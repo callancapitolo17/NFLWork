@@ -1,0 +1,12 @@
+name: TeamSimilarity
+title: TeamSimilarity
+username: callan-capitolo
+account: callan-capitolo
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 11272040
+bundleId: 8279555
+url: https://callan-capitolo.shinyapps.io/TeamSimilarity/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE
