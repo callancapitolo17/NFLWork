@@ -11,6 +11,9 @@ library(ggrepel)
 library(gridExtra)
 library(patchwork)
 library(zoo)
+library(tidyr)
+library(gt)
+library(gtExtras)
 
 # add explosive and negative play rate ----
 pfr_stats_pass <- nflreadr::load_pfr_advstats(seasons = 2023,
@@ -48,11 +51,9 @@ replace_with_values_and_ranks <- function(column) {
   formatted
 }
 
-def_replace_with_values_and_ranks <- function(column) {
+replace_with_ranks<- function(column){
   values <- column
-  ranks <- 32-rank(column*-1,ties.method = "max")+1
-  formatted <- paste(values, "[", ranks, "]", sep = "")
-  formatted
+  ranks <- rank(column*-1,ties.method = "max")
 }
 
 #----Scouting Report (add blitz and fix ranking for yards and stuff, int rate)
@@ -289,36 +290,75 @@ defensive_scouting <- pbp_rp %>%
     away_rush_off_epa = mean(epa[posteam == away_team&pass == 0],na.rm = T)
   )
 
-offense <- "BUF"
-defense <- "BAL"
+offense <- "SEA"
+defense <- "DET"
 
 
 team_stats_numeric_off <- offensive_scouting %>% 
   select(-posteam) %>% 
-mutate_all(~round(.,3))
+  mutate_all(~round(.,3))
 
 team_stats_numeric_def <-defensive_scouting %>% 
   select(-defteam) %>% 
-mutate_all(~round(.,3))
+  mutate_all(~round(.,3))
+
+data_ranks_off <- apply(team_stats_numeric_off %>% 
+                          mutate(off_negative  = off_negative*-1, off_negative_pass  = off_negative_pass*-1, off_negative_rush = off_negative_rush*-1,off_third_down_dist = off_third_down_dist*-1)
+                        , 2, replace_with_ranks) %>% 
+  as.data.frame(.) %>% 
+  cbind(offensive_scouting$posteam,.) %>% 
+  rename("posteam" = "offensive_scouting$posteam") %>% 
+  pivot_longer(cols = -posteam,names_to = "Stat", values_to = "Offense Rank")
 
 data_with_values_and_ranks_off <- apply(team_stats_numeric_off %>% 
                                           mutate(off_negative  = off_negative*-1, off_negative_pass  = off_negative_pass*-1, off_negative_rush = off_negative_rush*-1,off_third_down_dist = off_third_down_dist*-1)
-                                          , 2, replace_with_values_and_ranks)
+                                        , 2, replace_with_values_and_ranks) %>%
+  as.data.frame(.) %>% 
+  cbind(offensive_scouting$posteam,.) %>% 
+  rename("posteam" = "offensive_scouting$posteam") %>% 
+  pivot_longer(cols = -posteam,names_to = "Stat", values_to = "Offense Value") %>% 
+  left_join(data_ranks_off, by = c("posteam","Stat"))
 
-data_with_ranks_off <- cbind(offensive_scouting$posteam,data.frame(data_with_values_and_ranks_off)) %>% 
-  rename("posteam" = "offensive_scouting$posteam")
+data_ranks_def <- apply(team_stats_numeric_def %>% 
+                          mutate_all(~.*-1) %>% 
+                          mutate(off_negative  = off_negative*-1, off_negative_pass  = off_negative_pass*-1, off_negative_rush = off_negative_rush*-1,off_third_down_dist = off_third_down_dist*-1, 
+                                 turnover_rate = turnover_rate*-1, fumble_rate = fumble_rate*-1, fumble_lost_rate = fumble_lost_rate*-1, sack_rate = sack_rate*-1, 
+                                 interception_rate =  interception_rate * -1, interception_worthy_rate = interception_worthy_rate*-1, blitz_rate = blitz_rate*-1,
+                                 off_early_down_1st_pct = -1 * off_early_down_1st_pct, off_3rd_down_1st_pct = -1 * off_3rd_down_1st_pct), 2, replace_with_ranks) %>% 
+  as.data.frame(.) %>% 
+  cbind(defensive_scouting$defteam,.) %>% 
+  rename("defteam" = "defensive_scouting$defteam") %>% 
+  pivot_longer(cols = -defteam,names_to = "Stat", values_to = "Defense Rank")
+
 
 data_with_values_and_ranks_def <- apply(team_stats_numeric_def %>% 
                                           mutate_all(~.*-1) %>% 
                                           mutate(off_negative  = off_negative*-1, off_negative_pass  = off_negative_pass*-1, off_negative_rush = off_negative_rush*-1,off_third_down_dist = off_third_down_dist*-1, 
-                                                 turnover_rate = turnover_rate*-1, fumble_rate = fumble_rate*-1, fumble_lost_rate = fumble_lost_rate*-1, sack_rate = sack_rate*-1, interception_rate =  interception_rate * -1, interception_worthy_rate = interception_worthy_rate*-1, blitz_rate = blitz_rate*-1), 2, replace_with_values_and_ranks)
+                                                 turnover_rate = turnover_rate*-1, fumble_rate = fumble_rate*-1, fumble_lost_rate = fumble_lost_rate*-1, sack_rate = sack_rate*-1, 
+                                                 interception_rate =  interception_rate * -1, interception_worthy_rate = interception_worthy_rate*-1, blitz_rate = blitz_rate*-1,
+                                                 off_early_down_1st_pct = -1 * off_early_down_1st_pct, off_3rd_down_1st_pct = -1 * off_3rd_down_1st_pct), 2, replace_with_values_and_ranks) %>% 
+  as.data.frame(.) %>% 
+  cbind(defensive_scouting$defteam,.) %>% 
+  rename("defteam" = "defensive_scouting$defteam") %>% 
+  pivot_longer(cols = -defteam,names_to = "Stat", values_to = "Defense Value") %>% 
+  left_join(data_ranks_def, by = c("defteam","Stat"))
 
-data_with_ranks_def <- cbind(defensive_scouting$defteam,data.frame(data_with_values_and_ranks_def)) %>% 
-  rename("defteam" = "defensive_scouting$defteam")
 
-scouting_report <- data_with_ranks_off %>% 
+scouting_report <- data_with_values_and_ranks_off %>% 
   filter(posteam == offense) %>% 
-  pivot_longer(cols = -posteam, names_to = "Stat", values_to = paste(offense, "Offense", sep = " ")) %>% 
-  left_join(data_with_ranks_def %>% filter(defteam == defense) %>% pivot_longer(cols = -defteam, names_to = "Stat", values_to = paste(defense, "Defense", sep = " ")),
+  left_join(data_with_values_and_ranks_def %>% filter(defteam == defense),
             by = c("Stat")) %>% 
   select(-posteam,-defteam)
+
+scouting_report %>% 
+  select(Stat,`Offense Value`,`Defense Value`,`Offense Rank`,`Defense Rank`) %>% 
+  mutate(rank_diff = `Offense Rank`-`Defense Rank`) %>% 
+  gt() %>% 
+  cols_align(align = "center") %>%
+  cols_label(`Stat` = "Stat",`Offense Value` = paste(offense,"Offense Value", sep = " "), `Defense Value` = paste(defense,"Defense Value", sep = " "),
+             `Offense Rank` = paste(offense,"Offense Rank", sep = " "), `Defense Rank` = paste(defense,"Defense Rank", sep = " "),
+             rank_diff = "Rank Difference") %>% 
+  gtExtras::gt_theme_538() %>% 
+  gt_hulk_col_numeric(columns = c(`Offense Rank`,`Defense Rank`,rank_diff)) %>% 
+  tab_header(title = md("Scouting Report"), subtitle = md("Purple Represents Offense Advantage, Green Represents Defense Advantage"))
+
