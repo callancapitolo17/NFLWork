@@ -8,7 +8,8 @@ library(tidyverse)   # Data manipulation
 library(caret)       # Model training and tuning
 library(randomForest) # Random Forest
 library(xgboost)     
-
+library(dplyr)
+library(caret)
 
 sched <- load_schedules(2010:2024)
 
@@ -132,6 +133,8 @@ best_params_manual_upd <- expand.grid(
   min_child_weight = 1, # Minimum sum of instance weight (hessian) needed in a child
   subsample = 1      # Subsample ratio of the training instance
 )
+cv_control <- trainControl(method = "cv", number = 5, classProbs = TRUE,
+                           summaryFunction = twoClassSummary, savePredictions = "final")
 
 edge_model_data <- model_update_data %>% 
   filter(season >= 2015) %>%
@@ -178,7 +181,7 @@ teaser_sched <- sched24 %>%
   mutate(spread_odds = ifelse(spread_line < 0 & favorite == "away",away_vig_free, 
                               ifelse(spread_line < 0 & favorite == "home",home_vig_free,ifelse(spread_line > 0 & underdog == "away",away_vig_free,home_vig_free))),
          total_odds = ifelse(total_type == "teaser_under",under_vig_free,over_vig_free)) %>% 
-  filter(week == 4)
+  filter(week == 5)
 
 prediction_data <- teaser_sched %>% 
   select(total_line,total_type,spread_line,place,spread_odds,total_odds,season,week)
@@ -189,4 +192,5 @@ pred_1 <- cbind(teaser_sched,predict(xgb_model_prod,prediction_data,type = "prob
   rename("side" = "place") %>% 
   select(away_team,home_team, total_line,total_type,spread_line,side,prob) %>% 
   mutate(place = ifelse(prob > 0.62,"bet","no"))
+
 
