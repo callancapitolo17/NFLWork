@@ -114,13 +114,13 @@ offensive_scouting <- pbp_rp %>%
     intereception_worthy_epa = mean(epa[pass==1&is_interception_worthy ==1],na.rm = T),
     screen_rate = mean(is_screen_pass[pass == 1],na.rm = T),
     off_screen_epa = mean(epa[is_screen_pass == 1],na.rm = T),
-    off_shotgun_rate = mean(shotgun,na.rm = T),
     rush_right_rate = mean(run_location == "right",na.rm = T),
     off_rush_right_epa = mean(epa[run_location == "right"],na.rm = T),
     rush_left_rate = mean(run_location == "left",na.rm = T),
     off_rush_left_epa = mean(epa[run_location == "left"],na.rm = T),
     rush_middle_rate = mean(run_location == "middle",na.rm = T),
     off_rush_middle_epa = mean(epa[run_location == "middle"],na.rm = T),
+    off_shotgun_rate = mean(shotgun,na.rm = T),
     given_pass_pct_from_shotgun = mean(shotgun[pass==1],na.rm = T),
     given_rush_pct_from_shotgun = mean(shotgun[rush==1],na.rm = T),
     given_shotgun_pass_rate = mean(pass[shotgun==1],na.rm = T),
@@ -292,8 +292,8 @@ defensive_scouting <- pbp_rp %>%
     away_rush_off_epa = mean(epa[posteam == away_team&pass == 0],na.rm = T)
   )
 
-offense <- "ATL"
-defense <- "TB"
+offense <- "DAL"
+defense <- "PIT"
 
 
 team_stats_numeric_off <- offensive_scouting %>% 
@@ -306,7 +306,7 @@ team_stats_numeric_def <-defensive_scouting %>%
 
 data_ranks_off <- apply(team_stats_numeric_off %>% 
                           mutate(off_negative  = off_negative*-1, off_negative_pass  = off_negative_pass*-1, off_negative_rush = off_negative_rush*-1,off_third_down_dist = off_third_down_dist*-1,
-                        sack_rate = sack_rate*-1, interception_worthy_rate = interception_worthy_rate*-1, interception_rate = interception_rate*-1), 2, replace_with_ranks) %>% 
+                        sack_rate = sack_rate*-1, interception_worthy_rate = interception_worthy_rate*-1, interception_rate = interception_rate*-1,turnover_rate = turnover_rate*-1, fumble_rate = fumble_rate*-1, fumble_lost_rate = fumble_lost_rate*-1), 2, replace_with_ranks) %>% 
   as.data.frame(.) %>% 
   cbind(offensive_scouting$posteam,.) %>% 
   rename("posteam" = "offensive_scouting$posteam") %>% 
@@ -314,7 +314,8 @@ data_ranks_off <- apply(team_stats_numeric_off %>%
 
 data_with_values_and_ranks_off <- apply(team_stats_numeric_off %>% 
                                           mutate(off_negative  = off_negative*-1, off_negative_pass  = off_negative_pass*-1, off_negative_rush = off_negative_rush*-1,off_third_down_dist = off_third_down_dist*-1,
-                                                 sack_rate = sack_rate*-1, interception_worthy_rate = interception_worthy_rate*-1, interception_rate = interception_rate*-1)
+                                                 sack_rate = sack_rate*-1, interception_worthy_rate = interception_worthy_rate*-1, interception_rate = interception_rate*-1,
+                                                 turnover_rate = turnover_rate*-1, fumble_rate = fumble_rate*-1, fumble_lost_rate = fumble_lost_rate*-1)
                                         , 2, replace_with_values_and_ranks) %>%
   as.data.frame(.) %>% 
   cbind(offensive_scouting$posteam,.) %>% 
