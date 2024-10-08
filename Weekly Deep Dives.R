@@ -776,9 +776,7 @@ pbp %>%
           axis.text = element_text(face = "bold", colour = "white",size = 12),
           axis.title = element_text(color = "white", size = 14),
           panel.border = element_rect(colour = "white", fill = NA, size = 1),
-          panel.grid = element_blank())+
-  xlim(0,1)+
-  ylim(0,1)
+          panel.grid = element_blank())
 ggsave("NegativePlays.png", width = 14, height =10, dpi = "retina")
 
 #Stadium Location Performance ----
