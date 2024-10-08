@@ -65,7 +65,7 @@ total_efficiency_both %>%
   ggplot(aes(x = defensive_epa, y = offensive_epa)) +
   geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
   scale_x_reverse()+
-  labs(x = "Defensive EPA/Play", y = "Offensive EPA/Play", title = "Efficiency Landscape Following Week 4",
+  labs(x = "Defensive EPA/Play", y = "Offensive EPA/Play", title = "Efficiency Landscape Following Week 5",
        subtitle = "Dotted Lines Represent League Average",
        caption = "Callan Capitolo | @CapAnalytics7 | nflfastR")+
   theme(legend.position = "top",
@@ -92,15 +92,14 @@ ggsave("EffLandscape.png", width = 14, height =10, dpi = "retina")
 #Side of Ball Breakdown----
 pbp_rp %>% 
   filter(season == year) %>% 
-  # group_by(posteam) %>%
-  group_by(defteam) %>%
+  group_by(posteam) %>%
+  # group_by(defteam) %>%
   summarize(epa_db = mean(epa[pass == 1],na.rm = T), epa_rush = mean(epa[rush == 1], na.rm = T)) %>% 
-  # left_join(teams_colors_logos ,by = c("posteam" = "team_abbr")) %>%
-  left_join(teams_colors_logos ,by = c("defteam" = "team_abbr")) %>%
   ggplot(aes(x = epa_rush, y = epa_db))+
-  scale_x_reverse()+
-  scale_y_reverse()+
-  geom_image(aes(image = team_logo_espn), size = 0.05, asp = 16/9)+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
+  # geom_nfl_logos(aes(team_abbr = defteam), width = 0.05)+
+  # scale_x_reverse()+
+  # scale_y_reverse()+
   theme(legend.position = "none",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -116,7 +115,7 @@ pbp_rp %>%
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))+
-  labs(x = "EPA/Rush", y = "EPA/Dropback", title = "Defensive Efficiency Landscape",
+  labs(x = "EPA/Rush", y = "EPA/Dropback", title = "Offensive Efficiency Landscape",
        subtitle = "Dotted lines represent league average", 
        caption = "@CapAnalytics7 | nflfastR")+
   geom_hline(yintercept = mean(pbp_rp$epa[pbp_rp$season == 2024 & pbp_rp$pass == 1],na.rm = T), linetype = "dashed",color = "white")+
@@ -743,24 +742,29 @@ test <- pbp %>%
   select(penalty,desc,pass,rush,yards_gained,epa,penalty_yards,penalt) %>% 
   filter(penalty == 1)
 
-pbp %>% 
+negatives <- pbp %>% 
   filter(!is.na(series)) %>% 
   mutate(
-    negative_play = ifelse((!is.na(penalty_team) & !is.na(penalty_yards) & penalty_team == posteam & penalty_yards >0) | (yards_gained < 0), 1, 0),
+    negative_play = ifelse((!is.na(penalty_team) & !is.na(penalty_yards) & penalty_team == posteam & penalty_yards >0) | (yards_gained < 0 & down <4), 1, 0),
     unique_series_identifier = paste(game_id, series)) %>%
-  filter(qb_kneel !=1, !is.na(negative_play)) %>% #check drive_points
+  filter(qb_kneel !=1, !is.na(negative_play)) %>%
+  # select(negative_play, desc,penalty,pass, rush)#check drive_points
   group_by(unique_series_identifier) %>% 
-  summarize(posteam = first(posteam),negative_plays = max(negative_play),series_suc = max(series_success)) %>% 
+  summarize(posteam = first(posteam),negative_plays = max(negative_play),series_suc = max(series_success),
+            total_neg = sum(negative_play)) %>% 
   group_by(negative_plays,posteam) %>% 
-  summarize(success_series = mean(series_suc,na.rm = T), count = n()) %>% 
+  summarize(success_series = mean(series_suc,na.rm = T), count = n(), total_negatives = sum(total_neg), average_negative_plays_neg_drive = mean(total_neg)) %>% 
   filter(!is.na(posteam)) %>% 
   mutate(negative_plays = ifelse(negative_plays == 1, "Yes", "No")) %>% 
-  pivot_wider(values_from = c(count,success_series), names_from = negative_plays) %>% 
+  pivot_wider(values_from = c(count,success_series, total_negatives, average_negative_plays_neg_drive), names_from = negative_plays) %>% 
+  mutate(avg_neg = total_negatives_Yes/(count_Yes+count_No))
+
+negatives %>% 
   ggplot(aes(x = success_series_No, y = success_series_Yes))+
   geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
-  labs(x = "Number of Negative Plays on Drive (Includes Penalties)", y = "Average Points Per Drive",
-       title = "Points Per Drive vs Negative Plays Following Week 17 TNF", subtitle = "Minimum 3 Drives",
-       caption = "Callan Capitolo | @CapAnalytics7 | nflfastR" )+
+  labs(x = "Series Success With No Negative Plays", y = "Series Success With 1+ Negative Plays",
+       title = "Which Offenses are Best at Recovering from Negative Plays?", subtitle = "Series Success Defined as Series Results in First Down or Touchdown",
+       caption = "@CapAnalytics7 | nflfastR" )+
     theme(legend.position = "top",
           legend.direction = "horizontal",
           legend.background = element_rect(fill = "white", color="white"),
@@ -775,8 +779,29 @@ pbp %>%
           axis.text = element_text(face = "bold", colour = "white",size = 12),
           axis.title = element_text(color = "white", size = 14),
           panel.border = element_rect(colour = "white", fill = NA, size = 1),
-          panel.grid = element_blank())
+          panel.grid = element_blank())+
+  geom_smooth(method = "lm", se = FALSE, color = "white", linetype = "dashed")
 ggsave("NegativePlays.png", width = 14, height =10, dpi = "retina")
+
+#Negative Series Frequency----
+off_neg <- negatives %>% 
+  mutate(neg_series_rate = (count_Yes/(count_No+count_Yes))) %>% 
+  arrange(neg_series_rate) %>% 
+  select(posteam, neg_series_rate,average_negative_plays_neg_drive_Yes) %>% 
+  mutate_if(is.numeric, ~round(.,3)) %>% 
+  gt() %>% 
+  cols_align(align = "center") %>% 
+  gt_nfl_wordmarks(columns = "posteam") %>% 
+  cols_label(posteam = "Team",
+             neg_series_rate = "Series W/Negative Play Rate",
+             average_negative_plays_neg_drive_Yes = "Average Negative Plays Per Series W/Negative Play") %>% 
+  gtExtras::gt_theme_538() %>%
+  gtExtras::gt_hulk_col_numeric(c(neg_series_rate,average_negative_plays_neg_drive_Yes)) %>% 
+tab_header(
+  title = md("Which Offenses Avoid Negative Plays?"),
+)
+gtsave(off_neg, "NegativeOffPerformance.png")
+#Negative Plays on Early Downs, issue with negative plays per series with grouping
 
 #Stadium Location Performance ----
 pbp_rp %>% 
