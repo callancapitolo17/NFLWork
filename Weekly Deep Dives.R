@@ -740,30 +740,45 @@ ggsave("YAC.png", width = 14, height =10, dpi = "retina")
 
 
 #Ability to recover from negative plays----
+test <- pbp %>% 
+  select(penalty,desc,pass,rush,yards_gained,epa,penalty_yards,penalt) %>% 
+  filter(penalty == 1)
 
-negative_plays <- pbp_rp %>% 
+pbp %>% 
+  filter(!is.na(series)) %>% 
   mutate(
-    negative_play = ifelse(yards_gained < 0 | penalty_team == posteam, 1, 0),
-    unique_drive_identifier = paste(game_id, drive),
-    drive_points = ifelse(fixed_drive_result == "Touchdown", 6,
-                          ifelse(fixed_drive_result == "Field goal", 3, 0))) %>% #check drive_points
-  filter(!grepl("punt", desc, ignore.case = TRUE)) %>% 
-  group_by(unique_drive_identifier) %>% 
-  summarize(posteam = first(posteam),negative_plays = sum(negative_play, na.rm = T),points_drive = max(drive_points)) %>% 
+    negative_play = ifelse((!is.na(penalty_team) & !is.na(penalty_yards) & penalty_team == posteam & penalty_yards >0) | (yards_gained < 0), 1, 0),
+    unique_series_identifier = paste(game_id, series)) %>%
+  filter(qb_kneel !=1, !is.na(negative_play)) %>% #check drive_points
+  group_by(unique_series_identifier) %>% 
+  summarize(posteam = first(posteam),negative_plays = max(negative_play),series_suc = max(series_success)) %>% 
   group_by(negative_plays,posteam) %>% 
-  summarize(avg_points_drive = mean(points_drive), count = n()) %>% 
+  summarize(success_series = mean(series_suc,na.rm = T), count = n()) %>% 
   filter(!is.na(posteam)) %>% 
-  left_join(teams_colors_logos, by = c("posteam" = "team_abbr"))
-
-
-negative_plays %>% 
-  filter(count>2) %>% 
-  ggplot(aes(x = negative_plays, y = avg_points_drive))+
-  geom_image(aes(image = team_logo_espn), size = 0.02, asp = 16/9)+
+  mutate(negative_plays = ifelse(negative_plays == 1, "Yes", "No")) %>% 
+  pivot_wider(values_from = c(count,success_series), names_from = negative_plays) %>% 
+  ggplot(aes(x = success_series_No, y = success_series_Yes))+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
   labs(x = "Number of Negative Plays on Drive (Includes Penalties)", y = "Average Points Per Drive",
        title = "Points Per Drive vs Negative Plays Following Week 17 TNF", subtitle = "Minimum 3 Drives",
        caption = "Callan Capitolo | @CapAnalytics7 | nflfastR" )+
-  theme_bw()
+    theme(legend.position = "top",
+          legend.direction = "horizontal",
+          legend.background = element_rect(fill = "white", color="white"),
+          legend.title = element_blank(),
+          legend.text = element_text(colour = "black", face = "bold"),
+          plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+          plot.subtitle = element_text(hjust = .5, colour = "white", size = 10),
+          plot.caption = element_text(colour = "white", size = 10),
+          plot.background = element_rect(fill = "black", color="black"),
+          panel.background = element_rect(fill = "black", color="black"),
+          axis.ticks = element_line(color = "white"),
+          axis.text = element_text(face = "bold", colour = "white",size = 12),
+          axis.title = element_text(color = "white", size = 14),
+          panel.border = element_rect(colour = "white", fill = NA, size = 1),
+          panel.grid = element_blank())+
+  xlim(0,1)+
+  ylim(0,1)
 ggsave("NegativePlays.png", width = 14, height =10, dpi = "retina")
 
 #Stadium Location Performance ----
