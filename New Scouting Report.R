@@ -292,8 +292,8 @@ defensive_scouting <- pbp_rp %>%
     away_rush_off_epa = mean(epa[posteam == away_team&pass == 0],na.rm = T)
   )
 
-offense <- "DAL"
-defense <- "PIT"
+offense <- "KC"
+defense <- "NO"
 
 
 team_stats_numeric_off <- offensive_scouting %>% 
