@@ -63,8 +63,7 @@ total_efficiency_both <- total_efficiency_both %>%
 
 total_efficiency_both %>% 
   ggplot(aes(x = defensive_epa, y = offensive_epa)) +
-  geom_image(aes(image = team_logo_espn), size = 0.05, asp = 16/9)+
-  theme_bw()+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
   scale_x_reverse()+
   labs(x = "Defensive EPA/Play", y = "Offensive EPA/Play", title = "Efficiency Landscape Following Week 4",
        subtitle = "Dotted Lines Represent League Average",
