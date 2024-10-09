@@ -152,31 +152,21 @@ pbp_rp %>%
     TRUE ~ "Other"  # This acts as the catch-all for anything not matched
     
   )) %>%
-  
   group_by(posteam,detailed_play_type) %>%
-  
-  summarize(total_epa = sum(epa,na.rm = T)) %>%
+  summarize(total_epa = sum(epa,na.rm = T), epa_play = mean(epa,na.rm = T)) %>%
   mutate(sum_epa = sum(total_epa)) %>%
   ggplot(aes(x  = total_epa, y =reorder(posteam,sum_epa), fill = detailed_play_type))+
   geom_bar(stat = "identity")+
   scale_fill_brewer(palette = "Set3") +
   # geom_nfl_logos(aes(team_abbr = max(posteam)), width = 0.05, alpha = 0.7)+
   labs(y = "Offense", x = "Total EPA", title = "Where are Offenses Generating Success From?",
-       
        caption = "@CapAnalytics7 | nflfastR")+
-  
   theme(legend.position = "top",
-        
         legend.direction = "horizontal",
-        
         legend.background = element_rect(fill = "white", color="white"),
-        
         legend.title = element_blank(),
-        
         legend.text = element_text(colour = "black", face = "bold"),
-        
         plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
-        
         plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
         plot.caption = element_text(colour = "white", size = 10),
         panel.grid = element_blank(),
@@ -188,26 +178,23 @@ pbp_rp %>%
         panel.border = element_rect(colour = "white", fill = NA, size = 1),
         axis.title.y = element_blank(),
         axis.text.y = element_nfl_logo(size = 0.9)
-        
-  )
-
+        )
 ggsave("OffBreakout.png", width = 14, height =10, dpi = "retina")
 
 
 #Early down vs Late Down Efficiency----
 pbp_rp %>%
   filter(season == year) %>% 
-  group_by(posteam) %>%
-  # group_by(defteam) %>%
+  # group_by(posteam) %>%
+  group_by(defteam) %>%
   summarize(early_down_epa = mean(epa[down<=2],na.rm = T), late_down_epa = mean(epa[down>2],na.rm = T)) %>% 
-  left_join(teams_colors_logos, by = c("posteam" = "team_abbr")) %>%
-  # left_join(teams_colors_logos, by = c("defteam" = "team_abbr")) %>% 
   ggplot(aes(x = early_down_epa, y = late_down_epa)) +
-  geom_image(aes(image = team_logo_espn), size = 0.1, asp = 16/19)+
+  # geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
+  geom_nfl_logos(aes(team_abbr = defteam), width = 0.05)+
   theme_bw()+
-  # scale_x_reverse()+
-  # scale_y_reverse()+
-  labs(x = "EPA/Early Down (1st & 2nd down)", y = "EPA/Late Down (3rd & 4th down)", title = "Defensive Efficiency Late Down vs Early Down Following Week 3",
+  scale_x_reverse()+
+  scale_y_reverse()+
+  labs(x = "EPA/Early Down (1st & 2nd down)", y = "EPA/Late Down (3rd & 4th down)", title = "Defensive Efficiency Late Down vs Early Down",
        subtitle = "Dotted lines represent average",
        caption = "@CapAnalytics7 | nflfastR")+
   theme(legend.position = "top",
@@ -233,16 +220,16 @@ ggsave("EarlyvsLateEfficiency.png", width = 14, height =10, dpi = "retina")
 #Explosive vs Negative ----
 pbp_rp %>% 
   filter(season == year) %>% 
-  group_by(posteam) %>%
-  # group_by(defteam) %>% 
+  # group_by(posteam) %>%
+  group_by(defteam) %>%
   summarize(negative_rate = mean(negative,na.rm = T),explosive_rate = mean(explosive,na.rm = T)) %>% 
   ggplot(aes(x = negative_rate, y = explosive_rate))+
   geom_point()+
-  scale_x_reverse()+
-  # scale_y_reverse()+
-  # geom_nfl_logos(aes(team_abbr = defteam), width = 0.065)+
-  geom_nfl_logos(aes(team_abbr = posteam), width = 0.065)+
-  labs(x = "Negative Play Rate", y = "Explosive Play Rate*", title = "Which Offenses Avoid Negative Plays and Create Explosives?",
+  # scale_x_reverse()+
+  scale_y_reverse()+
+  geom_nfl_logos(aes(team_abbr = defteam), width = 0.06)+
+  # geom_nfl_logos(aes(team_abbr = posteam), width = 0.06)+
+  labs(x = "Negative Play Rate", y = "Explosive Play Rate*", title = "Which Defenses Create Negative Plays and Prevent Explosives?",
        caption = "*Passes that gained greater than 20 yards or runs that gained greater than 12 yards                         @CapAnalytics7 | nflfastR",
        subtitle = "Dotted Lines Represent League Average")+
   theme(legend.position = "top",
@@ -287,7 +274,7 @@ total_first_half <- total_first_half %>%
 
 total_first_half %>% 
   ggplot(aes(x = def_epa, y = off_epa)) +
-  geom_image(aes(image = team_logo_espn), size = 0.1, asp = 16/19)+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.055)+
   theme_bw()+
   scale_x_reverse()+
   labs(x = "First Half Defensive EPA/Play", y = "First Half Offensive EPA/Play", title = "1st Half Offensive and Defensive Efficiency Following Week 1",
@@ -323,12 +310,9 @@ explosive_pass <- pbp %>%
   summarize(passes = n(), adot = mean(air_yards,na.rm = T), explosive_rate = mean(explosive)) %>% 
   filter(passes>=50)
 
-explosive_pass <- explosive_pass %>% 
-  left_join(teams_colors_logos, by = c("posteam" = "team_abbr"))
-
 explosive_pass %>% 
   ggplot(aes(x = adot, y = explosive_rate))+
-  geom_image(aes(image = team_logo_espn), size = 0.03, asp = 16/9)+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.035)+
   geom_text_repel(
     aes(label = passer_player_name),
     box.padding = 0.05,  # adjust this value for padding around the labels
@@ -369,9 +353,8 @@ pbp_rp %>%
   filter(season == year) %>% 
   group_by(posteam) %>% 
   summarize(xpassoe = mean(pass_oe,na.rm = T), epa_xpass = mean(epa[xpass>=0.9 & pass == 1],na.rm = T)) %>% 
-  left_join(teams_colors_logos ,by = c("posteam" = "team_abbr")) %>% 
   ggplot(aes(x = xpassoe, y = epa_xpass))+
-  geom_image(aes(image = team_logo_espn), size = 0.05, asp = 16/9)+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.06)+
   theme(legend.position = "none",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -387,7 +370,7 @@ pbp_rp %>%
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))+
-  labs(x = "Pass Rate Over Expectation", y = "EPA/Expected Pass Dropback*", title = "Which Teams Are Passing More than Expected How do They Perform in Expected Passing Situations?",
+  labs(x = "Pass Rate Over Expectation", y = "EPA/Expected Pass Dropback*", title = "Which Teams Are Passing More than Expected? How do They Perform in Expected Passing Situations?",
        subtitle = "Dotted lines represent league average", 
        caption = "*Expected pass situation is down with xpass >0.9      @CapAnalytics7 | nflfastR")+
   geom_hline(yintercept = mean(pbp_rp$epa[pbp_rp$season == 2024 & pbp_rp$pass == 1 & pbp_rp$xpass>=0.9],na.rm = T), linetype = "dashed",color = "white")+
@@ -396,15 +379,14 @@ ggsave("xPass.png", width = 14, height =10, dpi = "retina")
 
 #Non Red vs Red----
 pbp_rp %>% 
-  # group_by(defteam) %>% 
-  group_by(posteam) %>%
+  group_by(defteam) %>%
+  # group_by(posteam) %>%
   summarize(epa_red = mean(epa[yardline_100<= 20],na.rm = T), epa_non_red = mean(epa[yardline_100> 20],na.rm = T)) %>% 
-  left_join(teams_colors_logos ,by = c("posteam" = "team_abbr")) %>%
-  # left_join(teams_colors_logos ,by = c("defteam" = "team_abbr")) %>%
   ggplot(aes(x = epa_red, y = epa_non_red))+
-  geom_image(aes(image = team_logo_espn), size = 0.05, asp = 16/9)+
-  # scale_x_reverse()+
-  # scale_y_reverse()+
+  # geom_nfl_logos(aes(team_abbr = posteam), width = 0.06)+
+  geom_nfl_logos(aes(team_abbr = defteam), width = 0.06)+
+  scale_x_reverse()+
+  scale_y_reverse()+
   theme(legend.position = "none",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -420,7 +402,7 @@ pbp_rp %>%
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))+
-  labs(x = "EPA/Redzone", y = "EPA/Outside Redzone", title = "Offensive Efficiency Inside vs Outside Red Zone",
+  labs(x = "EPA/Redzone", y = "EPA/Outside Redzone", title = "Defensive Efficiency Inside vs Outside Red Zone",
        subtitle = "Dotted lines represent league average", 
        caption = "@CapAnalytics7 | nflfastR")+
   geom_hline(yintercept = mean(pbp_rp$epa[pbp_rp$yardline_100>20],na.rm = T), linetype = "dashed",color = "white")+
@@ -738,9 +720,6 @@ ggsave("YAC.png", width = 14, height =10, dpi = "retina")
 
 
 #Ability to recover from negative plays----
-test <- pbp %>% 
-  select(penalty,desc,pass,rush,yards_gained,epa,penalty_yards,penalt) %>% 
-  filter(penalty == 1)
 
 negatives <- pbp %>% 
   filter(!is.na(series)) %>% 
@@ -798,7 +777,7 @@ off_neg <- negatives %>%
   gtExtras::gt_theme_538() %>%
   gtExtras::gt_hulk_col_numeric(c(neg_series_rate,average_negative_plays_neg_drive_Yes)) %>% 
 tab_header(
-  title = md("Which Offenses Avoid Negative Plays?"),
+  title = md("Which Offenses Avoid Negative Plays?")
 )
 gtsave(off_neg, "NegativeOffPerformance.png")
 #Negative Plays on Early Downs, issue with negative plays per series with grouping
