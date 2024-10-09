@@ -38,7 +38,7 @@ pbp_rp <- pbp %>%
   mutate(explosive = ifelse((yards_gained>20 & pass_attempt == 1) | (yards_gained >12 & (qb_scramble == 1 | rush == 1)),1,0),
         negative = ifelse(yards_gained < 0, 1,0))
 
-nfl99all <- load_pbp(1999:2023)
+nfl99all <- load_pbp(1999:2024)
 nfl99 <- nfl99all %>% 
   filter(pass == 1 | rush == 1) %>% 
   mutate(explosive = ifelse((yards_gained>20 & pass_attempt == 1) | (yards_gained >12 & (qb_scramble == 1 | rush == 1)),1,0),
@@ -957,3 +957,10 @@ nfl99 %>%
 ggsave("AirYardsEff.png", width = 14, height =10, dpi = "retina")
 
 #Middle 8 ----
+
+nfl99 %>% 
+  filter(posteam == "SF") %>% 
+  group_by(posteam,wp,id) %>% 
+  summarize(name = first(name), epa = mean(epa,na.rm = T)) %>% 
+  filter(name %in% c("J.Garoppolo", "B.Purdy"))
+  
