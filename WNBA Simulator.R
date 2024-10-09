@@ -71,5 +71,3 @@ monte_carlo_best_of_7 <- function() {
 
 # Run the Monte Carlo simulation
 monte_carlo_best_of_7()
-
-win <- 0.5 <0.6
