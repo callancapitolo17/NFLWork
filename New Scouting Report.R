@@ -61,8 +61,12 @@ offensive_scouting <- pbp_rp %>%
   group_by(posteam) %>% 
   summarize(
     off_epa = mean(epa,na.rm = T),
+    `EPA Last 4 Weeks` = mean(epa[week> max(week)-4],na.rm = T),
+    `Success Rate` = mean(success, na.rm = T),
     off_pass_epa = mean(epa[pass == 1],na.rm = T),
+    `Dropback Success Rate` = mean(success[pass==1],na.rm = T),
     off_rush_epa = mean(epa[pass == 0],na.rm = T),
+    `Rush Success Rate` = mean(success[rush==1],na.rm = T),
     off_explosive = mean(explosive,na.rm = T),
     off_explosive_rush = mean(explosive[rush == 1],na.rm = T),
     off_explosive_pass = mean(explosive[pass == 1],na.rm = T),
@@ -179,8 +183,12 @@ defensive_scouting <- pbp_rp %>%
   group_by(defteam) %>% 
   summarize(
     off_epa = mean(epa,na.rm = T),
+    `EPA Last 4 Weeks` = mean(epa[week> max(week)-4]),
+    `Success Rate` = mean(success, na.rm = T),
     off_pass_epa = mean(epa[pass == 1],na.rm = T),
+    `Dropback Success Rate` = mean(success[pass==1],na.rm = T),
     off_rush_epa = mean(epa[pass == 0],na.rm = T),
+    `Rush Success Rate` = mean(success[rush==1],na.rm = T),
     off_explosive = mean(explosive,na.rm = T),
     off_explosive_rush = mean(explosive[rush == 1],na.rm = T),
     off_explosive_pass = mean(explosive[pass == 1],na.rm = T),
@@ -232,6 +240,23 @@ defensive_scouting <- pbp_rp %>%
     intereception_worthy_epa = mean(epa[pass==1&is_interception_worthy ==1],na.rm = T),
     screen_rate = mean(is_screen_pass[pass == 1],na.rm = T),
     off_screen_epa = mean(epa[is_screen_pass == 1],na.rm = T),
+    rush_right_rate = mean(run_location == "right",na.rm = T),
+    off_rush_right_epa = mean(epa[run_location == "right"],na.rm = T),
+    rush_left_rate = mean(run_location == "left",na.rm = T),
+    off_rush_left_epa = mean(epa[run_location == "left"],na.rm = T),
+    rush_middle_rate = mean(run_location == "middle",na.rm = T),
+    off_rush_middle_epa = mean(epa[run_location == "middle"],na.rm = T),
+    off_shotgun_rate = mean(shotgun,na.rm = T),
+    given_pass_pct_from_shotgun = mean(shotgun[pass==1],na.rm = T),
+    given_rush_pct_from_shotgun = mean(shotgun[rush==1],na.rm = T),
+    given_shotgun_pass_rate = mean(pass[shotgun==1],na.rm = T),
+    given_under_center_pass_rate = mean(pass[shotgun==0],na.rm = T),
+    off_shotgun_epa = mean(epa[shotgun == 1],na.rm = T),
+    off_shotgun_pass_epa = mean(epa[shotgun == 1 & pass == 1],na.rm = T),
+    off_shotgun_rush_epa = mean(epa[shotgun == 1 & rush == 1],na.rm = T),
+    off_no_shotgun_epa = mean(epa[shotgun == 0],na.rm = T),
+    off_no_shotgun_pass_epa = mean(epa[shotgun == 0 & pass == 1],na.rm = T),
+    off_no_shotgun_rush_epa = mean(epa[shotgun == 0 & rush == 1],na.rm = T),
     off_1h_epa = mean(epa[qtr<=21],na.rm =T),
     off_1h_pass_epa = mean(epa[qtr<=2&pass ==1], na.rm =T),
     off_1h_rush_epa = mean(epa[qtr<=2&rush ==1], na.rm =T),
@@ -257,23 +282,6 @@ defensive_scouting <- pbp_rp %>%
     off_motion_impr = off_motion_epa-off_no_motion_epa,
     off_pass_motion_impr = off_pass_motion_epa - off_pass_no_motion_epa,
     off_rush_motion_impr = off_rush_motion_epa - off_rush_no_motion_epa,
-    off_shotgun_rate = mean(shotgun,na.rm = T),
-    rush_right_rate = mean(run_location == "right",na.rm = T),
-    off_rush_right_epa = mean(epa[run_location == "right"],na.rm = T),
-    rush_left_rate = mean(run_location == "left",na.rm = T),
-    off_rush_left_epa = mean(epa[run_location == "left"],na.rm = T),
-    rush_middle_rate = mean(run_location == "middle",na.rm = T),
-    off_rush_middle_epa = mean(epa[run_location == "middle"],na.rm = T),
-    given_pass_pct_from_shotgun = mean(shotgun[pass==1],na.rm = T),
-    given_rush_pct_from_shotgun = mean(shotgun[rush==1],na.rm = T),
-    given_shotgun_pass_rate = mean(pass[shotgun==1],na.rm = T),
-    given_under_center_pass_rate = mean(pass[shotgun==0],na.rm = T),
-    off_shotgun_epa = mean(epa[shotgun == 1],na.rm = T),
-    off_shotgun_pass_epa = mean(epa[shotgun == 1 & pass == 1],na.rm = T),
-    off_shotgun_rush_epa = mean(epa[shotgun == 1 & rush == 1],na.rm = T),
-    off_no_shotgun_epa = mean(epa[shotgun == 0],na.rm = T),
-    off_no_shotgun_pass_epa = mean(epa[shotgun == 0 & pass == 1],na.rm = T),
-    off_no_shotgun_rush_epa = mean(epa[shotgun == 0 & rush == 1],na.rm = T),
     rpo_rate = mean(is_rpo,na.rm = T),
     off_rpo_epa = mean(epa[is_rpo == 1],na.rm = T),
     off_rush_in_heavy_box_rate = mean(rush[heavybox == 1],na.rm = T),
@@ -292,13 +300,9 @@ defensive_scouting <- pbp_rp %>%
     away_rush_off_epa = mean(epa[posteam == away_team&pass == 0],na.rm = T)
   )
 
-<<<<<<< HEAD
-offense <- "KC"
-defense <- "NO"
-=======
-offense <- "PIT"
-defense <- "DAL"
->>>>>>> ea587c1ae3b3bbe15fd704ae128af3012cf0f050
+offense <- "SEA"
+defense <- "SF"
+
 
 
 team_stats_numeric_off <- offensive_scouting %>% 
@@ -333,7 +337,7 @@ data_ranks_def <- apply(team_stats_numeric_def %>%
                           mutate(off_negative  = off_negative*-1, off_negative_pass  = off_negative_pass*-1, off_negative_rush = off_negative_rush*-1,off_third_down_dist = off_third_down_dist*-1, 
                                  turnover_rate = turnover_rate*-1, fumble_rate = fumble_rate*-1, fumble_lost_rate = fumble_lost_rate*-1, sack_rate = sack_rate*-1, 
                                  interception_rate =  interception_rate * -1, interception_worthy_rate = interception_worthy_rate*-1, blitz_rate = blitz_rate*-1,
-                                 off_early_down_1st_pct = -1 * off_early_down_1st_pct, off_3rd_down_1st_pct = -1 * off_3rd_down_1st_pct), 2, replace_with_ranks) %>% 
+                                 ), 2, replace_with_ranks) %>% 
   as.data.frame(.) %>% 
   cbind(defensive_scouting$defteam,.) %>% 
   rename("defteam" = "defensive_scouting$defteam") %>% 
@@ -345,7 +349,7 @@ data_with_values_and_ranks_def <- apply(team_stats_numeric_def %>%
                                           mutate(off_negative  = off_negative*-1, off_negative_pass  = off_negative_pass*-1, off_negative_rush = off_negative_rush*-1,off_third_down_dist = off_third_down_dist*-1, 
                                                  turnover_rate = turnover_rate*-1, fumble_rate = fumble_rate*-1, fumble_lost_rate = fumble_lost_rate*-1, sack_rate = sack_rate*-1, 
                                                  interception_rate =  interception_rate * -1, interception_worthy_rate = interception_worthy_rate*-1, blitz_rate = blitz_rate*-1,
-                                                 off_early_down_1st_pct = -1 * off_early_down_1st_pct, off_3rd_down_1st_pct = -1 * off_3rd_down_1st_pct), 2, replace_with_values_and_ranks) %>% 
+                                                 ), 2, replace_with_values_and_ranks) %>% 
   as.data.frame(.) %>% 
   cbind(defensive_scouting$defteam,.) %>% 
   rename("defteam" = "defensive_scouting$defteam") %>% 
