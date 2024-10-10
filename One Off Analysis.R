@@ -151,5 +151,138 @@ gtsave(qb_gt, "qb_efficiency_week5.png")
 
 
 
+#Brock vs Jimmy ----
+nfl99 %>% 
+  filter(posteam == "SF") %>% 
+  mutate(wp = round(wp,2)) %>% 
+  group_by(posteam,wp,id) %>% 
+  summarize(name = first(name), epa = mean(epa,na.rm = T)) %>% 
+  filter(name %in% c("J.Garoppolo", "B.Purdy")) %>% 
+  ggplot(aes(x = wp, y = epa,color = name)) + 
+  geom_smooth(se = FALSE, span =0.6, method = "loess", lwd = 3)+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+        plot.caption = element_text(colour = "white", size = 10),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1))+
+  labs(x = "Win Probability", y = "EPA/Play (Pass or Rush by QB)", title = "How do Purdy and Garoppolo Perform at Different Win Probabilities?",
+       caption = "@CapAnalytics7 | nflfastR", subtitle = "Purdy Performs Better in High Win Probability Situations than Garoppolo")
+ggsave("BrockvPurdy.png", width = 14, height =10, dpi = "retina")
+
+nfl99 %>% 
+  filter(posteam == "SF") %>% 
+  mutate(wp = round(wp,2)) %>%
+  left_join(nfl99 %>% 
+              mutate(pur_g = ifelse(name %in% c("B.Purdy","J.Garoppolo"),name, 0)) %>% 
+              group_by(game_id) %>% 
+              summarize(qb = max(pur_g)), by = c("game_id")) %>% 
+  filter(qb != 0) %>% 
+  # group_by(qb,wp) %>% 
+  group_by(qb,wp, season) %>%
+  filter(qb == "B.Purdy") %>% 
+  summarize(pass = mean(pass_oe, na.rm = T)) %>% 
+  # ggplot(aes(x= wp, y = pass, color = as.factor(qb)))+
+  ggplot(aes(x= wp, y = pass, color = as.factor(season)))+
+  geom_smooth(se = F, method = "loess", span = .6, lwd = 3)+
+  # scale_color_brewer(palette = "Set2")+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+        plot.caption = element_text(colour = "white", size = 10),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1))+
+  labs(x = "Win Probability", y = "Pass Rate Over Expected", title = "Has Shanahan Shown More Trust in Purdy as He Has Developed?",
+       caption = "@CapAnalytics7 | nflfastR", subtitle = "In high win probability situations, Shanahan has let Purdy air the ball out more in years past")
+ggsave("BrockvPurdyRate.png", width = 14, height =10, dpi = "retina")
+
+#EPA Decay Rate
+# Load necessary libraries
+library(nflfastR)
+library(dplyr)
+library(purrr)
+library(Metrics) # For RMSE calculation
+
+# Load NFL data
+pbp_data <- load_pbp(1999:2023)# Load data from 1999 to 2023
+
+pbp_data <- pbp_data %>% 
+  filter(season>2010)
+calculate_adjusted_epa <- function(data, decay_rate) {
+  data %>%
+    group_by(season, posteam, week) %>%
+    summarize(
+      weekly_epa = mean(epa, na.rm = TRUE), .groups = 'drop'
+    ) %>%
+    arrange(season, week) %>%
+    group_by(posteam,season,week) %>%
+    mutate(
+      decay_factor = decay_rate ^ (max(week) - week),
+      weighted_epa = weekly_epa * decay_factor
+    ) 
+  # %>%
+  #   summarize(
+  #     adjusted_epa = sum(weighted_epa) / sum(decay_factor)
+  #   )
+}
+
+# Define decay rates to test
+decay_rates <- seq(0.9, 1, by = 0.01)
+
+# Cross-validation function
+# Adjusted cross-validation function
+cross_validate_decay <- function(data, decay_rate) {
+  # Calculate adjusted EPA for the chosen decay rate
+  adjusted_data <- calculate_adjusted_epa(data, decay_rate)
+  
+  # Shift the adjusted EPA forward by one week for validation
+  adjusted_data <- adjusted_data %>%
+    mutate(week = week +1)
+  
+  # Join with actual EPA data for the next week
+  validation_data <- data %>%
+    group_by(season, posteam, week) %>%
+    summarize(
+      actual_epa = mean(epa, na.rm = TRUE), .groups = 'drop'
+    ) %>%
+    left_join(adjusted_data, by = c("season", "posteam", "week"))
+  # Filter out any rows where `next_week_adjusted_epa` is NA
+  validation_data <- validation_data %>% 
+  filter(!is.na(adjusted_epa))
+  
+  # Calculate RMSE between adjusted EPA (from prior week) and actual EPA
+  rmse(validation_data$adjusted_epa, validation_data$actual_epa)
+}
+
+# Apply cross-validation for each decay rate
+decay_results <- map_df(decay_rates, ~ tibble(
+  decay_rate = .x,
+  rmse = cross_validate_decay(pbp_data, .x)
+))
+
+# Find the decay rate with the lowest RMSE
+best_decay_rate <- decay_results %>%
+  arrange(rmse) %>%
+  slice(1)
+
+print(best_decay_rate)
 
 

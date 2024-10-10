@@ -67,7 +67,7 @@ total_efficiency_both %>%
   scale_x_reverse()+
   labs(x = "Defensive EPA/Play", y = "Offensive EPA/Play", title = "Efficiency Landscape Following Week 5",
        subtitle = "Dotted Lines Represent League Average",
-       caption = "Callan Capitolo | @CapAnalytics7 | nflfastR")+
+       caption = "@CapAnalytics7 | nflfastR")+
   theme(legend.position = "top",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -89,6 +89,35 @@ ggsave("EffLandscape.png", width = 14, height =10, dpi = "retina")
 
 
 
+#EPA vs Success----
+pbp_rp %>% 
+  # group_by(posteam) %>% 
+  group_by(defteam) %>% 
+  summarize(success_rate = mean(success,na.rm = T), epa_play = mean(epa,na.rm = T)) %>% 
+  ggplot(aes(x = success_rate, y = epa_play )) +
+  geom_nfl_logos(aes(team_abbr = defteam), width = 0.05)+
+  # labs(x = "Success Rate", y = "EPA/Play", title = "Offensive Success Rate vs EPA/Play",
+       # caption = "@CapAnalytics7 | nflfastR")+
+  labs(x = "Success Rate Allowed", y = "EPA/Play", title = "Defensive Success Rate vs EPA/Play",caption = "@CapAnalytics7 | nflfastR")+
+  scale_x_reverse()+
+  scale_y_reverse()+
+  theme(legend.position = "top",
+          legend.direction = "horizontal",
+          legend.background = element_rect(fill = "white", color="white"),
+          legend.title = element_blank(),
+          legend.text = element_text(colour = "black", face = "bold"),
+          plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+          plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+          plot.caption = element_text(colour = "white", size = 8),
+          panel.grid = element_blank(),
+          plot.background = element_rect(fill = "black", color="black"),
+          panel.background = element_rect(fill = "black", color="black"),
+          axis.ticks = element_line(color = "white"),
+          axis.text = element_text(face = "bold", colour = "white",size = 12),
+          axis.title = element_text(color = "white", size = 14),
+          panel.border = element_rect(colour = "white", fill = NA, size = 1))+
+  geom_smooth(se = F, method = "lm", color = "white")
+ggsave("SuccessLandscape.png", width = 14, height =10, dpi = "retina")
 #Side of Ball Breakdown----
 pbp_rp %>% 
   filter(season == year) %>% 
@@ -126,7 +155,6 @@ ggsave("DefOffBreakdown.png", width = 14, height =10, dpi = "retina")
 
 #NFL Offense Breakout----
 pbp_rp %>%
-  
   filter(rush == 1 | pass == 1, qb_kneel == 0, qb_spike == 0) %>%
   
   mutate(detailed_play_type = case_when(
@@ -548,10 +576,8 @@ pbp_rp %>%
   group_by(posteam) %>% 
   summarize(motion_rate = mean(is_motion,na.rm = T), epa_motion = mean(epa[is_motion == 1],na.rm = T), epa_no_motion = mean(epa[is_motion == 0],na.rm = T)) %>% 
   mutate(epa_change = epa_motion - epa_no_motion) %>% 
-  left_join(teams_colors_logos, by = c("posteam" = "team_abbr")) %>% 
   ggplot(aes(x = motion_rate, y = epa_change))+
-  geom_point()+
-  geom_image(aes(image = team_logo_espn),size = 0.05, asp = 16/9)+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
   labs(x = "Motion Rate", y = "Change in EPA/Play With Motion (EPA/Motion Play - EPA/No Motion Play)", title = "Which Teams Should Increase/Decrease Their Motion Usage?",
        subtitle = "Dotted Lines Represent League Average")+
   theme(legend.position = "top",
@@ -580,9 +606,7 @@ pbp_rp %>%
   summarize(pa_rate = mean(is_play_action[pass == 1],na.rm = T), pa24 = mean(epa[is_play_action == 1],na.rm = T),
             no_pa = mean(epa[is_play_action == 0 & pass == 1], na.rm = T)) %>% 
   mutate(pa_improve = pa24 - no_pa) %>% 
-  left_join(teams_colors_logos, by = c("posteam" = "team_abbr")) %>% 
   ggplot(aes(x = pa_rate, y = pa_improve))+
-  # geom_image(aes(image = team_logo_espn), size = 0.05, asp = 16/9)+
   geom_nfl_logos(aes(team_abbr = posteam), width = 0.065)+
   labs(x = "Play Action Rate", y = "EPA Improvement With Play Action (EPA/DB w/PA - EPA/DB no PA)", title = "Which Teams Should Increase/Decrease Play Action Usage?", caption ="@CapAnalytics7 | nflfastR",
        subtitle = "Dotted Lines Represent League Average")+
@@ -958,14 +982,27 @@ ggsave("AirYardsEff.png", width = 14, height =10, dpi = "retina")
 
 #Middle 8 ----
 
-nfl99 %>% 
-  filter(posteam == "SF") %>% 
-  mutate(wp = round(wp,2)) %>% 
-  group_by(posteam,wp,id) %>% 
-  summarize(name = first(name), epa = mean(epa,na.rm = T)) %>% 
-  filter(name %in% c("J.Garoppolo", "B.Purdy")) %>% 
-  ggplot(aes(x = wp, y = epa,color = name)) + 
-  geom_smooth(se = FALSE, span =0.6, method = "loess", lwd = 3)+
+#Decay Efficiency Landscape----
+decay_rate <- 0.9
+weight_epa <- pbp_rp %>%
+  filter(season == year) %>%
+  mutate(decay_factor = decay_rate^ ((max(week) - week)),
+         weighted_epa = epa * decay_factor) %>% 
+  group_by(posteam) %>%
+  summarize(offensive_epa = sum(weighted_epa)/sum(decay_factor)) %>% 
+  left_join(pbp_rp %>%
+  filter(season == year) %>%
+  mutate(decay_factor = decay_rate^ ((max(week) - week)),
+         weighted_epa = epa * decay_factor) %>% 
+  group_by(defteam) %>%
+  summarize(defensive_epa = sum(weighted_epa)/sum(decay_factor)), by = c("posteam" = "defteam"))
+weight_epa %>% 
+  ggplot(aes(x = defensive_epa, y = offensive_epa)) +
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
+  scale_x_reverse()+
+  labs(x = "Weighted Defensive EPA/Play", y = "Weighted Offensive EPA/Play", title = "Weighted Efficiency Landscape Following Week 5",
+       subtitle = "Adjusted EPA/Play Factors Performance in Recent Weeks More",
+       caption = "Decay Rate is 0.9                   @CapAnalytics7 | nflfastR")+
   theme(legend.position = "top",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -973,7 +1010,7 @@ nfl99 %>%
         legend.text = element_text(colour = "black", face = "bold"),
         plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
         plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
-        plot.caption = element_text(colour = "white", size = 10),
+        plot.caption = element_text(colour = "white", size = 8),
         panel.grid = element_blank(),
         plot.background = element_rect(fill = "black", color="black"),
         panel.background = element_rect(fill = "black", color="black"),
@@ -981,42 +1018,6 @@ nfl99 %>%
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))+
-  labs(x = "Win Probability", y = "EPA/Play (Pass or Rush by QB)", title = "How do Purdy and Garoppolo Perform at Different Win Probabilities?",
-       caption = "@CapAnalytics7 | nflfastR", subtitle = "Purdy Performs Better in High Win Probability Situations than Garoppolo")
-ggsave("BrockvPurdy.png", width = 14, height =10, dpi = "retina")
-
-nfl99 %>% 
-  filter(posteam == "SF") %>% 
-  mutate(wp = round(wp,2)) %>%
-  left_join(nfl99 %>% 
-              mutate(pur_g = ifelse(name %in% c("B.Purdy","J.Garoppolo"),name, 0)) %>% 
-              group_by(game_id) %>% 
-              summarize(qb = max(pur_g)), by = c("game_id")) %>% 
-  filter(qb != 0) %>% 
-  # group_by(qb,wp) %>% 
-  group_by(qb,wp, season) %>%
-  filter(qb == "B.Purdy") %>% 
-  summarize(pass = mean(pass_oe, na.rm = T)) %>% 
-  # ggplot(aes(x= wp, y = pass, color = as.factor(qb)))+
-  ggplot(aes(x= wp, y = pass, color = as.factor(season)))+
-  geom_smooth(se = F, method = "loess", span = .6, lwd = 3)+
-  # scale_color_brewer(palette = "Set2")+
-  theme(legend.position = "top",
-        legend.direction = "horizontal",
-        legend.background = element_rect(fill = "white", color="white"),
-        legend.title = element_blank(),
-        legend.text = element_text(colour = "black", face = "bold"),
-        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
-        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
-        plot.caption = element_text(colour = "white", size = 10),
-        panel.grid = element_blank(),
-        plot.background = element_rect(fill = "black", color="black"),
-        panel.background = element_rect(fill = "black", color="black"),
-        axis.ticks = element_line(color = "white"),
-        axis.text = element_text(face = "bold", colour = "white",size = 12),
-        axis.title = element_text(color = "white", size = 14),
-        panel.border = element_rect(colour = "white", fill = NA, size = 1))+
-  labs(x = "Win Probability", y = "Pass Rate Over Expected", title = "Has Shanahan Shown More Trust in Purdy as He Has Developed?",
-       caption = "@CapAnalytics7 | nflfastR", subtitle = "In high win probability situations, Shanahan has let Purdy air the ball out more in years past")
-ggsave("BrockvPurdyRate.png", width = 14, height =10, dpi = "retina")
-  
+  geom_hline(yintercept = mean(weight_epa$offensive_epa), linetype = "dashed",color = "white")+
+  geom_vline(xintercept = mean(weight_epa$defensive_epa), linetype = "dashed", color = "white")
+ggsave("WeightedLandscape.png", width = 14, height =10, dpi = "retina")
