@@ -323,18 +323,14 @@ nfl99 %>%
         panel.border = element_rect(colour = "white", fill = NA, size = 1))+
   labs(x = "How Offense Acquired Ball", y = "EPA/Play on Drive", title = "Does the Way an Offense Acquire the Ball Influence Drive Success?",
        caption = "@CapAnalytics7 | nflfastR", subtitle = "The way an Offense Acquires the Ball does Have an Influence on Offensive Efficiency")
-ggsave("EPABallAcq.png", width = 14, height =10, dpi = "retina")
+ggsave("EPABallAcq.png", width = 16, height =10, dpi = "retina")
 
-test <- nfl99 %>% 
-  filter(season == 2024, week == 5) %>% 
+nfl99 %>% 
   filter(!is.na(drive_start_transition)) %>% 
   mutate(drive_start_transition = ifelse(grepl("blocked",tolower(drive_start_transition)),"Blocked Kick/Punt",
                                          ifelse(grepl("safety",tolower(drive_start_transition)), "Safety",
                                                 ifelse(grepl("missed",tolower(drive_start_transition)),"Missed FG",
                                                        ifelse(grepl("interception|fumble|muffed",tolower(drive_start_transition)),"Turnover",drive_start_transition))))) %>%
-  # mutate(drive_start = ifelse(grepl(posteam,toupper(drive_start_yard_line)), 100- as.numeric(str_extract(drive_start_yard_line, "\\d+")),as.numeric(str_extract(drive_start_yard_line, "\\d+")))) %>%
-  mutate(drive_start = ifelse(yrdln == drive_start_yard_line, yardline_100,NA)) %>% 
-  select(yardline_100,posteam,drive_start_yard_line, drive_start)
   group_by(toupper(drive_start_transition)) %>% 
   summarize(count = n(),epa_play = mean(epa,na.rm = T), success_rate = mean(success,na.rm =T)) %>% 
   filter(count>100) %>% 
@@ -358,7 +354,9 @@ test <- nfl99 %>%
         panel.border = element_rect(colour = "white", fill = NA, size = 1))+
   labs(x = "How Offense Acquired Ball", y = "Success Rate on Drive", title = "Does the Way an Offense Acquire the Ball Influence Drive Success?",
        caption = "@CapAnalytics7 | nflfastR", subtitle = "The way an Offense Acquires the Ball does Have an Influence on Offensive Efficiency")
-ggsave("SuccessRateBallAcq.png", width = 14, height =10, dpi = "retina")
+ggsave("SuccessRateBallAcq.png", width = 16, height =10, dpi = "retina")
+
+mutate(drive_start = ifelse(yrdln == drive_start_yard_line, yardline_100,NA)) %>% 
 
 comp_data<-nfl99 %>% 
   filter(!is.na(drive_start_transition)) %>% 
