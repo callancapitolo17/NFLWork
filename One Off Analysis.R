@@ -5,6 +5,13 @@ library(tidyverse)
 
 pbp <- load_pbp(2010:2023)
 
+nfl99all <- load_pbp(1999:2024)
+nfl99 <- nfl99all %>% 
+  filter(pass == 1 | rush == 1) %>% 
+  mutate(explosive = ifelse((yards_gained>20 & pass_attempt == 1) | (yards_gained >12 & (qb_scramble == 1 | rush == 1)),1,0),
+         negative = ifelse(yards_gained < 0, 1,0))
+
+
 pbp_rp <- pbp %>%
   filter(pass == 1 | rush == 1) %>%
   filter(!is.na(epa))
@@ -398,4 +405,84 @@ best_decay_rate <- decay_results %>%
 
 print(best_decay_rate)
 
+
+#Method of Obtaining Ball----
+nfl99 %>% 
+  filter(!is.na(drive_start_transition)) %>% 
+  mutate(drive_start_transition = ifelse(grepl("blocked",tolower(drive_start_transition)),"Blocked Kick/Punt",
+                                         ifelse(grepl("safety",tolower(drive_start_transition)), "Safety", 
+                                         ifelse(grepl("missed",tolower(drive_start_transition)),"Missed FG", 
+                                         ifelse(grepl("interception|fumble|muffed",tolower(drive_start_transition)),"Turnover",drive_start_transition))))) %>% 
+  group_by(toupper(drive_start_transition)) %>% 
+  summarize(count = n(),epa_play = mean(epa,na.rm = T), success_rate = mean(success,na.rm =T)) %>% 
+  filter(count>100) %>% 
+  arrange(-epa_play) %>% 
+  ggplot(aes(x = reorder(`toupper(drive_start_transition)`,-epa_play), y = epa_play))+
+  geom_bar(stat = "identity")+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+        plot.caption = element_text(colour = "white", size = 10),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 11),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1))+
+  labs(x = "How Offense Acquired Ball", y = "EPA/Play on Drive", title = "Does the Way an Offense Acquire the Ball Influence Drive Success?",
+       caption = "@CapAnalytics7 | nflfastR", subtitle = "The way an Offense Acquires the Ball does Have an Influence on Offensive Efficiency")
+ggsave("EPABallAcq.png", width = 16, height =10, dpi = "retina")
+
+nfl99 %>% 
+  filter(!is.na(drive_start_transition)) %>% 
+  mutate(drive_start_transition = ifelse(grepl("blocked",tolower(drive_start_transition)),"Blocked Kick/Punt",
+                                         ifelse(grepl("safety",tolower(drive_start_transition)), "Safety",
+                                                ifelse(grepl("missed",tolower(drive_start_transition)),"Missed FG",
+                                                       ifelse(grepl("interception|fumble|muffed",tolower(drive_start_transition)),"Turnover",drive_start_transition))))) %>%
+  group_by(toupper(drive_start_transition)) %>% 
+  summarize(count = n(),epa_play = mean(epa,na.rm = T), success_rate = mean(success,na.rm =T)) %>% 
+  filter(count>100) %>% 
+  arrange(-epa_play) %>% 
+  ggplot(aes(x = reorder(`toupper(drive_start_transition)`,-success_rate), y = success_rate))+
+  geom_bar(stat = "identity")+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+        plot.caption = element_text(colour = "white", size = 10),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 11),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1))+
+  labs(x = "How Offense Acquired Ball", y = "Success Rate on Drive", title = "Does the Way an Offense Acquire the Ball Influence Drive Success?",
+       caption = "@CapAnalytics7 | nflfastR", subtitle = "The way an Offense Acquires the Ball does Have an Influence on Offensive Efficiency")
+ggsave("SuccessRateBallAcq.png", width = 16, height =10, dpi = "retina")
+
+mutate(drive_start = ifelse(yrdln == drive_start_yard_line, yardline_100,NA)) %>% 
+
+comp_data<-nfl99 %>% 
+  filter(!is.na(drive_start_transition)) %>% 
+  mutate(drive_start_transition = tolower(ifelse(grepl("blocked",tolower(drive_start_transition)),"Blocked Kick/Punt",
+                                         ifelse(grepl("safety",tolower(drive_start_transition)), "Safety", 
+                                                ifelse(grepl("missed",tolower(drive_start_transition)),"Missed FG", 
+                                                       ifelse(grepl("interception|fumble|muffed",tolower(drive_start_transition)),"Turnover",drive_start_transition)))))) %>% 
+  filter(!is.na(epa))
+anova_result <- (aov(success~drive_start_transition, data =comp_data))
+
+tukey_result <- TukeyHSD(anova_result, "drive_start_transition")
+summary(anova_result)
+
+# View the results
+print(tukey_result)
 
