@@ -214,6 +214,119 @@ nfl99 %>%
        caption = "@CapAnalytics7 | nflfastR", subtitle = "In high win probability situations, Shanahan has let Purdy air the ball out more in years past")
 ggsave("BrockvPurdyRate.png", width = 14, height =10, dpi = "retina")
 
+
+#Running Efficinecy by Win Prob and Exp Pass---
+nfl99 %>% 
+  filter(rush == 1, qb_kneel!= 1) %>% 
+  mutate(wp = round(wp,2)) %>%
+  group_by(wp) %>% 
+  summarize(rush_epa = mean(epa,na.rm =T)) %>% 
+  ggplot(aes(x = wp, y = rush_epa)) + 
+  geom_smooth(se = FALSE, method = "loess" ,span = 0.6, lwd = 3)+
+  geom_point(color = "white", alpha = 0.2)+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+        plot.caption = element_text(colour = "white", size = 10),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1))+
+  labs(x = "Win Probability", y = "EPA/Rush", title = "Does Rushing Efficiency Change With Win Probability?",
+       caption = "@CapAnalytics7 | nflfastR", subtitle = "Rushing is most efficient when the offense has a low win probablity")
+ggsave("RushvsWP.png", width = 14, height =10, dpi = "retina")
+
+nfl99 %>% 
+  filter(rush == 1, qb_kneel!= 1) %>% 
+  mutate(xpass = round(xpass,2)) %>%
+  group_by(xpass) %>% 
+  summarize(rush_epa = mean(epa,na.rm =T)) %>% 
+  ggplot(aes(x = xpass, y = rush_epa)) + 
+  geom_smooth(se = FALSE, method = "loess" ,span = 0.6, lwd = 3)+
+  geom_point(color = "white", alpha = 0.2)+
+  ylim(-0.4,0.05)+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+        plot.caption = element_text(colour = "white", size = 10),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1))+
+  labs(x = "Pass Play Probability", y = "EPA/Rush", title = "Does Rushing Efficiency Change With the Likelihood of a Pass Play?",
+       caption = "@CapAnalytics7 | nflfastR", subtitle = "Rushing is most efficient when the offense has low win probablity")
+ggsave("RushXP.png", width = 14, height =10, dpi = "retina")
+
+nfl99 %>% 
+  filter(rush == 1, qb_kneel!= 1) %>% 
+  mutate(xpass = round(xpass,2)) %>%
+  filter(posteam == "SF", season>=2017) %>% 
+  group_by(xpass) %>% 
+  summarize(rush_epa = mean(epa,na.rm =T)) %>% 
+  ggplot(aes(x = xpass, y = rush_epa)) + 
+  geom_smooth(se = FALSE, method = "loess" ,span = 0.6, lwd = 3)+
+  geom_point(color = "white", alpha = 0.2)+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+        plot.caption = element_text(colour = "white", size = 10),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1))+
+  labs(x = "Pass Play Probability", y = "EPA/Rush", title = "Does Rushing Efficiency Change With the Likelihood of a Pass Play?",
+       caption = "@CapAnalytics7 | nflfastR", subtitle = "Rushing is most efficient when the offense has low win probablity")
+nfl99 %>% 
+  filter(rush == 1, qb_kneel!= 1) %>% 
+  mutate(wp = round(wp,2)) %>%
+  filter(posteam == "SF", season>=2017) %>% 
+  group_by(wp) %>% 
+  summarize(rush_epa = mean(epa,na.rm =T)) %>% 
+  ggplot(aes(x = wp, y = rush_epa)) + 
+  geom_smooth(se = FALSE, method = "loess" ,span = 0.6, lwd = 3)+
+  geom_point(color = "white", alpha = 0.2)+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+        plot.caption = element_text(colour = "white", size = 10),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1))+
+  labs(x = "Win Probability", y = "EPA/Rush", title = "Does Shanahan's Offense Rushing Efficiency Change With Win Probability?",
+       caption = "@CapAnalytics7 | nflfastR", subtitle = "Shanahan's offense's rushing efficiency stays fairly constant in respect to their win probablity")
+ggsave("ShanWP.png", width = 14, height =10, dpi = "retina")
+
+
+
 #EPA Decay Rate
 # Load necessary libraries
 library(nflfastR)

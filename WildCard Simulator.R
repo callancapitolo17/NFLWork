@@ -19,7 +19,7 @@ monte_carlo_best_of_7 <- function() {
   underdog_wins <- as.integer(readline(prompt = paste0("Enter the number of games ", underdog, " has won to date: ")))
   
   # Series format (2-2-1-1-1) starting with the favorite's home court
-  home_court_order <- c(favorite, favorite,favorite)
+  home_court_order <- c(favorite, favorite,underdog,underdog,underdog,favorite,favorite)
   
   # Define the simulation function
   simulate_series <- function(favorite_wins, underdog_wins) {
@@ -32,10 +32,10 @@ monte_carlo_best_of_7 <- function() {
         if (win) underdog_wins <- underdog_wins + 1 else favorite_wins <- favorite_wins + 1
       }
       
-      if (favorite_wins == 2) return(paste(favorite, "2", underdog, underdog_wins))
-      if (underdog_wins == 2) return(paste(underdog, "2", favorite, favorite_wins))
+      if (favorite_wins == 4) return(paste(favorite, "4", underdog, underdog_wins))
+      if (underdog_wins == 4) return(paste(underdog, "4", favorite, favorite_wins))
     }
-    return(ifelse(favorite_wins == 2, paste(favorite, "2", underdog, underdog_wins), paste(underdog, "2", favorite, favorite_wins)))
+    return(ifelse(favorite_wins == 4, paste(favorite, "4", underdog, underdog_wins), paste(underdog, "4", favorite, favorite_wins)))
   }
   
   # Perform Monte Carlo simulation
@@ -43,8 +43,8 @@ monte_carlo_best_of_7 <- function() {
   results <- replicate(iterations, simulate_series(favorite_wins, underdog_wins))
   
   # Calculate overall probabilities
-  favorite_prob <- mean(grepl(paste0(favorite, " 2"), results))
-  underdog_prob <- mean(grepl(paste0(underdog, " 2"), results))
+  favorite_prob <- mean(grepl(paste0(favorite, " 4"), results))
+  underdog_prob <- mean(grepl(paste0(underdog, " 4"), results))
   
   # Display overall win probabilities
   cat(favorite, "wins probability:", round(favorite_prob * 100, 2), "%\n")
