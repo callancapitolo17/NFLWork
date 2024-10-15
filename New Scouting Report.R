@@ -300,8 +300,13 @@ defensive_scouting <- pbp_rp %>%
     away_rush_off_epa = mean(epa[posteam == away_team&pass == 0],na.rm = T)
   )
 
+<<<<<<< HEAD
 offense <- "BUF"
 defense <- "NYJ"
+=======
+offense <- "NYG"
+defense <- "CIN"
+>>>>>>> 3d91b33bdddd7cabfa0329aafdbe72cf8dc494f4
 
 
 
@@ -374,4 +379,5 @@ scouting_report %>%
   gtExtras::gt_theme_538() %>% 
   gt_hulk_col_numeric(columns = c(`Offense Rank`,`Defense Rank`,rank_diff)) %>% 
   tab_header(title = md("Scouting Report"), subtitle = md("Purple Represents Offense Advantage, Green Represents Defense Advantage"))
+
 

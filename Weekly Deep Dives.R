@@ -65,7 +65,7 @@ total_efficiency_both %>%
   ggplot(aes(x = defensive_epa, y = offensive_epa)) +
   geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
   scale_x_reverse()+
-  labs(x = "Defensive EPA/Play", y = "Offensive EPA/Play", title = "Efficiency Landscape Following Week 5",
+  labs(x = "Defensive EPA/Play", y = "Offensive EPA/Play", title = "Efficiency Landscape",
        subtitle = "Dotted Lines Represent League Average",
        caption = "@CapAnalytics7 | nflfastR")+
   theme(legend.position = "top",
@@ -91,16 +91,16 @@ ggsave("EffLandscape.png", width = 14, height =10, dpi = "retina")
 
 #EPA vs Success----
 pbp_rp %>% 
-  # group_by(posteam) %>% 
-  group_by(defteam) %>% 
+  group_by(posteam) %>%
+  # group_by(defteam) %>% 
   summarize(success_rate = mean(success,na.rm = T), epa_play = mean(epa,na.rm = T)) %>% 
   ggplot(aes(x = success_rate, y = epa_play )) +
-  geom_nfl_logos(aes(team_abbr = defteam), width = 0.05)+
-  # labs(x = "Success Rate", y = "EPA/Play", title = "Offensive Success Rate vs EPA/Play",
-       # caption = "@CapAnalytics7 | nflfastR")+
-  labs(x = "Success Rate Allowed", y = "EPA/Play", title = "Defensive Success Rate vs EPA/Play",caption = "@CapAnalytics7 | nflfastR")+
-  scale_x_reverse()+
-  scale_y_reverse()+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
+  # geom_nfl_logos(aes(team_abbr = defteam), width = 0.05)+
+  labs(x = "Success Rate", y = "EPA/Play", title = "Offensive Success Rate vs EPA/Play",caption = "@CapAnalytics7 | nflfastR")+
+  # labs(x = "Success Rate Allowed", y = "EPA/Play", title = "Defensive Success Rate vs EPA/Play",caption = "@CapAnalytics7 | nflfastR")+
+  # scale_x_reverse()+
+  # scale_y_reverse()+
   theme(legend.position = "top",
           legend.direction = "horizontal",
           legend.background = element_rect(fill = "white", color="white"),
