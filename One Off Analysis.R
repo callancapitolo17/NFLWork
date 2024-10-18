@@ -486,3 +486,18 @@ summary(anova_result)
 # View the results
 print(tukey_result)
 
+#Jets----
+Jets<- pbp_rp %>% 
+  filter(posteam == "NYJ") %>% 
+  group_by(week) %>% 
+  summarize( `Motion Rate` = mean(is_motion), `EPA/Play With Motion` = mean(epa[is_motion == T], na.rm = T), `EPA/Play With No Motion` = mean(epa[is_motion == F], na.rm = T), `Difference Between EPAs` = `EPA/Play With Motion` - `EPA/Play With No Motion`) %>% 
+  mutate_if(is.numeric, ~round(.,2)) %>% 
+  gt() %>% 
+  cols_align(align = "center") %>%
+  gtExtras::gt_theme_538() %>%
+  gtExtras::gt_hulk_col_numeric(`Difference Between EPAs`) %>%
+  tab_header(
+    title = md("How Has the Jets Motion Usage Changed?"),
+    subtitle = md("The Jets offense increased their motion rate under Downing and saw an improvement in their efficiency with motion")
+  )
+gtsave(Jets, "Jets.png")

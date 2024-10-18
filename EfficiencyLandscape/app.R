@@ -40,7 +40,7 @@ ui <- fluidPage(
 server <- function(input, output) {
 
   output$plot1 <- renderPlotly({
-    pbp <- load_pbp(as.integer(input$NFL_Season))
+    pbp <- load_pbp(2024)
     
     pbp_rp <- pbp %>%
       filter(pass == 1 | rush == 1) %>%
