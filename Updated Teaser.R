@@ -181,7 +181,7 @@ teaser_sched <- sched24 %>%
   mutate(spread_odds = ifelse(spread_line < 0 & favorite == "away",away_vig_free, 
                               ifelse(spread_line < 0 & favorite == "home",home_vig_free,ifelse(spread_line > 0 & underdog == "away",away_vig_free,home_vig_free))),
          total_odds = ifelse(total_type == "teaser_under",under_vig_free,over_vig_free)) %>% 
-  filter(week == 6)
+  filter(week == 7)
 
 prediction_data <- teaser_sched %>% 
   select(total_line,total_type,spread_line,place,spread_odds,total_odds,season,week)

@@ -300,13 +300,10 @@ defensive_scouting <- pbp_rp %>%
     away_rush_off_epa = mean(epa[posteam == away_team&pass == 0],na.rm = T)
   )
 
-<<<<<<< HEAD
-offense <- "BUF"
-defense <- "NYJ"
-=======
-offense <- "NYG"
-defense <- "CIN"
->>>>>>> 3d91b33bdddd7cabfa0329aafdbe72cf8dc494f4
+
+offense <- "MIN"
+defense <- "DET"
+
 
 
 
