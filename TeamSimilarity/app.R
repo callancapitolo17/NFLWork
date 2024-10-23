@@ -13,7 +13,7 @@ library(dbscan)
 library(zoo)
 library(gtExtras)
 #loads play by play data
-pbp <- load_pbp(c(2006:2023)) %>% 
+pbp <- load_pbp(c(2006:2024)) %>% 
   filter(pass == 1 | rush == 1) %>%
   filter(!is.na(epa),!is.na(posteam),!is.na(defteam))%>% 
   mutate(short_throw = ifelse(air_yards<=10,1,0),

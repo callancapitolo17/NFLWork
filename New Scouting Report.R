@@ -307,6 +307,7 @@ defense <- "DET"
 
 
 
+
 team_stats_numeric_off <- offensive_scouting %>% 
   select(-posteam) %>% 
   mutate_all(~round(.,3))
