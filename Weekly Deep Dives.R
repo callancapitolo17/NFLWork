@@ -175,7 +175,7 @@ pbp_rp %>%
   geom_bar(stat = "identity")+
   scale_fill_brewer(palette = "Set3") +
   # geom_nfl_logos(aes(team_abbr = max(posteam)), width = 0.05, alpha = 0.7)+
-  labs(y = "Offense", x = "Total EPA/Total Plays", title = "Where are Offenses Generating Success From?", subtitle = "Sections represent different components of an offense's EPA/Play",
+  labs(y = "Offense", x = "EPA/Play Components", title = "Where are Offenses Generating Success From?", subtitle = "Sections represent different components of an offense's EPA/Play",
        caption = "@CapAnalytics7 | nflfastR")+
   theme(legend.position = "top",
         legend.direction = "horizontal",
