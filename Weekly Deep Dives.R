@@ -171,7 +171,7 @@ pbp_rp %>%
   group_by(posteam,detailed_play_type) %>%
   summarize(total_epa = sum(epa,na.rm = T), epa_play = mean(epa,na.rm = T), count = n()) %>%
   mutate(sum_epa = sum(total_epa), total_count = sum(count), epa_tot_play = total_epa/total_count) %>% #epa_tot_play sums to epa/play
-  ggplot(aes(x  = epa_tot_play, y =reorder(posteam,sum_epa), fill = detailed_play_type))+
+  ggplot(aes(x  = epa_tot_play, y =reorder(posteam,epa_tot_play), fill = detailed_play_type))+
   geom_bar(stat = "identity")+
   scale_fill_brewer(palette = "Set3") +
   # geom_nfl_logos(aes(team_abbr = max(posteam)), width = 0.05, alpha = 0.7)+
@@ -196,7 +196,7 @@ pbp_rp %>%
         axis.text.y = element_nfl_logo(size = 0.9)
         )
 ggsave("OffBreakout.png", width = 14, height =10, dpi = "retina")
-
+ 
 
 #Early down vs Late Down Efficiency----
 pbp_rp %>%
