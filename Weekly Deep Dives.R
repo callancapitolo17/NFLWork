@@ -267,6 +267,71 @@ pbp_rp %>%
 
 ggsave("ExpvsNeg.png", width = 14, height =10, dpi = "retina")
 
+#Ability to recover from negative plays----
+
+negatives <- pbp %>% 
+  filter(!is.na(series)) %>% 
+  mutate(
+    negative_play = ifelse((!is.na(penalty_team) & !is.na(penalty_yards) & penalty_team == posteam & penalty_yards >0) | (yards_gained < 0 & down <4), 1, 0),
+    unique_series_identifier = paste(game_id, series)) %>%
+  filter(qb_kneel !=1, !is.na(negative_play)) %>%
+  # select(negative_play, desc,penalty,pass, rush)#check drive_points
+  group_by(unique_series_identifier) %>% 
+  summarize(posteam = first(posteam),negative_plays = max(negative_play),series_suc = max(series_success),
+            total_neg = sum(negative_play)) %>% 
+  group_by(negative_plays,posteam) %>% 
+  summarize(success_series = mean(series_suc,na.rm = T), count = n(), total_negatives = sum(total_neg), average_negative_plays_neg_drive = mean(total_neg)) %>% 
+  filter(!is.na(posteam)) %>% 
+  mutate(negative_plays = ifelse(negative_plays == 1, "Yes", "No")) %>% 
+  pivot_wider(values_from = c(count,success_series, total_negatives, average_negative_plays_neg_drive), names_from = negative_plays) %>% 
+  mutate(avg_neg = total_negatives_Yes/(count_Yes+count_No))
+
+negatives %>% 
+  ggplot(aes(x = success_series_No, y = success_series_Yes))+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
+  labs(x = "Series Success With No Negative Plays", y = "Series Success With 1+ Negative Plays",
+       title = "Which Offenses are Best at Recovering from Negative Plays?", subtitle = "Series Success Defined as Series Results in First Down or Touchdown",
+       caption = "@CapAnalytics7 | nflfastR" )+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 10),
+        plot.caption = element_text(colour = "white", size = 10),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1),
+        panel.grid = element_blank())+
+  geom_smooth(method = "lm", se = FALSE, color = "white", linetype = "dashed")
+ggsave("NegativePlays.png", width = 14, height =10, dpi = "retina")
+
+#Negative Series Frequency----
+off_neg <- negatives %>% 
+  mutate(neg_series_rate = (count_Yes/(count_No+count_Yes))) %>% 
+  arrange(neg_series_rate) %>% 
+  select(posteam, neg_series_rate,average_negative_plays_neg_drive_Yes) %>% 
+  mutate_if(is.numeric, ~round(.,3)) %>% 
+  gt() %>% 
+  cols_align(align = "center") %>% 
+  gt_nfl_wordmarks(columns = "posteam") %>% 
+  cols_label(posteam = "Team",
+             neg_series_rate = "Series W/Negative Play Rate",
+             average_negative_plays_neg_drive_Yes = "Average Negative Plays Per Series W/Negative Play") %>% 
+  gtExtras::gt_theme_538() %>%
+  gtExtras::gt_hulk_col_numeric(c(neg_series_rate,average_negative_plays_neg_drive_Yes)) %>% 
+  tab_header(
+    title = md("Which Offenses Avoid Negative Plays?")
+  )
+gtsave(off_neg, "NegativeOffPerformance.png")
+#Negative Plays on Early Downs, issue with negative plays per series with grouping
+
+
+
 #1st Half Total Efficiency----
 first_half_off <- pbp_rp %>% 
   filter(qtr %in% c(1,2)) %>% 
@@ -328,7 +393,7 @@ explosive_pass <- pbp %>%
 
 explosive_pass %>% 
   ggplot(aes(x = adot, y = explosive_rate))+
-  geom_nfl_logos(aes(team_abbr = posteam), width = 0.035)+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.025)+
   geom_text_repel(
     aes(label = passer_player_name),
     box.padding = 0.05,  # adjust this value for padding around the labels
@@ -338,8 +403,8 @@ explosive_pass %>%
     color = "white"
   )+
   labs(x = "Average Depth of Target",
-       y = "Explosive Pass Rate", title = "Explosive Pass Rate vs Average Depth of Target",
-       caption = "@CapAnalytics7 | nflfastR", subtitle = "Minimum 50 Passes")+
+       y = "Explosive Pass Rate*", title = "Explosive Pass Rate vs Average Depth of Target",
+       caption = "*Passes that gain more than 20 yards      @CapAnalytics7 | nflfastR", subtitle = "Minimum 50 Dropbacks")+
   theme(legend.position = "top",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -370,7 +435,7 @@ pbp_rp %>%
   group_by(posteam) %>% 
   summarize(xpassoe = mean(pass_oe,na.rm = T), epa_xpass = mean(epa[xpass>=0.9 & pass == 1],na.rm = T)) %>% 
   ggplot(aes(x = xpassoe, y = epa_xpass))+
-  geom_nfl_logos(aes(team_abbr = posteam), width = 0.06)+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
   theme(legend.position = "none",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -395,14 +460,14 @@ ggsave("xPass.png", width = 14, height =10, dpi = "retina")
 
 #Non Red vs Red----
 pbp_rp %>% 
-  # group_by(defteam) %>%
-  group_by(posteam) %>%
+  group_by(defteam) %>%
+  # group_by(posteam) %>%
   summarize(epa_red = mean(epa[yardline_100<= 20],na.rm = T), epa_non_red = mean(epa[yardline_100> 20],na.rm = T)) %>% 
   ggplot(aes(x = epa_red, y = epa_non_red))+
-  geom_nfl_logos(aes(team_abbr = posteam), width = 0.06)+
-  # geom_nfl_logos(aes(team_abbr = defteam), width = 0.06)+
-  # scale_x_reverse()+
-  # scale_y_reverse()+
+  # geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
+  geom_nfl_logos(aes(team_abbr = defteam), width = 0.05)+
+  scale_x_reverse()+
+  scale_y_reverse()+
   theme(legend.position = "none",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -428,10 +493,9 @@ ggsave("RedBreakOut.png", width = 14, height =10, dpi = "retina")
 #Biggest Plays ----
 big_play <- pbp_rp %>% 
   filter(season == 2024) %>% 
-  filter(week == 2) %>% 
+  filter(week == 7) %>% 
   select(desc,wpa) %>% 
-  mutate(wpa = abs(wpa))
-arrange(-wpa)
+  mutate(wpa = abs(wpa)) %>% arrange(-wpa)
 
 #Win Probability----
 
@@ -519,7 +583,7 @@ rushing_player<-pbp_rp %>%
   filter(season == year) %>% 
   group_by(rusher_player_id,rusher_player_name) %>% 
   summarize(rusher_player_name = max(rusher_player_name),posteam = last(posteam),rushes = n(), rush_epa = mean(epa), success_rate = mean(success)) %>% 
-  filter(rushes>=20) %>% 
+  filter(rushes>=50) %>% 
   mutate(rusher_player_name = ifelse(rusher_player_name == "T.Hill", "Taysom Hill", rusher_player_name)) %>% 
   left_join(teams_colors_logos, by = c("posteam" = "team_abbr"))
     
@@ -529,8 +593,8 @@ rushing_player<-pbp_rp %>%
 rushing_player %>%   
   ggplot(aes(x = success_rate, y = rush_epa))+
   geom_nfl_logos(aes(team_abbr = posteam), width = 0.02)+
-  labs(x = "Success Rate", y = "EPA/Rush", title = "Rushing Efficiency by Rusher Following Week 3", subtitle = "Minimum 20 Rushes",
-       caption = "Callan Capitolo | @CapAnalytics7 | nflfastR")+
+  labs(x = "Success Rate", y = "EPA/Rush", title = "Rushing Efficiency by Rusher Following Week 3", subtitle = "Minimum 50 Rushes",
+       caption = "@CapAnalytics7 | nflfastR")+
   theme_bw()+
   geom_text_repel(
     aes(label = rusher_player_name),
@@ -555,7 +619,9 @@ rushing_player %>%
         axis.ticks = element_line(color = "white"),
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
-        panel.border = element_rect(colour = "white", fill = NA, size = 1))
+        panel.border = element_rect(colour = "white", fill = NA, size = 1))+
+  geom_hline(yintercept = mean(rushing_player$rush_epa,na.rm = T), linetype = "dashed",color = "white")+
+  geom_vline(xintercept = mean(rushing_player$success_rate,na.rm = T), linetype = "dashed",color = "white")
 ggsave("RunningEfficiency.png", width = 14, height =10, dpi = "retina")
 
 
@@ -567,7 +633,7 @@ pbp_rp %>%
   ggplot(aes(x = motion_rate, y = epa_change))+
   geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
   labs(x = "Motion Rate", y = "Change in EPA/Play With Motion (EPA/Motion Play - EPA/No Motion Play)", title = "Which Teams Should Increase/Decrease Their Motion Usage?",
-       subtitle = "Dotted Lines Represent League Average")+
+       subtitle = "Dotted Lines Represent League Average", caption = "@CapAnalytics7 | nflfastR")+
   theme(legend.position = "top",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -747,81 +813,6 @@ yac_passing %>%
   geom_smooth(method = "lm", se = FALSE, color = "white", linetype = "dashed")
 ggsave("YAC.png", width = 14, height =10, dpi = "retina")
 
-
-#Ability to recover from negative plays----
-
-negatives <- pbp %>% 
-  filter(!is.na(series)) %>% 
-  mutate(
-    negative_play = ifelse((!is.na(penalty_team) & !is.na(penalty_yards) & penalty_team == posteam & penalty_yards >0) | (yards_gained < 0 & down <4), 1, 0),
-    unique_series_identifier = paste(game_id, series)) %>%
-  filter(qb_kneel !=1, !is.na(negative_play)) %>%
-  # select(negative_play, desc,penalty,pass, rush)#check drive_points
-  group_by(unique_series_identifier) %>% 
-  summarize(posteam = first(posteam),negative_plays = max(negative_play),series_suc = max(series_success),
-            total_neg = sum(negative_play)) %>% 
-  group_by(negative_plays,posteam) %>% 
-  summarize(success_series = mean(series_suc,na.rm = T), count = n(), total_negatives = sum(total_neg), average_negative_plays_neg_drive = mean(total_neg)) %>% 
-  filter(!is.na(posteam)) %>% 
-  mutate(negative_plays = ifelse(negative_plays == 1, "Yes", "No")) %>% 
-  pivot_wider(values_from = c(count,success_series, total_negatives, average_negative_plays_neg_drive), names_from = negative_plays) %>% 
-  mutate(avg_neg = total_negatives_Yes/(count_Yes+count_No))
-
-negatives %>% 
-  ggplot(aes(x = success_series_No, y = success_series_Yes))+
-  geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
-  labs(x = "Series Success With No Negative Plays", y = "Series Success With 1+ Negative Plays",
-       title = "Which Offenses are Best at Recovering from Negative Plays?", subtitle = "Series Success Defined as Series Results in First Down or Touchdown",
-       caption = "@CapAnalytics7 | nflfastR" )+
-    theme(legend.position = "top",
-          legend.direction = "horizontal",
-          legend.background = element_rect(fill = "white", color="white"),
-          legend.title = element_blank(),
-          legend.text = element_text(colour = "black", face = "bold"),
-          plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
-          plot.subtitle = element_text(hjust = .5, colour = "white", size = 10),
-          plot.caption = element_text(colour = "white", size = 10),
-          plot.background = element_rect(fill = "black", color="black"),
-          panel.background = element_rect(fill = "black", color="black"),
-          axis.ticks = element_line(color = "white"),
-          axis.text = element_text(face = "bold", colour = "white",size = 12),
-          axis.title = element_text(color = "white", size = 14),
-          panel.border = element_rect(colour = "white", fill = NA, size = 1),
-          panel.grid = element_blank())+
-  geom_smooth(method = "lm", se = FALSE, color = "white", linetype = "dashed")
-ggsave("NegativePlays.png", width = 14, height =10, dpi = "retina")
-
-#Negative Series Frequency----
-off_neg <- negatives %>% 
-  mutate(neg_series_rate = (count_Yes/(count_No+count_Yes))) %>% 
-  arrange(neg_series_rate) %>% 
-  select(posteam, neg_series_rate,average_negative_plays_neg_drive_Yes) %>% 
-  mutate_if(is.numeric, ~round(.,3)) %>% 
-  gt() %>% 
-  cols_align(align = "center") %>% 
-  gt_nfl_wordmarks(columns = "posteam") %>% 
-  cols_label(posteam = "Team",
-             neg_series_rate = "Series W/Negative Play Rate",
-             average_negative_plays_neg_drive_Yes = "Average Negative Plays Per Series W/Negative Play") %>% 
-  gtExtras::gt_theme_538() %>%
-  gtExtras::gt_hulk_col_numeric(c(neg_series_rate,average_negative_plays_neg_drive_Yes)) %>% 
-tab_header(
-  title = md("Which Offenses Avoid Negative Plays?")
-)
-gtsave(off_neg, "NegativeOffPerformance.png")
-#Negative Plays on Early Downs, issue with negative plays per series with grouping
-
-#Stadium Location Performance ----
-pbp_rp %>% 
-  mutate(outdoor = ifelse(roof == "outdoors", "outdoor","indoor")) %>% 
-  group_by(posteam,outdoor) %>% 
-  summarize(epa_play = mean(epa)) %>% 
-  left_join(teams_colors_logos, by = c("posteam" = "team_abbr")) %>% 
-  pivot_wider(names_from = outdoor, values_from = epa_play) %>% 
-  ggplot(aes(x = indoor, y = outdoor))+
-  geom_image(aes(image = team_logo_espn), size = 0.05, asp = 16/9)+
-  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") 
-
     
 
 #Passing Charts----
@@ -994,19 +985,19 @@ weight_epa <- pbp_rp %>%
   mutate(decay_factor = decay_rate^ ((max(week) - week)),
          weighted_epa = epa * decay_factor) %>% 
   group_by(posteam) %>%
-  summarize(offensive_epa = sum(weighted_epa)/sum(decay_factor)) %>% 
+  summarize(offensive_epa = sum(weighted_epa)/sum(decay_factor), off_nw_epa = mean(epa,na.rm = T)) %>% 
   left_join(pbp_rp %>%
   filter(season == year) %>%
   mutate(decay_factor = decay_rate^ ((max(week) - week)),
          weighted_epa = epa * decay_factor) %>% 
   group_by(defteam) %>%
-  summarize(defensive_epa = sum(weighted_epa)/sum(decay_factor)), by = c("posteam" = "defteam"))
+  summarize(defensive_epa = sum(weighted_epa)/sum(decay_factor),def_nw_epa = mean(epa,na.rm = T)), by = c("posteam" = "defteam"))
 weight_epa %>% 
   ggplot(aes(x = defensive_epa, y = offensive_epa)) +
-  geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.04,alpha = 0.8)+
   scale_x_reverse()+
-  labs(x = "Weighted Defensive EPA/Play", y = "Weighted Offensive EPA/Play", title = "Weighted Efficiency Landscape Following Week 5",
-       subtitle = "Weighted EPA/Play Factors Performance in Recent Weeks More",
+  labs(x = "Weighted Defensive EPA/Play", y = "Weighted Offensive EPA/Play", title = "Weighted Efficiency Landscape",
+       subtitle = "Weighted EPA/Play factors performance in recent weeks more; Logos represent weighted EPA/Play, dots represent regular EPA/Play",
        caption = "Decay Rate is 0.95                   @CapAnalytics7 | nflfastR")+
   theme(legend.position = "top",
         legend.direction = "horizontal",
@@ -1022,9 +1013,12 @@ weight_epa %>%
         axis.ticks = element_line(color = "white"),
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
-        panel.border = element_rect(colour = "white", fill = NA, size = 1))
-  # geom_hline(yintercept = sum(weight_epa$offensive_epa)/(weight_epa), linetype = "dashed",color = "white")+
-  # geom_vline(xintercept = mean(weight_epa$defensive_epa), linetype = "dashed", color = "white")
+        panel.border = element_rect(colour = "white", fill = NA, size = 1))+
+  geom_point(aes(x = def_nw_epa, y = off_nw_epa), color = "white",fill = "blue", shape = 1, size = 8)+
+  scale_color_nfl(type = "primary")+
+  geom_segment(aes(x = def_nw_epa, y = off_nw_epa, 
+                   xend = defensive_epa, yend = offensive_epa), 
+               color = "lightgrey", alpha = 0.8, lwd =1.5)# Add points for regular EPA
 ggsave("WeightedLandscape.png", width = 14, height =10, dpi = "retina")
 
 #Field Position----
@@ -1069,3 +1063,15 @@ filter(strat_field>0) %>%
        title = "Which Teams Have Benefitted the Most From Field Position?")
 ggsave("FieldPosition.png", width = 14, height =10, dpi = "retina")
 #Maybe add expected ponts at start of drive?
+
+#Stadium Location Performance ----
+pbp_rp %>% 
+  mutate(outdoor = ifelse(roof == "outdoors", "outdoor","indoor")) %>% 
+  group_by(posteam,outdoor) %>% 
+  summarize(epa_play = mean(epa)) %>% 
+  left_join(teams_colors_logos, by = c("posteam" = "team_abbr")) %>% 
+  pivot_wider(names_from = outdoor, values_from = epa_play) %>% 
+  ggplot(aes(x = indoor, y = outdoor))+
+  geom_image(aes(image = team_logo_espn), size = 0.05, asp = 16/9)+
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") 
+
