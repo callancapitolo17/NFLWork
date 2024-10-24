@@ -201,15 +201,15 @@ ggsave("OffBreakout.png", width = 14, height =10, dpi = "retina")
 #Early down vs Late Down Efficiency----
 pbp_rp %>%
   filter(season == year) %>% 
-  group_by(posteam) %>%
-  # group_by(defteam) %>%
+  # group_by(posteam) %>%
+  group_by(defteam) %>%
   summarize(early_down_epa = mean(epa[down<=2],na.rm = T), late_down_epa = mean(epa[down>2],na.rm = T)) %>% 
   ggplot(aes(x = early_down_epa, y = late_down_epa)) +
-  geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
-  # geom_nfl_logos(aes(team_abbr = defteam), width = 0.05)+
-  # scale_x_reverse()+
-  # scale_y_reverse()+
-  labs(x = "EPA/Early Down (1st & 2nd down)", y = "EPA/Late Down (3rd & 4th down)", title = "Offensive Efficiency Late Down vs Early Down",
+  # geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
+  geom_nfl_logos(aes(team_abbr = defteam), width = 0.05)+
+  scale_x_reverse()+
+  scale_y_reverse()+
+  labs(x = "EPA/Early Down (1st & 2nd down)", y = "EPA/Late Down (3rd & 4th down)", title = "Defensive Efficiency Late Down vs Early Down",
        subtitle = "Dotted lines represent average",
        caption = "@CapAnalytics7 | nflfastR")+
   theme(legend.position = "top",
@@ -244,7 +244,7 @@ pbp_rp %>%
   # scale_y_reverse()+
   # geom_nfl_logos(aes(team_abbr = defteam), width = 0.06)+
   geom_nfl_logos(aes(team_abbr = posteam), width = 0.06)+
-  labs(x = "Negative Play Rate", y = "Explosive Play Rate*", title = "Which Offensives Create Explosive Plays and Prevent Negatives?",
+  labs(x = "Negative Play Rate", y = "Explosive Play Rate*", title = "Which Offenses Create Explosive Plays and Prevent Negatives?",
        caption = "*Passes that gained greater than 20 yards or runs that gained greater than 12 yards                         @CapAnalytics7 | nflfastR",
        subtitle = "Dotted Lines Represent League Average")+
   theme(legend.position = "top",
