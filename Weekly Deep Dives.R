@@ -996,9 +996,9 @@ weight_epa %>%
   ggplot(aes(x = defensive_epa, y = offensive_epa)) +
   geom_nfl_logos(aes(team_abbr = posteam), width = 0.04,alpha = 0.8)+
   scale_x_reverse()+
-  labs(x = "Weighted Defensive EPA/Play", y = "Weighted Offensive EPA/Play", title = "Weighted Efficiency Landscape",
-       subtitle = "Weighted EPA/Play factors performance in recent weeks more; Logos represent weighted EPA/Play, dots represent regular EPA/Play",
-       caption = "Decay Rate is 0.95                   @CapAnalytics7 | nflfastR")+
+  labs(x = "Weighted Defensive EPA/Play", y = "Weighted Offensive EPA/Play", title = "What Have You Done Lately?",
+       subtitle = "Time Weighted Efficiency Landscape",
+       caption = "Weighted EPA/Play factors performance in recent weeks more; Logos represent weighted EPA/Play, dots represent regular EPA/Play; Decay Rate is 0.95                   @CapAnalytics7 | nflfastR")+
   theme(legend.position = "top",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
