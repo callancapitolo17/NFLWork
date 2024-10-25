@@ -501,3 +501,162 @@ Jets<- pbp_rp %>%
     subtitle = md("The Jets offense increased their motion rate under Downing and saw an improvement in their efficiency with motion")
   )
 gtsave(Jets, "Jets.png")
+
+#49ers Radar Plot
+pbp23 <- load_pbp(2023:2024)
+ftn_data <- nflreadr::load_ftn_charting(2023:2024) %>%
+  select(-week, -season)
+pbp23 <- pbp23 %>%
+  left_join(ftn_data, by = c("game_id" = "nflverse_game_id",
+                             "play_id" = "nflverse_play_id")) 
+
+nfl23 <- pbp23 %>% 
+  filter(pass == 1 | rush == 1) %>% 
+  filter(qb_kneel== 0, qb_spike ==0) %>% 
+  mutate(explosive = ifelse((yards_gained>20 & pass_attempt == 1) | (yards_gained >12 & (qb_scramble == 1 | rush == 1)),1,0),
+         negative = ifelse(yards_gained < 0, 1,0))
+
+team_stats <- nfl23 %>% 
+  mutate(turnover = ifelse(interception == 0 & fumble_lost == 0, 0,1)) %>% 
+  group_by(season,posteam) %>% 
+  summarize(`EPA/Play`= mean(epa,na.rm =T), `Success Rate` = mean(success,na.rm =T) ,`EPA/Dropback` = mean(epa[pass == 1],na.rm = T), ADoT = mean(air_yards,na.rm = T), `EPA/Rush` = mean(epa[rush == 1], na.rm = T), CPOE = mean(cpoe,na.rm = T), `Explosive Play Rate` = mean(explosive, na.rm = T),
+            `% of Yards From YAC` = sum(yards_after_catch,na.rm = T)/sum(yards_gained[complete_pass == 1],na.rm = T),`Negative Play Rate` = mean(negative, na.rm = T), 
+            `Motion Rate`= mean(is_motion, na.rm = T), `Turnover Rate` = mean(turnover,na.rm = T),
+            # `Catchable Ball Rate` = mean(is_catchable_ball[!is.na(air_yards) & is_throw_away == 0], na.rm = T),
+            # `Contested Throw Rate` = mean(is_contested_ball[!is.na(air_yards)]), 
+            `YAC Over Expected/Catch` = mean(yards_after_catch-xyac_mean_yardage,na.rm = T)
+            ) %>% 
+  mutate(name = paste (posteam,season, sep = " ")) %>% 
+  ungroup %>% 
+  select(-season,-posteam)
+
+replace_with_values_and_ranks <- function(column) {
+  values <- column
+  ranks <- rank(column*-1,ties.method = "max")
+}
+team_rank <- as.data.frame(cbind(team_stats$name,(apply(team_stats %>% 
+                                                                    select(-name,) %>% 
+                                                                    mutate(`Negative Play Rate` = `Negative Play Rate` * -1, , `Turnover Rate` = `Turnover Rate` * -1), 2, replace_with_values_and_ranks)))) %>% 
+  pivot_longer(cols = -`V1`, names_to = "statistic", values_to = "rank") %>% 
+  mutate(rank = as.numeric(rank))
+
+team_all_comb<- team_stats %>% pivot_longer(cols = c(-name), names_to = "statistic", values_to = "value") %>% 
+  inner_join(team_rank, by = c("name" = "V1", "statistic"))
+
+team1 <- "SF 2023" #Rework to be more flexible and incorporate more players
+team2 <- "SF 2024"
+#Production Stats ----
+
+
+temp <- (360/n_distinct(team_all_comb$statistic))/2
+
+myAng <- seq(-temp, -360+temp, length.out = n_distinct(team_all_comb$statistic))
+
+ang <- ifelse(myAng < -90, myAng+180,myAng)
+
+ang <- ifelse(ang < -90, ang+180, ang)
+
+
+pizza_prod<- team_all_comb %>% 
+  mutate(rank = max(rank) + 1 - rank) %>% 
+  filter(name %in% c(team1,team2)) %>% 
+  mutate(name = factor(name, levels = c(team1, team2))) %>% 
+  arrange(name) %>% 
+  ggplot(aes(x = statistic, y = rank, fill = name, label = value))+
+  geom_bar(stat = "identity", position = position_identity(), alpha = 0.6)+
+  # geom_label(color = "white", size=2.5, fontface="bold", show.legend = FALSE, position = position_jitterdodge())+
+  coord_polar()+
+  geom_bar(aes(y = max(team_all_comb$rank)/n_distinct(name)),stat = "identity", width =1, alpha = 0.1, fill = "grey")+
+  geom_hline(yintercept = seq(1, max(team_all_comb$rank), by = max(team_all_comb$rank)),
+             color = "white",
+             size = 1)+
+  geom_vline(xintercept = seq(.5, n_distinct(team_all_comb$statistic), by = 1),
+             color = "white",
+             size = .5)+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 8),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        panel.grid = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_text(face = "bold", size = 8, colour = "white"),
+        axis.title = element_blank(),
+        axis.text.x = element_text(face = "bold", size = 12, angle = ang)) +
+  labs(x = NULL, y = NULL)+
+  scale_fill_brewer(palette = "Set1")+
+  annotate("text", x = (pi/12) * 2, y = seq(10,n_distinct(team_all_comb$name), by = 10), label = seq(10*n_distinct(team_all_comb$name)%/%10, 10 ,by = -10), hjust = 1.15, 
+           color = "White", size = 5)
+
+
+tab_prod <- team_all_comb %>%
+  filter(name %in% c(team1,team2)) %>%
+  mutate(value = round(value,3)) %>% 
+  mutate(name = factor(name, levels = c(team1, team2))) %>% 
+  pivot_wider(names_from = name, values_from = c(value,rank)) %>% 
+  rename("Value1" = paste("value_",team1,sep = ""), "Rank1" = paste("rank_",team1,sep = ""), "Value2" = paste("value_",team2,sep = ""),"Rank2" = paste("rank_",team2,sep = "")) %>%
+  select(statistic,Value1,Rank1,Value2,Rank2) %>% 
+  arrange(statistic) %>% 
+  gt() %>% 
+  cols_align(align = "center") %>% 
+  tab_spanner(label = team1, columns = c(Value1,Rank1)) %>% 
+  tab_spanner(label = team2, columns = c(Value2,Rank2)) %>% 
+  cols_label(Value1 = "Value", Rank1 = "Rank",Value2 = "Value",Rank2 = "Rank") %>% 
+  gtExtras::gt_theme_538() %>% 
+  tab_options(
+    table.background.color = "black",        # Set the entire table background to black
+    heading.background.color = "black",      # Set the header background to black
+    column_labels.background.color = "black", # Set the column label background to black
+    row_group.background.color = "black",    # Set row group background to black (if any)
+    summary_row.background.color = "black",  # Set summary row background to black (if any)
+    grand_summary_row.background.color = "black", # Set grand summary row background to black (if any)
+    footnotes.background.color = "black",    # Set footnotes background to black
+    source_notes.background.color = "black", # Set source notes background to black
+    table.border.top.color = "black",        # Set table top border to black
+    table.border.bottom.color = "black",     # Set table bottom border to black
+    heading.border.bottom.color = "black",   # Set header bottom border to black
+    column_labels.border.top.color = "black",# Set column label top border to black
+    column_labels.border.bottom.color = "black" # Set column label bottom border to black
+  ) %>% 
+  gt_hulk_col_numeric(columns = c(Rank1,Rank2),reverse = TRUE) %>%
+  tab_style(
+    style = cell_text(size = px(16), weight = "bold", color = "white"),  # Change font and size for column labels
+    locations = cells_column_labels(columns = everything())
+  ) %>% 
+  tab_style(
+    style = cell_text(color = "white", size = px(16)),  # Change font and size for the body text
+    locations = cells_body(columns = c(statistic, Value1, Value2))
+  )
+
+if (exists("f") && inherits(f, "ChromoteSession")) {
+  try(f$shutdown(), silent = TRUE)
+}
+
+# Start a new session
+f <- ChromoteSession$new()
+
+gtsave(tab_prod, "prod_temp_table.png")
+
+table_image <- image_read("prod_temp_table.png")
+table_image_transparent <- image_transparent(table_image, "white")
+table_grob <- rasterGrob(table_image, interpolate = TRUE)
+spacer <- ggplot() + theme_void() + theme(panel.background = element_rect(fill = "black"))
+
+pizza_prod + table_grob+spacer + plot_layout(ncol = 3, widths = c(6,3,.1))& 
+  theme(
+    plot.background = element_rect(fill = "black", color = "black"),
+    panel.background = element_rect(fill = "black", color = "black"),
+    plot.caption = element_text(size = 10, hjust = 0.5, face = "italic", color = "white"),
+    plot.title = element_text(size =20,hjust = 0.5, face = "italic", color = "white"),
+    plot.subtitle = element_text(hjust = 0.5, face = "bold", color = "white"))&
+  plot_annotation(
+    caption = glue("Compared to {n_distinct(qb_all_stats$name)} QB seasons with 60+ dropbacks in 2022-2023"),
+    title = "2022-2023 QB Production Comparison",
+    subtitle =  "@CapAnalytics7 | nflfastR"
+  )
+ggsave("QB_Comp_Prod.png", bg = "black", ,width = 14, height =10, dpi = "retina") 
