@@ -1075,3 +1075,11 @@ pbp_rp %>%
   geom_image(aes(image = team_logo_espn), size = 0.05, asp = 16/9)+
   geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") 
 
+#Offense Predictability----
+pbp_rp %>% 
+  group_by(posteam) %>% 
+  summarize(given_no_uc_pass_rate = mean(pass[qb_location %in% c("S","U")],na.rm = T),
+            given_under_center_pass_rate = mean(pass[qb_location == "U"],na.rm = T)) %>% 
+  ggplot(aes(x = given_no_uc_pass_rate, y = given_under_center_pass_rate))+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.04,alpha = 0.8)
+
