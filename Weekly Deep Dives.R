@@ -460,14 +460,14 @@ ggsave("xPass.png", width = 14, height =10, dpi = "retina")
 
 #Non Red vs Red----
 pbp_rp %>% 
-  group_by(defteam) %>%
-  # group_by(posteam) %>%
+  # group_by(defteam) %>%
+  group_by(posteam) %>%
   summarize(epa_red = mean(epa[yardline_100<= 20],na.rm = T), epa_non_red = mean(epa[yardline_100> 20],na.rm = T)) %>% 
   ggplot(aes(x = epa_red, y = epa_non_red))+
-  # geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
-  geom_nfl_logos(aes(team_abbr = defteam), width = 0.05)+
-  scale_x_reverse()+
-  scale_y_reverse()+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.04, alpha = 0.95)+
+  # geom_nfl_logos(aes(team_abbr = defteam), width = 0.04, alpha = 0.95)+
+  # scale_x_reverse()+
+  # scale_y_reverse()+
   theme(legend.position = "none",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -483,7 +483,7 @@ pbp_rp %>%
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))+
-  labs(x = "EPA/Redzone", y = "EPA/Outside Redzone", title = "Defensive Efficiency Inside vs Outside Red Zone",
+  labs(x = "EPA/Redzone", y = "EPA/Outside Redzone", title = "Offense Efficiency Inside vs Outside Red Zone",
        subtitle = "Dotted lines represent league average", 
        caption = "@CapAnalytics7 | nflfastR")+
   geom_hline(yintercept = mean(pbp_rp$epa[pbp_rp$yardline_100>20],na.rm = T), linetype = "dashed",color = "white")+
@@ -1078,8 +1078,42 @@ pbp_rp %>%
 #Offense Predictability----
 pbp_rp %>% 
   group_by(posteam) %>% 
+  summarize(given_no_uc_pass_rate = mean(pass_oe[qb_location %in% c("S","U")],na.rm = T),
+            given_under_center_rush_rate = mean(pass_oe[qb_location == "U"],na.rm = T)) %>% 
   summarize(given_no_uc_pass_rate = mean(pass[qb_location %in% c("S","U")],na.rm = T),
-            given_under_center_pass_rate = mean(pass[qb_location == "U"],na.rm = T)) %>% 
-  ggplot(aes(x = given_no_uc_pass_rate, y = given_under_center_pass_rate))+
-  geom_nfl_logos(aes(team_abbr = posteam), width = 0.04,alpha = 0.8)
+            given_under_center_rush_rate = mean(rush[qb_location == "U"],na.rm = T)) %>% 
+  ggplot(aes(x = given_no_uc_pass_rate, y = given_under_center_rush_rate))+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.04,alpha = 0.95)+
+  geom_mean_lines(aes(x0 = given_no_uc_pass_rate, y0 = given_under_center_rush_rate), linetype = "dashed", color = "white")+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 10),
+        plot.caption = element_text(colour = "white", size = 10),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1),
+        panel.grid = element_blank())+
+  labs(title = "How Predictable is The Offensive Playcalling?", subtitle = "Dotted Lines Represent League Average", 
+       caption =  "@CapAnalytics7 | nflfastR", x = "Non-Under Center Pass Rate", y = "Under Center Rush Rate")
+
+#Strength of Schedule----
+strength_efficiency <- pbp_rp %>%
+  filter(season == year) %>%
+  group_by(posteam) %>%
+  summarize(offensive_epa = mean(epa)) %>% 
+  left_join(pbp_rp %>%
+              filter(season == year) %>%
+              group_by(defteam) %>%
+              summarize(defensive_epa = mean(epa)), by = c("posteam" = "defteam"))
+replace_with_ranks<- function(column){
+  values <- column
+  ranks <- rank(column*-1,ties.method = "max")
+}
 
