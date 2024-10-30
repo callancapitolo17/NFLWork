@@ -662,7 +662,7 @@ pbp_rp %>%
             no_pa = mean(epa[is_play_action == 0 & pass == 1], na.rm = T)) %>% 
   mutate(pa_improve = pa24 - no_pa) %>% 
   ggplot(aes(x = pa_rate, y = pa_improve))+
-  geom_nfl_logos(aes(team_abbr = posteam), width = 0.065)+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.045,alpha = 0.95)+
   labs(x = "Play Action Rate", y = "EPA Improvement With Play Action (EPA/DB w/PA - EPA/DB no PA)", title = "Which Teams Should Increase/Decrease Play Action Usage?", caption ="@CapAnalytics7 | nflfastR",
        subtitle = "Dotted Lines Represent League Average")+
   theme(legend.position = "top",
@@ -706,7 +706,7 @@ trailvslead %>%
   theme_bw()+
   labs(x = "EPA Per Play When Trailing", y = "EPA Per Playing When Tied or Leading", 
        title = "Offensive Efficiency When Leading/Tied vs Trailing Following Week 17",
-       caption = "Callan Capitolo | @CapAnalytics7 | nflfastR")+
+       caption = "@CapAnalytics7 | nflfastR")+
   theme(legend.position = "top",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -721,9 +721,7 @@ trailvslead %>%
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1),
-        panel.grid = element_blank())+
-  geom_hline(yintercept = mean(earlyvslate$late_down_epa), linetype = "dashed",color = "white")+
-  geom_vline(xintercept = mean(earlyvslate$early_down_epa), linetype = "dashed", color = "white")
+        panel.grid = element_blank())
 ggsave("LeadingvsTrailing.png", width = 14, height =10, dpi = "retina")
 
 
@@ -1114,6 +1112,44 @@ strength_efficiency <- pbp_rp %>%
               summarize(defensive_epa = mean(epa)), by = c("posteam" = "defteam"))
 replace_with_ranks<- function(column){
   values <- column
-  ranks <- rank(column*-1,ties.method = "max")
+  ranks <- as.numeric(rank(column*-1,ties.method = "max"))
 }
+strength_ranks <- apply(strength_efficiency %>% 
+        mutate(defensive_epa = defensive_epa*-1) %>% select(-posteam), 2, replace_with_ranks)
+strength_teams <- as.data.frame(cbind(strength_efficiency$posteam,strength_ranks)) %>% 
+  rename("team" = "V1") %>% 
+  mutate(offensive_epa = as.numeric(offensive_epa), defensive_epa = as.numeric(defensive_epa))
+pbp_rp %>% 
+  group_by(game_id) %>% 
+  summarize(home_team = max(home_team), away_team = max(away_team)) %>% 
+  pivot_longer(cols = c(home_team,away_team),names_to = "type", values_to = "group_team") %>% 
+  left_join(pbp_rp %>% 
+              group_by(game_id) %>% 
+              summarize(home_team = max(home_team), away_team = max(away_team)), by = c("game_id")) %>% 
+  mutate(opponent = ifelse(home_team == group_team, away_team, home_team)) %>% 
+  select(-home_team,-away_team) %>% 
+  left_join(strength_teams, by = c("opponent" = "team")) %>% 
+  group_by(group_team) %>% 
+  summarize(off_rank = mean(offensive_epa), def_rank = mean(defensive_epa)) %>% 
+  ggplot(aes(x = def_rank, y = off_rank)) +
+  geom_nfl_logos(aes(team_abbr = group_team),width = 0.045, alpha = 0.95) +
+  geom_mean_lines(aes(x0 = def_rank, y0 = off_rank), color = "white", linetype = "dotted")+
+  scale_x_reverse()+
+  scale_y_reverse()+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 10),
+        plot.caption = element_text(colour = "white", size = 10),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1),
+        panel.grid = element_blank())+
+  labs(y = "Offenses Faced Strength", x = "Defenses Faced Strength", title = "How Hard is a Team's Schedule So Far?")
 
