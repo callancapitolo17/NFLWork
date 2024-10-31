@@ -994,9 +994,9 @@ weight_epa %>%
   ggplot(aes(x = defensive_epa, y = offensive_epa)) +
   geom_nfl_logos(aes(team_abbr = posteam), width = 0.04,alpha = 0.8)+
   scale_x_reverse()+
-  labs(x = "Weighted Defensive EPA/Play", y = "Weighted Offensive EPA/Play", title = "What Have You Done Lately?",
-       subtitle = "Time Weighted Efficiency Landscape",
-       caption = "Weighted EPA/Play factors performance in recent weeks more; Logos represent weighted EPA/Play, dots represent regular EPA/Play; Decay Rate is 0.95                   @CapAnalytics7 | nflfastR")+
+  labs(x = "Weighted Defensive EPA/Play", y = "Weighted Offensive EPA/Play", title = "What Have You Done Lately? Time Weighted Efficiency Landscane",
+       subtitle = "Logos represent weighted EPA/Play, dots represent season long EPA/Play",
+       caption = "Weighted EPA/Play factors performance in recent weeks more; Decay Rate is 0.95                   @CapAnalytics7 | nflfastR")+
   theme(legend.position = "top",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -1119,7 +1119,7 @@ strength_ranks <- apply(strength_efficiency %>%
 strength_teams <- as.data.frame(cbind(strength_efficiency$posteam,strength_ranks)) %>% 
   rename("team" = "V1") %>% 
   mutate(offensive_epa = as.numeric(offensive_epa), defensive_epa = as.numeric(defensive_epa))
-pbp_rp %>% 
+schedule_strength <- pbp_rp %>% 
   group_by(game_id) %>% 
   summarize(home_team = max(home_team), away_team = max(away_team)) %>% 
   pivot_longer(cols = c(home_team,away_team),names_to = "type", values_to = "group_team") %>% 
@@ -1130,7 +1130,9 @@ pbp_rp %>%
   select(-home_team,-away_team) %>% 
   left_join(strength_teams, by = c("opponent" = "team")) %>% 
   group_by(group_team) %>% 
-  summarize(off_rank = mean(offensive_epa), def_rank = mean(defensive_epa)) %>% 
+  summarize(off_rank = mean(offensive_epa), def_rank = mean(defensive_epa))
+
+schedule_strength %>% 
   ggplot(aes(x = def_rank, y = off_rank)) +
   geom_nfl_logos(aes(team_abbr = group_team),width = 0.045, alpha = 0.95) +
   geom_mean_lines(aes(x0 = def_rank, y0 = off_rank), color = "white", linetype = "dotted")+
@@ -1146,10 +1148,55 @@ pbp_rp %>%
         plot.caption = element_text(colour = "white", size = 10),
         plot.background = element_rect(fill = "black", color="black"),
         panel.background = element_rect(fill = "black", color="black"),
-        axis.ticks = element_line(color = "white"),
-        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1),
         panel.grid = element_blank())+
-  labs(y = "Offenses Faced Strength", x = "Defenses Faced Strength", title = "How Hard is a Team's Schedule So Far?")
+  labs(y = "Offenses Played Strength", x = "Defenses Played Strength", title = "How Hard is a Team's Schedule So Far?", caption = "@CapAnalytics7 | nflfastR", subtitle = "Dotted Lines Represent League Average")+
+  annotate("text",label = "Played Good Offenses, Played Bad Defenses", y = quantile(schedule_strength$off_rank,0.01), x = quantile(schedule_strength$def_rank,0.95),color = "white")+
+  annotate("text",label = "Played Bad Offenses, Played Bad Defenses", y = quantile(schedule_strength$off_rank,0.95), x = quantile(schedule_strength$def_rank,0.95),color = "white")+
+  annotate("text",label = "Played Good Offenses, Played Good Defenses", y = quantile(schedule_strength$off_rank,0.01), x = quantile(schedule_strength$def_rank,0.05),color = "white")+
+  annotate("text",label = "Played Bad Offenses, Played Good Defenses", y = quantile(schedule_strength$off_rank,0.97), x = quantile(schedule_strength$def_rank,0.03),color = "white")
+ggsave("SOS.png", width = 14, height =10, dpi = "retina")
 
+
+#Forward Looking----
+sched24 <- load_schedules(2024)
+upcoming_sos <- sched24 %>% 
+  filter(week > max(pbp_rp$week)) %>% 
+  pivot_longer(cols = c(home_team,away_team),names_to = "type", values_to = "group_team") %>% 
+  left_join(sched24, by = c("game_id")) %>% 
+  mutate(opponent = ifelse(home_team == group_team, away_team, home_team)) %>%
+  select(game_id, group_team, opponent,home_team,away_team) %>% 
+  left_join(strength_teams, by = c("opponent" = "team")) %>% 
+  group_by(group_team) %>% 
+  summarize(off_rank = mean(offensive_epa), def_rank = mean(defensive_epa))
+
+upcoming_sos %>% 
+  ggplot(aes(x = def_rank, y = off_rank)) +
+  geom_nfl_logos(aes(team_abbr = group_team),width = 0.045, alpha = 0.95) +
+  geom_mean_lines(aes(x0 = def_rank, y0 = off_rank), color = "white", linetype = "dotted")+
+  scale_x_reverse()+
+  scale_y_reverse()+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 10),
+        plot.caption = element_text(colour = "white", size = 10),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1),
+        panel.grid = element_blank())+
+  labs(y = "Upcoming Offensive Strength", x = "Upcoming Defensive Strength", title = "How Difficult is a Team's Upcoming Schedule?", caption = "@CapAnalytics7 | nflfastR", subtitle = "Dotted Lines Represent League Average")+
+  annotate("text",label = "Upcoming Good Offense\nUpcoming Bad Defenses", y = quantile(upcoming_sos$off_rank,0.02), x = quantile(upcoming_sos$def_rank,0.98),color = "white")+
+  annotate("text",label = "Upcoming Bad Offenses\nUpcoming Bad Defenses", y = quantile(upcoming_sos$off_rank,0.97), x = quantile(upcoming_sos$def_rank,0.98),color = "white")+
+  annotate("text",label = "Upcoming Good Offenses\nUpcoming Good Defenses", y = quantile(upcoming_sos$off_rank,0.02), x = quantile(upcoming_sos$def_rank,0.02),color = "white")+
+  annotate("text",label = "Upcoming Bad Offenses\nUpcoming Good Defenses", y = quantile(upcoming_sos$off_rank,0.97), x = quantile(upcoming_sos$def_rank,0.02),color = "white")
+ggsave("UpcomingSOS.png", width = 14, height =10, dpi = "retina")

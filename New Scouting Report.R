@@ -301,8 +301,8 @@ defensive_scouting <- pbp_rp %>%
   )
 
 
-offense <- "NYG"
-defense <- "PIT"
+offense <- "HOU"
+defense <- "NYJ"
 
 
 
