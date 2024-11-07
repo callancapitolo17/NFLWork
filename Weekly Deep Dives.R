@@ -1073,3 +1073,18 @@ sos_diff %>%
   annotate("text",label = "Better Offenses\nBetter Defenses", y = quantile(sos_diff$schedule_diff_off,0.02), x = quantile(sos_diff$schedule_diff_def,0.02),color = "white")+
   annotate("text",label = "Worse Offenses\nBetter Defenses", y = quantile(sos_diff$schedule_diff_off,0.97), x = quantile(sos_diff$schedule_diff_def,0.02),color = "white")
 ggsave("DiffSOS.png", width = 14, height =10, dpi = "retina")
+
+
+#Adjusted Indexing----
+replace_with_index<- function(column){
+  index <- column/mean(column)
+}
+strength_efficiency_ind <- pbp_rp %>%
+  filter(season == year) %>%
+  group_by(posteam) %>%
+  summarize(offensive_epa = mean(epa)) %>% 
+  left_join(pbp_rp %>%
+              filter(season == year) %>%
+              group_by(defteam) %>%
+              summarize(defensive_epa = mean(epa)), by = c("posteam" = "defteam")) %>% 
+  mutate(def_index = scale(defensive_epa), off_index = offensive_epa/mean(offensive_epa), def_check_mean = scale(defensive_epa)*-1, def_check = defensive_epa)
