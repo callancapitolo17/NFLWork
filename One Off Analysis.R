@@ -660,3 +660,170 @@ pizza_prod + table_grob+spacer + plot_layout(ncol = 3, widths = c(6,3,.1))&
     subtitle =  "@CapAnalytics7 | nflfastR"
   )
 ggsave("QB_Comp_Prod.png", bg = "black", ,width = 14, height =10, dpi = "retina") 
+
+
+#Fix this matchup----
+currentweek <- load_schedules(2024) %>% 
+  filter(week ==10)
+
+matchups <- currentweek %>% 
+  left_join(total_first_half, by = c("home_team" = "posteam"))
+
+matchups <- matchups %>% 
+  left_join(total_first_half, by = c("away_team" = "posteam"))
+
+epa_1h_matchups <- matchups %>% 
+  select(team_wordmark.x,def_epa.x,off_epa.x, team_wordmark.y,def_epa.y,off_epa.y) %>% 
+  mutate(home_team_off_diff = off_epa.x - def_epa.y*-1) %>% 
+  mutate(home_team_def_diff = def_epa.x*-1 - off_epa.y) %>% 
+  mutate_if(is.numeric,round,2) %>% 
+  mutate(EPAdifference = home_team_def_diff+home_team_off_diff) %>% 
+  mutate_if(is.numeric,round,2)
+
+first_half <- epa_1h_matchups %>%
+  select(-home_team_off_diff,-home_team_def_diff, -EPAdifference) %>% 
+  # arrange(-EPAdifference) %>%
+  gt() %>%
+  cols_align(align = "center") %>%
+  gtExtras::gt_img_rows(team_wordmark.x) %>%
+  gtExtras::gt_img_rows(team_wordmark.y) %>%
+  cols_label(team_wordmark.x = "Home Team",
+             team_wordmark.y = "Away Team",
+             def_epa.x = "Home 1H Def EPA/Play",
+             off_epa.x = "Home 1H Off EPA/Play",
+             def_epa.y = "Away 1H Def EPA/Play",
+             off_epa.y = "Away 1H Off EPA/Play") %>% 
+  # EPAdifference = "Difference in Total 1H EPA/Play") %>%
+  gtExtras::gt_theme_538() %>%
+  # gtExtras::gt_hulk_col_numeric(EPAdifference) %>% 
+  tab_header(
+    title = md("1st Half Efficiency by Week 12 Matchups"),
+    subtitle = md("Negative Defensive EPA is Good, Positive Offensive EPA is Good")
+  )
+gtsave(first_half, "FirstHalfEfficiency.png") 
+
+
+#Passing Charts----
+nfl99all %>%
+  mutate(air_yards_bins = cut(air_yards,
+                              breaks = c(-Inf, 0, 10, 20, Inf),
+                              labels = c("<=0", "1-10", "11-20", "21+"))) %>%
+  filter(posteam == "SF") %>% 
+  filter(passer_player_name %in% c("B.Purdy", "J.Garoppolo") & !is.na(pass_location)) %>%
+  group_by(passer_player_name, pass_location, air_yards_bins) %>%
+  summarize(count_air = n(), epa_pass = mean(epa), success_rate = mean(success),
+            YPA = mean(yards_gained),
+            cmp = sum(complete_pass) / n()) %>%
+  ungroup() %>%
+  group_by(passer_player_name) %>%
+  mutate(pct_throws = count_air / sum(count_air)) %>%
+  ggplot(aes(x = pass_location, y = air_yards_bins, fill = pct_throws)) +
+  geom_tile() +
+  facet_wrap(~ passer_player_name) +
+  geom_text(aes(label = paste("% Throws:", round(pct_throws, 2), "\nEPA:", round(epa_pass, 2),
+                              "\nSuccess:", round(success_rate, 2), "\nYPA:", round(YPA, 2),
+                              "\nComp %:", round(cmp, 2))),
+            size = 3) +
+  scale_fill_gradient(low = "white", high = "red") +
+  labs(x = "Pass Location", y = "Air Yards", title = "Brock Purdy vs Jimmy Garropolo (Super Bowl Seasons Only)") +
+  theme_minimal()
+ggsave("JimmyGvsPurdy.png", width = 14, height =10, dpi = "retina")
+
+
+#Rolling average----
+pbp_rp %>% 
+  filter(week == 22, posteam == "SF") %>%
+  mutate(roll_epa = rollapply(epa, width = 15, align = "right", FUN = mean,partial = TRUE),
+         play_num = row_number()) %>%
+  ggplot(aes(x = play_num, y = roll_epa))+
+  # geom_point()
+  geom_line(linewidth =1 )+
+  geom_vline(xintercept = 5,linetype = "dashed", color = 'red')+
+  # geom_vline(xintercept = 45,linetype = "dashed", color = 'red')+
+  labs(x = "Play Number", y = "49ers Offense Rolling EPA/Play for Previous 15 Plays", title = "49ers Rolling EPA/Play by Play Number for Super Bowl")+
+  annotate("text", x = 9, y = 0.1, label = "CMC Fumble", color = "red",size =4)
+# annotate("text", x = 48, y = -0.05, label = "Muffed Punt", color = "red",size =4)
+ggsave("SuperBowlBreakdown.png", width = 14, height =10, dpi = "retina")
+
+#Recovering from blowout?----
+
+bet_data <- nfl99 %>%
+  group_by(game_id) %>% 
+  summarize(year = max(season), week = max(week),homescore = max(home_score), away_score = max(away_score),spread = max(spread_line), result = max(result), bet_total = max(total_line), result_total = max(total),location = max(location),
+            home = max(home_team), away = max(away_team)) %>% 
+  mutate(favorite = ifelse(spread >= 0, "home", "away")) %>% 
+  mutate(underdog = ifelse(spread >= 0, "away", "home")) %>% 
+  mutate(favorite = ifelse(spread >= 0, "home", "away"), favorite_cover = ifelse((favorite == "home" & result > spread) |(favorite == "away" & result < spread),1,0 )) %>% 
+  mutate(underdog = ifelse(spread >= 0, "away", "home"), underdog_cover = ifelse((underdog == "home" & result > spread) |(underdog == "away" & result < spread),1,0 )) %>% 
+  pivot_longer(cols = c("favorite_cover", "underdog_cover"), values_to = "cover", names_to = "side") %>% 
+  mutate(team_bet = ifelse((side == "favorite_cover" & favorite == "away") | (side == "underdog_cover" & underdog == "away"),away,home)) %>% 
+  # mutate(coverby = ifelse(side == "favorite_cover" & favorite == "home"),result - spread) %>%
+  mutate(coverby = result - spread) %>% 
+  mutate(coverby = ifelse((cover == 0 & coverby >0) |(cover == 1 & coverby <0) , coverby*-1,coverby))
+
+
+
+following_week <- bet_data %>% 
+  group_by(year,week,team_bet) %>% summarize(next_week_cover = sum(cover)) %>% 
+  mutate(week = week-1)
+
+bet_data_comb <- bet_data %>% 
+  left_join(following_week,by = c("year","week","team_bet"))
+
+corr <- bet_data_comb %>% 
+  group_by(coverby) %>% 
+  summarize(following_week_cover = mean(next_week_cover,na.rm = T), count = n()) %>% 
+  filter(count > 20) %>% 
+  ggplot(aes(x = coverby, y = following_week_cover))+
+  geom_point(aes(size =count),color = "white")+
+  geom_smooth(se = FALSE, linewidth = 3)+
+  labs(x = "Points Covered By", y = "Following Week Cover Rate", title= "Do NFL Teams Who Get Blown Out Recover the Following Week ATS?",
+       subtitle = "Teams on either side of a blow out tend to perform better the following week than teams with closer contested spreads", 
+       caption = "Dotted line represents break even win rate for -110 spread; data since 1999                      @CapAnalytics7 | nflfastR")+
+  theme(legend.position = "none",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+        plot.caption = element_text(colour = "white", size = 10),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1))+
+  geom_hline(yintercept = 0.5236, color = "white",linetype = "dashed")
+ggsave("Blowouts.png", width = 14, height =10, dpi = "retina")
+
+#Success by Air Yards----
+nfl99 %>% 
+  filter(!is.na(air_yards)) %>% 
+  group_by(air_yards) %>% 
+  summarize(epa_pass = mean(epa,na.rm = T), count = n()) %>% 
+  filter(count > 200) %>% 
+  ggplot(aes(x = air_yards, y = epa_pass))+
+  geom_point(color = "white")+
+  geom_smooth(se = FALSE, linewidth = 3)+
+  labs(x = "Air Yards", y = "EPA/Pass", title= "How Does Pass Efficiency Change By Air Yards?",
+       subtitle = "Between 11-35 Air Yards Pass Efficiency Reaches a Plateau", 
+       caption = "Minimum 200 passes,data since 2006                      @CapAnalytics7 | nflfastR")+
+  theme(legend.position = "none",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+        plot.caption = element_text(colour = "white", size = 10),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1))
+ggsave("AirYardsEff.png", width = 14, height =10, dpi = "retina")
+
