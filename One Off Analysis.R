@@ -2,6 +2,7 @@ library(ggimage)
 library(gt)
 library(nflfastR)
 library(tidyverse)
+library(gtExtras)
 
 pbp <- load_pbp(2010:2023)
 
@@ -826,4 +827,84 @@ nfl99 %>%
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))
 ggsave("AirYardsEff.png", width = 14, height =10, dpi = "retina")
+
+#Lucky----
+lucky <- pbp_rp %>% 
+  filter(qb_kneel == 0, qb_spike == 0,pass == 1 |rush  == 1) %>% 
+  filter(season == 2024) %>%
+  group_by(game_id) %>% 
+  summarize(homescore = max(home_score),homeepa = mean(epa[home_team == posteam], na.rm = T), hometeam = max(home_team),
+            awayscore = max(away_score),awayepa = mean(epa[away_team == posteam], na.rm = T), awayteam = max(away_team)) %>% 
+  mutate(winningteam = ifelse(homescore == awayscore, NA,ifelse(homescore>awayscore,hometeam,awayteam)),
+         losingteam = ifelse(homescore == awayscore, NA,ifelse(homescore>awayscore,awayteam,hometeam)),
+         winning_epa = ifelse(hometeam == winningteam, homeepa, awayepa),
+         losing_epa = ifelse(hometeam == losingteam, homeepa,awayepa)) %>% 
+  # mutate(luckywin = ifelse(homescore == awayscore,NA,ifelse((homescore>awayscore & homeepa<awayepa)|(homescore<awayscore & homeepa>awayepa),1,0)))
+  mutate(luckyepawin = ifelse(homescore == awayscore, NA,ifelse(winning_epa<losing_epa,1,0)))
+unlucky_teams <- lucky %>% 
+  group_by(losingteam) %>% 
+  summarize(pct_unlucky_losses = mean(luckyepawin,na.rm = T),
+            total_unlucky_win = sum(luckyepawin,na.rm = T))
+lucky_teams <- lucky %>% 
+  group_by(winningteam) %>% 
+  summarize(pct_lucky_losses = mean(luckyepawin,na.rm = T),
+            total_lucky_win = sum(luckyepawin,na.rm = T))
+
+check <- pbp %>% 
+  filter(!(play_type %in% c("run","pass"))) %>% 
+  select(desc,epa,posteam,defteam,play_type,pass, rush)
+
+lucky_data <- pbp %>% 
+  group_by(game_id,posteam) %>% 
+  summarize(total_epa_off = sum(epa,na.rm = T), off_plays = n(), homescore = max(home_score), hometeam = max(home_team),
+            awayscore = max(away_score), awayteam = max(away_team),off_total_success = sum(success,na.rm = T)) %>% 
+  mutate(winningteam = ifelse(homescore == awayscore, NA,ifelse(homescore>awayscore,hometeam,awayteam)),
+                              losingteam = ifelse(homescore == awayscore, NA,ifelse(homescore>awayscore,awayteam,hometeam))) %>% 
+  filter(!is.na(posteam)) %>% 
+  left_join(pbp %>% 
+              group_by(game_id,defteam) %>% 
+              summarize(total_epa_def = sum(epa,na.rm = T)*-1, def_plays = n(), total_success = sum(success,na.rm = T)) %>%
+              mutate(def_total_success = def_plays-total_success) %>% 
+              filter(!is.na(defteam)), by = c("game_id", "posteam" = "defteam")) %>% 
+  mutate(total_epa = total_epa_off+total_epa_def,
+         all_total_success = def_total_success+off_total_success) %>% 
+  mutate(result = ifelse(is.na(winningteam), NA, ifelse(winningteam == posteam, "win","loss"))) %>% 
+  select(game_id, winningteam,losingteam,total_epa,result,all_total_success) %>% 
+  pivot_wider(names_from = result, values_from = c(total_epa,all_total_success)) %>% 
+  mutate(epa_lucky_win = ifelse(total_epa_loss>total_epa_win,1,0),
+         success_lucky_win = ifelse(all_total_success_loss>all_total_success_win,1,0))
+
+lucky_data %>% 
+  group_by(winningteam) %>% 
+  summarize(`Lucky Wins By EPA` = sum(epa_lucky_win), `Lucky Wins by Success Rate` = sum(success_lucky_win)) %>% 
+  left_join(lucky_data %>% 
+              group_by(losingteam) %>% 
+              summarize(`Unlucky Losses by EPA` = sum(epa_lucky_win), `Unlucky Losses by Success Rate` = sum(success_lucky_win)),
+            by = c("winningteam" = "losingteam")) %>% 
+  mutate(across(where(is.numeric), ~if_else(is.na(.), 0, .))) %>% 
+  mutate(`Net Lucky Wins By Success Rate` = `Lucky Wins by Success Rate`- `Unlucky Losses by Success Rate`) %>% 
+  mutate(`Net Lucky Wins By EPA` = `Lucky Wins By EPA` - `Unlucky Losses by EPA`) %>% 
+  rename(" " = "winningteam") %>% 
+  select(" ", `Net Lucky Wins By EPA`,`Lucky Wins By EPA`, `Unlucky Losses by EPA`, `Net Lucky Wins By Success Rate`,`Lucky Wins by Success Rate`, `Unlucky Losses by Success Rate`) %>% 
+  arrange(`Net Lucky Wins By Success Rate`) %>% 
+  gt() %>% 
+  gt_nfl_wordmarks(columns = c(" ")) %>% 
+  cols_align(align = "center") %>% 
+  # gt_hulk_col_numeric(columns = c("Net Lucky Wins By Success Rate", "Net Lucky Wins By EPA")) %>% 
+  gt_hulk_col_numeric(columns = -" ") %>% 
+  gt_theme_538() %>% 
+  tab_header(
+    title = md("Which Teams Have Been Luckiest this Season?"),
+    subtitle = md("Unlucky/Lucky Win = Losing Team Outperformed Winning Team in Metric")
+  ) %>% 
+  tab_footnote(footnote = md("@CapAnalytics7|nflfastr"))
+gtsave(check, "my_table.png")
+
+
+#Purdy Game vs Bucs
+test <- nfl99 %>% 
+  filter(name == "B.Purdy") %>% 
+  group_by(game_id,id) %>% 
+  summarize(`EPA/Play` = mean(epa,na.rm = T), success_rate = mean(success,na.rm = T)) %>% 
+  arrange(-`EPA/Play`)
 

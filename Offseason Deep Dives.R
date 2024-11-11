@@ -470,6 +470,7 @@ ggsave("Yards.png", width = 14, height =10, dpi = "retina")
 # Luckiness ----
 test <- nfl99 %>% 
   filter(qb_kneel == 0, qb_spike == 0,pass == 1 |rush  == 1) %>% 
+  filter(season == 2024) %>%
   group_by(game_id) %>% 
   summarize(homescore = max(home_score),homeepa = mean(epa[home_team == posteam], na.rm = T), hometeam = max(home_team),
             awayscore = max(away_score),awayepa = mean(epa[away_team == posteam], na.rm = T), awayteam = max(away_team), year = max(season)) %>% 
