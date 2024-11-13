@@ -458,36 +458,27 @@ pbp_rp %>%
 ggsave("xPass.png", width = 14, height =10, dpi = "retina")
 
 #Non Red vs Red----
-
-test <- pbp_rp %>% 
-  mutate(unique_series_identifier = paste(game_id, series)) %>%
-  group_by(unique_series_identifier) %>% 
-  summarize(posteam = first(posteam),drive_20 = max(drive_inside20),drive_td = max(drive_end_transition)) %>% 
-  mutate(touchdown = ifelse(drive_td == "TOUCHDOWN",1,0)) %>% 
-  group_by(posteam) %>% 
-  summarize(red_td_rate = mean(touchdown[drive_20 == 1], na.rm = T))
-
 pbp_rp %>% 
-  group_by(defteam) %>%
-  # group_by(posteam) %>%
+  # group_by(defteam) %>%
+  group_by(posteam) %>%
   summarize(epa_red = mean(epa[yardline_100<= 20],na.rm = T), epa_non_red = mean(epa[yardline_100> 20],na.rm = T)) %>% 
   left_join( pbp_rp %>% 
                mutate(unique_series_identifier = paste(game_id, series)) %>%
                group_by(unique_series_identifier) %>% 
                summarize(posteam = first(posteam),defteam = first(defteam),drive_20 = max(drive_inside20),drive_td = max(drive_end_transition)) %>% 
                mutate(touchdown = ifelse(drive_td == "TOUCHDOWN",1,0)) %>% 
-               # group_by(posteam) %>% 
-               group_by(defteam) %>%
+               group_by(posteam) %>%
+               # group_by(defteam) %>%
                summarize(red_td_rate = mean(touchdown[drive_20 == 1], na.rm = T)), 
-             # by = c("posteam")
-             by = c("defteam")
+             by = c("posteam")
+             # by = c("defteam")
              ) %>% 
   ggplot(aes(x = red_td_rate, y = epa_non_red))+
-  # geom_nfl_logos(aes(team_abbr = posteam), width = 0.04, alpha = 0.95)+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.045, alpha = 0.95)+
   geom_mean_lines(aes(x0 = red_td_rate, y0 = epa_non_red), color = "white", linetype = "dashed")+
-  geom_nfl_logos(aes(team_abbr = defteam), width = 0.04, alpha = 0.95)+
-  scale_x_reverse()+
-  scale_y_reverse()+
+  # geom_nfl_logos(aes(team_abbr = defteam), width = 0.045, alpha = 0.95)+
+  # scale_x_reverse()+
+  # scale_y_reverse()+
   theme(legend.position = "none",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -503,8 +494,8 @@ pbp_rp %>%
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))+
-  # labs(x = "Redzone TD Rate", y = "Non Redzone EPA/Play", title = "Offense Efficiency Inside vs Outside Red Zone", subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")
-  labs(x = "Redzone TD Rate Allowed", y = "Non Redzone EPA/Play", title = "Defensive Efficiency Inside vs Outside Red Zone", subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")
+  labs(x = "Redzone TD Rate", y = "Non Redzone EPA/Play", title = "Offense Efficiency Inside vs Outside Red Zone", subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")
+  # labs(x = "Redzone TD Rate Allowed", y = "Non Redzone EPA/Play", title = "Defensive Efficiency Inside vs Outside Red Zone", subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")
 ggsave("RedBreakOut.png", width = 14, height =10, dpi = "retina")
 
 #Biggest Plays ----
@@ -717,10 +708,9 @@ trailvslead <-leading %>%
 
 trailvslead %>% 
   ggplot(aes(x = epa_trailing_play, y = epa_leading_play)) +
-  geom_image(aes(image = team_logo_espn), size = 0.1, asp = 16/19)+
-  theme_bw()+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.045,alpha = 0.95)+
   labs(x = "EPA Per Play When Trailing", y = "EPA Per Playing When Tied or Leading", 
-       title = "Offensive Efficiency When Leading/Tied vs Trailing Following Week 17",
+       title = "Offensive Efficiency When Leading/Tied vs Trailing", subtitle = "Dotted lines represent league average",
        caption = "@CapAnalytics7 | nflfastR")+
   theme(legend.position = "top",
         legend.direction = "horizontal",
@@ -736,12 +726,9 @@ trailvslead %>%
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1),
-        panel.grid = element_blank())
+        panel.grid = element_blank())+
+  geom_mean_lines(aes(x0 = epa_trailing_play, y0 = epa_leading_play),color = "white", linetype = "dashed")
 ggsave("LeadingvsTrailing.png", width = 14, height =10, dpi = "retina")
-
-
-
-
 
 # Yards After Catch----
 yac_passing <- pbp_rp %>% 
@@ -785,7 +772,7 @@ yac_passing %>%
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1),
         panel.grid = element_blank())+
-  geom_smooth(method = "lm", se = FALSE, color = "white", linetype = "dashed")
+  geom_mean_lines(aes(x0 = yac_pct, y0 = epa_pass),color = "white", linetype = "dashed")
 ggsave("YAC.png", width = 14, height =10, dpi = "retina")
 
 #Time to throw vs aDoT----
@@ -814,10 +801,6 @@ pbp_rp %>%
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))
-
-
-
-
 #Middle 8 ----
 
 #Decay Efficiency Landscape----
@@ -1115,29 +1098,56 @@ lucky_data <- pbp %>%
   mutate(epa_lucky_win = ifelse(total_epa_loss>total_epa_win,1,0),
          success_lucky_win = ifelse(all_total_success_loss>all_total_success_win,1,0))
 
-lucky_tab <- lucky_data %>% 
+lucky_data %>% 
   group_by(winningteam) %>% 
   summarize(`Lucky Wins By EPA` = sum(epa_lucky_win), `Lucky Wins by Success Rate` = sum(success_lucky_win)) %>% 
   left_join(lucky_data %>% 
               group_by(losingteam) %>% 
-              summarize(`Unlucky Losses by EPA` = sum(epa_lucky_win), `Unlucky Losses by Success Rate` = sum(success_lucky_win)),
+              summarize(`Unlucky Losses by EPA` = sum(epa_lucky_win), `Unlucky Losses by Success Rate` = sum(success_lucky_win) *-1),
             by = c("winningteam" = "losingteam")) %>% 
   mutate(across(where(is.numeric), ~if_else(is.na(.), 0, .))) %>% 
-  mutate(`Net Lucky Wins By Success Rate` = `Lucky Wins by Success Rate`- `Unlucky Losses by Success Rate`) %>% 
-  mutate(`Net Lucky Wins By EPA` = `Lucky Wins By EPA` - `Unlucky Losses by EPA`) %>% 
-  rename(" " = "winningteam") %>% 
+  # mutate(`Net Lucky Wins By Success Rate` = `Lucky Wins by Success Rate`- `Unlucky Losses by Success Rate`) %>% 
+  # mutate(`Net Lucky Wins By EPA` = `Lucky Wins By EPA` - `Unlucky Losses by EPA`) %>% 
+  # rename(" " = "winningteam")
   # select(" ", `Net Lucky Wins By EPA`,`Lucky Wins By EPA`, `Unlucky Losses by EPA`, `Net Lucky Wins By Success Rate`,`Lucky Wins by Success Rate`, `Unlucky Losses by Success Rate`) %>% 
-  select(" ", `Net Lucky Wins By Success Rate`,`Lucky Wins by Success Rate`, `Unlucky Losses by Success Rate`) %>% 
-  arrange(`Net Lucky Wins By Success Rate`) %>% 
-  gt() %>% 
-  gt_nfl_wordmarks(columns = c(" ")) %>% 
-  cols_align(align = "center") %>% 
-  # gt_hulk_col_numeric(columns = c("Net Lucky Wins By Success Rate", "Net Lucky Wins By EPA")) %>% 
-  gt_hulk_col_numeric(columns = -" ") %>% 
-  gt_theme_538() %>% 
-  tab_header(
-    title = md("Which Teams Have Been Luckiest this Season?"),
-    subtitle = md("Unlucky/Lucky Win = Losing Team Outperformed Winning Team in Metric")
-  ) %>% 
-  tab_footnote(footnote = md("@CapAnalytics7|nflfastr"))
-gtsave(lucky_tab, "lucky_table.png")
+  # select(winningteam, `Net Lucky Wins By Success Rate`,`Lucky Wins by Success Rate`, `Unlucky Losses by Success Rate`) %>% 
+  select(winningteam, `Lucky Wins by Success Rate`, `Unlucky Losses by Success Rate`) %>% 
+  # arrange(`Net Lucky Wins By Success Rate`) %>% 
+  pivot_longer(cols = c(`Lucky Wins by Success Rate`, `Unlucky Losses by Success Rate`), names_to = "Result", values_to = "Count") %>% 
+  ggplot(aes(y = winningteam, x = Count, fill = Result))+
+  geom_bar(stat = "identity")+
+  scale_fill_brewer(palette = "Set3") +
+  labs(y = "Offense", x = "Count", title = "Which Teams Have Been Lucky This Year?", subtitle = "Unlucky Loss/Lucky Win = Losing Team Outperformed Winning Team in Success Rate",caption = "@CapAnalytics7 | nflfastR")+
+    theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+        plot.caption = element_text(colour = "white", size = 10),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1),
+        axis.title.y = element_blank(),
+        axis.text.y = element_nfl_logo(size = 0.9)
+  )+
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 8))
+  
+  
+# gt() %>% 
+#   gt_nfl_wordmarks(columns = c(" ")) %>% 
+#   cols_align(align = "center") %>% 
+#   # gt_hulk_col_numeric(columns = c("Net Lucky Wins By Success Rate", "Net Lucky Wins By EPA")) %>% 
+#   gt_hulk_col_numeric(columns = -" ") %>% 
+#   gt_theme_538() %>% 
+#   tab_header(
+#     title = md("Which Teams Have Been Luckiest this Season?"),
+#     subtitle = md("Unlucky/Lucky Win = Losing Team Outperformed Winning Team in Metric")
+#   ) %>% 
+#   tab_footnote(footnote = md("@CapAnalytics7|nflfastrR"))
+# gtsave(lucky_tab, "lucky_table.png")
