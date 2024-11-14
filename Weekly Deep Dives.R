@@ -637,11 +637,11 @@ ggsave("RunningEfficiency.png", width = 14, height =10, dpi = "retina")
 pbp_rp %>% 
   group_by(posteam) %>% 
   summarize(motion_rate = mean(is_motion,na.rm = T), epa_motion = mean(epa[is_motion == 1],na.rm = T), epa_no_motion = mean(epa[is_motion == 0],na.rm = T)) %>% 
-  mutate(epa_change = ((epa_motion - epa_no_motion)/abs(epa_no_motion))*100) %>% 
+  mutate(epa_change = epa_motion - epa_no_motion) %>% 
   ggplot(aes(x = motion_rate, y = epa_change))+
   geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
   geom_mean_lines(aes(x0 = motion_rate, y0 = epa_change), color = "white", linetype = "dotted")+
-  labs(x = "Motion Rate", y = "% Change in EPA/Play With Motion", title = "Which Teams Should Increase/Decrease Their Motion Usage?",
+  labs(x = "Motion Rate", y = "Change in EPA/Play With Motion", title = "Which Teams Should Increase/Decrease Their Motion Usage?",
        subtitle = "Dotted Lines Represent League Average", caption = "@CapAnalytics7 | nflfastR")+
   theme(legend.position = "top",
         legend.direction = "horizontal",
@@ -661,17 +661,19 @@ pbp_rp %>%
 ggsave("MotionRate.png", width = 14, height =10, dpi = "retina")
 
 
-#Play Action Rate---- 
+#Play Action Rate----  
 pbp_rp %>% 
   filter(season == year) %>% 
   group_by(posteam) %>% 
   summarize(pa_rate = mean(is_play_action[pass == 1],na.rm = T), pa24 = mean(epa[is_play_action == 1],na.rm = T),
             no_pa = mean(epa[is_play_action == 0 & pass == 1], na.rm = T)) %>% 
-  mutate(pa_improve = (pa24 - no_pa)/abs(no_pa)*100) %>% 
-  ggplot(aes(x = pa_rate, y = pa_improve))+
+  mutate(pa_improve = (pa24 - no_pa)/abs(no_pa)*100) %>%
+  mutate(scaling_no_pa = scale(no_pa)+2, scaling_pa24 = scale(pa24)+2, change_scale = (scaling_pa24-scaling_no_pa)/abs(scaling_no_pa),
+         pa_difference = pa24-no_pa) %>% 
+  ggplot(aes(x = pa_rate, y = pa_difference))+
   geom_nfl_logos(aes(team_abbr = posteam), width = 0.045,alpha = 0.95)+
-  geom_mean_lines(aes(x0 = pa_rate, y0 = pa_improve),color = "white", linetype = "dashed")+
-  labs(x = "Play Action Rate", y = "% Change in EPA/Play When Using Play Action", title = "Which Teams Should Increase/Decrease Play Action Usage?", caption ="@CapAnalytics7 | nflfastR",
+  geom_mean_lines(aes(x0 = pa_rate, y0 = pa_difference),color = "white", linetype = "dashed")+
+  labs(x = "Play Action Rate", y = "Change in EPA/Play When Using Play Action", title = "Which Teams Should Increase/Decrease Play Action Usage?", caption ="@CapAnalytics7 | nflfastR",
        subtitle = "Dotted Lines Represent League Average")+
   theme(legend.position = "top",
         legend.direction = "horizontal",
@@ -821,7 +823,7 @@ weight_epa %>%
   ggplot(aes(x = defensive_epa, y = offensive_epa)) +
   geom_nfl_logos(aes(team_abbr = posteam), width = 0.04,alpha = 0.8)+
   scale_x_reverse()+
-  labs(x = "Weighted Defensive EPA/Play", y = "Weighted Offensive EPA/Play", title = "What Have You Done Lately? Time Weighted Efficiency Landscane",
+  labs(x = "Weighted Defensive EPA/Play", y = "Weighted Offensive EPA/Play", title = "What Have You Done Lately? Time Weighted Efficiency Landscape",
        subtitle = "Logos represent weighted EPA/Play, dots represent season long EPA/Play",
        caption = "Weighted EPA/Play factors performance in recent weeks more; Decay Rate is 0.95                   @CapAnalytics7 | nflfastR")+
   theme(legend.position = "top",
@@ -937,16 +939,8 @@ strength_efficiency <- pbp_rp %>%
   left_join(pbp_rp %>%
               filter(season == year) %>%
               group_by(defteam) %>%
-              summarize(defensive_epa = mean(epa)), by = c("posteam" = "defteam"))
-replace_with_ranks<- function(column){
-  values <- column
-  ranks <- as.numeric(rank(column*-1,ties.method = "max"))
-}
-strength_ranks <- apply(strength_efficiency %>% 
-        mutate(defensive_epa = defensive_epa*-1) %>% select(-posteam), 2, replace_with_ranks)
-strength_teams <- as.data.frame(cbind(strength_efficiency$posteam,strength_ranks)) %>% 
-  rename("team" = "V1") %>% 
-  mutate(offensive_epa = as.numeric(offensive_epa), defensive_epa = as.numeric(defensive_epa))
+              summarize(defensive_epa = mean(epa)), by = c("posteam" = "defteam")) %>% 
+  mutate(off_scale = scale(offensive_epa)[,1], def_scale = scale(defensive_epa*-1)[,1])
 schedule_strength <- pbp_rp %>% 
   group_by(game_id) %>% 
   summarize(home_team = max(home_team), away_team = max(away_team)) %>% 
@@ -956,16 +950,16 @@ schedule_strength <- pbp_rp %>%
               summarize(home_team = max(home_team), away_team = max(away_team)), by = c("game_id")) %>% 
   mutate(opponent = ifelse(home_team == group_team, away_team, home_team)) %>% 
   select(-home_team,-away_team) %>% 
-  left_join(strength_teams, by = c("opponent" = "team")) %>% 
+  left_join(strength_efficiency, by = c("opponent" = "posteam")) %>% 
   group_by(group_team) %>% 
   summarize(past_off_rank = mean(offensive_epa), past_def_rank = mean(defensive_epa))
 
 schedule_strength %>% 
   ggplot(aes(x = past_def_rank, y = past_off_rank)) +
   geom_nfl_logos(aes(team_abbr = group_team),width = 0.045, alpha = 0.95) +
-  geom_mean_lines(aes(x0 = def_rank, y0 = off_rank), color = "white", linetype = "dotted")+
+  geom_mean_lines(aes(x0 = past_def_rank, y0 = past_off_rank), color = "white", linetype = "dotted")+
   scale_x_reverse()+
-  scale_y_reverse()+
+  # scale_y_reverse()+
   theme(legend.position = "top",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -982,10 +976,10 @@ schedule_strength %>%
         panel.border = element_rect(colour = "white", fill = NA, size = 1),
         panel.grid = element_blank())+
   labs(y = "Offenses Played Strength", x = "Defenses Played Strength", title = "How Hard is a Team's Schedule So Far?", caption = "@CapAnalytics7 | nflfastR", subtitle = "Dotted Lines Represent League Average")+
-  annotate("text",label = "Played Good Offenses, Played Bad Defenses", y = quantile(schedule_strength$off_rank,0.01), x = quantile(schedule_strength$def_rank,0.95),color = "white")+
-  annotate("text",label = "Played Bad Offenses, Played Bad Defenses", y = quantile(schedule_strength$off_rank,0.95), x = quantile(schedule_strength$def_rank,0.95),color = "white")+
-  annotate("text",label = "Played Good Offenses, Played Good Defenses", y = quantile(schedule_strength$off_rank,0.01), x = quantile(schedule_strength$def_rank,0.05),color = "white")+
-  annotate("text",label = "Played Bad Offenses, Played Good Defenses", y = quantile(schedule_strength$off_rank,0.97), x = quantile(schedule_strength$def_rank,0.03),color = "white")
+  annotate("text",label = "Played Good Offenses\nPlayed Bad Defenses", y = quantile(schedule_strength$past_off_rank,0.99), x = quantile(schedule_strength$past_def_rank,0.95),color = "white")+
+  annotate("text",label = "Played Bad Offenses\nPlayed Bad Defenses", y = quantile(schedule_strength$past_off_rank,0.02), x = quantile(schedule_strength$past_def_rank,0.95),color = "white")+
+  annotate("text",label = "Played Good Offenses\nPlayed Good Defenses", y = quantile(schedule_strength$past_off_rank,0.99), x = quantile(schedule_strength$past_def_rank,0.05),color = "white")+
+  annotate("text",label = "Played Bad Offenses\nPlayed Good Defenses", y = quantile(schedule_strength$past_off_rank,0.02), x = quantile(schedule_strength$past_def_rank,0.03),color = "white")
 ggsave("SOS.png", width = 14, height =10, dpi = "retina")
 
 
@@ -1004,7 +998,7 @@ upcoming_sos <- sched24 %>%
 upcoming_sos %>% 
   ggplot(aes(x = up_def_rank, y = up_off_rank)) +
   geom_nfl_logos(aes(team_abbr = group_team),width = 0.045, alpha = 0.95) +
-  geom_mean_lines(aes(x0 = def_rank, y0 = off_rank), color = "white", linetype = "dotted")+
+  geom_mean_lines(aes(x0 = up_def_rank, y0 = up_off_rank), color = "white", linetype = "dotted")+
   scale_x_reverse()+
   scale_y_reverse()+
   theme(legend.position = "top",
@@ -1023,10 +1017,10 @@ upcoming_sos %>%
         panel.border = element_rect(colour = "white", fill = NA, size = 1),
         panel.grid = element_blank())+
   labs(y = "Upcoming Offensive Strength", x = "Upcoming Defensive Strength", title = "How Difficult is a Team's Upcoming Schedule?", caption = "@CapAnalytics7 | nflfastR", subtitle = "Dotted Lines Represent League Average")+
-  annotate("text",label = "Upcoming Good Offense\nUpcoming Bad Defenses", y = quantile(upcoming_sos$off_rank,0.02), x = quantile(upcoming_sos$def_rank,0.98),color = "white")+
-  annotate("text",label = "Upcoming Bad Offenses\nUpcoming Bad Defenses", y = quantile(upcoming_sos$off_rank,0.97), x = quantile(upcoming_sos$def_rank,0.98),color = "white")+
-  annotate("text",label = "Upcoming Good Offenses\nUpcoming Good Defenses", y = quantile(upcoming_sos$off_rank,0.02), x = quantile(upcoming_sos$def_rank,0.02),color = "white")+
-  annotate("text",label = "Upcoming Bad Offenses\nUpcoming Good Defenses", y = quantile(upcoming_sos$off_rank,0.97), x = quantile(upcoming_sos$def_rank,0.02),color = "white")
+  annotate("text",label = "Upcoming Good Offense\nUpcoming Bad Defenses", y = quantile(upcoming_sos$up_off_rank,0.02), x = quantile(upcoming_sos$up_def_rank,0.98),color = "white")+
+  annotate("text",label = "Upcoming Bad Offenses\nUpcoming Bad Defenses", y = quantile(upcoming_sos$up_off_rank,0.97), x = quantile(upcoming_sos$up_def_rank,0.98),color = "white")+
+  annotate("text",label = "Upcoming Good Offenses\nUpcoming Good Defenses", y = quantile(upcoming_sos$up_off_rank,0.02), x = quantile(upcoming_sos$up_def_rank,0.02),color = "white")+
+  annotate("text",label = "Upcoming Bad Offenses\nUpcoming Good Defenses", y = quantile(upcoming_sos$up_off_rank,0.97), x = quantile(upcoming_sos$up_def_rank,0.02),color = "white")
 ggsave("UpcomingSOS.png", width = 14, height =10, dpi = "retina")
 
 #SOS Difference----
@@ -1054,7 +1048,7 @@ sos_diff %>%
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1),
         panel.grid = element_blank())+
-  labs(y = "Strength Difference Between Upcoming vs Played Offenses", x = "Strength Difference Between Upcoming vs Played Offenses", title = "Which Teams See the Biggest Shift in Schedule Difficulty?", caption = "@CapAnalytics7 | nflfastR", subtitle = "Dotted Lines Represent League Average")+
+  labs(y = "Difference in Strength Between Upcoming vs Played Offenses", x = "Difference in Strength Between Upcoming vs Played Offenses", title = "Which Teams See the Biggest Shift in Schedule Difficulty?", caption = "@CapAnalytics7 | nflfastR", subtitle = "Dotted Lines Represent League Average")+
   annotate("text",label = "Better Offenses\nWorse Defenses", y = quantile(sos_diff$schedule_diff_off,0.02), x = quantile(sos_diff$schedule_diff_def,0.98),color = "white")+
   annotate("text",label = "Worse Offenses\nWorse Defenses", y = quantile(sos_diff$schedule_diff_off,0.97), x = quantile(sos_diff$schedule_diff_def,0.98),color = "white")+
   annotate("text",label = "Better Offenses\nBetter Defenses", y = quantile(sos_diff$schedule_diff_off,0.02), x = quantile(sos_diff$schedule_diff_def,0.02),color = "white")+
@@ -1106,15 +1100,18 @@ lucky_data %>%
               summarize(`Unlucky Losses by EPA` = sum(epa_lucky_win), `Unlucky Losses by Success Rate` = sum(success_lucky_win) *-1),
             by = c("winningteam" = "losingteam")) %>% 
   mutate(across(where(is.numeric), ~if_else(is.na(.), 0, .))) %>% 
-  # mutate(`Net Lucky Wins By Success Rate` = `Lucky Wins by Success Rate`- `Unlucky Losses by Success Rate`) %>% 
+  # mutate(`Net Lucky Wins By Success Rate` = `Lucky Wins by Success Rate`- `Unlucky Losses by Success Rate`) %>%
   # mutate(`Net Lucky Wins By EPA` = `Lucky Wins By EPA` - `Unlucky Losses by EPA`) %>% 
   # rename(" " = "winningteam")
   # select(" ", `Net Lucky Wins By EPA`,`Lucky Wins By EPA`, `Unlucky Losses by EPA`, `Net Lucky Wins By Success Rate`,`Lucky Wins by Success Rate`, `Unlucky Losses by Success Rate`) %>% 
-  # select(winningteam, `Net Lucky Wins By Success Rate`,`Lucky Wins by Success Rate`, `Unlucky Losses by Success Rate`) %>% 
-  select(winningteam, `Lucky Wins by Success Rate`, `Unlucky Losses by Success Rate`) %>% 
+  # select(winningteam, `Net Lucky Wins By Success Rate`,`Lucky Wins by Success Rate`, `Unlucky Losses by Success Rate`) %>%
+  select(winningteam, `Lucky Wins by Success Rate`, `Unlucky Losses by Success Rate`) %>%
   # arrange(`Net Lucky Wins By Success Rate`) %>% 
-  pivot_longer(cols = c(`Lucky Wins by Success Rate`, `Unlucky Losses by Success Rate`), names_to = "Result", values_to = "Count") %>% 
-  ggplot(aes(y = winningteam, x = Count, fill = Result))+
+  pivot_longer(cols = c(`Unlucky Losses by Success Rate`, `Lucky Wins by Success Rate`), names_to = "Result", values_to = "Count") %>% 
+  group_by(winningteam) %>% 
+  mutate(net_wins_succ = sum(Count)) %>%
+  mutate(Result = factor(Result, levels = c("Unlucky Losses by Success Rate","Lucky Wins by Success Rate"))) %>%  # Set order of legend
+  ggplot(aes(y = reorder(winningteam, -net_wins_succ), x = Count, fill = Result))+
   geom_bar(stat = "identity")+
   scale_fill_brewer(palette = "Set3") +
   labs(y = "Offense", x = "Count", title = "Which Teams Have Been Lucky This Year?", subtitle = "Unlucky Loss/Lucky Win = Losing Team Outperformed Winning Team in Success Rate",caption = "@CapAnalytics7 | nflfastR")+
@@ -1137,8 +1134,10 @@ lucky_data %>%
         axis.text.y = element_nfl_logo(size = 0.9)
   )+
   scale_x_continuous(breaks = scales::pretty_breaks(n = 8))
+ggsave("Lucky.png", width = 14, height =10, dpi = "retina")
   
   
+
 # gt() %>% 
 #   gt_nfl_wordmarks(columns = c(" ")) %>% 
 #   cols_align(align = "center") %>% 

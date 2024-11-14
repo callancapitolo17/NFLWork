@@ -901,10 +901,71 @@ lucky_data %>%
 gtsave(check, "my_table.png")
 
 
-#Purdy Game vs Bucs
+#Purdy Game vs Bucs----
 test <- nfl99 %>% 
   filter(name == "B.Purdy") %>% 
   group_by(game_id,id) %>% 
   summarize(`EPA/Play` = mean(epa,na.rm = T), success_rate = mean(success,na.rm = T)) %>% 
   arrange(-`EPA/Play`)
 
+#Expected Wins----
+ftn_data <- nflreadr::load_ftn_charting(2022:2024) %>%
+  select(-week, -season)
+participation <- load_participation(2022:2024) %>% 
+  select(-old_game_id)
+pbp22 <- load_pbp(2022:2024)
+pbp22 <- pbp22 %>%
+  left_join(ftn_data, by = c("game_id" = "nflverse_game_id",
+                             "play_id" = "nflverse_play_id")) %>% 
+  left_join(participation,by = c("game_id" = "nflverse_game_id",
+                                 "play_id" = "play_id"))
+library(tidyr)
+recovery_rate <- mean(nfl99all$fumble_lost[nfl99all$fumble == 1],na.rm = T)
+interception_rate <- mean(pbp22$interception[pbp22$is_interception_worthy],na.rm = T)
+lucky_data <- pbp22 %>% 
+  group_by(game_id,posteam) %>% 
+  summarize(total_epa_off = sum(epa,na.rm = T), off_plays = n(), homescore = max(home_score), hometeam = max(home_team),
+            awayscore = max(away_score), awayteam = max(away_team),off_total_success = sum(success,na.rm = T),
+            off_success_rate = mean(success, na.rm = T), off_epa_play = mean(epa,na.rm = T), off_fumbles = sum(fumble,na.rm = T), 
+            off_fumbles_lost = sum(fumble_lost,na.rm =T), off_int = sum(interception,na.rm = T), off_int_worth = sum(is_interception_worthy,na.rm = T),
+            off_expected_fumbles = recovery_rate * off_fumbles) %>% 
+  filter(!is.na(posteam)) %>% 
+  mutate(location = ifelse(hometeam==posteam, "hometeam", "awayteam"), home_team_win = ifelse(homescore>awayscore,1,0)) %>% 
+  # mutate(winningteam = ifelse(homescore == awayscore, NA,ifelse(homescore>awayscore,hometeam,awayteam)),
+  #        losingteam = ifelse(homescore == awayscore, NA,ifelse(homescore>awayscore,awayteam,hometeam))) %>% 
+  left_join(pbp22 %>% 
+              group_by(game_id,defteam) %>% 
+              summarize(total_epa_def = sum(epa,na.rm = T)*-1, def_plays = n(), off_def_success = sum(success,na.rm = T), 
+                        def_success_rate_allowed = mean(success,na.rm = T), def_epa_play = mean(epa,na.rm = T),
+                        def_fumbles = sum(fumble,na.rm = T), 
+                        def_fumbles_lost = sum(fumble_lost,na.rm =T), def_int = sum(interception,na.rm = T), def_int_worth = sum(is_interception_worthy,na.rm = T)) %>%
+              mutate(def_total_success = def_plays-off_def_success) %>% 
+              filter(!is.na(defteam)), by = c("game_id", "posteam" = "defteam")) %>% 
+  mutate(total_epa = total_epa_off+total_epa_def,
+         all_total_success = def_total_success+off_total_success, net_success_rate = all_total_success/(off_plays+def_plays),
+         net_epa_play = total_epa/(off_plays+def_plays)) %>%
+  ungroup() %>% 
+  filter(location == "hometeam") %>% 
+  select(-homescore,-awayscore, -all_total_success, -def_total_success,-posteam,-hometeam, -awayteam,-off_total_success,
+         -off_def_success, -total_epa_off, -total_epa_def, -location)
+  # mutate(result = ifelse(is.na(winningteam), NA, ifelse(winningteam == posteam, "win","loss")))
+  # select(game_id, winningteam,losingteam,total_epa,result,all_total_success) %>% 
+  pivot_wider(names_from = location, values_from = c("off_plays", "off_success_rate", "off_epa_play", 
+                                                     "def_success_rate_allowed", "def_epa_play", 
+                                                     "total_epa", "net_success_rate", "net_epa_play"))
+
+lucky_data <- pbp22 %>% 
+  group_by(game_id,posteam_type) %>% 
+  summarize(total_epa_off = sum(epa,na.rm = T), off_plays = n(), homescore = max(home_score), hometeam = max(home_team),
+            awayscore = max(away_score), awayteam = max(away_team),off_total_success = sum(success,na.rm = T)) %>% 
+  mutate(winningteam = ifelse(homescore == awayscore, NA,ifelse(homescore>awayscore,hometeam,awayteam)),
+         losingteam = ifelse(homescore == awayscore, NA,ifelse(homescore>awayscore,awayteam,hometeam))) %>% 
+  filter(!is.na(posteam)) %>% 
+  left_join(pbp22 %>% 
+              group_by(game_id,defteam) %>% 
+              summarize(total_epa_def = sum(epa,na.rm = T)*-1, def_plays = n(), total_success = sum(success,na.rm = T)) %>%
+              mutate(def_total_success = def_plays-total_success) %>% 
+              filter(!is.na(defteam)), by = c("game_id", "posteam" = "defteam")) %>% 
+  mutate(total_epa = total_epa_off+total_epa_def,
+         all_total_success = def_total_success+off_total_success) %>% 
+  mutate(result = ifelse(is.na(winningteam), NA, ifelse(winningteam == posteam, "win","loss")))
