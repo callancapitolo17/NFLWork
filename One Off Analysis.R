@@ -909,6 +909,11 @@ test <- nfl99 %>%
   arrange(-`EPA/Play`)
 
 #Expected Wins----
+nfl99all <- load_pbp(1999:2024)
+nfl99 <- nfl99all %>%
+  filter(pass == 1 | rush == 1) %>%
+  mutate(explosive = ifelse((yards_gained>20 & pass_attempt == 1) | (yards_gained >12 & (qb_scramble == 1 | rush == 1)),1,0),
+         negative = ifelse(yards_gained < 0, 1,0))
 ftn_data <- nflreadr::load_ftn_charting(2022:2024) %>%
   select(-week, -season)
 participation <- load_participation(2022:2024) %>% 
@@ -919,9 +924,14 @@ pbp22 <- pbp22 %>%
                              "play_id" = "nflverse_play_id")) %>% 
   left_join(participation,by = c("game_id" = "nflverse_game_id",
                                  "play_id" = "play_id"))
+
 library(tidyr)
 recovery_rate <- mean(nfl99all$fumble_lost[nfl99all$fumble == 1],na.rm = T)
 interception_rate <- mean(pbp22$interception[pbp22$is_interception_worthy],na.rm = T)
+pa_rate <- nfl99all %>% mutate(extra_result = ifelse(extra_point_result == "good",1,0)) %>% 
+  filter(season > 2014) %>%
+  summarize(avg_conv = mean(extra_result[extra_point_attempt == 1],na.rm = T)) %>% 
+  pull(avg_conv)
 lucky_data <- pbp22 %>% 
   group_by(game_id,posteam) %>% 
   summarize(total_epa_off = sum(epa,na.rm = T), off_plays = n(), homescore = max(home_score), hometeam = max(home_team),
@@ -953,6 +963,8 @@ lucky_data <- pbp22 %>%
   pivot_wider(names_from = location, values_from = c("off_plays", "off_success_rate", "off_epa_play", 
                                                      "def_success_rate_allowed", "def_epa_play", 
                                                      "total_epa", "net_success_rate", "net_epa_play"))
+  
+
 
 lucky_data <- pbp22 %>% 
   group_by(game_id,posteam_type) %>% 

@@ -40,8 +40,8 @@ pbp_rp <- pbp %>%
         negative = ifelse(yards_gained < 0, 1,0))
 
 # nfl99all <- load_pbp(1999:2024)
-# nfl99 <- nfl99all %>% 
-#   filter(pass == 1 | rush == 1) %>% 
+# nfl99 <- nfl99all %>%
+#   filter(pass == 1 | rush == 1) %>%
 #   mutate(explosive = ifelse((yards_gained>20 & pass_attempt == 1) | (yards_gained >12 & (qb_scramble == 1 | rush == 1)),1,0),
 #          negative = ifelse(yards_gained < 0, 1,0))
 
