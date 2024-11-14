@@ -932,7 +932,7 @@ pa_rate <- nfl99all %>% mutate(extra_result = ifelse(extra_point_result == "good
   filter(season > 2014) %>%
   summarize(avg_conv = mean(extra_result[extra_point_attempt == 1],na.rm = T)) %>% 
   pull(avg_conv)
-lucky_data <- pbp22 %>% 
+lucky_data <- pbp22 %>% #add extra point totals, simulation vs model
   group_by(game_id,posteam) %>% 
   summarize(total_epa_off = sum(epa,na.rm = T), off_plays = n(), homescore = max(home_score), hometeam = max(home_team),
             awayscore = max(away_score), awayteam = max(away_team),off_total_success = sum(success,na.rm = T),
