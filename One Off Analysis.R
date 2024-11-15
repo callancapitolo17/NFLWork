@@ -908,6 +908,48 @@ test <- nfl99 %>%
   summarize(`EPA/Play` = mean(epa,na.rm = T), success_rate = mean(success,na.rm = T)) %>% 
   arrange(-`EPA/Play`)
 
+#Playground----  
+summarize(total_epa_off = sum(epa,na.rm = T), off_plays = n(), homescore = max(home_score), hometeam = max(home_team),
+          awayscore = max(away_score), awayteam = max(away_team),off_total_success = sum(success,na.rm = T),
+          off_success_rate = mean(success, na.rm = T), off_epa_play = mean(epa,na.rm = T), off_fumbles = sum(fumble,na.rm = T), 
+          off_fumbles_lost = sum(fumble_lost,na.rm =T), off_int = sum(interception,na.rm = T), off_int_worth = sum(is_interception_worthy,na.rm = T),
+          off_expected_fumbles = recovery_rate * off_fumbles, off_expected_ints = interception_rate*off_int_worth,
+          off_xp_made = sum(extra_result,na.rm = T), off_xp_attempts = sum(extra_point_attempt,na.rm = T), off_exp_xp = off_xp_attempts * pa_rate,
+          off_2p_att = sum(two_point_attempt), off_2p_conv = sum(two_point_conv_result,na.rm = T), off_exp_2p = off_2p_conv*two_point_rate,
+          off_fg_made = sum(field_goal_result,na.rm = T), off_fg_att = sum(field_goal_attempt,na.rm = T), off_fg_exp = sum(fg_prob[field_goal_attempt == 1],na.rm = T)) %>%
+  
+  
+  
+  lucky_data <- pbp22 %>% 
+  group_by(game_id,posteam_type) %>% 
+  summarize(total_epa_off = sum(epa,na.rm = T), off_plays = n(), homescore = max(home_score), hometeam = max(home_team),
+            awayscore = max(away_score), awayteam = max(away_team),off_total_success = sum(success,na.rm = T)) %>% 
+  mutate(winningteam = ifelse(homescore == awayscore, NA,ifelse(homescore>awayscore,hometeam,awayteam)),
+         losingteam = ifelse(homescore == awayscore, NA,ifelse(homescore>awayscore,awayteam,hometeam))) %>% 
+  filter(!is.na(posteam)) %>% 
+  left_join(pbp22 %>% 
+              group_by(game_id,defteam) %>% 
+              summarize(total_epa_def = sum(epa,na.rm = T)*-1, def_plays = n(), total_success = sum(success,na.rm = T)) %>%
+              mutate(def_total_success = def_plays-total_success) %>% 
+              filter(!is.na(defteam)), by = c("game_id", "posteam" = "defteam")) %>% 
+  mutate(total_epa = total_epa_off+total_epa_def,
+         all_total_success = def_total_success+off_total_success) %>% 
+  mutate(result = ifelse(is.na(winningteam), NA, ifelse(winningteam == posteam, "win","loss")))
+
+avg_epa_int <- mean(nfl99$epa[nfl99$interception==1],na.rm = T)
+avg_epa_fumble <- mean(nfl99$epa[nfl99$fumble_lost==1],na.rm = T)
+
+tests <- pbp_rp %>% 
+  filter(!is.na(air_yards)) %>% 
+  mutate(unlucky_epa = ifelse(is_interception_worthy == FALSE & interception == 1,xyac_epa+air_epa-epa,
+                              ifelse(is_interception_worthy == TRUE & interception == 0,avg_epa_int - epa,
+                                     ifelse(fumble_lost == 0 & fumble == 1,avg_epa_fumble-epa,NA)))) %>% 
+  select(desc,fumble,fumble_lost, epa, yac_epa,air_epa, xyac_epa,unlucky_epa)
+table(pbp$extra_point_result)
+
+median(pbp$epa[pbp$extra_point_result != "good"],na.rm = T)
+
+
 #Expected Wins----
 nfl99all <- load_pbp(1999:2024)
 nfl99 <- nfl99all %>%
@@ -932,23 +974,39 @@ pa_rate <- nfl99all %>% mutate(extra_result = ifelse(extra_point_result == "good
   filter(season > 2014) %>%
   summarize(avg_conv = mean(extra_result[extra_point_attempt == 1],na.rm = T)) %>% 
   pull(avg_conv)
+two_point_rate <- nfl99all %>% 
+  mutate(two_point_conv_result = ifelse(two_point_conv_result == "success",1,0)) %>% 
+  summarize(avg_conv = mean(two_point_conv_result[two_point_attempt == 1],na.rm = T)) %>% 
+  pull(avg_conv)
 lucky_data <- pbp22 %>% #add extra point totals, simulation vs model
+  mutate(extra_result = ifelse(extra_point_result == "good",1,0)) %>% 
+  mutate(two_point_conv_result = ifelse(two_point_conv_result == "success",1,0)) %>%
+  mutate(field_goal_result = ifelse(field_goal_result == "made",1,0)) %>% 
   group_by(game_id,posteam) %>% 
   summarize(total_epa_off = sum(epa,na.rm = T), off_plays = n(), homescore = max(home_score), hometeam = max(home_team),
             awayscore = max(away_score), awayteam = max(away_team),off_total_success = sum(success,na.rm = T),
-            off_success_rate = mean(success, na.rm = T), off_epa_play = mean(epa,na.rm = T), off_fumbles = sum(fumble,na.rm = T), 
-            off_fumbles_lost = sum(fumble_lost,na.rm =T), off_int = sum(interception,na.rm = T), off_int_worth = sum(is_interception_worthy,na.rm = T),
-            off_expected_fumbles = recovery_rate * off_fumbles) %>% 
+            off_success_rate = mean(success, na.rm = T), off_epa_play = mean(epa,na.rm = T),
+            off_expected_ints_oe = sum(interception,na.rm = T)-(interception_rate* sum(is_interception_worthy,na.rm = T)),
+            off_expected_fumbles_oe = sum(fumble_lost,na.rm =T)-(recovery_rate * sum(fumble,na.rm = T)),
+            off_xp_oe = sum(extra_result,na.rm = T) - sum(extra_point_attempt,na.rm = T) * pa_rate,
+            off_2p_oe = sum(two_point_conv_result,na.rm = T) - sum(two_point_attempt,na.rm = T)*two_point_rate,
+            off_fg_oe = sum(field_goal_result,na.rm = T) -  sum(fg_prob[field_goal_attempt == 1],na.rm = T)) %>%
   filter(!is.na(posteam)) %>% 
   mutate(location = ifelse(hometeam==posteam, "hometeam", "awayteam"), home_team_win = ifelse(homescore>awayscore,1,0)) %>% 
   # mutate(winningteam = ifelse(homescore == awayscore, NA,ifelse(homescore>awayscore,hometeam,awayteam)),
   #        losingteam = ifelse(homescore == awayscore, NA,ifelse(homescore>awayscore,awayteam,hometeam))) %>% 
   left_join(pbp22 %>% 
+              mutate(extra_result = ifelse(extra_point_result == "good",1,0)) %>% 
+              mutate(two_point_conv_result = ifelse(two_point_conv_result == "success",1,0)) %>%
+              mutate(field_goal_result = ifelse(field_goal_result == "made",1,0)) %>% 
               group_by(game_id,defteam) %>% 
               summarize(total_epa_def = sum(epa,na.rm = T)*-1, def_plays = n(), off_def_success = sum(success,na.rm = T), 
                         def_success_rate_allowed = mean(success,na.rm = T), def_epa_play = mean(epa,na.rm = T),
-                        def_fumbles = sum(fumble,na.rm = T), 
-                        def_fumbles_lost = sum(fumble_lost,na.rm =T), def_int = sum(interception,na.rm = T), def_int_worth = sum(is_interception_worthy,na.rm = T)) %>%
+                        def_expected_ints_oe = sum(interception,na.rm = T)-(interception_rate* sum(is_interception_worthy,na.rm = T)),
+                        def_expected_fumbles_oe = sum(fumble_lost,na.rm =T)-(recovery_rate * sum(fumble,na.rm = T)),
+                        def_xp_oe = sum(extra_result,na.rm = T) - sum(extra_point_attempt,na.rm = T) * pa_rate,
+                        def_2p_oe = sum(two_point_conv_result,na.rm = T) - sum(two_point_attempt,na.rm = T)*two_point_rate,
+                        def_fg_oe = sum(field_goal_result,na.rm = T) -  sum(fg_prob[field_goal_attempt == 1],na.rm = T)) %>%
               mutate(def_total_success = def_plays-off_def_success) %>% 
               filter(!is.na(defteam)), by = c("game_id", "posteam" = "defteam")) %>% 
   mutate(total_epa = total_epa_off+total_epa_def,
@@ -960,24 +1018,73 @@ lucky_data <- pbp22 %>% #add extra point totals, simulation vs model
          -off_def_success, -total_epa_off, -total_epa_def, -location)
   # mutate(result = ifelse(is.na(winningteam), NA, ifelse(winningteam == posteam, "win","loss")))
   # select(game_id, winningteam,losingteam,total_epa,result,all_total_success) %>% 
-  pivot_wider(names_from = location, values_from = c("off_plays", "off_success_rate", "off_epa_play", 
-                                                     "def_success_rate_allowed", "def_epa_play", 
-                                                     "total_epa", "net_success_rate", "net_epa_play"))
+  # pivot_wider(names_from = location, values_from = c("off_plays", "off_success_rate", "off_epa_play", 
+  #                                                    "def_success_rate_allowed", "def_epa_play", 
+  #                                                    "total_epa", "net_success_rate", "net_epa_play"))
+
+# Load necessary libraries
+library(caret)
+library(glmnet)
+library(dplyr)
+
+# Prepare the data: ensure no NA values and set predictors and response
+lucky_data <- lucky_data %>%
+  filter(!is.na(home_team_win)) # Ensure no missing values in the response variable
+
+# Define predictor variables and the response
+predictors <- lucky_data %>% select(total_epa, net_success_rate, net_epa_play, off_plays, off_success_rate,
+                                    off_epa_play, off_expected_ints_oe, off_expected_fumbles_oe, off_xp_oe,
+                                    off_2p_oe, off_fg_oe, def_plays, def_success_rate_allowed, def_epa_play,
+                                    def_expected_ints_oe, def_expected_fumbles_oe, def_xp_oe, def_2p_oe, def_fg_oe)
+response <- lucky_data$home_team_win
+
+# Convert predictors to matrix format as required by glmnet
+X <- as.matrix(predictors)
+y <- factor(response, levels = c(0, 1), labels = c("loss", "win"))
+# Set up cross-validation with the caret package
+set.seed(123)  # for reproducibility
+train_control <- trainControl(
+  method = "cv",         # Use cross-validation
+  number = 10,           # 10-fold cross-validation
+  summaryFunction = twoClassSummary,  # For AUC metric
+  classProbs = TRUE,     # Needed for AUC
+  savePredictions = "final"
+)
+
+# Set up a tuning grid for regularization parameters
+tune_grid <- expand.grid(
+  alpha = c(0, 0.5, 1),   # Elastic net mixing parameter: 0 = Ridge, 1 = Lasso
+  lambda = 10^seq(-4, 1, length = 10)  # Regularization parameter
+)
+
+# Fit the logistic regression model with cross-validation and parameter tuning
+model <- train(
+  X, y,
+  method = "glmnet",
+  trControl = train_control,
+  tuneGrid = tune_grid,
+  metric = "ROC"  # Use Area Under the ROC Curve to select best model
+)
+
+# Print best tuning parameters and model summary
+print(model$bestTune)
+print(model)
+
+# Make predictions on the training data
+lucky_data$predicted_home_win_prob <- predict(model, X, type = "prob")[, "win"]  # Probabilities for "1"
+# lucky_data$predicted_home_win <- ifelse(lucky_data$predicted_home_win_prob > 0.5, 1, 0)
+
+# Evaluate the model’s performance
+conf_matrix <- confusionMatrix(factor(lucky_data$predicted_home_win), factor(y))
+print(conf_matrix)
+
+# Extract and print overall model metrics
+cat("Accuracy:", conf_matrix$overall["Accuracy"], "\n")
+cat("AUC:", max(model$results$ROC), "\n")
+
+variable_importance <- varImp(model, scale = FALSE)
+
+# Print the variable importance
+print(variable_importance)
+
   
-
-
-lucky_data <- pbp22 %>% 
-  group_by(game_id,posteam_type) %>% 
-  summarize(total_epa_off = sum(epa,na.rm = T), off_plays = n(), homescore = max(home_score), hometeam = max(home_team),
-            awayscore = max(away_score), awayteam = max(away_team),off_total_success = sum(success,na.rm = T)) %>% 
-  mutate(winningteam = ifelse(homescore == awayscore, NA,ifelse(homescore>awayscore,hometeam,awayteam)),
-         losingteam = ifelse(homescore == awayscore, NA,ifelse(homescore>awayscore,awayteam,hometeam))) %>% 
-  filter(!is.na(posteam)) %>% 
-  left_join(pbp22 %>% 
-              group_by(game_id,defteam) %>% 
-              summarize(total_epa_def = sum(epa,na.rm = T)*-1, def_plays = n(), total_success = sum(success,na.rm = T)) %>%
-              mutate(def_total_success = def_plays-total_success) %>% 
-              filter(!is.na(defteam)), by = c("game_id", "posteam" = "defteam")) %>% 
-  mutate(total_epa = total_epa_off+total_epa_def,
-         all_total_success = def_total_success+off_total_success) %>% 
-  mutate(result = ifelse(is.na(winningteam), NA, ifelse(winningteam == posteam, "win","loss")))

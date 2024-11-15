@@ -1137,16 +1137,31 @@ lucky_data %>%
 ggsave("Lucky.png", width = 14, height =10, dpi = "retina")
   
   
-
-# gt() %>% 
-#   gt_nfl_wordmarks(columns = c(" ")) %>% 
-#   cols_align(align = "center") %>% 
-#   # gt_hulk_col_numeric(columns = c("Net Lucky Wins By Success Rate", "Net Lucky Wins By EPA")) %>% 
-#   gt_hulk_col_numeric(columns = -" ") %>% 
-#   gt_theme_538() %>% 
-#   tab_header(
-#     title = md("Which Teams Have Been Luckiest this Season?"),
-#     subtitle = md("Unlucky/Lucky Win = Losing Team Outperformed Winning Team in Metric")
-#   ) %>% 
-#   tab_footnote(footnote = md("@CapAnalytics7|nflfastrR"))
+pbp %>% 
+  mutate(extra_result = ifelse(extra_point_result == "good",1,0)) %>% 
+  mutate(two_point_conv_result = ifelse(two_point_conv_result == "success",1,0)) %>%
+  mutate(field_goal_result = ifelse(field_goal_result == "made",1,0)) %>% 
+  group_by(posteam) %>% 
+  filter(!is.na(posteam)) %>% 
+  summarize(
+    `Int Over Expected` = sum(interception,na.rm = T)-(interception_rate* sum(is_interception_worthy,na.rm = T)),
+    `Fumbles Over Expected` = sum(fumble_lost,na.rm =T)-(recovery_rate * sum(fumble,na.rm = T)),
+    `Extra Points Over Expected` = sum(extra_result,na.rm = T) - sum(extra_point_attempt,na.rm = T) * pa_rate,
+    `Two Point Conversions Over Expected` = sum(two_point_conv_result,na.rm = T) - sum(two_point_attempt,na.rm = T)*two_point_rate,
+    `FGs Over Expected` = sum(field_goal_result,na.rm = T) -  sum(fg_prob[field_goal_attempt == 1],na.rm = T)) %>%
+  mutate_if(is.numeric, ~round(.,2)) %>% 
+gt() %>%
+  gt_nfl_wordmarks(columns = c(posteam)) %>%
+  cols_align(align = "center") %>%
+  gt_hulk_col_numeric(columns = -posteam) %>%
+  tab_header(
+    title = md("Which Offenses Have Been Luckiest this Season?"),
+    subtitle = md("")
+  ) %>%
+  tab_footnote(footnote = md("@CapAnalytics7|nflfastrR")) %>% 
+  gt_theme_538() %>%   
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_title()
+  )
 # gtsave(lucky_tab, "lucky_table.png")
