@@ -1357,7 +1357,7 @@ variable_importance <- varImp(model, scale = FALSE)
 print(variable_importance)
 
 
-test <- lucky_data_24 %>% mutate(away_win_prob = 1 - predicted_home_win_prob) %>% 
+x_wins <- lucky_data_24 %>% mutate(away_win_prob = 1 - predicted_home_win_prob) %>% 
   left_join(pbp22 %>%
               filter(season == 2024) %>% 
               group_by(game_id) %>% 
@@ -1365,23 +1365,36 @@ test <- lucky_data_24 %>% mutate(away_win_prob = 1 - predicted_home_win_prob) %>
                         awayscore = max(away_score), awayteam = max(away_team),
                         season = max(season), week = max(week)),
             by = c("game_id")) %>% 
-  select(hometeam,awayteam, predicted_home_win_prob, away_win_prob) %>% 
+  select(hometeam,awayteam, predicted_home_win_prob, away_win_prob,homescore,awayscore) %>% 
   pivot_longer(
     cols = c(hometeam, awayteam),
     names_to = "team_type",
     values_to = "team"
   ) %>% 
   mutate(
-    win_prob = ifelse(team_type == "hometeam", predicted_home_win_prob, away_win_prob)
+    win_prob = ifelse(team_type == "hometeam", predicted_home_win_prob, away_win_prob),
+    win = ifelse((team_type == "awayteam" & awayscore>homescore )|(team_type == "hometeam" & awayscore<homescore ) ,1,0)
   ) %>% 
   group_by(team) %>% 
-  summarize(total_win = round(sum(win_prob),3))
-check_tab <- test %>% 
-  arrange(-total_win) %>% 
+  summarize(exp_total_win = round(sum(win_prob),2),total_wins = sum(win)) %>% 
+  mutate(wins_oe = total_wins-exp_total_win)
+xw_tab <- x_wins %>% 
+  arrange(-exp_total_win) %>% 
   gt() %>% 
   cols_align(align = "center") %>% 
   cols_label(team = "",
-             total_win = "Expected Wins" ) %>%
+             exp_total_win = "Expected Wins",
+             total_wins = "Total Wins",
+             wins_oe = "Wins Over Expectation") %>%
   gtExtras::gt_theme_538() %>% 
-  gt_nfl_wordmarks(columns = "team") 
-gtsave(check_tab, "XW.png")
+  gt_nfl_wordmarks(columns = "team") %>% 
+  gt_hulk_col_numeric(columns = wins_oe) %>% 
+  tab_header(
+    title = md("How Lucky Are We?"),
+    subtitle = md("Expected Wins vs Actual Wins; Green Represents Overperformance, Purple Represents Underperformance")
+  ) %>% 
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_title()
+  )
+gtsave(xw_tab, "XW.png")
