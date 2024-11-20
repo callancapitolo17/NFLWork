@@ -92,17 +92,17 @@ ggsave("EffLandscape.png", width = 14, height =10, dpi = "retina")
 
 #EPA vs Success----
 pbp_rp %>% 
-  group_by(posteam) %>%
-  # group_by(defteam) %>%
+  # group_by(posteam) %>%
+  group_by(defteam) %>%
   summarize(success_rate = mean(success,na.rm = T), epa_play = mean(epa,na.rm = T)) %>% 
   ggplot(aes(x = success_rate, y = epa_play )) +
-  geom_nfl_logos(aes(team_abbr = posteam), width = 0.045, alpha = 0.95)+
-  # geom_nfl_logos(aes(team_abbr = defteam), width = 0.045)+
-  labs(x = "Success Rate", y = "EPA/Play", title = "Offensive Success Rate vs EPA/Play",caption = "@CapAnalytics7 | nflfastR",
-       subtitle = "Teams above line benefit from high impact plays; teams below line lack high impact plays")+
-  # labs(x = "Success Rate Allowed", y = "EPA/Play",subtitle = "Teams above line benefit from high impact plays; teams below line lack high impact plays", title = "Defensive Success Rate vs EPA/Play",caption = "@CapAnalytics7 | nflfastR")+
-  # scale_x_reverse()+
-  # scale_y_reverse()+
+  # geom_nfl_logos(aes(team_abbr = posteam), width = 0.045, alpha = 0.95)+
+  geom_nfl_logos(aes(team_abbr = defteam), width = 0.045)+
+  # labs(x = "Success Rate", y = "EPA/Play", title = "Offensive Success Rate vs EPA/Play",caption = "@CapAnalytics7 | nflfastR",
+       # subtitle = "Teams above line benefit from high impact plays; teams below line lack high impact plays")+
+  labs(x = "Success Rate Allowed", y = "EPA/Play",subtitle = "Teams above line benefit from high impact plays; teams below line lack high impact plays", title = "Defensive Success Rate vs EPA/Play",caption = "@CapAnalytics7 | nflfastR")+
+  scale_x_reverse()+
+  scale_y_reverse()+
   theme(legend.position = "top",
           legend.direction = "horizontal",
           legend.background = element_rect(fill = "white", color="white"),
@@ -123,14 +123,14 @@ ggsave("SuccessLandscape.png", width = 14, height =10, dpi = "retina")
 #Side of Ball Breakdown----
 pbp_rp %>% 
   filter(season == year) %>% 
-  group_by(posteam) %>%
-  # group_by(defteam) %>%
+  # group_by(posteam) %>%
+  group_by(defteam) %>%
   summarize(epa_db = mean(epa[pass == 1],na.rm = T), epa_rush = mean(epa[rush == 1], na.rm = T)) %>% 
   ggplot(aes(x = epa_rush, y = epa_db))+
-  geom_nfl_logos(aes(team_abbr = posteam), width = 0.045, alpha = 0.95)+
-  # geom_nfl_logos(aes(team_abbr = defteam), width = 0.045, alpha = 0.955)+
-  # scale_x_reverse()+
-  # scale_y_reverse()+
+  # geom_nfl_logos(aes(team_abbr = posteam), width = 0.045, alpha = 0.95)+
+  geom_nfl_logos(aes(team_abbr = defteam), width = 0.045, alpha = 0.955)+
+  scale_x_reverse()+
+  scale_y_reverse()+
   theme(legend.position = "none",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -146,8 +146,8 @@ pbp_rp %>%
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))+
-  # labs(x = "EPA/Rush", y = "EPA/Dropback", title = "Defensive Efficiency Landscape",subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")+
-  labs(x = "EPA/Rush", y = "EPA/Dropback", title = "Offensive Efficiency Landscape",subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")+
+  labs(x = "EPA/Rush", y = "EPA/Dropback", title = "Defensive Efficiency Landscape",subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")+
+  # labs(x = "EPA/Rush", y = "EPA/Dropback", title = "Offensive Efficiency Landscape",subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")+
   geom_hline(yintercept = mean(pbp_rp$epa[pbp_rp$season == 2024 & pbp_rp$pass == 1],na.rm = T), linetype = "dashed",color = "white")+
   geom_vline(xintercept = mean(pbp_rp$epa[pbp_rp$season == 2024 & pbp_rp$rush == 1],na.rm = T), linetype = "dashed",color = "white")
 ggsave("DefOffBreakdown.png", width = 14, height =10, dpi = "retina")
@@ -164,7 +164,7 @@ pbp_rp %>%
     qb_scramble == 1 ~ "QB Scramble",
     sack == 1 ~ "Sack",
     air_yards <= 0 ~ "At/Behind LOS Pass",
-    air_yards > 0 & air_yards <= 10 ~ "0-10 Air Yard Pass",
+    air_yards > 0 & air_yards <= 10 ~ "1-10 Air Yard Pass",
     air_yards > 10 & air_yards <= 20 ~ "10-20 Air Yard Pass",
     air_yards > 20 ~ "20+ Air Yard Pass",
     TRUE ~ "Other"  # This acts as the catch-all for anything not matched
