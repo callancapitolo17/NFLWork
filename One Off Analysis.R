@@ -1239,7 +1239,7 @@ lucky_data_all_3 <- pbp22 %>% #look to incorporate epa with luck elements?
   mutate(extra_result = ifelse(extra_point_result == "good",1,0)) %>% 
   mutate(two_point_conv_result = ifelse(two_point_conv_result == "success",1,0)) %>%
   mutate(field_goal_result = ifelse(field_goal_result == "made",1,0)) %>%
-  mutate(epa_noiseless = ifelse(fumble == 1 | (interception == 1 & is_interception_worthy == 0), NA, epa)) %>% 
+  mutate(epa_noiseless = ifelse(fumble == 1 | (interception == 1 & is_interception_worthy == 0) | field_goal_result != "made", NA, epa)) %>% #maybe not NA, predict wp?
   group_by(game_id,posteam) %>% 
   summarize(total_epa_off = sum(epa,na.rm = T), off_plays = n(), homescore = max(home_score), hometeam = max(home_team),
             awayscore = max(away_score), awayteam = max(away_team),off_total_success = sum(success,na.rm = T),
@@ -1398,3 +1398,4 @@ xw_tab <- x_wins %>%
     locations = cells_title()
   )
 gtsave(xw_tab, "XW.png")
+t <- lucky_data_24 %>% select(game_id, predicted_home_win_prob)
