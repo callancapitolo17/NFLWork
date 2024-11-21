@@ -777,6 +777,45 @@ yac_passing %>%
   geom_mean_lines(aes(x0 = yac_pct, y0 = epa_pass),color = "white", linetype = "dashed")
 ggsave("YAC.png", width = 14, height =10, dpi = "retina")
 
+#Special Teams----
+pbp %>% 
+  filter(play_type %in% c("kickoff", "extra_point", "field_goal", "punt")) %>% 
+  group_by(posteam) %>% 
+  summarize(off_epa_play = mean(epa,na.rm = T), off_plays = n()) %>% 
+  left_join(pbp %>% 
+              group_by(defteam) %>% 
+              filter(play_type %in% c("kickoff", "extra_point", "field_goal", "punt")) %>% 
+              summarize(epa_def = mean(epa,na.rm = T), def_plays = n()),
+              by = c("posteam" = "defteam")) %>% 
+  mutate(net_epa_play = round((epa_def*-1+off_epa_play)/(def_plays+off_plays),5)) %>% 
+  ggplot(aes(x = net_epa_play, y = reorder(posteam,net_epa_play))) +
+    geom_col(aes(color = posteam, fill = posteam))+
+    labs(y = "", x = "Special Teams EPA/Play", title = "Special Tea", subtitle = "Sections represent different components of an offense's EPA/Play",caption = "@CapAnalytics7 | nflfastR")+
+    theme(legend.position = "top",
+          legend.direction = "horizontal",
+          legend.background = element_rect(fill = "white", color="white"),
+          legend.title = element_blank(),
+          legend.text = element_text(colour = "black", face = "bold"),
+          plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+          plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+          plot.caption = element_text(colour = "white", size = 10),
+          panel.grid = element_blank(),
+          plot.background = element_rect(fill = "black", color="black"),
+          panel.background = element_rect(fill = "black", color="black"),
+          axis.ticks = element_line(color = "white"),
+          axis.text = element_text(face = "bold", colour = "white",size = 12),
+          axis.title = element_text(color = "white", size = 14),
+          panel.border = element_rect(colour = "white", fill = NA, size = 1),
+          axis.title.y = element_blank(),
+          axis.text.y = element_nfl_logo(size = 0.9)
+    )+
+  scale_color_nfl(type = "secondary") +
+  scale_fill_nfl()+
+  scale_x_continuous(labels = scales::label_number())
+ggsave("SpecialTeams.png", width = 14, height =10, dpi = "retina")
+
+
+
 #Time to throw vs aDoT----
 pbp_rp %>% 
   filter(season == year) %>% 
@@ -977,9 +1016,9 @@ schedule_strength %>%
         panel.border = element_rect(colour = "white", fill = NA, size = 1),
         panel.grid = element_blank())+
   labs(y = "Offenses Played Strength", x = "Defenses Played Strength", title = "How Hard is a Team's Schedule So Far?", caption = "@CapAnalytics7 | nflfastR", subtitle = "Dotted Lines Represent League Average")+
-  annotate("text",label = "Played Good Offenses\nPlayed Bad Defenses", y = quantile(schedule_strength$past_off_rank,0.99), x = quantile(schedule_strength$past_def_rank,0.95),color = "white")+
+  annotate("text",label = "Played Good Offenses\nPlayed Bad Defenses", y = quantile(schedule_strength$past_off_rank,0.98), x = quantile(schedule_strength$past_def_rank,0.95),color = "white")+
   annotate("text",label = "Played Bad Offenses\nPlayed Bad Defenses", y = quantile(schedule_strength$past_off_rank,0.02), x = quantile(schedule_strength$past_def_rank,0.95),color = "white")+
-  annotate("text",label = "Played Good Offenses\nPlayed Good Defenses", y = quantile(schedule_strength$past_off_rank,0.99), x = quantile(schedule_strength$past_def_rank,0.05),color = "white")+
+  annotate("text",label = "Played Good Offenses\nPlayed Good Defenses", y = quantile(schedule_strength$past_off_rank,0.98), x = quantile(schedule_strength$past_def_rank,0.05),color = "white")+
   annotate("text",label = "Played Bad Offenses\nPlayed Good Defenses", y = quantile(schedule_strength$past_off_rank,0.02), x = quantile(schedule_strength$past_def_rank,0.03),color = "white")
 ggsave("SOS.png", width = 14, height =10, dpi = "retina")
 
@@ -992,7 +1031,7 @@ upcoming_sos <- sched24 %>%
   left_join(sched24, by = c("game_id")) %>% 
   mutate(opponent = ifelse(home_team == group_team, away_team, home_team)) %>%
   select(game_id, group_team, opponent,home_team,away_team) %>% 
-  left_join(strength_teams, by = c("opponent" = "team")) %>% 
+  left_join(strength_efficiency, by = c("opponent" = "posteam")) %>% 
   group_by(group_team) %>% 
   summarize(up_off_rank = mean(offensive_epa), up_def_rank = mean(defensive_epa))
 
@@ -1001,7 +1040,7 @@ upcoming_sos %>%
   geom_nfl_logos(aes(team_abbr = group_team),width = 0.045, alpha = 0.95) +
   geom_mean_lines(aes(x0 = up_def_rank, y0 = up_off_rank), color = "white", linetype = "dotted")+
   scale_x_reverse()+
-  scale_y_reverse()+
+  # scale_y_reverse()+
   theme(legend.position = "top",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -1018,10 +1057,10 @@ upcoming_sos %>%
         panel.border = element_rect(colour = "white", fill = NA, size = 1),
         panel.grid = element_blank())+
   labs(y = "Upcoming Offensive Strength", x = "Upcoming Defensive Strength", title = "How Difficult is a Team's Upcoming Schedule?", caption = "@CapAnalytics7 | nflfastR", subtitle = "Dotted Lines Represent League Average")+
-  annotate("text",label = "Upcoming Good Offense\nUpcoming Bad Defenses", y = quantile(upcoming_sos$up_off_rank,0.02), x = quantile(upcoming_sos$up_def_rank,0.98),color = "white")+
-  annotate("text",label = "Upcoming Bad Offenses\nUpcoming Bad Defenses", y = quantile(upcoming_sos$up_off_rank,0.97), x = quantile(upcoming_sos$up_def_rank,0.98),color = "white")+
-  annotate("text",label = "Upcoming Good Offenses\nUpcoming Good Defenses", y = quantile(upcoming_sos$up_off_rank,0.02), x = quantile(upcoming_sos$up_def_rank,0.02),color = "white")+
-  annotate("text",label = "Upcoming Bad Offenses\nUpcoming Good Defenses", y = quantile(upcoming_sos$up_off_rank,0.97), x = quantile(upcoming_sos$up_def_rank,0.02),color = "white")
+  annotate("text",label = "Upcoming Bad Offenses\nUpcoming Bad Defenses", y = quantile(upcoming_sos$up_off_rank,0.05), x = quantile(upcoming_sos$up_def_rank,0.92),color = "white")+
+  annotate("text",label = "Upcoming Good Offenses\nUpcoming Bad Defenses", y = quantile(upcoming_sos$up_off_rank,0.95), x = quantile(upcoming_sos$up_def_rank,0.92),color = "white")+
+  annotate("text",label = "Upcoming Good Offenses\nUpcoming Good Defenses", y = quantile(upcoming_sos$up_off_rank,0.05), x = quantile(upcoming_sos$up_def_rank,0.08),color = "white")+
+  annotate("text",label = "Upcoming Bad Offenses\nUpcoming Good Defenses", y = quantile(upcoming_sos$up_off_rank,0.95), x = quantile(upcoming_sos$up_def_rank,0.08),color = "white")
 ggsave("UpcomingSOS.png", width = 14, height =10, dpi = "retina")
 
 #SOS Difference----
@@ -1033,7 +1072,7 @@ sos_diff %>%
   geom_nfl_logos(aes(team_abbr = group_team),width = 0.045, alpha = 0.95) +
   geom_mean_lines(aes(x0 = schedule_diff_def, y0 = schedule_diff_off), color = "white", linetype = "dotted")+
   scale_x_reverse()+
-  scale_y_reverse()+
+  # scale_y_reverse()+
   theme(legend.position = "top",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -1049,11 +1088,11 @@ sos_diff %>%
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1),
         panel.grid = element_blank())+
-  labs(y = "Difference in Strength Between Upcoming vs Played Offenses", x = "Difference in Strength Between Upcoming vs Played Offenses", title = "Which Teams See the Biggest Shift in Schedule Difficulty?", caption = "@CapAnalytics7 | nflfastR", subtitle = "Dotted Lines Represent League Average")+
-  annotate("text",label = "Better Offenses\nWorse Defenses", y = quantile(sos_diff$schedule_diff_off,0.02), x = quantile(sos_diff$schedule_diff_def,0.98),color = "white")+
-  annotate("text",label = "Worse Offenses\nWorse Defenses", y = quantile(sos_diff$schedule_diff_off,0.97), x = quantile(sos_diff$schedule_diff_def,0.98),color = "white")+
-  annotate("text",label = "Better Offenses\nBetter Defenses", y = quantile(sos_diff$schedule_diff_off,0.02), x = quantile(sos_diff$schedule_diff_def,0.02),color = "white")+
-  annotate("text",label = "Worse Offenses\nBetter Defenses", y = quantile(sos_diff$schedule_diff_off,0.97), x = quantile(sos_diff$schedule_diff_def,0.02),color = "white")
+  labs(y = "Difference in Strength Between Upcoming vs Played Offenses", x = "Difference in Strength Between Upcoming vs Played Defenses", title = "Which Teams See the Biggest Shift in Schedule Difficulty?", caption = "@CapAnalytics7 | nflfastR", subtitle = "Dotted Lines Represent League Average")+
+  annotate("text",label = "Worse Offenses\nWorse Defenses", y = quantile(sos_diff$schedule_diff_off,0.02), x = quantile(sos_diff$schedule_diff_def,0.98),color = "white")+
+  annotate("text",label = "Better Offenses\nWorse Defenses", y = quantile(sos_diff$schedule_diff_off,0.97), x = quantile(sos_diff$schedule_diff_def,0.98),color = "white")+
+  annotate("text",label = "Worse Offenses\nBetter Defenses", y = quantile(sos_diff$schedule_diff_off,0.02), x = quantile(sos_diff$schedule_diff_def,0.02),color = "white")+
+  annotate("text",label = "Better Offenses\nBetter Defenses", y = quantile(sos_diff$schedule_diff_off,0.97), x = quantile(sos_diff$schedule_diff_def,0.02),color = "white")
 ggsave("DiffSOS.png", width = 14, height =10, dpi = "retina")
 
 
