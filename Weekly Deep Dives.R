@@ -738,7 +738,7 @@ yac_passing <- pbp_rp %>%
   filter(season == year) %>%
   group_by(passer_player_id,passer_player_name,posteam) %>% 
   summarise(count = n(), total_passing_yards = sum(yards_gained, na.rm =T), yac = sum(yards_after_catch, na.rm = T), epa_pass = mean(epa),
-            adot = mean(air_yards,na.rm =T)) %>% 
+            adot = mean(air_yards,na.rm =T), YAC_Over_Expected_Catch = mean(yards_after_catch-xyac_mean_yardage,na.rm = T)) %>% 
   mutate(yac_pct = yac/total_passing_yards) %>% 
   filter(count >= 50 & !is.na(passer_player_id))
 
@@ -746,9 +746,9 @@ yac_passing <- yac_passing %>%
   left_join(teams_colors_logos ,by = c("posteam" = "team_abbr"))
 
 yac_passing %>% 
-  ggplot(aes(x=yac_pct, y = epa_pass))+
+  ggplot(aes(x=yac_pct, y = YAC_Over_Expected_Catch))+
   geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
-  labs(x = "% of Passing Yards from YAC", y = "EPA/Dropback", title = "EPA Per Pass Attempt vs % of Passing Yards from YAC", subtitle = "Minimum 50 Pass Attempts",
+  labs(x = "% of Passing Yards from YAC", y = "YAC Over Expected Per Catch", title = "Which QBs Benefit the Most From YAC?", subtitle = "Minimum 50 Pass Attempts",
        caption = "Callan Capitolo | @CapAnalytics7 | nflfastR")+
   # geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") +
   geom_text_repel(
@@ -843,6 +843,7 @@ weight_epa %>%
         panel.border = element_rect(colour = "white", fill = NA, size = 1))+
   geom_point(aes(x = def_nw_epa, y = off_nw_epa), color = "white",fill = "blue", shape = 1, size = 8)+
   scale_color_nfl(type = "primary")+
+  geom_mean_lines(aes(x0 = def_nw_epa, y0 = off_nw_epa),color = "white", linetype = "dashed")+
   geom_segment(aes(x = def_nw_epa, y = off_nw_epa, 
                    xend = defensive_epa, yend = offensive_epa), 
                color = "lightgrey", alpha = 0.8, lwd =1.5)# Add points for regular EPA
