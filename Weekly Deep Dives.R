@@ -843,6 +843,39 @@ pbp_rp %>%
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))
 #Middle 8 ----
+pbp_rp %>% 
+  filter(half_seconds_remaining <=240) %>% 
+  group_by(posteam) %>% 
+  summarize(offensive_epa = mean(epa,na.rm = T)) %>% 
+  left_join(pbp_rp %>% 
+              filter(half_seconds_remaining <=240) %>% 
+              group_by(defteam) %>% 
+              summarize(defensive_epa = mean(epa,na.rm = T)), by = c("posteam" = "defteam")) %>% 
+  ggplot(aes(x = defensive_epa, y = offensive_epa)) +
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.05, alpha = 0.95)+
+  scale_x_reverse()+
+  labs(x = "Defensive EPA/Play", y = "Offensive EPA/Play", title = "Middle 8 Efficiency Landscape",
+       subtitle = "Dotted Lines Represent League Average",
+       caption = "@CapAnalytics7 | nflfastR")+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+        plot.caption = element_text(colour = "white", size = 8),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1))+
+  geom_mean_lines(aes(x0 = defensive_epa, y0 = offensive_epa), color = "white")
+  
+  
+
 
 #Decay Efficiency Landscape----
 decay_rate <- 0.95
@@ -1205,3 +1238,55 @@ gt() %>%
     locations = cells_title()
   )
 # gtsave(lucky_tab, "lucky_table.png")
+
+#Interception----
+pbp_rp %>% 
+  filter(!is.na(air_yards)) %>% 
+  group_by(id,posteam) %>% 
+  summarize(name = first(name), int = mean(interception,na.rm = T), int_worthy = mean(is_interception_worthy,na.rm = T), count = n()) %>%
+  filter(count>50) %>% 
+  ggplot(aes(x = int, y = int_worthy))+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.025, alpha = 0.8)+
+  geom_text_repel(
+    aes(label = name),
+    box.padding = 0.05,  # adjust this value for padding around the labels
+    point.padding = 0.1,  # adjust this value for padding around the points
+    segment.color = "grey",
+    segment.size = 0.2,
+    color = "white"
+  )+
+  labs(x = "Interception Rate",
+       y = "Interception Worthy Throw Rate", title = "Interception Worthy Throws vs Interception Rate",
+       caption = "@CapAnalytics7 | nflfastR", subtitle = "Minimum 50 Attempts")+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 10),
+        plot.caption = element_text(colour = "white", size = 10),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1),
+        panel.grid = element_blank())+
+  geom_mean_lines(aes(x0 = int, y0 = int_worthy), color = "white")
+  
+#Rolling EPA
+library(zoo)
+test <- pbp_rp %>% 
+  group_by(posteam) %>% 
+  mutate(roll_epa = rollapply(epa, width = 150, align = "left", FUN = mean,partial = TRUE, fill = NA, na.rm = T),
+         play_num = row_number()) %>% 
+  select(posteam, roll_epa,play_num,epa)
+  ggplot(aes(x = play_num, y = roll_epa)) %>% +
+  # geom_point()
+  geom_line(linewidth =1 )+
+  geom_vline(xintercept = 5,linetype = "dashed", color = 'red')+
+  # geom_vline(xintercept = 45,linetype = "dashed", color = 'red')+
+  labs(x = "Play Number", y = "49ers Offense Rolling EPA/Play for Previous 15 Plays", title = "49ers Rolling EPA/Play by Play Number for Super Bowl")+
+  annotate("text", x = 9, y = 0.1, label = "CMC Fumble", color = "red",size =4)
+# annotate("text", x = 48, y = -0.05, label = "Muffed Punt", color = "red",size =4)
