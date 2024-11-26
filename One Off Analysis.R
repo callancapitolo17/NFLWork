@@ -1399,3 +1399,13 @@ xw_tab <- x_wins %>%
   )
 gtsave(xw_tab, "XW.png")
 t <- lucky_data_24 %>% select(game_id, predicted_home_win_prob)
+
+
+#Longest Completion
+test <- pbp_rp %>% 
+  # filter(!is.na(air_yards)) %>% 
+  select(desc,incomplete_pass,air_yards,receiver_id,receiver_player_name,yards_gained,air_yards,rush,pass)
+
+pbp_rp %>% 
+  group_by(receiver_player_id) %>% 
+  summarize(name = first(receiver_player_name))
