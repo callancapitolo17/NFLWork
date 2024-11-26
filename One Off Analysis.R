@@ -1406,6 +1406,105 @@ test <- pbp_rp %>%
   # filter(!is.na(air_yards)) %>% 
   select(desc,incomplete_pass,air_yards,receiver_id,receiver_player_name,yards_gained,air_yards,rush,pass)
 
-pbp_rp %>% 
-  group_by(receiver_player_id) %>% 
-  summarize(name = first(receiver_player_name))
+game_wr <- pbp_rp %>% 
+  filter(!is.na(air_yards)) %>% 
+  group_by(receiver_player_id,game_id) %>% 
+  summarize(name = first(receiver_player_name),posteam = max(posteam),longest_rec = max(yards_gained[!is.na(air_yards)],na.rm = T), week = max(week), targets = n(),
+            total_air_yards = sum(air_yards,na.rm = T), total_yards_gained = sum(yards_gained), YAC = sum(yards_after_catch,na.rm = T),
+            epa_target = mean(epa,na.rm = T), total_epa = sum(epa,na.rm = T), success_rate = mean(success,na.rm = T), spread = max(spread_line),
+            bet_total = max(total_line), adot = mean(air_yards,na.rm = T), year = max(season), defteam = max(defteam)) %>% 
+  mutate(longest_rec = ifelse(longest_rec< -100,0,longest_rec)) %>% 
+  filter(!is.na(name)) %>% 
+  group_by(game_id,posteam) %>% 
+  mutate(pct_air_yards = total_air_yards/sum(total_air_yards), yards_gained_share = total_yards_gained/sum(total_yards_gained), target_share = targets/sum(targets))
+
+longest_rec_data <- game_wr %>% 
+  select(receiver_player_id,name,game_id,week, posteam,spread,bet_total,longest_rec,year,defteam)
+
+season_wr <- game_wr %>%
+  group_by(receiver_player_id, posteam) %>%
+  arrange(week, game_id) %>% # Ensure the data is sorted by week and game
+  mutate(
+    cum_targets = cummean(targets),
+    cum_air_yards = cummean(total_air_yards),
+    cum_yards_gained = cummean(total_yards_gained),
+    cum_yac = cummean(YAC),
+    cum_epa = cummean(total_epa),
+    cum_success_rate = cummean(success_rate), # Weighted average
+    cum_longest_rec = cummean(longest_rec),
+    cum_pct_air_yards = cummean(pct_air_yards), # Weighted average
+    cum_target_share = cummean(target_share),
+    cum_adot = cummean(adot)
+    ) %>%
+  ungroup() %>% 
+  group_by(receiver_player_id) %>%
+  mutate(next_week = lead(week)) %>% 
+  filter(!is.na(week)) %>% 
+  select(week = next_week,receiver_player_id,year ,posteam,starts_with("cum"))
+
+
+
+off_scout <- pbp_rp %>%
+  group_by(posteam, week,game_id) %>%
+  summarize(
+    plays_in_week = n(),                # Total plays in the week
+    total_epa_in_week = sum(epa, na.rm = TRUE), # Total EPA in the week
+    total_dropbacks = sum(pass,na.rm = T),
+    total_db_epa = sum(epa[pass == 1],na.rm =T),
+    total_db_success = sum(success[pass==1], na.rm = T),
+    total_success = sum(success,na.rm = T),
+    total_proe = sum(pass_oe,na.rm = T),
+    .groups = "drop"
+  ) %>%
+  group_by(posteam) %>%
+  arrange(week) %>%
+  mutate(
+    # Cumulative EPA
+    off_cum_avg_epa_per_play = cumsum(total_epa_in_week) /cumsum(plays_in_week), # Cumulative avg EPA/play
+    off_cum_avg_epa_per_db = cumsum(total_db_epa) /cumsum(total_dropbacks),
+    off_cum_avg_success_per_db = cumsum(total_db_success) /cumsum(total_dropbacks),
+    off_cum_avg_success_rate = cumsum(total_success) /cumsum(plays_in_week),
+    off_cum_proe = cumsum(total_proe) /cumsum(plays_in_week)
+  ) %>% 
+  group_by(posteam) %>%
+  mutate(next_week = lead(week)) %>% 
+  select(posteam, week = next_week,starts_with("off_cum")) %>% 
+  filter(!is.na(week))
+def_scout <- pbp_rp %>%
+  group_by(defteam, week,game_id) %>%
+  summarize(
+    plays_in_week = n(),                # Total plays in the week
+    total_epa_in_week = sum(epa, na.rm = TRUE), # Total EPA in the week
+    total_dropbacks = sum(pass,na.rm = T),
+    total_db_epa = sum(epa[pass == 1],na.rm =T),
+    total_db_success = sum(success[pass==1], na.rm = T),
+    total_success = sum(success,na.rm = T),
+    total_proe = sum(pass_oe,na.rm = T),
+    .groups = "drop"
+  ) %>%
+  group_by(defteam) %>%
+  arrange(week) %>%
+  mutate(
+    # Cumulative EPA
+    def_cum_avg_epa_per_play = cumsum(total_epa_in_week) /cumsum(plays_in_week), # Cumulative avg EPA/play
+    def_cum_avg_epa_per_db = cumsum(total_db_epa) /cumsum(total_dropbacks),
+    def_cum_avg_success_per_db = cumsum(total_db_success) /cumsum(total_dropbacks),
+    def_cum_avg_success_rate = cumsum(total_success) /cumsum(plays_in_week),
+    def_cum_proe = cumsum(total_proe) /cumsum(plays_in_week)
+  ) %>% 
+  group_by(defteam) %>%
+  mutate(next_week = lead(week)) %>% 
+  select(defteam, week = next_week, starts_with("def_cum")) %>%
+  filter(!is.na(week)) # Remove rows where the next week doesn't exist
+
+longest_rec_joined_data <- longest_rec_data %>% 
+  left_join(season_wr, by = c("receiver_player_id","week","year","posteam")) %>% 
+  left_join(off_scout, by = c("week","posteam")) %>% 
+  left_join(def_scout, by = c("week","defteam")) %>% 
+  ungroup() %>% 
+  select(-posteam,-defteam)
+
+test <- cor(longest_rec_joined_data %>% 
+  select(where(is.numeric)) %>% 
+    filter(complete.cases(.)))
+
