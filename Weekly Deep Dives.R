@@ -92,17 +92,16 @@ ggsave("EffLandscape.png", width = 14, height =10, dpi = "retina")
 
 #EPA vs Success----
 pbp_rp %>% 
-  # group_by(posteam) %>%
-  group_by(defteam) %>%
+  group_by(posteam) %>%
+  # group_by(defteam) %>%
   summarize(success_rate = mean(success,na.rm = T), epa_play = mean(epa,na.rm = T)) %>% 
   ggplot(aes(x = success_rate, y = epa_play )) +
-  # geom_nfl_logos(aes(team_abbr = posteam), width = 0.045, alpha = 0.95)+
-  geom_nfl_logos(aes(team_abbr = defteam), width = 0.045)+
-  # labs(x = "Success Rate", y = "EPA/Play", title = "Offensive Success Rate vs EPA/Play",caption = "@CapAnalytics7 | nflfastR",
-       # subtitle = "Teams above line benefit from high impact plays; teams below line lack high impact plays")+
-  labs(x = "Success Rate Allowed", y = "EPA/Play",subtitle = "Teams above line benefit from high impact plays; teams below line lack high impact plays", title = "Defensive Success Rate vs EPA/Play",caption = "@CapAnalytics7 | nflfastR")+
-  scale_x_reverse()+
-  scale_y_reverse()+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.045, alpha = 0.95)+
+  # geom_nfl_logos(aes(team_abbr = defteam), width = 0.045)+
+  labs(x = "Success Rate", y = "EPA/Play", title = "Offensive Success Rate vs EPA/Play",caption = "@CapAnalytics7 | nflfastR", subtitle = "Teams above line benefit from high impact plays; teams below line lack high impact plays")+
+  # labs(x = "Success Rate Allowed", y = "EPA/Play",subtitle = "Teams above line benefit from high impact plays; teams below line lack high impact plays", title = "Defensive Success Rate vs EPA/Play",caption = "@CapAnalytics7 | nflfastR")+
+  # scale_x_reverse()+
+  # scale_y_reverse()+
   theme(legend.position = "top",
           legend.direction = "horizontal",
           legend.background = element_rect(fill = "white", color="white"),
@@ -123,14 +122,14 @@ ggsave("SuccessLandscape.png", width = 14, height =10, dpi = "retina")
 #Side of Ball Breakdown----
 pbp_rp %>% 
   filter(season == year) %>% 
-  # group_by(posteam) %>%
-  group_by(defteam) %>%
+  group_by(posteam) %>%
+  # group_by(defteam) %>%
   summarize(epa_db = mean(epa[pass == 1],na.rm = T), epa_rush = mean(epa[rush == 1], na.rm = T)) %>% 
   ggplot(aes(x = epa_rush, y = epa_db))+
-  # geom_nfl_logos(aes(team_abbr = posteam), width = 0.045, alpha = 0.95)+
-  geom_nfl_logos(aes(team_abbr = defteam), width = 0.045, alpha = 0.955)+
-  scale_x_reverse()+
-  scale_y_reverse()+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.045, alpha = 0.95)+
+  # geom_nfl_logos(aes(team_abbr = defteam), width = 0.045, alpha = 0.955)+
+  # scale_x_reverse()+
+  # scale_y_reverse()+
   theme(legend.position = "none",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -146,8 +145,8 @@ pbp_rp %>%
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))+
-  labs(x = "EPA/Rush", y = "EPA/Dropback", title = "Defensive Efficiency Landscape",subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")+
-  # labs(x = "EPA/Rush", y = "EPA/Dropback", title = "Offensive Efficiency Landscape",subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")+
+  # labs(x = "EPA/Rush", y = "EPA/Dropback", title = "Defensive Efficiency Landscape",subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")+
+  labs(x = "EPA/Rush", y = "EPA/Dropback", title = "Offensive Efficiency Landscape",subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")+
   geom_hline(yintercept = mean(pbp_rp$epa[pbp_rp$season == 2024 & pbp_rp$pass == 1],na.rm = T), linetype = "dashed",color = "white")+
   geom_vline(xintercept = mean(pbp_rp$epa[pbp_rp$season == 2024 & pbp_rp$rush == 1],na.rm = T), linetype = "dashed",color = "white")
 ggsave("DefOffBreakdown.png", width = 14, height =10, dpi = "retina")
@@ -169,36 +168,19 @@ pbp_rp %>%
     air_yards > 20 ~ "20+ Air Yard Pass",
     TRUE ~ "Other"  # This acts as the catch-all for anything not matched
   )) %>%
-  # group_by(defteam,detailed_play_type) %>%
-  group_by(posteam,detailed_play_type) %>%
+  group_by(defteam,detailed_play_type) %>%
+  # group_by(posteam,detailed_play_type) %>%
   summarize(total_epa = sum(epa,na.rm = T), epa_play = mean(epa,na.rm = T), count = n()) %>%
   mutate(sum_epa = sum(total_epa), total_count = sum(count), epa_tot_play = total_epa/total_count) %>% #epa_tot_play sums to epa/play
-  ggplot(aes(x  = epa_tot_play, y =reorder(posteam,epa_tot_play), fill = detailed_play_type))+
-  # ggplot(aes(x  = epa_tot_play, y =reorder(defteam,-epa_tot_play), fill = detailed_play_type))+
+  # ggplot(aes(x  = epa_tot_play, y =reorder(posteam,epa_tot_play), fill = detailed_play_type))+
+  ggplot(aes(x  = epa_tot_play, y =reorder(defteam,-epa_tot_play), fill = detailed_play_type))+
   geom_bar(stat = "identity")+
   scale_fill_brewer(palette = "Set3") +
   # geom_nfl_logos(aes(team_abbr = max(posteam)), width = 0.05, alpha = 0.7)+
-  labs(y = "Offense", x = "EPA/Play Components", title = "Where are Offenses Generating Success From?", subtitle = "Sections represent different components of an offense's EPA/Play",caption = "@CapAnalytics7 | nflfastR")+
-  # labs(y = "Defense", x = "EPA/Play Components", title = "Where are Defenses Generating Success From?", subtitle = "Sections represent different components of an defense's EPA/Play",caption = "@CapAnalytics7 | nflfastR")+
-  # scale_x_reverse()+
-  theme(legend.position = "top",
-        legend.direction = "horizontal",
-        legend.background = element_rect(fill = "white", color="white"),
-        legend.title = element_blank(),
-        legend.text = element_text(colour = "black", face = "bold"),
-        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
-        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
-        plot.caption = element_text(colour = "white", size = 10),
-        panel.grid = element_blank(),
-        plot.background = element_rect(fill = "black", color="black"),
-        panel.background = element_rect(fill = "black", color="black"),
-        axis.ticks = element_line(color = "white"),
-        axis.text = element_text(face = "bold", colour = "white",size = 12),
-        axis.title = element_text(color = "white", size = 14),
-        panel.border = element_rect(colour = "white", fill = NA, size = 1),
-        axis.title.y = element_blank(),
-        axis.text.y = element_nfl_logo(size = 0.9)
-        )
+  # labs(y = "Offense", x = "EPA/Play Components", title = "Where are Offenses Generating Success From?", subtitle = "Sections represent different components of an offense's EPA/Play",caption = "@CapAnalytics7 | nflfastR")+
+  labs(y = "Defense", x = "EPA/Play Components", title = "Where are Defenses Generating Success From?", subtitle = "Sections represent different components of an defense's EPA/Play",caption = "@CapAnalytics7 | nflfastR")+
+  scale_x_reverse()+
+  trans_per_person
 ggsave("OffBreakout.png", width = 14, height =10, dpi = "retina")
  
 
