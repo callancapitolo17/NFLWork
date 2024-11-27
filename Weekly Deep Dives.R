@@ -221,17 +221,17 @@ ggsave("EarlyvsLateEfficiency.png", width = 14, height =10, dpi = "retina")
 #Explosive vs Negative ----
 pbp_rp %>% 
   filter(season == year) %>% 
-  group_by(posteam) %>%
-  # group_by(defteam) %>%
+  # group_by(posteam) %>%
+  group_by(defteam) %>%
   summarize(negative_rate = mean(negative,na.rm = T),explosive_rate = mean(explosive,na.rm = T)) %>% 
   ggplot(aes(x = negative_rate, y = explosive_rate))+
   geom_point()+
-  scale_x_reverse()+
-  # scale_y_reverse()+
-  # geom_nfl_logos(aes(team_abbr = defteam), width = 0.045)+
-  geom_nfl_logos(aes(team_abbr = posteam), width = 0.045)+
-  labs(x = "Negative Play Rate", y = "Explosive Play Rate*", title = "Which Offenses Create Explosive Plays and Prevent Negatives?", caption = "*Passes that gained greater than 20 yards or runs that gained greater than 12 yards                         @CapAnalytics7 | nflfastR", subtitle = "Dotted Lines Represent League Average")+
-  # labs(x = "Negative Play Rate", y = "Explosive Play Rate*", title = "Which Defenses Prevent Explosives and Create Negatives?", caption = "*Passes that gained greater than 20 yards or runs that gained greater than 12 yards                         @CapAnalytics7 | nflfastR", subtitle = "Dotted Lines Represent League Average")+
+  # scale_x_reverse()+
+  scale_y_reverse()+
+  geom_nfl_logos(aes(team_abbr = defteam), width = 0.045)+
+  # geom_nfl_logos(aes(team_abbr = posteam), width = 0.045)+
+  # labs(x = "Negative Play Rate", y = "Explosive Play Rate*", title = "Which Offenses Create Explosive Plays and Prevent Negatives?", caption = "*Passes that gained greater than 20 yards or runs that gained greater than 12 yards                         @CapAnalytics7 | nflfastR", subtitle = "Dotted Lines Represent League Average")+
+  labs(x = "Negative Play Rate", y = "Explosive Play Rate*", title = "Which Defenses Prevent Explosives and Create Negatives?", caption = "*Passes that gained greater than 20 yards or runs that gained greater than 12 yards                         @CapAnalytics7 | nflfastR", subtitle = "Dotted Lines Represent League Average")+
   theme(legend.position = "top",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
