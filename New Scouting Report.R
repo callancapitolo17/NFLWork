@@ -301,8 +301,8 @@ defensive_scouting <- pbp_rp %>%
   )
 
 
-offense <- "HOU"
-defense <- "DAL"
+offense <- "BUF"
+defense <- "SF"
 
 
 
