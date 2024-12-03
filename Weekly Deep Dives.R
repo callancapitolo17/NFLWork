@@ -441,26 +441,26 @@ ggsave("xPass.png", width = 14, height =10, dpi = "retina")
 
 #Non Red vs Red----
 pbp_rp %>% 
-  group_by(defteam) %>%
-  # group_by(posteam) %>%
+  # group_by(defteam) %>%
+  group_by(posteam) %>%
   summarize(epa_red = mean(epa[yardline_100<= 20],na.rm = T), epa_non_red = mean(epa[yardline_100> 20],na.rm = T)) %>% 
   left_join( pbp_rp %>% 
                mutate(unique_series_identifier = paste(game_id, series)) %>%
                group_by(unique_series_identifier) %>% 
                summarize(posteam = first(posteam),defteam = first(defteam),drive_20 = max(drive_inside20),drive_td = max(drive_end_transition)) %>% 
                mutate(touchdown = ifelse(drive_td == "TOUCHDOWN",1,0)) %>% 
-               # group_by(posteam) %>%
-               group_by(defteam) %>%
+               group_by(posteam) %>%
+               # group_by(defteam) %>%
                summarize(red_td_rate = mean(touchdown[drive_20 == 1], na.rm = T)), 
-             # by = c("posteam")
-             by = c("defteam")
+             by = c("posteam")
+             # by = c("defteam")
              ) %>% 
   ggplot(aes(x = red_td_rate, y = epa_non_red))+
-  # geom_nfl_logos(aes(team_abbr = posteam), width = 0.045, alpha = 0.95)+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.045, alpha = 0.95)+
   geom_mean_lines(aes(x0 = red_td_rate, y0 = epa_non_red), color = "white", linetype = "dashed")+
-  geom_nfl_logos(aes(team_abbr = defteam), width = 0.045, alpha = 0.95)+
-  scale_x_reverse()+
-  scale_y_reverse()+
+  # geom_nfl_logos(aes(team_abbr = defteam), width = 0.045, alpha = 0.95)+
+  # scale_x_reverse()+
+  # scale_y_reverse()+
   theme(legend.position = "none",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -476,8 +476,8 @@ pbp_rp %>%
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))+
-  # labs(x = "Redzone TD Rate", y = "Non Redzone EPA/Play", title = "Offense Efficiency Inside vs Outside Red Zone", subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")
-  labs(x = "Redzone TD Rate Allowed", y = "Non Redzone EPA/Play", title = "Defensive Efficiency Inside vs Outside Red Zone", subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")
+  labs(x = "Redzone TD Rate", y = "Non Redzone EPA/Play", title = "Offense Efficiency Inside vs Outside Red Zone", subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")
+  # labs(x = "Redzone TD Rate Allowed", y = "Non Redzone EPA/Play", title = "Defensive Efficiency Inside vs Outside Red Zone", subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")
 ggsave("RedBreakOut.png", width = 14, height =10, dpi = "retina")
 
 #Biggest Plays ----
