@@ -1213,7 +1213,7 @@ gt() %>%
     title = md("Which Offenses Have Been Luckiest this Season?"),
     subtitle = md("")
   ) %>%
-  tab_footnote(footnote = md("@CapAnalytics7|nflfastrR")) %>% 
+  tab_footnote(footnote = md("@CapAnalytics7|nflfastr")) %>% 
   gt_theme_538() %>%   
   tab_style(
     style = cell_text(align = "center"),
@@ -1257,7 +1257,7 @@ pbp_rp %>%
         panel.grid = element_blank())+
   geom_mean_lines(aes(x0 = int, y0 = int_worthy), color = "white")
   
-#Rolling EPA
+#Rolling EPA----
 library(zoo)
 test <- pbp_rp %>% 
   group_by(posteam) %>% 
@@ -1272,3 +1272,45 @@ test <- pbp_rp %>%
   labs(x = "Play Number", y = "49ers Offense Rolling EPA/Play for Previous 15 Plays", title = "49ers Rolling EPA/Play by Play Number for Super Bowl")+
   annotate("text", x = 9, y = 0.1, label = "CMC Fumble", color = "red",size =4)
 # annotate("text", x = 48, y = -0.05, label = "Muffed Punt", color = "red",size =4)
+
+#Catchable Targets----  
+#Is there a way to get AdoT on this graph
+pbp_rp %>% 
+    group_by(receiver_player_id,posteam,game_id) %>% 
+    summarize(name = first(receiver_player_name), targets = n(), catchable = sum(is_catchable_ball,na.rm = T),adot = mean(air_yards,na.rm = T)) %>% 
+    group_by(posteam,game_id) %>% 
+    mutate(target_share = targets/sum(targets)) %>% 
+    group_by(receiver_player_id,posteam) %>% 
+    summarize(name = first(name),pct_catchable = sum(catchable)/sum(targets), target_share_per_game = mean(target_share), targets = sum(targets)) %>% 
+    filter(!is.na(name))  %>% 
+    filter(targets>=40) %>% 
+    ggplot(aes(x = target_share_per_game, y = pct_catchable))+
+    geom_nfl_logos(aes(team_abbr = posteam), width = 0.02)+
+    labs(x = "Targets", y = "Average Target Rate Per Game", title = "Which Receivers Targets are Catchable?", subtitle = "Minimum 40 Targets",
+         caption = "@CapAnalytics7 | nflfastR")+
+    geom_mean_lines(aes(x0 = target_share_per_game, y0 = pct_catchable))+
+    geom_text_repel(
+      aes(label = name),
+      box.padding = 0.03,  # adjust this value for padding around the labels
+      point.padding = 0.01,  # adjust this value for padding around the points
+      segment.color = "grey",
+      segment.size = 0.2,
+      color = "white",
+      size = 3
+    )+
+    theme(legend.position = "none",
+          legend.direction = "horizontal",
+          legend.background = element_rect(fill = "white", color="white"),
+          legend.title = element_blank(),
+          legend.text = element_text(colour = "black", face = "bold"),
+          plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+          plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+          plot.caption = element_text(colour = "white", size = 10),
+          panel.grid = element_blank(),
+          plot.background = element_rect(fill = "black", color="black"),
+          panel.background = element_rect(fill = "black", color="black"),
+          axis.ticks = element_line(color = "white"),
+          axis.text = element_text(face = "bold", colour = "white",size = 12),
+          axis.title = element_text(color = "white", size = 14),
+          panel.border = element_rect(colour = "white", fill = NA, size = 1))
+  
