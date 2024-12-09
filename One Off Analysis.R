@@ -1,9 +1,15 @@
-library(ggimage)
-library(gt)
 library(nflfastR)
+library(ggplot2)
 library(tidyverse)
-library(gtExtras)
+library(ggimage)
+library(ggthemes)
+library(dplyr)
+library(ggrepel)
+library(nflreadr)
+library(gt)
+library(ggrepel)
 library(nflplotR)
+library(gtExtras)
 
 
 nfl99all <- load_pbp(1999:2024)
@@ -1607,13 +1613,145 @@ if (best_model_name %in% c("rf", "xgb")) {
 }
 
 # Final predictions
-x_test$final_predictions <- as.data.frame(predict(best_model, newdata = x_test))
+final_predictions <- as.data.frame(predict(best_model, newdata = x_test))
+
+test_identifiers <- testData %>% select(receiver_player_id, game_id, name,longest_rec) # Drop non-predictive or irrelevant columns
+
+# Make predictions using the best model
+
+# Combine predictions with identifiers
+predictions_with_identifiers <- test_identifiers %>%
+  mutate(predicted_longest_rec = final_predictions)
+
+
+#Longest Completion Forward Data Prep----
+
+write.csv(wr_long_data,"wr_long_data.csv")
+
+pbp_rp <- read.csv("pbp_rp.csv")
+wr_pred_data <- pbp_rp
+
+game_wr <- wr_pred_data %>% 
+  filter(!is.na(air_yards)) %>% 
+  group_by(receiver_player_id,game_id) %>% 
+  summarize(name = first(receiver_player_name),posteam = max(posteam),longest_rec = max(yards_gained[!is.na(air_yards)],na.rm = T), week = max(week), targets = n(),
+            total_air_yards = sum(air_yards,na.rm = T), total_yards_gained = sum(yards_gained), YAC = sum(yards_after_catch,na.rm = T),
+            epa_target = mean(epa,na.rm = T), total_epa = sum(epa,na.rm = T), success_rate = mean(success,na.rm = T), spread = max(spread_line),
+            bet_total = max(total_line), adot = mean(air_yards,na.rm = T), year = max(season), defteam = max(defteam),
+            catchable_targ = sum(is_catchable_ball,na.rm = T), contested_ball = sum(is_contested_ball),
+            created_rec = sum(is_created_reception,na.rm = T)) %>% 
+  mutate(longest_rec = ifelse(longest_rec< -100,0,longest_rec)) %>% 
+  filter(!is.na(name)) %>% 
+  group_by(game_id,posteam) %>% 
+  mutate(pct_air_yards = total_air_yards/sum(total_air_yards), yards_gained_share = total_yards_gained/sum(total_yards_gained), target_share = targets/sum(targets))
+
+
+season_wr <- game_wr %>%
+  group_by(receiver_player_id, posteam,name) %>%
+  summarize(
+    targets_per_game = mean(targets),
+    air_yards_per_game = mean(total_air_yards),
+    yards_game_per_game = mean(total_yards_gained),
+    yac__per_game = mean(YAC),
+    epa_per_game = mean(total_epa),
+    success_rate__per_game = mean(success_rate), 
+    longest_rec__per_game = mean(longest_rec),
+    pct_air_yards__per_game = mean(pct_air_yards), # Weighted average try?
+    target_share__per_game = mean(target_share),
+    adot_per_game = mean(adot),
+    cum_targets = sum(targets),
+    cum_target_rate = sum(catchable_targ)/sum(targets),
+    cum_contested_rate = sum(contested_ball)/sum(targets),
+    cum_created_reception_rate = sum(created_rec)/sum(targets)
+    
+  ) %>%
+  ungroup() %>% 
+  select(receiver_player_id,posteam,name,ends_with("per_game"),starts_with("cum"))
+
+
+
+off_scout <- wr_pred_data %>%
+  group_by(posteam, week,game_id,season) %>%
+  summarize(
+    plays_in_week = n(),                # Total plays in the week
+    total_epa_in_week = sum(epa, na.rm = TRUE), # Total EPA in the week
+    total_dropbacks = sum(pass,na.rm = T),
+    total_db_epa = sum(epa[pass == 1],na.rm =T),
+    total_db_success = sum(success[pass==1], na.rm = T),
+    total_success = sum(success,na.rm = T),
+    total_proe = sum(pass_oe,na.rm = T),
+    off_game_longest_rec = max(yards_gained[!is.na(air_yards)]),
+    .groups = "drop"
+  ) %>%
+  group_by(posteam,season) %>%
+  summarize(
+    # Cumulative EPA
+    off_cum_avg_epa_per_play = sum(total_epa_in_week) /sum(plays_in_week), # Cumulative avg EPA/play
+    off_cum_avg_epa_per_db = sum(total_db_epa) /sum(total_dropbacks),
+    off_cum_avg_success_per_db = sum(total_db_success) /sum(total_dropbacks),
+    off_cum_avg_success_rate = sum(total_success) /sum(plays_in_week),
+    off_cum_proe = sum(total_proe) /sum(plays_in_week),
+    off_cum_longest_rec_pg = mean(off_game_longest_rec)
+  )
+
+def_scout <- wr_pred_data %>%
+  group_by(defteam, week,game_id,season) %>%
+  summarize(
+    plays_in_week = n(),                # Total plays in the week
+    total_epa_in_week = sum(epa, na.rm = TRUE), # Total EPA in the week
+    total_dropbacks = sum(pass,na.rm = T),
+    total_db_epa = sum(epa[pass == 1],na.rm =T),
+    total_db_success = sum(success[pass==1], na.rm = T),
+    total_success = sum(success,na.rm = T),
+    total_proe = sum(pass_oe,na.rm = T),
+    def_game_longest_rec = max(yards_gained[!is.na(air_yards)]),
+    .groups = "drop"
+  ) %>%
+  group_by(defteam,season) %>%
+  arrange(week) %>%
+  summarize(
+    # Cumulative EPA
+    def_cum_avg_epa_per_play = sum(total_epa_in_week) /sum(plays_in_week), # Cumulative avg EPA/play
+    def_cum_avg_epa_per_db = sum(total_db_epa) /sum(total_dropbacks),
+    def_cum_avg_success_per_db = sum(total_db_success) /sum(total_dropbacks),
+    def_cum_avg_success_rate = sum(total_success) /sum(plays_in_week),
+    def_cum_proe = sum(total_proe) /sum(plays_in_week),
+    def_cum_longest_rec_pg = mean(def_game_longest_rec)
+  ) %>% 
+  select(defteam, starts_with("def_cum"))# Remove rows year = seasonwhere the next week doesn't exist
+
+
+schedules <- load_schedules(2024)
+
+wr_sched <- schedules %>% 
+  # filter(is.na(away_score), week == pbp_rp$week +1)
+  filter(is.na(away_score), week == 14) %>% 
+  select(week, home_team ,spread = spread_line,bet_total = total_line,year = season,away_team) %>% 
+  mutate(posteam_home = "yes", posteam_away = "no") %>% 
+  pivot_longer(cols = c(posteam_home,posteam_away), values_to = "home_pos_team", names_to = "posteam") %>% 
+  mutate(posteam = ifelse(home_pos_team == "yes", home_team, away_team),
+         defteam = ifelse(home_pos_team == "yes", away_team, home_team)) %>% 
+  select(-home_team,-away_team,-home_pos_team)
+
+longest_rec_joined_data <- wr_sched %>% 
+  right_join(season_wr, by = c("posteam")) %>% 
+  left_join(off_scout, by = c("posteam")) %>% 
+  left_join(def_scout, by = c("defteam")) %>% 
+  ungroup() 
+
+week_predictions <- as.data.frame(predict(best_model, newdata = longest_rec_joined_data))[[1]]
+
+longest_rec_predictions <- longest_rec_joined_data %>% 
+  filter(!is.na(spread)) %>% 
+  select(name) %>% 
+  mutate(pred_longest_rec = week_predictions)
+
 
 #49ers This Year vs Last----
 shanahan_in<- nfl99 %>% filter(pass == 1, season >2022, posteam == "SF", name == "B.Purdy") %>% 
   left_join(ftn_data, by = c("game_id" = "nflverse_game_id",
                              "play_id" = "nflverse_play_id"))
-shanahan_in %>% 
+shan_all <- shanahan_in %>% 
   group_by(season) %>% 
   summarize(`EPA/PA Play` = mean(epa[is_play_action],na.rm = T),
             `EPA/RPO` = mean(epa[is_rpo == 1],na.rm = T),
@@ -1628,7 +1766,8 @@ shanahan_in %>%
   tab_header(title = md("Where has it Gone Wrong for the 49ers Offense?"),
              subtitle = md("The 49ers are just not as good at what made them great last year with the big issue coming from a lack of YAC")) %>% 
   tab_footnote(footnote = md("Only Purdy Dropbacks @CapAnalytics7|nflfastr | FTN"))
-shanahan_in %>% 
+gtsave(shan_all, "shan_all.png")
+shan_yac <- shanahan_in %>% 
   group_by(season) %>% 
   summarize(`EPA/PA Play` = mean(comp_yac_epa[is_play_action],na.rm = T),
             `EPA/RPO` = mean(comp_yac_epa[is_rpo == 1],na.rm = T),
@@ -1642,8 +1781,9 @@ shanahan_in %>%
   gtExtras::gt_theme_538() %>% 
   tab_header(title = md("49ers Have seen a Major Regression in YAC Across All Pass Categories")) %>% 
   tab_footnote(footnote = md("Only Purdy Dropbacks and Completed Passes @CapAnalytics7|nflfastr | FTN"))
+gtsave(shan_yac, "shan_yac.png")
 
-shanahan_in %>% 
+shan_air <- shanahan_in %>% 
   group_by(season) %>% 
   summarize(`Air Yards EPA/PA Play` = mean(comp_air_epa[is_play_action],na.rm = T),
             `Air Yards EPA/RPO` = mean(comp_air_epa[is_rpo == 1],na.rm = T),
@@ -1657,3 +1797,54 @@ shanahan_in %>%
   gtExtras::gt_theme_538() %>% 
   tab_header(title = md("When Removing YAC EPA the Niners Offense Has Actually Improved Compared to Last Year")) %>% 
   tab_footnote(footnote = md("Only Purdy Dropbacks and Completed Passes @CapAnalytics7|nflfastr | FTN"))
+gtsave(shan_air, "shan_air.png")
+
+#Best Offense to Not Make Playoffs----
+off <- nfl99 %>% 
+  group_by(posteam,season) %>% 
+  summarize(`EPA/Play` = mean(epa,na.rm = T), `Success Rate` = mean(success, na.rm = T), `EPA/Dropback` = mean(epa[pass==1],na.rm = T),
+            playoffs = min(season_type), `Win Prob Added/Play` = mean(wpa,na.rm = T)) %>% 
+  filter(season < 2024 | (posteam %in% c("CIN") & season == 2024), playoffs == "REG", !is.na(posteam))
+
+replace_with_ranks<- function(column){
+  values <- column
+  ranks <- rank(column*-1,ties.method = "max")
+}
+
+replace_with_ranks_no_flip<- function(column){
+  values <- column
+  ranks <- rank(column,ties.method = "max")
+}
+
+bengals_off <- cbind(off %>% 
+        select(posteam,season),as.data.frame(apply(off %>% ungroup() %>% 
+        select(-posteam,-season, -playoffs),2,replace_with_ranks)) %>% 
+        mutate(`Aggregate Ranking` = (`Success Rate`+`EPA/Play`+`EPA/Dropback`+ `Win Prob Added/Play`)/4) %>% 
+        apply(.,2,replace_with_ranks_no_flip)) %>% #Rowmean rank?
+  filter(posteam == "CIN", season == 2024) %>% 
+  rename(" " = posteam) %>% 
+  ungroup() %>% 
+  gt() %>% 
+  cols_align(align = "center") %>% 
+  gt_theme_538() %>% 
+  gt_nfl_wordmarks(columns = " ") %>% 
+  tab_header(title = md("The Bengals are Wasting an Elite Offense"), subtitle = md("Ranking Compared to 489 Teams Who Have Missed Playoff Since 1999"))
+gtsave(bengals_off,"bengals.png")
+  
+
+
+#Best Offense to Not Make Playoffs & Adjusted QB EPA Start----
+qbs_no_yoffs <- nfl99 %>% 
+  filter(season > 2005) %>% 
+  group_by(play_id,game_id) %>% 
+  mutate(qb_credit = ifelse(complete_pass == 1 & !anyNA(c(xyac_epa,comp_yac_epa)), air_epa+min(c(xyac_epa,comp_yac_epa),na.rm = T),epa),
+         test = min(c(xyac_epa,comp_yac_epa),na.rm = T)) %>% 
+  select(season,complete_pass,desc,epa,air_epa,xyac_epa,yac_epa, comp_air_epa,comp_yac_epa,qb_credit,test)
+  group_by(id, posteam,season) %>% 
+  summarize(name = first(name),epa_play = mean(epa[week <14],na.rm = T), success_rate = mean(success, na.rm = T), epa_db = mean(epa[pass==1],na.rm = T),
+            passes = sum(pass,na.rm = T), credit_epa = mean(qb_credit[week<14],na.rm = T), wpa_play = mean(wpa,na.rm = T)) %>% 
+  left_join(nfl99 %>% 
+              group_by(posteam,season) %>% 
+              summarize(playoffs = min(season_type)), by = c("posteam","season")) %>% 
+  filter(season < 2024 | (posteam == "CIN" & season == 2024), playoffs == "REG", !is.na(posteam), passes > 250)
+  
