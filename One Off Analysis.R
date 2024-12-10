@@ -1409,9 +1409,6 @@ t <- lucky_data_24 %>% select(game_id, predicted_home_win_prob)
 #Longest Completion----
 wr_long_data <- nfl99 %>% filter(season>=2022) %>% left_join(ftn_data, by = c("game_id" = "nflverse_game_id",
                                                                         "play_id" = "nflverse_play_id")) 
-write.csv(wr_long_data,"wr_long_data.csv")
-
-wr_long_data <- read.csv("wr_long_data.csv")
 game_wr <- wr_long_data %>% 
   filter(!is.na(air_yards)) %>% 
   group_by(receiver_player_id,game_id) %>% 
@@ -1626,9 +1623,6 @@ predictions_with_identifiers <- test_identifiers %>%
 
 #Longest Completion Forward Data Prep----
 
-write.csv(wr_long_data,"wr_long_data.csv")
-
-pbp_rp <- read.csv("pbp_rp.csv")
 wr_pred_data <- pbp_rp
 
 game_wr <- wr_pred_data %>% 
