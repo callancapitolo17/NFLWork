@@ -1277,16 +1277,16 @@ test <- pbp_rp %>%
 #Is there a way to get AdoT on this graph
 pbp_rp %>% 
     group_by(receiver_player_id,posteam,game_id) %>% 
-    summarize(name = first(receiver_player_name), targets = n(), catchable = sum(is_catchable_ball,na.rm = T),adot = mean(air_yards,na.rm = T)) %>% 
+    summarize(name = first(receiver_player_name), targets = n(), catchable = sum(is_catchable_ball,na.rm = T),adot = sum(air_yards,na.rm = T)) %>% 
     group_by(posteam,game_id) %>% 
     mutate(target_share = targets/sum(targets)) %>% 
     group_by(receiver_player_id,posteam) %>% 
-    summarize(name = first(name),pct_catchable = sum(catchable)/sum(targets), target_share_per_game = mean(target_share), targets = sum(targets)) %>% 
+    summarize(name = first(name),pct_catchable = sum(catchable)/sum(targets), target_share_per_game = mean(target_share), targets = sum(targets), adot = sum(adot)/targets) %>% 
     filter(!is.na(name))  %>% 
     filter(targets>=40) %>% 
     ggplot(aes(x = target_share_per_game, y = pct_catchable))+
     geom_nfl_logos(aes(team_abbr = posteam), width = 0.02)+
-    labs(x = "Targets", y = "Average Target Rate Per Game", title = "Which Receivers Targets are Catchable?", subtitle = "Minimum 40 Targets",
+    labs(y = "Catchable Target Rate", x = "Average Target Rate Per Game", title = "Which Receivers' Targets are Catchable?", subtitle = "Minimum 40 Targets",
          caption = "@CapAnalytics7 | nflfastR")+
     geom_mean_lines(aes(x0 = target_share_per_game, y0 = pct_catchable))+
     geom_text_repel(
@@ -1313,4 +1313,4 @@ pbp_rp %>%
           axis.text = element_text(face = "bold", colour = "white",size = 12),
           axis.title = element_text(color = "white", size = 14),
           panel.border = element_rect(colour = "white", fill = NA, size = 1))
-  
+ggsave("CatchableTarget.png", width = 14, height =10, dpi = "retina")

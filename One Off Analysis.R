@@ -1609,8 +1609,15 @@ if (best_model_name %in% c("rf", "xgb")) {
   varImp(best_model) %>% plot()
 }
 
+residuals <- y_test - final_predictions[[1]]
+
+# Plot residuals
+plot(final_predictions[[1]], residuals, main = "Residuals vs Predictions", xlab = "Predicted Values", ylab = "Residuals")
+abline(h = 0, col = "red")
+
 # Final predictions
 final_predictions <- as.data.frame(predict(best_model, newdata = x_test))
+final_check<- as.data.frame(predict(best_model, newdata = x_test, interval = "prediction", level = 0.5))
 
 test_identifiers <- testData %>% select(receiver_player_id, game_id, name,longest_rec) # Drop non-predictive or irrelevant columns
 
