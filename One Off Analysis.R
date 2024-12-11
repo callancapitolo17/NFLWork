@@ -1627,6 +1627,158 @@ test_identifiers <- testData %>% select(receiver_player_id, game_id, name,longes
 predictions_with_identifiers <- test_identifiers %>%
   mutate(predicted_longest_rec = final_predictions)
 
+# Load necessary libraries
+
+
+tree_predictions_vector <- predict(rf_model, x_test, predict.all = TRUE)
+
+# Extract the individual tree predictions
+
+# Load the fitdistrplus package
+library(fitdistrplus)
+
+# Fit various distributions
+fit_normal <- fitdist(tree_predictions_vector, "norm")
+fit_lognorm <- fitdist(tree_predictions_vector, "lnorm")
+fit_gamma <- fitdist(tree_predictions_vector, "gamma")
+fit_weibull <- fitdist(tree_predictions_vector, "weibull")
+# fit_beta <- fitdist(tree_predictions_vector / max(tree_predictions_vector), "beta")
+fit_exp = fitdist(tree_predictions_vector, "exp")
+# fit_t <- fitdist(tree_predictions_vector, "t")
+
+# Compare AIC and BIC for all fitted distributions
+aic_values <- c(
+  normal = fit_normal$aic,
+  lognormal = fit_lognorm$aic,
+  gamma = fit_gamma$aic,
+  weibull = fit_weibull$aic,
+  # beta = fit_beta$aic,
+  exp = fit_exp$aic
+  # t = fit_t$aic
+)
+
+bic_values <- c(
+  normal = BIC(fit_normal),
+  lognormal = BIC(fit_lognorm),
+  gamma = BIC(fit_gamma),
+  weibull = BIC(fit_weibull),
+  # beta = BIC(fit_beta),
+  exp = BIC(fit_exp)
+  # t = BIC(fit_t)
+)
+
+aic_values
+bic_values
+
+plot.legend <- c("Normal", "Log-Normal", "Gamma", "Weibull", "Exp")
+denscomp(list(fit_normal, fit_lognorm, fit_gamma, fit_weibull), legendtext = plot.legend)
+
+qqcomp(list(fit_normal, fit_lognorm, fit_gamma, fit_weibull), legendtext = plot.legend)
+ppcomp(list(fit_normal, fit_lognorm, fit_gamma, fit_weibull), legendtext = plot.legend)
+
+library(goftest)
+
+# KS test for the normal fit
+# Replace gamma-specific parts with log-normal equivalents
+
+# Perform KS test for the log-normal fit
+ks.test(
+  tree_predictions_vector,
+  "plnorm",
+  meanlog = fit_lognorm$estimate["meanlog"],
+  sdlog = fit_lognorm$estimate["sdlog"]
+)
+
+# Perform AD test for the log-normal fit
+ad.test(
+  tree_predictions_vector,
+  plnorm,
+  meanlog = fit_lognorm$estimate["meanlog"],
+  sdlog = fit_lognorm$estimate["sdlog"]
+)
+
+# Define bins (intervals for the test)
+bins <- hist(tree_predictions_vector, breaks = 10, plot = FALSE)$breaks
+
+# Calculate expected frequencies for log-normal
+expected <- diff(plnorm(bins, meanlog = fit_lognorm$estimate["meanlog"], sdlog = fit_lognorm$estimate["sdlog"])) * length(tree_predictions_vector)
+
+# Calculate observed frequencies
+observed <- hist(tree_predictions_vector, breaks = bins, plot = FALSE)$counts
+
+# Perform chi-squared test
+chisq.test(observed, p = expected / sum(expected))
+
+# Generate the fitted log-normal density
+lognorm_density <- data.frame(
+  x = seq(min(tree_predictions_vector), max(tree_predictions_vector), length.out = 100),
+  y = dlnorm(seq(min(tree_predictions_vector), max(tree_predictions_vector), length.out = 100),
+             meanlog = fit_lognorm$estimate["meanlog"],
+             sdlog = fit_lognorm$estimate["sdlog"])
+)
+
+# Plot the histogram and fitted density
+ggplot(data.frame(tree_predictions_vector), aes(x = tree_predictions_vector)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "blue", alpha = 0.4) +
+  geom_line(data = lognorm_density, aes(x = x, y = y), color = "red", size = 1) +
+  labs(title = "Log-Normal Distribution Fit",
+       x = "Predicted Values",
+       y = "Density")
+
+# Generate Q-Q plot for log-normal
+qqcomp(list(fit_lognorm), legendtext = c("Log-Normal"))
+
+# Create an empirical CDF and compare with log-normal CDF
+ecdf_data <- ecdf(tree_predictions_vector)
+
+# Plot the empirical and theoretical CDFs
+plot(ecdf_data, main = "CDF Comparison", xlab = "Predicted Values", ylab = "Cumulative Probability")
+curve(plnorm(x, meanlog = fit_lognorm$estimate["meanlog"], sdlog = fit_lognorm$estimate["sdlog"]),
+      add = TRUE, col = "red")
+legend("bottomright", legend = c("Empirical CDF", "Theoretical Log-Normal CDF"), col = c("black", "red"), lty = 1)
+
+# Residual Analysis using log-normal fit
+observed <- tree_predictions_vector
+expected <- qlnorm(
+  p = ecdf(tree_predictions_vector)(tree_predictions_vector),
+  meanlog = fit_lognorm$estimate["meanlog"],
+  sdlog = fit_lognorm$estimate["sdlog"]
+)
+
+residuals <- observed - expected
+
+# Plot 1: Residuals vs. Observed Values
+ggplot(data.frame(observed, residuals), aes(x = (observed), y = residuals)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(title = "Residuals vs Observed Values (Log-Normal)",
+       x = "Observed Values",
+       y = "Residuals") +
+  theme_minimal()
+
+# Plot 2: Histogram of Residuals
+ggplot(data.frame(residuals), aes(x = residuals)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "blue", alpha = 0.4) +
+  geom_density(color = "red", size = 1) +
+  labs(title = "Histogram of Residuals (Log-Normal)",
+       x = "Residuals",
+       y = "Density") +
+  theme_minimal()
+
+# Plot 3: Residuals vs Fitted Values
+fitted <- expected
+ggplot(data.frame(fitted, residuals), aes(x = fitted, y = residuals)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(title = "Residuals vs Fitted Values (Log-Normal)",
+       x = "Fitted Values",
+       y = "Residuals") +
+  theme_minimal()
+
+#Issues with residuals
+
+
+
 
 #Longest Completion Forward Data Prep----
 
@@ -1726,7 +1878,7 @@ schedules <- load_schedules(2024)
 
 wr_sched <- schedules %>% 
   # filter(is.na(away_score), week == pbp_rp$week +1)
-  filter(is.na(away_score), week == 14) %>% 
+  filter(is.na(away_score), week == 15) %>% 
   select(week, home_team ,spread = spread_line,bet_total = total_line,year = season,away_team) %>% 
   mutate(posteam_home = "yes", posteam_away = "no") %>% 
   pivot_longer(cols = c(posteam_home,posteam_away), values_to = "home_pos_team", names_to = "posteam") %>% 
@@ -1832,7 +1984,13 @@ bengals_off <- cbind(off %>%
   tab_header(title = md("The Bengals are Wasting an Elite Offense"), subtitle = md("Ranking Compared to 489 Teams Who Have Missed Playoff Since 1999"))
 gtsave(bengals_off,"bengals.png")
   
+library(chromote)
+if (exists("f") && inherits(f, "ChromoteSession")) {
+  try(f$shutdown(), silent = TRUE)
+}
 
+# Start a new session
+f <- ChromoteSession$new()
 
 #Best Offense to Not Make Playoffs & Adjusted QB EPA Start----
 qbs_no_yoffs <- nfl99 %>% 
