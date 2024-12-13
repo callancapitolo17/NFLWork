@@ -1449,7 +1449,7 @@ season_wr <- game_wr %>%
   mutate(next_week = lead(week)) %>% 
   filter(next_week >1) %>% 
   filter(!is.na(week)) %>% 
-  select(week = next_week,receiver_player_id,year ,posteam,ends_with("per_game"),starts_with("cum"))
+  select(week = next_week,receiver_player_id,year,posteam,ends_with("per_game"),starts_with("cum"))
 
 
 
@@ -1634,10 +1634,6 @@ tree_predictions_vector <- predict(rf_model, x_test, predict.all = TRUE)
 
 # Extract the individual tree predictions
 
-# Load the fitdistrplus package
-library(fitdistrplus)
-
-# Fit various distributions
 fit_normal <- fitdist(tree_predictions_vector, "norm")
 fit_lognorm <- fitdist(tree_predictions_vector, "lnorm")
 fit_gamma <- fitdist(tree_predictions_vector, "gamma")
@@ -1678,7 +1674,11 @@ ppcomp(list(fit_normal, fit_lognorm, fit_gamma, fit_weibull), legendtext = plot.
 
 library(goftest)
 
-# KS test for the normal fit
+# Load the fitdistrplus package
+library(fitdistrplus)
+
+# Fit various distributions
+# Perform KS test for the Weibull fit
 # Replace gamma-specific parts with log-normal equivalents
 
 # Perform KS test for the log-normal fit
@@ -1748,7 +1748,7 @@ expected <- qlnorm(
 residuals <- observed - expected
 
 # Plot 1: Residuals vs. Observed Values
-ggplot(data.frame(observed, residuals), aes(x = (observed), y = residuals)) +
+ggplot(data.frame(observed, residuals), aes(x = observed, y = residuals)) +
   geom_point(alpha = 0.5, color = "blue") +
   geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
   labs(title = "Residuals vs Observed Values (Log-Normal)",
@@ -1773,6 +1773,8 @@ ggplot(data.frame(fitted, residuals), aes(x = fitted, y = residuals)) +
   labs(title = "Residuals vs Fitted Values (Log-Normal)",
        x = "Fitted Values",
        y = "Residuals") +
+  theme_minimal()
++
   theme_minimal()
 
 #Issues with residuals
