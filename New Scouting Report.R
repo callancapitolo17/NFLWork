@@ -39,7 +39,7 @@ pbp_rp <- pbp %>%
          short_throw = ifelse(air_yards<=10,1,0),
          medium_throw = ifelse(air_yards>10&air_yards<=20,1,0),
          long_throw = ifelse(air_yards>20,1,0)) %>% 
-  mutate(explosive = ifelse((yards_gained>20 & pass_attempt == 1) | (yards_gained >12 & (qb_scramble == 1 | rush == 1)),1,0),
+  mutate(explosive = ifelse((yardline_100 <  20 & pass_attempt == 1) | (yardline_100<12 & (qb_scramble ==1 |rush ==1)), NA, ifelse((yards_gained>20 & pass_attempt == 1) | (yards_gained >12 & (qb_scramble == 1 | rush == 1)),1,0)),
          negative = ifelse(yards_gained < 0, 1,0))
 
 
@@ -382,3 +382,4 @@ scouting_report %>%
   tab_header(title = md("Scouting Report"), subtitle = md("Purple Represents Offense Advantage, Green Represents Defense Advantage"))
 }
 
+scouting_function()
