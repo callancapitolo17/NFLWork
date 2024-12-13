@@ -56,7 +56,10 @@ replace_with_ranks<- function(column){
   ranks <- rank(column*-1,ties.method = "max")
 }
 
+
 #----Scouting Report (add blitz and fix ranking for yards and stuff, int rate)
+scouting_function <- function(){
+
 offensive_scouting <- pbp_rp %>% 
   group_by(posteam) %>% 
   summarize(
@@ -301,8 +304,8 @@ defensive_scouting <- pbp_rp %>%
   )
 
 
-offense <- "LA"
-defense <- "SF"
+offense <- readline(prompt = "Enter Offense:")
+defense <- readline(prompt = "Enter Defense:")
 
 
 
@@ -377,5 +380,5 @@ scouting_report %>%
   gtExtras::gt_theme_538() %>% 
   gt_hulk_col_numeric(columns = c(`Offense Rank`,`Defense Rank`,rank_diff)) %>% 
   tab_header(title = md("Scouting Report"), subtitle = md("Purple Represents Offense Advantage, Green Represents Defense Advantage"))
-
+}
 
