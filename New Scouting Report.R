@@ -301,8 +301,8 @@ defensive_scouting <- pbp_rp %>%
   )
 
 
-offense <- "KC"
-defense <- "LAC"
+offense <- "LA"
+defense <- "SF"
 
 
 
