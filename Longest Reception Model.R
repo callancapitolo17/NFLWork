@@ -1,5 +1,18 @@
+library(nflfastR)
+library(ggplot2)
+library(tidyverse)
+library(ggimage)
+library(ggthemes)
+library(dplyr)
+library(ggrepel)
+library(nflreadr)
+library(gt)
+library(ggrepel)
+library(nflplotR)
+library(gtExtras)
+
 #Data Prep----
-wr_long_data <- nfl99 %>% filter(season>=2022) %>% left_join(ftn_data, by = c("game_id" = "nflverse_game_id",
+wr_long_data <- load_pbp(2022:2024) %>% left_join(ftn_data, by = c("game_id" = "nflverse_game_id",
                                                                               "play_id" = "nflverse_play_id")) 
 game_wr <- wr_long_data %>% 
   filter(!is.na(air_yards)) %>% 
@@ -46,6 +59,7 @@ season_wr <- game_wr %>%
 
 
 off_scout <- wr_long_data %>%
+  filter(!is.na(air_yards)) %>% 
   group_by(posteam, week,game_id,season) %>%
   summarize(
     plays_in_week = n(),                # Total plays in the week
@@ -75,6 +89,7 @@ off_scout <- wr_long_data %>%
   filter(!is.na(week))
 
 def_scout <- wr_long_data %>%
+  filter(!is.na(air_yards)) %>% 
   group_by(defteam, week,game_id,season) %>%
   summarize(
     plays_in_week = n(),                # Total plays in the week
@@ -114,13 +129,30 @@ longest_rec_joined_data <- longest_rec_data %>%
   left_join(def_scout, by = c("week","defteam","year")) %>% 
   ungroup() %>% 
   select(-posteam,-defteam) %>% 
-  filter(week>1) %>% 
-  mutate(longest_rec = ifelse(longest_rec<=0,0.00001,longest_rec))
+  filter(week>1) %>%
+  filter(longest_rec >0) #Filter out 0
 
-tree_predictions_vector <- longest_rec_joined_data$longest_rec
+test <- longest_rec_joined_data %>%
+  group_by(longest_rec) %>% 
+  summarize(count = n())
+  
+
+longest_rec_joined_data %>% 
+  ggplot(aes(x =(longest_rec)))+
+  geom_density()
+
+tree_predictions_vector <- sqrt(longest_rec_joined_data$longest_rec)
+# tree_predictions_vector <- ifelse(tree_predictions_vector==0,0.0000000000000001,tree_predictions_vector)
+
+library(goftest)
+
+# Extract the individual tree predictions
+
+# Load the fitdistrplus package
+library(fitdistrplus)
 
 fit_normal <- fitdist(tree_predictions_vector, "norm")
-fit_lognorm <- fitdist(tree_predictions_vector, "lnorm")
+fit_lognorm <- fitdist(tree_predictions_vector,"lnorm")
 fit_gamma <- fitdist(tree_predictions_vector, "gamma")
 fit_weibull <- fitdist(tree_predictions_vector, "weibull")
 # fit_beta <- fitdist(tree_predictions_vector / max(tree_predictions_vector), "beta")
@@ -164,26 +196,27 @@ library(goftest)
 # Load the fitdistrplus package
 library(fitdistrplus)
 # Perform KS test for the gamma fit
+# Perform KS test for the normal fit
 ks.test(
   tree_predictions_vector,
-  "pgamma",
-  shape = fit_gamma$estimate["shape"],
-  rate = fit_gamma$estimate["rate"]
+  "pnorm",
+  mean = fit_normal$estimate["mean"],
+  sd = fit_normal$estimate["sd"]
 )
 
-# Perform AD test for the gamma fit
+# Perform AD test for the normal fit
 ad.test(
   tree_predictions_vector,
-  pgamma,
-  shape = fit_gamma$estimate["shape"],
-  rate = fit_gamma$estimate["rate"]
+  pnorm,
+  mean = fit_normal$estimate["mean"],
+  sd = fit_normal$estimate["sd"]
 )
 
 # Define bins (intervals for the test)
 bins <- hist(tree_predictions_vector, breaks = 10, plot = FALSE)$breaks
 
-# Calculate expected frequencies for gamma
-expected <- diff(pgamma(bins, shape = fit_gamma$estimate["shape"], rate = fit_gamma$estimate["rate"])) * length(tree_predictions_vector)
+# Calculate expected frequencies for normal distribution
+expected <- diff(pnorm(bins, mean = fit_normal$estimate["mean"], sd = fit_normal$estimate["sd"])) * length(tree_predictions_vector)
 
 # Calculate observed frequencies
 observed <- hist(tree_predictions_vector, breaks = bins, plot = FALSE)$counts
@@ -191,40 +224,40 @@ observed <- hist(tree_predictions_vector, breaks = bins, plot = FALSE)$counts
 # Perform chi-squared test
 chisq.test(observed, p = expected / sum(expected))
 
-# Generate the fitted gamma density
-gamma_density <- data.frame(
+# Generate the fitted normal density
+normal_density <- data.frame(
   x = seq(min(tree_predictions_vector), max(tree_predictions_vector), length.out = 100),
-  y = dgamma(seq(min(tree_predictions_vector), max(tree_predictions_vector), length.out = 100),
-             shape = fit_gamma$estimate["shape"],
-             rate = fit_gamma$estimate["rate"])
+  y = dnorm(seq(min(tree_predictions_vector), max(tree_predictions_vector), length.out = 100),
+            mean = fit_normal$estimate["mean"],
+            sd = fit_normal$estimate["sd"])
 )
 
-# Plot the histogram and fitted gamma density
+# Plot the histogram and fitted normal density
 ggplot(data.frame(tree_predictions_vector), aes(x = tree_predictions_vector)) +
   geom_histogram(aes(y = ..density..), bins = 30, fill = "blue", alpha = 0.4) +
-  geom_line(data = gamma_density, aes(x = x, y = y), color = "red", size = 1) +
-  labs(title = "Gamma Distribution Fit",
+  geom_line(data = normal_density, aes(x = x, y = y), color = "red", size = 1) +
+  labs(title = "Normal Distribution Fit",
        x = "Predicted Values",
        y = "Density")
 
-# Generate Q-Q plot for gamma
-qqcomp(list(fit_gamma), legendtext = c("Gamma"))
+# Generate Q-Q plot for normal
+qqcomp(list(fit_normal), legendtext = c("Normal"))
 
-# Create an empirical CDF and compare with gamma CDF
+# Create an empirical CDF and compare with normal CDF
 ecdf_data <- ecdf(tree_predictions_vector)
 
 # Plot the empirical and theoretical CDFs
 plot(ecdf_data, main = "CDF Comparison", xlab = "Predicted Values", ylab = "Cumulative Probability")
-curve(pgamma(x, shape = fit_gamma$estimate["shape"], rate = fit_gamma$estimate["rate"]),
+curve(pnorm(x, mean = fit_normal$estimate["mean"], sd = fit_normal$estimate["sd"]),
       add = TRUE, col = "red")
-legend("bottomright", legend = c("Empirical CDF", "Theoretical Gamma CDF"), col = c("black", "red"), lty = 1)
+legend("bottomright", legend = c("Empirical CDF", "Theoretical Normal CDF"), col = c("black", "red"), lty = 1)
 
-# Residual Analysis using gamma fit
+# Residual Analysis using normal fit
 observed <- tree_predictions_vector
-expected <- qgamma(
+expected <- qnorm(
   p = ecdf(tree_predictions_vector)(tree_predictions_vector),
-  shape = fit_gamma$estimate["shape"],
-  rate = fit_gamma$estimate["rate"]
+  mean = fit_normal$estimate["mean"],
+  sd = fit_normal$estimate["sd"]
 )
 
 residuals <- (observed) - (expected)
@@ -233,7 +266,7 @@ residuals <- (observed) - (expected)
 ggplot(data.frame(observed, residuals), aes(x = observed, y = residuals)) +
   geom_point(alpha = 0.5, color = "blue") +
   geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
-  labs(title = "Residuals vs Observed Values (Gamma)",
+  labs(title = "Residuals vs Observed Values (Normal)",
        x = "Observed Values",
        y = "Residuals") +
   theme_minimal()
@@ -242,7 +275,7 @@ ggplot(data.frame(observed, residuals), aes(x = observed, y = residuals)) +
 ggplot(data.frame(residuals), aes(x = residuals)) +
   geom_histogram(aes(y = ..density..), bins = 30, fill = "blue", alpha = 0.4) +
   geom_density(color = "red", size = 1) +
-  labs(title = "Histogram of Residuals (Gamma)",
+  labs(title = "Histogram of Residuals (Normal)",
        x = "Residuals",
        y = "Density") +
   theme_minimal()
@@ -252,10 +285,11 @@ fitted <- expected
 ggplot(data.frame(fitted, residuals), aes(x = fitted, y = residuals)) +
   geom_point(alpha = 0.5, color = "blue") +
   geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
-  labs(title = "Residuals vs Fitted Values (Gamma)",
+  labs(title = "Residuals vs Fitted Values (Normal)",
        x = "Fitted Values",
        y = "Residuals") +
   theme_minimal()
+
 
 
 #No Transform----
