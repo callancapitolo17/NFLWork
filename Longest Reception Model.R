@@ -138,7 +138,7 @@ test <- longest_rec_joined_data %>%
   
 
 longest_rec_joined_data %>% 
-  ggplot(aes(x =(longest_rec)))+
+  ggplot(aes(x =sqrt(longest_rec)))+
   geom_density()
 
 tree_predictions_vector <- sqrt(longest_rec_joined_data$longest_rec)
@@ -197,19 +197,21 @@ library(goftest)
 library(fitdistrplus)
 # Perform KS test for the gamma fit
 # Perform KS test for the normal fit
+set.seed(123)  # For reproducibility
+
 ks.test(
   tree_predictions_vector,
-  "pnorm",
-  mean = fit_normal$estimate["mean"],
-  sd = fit_normal$estimate["sd"]
+  "pgamma",
+  rate = fit_gamma$estimate["rate"],
+  shape = fit_gamma$estimate["shape"]
 )
 
 # Perform AD test for the normal fit
 ad.test(
   tree_predictions_vector,
-  pnorm,
-  mean = fit_normal$estimate["mean"],
-  sd = fit_normal$estimate["sd"]
+  pgamma,
+  rate = fit_gamma$estimate["rate"],
+  shape = fit_gamma$estimate["shape"]
 )
 
 # Define bins (intervals for the test)
@@ -224,49 +226,56 @@ observed <- hist(tree_predictions_vector, breaks = bins, plot = FALSE)$counts
 # Perform chi-squared test
 chisq.test(observed, p = expected / sum(expected))
 
-# Generate the fitted normal density
-normal_density <- data.frame(
+# Generate the fitted gamma density
+gamma_density <- data.frame(
   x = seq(min(tree_predictions_vector), max(tree_predictions_vector), length.out = 100),
-  y = dnorm(seq(min(tree_predictions_vector), max(tree_predictions_vector), length.out = 100),
-            mean = fit_normal$estimate["mean"],
-            sd = fit_normal$estimate["sd"])
+  y = dgamma(seq(min(tree_predictions_vector), max(tree_predictions_vector), length.out = 100),
+             shape = fit_gamma$estimate["shape"],
+             rate = fit_gamma$estimate["rate"])
 )
 
-# Plot the histogram and fitted normal density
+# Plot the histogram and fitted gamma density
 ggplot(data.frame(tree_predictions_vector), aes(x = tree_predictions_vector)) +
   geom_histogram(aes(y = ..density..), bins = 30, fill = "blue", alpha = 0.4) +
-  geom_line(data = normal_density, aes(x = x, y = y), color = "red", size = 1) +
-  labs(title = "Normal Distribution Fit",
+  geom_line(data = gamma_density, aes(x = x, y = y), color = "red", size = 1) +
+  labs(title = "Gamma Distribution Fit",
        x = "Predicted Values",
        y = "Density")
 
-# Generate Q-Q plot for normal
-qqcomp(list(fit_normal), legendtext = c("Normal"))
+# Generate Q-Q plot for gamma
+qqcomp(list(fit_gamma), legendtext = c("Gamma"))
 
-# Create an empirical CDF and compare with normal CDF
+# Create an empirical CDF and compare with gamma CDF
 ecdf_data <- ecdf(tree_predictions_vector)
-
-# Plot the empirical and theoretical CDFs
 plot(ecdf_data, main = "CDF Comparison", xlab = "Predicted Values", ylab = "Cumulative Probability")
-curve(pnorm(x, mean = fit_normal$estimate["mean"], sd = fit_normal$estimate["sd"]),
-      add = TRUE, col = "red")
-legend("bottomright", legend = c("Empirical CDF", "Theoretical Normal CDF"), col = c("black", "red"), lty = 1)
+curve(pgamma(x, shape = fit_gamma$estimate["shape"], rate = fit_gamma$estimate["rate"]),
+      add = TRUE, col = "red", lwd = 2)
+legend("bottomright", legend = c("Empirical CDF", "Theoretical Gamma CDF"), col = c("black", "red"), lty = 1)
 
-# Residual Analysis using normal fit
+# Residual Analysis using gamma fit
 observed <- tree_predictions_vector
-expected <- qnorm(
+expected <- qgamma(
   p = ecdf(tree_predictions_vector)(tree_predictions_vector),
-  mean = fit_normal$estimate["mean"],
-  sd = fit_normal$estimate["sd"]
+  shape = fit_gamma$estimate["shape"],
+  rate = fit_gamma$estimate["rate"]
+)
+shape <- fit_gamma$estimate["shape"]
+rate <- fit_gamma$estimate["rate"]
+
+# Calculate fitted (expected) values as the mean of the gamma distribution
+fitted <- qgamma(
+  p = pgamma(tree_predictions_vector, shape = shape, rate = rate), 
+  shape = shape, 
+  rate = rate
 )
 
-residuals <- (observed) - (expected)
+residuals <- observed - fitted
 
-# Plot 1: Residuals vs. Observed Values
+# Plot 1: Residuals vs Observed Values
 ggplot(data.frame(observed, residuals), aes(x = observed, y = residuals)) +
   geom_point(alpha = 0.5, color = "blue") +
   geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
-  labs(title = "Residuals vs Observed Values (Normal)",
+  labs(title = "Residuals vs Observed Values (Gamma)",
        x = "Observed Values",
        y = "Residuals") +
   theme_minimal()
@@ -275,20 +284,11 @@ ggplot(data.frame(observed, residuals), aes(x = observed, y = residuals)) +
 ggplot(data.frame(residuals), aes(x = residuals)) +
   geom_histogram(aes(y = ..density..), bins = 30, fill = "blue", alpha = 0.4) +
   geom_density(color = "red", size = 1) +
-  labs(title = "Histogram of Residuals (Normal)",
+  labs(title = "Histogram of Residuals (Gamma)",
        x = "Residuals",
        y = "Density") +
   theme_minimal()
 
-# Plot 3: Residuals vs Fitted Values
-fitted <- expected
-ggplot(data.frame(fitted, residuals), aes(x = fitted, y = residuals)) +
-  geom_point(alpha = 0.5, color = "blue") +
-  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
-  labs(title = "Residuals vs Fitted Values (Normal)",
-       x = "Fitted Values",
-       y = "Residuals") +
-  theme_minimal()
 
 
 
