@@ -1,3 +1,11 @@
+library(caret)
+library(tidyverse)
+library(data.table)
+library(randomForest)
+library(xgboost)
+library(Metrics)
+library(goftest)
+library(fitdistrplus)
 library(nflfastR)
 library(ggplot2)
 library(tidyverse)
@@ -8,10 +16,11 @@ library(ggrepel)
 library(nflreadr)
 library(gt)
 library(ggrepel)
-library(nflplotR)
 library(gtExtras)
 
 #Data Prep----
+ftn_data <- nflreadr::load_ftn_charting(2022:2024) %>%
+  select(-week, -season)
 wr_long_data <- load_pbp(2022:2024) %>% left_join(ftn_data, by = c("game_id" = "nflverse_game_id",
                                                                               "play_id" = "nflverse_play_id")) 
 game_wr <- wr_long_data %>% 
@@ -121,7 +130,8 @@ def_scout <- wr_long_data %>%
 
 
 longest_rec_data <- game_wr %>% 
-  select(receiver_player_id,name,game_id,week, posteam,spread,bet_total,longest_rec,year,defteam)
+  filter(longest_rec >0 & targets <=3) %>% 
+  select(receiver_player_id,name,game_id,week,posteam,spread,bet_total,longest_rec,year,defteam)
 
 longest_rec_joined_data <- longest_rec_data %>% 
   left_join(season_wr, by = c("receiver_player_id","week","year","posteam")) %>% 
@@ -129,8 +139,11 @@ longest_rec_joined_data <- longest_rec_data %>%
   left_join(def_scout, by = c("week","defteam","year")) %>% 
   ungroup() %>% 
   select(-posteam,-defteam) %>% 
-  filter(week>1) %>%
-  filter(longest_rec >0) #Filter out 0
+  filter(week>1)
+   #Filter out 0
+
+checks <- longest_rec_joined_data %>% 
+  filter(longest_rec == 0)
 
 test <- longest_rec_joined_data %>%
   group_by(longest_rec) %>% 
@@ -188,15 +201,7 @@ denscomp(list(fit_normal, fit_lognorm, fit_gamma, fit_weibull), legendtext = plo
 
 qqcomp(list(fit_normal, fit_lognorm, fit_gamma, fit_weibull), legendtext = plot.legend)
 ppcomp(list(fit_normal, fit_lognorm, fit_gamma, fit_weibull), legendtext = plot.legend)
-
-library(goftest)
-
-# Extract the individual tree predictions
-
-# Load the fitdistrplus package
-library(fitdistrplus)
 # Perform KS test for the gamma fit
-# Perform KS test for the normal fit
 set.seed(123)  # For reproducibility
 
 ks.test(
@@ -290,9 +295,8 @@ ggplot(data.frame(residuals), aes(x = residuals)) +
   theme_minimal()
 
 
+#Longest Completion Transformed Model----
 
-
-#No Transform----
 # Load required libraries
 library(caret)
 library(tidyverse)
@@ -300,6 +304,95 @@ library(data.table)
 library(randomForest)
 library(xgboost)
 library(Metrics)
+
+# Data Preparation
+set.seed(42) # Set seed for reproducibility
+
+# Clean and preprocess data
+sqrt_data <- longest_rec_joined_data %>%
+  drop_na() %>%  # Remove rows with missing values
+  mutate_if(is.character, as.factor) %>%  # Convert character columns to factors
+  select(-receiver_player_id, -game_id, -name) %>%  # Drop non-predictive or irrelevant columns
+  mutate(longest_rec = sqrt(ifelse(longest_rec<0,0,longest_rec)))
+# Split data into training and testing sets
+sqrt_trainIndex <- createDataPartition(sqrt_data$longest_rec, p = 0.8, list = FALSE)
+sqrt_trainData <- sqrt_data[sqrt_trainIndex, ]
+sqrt_testData <- sqrt_data[-sqrt_trainIndex, ]
+
+# Separate predictors and response
+sqrt_x_train <- sqrt_trainData %>% select(-longest_rec)
+sqrt_y_train <- sqrt_trainData$longest_rec
+sqrt_x_test <- sqrt_testData %>% select(-longest_rec)
+sqrt_y_test <- sqrt_testData$longest_rec
+
+# Feature Scaling
+sqrt_preProc <- preProcess(sqrt_x_train, method = c("center", "scale"))
+sqrt_x_train <- predict(sqrt_preProc, sqrt_x_train)
+sqrt_x_test <- predict(sqrt_preProc, sqrt_x_test)
+
+# Model Training and Cross-Validation
+
+# Linear Regression
+sqrt_lm_model <- train(longest_rec ~ ., data = sqrt_trainData, method = "lm",
+                       trControl = trainControl(method = "cv", number = 5))
+
+# Random Forest
+sqrt_rf_model <- train(longest_rec ~ ., data = sqrt_trainData, method = "rf",
+                       trControl = trainControl(method = "cv", number = 5),
+                       tuneLength = 5)
+
+# Gradient Boosting (XGBoost)
+sqrt_xgb_grid <- expand.grid(
+  nrounds = c(100, 200),
+  max_depth = c(3, 5, 7),
+  eta = c(0.01, 0.1),
+  gamma = 0,
+  colsample_bytree = 0.8,
+  min_child_weight = 1,
+  subsample = 0.8
+)
+
+sqrt_xgb_model <- train(longest_rec ~ ., data = sqrt_trainData, method = "xgbTree",
+                        trControl = trainControl(method = "cv", number = 5),
+                        tuneGrid = sqrt_xgb_grid)
+
+# Evaluate Models
+sqrt_models <- list(lm = sqrt_lm_model, rf = sqrt_rf_model, xgb = sqrt_xgb_model)
+sqrt_results <- resamples(sqrt_models)
+
+# Summarize results
+summary(sqrt_results)
+
+# Compare RMSE on the test set
+sqrt_model_performance <- sapply(sqrt_models, function(model) {
+  predictions <- predict(model, newdata = sqrt_x_test)
+  rmse(sqrt_y_test, predictions)
+})
+
+# Select the best model
+sqrt_best_model_name <- names(sqrt_model_performance)[which.min(sqrt_model_performance)]
+sqrt_best_model <- sqrt_models[[sqrt_best_model_name]]
+
+cat("Best model:", sqrt_best_model_name, "with RMSE:", min(sqrt_model_performance), "\n")
+
+# Feature Importance (for Random Forest or XGBoost)
+if (sqrt_best_model_name %in% c("rf", "xgb")) {
+  varImp(sqrt_best_model) %>% plot()
+}
+
+sqrt_final_predictions <- as.data.frame(predict(sqrt_best_model, newdata = sqrt_x_test))
+sqrt_final_check<- as.data.frame(predict(sqrt_best_model, newdata = sqrt_x_test, interval = "prediction", level = 0.5))
+
+sqrt_residuals <- sqrt_y_test - sqrt_final_predictions[[1]]
+
+# Plot residuals
+plot(sqrt_final_predictions[[1]], sqrt_residuals, main = "Residuals vs Predictions", xlab = "Predicted Values", ylab = "Residuals")
+abline(h = 0, col = "red")
+
+
+
+  #No Transform----
+# Load required libraries
 
 # Data Preparation
 set.seed(42) # Set seed for reproducibility
@@ -502,131 +595,6 @@ ggplot(data.frame(fitted, residuals), aes(x = fitted, y = residuals)) +
   theme_minimal()
 
 #Issues with residuals
-
-
-
-#Longest Completion Transformed Model----
-
-
-log_transformed <- data %>% 
-  mutate(longest_rec = ifelse(longest_rec <=0,0.1,longest_rec))
-sqrt_transformed <- data %>% 
-  mutate(longest_rec = ifelse(longest_rec <=0,0,longest_rec))
-par(mfrow = c(1, 3))
-qqnorm(data$longest_rec, main = "Original")
-qqline(data$longest_rec, col = "red")
-
-qqnorm(log(log_transformed$longest_rec), main = "Log-Transformed")
-qqline(log(log_transformed$longest_rec), col = "blue")
-
-qqnorm(sqrt(sqrt_transformed$longest_rec), main = "Square Root-Transformed")
-qqline(sqrt(sqrt_transformed$longest_rec), col = "green")
-
-# Load required libraries
-library(caret)
-library(tidyverse)
-library(data.table)
-library(randomForest)
-library(xgboost)
-library(Metrics)
-
-# Data Preparation
-set.seed(42) # Set seed for reproducibility
-
-# Clean and preprocess data
-data <- longest_rec_joined_data %>%
-  drop_na() %>%  # Remove rows with missing values
-  mutate_if(is.character, as.factor) %>%  # Convert character columns to factors
-  select(-receiver_player_id, -game_id, -name) %>%  # Drop non-predictive or irrelevant columns
-  mutate(longest_rec = sqrt(ifelse(longest_rec<0,0,longest_rec)))
-# Split data into training and testing sets
-trainIndex <- createDataPartition(data$longest_rec, p = 0.8, list = FALSE)
-trainData <- data[trainIndex, ]
-testData <- data[-trainIndex, ]
-
-# Separate predictors and response
-x_train <- trainData %>% select(-longest_rec)
-y_train <- trainData$longest_rec
-x_test <- testData %>% select(-longest_rec)
-y_test <- testData$longest_rec
-
-# Feature Scaling
-preProc <- preProcess(x_train, method = c("center", "scale"))
-x_train <- predict(preProc, x_train)
-x_test <- predict(preProc, x_test)
-
-# Model Training and Cross-Validation
-
-# Linear Regression
-lm_model <- train(longest_rec ~ ., data = trainData, method = "lm",
-                  trControl = trainControl(method = "cv", number = 5))
-
-# Random Forest
-rf_model <- train(longest_rec ~ ., data = trainData, method = "rf",
-                  trControl = trainControl(method = "cv", number = 5),
-                  tuneLength = 5)
-
-# Gradient Boosting (XGBoost)
-xgb_grid <- expand.grid(
-  nrounds = c(100, 200),
-  max_depth = c(3, 5, 7),
-  eta = c(0.01, 0.1),
-  gamma = 0,
-  colsample_bytree = 0.8,
-  min_child_weight = 1,
-  subsample = 0.8
-)
-
-xgb_model <- train(longest_rec ~ ., data = trainData, method = "xgbTree",
-                   trControl = trainControl(method = "cv", number = 5),
-                   tuneGrid = xgb_grid)
-
-# Evaluate Models
-models <- list(lm = lm_model, rf = rf_model, xgb = xgb_model)
-results <- resamples(models)
-
-# Summarize results
-summary(results)
-
-# Compare RMSE on the test set
-model_performance <- sapply(models, function(model) {
-  predictions <- predict(model, newdata = x_test)
-  rmse(y_test, predictions)
-})
-
-# Select the best model
-best_model_name <- names(model_performance)[which.min(model_performance)]
-best_model <- models[[best_model_name]]
-
-cat("Best model:", best_model_name, "with RMSE:", min(model_performance), "\n")
-
-# Feature Importance (for Random Forest or XGBoost)
-if (best_model_name %in% c("rf", "xgb")) {
-  varImp(best_model) %>% plot()
-}
-
-residuals <- y_test - final_predictions[[1]]
-
-# Plot residuals
-plot(final_predictions[[1]], residuals, main = "Residuals vs Predictions", xlab = "Predicted Values", ylab = "Residuals")
-abline(h = 0, col = "red")
-
-# Final predictions
-final_predictions <- as.data.frame(predict(best_model, newdata = x_test))
-final_check<- as.data.frame(predict(best_model, newdata = x_test, interval = "prediction", level = 0.5))
-
-test_identifiers <- testData %>% select(receiver_player_id, game_id, name,longest_rec) # Drop non-predictive or irrelevant columns
-
-# Make predictions using the best model
-
-# Combine predictions with identifiers
-predictions_with_identifiers <- test_identifiers %>%
-  mutate(predicted_longest_rec = final_predictions)
-
-
-
-
-
 
 
 

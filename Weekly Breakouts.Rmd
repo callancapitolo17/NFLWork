@@ -98,7 +98,7 @@ total_efficiency_both %>%
         panel.border = element_rect(colour = "white", fill = NA, size = 1))+
   geom_hline(yintercept = mean(total_efficiency_both$offensive_epa), linetype = "dashed",color = "white")+
   geom_vline(xintercept = mean(total_efficiency_both$defensive_epa), linetype = "dashed", color = "white")
-#ggsave("EffLandscape.png", width = 14, height =10, dpi = "retina")
+# ggsave("EffLandscape.png", width = 14, height =10, dpi = "retina")
 
 
 
@@ -159,7 +159,7 @@ pbp_rp %>%
           axis.title = element_text(color = "white", size = 14),
           panel.border = element_rect(colour = "white", fill = NA, size = 1))+
   geom_smooth(se = F, method = "lm", color = "white")
-ggsave("DefSuccessLandscape.png", width = 14, height =10, dpi = "retina")
+# ggsave("DefSuccessLandscape.png", width = 14, height =10, dpi = "retina")
 ```
 
 ## Side of Ball Breakdown
@@ -193,7 +193,7 @@ pbp_rp %>%
   labs(x = "EPA/Rush", y = "EPA/Dropback", title = "Offensive Efficiency Landscape",subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")+
   geom_hline(yintercept = mean(pbp_rp$epa[pbp_rp$season == 2024 & pbp_rp$pass == 1],na.rm = T), linetype = "dashed",color = "white")+
   geom_vline(xintercept = mean(pbp_rp$epa[pbp_rp$season == 2024 & pbp_rp$rush == 1],na.rm = T), linetype = "dashed",color = "white")
-#ggsave("OffBreakdown.png", width = 14, height =10, dpi = "retina")
+# ggsave("OffBreakdown.png", width = 14, height =10, dpi = "retina")
 
 pbp_rp %>% 
   filter(season == year) %>% 
@@ -309,7 +309,7 @@ pbp_rp %>%
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1),
         panel.grid = element_blank())
-#ggsave("OffPlayBreakout.png", width = 14, height =10, dpi = "retina")
+# ggsave("OffPlayBreakout.png", width = 14, height =10, dpi = "retina")
  
 
 ```
@@ -1003,7 +1003,7 @@ yac_passing <- yac_passing %>%
 
 yac_passing %>% 
   ggplot(aes(x=yac_pct, y = YAC_Over_Expected_Catch))+
-  geom_nfl_logos(aes(team_abbr = posteam), width = 0.05)+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.03)+
   labs(x = "% of Passing Yards from YAC", y = "YAC Over Expected Per Catch", title = "Which QBs Benefit the Most From YAC?", subtitle = "Minimum 50 Pass Attempts",
        caption = "Callan Capitolo | @CapAnalytics7 | nflfastR")+
   # geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") +
@@ -1031,7 +1031,7 @@ yac_passing %>%
         panel.border = element_rect(colour = "white", fill = NA, size = 1),
         panel.grid = element_blank())+
   geom_mean_lines(aes(x0 = yac_pct, y0 = epa_pass),color = "white", linetype = "dashed")
-#ggsave("YAC.png", width = 14, height =10, dpi = "retina")
+ggsave("YAC.png", width = 14, height =10, dpi = "retina")
 
 ```
 
@@ -1049,7 +1049,7 @@ pbp %>%
   mutate(net_epa_play = round((epa_def*-1+off_epa_play)/(def_plays+off_plays),5)) %>% 
   ggplot(aes(x = net_epa_play, y = reorder(posteam,net_epa_play))) +
     geom_col(aes(color = posteam, fill = posteam))+
-    labs(y = "", x = "Special Teams EPA/Play", title = "Special Tea", subtitle = "Sections represent different components of an offense's EPA/Play",caption = "@CapAnalytics7 | nflfastR")+
+    labs(y = "", x = "Special Teams EPA/Play", title = "Special Teams", subtitle = "Sections represent different components of an offense's EPA/Play",caption = "@CapAnalytics7 | nflfastR")+
     theme(legend.position = "top",
           legend.direction = "horizontal",
           legend.background = element_rect(fill = "white", color="white"),
