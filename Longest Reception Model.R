@@ -11,13 +11,12 @@ library(ggplot2)
 library(tidyverse)
 library(ggimage)
 library(ggthemes)
-library(dplyr)
 library(ggrepel)
 library(nflreadr)
 library(gt)
 library(ggrepel)
 library(gtExtras)
-
+library(dplyr)
 #Data Prep----
 ftn_data <- nflreadr::load_ftn_charting(2022:2024) %>%
   select(-week, -season)
@@ -337,9 +336,18 @@ sqrt_lm_model <- train(longest_rec ~ ., data = sqrt_trainData, method = "lm",
                        trControl = trainControl(method = "cv", number = 5))
 
 # Random Forest
-sqrt_rf_model <- train(longest_rec ~ ., data = sqrt_trainData, method = "rf",
-                       trControl = trainControl(method = "cv", number = 5),
-                       tuneLength = 5)
+sqrt_rf_grid <- expand.grid(
+  mtry = seq(2, ncol(sqrt_x_train), by = 2)  # Test mtry values for the transformed model
+)
+
+sqrt_rf_model <- train(
+  longest_rec ~ ., 
+  data = sqrt_trainData, 
+  method = "rf",
+  trControl = trainControl(method = "cv", number = 5),  # 5-fold cross-validation
+  tuneGrid = sqrt_rf_grid,
+  ntree = 500
+)
 
 # Gradient Boosting (XGBoost)
 sqrt_xgb_grid <- expand.grid(
@@ -391,7 +399,7 @@ abline(h = 0, col = "red")
 
 
 
-  #No Transform----
+#No Transform----
 # Load required libraries
 
 # Data Preparation
@@ -426,9 +434,19 @@ lm_model <- train(longest_rec ~ ., data = trainData, method = "lm",
                   trControl = trainControl(method = "cv", number = 5))
 
 # Random Forest
-rf_model <- train(longest_rec ~ ., data = trainData, method = "rf",
-                  trControl = trainControl(method = "cv", number = 5),
-                  tuneLength = 5)
+rf_grid <- expand.grid(
+  mtry = seq(2, ncol(x_train), by = 2)  # Test mtry values from 2 to the number of predictors
+)
+
+# Retraining Original RF Model
+rf_model <- train(
+  longest_rec ~ ., 
+  data = trainData, 
+  method = "rf",
+  trControl = trainControl(method = "cv", number = 5),  # 5-fold cross-validation
+  tuneGrid = rf_grid,
+  ntree = 500
+)
 
 # Gradient Boosting (XGBoost)
 xgb_grid <- expand.grid(
@@ -486,115 +504,51 @@ test_identifiers <- testData %>% select(receiver_player_id, game_id, name,longes
 predictions_with_identifiers <- test_identifiers %>%
   mutate(predicted_longest_rec = final_predictions)
 
-# Load necessary libraries
+#Model Comparison----
+# Reverse the square root transformation
+sqrt_final_predictions_original_scale <- sqrt_final_predictions[[1]]^2
+sqrt_residuals_original_scale <- sqrt_y_test^2 - sqrt_final_predictions_original_scale
+
+# RMSE and MAE for the original model
+original_rmse <- rmse(y_test, final_predictions[[1]])
+original_mae <- mae(y_test, final_predictions[[1]])
+
+# RMSE and MAE for the transformed model (on original scale)
+sqrt_rmse <- rmse(y_test, sqrt_final_predictions_original_scale)
+sqrt_mae <- mae(y_test, sqrt_final_predictions_original_scale)
+
+cat("Original Model RMSE:", original_rmse, "\n")
+cat("Original Model MAE:", original_mae, "\n")
+cat("Square Root Model RMSE (Original Scale):", sqrt_rmse, "\n")
+cat("Square Root Model MAE (Original Scale):", sqrt_mae, "\n")
+
+# Residuals plot for the original model
+original_residuals <- y_test - final_predictions[[1]]
+plot(final_predictions[[1]], original_residuals, main = "Residuals vs Predictions (Original Model)", xlab = "Predicted Values", ylab = "Residuals")
+abline(h = 0, col = "red")
+
+# Residuals plot for the square root-transformed model (on original scale)
+plot(sqrt_final_predictions_original_scale, sqrt_residuals_original_scale, main = "Residuals vs Predictions (Sqrt Model)", xlab = "Predicted Values", ylab = "Residuals")
+abline(h = 0, col = "red")
+
+# Paired t-test on residuals (original scale)
+t.test(abs(original_residuals), abs(sqrt_residuals_original_scale), paired = TRUE)
 
 
-tree_predictions_vector <- predict(best_model, x_test, predict.all = TRUE)
+#Best Model Prep----
+# Check the best model name
+cat("Best model:", sqrt_best_model_name, "\n")
 
-# Extract the individual tree predictions
+# Extract the best tuning parameters for the model
+if (sqrt_best_model_name == "xgb") {
+  best_params <- sqrt_xgb_model$bestTune
+} else if (sqrt_best_model_name == "rf") {
+  best_params <- sqrt_rf_model$bestTune
+} else if (sqrt_best_model_name == "lm") {
+  best_params <- "No tuning parameters for linear regression"
+}
 
-# Load the fitdistrplus package
-library(fitdistrplus)
-
-# Fit various distributions
-# Perform KS test for the Weibull fit
-# Replace gamma-specific parts with log-normal equivalents
-
-# Perform KS test for the log-normal fit
-ks.test(
-  tree_predictions_vector,
-  "plnorm",
-  meanlog = fit_lognorm$estimate["meanlog"],
-  sdlog = fit_lognorm$estimate["sdlog"]
-)
-
-# Perform AD test for the log-normal fit
-ad.test(
-  tree_predictions_vector,
-  plnorm,
-  meanlog = fit_lognorm$estimate["meanlog"],
-  sdlog = fit_lognorm$estimate["sdlog"]
-)
-
-# Define bins (intervals for the test)
-bins <- hist(tree_predictions_vector, breaks = 10, plot = FALSE)$breaks
-
-# Calculate expected frequencies for log-normal
-expected <- diff(plnorm(bins, meanlog = fit_lognorm$estimate["meanlog"], sdlog = fit_lognorm$estimate["sdlog"])) * length(tree_predictions_vector)
-
-# Calculate observed frequencies
-observed <- hist(tree_predictions_vector, breaks = bins, plot = FALSE)$counts
-
-# Perform chi-squared test
-chisq.test(observed, p = expected / sum(expected))
-
-# Generate the fitted log-normal density
-lognorm_density <- data.frame(
-  x = seq(min(tree_predictions_vector), max(tree_predictions_vector), length.out = 100),
-  y = dlnorm(seq(min(tree_predictions_vector), max(tree_predictions_vector), length.out = 100),
-             meanlog = fit_lognorm$estimate["meanlog"],
-             sdlog = fit_lognorm$estimate["sdlog"])
-)
-
-# Plot the histogram and fitted density
-ggplot(data.frame(tree_predictions_vector), aes(x = tree_predictions_vector)) +
-  geom_histogram(aes(y = ..density..), bins = 30, fill = "blue", alpha = 0.4) +
-  geom_line(data = lognorm_density, aes(x = x, y = y), color = "red", size = 1) +
-  labs(title = "Log-Normal Distribution Fit",
-       x = "Predicted Values",
-       y = "Density")
-
-# Generate Q-Q plot for log-normal
-qqcomp(list(fit_lognorm), legendtext = c("Log-Normal"))
-
-# Create an empirical CDF and compare with log-normal CDF
-ecdf_data <- ecdf(tree_predictions_vector)
-
-# Plot the empirical and theoretical CDFs
-plot(ecdf_data, main = "CDF Comparison", xlab = "Predicted Values", ylab = "Cumulative Probability")
-curve(plnorm(x, meanlog = fit_lognorm$estimate["meanlog"], sdlog = fit_lognorm$estimate["sdlog"]),
-      add = TRUE, col = "red")
-legend("bottomright", legend = c("Empirical CDF", "Theoretical Log-Normal CDF"), col = c("black", "red"), lty = 1)
-
-# Residual Analysis using log-normal fit
-observed <- tree_predictions_vector
-expected <- qlnorm(
-  p = ecdf(tree_predictions_vector)(tree_predictions_vector),
-  meanlog = fit_lognorm$estimate["meanlog"],
-  sdlog = fit_lognorm$estimate["sdlog"]
-)
-
-residuals <- observed - expected
-
-# Plot 1: Residuals vs. Observed Values
-ggplot(data.frame(observed, residuals), aes(x = observed, y = residuals)) +
-  geom_point(alpha = 0.5, color = "blue") +
-  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
-  labs(title = "Residuals vs Observed Values (Log-Normal)",
-       x = "Observed Values",
-       y = "Residuals") +
-  theme_minimal()
-
-# Plot 2: Histogram of Residuals
-ggplot(data.frame(residuals), aes(x = residuals)) +
-  geom_histogram(aes(y = ..density..), bins = 30, fill = "blue", alpha = 0.4) +
-  geom_density(color = "red", size = 1) +
-  labs(title = "Histogram of Residuals (Log-Normal)",
-       x = "Residuals",
-       y = "Density") +
-  theme_minimal()
-
-# Plot 3: Residuals vs Fitted Values
-fitted <- expected
-ggplot(data.frame(fitted, residuals), aes(x = fitted, y = residuals)) +
-  geom_point(alpha = 0.5, color = "blue") +
-  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
-  labs(title = "Residuals vs Fitted Values (Log-Normal)",
-       x = "Fitted Values",
-       y = "Residuals") +
-  theme_minimal()
-
-#Issues with residuals
+print(best_params)
 
 
 
