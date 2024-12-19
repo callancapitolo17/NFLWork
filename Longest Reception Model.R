@@ -534,8 +534,6 @@ abline(h = 0, col = "red")
 # Paired t-test on residuals (original scale)
 t.test(abs(original_residuals), abs(sqrt_residuals_original_scale), paired = TRUE)
 
-
-#Best Model Prep----
 # Check the best model name
 cat("Best model:", sqrt_best_model_name, "\n")
 
@@ -650,7 +648,7 @@ schedules <- load_schedules(2024)
 
 wr_sched <- schedules %>% 
   # filter(is.na(away_score), week == pbp_rp$week +1)
-  filter(is.na(away_score), week == 15) %>% 
+  filter(is.na(away_score), week == 16) %>% 
   select(week, home_team ,spread = spread_line,bet_total = total_line,year = season,away_team) %>% 
   mutate(posteam_home = "yes", posteam_away = "no") %>% 
   pivot_longer(cols = c(posteam_home,posteam_away), values_to = "home_pos_team", names_to = "posteam") %>% 
@@ -658,16 +656,131 @@ wr_sched <- schedules %>%
          defteam = ifelse(home_pos_team == "yes", away_team, home_team)) %>% 
   select(-home_team,-away_team,-home_pos_team)
 
-longest_rec_joined_data <- wr_sched %>% 
+longest_rec_joined_data_pred <- wr_sched %>% 
   right_join(season_wr, by = c("posteam")) %>% 
   left_join(off_scout, by = c("posteam")) %>% 
   left_join(def_scout, by = c("defteam")) %>% 
   ungroup() 
 
-week_predictions <- as.data.frame(predict(best_model, newdata = longest_rec_joined_data))[[1]]
 
-longest_rec_predictions <- longest_rec_joined_data %>% 
-  filter(!is.na(spread)) %>% 
-  select(name) %>% 
-  mutate(pred_longest_rec = week_predictions)
 
+#Final Model----
+
+# Combine training and testing data for final retraining
+final_data <- rbind(trainData, testData)
+
+# Separate predictors and target variable
+final_x <- final_data %>% select(-longest_rec)
+final_y <- final_data$longest_rec
+
+# Step 1: Preprocess data (center and scale)
+final_preProc <- preProcess(final_x, method = c("center", "scale"))
+final_x <- predict(final_preProc, final_x)
+
+# Step 2: Retrain the best model (assume Random Forest is the best)
+final_rf_model <- randomForest(
+  sqrt(longest_rec) ~ ., 
+  data = cbind(final_x, longest_rec = final_y), 
+  mtry = 2,  # Best mtry value identified earlier
+  ntree = 500,      # Optimal ntree value
+  importance = TRUE  # Enable variable importance
+)
+
+# Save preprocessing steps and model
+saveRDS(final_preProc, file = "final_preprocessing.rds")
+saveRDS(final_rf_model, file = "final_rf_model.rds")
+
+# Evaluate the retrained model on an independent test set
+processed_test_x <- predict(final_preProc, newdata = x_test)
+
+# Make predictions on the test set
+test_predictions <- predict(final_rf_model, newdata = processed_test_x)
+
+# Reverse transformation for predictions (if necessary)
+test_predictions_original_scale <- test_predictions^2
+
+# Calculate evaluation metrics
+final_rmse <- rmse(y_test, test_predictions_original_scale)
+final_mae <- mae(y_test, test_predictions_original_scale)
+
+cat("Final Model RMSE:", final_rmse, "\n")
+cat("Final Model MAE:", final_mae, "\n")
+
+
+#Predictions ----
+
+# Load the saved preprocessing object and final model
+final_preProc <- readRDS("final_preprocessing.rds")
+final_rf_model <- readRDS("final_rf_model.rds")
+
+# Preprocess new data
+processed_new_data <- predict(final_preProc, newdata = longest_rec_joined_data_pred)
+
+# Make predictions
+predictions_df <- longest_rec_joined_data_pred %>%  mutate(longest_reception_predctions = predict(final_rf_model, newdata = processed_new_data))
+
+sqrt_longest_rec <- sqrt(longest_rec_joined_data$longest_rec)
+fit_gamma <- fitdist(sqrt_longest_rec, "gamma")
+
+# Extract parameters
+shape <- fit_gamma$estimate["shape"]
+rate <- fit_gamma$estimate["rate"]
+
+market_line <- 15.5
+
+sqrt_market_line <- sqrt(market_line)
+
+
+# Calculate probabilities for each prediction
+predictions_df <- longest_rec_joined_data_pred %>%
+  mutate(
+    longest_reception_predictions = predict(final_rf_model, newdata = processed_new_data),
+    adjusted_rate = shape / longest_reception_predictions,  # rate = shape / mean
+    
+    # Calculate the probability of exceeding the market line
+    prob_exceed_threshold = 1 - pgamma(
+      sqrt_market_line,       # Transformed market line
+      shape = shape,          # Shape remains constant
+      rate = adjusted_rate    # Player-specific rate
+    )
+  )
+
+check <- predictions_df %>% select(posteam,name, longest_reception_predictions, prob_exceed_threshold)
+american_to_decimal_odds <- function(odds){ifelse(odds < 0, 1 - (100/odds), 1+(odds/100))}
+prob_to_decimal <- function(prob){ifelse(prob > 0, 1 / prob, NA)}
+decimal_to_american = function(fair_decimal_odds)ifelse(
+  fair_decimal_odds > 2.0,
+  (fair_decimal_odds - 1) * 100,          # Positive American odds
+  -100 / (fair_decimal_odds - 1)          # Negative American odds
+)
+ev <- function(predicted_prob,decimal_odds){(predicted_prob * (decimal_odds-1)) - (1 - predicted_prob)}
+longest_reception_prediction_output <- function(){
+  player <- readline(prompt = "Enter Player Name:")
+  betting_line <- as.numeric(readline(prompt = "Enter Line:"))
+  over_odds <- as.numeric(readline(promp = "Enter Over Odds:"))
+  under_odds <- as.numeric(readline(promp = "Enter Under Odds:"))
+  over_dec <- american_to_decimal_odds(over_odds)
+  under_dec <- american_to_decimal_odds(under_odds)
+  over_prob <- 1/over_dec
+  under_prob <- 1/under_dec
+  results <- predictions_df %>% 
+    filter(name == player) %>% 
+    mutate(betting_line = betting_line,
+      adjusted_rate = shape / longest_reception_predictions,
+      predicted_over_prob = 1 - pgamma(
+      sqrt(betting_line),       # Transformed market line
+      shape = shape,          # Shape remains constant
+      rate = adjusted_rate    # Player-specific rate
+    ),
+    predicted_under_prob = 1-predicted_over_prob,
+    pred_over_dec_odds = prob_to_decimal(predicted_over_prob),
+    pred_over_american_odds = decimal_to_american(pred_over_dec_odds),
+    `Over ROI %` = ev(predicted_over_prob,over_dec)*100,
+    pred_under_dec_odds = prob_to_decimal(predicted_under_prob),
+    pred_under_american_odds = decimal_to_american(pred_under_dec_odds),
+    `Under ROI %` = ev(predicted_under_prob,under_dec)*100,
+    pred_longest_rec = longest_reception_predictions^2) %>% 
+    select(posteam,name, pred_longest_rec,betting_line, predicted_over_prob,`Over ROI %`, `Under ROI %`)
+  return(results)
+}
+longest_reception_prediction_output()
