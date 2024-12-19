@@ -1159,7 +1159,7 @@ weight_epa %>%
   geom_segment(aes(x = def_nw_epa, y = off_nw_epa, 
                    xend = defensive_epa, yend = offensive_epa), 
                color = "lightgrey", alpha = 0.8, lwd =1.5)# Add points for regular EPA
-#ggsave("WeightedLandscape.png", width = 14, height =10, dpi = "retina")
+ggsave("WeightedLandscape.png", width = 14, height =10, dpi = "retina")
 
 ```
 
