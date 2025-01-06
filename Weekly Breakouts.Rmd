@@ -1,7 +1,7 @@
 ---
 output:
-  html_document: default
   pdf_document: default
+  html_document: default
 --- 
 
 
@@ -108,15 +108,10 @@ total_efficiency_both %>%
 ```{r}
 pbp_rp %>% 
   group_by(posteam) %>%
-  # group_by(defteam) %>%
   summarize(success_rate = mean(success,na.rm = T), epa_play = mean(epa,na.rm = T)) %>% 
   ggplot(aes(x = success_rate, y = epa_play )) +
   geom_nfl_logos(aes(team_abbr = posteam), width = 0.045, alpha = 0.95)+
-  # geom_nfl_logos(aes(team_abbr = defteam), width = 0.045)+
   labs(x = "Success Rate", y = "EPA/Play", title = "Offensive Success Rate vs EPA/Play",caption = "@CapAnalytics7 | nflfastR", subtitle = "Teams above line benefit from high impact plays; teams below line lack high impact plays")+
-  # labs(x = "Success Rate Allowed", y = "EPA/Play",subtitle = "Teams above line benefit from high impact plays; teams below line lack high impact plays", title = "Defensive Success Rate vs EPA/Play",caption = "@CapAnalytics7 | nflfastR")+
-  # scale_x_reverse()+
-  # scale_y_reverse()+
   theme(legend.position = "top",
           legend.direction = "horizontal",
           legend.background = element_rect(fill = "white", color="white"),
@@ -488,34 +483,34 @@ ggsave("NegativePlays.png", width = 14, height =10, dpi = "retina")
 ```
 
 ## Negative Series Frequency
-```{r}
-negatives %>%
-  mutate(neg_series_rate = (count_Yes/(count_No+count_Yes))) %>%
-  arrange(neg_series_rate) %>%
-  select(posteam, neg_series_rate,average_negative_plays_neg_drive_Yes) %>%
-  mutate_if(is.numeric, ~round(.,3)) %>%
-  gt() %>%
-  cols_align(align = "center") %>%
-  gt_nfl_wordmarks(columns = "posteam") %>%
-  cols_label(posteam = "Team",
-             neg_series_rate = "Series W/Negative Play Rate",
-             average_negative_plays_neg_drive_Yes = "Average Negative Plays Per Series W/Negative Play") %>%
-  gtExtras::gt_theme_538() %>%
-  gtExtras::gt_hulk_col_numeric(c(neg_series_rate,average_negative_plays_neg_drive_Yes)) %>%
-  tab_header(
-    title = md("Which Offenses Avoid Negative Plays?")
-  ) %>%
-    tab_options(
-    table.width = pct(100), # Set width percentage
-    table.font.size = px(10) # Adjust font size
-  )
-
-#gtsave(off_neg, "NegativeOffPerformance.png")
-#Negative Plays on Early Downs, issue with negative plays per series with grouping
-
-
-
-```
+# ```{r}
+# negatives %>%
+#   mutate(neg_series_rate = (count_Yes/(count_No+count_Yes))) %>%
+#   arrange(neg_series_rate) %>%
+#   select(posteam, neg_series_rate,average_negative_plays_neg_drive_Yes) %>%
+#   mutate_if(is.numeric, ~round(.,3)) %>%
+#   gt() %>%
+#   cols_align(align = "center") %>%
+#   gt_nfl_wordmarks(columns = "posteam") %>%
+#   cols_label(posteam = "Team",
+#              neg_series_rate = "Series W/Negative Play Rate",
+#              average_negative_plays_neg_drive_Yes = "Average Negative Plays Per Series W/Negative Play") %>%
+#   gtExtras::gt_theme_538() %>%
+#   gtExtras::gt_hulk_col_numeric(c(neg_series_rate,average_negative_plays_neg_drive_Yes)) %>%
+#   tab_header(
+#     title = md("Which Offenses Avoid Negative Plays?")
+#   ) %>%
+#     tab_options(
+#     table.width = pct(100), # Set width percentage
+#     table.font.size = px(10) # Adjust font size
+#   )
+# 
+# #gtsave(off_neg, "NegativeOffPerformance.png")
+# #Negative Plays on Early Downs, issue with negative plays per series with grouping
+# 
+# 
+# 
+# ```
 
 ## 1st Half Efficiency Landscape
 ```{r}
@@ -561,7 +556,7 @@ total_first_half %>%
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))
-#ggsave("First Half Performance.png", width = 14, height =10, dpi = "retina")
+# ggsave("First Half Performance.png", width = 14, height =10, dpi = "retina")
 
 
 
@@ -652,7 +647,6 @@ pbp_rp %>%
 ## Non Redzone vs Redzone Efficiency
 ```{r}
 pbp_rp %>% 
-  # group_by(defteam) %>%
   group_by(posteam) %>%
   summarize(epa_red = mean(epa[yardline_100<= 20],na.rm = T), epa_non_red = mean(epa[yardline_100> 20],na.rm = T)) %>% 
   left_join( pbp_rp %>% 
@@ -661,17 +655,12 @@ pbp_rp %>%
                summarize(posteam = first(posteam),defteam = first(defteam),drive_20 = max(drive_inside20),drive_td = max(drive_end_transition)) %>% 
                mutate(touchdown = ifelse(drive_td == "TOUCHDOWN",1,0)) %>% 
                group_by(posteam) %>%
-               # group_by(defteam) %>%
                summarize(red_td_rate = mean(touchdown[drive_20 == 1], na.rm = T)), 
              by = c("posteam")
-             # by = c("defteam")
              ) %>% 
   ggplot(aes(x = red_td_rate, y = epa_non_red))+
   geom_nfl_logos(aes(team_abbr = posteam), width = 0.045, alpha = 0.95)+
   geom_mean_lines(aes(x0 = red_td_rate, y0 = epa_non_red), color = "white", linetype = "dashed")+
-  # geom_nfl_logos(aes(team_abbr = defteam), width = 0.045, alpha = 0.95)+
-  # scale_x_reverse()+
-  # scale_y_reverse()+
   theme(legend.position = "none",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -688,8 +677,7 @@ pbp_rp %>%
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))+
   labs(x = "Redzone TD Rate", y = "Non Redzone EPA/Play", title = "Offense Efficiency Inside vs Outside Red Zone", subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")
-  # labs(x = "Redzone TD Rate Allowed", y = "Non Redzone EPA/Play", title = "Defensive Efficiency Inside vs Outside Red Zone", subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")
-#ggsave("OffRedBreakOut.png", width = 14, height =10, dpi = "retina")
+# ggsave("OffRedBreakOut.png", width = 14, height =10, dpi = "retina")
 
 pbp_rp %>% 
   group_by(defteam) %>%
@@ -724,7 +712,7 @@ pbp_rp %>%
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))+
   labs(x = "Redzone TD Rate Allowed", y = "Non Redzone EPA/Play", title = "Defensive Efficiency Inside vs Outside Red Zone", subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")
-#ggsave("DefRedBreakOut.png", width = 14, height =10, dpi = "retina")
+# ggsave("DefRedBreakOut.png", width = 14, height =10, dpi = "retina")
 ```
 
 
@@ -845,7 +833,7 @@ rushing_player<-pbp_rp %>%
 rushing_player %>%   
   ggplot(aes(x = success_rate, y = rush_epa))+
   geom_nfl_logos(aes(team_abbr = posteam), width = 0.02)+
-  labs(x = "Success Rate", y = "EPA/Rush", title = "Rushing Efficiency by Rusher Following Week 3", subtitle = "Minimum 50 Rushes",
+  labs(x = "Success Rate", y = "EPA/Rush", title = "Rushing Efficiency by Rusher", subtitle = "Minimum 50 Rushes",
        caption = "@CapAnalytics7 | nflfastR")+
   theme_bw()+
   geom_text_repel(
@@ -940,7 +928,7 @@ pbp_rp %>%
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))
-#ggsave("PARate.png", width = 14, height =10, dpi = "retina")
+# ggsave("PARate.png", width = 14, height =10, dpi = "retina")
 
 
 ```
@@ -1049,7 +1037,7 @@ pbp %>%
   mutate(net_epa_play = round((epa_def*-1+off_epa_play)/(def_plays+off_plays),5)) %>% 
   ggplot(aes(x = net_epa_play, y = reorder(posteam,net_epa_play))) +
     geom_col(aes(color = posteam, fill = posteam))+
-    labs(y = "", x = "Special Teams EPA/Play", title = "Special Teams", subtitle = "Sections represent different components of an offense's EPA/Play",caption = "@CapAnalytics7 | nflfastR")+
+    labs(y = "", x = "Special Teams EPA/Play", title = "Special Teams", caption = "@CapAnalytics7 | nflfastR")+
     theme(legend.position = "top",
           legend.direction = "horizontal",
           legend.background = element_rect(fill = "white", color="white"),
@@ -1071,7 +1059,7 @@ pbp %>%
   scale_color_nfl(type = "secondary") +
   scale_fill_nfl()+
   scale_x_continuous(labels = scales::label_number())
-#ggsave("SpecialTeams.png", width = 14, height =10, dpi = "retina")
+# ggsave("SpecialTeams.png", width = 14, height =10, dpi = "retina")
 
 
 
@@ -1159,7 +1147,7 @@ weight_epa %>%
   geom_segment(aes(x = def_nw_epa, y = off_nw_epa, 
                    xend = defensive_epa, yend = offensive_epa), 
                color = "lightgrey", alpha = 0.8, lwd =1.5)# Add points for regular EPA
-ggsave("WeightedLandscape.png", width = 14, height =10, dpi = "retina")
+# ggsave("WeightedLandscape.png", width = 14, height =10, dpi = "retina")
 
 ```
 
@@ -1487,5 +1475,88 @@ pbp_rp %>%
           axis.title = element_text(color = "white", size = 14),
           panel.border = element_rect(colour = "white", fill = NA, size = 1))
 #ggsave("CatchableTarget.png", width = 14, height =10, dpi = "retina")
+```
+
+## MVP Talk
+```{r}
+pbp_rp %>% 
+  group_by(id) %>% 
+  summarize(name = max(name),posteam = max(posteam), wpa = mean(wpa,na.rm =T), epa = mean(epa,na.rm = T), count = sum(pass,na.rm = T)) %>% 
+  filter(count >100) %>% 
+  ggplot(aes(x = wpa, y = epa))+
+  geom_nfl_logos(aes(team_abbr = posteam), width = 0.025, alpha = 0.8)+
+  geom_text_repel(
+    aes(label = name),
+    box.padding = 0.05,  # adjust this value for padding around the labels
+    point.padding = 0.1,  # adjust this value for padding around the points
+    segment.color = "grey",
+    segment.size = 0.2,
+    color = "white"
+  )+
+  labs(x = "WPA/Play",
+       y = "EPA/Play", title = "Which QB Should be at the Forefront of the MVP Conversation?",
+       caption = "@CapAnalytics7 | nflfastR", subtitle = "Minimum 100 Attempts")+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 10),
+        plot.caption = element_text(colour = "white", size = 10),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1),
+        panel.grid = element_blank())+
+  geom_mean_lines(aes(x0 = wpa, y0 = epa), color = "white")
+# ggsave("NFLMVP.png", width = 14, height =10, dpi = "retina")  
+
+
+```
+
+## Kicker Performance
+```{r}
+pbp %>% 
+  filter(field_goal_attempt == 1 | extra_point_attempt == 1) %>% 
+  mutate(bin_fg = ifelse(is.na(field_goal_result), NA, ifelse(field_goal_result == "made",1,0)),
+         fg_oe = bin_fg- fg_prob,
+         bin_xp = ifelse(is.na(extra_point_result), NA, ifelse(extra_point_result == "good",1,0)),
+         xp_oe = bin_xp- extra_point_prob) %>% 
+  group_by(kicker_player_id) %>% 
+  summarize(name = first(kicker_player_name),team = first(posteam),xp_oe = mean(xp_oe,na.rm = T), fg_oe = mean(fg_oe,na.rm = T), count = n()) %>% 
+  filter(count>=25) %>% 
+  ggplot(aes(x = xp_oe, y = fg_oe))+
+  geom_nfl_logos(aes(team_abbr = team), width = 0.025, alpha = 0.8)+
+  geom_text_repel(
+    aes(label = name),
+    box.padding = 0.05,  # adjust this value for padding around the labels
+    point.padding = 0.1,  # adjust this value for padding around the points
+    segment.color = "grey",
+    segment.size = 0.2,
+    color = "white"
+  )+
+  labs(x = "Extra Point Over Expectation",
+       y = "Field Goal Over Expectation", title = "Evaluating Kicker Performance",
+       caption = "@CapAnalytics7 | nflfastR", subtitle = "Minimum 25 Attempts")+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 10),
+        plot.caption = element_text(colour = "white", size = 10),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1),
+        panel.grid = element_blank())+
+  geom_mean_lines(aes(x0 = xp_oe, y0 = fg_oe), color = "white")
+# ggsave("KickerPerformance.png", width = 14, height =10, dpi = "retina")  
 ```
 
