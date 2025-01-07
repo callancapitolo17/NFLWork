@@ -1,7 +1,7 @@
 ---
 output:
-  pdf_document: default
   html_document: default
+  pdf_document: default
 --- 
 
 
@@ -52,10 +52,17 @@ pbp_rp <- pbp %>%
          heavybox = ifelse(n_defense_box>=8,1,0)) %>% 
   mutate(explosive = ifelse((yardline_100 <  20 & pass_attempt == 1) | (yardline_100<12 & (qb_scramble ==1 |rush ==1)), NA, ifelse((yards_gained>20 & pass_attempt == 1) | (yards_gained >12 & (qb_scramble == 1 | rush == 1)),1,0)),
         negative = ifelse(yards_gained < 0, 1,0))
-
+playoffs <- c("DET","PHI","LA","TB","MIN","WAS","GB","KC","BUF","BAL","HOU","LAC","PIT","DEN")
 ```
 
-
+  mutate(
+    colour = ifelse(posteam %in% playoffs, NA, "b/w"),
+    alpha = ifelse(posteam %in% playoffs, 0.9, 0.8)
+  ) %>% 
+  
+geom_nfl_logos(aes(team_abbr = posteam, width = 0.045, alpha = alpha,color = colour))+
+  scale_alpha_identity()+
+  scale_color_identity()+
 ## Efficiency Landscape
 ```{r, echo = FALSE}
 total_offensive_efficiency <- pbp_rp %>%
@@ -99,9 +106,6 @@ total_efficiency_both %>%
   geom_hline(yintercept = mean(total_efficiency_both$offensive_epa), linetype = "dashed",color = "white")+
   geom_vline(xintercept = mean(total_efficiency_both$defensive_epa), linetype = "dashed", color = "white")
 # ggsave("EffLandscape.png", width = 14, height =10, dpi = "retina")
-
-
-
 ```
 
 ## EPA vs Success Rate
@@ -162,13 +166,9 @@ pbp_rp %>%
 pbp_rp %>% 
   filter(season == year) %>% 
   group_by(posteam) %>%
-  # group_by(defteam) %>%
   summarize(epa_db = mean(epa[pass == 1],na.rm = T), epa_rush = mean(epa[rush == 1], na.rm = T)) %>% 
   ggplot(aes(x = epa_rush, y = epa_db))+
   geom_nfl_logos(aes(team_abbr = posteam), width = 0.045, alpha = 0.95)+
-  # geom_nfl_logos(aes(team_abbr = defteam), width = 0.045, alpha = 0.955)+
-  # scale_x_reverse()+
-  # scale_y_reverse()+
   theme(legend.position = "none",
         legend.direction = "horizontal",
         legend.background = element_rect(fill = "white", color="white"),
@@ -184,7 +184,6 @@ pbp_rp %>%
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))+
-  # labs(x = "EPA/Rush", y = "EPA/Dropback", title = "Defensive Efficiency Landscape",subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")+
   labs(x = "EPA/Rush", y = "EPA/Dropback", title = "Offensive Efficiency Landscape",subtitle = "Dotted lines represent league average", caption = "@CapAnalytics7 | nflfastR")+
   geom_hline(yintercept = mean(pbp_rp$epa[pbp_rp$season == 2024 & pbp_rp$pass == 1],na.rm = T), linetype = "dashed",color = "white")+
   geom_vline(xintercept = mean(pbp_rp$epa[pbp_rp$season == 2024 & pbp_rp$rush == 1],na.rm = T), linetype = "dashed",color = "white")
@@ -603,13 +602,7 @@ explosive_pass %>%
         panel.grid = element_blank())+
   geom_hline(yintercept = mean(pbp_rp$explosive[pbp_rp$pass == 1 & !is.na(pbp_rp$air_yards)],na.rm = T), linetype = "dashed",color = "white")+
   geom_vline(xintercept = mean(pbp_rp$air_yards,na.rm = T), linetype = "dashed", color = "white")
-#ggsave("ExplosivePassRate.png", width = 14, height =10, dpi = "retina")
-
-
-
-
-
-
+ggsave("ExplosivePassRate.png", width = 14, height =10, dpi = "retina")
 ```
 
 ## Pass Over Exp vs EPA/Exped Pass Situation
@@ -640,7 +633,7 @@ pbp_rp %>%
        caption = "*Expected pass situation is down with xpass >0.9      @CapAnalytics7 | nflfastR")+
   geom_hline(yintercept = mean(pbp_rp$epa[pbp_rp$season == 2024 & pbp_rp$pass == 1 & pbp_rp$xpass>=0.9],na.rm = T), linetype = "dashed",color = "white")+
   geom_vline(xintercept = mean(pbp_rp$pass_oe[pbp_rp$season == 2024],na.rm = T), linetype = "dashed",color = "white")
-#ggsave("xPass.png", width = 14, height =10, dpi = "retina")
+# ggsave("xPass.png", width = 14, height =10, dpi = "retina")
 
 ```
 
@@ -893,7 +886,7 @@ pbp_rp %>%
         axis.text = element_text(face = "bold", colour = "white",size = 12),
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))
-#ggsave("MotionRate.png", width = 14, height =10, dpi = "retina")
+# ggsave("MotionRate.png", width = 14, height =10, dpi = "retina")
 
 
 ```
@@ -929,8 +922,6 @@ pbp_rp %>%
         axis.title = element_text(color = "white", size = 14),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))
 # ggsave("PARate.png", width = 14, height =10, dpi = "retina")
-
-
 ```
 
 ## Lead vs Trailing Offensive Efficiency
@@ -1557,6 +1548,6 @@ pbp %>%
         panel.border = element_rect(colour = "white", fill = NA, size = 1),
         panel.grid = element_blank())+
   geom_mean_lines(aes(x0 = xp_oe, y0 = fg_oe), color = "white")
-# ggsave("KickerPerformance.png", width = 14, height =10, dpi = "retina")  
+# ggsave("KickerPerformance.png", width = 14, height =10, dpi = "retina")
 ```
 
