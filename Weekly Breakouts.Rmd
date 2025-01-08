@@ -602,7 +602,7 @@ explosive_pass %>%
         panel.grid = element_blank())+
   geom_hline(yintercept = mean(pbp_rp$explosive[pbp_rp$pass == 1 & !is.na(pbp_rp$air_yards)],na.rm = T), linetype = "dashed",color = "white")+
   geom_vline(xintercept = mean(pbp_rp$air_yards,na.rm = T), linetype = "dashed", color = "white")
-ggsave("ExplosivePassRate.png", width = 14, height =10, dpi = "retina")
+# ggsave("ExplosivePassRate.png", width = 14, height =10, dpi = "retina")
 ```
 
 ## Pass Over Exp vs EPA/Exped Pass Situation
