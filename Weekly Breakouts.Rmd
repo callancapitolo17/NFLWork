@@ -1051,9 +1051,38 @@ pbp %>%
   scale_fill_nfl()+
   scale_x_continuous(labels = scales::label_number())
 # ggsave("SpecialTeams.png", width = 14, height =10, dpi = "retina")
-
-
-
+pbp %>% 
+  filter(play_type %in% c("kickoff", "extra_point", "field_goal", "punt")) %>% 
+  group_by(posteam) %>% 
+  summarize(off_epa_play = mean(epa,na.rm = T), off_plays = n(),off_total_epa = sum(epa,na.rm = T),off_total_wpa = sum(wpa,na.rm = T)) %>% 
+  left_join(pbp %>% 
+              group_by(defteam) %>% 
+              filter(play_type %in% c("kickoff", "extra_point", "field_goal", "punt")) %>% 
+              summarize(epa_def = mean(epa,na.rm = T), def_plays = n(),def_total_epa = sum(epa,na.rm = T),def_total_wpa = sum(wpa,na.rm = T)),
+              by = c("posteam" = "defteam")) %>% 
+  mutate(net_epa_play = round((epa_def*-1+off_epa_play)/(def_plays+off_plays),5),
+         total_epa = def_total_epa*-1+off_total_epa, total_wpa = off_total_wpa+def_total_wpa*-1) %>% 
+  ggplot(aes(x = total_epa, y =total_wpa)) +
+   geom_nfl_logos(aes(team_abbr = posteam), width = 0.045)+
+    labs(y = "Total WPA", x = "Total EPA", title = "Special Teams Overview", caption = "@CapAnalytics7 | nflfastR")+
+    theme(legend.position = "top",
+          legend.direction = "horizontal",
+          legend.background = element_rect(fill = "white", color="white"),
+          legend.title = element_blank(),
+          legend.text = element_text(colour = "black", face = "bold"),
+          plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+          plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+          plot.caption = element_text(colour = "white", size = 10),
+          panel.grid = element_blank(),
+          plot.background = element_rect(fill = "black", color="black"),
+          panel.background = element_rect(fill = "black", color="black"),
+          axis.ticks = element_line(color = "white"),
+          axis.text = element_text(face = "bold", colour = "white",size = 12),
+          axis.title = element_text(color = "white", size = 14),
+          panel.border = element_rect(colour = "white", fill = NA, size = 1)
+    )+
+  geom_mean_lines(aes(x0 = total_epa, y0 = total_wpa), color = "white")
+ggsave("SpecialTeamsOverview.png", width = 14, height =10, dpi = "retina")
 ```
 
 
