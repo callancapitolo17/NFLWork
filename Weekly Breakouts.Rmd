@@ -1451,7 +1451,7 @@ pbp_rp %>%
         panel.border = element_rect(colour = "white", fill = NA, size = 1),
         panel.grid = element_blank())+
   geom_mean_lines(aes(x0 = int, y0 = int_worthy), color = "white")
-  
+# ggsave("Interceptions.png", width = 14, height =10, dpi = "retina")
 ```
 
 ## Catchable Targets

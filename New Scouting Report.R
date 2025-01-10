@@ -15,13 +15,6 @@ library(tidyr)
 library(gt)
 library(gtExtras)
 
-# add explosive and negative play rate ----
-pfr_stats_pass <- nflreadr::load_pfr_advstats(seasons = 2023,
-                                              stat_type = "pass",
-                                              summary_level = "week")
-ngs_data_passing <- nflreadr::load_nextgen_stats(seasons = 2023,
-                                                 stat_type = "passing")
-
 ftn_data <- nflreadr::load_ftn_charting(2024) %>%
   select(-week, -season)
 pbp <- load_pbp(2024)
