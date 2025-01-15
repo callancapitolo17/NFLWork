@@ -10,6 +10,15 @@ library(tidyverse)      # data wrangling functions
 library(lubridate)      # time & date functions
 library(nflfastR)
 library(nflreadr)
+all <- load_schedules(1999:2024) %>% 
+  filter(!is.na(away_score)) %>% 
+  filter(location == "Home") %>% 
+  rename(away_team_score = away_score, home_team_score = home_score) %>%
+  mutate(
+    outcome = ifelse(home_team_score == away_team_score,0.5, ifelse(home_team_score > away_team_score, 1, 0)))
+
+home_win_rate <- mean(all$outcome)  # Outcome: 1 if home wins, 0 otherwise
+hfa_points <- 400 * log10(home_win_rate / (1 - home_win_rate))
 
 #### 1. Load the data ####
 matches <- load_schedules(2024) %>% 
@@ -39,6 +48,7 @@ matches <- matches %>%
 #### 3. Using win totals to estimate starting ELO ratings ####
 # Gather win totals from reasonably sharp sportsbook and enter them into this vector:, how should I account for different odds?
 win_totals <- c(
+  "ARI" = 6.5,
   "ATL" = 9.5,
   "BAL" = 11.5,
   "BUF" = 10.5,
@@ -74,11 +84,11 @@ win_totals <- c(
 
 # Normalize win totals
 total_wins <- sum(win_totals)
-normalized_win_totals <- win_totals / total_wins * 1230 #<- total wins
-win_probabilities <- normalized_win_totals / 82 #<- total games in NBA season
+normalized_win_totals <- win_totals / total_wins * 265.5 #<- total wins
+win_probabilities <- normalized_win_totals / 17 #<- total games in NBA season
 
 # Function to convert win probability to starting ELO rating
-elo_from_win_prob <- function(win_prob, avg_opponent_elo = 1500, home_field_adv = 73) { #Where does 73 come from?
+elo_from_win_prob <- function(win_prob, avg_opponent_elo = 1500, home_field_adv = hfa_points) { #Where does 73 come from?
   team_elo <- avg_opponent_elo + home_field_adv - 400 * log10((1 / win_prob) - 1)
   return(team_elo)
 }
