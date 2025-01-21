@@ -66,7 +66,7 @@ win_totals <- c(
   "KC" = 11.5,
   "LV" = 6.5,
   "LAC" = 8.5,
-  "LAR" = 8.5,
+  "LA" = 8.5,
   "MIA" = 9.5,
   "MIN" = 6.5,
   "NE" = 5.5,
@@ -84,11 +84,11 @@ win_totals <- c(
 
 # Normalize win totals
 total_wins <- sum(win_totals)
-normalized_win_totals <- win_totals / total_wins * 265.5 #<- total wins
+normalized_win_totals <- win_totals / total_wins * 272 #<- total wins
 win_probabilities <- normalized_win_totals / 17 #<- total games in NBA season
 
 # Function to convert win probability to starting ELO rating
-elo_from_win_prob <- function(win_prob, avg_opponent_elo = 1500, home_field_adv = hfa_points) { #Where does 73 come from?
+elo_from_win_prob <- function(win_prob, avg_opponent_elo = 1500, home_field_adv = 73) { #Where does 73 come from?
   team_elo <- avg_opponent_elo + home_field_adv - 400 * log10((1 / win_prob) - 1)
   return(team_elo)
 }
@@ -161,10 +161,10 @@ generated quantities {
 
 # fit Stan model with mcmc
 fit <- stan(model_code = stan_model_code_new, data = data_list,
-            iter = 2000, warmup = 500, chains = 4, seed = 123)
+            iter = 2000, warmup = 500, chains = 4, seed = 123) 
 
 # Print Stan fit
-print(fit)
+print(fit) #mean = estimate, se_mean = uncertainty of estimate, sd = variability in posterior, n_eff = number of independent samples, rhat = diagnose convergence, 1 means chains have converged
 
 # Print selected parameter trace plots
 traceplot(fit, pars = c("K", "home_adv", "rating[1]", "rating[2]"))
@@ -178,24 +178,6 @@ team_ratings <- data.frame(
 
 # Print ELO ratings
 print(team_ratings)
-
-
-# Print Stan fit
-print(fit)
-
-# Print selected parameter trace plots
-traceplot(fit, pars = c("K", "home_adv", "rating[1]", "rating[2]"))
-
-# Print team ELO ratings + home_adv & K parameter estimates
-fit_summary <- summary(fit, pars = c("rating", "home_adv", "K"))$summary
-rating_estimates <- fit_summary[, "mean"]
-team_ratings <- data.frame(
-  Team = names(c(team_ids, "home_adv", "K")),
-  ELO_Rating = rating_estimates)
-
-# Print ELO ratings
-print(team_ratings)
-
 
 #### 4. Plot estimated posterior team strength ####
 # Extract parameters from the fitted model
@@ -252,21 +234,14 @@ predict_match_outcome <- function(home_team_name, away_team_name, n_simulations 
 }
 
 # Example matchup prediction: Detroit at Boston
-home_team <- "Boston Celtics"
-away_team <- "Detroit Pistons"
-win_prob_home <- predict_match_outcome(home_team, away_team)
-print(paste("Win probability for", home_team, "against", away_team, ":", win_prob_home))
-
-# Sanity check: Boston vs Boston - should show us the home advantage
-home_team <- "Boston Celtics"
-away_team <- "Boston Celtics"
+home_team <- "KC"
+away_team <- "BUF"
 win_prob_home <- predict_match_outcome(home_team, away_team)
 print(paste("Win probability for", home_team, "against", away_team, ":", win_prob_home))
 
 # Convert win probability to decimal odds
 exp_home_odds <- 1/win_prob_home
-exp_home_odds
 
 # Convert win probability to spread | NBA value = 0.16 | NFL value  = 0.143
-exp_home_spread <- (log((1/win_prob_home)-1)/0.16)
+exp_home_spread <- (log((1/win_prob_home)-1)/0.143)
 exp_home_spread
