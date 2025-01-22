@@ -47,6 +47,37 @@ matches <- matches %>%
 
 #### 3. Using win totals to estimate starting ELO ratings ####
 # Gather win totals from reasonably sharp sportsbook and enter them into this vector:, how should I account for different odds?
+win_total_data <- read.csv("Clean Win Totals - Sheet1.csv")
+
+# Function to convert American odds to implied probability
+american_odds_to_prob <- function(odds) {
+  return(ifelse(odds > 0,
+         100 / (odds + 100),  # For positive odds
+         -odds / (-odds + 100)))
+}
+
+# Function to de-vig American odds
+devig_american_odds <- function(over_odds, under_odds) {
+  # Convert odds to implied probabilities
+  over_prob = american_odds_to_prob(over_odds)
+  under_prob = american_odds_to_prob(under_odds)
+  
+  # Calculate the total implied probability
+  total_prob = over_prob + under_prob
+  
+  # Remove the vig by normalizing probabilities
+  over_prob_no_vig = over_prob / total_prob
+  under_prob_no_vig = under_prob / total_prob
+  
+  # Return de-vig probabilities
+  return(list(over_prob_no_vig = over_prob_no_vig, under_prob_no_vig = under_prob_no_vig))
+}
+
+FD_nv_odds <- devig_american_odds(win_total_data$Fanduel.Over,win_total_data$Fanduel.Under)
+
+adjusted_win <- win_total_data %>% 
+  mutate(adjusted_total = (FD_nv_odds$over_prob_no_vig-FD_nv_odds$under_prob_no_vig)/max(abs(FD_nv_odds$over_prob_no_vig-FD_nv_odds$under_prob_no_vig)))
+
 win_totals <- c(
   "ARI" = 6.5,
   "ATL" = 9.5,
