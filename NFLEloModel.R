@@ -73,45 +73,73 @@ devig_american_odds <- function(over_odds, under_odds) {
   return(list(over_prob_no_vig = over_prob_no_vig, under_prob_no_vig = under_prob_no_vig))
 }
 
+data_list <- list(
+  N = nrow(matches),
+  T = length(teams),
+  home_team = matches$home_team_id,
+  away_team = matches$away_team_id,
+  outcome = matches$outcome,
+  starting_elo = starting_elo)
+
+# Updated Stan code (using win total priors)
+stan_model_code_new <- "
+data {
+    int<lower=0> N;                     // Number of matches
+    int<lower=0> T;                     // Number of teams
+    int<lower=0, upper=17> bet_win_total; // Home team for each match
+    int<lower=0, upper=1> over_prob; // Away team for each match
+    int<lower=0, upper=1> under_prob;   // Outcome of each match
+    vector[T] starting_elo;             // Starting ELO ratings
+}
+parameters {
+  real<lower=0, upper=17> Win Total;           // Win Total
+}
+model {
+  // Priors
+  rating ~ normal(starting_elo, 50);  // Team rating prior using starting ELO ratings
+  home_adv ~ normal(50, 25);          // Home advantage prior
+  K ~ normal(50, 25);                 // K parameter prior
+
+  for (n in 1:N) {
+    // Likelihood
+    real prob = 1 / (1 + pow(10, (rating[away_team[n]] - (rating[home_team[n]] + home_adv)) / 400));
+    outcome[n] ~ bernoulli(prob);
+  }
+}
+generated quantities {
+  vector[T] new_rating = rating;
+  vector[N] rating_change;
+
+  for (n in 1:N) {
+    // Calculate the probability of home win with ELo formula
+    real prob = 1 / (1 + pow(10, (new_rating[away_team[n]] - (new_rating[home_team[n]] + home_adv)) / 400));
+
+    // Calculate the rating change
+    rating_change[n] = K * (outcome[n] - prob);
+
+    // Apply the rating changes incrementally
+    new_rating[home_team[n]] += rating_change[n];
+    new_rating[away_team[n]] -= rating_change[n];
+  }
+}
+"
+
+# fit Stan model with mcmc
+fit <- stan(model_code = stan_model_code_new, data = data_list,
+            iter = 2000, warmup = 500, chains = 4, seed = 123) 
+
+# Print Stan fit
+print(fit) #mean = estimate, se_mean = uncertainty of estimate, sd = variability in posterior, n_eff = number of independent samples, rhat = diagnose convergence, 1 means chains have converged
+
+# Print selected parameter trace plots
+traceplot(fit, pars = c("K", "home_adv", "rating[1]", "rating[2]"))
+
+
 FD_nv_odds <- devig_american_odds(win_total_data$Fanduel.Over,win_total_data$Fanduel.Under)
 
 adjusted_win <- win_total_data %>% 
-  mutate(adjusted_total = (FD_nv_odds$over_prob_no_vig-FD_nv_odds$under_prob_no_vig)/max(abs(FD_nv_odds$over_prob_no_vig-FD_nv_odds$under_prob_no_vig)))
+  mutate(adjusted_total = (win_total_data$Fanduel.Total+0.5)*(FD_nv_odds$over_prob_no_vig) + (win_total_data$Fanduel.Total-0.5)*(FD_nv_odds$under_prob_no_vig))
 
-win_totals <- c(
-  "ARI" = 6.5,
-  "ATL" = 9.5,
-  "BAL" = 11.5,
-  "BUF" = 10.5,
-  "CAR" = 5.5,
-  "CHI" = 8.5,
-  "CIN" = 10.5,
-  "CLE" = 9.5,
-  "DAL" = 10.5,
-  "DEN" = 5.5,
-  "DET" = 10.5,
-  "GB" = 9.5,
-  "HOU" = 9.5,
-  "IND" = 8.5,
-  "JAX" = 8.5,
-  "KC" = 11.5,
-  "LV" = 6.5,
-  "LAC" = 8.5,
-  "LA" = 8.5,
-  "MIA" = 9.5,
-  "MIN" = 6.5,
-  "NE" = 5.5,
-  "NO" = 7.5,
-  "NYG" = 6.5,
-  "NYJ" = 9.5,
-  "PHI" = 10.5,
-  "PIT" = 7.5,
-  "SF" = 11.5,
-  "SEA" = 7.5,
-  "TB" = 7.5,
-  "TEN" = 6.5,
-  "WAS" = 6.5
-)
 
 # Normalize win totals
 total_wins <- sum(win_totals)
