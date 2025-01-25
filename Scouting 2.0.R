@@ -170,9 +170,6 @@ rec_defensive_scouting <- summarize_pbp_data(data = pbp_rp %>% filter(week >= (m
 
 
 
-offense <- readline(prompt = "Enter Offense:")
-defense <- readline(prompt = "Enter Defense:")
-
 # Helper function for preprocessing and ranking
 prepare_rank_data <- function(data, id_col, negate_cols = NULL, rank_function, name) {
   data_numeric <- data %>% 
@@ -219,23 +216,45 @@ data_ranks_def <- prepare_rank_data(
   name = "Def"
 )
 
+rec_data_ranks_off <- prepare_rank_data(
+  rec_offensive_scouting, 
+  id_col = "posteam", 
+  negate_cols = negate_columns_off, 
+  rank_function = replace_with_ranks,
+  name = "Rec Off"
+)
 
+rec_data_ranks_def <- prepare_rank_data(
+  rec_defensive_scouting, 
+  id_col = "defteam", 
+  negate_cols = negate_columns_def, 
+  rank_function = replace_with_ranks,
+  name = "Rec Def"
+)
 
-scouting_report <- data_ranks_off %>% 
+joined_offense <- data_ranks_off %>% left_join(rec_data_ranks_off, by = c("id", "Stat"))
+joined_defense <- data_ranks_def %>% left_join(rec_data_ranks_def, by = c("id", "Stat"))
+
+scouting_guide <- function(){
+offense <- readline(prompt = "Enter Offense:")
+defense <- readline(prompt = "Enter Defense:")
+
+scouting_report <- joined_offense %>% 
   filter(id == offense) %>% rename("offense" = id) %>%  
-  left_join(data_ranks_def %>% filter(id == defense) %>% rename("defense" = id),
+  left_join(joined_defense %>% filter(id == defense) %>% rename("defense" = id),
             by = c("Stat")) %>% 
   select(-offense,-defense)
 
 scouting_report %>% 
-  select(Stat,`Offense Value`,`Defense Value`,`Offense Rank`,`Defense Rank`) %>% 
-  mutate(rank_diff = `Offense Rank`-`Defense Rank`) %>% 
+  mutate(`Rank Diff` = `Off Rank`-`Def Rank`, `Rec Rank Diff` = `Rec Off Rank`-`Rec Def Rank`) %>% 
+  select(Stat,`Off Rank`,`Def Rank`,`Rank Diff`,`Rec Off Rank`,`Rec Def Rank`,`Rec Rank Diff`) %>% 
   gt() %>% 
   cols_align(align = "center") %>%
-  cols_label(`Stat` = "Stat",`Offense Value` = paste(offense,"Offense Value", sep = " "), `Defense Value` = paste(defense,"Defense Value", sep = " "),
-             `Offense Rank` = paste(offense,"Offense Rank", sep = " "), `Defense Rank` = paste(defense,"Defense Rank", sep = " "),
-             rank_diff = "Rank Difference") %>% 
+  cols_label(`Stat` = "Stat",`Off Rank` = paste(offense,"Offense Rank", sep = " "), `Def Rank` = paste(defense,"Defense Rank", sep = " "),
+             rank_diff = "Rank Difference",
+             `Rec Off Rank` = paste(offense,"Rec Offense Rank", sep = " "), `Rec Def Rank` = paste(defense,"Rec Defense Rank", sep = " "),
+             rec_rank_diff = "Rec Rank Difference") %>% 
   gtExtras::gt_theme_538() %>% 
-  gt_hulk_col_numeric(columns = c(`Offense Rank`,`Defense Rank`,rank_diff)) %>% 
+  gt_hulk_col_numeric(columns = c(rank_diff, rec_rank_diff)) %>% 
   tab_header(title = md("Scouting Report"), subtitle = md("Purple Represents Offense Advantage, Green Represents Defense Advantage"))
-
+}
