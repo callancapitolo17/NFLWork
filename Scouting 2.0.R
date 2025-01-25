@@ -45,7 +45,6 @@ summarize_pbp_data <- function(data,group_col) {
     group_by(across(all_of(group_col))) %>% 
     summarize(
       epa_avg = mean(epa, na.rm = TRUE),
-      epa_last_4_weeks = mean(epa[week > max(week) - 4], na.rm = TRUE),
       success_rate = mean(success, na.rm = TRUE),
       pass_epa = mean(epa[pass == 1], na.rm = TRUE),
       dropback_success_rate = mean(success[pass == 1], na.rm = TRUE),
@@ -251,10 +250,10 @@ scouting_report %>%
   gt() %>% 
   cols_align(align = "center") %>%
   cols_label(`Stat` = "Stat",`Off Rank` = paste(offense,"Offense Rank", sep = " "), `Def Rank` = paste(defense,"Defense Rank", sep = " "),
-             rank_diff = "Rank Difference",
+             `Rank Diff` = "Rank Difference",
              `Rec Off Rank` = paste(offense,"Rec Offense Rank", sep = " "), `Rec Def Rank` = paste(defense,"Rec Defense Rank", sep = " "),
-             rec_rank_diff = "Rec Rank Difference") %>% 
+             `Rec Rank Diff` = "Rec Rank Difference") %>% 
   gtExtras::gt_theme_538() %>% 
-  gt_hulk_col_numeric(columns = c(rank_diff, rec_rank_diff)) %>% 
+  gt_hulk_col_numeric(columns = c(`Rank Diff`, `Rec Rank Diff`)) %>% 
   tab_header(title = md("Scouting Report"), subtitle = md("Purple Represents Offense Advantage, Green Represents Defense Advantage"))
 }
