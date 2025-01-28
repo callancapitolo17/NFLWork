@@ -208,7 +208,7 @@ data_ranks_off <- prepare_rank_data(
 )
 
 data_ranks_def <- prepare_rank_data(
-  defensive_scouting, 
+  defensive_scouting %>% mutate_if(is.numeric,~.*-1), 
   id_col = "defteam", 
   negate_cols = negate_columns_def, 
   rank_function = replace_with_ranks,
@@ -224,7 +224,7 @@ rec_data_ranks_off <- prepare_rank_data(
 )
 
 rec_data_ranks_def <- prepare_rank_data(
-  rec_defensive_scouting, 
+  rec_defensive_scouting %>% mutate_if(is.numeric,~.*-1), 
   id_col = "defteam", 
   negate_cols = negate_columns_def, 
   rank_function = replace_with_ranks,

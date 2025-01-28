@@ -10,15 +10,6 @@ library(tidyverse)      # data wrangling functions
 library(lubridate)      # time & date functions
 library(nflfastR)
 library(nflreadr)
-all <- load_schedules(1999:2024) %>% 
-  filter(!is.na(away_score)) %>% 
-  filter(location == "Home") %>% 
-  rename(away_team_score = away_score, home_team_score = home_score) %>%
-  mutate(
-    outcome = ifelse(home_team_score == away_team_score,0.5, ifelse(home_team_score > away_team_score, 1, 0)))
-
-home_win_rate <- mean(all$outcome)  # Outcome: 1 if home wins, 0 otherwise
-hfa_points <- 400 * log10(home_win_rate / (1 - home_win_rate))
 
 #### 1. Load the data ####
 matches <- load_schedules(2024) %>% 
@@ -73,78 +64,78 @@ devig_american_odds <- function(over_odds, under_odds) {
   return(list(over_prob_no_vig = over_prob_no_vig, under_prob_no_vig = under_prob_no_vig))
 }
 
-data_list <- list(
-  N = nrow(matches),
-  T = length(teams),
-  home_team = matches$home_team_id,
-  away_team = matches$away_team_id,
-  outcome = matches$outcome,
-  starting_elo = starting_elo)
 
-# Updated Stan code (using win total priors)
-stan_model_code_new <- "
-data {
-    int<lower=0> N;                     // Number of matches
-    int<lower=0> T;                     // Number of teams
-    int<lower=0, upper=17> bet_win_total; // Home team for each match
-    int<lower=0, upper=1> over_prob; // Away team for each match
-    int<lower=0, upper=1> under_prob;   // Outcome of each match
-    vector[T] starting_elo;             // Starting ELO ratings
+FD_nv_odds <- devig_american_odds(win_total_data$Fanduel.Over,win_total_data$Fanduel.Under)
+DK_nv_odds <- devig_american_odds(win_total_data$Draftkings.Over,win_total_data$Draftkings.Under)
+
+adjusted_win <- win_total_data %>% 
+  mutate(FD_adjusted_total = (Fanduel.Total+0.5)*(FD_nv_odds$over_prob_no_vig) + (Fanduel.Total-0.5)*(FD_nv_odds$under_prob_no_vig),
+         DK_adjusted_total = (DraftKings.Total+0.5)*(DK_nv_odds$over_prob_no_vig) + (DraftKings.Total-0.5)*(DK_nv_odds$under_prob_no_vig),
+         )
+fd_win_data_list <- list(
+  N = nrow(win_total_data),
+  total = win_total_data$Fanduel.Total,
+  prob_over = FD_nv_odds$over_prob_no_vig,
+  prob_under = FD_nv_odds$under_prob_no_vig
+)
+
+dk_win_data_list <- list(
+  N = nrow(win_total_data),
+  total = win_total_data$DraftKings.Total,
+  prob_over = DK_nv_odds$over_prob_no_vig,
+  prob_under = DK_nv_odds$under_prob_no_vig
+)
+stan_wins <- "data {
+  int<lower=0> N;                     // Number of teams
+  real<lower=0, upper=17> total[N];             // Listed win totals from sportsbook
+  real<lower=0, upper=1> prob_over[N];         // Implied probability for over
+  real<lower=0, upper=1> prob_under[N];        // Implied probability for under
 }
+
 parameters {
-  real<lower=0, upper=17> Win Total;           // Win Total
+  real<lower=0, upper=17> team_wins[N];         // Latent win totals for each team
+  real<lower=0> alpha;                // Dispersion parameter (now inferred)
 }
-model {
-  // Priors
-  rating ~ normal(starting_elo, 50);  // Team rating prior using starting ELO ratings
-  home_adv ~ normal(50, 25);          // Home advantage prior
-  K ~ normal(50, 25);                 // K parameter prior
 
-  for (n in 1:N) {
-    // Likelihood
-    real prob = 1 / (1 + pow(10, (rating[away_team[n]] - (rating[home_team[n]] + home_adv)) / 400));
-    outcome[n] ~ bernoulli(prob);
+model {
+  // Priors for alpha (e.g., weakly informative prior)
+  alpha ~ normal(2, 0.5);  // Assume alpha ~ N(2, 1) but constrain to positive
+  
+  // Priors for win totals shaped by sportsbook probabilities
+  for (i in 1:N) {
+    team_wins[i] ~ normal(total[i] + (prob_over[i] - prob_under[i]), 2);
   }
 }
+
 generated quantities {
-  vector[T] new_rating = rating;
-  vector[N] rating_change;
-
-  for (n in 1:N) {
-    // Calculate the probability of home win with ELo formula
-    real prob = 1 / (1 + pow(10, (new_rating[away_team[n]] - (new_rating[home_team[n]] + home_adv)) / 400));
-
-    // Calculate the rating change
-    rating_change[n] = K * (outcome[n] - prob);
-
-    // Apply the rating changes incrementally
-    new_rating[home_team[n]] += rating_change[n];
-    new_rating[away_team[n]] -= rating_change[n];
+  real simulated_wins[N];     // Simulated win totals
+  for (i in 1:N) {
+    simulated_wins[i] = normal_rng(team_wins[i], alpha);
   }
 }
 "
-
-# fit Stan model with mcmc
-fit <- stan(model_code = stan_model_code_new, data = data_list,
+fd_win_fit <- stan(model_code = stan_wins, data = fd_win_data_list,
             iter = 2000, warmup = 500, chains = 4, seed = 123) 
+print(fd_win_fit)
 
-# Print Stan fit
-print(fit) #mean = estimate, se_mean = uncertainty of estimate, sd = variability in posterior, n_eff = number of independent samples, rhat = diagnose convergence, 1 means chains have converged
+dk_win_fit <- stan(model_code = stan_wins, data = dk_win_data_list,
+                   iter = 2000, warmup = 500, chains = 4, seed = 123)
 
-# Print selected parameter trace plots
-traceplot(fit, pars = c("K", "home_adv", "rating[1]", "rating[2]"))
+traceplot(dk_win_fit, pars = c("team_wins[1]", "team_wins[2]"))
+print(dk_win_fit)
 
 
-FD_nv_odds <- devig_american_odds(win_total_data$Fanduel.Over,win_total_data$Fanduel.Under)
+# Combine results with the original data
+results <- betting_data %>%
+  mutate(expected_wins = expected_wins)
 
-adjusted_win <- win_total_data %>% 
-  mutate(adjusted_total = (win_total_data$Fanduel.Total+0.5)*(FD_nv_odds$over_prob_no_vig) + (win_total_data$Fanduel.Total-0.5)*(FD_nv_odds$under_prob_no_vig))
-
+# Print the results
+print(results)
 
 # Normalize win totals
 total_wins <- sum(win_totals)
 normalized_win_totals <- win_totals / total_wins * 272 #<- total wins
-win_probabilities <- normalized_win_totals / 17 #<- total games in NBA season
+win_probabilities <- normalized_win_totals / 17 #<- total games in Nfl season
 
 # Function to convert win probability to starting ELO rating
 elo_from_win_prob <- function(win_prob, avg_opponent_elo = 1500, home_field_adv = 73) { #Where does 73 come from?

@@ -52,7 +52,6 @@ pbp_rp <- pbp %>%
          heavybox = ifelse(n_defense_box>=8,1,0)) %>% 
   mutate(explosive = ifelse((yardline_100 <  20 & pass_attempt == 1) | (yardline_100<12 & (qb_scramble ==1 |rush ==1)), NA, ifelse((yards_gained>20 & pass_attempt == 1) | (yards_gained >12 & (qb_scramble == 1 | rush == 1)),1,0)),
         negative = ifelse(yards_gained < 0, 1,0))
-playoffs <- c("DET","PHI","LA","TB","MIN","WAS","GB","KC","BUF","BAL","HOU","LAC","PIT","DEN")
 ```
 
   mutate(
@@ -1082,7 +1081,7 @@ pbp %>%
           panel.border = element_rect(colour = "white", fill = NA, size = 1)
     )+
   geom_mean_lines(aes(x0 = total_epa, y0 = total_wpa), color = "white")
-ggsave("SpecialTeamsOverview.png", width = 14, height =10, dpi = "retina")
+# ggsave("SpecialTeamsOverview.png", width = 14, height =10, dpi = "retina")
 ```
 
 

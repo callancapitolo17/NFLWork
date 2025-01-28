@@ -15,7 +15,7 @@ library(gtExtras)
 nfl99all <- load_pbp(1999:2024)
 nfl99 <- nfl99all %>% 
   filter(pass == 1 | rush == 1) %>% 
-  mutate(explosive = ifelse((yards_gained>20 & pass_attempt == 1) | (yards_gained >12 & (qb_scramble == 1 | rush == 1)),1,0),
+  mutate(explosive = ifelse((yardline_100 <  20 & pass_attempt == 1) | (yardline_100<12 & (qb_scramble ==1 |rush ==1)), NA, ifelse((yards_gained>20 & pass_attempt == 1) | (yards_gained >12 & (qb_scramble == 1 | rush == 1)),1,0)),
          negative = ifelse(yards_gained < 0, 1,0))
 
 
@@ -2009,3 +2009,213 @@ qbs_no_yoffs <- nfl99 %>%
               summarize(playoffs = min(season_type)), by = c("posteam","season")) %>% 
   filter(season < 2024 | (posteam == "CIN" & season == 2024), playoffs == "REG", !is.na(posteam), passes > 250)
   
+  
+#Playoff Goat----
+  nfl99 %>% 
+    filter(season_type == "POST") %>% 
+    group_by(id) %>% 
+    summarize(name = max(name),posteam = first(posteam), wpa = mean(wpa,na.rm =T), epa = mean(epa,na.rm = T), count = sum(pass,na.rm = T)) %>% 
+    filter(count >=100) %>% 
+    ggplot(aes(x = wpa, y = epa))+
+    geom_nfl_logos(aes(team_abbr = posteam), width = 0.025, alpha = 0.8)+
+    geom_text_repel(
+      aes(label = name),
+      box.padding = 0.05,  # adjust this value for padding around the labels
+      point.padding = 0.1,  # adjust this value for padding around the points
+      segment.color = "grey",
+      segment.size = 0.2,
+      color = "white"
+    )+
+    labs(x = "WPA/Play",
+         y = "EPA/Play", title = "Which QBs Have Performed Best in the Postseason?",
+         caption = "@CapAnalytics7 | nflfastR", subtitle = "Minimum 100 Attempts")+
+    theme(legend.position = "top",
+          legend.direction = "horizontal",
+          legend.background = element_rect(fill = "white", color="white"),
+          legend.title = element_blank(),
+          legend.text = element_text(colour = "black", face = "bold"),
+          plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+          plot.subtitle = element_text(hjust = .5, colour = "white", size = 10),
+          plot.caption = element_text(colour = "white", size = 10),
+          plot.background = element_rect(fill = "black", color="black"),
+          panel.background = element_rect(fill = "black", color="black"),
+          axis.ticks = element_line(color = "white"),
+          axis.text = element_text(face = "bold", colour = "white",size = 12),
+          axis.title = element_text(color = "white", size = 14),
+          panel.border = element_rect(colour = "white", fill = NA, size = 1),
+          panel.grid = element_blank())+
+    geom_mean_lines(aes(x0 = wpa, y0 = epa), color = "white")
+ggsave("GOAT.png", width = 14, height =10, dpi = "retina")
+#Screen Conversion----
+  pbp22 <- load_pbp(2022:2024)
+  ftn_data <- nflreadr::load_ftn_charting(2022:2024) %>%
+    select(-week, -season)
+  pbp22 <- pbp22 %>%
+    left_join(ftn_data, by = c("game_id" = "nflverse_game_id",
+                               "play_id" = "nflverse_play_id")) 
+pbp22 %>% filter(pass ==1 | rush == 1) %>% 
+  filter(down  %in% c(3,4), ydstogo <= 5) %>% 
+  mutate(conv = ifelse(yards_gained >= ydstogo,1,0)) %>% 
+  group_by(is_screen_pass) %>% 
+  summarize(conversion_rate = mean(conv,na.rm = T))
+
+
+#49ers ST----
+nfl99all %>% 
+  filter(season >= 2016) %>% 
+  filter(play_type %in% c("kickoff", "extra_point", "field_goal", "punt")) %>% 
+  group_by(posteam,season) %>% 
+  summarize(off_epa_play = mean(epa,na.rm = T), off_plays = n(),off_total_epa = sum(epa,na.rm = T),off_total_wpa = sum(wpa,na.rm = T)) %>% 
+  left_join(nfl99all %>% 
+              filter(season >= 2016) %>% 
+              group_by(defteam,season) %>% 
+              filter(play_type %in% c("kickoff", "extra_point", "field_goal", "punt")) %>% 
+              summarize(epa_def = mean(epa,na.rm = T), def_plays = n(),def_total_epa = sum(epa,na.rm = T),def_total_wpa = sum(wpa,na.rm = T)),
+            by = c("posteam" = "defteam","season")) %>% 
+  mutate(total_epa = def_total_epa*-1+off_total_epa, total_wpa = off_total_wpa+def_total_wpa*-1,
+         wpa_play = total_wpa/(off_plays+def_plays), epa_play = total_epa/(off_plays+def_plays)) %>% 
+  mutate(
+    colour = ifelse(posteam == "NYJ", NA, "b/w"),
+    alpha = ifelse(posteam == "NYJ", 1, 0.1)
+  ) %>% 
+  ggplot(aes(x = epa_play, y =wpa_play)) +
+  geom_nfl_logos(aes(team_abbr = posteam, width = 0.045, alpha = alpha,color = colour))+
+  scale_alpha_identity()+
+  scale_color_identity()+
+  labs(y = "WPA/Play", x = "EPA/Play", title = "Brant Boyer Special Teams Overview", caption = "@CapAnalytics7 | nflfastR")+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+        plot.caption = element_text(colour = "white", size = 10),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1)
+  )+
+  geom_mean_lines(aes(x0 = epa_play, y0 = wpa_play), color = "white")
+ggsave("ST1.png", width = 14, height =10, dpi = "retina")
+
+nfl99all %>% 
+  filter(season >= 2016) %>% 
+  filter(play_type %in% c("kickoff", "extra_point", "field_goal", "punt")) %>% 
+  group_by(posteam) %>% 
+  summarize(off_epa_play = mean(epa,na.rm = T), off_plays = n(),off_total_epa = sum(epa,na.rm = T),off_total_wpa = sum(wpa,na.rm = T)) %>% 
+  left_join(nfl99all %>% 
+              filter(season >= 2016) %>% 
+              group_by(defteam) %>% 
+              filter(play_type %in% c("kickoff", "extra_point", "field_goal", "punt")) %>% 
+              summarize(epa_def = mean(epa,na.rm = T), def_plays = n(),def_total_epa = sum(epa,na.rm = T),def_total_wpa = sum(wpa,na.rm = T)),
+            by = c("posteam" = "defteam")) %>% 
+  mutate(total_epa = def_total_epa*-1+off_total_epa, total_wpa = off_total_wpa+def_total_wpa*-1,
+         wpa_play = total_wpa/(off_plays+def_plays), epa_play = total_epa/(off_plays+def_plays)) %>% 
+  mutate(
+    colour = ifelse(posteam == "NYJ", NA, "b/w"),
+    alpha = ifelse(posteam == "NYJ", 1, 0.1)
+  ) %>% 
+  ggplot(aes(x = epa_play, y =wpa_play)) +
+  geom_nfl_logos(aes(team_abbr = posteam, width = 0.045, alpha = alpha,color = colour))+
+  scale_alpha_identity()+
+  scale_color_identity()+
+  labs(y = "WPA/Play", x = "EPA/Play", title = "Brant Boyer Special Teams Overview", caption = "@CapAnalytics7 | nflfastR")+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+        plot.caption = element_text(colour = "white", size = 10),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1)
+  )+
+  geom_mean_lines(aes(x0 = epa_play, y0 = wpa_play), color = "white")
+ggsave("ST2.png", width = 14, height =10, dpi = "retina")
+
+nfl99all %>% 
+  filter(season >= 2016, posteam == "NYJ") %>% 
+  filter(play_type %in% c("kickoff", "extra_point", "field_goal", "punt")) %>% 
+  group_by(posteam,season) %>% 
+  summarize(off_epa_play = mean(epa,na.rm = T), off_plays = n(),off_total_epa = sum(epa,na.rm = T),off_total_wpa = sum(wpa,na.rm = T)) %>% 
+  left_join(nfl99all %>% 
+              filter(season >= 2016, defteam == "NYJ") %>% 
+              group_by(defteam,season) %>% 
+              filter(play_type %in% c("kickoff", "extra_point", "field_goal", "punt")) %>% 
+              summarize(epa_def = mean(epa,na.rm = T), def_plays = n(),def_total_epa = sum(epa,na.rm = T),def_total_wpa = sum(wpa,na.rm = T)),
+            by = c("posteam" = "defteam","season")) %>% 
+  mutate(total_epa = def_total_epa*-1+off_total_epa, total_wpa = off_total_wpa+def_total_wpa*-1,
+         wpa_play = total_wpa/(off_plays+def_plays), epa_play = total_epa/(off_plays+def_plays)) %>% 
+  ggplot(aes(x = as.factor(season), y =epa_play)) +
+  geom_col(aes(color = posteam, fill = posteam))+
+  scale_color_nfl(type = "secondary") +
+  scale_fill_nfl()+
+  labs(y = "EPA/Play", x = "Season", title = "Brant Boyer Special Teams Overview", caption = "@CapAnalytics7 | nflfastR")+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+        plot.caption = element_text(colour = "white", size = 10),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1)
+  )
+ggsave("ST3.png", width = 14, height =10, dpi = "retina")
+nfl99all %>% 
+  filter(season >= 2016, posteam == "NYJ") %>% 
+  filter(play_type %in% c("kickoff", "extra_point", "field_goal", "punt")) %>% 
+  group_by(posteam,season) %>% 
+  summarize(off_epa_play = mean(epa,na.rm = T), off_plays = n(),off_total_epa = sum(epa,na.rm = T),off_total_wpa = sum(wpa,na.rm = T)) %>% 
+  left_join(nfl99all %>% 
+              filter(season >= 2016, defteam == "NYJ") %>% 
+              group_by(defteam,season) %>% 
+              filter(play_type %in% c("kickoff", "extra_point", "field_goal", "punt")) %>% 
+              summarize(epa_def = mean(epa,na.rm = T), def_plays = n(),def_total_epa = sum(epa,na.rm = T),def_total_wpa = sum(wpa,na.rm = T)),
+            by = c("posteam" = "defteam","season")) %>% 
+  mutate(total_epa = def_total_epa*-1+off_total_epa, total_wpa = off_total_wpa+def_total_wpa*-1,
+         wpa_play = total_wpa/(off_plays+def_plays), epa_play = total_epa/(off_plays+def_plays)) %>% 
+  ggplot(aes(x = as.factor(season), y =wpa_play)) +
+  geom_col(aes(color = posteam, fill = posteam))+
+  scale_color_nfl(type = "secondary") +
+  scale_fill_nfl()+
+  labs(y = "WPA/Play", x = "Season", title = "Brant Boyer Special Teams Overview", caption = "@CapAnalytics7 | nflfastR")+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold"),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 12),
+        plot.caption = element_text(colour = "white", size = 10),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 12),
+        axis.title = element_text(color = "white", size = 14),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1)
+  )
+ggsave("ST4.png", width = 14, height =10, dpi = "retina")
+
+#Shot Plays----
+test <- nfl99 %>% 
+  group_by(ydstogo) %>% 
+  summarize(exp_rate = mean(explosive,na.rm = T), count = n()) %>% 
+  filter(count >100)
