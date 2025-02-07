@@ -2219,3 +2219,12 @@ test <- nfl99 %>%
   group_by(ydstogo) %>% 
   summarize(exp_rate = mean(explosive,na.rm = T), count = n()) %>% 
   filter(count >100)
+#Timeouts----
+pbp %>% 
+  filter(timeout_team %in% c("PHI","KC")) %>% 
+  filter(game_half == "Half1") %>% 
+  group_by(game_id) %>%
+  mutate(tos = cumsum(timeout)) %>% 
+  ungroup() %>% 
+  group_by(timeout_team) %>% 
+  summarize(mean(half_seconds_remaining[tos == 1]))
