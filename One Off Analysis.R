@@ -2219,3 +2219,42 @@ test <- nfl99 %>%
   group_by(ydstogo) %>% 
   summarize(exp_rate = mean(explosive,na.rm = T), count = n()) %>% 
   filter(count >100)
+
+
+# First TD Jersey Number----
+pbp_rp %>% 
+  filter(td_team %in% c("KC", "PHI")) %>% 
+  group_by(game_id) %>% 
+  mutate(td_count = cumsum(touchdown)) %>% 
+  mutate(jersey = case_when(
+    passer_id == td_player_id ~ passer_jersey_number,
+    rusher_id == td_player_id ~ rusher_jersey_number,
+    receiver_id == td_player_id ~ receiver_jersey_number,
+    TRUE ~ NA_real_
+  )) %>% 
+  ungroup() %>% 
+  # group_by(td_team) %>% 
+  summarize(mean(jersey[td_count == 1],na.rm = T), median(jersey[td_count == 1],na.rm = T), sd(jersey[td_count == 1],na.rm = T))
+
+
+final_td_jerseys <- pbp_rp %>% 
+  filter(td_team %in% c("KC", "PHI"), touchdown == 1) %>% 
+  group_by(game_id) %>% 
+  slice_tail(n = 1) %>% 
+  mutate(jersey = case_when(
+    passer_id == td_player_id   ~ passer_jersey_number,
+    rusher_id == td_player_id   ~ rusher_jersey_number,
+    receiver_id == td_player_id ~ receiver_jersey_number,
+    TRUE ~ NA_real_
+  )) %>% 
+  ungroup()
+
+# Optionally, to summarize these jersey numbers across games:
+final_td_jerseys %>% 
+  summarize(mean_jersey = mean(jersey, na.rm = TRUE),
+            median_jersey = median(jersey, na.rm = TRUE),
+            sd_jersey = sd(jersey, na.rm = TRUE))
+
+
+
+
