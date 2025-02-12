@@ -12,21 +12,19 @@ library(grid)
 library(ggrepel)
 library(cowplot)
 library(patchwork)
-ftn_data <- nflreadr::load_ftn_charting(2022:2023) %>%
+ftn_data <- nflreadr::load_ftn_charting(2022:2024) %>%
   select(-week, -season)
-pbp <- load_pbp(2022:2023)
+pbp <- load_pbp(2022:2024)
 participation <- load_participation(2022:2024) %>% 
   select(-old_game_id)
 pbp <- pbp %>%
   left_join(ftn_data, by = c("game_id" = "nflverse_game_id",
-                             "play_id" = "nflverse_play_id")) %>% 
-  left_join(participation,by = c("game_id" = "nflverse_game_id",
-                                 "play_id" = "play_id"))
+                             "play_id" = "nflverse_play_id"))
 
 nfl22 <- pbp %>% 
   filter(pass == 1 | rush == 1) %>% 
   filter(qb_kneel != 1, qb_spike !=1) %>% 
-  mutate(explosive = ifelse((yards_gained>20 & pass_attempt == 1) | (yards_gained >12 & (qb_scramble == 1 | rush == 1)),1,0),
+  mutate(explosive = ifelse((yardline_100 <  20 & pass_attempt == 1) | (yardline_100<12 & (qb_scramble ==1 |rush ==1)), NA, ifelse((yards_gained>20 & pass_attempt == 1) | (yards_gained >12 & (qb_scramble == 1 | rush == 1)),1,0)),
          negative = ifelse(yards_gained < 0, 1,0))
 
 #Cluster Work----
@@ -90,13 +88,6 @@ cluster_summary <- as.data.frame(season_qb_stats) %>%
   group_by(cluster_gmm) %>%
   summarize(across(where(is.numeric), median, na.rm = TRUE))
 
-print(cluster_summary)
-
-
-test <- season_qb_stats %>% 
-  select(cluster_gmm, everything()) %>% 
-  mutate_if(is.numeric, ~round(.,3))
-
 #4 Explosive passers who push down field and scrabmlers, 3 best qbs
 
 # Visualize the means across clusters
@@ -146,38 +137,36 @@ fviz_pca_ind(pca_result, geom.ind = "point", habillage = season_qb_stats$gmm_pos
 # View the PCA loadings to see which variables contribute most to each principal component
 print(pca_result$rotation)
 
-# test <- season_qb_stats %>% 
-#   ungroup() %>% 
-#   mutate(cluster = ifelse(cluster_gmm == 1, "Below Average Scrambler QB", ifelse(cluster_gmm == 2,"Below Average Pocket Passer",
-#                                                                                  ifelse(cluster_gmm == 3, "Elite Pocket Production QB","Gunslinger Mobile QB"))))
+test <- season_qb_stats %>%
+  ungroup() %>%
+  mutate(cluster = ifelse(cluster_gmm == 1, "Below Average Scrambler QB", ifelse(cluster_gmm == 2,"Below Average Pocket Passer",
+                                                                                 ifelse(cluster_gmm == 3, "Elite Pocket Production","Mobile Gunslinger"))))
 
 # Comparison Building -----
 qb_all_stats <- nfl22 %>% 
   mutate(qb_fumbler = ifelse(is.na(fumbled_1_player_id) | fumbled_1_player_id != id,0,1)) %>% 
   group_by(season,id) %>% 
   summarize(name = max(name),`EPA/Pass` = mean(epa[pass == 1 & qb_scramble!= 1],na.rm = T), aDoT = mean(air_yards,na.rm = T), `EPA/Rush` = mean(epa[rush == 1 | qb_scramble == 1]), `Success Rate/DB` = mean(success[pass == 1]), CPOE = mean(cpoe,na.rm = T),dropbacks = sum(pass),
-          `Pressure Rate` = (sum(was_pressure,na.rm = T)+sum(sack,na.rm = T))/sum(pass,na.rm=T), `Explosive DB Rate` = mean(explosive[pass==1], na.rm = T),
-          `Int Rate` = mean(interception[!is.na(air_yards)], na.rm = T), `% of Yards From YAC` = sum(yards_after_catch,na.rm = T)/sum(yards_gained[complete_pass == 1],na.rm = T),
-          `Comp Rate` = sum(complete_pass,na.rm = T)/sum(!is.na(air_yards)), `Negative DB Rate` = mean(negative[pass == 1], na.rm = T), `Early Down EPA/DB` = mean(epa[pass == 1 & down %in% c(1,2)],na.rm = T),
-          `EPA/Outside Num Pass` = mean(epa[pass_location %in% c("left","right")],na.rm = T),
-          `EPA/Btw Num Pass` = mean(epa[pass_location == "middle"], na.rm = T), `Scramble Rate` = mean(qb_scramble[pass == 1]),`EPA/xPass DB` = mean(epa[xpass>0.85 & pass==1], na.rm = T),
-          `EPA/Late Down DB` = mean(epa[down %in% c(3,4)], na.rm = T), `EPA/4Q DB` = mean(epa[qtr>=4 & pass == 1]), `EPA/Trailing DB` = mean(epa[posteam_score<defteam_score],na.rm = T),
-          `EPA/Tied/Winning DB` = mean(epa[posteam_score>=defteam_score],na.rm = T), `EPA/Garbage Time DB` = mean(epa[(def_wp>0.9 | def_wp < 0.1) & pass == 1],na.rm = T), `EPA/Non Garbage Time DB` = mean(epa[(def_wp <= 0.9 | def_wp >= 0.1) & pass == 1],na.rm = T), 
-          `EPA/Shotgun DB` = mean(epa[pass == 1 & shotgun == 1], na.rm = T), `EPA/Under Center DB` = mean(epa[pass == 1 & shotgun == 0],na.rm =T),`EPA/Motion DB` = mean(epa[is_motion == 1 & pass == 1],na.rm =T), `EPA/No Motion DB` = mean(epa[is_motion == 0 & pass == 1],na.rm = T),
+            `Explosive DB Rate` = mean(explosive[pass==1], na.rm = T),
+            `Int Rate` = mean(interception[!is.na(air_yards)], na.rm = T), `% of Yards From YAC` = sum(yards_after_catch,na.rm = T)/sum(yards_gained[complete_pass == 1],na.rm = T),
+            `Comp Rate` = sum(complete_pass,na.rm = T)/sum(!is.na(air_yards)), `Negative DB Rate` = mean(negative[pass == 1], na.rm = T), `Early Down EPA/DB` = mean(epa[pass == 1 & down %in% c(1,2)],na.rm = T),
+            `EPA/Outside Num Pass` = mean(epa[pass_location %in% c("left","right")],na.rm = T),
+            `EPA/Btw Num Pass` = mean(epa[pass_location == "middle"], na.rm = T), `Scramble Rate` = mean(qb_scramble[pass == 1]),`EPA/xPass DB` = mean(epa[xpass>0.85 & pass==1], na.rm = T),
+            `EPA/Late Down DB` = mean(epa[down %in% c(3,4)], na.rm = T), `EPA/4Q DB` = mean(epa[qtr>=4 & pass == 1]), `EPA/Trailing DB` = mean(epa[posteam_score<defteam_score],na.rm = T),
+            `EPA/Tied/Winning DB` = mean(epa[posteam_score>=defteam_score],na.rm = T), `EPA/Garbage Time DB` = mean(epa[(def_wp>0.9 | def_wp < 0.1) & pass == 1],na.rm = T), `EPA/Non Garbage Time DB` = mean(epa[(def_wp <= 0.9 | def_wp >= 0.1) & pass == 1],na.rm = T), 
+            `EPA/Shotgun DB` = mean(epa[pass == 1 & shotgun == 1], na.rm = T), `EPA/Under Center DB` = mean(epa[pass == 1 & shotgun == 0],na.rm =T),`EPA/Motion DB` = mean(epa[is_motion == 1 & pass == 1],na.rm =T), `EPA/No Motion DB` = mean(epa[is_motion == 0 & pass == 1],na.rm = T),
             , `EPA/Out of Pocket DB` = mean(epa[is_qb_out_of_pocket == 1 & pass == 1], na.rm = T),
             `EPA/In Pocket DB` = mean(epa[is_qb_out_of_pocket == 0 & pass == 1], na.rm = T), `Int Worthy Throw Rate` = mean(is_interception_worthy[!is.na(air_yards)] , na.rm = T),
             `Catchable Ball Rate` = mean(is_catchable_ball[!is.na(air_yards) & is_throw_away == 0], na.rm = T),`Catchable Ball Drop Rate` = mean(is_drop[!is.na(air_yards) & is_catchable_ball == 1],na.rm = T),
             `Contested Throw Rate` = mean(is_contested_ball[!is.na(air_yards)]), `EPA/Blitz DB` = mean(epa[n_blitzers>0],na.rm = T), `EPA/Non Blitz DB` = mean(epa[n_blitzers<=0],na.rm = T), 
             `EPA/1st Read DB` = mean(epa[read_thrown %in% c(1,"DES")],na.rm = T), `EPA/Non 1st Read DB` = mean(epa[read_thrown %in% c(2,"SD","CHK",0)],na.rm = T),
-          `Shotgun Rate` = mean(qb_location == "S",na.rm = T), `EPA/Shotgun DB` = mean(epa[qb_location == "S" & pass == 1],na.rm = T),
-          `Under Center Rate` = mean(qb_location == "U",na.rm = T),`EPA/Under Center DB` = mean(epa[qb_location == "U" & pass == 1],na.rm = T),
-          `QB Sack Fault Rate` = mean(is_qb_fault_sack[sack == 1],na.rm = T), `EPA/Clutch DB` = mean(epa[abs(posteam_score-defteam_score)<=8 & game_seconds_remaining <= 300],na.rm = T),
-          `EPA/PA DB` = mean(epa[pass == 1 & is_play_action == 1],na.rm = T), `EPA/ Non PA DB` = mean(epa[pass == 1 & is_play_action == 0],na.rm = T),
-          `WPA/Play` = mean(wpa,na.rm = T), `YAC Over Expected/Catch` = mean(yards_after_catch-xyac_mean_yardage,na.rm = T), 
-          `EPA/Light Box DB` = mean(epa[n_defense_box <7],na.rm = T), `Fumble Rate` = mean(qb_fumbler, na.rm = T), `EPA/Red Zone DB` = mean(epa[yardline_100 <= 200], na.rm = T),
-          `EPA Lost/Turnover` = mean(epa[(qb_fumbler == 1 & fumble_lost == 1) | interception == 1],na.rm = T), `EPA/Scramble` = mean(epa[qb_scramble == 1], na.rm = T), `EPA/Deep Pass` = mean(epa[air_yards>=20],na.rm = T),
-          `Pressure to Sack Rate` = sum(sack,na.rm = T)/(sum(was_pressure,na.rm = T)+sum(sack,na.rm = T)), `EPA/Pressure` = mean(epa[was_pressure == TRUE | sack == 1],na.rm = T),
-          `Avg Time to Throw` = mean(time_to_throw,na.rm = T)) %>% 
+            `Shotgun Rate` = mean(qb_location == "S",na.rm = T), `EPA/Shotgun DB` = mean(epa[qb_location == "S" & pass == 1],na.rm = T),
+            `Under Center Rate` = mean(qb_location == "U",na.rm = T),`EPA/Under Center DB` = mean(epa[qb_location == "U" & pass == 1],na.rm = T),
+            `QB Sack Fault Rate` = mean(is_qb_fault_sack[sack == 1],na.rm = T), `EPA/Clutch DB` = mean(epa[abs(posteam_score-defteam_score)<=8 & game_seconds_remaining <= 300],na.rm = T),
+            `EPA/PA DB` = mean(epa[pass == 1 & is_play_action == 1],na.rm = T), `EPA/ Non PA DB` = mean(epa[pass == 1 & is_play_action == 0],na.rm = T),
+            `WPA/Play` = mean(wpa,na.rm = T), `YAC Over Expected/Catch` = mean(yards_after_catch-xyac_mean_yardage,na.rm = T), 
+            `EPA/Light Box DB` = mean(epa[n_defense_box <7],na.rm = T), `Fumble Rate` = mean(qb_fumbler, na.rm = T), `EPA/Red Zone DB` = mean(epa[yardline_100 <= 200], na.rm = T),
+            `EPA Lost/Turnover` = mean(epa[(qb_fumbler == 1 & fumble_lost == 1) | interception == 1],na.rm = T), `EPA/Scramble` = mean(epa[qb_scramble == 1], na.rm = T), `EPA/Deep Pass` = mean(epa[air_yards>=20],na.rm = T)) %>% 
   filter(dropbacks>60) %>% 
   mutate(name = paste (name,season, sep = " ")) %>% 
   ungroup %>% 
@@ -200,10 +189,10 @@ replace_with_values_and_ranks <- function(column) {
 
 
 qb_rank <- as.data.frame(cbind(qb_all_stats_clustered$name,(apply(qb_all_stats_clustered %>% 
-                                                 select(-name,-cluster) %>% 
-                                                 mutate(`Pressure Rate` = `Pressure Rate`*-1,`Int Rate` = `Int Rate`*-1,
-                                                        `Negative DB Rate` = `Negative DB Rate`*-1, `Int Worthy Throw Rate` = `Int Worthy Throw Rate` * -1, `QB Sack Fault Rate` = `QB Sack Fault Rate`*-1,
-                                                        `Fumble Rate` = `Fumble Rate`*-1,`Pressure to Sack Rate` = `Pressure to Sack Rate`*-1, `Contested Throw Rate` = `Contested Throw Rate`*-1), 2, replace_with_values_and_ranks)))) %>% 
+                                                                    select(-name,-cluster) %>% 
+                                                                    mutate(`Int Rate` = `Int Rate`*-1,
+                                                                           `Negative DB Rate` = `Negative DB Rate`*-1, `Int Worthy Throw Rate` = `Int Worthy Throw Rate` * -1, `QB Sack Fault Rate` = `QB Sack Fault Rate`*-1,
+                                                                           `Fumble Rate` = `Fumble Rate`*-1, `Contested Throw Rate` = `Contested Throw Rate`*-1), 2, replace_with_values_and_ranks)))) %>% 
   pivot_longer(cols = -`V1`, names_to = "statistic", values_to = "rank") %>% 
   mutate(rank = as.numeric(rank))
 
@@ -212,26 +201,16 @@ qbs_all_comb<- qb_all_stats_clustered %>% pivot_longer(cols = c(-name,-cluster),
   inner_join(qb_rank, by = c("name" = "V1", "statistic"))
 
 
-
-
-
-          
-          
-           
-          
-#deep throw rate, epa 4th, light box epa
-          
-
-production_stats <- c("EPA/Pass", "EPA/Rush", "aDoT", "Avg Time to Throw", "Success Rate/DB", "CPOE","Explosive DB Rate","Negative DB Rate","Pressure to Sack Rate","EPA/xPass DB","WPA/Play","% of Yards From YAC")
-advanced_prod_stats = c("EPA/Outside Num Pass", "EPA/Btw Num Pass","Comp Rate","Pressure Rate", "Int Rate", "Int Worthy Throw Rate",
-                        "Fumble Rate", "EPA Lost/Turnover","YAC Over Expected/Catch", "Catchable Ball Rate", "Catchable Ball Drop Rate", "Contested Throw Rate")
+production_stats <- c("EPA/Pass", "EPA/Rush", "aDoT", "Avg Time to Throw", "Success Rate/DB", "CPOE","Explosive DB Rate","Negative DB Rate","EPA/xPass DB","WPA/Play","% of Yards From YAC","Catchable Ball Rate")
+advanced_prod_stats = c("EPA/Outside Num Pass", "EPA/Btw Num Pass","Comp Rate", "Int Rate", "Int Worthy Throw Rate",
+                        "Fumble Rate", "EPA Lost/Turnover","YAC Over Expected/Catch", "Catchable Ball Drop Rate", "Contested Throw Rate")
 situational_stats <- c("Early Down EPA/DB","EPA/Late Down DB", "EPA/Trailing DB", "EPA/Tied/Winning DB", "EPA/Garbage Time DB", "EPA/Non Garbage Time DB", "EPA/Clutch DB", "EPA/Red Zone DB",
                        "Scramble Rate", "EPA/Scramble","EPA/1st Read DB", "EPA/Non 1st Read DB")
 playcall_stats <- c("EPA/Motion DB", "EPA/No Motion DB", "Shotgun Rate", "EPA/Shotgun DB","EPA/Under Center DB",
-                    "EPA/PA DB", "EPA/ Non PA DB", "EPA/Pressure" ,"EPA/Blitz DB", "EPA/Non Blitz DB","EPA/Out of Pocket DB", "EPA/In Pocket DB")
+                    "EPA/PA DB", "EPA/ Non PA DB","EPA/Blitz DB", "EPA/Non Blitz DB","EPA/Out of Pocket DB", "EPA/In Pocket DB")
 
-player1 <- "A.Dalton 2023" #Rework to be more flexible and incorporate more players
-player2 <- "B.Young 2023"
+player1 <- "M.Willis 2024" #Rework to be more flexible and incorporate more players
+player2 <- "M.Willis 2024"
 #Production Stats ----
 prod_qbs <- qbs_all_comb %>% 
   filter(statistic %in% production_stats) %>% 

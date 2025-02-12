@@ -2237,3 +2237,25 @@ all %>%
   ungroup() %>% 
   group_by(timeout_team) %>% 
   summarize(mean(half_seconds_remaining[tos == 1]))
+
+
+#Super Bowl----
+test <- nfl99 %>% 
+  filter(name == "P.Mahomes") %>% 
+  group_by(game_id,name) %>% 
+  summarize(`EPA/Play` = mean(epa,na.rm = T), `Success Rate` = mean(success,na.rm = T), CPOE = mean(cpoe,na.rm =T))
+
+test2 <- nfl99 %>% 
+  filter(name == "P.Mahomes") %>% 
+  filter(game_half != "Overtime") %>% 
+  group_by(game_id,name,game_half) %>% 
+  summarize(`EPA/Play` = mean(epa,na.rm = T), `Success Rate` = mean(success,na.rm = T), CPOE = mean(cpoe,na.rm =T))
+
+
+test3 <- nfl99 %>% 
+  filter(game_half != "Overtime") %>% 
+  filter(season_type == "POST") %>% 
+  # filter(season == 2024) %>% 
+  group_by(game_id,name,game_half,id) %>% 
+  summarize(`EPA/Play` = mean(epa,na.rm = T), `Success Rate` = mean(success,na.rm = T), CPOE = mean(cpoe,na.rm =T), count = sum(pass,na.rm = T)) %>% 
+  filter(count >=8)
