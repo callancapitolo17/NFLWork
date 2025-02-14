@@ -10,7 +10,8 @@ library(nflfastR)
 library(nflreadr)
 
 #### 1. Load the data ####
-matches <- load_schedules(2024) %>% 
+all <- load_schedules(2024)
+matches <- all %>% 
   filter(!is.na(away_score)) %>% 
   select(date = gameday,away_team,away_score,home_team,home_score,location)
 head(matches)
@@ -329,8 +330,8 @@ predict_match_outcome <- function(home_team_name, away_team_name, location ="" ,
   return(win_prob_home)
 }
 
-test <- matches %>% 
-  # filter(is.na(home_team_score), week == min(week)) %>% 
+test <- all %>% 
+  filter(is.na(home_team_score), week == min(week)) %>% 
   mutate(home_team_win_prob = pmap_dbl(
     list(home_team, away_team, location), # Ensure 'location' contains "Neutral" or home field info
     predict_match_outcome),
