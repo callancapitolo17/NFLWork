@@ -10,6 +10,7 @@ library(gt)
 library(ggrepel)
 library(nflplotR)
 library(gtExtras)
+library(lubridate)
 
 nfl99all <- load_pbp(1999:2024)
 nfl99 <- nfl99all %>%
@@ -21,6 +22,22 @@ nfl_play_data <- nfl99 %>% #no huddle, drive length, 3rd down/4th down
   filter(two_point_attempt!=1) %>%
   filter(season > 2005) %>% 
   filter(play_type_nfl != "FIELD_GOAL", play_type_nfl != "PENALTY" ) %>% 
+  group_by(game_id,posteam,week,season) %>% 
+  summarize(offensive_plays = n(),total_pass_oe = sum(pass_oe,na.rm = T), proe_eligible_plays = sum(!is.na(pass_oe),na.rm = T), proe = total_pass_oe/proe_eligible_plays) %>% 
+  filter(!is.na(posteam)) %>% 
+  arrange(game_id,posteam,week) %>% 
+  ungroup() %>% 
+  group_by(posteam,season) %>% 
+  mutate(plays_per_game = cummean(offensive_plays))
+
+test <- nfl99 %>% #no huddle, drive length, 3rd down/4th down
+  filter(two_point_attempt!=1) %>%
+  filter(season > 2005) %>% 
+  filter(play_type_nfl != "FIELD_GOAL", play_type_nfl != "PENALTY" ) %>% 
+  mutate(drive_id = paste(game_id,drive),
+         drive_top = as.numeric(ms(drive_time_of_possession))) %>% 
+  group_by(drive_id) %>% 
+  summarize(plays_drive = n(),top = max(drive_top))
   group_by(game_id,posteam,week,season) %>% 
   summarize(offensive_plays = n(),total_pass_oe = sum(pass_oe,na.rm = T), proe_eligible_plays = sum(!is.na(pass_oe),na.rm = T), proe = total_pass_oe/proe_eligible_plays) %>% 
   filter(!is.na(posteam)) %>% 
@@ -60,7 +77,7 @@ clean_schedule <- all_schedules %>%
   mutate(opponent = ifelse(home_team == team, away_team,home_team)) %>% 
   select(-away_team,-home_team)
 joined_play_data <- nfl_play_data %>% 
-  left_join(clean_schedule, by = c("game_id", ))
+  left_join(clean_schedule, by = c("game_id", "posteam" = "team"))
 
 
 
