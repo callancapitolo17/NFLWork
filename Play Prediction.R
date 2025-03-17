@@ -10,6 +10,7 @@ library(gt)
 library(ggrepel)
 library(nflplotR)
 library(gtExtras)
+library(lubridate)
 
 nfl99all <- load_pbp(1999:2024)
 nfl99 <- nfl99all %>%
@@ -21,6 +22,46 @@ nfl_play_data <- nfl99 %>% #no huddle, drive length, 3rd down/4th down
   filter(two_point_attempt!=1) %>%
   filter(season > 2005) %>% 
   filter(play_type_nfl != "FIELD_GOAL", play_type_nfl != "PENALTY" ) %>% 
+  group_by(game_id,posteam,week,season) %>% 
+  summarize(offensive_plays = n(),total_pass_oe = sum(pass_oe,na.rm = T), proe_eligible_plays = sum(!is.na(pass_oe),na.rm = T), proe = total_pass_oe/proe_eligible_plays) %>% 
+  filter(!is.na(posteam)) %>% 
+  arrange(game_id,posteam,week) %>% 
+  ungroup() %>% 
+  group_by(posteam,season) %>% 
+  mutate(plays_per_game = cummean(offensive_plays))
+
+#drive stats
+drive <- nfl99 %>% #no huddle, drive length, 3rd down/4th down
+  mutate(
+    # Approximate play end time using next play's start time
+    game_seconds_end = lead(game_seconds_remaining),
+    
+    # Handle the last play of the game (set to 0 if it's missing)
+    game_seconds_end = ifelse(is.na(game_seconds_end), 0, game_seconds_end),
+    
+    # Time elapsed on the play (play start - next play start)
+    play_duration = game_seconds_remaining - game_seconds_end
+  ) %>%
+  filter(two_point_attempt!=1) %>%
+  filter(season > 2005) %>% 
+  filter(play_type_nfl != "FIELD_GOAL", play_type_nfl != "PENALTY" ) %>%
+  arrange(game_id, play_id) %>%
+  mutate(
+    # Detect when a new drive should start
+    new_drive_flag = (posteam != lag(posteam, default = first(posteam))) |  # Change in possession
+      (lag(qtr, default = first(qtr)) == 2 & qtr == 3) |      # Halftime reset
+      (lag(play_type, default = "NA") %in% c("punt", "field_goal", "interception", "fumble")),  # Turnover plays
+    
+    # Assign new drive numbers
+    corrected_drive = cumsum(coalesce(new_drive_flag, 0)) + 1
+  ) %>% 
+  mutate(drive_id = paste(game_id,corrected_drive),
+         drive_top = as.numeric(ms(drive_time_of_possession))) %>% 
+  filter(game_id %in% c("2019_15_CLE_ARI")) %>% 
+  select(desc,drive_id, drive_play_count,drive_time_of_possession,fixed_drive,drive,drive_game_clock_start,drive_game_clock_end,corrected_drive,game_seconds_remaining,time)
+  group_by(game_id,drive_id,posteam,week) %>% 
+  summarize(plays_drive = n(),top = max(drive_top), time_per_play = top/plays_drive, max_time = max(game_seconds_remaining),
+            min_time = min(game_seconds_remaining), drive_time = max_time - min_time, time_per_play = drive_time/plays_drive)
   group_by(game_id,posteam,week,season) %>% 
   summarize(offensive_plays = n(),total_pass_oe = sum(pass_oe,na.rm = T), proe_eligible_plays = sum(!is.na(pass_oe),na.rm = T), proe = total_pass_oe/proe_eligible_plays) %>% 
   filter(!is.na(posteam)) %>% 
@@ -60,40 +101,4 @@ clean_schedule <- all_schedules %>%
   mutate(opponent = ifelse(home_team == team, away_team,home_team)) %>% 
   select(-away_team,-home_team)
 joined_play_data <- nfl_play_data %>% 
-  left_join(clean_schedule, by = c("game_id", ))
-
-
-
-# Load necessary libraries
-library(nflfastR)
-library(dplyr)
-
-# Load play-by-play data (example for 2023 season)
-pbp <- load_pbp(2023)
-
-# Compute time differences and infer clock stoppages
-time_between_plays <- nfl99 %>%
-  filter(qb_kneel != 1) %>% 
-  arrange(game_id, posteam, desc(game_seconds_remaining)) %>%
-  mutate(
-    next_play_time = lead(game_seconds_remaining),  # Game clock at next play
-    time_between_plays = game_seconds_remaining - next_play_time,  # Time diff
-    
-    # Clock stopped if the game clock doesn't move OR an excessive gap exists
-    clock_stopped = ifelse(
-      is.na(next_play_time) | next_play_time == game_seconds_remaining | time_between_plays > 40,
-      1, 0
-    )
-  ) %>% 
-  filter(clock_stopped == 0, time_between_plays >0) %>%
-  select(game_seconds_remaining,next_play_time,time_between_plays,desc)
-  group_by(game_id, posteam) %>%
-  summarise(
-    avg_time_between_plays = mean(time_between_plays, na.rm = TRUE),
-    median_time_between_plays = median(time_between_plays, na.rm = TRUE),
-    n_plays = n()
-  ) %>%
-  ungroup()
-
-# View results
-head(pbp_filtered)
+  left_join(clean_schedule, by = c("game_id", "posteam" = "team"))
