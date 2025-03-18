@@ -14,9 +14,12 @@
 #
 # Load required libraries:
 library(rvest)
+library(httr)
+library(jsonlite)
 library(dplyr)
-library(stringr)
+library(purrr)
 library(readr)
+library(tidyr)
 
 # ------------------------------
 # 1. Acquire Bracket Data
@@ -203,11 +206,72 @@ test <- read.csv("export (1).csv")
 
 
 # b) KenPom Ratings (local CSV file)
-kenpom_ratings <- read_csv("kenpom_ratings.csv")  # Ensure file exists and columns are "team", "kenpom_rating"
+library(googlesheets4)
+gs4_auth()
+# Replace with your actual Google Sheets URL
+sheet_url <- "https://docs.google.com/spreadsheets/d/10o9dwZeyREliM8iOIevpHIhNeCHYeVGE-y50N3KHujQ/edit?gid=0#gid=0"
 
-# c) PoolGenius Ratings (local CSV file)
-poolgenius_ratings <- read_csv("poolgenius_ratings.csv")  # Ensure file exists and columns are "team", "poolgenius_rating"
+# Read the sheet (first sheet by default)
+kenpom_data <- read_sheet(sheet_url) %>% 
+  mutate(Team = str_replace(Team, "\\s\\d+$", ""))
 
+#torvik
+
+torvik_url <- "https://barttorvik.com/trank.php?year=2025&t=0&json=1"
+torvik_data <- as.data.frame(fromJSON(torvik_url))
+colnames(torvik_data)[c(1, 2, 3,4)] <- c("Team", "OffEff", "DefEff", "TorvikPower")
+
+# Convert columns to numeric
+torvik_data <- torvik_data %>%
+  mutate(
+    OffEff = as.numeric(OffEff),
+    DefEff = as.numeric(DefEff),
+    TorvikPower = as.numeric(TorvikPower),
+    TorvikMargin = ((OffEff-DefEff)/100)*70
+  ) %>% 
+  select(Team,TorvikMargin)
+
+sagarin_url <- "https://sagarin.com/sports/cbsend.htm"
+sagarin_page <- read_html(sagarin_url)
+sagarin_table <- html_table(sagarin_page, fill = TRUE)[[1]]
+sagarin_ratings <- sagarin_table %>% select(team = Team, sagarin = Predictor)
+
+evanmiya_url <- "https://evanmiya.com/?team_ratings"
+evanmiya_page <- read_html(evanmiya_url)
+library(tidyr)
+library(tidyverse)
+library(googlesheets4)
+
+# Read data from Google Sheets
+library(tidyverse)
+library(googlesheets4)
+
+# Read in EvanMiya data
+evan_miya <- read_sheet(sheet_url2)
+
+# Determine the grouping factor (every 22 rows should be one row)
+group_size <- 21  # Set the number of rows per team
+evan_miya$group <- rep(1:(nrow(evan_miya)/group_size), each = group_size)[1:nrow(evan_miya)]  # Assign group numbers
+
+# Reshape data: Convert every 22 rows into a single row
+evan_miya <- evan_miya %>%
+  group_by(group) %>%
+  mutate(row_number = row_number()) %>%
+  ungroup()
+
+# Pivot into wide format (ensuring teams align correctly)
+evan_miya_wide <- evan_miya %>%
+  pivot_wider(names_from = row_number, values_from = 1) %>%  
+  select(-group) %>% 
+  mutate(`2` = gsub("[^[:alnum:][:space:]]", "", evan_miya_wide$Team))
+
+colnames(evan_miya_wide) <- c(
+  "Relative Ranking", "Team", "O-Rate", "D-Rate", "Relative Rating",
+  "Opponent Adjust", "Pace Adjust", "Off Rank", "Def Rank", "True Tempo",
+  "Tempo Rank", "Injury Rank", "Home Rank", "Roster Rank",
+  "Kill Shots Per Game", "Kill Shots Conceded Per Game", "Kill Shots Margin Per Game",
+  "Total Kill Shots", "Total Kill Shots Conceded", "D1 Wins", "D1 Losses"
+)
 # Merge power ratings from all sources.
 power_ratings <- espn_bpi_ratings %>% 
   full_join(kenpom_ratings, by = "team") %>% 
