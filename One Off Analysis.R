@@ -2253,4 +2253,15 @@ test3 <- nfl99 %>%
   group_by(game_id,name,game_half,id) %>% 
   summarize(`EPA/Play` = mean(epa,na.rm = T), `Success Rate` = mean(success,na.rm = T), CPOE = mean(cpoe,na.rm =T), count = sum(pass,na.rm = T)) %>% 
   filter(count >=8)
->>>>>>> 86517993ca870f1b196fa79527af42cd9e7193b7
+
+
+
+#Deebo----
+deebo <- nfl99 %>% 
+  filter(receiver_player_name == "D.Samuel") %>% 
+  group_by(season) %>% 
+  summarize(yoe = mean(yards_after_catch-xyac_median_yardage, na.rm = T), yac_epa = mean(yac_epa, na.rm = T))
+ngs <- load_nextgen_stats(2019:2024, stat_type = "receiving")
+
+deebo_stats <- ngs %>% filter(player_display_name == "Deebo Samuel", week == 0) %>% 
+  left_join(deebo, by = "season")
