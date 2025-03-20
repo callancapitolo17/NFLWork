@@ -21,6 +21,7 @@ library(purrr)
 library(readr)
 library(tidyr)
 library(googlesheets4)
+library(stringr)
 gs4_auth()
 
 # ------------------------------
@@ -155,7 +156,8 @@ library(purrr)
 library(tibble)
 
 library(hoopR)
-teams_std <- espn_mbb_teams(2025)
+teams_std <- espn_mbb_teams(2025) %>% 
+  mutate(team = ifelse(team == "McNeese", "McNeese State",team))
 
 # Define a helper function to clean text (lowercase, remove non-alphanumerics)
 clean_text <- function(x) {
@@ -178,7 +180,7 @@ get_standard_team <- function(team, teams_std) {
       # Only compare if the variant is not NA.
       if (!is.na(variant)) {
         # If both cleaned texts are not NA and are equal, return the canonical name.
-        if (!is.na(variant) && team_clean == clean_text(variant)) {
+        if (!is.na(variant) && (team_clean == clean_text(variant))) {
           return(teams_std$display_name[i])
         }
       }
@@ -248,27 +250,45 @@ kenpom_data <- read_sheet(sheet_url) %>%
   mutate(Team = ifelse(Team == "Connecticut", "UConn",Team))
 
 clean_kenpom_data <- kenpom_data %>%
-  mutate(standard_team = map_chr(Team, ~ get_standard_team(.x, teams_std = teams_std)))
+  mutate(standard_team = map_chr(Team, ~ get_standard_team(.x, teams_std = teams_std))) %>% 
+  select(standard_team, NetRtg) %>% 
+  mutate(NetRtg = map_dbl(NetRtg, ~ ifelse(is.null(.x), NA_real_, as.numeric(.x))))
 #torvik
 
-torvik_url <- "https://barttorvik.com/trank.php?year=2025&t=0&json=1"
-torvik_data <- as.data.frame(fromJSON(torvik_url))
-colnames(torvik_data)[c(1, 2, 3,4)] <- c("Team", "OffEff", "DefEff", "TorvikPower")
+library(httr)
+library(jsonlite)
 
-# Convert columns to numeric
-torvik_data <- torvik_data %>%
-  mutate(
-    OffEff = as.numeric(OffEff),
-    DefEff = as.numeric(DefEff),
-    TorvikPower = as.numeric(TorvikPower),
-    TorvikMargin = ((OffEff-DefEff)/100)*70
-  ) %>% 
-  select(Team,TorvikMargin) 
+torvik_url <- "https://barttorvik.com/trank.php?year=2025&t=0&json=1"
+
+# Set user-agent to mimic a browser request
+response <- GET(torvik_url, add_headers("User-Agent" = "Mozilla/5.0"))
+
+# Check if request was successful
+if (status_code(response) == 200) {
+  torvik_data <- as.data.frame(fromJSON(content(response, "text", encoding = "UTF-8")))
+  
+  colnames(torvik_data)[c(1, 2, 3, 4)] <- c("Team", "OffEff", "DefEff", "TorvikPower")
+  
+  # Convert columns to numeric
+  torvik_data <- torvik_data %>%
+    mutate(
+      OffEff = as.numeric(OffEff),
+      DefEff = as.numeric(DefEff),
+      TorvikPower = as.numeric(TorvikPower),
+      TorvikMargin = ((OffEff - DefEff) / 100) * 70
+    ) %>% 
+    select(Team, TorvikMargin) 
+} else {
+  stop("Failed to retrieve Torvik data. HTTP status:", status_code(response))
+}
+
 clean_torvik_data <- torvik_data %>% 
-  mutate(standard_team = map_chr(Team, ~ get_standard_team(.x, teams_std = teams_std)))
+  mutate(Team = ifelse(Team == "Connecticut", "UConn",ifelse(Team == "Mississippi", "Ole Miss",Team))) %>% 
+  mutate(standard_team = map_chr(Team, ~ get_standard_team(.x, teams_std = teams_std))) %>% 
+  select(standard_team, TorvikMargin)
 
 # Read in EvanMiya data
-evan_miya <- read_sheet(sheet_url2)
+evan_miya <- read_sheet("https://docs.google.com/spreadsheets/u/0/d/1zaDMGo6bRMis_VD7yH4uZY9aFXbp0QUPp3HRoE8x3EY/edit?usp=drive_web&pli=1&authuser=0")
 
 # Determine the grouping factor (every 22 rows should be one row)
 group_size <- 21  # Set the number of rows per team
@@ -302,7 +322,9 @@ clean_evan_miya_wide <- evan_miya_wide %>%
   mutate(standard_team = map_chr(Team, ~ get_standard_team(.x, teams_std = teams_std %>% 
                                                              mutate(nickname = sub("'", "", nickname),
                                                                     nickname = sub("St.", "Saint ",nickname)
-                                                                    ))))
+                                                                    )))) %>% 
+  select(standard_team, `Relative Rating`) %>% 
+  mutate(`Relative Rating` = map_dbl(`Relative Rating`, ~ ifelse(is.null(.x), NA_real_, as.numeric(.x))))
 
  
 # Now power_ratings$standard_team will contain the standardized team names.
@@ -310,8 +332,9 @@ clean_evan_miya_wide <- evan_miya_wide %>%
 power_ratings <- clean_bpi_data %>%
   left_join(clean_kenpom_data %>% rename(KenPomRating = NetRtg), by = c("standard_team")) %>%
   left_join(clean_torvik_data, by = c("standard_team")) %>%
-  left_join(clean_evan_miya_wide %>% rename(EvanMiyaRating = `Relative Rating`), by = c("standard_team")) %>% #fix evan miya
-  mutate(
+  left_join(clean_evan_miya_wide %>% rename(EvanMiyaRating = `Relative Rating`), by = c("standard_team")) %>%  #fix evan miya
+  mutate(,
+    EvanMiyaRating = as.numeric(unlist(EvanMiyaRating)),
     # Normalize KenPom & EvanMiya (convert from per 100 possessions to per 70 possessions)
     KenPomMargin = (as.numeric(KenPomRating) / 100) * 70,
     EvanMiyaMargin = (EvanMiyaRating / 100) * 70,
@@ -321,23 +344,21 @@ power_ratings <- clean_bpi_data %>%
     # BPI & Torvik are already correct
     BPIMargin = bpi
   ) %>%
-  select(team, KenPomMargin, BPIMargin, EvanMiyaMargin, TorvikMargin, SagarinMargin)
+  select(team, KenPomMargin, BPIMargin, EvanMiyaMargin, TorvikMargin)
 
 # ------------------------------
 # 3. Merge Bracket Data with Power Ratings
 # ------------------------------
 # Standardize team names and convert seeds if possible.
 final_bracket <- final_bracket %>%
-  mutate(team = str_trim(team))
-power_ratings <- power_ratings %>%
-  mutate(team = str_trim(team))
+  mutate(standard_team = map_chr(team, ~ get_standard_team(.x, teams_std = teams_std)))
 
 # If seeds are purely numeric strings, convert them; otherwise, keep as character.
 final_bracket <- final_bracket %>%
   mutate(seed = as.numeric(seed))
 
 # Merge using inner_join to keep only teams for which we have ratings.
-bracket_with_ratings <- inner_join(final_bracket, power_ratings, by = "team")
+bracket_with_ratings <- left_join(final_bracket, power_ratings, by = c("standard_team" = "team"))
 cat("Teams with power ratings available:", nrow(bracket_with_ratings), "\n\n")
 
 # ------------------------------
@@ -378,20 +399,12 @@ simulate_game <- function(team1, team2, game_number = 1, beta1 = 0.1, beta2 = 0.
 
 # Function to simulate one round (pair teams two-by-two).
 simulate_round <- function(teams, game_number = 1) {
-  n <- nrow(teams)
-  winners <- data.frame()
-  
-  # Sort teams by seed for pairing (assuming lower seed numbers are higher-ranked)
   teams <- teams %>% arrange(seed)
-  
-  for (i in seq(1, n, by = 2)) {
-    team1 <- teams[i, ]
-    team2 <- teams[i + 1, ]
-    game_result <- simulate_game(team1, team2, game_number)
-    winners <- bind_rows(winners, game_result$winner)
-  }
-  
-  return(winners)
+  matchups <- teams %>%
+    mutate(pairing = rep(1:(n() / 2), each = 2)) %>%
+    group_by(pairing) %>%
+    summarise(winner = list(simulate_game(cur_data()[1,], cur_data()[2,], game_number)$winner))
+  return(bind_rows(matchups$winner))
 }
 
 # Function to simulate the full tournament.
