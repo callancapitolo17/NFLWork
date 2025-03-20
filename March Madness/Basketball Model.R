@@ -509,7 +509,7 @@ team_results <- sim_results %>%
 
 bets <- team_results %>%
   gt() %>%
-  tab_header(title = "The Quant's March Madness Betting Guide") %>%
+  tab_header(title = "March Madness Betting Guide Based on 10,000 Simulations") %>%
   fmt_number(columns = 3:8, decimals = 0)
 gtsave(bets,"bets.png")
 prob_to_american(
