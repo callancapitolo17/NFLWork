@@ -485,8 +485,8 @@ team_results <- sim_results %>%
     .groups = "drop"
   ) %>%
   arrange((Champion)) %>% 
-  mutate_if(is.numeric, ~round(.,0))%>% 
-  left_join(bracket_with_ratings %>% select(team,region), by = "team") #too lazy to fix can remove
+  mutate_if(is.numeric, ~round(.,0)) #%>%
+  # left_join(bracket_with_ratings %>% select(team,region), by = "team") #too lazy to fix can remove
 
 team_results <- sim_results %>%
   group_by(team, seed) %>%
