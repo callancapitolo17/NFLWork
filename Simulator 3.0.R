@@ -1,3 +1,4 @@
+# Load required libraries
 library(rvest)
 library(dplyr)
 library(purrr)
@@ -14,7 +15,6 @@ library(httr)
 # gs4_auth()
 
 ### 1. Acquire Bracket Data (Dynamic Scraping) --------------
-
 bracket_url <- "https://www.ncaa.com/march-madness-live/bracket"  # update if needed
 bracket_page <- read_html(bracket_url)
 region_nodes <- bracket_page %>% html_nodes("div.bracket-container div.region")
@@ -59,7 +59,6 @@ scrape_region <- function(region_node) {
         team_nodes <- round_node %>% html_nodes("div.team")
         teams <- team_nodes %>% map_chr(~ .x %>% html_node("p.body_2") %>% html_text(trim = TRUE))
         seeds <- team_nodes %>% map_chr(~ .x %>% html_node("span.overline") %>% html_text(trim = TRUE))
-        
         tibble(
           region   = region_name,
           round    = round_label,
@@ -73,7 +72,6 @@ scrape_region <- function(region_node) {
     team_nodes <- region_node %>% html_nodes("div.team")
     teams <- team_nodes %>% map_chr(~ .x %>% html_node("p.body_2") %>% html_text(trim = TRUE))
     seeds <- team_nodes %>% map_chr(~ .x %>% html_node("span.overline") %>% html_text(trim = TRUE))
-    
     tibble(
       region   = region_name,
       round    = "Round of 64",
@@ -121,7 +119,7 @@ scrape_final <- function(page) {
   )
 }
 
-# Combine all scraped bracket data.
+# Combine scraped data.
 final_bracket <- bind_rows(
   bracket_data,
   scrape_final_four(bracket_page),
@@ -261,18 +259,18 @@ power_ratings <- clean_bpi_data %>%
   ) %>%
   select(team, KenPomMargin, BPIMargin, EvanMiyaMargin, TorvikMargin)
 
-### 3. Merge Bracket Data with Power Ratings & Prepare for Simulation --------------
+### 3. Merge Bracket Data with Power Ratings & Build Current Bracket --------------
 final_bracket <- final_bracket %>%
   mutate(standard_team = map_chr(team, ~ get_standard_team(.x, teams_std = teams_std))) %>%
   mutate(seed = as.numeric(seed))
+
 bracket_with_ratings <- left_join(final_bracket, power_ratings, by = c("standard_team" = "team")) %>% 
   rowwise() %>%
   mutate(composite_rating = mean(c_across(KenPomMargin:TorvikMargin), na.rm = TRUE)) %>%
   ungroup()
 
-# --- NEW STEP: Automatically Mark Advanced Teams ---
-# Assign numeric round values:
-#   "round-X" -> X, "Final Four" -> 5, "Final" -> 6
+# --- Automatically Mark Advanced Teams ---
+# Assign numeric round values: "round-X" -> X, "Final Four" -> 5, "Final" -> 6.
 bracket_with_ratings <- bracket_with_ratings %>%
   mutate(round_num = case_when(
     grepl("round-", round) ~ as.numeric(str_extract(round, "\\d+")),
@@ -284,35 +282,41 @@ bracket_with_ratings <- bracket_with_ratings %>%
 # Define expected counts for rounds 1-4.
 expected_counts <- c("1" = 16, "2" = 8, "3" = 4, "4" = 2)
 
-# For each region, determine the highest round that is complete.
+# For each team, keep only the deepest (largest round_num) row.
+largest_round_per_team <- bracket_with_ratings %>%
+  group_by(team) %>%
+  filter(round_num == max(round_num, na.rm = TRUE)) %>%
+  ungroup()
+
+# Build the current bracket using only teams that are still in contention.
+# (Eliminated teams should have been removed from the scraped data.)
+current_bracket <- largest_round_per_team %>%
+  filter(!is.na(team) & team != "") %>%
+  arrange(region, seed)
+
+# Now, for each region, identify the deepest complete round.
 region_complete <- bracket_with_ratings %>%
   filter(round_num %in% as.numeric(names(expected_counts))) %>%
   group_by(region, round_num) %>%
   summarise(count = n(), .groups = "drop") %>%
   filter(count == expected_counts[as.character(round_num)]) %>%
   group_by(region) %>%
-  summarise(complete_round = max(round_num, na.rm = TRUE), .groups = "drop") %>%
+  summarise(max_complete = max(round_num, na.rm = TRUE), .groups = "drop") %>%
   ungroup()
 
-# Join back and mark teams as advanced if they are in a round greater than the complete round.
-bracket_with_ratings <- bracket_with_ratings %>%
+# Merge that info into current_bracket and mark teams that have reached that complete round as advanced.
+current_bracket <- current_bracket %>%
   left_join(region_complete, by = "region") %>%
-  mutate(advanced = if_else(!is.na(complete_round) & round_num > complete_round, 1, 0)) %>%
-  mutate(advanced = if_else(region %in% c("Final Four", "Final"), 1, advanced))
+  mutate(advanced = if_else(!is.na(max_complete) & round_num >= max_complete, 1, 0))
 
-# For simulation, we assume bracket_with_ratings is the current state.
-current_bracket <- bracket_with_ratings %>%
-  filter(!is.na(team) & team != "") %>%
-  arrange(region, seed)
-
-### 4. Simulation Functions (Handling Byes for Advanced Teams) --------------
+### 4. Simulation Functions --------------
 
 # Helper: get_region_order (for final four ordering)
 get_region_order <- function(bracket) {
   bracket %>% distinct(region) %>% pull(region)
 }
 
-# Updated get_bracket_matchups: for 4 teams (Final Four) reorder accordingly; otherwise, use seed-based ordering.
+# get_bracket_matchups: if 4 teams (Final Four), reorder accordingly; otherwise, use seed-based ordering.
 get_bracket_matchups <- function(teams, region_order_auto = NULL) {
   n <- nrow(teams)
   if(n == 4) {
@@ -336,9 +340,23 @@ get_bracket_matchups <- function(teams, region_order_auto = NULL) {
   }
 }
 
-# New simulate_round that gives a bye to teams already advanced.
+simulate_game <- function(team1, team2, game_number = 1, beta1 = 0.1, beta2 = 0.05, sd_margin = 11.2) {
+  if(is.na(team1$composite_rating)) team1$composite_rating <- 0
+  if(is.na(team2$composite_rating)) team2$composite_rating <- 0
+  expected_diff <- team1$composite_rating - team2$composite_rating
+  actual_margin <- rnorm(1, mean = expected_diff, sd = sd_margin)
+  winner <- if(actual_margin > 0) team1 else team2
+  loser  <- if(actual_margin > 0) team2 else team1
+  rating_change <- beta1 * (actual_margin - expected_diff) +
+    beta2 * (actual_margin - expected_diff) * log(game_number + 1)
+  winner$composite_rating <- winner$composite_rating + rating_change
+  loser$composite_rating  <- loser$composite_rating - rating_change
+  list(winner = winner)
+}
+
+# simulate_round: This function now gives byes to teams already marked as advanced.
 simulate_round <- function(teams, game_number = 1, region_order_auto = NULL) {
-  # Separate teams that are already advanced.
+  # Separate teams already advanced from those needing simulation.
   advanced_teams <- teams %>% filter(advanced == 1)
   active_teams <- teams %>% filter(advanced == 0)
   
@@ -363,17 +381,13 @@ simulate_round <- function(teams, game_number = 1, region_order_auto = NULL) {
   } else {
     winners <- tibble()
   }
-  
-  # Combine winners with already advanced teams.
   bind_rows(winners, advanced_teams)
 }
 
-# Update get_remaining_rounds to work for non-power-of-two bracket sizes.
+# get_remaining_rounds: dynamically determine round names based on current bracket size.
 get_remaining_rounds <- function(current_N) {
   rounds_needed <- ceiling(log2(current_N))
-  # Predefined round names (modify if needed).
   round_names <- c("Round of 64", "Round of 32", "Sweet 16", "Elite 8", "Final 4", "Title Game", "Champion")
-  # Select the last 'rounds_needed' names.
   list(round_names = round_names[(length(round_names) - rounds_needed + 1):length(round_names)])
 }
 
@@ -384,10 +398,12 @@ simulate_remaining_tournament <- function(bracket, region_order_auto = NULL) {
   current_N <- nrow(bracket)
   rounds_info <- get_remaining_rounds(current_N)
   round_names <- rounds_info$round_names
+  
   team_progress <- bracket %>% select(team, seed)
   for(r in round_names) {
     team_progress[[r]] <- 0
   }
+  
   round_num <- 1
   teams_round <- bracket
   while(nrow(teams_round) > 1) {
@@ -403,12 +419,12 @@ simulate_remaining_tournament <- function(bracket, region_order_auto = NULL) {
 }
 
 ### 5. Monte Carlo Tournament Simulation --------------
-# Run the simulation using the current bracket state.
-n_simulations <- 10000
+n_simulations <- 10
 sim_results <- map_dfr(1:n_simulations, ~ simulate_remaining_tournament(current_bracket))
 
-# Define helper to convert probability to American odds.
-prob_to_american <- function(prob) {
+# Convert simulation probabilities to American odds.
+prob_to_american <- function(prob, eps = 1e-6) {
+  prob <- pmax(pmin(prob, 1 - eps), eps)
   ifelse(prob >= 0.5, -100 * prob / (1 - prob), 100 / prob - 100)
 }
 
@@ -416,9 +432,10 @@ team_results <- sim_results %>%
   group_by(team, seed) %>%
   summarise(across(everything(), mean), .groups = "drop") %>%
   arrange(desc(Champion)) %>%
+  filter(team %in% current_bracket$team) %>%  # Only include teams still in the current bracket.
   mutate(across(-c(team, seed), prob_to_american))
 
-### 6. Display and Save Results --------------
+### 6. Display Results --------------
 bets <- team_results %>%
   gt() %>%
   tab_header(title = "Monte Carlo Simulation: In-Progress Tournament (10,000 Iterations)") %>%
