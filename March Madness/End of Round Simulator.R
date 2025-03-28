@@ -429,7 +429,7 @@ simulate_remaining_tournament <- function(bracket, region_order_auto = NULL) {
 # 5. Monte Carlo Tournament Simulation
 # ------------------------------
 
-n_simulations <- 100
+n_simulations <- 10000
 sim_results <- map_dfr(1:n_simulations, ~ simulate_remaining_tournament(current_bracket))
 
 # Define prob_to_american (must be defined before using in mutate).
@@ -440,18 +440,43 @@ prob_to_american <- function(prob) {
 team_results <- sim_results %>%
   group_by(team, seed) %>%
   summarise(across(everything(), mean), .groups = "drop") %>%
-  arrange(desc(Champion)) %>%
-  # mutate(survivor = `Elite 8` * (1- `Final 4`))
-  mutate(across(-c(team, seed), prob_to_american))
+  { 
+    # Identify simulation round columns (all columns except team and seed)
+    sim_rounds <- setdiff(names(.), c("team", "seed"))
+    
+    # If there is at least one simulated round, set the first as p_current
+    if (length(sim_rounds) >= 1) {
+      p_current_col <- sim_rounds[1]
+      # All remaining rounds are used to compute a cumulative future win probability.
+      future_rounds <- sim_rounds[-1]
+      
+      # Compute the option value:
+      # p_current = probability of advancing from the current round (first column)
+      # f_future = average win probability in later rounds (can be adjusted to different weights)
+      mutate(., 
+             p_current = .data[[p_current_col]],
+             f_future = if(length(future_rounds) > 0) rowMeans(select(., all_of(future_rounds))) else 0,
+             `Survivor Value` = p_current * (1 - f_future)
+      )
+    } else {
+      .
+    }
+  } %>%
+  arrange(desc(`Survivor Value`))
 
-# ------------------------------
-# 6. Display and Save Results
-# ------------------------------
-
+# Optionally, convert other probabilities to American odds (leave sim_option_value as a probability)
+team_results <- team_results %>%
+  select(-p_current,-f_future) %>% 
+  arrange(desc(`Champion`)) %>% 
+  mutate(`Survivor Value Rank` = min_rank(desc(`Survivor Value`))) %>% 
+  mutate(across(-c(team, seed, `Survivor Value`,`Survivor Value Rank`), prob_to_american)) %>%  #Convert Survivor Value to Rank?
+  select(-`Survivor Value`)
+# Display the results with gt (or any method of your choice)
 bets <- team_results %>%
   gt() %>%
-  tab_header(title = "March Madness Betting Guide Based on 10,000 Simulations") %>%
-  fmt_number(columns = c(3:ncol(team_results)), decimals = 0)
+  tab_header(title = "March Madness Betting Guide with Survivor Recommendations") %>%
+  fmt_number(columns = c(3:ncol(team_results)), decimals = 0) %>% 
+  gtExtras::gt_hulk_col_numeric(columns = `Survivor Value Rank`)
 
 bets
 gtsave(bets,"bets.png")
