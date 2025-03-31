@@ -464,7 +464,6 @@ team_results <- sim_results %>%
   } %>%
   arrange(desc(`Survivor Value`))
 
-<<<<<<< HEAD
 # Optionally, convert other probabilities to American odds (leave sim_option_value as a probability)
 team_results <- team_results %>%
   select(-p_current,-f_future) %>% 
@@ -478,48 +477,5 @@ bets <- team_results %>%
   tab_header(title = "March Madness Betting Guide with Survivor Recommendations") %>%
   fmt_number(columns = c(3:ncol(team_results)), decimals = 0) %>% 
   gtExtras::gt_hulk_col_numeric(columns = `Survivor Value Rank`)
-
-=======
-team_results <- sim_results %>%
-  group_by(team, seed) %>%
-  summarise(across(everything(), mean), .groups = "drop") %>%
-  { 
-    # Identify simulation round columns (all columns except team and seed)
-    sim_rounds <- setdiff(names(.), c("team", "seed"))
-    
-    # If there is at least one simulated round, set the first as p_current
-    if (length(sim_rounds) >= 1) {
-      p_current_col <- sim_rounds[1]
-      # All remaining rounds are used to compute a cumulative future win probability.
-      future_rounds <- sim_rounds[-1]
-      
-      # Compute the option value:
-      # p_current = probability of advancing from the current round (first column)
-      # f_future = average win probability in later rounds (can be adjusted to different weights)
-      mutate(., 
-             p_current = .data[[p_current_col]],
-             f_future = if(length(future_rounds) > 0) rowMeans(select(., all_of(future_rounds))) else 0,
-             `Survivor Value` = p_current * (1 - f_future)
-      )
-    } else {
-      .
-    }
-  } %>%
-  arrange(desc(`Survivor Value`))
-
-# Optionally, convert other probabilities to American odds (leave sim_option_value as a probability)
-team_results <- team_results %>%
-  mutate(`Survivor Rank` = min_rank(desc(`Survivor Value`))) %>% 
-  select(-p_current,-f_future, -`Survivor Value`) %>% 
-  arrange(desc(`Champion`)) %>% 
-  mutate(across(-c(team, seed, `Survivor Rank`), prob_to_american))
-
-# Display the results with gt (or any method of your choice)
-bets <- team_results %>%
-  gt() %>%
-  tab_header(title = "March Madness Betting Guide with Simulated Option Values") %>%
-  fmt_number(columns = c(3:ncol(team_results)), decimals = 0) %>% 
-  gtExtras::gt_hulk_col_numeric(columns = `Survivor Rank`)
->>>>>>> 9f921b19d106dcb11d7a3e2829e9dd7ffe9497ff
 bets
 gtsave(bets,"MarchMadness.png")
