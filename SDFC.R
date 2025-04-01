@@ -1,4 +1,5 @@
 library(dplyr)
+library(ggplot2)
 data <- readxl::read_xlsx("AnalystDataUseCase.xlsx")
 str(data)
 summary(data) 
@@ -34,7 +35,83 @@ enhanced_data <- data %>%
 enhanced_data %>% 
   group_by(local) %>% 
   summarize(count = n(), avg_seats_per_transaction = mean(num_seats), avg_price = mean(full_price), weighted_avg_spend = sum(num_seats*full_price)/sum(num_seats),group = mean(enhanced_type == "Group"),
-            non_group_avg_seats = mean(num_seats[enhanced_type != "Group"]), avg_non_group_spend_per_transaction= mean(full_price[enhanced_type != "Group"])) #visitors spend more, but less groups
+            non_group_avg_seats = mean(num_seats[enhanced_type != "Group"]), avg_non_group_spend_per_transaction= mean(full_price[enhanced_type != "Group"]),
+            non_group_weighted_avg_spend = sum(num_seats[enhanced_type!= "Group"]*full_price[enhanced_type!= "Group"])/sum(num_seats[enhanced_type!= "Group"])) #visitors spend more, but less groups
 enhanced_data %>% 
   group_by(enhanced_type) %>% 
   summarize(mean(full_price), weighted_avg_spend = sum(num_seats*full_price)/sum(num_seats), mean(num_seats), n())
+
+enhanced_data %>% 
+  group_by(event_name) %>% 
+  summarize(total_tickets_local = sum(num_seats[local == "Local"]), total_ticket_visit = sum(num_seats[local == "Visitor"])) %>% 
+  mutate(pct_local = total_tickets_local/(total_tickets_local+ total_ticket_visit))
+
+enhanced_data %>% 
+  mutate(purchase_date = as.Date(add_datetime, origin = "1899-12-30")) %>% 
+  mutate(
+    mmdd = substr(event_name, nchar(event_name) - 3, nchar(event_name)),        # Extract last 4 chars
+    event_date = as.Date(paste0("2025", mmdd), format = "%Y%m%d")               # Assuming events are in 2025
+  ) %>% 
+  mutate(days_before_event = as.integer(event_date - purchase_date)) %>% 
+  group_by(local) %>% 
+  summarize(mean(days_before_event))
+
+enhanced_data %>% 
+  mutate(purchase_date = as.Date(add_datetime, origin = "1899-12-30")) %>% 
+  mutate(
+    mmdd = substr(event_name, nchar(event_name) - 3, nchar(event_name)),        # Extract last 4 chars
+    event_date = as.Date(paste0("2025", mmdd), format = "%Y%m%d")               # Assuming events are in 2025
+  ) %>% 
+  mutate(days_before_event = as.integer(event_date - purchase_date)) %>% 
+  filter(local != "Unknown") %>% 
+  group_by(days_before_event,local) %>% 
+  summarize(transactions = n()) %>% 
+  ungroup() %>% 
+  group_by(local) %>% 
+  mutate(pct_transactions = transactions/sum(transactions)) %>% 
+  ggplot(aes(x = days_before_event, y = pct_transactions, colour = local))+
+  geom_smooth(se = F, lwd = 3)+
+  labs(x = "Days Before Event of Transaction", y = "% of Transactions",
+       title = "When Should SDFC Target Different Fan Groups?",
+       subtitle = "Visiting fans purchase earlier than local fans",
+       color = "Fan Type")+
+  theme_bw()+
+  theme(
+    panel.grid = element_blank(),              # removes gridlines
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 36),    # centers the title
+    plot.subtitle = element_text(hjust = 0.5,size = 30),
+    axis.text = element_text(face = "bold",size = 24),
+    axis.title = element_text(face = "bold", size = 24),
+    legend.position = "top",
+    legend.title = element_blank(),
+    legend.text = element_text(colour = "black", face = "bold", size = 18)
+  )+
+  scale_y_continuous(labels = percent_format())
+ggsave("TicketPurchasersTimePurchase.png", width = 14, height = 10, dpi = "retina", bg = "white")
+  
+#local fans and vistiing fans behave differently. Local fans buy earlier, spend less per ticket and buy less tickets
+library(scales)
+enhanced_data %>% filter(local != "Unknown") %>% 
+  group_by(local) %>% 
+  summarize(purchasers = n()) %>% 
+  ungroup() %>% 
+  mutate(pct_purchasers = purchasers/sum(purchasers)) %>% 
+  ggplot(aes(x= local, y = pct_purchasers))+
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    title = "Where Do SDFC's Ticket Purchasers Come From?",
+    x = NULL,
+    y = "Percent of Purchasers",
+    subtitle = "Approximately 2/3 of Ticket Purchasers are Local"
+  ) +
+  theme_bw()+
+  theme(
+    panel.grid = element_blank(),              # removes gridlines
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 36),    # centers the title
+    plot.subtitle = element_text(hjust = 0.5,size = 30),
+    axis.text = element_text(face = "bold",size = 24),
+    axis.title = element_text(face = "bold", size = 24)
+  )
+ggsave("TicketPurchasers.png", width = 14, height = 10, dpi = "retina", bg = "white")
+
