@@ -71,7 +71,7 @@ enhanced_data %>%
   mutate(pct_transactions = transactions/sum(transactions)) %>% 
   ggplot(aes(x = days_before_event, y = pct_transactions, colour = local))+
   geom_smooth(se = F, lwd = 3)+
-  labs(x = "Days Before Event of Transaction", y = "% of Transactions",
+  labs(x = "Trasncation Days Before Event", y = "% of Transactions",
        title = "When Should SDFC Target Different Fan Groups?",
        subtitle = "Visiting fans purchase earlier than local fans",
        color = "Fan Type")+
@@ -102,8 +102,8 @@ enhanced_data %>% filter(local != "Unknown") %>%
   labs(
     title = "Where Do SDFC's Ticket Purchasers Come From?",
     x = NULL,
-    y = "Percent of Purchasers",
-    subtitle = "Approximately 2/3 of Ticket Purchasers are Local"
+    y = "% of Purchasers",
+    subtitle = "Approximately 64% of Ticket Purchasers are Local"
   ) +
   theme_bw()+
   theme(
@@ -115,3 +115,7 @@ enhanced_data %>% filter(local != "Unknown") %>%
   )
 ggsave("TicketPurchasers.png", width = 14, height = 10, dpi = "retina", bg = "white")
 
+enhanced_data %>% filter(enhanced_type == "Group", local != "Unknown") %>%  group_by(local) %>% summarise(total_tickets = sum(num_seats)) %>% 
+  ungroup() %>% mutate(pct = total_tickets/sum(total_tickets))
+enhanced_data %>%  group_by(enhanced_type) %>% summarise(total_tickets = mean(full_price)) %>% 
+  ungroup() %>% mutate(pct = total_tickets/sum(total_tickets))
