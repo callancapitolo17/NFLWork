@@ -1,18 +1,26 @@
 simulate_series_distribution <- function(
     home_advantage,              # e.g. "Grizzlies"
     challenger,                  # e.g. "Thunder"
-    p_home_win_at_home,          # market P(home_advantage wins G1 at home)
+    p_home_win_at_home = NULL,          # market P(home_advantage wins G1 at home)
     p_challenger_win_at_home = NULL,  # optional override
     HCA = 0.088,                 # league home‑court edge (NBA ≈0.088)
     pattern = c(2,2,1,1,1),      # 2‑2‑1‑1‑1 for best‑of‑7
     max_wins = 4,                # wins needed to clinch
-    n_iter = 1e5                 # Monte Carlo iterations
+    n_iter = 1e5,
+    current_home_adv_wins = 0,
+    current_challenger_wins = 0
+    # Monte Carlo iterations
 ) {
   # 1) back out challenger’s home‑win % if not provided
   if (is.null(p_challenger_win_at_home)) {
     neutral_home_p      <- p_home_win_at_home - HCA
     neutral_challenger_p <- 1 - neutral_home_p
     p_challenger_win_at_home <- neutral_challenger_p + HCA
+  }
+  if (is.null(p_home_win_at_home)) {
+    neutral_challenger_p      <- p_challenger_win_at_home - HCA
+    neutral_home_p <- 1 - neutral_challenger_p
+    p_home_win_at_home <- neutral_home_p + HCA
   }
   
   # 2) helpers
@@ -22,11 +30,11 @@ simulate_series_distribution <- function(
   
   # 3) build who’s at home each game
   hosts      <- rep(c(home_advantage, challenger), length.out = length(pattern))
-  home_order <- rep(hosts, times = pattern)
+  home_order <- rep(hosts, times = pattern)[(current_home_adv_wins + current_challenger_wins+1):sum(pattern)]
   
   # 4) simulate one series
   single_run <- function() {
-    hw <- 0L; cw <- 0L
+    hw <- current_home_adv_wins; cw <- current_challenger_wins
     for (loc in home_order) {
       if (hw == max_wins || cw == max_wins) break
       if (loc == home_advantage) {
@@ -134,8 +142,11 @@ simulate_series_distribution <- function(
 }
 
 simulate_series_distribution(
-  home_advantage         = "Thunder",
-  challenger             = "Grizzlies",
-  p_home_win_at_home     = 0.868,
-  n_iter                 = 1e5
+  home_advantage         = "Pacers",
+  challenger             = "Bucks",
+  p_challenger_win_at_home =  0.604,
+  n_iter                 = 1e5,
+  current_home_adv_wins = 2,
+  current_challenger_wins = 1
+  
 )
