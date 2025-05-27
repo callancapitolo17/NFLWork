@@ -32,8 +32,12 @@ mean_matching_sample <- function(data, parent_spread, parent_total,
                                  N = max(ceiling(0.025 * nrow(data)), 300),
                                  tol = 0.01, max_iter = 20) {
   dt <- as.data.table(data)
-  scale_spread <- dt[, max(spread_line, na.rm = TRUE) - min(spread_line, na.rm = TRUE)]
-  scale_total  <- dt[, max(total_line,  na.rm = TRUE) - min(total_line,  na.rm = TRUE)]
+  # use the 5th to 95th percentile range for typical spread variation
+  qs <- dt[, quantile(spread_line, probs = c(0.05, 0.95), na.rm = TRUE)]
+  scale_spread <- qs[2] - qs[1]
+  # use the 5th to 95th percentile range for typical total variation
+  qt <- dt[, quantile(total_line, probs = c(0.05, 0.95), na.rm = TRUE)]
+  scale_total  <- qt[2] - qt[1]
   iter <- 0
   
   repeat {
@@ -59,8 +63,8 @@ mean_matching_sample <- function(data, parent_spread, parent_total,
        iterations    = iter)
 }
 
-# 5. Directional median-based refinement (data.table)
-# ----------------------------------------------------------------
+# 5. Directional 2D median refinement (data.table)
+# -----------------------------------------------------
 refine_sample <- function(initial, parent_spread, parent_total,
                           tol_med = 0.005, max_iter = 1000) {
   samp_dt <- copy(initial$sample)
@@ -69,40 +73,53 @@ refine_sample <- function(initial, parent_spread, parent_total,
   
   repeat {
     iter <- iter + 1
-    # compute current median and error for spread
+    # compute current medians and errors
     med_s <- samp_dt[, median(spread_line)]
+    med_t <- samp_dt[, median(total_line)]
     err_s <- med_s - parent_spread
-    # convergence check on spread median
-    if (abs(err_s) < tol_med) break
+    err_t <- med_t - parent_total
     
-    # 1) Remove the game contributing furthest in the direction of the error
-    if (err_s > 0) {
-      # median too high: remove largest > parent
-      candidates <- samp_dt[spread_line > parent_spread]
-    } else {
-      # median too low: remove smallest < parent
-      candidates <- samp_dt[spread_line < parent_spread]
-    }
-    if (nrow(candidates) == 0) break
-    # pick worst by index
-    worst_row <- candidates[which.max(candidates$index)]
-    samp_dt <- samp_dt[game_id != worst_row$game_id]
-    # re-add removed to pool for potential later re-entry
-    pool_dt <- rbindlist(list(pool_dt, worst_row), use.names = TRUE)
+    # stop if both within tolerance
+    if (abs(err_s) < tol_med && abs(err_t) < tol_med) break
     
-    # 2) Add a game that pulls median toward parent
-    if (err_s > 0) {
-      # want a lower spread: pick pool game below parent
-      pool_cand <- pool_dt[spread_line < parent_spread]
+    # choose dimension with larger relative error
+    if (abs(err_s) >= abs(err_t)) {
+      # refine spread directionally
+      if (err_s > 0) {
+        # median too high: remove sample games > parent, add pool games < parent
+        to_remove <- samp_dt[spread_line > parent_spread]
+        to_add    <- pool_dt[spread_line < parent_spread]
+      } else {
+        # median too low: remove sample games < parent, add pool games > parent
+        to_remove <- samp_dt[spread_line < parent_spread]
+        to_add    <- pool_dt[spread_line > parent_spread]
+      }
     } else {
-      pool_cand <- pool_dt[spread_line > parent_spread]
+      # refine total directionally
+      if (err_t > 0) {
+        to_remove <- samp_dt[total_line > parent_total]
+        to_add    <- pool_dt[total_line < parent_total]
+      } else {
+        to_remove <- samp_dt[total_line < parent_total]
+        to_add    <- pool_dt[total_line > parent_total]
+      }
     }
-    if (nrow(pool_cand) == 0) next
-    # pick candidate closest to parent on spread
-    cand_idx <- pool_cand[, which.min(abs(spread_line - parent_spread))]
-    add_row <- pool_cand[cand_idx]
-    samp_dt <- rbindlist(list(samp_dt, add_row), use.names = TRUE)
-    pool_dt <- pool_dt[game_id != add_row$game_id]
+    
+    # if no candidates to remove or add, break
+    if (nrow(to_remove) == 0 || nrow(to_add) == 0) break
+    
+    # remove the worst by 2D index
+    worst_idx <- to_remove[, which.max(index)]
+    worst     <- to_remove[worst_idx]
+    samp_dt   <- samp_dt[game_id != worst$game_id]
+    pool_dt   <- rbindlist(list(pool_dt, worst), use.names = TRUE)
+    
+    # add the best by 2D index
+    add_candidates <- to_add
+    best_idx <- add_candidates[, which.min(index)]
+    best     <- add_candidates[best_idx]
+    samp_dt  <- rbindlist(list(samp_dt, best), use.names = TRUE)
+    pool_dt  <- pool_dt[game_id != best$game_id]
     
     if (iter >= max_iter) break
   }
@@ -110,7 +127,7 @@ refine_sample <- function(initial, parent_spread, parent_total,
   samp_dt
 }
 
-# 6. Example end-to-end. Example end-to-end. Example end-to-end Example end-to-end Example end-to-end
+# 6. Example end-to-end. Example end-to-end. Example end-to-end. Example end-to-end. Example end-to-end Example end-to-end Example end-to-end
 # ---------------------
 parent_spread <- 3   # initial target spread
 parent_total  <- 44  # initial target total
