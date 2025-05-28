@@ -26,36 +26,77 @@ distance_index <- function(data, parent_spread, parent_total, scale_spread, scal
   )
 }
 
-# 4. Efficient mean-matching sample builder (data.table + partial sort fix)
-# -------------------------------------------------------------------------
+# 4. Efficient mean-matching sample builder (data.table + dynamic N)
+# ----------------------------------------------------------------------
 mean_matching_sample <- function(data, parent_spread, parent_total,
-                                 N = max(ceiling(0.025 * nrow(data)), 300),
+                                 base_pct = 0.025,  # fraction of data for base sample
+                                 min_N = 50,        # minimum allowed sample size
                                  tol = 0.01, max_iter = 20) {
   dt <- as.data.table(data)
-  # use the 5th to 95th percentile range for typical spread variation
+  # Compute base_N solely from base_pct
+  base_N <- ceiling(base_pct * nrow(dt))
+  
+  # use the 5th to 95th percentile range for typical variations
   qs <- dt[, quantile(spread_line, probs = c(0.05, 0.95), na.rm = TRUE)]
   scale_spread <- qs[2] - qs[1]
-  # use the 5th to 95th percentile range for typical total variation
   qt <- dt[, quantile(total_line, probs = c(0.05, 0.95), na.rm = TRUE)]
   scale_total  <- qt[2] - qt[1]
-  iter <- 0
   
+  # ---------------
+  # Mean-matching loop to adjust parent lines
+  # ---------------
+  iter <- 0
+  samp_dt <- NULL
   repeat {
     iter <- iter + 1
+    # recalc distances
     dt <- distance_index(dt, parent_spread, parent_total, scale_spread, scale_total)
     idx_vec <- as.numeric(dt$index)
-    thr     <- sort(idx_vec, partial = N)[N]
+    
+    # dynamic sample size based on error magnitude
+    if (is.null(samp_dt) || iter == 1) {
+      N_current <- base_N
+    } else {
+      err_spread <- mean(samp_dt$spread_line) - parent_spread
+      err_total  <- mean(samp_dt$total_line)   - parent_total
+      error_ratio <- max(abs(err_spread), abs(err_total)) / tol
+      N_current <- min(nrow(dt), max(min_N, ceiling(base_N * (1 + error_ratio))))
+    }
+    
+    # select top N_current by distance
+    thr <- sort(idx_vec, partial = N_current)[N_current]
     samp_dt <- dt[idx_vec <= thr]
-    if (nrow(samp_dt) > N) samp_dt <- samp_dt[order(index)][1:N]
+    if (nrow(samp_dt) > N_current) samp_dt <- samp_dt[order(index)][1:N_current]
+    
+    # compute mean errors
     err_spread <- mean(samp_dt$spread_line) - parent_spread
     err_total  <- mean(samp_dt$total_line)   - parent_total
+    # check convergence
     if ((abs(err_spread) < tol && abs(err_total) < tol) || iter >= max_iter) break
+    
+    # adjust parent lines
     parent_spread <- parent_spread + err_spread
     parent_total  <- parent_total  + err_total
   }
-  samp_dt$in_sample <- TRUE
-  pool_dt <- dt[!dt$game_id %in% samp_dt$game_id]
-  pool_dt$in_sample <- FALSE
+  
+  # ---------------
+  # Maximize sample size under constraints
+  # ---------------
+  sorted_dt <- copy(dt)[order(index)]
+  sorted_dt[, cum_spread := cumsum(spread_line) / seq_len(.N)]
+  sorted_dt[, cum_total  := cumsum(total_line)  / seq_len(.N)]
+  
+  valid_idx <- which(abs(sorted_dt$cum_spread - parent_spread) <= tol &
+                       abs(sorted_dt$cum_total  - parent_total ) <= tol)
+  if (length(valid_idx) > 0) {
+    N_max <- max(valid_idx)
+    samp_dt <- sorted_dt[1:N_max]
+  }
+  
+  samp_dt[, in_sample := TRUE]
+  pool_dt <- sorted_dt[!seq_len(.N) %in% seq_len(ifelse(exists("N_max"), N_max, 0))]
+  pool_dt[, in_sample := FALSE]
+  
   list(sample        = samp_dt,
        pool          = pool_dt,
        parent_spread = parent_spread,
@@ -63,7 +104,7 @@ mean_matching_sample <- function(data, parent_spread, parent_total,
        iterations    = iter)
 }
 
-# 5. Directional 2D median refinement (data.table)
+# 5. Directional 2D median refinement (data.table). Directional 2D median refinement (data.table)
 # -----------------------------------------------------
 refine_sample <- function(initial, parent_spread, parent_total,
                           tol_med = 0.005, max_iter = 1000) {
@@ -84,18 +125,14 @@ refine_sample <- function(initial, parent_spread, parent_total,
     
     # choose dimension with larger relative error
     if (abs(err_s) >= abs(err_t)) {
-      # refine spread directionally
       if (err_s > 0) {
-        # median too high: remove sample games > parent, add pool games < parent
         to_remove <- samp_dt[spread_line > parent_spread]
         to_add    <- pool_dt[spread_line < parent_spread]
       } else {
-        # median too low: remove sample games < parent, add pool games > parent
         to_remove <- samp_dt[spread_line < parent_spread]
         to_add    <- pool_dt[spread_line > parent_spread]
       }
     } else {
-      # refine total directionally
       if (err_t > 0) {
         to_remove <- samp_dt[total_line > parent_total]
         to_add    <- pool_dt[total_line < parent_total]
@@ -127,7 +164,7 @@ refine_sample <- function(initial, parent_spread, parent_total,
   samp_dt
 }
 
-# 6. Example end-to-end. Example end-to-end. Example end-to-end. Example end-to-end. Example end-to-end Example end-to-end Example end-to-end
+# 6. Example end-to-end
 # ---------------------
 parent_spread <- 3   # initial target spread
 parent_total  <- 44  # initial target total
