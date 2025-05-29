@@ -8,179 +8,185 @@ library(nflfastR)
 library(tidyverse)
 library(data.table)
 
-# 2. Fetch historical odds data
-# -----------------------------
+# 2. Fetch historical odds + moneyline data
+# -------------------------------------------
 seasons <- 1999:2024
-odds_raw <- map_df(seasons, ~ nflfastR::fast_scraper_schedules(.x) %>%
-                     select(game_id, season, week, spread_line, total_line)) %>%
-  filter(!is.na(spread_line) & !is.na(total_line))
+# grab schedule (lines & scores) and moneyline odds
+dt <- map_df(seasons, ~ nflfastR::fast_scraper_schedules(.x)) %>%
+  select(game_id, season, week,
+         home_score, away_score,
+         spread_line, total_line,
+         home_moneyline, away_moneyline) %>%
+  filter(!is.na(spread_line) & !is.na(total_line) &
+           !is.na(home_moneyline) & !is.na(away_moneyline)) %>%
+  as.data.table()
 
-# 3. Distance index (Pythagorean) for spread and total
-# -----------------------------------------------------
-distance_index <- function(data, parent_spread, parent_total, scale_spread, scale_total) {
-  factor <- scale_spread / scale_total
-  data %>% mutate(
-    dx    = (spread_line - parent_spread) / scale_spread,
-    dy    = (total_line  - parent_total)  / scale_total,
-    index = dx^2 + dy^2
-  )
+# compute implied de-vig probabilities for underdog cover
+# --------------------------------------------------------
+dt[, `:=`(
+  # implied win probabilities from moneyline (raw)
+  p_home_raw = fifelse(home_moneyline > 0,
+                       100 / (home_moneyline + 100),
+                       -home_moneyline / (-home_moneyline + 100)),
+  p_away_raw = fifelse(away_moneyline > 0,
+                       100 / (away_moneyline + 100),
+                       -away_moneyline / (-away_moneyline + 100))
+)]
+# normalize to remove vig
+dt[, `:=`(
+  p_home = p_home_raw / (p_home_raw + p_away_raw),
+  p_away = p_away_raw / (p_home_raw + p_away_raw)
+)]
+# flag which side is underdog for spread (moneyline-based)  
+# dt[, underdog_ml := ifelse(spread_line > 0, p_home, p_away)]
+
+# compute implied de-vig probabilities for spread odds (if available)
+if (all(c("home_spread_odds","away_spread_odds") %in% names(dt))) {
+  dt[, `:=`(
+    p_home_spread_raw = fifelse(home_spread_odds > 0,
+                                100 / (home_spread_odds + 100),
+                                -home_spread_odds / (-home_spread_odds + 100)),
+    p_away_spread_raw = fifelse(away_spread_odds > 0,
+                                100 / (away_spread_odds + 100),
+                                -away_spread_odds / (-away_spread_odds + 100))
+  )]
+  # normalize to remove vig for spread
+  dt[, `:=`(
+    p_home_spread = p_home_spread_raw / (p_home_spread_raw + p_away_spread_raw),
+    p_away_spread = p_away_spread_raw / (p_home_spread_raw + p_away_spread_raw)
+  )]
+  # set spread target probability based on underdog side for cover
+  dt[, spread_target := fifelse(spread_line > 0, p_home_spread, p_away_spread)]
+} else {
+  # fallback to moneyline implied probabilities
+  dt[, spread_target := underdog_ml]
 }
 
-# 4. Efficient mean-matching sample builder (data.table + dynamic N)
-# ----------------------------------------------------------------------
-mean_matching_sample <- function(data, parent_spread, parent_total,
-                                 base_pct = 0.025,  # fraction of data for base sample
-                                 min_N = 50,        # minimum allowed sample size
-                                 tol = 0.01, max_iter = 20) {
-  dt <- as.data.table(data)
-  # Compute base_N solely from base_pct
-  base_N <- ceiling(base_pct * nrow(dt))
+# compute implied de-vig over probability if odds available
+# ---------------------------------------------------------
+# assume columns over_moneyline and under_moneyline exist
+if (all(c("over_moneyline","under_moneyline") %in% names(dt))) {
+  dt[, `:=`(
+    p_over_raw = fifelse(over_moneyline > 0,
+                         100 / (over_moneyline + 100),
+                         -over_moneyline / (-under_moneyline + 100)),
+    p_under_raw = fifelse(under_moneyline > 0,
+                          100 / (under_moneyline + 100),
+                          -under_moneyline / (-under_moneyline + 100))
+  )]
+  dt[, `:=`(
+    p_over = p_over_raw / (p_over_raw + p_under_raw),
+    p_under = p_under_raw / (p_over_raw + p_under_raw)
+  )]
+}
+
+# 3. Compute actual cover + over outcomes
+# ----------------------------------------
+dt[, actual_cover := as.integer((home_score - away_score + spread_line) > 0)]
+dt[, actual_over  := as.integer((home_score + away_score) > total_line)]
+
+# 4. Distance index helper (compute only index)
+# ---------------------------------------------
+distance_index <- function(DT, ps, pt, ss, st) {
+  DT[, index := ((spread_line - ps)/ss)^2 + ((total_line - pt)/st)^2]
+}
+
+# 5. Answer Key sampler with de-vig targets
+# ------------------------------------------
+answer_key_sample <- function(DT,
+                              parent_spread, parent_total,
+                              N = ceiling(0.025 * nrow(DT)),
+                              tol_rate = 0.01,
+                              max_iter = 1e5) {
   
-  # use the 5th to 95th percentile range for typical variations
+  dt <- copy(DT)
+  
+  # a) compute typical variation (5th–95th percentile)
   qs <- dt[, quantile(spread_line, probs = c(0.05, 0.95), na.rm = TRUE)]
-  scale_spread <- qs[2] - qs[1]
-  qt <- dt[, quantile(total_line, probs = c(0.05, 0.95), na.rm = TRUE)]
-  scale_total  <- qt[2] - qt[1]
+  ss <- qs[2] - qs[1]
+  qt <- dt[, quantile(total_line,  probs = c(0.05, 0.95), na.rm = TRUE)]
+  st <- qt[2] - qt[1]
   
-  # ---------------
-  # Mean-matching loop to adjust parent lines
-  # ---------------
-  iter <- 0
-  samp_dt <- NULL
-  repeat {
-    iter <- iter + 1
-    # recalc distances
-    dt <- distance_index(dt, parent_spread, parent_total, scale_spread, scale_total)
-    idx_vec <- as.numeric(dt$index)
+  # b) sort by similarity and initial sample
+  distance_index(dt, parent_spread, parent_total, ss, st)
+  setorder(dt, index)
+  dt[, included := FALSE]
+  dt[1:N, included := TRUE]
+  
+  # c) compute de-vigged target rates
+  target_cover <- mean(dt[spread_line == parent_spread]$underdog_ml)
+  if ("p_over" %in% names(dt)) {
+    target_over <- mean(dt[total_line == parent_total]$p_over)
+  } else {
+    target_over <- 0.5
+  }
+  
+  # d) one-step adjustment function (flag_col, target_rate)
+  one_pass <- function(flag_col, target_rate) {
+    current_rate <- mean(dt[included == TRUE][[flag_col]])
+    err <- current_rate - target_rate
+    if (abs(err) <= tol_rate) return(FALSE)
     
-    # dynamic sample size based on error magnitude
-    if (is.null(samp_dt) || iter == 1) {
-      N_current <- base_N
+    if (err > 0) {
+      rem_bit <- 1L; add_bit <- 0L
     } else {
-      err_spread <- mean(samp_dt$spread_line) - parent_spread
-      err_total  <- mean(samp_dt$total_line)   - parent_total
-      error_ratio <- max(abs(err_spread), abs(err_total)) / tol
-      N_current <- min(nrow(dt), max(min_N, ceiling(base_N * (1 + error_ratio))))
+      rem_bit <- 0L; add_bit <- 1L
     }
+    # remove worst-fit included of rem_bit
+    rem_idx <- dt[included == TRUE & get(flag_col) == rem_bit, .I[.N]]
+    if (length(rem_idx) == 0) return(FALSE)
+    dt[rem_idx, included := FALSE]
     
-    # select top N_current by distance
-    thr <- sort(idx_vec, partial = N_current)[N_current]
-    samp_dt <- dt[idx_vec <= thr]
-    if (nrow(samp_dt) > N_current) samp_dt <- samp_dt[order(index)][1:N_current]
+    # add best-fit excluded of add_bit
+    add_idx <- dt[included == FALSE & get(flag_col) == add_bit, .I[1]]
+    if (length(add_idx) == 0) return(FALSE)
+    dt[add_idx, included := TRUE]
     
-    # compute mean errors
-    err_spread <- mean(samp_dt$spread_line) - parent_spread
-    err_total  <- mean(samp_dt$total_line)   - parent_total
-    # check convergence
-    if ((abs(err_spread) < tol && abs(err_total) < tol) || iter >= max_iter) break
-    
-    # adjust parent lines
-    parent_spread <- parent_spread + err_spread
-    parent_total  <- parent_total  + err_total
+    TRUE
   }
   
-  # ---------------
-  # Maximize sample size under constraints
-  # ---------------
-  sorted_dt <- copy(dt)[order(index)]
-  sorted_dt[, cum_spread := cumsum(spread_line) / seq_len(.N)]
-  sorted_dt[, cum_total  := cumsum(total_line)  / seq_len(.N)]
-  
-  valid_idx <- which(abs(sorted_dt$cum_spread - parent_spread) <= tol &
-                       abs(sorted_dt$cum_total  - parent_total ) <= tol)
-  if (length(valid_idx) > 0) {
-    N_max <- max(valid_idx)
-    samp_dt <- sorted_dt[1:N_max]
-  }
-  
-  samp_dt[, in_sample := TRUE]
-  pool_dt <- sorted_dt[!seq_len(.N) %in% seq_len(ifelse(exists("N_max"), N_max, 0))]
-  pool_dt[, in_sample := FALSE]
-  
-  list(sample        = samp_dt,
-       pool          = pool_dt,
-       parent_spread = parent_spread,
-       parent_total  = parent_total,
-       iterations    = iter)
-}
-
-# 5. Directional 2D median refinement (data.table). Directional 2D median refinement (data.table)
-# -----------------------------------------------------
-refine_sample <- function(initial, parent_spread, parent_total,
-                          tol_med = 0.005, max_iter = 1000) {
-  samp_dt <- copy(initial$sample)
-  pool_dt <- copy(initial$pool)
+  # e) iterative adjustment: covers then overs
   iter <- 0
-  
-  repeat {
+  while (iter < max_iter && one_pass("actual_cover", target_cover)) {
     iter <- iter + 1
-    # compute current medians and errors
-    med_s <- samp_dt[, median(spread_line)]
-    med_t <- samp_dt[, median(total_line)]
-    err_s <- med_s - parent_spread
-    err_t <- med_t - parent_total
-    
-    # stop if both within tolerance
-    if (abs(err_s) < tol_med && abs(err_t) < tol_med) break
-    
-    # choose dimension with larger relative error
-    if (abs(err_s) >= abs(err_t)) {
-      if (err_s > 0) {
-        to_remove <- samp_dt[spread_line > parent_spread]
-        to_add    <- pool_dt[spread_line < parent_spread]
-      } else {
-        to_remove <- samp_dt[spread_line < parent_spread]
-        to_add    <- pool_dt[spread_line > parent_spread]
-      }
-    } else {
-      if (err_t > 0) {
-        to_remove <- samp_dt[total_line > parent_total]
-        to_add    <- pool_dt[total_line < parent_total]
-      } else {
-        to_remove <- samp_dt[total_line < parent_total]
-        to_add    <- pool_dt[total_line > parent_total]
-      }
-    }
-    
-    # if no candidates to remove or add, break
-    if (nrow(to_remove) == 0 || nrow(to_add) == 0) break
-    
-    # remove the worst by 2D index
-    worst_idx <- to_remove[, which.max(index)]
-    worst     <- to_remove[worst_idx]
-    samp_dt   <- samp_dt[game_id != worst$game_id]
-    pool_dt   <- rbindlist(list(pool_dt, worst), use.names = TRUE)
-    
-    # add the best by 2D index
-    add_candidates <- to_add
-    best_idx <- add_candidates[, which.min(index)]
-    best     <- add_candidates[best_idx]
-    samp_dt  <- rbindlist(list(samp_dt, best), use.names = TRUE)
-    pool_dt  <- pool_dt[game_id != best$game_id]
-    
-    if (iter >= max_iter) break
+  }
+  while (iter < max_iter && one_pass("actual_over",  target_over)) {
+    iter <- iter + 1
   }
   
-  samp_dt
+  dt_final <- dt[included == TRUE]
+  dt_final
 }
 
 # 6. Example end-to-end
 # ---------------------
-parent_spread <- 3   # initial target spread
-parent_total  <- 44  # initial target total
-mm_init      <- mean_matching_sample(odds_raw, parent_spread, parent_total)
-final_sample <- refine_sample(mm_init, mm_init$parent_spread, mm_init$parent_total)
+# Set your target lines
+parent_spread <- 3.5   # target spread for underdog cover
+parent_total  <- 46.0  # target total for over/under
 
-# 7. Inspect final sample
-# -----------------------
-cat("Mean-match iterations:", mm_init$iterations, "\n")
-cat("Adjusted parent line: Spread =", round(mm_init$parent_spread,2),
-    ", Total =", round(mm_init$parent_total,2), "\n")
-cat("Final sample size:", nrow(final_sample), "games\n")
-cat("Median spread:", median(final_sample$spread_line),
-    "| Median total:", median(final_sample$total_line), "\n")
+# Run the Answer Key sampler
+final_sample <- answer_key_sample(dt, parent_spread, parent_total)
 
-final_sample[order(index), .(game_id, season, week, spread_line, total_line, index)]
+# Inspect results
+cat("Final sample size:", nrow(final_sample), "games
+")
 
-# 8. Next steps: integrate probability model for Answer Key EV computation
-# -------------------------------------------------------------------------
+# Compare sample rates to de-vigged targets
+# De-vigged targets:
+target_cover <- mean(dt[spread_line == parent_spread]$underdog_ml)
+if ("p_over" %in% names(dt)) {
+  target_over <- mean(dt[total_line == parent_total]$p_over)
+} else {
+  target_over <- 0.5
+}
+cat("Target cover (de-vig):", round(target_cover,3), " | Sample cover:", round(mean(final_sample$actual_cover),3), "
+")
+cat("Target over  (de-vig):", round(target_over,3),  " | Sample over: ", round(mean(final_sample$actual_over),3), "
+")
+
+# View top 10 games in final sample by similarity
+final_sample[order(index)][1:10, .(
+  game_id, season, week,
+  spread_line, total_line,
+  underdog_ml, actual_cover, actual_over, index
+)]
