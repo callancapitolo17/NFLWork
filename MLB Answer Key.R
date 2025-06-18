@@ -1,12 +1,15 @@
 library(data.table)
-
-# Answer Key Builder: NFL Data with nflfastR (Elihu-Style Greedy Error Minimization, Robust Swap Logic)
-# Language: R
-
-library(nflreadr)
-library(data.table)
-library(dplyr)
-
+library(oddsapiR)
+Sys.setenv(ODDS_API_KEY = "8daf16e73acb7f1c4e629e001520b9a2")
+mlb_hist <- toa_sports_odds_history(
+  sport_key   = "baseball_mlb", 
+  regions     = "us",
+  markets     = "h2h,totals",
+  odds_format = "american",
+  date_format = "iso",
+  date_from   = "2015-01-01",
+  date_to     = "2024-12-31"
+)
 # Helper: de-vig two American-style odds, return data.frame
 devig_american <- function(odd1, odd2) {
   p1_raw <- ifelse(odd1 > 0,

@@ -12,8 +12,11 @@ for (i in seq_len(max_iter_mean)) {
   parent_spread <- parent_spread + err_s
   parent_total  <- parent_total  + err_t
 }
-cover_error = sum(dt[included == TRUE, actual_cover]) - round(target_cover * N)
-over_error  = sum(dt[included == TRUE, actual_over ]) - round(target_over  * N)
+set_cover_error = sum(dt[included == TRUE, actual_cover]) - round(target_cover * N)
+set_over_error  = sum(dt[included == TRUE, actual_over ]) - round(target_over  * N)
+
+cover_error = set_cover_error
+over_error  = set_over_error
 cover_adjustments <- abs(cover_error)
 over_adjustments <- abs(over_error)
 for (i in seq(N,1)) {
@@ -32,4 +35,23 @@ for (i in seq(N,1)) {
   }
 }
 
+cover_error = set_cover_error
+over_error  = set_over_error
+cover_adjustments <- abs(cover_error)
+over_adjustments <- abs(over_error)
+for (i in seq(N+1,20)) {
+  if(over_adjustments == 0 & cover_adjustments == 0){break}
+  if(dt[i,"included"] == FALSE){
+    improved_cover <- (as.integer(cover_error > 0) != dt[i, actual_cover])
+    improved_over  <- (as.integer(over_error  > 0) != dt[i, actual_over ])
+    if(improved_over | improved_cover){
+      dt[i,"included"] <- TRUE
+      over_adjustments <- ifelse(improved_over, over_adjustments -1, over_adjustments+1)
+      cover_adjustments <- ifelse(improved_cover, cover_adjustments -1, cover_adjustments+1)
+      cover_error <- sum(dt[included == TRUE, actual_cover]) - round(target_cover * sum(dt[, included]) )
+      over_error  <- sum(dt[included == TRUE, actual_over])  - round(target_over  * sum(dt[, included]) )
+      print(c(over_adjustments,cover_adjustments,i))
+    }
+  }
+}
 #Look into how to keep track of adjustments, use spreadsheet

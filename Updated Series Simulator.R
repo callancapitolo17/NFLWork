@@ -142,12 +142,12 @@ simulate_series_distribution <- function(
 }
 
 simulate_series_distribution(
-  home_advantage         = "Rockets",
-  challenger             = "Dubs",
-  p_challenger_win_at_home  =  0.607,
+  home_advantage         = "Lakers",
+  challenger             = "Wolves",
+  p_challenger_win_at_home  =  0.3,
   n_iter                 = 1e5,
   current_home_adv_wins = 1,
-  current_challenger_wins = 2,
+  current_challenger_wins = 3,
   #HCA = 0.03
   
 )
