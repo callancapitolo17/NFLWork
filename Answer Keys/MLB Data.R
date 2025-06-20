@@ -11,7 +11,9 @@ season_year <- 2023
 sched <- baseballr::mlb_schedule(season = season_year)
 
 # 3) Extract all game_pk values
-game_pks <- sched$game_pk
+game_pks <- pull(sched %>% 
+  filter(!series_description %in% c("Exhibition","Spring Training") & status_coded_game_state == "F") %>% 
+    select(game_pk))
 
 # 4) Pull play‐by‐play for each game_pk and row‐bind
 #    (this will take a few minutes for ~2,430 games)
