@@ -14,7 +14,7 @@ strikers <- c(#"Goals","Assists","Non-Penalty Goals",
               "Tackles (Att 3rd)","Interceptions","Touches (Att Pen)","Successful Take-Ons",
               "Successful Take-On %","Ball Recoveries","Aerials Won","% of Aerials Won")
 
-statgroup_rankings <- data1 %>%
+statgroup_rankings <- rbind(data1, data2) %>%
   count(StatGroup, name = "n") %>%
   arrange(n) %>%
   mutate(stat_priority = row_number())
