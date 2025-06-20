@@ -5,9 +5,8 @@ library(dplyr)
 
 
 
-pull(player_dictionary_mapping() %>% filter(PlayerFBref  == "Jack Singer") %>% select(UrlFBref))
-data1 <- fb_player_scouting_report(pull(player_dictionary_mapping() %>% filter(PlayerFBref  == "Rafael Leão") %>% select(UrlFBref)), pos_versus = "primary")
-data2 <- fb_player_scouting_report(pull(player_dictionary_mapping() %>% filter(PlayerFBref  == "Nico Williams") %>% select(UrlFBref)), pos_versus = "primary")
+data1 <- fb_player_scouting_report(pull(player_dictionary_mapping() %>% filter(PlayerFBref  == "Rafael Leão") %>% select(UrlFBref)), pos_versus = "primary", time_pause =  10)
+data2 <- fb_player_scouting_report(pull(player_dictionary_mapping() %>% filter(PlayerFBref  == "Nico Williams") %>% select(UrlFBref)), pos_versus = "primary",time_pause =  10)
 
 strikers <- c(#"Goals","Assists","Non-Penalty Goals",
               "xG: Expected Goals", "npxG: Non-Penalty xG","Progressive Carries","Progressive Passes",
