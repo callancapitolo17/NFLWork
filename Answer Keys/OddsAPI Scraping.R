@@ -1,40 +1,48 @@
-# 1) Install + load only what you need
-for (pkg in c("httr","jsonlite","dplyr","tidyr","lubridate")) {
-  if (!requireNamespace(pkg, quietly=TRUE)) install.packages(pkg)
-}
 library(httr)
 library(jsonlite)
 library(dplyr)
-library(tidyr)
+library(purrr)
 library(lubridate)
-library(oddsapiR)
+library(baseballr)
+sched <- map_dfr(2020:2025, mlb_schedule) 
+mlb_dates  <- sched %>% 
+  mutate(date = as.Date(date)) %>% 
+  filter(!series_description %in% c("Exhibition","Spring Training") & status_coded_game_state == "F") %>% 
+  filter(date >= as.Date("2020-06-06")) %>% 
+  pull(date) %>% 
+  unique() %>% 
+  sort()
 
-# 2) Build the “closing snapshot” timestamp for yesterday at 23:59:59 UTC
-snapshot <- paste0(format(Sys.Date() - 1, "%Y-%m-%d"), "T23:59:59Z")
 
-# 3) Hit the Odds API historical endpoint
-res <- GET(
-  "https://api.the-odds-api.com/v4/historical/sports/baseball_mlb/odds",
-  query = list(
-    apiKey      = Sys.getenv("ODDS_API_KEY"),  # make sure you’ve exported this
-    date        = snapshot,
-    regions     = "us",
-    markets     = "h2h,totals",                # moneyline + totals
-    oddsFormat  = "american",
-    dateFormat  = "iso"
+history_df <- map_dfr(mlb_dates, function(day) {
+  snapshot <- paste0(format(day, "%Y-%m-%d"), "T23:59:59Z")
+  res <- GET(
+    "https://api.the-odds-api.com/v4/historical/sports/baseball_mlb/odds",
+    query = list(
+      apiKey     = Sys.getenv("ODDS_API_KEY"),
+      date       = snapshot,
+      regions    = "us,eu",
+      markets    = "h2h,totals",
+      oddsFormat = "american",
+      dateFormat = "iso"
+    )
   )
-)
-stop_for_status(res)
+  stop_for_status(res) #make sure web request works or else throw an error
+  parsed <- fromJSON(content(res, "text"), flatten = TRUE) #put the json into an oject in R that works and I can work with
+  
+  # if there were no games that day, just return an empty tibble
+  if (length(parsed$data) == 0) {
+    return(tibble())
+  }
+  
+  # otherwise pull out the 'data' element and coerce that to a tibble
+  as_tibble(parsed$data) %>%
+    mutate(snapshot_date = day)  # tag each row with its snapshot date
+})
 
-# 4) Parse & flatten the nested JSON
-history_df <- fromJSON(content(res, "text"), flatten = TRUE) %>%
+clean_history_df <- history_df %>% 
   as_tibble()
-
-library(dplyr)
-library(tidyr)
-library(lubridate)
-
-flat_odds <- history_df$data %>%
+flat_odds <- clean_history_df %>%
   # 1. one row per bookie
   unnest_longer(bookmakers) %>%
   unnest_wider (bookmakers,   names_sep = "_") %>%
@@ -70,10 +78,10 @@ flat_odds <- history_df$data %>%
   summarise(
     ml_home_odds   = closing_odds_1[market_type == "moneyline"],
     ml_away_odds   = closing_odds_2[market_type == "moneyline"],
-    total_line     = bookmakers_markets_outcomes_point_1[market_type == "totals"],
+    ttotal_line = if_else(any(market_type=="totals"),
+                          bookmakers_markets_outcomes_point_1[market_type=="totals"],
+                          NA_real_),
     tot_over_odds  = closing_odds_1[market_type == "totals"],
     tot_under_odds = closing_odds_2[market_type == "totals"],
     .groups = "drop"
   )
-  
-

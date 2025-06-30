@@ -1,6 +1,6 @@
 library(data.table)
 library(oddsapiR)
-Sys.setenv(ODDS_API_KEY = "8daf16e73acb7f1c4e629e001520b9a2")
+Sys.setenv(ODDS_API_KEY = "4c490c81e9b826798390440845c89d50")
 mlb_hist <- toa_sports_odds_history(
   sport_key   = "baseball_mlb", 
   regions     = "us",
