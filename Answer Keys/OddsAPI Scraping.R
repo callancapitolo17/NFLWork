@@ -76,12 +76,16 @@ flat_odds <- clean_history_df %>%
     bookmaker_key, bookmaker_title, bookmaker_update
   ) %>%
   summarise(
-    ml_home_odds   = closing_odds_1[market_type == "moneyline"],
-    ml_away_odds   = closing_odds_2[market_type == "moneyline"],
-    ttotal_line = if_else(any(market_type=="totals"),
-                          bookmakers_markets_outcomes_point_1[market_type=="totals"],
-                          NA_real_),
-    tot_over_odds  = closing_odds_1[market_type == "totals"],
-    tot_under_odds = closing_odds_2[market_type == "totals"],
+    ml_home_odds   = first(closing_odds_1[market_type == "moneyline"]),
+    ml_away_odds   = first(closing_odds_2[market_type == "moneyline"]),
+    total_line = if_else(bookmakers_markets_outcomes_point_1[market_type=="totals"] >0,
+                          first(bookmakers_markets_outcomes_point_1[market_type=="totals"]),
+                          NA),
+    tot_over_odds  = first(closing_odds_1[market_type == "totals"]),
+    tot_under_odds = first(closing_odds_2[market_type == "totals"]),
     .groups = "drop"
   )
+
+
+test <- flat_odds %>% 
+  filter(ml_home_odds > -500, ml_away_odds > -500)
