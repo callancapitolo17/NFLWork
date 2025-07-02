@@ -86,6 +86,9 @@ flat_odds <- clean_history_df %>%
     .groups = "drop"
   )
 
+write.csv(flat_odds,"MLB Flat Odds.csv")
 
-test <- flat_odds %>% 
-  filter(ml_home_odds > -500, ml_away_odds > -500)
+check <- flat_odds %>% 
+  # filter(ml_home_odds > -500, ml_away_odds > -500, tot_over_odds > -500, tot_under_odds > -500) %>% 
+  mutate(time_chec = ifelse(bookmaker_update>commence_time,1,0)) %>% 
+  filter(time_chec > 0)
