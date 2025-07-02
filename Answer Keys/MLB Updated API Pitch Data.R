@@ -52,7 +52,7 @@ get_season_pbp <- function(season_year) {
   
   safely_get <- possibly(~ {
     pb$tick()
-    get_pbp_mlb(.x)$allPlays
+    get_pbp_mlb(.x)
   }, otherwise = NULL)
   
   season_pbp <- map_dfr(game_pks, safely_get, .id = "game_pk")
