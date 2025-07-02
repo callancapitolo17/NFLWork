@@ -31,6 +31,7 @@ library(dplyr)
 library(purrr)
 library(tibble)
 library(progress)
+library(tidyr)
 
 # Function to safely pull PBP for one season
 get_season_pbp <- function(season_year) {
@@ -64,3 +65,13 @@ get_season_pbp <- function(season_year) {
 seasons <- 2015:2024
 
 pbp_all <- map_dfr(seasons, get_season_pbp, .id = "season")
+df_pbp_all <- pbp_all %>% select(-reviewDetails.additionalReviews)
+write.csv(df_pbp_all,"Pitch_Level_Data_15-24.csv")
+
+first6 <- head(df_pbp_all)
+
+games_by_inning <- df_pbp_all %>% 
+  group_by(game_pk,season,about.inning) %>% 
+  summarize(first(game_date),first(home_team), first(away_team),home_score = max(result.homeScore),away_score = max(result.awayScore)) %>% 
+  mutate(home_winner_using_game_score = ifelse(home_score > away_score,1,0)) %>% 
+  pivot_wider(names_from = about.inning, values_from = home_winner_using_game_score)
