@@ -1,6 +1,7 @@
 #Part 1 ----
 library(dplyr)
 library(stringr)
+library(ggplot2)
 race_info <- read.csv("race_info_2024.csv") #overall race info
 race_sessions <- read.csv("race_sessions_2024.csv") #information about each session in race
 session_competitors <- read.csv("session_competitors_2024.csv") #competitor results
@@ -101,3 +102,49 @@ regular25 <- start_list %>% filter(isRegular == 1) %>%
   filter(is.na(regular)) %>% 
   left_join(all_results, by = "fullName")
 #Aaron Reutzel has experience in Ridge & Sons Racing
+
+#Part 2----
+f1_2024 <- read.csv("f1_2024.csv") %>% mutate(position = as.numeric(position))#results
+f1_2025 <- read.csv("f1_2025.csv") %>% mutate(position = as.numeric(position)) #results
+f1_odds_2024 <- read.csv("f1_odds_24.csv") #betting odds
+
+
+#Question 1 ----
+clean_odds <- f1_odds_2024 %>% mutate(probability = 1/EU.Odds) %>% group_by(Race,Market) %>% mutate(total_market_probability = sum(probability)) %>% ungroup() %>% 
+  mutate(no_vig_prob = ifelse(Market == "Top 6", probability * (6/total_market_probability),
+                              ifelse(Market == "Top 10",probability * (10/total_market_probability),
+                              ifelse(Market == "Event Podium", probability * (3/total_market_probability),
+                                     probability/total_market_probability))))
+
+results_vs_prob <- clean_odds %>%   filter(Market %in% c("Event Winner","Event Podium","Top 6","Top 10")) %>%  filter(Name.Result != "") %>% 
+  left_join(f1_2024 %>% filter(sessionName == "Race") %>% select(season, eventName,eventNum,driverName,position) %>% mutate(driverName = ifelse(driverName == "Alexander Albon", "Alex Albon", 
+                                                                                                                                                ifelse(driverName == "Guanyu Zhou", "Zhou Guanyu",driverName))) %>% 
+              group_by(driverName) %>% mutate(races_completed = sum(position >0,na.rm = T)) %>%  ungroup(), 
+            by = c("Season" = "season", "RaceStop" = "eventNum", "Name.Result" = "driverName")) %>% 
+  mutate(result = ifelse(Market == "Event Winner" & position == 1, 1, ifelse(Market == "Event Podium" & position <= 3, 1, ifelse(Market == "Top 6" & position <= 6, 1,
+                                                                                                                                ifelse(Market == "Top 10" & position <= 10, 1,0))))) %>% 
+  filter(!is.na(result),!is.na(no_vig_prob)) %>% 
+  arrange(RaceStop) %>% 
+  group_by(Name.Result,Market) %>% 
+  mutate(total_prob = cumsum(no_vig_prob), actual_result = cumsum(result), races = max(races_completed, na.rm = T)) %>% 
+  filter(races>=18)
+
+results_vs_prob %>% pivot_longer(c(total_prob,actual_result), names_to = "Type", values_to = "Values") %>% 
+  filter(Name.Result == "Max Verstappen") %>% 
+  ggplot(aes(x = Market, y = Values, fill = Type))+
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) #cumsum?
+
+#Double check de-vig to make sure sums properly
+#Question 2 ----
+max_odds <- clean_odds %>%   filter(Market %in% c("Event Winner","Event Podium","Top 6","Top 10")) %>%  filter(Name.Result != "") %>% 
+  left_join(f1_2024 %>% filter(sessionName == "Race") %>% select(season, eventName,eventNum,driverName,position) %>% mutate(driverName = ifelse(driverName == "Alexander Albon", "Alex Albon", 
+                                                                                                                                                ifelse(driverName == "Guanyu Zhou", "Zhou Guanyu",driverName))), 
+              by = c("Season" = "season", "RaceStop" = "eventNum", "Name.Result" = "driverName")) %>% 
+  mutate(result = ifelse(Market == "Event Winner" & position == 1, 1, ifelse(Market == "Event Podium" & position <= 3, 1, ifelse(Market == "Top 6" & position <= 6, 1,
+                                                                                                                                 ifelse(Market == "Top 10" & position <= 10, 1,0))))) %>% 
+  group_by(Market) %>% 
+  summarize(max_odds = max(EU.Odds[result == 1],na.rm = T))
+
+f1_odds_2024 %>% group_by(Market) %>% 
+  summarize(n_distinct(RaceStop))
+  
