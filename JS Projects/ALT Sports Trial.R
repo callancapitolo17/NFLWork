@@ -2,6 +2,9 @@
 library(dplyr)
 library(stringr)
 library(ggplot2)
+library(tidyr)
+library(gt)
+library(gtExtras)
 race_info <- read.csv("race_info_2024.csv") #overall race info
 race_sessions <- read.csv("race_sessions_2024.csv") #information about each session in race
 session_competitors <- read.csv("session_competitors_2024.csv") #competitor results
@@ -34,6 +37,20 @@ regulars <- clean_racing_df %>%
   filter(participation_rate > 0.75) %>% 
   mutate(regular = "Yes")
 
+regulars %>% 
+  select(fullName,participation_rate) %>% 
+  arrange(-participation_rate) %>% 
+  gt() %>% 
+  cols_align(align = "center") %>%
+  cols_label(fullName = "Driver",participation_rate = "Participation Rate") %>% 
+  gt_theme_538(quiet = TRUE) %>% 
+  tab_header(
+    title = md("Regular Drivers")
+  ) %>% 
+  tab_options(
+    heading.align = "center"    # centers both title and subtitle
+  )
+
 #Question 2----
 regular_racing_df <- clean_racing_df %>% 
   filter(season == 2024) %>% 
@@ -44,6 +61,23 @@ race_results <- regular_racing_df %>%
   filter(str_detect(Sessions_Name,"A Feature")) %>% #check this
   group_by(fullName) %>% 
   summarize(wins = mean(Position == 1), top_3 = mean(Position <=3), top_5 = mean(Position <= 5), top_10 = mean(Position <= 10))
+
+race_results %>% 
+  gt() %>% 
+  fmt_number(
+    columns = c(wins, top_3, top_5, top_10),
+    decimals = 2
+  ) %>% 
+  cols_align(align = "center") %>%
+  cols_label(fullName = "Driver",wins = "Win Rate", top_3 = "Top 3 Rate", top_5 = "Top 5 Rate", top_10 = "Top 10 Rate") %>% 
+  gt_theme_538(quiet = TRUE) %>% 
+  gt_hulk_col_numeric(columns = -fullName) %>% 
+  tab_header(
+    title = md("Regular Drivers Race Results")
+  ) %>% 
+  tab_options(
+    heading.align = "center"    # centers both title and subtitle
+  )
 
 
 #Question 3----
@@ -130,9 +164,49 @@ results_vs_prob <- clean_odds %>%   filter(Market %in% c("Event Winner","Event P
   filter(races>=18)
 
 results_vs_prob %>% pivot_longer(c(total_prob,actual_result), names_to = "Type", values_to = "Values") %>% 
-  filter(Name.Result == "Max Verstappen") %>% 
-  ggplot(aes(x = Market, y = Values, fill = Type))+
-  geom_col(position = position_dodge(width = 0.8), width = 0.7) #cumsum?
+  filter(Name.Result == "Lewis Hamilton") %>% 
+  ggplot(aes(x = RaceStop, y = Values, color = Market, linetype = Type))+
+  geom_line(lwd = 4)+
+  labs(x = "Race Number", y = "Race Results", title = "Lewis Hamilton Race Results vs No Vig Probability by Race", 
+       caption = "Lines de-vigged through proportional scaling approach")+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold", size = 20),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 26),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 22),
+        plot.caption = element_text(colour = "white", size = 14),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 22),
+        axis.title = element_text(color = "white", size = 24),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1))+
+  scale_linetype_manual(name   = "Series",
+                        values = c(total_prob   = "dashed",
+                                   actual_result = "solid"),
+                        labels = c("Implied No Vig Probability",
+                                   "Cumulative Results")) +
+  scale_color_manual( values = c("Event Podium"   = "purple",  # cyan
+                       "Event Winner"   = "red",  # magenta
+                       "Top 10"  = "orange",  # yellow
+                       "Top 6"   = "darkgrey"   # lime green
+  ))+
+  guides(
+    linetype = guide_legend(
+      override.aes = list(
+        size = 5,           # make legend lines thicker
+        color = "white",
+        lwd = 1
+      )),
+    color = guide_legend(
+      override.aes = list(
+        size = 5,           # make legend lines thicker
+        lwd = 1
+      ))
+  )
 
 #Double check de-vig to make sure sums properly
 #Question 2 ----
@@ -144,7 +218,12 @@ max_odds <- clean_odds %>%   filter(Market %in% c("Event Winner","Event Podium",
                                                                                                                                  ifelse(Market == "Top 10" & position <= 10, 1,0))))) %>% 
   group_by(Market) %>% 
   summarize(max_odds = max(EU.Odds[result == 1],na.rm = T))
-
-f1_odds_2024 %>% group_by(Market) %>% 
-  summarize(n_distinct(RaceStop))
-  
+#Question 3----
+results_25 <- f1_2025 %>% 
+  filter(sessionName == "Race") %>% 
+  group_by(driverName) %>% 
+  summarize(wins = mean(position == 1,na.rm =T), top_3 = mean(position <=3,na.rm =T), 
+            top_5 = mean(position <= 5,na.rm =T), top_10 = mean(position <= 10,na.rm =T),
+            races = n_distinct(eventKey))
+#Max pedigree, firing of director --> lean into variance
+#Charles Leclerc similar top 3, top 5, top 10 rate to heavy favorites but way off rest pricing
