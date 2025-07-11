@@ -1,4 +1,34 @@
-#Part 1 ----
+---
+title: "ALT Sports Analysis"
+author: "Callan Capitolo"
+output:
+  html_document:
+    self_contained: false
+    toc: true
+    toc_float: true
+    number_sections: false
+    theme:
+      version: 4
+      bootswatch: flatly
+    code_folding: hide
+    code_download: true  
+css: styles.css
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo       = TRUE,   # hide all code
+  message    = FALSE,   # suppress package messages
+  warning    = FALSE,   # suppress warnings
+  fig.width  = 6,       # nice figure size
+  fig.height = 4,
+  dpi        = 300,     # high-res output
+  fig.pos    = "H",     # place plots here
+  out.width  = "100%"   # full-width figures
+)
+```
+
+```{r}
+
 library(dplyr)
 library(stringr)
 library(ggplot2)
@@ -27,18 +57,20 @@ clean_racing_df <- race_competitors_unique %>%
   left_join(race_sessions_unique %>% rename("race_sessions_ID" = ID) , by = c("SessionID" = "race_sessions_ID", "RaceID")) %>% 
   left_join(race_info_unique %>%  rename("race_info_ID" = ID), by = c("RaceID" = "race_info_ID")) %>% 
   mutate(Position = as.numeric(Position))
+```
+# Part 1
 
-#Question 1----
-
+# Question 1
+```{r}
 regulars <- clean_racing_df %>% 
   filter(season == 2024) %>% 
   mutate(total_races = n_distinct(RaceID)) %>% 
   group_by(fullName) %>% 
   summarize(races = n_distinct(RaceID), total_races = max(total_races), participation_rate = races/total_races) %>% 
-  filter(participation_rate > 0.75) %>% 
+  filter(participation_rate >= 0.75) %>% 
   mutate(regular = "Yes")
 
-regular_tab<- regulars %>% 
+regulars %>% 
   select(fullName,participation_rate) %>% 
   arrange(-participation_rate) %>% 
   gt() %>% 
@@ -46,13 +78,17 @@ regular_tab<- regulars %>%
   cols_label(fullName = "Driver",participation_rate = "Participation Rate") %>% 
   gt_theme_538() %>% 
   tab_header(
-    title = md("Regular Drivers")
+    title = md("Regular Drivers"),
+    subtitle = md("Must Have Race Participation Rate of At Least 75%")
   ) %>% 
   tab_options(
     heading.align = "center"    # centers both title and subtitle
   )
-gtsave(regular_tab,"regulars.png")
-#Question 2----
+```
+
+\newpage
+# Question 2
+```{r}
 regular_racing_df <- clean_racing_df %>% 
   filter(season == 2024) %>% 
   left_join(regulars %>% select(fullName,regular), by = c("fullName"))
@@ -63,7 +99,7 @@ race_results <- regular_racing_df %>%
   group_by(fullName) %>% 
   summarize(wins = mean(Position == 1), top_3 = mean(Position <=3), top_5 = mean(Position <= 5), top_10 = mean(Position <= 10))
 
-reg_results <- race_results %>% 
+race_results %>% 
   gt() %>% 
   fmt_number(
     columns = c(wins, top_3, top_5, top_10),
@@ -85,11 +121,10 @@ reg_results <- race_results %>%
   tab_options(
     heading.align = "center"    # centers both title and subtitle
   )
-gtsave(reg_results,"regular_results.png")
+```
 
-
-#Question 3----
-#ChatGPT assistance
+# Question 3
+```{r}
 h2h_all <- regular_racing_df %>%
   filter(regular == "Yes") %>% 
   filter(str_detect(Sessions_Name,"A Feature")) %>%
@@ -131,7 +166,7 @@ h2h_wide <- h2h_matrix %>%
   )
 
 # 2. Feed to gt and style
-h2h_results <- h2h_wide %>% 
+h2h_wide %>% 
   gt(rowname_col = "fullName.A") %>% 
   fmt_percent(
     columns = everything(),     # all opponent columns
@@ -157,9 +192,11 @@ h2h_results <- h2h_wide %>%
   tab_options(
     heading.align = "center"    # centers both title and subtitle
   )
-gtsave(h2h_results,"h2h_results.png")
+```
+AI assisted in help to brainstorming idea for matrix.
 
-#Question 4----
+# Question 4
+```{r}
 non_regular_results <- regular_racing_df %>% 
   filter(is.na(regular)) %>% 
   filter(str_detect(Sessions_Name,"A Feature")) %>% #check this
@@ -200,8 +237,10 @@ non_regular_results %>%
     heading.align = "center"    # centers both title and subtitle
   )
 
+```
 
-#Question 5----
+# Question 5
+```{r}
 all_results <- regular_racing_df %>% 
   filter(str_detect(Sessions_Name,"A Feature")) %>% #check this
   group_by(fullName) %>% 
@@ -248,26 +287,37 @@ start_list_results %>%
   tab_options(
     heading.align = "center"    # centers both title and subtitle
   )
-  
-#Based on last year's perfromance top contenders are Brad Sweet, Kyle Larson, and Tyler Courtney as the major favorites, then Rico Abreu and Corey Day
+```
+I created a composite metric to create an all-in-one metric to evaluate drivers. The composite metric rewards drivers for wins, but also for consistency through finishing in the top 3, top 5, etc. The formula is **composite metric = win rate * 10 + top 3 rate * 7 +top 5 rate * 5 + top 10**. Through the composite metric I was able to determine 3 tiers of contenders. **Top Contenders**: Brad Sweet, Kyle Larson, and Tyler Courtney - **Middle Contenders**: Rico Abreu, Corey Day - **Low Contenders**: Justin Sanders, Brent Marks, Aaorn Reutzel, Tanner Thorson, Justin Peck
 
-#Question 6----
+# Question 6
+```{r}
 regular25 <- start_list %>% filter(isRegular == 1) %>% 
   left_join(regulars, by = "fullName") %>% 
   filter(is.na(regular)) %>% 
   left_join(all_results, by = "fullName")
 
+notes_df <- tribble(
+  ~fullName,         ~notes,
+  "Aaron Reutzel",   "Three-time All Star Circuit of Champions champ (2018–20); 2 wins in rookie 2021 World of Outlaws season",
+  "Chase Randall",   "2021 USAC National Midget ROY & 360 Knoxville champ; 6 wins in 10 Sprint Invaders starts",
+  "Daison Pursley",  "2017 USAC Micro Sprint champ; Passing Master in 2023 & 2024; first ever to win Midget, Sprint & Silver Crown in one year (2024)",
+  "Danny Sams III",  "Kart & quarter-midget grad; 3 wins in 2024 Ohio Sprint Speedweek + a 360 win at Lawrenceburg",
+  "Sye Lynch",       "FAST on Dirt feature winner (2019, 2022); runner-up in Commonwealth Clash; made 2021 Outlaws debut"
+)
+
 regular25 %>% select(fullName,races_count,wins,top_3,top_5,top_10) %>% 
+  left_join(notes_df, by = "fullName") %>% 
   gt() %>% 
   fmt_number(
     columns = c(wins, top_3, top_5, top_10),
     decimals = 2
   ) %>% 
   cols_align(align = "center") %>%
-  cols_label(fullName = "Driver", races_count = "Races" ,wins = "Win Rate", top_3 = "Top 3 Rate", top_5 = "Top 5 Rate", top_10 = "Top 10 Rate") %>% 
+  cols_label(fullName = "Driver", races_count = "Races" ,wins = "Win Rate", top_3 = "Top 3 Rate", top_5 = "Top 5 Rate", top_10 = "Top 10 Rate", notes = "AI Other Experience Notes") %>% 
   gt_theme_538() %>% 
   data_color(
-    columns  = c(-fullName,-races_count),
+    columns  = c(-fullName,-races_count, -notes),
     # map low->high win_pct to a color ramp
     colors   = col_numeric(
       palette = c("white", "darkgreen"),
@@ -280,15 +330,19 @@ regular25 %>% select(fullName,races_count,wins,top_3,top_5,top_10) %>%
   tab_options(
     heading.align = "center"    # centers both title and subtitle
   )
+```
+I have included some statistics above for the new 2025 regulars and an AI generated summary of their other racing experience.
 
-#Part 2----
+# Part 2
+```{r}
 f1_2024 <- read.csv("f1_2024.csv") %>% mutate(position = as.numeric(position)) %>%mutate(driverName = ifelse(driverName == "Alexander Albon", "Alex Albon", 
                                                                                                              ifelse(driverName == "Guanyu Zhou", "Zhou Guanyu",driverName)))#results
 f1_2025 <- read.csv("f1_2025.csv") %>% mutate(position = as.numeric(position)) #results
-f1_odds_2024 <- read.csv("f1_odds_24.csv") #betting odds
+f1_odds_2024 <- read.csv("f1_odds_24.csv") 
+```
 
-
-#Question 1 ----
+# Question 1
+```{r, fig.width=18,fig.height=10, out.width='100%', fig.align='center', fig.show='hold'}
 clean_odds <- f1_odds_2024 %>% mutate(probability = 1/EU.Odds) %>% group_by(Race,Market) %>% mutate(total_market_probability = sum(probability)) %>% ungroup() %>% 
   mutate(no_vig_prob = ifelse(Market == "Top 6", probability * (6/total_market_probability),
                               ifelse(Market == "Top 10",probability * (10/total_market_probability),
@@ -327,7 +381,7 @@ results_vs_prob %>% pivot_longer(c(total_prob,actual_result), names_to = "Type",
   filter(Name.Result == racer) %>% 
   ggplot(aes(x = RaceStop, y = Values, color = Market, linetype = Type))+
   geom_line(lwd = 4)+
-  labs(x = "Race Number", y = "Race Results", title = paste0(racer," Race Results vs No Vig Probability by Race"), 
+  labs(x = "Race Number", y = "Actual Finishes vs Expected Finishes", title = paste0(racer," Actual Finishes vs Expected Finishes by Race"), 
        caption = "Lines de-vigged through proportional scaling approach")+
   theme(legend.position = "top",
         legend.direction = "horizontal",
@@ -336,7 +390,7 @@ results_vs_prob %>% pivot_longer(c(total_prob,actual_result), names_to = "Type",
         legend.text = element_text(colour = "black", face = "bold", size = 20),
         plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 26),
         plot.subtitle = element_text(hjust = .5, colour = "white", size = 22),
-        plot.caption = element_text(colour = "white", size = 14),
+        plot.caption = element_text(colour = "white", size = 22),
         panel.grid = element_blank(),
         plot.background = element_rect(fill = "black", color="black"),
         panel.background = element_rect(fill = "black", color="black"),
@@ -345,10 +399,10 @@ results_vs_prob %>% pivot_longer(c(total_prob,actual_result), names_to = "Type",
         axis.title = element_text(color = "white", size = 24),
         panel.border = element_rect(colour = "white", fill = NA, size = 1))+
   scale_linetype_manual(name   = "Series",
-                        values = c(total_prob   = "dashed",
+                        values = c(total_prob   = "dotted",
                                    actual_result = "solid"),
-                        labels = c("Implied No Vig Probability",
-                                   "Cumulative Results")) +
+                        labels = c(total_prob = "Implied No Vig Probability",
+                                   actual_result = "Cumulative Results")) +
   scale_color_manual( values = c("Event Podium"   = "purple",  # cyan
                        "Event Winner"   = "red",  # magenta
                        "Top 10"  = "orange",  # yellow
@@ -357,19 +411,122 @@ results_vs_prob %>% pivot_longer(c(total_prob,actual_result), names_to = "Type",
   guides(
     linetype = guide_legend(
       override.aes = list(
-        size = 5,           # make legend lines thicker
+        size = 10,           # make legend lines thicker
         color = "white",
-        lwd = 1
+        lwd = 2
       )),
     color = guide_legend(
       override.aes = list(
-        size = 5,           # make legend lines thicker
-        lwd = 1
+        size = 10,           # make legend lines thicker
+        lwd = 2
       ))
   )
 
-#Double check de-vig to make sure sums properly
-#Question 2 ----
+```
+
+```{r, fig.width=18,fig.height=10, out.width='100%', fig.align='center', fig.show='hold'}
+racer <- "George Russell"
+
+results_vs_prob %>% pivot_longer(c(total_prob,actual_result), names_to = "Type", values_to = "Values") %>% 
+  filter(Name.Result == racer) %>% 
+  ggplot(aes(x = RaceStop, y = Values, color = Market, linetype = Type))+
+  geom_line(lwd = 4)+
+  labs(x = "Race Number", y = "Actual Finishes vs Expected Finishes", title = paste0(racer," Actual Finishes vs Expected Finishes by Race"), 
+       caption = "Lines de-vigged through proportional scaling approach")+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold", size = 20),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 26),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 22),
+        plot.caption = element_text(colour = "white", size = 22),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 22),
+        axis.title = element_text(color = "white", size = 24),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1))+
+  scale_linetype_manual(name   = "Series",
+                        values = c(total_prob   = "dotted",
+                                   actual_result = "solid"),
+                        labels = c(total_prob = "Implied No Vig Probability",
+                                   actual_result = "Cumulative Results")) +
+  scale_color_manual( values = c("Event Podium"   = "purple",  # cyan
+                       "Event Winner"   = "red",  # magenta
+                       "Top 10"  = "orange",  # yellow
+                       "Top 6"   = "darkgrey"   # lime green
+  ))+
+  guides(
+    linetype = guide_legend(
+      override.aes = list(
+        size = 10,           # make legend lines thicker
+        color = "white",
+        lwd = 2
+      )),
+    color = guide_legend(
+      override.aes = list(
+        size = 10,           # make legend lines thicker
+        lwd = 2
+      ))
+  )
+```
+
+
+
+```{r, fig.width=18,fig.height=10, out.width='100%', fig.align='center', fig.show='hold'}
+racer <- "Sergio Perez"
+
+results_vs_prob %>% pivot_longer(c(total_prob,actual_result), names_to = "Type", values_to = "Values") %>% 
+  filter(Name.Result == racer) %>% 
+  ggplot(aes(x = RaceStop, y = Values, color = Market, linetype = Type))+
+  geom_line(lwd = 4)+
+  labs(x = "Race Number", y = "Actual Finishes vs Expected Finishes", title = paste0(racer," Actual Finishes vs Expected Finishes by Race"), 
+       caption = "Lines de-vigged through proportional scaling approach")+
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "white", color="white"),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", face = "bold", size = 20),
+        plot.title = element_text(hjust = .5, colour = "white", face = "bold", size = 26),
+        plot.subtitle = element_text(hjust = .5, colour = "white", size = 22),
+        plot.caption = element_text(colour = "white", size = 22),
+        panel.grid = element_blank(),
+        plot.background = element_rect(fill = "black", color="black"),
+        panel.background = element_rect(fill = "black", color="black"),
+        axis.ticks = element_line(color = "white"),
+        axis.text = element_text(face = "bold", colour = "white",size = 22),
+        axis.title = element_text(color = "white", size = 24),
+        panel.border = element_rect(colour = "white", fill = NA, size = 1))+
+  scale_linetype_manual(name   = "Series",
+                        values = c(total_prob   = "dotted",
+                                   actual_result = "solid"),
+                        labels = c(total_prob = "Implied No Vig Probability",
+                                   actual_result = "Cumulative Results")) +
+  scale_color_manual( values = c("Event Podium"   = "purple",  # cyan
+                       "Event Winner"   = "red",  # magenta
+                       "Top 10"  = "orange",  # yellow
+                       "Top 6"   = "darkgrey"   # lime green
+  ))+
+  guides(
+    linetype = guide_legend(
+      override.aes = list(
+        size = 10,           # make legend lines thicker
+        color = "white",
+        lwd = 2
+      )),
+    color = guide_legend(
+      override.aes = list(
+        size = 10,           # make legend lines thicker
+        lwd = 2
+      ))
+  )
+```
+I de-vigged the lines through the proportional scaling approach to get a true probability for each market type.
+
+# Question 2
+```{r}
 max_odds <- clean_odds %>%   filter(Market %in% c("Event Winner","Event Podium","Top 6","Top 10")) %>%  filter(Name.Result != "") %>% 
   left_join(f1_2024 %>% filter(sessionName == "Race") %>% select(season, eventName,eventNum,driverName,position), 
               by = c("Season" = "season", "RaceStop" = "eventNum", "Name.Result" = "driverName")) %>% 
@@ -408,19 +565,6 @@ highest_scoring_team <- clean_odds %>% filter(Market == "Highest Scoring Team") 
   group_by(Market) %>% 
   summarize(max_odds = max(EU.Odds[is_top_constructor == TRUE],na.rm = T))
 
-# fastest_quals <- f1_2024 %>%
-#   filter(sessionType == "Qualifying",classifiedTime >0) %>%      # only Q sessions
-#   group_by(eventNum) %>%                       # one group per race
-#   slice_min(order_by = classifiedTime, 
-#             n        = 1, 
-#             with_ties = FALSE) %>%             # pick exactly one row
-#   ungroup()
-
-# top_qualifier <- clean_odds %>% filter(Market == "Top Qualifier") %>% 
-#   inner_join(fastest_quals,by = c("RaceStop" = "eventNum","Name.Result" = "driverName")) %>% 
-#   group_by(Market) %>% 
-#   summarize(max_odds = max(EU.Odds))
-
 margin_of_victory <- f1_2024 %>% filter(sessionType == "Race", position == 2) %>%  group_by(eventNum) %>% summarize(margin = min(gapToLeader,na.rm = T)) %>% 
   mutate(classified_time = case_when(
     margin < 5 ~ "Under 5 seconds",
@@ -437,27 +581,38 @@ rbind(max_odds,highest_scoring_team,max_margin_odds) %>%
   cols_label(max_odds = "Max Odds") %>% 
   gt_theme_538() %>% 
   tab_header(title = "Longest Successful Odds in 2024")
-#Question 3----
+```
+# Question 3
+```{r}
 results_25 <- f1_2025 %>% 
   filter(sessionName == "Race") %>% 
   group_by(driverName) %>% 
   summarize(races = n_distinct(eventKey),wins = mean(position == 1,na.rm =T), top_3 = mean(position <=3,na.rm =T), 
-            top_5 = mean(position <= 5,na.rm =T), top_10 = mean(position <= 10,na.rm =T))
+            top_5 = mean(position <= 5,na.rm =T), top_10 = mean(position <= 10,na.rm =T)) %>% 
+  mutate(composite_metric = wins*10+top_3*7+top_5*5+top_10)
 results_25 %>% 
+  arrange(-composite_metric) %>% 
   gt() %>% 
   fmt_number(
-    columns = c(wins, top_3, top_5, top_10),
+    columns = c(wins, top_3, top_5, top_10,composite_metric),
     decimals = 2
   ) %>% 
   cols_align(align = "center") %>%
-  cols_label(fullName = "Driver", races_count = "Races" ,wins = "Win Rate", top_3 = "Top 3 Rate", top_5 = "Top 5 Rate", top_10 = "Top 10 Rate") %>% 
+  cols_label(driverName = "Driver", races = "Races" ,wins = "Win Rate", top_3 = "Top 3 Rate", top_5 = "Top 5 Rate", top_10 = "Top 10 Rate", composite_metric = "Composite Metric") %>% 
   gt_theme_538() %>% 
   data_color(
-    columns  = c(-fullName,-races_count),
+    columns  = c(-driverName,-races,-composite_metric),
     # map low->high win_pct to a color ramp
     colors   = col_numeric(
       palette = c("white", "darkgreen"),
       domain  = c(0, 1)
+    )) %>% 
+    data_color(
+    columns  = composite_metric,
+    # map low->high win_pct to a color ramp
+    colors   = col_numeric(
+      palette = c("white", "darkgreen"),
+      domain  = c(0, 16)
     )) %>% 
   tab_header(
     title = md("F1 2025 Results")
@@ -465,6 +620,6 @@ results_25 %>%
   tab_options(
     heading.align = "center"    # centers both title and subtitle
   )
-  
-#Max pedigree, firing of director --> lean into variance
-#Charles Leclerc similar top 3, top 5, top 10 rate to heavy favorites but way off rest pricing
+```
+
+I have again used the composite metric defined earlier to analyze these drivers. There is 2 angles I would look to play. The first angle is using the composite metric to identify Charles Leclerc as a driver with value. The reason his composite metric is much lower than the top 4 is because he is yet to have a win this year, but his top 3, top 5, and top 10 results are similar to the top 4. The top 4 are priced between +185 to +450 while Leclerc is priced at +1400 which is a significant jump. This odds change is too big to Leclerc which is why there is value in taking him at +1400. The other angle I would look to play is Max Verstappen due to the recent exit of Christian Horner causing uncertainty in the potential impact of this firing. I do not think books are exactly sure how this change will effect Verstappen's performance and I want to lean into this uncertainty.  With the race being months away, I want to lean into this uncertainty early through betting Verstappen now before the markets can fully understand the firing impact.
