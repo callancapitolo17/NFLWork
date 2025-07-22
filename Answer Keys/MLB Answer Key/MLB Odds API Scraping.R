@@ -13,38 +13,83 @@ mlb_dates  <- sched %>%
   unique() %>% 
   sort()
 
-
-history_df <- map_dfr(mlb_dates, function(day) {
-  snapshot <- paste0(format(day, "%Y-%m-%d"), "T23:59:59Z")
+# Loop over each day to collect event info
+event_list <- map_dfr(mlb_dates, function(day) {
+  snapshot <- paste0(format(day, "%Y-%m-%d"), "T14:59:59Z")
   res <- GET(
-    "https://api.the-odds-api.com/v4/historical/sports/baseball_mlb/odds",
+    url = "https://api.the-odds-api.com/v4/historical/sports/baseball_mlb/events",
+    query = list(
+      apiKey = Sys.getenv("ODDS_API_KEY"),
+      date = snapshot,
+      dateFormat = "iso"
+    )
+  )
+  stop_for_status(res)
+  parsed <- fromJSON(content(res, "text"), flatten = TRUE)
+  
+  if (length(parsed) == 0) return(tibble())
+  
+  as_tibble(parsed) %>%
+    mutate(snapshot_date = day)
+})
+event_list_clean <- event_list$data %>%
+  select(id, home_team, away_team, commence_time) %>%
+  distinct(id, .keep_all = TRUE) %>%
+  mutate(commence_time = ymd_hms(commence_time, tz = "UTC"))
+
+
+# Function to get odds for a single event via eventIds param
+get_event_odds_by_id <- function(event_id, commence_time) {
+  snapshot <- format(commence_time - minutes(15), "%Y-%m-%dT%H:%M:%SZ")
+  
+  res <- GET(
+    url = "https://api.the-odds-api.com/v4/historical/sports/baseball_mlb/odds",
     query = list(
       apiKey     = Sys.getenv("ODDS_API_KEY"),
       date       = snapshot,
+      eventIds   = event_id,
       regions    = "us,eu",
       markets    = "h2h,totals",
       oddsFormat = "american",
       dateFormat = "iso"
     )
   )
-  stop_for_status(res) #make sure web request works or else throw an error
-  parsed <- fromJSON(content(res, "text"), flatten = TRUE) #put the json into an oject in R that works and I can work with
   
-  # if there were no games that day, just return an empty tibble
-  if (length(parsed$data) == 0) {
+  if (http_status(res)$category != "Success") {
+    warning(paste("Request failed for", event_id, "at snapshot:", snapshot))
     return(tibble())
   }
   
-  # otherwise pull out the 'data' element and coerce that to a tibble
-  as_tibble(parsed$data) %>%
-    mutate(snapshot_date = day)  # tag each row with its snapshot date
-})
+  parsed <- fromJSON(content(res, as = "text"), flatten = TRUE)
+  
+  if (length(parsed$data) == 0) {
+    return(tibble())
+  }
+  as_tibble(parsed$data)
+}
+
+
+# Apply this function across all events
+history_df <- map2_dfr(
+  event_list_clean$id,
+  event_list_clean$commence_time,
+  get_event_odds_by_id
+)
+
+library(tidyr)
 
 clean_history_df <- history_df %>% 
-  as_tibble()
+  as_tibble() %>% 
+  filter(map_lgl(bookmakers, ~ length(.x) > 0))
+
+# clean_history_df <- history_df %>%
+#   # mutate(bookmakers = map(bookmakers, ~ as.list(as.data.frame(.x)))) %>% 
+#   slice_head(n = 1069) %>% 
+#   as_tibble()
+
 flat_odds <- clean_history_df %>%
   # 1. one row per bookie
-  unnest_longer(bookmakers) %>%
+  unnest_longer(bookmakers) %>% 
   unnest_wider (bookmakers,   names_sep = "_") %>%
   # 2. one row per market (h2h, totals, …)
   unnest_longer(bookmakers_markets) %>%
@@ -87,7 +132,7 @@ flat_odds <- clean_history_df %>%
   )
 
 write.csv(flat_odds,"MLB Flat Odds.csv")
-
+tes <- read.csv("MLB Flat Odds.csv")
 check <- flat_odds %>% 
   # filter(ml_home_odds > -500, ml_away_odds > -500, tot_over_odds > -500, tot_under_odds > -500) %>% 
   mutate(time_chec = ifelse(bookmaker_update>commence_time,1,0)) %>% 

@@ -36,7 +36,7 @@ df %>%
 ggsave("UnitedWages.png", width = 14, height = 10)
 
 #Shot Radar
-shot_data <- get_player_shots(player_id = 7084) # Salah's `player_id` on Understat is `1250`
+shot_data <- get_player_shots(player_id = 8995) # Salah's `player_id` on Understat is `1250`
 plot_shot(shot_data %>% filter(year == 2024),highlight_goals = TRUE, average_location = FALSE)
 ggsave("ShotRadar.png", width = 14, height = 10)
 man_city_shots <- understat_team_season_shots(team_url = "https://understat.com/team/Manchester_City/2020")
