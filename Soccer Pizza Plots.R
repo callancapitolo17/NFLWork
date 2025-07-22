@@ -10,7 +10,7 @@ data1 <- fb_player_scouting_report(pull(player_dictionary_mapping() %>% filter(P
 data2 <- fb_player_scouting_report(pull(player_dictionary_mapping() %>% filter(PlayerFBref  == player2) %>% select(UrlFBref) %>% slice(1)), pos_versus = "primary",time_pause =  5)
 
 strikers <- c(#"Goals","Assists","Non-Penalty Goals",
-              "xG: Expected Goals", "npxG: Non-Penalty xG","npxG/Shot","xA: Expected Assists","Shot-Creating Actions","Goal-Creating Actions",
+              "Non-Penalty Goals - npxG","xG: Expected Goals", "npxG: Non-Penalty xG","npxG/Shot","xA: Expected Assists","Shot-Creating Actions","Goal-Creating Actions",
               "Progressive Passes", "Progressive Carries","Successful Take-Ons", "Successful Take-On %","Touches (Att Pen)","Aerials Won","% of Aerials Won",
               "Tackles (Att 3rd)","Interceptions","Ball Recoveries")
 midfielders <- c("xG: Expected Goals", "npxG: Non-Penalty xG","xA: Expected Assists", "Progressive Passes", 

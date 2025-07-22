@@ -1,30 +1,4 @@
-# install + load
-if (!requireNamespace("baseballr", quietly=TRUE)) install.packages("baseballr")
-library(baseballr)
-library(dplyr)
-library(purrr)
 
-# 1) Pick your season
-season_year <- 2007:2025
-
-# 2) Fetch the full MLB schedule for that season
-sched <- baseballr::mlb_schedule(season = season_year)
-
-# 3) Extract all game_pk values
-game_pks <- pull(sched %>% 
-  filter(!series_description %in% c("Exhibition","Spring Training") & status_coded_game_state == "F") %>% 
-    select(game_pk))
-
-# 4) Pull play‐by‐play for each game_pk and row‐bind
-#    (this will take a few minutes for ~2,430 games)
-pbp_season <- map_dfr(
-  game_pks,
-  ~ get_pbp_mlb(game_pk = .x),
-  .id = "game_pk"
-)
-
-# 5) Quick sanity check
-glimpse(pbp_season)
 
 library(baseballr)
 library(dplyr)
@@ -64,9 +38,15 @@ get_season_pbp <- function(season_year) {
 # Loop over all seasons since 2007
 seasons <- 2015:2024
 
-pbp_all <- map_dfr(seasons, get_season_pbp, .id = "season")
+for (season in seasons) {
+  pbp <- get_season_pbp(season)
+  saveRDS(pbp, file = paste0("pbp_", season, ".rds"))
+  message("Saved season: ", season)
+}
 df_pbp_all <- pbp_all %>% select(-reviewDetails.additionalReviews)
 write.csv(df_pbp_all,"Pitch_Level_Data_15-24.csv")
+
+df_pbp_all <- read.csv("Pitch_Level_Data_15-24.csv")
 
 first6 <- head(df_pbp_all)
 
