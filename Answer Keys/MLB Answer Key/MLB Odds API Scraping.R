@@ -133,7 +133,33 @@ flat_odds <- clean_history_df %>%
 
 write.csv(flat_odds,"MLB Flat Odds.csv")
 tes <- read.csv("MLB Flat Odds.csv")
-check <- flat_odds %>% 
-  # filter(ml_home_odds > -500, ml_away_odds > -500, tot_over_odds > -500, tot_under_odds > -500) %>% 
-  mutate(time_chec = ifelse(bookmaker_update>commence_time,1,0)) %>% 
-  filter(time_chec > 0)
+clean_flat_odds <- flat_odds %>%
+  filter(if_all(c(ml_home_odds, ml_away_odds, tot_over_odds, tot_under_odds), ~ .x > -500))
+odds_to_prob <- function(odds) {
+  ifelse(odds > 0, 100 / (odds + 100), -odds / (-odds + 100))
+}
+clean_flat_odds <- flat_odds %>%
+  filter(if_all(c(ml_home_odds, ml_away_odds, tot_over_odds, tot_under_odds), ~ .x > -500)) %>% 
+  mutate(
+    prob_home = odds_to_prob(ml_home_odds),
+    prob_away = odds_to_prob(ml_away_odds),
+    prob_over = odds_to_prob(tot_over_odds),
+    prob_under = odds_to_prob(tot_under_odds)
+  ) %>% 
+  group_by(id) %>% #as of now not de-vigging
+  filter(
+    between(
+      prob_home, quantile(prob_home, 0.10, na.rm = TRUE), quantile(prob_home, 0.90, na.rm = TRUE) # removing moneyline outliers
+    ),
+      between(
+        prob_over, quantile(prob_over, 0.10, na.rm = TRUE), quantile(prob_over, 0.90, na.rm = TRUE) # removing total outliers
+      ))
+consensus_ml <- clean_flat_odds %>% 
+  group_by(id) %>% 
+  summarise(
+    consensus_prob_home = median(prob_home, na.rm = TRUE),
+    consensus_prob_away = median(prob_away, na.rm = TRUE)
+  ) %>%
+  ungroup()
+  
+
