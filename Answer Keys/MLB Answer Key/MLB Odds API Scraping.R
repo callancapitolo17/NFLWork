@@ -133,13 +133,29 @@ flat_odds <- clean_history_df %>%
 
 write.csv(flat_odds,"MLB Flat Odds.csv")
 tes <- read.csv("MLB Flat Odds.csv")
-clean_flat_odds <- flat_odds %>%
-  filter(if_all(c(ml_home_odds, ml_away_odds, tot_over_odds, tot_under_odds), ~ .x > -500))
+# Define the weights for each bookmaker to create consensus total line
+book_weights <- tibble::tibble(
+  bookmaker_key = c(
+    "pinnacle", "circasports", "betonlineag", "lowvig", "matchbook", "bookmaker.eu", "coolbet",
+    "everygame", "intertops", "unibet", "unibet_us", "unibet_it", "betmgm", "williamhill_us",
+    "caesars", "fanduel", "draftkings", "pointsbetus", "betrivers", "bovada", "sport888", "superbook",
+    "wynnbet", "sugarhouse", "betus", "mybookieag", "foxbet", "barstool", "fanatics", "gtbets",
+    "tipico_de", "twinspires", "livescorebet_eu", "nordicbet", "betsson", "onexbet"
+  ),
+  weight = c(
+    1.00, 0.95, 0.92, 0.90, 0.88, 0.88, 0.85, 0.80, 0.80, 0.80, 0.75, 0.75, 0.72, 0.72,
+    0.70, 0.68, 0.68, 0.65, 0.60, 0.55, 0.52, 0.52, 0.50, 0.50, 0.48, 0.45, 0.45, 0.45, 0.40, 0.40,
+    0.38, 0.38, 0.35, 0.35, 0.35, 0.38
+  )
+)
+#Calculate probability from american odds
 odds_to_prob <- function(odds) {
   ifelse(odds > 0, 100 / (odds + 100), -odds / (-odds + 100))
 }
 clean_flat_odds <- flat_odds %>%
-  filter(if_all(c(ml_home_odds, ml_away_odds, tot_over_odds, tot_under_odds), ~ .x > -500)) %>% 
+  left_join(book_weights, by = "bookmaker_key") %>% 
+  filter(if_all(c(ml_home_odds, ml_away_odds, tot_over_odds, tot_under_odds), ~ .x > -400)) %>% 
+  filter(tot_over_odds > -200, tot_under_odds > -200) #having a total that high doesn't make sense could make to maybe lower
   mutate(
     prob_home = odds_to_prob(ml_home_odds),
     prob_away = odds_to_prob(ml_away_odds),
