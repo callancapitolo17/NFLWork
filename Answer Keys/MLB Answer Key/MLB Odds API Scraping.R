@@ -132,7 +132,7 @@ flat_odds <- clean_history_df %>%
   )
 
 write.csv(flat_odds,"MLB Flat Odds.csv")
-tes <- read.csv("MLB Flat Odds.csv")
+flat_odds <- read.csv("MLB Flat Odds.csv")
 # Define the weights for each bookmaker to create consensus total line
 book_weights <- tibble::tibble(
   bookmaker_key = c(
@@ -155,7 +155,7 @@ odds_to_prob <- function(odds) {
 clean_flat_odds <- flat_odds %>%
   left_join(book_weights, by = "bookmaker_key") %>% 
   filter(if_all(c(ml_home_odds, ml_away_odds, tot_over_odds, tot_under_odds), ~ .x > -400)) %>% 
-  filter(tot_over_odds > -200, tot_under_odds > -200) #having a total that high doesn't make sense could make to maybe lower
+  filter(tot_over_odds > -200, tot_under_odds > -200) %>%  #having a total that high doesn't make sense could make to maybe lower
   mutate(
     prob_home = odds_to_prob(ml_home_odds),
     prob_away = odds_to_prob(ml_away_odds),
@@ -171,11 +171,21 @@ clean_flat_odds <- flat_odds %>%
         prob_over, quantile(prob_over, 0.10, na.rm = TRUE), quantile(prob_over, 0.90, na.rm = TRUE) # removing total outliers
       ))
 consensus_ml <- clean_flat_odds %>% 
-  group_by(id) %>% 
-  summarise(
+  group_by(id,commence_time) %>% 
+  summarize(
     consensus_prob_home = median(prob_home, na.rm = TRUE),
     consensus_prob_away = median(prob_away, na.rm = TRUE)
   ) %>%
   ungroup()
-  
+
+ consensus_over <- clean_flat_odds %>% 
+  group_by(id,total_line) %>% 
+  mutate(total_weight = sum(weight, na.rm = T)) %>% 
+  ungroup() %>% 
+  group_by(id) %>% 
+  filter(total_weight == max(total_weight, na.rm = TRUE)) %>% 
+  group_by(id,total_line) %>% 
+  summarize(consensus_over = median(prob_over, na.rm = T),
+            consensus_under = median(prob_under,na.rm = T))
+mlb_betting_history <- consensus_ml %>% inner_join(consensus_over, by = "id")  
 
