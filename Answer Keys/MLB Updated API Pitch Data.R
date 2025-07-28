@@ -44,11 +44,45 @@ for (season in seasons) {
   message("Saved season: ", season)
 }
 df_pbp_all <- pbp_all %>% select(-reviewDetails.additionalReviews)
+
+seasons <- 2015:2024
+
+# convert to .parquet once
+library(arrow)
+library(purrr)
+library(dplyr)
+
+# Helper: Drop all list-columns
+drop_list_cols <- function(df) {
+  df %>%
+    select(where(~ !is.list(.)))
+}
+
+# Convert and save
+for (season in seasons) {
+  df <- readRDS(paste0("pbp_", season, ".rds"))
+  df_clean <- drop_list_cols(df)
+  write_parquet(df_clean, paste0("pbp_", season, ".parquet"))
+}
+
+parquet_files <- list.files(pattern = "pbp_\\d{4}\\.parquet$")
+
+# Optional: extract the season year from filename
+get_season <- function(file) {
+  gsub("pbp_(\\d{4})\\.parquet", "\\1", file)
+}
+
+# Read and combine
+pbp_all <- map_dfr(parquet_files, function(file) {
+  df <- read_parquet(file)
+  df$season <- get_season(file)
+  df
+})
+
+
 write.csv(df_pbp_all,"Pitch_Level_Data_15-24.csv")
 
 df_pbp_all <- read.csv("Pitch_Level_Data_15-24.csv")
-
-first6 <- head(df_pbp_all)
 
 games_by_inning <- df_pbp_all %>% 
   group_by(game_pk,season,about.inning) %>% 
