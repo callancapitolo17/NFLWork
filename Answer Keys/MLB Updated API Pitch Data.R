@@ -80,21 +80,25 @@ pbp_all <- map_dfr(parquet_files, function(file) {
 })
 
 #Analysis ----
-game_ml_by_inning <- pbp_all %>% 
+game_by_inning <- pbp_all %>% 
   # filter(!is.na(about.inning)) %>% 
-  group_by(game_pk,season,about.inning) %>% 
-  summarize(first(game_date),first(home_team), first(away_team),home_score = max(result.homeScore),away_score = max(result.awayScore)) %>% 
-  mutate(game_ml_inning_ = ifelse(home_score > away_score,1,ifelse(home_score== away_score,NA,0))) %>% 
-  mutate(full_game_total_inning_ = home_score+away_score) %>% 
+  group_by(game_pk,season, about.inning) %>% 
+  summarize(game_date = first(game_date),home_team = first(home_team), away_team = first(away_team),inning_start_time = min(about.startTime), home_score = max(result.homeScore),away_score = max(result.awayScore)) %>% 
+  mutate(game_home_ml_inning = ifelse(home_score > away_score,1,ifelse(home_score== away_score,NA,0))) %>% 
+  mutate(full_game_total_inning = home_score+away_score) %>% 
   ungroup() %>% 
-  select(-home_score,-away_score) %>% #allow a proper pivt - score isn't need because of game score
-  pivot_wider(names_from = about.inning, values_from = c(game_ml_inning_,full_game_total_inning_))
+  group_by(season,game_pk) %>% 
+  mutate(game_start_time = min(inning_start_time)) %>% 
+  ungroup() %>% 
+  select(-home_score,-away_score,-inning_start_time) %>% #allow a proper pivt - score isn't need because of game score
+  pivot_wider(names_from = about.inning, values_from = c(game_home_ml_inning,full_game_total_inning))
 
 
 game_total_by_inning <- pbp_all %>% 
   filter(!is.na(about.inning)) %>% 
   group_by(game_pk,season,about.inning) %>% 
-  summarize(first(game_date),first(home_team), first(away_team),home_score = max(result.homeScore),away_score = max(result.awayScore)) %>% 
+  summarize(first(game_date),first(home_team), first(away_team),home_score = max(result.homeScore),away_score = max(result.awayScore),
+            start_time = min(about.startTime)) %>% 
   mutate(total = home_score+away_score) %>% 
   ungroup() %>% 
   select(-home_score,-away_score) %>% #allow a proper pivt - score isn't need because of game score
