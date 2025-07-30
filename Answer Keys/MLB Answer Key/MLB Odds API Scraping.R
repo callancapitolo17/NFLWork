@@ -173,6 +173,8 @@ clean_flat_odds <- flat_odds %>%
 consensus_ml <- clean_flat_odds %>% 
   group_by(id,commence_time) %>% 
   summarize(
+    home_team = first(home_team),
+    away_team = first(away_team),
     consensus_prob_home = median(prob_home, na.rm = TRUE),
     consensus_prob_away = median(prob_away, na.rm = TRUE)
   ) %>%
@@ -187,5 +189,7 @@ consensus_ml <- clean_flat_odds %>%
   group_by(id,total_line) %>% 
   summarize(consensus_over = median(prob_over, na.rm = T),
             consensus_under = median(prob_under,na.rm = T))
-mlb_betting_history <- consensus_ml %>% inner_join(consensus_over, by = "id")  
+mlb_betting_history <- consensus_ml %>% inner_join(consensus_over, by = "id")  %>% 
+  mutate(start_time = format(ymd_hms(commence_time, tz = "UTC"), tz = "America/Los_Angeles", usetz = TRUE))
+  
 
