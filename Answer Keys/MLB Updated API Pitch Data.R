@@ -89,17 +89,18 @@ game_by_inning <- pbp_all %>%
   ungroup() %>% 
   group_by(season,game_pk) %>% 
   mutate(game_start_time = min(inning_start_time)) %>% 
+  mutate(game_start_time = ymd_hms(game_start_time, tz = "UTC")) %>% 
   ungroup() %>% 
   select(-home_score,-away_score,-inning_start_time) %>% #allow a proper pivt - score isn't need because of game score
   pivot_wider(names_from = about.inning, values_from = c(game_home_ml_inning,full_game_total_inning))
 
 
-game_total_by_inning <- pbp_all %>% 
-  filter(!is.na(about.inning)) %>% 
-  group_by(game_pk,season,about.inning) %>% 
-  summarize(first(game_date),first(home_team), first(away_team),home_score = max(result.homeScore),away_score = max(result.awayScore),
-            start_time = min(about.startTime)) %>% 
-  mutate(total = home_score+away_score) %>% 
-  ungroup() %>% 
-  select(-home_score,-away_score) %>% #allow a proper pivt - score isn't need because of game score
-  pivot_wider(names_from = about.inning, values_from = total,names_prefix = "Total")
+# game_total_by_inning <- pbp_all %>% 
+#   filter(!is.na(about.inning)) %>% 
+#   group_by(game_pk,season,about.inning) %>% 
+#   summarize(first(game_date),first(home_team), first(away_team),home_score = max(result.homeScore),away_score = max(result.awayScore),
+#             start_time = min(about.startTime)) %>% 
+#   mutate(total = home_score+away_score) %>% 
+#   ungroup() %>% 
+#   select(-home_score,-away_score) %>% #allow a proper pivt - score isn't need because of game score
+#   pivot_wider(names_from = about.inning, values_from = total,names_prefix = "Total")
