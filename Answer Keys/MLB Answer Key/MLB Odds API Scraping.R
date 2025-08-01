@@ -190,6 +190,34 @@ consensus_ml <- clean_flat_odds %>%
   summarize(consensus_over = median(prob_over, na.rm = T),
             consensus_under = median(prob_under,na.rm = T))
 mlb_betting_history <- consensus_ml %>% inner_join(consensus_over, by = "id")  %>% 
-  mutate(start_time = format(ymd_hms(commence_time, tz = "UTC"), tz = "America/Los_Angeles", usetz = TRUE))
-  
+  # mutate(start_time = with_tz(ymd_hms(commence_time, tz = "UTC"),tzone = "America/Los_Angeles"))
+  mutate(commence_time = ymd_hms(commence_time, tz = "UTC")) %>% 
+  mutate(game_date = as.Date(commence_time))
 
+library(fuzzyjoin)
+
+# test <- mlb_betting_history %>% difference_inner_join(game_by_inning %>% mutate(game_date = as.Date(game_date)), by = c("game_date", "home_team","away_team","commence_time" = "game_start_time"),
+#                                                       max_dist = c(0, 0,0,as.difftime(1, units = "hours")),
+#                                                       distance_col = "time_diff")  
+library(data.table)
+odds_dt <- as.data.table(mlb_betting_history)
+inning_dt <- as.data.table(game_by_inning)
+
+# Make sure commence_time and game_start_time are POSIXct!
+odds_dt[, commence_time := ymd_hms(commence_time, tz = "UTC")]
+inning_dt[, game_start_time := ymd_hms(game_start_time, tz = "UTC")]
+
+# Standardize team names if needed (trimws, toupper, etc)
+# odds_dt[, home_team := toupper(trimws(home_team))]
+# inning_dt[, home_team := toupper(trimws(home_team))]
+
+# Set keys for both tables
+setkey(odds_dt, home_team, away_team, commence_time)
+setkey(inning_dt, home_team, away_team, game_start_time)
+
+# Rolling join: match to the nearest game_start_time within 1 hour (3600 seconds)
+joined_dt <- inning_dt[odds_dt, 
+                       on = .(home_team, away_team, game_start_time = commence_time), 
+                       roll = "nearest",  # closest time (could use "forward" or "backward" for direction)
+                       nomatch = 0L
+]
