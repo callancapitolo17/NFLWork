@@ -125,19 +125,25 @@ distance_index <- function(dt, ps, pt, ss, st) {
 }
 
 # Function 1: mean‐matching to select initial N games
+# Now supports EITHER spread lines OR moneyline probabilities
 mean_match <- function(dt, N, parent_spread, parent_total,
-                       ss, st, max_iter_mean, tol_mean) {
+                       ss, st, max_iter_mean, tol_mean,
+                       use_spread_line = FALSE) {  # NEW parameter
   dt <- copy(dt)
   adj_spread <- parent_spread
   adj_total <- parent_total
+  
+  # Determine which column to match against
+  spread_col <- if (use_spread_line) "home_spread" else "home_ml_odds"
+  
   for (iter in seq_len(max_iter_mean)) {
-    distance_index(dt, adj_spread, adj_total, ss, st)
+    distance_index_generic(dt, adj_spread, adj_total, ss, st, spread_col)  # NEW helper
     setorder(dt, index)
     dt[, included := FALSE]
     dt[1:N, included := TRUE]
     
     # compute current means and errors
-    mean_s <- dt[included == TRUE, mean(home_ml_odds)]
+    mean_s <- dt[included == TRUE, mean(get(spread_col))]
     mean_t <- dt[included == TRUE, mean(total_line)]
     err_s <- mean_s - parent_spread
     err_t <- mean_t - parent_total
@@ -157,30 +163,36 @@ mean_match <- function(dt, N, parent_spread, parent_total,
   )
 }
 
+# New generic distance calculator
+distance_index_generic <- function(dt, ps, pt, ss, st, spread_col = "home_ml_odds") {
+  dt[, index := ((get(spread_col) - ps) / ss)^2 + ((total_line - pt) / st)^2]
+}
+
 # Function 2: balance sample by greedy remove/add + shrink‐on‐stall
 balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
   dt <- copy(dt)
+  n_sample <- N  # CHANGED: use different variable name to avoid confusion
+  
   # initialize errors
-  cover_error <- dt[included == TRUE, sum(actual_cover)] -
-    round(target_cover * N)
-  over_error <- dt[included == TRUE, sum(actual_over)] -
-    round(target_over * N)
+  cover_error <- dt[included == TRUE, sum(actual_cover, na.rm =T)] -
+    round(target_cover * n_sample)
+  over_error <- dt[included == TRUE, sum(actual_over,na.rm = T)] -
+    round(target_over * n_sample)
   M <- nrow(dt)
   
   repeat {
-    # stop if within tolerance
-    if (abs(cover_error) <= tol_error && abs(over_error) <= tol_error) break
+    if ((abs(cover_error) <= tol_error) && (abs(over_error) <= tol_error)) {break}
     
     # mark failures
     removal_failed <- TRUE
     addition_failed <- TRUE
     
-    # ---- remove one game from 1..N ----
-    in1toN <- dt[1:N, included]
-    cov_help1 <- (cover_error > 0 & dt[1:N, actual_cover] == 1) |
-      (cover_error < 0 & dt[1:N, actual_cover] == 0)
-    ov_help1 <- (over_error > 0 & dt[1:N, actual_over] == 1) |
-      (over_error < 0 & dt[1:N, actual_over] == 0)
+    # ---- remove one game from 1..n_sample ----
+    in1toN <- dt[seq_len(n_sample), included]  # CHANGED: use seq_len
+    cov_help1 <- (cover_error > 0 & dt[seq_len(n_sample), actual_cover] == 1) |
+      (cover_error < 0 & dt[seq_len(n_sample), actual_cover] == 0)
+    ov_help1 <- (over_error > 0 & dt[seq_len(n_sample), actual_over] == 1) |
+      (over_error < 0 & dt[seq_len(n_sample), actual_over] == 0)
     
     both1 <- which(in1toN & cov_help1 & ov_help1)
     either1 <- which(in1toN & (cov_help1 | ov_help1))
@@ -196,48 +208,49 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
     }
     
     if (!removal_failed) {
-      cover_error <- dt[included == TRUE, sum(actual_cover)] -
-        round(target_cover * N)
-      over_error <- dt[included == TRUE, sum(actual_over)] -
-        round(target_over * N)
+      cover_error <- dt[included == TRUE, sum(actual_cover,na.rm = T)] -
+        round(target_cover * n_sample)
+      over_error <- dt[included == TRUE, sum(actual_over, na.rm = T)] -
+        round(target_over * n_sample)
     }
     
-    # ---- add one game from (N+1)..M ----
-    inNplus <- dt[(N + 1):M, included]
-    cov_help2 <- (cover_error > 0 & dt[(N + 1):M, actual_cover] == 0) |
-      (cover_error < 0 & dt[(N + 1):M, actual_cover] == 1)
-    ov_help2 <- (over_error > 0 & dt[(N + 1):M, actual_over] == 0) |
-      (over_error < 0 & dt[(N + 1):M, actual_over] == 1)
+    # ---- add one game from (n_sample+1)..M ----
+    idx_range <- seq(n_sample + 1, M)  # CHANGED: explicit range
+    inNplus <- dt[idx_range, included]
+    cov_help2 <- (cover_error > 0 & dt[idx_range, actual_cover] == 0) |
+      (cover_error < 0 & dt[idx_range, actual_cover] == 1)
+    ov_help2 <- (over_error > 0 & dt[idx_range, actual_over] == 0) |
+      (over_error < 0 & dt[idx_range, actual_over] == 1)
     
     both2 <- which(!inNplus & cov_help2 & ov_help2)
     either2 <- which(!inNplus & (cov_help2 | ov_help2))
     
     if (length(both2) > 0) {
-      j <- max(both2) + N
+      j <- max(both2) + n_sample
       dt[j, included := TRUE]
       addition_failed <- FALSE
     } else if (length(either2) > 0) {
-      j <- max(either2) + N
+      j <- max(either2) + n_sample
       dt[j, included := TRUE]
       addition_failed <- FALSE
     }
     
     if (!addition_failed) {
-      cover_error <- dt[included == TRUE, sum(actual_cover)] -
-        round(target_cover * N)
-      over_error <- dt[included == TRUE, sum(actual_over)] -
-        round(target_over * N)
+      cover_error <- dt[included == TRUE, sum(actual_cover, na.rm = T)] -
+        round(target_cover * n_sample)
+      over_error <- dt[included == TRUE, sum(actual_over, na.rm = T)] -
+        round(target_over * n_sample)
     }
     
     # ---- if neither helped, shrink sample size ----
     if (removal_failed && addition_failed) {
-      worst_i <- dt[1:N, which.max(index)]
+      worst_i <- dt[seq_len(n_sample), which.max(index)]  # CHANGED
       dt[worst_i, included := FALSE]
-      N <- N - 1
-      cover_error <- dt[included == TRUE, sum(actual_cover)] -
-        round(target_cover * N)
-      over_error <- dt[included == TRUE, sum(actual_over)] -
-        round(target_over * N)
+      n_sample <- n_sample - 1  # CHANGED
+      cover_error <- dt[included == TRUE, sum(actual_cover, na.rm = T)] -
+        round(target_cover * n_sample)
+      over_error <- dt[included == TRUE, sum(actual_over, na.rm = T)] -
+        round(target_over * n_sample)
       next
     }
   }
@@ -245,19 +258,19 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
   # return final dt and stats
   list(
     dt = dt,
-    final_N = N,
+    final_N = n_sample,  # CHANGED
     cover_error = cover_error,
     over_error = over_error
   )
 }
 
-fetch_event_odds <- function(event_id, market) {
+fetch_event_odds <- function(event_id, market, sport_key = "baseball_mlb") {
   res <- GET(
-    paste0("https://api.the-odds-api.com/v4/sports/baseball_mlb/events/", event_id, "/odds"),
+    paste0("https://api.the-odds-api.com/v4/sports/", sport_key, "/events/", event_id, "/odds"),
     query = list(
       apiKey     = Sys.getenv("ODDS_API_KEY"),
       regions    = "us,us2,us_ex",
-      markets    = market, # change this to whichever market you want
+      markets    = market,
       oddsFormat = "american",
       dateFormat = "iso"
     )
@@ -265,15 +278,19 @@ fetch_event_odds <- function(event_id, market) {
   
   if (http_error(res)) {
     warning(paste("Failed for event:", event_id))
-    return(NULL)
+    return(tibble())
   }
   
-  fromJSON(content(res, "text"), flatten = TRUE) %>% as_tibble()
+  odds_data <- fromJSON(content(res, "text"), flatten = TRUE)
+  if (is.null(odds_data) || length(odds_data) == 0) {
+    return(tibble())
+  }
+  as_tibble(odds_data)
 }
 
 run_means_for_id_total <- function(id, parent_spread, parent_total, target_cover, target_over, totals, inning,
                                    DT, ss, st, N,
-                                   max_iter_mean = 500, tol_mean = 0.005, tol_error = 1) {
+                                   max_iter_mean = 500, tol_mean = 0.005, tol_error = 3) {
   mm <- mean_match(DT, N, parent_spread, parent_total, ss, st, max_iter_mean, tol_mean)
   bal <- balance_sample(mm$dt, N, target_cover, target_over, tol_error)
   
@@ -293,7 +310,7 @@ run_means_for_id_total <- function(id, parent_spread, parent_total, target_cover
 
 run_means_for_id_spread <- function(id, parent_spread, parent_total, target_cover, target_over, spreads, inning,
                                     DT, ss, st, N,
-                                    max_iter_mean = 500, tol_mean = 0.005, tol_error = 1) {
+                                    max_iter_mean = 500, tol_mean = 0.005, tol_error = 2) {
   mm <- mean_match(DT, N, parent_spread, parent_total, ss, st, max_iter_mean, tol_mean)
   bal <- balance_sample(mm$dt, N, target_cover, target_over, tol_error)
 
@@ -316,20 +333,20 @@ run_means_for_id_spread <- function(id, parent_spread, parent_total, target_cove
   tibble(!!!pct_cols)
 }
 
+#generates bets for moneylines
 run_means_for_id <- function(id, parent_spread, parent_total, target_cover, target_over,
                              DT, ss, st, N,
-                             max_iter_mean = 500, tol_mean = 0.005, tol_error = 1) {
-  mm <- mean_match(DT, N, parent_spread, parent_total, ss, st, max_iter_mean, tol_mean)
+                             max_iter_mean = 500, tol_mean = 0.005, tol_error = 1,
+                             use_spread_line = FALSE,
+                             margin_col = "game_home_margin_in") {  
+  mm <- mean_match(DT, N, parent_spread, parent_total, ss, st, 
+                   max_iter_mean, tol_mean, use_spread_line)
   bal <- balance_sample(mm$dt, N, target_cover, target_over, tol_error)
-  
   inc_df <- bal$dt %>% filter(included == TRUE)
-  
-  # summarise all game_home_ml* columns
   bets_summary <- inc_df %>%
-    summarise(across(starts_with("game_home_margin_in"), ~ sum(.x > 0, na.rm = TRUE) / sum(.x != 0, na.rm = T)))
-  
-  bets_summary %>%
-    select(everything())
+    summarise(across(starts_with(margin_col), ~ sum(.x > 0, na.rm = TRUE) / sum(.x != 0, na.rm = T))) %>% 
+    ungroup()
+  bets_summary
 }
 
 prob_to_american <- function(prob) {
@@ -431,7 +448,6 @@ compute_ev <- function(pred_prob, book_prob) {
 }
 
 kelly_stake <- function(ev, book_prob, bankroll, kelly_mult) {
-  if (book_prob <= 0) return(0)
   edge_fraction <- ev / ((1 / book_prob) - 1)
   stake <- edge_fraction * kelly_mult * bankroll
   round(stake, 2)
@@ -477,84 +493,114 @@ format_bets_table <- function(
     time_col = "commence_time",
     tz_out   = "America/Los_Angeles"
 ) {
+  s1 <- str_extract(size1, "home|away|over|under")
+  s2 <- str_extract(size2, "home|away|over|under")
+  
+  # Map columns to standard names: metric_side (e.g. prob_home, size_over)
+  cols_map <- c(
+    set_names(pred1, paste0("prob_", s1)), set_names(pred2, paste0("prob_", s2)),
+    set_names(ev1,   paste0("ev_", s1)),   set_names(ev2,   paste0("ev_", s2)),
+    set_names(size1, paste0("size_", s1)), set_names(size2, paste0("size_", s2)),
+    set_names(odds1, paste0("odds_", s1)), set_names(odds2, paste0("odds_", s2))
+  )
+  
   df %>%
     filter(bookmaker_key %in% books) %>%
-    mutate(
-      pt_start_time = lubridate::with_tz(
-        lubridate::ymd_hms(.data[[time_col]], tz = "UTC"),
-        tzone = tz_out
-      )
+    mutate(pt_start_time = lubridate::with_tz(lubridate::ymd_hms(.data[[time_col]], tz = "UTC"), tzone = tz_out)) %>%
+    # Select and rename dynamically in one step
+    select(home_team, away_team, pt_start_time, bookmaker_key, market, all_of(cols_map)) %>%
+    pivot_longer(
+      cols = -c(home_team, away_team, pt_start_time, bookmaker_key, market),
+      names_to = c(".value", "bet_on"),
+      names_sep = "_"
     ) %>%
-    ungroup() %>%
-    # drop stuff you never care about once bets are formed
-    select(-id, -commence_time, -bookmaker_title) %>%
-    # standardize layout
-    relocate(
-      home_team, away_team, pt_start_time, bookmaker_key, market,
-      .before = everything()
-    ) %>%
-    relocate(
-      all_of(c(pred1, pred2)),
-      .after = market
-    ) %>%
-    relocate(
-      all_of(c(ev1, ev2)),
-      .after = pred2
-    ) %>%
-    relocate(
-      all_of(c(size1, size2)),
-      .after = ev2
-    ) %>%
-    relocate(
-      all_of(c(odds1, odds2)),
-      .after = size2
-    )
+    # Map 'home'/'away' to team names; keep 'Over'/'Under' as is
+    mutate(bet_on = case_when(
+      bet_on == "home" ~ home_team,
+      bet_on == "away" ~ away_team,
+      TRUE ~ str_to_title(bet_on)
+    )) %>%
+    filter(size > 0) %>% 
+    arrange(desc(size)) %>%
+    select(home_team, away_team, pt_start_time, bookmaker_key, market, bet_on, bet_size = size, ev, odds, prob)
 }
 
 
 # Entire Moneyline Process ----
 build_moneyline_market <- function(
     DT,
-    consensus_odds,    # e.g. mlb_odds for MLB, but generic name here
+    consensus_odds,
     ss, st, N,
-    period,            # generic "period" (inning, quarter, half, etc.)
-    events,            # output of get_todays_events()
-    market,            # e.g. "h2h_1st_5_innings"
+    period,
+    events,
+    market,
     bankroll   = 200,
     kelly_mult = 0.25,
-    targets
+    targets = NULL,
+    use_spread_line = FALSE,  # NEW: set TRUE for NFL spreads
+    sport_key,
+    margin_col
 ) {
   
-  # 2) Elihu engine for each id (moneyline / win prob)
+  # If targets not provided, build them from consensus_odds
+  if (is.null(targets)) {
+    if (use_spread_line) {
+      targets <- consensus_odds %>%
+        transmute(
+          id,
+          parent_spread = spread,                    # actual spread line
+          parent_total  = total_line,
+          target_cover  = consensus_devig_home_odds, # probability of covering
+          target_over   = consensus_devig_over_odds
+        )
+    } else {
+      targets <- consensus_odds %>%
+        transmute(
+          id,
+          parent_spread = consensus_devig_home_odds, # moneyline probability
+          parent_total  = total_line,
+          target_cover  = consensus_devig_home_odds,
+          target_over   = consensus_devig_over_odds
+        )
+    }
+  }
+  # 2) Elihu engine for each id
   final_preds <- targets %>%
     mutate(res = pmap(
       list(id, parent_spread, parent_total, target_cover, target_over),
       ~ run_means_for_id(..1, ..2, ..3, ..4, ..5,
-                         DT = DT, ss = ss, st = st, N = N)
-    )) %>%
+                         DT = DT, ss = ss, st = st, N = N,
+                         use_spread_line = use_spread_line,
+                         max_iter_mean = 500,
+                         margin_col = margin_col))) %>%
     unnest(res) %>%
+    ungroup() %>% 
     inner_join(
       consensus_odds %>%
+        ungroup() %>% 
         select(id, home_team, away_team, commence_time),
-      by = "id"
+      by = c("id", "home_team", "commence_time")
     ) %>%
     select(home_team, away_team, commence_time, everything())
-  
+
   predictions <- final_preds %>%
     mutate(
       across(
-        starts_with("game_home_margin_in"),
+        starts_with(margin_col),
         ~ prob_to_american(.x),
         .names = "{.col}_american"
       )
     ) %>%
     relocate(
       ends_with("_american"),
-      .before = starts_with("game_home_margin_in")
+      .before = starts_with(margin_col)
     )
   
   # 3) Get current odds for the chosen market
-  all_odds <- map_dfr(events$id, ~ fetch_event_odds(.x, market))
+  all_odds <- events$id %>%
+    map(~ fetch_event_odds(.x, market, sport_key)) %>%
+    keep(~ nrow(.x) > 0) %>%
+    bind_rows()
   
   flat_betting_odds <- all_odds %>%
     flatten_event_odds() %>%
@@ -577,23 +623,23 @@ build_moneyline_market <- function(
   # 4) Join predictions + consensus + market odds, compute EV + Kelly
   prediction_set <- flat_betting_odds %>%
     left_join(
-      predictions %>% select(id, contains(paste0("_", period))),
+      predictions %>% ungroup() %>% select(id, contains(paste0("_", period))),
       by = "id"
     ) %>%
     left_join(
-      consensus_odds %>% select(-home_team, -away_team),
+      consensus_odds %>% ungroup() %>%  select(-home_team, -away_team,-commence_time),
       by = "id"
     ) %>%
     rename(
       book_full_game_home_prob  = consensus_prob_home,
       book_full_game_away_prob  = consensus_prob_away,
-      book_full_game_over_prob  = consensus_over,
-      book_full_game_under_prob = consensus_under,
+      book_full_game_over_prob  = consensus_prob_over,
+      book_full_game_under_prob = consensus_prob_under,
       book_full_game_total_line = total_line
     ) %>%
     rename(
-      home_predicted_prob          = paste0("game_home_margin_in_", period),
-      home_predicted_american_odds = paste0("game_home_margin_in_", period, "_american")
+      home_predicted_prob          = paste0(margin_col, "_", period),
+      home_predicted_american_odds = paste0(margin_col,"_", period, "_american")
     ) %>%
     mutate(
       away_predicted_prob = 1 - home_predicted_prob
@@ -603,6 +649,7 @@ build_moneyline_market <- function(
       book_market_prob_home = p1,
       book_market_prob_away = p2
     ) %>%
+    filter(!is.na(spread)) %>% 
     mutate(
       home_ev       = compute_ev(home_predicted_prob, book_market_prob_home),
       away_ev       = compute_ev(away_predicted_prob, book_market_prob_away),
@@ -610,7 +657,6 @@ build_moneyline_market <- function(
       away_bet_size = kelly_stake(away_ev, book_market_prob_away, bankroll, kelly_mult),
       market        = market
     )
-  
   bets <- prediction_set %>%
     format_bets_table(
       pred1 = "home_predicted_prob",
@@ -622,7 +668,6 @@ build_moneyline_market <- function(
       odds1 = "book_home_market",
       odds2 = "book_away_market"
     )
-  
   list(
     predictions    = predictions,
     prediction_set = prediction_set,
@@ -640,6 +685,7 @@ build_totals_market <- function(
     period,             # inning / quarter / half etc
     events,
     market,             # e.g. "alternate_totals_1st_5_innings"
+    sport_key,          # e.g. "baseball_mlb", "americanfootball_nfl"
     bankroll   = 200,
     kelly_mult = 0.25
 ) {
@@ -654,7 +700,7 @@ build_totals_market <- function(
     )
   
   # 2) Current totals odds
-  all_odds <- map_dfr(events$id, ~ fetch_event_odds(.x, market))
+  all_odds <- map_dfr(events$id, ~ fetch_event_odds(.x, market, sport_key))
   
   flat_betting_odds <- all_odds %>%
     flatten_event_odds() %>%
@@ -767,6 +813,7 @@ build_spread_market <- function(
     period,             # inning / quarter / half etc
     events,
     market,             # e.g. "spreads_1st_5_innings"
+    sport_key,          # e.g. "baseball_mlb", "americanfootball_nfl"
     bankroll   = 200,
     kelly_mult = 0.25
 ) {
@@ -781,7 +828,7 @@ build_spread_market <- function(
     )
   
   # 2) Current spread odds
-  all_odds <- map_dfr(events$id, ~ fetch_event_odds(.x, market))
+  all_odds <- map_dfr(events$id, ~ fetch_event_odds(.x, market, sport_key))
   
   flat_betting_odds <- all_odds %>%
     flatten_event_odds() %>%
