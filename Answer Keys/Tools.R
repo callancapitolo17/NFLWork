@@ -65,7 +65,8 @@ pick_consensus_line <- function(df,
            market2_weighted_prob = .data[[market2]] * .data[[weight_col]]) %>% 
     group_by(.data[[game_id_col]], .data[[date_col]], .data[[line_col]],.data[[time_col]], .data[[home]],.data[[away]]) %>%
     summarize(consensus_market1 = sum(market1_weighted_prob, na.rm = T) / sum(.data[[weight_col]], na.rm = T),
-              consensus_market2 = sum(market2_weighted_prob, na.rm = T) / sum(.data[[weight_col]], na.rm = T)) %>% 
+              consensus_market2 = sum(market2_weighted_prob, na.rm = T) / sum(.data[[weight_col]], na.rm = T),
+              .groups = "drop") %>% 
     rename(!!paste0("consensus_",market1,sep = "") := consensus_market1,
            !!paste0("consensus_",market2,sep = "") := consensus_market2)
 }
@@ -938,6 +939,202 @@ build_spread_market <- function(
     predictions    = spread_predictions,
     prediction_set = prediction_set,
     bets           = bets
+  )
+}
+
+# Efficient Multi-Market Moneyline Builder ----
+build_multi_moneyline_markets <- function(
+    DT,
+    consensus_odds,
+    ss, st, N,
+    periods,            # Vector of periods: c(1, 2, 3, 4) for quarters
+    events,
+    markets,            # Vector of markets: c("h2h_q1", "h2h_q2", "h2h_q3", "h2h_q4")
+    sport_key,
+    bankroll   = 200,
+    kelly_mult = 0.25,
+    targets = NULL,
+    use_spread_line = FALSE,
+    margin_col = "game_home_margin_period"
+) {
+  
+  # Validate inputs
+  if (length(periods) != length(markets)) {
+    stop("periods and markets must be same length and correspond to each other")
+  }
+  
+  # Build targets if not provided
+  if (is.null(targets)) {
+    targets <- consensus_odds %>%
+      ungroup() %>%
+      transmute(
+        id,
+        parent_spread = if_else(use_spread_line, spread, consensus_prob_home),
+        parent_total  = total_line,
+        target_cover  = consensus_prob_home,
+        target_over   = consensus_prob_over
+      )
+  }
+  
+  cat(sprintf("Fetching %d markets for %d events (%d API calls)...\n", 
+              length(markets), length(events$id), length(markets) * length(events$id)))
+  
+  # 1) Batch fetch all markets for all events
+  all_odds <- expand_grid(event_id = events$id, market = markets) %>%
+    mutate(
+      data = map2(event_id, market, possibly(
+        ~ {
+          result <- fetch_event_odds(.x, .y, sport_key)
+          if (nrow(result) > 0 && "bookmakers" %in% names(result)) {
+            result  # Don't add market here, it's already in the parent tibble
+          } else {
+            tibble()
+          }
+        },
+        otherwise = tibble()
+      ))
+    ) %>%
+    filter(map_lgl(data, ~ nrow(.x) > 0)) %>%  # Filter out empty results before unnesting
+    unnest(data) %>%
+    select(-event_id)
+  
+  if (nrow(all_odds) == 0) stop("No odds data returned")
+  
+  # 2) Flatten all odds
+  flat_odds <- all_odds %>%
+    flatten_event_odds() %>%
+    select(-market_key) %>%  # Remove market_key from API response, we already have 'market' column
+    unnest_wider(outcome_name, names_sep = "_") %>%
+    unnest_wider(closing_odds, names_sep = "_") %>%
+    mutate(
+      home_odds = if_else(home_team == outcome_name_1, closing_odds_1, closing_odds_2),
+      away_odds = if_else(away_team == outcome_name_1, closing_odds_1, closing_odds_2)
+    ) %>%
+    group_by(market, id, commence_time, home_team, away_team, bookmaker_key, bookmaker_title) %>%
+    summarise(
+      book_home_market = first(home_odds),
+      book_away_market = first(away_odds),
+      .groups = "drop"
+    )
+  
+  # 3) Run predictions ONCE - generates probabilities for all periods
+  cat(sprintf("Running prediction engine for %d events across %d periods...\n", 
+              nrow(targets), length(periods)))
+  
+  predictions_raw <- targets %>%
+    ungroup() %>%  # Remove any grouping from targets
+    select(id, parent_spread, parent_total, target_cover, target_over) %>%  # Only keep needed columns
+    mutate(res = pmap(
+      list(id, parent_spread, parent_total, target_cover, target_over),
+      ~ run_means_for_id(..1, ..2, ..3, ..4, ..5, DT, ss, st, N,
+                         use_spread_line = use_spread_line, 
+                         margin_col = margin_col)
+    )) %>%
+    unnest(res)
+  
+  # Join with consensus to get team names and time
+  consensus_info <- consensus_odds %>% 
+    ungroup()
+  
+  # Debug: check what columns exist
+  if (!all(c("id", "home_team", "away_team", "commence_time") %in% names(consensus_info))) {
+    stop(paste("Missing columns in consensus_odds. Available columns:", 
+               paste(names(consensus_info), collapse = ", ")))
+  }
+  
+  consensus_info <- consensus_info %>%
+    select(id, home_team, away_team, commence_time)
+  
+  # Convert commence_time if it's character
+  if (is.character(consensus_info$commence_time)) {
+    consensus_info <- consensus_info %>%
+      mutate(commence_time = ymd_hms(commence_time, tz = "UTC"))
+  }
+  
+  predictions <- predictions_raw %>%
+    inner_join(consensus_info, by = "id")
+  
+  # Debug: verify predictions has the needed columns after join
+  if (nrow(predictions) == 0) {
+    stop("No predictions after joining with consensus_info. Check that IDs match between targets and consensus_odds.")
+  }
+  if (!"home_team" %in% names(predictions)) {
+    stop(paste("home_team missing from predictions after join. predictions columns:", 
+               paste(names(predictions), collapse = ", "),
+               "\nconsensus_info columns:", paste(names(consensus_info), collapse = ", ")))
+  }
+  
+  # 4) Create market-to-period mapping and pivot predictions
+  market_period_map <- tibble(market = markets, period = periods)
+  
+  # Select only columns we need - use any_of to handle missing gracefully
+  margin_cols <- names(predictions)[startsWith(names(predictions), margin_col)]
+  if (length(margin_cols) == 0) {
+    stop(paste("No columns starting with", margin_col, "found in predictions. Available columns:", 
+               paste(names(predictions), collapse = ", ")))
+  }
+  
+  predictions_long <- predictions %>%
+    select(id, home_team, away_team, commence_time, all_of(margin_cols)) %>%
+    pivot_longer(
+      cols = starts_with(margin_col),
+      names_to = "period_col",
+      values_to = "home_win_prob"
+    ) %>%
+    mutate(
+      period = as.numeric(str_extract(period_col, "\\d+"))
+    ) %>%
+    select(-period_col) %>%
+    inner_join(market_period_map, by = "period") %>%
+    mutate(away_win_prob = 1 - home_win_prob)
+  
+  # 5) Join predictions to markets and compute EV
+  prediction_set <- flat_odds %>%
+    left_join(predictions_long %>% select(-commence_time), by = c("market", "id", "home_team", "away_team")) %>%
+    left_join(
+      consensus_odds %>% 
+        ungroup() %>%
+        select(id, spread, total_line, starts_with("consensus")),
+      by = "id"
+    ) %>%
+    mutate(as_tibble(american_prob(book_home_market, book_away_market))) %>%
+    rename(book_market_prob_home = p1, book_market_prob_away = p2) %>%
+    filter(!is.na(spread), !is.na(home_win_prob)) %>%
+    mutate(
+      home_ev = compute_ev(home_win_prob, book_market_prob_home),
+      away_ev = compute_ev(away_win_prob, book_market_prob_away),
+      home_bet_size = kelly_stake(home_ev, book_market_prob_home, bankroll, kelly_mult),
+      away_bet_size = kelly_stake(away_ev, book_market_prob_away, bankroll, kelly_mult)
+    )
+  
+  # 6) Format bets
+  bets <- prediction_set %>%
+    format_bets_table(
+      pred1 = "home_win_prob", pred2 = "away_win_prob",
+      ev1 = "home_ev", ev2 = "away_ev",
+      size1 = "home_bet_size", size2 = "away_bet_size",
+      odds1 = "book_home_market", odds2 = "book_away_market"
+    )
+  
+  # 7) Market summary
+  summary <- bets %>%
+    group_by(market) %>%
+    summarise(
+      n_bets = n(),
+      total_stake = sum(bet_size),
+      avg_ev = mean(ev),
+      max_ev = max(ev),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(total_stake))
+  
+  cat(sprintf("Complete! Generated %d bets across %d markets\n", nrow(bets), length(markets)))
+  
+  list(
+    predictions = predictions_long,
+    prediction_set = prediction_set,
+    bets = bets,
+    markets_summary = summary
   )
 }
 
