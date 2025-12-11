@@ -131,21 +131,55 @@ mean_match <- function(dt, N, parent_spread, parent_total,
                        ss, st, max_iter_mean, tol_mean,
                        use_spread_line = FALSE) {  # NEW parameter
   dt <- copy(dt)
+  
+  # Defensive: ensure N is valid integer
+  N <- as.integer(N)
+  if (is.na(N) || N <= 0) {
+    stop(paste("Invalid N in mean_match. N =", N))
+  }
+  if (N > nrow(dt)) {
+    warning(paste("N (", N, ") > nrow(dt) (", nrow(dt), "). Using nrow(dt) instead."))
+    N <- nrow(dt)
+  }
+  
+  # Validate parent_spread and parent_total are single numerics
+  if (!is.numeric(parent_spread) || length(parent_spread) != 1 || is.na(parent_spread)) {
+    stop(paste("Invalid parent_spread in mean_match. Value:", parent_spread, 
+               "Type:", class(parent_spread), "Length:", length(parent_spread)))
+  }
+  if (!is.numeric(parent_total) || length(parent_total) != 1 || is.na(parent_total)) {
+    stop(paste("Invalid parent_total in mean_match. Value:", parent_total,
+               "Type:", class(parent_total), "Length:", length(parent_total)))
+  }
+  
   adj_spread <- parent_spread
   adj_total <- parent_total
   
   # Determine which column to match against
   spread_col <- if (use_spread_line) "home_spread" else "home_ml_odds"
   
+  # Check column exists
+  if (!spread_col %in% names(dt)) {
+    stop(paste("Column", spread_col, "not found in dt. Available columns:", 
+               paste(head(names(dt), 20), collapse = ", ")))
+  }
+  
+  # Check total_line exists
+  if (!"total_line" %in% names(dt)) {
+    stop("Column 'total_line' not found in dt")
+  }
+  
   for (iter in seq_len(max_iter_mean)) {
     distance_index_generic(dt, adj_spread, adj_total, ss, st, spread_col)  # NEW helper
     setorder(dt, index)
-    dt[, included := FALSE]
-    dt[1:N, included := TRUE]
     
-    # compute current means and errors
-    mean_s <- dt[included == TRUE, mean(get(spread_col))]
-    mean_t <- dt[included == TRUE, mean(total_line)]
+    # Use set() to avoid data.table scoping issues
+    set(dt, j = "included", value = FALSE)
+    set(dt, i = 1L:N, j = "included", value = TRUE)
+    
+    # compute current means and errors - use direct column access
+    mean_s <- mean(dt[included == TRUE][[spread_col]], na.rm = TRUE)
+    mean_t <- mean(dt[included == TRUE][["total_line"]], na.rm = TRUE)
     err_s <- mean_s - parent_spread
     err_t <- mean_t - parent_total
     
@@ -166,7 +200,27 @@ mean_match <- function(dt, N, parent_spread, parent_total,
 
 # New generic distance calculator
 distance_index_generic <- function(dt, ps, pt, ss, st, spread_col = "home_ml_odds") {
-  dt[, index := ((get(spread_col) - ps) / ss)^2 + ((total_line - pt) / st)^2]
+  # Validate inputs
+  if (!spread_col %in% names(dt)) {
+    stop(paste("Column", spread_col, "not found in distance_index_generic"))
+  }
+  if (!is.numeric(ps) || length(ps) != 1) {
+    stop(paste("ps must be single numeric. Value:", ps, "Type:", class(ps), "Length:", length(ps)))
+  }
+  if (!is.numeric(pt) || length(pt) != 1) {
+    stop(paste("pt must be single numeric. Value:", pt, "Type:", class(pt), "Length:", length(pt)))
+  }
+  if (!is.numeric(ss) || length(ss) != 1 || ss == 0) {
+    stop(paste("ss must be single non-zero numeric. Value:", ss, "Type:", class(ss)))
+  }
+  if (!is.numeric(st) || length(st) != 1 || st == 0) {
+    stop(paste("st must be single non-zero numeric. Value:", st, "Type:", class(st)))
+  }
+  
+  # Use set() for direct column assignment to avoid data.table scoping issues
+  index_vals <- ((dt[[spread_col]] - ps) / ss)^2 + ((dt[["total_line"]] - pt) / st)^2
+  set(dt, j = "index", value = index_vals)
+  invisible(dt)
 }
 
 # Function 2: balance sample by greedy remove/add + shrink‐on‐stall
@@ -200,11 +254,11 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
     
     if (length(both1) > 0) {
       i <- max(both1)
-      dt[i, included := FALSE]
+      set(dt, i = as.integer(i), j = "included", value = FALSE)
       removal_failed <- FALSE
     } else if (length(either1) > 0) {
       i <- max(either1)
-      dt[i, included := FALSE]
+      set(dt, i = as.integer(i), j = "included", value = FALSE)
       removal_failed <- FALSE
     }
     
@@ -227,12 +281,12 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
     either2 <- which(!inNplus & (cov_help2 | ov_help2))
     
     if (length(both2) > 0) {
-      j <- max(both2) + n_sample
-      dt[j, included := TRUE]
+      j <- min(both2) + n_sample # CHANGED: max -> min
+      set(dt, i = as.integer(j), j = "included", value = TRUE)
       addition_failed <- FALSE
     } else if (length(either2) > 0) {
-      j <- max(either2) + n_sample
-      dt[j, included := TRUE]
+      j <- min(either2) + n_sample # CHANGED: max -> min
+      set(dt, i = as.integer(j), j = "included", value = TRUE)
       addition_failed <- FALSE
     }
     
@@ -246,7 +300,7 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
     # ---- if neither helped, shrink sample size ----
     if (removal_failed && addition_failed) {
       worst_i <- dt[seq_len(n_sample), which.max(index)]  # CHANGED
-      dt[worst_i, included := FALSE]
+      set(dt, i = as.integer(worst_i), j = "included", value = FALSE)
       n_sample <- n_sample - 1  # CHANGED
       cover_error <- dt[included == TRUE, sum(actual_cover, na.rm = T)] -
         round(target_cover * n_sample)
@@ -339,7 +393,14 @@ run_means_for_id <- function(id, parent_spread, parent_total, target_cover, targ
                              DT, ss, st, N,
                              max_iter_mean = 500, tol_mean = 0.005, tol_error = 1,
                              use_spread_line = FALSE,
-                             margin_col = "game_home_margin_in") {  
+                             margin_col = "game_home_margin_in") {
+  
+  # Defensive: ensure N is valid
+  N <- as.integer(N)
+  if (is.na(N) || N <= 0) {
+    stop(paste("Invalid N in run_means_for_id. N =", N))
+  }
+  
   mm <- mean_match(DT, N, parent_spread, parent_total, ss, st, 
                    max_iter_mean, tol_mean, use_spread_line)
   bal <- balance_sample(mm$dt, N, target_cover, target_over, tol_error)
@@ -509,9 +570,9 @@ format_bets_table <- function(
     filter(bookmaker_key %in% books) %>%
     mutate(pt_start_time = lubridate::with_tz(lubridate::ymd_hms(.data[[time_col]], tz = "UTC"), tzone = tz_out)) %>%
     # Select and rename dynamically in one step
-    select(home_team, away_team, pt_start_time, bookmaker_key, market, all_of(cols_map)) %>%
+    select(id, home_team, away_team, pt_start_time, bookmaker_key, market, all_of(cols_map)) %>%
     pivot_longer(
-      cols = -c(home_team, away_team, pt_start_time, bookmaker_key, market),
+      cols = -c(id, home_team, away_team, pt_start_time, bookmaker_key, market),
       names_to = c(".value", "bet_on"),
       names_sep = "_"
     ) %>%
@@ -522,6 +583,10 @@ format_bets_table <- function(
       TRUE ~ str_to_title(bet_on)
     )) %>%
     filter(size > 0) %>% 
+    # Keep only highest bet size per game per market (ties included)
+    group_by(id, market) %>%
+    filter(size == max(size)) %>%
+    ungroup() %>%
     arrange(desc(size)) %>%
     select(home_team, away_team, pt_start_time, bookmaker_key, market, bet_on, bet_size = size, ev, odds, prob)
 }
@@ -1021,14 +1086,50 @@ build_multi_moneyline_markets <- function(
   cat(sprintf("Running prediction engine for %d events across %d periods...\n", 
               nrow(targets), length(periods)))
   
-  predictions_raw <- targets %>%
-    ungroup() %>%  # Remove any grouping from targets
-    select(id, parent_spread, parent_total, target_cover, target_over) %>%  # Only keep needed columns
+  # Debug: Check types of inputs
+  targets_clean <- targets %>%
+    ungroup() %>%
+    select(id, parent_spread, parent_total, target_cover, target_over)
+  
+  # Ensure all numeric columns are actually numeric
+  if (!is.numeric(targets_clean$parent_spread)) {
+    stop(paste("parent_spread is not numeric. Type:", class(targets_clean$parent_spread)))
+  }
+  if (!is.numeric(targets_clean$parent_total)) {
+    stop(paste("parent_total is not numeric. Type:", class(targets_clean$parent_total)))
+  }
+  if (!is.numeric(targets_clean$target_cover)) {
+    stop(paste("target_cover is not numeric. Type:", class(targets_clean$target_cover)))
+  }
+  if (!is.numeric(targets_clean$target_over)) {
+    stop(paste("target_over is not numeric. Type:", class(targets_clean$target_over)))
+  }
+  if (!is.numeric(N) || N <= 0) {
+    stop(paste("N must be positive numeric. Value:", N, "Type:", class(N)))
+  }
+  
+  # Ensure N is integer
+  N <- as.integer(N)
+  
+  predictions_raw <- targets_clean %>%
     mutate(res = pmap(
       list(id, parent_spread, parent_total, target_cover, target_over),
-      ~ run_means_for_id(..1, ..2, ..3, ..4, ..5, DT, ss, st, N,
-                         use_spread_line = use_spread_line, 
-                         margin_col = margin_col)
+      ~ run_means_for_id(
+          id = ..1, 
+          parent_spread = ..2, 
+          parent_total = ..3, 
+          target_cover = ..4, 
+          target_over = ..5,
+          DT = DT, 
+          ss = ss, 
+          st = st, 
+          N = N,
+          max_iter_mean = 500,
+          tol_mean = 0.005,
+          tol_error = 1,
+          use_spread_line = use_spread_line, 
+          margin_col = margin_col
+        )
     )) %>%
     unnest(res)
   
