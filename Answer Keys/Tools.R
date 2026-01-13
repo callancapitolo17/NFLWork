@@ -299,9 +299,13 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
     
     # ---- if neither helped, shrink sample size ----
     if (removal_failed && addition_failed) {
-      worst_i <- dt[seq_len(n_sample), which.max(index)]  # CHANGED
+      # Find the worst game that is ACTUALLY included
+      worst_i <- dt[included == TRUE, .I[which.max(index)]]
+      
       set(dt, i = as.integer(worst_i), j = "included", value = FALSE)
-      n_sample <- n_sample - 1  # CHANGED
+      n_sample <- n_sample - 1
+      
+      # Recalculate errors based on the new included set
       cover_error <- dt[included == TRUE, sum(actual_cover, na.rm = T)] -
         round(target_cover * n_sample)
       over_error <- dt[included == TRUE, sum(actual_over, na.rm = T)] -
@@ -551,7 +555,8 @@ format_bets_table <- function(
     ev1, ev2,              # names of EV columns           (e.g. "home_ev", "away_ev")
     size1, size2,          # names of bet size columns     (e.g. "home_bet_size", "away_bet_size")
     odds1, odds2,          # names of odds columns         (e.g. "book_home_market", "book_away_market")
-    books   = c("fliff", "rebet", "novig", "prophetx"),
+    books   = c("betonlineag","kalshi","draftkings"),
+    #books   = c("fliff", "rebet", "betonlineag","draftkings"),
     time_col = "commence_time",
     tz_out   = "America/Los_Angeles"
 ) {
@@ -582,7 +587,7 @@ format_bets_table <- function(
       bet_on == "away" ~ away_team,
       TRUE ~ str_to_title(bet_on)
     )) %>%
-    filter(size > 0) %>% 
+    filter(ev >= 0.05) %>%
     # Keep only highest bet size per game per market (ties included)
     group_by(id, market) %>%
     filter(size == max(size)) %>%

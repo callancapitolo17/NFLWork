@@ -1,11 +1,10 @@
-
-
 library(baseballr)
 library(dplyr)
 library(purrr)
 library(tibble)
 library(progress)
 library(tidyr)
+library(lubridate)
 
 # Function to safely pull PBP for one season
 get_season_pbp <- function(season_year) {
@@ -36,7 +35,8 @@ get_season_pbp <- function(season_year) {
 }
 
 # Loop over all seasons since 2007
-seasons <- 2015:2024
+# seasons <- 2015:2024
+seasons <- 2025
 
 for (season in seasons) {
   pbp <- get_season_pbp(season)
@@ -73,34 +73,54 @@ get_season <- function(file) {
 }
 
 # Read and combine
-pbp_all <- map_dfr(parquet_files, function(file) {
+pbp_all <- map_dfr(parquet_files[6:length(parquet_files)], function(file) { #get just pbp for games with betting data
   df <- read_parquet(file)
   df$season <- get_season(file)
   df
 })
 
+library(DBI)
+library(duckdb)
+library(glue)
+
+
+# files <- parquet_files
+# files_sql <- paste0("['", paste(files, collapse = "','"), "']")
+# 
+# # Create a table by scanning the parquet files. filename=true adds a filename column.
+# qry <- glue("
+#   CREATE OR REPLACE TABLE pbp_all AS
+#   SELECT
+#     t.*,
+#     CAST(regexp_extract(filename, '([0-9]{{4}})', 1) AS INTEGER) AS season
+#   FROM read_parquet({files_sql}, filename=true) AS t
+# ")
+# dbExecute(con, qry)
+con <- dbConnect(duckdb(), dbdir = "pbp.duckdb")
+
+
+pbp_all <- dbGetQuery(con, "
+  SELECT game_pk,season,\"about.inning\", game_date, home_team, away_team,\"about.startTime\",\"result.homeScore\",\"result.awayScore\",
+  FROM pbp_all
+  WHERE SEASON >= 2020
+")
+DBI::dbDisconnect(con, shutdown = TRUE)
+
 #Analysis ----
 game_by_inning <- pbp_all %>% 
-  # filter(!is.na(about.inning)) %>% 
+  # filter(!is.na(about.inning)) %>%
   group_by(game_pk,season, about.inning) %>% 
   summarize(game_date = first(game_date),home_team = first(home_team), away_team = first(away_team),inning_start_time = min(about.startTime), home_score = max(result.homeScore),away_score = max(result.awayScore)) %>% 
-  mutate(game_home_ml_inning = ifelse(home_score > away_score,1,ifelse(home_score== away_score,NA,0))) %>% 
-  mutate(full_game_total_inning = home_score+away_score) %>% 
+  mutate(game_home_margin_in = home_score-away_score) %>% 
+  mutate(game_total_in = home_score+away_score) %>% 
   ungroup() %>% 
   group_by(season,game_pk) %>% 
   mutate(game_start_time = min(inning_start_time)) %>% 
   mutate(game_start_time = ymd_hms(game_start_time, tz = "UTC")) %>% 
+  mutate(home_final_score = max(home_score), away_final_score = max(away_score), 
+         total_final_score = home_final_score + away_final_score,
+         home_winner = ifelse(home_final_score == away_final_score, NA,ifelse(home_final_score > away_final_score, 1,0))) %>% 
   ungroup() %>% 
   select(-home_score,-away_score,-inning_start_time) %>% #allow a proper pivt - score isn't need because of game score
-  pivot_wider(names_from = about.inning, values_from = c(game_home_ml_inning,full_game_total_inning))
-
-
-# game_total_by_inning <- pbp_all %>% 
-#   filter(!is.na(about.inning)) %>% 
-#   group_by(game_pk,season,about.inning) %>% 
-#   summarize(first(game_date),first(home_team), first(away_team),home_score = max(result.homeScore),away_score = max(result.awayScore),
-#             start_time = min(about.startTime)) %>% 
-#   mutate(total = home_score+away_score) %>% 
-#   ungroup() %>% 
-#   select(-home_score,-away_score) %>% #allow a proper pivt - score isn't need because of game score
-#   pivot_wider(names_from = about.inning, values_from = total,names_prefix = "Total")
+  pivot_wider(names_from = about.inning, values_from = c(game_home_margin,full_game_total_inning)) %>% 
+  mutate(game_date = as.Date(game_start_time)) #ensures dates are in the same format

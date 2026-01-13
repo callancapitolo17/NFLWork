@@ -1,4 +1,4 @@
-#TODO generate single sample answer key for each game and then use functions generates bets based on that
+#TODO generate single sample answer key for each game and then usfunctions generates bets based on that
 setwd("~/NFLWork/Answer Keys")
 library(data.table)
 library(oddsapiR)
@@ -17,7 +17,10 @@ library(data.table)
 # Answer Key----
 con <- dbConnect(duckdb(), dbdir = "pbp.duckdb") 
 
-DT <- dbGetQuery(con,"select * from nfl_betting_pbp") %>% 
+betting_20_plus <- dbGetQuery(con,"select * from nfl_betting_pbp")
+pre_20 <- dbGetQuery(con,"select * from nfl_pre_20_betting_history")
+
+DT <- bind_rows(betting_20_plus,pre_20) %>%
   rename(
     home_spread_odds = "consensus_devig_home_odds",
     away_spread_odds = "consensus_devig_away_odds",
@@ -105,11 +108,10 @@ targets <- nfl_odds %>%
 
 
 # 1) Get upcoming MLB events (you can pass regions here, but markets aren’t needed yet)
-period     <- 1
-bankroll   <- 50
+bankroll   <- 100
 kelly_mult <- 0.25
-N <-  round(nrow(DT)*0.05,0)
 tol_error <- 1
+N <- round(nrow(DT)*0.05,0)
 
 events <- get_events("americanfootball_nfl", regions = "us")
 
@@ -129,6 +131,7 @@ ml_results <- build_multi_moneyline_markets(
   use_spread_line = TRUE,
   targets         = targets,
   margin_col      = "game_home_margin_period"
+  
 )
 
 # View all bets across all markets
