@@ -587,7 +587,7 @@ format_bets_table <- function(
       bet_on == "away" ~ away_team,
       TRUE ~ str_to_title(bet_on)
     )) %>%
-    filter(ev >= 0.05) %>%
+    #filter(ev >= 0.05) %>%
     # Keep only highest bet size per game per market (ties included)
     group_by(id, market) %>%
     filter(size == max(size)) %>%
@@ -1017,15 +1017,15 @@ build_multi_moneyline_markets <- function(
     DT,
     consensus_odds,
     ss, st, N,
-    periods,            # Vector of periods: c(1, 2, 3, 4) for quarters
+    periods,            # Vector of periods: c("1", "2", "3", "4", "h1", "h2") - use strings for mixed types
     events,
-    markets,            # Vector of markets: c("h2h_q1", "h2h_q2", "h2h_q3", "h2h_q4")
+    markets,            # Vector of markets: c("h2h_q1", "h2h_q2", "h2h_q3", "h2h_q4", "h2h_h1", "h2h_h2")
     sport_key,
     bankroll   = 200,
     kelly_mult = 0.25,
     targets = NULL,
     use_spread_line = FALSE,
-    margin_col = "game_home_margin_period"
+    margin_col = "game_home_margin"
 ) {
   
   # Validate inputs
@@ -1171,7 +1171,7 @@ build_multi_moneyline_markets <- function(
   }
   
   # 4) Create market-to-period mapping and pivot predictions
-  market_period_map <- tibble(market = markets, period = periods)
+  market_period_map <- tibble(market = markets, period = as.character(periods))
   
   # Select only columns we need - use any_of to handle missing gracefully
   margin_cols <- names(predictions)[startsWith(names(predictions), margin_col)]
@@ -1188,7 +1188,10 @@ build_multi_moneyline_markets <- function(
       values_to = "home_win_prob"
     ) %>%
     mutate(
-      period = as.numeric(str_extract(period_col, "\\d+"))
+      # Extract period: handles "_1", "_2", "_Half1", "_Half2", "_h1", "_h2"
+      period = str_extract(period_col, "(?<=_)(\\d+|[Hh]alf\\d+|h\\d+)$") %>%
+        tolower() %>%
+        str_replace("half", "h")  # Normalize "Half1" -> "h1"
     ) %>%
     select(-period_col) %>%
     inner_join(market_period_map, by = "period") %>%

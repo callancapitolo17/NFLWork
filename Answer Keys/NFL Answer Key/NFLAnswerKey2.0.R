@@ -122,9 +122,9 @@ ml_results <- build_multi_moneyline_markets(
   ss              = ss,
   st              = st,
   N               = N,
-  periods         = c(1, 2, 3, 4),  # Quarters 1-4
+  periods         = c(1, 2, 3, 4,"h1"),  # Quarters 1-4
   events          = events,
-  markets         = c("h2h_q1", "h2h_q2", "h2h_q3", "h2h_q4"),  # Corresponding markets
+  markets         = c("h2h_q1", "h2h_q2", "h2h_q3", "h2h_q4","h2h_h1"),  # Corresponding markets
   sport_key       = "americanfootball_nfl",
   bankroll        = bankroll,
   kelly_mult      = kelly_mult,

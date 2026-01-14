@@ -1,12 +1,11 @@
+Sys.setenv(ODDS_API_KEY = "4c490c81e9b826798390440845c89d50")
 library(httr)
 library(jsonlite)
 library(dplyr)
 library(purrr)
 library(lubridate)
 library(baseballr)
-library(tidyr)
-
-sched <- map_dfr(2020:2025, mlb_schedule) #grab MLB schedule
+sched <- map_dfr(2020:2025, mlb_schedule) 
 mlb_dates  <- sched %>% 
   mutate(date = as.Date(date)) %>% 
   filter(!series_description %in% c("Exhibition","Spring Training") & status_coded_game_state == "F") %>% 
@@ -14,7 +13,6 @@ mlb_dates  <- sched %>%
   pull(date) %>% 
   unique() %>% 
   sort()
-#need to add check to ensure new game by looking at game id
 
 # Loop over each day to collect event info
 event_list <- map_dfr(mlb_dates, function(day) {
@@ -35,7 +33,7 @@ event_list <- map_dfr(mlb_dates, function(day) {
   as_tibble(parsed) %>%
     mutate(snapshot_date = day)
 })
-event_list_clean <- event_list$data %>%
+event_list_clean <- head(event_list$data,6) %>%
   select(id, home_team, away_team, commence_time) %>%
   distinct(id, .keep_all = TRUE) %>%
   mutate(commence_time = ymd_hms(commence_time, tz = "UTC"))
@@ -43,40 +41,28 @@ event_list_clean <- event_list$data %>%
 
 # Function to get odds for a single event via eventIds param
 get_event_odds_by_id <- function(event_id, commence_time) {
-  snapshot <- format(commence_time - minutes(144000), "%Y-%m-%dT%H:%M:%SZ")
+  snapshot <- format(commence_time - lubridate::minutes(15), "%Y-%m-%dT%H:%M:%SZ")
   
-  res <- GET(
-    url = "https://api.the-odds-api.com/v4/historical/sports/baseball_mlb/odds",
+  res <- httr::GET(
+    url = sprintf("https://api.the-odds-api.com/v4/historical/sports/baseball_mlb/events/%s/odds", event_id),
     query = list(
       apiKey     = Sys.getenv("ODDS_API_KEY"),
       date       = snapshot,
-      eventIds   = event_id,
-      regions    = "us,eu,uk,us_ex",
-      markets    = "h2h,totals",
+      regions    = "us,us2",        # removed invalid 'us_ex'
+      markets    = "spreads_1st_5_innings",           # keep as-is
       oddsFormat = "american",
       dateFormat = "iso"
     )
   )
   
-  if (http_status(res)$category != "Success") {
-    
-    
-    
-    
-    
-    
-    
-    
+  if (httr::http_status(res)$category != "Success") {
     warning(paste("Request failed for", event_id, "at snapshot:", snapshot))
     return(tibble())
   }
   
-  parsed <- fromJSON(content(res, as = "text"), flatten = TRUE)
-  
-  if (length(parsed$data) == 0) {
-    return(tibble())
-  }
-  as_tibble(parsed$data)
+  parsed <- fromJSON(httr::content(res, as = "text"), flatten = TRUE)
+  if (length(parsed$data) == 0) return(tibble())
+  dplyr::as_tibble(parsed$data)
 }
 
 
@@ -134,8 +120,8 @@ flat_odds <- clean_history_df %>%
     # ml_home_odds   = first(closing_odds_1[market_type == "moneyline" & (home_team == outcome_name_1 | home_team == outcome_name_2)]),
     # ml_away_odds   = first(closing_odds_2[market_type == "moneyline" & (away_team == outcome_name_1 | away_team == outcome_name_2)]),
     total_line = if_else(bookmakers_markets_outcomes_point_1[market_type=="totals"] >0,
-                          first(bookmakers_markets_outcomes_point_1[market_type=="totals"]),
-                          NA),
+                         first(bookmakers_markets_outcomes_point_1[market_type=="totals"]),
+                         NA),
     tot_over_odds  = first(closing_odds_1[market_type == "totals"]),
     tot_under_odds = first(closing_odds_2[market_type == "totals"]),
     .groups = "drop"
@@ -143,7 +129,13 @@ flat_odds <- clean_history_df %>%
 
 # write.csv(flat_odds,"MLB Flat Odds.csv")
 #Start of Analysis----
-flat_odds <- read.csv("MLB Flat Odds.csv")
+# flat_odds <- read.csv("MLB Flat Odds.csv") %>% 
+#     mutate(temp_home_odds = ifelse(home_team > away_team, ml_away_odds, ml_home_odds),
+#            temp_away_odds = ifelse(home_team > away_team, ml_home_odds, ml_away_odds),
+#            ml_home_odds = temp_home_odds,
+#            ml_away_odds = temp_away_odds) %>% 
+#     select(-temp_away_odds,
+#            -temp_home_odds)
 # Define the weights for each bookmaker to create consensus total line
 book_weights <- tibble::tibble(
   bookmaker_key = c(
@@ -178,9 +170,9 @@ clean_flat_odds <- flat_odds %>%
     between(
       prob_home, quantile(prob_home, 0.10, na.rm = TRUE), quantile(prob_home, 0.90, na.rm = TRUE) # removing moneyline outliers
     ),
-      between(
-        prob_over, quantile(prob_over, 0.10, na.rm = TRUE), quantile(prob_over, 0.90, na.rm = TRUE) # removing total outliers
-      ))
+    between(
+      prob_over, quantile(prob_over, 0.10, na.rm = TRUE), quantile(prob_over, 0.90, na.rm = TRUE) # removing total outliers
+    ))
 consensus_ml <- clean_flat_odds %>% 
   group_by(id,commence_time) %>% 
   summarize(
@@ -191,7 +183,7 @@ consensus_ml <- clean_flat_odds %>%
   ) %>%
   ungroup()
 
- consensus_over <- clean_flat_odds %>% 
+consensus_over <- clean_flat_odds %>% 
   group_by(id,total_line) %>% 
   mutate(total_weight = sum(weight, na.rm = T)) %>% 
   ungroup() %>% 
