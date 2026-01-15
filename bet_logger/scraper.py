@@ -268,8 +268,8 @@ def scrape_wagerzon(days_back: int = 7) -> list:
         raise ValueError("WAGERZON_USERNAME and WAGERZON_PASSWORD must be set in .env file")
 
     with sync_playwright() as p:
-        # Launch browser (headless=False to see what's happening during setup)
-        browser = p.chromium.launch(headless=False)
+        # Launch browser in headless mode by default
+        browser = p.chromium.launch(headless=True)
         context = browser.new_context()
         page = context.new_page()
 
@@ -363,8 +363,6 @@ def scrape_wagerzon(days_back: int = 7) -> list:
         except:
             pass  # Continue anyway and see what we get
 
-        page.screenshot(path="/Users/callancapitolo/bet_logger/debug_screenshot.png")
-        print("Saved debug screenshot to debug_screenshot.png")
 
         # Wait for the table to load
         try:
@@ -440,3 +438,5 @@ if __name__ == "__main__":
         # Import and use sheets module
         from sheets import append_bets_to_sheet
         append_bets_to_sheet(bets)
+
+    sys.exit(0)

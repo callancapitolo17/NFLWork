@@ -11,12 +11,11 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
-# Only import playwright when needed (not for --test mode)
-if "--test" not in sys.argv:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        sync_playwright = None
+# Playwright import
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:
+    sync_playwright = None
 
 from sheets import append_bets_to_sheet
 
@@ -330,224 +329,127 @@ def parse_bets_from_html(html_content: str) -> list:
     return bets
 
 
-def scrape_hoop88(weeks_back: int = 1) -> list:
+def scrape_hoop88(weeks_back: int = 1, headless: bool = True) -> list:
     """
     Log into Hoop88 and scrape bet history.
-    
+
     Args:
         weeks_back: Number of weeks back to fetch (0=This Week, 1=Last Week, etc.)
-    
+        headless: Run browser in headless mode (no visible window)
+
     Returns:
         List of parsed bet dictionaries
     """
-    import time
-    
     if not HOOP88_USERNAME or not HOOP88_PASSWORD:
         raise ValueError("HOOP88_USERNAME and HOOP88_PASSWORD must be set in .env file")
-    
+
     with sync_playwright() as p:
-        # Launch browser with larger viewport for better element visibility
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(headless=headless)
         context = browser.new_context(viewport={'width': 1920, 'height': 1080})
         page = context.new_page()
-        
-        # Navigate directly to the sports/history page
+
         print(f"Navigating to {HOOP88_URL}...")
-        page.goto(HOOP88_URL)
-        page.wait_for_load_state('domcontentloaded')
-        time.sleep(2)
-        
-        # Check if login form is present - if so, we need to log in
+        page.goto(HOOP88_URL, wait_until='networkidle')
+
+        # Check if login form is present
         print("Checking login status...")
-        login_needed = False
-        
-        try:
-            # Wait briefly for page to stabilize
-            page.wait_for_timeout(2000)
-            
-            username_field = page.locator('input[name="customerID"]')
-            if username_field.count() > 0 and username_field.is_visible():
-                login_needed = True
-        except:
-            pass
-        
+        username_field = page.locator('input[name="customerID"]')
+        login_needed = username_field.count() > 0 and username_field.is_visible()
+
         if login_needed:
-            print("Login form found, logging in...")
+            print("Logging in...")
             try:
-                # Fill login credentials
                 page.fill('input[name="customerID"]', HOOP88_USERNAME)
                 page.fill('input[name="Password"]', HOOP88_PASSWORD)
-                
-                # Click login button
                 page.click('button[data-action="login"]')
-                
-                # Wait for login to complete - look for a logged-in indicator
-                print("Waiting for login to complete...")
-                
-                # Wait for login form to disappear (indicates successful login)
-                try:
-                    page.wait_for_selector('input[name="customerID"]', state='hidden', timeout=15000)
-                    print("Login form hidden - login successful")
-                except:
-                    # Alternative: wait for Balance box to appear
-                    print("Waiting for Balance box to confirm login...")
-                
-                # Give page time to fully load after login
+                page.wait_for_selector('input[name="customerID"]', state='hidden', timeout=15000)
                 page.wait_for_load_state('networkidle')
-                time.sleep(3)
-                
-                print("Login completed")
-                page.screenshot(path="/Users/callancapitolo/NFLWork/bet_logger/debug_after_login.png")
-                
+                page.wait_for_timeout(1500)  # Brief pause for page to stabilize after login
+                print("✅ Login successful")
             except Exception as e:
                 print(f"Auto-login failed: {e}")
-                print("Please log in manually in the browser window...")
-                print("You have 60 seconds to log in.")
-                time.sleep(60)
+                if not headless:
+                    print("Please log in manually (30 seconds)...")
+                    page.wait_for_selector('input[name="customerID"]', state='hidden', timeout=30000)
+                else:
+                    raise RuntimeError("Login failed in headless mode")
         else:
-            print("Already logged in or no login form found")
-        
-        # Debug: print current URL
-        print(f"Current URL: {page.url}")
-        
-        # Now wait for and click the Balance box
-        print("Looking for Balance box...")
-        balance_clicked = False
-        
-        # Give page a moment to stabilize
-        time.sleep(2)
-        
-        # Try to click the Balance box
+            print("Already logged in")
+
+        # Click the Balance box to open bet history
+        print("Opening bet history...")
         try:
-            balance_selector = 'div[data-action="get-figure"]'
-            balance_box = page.locator(balance_selector)
-            count = balance_box.count()
-            print(f"Found {count} Balance box(es)")
-            
-            if count > 0:
-                # Take screenshot before click
-                page.screenshot(path="/Users/callancapitolo/NFLWork/bet_logger/debug_before_balance_click.png")
-                
-                # Use JavaScript click directly - most reliable method
-                print("Clicking Balance box via JavaScript...")
-                page.evaluate('document.querySelector(\'div[data-action="get-figure"]\').click()')
-                print("✅ Clicked Balance box via JavaScript")
-                balance_clicked = True
-                
-                # Wait for content to load
-                page.wait_for_load_state('networkidle')
-                time.sleep(2)
-            else:
-                print("No Balance box found")
-                
-        except Exception as e:
-            print(f"Balance box click failed: {e}")
-        
-        if not balance_clicked:
-            print("Could not click Balance box automatically")
-            print("Please click on the Balance box manually...")
-            print("You have 30 seconds to navigate to bet history.")
-            try:
-                page.screenshot(path="/Users/callancapitolo/NFLWork/bet_logger/debug_balance_not_found.png")
-            except:
-                pass
-            time.sleep(30)
-        
-        # Take screenshot to see current state after Balance click
-        page.screenshot(path="/Users/callancapitolo/NFLWork/bet_logger/debug_after_balance_click.png")
-        print(f"Current URL after Balance click: {page.url}")
-        
-        # Wait for the week dropdown to appear and select the desired week
-        print(f"Looking for week dropdown to select week {weeks_back}...")
-        try:
-            # Wait for the dropdown to be visible with longer timeout
-            page.wait_for_selector('select[data-list="week"]', state='visible', timeout=15000)
-            
-            dropdown = page.locator('select[data-list="week"]')
-            print(f"Found dropdown, selecting week {weeks_back}...")
-            
-            # Select the option by value
-            dropdown.select_option(value=str(weeks_back))
-            
-            # Wait for table to reload after selection
+            page.evaluate('document.querySelector(\'div[data-action="get-figure"]\').click()')
             page.wait_for_load_state('networkidle')
-            time.sleep(2)
-            print(f"✅ Filter applied: {'This Week' if weeks_back == 0 else 'Last Week' if weeks_back == 1 else f'{weeks_back} Weeks ago'}")
+            page.wait_for_timeout(1000)
+            print("✅ Opened bet history")
         except Exception as e:
-            print(f"Could not find or change week filter: {e}")
-            print("Continuing with current selection...")
-        
-        # Now click on the week row to expand and show bet details
-        # The week total has data-index="10" and data-trigger="true"
-        print("Clicking on Week column to expand bet details...")
-        try:
-            # Wait a moment for the week data to load
-            time.sleep(1)
-            
-            # Find the Week column trigger - it has data-index="10" and data-trigger="true"
-            week_trigger = page.locator('span[data-index="10"][data-trigger="true"]')
-            count = week_trigger.count()
-            print(f"Found {count} Week trigger(s) with data-index='10'")
-            
-            if count > 0:
-                # Click via JavaScript for reliability
-                page.evaluate('document.querySelector(\'span[data-index="10"][data-trigger="true"]\').click()')
-                print("✅ Clicked Week column to expand bets")
-                
-                # Wait for bet rows to load
-                page.wait_for_load_state('networkidle')
-                time.sleep(2)
+            if not headless:
+                print(f"Could not click Balance box: {e}")
+                print("Please navigate to bet history manually (15 seconds)...")
+                page.wait_for_timeout(15000)
             else:
-                print("No Week trigger found with data-index='10', trying alternative...")
-                # Fallback: find the span after "Week" responsive-field
-                page.evaluate('''
-                    const weekSpans = document.querySelectorAll('span[data-trigger="true"]');
-                    for (const span of weekSpans) {
-                        const prevSibling = span.previousElementSibling;
-                        if (prevSibling && prevSibling.textContent.includes('Week')) {
-                            span.click();
-                            break;
-                        }
-                    }
-                ''')
-                time.sleep(2)
+                raise RuntimeError(f"Could not open bet history in headless mode: {e}")
+
+        # Select the desired week
+        print(f"Selecting week {weeks_back}...")
+        try:
+            dropdown = page.locator('select[data-list="week"]')
+            dropdown.wait_for(state='attached', timeout=10000)
+            dropdown.select_option(value=str(weeks_back))
+            page.wait_for_load_state('networkidle')
+            week_label = 'This Week' if weeks_back == 0 else 'Last Week' if weeks_back == 1 else f'{weeks_back} Weeks ago'
+            print(f"✅ Selected: {week_label}")
         except Exception as e:
-            print(f"Could not click Week column: {e}")
-        
+            print(f"Could not change week filter: {e}")
+
+        # Wait for the weekly figures table to load (contains Carry, Mon, Tue, etc.)
+        print("Waiting for weekly figures to load...")
+        try:
+            # Wait for the "Week" row to appear in the table
+            page.wait_for_selector('text=Week', timeout=15000)
+            page.wait_for_timeout(1000)  # Brief pause after table loads
+            print("✅ Weekly figures loaded")
+        except Exception as e:
+            print(f"Warning: Could not confirm table loaded: {e}")
+
+        # Click on Week value (data-index="10") to expand bet details
+        print("Expanding bet details...")
+        try:
+            page.evaluate('document.querySelector(\'span[data-trigger="true"][data-index="10"]\').click()')
+            page.wait_for_load_state('networkidle')
+            page.wait_for_timeout(2000)
+            print("✅ Expanded bet details")
+        except Exception as e:
+            print(f"Could not expand bet details: {e}")
+
         # Wait for bet rows to load
-        print("Waiting for bet data to load...")
+        print("Loading bet data...")
         try:
-            page.wait_for_selector('#DataTables_Table_0 tbody tr[data-ticket]', timeout=15000)
-            print("✅ Found bet rows in table")
+            page.wait_for_selector('tr[data-ticket]', timeout=15000)
+            print("✅ Bet data loaded")
         except:
-            print("Warning: No bet rows found or timeout waiting for data")
-        
-        # Take final debug screenshot
-        page.screenshot(path="/Users/callancapitolo/NFLWork/bet_logger/debug_hoop88.png")
-        print("Saved debug screenshot to debug_hoop88.png")
-        
-        # Get the table HTML using the specific table ID
-        try:
-            # Use the specific table ID from the HTML you provided
-            table_html = page.locator('#DataTables_Table_0').evaluate('el => el.outerHTML')
-            print("Successfully grabbed table HTML")
-        except Exception as e:
-            print(f"Error getting table with ID: {e}")
-            # Fallback: try getting tbody directly with more specific selector
+            print("Warning: No bet rows found")
+
+        # Get the table HTML
+        table_html = None
+        for selector in ['#DataTables_Table_0', 'table.dataTable', 'table:has(tr[data-ticket])']:
             try:
-                table_html = page.locator('table.dataTable tbody').first.evaluate('el => el.outerHTML')
-                print("Used fallback selector for table")
-            except Exception as e2:
-                print(f"Fallback also failed: {e2}")
-                browser.close()
-                return []
-        
+                locator = page.locator(selector)
+                if locator.count() > 0:
+                    table_html = locator.first.evaluate('el => el.outerHTML')
+                    break
+            except:
+                continue
+
+        if not table_html:
+            print("❌ Could not get table HTML")
+            page.screenshot(path="debug_hoop88_error.png")
+            browser.close()
+            return []
+
         browser.close()
-        
-        # Parse the bets
-        bets = parse_bets_from_html(table_html)
-        
-        return bets
+        return parse_bets_from_html(table_html)
 
 
 def scrape_from_file(filepath: str) -> list:
@@ -559,18 +461,24 @@ def scrape_from_file(filepath: str) -> list:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--test":
-        # Test mode: parse from a saved HTML file
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Scrape bet history from Hoop88')
+    parser.add_argument('--test', action='store_true', help='Parse from saved HTML file instead of live scrape')
+    parser.add_argument('--weeks', type=int, default=1, help='Weeks back to fetch (0=This Week, 1=Last Week, default: 1)')
+    parser.add_argument('--visible', action='store_true', help='Show browser window (default is headless)')
+    parser.add_argument('--dry-run', action='store_true', help='Scrape but do not upload to Google Sheets')
+    args = parser.parse_args()
+
+    if args.test:
         print("TEST MODE: Parsing from saved HTML file")
         test_file = "hoop88_test.html"
-        
+
         if not os.path.exists(test_file):
             print(f"Error: {test_file} not found")
-            print("Save the bet history HTML to this file and try again")
             sys.exit(1)
-        
+
         bets = scrape_from_file(test_file)
-        
         print(f"\nParsed {len(bets)} bets:")
         for i, bet in enumerate(bets, 1):
             print(f"\n{i}. {bet['date']} - {bet['bet_type']}")
@@ -581,24 +489,21 @@ if __name__ == "__main__":
             print(f"   Amount: ${bet['bet_amount']:.2f}")
             print(f"   Result: {bet['result']}")
     else:
-        # Live scrape mode
         print("=" * 60)
         print("HOOP88 BET HISTORY SCRAPER")
         print("=" * 60)
-        
+
         try:
-            # Scrape bets from Hoop88 (default: last week)
-            bets = scrape_hoop88(weeks_back=1)
-            
+            bets = scrape_hoop88(weeks_back=args.weeks, headless=not args.visible)
+
             print(f"\n{'=' * 60}")
             print(f"Successfully scraped {len(bets)} bets from Hoop88")
             print(f"{'=' * 60}\n")
-            
-            if bets:
-                # Upload to Google Sheets
+
+            if bets and not args.dry_run:
                 print("Uploading to Google Sheets...")
                 result = append_bets_to_sheet(bets)
-                
+
                 if result['status'] == 'success':
                     print(f"\n✅ SUCCESS! Added {result['rows_added']} new bets to sheet")
                     print(f"   Rows {result['start_row']} to {result['end_row']}")
@@ -606,11 +511,15 @@ if __name__ == "__main__":
                     print(f"\n⚠️  {result['message']}")
                 else:
                     print(f"\n❌ Error uploading to sheets: {result.get('message', 'Unknown error')}")
+            elif args.dry_run:
+                print("Dry run - skipping upload to Google Sheets")
             else:
                 print("No bets found to upload")
-                
+
         except Exception as e:
             print(f"\n❌ Error: {e}")
             import traceback
             traceback.print_exc()
             sys.exit(1)
+
+    sys.exit(0)
