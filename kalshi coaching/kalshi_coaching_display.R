@@ -9,11 +9,19 @@ library(scales)
 # Path to DuckDB file (created by Python script)
 db_path <- "kalshi coaching/kalshi_coaching.duckdb"
 
-# Function to load latest odds from DuckDB
+# Function to load latest odds from DuckDB with change from previous snapshot
 load_latest_odds <- function(db_path) {
   con <- dbConnect(duckdb(), db_path, read_only = TRUE)
 
-  # Get the most recent fetch for each team/candidate
+  # Get the two most recent fetch times
+  fetch_times <- dbGetQuery(con, "
+    SELECT DISTINCT fetch_time
+    FROM coaching_odds
+    ORDER BY fetch_time DESC
+    LIMIT 2
+  ")
+
+  # Get latest odds
   latest_odds <- dbGetQuery(con, "
     WITH latest_fetch AS (
       SELECT MAX(fetch_time) as max_time
@@ -32,6 +40,27 @@ load_latest_odds <- function(db_path) {
     WHERE fetch_time = (SELECT max_time FROM latest_fetch)
     ORDER BY team, last_price DESC
   ")
+
+  # Get previous odds if we have more than one snapshot
+  if (nrow(fetch_times) >= 2) {
+    prev_time <- fetch_times$fetch_time[2]
+    previous_odds <- dbGetQuery(con, sprintf("
+      SELECT
+        team,
+        candidate,
+        last_price as prev_price
+      FROM coaching_odds
+      WHERE fetch_time = '%s'
+    ", prev_time))
+
+    # Join to calculate change
+    latest_odds <- latest_odds %>%
+      left_join(previous_odds, by = c("team", "candidate")) %>%
+      mutate(price_change = last_price - coalesce(prev_price, last_price))
+  } else {
+    latest_odds$prev_price <- NA
+    latest_odds$price_change <- 0
+  }
 
   # Get snapshot count
   snapshot_info <- dbGetQuery(con, "
@@ -94,7 +123,8 @@ create_team_table <- function(df, team_name) {
 create_summary_table <- function(df) {
   df %>%
     group_by(team) %>%
-    slice_max(last_price, n = 3) %>%
+    arrange(desc(last_price), desc(volume), .by_group = TRUE) %>%
+    slice_head(n = 5) %>%
     mutate(rank = row_number()) %>%
     ungroup() %>%
     select(team, rank, candidate, last_price, volume) %>%
@@ -106,10 +136,10 @@ create_summary_table <- function(df) {
     gt() %>%
     tab_header(
       title = "NFL Coaching Carousel - Kalshi Odds",
-      subtitle = paste("Top 3 candidates per team | Updated:", Sys.time())
+      subtitle = paste("Top 5 candidates per team | Updated:", Sys.time())
     ) %>%
     tab_spanner(
-      label = "Favorite",
+      label = "1st",
       columns = ends_with("_1")
     ) %>%
     tab_spanner(
@@ -120,11 +150,21 @@ create_summary_table <- function(df) {
       label = "3rd",
       columns = ends_with("_3")
     ) %>%
+    tab_spanner(
+      label = "4th",
+      columns = ends_with("_4")
+    ) %>%
+    tab_spanner(
+      label = "5th",
+      columns = ends_with("_5")
+    ) %>%
     cols_label(
       team = "Team",
       candidate_1 = "Name", last_price_1 = "%", volume_1 = "Vol",
       candidate_2 = "Name", last_price_2 = "%", volume_2 = "Vol",
-      candidate_3 = "Name", last_price_3 = "%", volume_3 = "Vol"
+      candidate_3 = "Name", last_price_3 = "%", volume_3 = "Vol",
+      candidate_4 = "Name", last_price_4 = "%", volume_4 = "Vol",
+      candidate_5 = "Name", last_price_5 = "%", volume_5 = "Vol"
     ) %>%
     fmt_number(
       columns = starts_with("volume"),
@@ -208,7 +248,7 @@ create_coaching_heatmap <- function(df, min_prob = 5) {
     ) +
     theme_minimal(base_size = 11) +
     theme(
-      axis.text.x = element_text(angle = 45, hjust = 0, vjust = 0.5, size = 9),
+      axis.text.x = element_text(angle = 75, hjust = 0, vjust = 0.5, size = 9),
       axis.text.y = element_text(size = 9),
       panel.grid = element_blank(),
       legend.position = "right",
@@ -266,8 +306,8 @@ create_coaching_heatmap_v2 <- function(df, min_prob = 5) {
     ) +
     theme_minimal(base_size = 11) +
     theme(
-      axis.text.x = element_text(angle = 45, hjust = 0, vjust = 0.5, size = 10, face = "bold"),
-      axis.text.y = element_text(size = 9),
+      axis.text.x = element_text(angle = 0, size = 12, face = "bold"),
+      axis.text.y = element_text(size = 12),
       panel.grid = element_blank(),
       legend.position = "right",
       plot.title = element_text(face = "bold", size = 16),
@@ -286,10 +326,23 @@ odds <- load_latest_odds(db_path)
 cat("Loaded", nrow(odds), "coaching odds records\n")
 cat("Teams:", paste(unique(odds$team), collapse = ", "), "\n\n")
 
-# Create and display the heatmap
+# Create the heatmap
 heatmap_plot <- create_coaching_heatmap_v2(odds, min_prob = 8)
-print(heatmap_plot)
 
-# Uncomment below to also show the gt summary table:
-# summary_table <- create_summary_table(odds)
-# print(summary_table)
+# Create the gt summary table
+summary_table <- create_summary_table(odds)
+
+# Check if running from command line (non-interactive) - save to files
+if (!interactive()) {
+  # Save heatmap as PNG
+  ggsave("kalshi coaching/heatmap.png", heatmap_plot, width = 14, height = 10, dpi = 150)
+  cat("Saved heatmap to kalshi coaching/heatmap.png\n")
+
+  # Save gt table as HTML
+  gtsave(summary_table, "kalshi coaching/table.html")
+  cat("Saved table to kalshi coaching/table.html\n")
+} else {
+  # Interactive mode (RStudio) - display plots
+  print(heatmap_plot)
+  print(summary_table)
+}

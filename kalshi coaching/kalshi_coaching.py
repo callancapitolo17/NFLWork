@@ -8,6 +8,7 @@ Run with: ./venv/bin/python kalshi_coaching.py
 import urllib.request
 import json
 import duckdb
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -122,7 +123,9 @@ def fetch_all_coaching_odds() -> list:
     all_odds = []
     fetch_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-    for series in NFL_COACHING_SERIES:
+    for i, series in enumerate(NFL_COACHING_SERIES):
+        if i > 0:
+            time.sleep(0.1)  # Small delay to avoid rate limiting
         print(f"Fetching {series}...")
         markets = fetch_markets_for_series(series)
 
