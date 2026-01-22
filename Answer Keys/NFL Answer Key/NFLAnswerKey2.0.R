@@ -18,9 +18,11 @@ library(data.table)
 con <- dbConnect(duckdb(), dbdir = "pbp.duckdb") 
 
 betting_20_plus <- dbGetQuery(con,"select * from nfl_betting_pbp")
-pre_20 <- dbGetQuery(con,"select * from nfl_pre_20_betting_history")
+pre_20 <- dbGetQuery(con,"select * from nfl_pre_20_betting_history") %>%
+  # Pre-2020 data has 'spread' column, rename to match 2020+ data
+  rename(home_spread = "spread")
 
-DT <- bind_rows(betting_20_plus,pre_20) %>%
+DT <- bind_rows(betting_20_plus, pre_20) %>%
   rename(
     home_spread_odds = "consensus_devig_home_odds",
     away_spread_odds = "consensus_devig_away_odds",
@@ -28,7 +30,7 @@ DT <- bind_rows(betting_20_plus,pre_20) %>%
     under_odds = "consensus_devig_under_odds"
   ) %>%
   mutate(actual_over = ifelse(total_final_score > total_line, 1, 0),
-         actual_cover = ifelse(home_margin > -home_spread, 1, 0)) %>% 
+         actual_cover = ifelse(home_margin > -home_spread, 1, 0)) %>%
   as.data.table()
 
 

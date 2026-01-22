@@ -155,6 +155,103 @@ def parse_risk_win(risk_win_text: str) -> tuple:
     return 0.0, 0.0
 
 
+def parse_contest_bet(row) -> dict:
+    """Parse a type-C contest/props bet which has a different HTML structure."""
+    try:
+        # Contest bets have the description in span.font-normal
+        font_normal = row.find('span', class_='font-normal')
+        if not font_normal:
+            return None
+
+        description = font_normal.get_text(strip=True)
+
+        # The header-bet is inside content-descripcion for type-C bets
+        content_desc = row.find('div', class_='content-descripcion')
+        if not content_desc:
+            return None
+
+        header_bet = content_desc.find('div', class_='header-bet')
+        if not header_bet:
+            return None
+
+        # Extract key information
+        risk_win_text = ''
+        accepted_date = ''
+        status_text = ''
+
+        for ln_div in header_bet.find_all('div', class_='ln'):
+            d_l = ln_div.find('div', class_='d-l')
+            d_r = ln_div.find('div', class_='d-r')
+
+            if d_l and d_r:
+                label = d_l.get_text(strip=True)
+                value = d_r.get_text(strip=True)
+
+                if label == 'Risk/Win':
+                    risk_win_text = value
+                elif label == 'Accepted':
+                    accepted_date = value
+                elif label == 'Status':
+                    status_text = value
+
+        risk, win = parse_risk_win(risk_win_text)
+        date = parse_date(accepted_date)
+
+        # Determine result from status text or wager-status class
+        final_result = None
+        if 'lost' in status_text.lower():
+            final_result = 'loss'
+        elif 'win' in status_text.lower() or 'won' in status_text.lower():
+            final_result = 'win'
+        elif 'push' in status_text.lower() or 'cancel' in status_text.lower():
+            final_result = 'push'
+
+        # Fallback to wager-status class in the amount cell
+        if not final_result:
+            result_cell = row.find('td', class_='to-risk')
+            if result_cell:
+                status_span = result_cell.find('span', class_=re.compile(r'wager-status-'))
+                if status_span:
+                    for cls in status_span.get('class', []):
+                        if 'wager-status-W' in cls:
+                            final_result = 'win'
+                            break
+                        elif 'wager-status-L' in cls:
+                            final_result = 'loss'
+                            break
+                        elif 'wager-status-X' in cls:
+                            final_result = 'push'
+                            break
+
+        # Detect sport from description
+        sport = parse_sport(description, '')
+
+        # Calculate decimal odds from risk/win
+        if risk > 0 and win > 0:
+            american_odds = int(round((win / risk) * 100))
+        else:
+            american_odds = 0
+
+        decimal_odds = calculate_decimal_odds_from_american(american_odds)
+
+        return {
+            'date': date,
+            'platform': 'Hoop88',
+            'sport': sport,
+            'description': description,
+            'bet_type': 'Contest',
+            'line': '',
+            'odds': american_odds,
+            'bet_amount': risk,
+            'dec': decimal_odds,
+            'result': final_result or ''
+        }
+
+    except Exception as e:
+        print(f"  ✗ Error parsing contest bet: {e}")
+        return None
+
+
 def parse_bets_from_html(html_content: str) -> list:
     """Parse bet data from Hoop88 HTML."""
     soup = BeautifulSoup(html_content, 'html.parser')
@@ -173,12 +270,20 @@ def parse_bets_from_html(html_content: str) -> list:
         try:
             ticket_num = row.get('data-ticket', '')
             bet_data_type = row.get('data-type', '')
-            
+
+            # Handle type-C bets (contest/props bets) differently
+            if bet_data_type == 'C':
+                bet = parse_contest_bet(row)
+                if bet:
+                    bets.append(bet)
+                    print(f"  ✓ {bet['date']} - {bet['bet_type']} - {bet['description'][:60]}... - ${bet['bet_amount']:.2f}")
+                continue
+
             # Find the type label
             type_label_elem = row.find('label', class_='type-magic')
             type_label = type_label_elem.get_text(strip=True) if type_label_elem else ''
             bet_type = parse_bet_type(type_label)
-            
+
             # Find header bet info
             header_bet = row.find('div', class_='header-bet')
             if not header_bet:
@@ -222,53 +327,80 @@ def parse_bets_from_html(html_content: str) -> list:
             
             # For parlays with multiple legs, we'll create one combined description
             leg_descriptions = []
-            all_odds = []
-            final_result = None
-            
+            leg_data = []  # Track odds and result for each leg
+
             for wager_simple in wager_simples:
                 # Extract team name
                 choosen = wager_simple.find('span', class_='choosen')
                 team_name = choosen.get_text(strip=True) if choosen else ''
-                
+
                 # Extract line and odds
                 line_selected = wager_simple.find('span', class_='line-selected')
                 line_text = line_selected.get_text(strip=True) if line_selected else ''
-                
+
                 # Extract period
                 period_desc = wager_simple.find('span', class_='period-description-s')
                 period = period_desc.get_text(strip=True) if period_desc else ''
-                
+
                 # Extract status
                 status_span = wager_simple.find('span', class_=re.compile(r'status-'))
                 leg_result = status_span.get_text(strip=True) if status_span else ''
-                
+
                 # Parse odds from line
                 odds = calculate_american_odds_from_line(line_text)
-                all_odds.append(odds)
-                
+                decimal_odds = calculate_decimal_odds_from_american(odds)
+
+                leg_data.append({
+                    'result': leg_result,
+                    'american_odds': odds,
+                    'decimal_odds': decimal_odds
+                })
+
                 # Build leg description
                 line_value = parse_line(line_text, period)
                 leg_desc = clean_description(team_name, line_text, period)
                 leg_descriptions.append(leg_desc)
-                
-                # Track result - if any leg loses, parlay loses
-                if leg_result == 'L':
-                    final_result = 'loss'
-                elif leg_result == 'X' and final_result != 'loss':
-                    final_result = 'push'
-                elif leg_result == 'W' and final_result is None:
-                    final_result = 'win'
+
+            # Extract results for determining outcome
+            leg_results = [leg['result'] for leg in leg_data]
+
+            # Determine parlay result from leg results:
+            # - If ANY leg loses -> parlay loses
+            # - If ALL legs push -> parlay pushes
+            # - If some legs win and others push (no losses) -> parlay wins (at reduced odds)
+            # - If ALL legs win -> parlay wins
+            if 'L' in leg_results:
+                final_result = 'loss'
+            elif all(r == 'X' for r in leg_results):
+                final_result = 'push'
+            elif all(r in ('W', 'X') for r in leg_results) and 'W' in leg_results:
+                final_result = 'win'
+            else:
+                final_result = None
             
             # Combine all legs into description
             description = ' | '.join(leg_descriptions)
-            
-            # For parlay, calculate combined odds from risk/win
-            if bet_type == 'Parlay' and risk > 0:
-                # Calculate from potential win
+
+            # Calculate odds - for parlays with pushed legs, recalculate from winning legs only
+            has_push = 'X' in leg_results
+            if bet_type == 'Parlay' and has_push and final_result == 'win':
+                # Multiply decimal odds of only the winning legs (exclude pushed legs)
+                combined_decimal = 1.0
+                for leg in leg_data:
+                    if leg['result'] == 'W':
+                        combined_decimal *= leg['decimal_odds']
+                decimal_odds = combined_decimal
+                # Convert back to American odds
+                if decimal_odds >= 2.0:
+                    american_odds = int(round((decimal_odds - 1) * 100))
+                else:
+                    american_odds = int(round(-100 / (decimal_odds - 1)))
+            elif bet_type == 'Parlay' and risk > 0:
+                # Calculate from potential win (original parlay odds)
                 american_odds = int(round((win / risk) * 100))
             else:
                 # For straight bets, use the single leg odds
-                american_odds = all_odds[0] if all_odds else 0
+                american_odds = leg_data[0]['american_odds'] if leg_data else 0
             
             # Determine final result for the entire bet from the wager-status class
             result_cell = row.find('td', class_='to-risk')
@@ -299,10 +431,16 @@ def parse_bets_from_html(html_content: str) -> list:
                     elif '$0' in result_text:
                         final_result = 'push'
             
-            decimal_odds = calculate_decimal_odds_from_american(american_odds)
-            
+            # Only recalculate decimal_odds if we didn't already set it for pushed parlays
+            if not (bet_type == 'Parlay' and has_push and final_result == 'win'):
+                decimal_odds = calculate_decimal_odds_from_american(american_odds)
+
             # Extract line for the sheet (first leg's line)
-            first_line = parse_line(wager_simples[0].find('span', class_='line-selected').get_text(strip=True), '') if wager_simples else ''
+            first_line = ''
+            if wager_simples:
+                first_line_elem = wager_simples[0].find('span', class_='line-selected')
+                if first_line_elem:
+                    first_line = parse_line(first_line_elem.get_text(strip=True), '')
             
             bet = {
                 'date': date,

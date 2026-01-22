@@ -16,7 +16,7 @@ load_latest_odds <- function(db_path) {
   # Get the two most recent fetch times
   fetch_times <- dbGetQuery(con, "
     SELECT DISTINCT fetch_time
-    FROM coaching_odds
+    FROM coaching_odds_v2
     ORDER BY fetch_time DESC
     LIMIT 2
   ")
@@ -25,18 +25,20 @@ load_latest_odds <- function(db_path) {
   latest_odds <- dbGetQuery(con, "
     WITH latest_fetch AS (
       SELECT MAX(fetch_time) as max_time
-      FROM coaching_odds
+      FROM coaching_odds_v2
     )
     SELECT
       team,
       candidate,
       yes_bid,
       yes_ask,
+      no_bid,
+      no_ask,
       last_price,
       volume,
       liquidity,
       fetch_time
-    FROM coaching_odds
+    FROM coaching_odds_v2
     WHERE fetch_time = (SELECT max_time FROM latest_fetch)
     ORDER BY team, last_price DESC
   ")
@@ -49,7 +51,7 @@ load_latest_odds <- function(db_path) {
         team,
         candidate,
         last_price as prev_price
-      FROM coaching_odds
+      FROM coaching_odds_v2
       WHERE fetch_time = '%s'
     ", prev_time))
 
@@ -67,7 +69,7 @@ load_latest_odds <- function(db_path) {
     SELECT COUNT(DISTINCT fetch_time) as snapshots,
            MIN(fetch_time) as first_fetch,
            MAX(fetch_time) as last_fetch
-    FROM coaching_odds
+    FROM coaching_odds_v2
   ")
 
   dbDisconnect(con, shutdown = TRUE)
@@ -82,7 +84,7 @@ load_latest_odds <- function(db_path) {
 create_team_table <- function(df, team_name) {
   df %>%
     filter(team == team_name) %>%
-    arrange(desc(last_price)) %>%
+    arrange(desc(yes_ask)) %>%
     head(10) %>%
     select(candidate, last_price, yes_bid, yes_ask, volume) %>%
     gt() %>%
@@ -121,71 +123,76 @@ create_team_table <- function(df, team_name) {
 
 # Function to create a summary table of top candidates per team
 create_summary_table <- function(df) {
-  df %>%
+  # Prepare data: top 10 per team, sorted by last_price then liquidity
+  table_data <- df %>%
     group_by(team) %>%
-    arrange(desc(last_price), desc(volume), .by_group = TRUE) %>%
-    slice_head(n = 5) %>%
-    mutate(rank = row_number()) %>%
+    arrange(desc(last_price), desc(liquidity), .by_group = TRUE) %>%
+    slice_head(n = 10) %>%
     ungroup() %>%
-    select(team, rank, candidate, last_price, volume) %>%
-    pivot_wider(
-      names_from = rank,
-      values_from = c(candidate, last_price, volume),
-      names_glue = "{.value}_{rank}"
+    mutate(
+      # Format name with change indicator
+      change_text = case_when(
+        price_change > 0 ~ paste0(" (+", price_change, ")"),
+        price_change < 0 ~ paste0(" (", price_change, ")"),
+        TRUE ~ ""
+      ),
+      name_with_change = paste0(candidate, change_text),
+      # Format bid/ask as combined string
+      yes_spread = paste0(yes_bid, "/", yes_ask),
+      # Format liquidity as dollars
+      liquidity_fmt = paste0("$", format(liquidity, big.mark = ",", scientific = FALSE)),
+      # Format contracts with commas
+      contracts_fmt = format(volume, big.mark = ",", scientific = FALSE)
     ) %>%
-    gt() %>%
+    select(team, name_with_change, last_price, yes_spread, liquidity_fmt, contracts_fmt, price_change)
+
+  # Create gt table grouped by team
+  table_data %>%
+    gt(groupname_col = "team") %>%
     tab_header(
       title = "NFL Coaching Carousel - Kalshi Odds",
-      subtitle = paste("Top 5 candidates per team | Updated:", Sys.time())
-    ) %>%
-    tab_spanner(
-      label = "1st",
-      columns = ends_with("_1")
-    ) %>%
-    tab_spanner(
-      label = "2nd",
-      columns = ends_with("_2")
-    ) %>%
-    tab_spanner(
-      label = "3rd",
-      columns = ends_with("_3")
-    ) %>%
-    tab_spanner(
-      label = "4th",
-      columns = ends_with("_4")
-    ) %>%
-    tab_spanner(
-      label = "5th",
-      columns = ends_with("_5")
+      subtitle = paste("Top 10 candidates per team | Updated:", format(Sys.time(), "%b %d, %Y %I:%M %p"))
     ) %>%
     cols_label(
-      team = "Team",
-      candidate_1 = "Name", last_price_1 = "%", volume_1 = "Vol",
-      candidate_2 = "Name", last_price_2 = "%", volume_2 = "Vol",
-      candidate_3 = "Name", last_price_3 = "%", volume_3 = "Vol",
-      candidate_4 = "Name", last_price_4 = "%", volume_4 = "Vol",
-      candidate_5 = "Name", last_price_5 = "%", volume_5 = "Vol"
+      name_with_change = "Candidate",
+      last_price = "Last",
+      yes_spread = "Bid/Ask",
+      liquidity_fmt = "Liquidity",
+      contracts_fmt = "Contracts Traded"
     ) %>%
-    fmt_number(
-      columns = starts_with("volume"),
-      use_seps = TRUE,
-      decimals = 0
+    cols_hide(price_change) %>%
+    # Color the candidate name based on change direction
+    tab_style(
+      style = cell_text(color = "green", weight = "bold"),
+      locations = cells_body(
+        columns = name_with_change,
+        rows = price_change > 0
+      )
     ) %>%
+    tab_style(
+      style = cell_text(color = "red", weight = "bold"),
+      locations = cells_body(
+        columns = name_with_change,
+        rows = price_change < 0
+      )
+    ) %>%
+    # Color the Last price column
     data_color(
-      columns = starts_with("last_price"),
+      columns = last_price,
       palette = c("white", "darkgreen"),
       domain = c(0, 100)
     ) %>%
     tab_options(
-      table.font.size = 11,
-      heading.title.font.size = 16,
-      heading.subtitle.font.size = 11,
-      column_labels.font.size = 10
+      table.font.size = 12,
+      heading.title.font.size = 18,
+      heading.subtitle.font.size = 12,
+      row_group.font.weight = "bold",
+      row_group.background.color = "#f0f0f0"
     )
 }
 
 # Heatmap visualization with ggplot2
-# Teams as columns, coaches as rows, color = probability, text size = volume
+# Teams as columns, coaches as rows, color = probability, text size = liquidity
 create_coaching_heatmap <- function(df, min_prob = 5) {
   # Filter to candidates with at least min_prob% chance somewhere
   top_candidates <- df %>%
@@ -202,7 +209,7 @@ create_coaching_heatmap <- function(df, min_prob = 5) {
   # Join with actual data
   plot_data <- all_combos %>%
     left_join(
-      top_candidates %>% select(candidate, team, last_price, volume),
+      top_candidates %>% select(candidate, team, last_price, liquidity),
       by = c("candidate", "team")
     )
 
@@ -219,14 +226,14 @@ create_coaching_heatmap <- function(df, min_prob = 5) {
     mutate(
       candidate = factor(candidate, levels = rev(candidate_order)),
       team = factor(team, levels = team_order),
-      vol_scaled = scales::rescale(sqrt(volume), to = c(2, 5), na.rm = TRUE)
+      liq_scaled = scales::rescale(sqrt(liquidity), to = c(2, 5), na.rm = TRUE)
     )
 
   p <- ggplot(plot_data, aes(x = team, y = candidate)) +
     geom_tile(aes(fill = last_price), color = "white", linewidth = 0.5) +
     geom_text(
       aes(label = ifelse(!is.na(last_price), paste0(last_price, "%"), ""),
-          size = vol_scaled),
+          size = liq_scaled),
       color = "white",
       fontface = "bold"
     ) +
@@ -244,7 +251,7 @@ create_coaching_heatmap <- function(df, min_prob = 5) {
       subtitle = paste("Updated:", format(Sys.time(), "%B %d, %Y %I:%M %p")),
       x = NULL,
       y = NULL,
-      caption = "Text size reflects trading volume | Source: Kalshi"
+      caption = "Text size reflects liquidity | Source: Kalshi"
     ) +
     theme_minimal(base_size = 11) +
     theme(
@@ -260,7 +267,7 @@ create_coaching_heatmap <- function(df, min_prob = 5) {
   return(p)
 }
 
-# Alternative version with viridis color scale
+# Alternative version with viridis color scale - shows bid/ask spread
 create_coaching_heatmap_v2 <- function(df, min_prob = 5) {
   top_candidates <- df %>%
     group_by(candidate) %>%
@@ -279,14 +286,15 @@ create_coaching_heatmap_v2 <- function(df, min_prob = 5) {
     mutate(
       candidate = factor(candidate, levels = rev(candidate_order)),
       team = factor(team, levels = team_order),
-      vol_scaled = scales::rescale(log1p(volume), to = c(2.5, 6), na.rm = TRUE),
-      label = paste0(last_price)
+      liq_scaled = scales::rescale(log1p(liquidity), to = c(2.5, 5), na.rm = TRUE),
+      # Show bid/ask spread
+      label = paste0(yes_bid, "/", yes_ask)
     )
 
   p <- ggplot(plot_data, aes(x = team, y = candidate)) +
     geom_tile(aes(fill = last_price), color = "white", linewidth = 0.8) +
     geom_text(
-      aes(label = label, size = vol_scaled),
+      aes(label = label, size = liq_scaled),
       color = "white",
       fontface = "bold"
     ) +
@@ -299,8 +307,8 @@ create_coaching_heatmap_v2 <- function(df, min_prob = 5) {
     scale_size_identity() +
     scale_x_discrete(position = "top") +
     labs(
-      title = "NFL Coaching Carousel - Kalshi Odds",
-      subtitle = paste("Text size = trading volume |", format(Sys.time(), "%b %d, %Y")),
+      title = "NFL Coaching Carousel - Kalshi Odds (Yes Bid/Ask)",
+      subtitle = paste("Text size = liquidity |", format(Sys.time(), "%b %d, %Y")),
       x = NULL,
       y = NULL
     ) +
