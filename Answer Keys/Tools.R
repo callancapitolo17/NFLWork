@@ -348,118 +348,45 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
   }
 }
 
-fetch_event_odds <- function(event_id, market, sport_key = "baseball_mlb") {
-  res <- GET(
-    paste0("https://api.the-odds-api.com/v4/sports/", sport_key, "/events/", event_id, "/odds"),
-    query = list(
-      apiKey     = Sys.getenv("ODDS_API_KEY"),
-      regions    = "us,us2,us_ex",
-      markets    = market,
-      oddsFormat = "american",
-      dateFormat = "iso"
-    )
-  )
-  
-  if (http_error(res)) {
-    warning(paste("Failed for event:", event_id))
-    return(tibble())
-  }
-  
-  odds_data <- fromJSON(content(res, "text"), flatten = TRUE)
-  if (is.null(odds_data) || length(odds_data) == 0) {
-    return(tibble())
-  }
-  as_tibble(odds_data)
-}
+# =============================================================================
+# ANSWER KEY CORE FUNCTIONS (New Architecture)
+# =============================================================================
 
-run_means_for_id_total <- function(id, parent_spread, parent_total, target_cover, target_over, totals, inning,
-                                   DT, ss, st, N,
-                                   max_iter_mean = 500, tol_mean = 0.005, tol_error = 3,
-                                   shrink_factor = 0.9, min_N = 50) {
-  current_N <- as.integer(N)
-
-  repeat {
-    mm <- mean_match(DT, current_N, parent_spread, parent_total, ss, st, max_iter_mean, tol_mean)
-    bal <- balance_sample(mm$dt, current_N, target_cover, target_over, tol_error)
-
-    if (bal$converged) break
-
-    current_N <- as.integer(current_N * shrink_factor)
-    if (current_N < min_N) {
-      warning(paste("balance_sample could not converge in run_means_for_id_total"))
-      break
-    }
-  }
-
-  inc_df <- bal$dt %>% filter(included == TRUE)
-
-  vals <- inc_df %>%
-    select("inning_total" = !!sym(paste0("full_game_total_inning_", inning, sep = ""))) %>%
-    pull()
-  pct_cols <- set_names(
-    map(totals, ~ sum(vals > .x, na.rm = T) / sum(vals != .x, na.rm = T)),
-    paste0("pct_over_", gsub("\\.", "_", totals))
-  )
-
-  tibble(!!!pct_cols)
-}
-
-run_means_for_id_spread <- function(id, parent_spread, parent_total, target_cover, target_over, spreads, inning,
-                                    DT, ss, st, N,
-                                    max_iter_mean = 500, tol_mean = 0.005, tol_error = 2,
-                                    shrink_factor = 0.9, min_N = 50) {
-  current_N <- as.integer(N)
-
-  repeat {
-    mm <- mean_match(DT, current_N, parent_spread, parent_total, ss, st, max_iter_mean, tol_mean)
-    bal <- balance_sample(mm$dt, current_N, target_cover, target_over, tol_error)
-
-    if (bal$converged) break
-
-    current_N <- as.integer(current_N * shrink_factor)
-    if (current_N < min_N) {
-      warning(paste("balance_sample could not converge in run_means_for_id_spread"))
-      break
-    }
-  }
-
-  inc_df <- bal$dt %>% filter(included == TRUE)
-
-  spreads <- spreads %>%
-    filter(`id` == id) %>%
-    pull(book_home_spread) %>%
-    unique()
-
-  vals <- inc_df %>%
-    select("spread" = !!sym(paste0("game_home_margin_in_", inning, sep = ""))) %>%
-    pull()
-  pct_cols <- set_names(
-    map(spreads, ~ sum(vals > -.x, na.rm = T) / sum(vals != -.x, na.rm = T)),
-    paste0("pct_home_cover_", gsub("\\.", "_", spreads))
-  )
-
-  tibble(!!!pct_cols)
-}
-
-#generates bets for moneylines
-# Per Feustel spec: if balance_sample cannot converge, restart the entire
-# procedure (mean_match + balance_sample) with a smaller N
-#
-# Returns both 2-way and 3-way probabilities from the same sample:
-# - 2-way: home_wins / (home_wins + away_wins), excludes ties
-# - 3-way: home_wins / n, away_wins / n, ties / n, includes ties
-run_means_for_id <- function(id, parent_spread, parent_total, target_cover, target_over,
-                             DT, ss, st, N,
-                             max_iter_mean = 500, tol_mean = 0.005, tol_error = 1,
-                             use_spread_line = FALSE,
-                             margin_col = "game_home_margin_in",
-                             shrink_factor = 0.9,
-                             min_N = 50) {
-
+#' Run Answer Key sampling algorithm once per game
+#'
+#' This is the core function that runs mean_match + balance_sample to select
+#' a balanced historical sample. The returned sample can then be used to
+#' generate predictions for multiple market types (moneylines, spreads, totals).
+#'
+#' @param id Game identifier
+#' @param parent_spread Target spread (or moneyline probability if use_spread_line=FALSE)
+#' @param parent_total Target total line
+#' @param target_cover Target cover rate (0.0-1.0)
+#' @param target_over Target over rate (0.0-1.0)
+#' @param DT Historical data table with game outcomes
+#' @param ss Spread/probability standard deviation for distance weighting
+#' @param st Total line standard deviation for distance weighting
+#' @param N Target sample size
+#' @param use_spread_line If TRUE, match on spread line; if FALSE, match on moneyline probability
+#' @return List containing: sample (data frame), final_N, cover_error, over_error, converged, metadata
+run_answer_key_sample <- function(
+    id,
+    parent_spread,
+    parent_total,
+    target_cover,
+    target_over,
+    DT, ss, st, N,
+    max_iter_mean = 500,
+    tol_mean = 0.005,
+    tol_error = 1,
+    use_spread_line = FALSE,
+    shrink_factor = 0.9,
+    min_N = 50
+) {
   # Defensive: ensure N is valid
   N <- as.integer(N)
   if (is.na(N) || N <= 0) {
-    stop(paste("Invalid N in run_means_for_id. N =", N))
+    stop(paste("Invalid N in run_answer_key_sample. N =", N))
   }
 
   current_N <- N
@@ -489,30 +416,145 @@ run_means_for_id <- function(id, parent_spread, parent_total, target_cover, targ
     }
   }
 
-  inc_df <- bal$dt %>% filter(included == TRUE)
+  # Return the balanced sample with metadata
+  list(
+    sample = bal$dt[bal$dt$included == TRUE, ],
+    final_N = sum(bal$dt$included),
+    cover_error = bal$cover_error,
+    over_error = bal$over_error,
+    converged = bal$converged,
+    metadata = list(
+      id = id,
+      parent_spread = parent_spread,
+      parent_total = parent_total,
+      target_cover = target_cover,
+      target_over = target_over
+    )
+  )
+}
+
+#' Generate moneyline predictions from a balanced sample
+#'
+#' @param sample Data frame of selected games from run_answer_key_sample()
+#' @param margin_col Column name prefix for margin columns (e.g., "game_home_margin_period")
+#' @return Tibble with 2-way and 3-way probabilities for each period
+predict_moneyline_from_sample <- function(
+    sample,
+    margin_col = "game_home_margin_period"
+) {
+  n_games <- nrow(sample)
 
   # 2-way probabilities (excludes ties): home_wins / (home_wins + away_wins)
-  probs_2way <- inc_df %>%
-    summarise(across(starts_with(margin_col), ~ sum(.x > 0, na.rm = TRUE) / sum(.x != 0, na.rm = TRUE))) %>%
+  probs_2way <- sample %>%
+    summarise(across(starts_with(margin_col),
+                     ~ sum(.x > 0, na.rm = TRUE) / sum(.x != 0, na.rm = TRUE))) %>%
     ungroup()
 
-  # 3-way probabilities (includes ties): home/away/tie each as fraction of total
-  n_games <- nrow(inc_df)
-
-  probs_3way_home <- inc_df %>%
+  # 3-way probabilities (includes ties): each outcome as fraction of total
+  probs_3way_home <- sample %>%
     summarise(across(starts_with(margin_col), ~ sum(.x > 0, na.rm = TRUE) / n_games)) %>%
     rename_with(~ paste0(.x, "_3way_home"), starts_with(margin_col))
 
-  probs_3way_away <- inc_df %>%
+  probs_3way_away <- sample %>%
     summarise(across(starts_with(margin_col), ~ sum(.x < 0, na.rm = TRUE) / n_games)) %>%
     rename_with(~ paste0(.x, "_3way_away"), starts_with(margin_col))
 
-  probs_3way_tie <- inc_df %>%
+  probs_3way_tie <- sample %>%
     summarise(across(starts_with(margin_col), ~ sum(.x == 0, na.rm = TRUE) / n_games)) %>%
     rename_with(~ paste0(.x, "_3way_tie"), starts_with(margin_col))
 
-  # Combine all probabilities
   bind_cols(probs_2way, probs_3way_home, probs_3way_away, probs_3way_tie)
+}
+
+#' Generate spread cover predictions from a balanced sample
+#'
+#' @param sample Data frame of selected games from run_answer_key_sample()
+#' @param spreads Vector of spread values to calculate cover probability for
+#' @param margin_col Column name prefix for margin columns
+#' @param period Period suffix (e.g., "1" for Q1, "Half1" for first half)
+#' @return Tibble with cover probability for each spread value
+predict_spreads_from_sample <- function(
+    sample,
+    spreads,
+    margin_col = "game_home_margin_period",
+    period
+) {
+  col_name <- paste0(margin_col, "_", period)
+
+  if (!(col_name %in% names(sample))) {
+    warning(paste("Column", col_name, "not found in sample"))
+    return(tibble())
+  }
+
+  margins <- sample[[col_name]]
+
+  # For each spread, calculate probability of home covering
+  # Home covers when margin > -spread (e.g., if spread is -7, home covers when margin > 7)
+  pct_cols <- set_names(
+    map(spreads, ~ sum(margins > -.x, na.rm = TRUE) / sum(margins != -.x, na.rm = TRUE)),
+    paste0("pct_home_cover_", gsub("-", "neg", gsub("\\.", "_", as.character(spreads))))
+  )
+
+  tibble(!!!pct_cols)
+}
+
+#' Generate total over predictions from a balanced sample
+#'
+#' @param sample Data frame of selected games from run_answer_key_sample()
+#' @param totals Vector of total values to calculate over probability for
+#' @param total_col Column name prefix for total columns
+#' @param period Period suffix (e.g., "1" for Q1, "Half1" for first half)
+#' @return Tibble with over probability for each total value
+predict_totals_from_sample <- function(
+    sample,
+    totals,
+    total_col = "full_game_total_period",
+    period
+) {
+  col_name <- paste0(total_col, "_", period)
+
+  if (!(col_name %in% names(sample))) {
+    warning(paste("Column", col_name, "not found in sample"))
+    return(tibble())
+  }
+
+  total_vals <- sample[[col_name]]
+
+  # For each total, calculate probability of over
+  pct_cols <- set_names(
+    map(totals, ~ sum(total_vals > .x, na.rm = TRUE) / sum(total_vals != .x, na.rm = TRUE)),
+    paste0("pct_over_", gsub("\\.", "_", as.character(totals)))
+  )
+
+  tibble(!!!pct_cols)
+}
+
+# =============================================================================
+# END ANSWER KEY CORE FUNCTIONS
+# =============================================================================
+
+fetch_event_odds <- function(event_id, market, sport_key = "baseball_mlb") {
+  res <- GET(
+    paste0("https://api.the-odds-api.com/v4/sports/", sport_key, "/events/", event_id, "/odds"),
+    query = list(
+      apiKey     = Sys.getenv("ODDS_API_KEY"),
+      regions    = "us,us2,us_ex",
+      markets    = market,
+      oddsFormat = "american",
+      dateFormat = "iso"
+    )
+  )
+  
+  if (http_error(res)) {
+    warning(paste("Failed for event:", event_id))
+    return(tibble())
+  }
+  
+  odds_data <- fromJSON(content(res, "text"), flatten = TRUE)
+  if (is.null(odds_data) || length(odds_data) == 0) {
+    return(tibble())
+  }
+  as_tibble(odds_data)
 }
 
 prob_to_american <- function(prob) {
