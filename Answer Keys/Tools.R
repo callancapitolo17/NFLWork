@@ -14,6 +14,24 @@ devig_american <- function(odd1, odd2) {
   total_raw <- p1_raw + p2_raw
   data.frame(p1 = p1_raw / total_raw, p2 = p2_raw / total_raw)
 }
+
+#' Devig 3-way American odds (home/away/tie)
+#' @param odd_home Home win odds (American format)
+#' @param odd_away Away win odds (American format)
+#' @param odd_tie Tie/Draw odds (American format)
+#' @return data.frame with p_home, p_away, p_tie (devigged probabilities summing to 1)
+devig_american_3way <- function(odd_home, odd_away, odd_tie) {
+  p_home_raw <- ifelse(odd_home > 0, 100 / (odd_home + 100), -odd_home / (-odd_home + 100))
+  p_away_raw <- ifelse(odd_away > 0, 100 / (odd_away + 100), -odd_away / (-odd_away + 100))
+  p_tie_raw <- ifelse(odd_tie > 0, 100 / (odd_tie + 100), -odd_tie / (-odd_tie + 100))
+
+  total_raw <- p_home_raw + p_away_raw + p_tie_raw
+  data.frame(
+    p_home = p_home_raw / total_raw,
+    p_away = p_away_raw / total_raw,
+    p_tie = p_tie_raw / total_raw
+  )
+}
 american_prob <- function(odd1, odd2) {
   data.frame(
     p1 = ifelse(odd1 > 0,
@@ -426,6 +444,10 @@ run_means_for_id_spread <- function(id, parent_spread, parent_total, target_cove
 #generates bets for moneylines
 # Per Feustel spec: if balance_sample cannot converge, restart the entire
 # procedure (mean_match + balance_sample) with a smaller N
+#
+# Returns both 2-way and 3-way probabilities from the same sample:
+# - 2-way: home_wins / (home_wins + away_wins), excludes ties
+# - 3-way: home_wins / n, away_wins / n, ties / n, includes ties
 run_means_for_id <- function(id, parent_spread, parent_total, target_cover, target_over,
                              DT, ss, st, N,
                              max_iter_mean = 500, tol_mean = 0.005, tol_error = 1,
@@ -468,10 +490,29 @@ run_means_for_id <- function(id, parent_spread, parent_total, target_cover, targ
   }
 
   inc_df <- bal$dt %>% filter(included == TRUE)
-  bets_summary <- inc_df %>%
-    summarise(across(starts_with(margin_col), ~ sum(.x > 0, na.rm = TRUE) / sum(.x != 0, na.rm = T))) %>%
+
+  # 2-way probabilities (excludes ties): home_wins / (home_wins + away_wins)
+  probs_2way <- inc_df %>%
+    summarise(across(starts_with(margin_col), ~ sum(.x > 0, na.rm = TRUE) / sum(.x != 0, na.rm = TRUE))) %>%
     ungroup()
-  bets_summary
+
+  # 3-way probabilities (includes ties): home/away/tie each as fraction of total
+  n_games <- nrow(inc_df)
+
+  probs_3way_home <- inc_df %>%
+    summarise(across(starts_with(margin_col), ~ sum(.x > 0, na.rm = TRUE) / n_games)) %>%
+    rename_with(~ paste0(.x, "_3way_home"), starts_with(margin_col))
+
+  probs_3way_away <- inc_df %>%
+    summarise(across(starts_with(margin_col), ~ sum(.x < 0, na.rm = TRUE) / n_games)) %>%
+    rename_with(~ paste0(.x, "_3way_away"), starts_with(margin_col))
+
+  probs_3way_tie <- inc_df %>%
+    summarise(across(starts_with(margin_col), ~ sum(.x == 0, na.rm = TRUE) / n_games)) %>%
+    rename_with(~ paste0(.x, "_3way_tie"), starts_with(margin_col))
+
+  # Combine all probabilities
+  bind_cols(probs_2way, probs_3way_home, probs_3way_away, probs_3way_tie)
 }
 
 prob_to_american <- function(prob) {
@@ -570,6 +611,17 @@ flatten_event_odds <- function(raw_odds) {
 
 compute_ev <- function(pred_prob, book_prob) {
   pred_prob * ((1 / book_prob) - 1) - (1 - pred_prob)
+}
+
+#' Compute EV for 3-way market (home/away/tie)
+#' For 3-way, EV = pred_prob * (decimal_odds - 1) - (1 - pred_prob)
+#' This is the same formula but we calculate for each of the three outcomes independently
+compute_ev_3way <- function(pred_prob, book_odds) {
+  # Convert American to decimal
+
+  decimal_odds <- ifelse(book_odds > 0, 1 + book_odds / 100, 1 + 100 / abs(book_odds))
+  # EV calculation
+  pred_prob * (decimal_odds - 1) - (1 - pred_prob)
 }
 
 kelly_stake <- function(ev, book_prob, bankroll, kelly_mult) {
