@@ -30,10 +30,10 @@ logit_ <- function(p) log(p / (1 - p))
 invlogit_ <- function(x) 1 / (1 + exp(-x))
 logloss_ <- function(p, y) -(y * log(p) + (1 - y) * log(1 - p))
 
-pick_consensus_line <- function(df, 
-                                game_id_col = "game_pk", 
-                                line_col = "total_line", 
-                                weight_col = "weight", 
+pick_consensus_line <- function(df,
+                                game_id_col = "game_pk",
+                                line_col = "total_line",
+                                weight_col = "weight",
                                 date_col = "game_date",
                                 market1 = "devig_over_odds",
                                 market2 = "devig_under_odds",
@@ -41,7 +41,8 @@ pick_consensus_line <- function(df,
                                 home = "home_team",
                                 away = "away_team") {
   # Purpose: For each game, pick the line (spread or total) that has the
-  # highest total weight across all sportsbooks posting it.
+  # highest total weight across all sportsbooks posting it, then calculate
+  # weighted average probability across all books posting that line.
   #
   # Args:
   #   df: data frame containing at least (game_id_col, date_col, line_col, weight_col)
@@ -52,23 +53,30 @@ pick_consensus_line <- function(df,
   #
   # Returns:
   #   data frame with one row per game_id containing the consensus line
-  
+
   df %>%
+    # Step 1: Calculate total weight for each line option
     group_by(.data[[game_id_col]], .data[[date_col]], .data[[line_col]]) %>%
-    mutate(total_weight = sum(.data[[weight_col]],na.rm =T)) %>% 
-    ungroup() %>% 
-    group_by(.data[[game_id_col]],.data[[date_col]]) %>% 
+    mutate(total_weight = sum(.data[[weight_col]], na.rm = TRUE)) %>%
+    ungroup() %>%
+    # Step 2: Keep only rows where line has max weight for that game
+    group_by(.data[[game_id_col]], .data[[date_col]]) %>%
     filter(total_weight == max(total_weight, na.rm = TRUE)) %>%
-    slice_head(n = 1) %>%   # handle ties safely
-    ungroup() %>% 
+    ungroup() %>%
+    # Step 3: Calculate weighted probabilities (keeping ALL books posting winning line)
     mutate(market1_weighted_prob = .data[[market1]] * .data[[weight_col]],
-           market2_weighted_prob = .data[[market2]] * .data[[weight_col]]) %>% 
-    group_by(.data[[game_id_col]], .data[[date_col]], .data[[line_col]],.data[[time_col]], .data[[home]],.data[[away]]) %>%
-    summarize(consensus_market1 = sum(market1_weighted_prob, na.rm = T) / sum(.data[[weight_col]], na.rm = T),
-              consensus_market2 = sum(market2_weighted_prob, na.rm = T) / sum(.data[[weight_col]], na.rm = T),
-              .groups = "drop") %>% 
-    rename(!!paste0("consensus_",market1,sep = "") := consensus_market1,
-           !!paste0("consensus_",market2,sep = "") := consensus_market2)
+           market2_weighted_prob = .data[[market2]] * .data[[weight_col]]) %>%
+    # Step 4: Aggregate to get weighted average across all books
+    group_by(.data[[game_id_col]], .data[[date_col]], .data[[line_col]], .data[[time_col]], .data[[home]], .data[[away]]) %>%
+    summarize(consensus_market1 = sum(market1_weighted_prob, na.rm = TRUE) / sum(.data[[weight_col]], na.rm = TRUE),
+              consensus_market2 = sum(market2_weighted_prob, na.rm = TRUE) / sum(.data[[weight_col]], na.rm = TRUE),
+              .groups = "drop") %>%
+    # Step 5: Handle ties (if two lines had same weight, pick one)
+    group_by(.data[[game_id_col]], .data[[date_col]]) %>%
+    slice_head(n = 1) %>%
+    ungroup() %>%
+    rename(!!paste0("consensus_", market1) := consensus_market1,
+           !!paste0("consensus_", market2) := consensus_market2)
 }
 
 moneyline_consensus <- function(df, 
@@ -223,35 +231,46 @@ distance_index_generic <- function(dt, ps, pt, ss, st, spread_col = "home_ml_odd
   invisible(dt)
 }
 
-# Function 2: balance sample by greedy remove/add + shrink‐on‐stall
+# Function 2: balance sample by greedy remove/add
+# Per Feustel spec: if both add and remove fail, return converged=FALSE
+# and let caller restart with smaller N
 balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
   dt <- copy(dt)
-  n_sample <- N  # CHANGED: use different variable name to avoid confusion
-  
+  n_sample <- N
+
   # initialize errors
-  cover_error <- dt[included == TRUE, sum(actual_cover, na.rm =T)] -
+  cover_error <- dt[included == TRUE, sum(actual_cover, na.rm = T)] -
     round(target_cover * n_sample)
-  over_error <- dt[included == TRUE, sum(actual_over,na.rm = T)] -
+  over_error <- dt[included == TRUE, sum(actual_over, na.rm = T)] -
     round(target_over * n_sample)
   M <- nrow(dt)
-  
+
   repeat {
-    if ((abs(cover_error) <= tol_error) && (abs(over_error) <= tol_error)) {break}
-    
+    if ((abs(cover_error) <= tol_error) && (abs(over_error) <= tol_error)) {
+      # Successfully converged
+      return(list(
+        dt = dt,
+        final_N = n_sample,
+        cover_error = cover_error,
+        over_error = over_error,
+        converged = TRUE
+      ))
+    }
+
     # mark failures
     removal_failed <- TRUE
     addition_failed <- TRUE
-    
+
     # ---- remove one game from 1..n_sample ----
-    in1toN <- dt[seq_len(n_sample), included]  # CHANGED: use seq_len
+    in1toN <- dt[seq_len(n_sample), included]
     cov_help1 <- (cover_error > 0 & dt[seq_len(n_sample), actual_cover] == 1) |
       (cover_error < 0 & dt[seq_len(n_sample), actual_cover] == 0)
     ov_help1 <- (over_error > 0 & dt[seq_len(n_sample), actual_over] == 1) |
       (over_error < 0 & dt[seq_len(n_sample), actual_over] == 0)
-    
+
     both1 <- which(in1toN & cov_help1 & ov_help1)
     either1 <- which(in1toN & (cov_help1 | ov_help1))
-    
+
     if (length(both1) > 0) {
       i <- max(both1)
       set(dt, i = as.integer(i), j = "included", value = FALSE)
@@ -261,66 +280,54 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
       set(dt, i = as.integer(i), j = "included", value = FALSE)
       removal_failed <- FALSE
     }
-    
+
     if (!removal_failed) {
-      cover_error <- dt[included == TRUE, sum(actual_cover,na.rm = T)] -
+      cover_error <- dt[included == TRUE, sum(actual_cover, na.rm = T)] -
         round(target_cover * n_sample)
       over_error <- dt[included == TRUE, sum(actual_over, na.rm = T)] -
         round(target_over * n_sample)
     }
-    
+
     # ---- add one game from (n_sample+1)..M ----
-    idx_range <- seq(n_sample + 1, M)  # CHANGED: explicit range
+    idx_range <- seq(n_sample + 1, M)
     inNplus <- dt[idx_range, included]
     cov_help2 <- (cover_error > 0 & dt[idx_range, actual_cover] == 0) |
       (cover_error < 0 & dt[idx_range, actual_cover] == 1)
     ov_help2 <- (over_error > 0 & dt[idx_range, actual_over] == 0) |
       (over_error < 0 & dt[idx_range, actual_over] == 1)
-    
+
     both2 <- which(!inNplus & cov_help2 & ov_help2)
     either2 <- which(!inNplus & (cov_help2 | ov_help2))
-    
+
     if (length(both2) > 0) {
-      j <- min(both2) + n_sample # CHANGED: max -> min
+      j <- min(both2) + n_sample
       set(dt, i = as.integer(j), j = "included", value = TRUE)
       addition_failed <- FALSE
     } else if (length(either2) > 0) {
-      j <- min(either2) + n_sample # CHANGED: max -> min
+      j <- min(either2) + n_sample
       set(dt, i = as.integer(j), j = "included", value = TRUE)
       addition_failed <- FALSE
     }
-    
+
     if (!addition_failed) {
       cover_error <- dt[included == TRUE, sum(actual_cover, na.rm = T)] -
         round(target_cover * n_sample)
       over_error <- dt[included == TRUE, sum(actual_over, na.rm = T)] -
         round(target_over * n_sample)
     }
-    
-    # ---- if neither helped, shrink sample size ----
+
+    # ---- if neither helped, signal non-convergence ----
+    # Per Feustel: "restart the procedure looking for a smaller sample"
     if (removal_failed && addition_failed) {
-      # Find the worst game that is ACTUALLY included
-      worst_i <- dt[included == TRUE, .I[which.max(index)]]
-      
-      set(dt, i = as.integer(worst_i), j = "included", value = FALSE)
-      n_sample <- n_sample - 1
-      
-      # Recalculate errors based on the new included set
-      cover_error <- dt[included == TRUE, sum(actual_cover, na.rm = T)] -
-        round(target_cover * n_sample)
-      over_error <- dt[included == TRUE, sum(actual_over, na.rm = T)] -
-        round(target_over * n_sample)
-      next
+      return(list(
+        dt = dt,
+        final_N = n_sample,
+        cover_error = cover_error,
+        over_error = over_error,
+        converged = FALSE
+      ))
     }
   }
-  
-  # return final dt and stats
-  list(
-    dt = dt,
-    final_N = n_sample,  # CHANGED
-    cover_error = cover_error,
-    over_error = over_error
-  )
 }
 
 fetch_event_odds <- function(event_id, market, sport_key = "baseball_mlb") {
@@ -349,13 +356,25 @@ fetch_event_odds <- function(event_id, market, sport_key = "baseball_mlb") {
 
 run_means_for_id_total <- function(id, parent_spread, parent_total, target_cover, target_over, totals, inning,
                                    DT, ss, st, N,
-                                   max_iter_mean = 500, tol_mean = 0.005, tol_error = 3) {
-  mm <- mean_match(DT, N, parent_spread, parent_total, ss, st, max_iter_mean, tol_mean)
-  bal <- balance_sample(mm$dt, N, target_cover, target_over, tol_error)
-  
+                                   max_iter_mean = 500, tol_mean = 0.005, tol_error = 3,
+                                   shrink_factor = 0.9, min_N = 50) {
+  current_N <- as.integer(N)
+
+  repeat {
+    mm <- mean_match(DT, current_N, parent_spread, parent_total, ss, st, max_iter_mean, tol_mean)
+    bal <- balance_sample(mm$dt, current_N, target_cover, target_over, tol_error)
+
+    if (bal$converged) break
+
+    current_N <- as.integer(current_N * shrink_factor)
+    if (current_N < min_N) {
+      warning(paste("balance_sample could not converge in run_means_for_id_total"))
+      break
+    }
+  }
+
   inc_df <- bal$dt %>% filter(included == TRUE)
-  
-  # summarise all game_home_ml* columns
+
   vals <- inc_df %>%
     select("inning_total" = !!sym(paste0("full_game_total_inning_", inning, sep = ""))) %>%
     pull()
@@ -363,15 +382,28 @@ run_means_for_id_total <- function(id, parent_spread, parent_total, target_cover
     map(totals, ~ sum(vals > .x, na.rm = T) / sum(vals != .x, na.rm = T)),
     paste0("pct_over_", gsub("\\.", "_", totals))
   )
-  
+
   tibble(!!!pct_cols)
 }
 
 run_means_for_id_spread <- function(id, parent_spread, parent_total, target_cover, target_over, spreads, inning,
                                     DT, ss, st, N,
-                                    max_iter_mean = 500, tol_mean = 0.005, tol_error = 2) {
-  mm <- mean_match(DT, N, parent_spread, parent_total, ss, st, max_iter_mean, tol_mean)
-  bal <- balance_sample(mm$dt, N, target_cover, target_over, tol_error)
+                                    max_iter_mean = 500, tol_mean = 0.005, tol_error = 2,
+                                    shrink_factor = 0.9, min_N = 50) {
+  current_N <- as.integer(N)
+
+  repeat {
+    mm <- mean_match(DT, current_N, parent_spread, parent_total, ss, st, max_iter_mean, tol_mean)
+    bal <- balance_sample(mm$dt, current_N, target_cover, target_over, tol_error)
+
+    if (bal$converged) break
+
+    current_N <- as.integer(current_N * shrink_factor)
+    if (current_N < min_N) {
+      warning(paste("balance_sample could not converge in run_means_for_id_spread"))
+      break
+    }
+  }
 
   inc_df <- bal$dt %>% filter(included == TRUE)
 
@@ -380,12 +412,11 @@ run_means_for_id_spread <- function(id, parent_spread, parent_total, target_cove
     pull(book_home_spread) %>%
     unique()
 
-  # summarise all spread_colums
   vals <- inc_df %>%
-    select("spread" = !!sym(paste0("game_home_margin_in_", inning, sep = ""))) %>% # select the correct column based on the inning
+    select("spread" = !!sym(paste0("game_home_margin_in_", inning, sep = ""))) %>%
     pull()
   pct_cols <- set_names(
-    map(spreads, ~ sum(vals > -.x, na.rm = T) / sum(vals != -.x, na.rm = T)), # flip sign of spread - to cover -0.5 margin needs to be greater than 0.5
+    map(spreads, ~ sum(vals > -.x, na.rm = T) / sum(vals != -.x, na.rm = T)),
     paste0("pct_home_cover_", gsub("\\.", "_", spreads))
   )
 
@@ -393,24 +424,52 @@ run_means_for_id_spread <- function(id, parent_spread, parent_total, target_cove
 }
 
 #generates bets for moneylines
+# Per Feustel spec: if balance_sample cannot converge, restart the entire
+# procedure (mean_match + balance_sample) with a smaller N
 run_means_for_id <- function(id, parent_spread, parent_total, target_cover, target_over,
                              DT, ss, st, N,
                              max_iter_mean = 500, tol_mean = 0.005, tol_error = 1,
                              use_spread_line = FALSE,
-                             margin_col = "game_home_margin_in") {
-  
+                             margin_col = "game_home_margin_in",
+                             shrink_factor = 0.9,
+                             min_N = 50) {
+
   # Defensive: ensure N is valid
   N <- as.integer(N)
   if (is.na(N) || N <= 0) {
     stop(paste("Invalid N in run_means_for_id. N =", N))
   }
-  
-  mm <- mean_match(DT, N, parent_spread, parent_total, ss, st, 
-                   max_iter_mean, tol_mean, use_spread_line)
-  bal <- balance_sample(mm$dt, N, target_cover, target_over, tol_error)
+
+  current_N <- N
+
+  repeat {
+    # Step 1: mean_match to get sample with correct spread/total means
+    mm <- mean_match(DT, current_N, parent_spread, parent_total, ss, st,
+                     max_iter_mean, tol_mean, use_spread_line)
+
+    # Step 2: balance_sample to match cover/over rates
+    bal <- balance_sample(mm$dt, current_N, target_cover, target_over, tol_error)
+
+    if (bal$converged) {
+      # Success - use this sample
+      break
+    }
+
+    # Per Feustel: "restart the procedure looking for a smaller sample"
+    current_N <- as.integer(current_N * shrink_factor)
+
+    if (current_N < min_N) {
+      # Cannot shrink further - use current sample (accept as-is per spec)
+      warning(paste("balance_sample could not converge. Using sample with N =",
+                    bal$final_N, "cover_error =", bal$cover_error,
+                    "over_error =", bal$over_error))
+      break
+    }
+  }
+
   inc_df <- bal$dt %>% filter(included == TRUE)
   bets_summary <- inc_df %>%
-    summarise(across(starts_with(margin_col), ~ sum(.x > 0, na.rm = TRUE) / sum(.x != 0, na.rm = T))) %>% 
+    summarise(across(starts_with(margin_col), ~ sum(.x > 0, na.rm = TRUE) / sum(.x != 0, na.rm = T))) %>%
     ungroup()
   bets_summary
 }
@@ -645,10 +704,10 @@ build_moneyline_market <- function(
                          max_iter_mean = 500,
                          margin_col = margin_col))) %>%
     unnest(res) %>%
-    ungroup() %>% 
+    ungroup() %>%
     inner_join(
       consensus_odds %>%
-        ungroup() %>% 
+        ungroup() %>%
         select(id, home_team, away_team, commence_time),
       by = c("id", "home_team", "commence_time")
     ) %>%
@@ -1120,19 +1179,19 @@ build_multi_moneyline_markets <- function(
     mutate(res = pmap(
       list(id, parent_spread, parent_total, target_cover, target_over),
       ~ run_means_for_id(
-          id = ..1, 
-          parent_spread = ..2, 
-          parent_total = ..3, 
-          target_cover = ..4, 
+          id = ..1,
+          parent_spread = ..2,
+          parent_total = ..3,
+          target_cover = ..4,
           target_over = ..5,
-          DT = DT, 
-          ss = ss, 
-          st = st, 
+          DT = DT,
+          ss = ss,
+          st = st,
           N = N,
           max_iter_mean = 500,
           tol_mean = 0.005,
           tol_error = 1,
-          use_spread_line = use_spread_line, 
+          use_spread_line = use_spread_line,
           margin_col = margin_col
         )
     )) %>%
