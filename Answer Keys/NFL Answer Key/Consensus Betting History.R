@@ -138,7 +138,9 @@ game_by_period <- pbp_all %>%
   ) %>%
   mutate(
     game_home_margin_period = home_score - away_score,
-    game_total_period = home_score + away_score
+    game_total_period = home_score + away_score,
+    home_score_period = home_score,
+    away_score_period = away_score
   ) %>%
   group_by(game_id) %>%
   mutate(
@@ -159,7 +161,7 @@ game_by_period <- pbp_all %>%
   ungroup() %>%
   select(-home_score, -away_score, -period_start_time, -away_score_max, -away_score_min,
          -home_score_max, -home_score_min, -game_date_from_id) %>%
-  pivot_wider(names_from = qtr, values_from = c(game_home_margin_period, game_total_period))
+  pivot_wider(names_from = qtr, values_from = c(game_home_margin_period, game_total_period, home_score_period, away_score_period))
 
 game_by_half <- pbp_all %>%
   group_by(game_id, game_half) %>%
@@ -183,12 +185,14 @@ game_by_half <- pbp_all %>%
   ) %>%
   mutate(
     game_home_margin_period = home_score - away_score,
-    game_total_period = home_score + away_score
-  ) %>% 
+    game_total_period = home_score + away_score,
+    home_score_period = home_score,
+    away_score_period = away_score
+  ) %>%
   ungroup() %>%
   select(-home_score, -away_score, -period_start_time, -away_score_max, -away_score_min,
          -home_score_max, -home_score_min, -game_date_from_id) %>%
-  pivot_wider(names_from = game_half, values_from = c(game_home_margin_period, game_total_period))
+  pivot_wider(names_from = game_half, values_from = c(game_home_margin_period, game_total_period, home_score_period, away_score_period))
 
 game_by_half_period <- game_by_period %>% inner_join(game_by_half, by = "game_id")
 

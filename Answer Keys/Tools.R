@@ -197,7 +197,7 @@ mean_match <- function(dt, N, parent_spread, parent_total,
   
   for (iter in seq_len(max_iter_mean)) {
     distance_index_generic(dt, adj_spread, adj_total, ss, st, spread_col)  # NEW helper
-    setorder(dt, index)
+    setorder(dt, index, -game_date)  # Sort by distance, then most recent first as tiebreaker
     
     # Use set() to avoid data.table scoping issues
     set(dt, j = "included", value = FALSE)
@@ -2745,6 +2745,239 @@ get_wagerzon_odds <- function(
 }
 
 
+#' Load Hoop88 odds from DuckDB
+#'
+#' @param sport Sport key (e.g., "nfl", "ncaaf")
+#' @param db_path Path to the Hoop88 DuckDB database
+#' @return Data frame with Hoop88 odds in standardized format
+get_hoop88_odds <- function(
+    sport = "nfl",
+    db_path = "~/NFLWork/hoop88_odds/hoop88.duckdb"
+) {
+  db_path <- normalizePath(path.expand(db_path), mustWork = FALSE)
+
+  if (!file.exists(db_path)) {
+    warning(sprintf("Hoop88 database not found at %s. Run scraper first.", db_path))
+    return(data.frame())
+  }
+
+  table_name <- paste0(sport, "_odds")
+
+  con <- dbConnect(duckdb(), dbdir = db_path, read_only = TRUE)
+  on.exit(dbDisconnect(con, shutdown = TRUE))
+
+  tables <- dbListTables(con)
+  if (!table_name %in% tables) {
+    warning(sprintf("Table '%s' not found in Hoop88 database. Run scraper first.", table_name))
+    return(data.frame())
+  }
+
+  raw_odds <- dbGetQuery(con, sprintf("SELECT * FROM %s", table_name))
+
+  if (nrow(raw_odds) == 0) {
+    warning("No odds found in Hoop88 database.")
+    return(data.frame())
+  }
+
+  result_list <- list()
+
+  for (i in seq_len(nrow(raw_odds))) {
+    row <- raw_odds[i, ]
+
+    base <- list(
+      bookmaker_key = "hoop88",
+      sport_key = row$sport_key,
+      home_team = row$home_team,
+      away_team = row$away_team,
+      game_date = row$game_date,
+      game_time = row$game_time,
+      hoop88_game_id = row$game_id,
+      fetch_time = row$fetch_time,
+      period = row$period
+    )
+
+    # Spreads record
+    if (!is.na(row$away_spread)) {
+      market_name <- row$market
+      spread_rec <- c(base, list(
+        market = market_name,
+        market_type = "spreads",
+        line = row$home_spread,
+        odds_away = row$away_spread_price,
+        odds_home = row$home_spread_price,
+        odds_over = NA_integer_,
+        odds_under = NA_integer_,
+        away_spread = row$away_spread,
+        home_spread = row$home_spread
+      ))
+      result_list[[length(result_list) + 1]] <- spread_rec
+    }
+
+    # Totals record
+    if (!is.na(row$total)) {
+      totals_market <- gsub("spreads", "totals", row$market)
+      totals_rec <- c(base, list(
+        market = totals_market,
+        market_type = "totals",
+        line = row$total,
+        odds_away = NA_integer_,
+        odds_home = NA_integer_,
+        odds_over = row$over_price,
+        odds_under = row$under_price
+      ))
+      result_list[[length(result_list) + 1]] <- totals_rec
+    }
+
+    # Moneyline record
+    if (!is.na(row$away_ml)) {
+      ml_market <- gsub("spreads", "h2h", row$market)
+      ml_rec <- c(base, list(
+        market = ml_market,
+        market_type = "h2h",
+        line = NA_real_,
+        odds_away = row$away_ml,
+        odds_home = row$home_ml,
+        odds_over = NA_integer_,
+        odds_under = NA_integer_
+      ))
+      result_list[[length(result_list) + 1]] <- ml_rec
+    }
+  }
+
+  if (length(result_list) == 0) {
+    return(data.frame())
+  }
+
+  result <- bind_rows(lapply(result_list, as.data.frame))
+
+  cat(sprintf("Loaded %d Hoop88 odds records (%d spreads, %d totals, %d ML)\n",
+              nrow(result),
+              sum(result$market_type == "spreads"),
+              sum(result$market_type == "totals"),
+              sum(result$market_type == "h2h")))
+
+  return(result)
+}
+
+
+#' Load BFA Gaming odds from DuckDB
+#'
+#' Loads scraped BFA Gaming derivative odds and transforms them into a standardized
+#' format compatible with the Wagerzon comparison functions.
+#'
+#' @param sport Sport key (e.g., "nfl", "nba")
+#' @param db_path Path to the BFA DuckDB database
+#' @return Data frame with BFA odds in standardized format
+get_bfa_odds <- function(
+    sport = "nfl",
+    db_path = "~/NFLWork/bfa_odds/bfa.duckdb"
+) {
+  db_path <- normalizePath(path.expand(db_path), mustWork = FALSE)
+
+  if (!file.exists(db_path)) {
+    warning(sprintf("BFA database not found at %s. Run scraper first.", db_path))
+    return(data.frame())
+  }
+
+  table_name <- paste0(sport, "_odds")
+
+  con <- dbConnect(duckdb(), dbdir = db_path, read_only = TRUE)
+  on.exit(dbDisconnect(con, shutdown = TRUE))
+
+  tables <- dbListTables(con)
+  if (!table_name %in% tables) {
+    warning(sprintf("Table '%s' not found in BFA database. Run scraper first.", table_name))
+    return(data.frame())
+  }
+
+  raw_odds <- dbGetQuery(con, sprintf("SELECT * FROM %s", table_name))
+
+  if (nrow(raw_odds) == 0) {
+    warning("No odds found in BFA database.")
+    return(data.frame())
+  }
+
+  result_list <- list()
+
+  for (i in seq_len(nrow(raw_odds))) {
+    row <- raw_odds[i, ]
+
+    base <- list(
+      bookmaker_key = "bfa",
+      sport_key = row$sport_key,
+      home_team = row$home_team,
+      away_team = row$away_team,
+      game_date = row$game_date,
+      game_time = row$game_time,
+      bfa_game_id = row$game_id,
+      fetch_time = row$fetch_time,
+      period = row$period
+    )
+
+    # Spreads record
+    if (!is.na(row$away_spread)) {
+      market_name <- row$market
+      spread_rec <- c(base, list(
+        market = market_name,
+        market_type = "spreads",
+        line = row$home_spread,
+        odds_away = row$away_spread_price,
+        odds_home = row$home_spread_price,
+        odds_over = NA_integer_,
+        odds_under = NA_integer_,
+        away_spread = row$away_spread,
+        home_spread = row$home_spread
+      ))
+      result_list[[length(result_list) + 1]] <- spread_rec
+    }
+
+    # Totals record
+    if (!is.na(row$total)) {
+      totals_market <- gsub("spreads", "totals", row$market)
+      totals_rec <- c(base, list(
+        market = totals_market,
+        market_type = "totals",
+        line = row$total,
+        odds_away = NA_integer_,
+        odds_home = NA_integer_,
+        odds_over = row$over_price,
+        odds_under = row$under_price
+      ))
+      result_list[[length(result_list) + 1]] <- totals_rec
+    }
+
+    # Moneyline record
+    if (!is.na(row$away_ml)) {
+      ml_market <- gsub("spreads", "h2h", row$market)
+      ml_rec <- c(base, list(
+        market = ml_market,
+        market_type = "h2h",
+        line = NA_real_,
+        odds_away = row$away_ml,
+        odds_home = row$home_ml,
+        odds_over = NA_integer_,
+        odds_under = NA_integer_
+      ))
+      result_list[[length(result_list) + 1]] <- ml_rec
+    }
+  }
+
+  if (length(result_list) == 0) {
+    return(data.frame())
+  }
+
+  result <- bind_rows(lapply(result_list, as.data.frame))
+
+  cat(sprintf("Loaded %d BFA odds records (%d spreads, %d totals, %d ML)\n",
+              nrow(result),
+              sum(result$market_type == "spreads"),
+              sum(result$market_type == "totals"),
+              sum(result$market_type == "h2h")))
+
+  return(result)
+}
+
+
 #' Merge Wagerzon odds with The Odds API consensus odds
 #'
 #' @param api_odds Odds from The Odds API (data.frame)
@@ -2908,7 +3141,9 @@ compare_spreads_to_wagerzon <- function(
       commence_time = as.POSIXct(fetch_time, tz = "UTC")
     )
 
-  # Format bets - pass books = "wagerzon" to include Wagerzon in filter
+  # Get bookmaker key from input data (works for wagerzon, hoop88, etc.)
+  book_key <- unique(wz_spreads$bookmaker_key)[1]
+
   bets <- prediction_set %>%
     format_bets_table(
       pred1 = "home_cover_prob", pred2 = "away_cover_prob",
@@ -2917,7 +3152,7 @@ compare_spreads_to_wagerzon <- function(
       odds1 = "odds_home", odds2 = "odds_away",
       line_col_1 = "home_spread",
       line_col_2 = "away_spread",
-      books = "wagerzon",
+      books = book_key,
       ev_threshold = ev_threshold
     )
 
@@ -2926,7 +3161,7 @@ compare_spreads_to_wagerzon <- function(
     summarise(n_bets = n(), total_stake = sum(bet_size), avg_ev = mean(ev), max_ev = max(ev), .groups = "drop") %>%
     arrange(desc(total_stake))
 
-  cat(sprintf("Generated %d Wagerzon spread bets\n", nrow(bets)))
+  cat(sprintf("Generated %d %s spread bets\n", nrow(bets), book_key))
 
   list(predictions = predictions, prediction_set = prediction_set, bets = bets, markets_summary = summary)
 }
@@ -2989,6 +3224,9 @@ compare_totals_to_wagerzon <- function(
       commence_time = as.POSIXct(fetch_time, tz = "UTC")
     )
 
+  # Get bookmaker key from input data
+  book_key <- unique(wz_totals$bookmaker_key)[1]
+
   bets <- prediction_set %>%
     format_bets_table(
       pred1 = "over_prob", pred2 = "under_prob",
@@ -2996,7 +3234,7 @@ compare_totals_to_wagerzon <- function(
       size1 = "over_bet_size", size2 = "under_bet_size",
       odds1 = "odds_over", odds2 = "odds_under",
       line_col_1 = "line", line_col_2 = "line",
-      books = "wagerzon",
+      books = book_key,
       ev_threshold = ev_threshold
     )
 
@@ -3005,7 +3243,7 @@ compare_totals_to_wagerzon <- function(
     summarise(n_bets = n(), total_stake = sum(bet_size), avg_ev = mean(ev), max_ev = max(ev), .groups = "drop") %>%
     arrange(desc(total_stake))
 
-  cat(sprintf("Generated %d Wagerzon totals bets\n", nrow(bets)))
+  cat(sprintf("Generated %d %s totals bets\n", nrow(bets), book_key))
 
   list(predictions = predictions, prediction_set = prediction_set, bets = bets, markets_summary = summary)
 }
@@ -3066,13 +3304,16 @@ compare_moneylines_to_wagerzon <- function(
       commence_time = as.POSIXct(fetch_time, tz = "UTC")
     )
 
+  # Get bookmaker key from input data
+  book_key <- unique(wz_ml$bookmaker_key)[1]
+
   bets <- prediction_set %>%
     format_bets_table(
       pred1 = "home_win_prob", pred2 = "away_win_prob",
       ev1 = "home_ev", ev2 = "away_ev",
       size1 = "home_bet_size", size2 = "away_bet_size",
       odds1 = "odds_home", odds2 = "odds_away",
-      books = "wagerzon",
+      books = book_key,
       ev_threshold = ev_threshold
     )
 
@@ -3081,7 +3322,7 @@ compare_moneylines_to_wagerzon <- function(
     summarise(n_bets = n(), total_stake = sum(bet_size), avg_ev = mean(ev), max_ev = max(ev), .groups = "drop") %>%
     arrange(desc(total_stake))
 
-  cat(sprintf("Generated %d Wagerzon moneyline bets\n", nrow(bets)))
+  cat(sprintf("Generated %d %s moneyline bets\n", nrow(bets), book_key))
 
   list(predictions = predictions, prediction_set = prediction_set, bets = bets, markets_summary = summary)
 }
@@ -3158,5 +3399,264 @@ run_wagerzon_comparison <- function(
   }
 
   list(bets = combined_bets, wagerzon_odds = wz_odds)
+}
+
+# =============================================================================
+# PARLAY FAIR ODDS CALCULATOR
+# =============================================================================
+
+#' Evaluate a single leg of a parlay against sample data
+#'
+#' @param samples Dataframe of sample rows (historical similar games)
+#' @param leg List with: market, period, side, line
+#' @return Logical vector: TRUE (win), FALSE (lose), NA (push)
+#'
+#' @examples
+#' # 1H home -3
+#' evaluate_leg(samples, list(market = "spread", period = "Half1", side = "home", line = -3))
+#' # 1H under 22.5
+#' evaluate_leg(samples, list(market = "total", period = "Half1", side = "under", line = 22.5))
+evaluate_leg <- function(samples, leg) {
+
+  period <- leg$period
+
+  # Get the right columns based on period
+
+if (period == "Full") {
+    margin_col <- "home_margin"
+    total_col <- "total_final_score"
+  } else {
+    margin_col <- paste0("game_home_margin_period_", period)
+    total_col <- paste0("game_total_period_", period)
+  }
+
+  margin <- samples[[margin_col]]
+  total <- samples[[total_col]]
+
+  result <- switch(leg$market,
+
+    "spread" = {
+      if (leg$side == "home") {
+        # Home -3 means line = -3, home covers if margin > 3
+        threshold <- -leg$line
+        case_when(
+          margin > threshold ~ TRUE,
+          margin < threshold ~ FALSE,
+          TRUE ~ NA
+        )
+      } else {
+        # Away +3 means line = 3, away covers if margin < 3
+        threshold <- leg$line
+        case_when(
+          margin < threshold ~ TRUE,
+          margin > threshold ~ FALSE,
+          TRUE ~ NA
+        )
+      }
+    },
+
+    "total" = {
+      if (leg$side == "over") {
+        case_when(
+          total > leg$line ~ TRUE,
+          total < leg$line ~ FALSE,
+          TRUE ~ NA
+        )
+      } else {
+        case_when(
+          total < leg$line ~ TRUE,
+          total > leg$line ~ FALSE,
+          TRUE ~ NA
+        )
+      }
+    },
+
+    "team_total" = {
+      home_score <- (total + margin) / 2
+      away_score <- (total - margin) / 2
+
+      switch(leg$side,
+        "home_over" = case_when(
+          home_score > leg$line ~ TRUE,
+          home_score < leg$line ~ FALSE,
+          TRUE ~ NA
+        ),
+        "home_under" = case_when(
+          home_score < leg$line ~ TRUE,
+          home_score > leg$line ~ FALSE,
+          TRUE ~ NA
+        ),
+        "away_over" = case_when(
+          away_score > leg$line ~ TRUE,
+          away_score < leg$line ~ FALSE,
+          TRUE ~ NA
+        ),
+        "away_under" = case_when(
+          away_score < leg$line ~ TRUE,
+          away_score > leg$line ~ FALSE,
+          TRUE ~ NA
+        )
+      )
+    },
+
+    "moneyline" = {
+      # 2-way moneyline: tie = push
+      if (leg$side == "home") {
+        case_when(
+          margin > 0 ~ TRUE,
+          margin < 0 ~ FALSE,
+          TRUE ~ NA  # tie = push
+        )
+      } else {
+        case_when(
+          margin < 0 ~ TRUE,
+          margin > 0 ~ FALSE,
+          TRUE ~ NA  # tie = push
+        )
+      }
+    },
+
+    "moneyline_3way" = {
+      # 3-way moneyline: can bet on tie (no pushes)
+      switch(leg$side,
+        "home" = case_when(
+          margin > 0 ~ TRUE,
+          TRUE ~ FALSE  # lose if tie or away wins
+        ),
+        "away" = case_when(
+          margin < 0 ~ TRUE,
+          TRUE ~ FALSE  # lose if tie or home wins
+        ),
+        "tie" = case_when(
+          margin == 0 ~ TRUE,
+          TRUE ~ FALSE  # lose if either team wins
+        )
+      )
+    }
+  )
+
+  return(result)
+}
+
+
+#' Compute fair parlay odds from sample data
+#'
+#' @param samples Dataframe of sample rows for a single game
+#' @param legs List of leg specifications, each with: market, period, side, line
+#' @return List with joint_prob, fair_american_odds, leg_probs, correlation_factor, etc.
+#'
+#' @examples
+#' legs <- list(
+#'   list(market = "spread", period = "Half1", side = "home", line = -3),
+#'   list(market = "total", period = "Half1", side = "under", line = 22.5)
+#' )
+#' result <- compute_parlay_fair_odds(samples, legs)
+compute_parlay_fair_odds <- function(samples, legs) {
+
+  # Evaluate each leg
+  leg_results <- map(legs, ~evaluate_leg(samples, .x))
+
+  # Find samples where ALL legs resolved (no NAs)
+  all_resolved <- map(leg_results, ~!is.na(.x)) %>%
+    reduce(`&`)
+
+  # Find samples where ALL legs hit
+  all_hit <- map(leg_results, ~.x == TRUE) %>%
+    reduce(`&`)
+  all_hit[is.na(all_hit)] <- FALSE
+
+  # Count resolved and hits
+  n_samples_total <- nrow(samples)
+  n_samples_resolved <- sum(all_resolved)
+  n_hits <- sum(all_hit & all_resolved)
+  n_pushes <- n_samples_total - n_samples_resolved
+
+  # Joint probability
+  joint_prob <- n_hits / n_samples_resolved
+
+  # Individual leg probabilities (for correlation factor)
+  leg_probs <- map_dbl(leg_results, function(res) {
+    resolved <- !is.na(res)
+    sum(res[resolved] == TRUE) / sum(resolved)
+  })
+
+  # Correlation factor: actual joint prob vs independent assumption
+  independent_prob <- prod(leg_probs)
+  correlation_factor <- joint_prob / independent_prob
+
+  # Convert to odds
+  fair_american_odds <- prob_to_american(joint_prob)
+  fair_decimal_odds <- 1 / joint_prob
+
+  list(
+    joint_prob = joint_prob,
+    fair_american_odds = fair_american_odds,
+    fair_decimal_odds = round(fair_decimal_odds, 2),
+    n_samples_resolved = n_samples_resolved,
+    n_samples_total = n_samples_total,
+    n_hits = n_hits,
+    n_pushes = n_pushes,
+    leg_probs = leg_probs,
+    independent_prob = independent_prob,
+    correlation_factor = round(correlation_factor, 3)
+  )
+}
+
+
+#' Format a leg specification as a readable string
+#'
+#' @param leg List with: market, period, side, line
+#' @return Character string describing the leg
+format_leg <- function(leg) {
+  period_display <- switch(leg$period,
+    "1" = "1Q",
+    "2" = "2Q",
+    "3" = "3Q",
+    "4" = "4Q",
+    "Half1" = "1H",
+    "Half2" = "2H",
+    "Full" = "FG",
+    leg$period
+  )
+
+  switch(leg$market,
+    "spread" = sprintf("%s %s %+.1f", period_display, leg$side, leg$line),
+    "total" = sprintf("%s %s %.1f", period_display, leg$side, leg$line),
+    "team_total" = sprintf("%s %s %.1f", period_display, gsub("_", " ", leg$side), leg$line),
+    "moneyline" = sprintf("%s %s ML", period_display, leg$side),
+    "moneyline_3way" = sprintf("%s %s ML (3-way)", period_display, leg$side),
+    sprintf("%s %s", leg$market, leg$side)
+  )
+}
+
+
+#' Print parlay fair odds result in a readable format
+#'
+#' @param result Output from compute_parlay_fair_odds
+#' @param legs The legs used (for display)
+print_parlay_result <- function(result, legs) {
+  cat("\n=== PARLAY FAIR ODDS ===\n\n")
+
+  cat("Legs:\n")
+  for (i in seq_along(legs)) {
+    cat(sprintf("  %d. %s (%.1f%% individual)\n",
+        i, format_leg(legs[[i]]), result$leg_probs[i] * 100))
+  }
+
+  cat(sprintf("\nJoint probability: %.2f%%\n", result$joint_prob * 100))
+  cat(sprintf("Fair American odds: %+d\n", result$fair_american_odds))
+  cat(sprintf("Fair decimal odds: %.2f\n", result$fair_decimal_odds))
+
+  cat(sprintf("\nCorrelation factor: %.3f", result$correlation_factor))
+  if (result$correlation_factor > 1) {
+    cat(" (positive correlation - legs help each other)\n")
+  } else if (result$correlation_factor < 1) {
+    cat(" (negative correlation - legs hurt each other)\n")
+  } else {
+    cat(" (no correlation)\n")
+  }
+
+  cat(sprintf("\nSamples: %d resolved, %d pushes excluded\n",
+      result$n_samples_resolved, result$n_pushes))
 }
 
