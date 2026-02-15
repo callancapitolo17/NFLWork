@@ -174,3 +174,6 @@ This repo contains tools for:
 - Delete the branch after merging: `git branch -d feature/description`
 - For quick, isolated fixes (typo, one-liner) committing directly to `main` is fine
 
+**Planning requirement:**
+- Every implementation plan must include a version control section: what branch to use, what files will be created/modified, and how commits will be structured
+
