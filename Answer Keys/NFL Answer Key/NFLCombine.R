@@ -322,59 +322,6 @@ all_bets_combined %>%
 cat("\n=== TOP 20 BETS ===\n")
 print(all_bets_combined %>% head(20))
 
-# Open interactive table in browser (temp file auto-cleaned by OS)
-if (nrow(all_bets_combined) > 0) {
-  library(DT)
-
-  # Format for display
-  display_df <- all_bets_combined %>%
-    select(bookmaker_key, market, bet_on, line, ev, prob, odds, bet_size, home_team, away_team) %>%
-    mutate(
-      ev = round(ev * 100, 1),  # Convert to percentage
-      prob = round(prob * 100, 1),
-      bet_size = round(bet_size, 2)
-    ) %>%
-    rename(
-      Book = bookmaker_key,
-      Market = market,
-      Bet = bet_on,
-      Line = line,
-      `EV%` = ev,
-      `Prob%` = prob,
-      Odds = odds,
-      `Bet$` = bet_size,
-      Home = home_team,
-      Away = away_team
-    )
-
-  # Create interactive datatable
-  dt <- datatable(
-    display_df,
-    caption = paste("NFL Bets -", Sys.Date()),
-    filter = "top",
-    options = list(
-      pageLength = 50,
-      order = list(list(4, "desc")),  # Sort by EV% descending
-      dom = "Bfrtip"
-    )
-  ) %>%
-    formatStyle("EV%", backgroundColor = styleInterval(c(5, 10), c("white", "lightgreen", "green")))
-
-  # Save to temp and open in browser
-  tmp <- tempfile(fileext = ".html")
-  htmlwidgets::saveWidget(dt, tmp, selfcontained = TRUE)
-
-  # Normalize path and open with file:// URL scheme
-  tmp_path <- normalizePath(tmp, mustWork = FALSE)
-  if (file.exists(tmp_path)) {
-    browseURL(paste0("file://", tmp_path))
-    Sys.sleep(2)  # Wait for browser to load before R exits
-    cat("\nOpened bets in browser.\n")
-  } else {
-    cat("\nWarning: Could not create HTML file.\n")
-  }
-}
-
 # =============================================================================
 # SAVE TO DUCKDB FOR DASHBOARD
 # =============================================================================

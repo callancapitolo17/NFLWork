@@ -10,6 +10,13 @@ import re
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from utils import (
+    calculate_american_odds,
+    calculate_decimal_odds_from_american,
+    parse_status,
+    parse_sport,
+    parse_risk_win,
+)
 
 # Playwright import
 try:
@@ -26,103 +33,6 @@ BFA_URL = os.getenv("BFA_URL", "https://bfagaming.com")
 BFA_USERNAME = os.getenv("BFA_USERNAME")
 BFA_PASSWORD = os.getenv("BFA_PASSWORD")
 BFA_HISTORY_URL = "https://bfagaming.com/my-bets"
-
-
-def calculate_american_odds_from_line(line_text: str) -> int:
-    """Extract American odds from line text like '-110' or '+120'."""
-    match = re.search(r'([+-]\d+)', line_text)
-    if match:
-        return int(match.group(1))
-    return -110  # Default juice
-
-
-def calculate_decimal_odds_from_american(american_odds: int) -> float:
-    """Convert American odds to decimal odds format."""
-    if american_odds > 0:
-        return (american_odds / 100) + 1
-    elif american_odds < 0:
-        return (100 / abs(american_odds)) + 1
-    return 1.0
-
-
-def parse_status(status_text: str) -> str:
-    """Extract result from status text."""
-    status_upper = status_text.upper().strip()
-    if 'WIN' in status_upper or 'WON' in status_upper:
-        return 'W'
-    elif 'LOST' in status_upper or 'LOSE' in status_upper:
-        return 'L'
-    elif 'PUSH' in status_upper or 'TIE' in status_upper or 'CANCELLED' in status_upper:
-        return 'X'
-    return ''
-
-
-def parse_sport(description: str) -> str:
-    """Determine sport from bet description text."""
-    text_upper = description.upper()
-
-    # NFL teams
-    nfl_teams = [
-        'BEARS', 'LIONS', 'PACKERS', 'VIKINGS',  # NFC North
-        'COWBOYS', 'EAGLES', 'GIANTS', 'COMMANDERS',  # NFC East
-        'FALCONS', 'PANTHERS', 'SAINTS', 'BUCCANEERS',  # NFC South
-        'CARDINALS', 'RAMS', 'SEAHAWKS', '49ERS',  # NFC West
-        'BENGALS', 'BROWNS', 'RAVENS', 'STEELERS',  # AFC North
-        'BILLS', 'DOLPHINS', 'PATRIOTS', 'JETS',  # AFC East
-        'COLTS', 'JAGUARS', 'TEXANS', 'TITANS',  # AFC South
-        'BRONCOS', 'CHARGERS', 'CHIEFS', 'RAIDERS'  # AFC West
-    ]
-
-    # NBA teams
-    nba_teams = [
-        'CELTICS', 'NETS', 'KNICKS', '76ERS', 'RAPTORS',  # Atlantic
-        'BULLS', 'CAVALIERS', 'PISTONS', 'PACERS', 'BUCKS',  # Central
-        'HAWKS', 'HORNETS', 'HEAT', 'MAGIC', 'WIZARDS',  # Southeast
-        'NUGGETS', 'TIMBERWOLVES', 'THUNDER', 'BLAZERS', 'JAZZ',  # Northwest
-        'WARRIORS', 'CLIPPERS', 'LAKERS', 'SUNS', 'KINGS',  # Pacific
-        'MAVERICKS', 'ROCKETS', 'GRIZZLIES', 'PELICANS', 'SPURS'  # Southwest
-    ]
-
-    # NHL teams
-    nhl_teams = [
-        'BRUINS', 'SABRES', 'RED WINGS', 'PANTHERS', 'CANADIENS',
-        'SENATORS', 'LIGHTNING', 'MAPLE LEAFS', 'HURRICANES', 'BLUE JACKETS',
-        'DEVILS', 'ISLANDERS', 'RANGERS', 'FLYERS', 'PENGUINS',
-        'CAPITALS', 'BLACKHAWKS', 'AVALANCHE', 'STARS', 'WILD',
-        'PREDATORS', 'BLUES', 'JETS', 'DUCKS', 'COYOTES',
-        'FLAMES', 'OILERS', 'KINGS', 'SHARKS', 'KRAKEN', 'GOLDEN KNIGHTS'
-    ]
-
-    # Check NFL first (most common based on your bets)
-    for team in nfl_teams:
-        if team in text_upper:
-            return 'NFL'
-
-    # Check NBA
-    for team in nba_teams:
-        if team in text_upper:
-            return 'NBA'
-
-    # Check NHL
-    for team in nhl_teams:
-        if team in text_upper:
-            return 'NHL'
-
-    # Check for explicit sport mentions
-    if 'NFL' in text_upper or 'FOOTBALL' in text_upper:
-        return 'NFL'
-    elif 'NBA' in text_upper or 'BASKETBALL' in text_upper:
-        return 'NBA'
-    elif 'NHL' in text_upper or 'HOCKEY' in text_upper:
-        return 'NHL'
-    elif 'MLB' in text_upper or 'BASEBALL' in text_upper:
-        return 'MLB'
-    elif 'NCAAF' in text_upper or 'COLLEGE FOOTBALL' in text_upper:
-        return 'NCAAF'
-    elif 'NCAAM' in text_upper or 'COLLEGE BASKETBALL' in text_upper:
-        return 'NCAAM'
-
-    return ''
 
 
 def parse_bet_type(description: str) -> str:
@@ -167,20 +77,6 @@ def parse_date(date_str: str) -> str:
     except Exception as e:
         print(f"  Warning: Could not parse date '{date_str}': {e}")
         return date_str
-
-
-def parse_risk_win(risk_win_text: str) -> tuple:
-    """Parse risk/win text into separate values."""
-    # Format: "200.00/360.00"
-    try:
-        parts = risk_win_text.replace('$', '').replace(',', '').split('/')
-        if len(parts) == 2:
-            risk = float(parts[0].strip())
-            win = float(parts[1].strip())
-            return risk, win
-    except Exception as e:
-        print(f"  Warning: Could not parse risk/win '{risk_win_text}': {e}")
-    return 0.0, 0.0
 
 
 def parse_leg(leg_text: str) -> dict:
@@ -331,11 +227,7 @@ def parse_bets_from_html(html_content: str) -> list:
             sport = parse_sport(description_text)
 
             # Calculate odds from risk/win ratio
-            if risk > 0 and win > 0:
-                american_odds = int(round((win / risk) * 100))
-            else:
-                american_odds = 0
-
+            american_odds = calculate_american_odds(risk, win)
             decimal_odds = calculate_decimal_odds_from_american(american_odds)
 
             # Extract first leg's line for the 'line' column
@@ -552,11 +444,6 @@ def scrape_bfa(weeks_back: int = 1, headless: bool = True) -> list:
 
         # Get the page HTML
         page_html = page.content()
-
-        # Save for debugging
-        with open('debug_bfa_page.html', 'w', encoding='utf-8') as f:
-            f.write(page_html)
-        print("Saved page HTML to debug_bfa_page.html")
 
         browser.close()
         return parse_bets_from_html(page_html)

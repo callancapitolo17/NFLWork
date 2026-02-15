@@ -1,113 +1,112 @@
-# Wagerzon Bet Logger
+# Bet Logger
 
-Automatically scrapes bet history from Wagerzon and uploads to Google Sheets.
+Multi-platform bet history scraper. Scrapes settled bets from Wagerzon, Hoop88, and BFA Gaming, then uploads to Google Sheets with automatic duplicate detection.
 
-## Features
+## Setup
 
-- Auto-login to Wagerzon
-- Scrapes bet history (defaults to "Last Week")
-- Automatic duplicate detection (date + description + bet amount)
-- Dynamic row detection (appends to next empty row)
-- Calculates American odds and decimal odds
-
-## Setup Instructions
-
-### 1. Install Python Dependencies
+### 1. Python Environment
 
 ```bash
-cd "/Users/callancapitolo/Sports Stuff/bet_logger"
+cd "/Users/callancapitolo/NFLWork/bet_logger"
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
 ```
 
-### 2. Set Up Google Cloud Credentials
+### 2. Google Sheets Credentials
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project (or select existing)
-3. Enable the **Google Sheets API**:
-   - Go to "APIs & Services" > "Library"
-   - Search for "Google Sheets API"
-   - Click "Enable"
-4. Create a Service Account:
-   - Go to "APIs & Services" > "Credentials"
-   - Click "Create Credentials" > "Service Account"
-   - Name it something like "bet-logger"
-   - Click "Done"
-5. Create a key for the service account:
-   - Click on the service account you just created
-   - Go to "Keys" tab
-   - Click "Add Key" > "Create new key" > "JSON"
-   - Save the downloaded file as `credentials.json` in this folder
+2. Enable the **Google Sheets API**
+3. Create a **Service Account** and download the JSON key as `credentials.json` in this folder
+4. Share your Google Sheet with the service account email (Editor access)
 
-### 3. Share Your Google Sheet
-
-1. Open your betting spreadsheet
-2. Click "Share" button
-3. Add the service account email (looks like `bet-logger@your-project.iam.gserviceaccount.com`)
-4. Give it "Editor" access
-
-### 4. Configure Environment Variables
+### 3. Environment Variables
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your actual values:
-- `WAGERZON_USERNAME`: Your Wagerzon username
-- `WAGERZON_PASSWORD`: Your Wagerzon password
-- `WAGERZON_URL`: The Wagerzon website URL
+Edit `.env` with credentials for each platform (Wagerzon, Hoop88, BFA) and your Google Sheet ID.
 
 ## Usage
 
-### Run Full Scraper
+### Run all scrapers
 
 ```bash
-cd "/Users/callancapitolo/Sports Stuff/bet_logger" && source venv/bin/activate && python scraper.py
+./run_all_scrapers.sh
 ```
 
-This will:
-1. Open a browser window
-2. Navigate to Wagerzon and log in
-3. Go to bet history
-4. Scrape all bets from "Last Week"
-5. Skip any duplicates
-6. Upload new bets to your Google Sheet
+Runs Wagerzon, Hoop88, and BFA sequentially. Continues to the next scraper if one fails.
 
-### Test the Parser (without logging in)
+### Run individual scrapers
 
 ```bash
-cd "/Users/callancapitolo/Sports Stuff/bet_logger" && source venv/bin/activate && python scraper.py --test
+./venv/bin/python3 scraper_wagerzon.py
+./venv/bin/python3 scraper_hoop88.py [--weeks 1] [--visible] [--dry-run]
+./venv/bin/python3 scraper_bfa.py    [--weeks 1] [--visible] [--dry-run]
 ```
 
-### Test Google Sheets Connection
+**Flags:**
+- `--weeks N` — How many weeks back to fetch (0=this week, 1=last week, default: 1)
+- `--visible` — Show the browser window instead of running headless
+- `--dry-run` — Scrape but don't upload to Google Sheets
+- `--test` — Parse from a saved HTML file (offline testing)
+
+### Automated Monday runs (launchd)
+
+The scrapers are configured to run automatically every Monday at 5 AM via macOS launchd. Logs go to `bet_logger/logs/`. To check status:
 
 ```bash
-cd "/Users/callancapitolo/Sports Stuff/bet_logger" && source venv/bin/activate && python sheets.py --test
+launchctl list | grep betlogger
 ```
 
-## Output Columns
+To manually load/unload:
 
-The scraper fills these columns in your sheet:
-- A: Date (e.g., "1/6/26")
-- B: Platform ("Wagerzon")
-- C: Sports (NFL, NHL, etc.)
-- D: Bet Description
-- E: Bet Type (Parlay, Straight, Prop, etc.)
-- F: Line
-- G: Odds (American format, e.g., "+450", "-110")
-- H: Bet Amount
-- I: Decimal Odds
-- J: Result (win/loss)
+```bash
+launchctl load ~/Library/LaunchAgents/com.callancapitolo.betlogger.plist
+launchctl unload ~/Library/LaunchAgents/com.callancapitolo.betlogger.plist
+```
+
+## Output Columns (Google Sheets)
+
+| Column | Field | Example |
+|--------|-------|---------|
+| A | Date | 1/6/26 |
+| B | Platform | Wagerzon / Hoop88 / BFA |
+| C | Sport | NFL, NBA, NHL, NCAAF, NCAAM |
+| D | Description | Houston Texans -0.5 +130 - 1st Quarter |
+| E | Bet Type | Parlay, Straight, Prop, Teaser, Contest |
+| F | Line | +3.5, Over 45.5 |
+| G | Odds | +450, -110 (American format) |
+| H | Bet Amount | $100.00 |
+| I | Decimal Odds | 5.50 |
+| J | Result | win / loss / push |
+
+Duplicate detection uses (date + description + bet amount) as the key.
+
+## Platform Notes
+
+**Wagerzon** — Scrapes the HTML history table at `backend.wagerzon.com/wager/History.aspx`. Auto-login with credentials, falls back to 60-second manual login window if needed.
+
+**Hoop88** — Navigates the bet history UI by clicking the Balance box, selecting a week from the dropdown, and expanding bet details. Handles parlays by combining legs with `|`. Converts fractional lines (1/2, 1/4, 3/4).
+
+**BFA Gaming** — Uses Keycloak SSO authentication (redirects to `auth.bfagaming.com`). Blazor SPA with date range filters. Parses teasers with adjusted lines.
 
 ## Troubleshooting
 
-### Auto-login doesn't work
-The script will wait 60 seconds for you to log in manually if auto-login fails.
+- **Login fails** — Check credentials in `.env`. If auto-login fails, run with `--visible` to log in manually.
+- **No bets found** — Check the time period filter. Verify bets exist on the site for that week.
+- **Duplicates still appearing** — Detection matches on exact (date, description, amount). Any small difference bypasses it.
+- **Permission denied on Sheets** — Share the spreadsheet with the service account email from `credentials.json`.
 
-### Permission denied on Google Sheets
-Make sure you shared the spreadsheet with your service account email address.
+## Architecture
 
-### Duplicates still appearing
-Duplicate detection matches on date + description + bet amount. If any of these differ slightly, it won't be detected as a duplicate.
+```
+run_all_scrapers.sh          # Entry point (runs all 3)
+  scraper_wagerzon.py        # Wagerzon scraper
+  scraper_hoop88.py          # Hoop88 scraper
+  scraper_bfa.py             # BFA Gaming scraper
+utils.py                     # Shared: odds calc, sport detection, parsing
+sheets.py                    # Google Sheets upload + duplicate detection
+```

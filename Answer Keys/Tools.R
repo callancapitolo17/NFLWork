@@ -1,3 +1,19 @@
+# =============================================================================
+# TOOLS.R - Answer Key Utility Functions
+# =============================================================================
+#
+# PERFORMANCE NOTES:
+# -----------------
+# The main bottleneck is run_answer_key_sample() which runs mean_match +
+# balance_sample (~5-6 sec/game with 21k historical games).
+#
+# Future optimizations (in order of effort/impact):
+# 1. Parallel processing - Use R's parallel package (4-8x speedup, low effort)
+# 2. Pre-computed caching - Cache samples for spread/total buckets (10-20x, medium)
+# 3. Rcpp rewrite - Rewrite mean_match/balance_sample in C++ (10-50x, high effort)
+#
+# =============================================================================
+
 odds_to_prob <- function(odds) {
   ifelse(odds > 0, 100 / (odds + 100), -odds / (-odds + 100))
 }
@@ -552,27 +568,40 @@ generate_all_samples <- function(
     shrink_factor = 0.9,
     min_N = 50
 ) {
-  cat(sprintf("Generating samples for %d games...\n", nrow(targets)))
+  n_games <- nrow(targets)
+  n_cores <- min(parallel::detectCores() - 1L, n_games, na.rm = TRUE)
+  n_cores <- max(n_cores, 1L)
+  cat(sprintf("Generating samples for %d games using %d cores...\n", n_games, n_cores))
 
   N <- as.integer(N)
 
-  samples <- targets %>%
-    pmap(function(id, parent_spread, parent_total, target_cover, target_over) {
-      run_answer_key_sample(
-        id = id,
-        parent_spread = parent_spread,
-        parent_total = parent_total,
-        target_cover = target_cover,
-        target_over = target_over,
-        DT = DT, ss = ss, st = st, N = N,
-        max_iter_mean = max_iter_mean,
-        tol_mean = tol_mean,
-        tol_error = tol_error,
-        use_spread_line = use_spread_line,
-        shrink_factor = shrink_factor,
-        min_N = min_N
-      )
-    })
+  # Split targets into a list of single-row lists for mclapply
+  target_list <- lapply(seq_len(n_games), function(i) {
+    list(
+      id = targets$id[i],
+      parent_spread = targets$parent_spread[i],
+      parent_total = targets$parent_total[i],
+      target_cover = targets$target_cover[i],
+      target_over = targets$target_over[i]
+    )
+  })
+
+  samples <- parallel::mclapply(target_list, function(tgt) {
+    run_answer_key_sample(
+      id = tgt$id,
+      parent_spread = tgt$parent_spread,
+      parent_total = tgt$parent_total,
+      target_cover = tgt$target_cover,
+      target_over = tgt$target_over,
+      DT = DT, ss = ss, st = st, N = N,
+      max_iter_mean = max_iter_mean,
+      tol_mean = tol_mean,
+      tol_error = tol_error,
+      use_spread_line = use_spread_line,
+      shrink_factor = shrink_factor,
+      min_N = min_N
+    )
+  }, mc.cores = n_cores)
 
   # Name the list by game id for easy lookup
   names(samples) <- targets$id
@@ -764,11 +793,13 @@ format_bets_table <- function(
     line_col = NULL,       # optional: single line column (e.g. "book_total_line" for totals)
     line_col_1 = NULL,     # optional: line for side 1 (e.g. "book_home_spread" for spreads)
     line_col_2 = NULL,     # optional: line for side 2 (e.g. "book_away_spread" for spreads)
-    books   = c("betonlineag","kalshi","draftkings"),
+    books   = NULL,
     time_col = "commence_time",
     tz_out   = "America/Los_Angeles",
     ev_threshold = 0.05    # minimum EV to include bet (default 5%)
 ) {
+  if (is.null(books)) books <- unique(df$bookmaker_key)
+
   s1 <- str_extract(size1, "home|away|over|under")
   s2 <- str_extract(size2, "home|away|over|under")
 
@@ -798,7 +829,7 @@ format_bets_table <- function(
 
   result <- df %>%
     filter(bookmaker_key %in% books) %>%
-    mutate(pt_start_time = lubridate::with_tz(lubridate::ymd_hms(.data[[time_col]], tz = "UTC"), tzone = tz_out))
+    mutate(pt_start_time = lubridate::with_tz(as.POSIXct(.data[[time_col]], tz = "UTC"), tzone = tz_out))
 
   if (has_separate_lines) {
     # For spreads: separate line columns for each side (included in pivot)
@@ -846,12 +877,8 @@ format_bets_table <- function(
     )) %>%
     # Filter by EV threshold
     filter(ev >= ev_threshold) %>%
-    # Keep only highest bet size per game per market per side (best book for each side)
-    group_by(id, market, bet_on) %>%
-    filter(size == max(size)) %>%
-    ungroup() %>%
     arrange(desc(size)) %>%
-    select(home_team, away_team, pt_start_time, bookmaker_key, market, bet_on, line, bet_size = size, ev, odds, prob)
+    select(id, home_team, away_team, pt_start_time, bookmaker_key, market, bet_on, line, bet_size = size, ev, odds, prob)
 }
 
 
@@ -1319,33 +1346,51 @@ build_moneylines_from_samples <- function(
     sport_key,
     bankroll = 200,
     kelly_mult = 0.25,
-    margin_col = "game_home_margin_period"
+    margin_col = "game_home_margin_period",
+    pre_fetched_odds = NULL,
+    books = NULL
 ) {
   # Validate inputs
   if (length(periods) != length(markets)) {
     stop("periods and markets must be same length and correspond to each other")
   }
 
-  cat(sprintf("Fetching %d markets for %d events...\n", length(markets), length(events$id)))
-
-  # 1) Batch fetch all markets for all events
-  all_odds <- expand_grid(event_id = events$id, market = markets) %>%
-    mutate(
-      data = map2(event_id, market, possibly(
-        ~ {
-          result <- fetch_event_odds(.x, .y, sport_key)
-          if (nrow(result) > 0 && "bookmakers" %in% names(result)) {
-            result
-          } else {
-            tibble()
-          }
-        },
-        otherwise = tibble()
-      ))
-    ) %>%
-    filter(map_lgl(data, ~ nrow(.x) > 0)) %>%
-    unnest(data) %>%
-    select(-event_id)
+  # 1) Get odds: either from pre-fetched cache or live API
+  if (!is.null(pre_fetched_odds)) {
+    cached <- pre_fetched_odds %>% filter(market %in% markets)
+    cat(sprintf("Using %d cached API responses for %d markets\n", nrow(cached), length(markets)))
+    all_odds <- cached %>%
+      mutate(data = map(json_response, ~ {
+        parsed <- tryCatch(fromJSON(.x, flatten = TRUE), error = function(e) NULL)
+        if (!is.null(parsed) && length(parsed) > 0 && "bookmakers" %in% names(parsed)) {
+          as_tibble(parsed)
+        } else {
+          tibble()
+        }
+      })) %>%
+      filter(map_lgl(data, ~ nrow(.x) > 0)) %>%
+      unnest(data) %>%
+      select(-json_response, -event_id)
+  } else {
+    cat(sprintf("Fetching %d markets for %d events...\n", length(markets), length(events$id)))
+    all_odds <- expand_grid(event_id = events$id, market = markets) %>%
+      mutate(
+        data = map2(event_id, market, possibly(
+          ~ {
+            result <- fetch_event_odds(.x, .y, sport_key)
+            if (nrow(result) > 0 && "bookmakers" %in% names(result)) {
+              result
+            } else {
+              tibble()
+            }
+          },
+          otherwise = tibble()
+        ))
+      ) %>%
+      filter(map_lgl(data, ~ nrow(.x) > 0)) %>%
+      unnest(data) %>%
+      select(-event_id)
+  }
 
   if (nrow(all_odds) == 0) stop("No odds data returned")
 
@@ -1437,7 +1482,8 @@ build_moneylines_from_samples <- function(
       pred1 = "home_win_prob", pred2 = "away_win_prob",
       ev1 = "home_ev", ev2 = "away_ev",
       size1 = "home_bet_size", size2 = "away_bet_size",
-      odds1 = "book_home_market", odds2 = "book_away_market"
+      odds1 = "book_home_market", odds2 = "book_away_market",
+      books = books
     )
 
   # 7) Market summary
@@ -1654,7 +1700,8 @@ build_3way_from_samples <- function(
       ev1 = "home_ev", ev2 = "away_ev",
       size1 = "home_bet_size", size2 = "away_bet_size",
       odds1 = "book_home_odds", odds2 = "book_away_odds",
-      pred3 = "tie_prob", ev3 = "tie_ev", size3 = "tie_bet_size", odds3 = "book_tie_odds"
+      pred3 = "tie_prob", ev3 = "tie_ev", size3 = "tie_bet_size", odds3 = "book_tie_odds",
+      books = books
     )
 
   # 7) Market summary
@@ -1689,33 +1736,51 @@ build_totals_from_samples <- function(
     sport_key,
     bankroll = 200,
     kelly_mult = 0.25,
-    total_col = "game_total_period"
+    total_col = "game_total_period",
+    pre_fetched_odds = NULL,
+    books = NULL
 ) {
   # Validate inputs
   if (length(periods) != length(markets)) {
     stop("periods and markets must be same length and correspond to each other")
   }
 
-  cat(sprintf("Fetching %d totals markets for %d events...\n", length(markets), length(events$id)))
-
-  # 1) Batch fetch all markets
-  all_odds <- expand_grid(event_id = events$id, market = markets) %>%
-    mutate(
-      data = map2(event_id, market, possibly(
-        ~ {
-          result <- fetch_event_odds(.x, .y, sport_key)
-          if (nrow(result) > 0 && "bookmakers" %in% names(result)) {
-            result
-          } else {
-            tibble()
-          }
-        },
-        otherwise = tibble()
-      ))
-    ) %>%
-    filter(map_lgl(data, ~ nrow(.x) > 0)) %>%
-    unnest(data) %>%
-    select(-event_id)
+  # 1) Get odds: either from pre-fetched cache or live API
+  if (!is.null(pre_fetched_odds)) {
+    cached <- pre_fetched_odds %>% filter(market %in% markets)
+    cat(sprintf("Using %d cached API responses for %d totals markets\n", nrow(cached), length(markets)))
+    all_odds <- cached %>%
+      mutate(data = map(json_response, ~ {
+        parsed <- tryCatch(fromJSON(.x, flatten = TRUE), error = function(e) NULL)
+        if (!is.null(parsed) && length(parsed) > 0 && "bookmakers" %in% names(parsed)) {
+          as_tibble(parsed)
+        } else {
+          tibble()
+        }
+      })) %>%
+      filter(map_lgl(data, ~ nrow(.x) > 0)) %>%
+      unnest(data) %>%
+      select(-json_response, -event_id)
+  } else {
+    cat(sprintf("Fetching %d totals markets for %d events...\n", length(markets), length(events$id)))
+    all_odds <- expand_grid(event_id = events$id, market = markets) %>%
+      mutate(
+        data = map2(event_id, market, possibly(
+          ~ {
+            result <- fetch_event_odds(.x, .y, sport_key)
+            if (nrow(result) > 0 && "bookmakers" %in% names(result)) {
+              result
+            } else {
+              tibble()
+            }
+          },
+          otherwise = tibble()
+        ))
+      ) %>%
+      filter(map_lgl(data, ~ nrow(.x) > 0)) %>%
+      unnest(data) %>%
+      select(-event_id)
+  }
 
   if (nrow(all_odds) == 0) stop("No totals odds data returned")
 
@@ -1832,7 +1897,8 @@ build_totals_from_samples <- function(
       ev1 = "over_ev", ev2 = "under_ev",
       size1 = "over_bet_size", size2 = "under_bet_size",
       odds1 = "book_over_market", odds2 = "book_under_market",
-      line_col = "book_total_line"
+      line_col = "book_total_line",
+      books = books
     )
 
   # 6) Market summary
@@ -1856,33 +1922,51 @@ build_spreads_from_samples <- function(
     sport_key,
     bankroll = 200,
     kelly_mult = 0.25,
-    margin_col = "game_home_margin_period"
+    margin_col = "game_home_margin_period",
+    pre_fetched_odds = NULL,
+    books = NULL
 ) {
   # Validate inputs
   if (length(periods) != length(markets)) {
     stop("periods and markets must be same length and correspond to each other")
   }
 
-  cat(sprintf("Fetching %d spreads markets for %d events...\n", length(markets), length(events$id)))
-
-  # 1) Batch fetch all markets
-  all_odds <- expand_grid(event_id = events$id, market = markets) %>%
-    mutate(
-      data = map2(event_id, market, possibly(
-        ~ {
-          result <- fetch_event_odds(.x, .y, sport_key)
-          if (nrow(result) > 0 && "bookmakers" %in% names(result)) {
-            result
-          } else {
-            tibble()
-          }
-        },
-        otherwise = tibble()
-      ))
-    ) %>%
-    filter(map_lgl(data, ~ nrow(.x) > 0)) %>%
-    unnest(data) %>%
-    select(-event_id)
+  # 1) Get odds: either from pre-fetched cache or live API
+  if (!is.null(pre_fetched_odds)) {
+    cached <- pre_fetched_odds %>% filter(market %in% markets)
+    cat(sprintf("Using %d cached API responses for %d spreads markets\n", nrow(cached), length(markets)))
+    all_odds <- cached %>%
+      mutate(data = map(json_response, ~ {
+        parsed <- tryCatch(fromJSON(.x, flatten = TRUE), error = function(e) NULL)
+        if (!is.null(parsed) && length(parsed) > 0 && "bookmakers" %in% names(parsed)) {
+          as_tibble(parsed)
+        } else {
+          tibble()
+        }
+      })) %>%
+      filter(map_lgl(data, ~ nrow(.x) > 0)) %>%
+      unnest(data) %>%
+      select(-json_response, -event_id)
+  } else {
+    cat(sprintf("Fetching %d spreads markets for %d events...\n", length(markets), length(events$id)))
+    all_odds <- expand_grid(event_id = events$id, market = markets) %>%
+      mutate(
+        data = map2(event_id, market, possibly(
+          ~ {
+            result <- fetch_event_odds(.x, .y, sport_key)
+            if (nrow(result) > 0 && "bookmakers" %in% names(result)) {
+              result
+            } else {
+              tibble()
+            }
+          },
+          otherwise = tibble()
+        ))
+      ) %>%
+      filter(map_lgl(data, ~ nrow(.x) > 0)) %>%
+      unnest(data) %>%
+      select(-event_id)
+  }
 
   if (nrow(all_odds) == 0) stop("No spreads odds data returned")
 
@@ -2007,7 +2091,8 @@ build_spreads_from_samples <- function(
       size1 = "home_bet_size", size2 = "away_bet_size",
       odds1 = "book_home_market", odds2 = "book_away_market",
       line_col_1 = "book_home_spread",  # Home bet shows home spread (e.g., +1.5)
-      line_col_2 = "book_away_spread"   # Away bet shows away spread (e.g., -1.5)
+      line_col_2 = "book_away_spread",  # Away bet shows away spread (e.g., -1.5)
+      books = books
     )
 
   # 6) Market summary
@@ -2330,7 +2415,9 @@ build_team_totals_from_samples <- function(
     sport_key,
     bankroll = 200,
     kelly_mult = 0.25,
-    ev_threshold = 0.05
+    ev_threshold = 0.05,
+    pre_fetched_odds = NULL,
+    books = NULL
 ) {
   # Validate inputs
   if (length(periods) != length(markets)) {
@@ -2340,31 +2427,47 @@ build_team_totals_from_samples <- function(
   # Create market-to-period mapping
   market_period_map <- tibble(market = markets, period = as.character(periods))
 
-  # 1) Fetch odds for all markets
-  cat(sprintf("Fetching %d team totals markets for %d events...\n", length(markets), nrow(events)))
-
-  raw_odds <- map_dfr(markets, function(m) {
-    event_ids <- events$id
-    map_dfr(event_ids, function(eid) {
-      tryCatch({
-        res <- httr::GET(
-          paste0("https://api.the-odds-api.com/v4/sports/", sport_key, "/events/", eid, "/odds"),
-          query = list(
-            apiKey = Sys.getenv("ODDS_API_KEY"),
-            regions = "us,us2,eu",
-            markets = m,
-            oddsFormat = "american"
+  # 1) Get odds: either from pre-fetched cache or live API
+  if (!is.null(pre_fetched_odds)) {
+    cached <- pre_fetched_odds %>% filter(market %in% markets)
+    cat(sprintf("Using %d cached API responses for %d team totals markets\n", nrow(cached), length(markets)))
+    raw_odds <- cached %>%
+      mutate(data = map(json_response, ~ {
+        parsed <- tryCatch(fromJSON(.x, flatten = FALSE), error = function(e) NULL)
+        if (!is.null(parsed) && length(parsed$bookmakers) > 0) {
+          as_tibble(parsed)
+        } else {
+          tibble()
+        }
+      })) %>%
+      filter(map_lgl(data, ~ nrow(.x) > 0)) %>%
+      unnest(data) %>%
+      select(-json_response, -event_id)
+  } else {
+    cat(sprintf("Fetching %d team totals markets for %d events...\n", length(markets), nrow(events)))
+    raw_odds <- map_dfr(markets, function(m) {
+      event_ids <- events$id
+      map_dfr(event_ids, function(eid) {
+        tryCatch({
+          res <- httr::GET(
+            paste0("https://api.the-odds-api.com/v4/sports/", sport_key, "/events/", eid, "/odds"),
+            query = list(
+              apiKey = Sys.getenv("ODDS_API_KEY"),
+              regions = "us,us2,eu",
+              markets = m,
+              oddsFormat = "american"
+            )
           )
-        )
-        httr::stop_for_status(res)
+          httr::stop_for_status(res)
 
-        out <- fromJSON(content(res, "text"), flatten = FALSE)
-        if (length(out$bookmakers) == 0) return(tibble())
-        out$market <- m
-        as_tibble(out)
-      }, error = function(e) tibble())
+          out <- fromJSON(content(res, "text"), flatten = FALSE)
+          if (length(out$bookmakers) == 0) return(tibble())
+          out$market <- m
+          as_tibble(out)
+        }, error = function(e) tibble())
+      })
     })
-  })
+  }
 
   if (nrow(raw_odds) == 0) {
     cat("No team totals odds returned from API\n")
@@ -2411,6 +2514,11 @@ build_team_totals_from_samples <- function(
       .groups = "drop"
     ) %>%
     filter(!is.na(book_over_odds), !is.na(book_under_odds))
+
+  # Filter to enabled books
+  if (!is.null(books)) {
+    flat_odds <- flat_odds %>% filter(bookmaker_key %in% books)
+  }
 
   if (nrow(flat_odds) == 0) {
     cat("No valid team totals odds after flattening\n")
@@ -2534,11 +2642,6 @@ build_team_totals_from_samples <- function(
     )
 
   bets <- bind_rows(bets_over, bets_under) %>%
-    # Filter to best book per bet
-    group_by(id, market, bet_on, line) %>%
-    filter(bet_size == max(bet_size)) %>%
-    slice_head(n = 1) %>%
-    ungroup() %>%
     # Convert commence_time to pt_start_time for consistency with other bet tables
     mutate(
       pt_start_time = with_tz(commence_time, "America/Los_Angeles")
@@ -2741,6 +2844,7 @@ get_wagerzon_odds <- function(
               sum(result$market_type == "totals"),
               sum(result$market_type == "h2h")))
 
+  result <- resolve_offshore_teams(result, sport = sport)
   return(result)
 }
 
@@ -2850,12 +2954,24 @@ get_hoop88_odds <- function(
 
   result <- bind_rows(lapply(result_list, as.data.frame))
 
+  # Filter to correct sport only (scraper may include wrong sport data)
+  expected_key <- switch(sport,
+    "nfl" = "americanfootball_nfl",
+    "ncaaf" = "americanfootball_ncaaf",
+    "cbb" = "basketball_ncaab",
+    "nba" = "basketball_nba",
+    sport)
+  if ("sport_key" %in% names(result)) {
+    result <- result %>% filter(sport_key == expected_key)
+  }
+
   cat(sprintf("Loaded %d Hoop88 odds records (%d spreads, %d totals, %d ML)\n",
               nrow(result),
               sum(result$market_type == "spreads"),
               sum(result$market_type == "totals"),
               sum(result$market_type == "h2h")))
 
+  result <- resolve_offshore_teams(result, sport = sport)
   return(result)
 }
 
@@ -2974,7 +3090,192 @@ get_bfa_odds <- function(
               sum(result$market_type == "totals"),
               sum(result$market_type == "h2h")))
 
+  result <- resolve_offshore_teams(result, sport = sport)
   return(result)
+}
+
+
+#' Resolve offshore scraped team names to Odds API format
+#'
+#' Two-layer approach matching canonical_match.py:
+#' Layer 1: cbb_team_dict lookup (short_name/nickname/abbreviation -> odds_api_name)
+#' Layer 2: Game-level matching against canonical games from cbb_odds_temp
+#'
+#' @param odds_df Data frame with home_team and away_team columns
+#' @param sport Sport key ("cbb", "nfl", etc.)
+#' @return odds_df with resolved team names
+resolve_offshore_teams <- function(odds_df, sport = "cbb") {
+  if (nrow(odds_df) == 0) return(odds_df)
+
+  dict_db <- sprintf("~/NFLWork/Answer Keys/%s.duckdb", sport)
+  dict_db <- normalizePath(path.expand(dict_db), mustWork = FALSE)
+  if (!file.exists(dict_db)) return(odds_df)
+
+  con <- dbConnect(duckdb(), dbdir = dict_db, read_only = TRUE)
+  on.exit(dbDisconnect(con, shutdown = TRUE))
+
+  # Layer 1: team dict lookup
+  team_dict <- tryCatch(
+    dbGetQuery(con, paste0(sport, "_team_dict") %>%
+      {sprintf("SELECT short_name, nickname, abbreviation, odds_api_name FROM %s WHERE odds_api_name IS NOT NULL", .)}),
+    error = function(e) data.frame()
+  )
+
+  # Layer 2: canonical games from API consensus
+  canonical <- tryCatch(
+    dbGetQuery(con, paste0(sport, "_odds_temp") %>%
+      {sprintf("SELECT DISTINCT home_team, away_team FROM %s", .)}),
+    error = function(e) data.frame()
+  )
+
+  if (nrow(team_dict) == 0 && nrow(canonical) == 0) return(odds_df)
+
+  # Strip quotes + punctuation (keep spaces)
+  strip_chars <- function(x) {
+    x <- gsub("\u2018|\u2019|\u201C|\u201D|'|`|\"", "", x)
+    gsub("[.\\-]", "", tolower(trimws(x)))
+  }
+
+  # Strip everything non-alphanumeric (for space-vs-dash matching)
+  strip_all <- function(x) gsub("[^a-z0-9]", "", tolower(x))
+
+  # Build lookup: lowercased name variants -> odds_api_name
+  lookup <- character(0)
+  if (nrow(team_dict) > 0) {
+    for (i in seq_len(nrow(team_dict))) {
+      api_name <- team_dict$odds_api_name[i]
+      for (col in c("short_name", "nickname", "abbreviation")) {
+        val <- team_dict[[col]][i]
+        if (!is.na(val) && nchar(trimws(val)) > 0) {
+          lookup[tolower(trimws(val))] <- api_name
+          lookup[strip_chars(val)] <- api_name
+          lookup[strip_all(val)] <- api_name
+        }
+      }
+    }
+  }
+
+  # Also index canonical names (API format) and their no-mascot variants
+  all_canonical <- character(0)
+  if (nrow(canonical) > 0) {
+    all_canonical <- unique(c(canonical$home_team, canonical$away_team))
+    for (name in all_canonical) {
+      lookup[tolower(name)] <- name
+      lookup[strip_chars(name)] <- name
+      lookup[strip_all(name)] <- name
+      no_mascot <- sub(" [^ ]+$", "", name)
+      if (nchar(no_mascot) > 0) {
+        lookup[tolower(no_mascot)] <- name
+        lookup[strip_chars(no_mascot)] <- name
+        lookup[strip_all(no_mascot)] <- name
+      }
+    }
+  }
+
+  # Resolution function for a single name (Layer 1 + substring matching)
+  resolve_one <- function(raw_name) {
+    low <- tolower(trimws(raw_name))
+    stripped <- strip_chars(raw_name)
+    squished <- strip_all(raw_name)
+
+    # Direct lookup (try low, stripped, then squished/no-space variants)
+    hit <- lookup[low]
+    if (!is.na(hit)) return(unname(hit))
+    hit <- lookup[stripped]
+    if (!is.na(hit)) return(unname(hit))
+    hit <- lookup[squished]
+    if (!is.na(hit)) return(unname(hit))
+
+    # Substring match against canonical names (both sides stripped)
+    if (length(all_canonical) > 0) {
+      for (cn in all_canonical) {
+        cn_stripped <- strip_chars(cn)
+        cn_no_mascot <- strip_chars(sub(" [^ ]+$", "", cn))
+        cn_squished <- strip_all(sub(" [^ ]+$", "", cn))
+        if (nchar(cn_no_mascot) >= 4 &&
+            (stripped == cn_no_mascot ||
+             squished == cn_squished ||
+             grepl(stripped, cn_stripped, fixed = TRUE) ||
+             grepl(cn_no_mascot, stripped, fixed = TRUE))) {
+          return(cn)
+        }
+      }
+    }
+
+    NULL  # unresolved
+  }
+
+  # Game-level matching (Layer 2): match scraped game pair to canonical game pair
+  # Uses word-overlap scoring to find best canonical game match
+  resolve_game <- function(scraped_away, scraped_home) {
+    if (nrow(canonical) == 0) return(list(away = scraped_away, home = scraped_home))
+
+    sa_words <- unlist(strsplit(strip_chars(scraped_away), "\\s+"))
+    sh_words <- unlist(strsplit(strip_chars(scraped_home), "\\s+"))
+    sa_words <- sa_words[nchar(sa_words) >= 3]
+    sh_words <- sh_words[nchar(sh_words) >= 3]
+
+    best_score <- 0
+    best_away <- scraped_away
+    best_home <- scraped_home
+
+    for (j in seq_len(nrow(canonical))) {
+      ca <- canonical$away_team[j]
+      ch <- canonical$home_team[j]
+      ca_words <- unlist(strsplit(strip_chars(ca), "\\s+"))
+      ch_words <- unlist(strsplit(strip_chars(ch), "\\s+"))
+      ca_words <- ca_words[nchar(ca_words) >= 3]
+      ch_words <- ch_words[nchar(ch_words) >= 3]
+
+      # Score: how many scraped words appear in canonical name
+      away_score <- sum(sa_words %in% ca_words) + sum(ca_words %in% sa_words)
+      home_score <- sum(sh_words %in% ch_words) + sum(ch_words %in% sh_words)
+
+      # Both sides must have some match
+      if (away_score >= 2 && home_score >= 2) {
+        total <- away_score + home_score
+        if (total > best_score) {
+          best_score <- total
+          best_away <- ca
+          best_home <- ch
+        }
+      }
+    }
+
+    list(away = best_away, home = best_home)
+  }
+
+  # Step 1: Try resolve_one for each team individually
+  # Step 2: For unresolved games, try game-level matching
+  resolved <- 0
+  for (i in seq_len(nrow(odds_df))) {
+    old_away <- odds_df$away_team[i]
+    old_home <- odds_df$home_team[i]
+
+    r_away <- resolve_one(old_away)
+    r_home <- resolve_one(old_home)
+
+    if (!is.null(r_away) && !is.null(r_home)) {
+      odds_df$away_team[i] <- r_away
+      odds_df$home_team[i] <- r_home
+    } else {
+      # Game-level matching fallback
+      game_match <- resolve_game(
+        if (!is.null(r_away)) r_away else old_away,
+        if (!is.null(r_home)) r_home else old_home
+      )
+      odds_df$away_team[i] <- game_match$away
+      odds_df$home_team[i] <- game_match$home
+    }
+
+    if (odds_df$away_team[i] != old_away || odds_df$home_team[i] != old_home) {
+      resolved <- resolved + 1
+    }
+  }
+
+  n_games <- n_distinct(paste(odds_df$away_team, odds_df$home_team))
+  cat(sprintf("Resolved %d records (%d unique games) via team name matching.\n", resolved, n_games))
+  odds_df
 }
 
 
@@ -3113,7 +3414,7 @@ compare_spreads_to_wagerzon <- function(
   joined <- wz_spreads %>%
     inner_join(
       predictions %>%
-        select(id, home_team, away_team, market, book_home_spread, home_cover_prob, away_cover_prob),
+        select(id, home_team, away_team, market, book_home_spread, home_cover_prob, away_cover_prob, commence_time),
       by = c("home_team", "away_team", "market"),
       relationship = "many-to-many"
     ) %>%
@@ -3136,9 +3437,7 @@ compare_spreads_to_wagerzon <- function(
       home_ev = compute_ev(home_cover_prob, wz_prob_home),
       away_ev = compute_ev(away_cover_prob, wz_prob_away),
       home_bet_size = kelly_stake(home_ev, wz_prob_home, bankroll, kelly_mult),
-      away_bet_size = kelly_stake(away_ev, wz_prob_away, bankroll, kelly_mult),
-      # Add commence_time for format_bets_table (use fetch_time as proxy)
-      commence_time = as.POSIXct(fetch_time, tz = "UTC")
+      away_bet_size = kelly_stake(away_ev, wz_prob_away, bankroll, kelly_mult)
     )
 
   # Get bookmaker key from input data (works for wagerzon, hoop88, etc.)
@@ -3200,7 +3499,7 @@ compare_totals_to_wagerzon <- function(
   joined <- wz_totals %>%
     inner_join(
       predictions %>%
-        select(id, home_team, away_team, market, book_total_line, over_prob, under_prob),
+        select(id, home_team, away_team, market, book_total_line, over_prob, under_prob, commence_time),
       by = c("home_team", "away_team", "market"),
       relationship = "many-to-many"
     ) %>%
@@ -3220,8 +3519,7 @@ compare_totals_to_wagerzon <- function(
       over_ev = compute_ev(over_prob, wz_prob_over),
       under_ev = compute_ev(under_prob, wz_prob_under),
       over_bet_size = kelly_stake(over_ev, wz_prob_over, bankroll, kelly_mult),
-      under_bet_size = kelly_stake(under_ev, wz_prob_under, bankroll, kelly_mult),
-      commence_time = as.POSIXct(fetch_time, tz = "UTC")
+      under_bet_size = kelly_stake(under_ev, wz_prob_under, bankroll, kelly_mult)
     )
 
   # Get bookmaker key from input data
@@ -3282,7 +3580,7 @@ compare_moneylines_to_wagerzon <- function(
   joined <- wz_ml %>%
     inner_join(
       predictions %>%
-        select(id, home_team, away_team, market, home_win_prob, away_win_prob),
+        select(id, home_team, away_team, market, home_win_prob, away_win_prob, commence_time),
       by = c("home_team", "away_team", "market")
     )
 
@@ -3300,8 +3598,7 @@ compare_moneylines_to_wagerzon <- function(
       home_ev = compute_ev(home_win_prob, wz_prob_home),
       away_ev = compute_ev(away_win_prob, wz_prob_away),
       home_bet_size = kelly_stake(home_ev, wz_prob_home, bankroll, kelly_mult),
-      away_bet_size = kelly_stake(away_ev, wz_prob_away, bankroll, kelly_mult),
-      commence_time = as.POSIXct(fetch_time, tz = "UTC")
+      away_bet_size = kelly_stake(away_ev, wz_prob_away, bankroll, kelly_mult)
     )
 
   # Get bookmaker key from input data
@@ -3658,5 +3955,622 @@ print_parlay_result <- function(result, legs) {
 
   cat(sprintf("\nSamples: %d resolved, %d pushes excluded\n",
       result$n_samples_resolved, result$n_pushes))
+}
+
+
+# =============================================================================
+# GENERALIZED DERIVATIVE BACKTEST FUNCTION
+# =============================================================================
+
+#' Run a generalized derivative backtest for any sport
+#'
+#' This function runs a leave-one-out backtest on derivative markets (H1, H2, etc.)
+#' comparing answer key predictions to book implied probabilities and actual outcomes.
+#'
+#' @param pbp_data Data frame with play-by-play outcomes (margins, totals by period)
+#' @param sport_config List with sport-specific configuration:
+#'   - sport: "nfl", "cbb", etc.
+#'   - margin_col_prefix: e.g., "game_home_margin_"
+#'   - total_col_prefix: e.g., "game_total_"
+#'   - periods: list with period names and their column suffixes
+#'   - parent_spread_col: column name for FG spread
+#'   - parent_total_col: column name for FG total
+#'   - consensus_home_odds_col: column for consensus home cover prob
+#'   - consensus_over_odds_col: column for consensus over prob
+#'   - home_score_prefix: e.g., "home_" for home_h1_score
+#'   - away_score_prefix: e.g., "away_" for away_h1_score
+#' @param derivative_odds Optional data frame with derivative odds (for log-loss vs book)
+#' @param kelly_mult Kelly multiplier for ROI simulation (default 0.25)
+#' @param bankroll Starting bankroll for ROI simulation (default 1000)
+#' @param sample_pct Percentage of historical data to use for sample size (default 0.10)
+#' @param test_game_ids Optional vector of game IDs to test (NULL = test all games)
+#' @param verbose Print progress messages (default TRUE)
+#' @return List with: predictions, by_market, by_period, overall, plots
+run_derivative_backtest <- function(
+    pbp_data,
+    sport_config,
+    derivative_odds = NULL,
+    kelly_mult = 0.25,
+    bankroll = 1000,
+    sample_pct = 0.10,
+    test_game_ids = NULL,
+    verbose = TRUE
+) {
+
+  # ============================================================================
+  # HELPER FUNCTIONS
+  # ============================================================================
+
+  american_to_prob <- function(odds) {
+    ifelse(odds > 0, 100 / (odds + 100), abs(odds) / (abs(odds) + 100))
+  }
+
+  devig_american_pair <- function(odds1, odds2) {
+    p1 <- american_to_prob(odds1)
+    p2 <- american_to_prob(odds2)
+    total <- p1 + p2
+    list(prob1 = p1 / total, prob2 = p2 / total)
+  }
+
+  calc_ev <- function(pred_prob, book_odds) {
+    decimal_odds <- ifelse(book_odds > 0, 1 + book_odds / 100, 1 + 100 / abs(book_odds))
+    pred_prob * decimal_odds - 1
+  }
+
+  kelly_stake <- function(ev, book_odds, bankroll, kelly_mult = 0.25) {
+    if (ev <= 0) return(0)
+    decimal_odds <- ifelse(book_odds > 0, 1 + book_odds / 100, 1 + 100 / abs(book_odds))
+    b <- decimal_odds - 1
+    p <- (ev + 1) / decimal_odds
+    q <- 1 - p
+    kelly_full <- max(0, (b * p - q) / b)
+    bankroll * kelly_mult * kelly_full
+  }
+
+  # ============================================================================
+  # SETUP
+  # ============================================================================
+
+  if (verbose) cat("\n===========================================\n")
+  if (verbose) cat("DERIVATIVE BACKTEST:", toupper(sport_config$sport), "\n")
+  if (verbose) cat("===========================================\n\n")
+
+  # Convert to data.table for efficiency
+  DT <- as.data.table(pbp_data)
+
+  # Calculate dispersion for sample weighting
+  disp <- compute_dispersion(DT, moneyline = FALSE,
+                             spread_col = sport_config$parent_spread_col,
+                             total_col = sport_config$parent_total_col)
+  ss <- disp$ss
+  st <- disp$st
+  N <- round(nrow(DT) * sample_pct, 0)
+
+  if (verbose) cat("Total games:", nrow(DT), "\n")
+  if (verbose) cat("Sample size N:", N, "\n")
+  if (verbose) cat("Dispersion - ss:", round(ss, 2), "st:", round(st, 2), "\n\n")
+
+  # Get list of games to test (use subset if provided)
+  if (!is.null(test_game_ids)) {
+    all_game_ids <- test_game_ids[test_game_ids %in% unique(DT$game_id)]
+    if (verbose) cat("Testing subset of", length(all_game_ids), "games\n\n")
+  } else {
+    all_game_ids <- unique(DT$game_id)
+  }
+
+  # ============================================================================
+  # DEFINE MARKETS TO TEST
+  # ============================================================================
+
+  # Build market definitions based on sport config
+  markets <- list()
+
+  for (period_name in names(sport_config$periods)) {
+    period_info <- sport_config$periods[[period_name]]
+    suffix <- period_info$suffix
+
+    # Spread market
+    margin_col <- paste0(sport_config$margin_col_prefix, suffix)
+    if (margin_col %in% names(DT)) {
+      markets[[paste0("spread_", period_name)]] <- list(
+        type = "spread",
+        period = period_name,
+        margin_col = margin_col,
+        display_name = paste0(period_info$display, " Spread")
+      )
+    }
+
+    # Total market
+    total_col <- paste0(sport_config$total_col_prefix, suffix)
+    if (total_col %in% names(DT)) {
+      markets[[paste0("total_", period_name)]] <- list(
+        type = "total",
+        period = period_name,
+        total_col = total_col,
+        display_name = paste0(period_info$display, " Total")
+      )
+    }
+
+    # Moneyline market (uses margin column)
+    if (margin_col %in% names(DT)) {
+      markets[[paste0("ml_", period_name)]] <- list(
+        type = "moneyline",
+        period = period_name,
+        margin_col = margin_col,
+        display_name = paste0(period_info$display, " Moneyline")
+      )
+    }
+
+    # Team totals (home and away)
+    home_score_col <- paste0(sport_config$home_score_prefix, suffix, "_score")
+    away_score_col <- paste0(sport_config$away_score_prefix, suffix, "_score")
+
+    if (home_score_col %in% names(DT)) {
+      markets[[paste0("home_tt_", period_name)]] <- list(
+        type = "team_total",
+        period = period_name,
+        score_col = home_score_col,
+        side = "home",
+        display_name = paste0(period_info$display, " Home Team Total")
+      )
+    }
+
+    if (away_score_col %in% names(DT)) {
+      markets[[paste0("away_tt_", period_name)]] <- list(
+        type = "team_total",
+        period = period_name,
+        score_col = away_score_col,
+        side = "away",
+        display_name = paste0(period_info$display, " Away Team Total")
+      )
+    }
+  }
+
+  if (verbose) cat("Markets to test:", length(markets), "\n")
+  if (verbose) cat("Market names:", paste(names(markets), collapse = ", "), "\n\n")
+
+  # ============================================================================
+  # RUN PREDICTIONS
+  # ============================================================================
+
+  if (verbose) cat("Running predictions...\n")
+
+  all_predictions <- list()
+
+  for (i in seq_along(all_game_ids)) {
+    if (verbose && i %% 100 == 0) cat("  ", i, "/", length(all_game_ids), "\n")
+
+    test_game_id <- all_game_ids[i]
+    test_game <- DT[DT$game_id == test_game_id, ][1, ]
+
+    # Get parent lines for this game
+    parent_spread <- test_game[[sport_config$parent_spread_col]]
+    parent_total <- test_game[[sport_config$parent_total_col]]
+
+    # Get consensus probabilities for target cover/over rates
+    target_cover <- test_game[[sport_config$consensus_home_odds_col]]
+    target_over <- test_game[[sport_config$consensus_over_odds_col]]
+
+    # Skip if missing parent data
+    if (is.na(parent_spread) || is.na(parent_total)) next
+    if (is.na(target_cover) || is.na(target_over)) next
+
+    # Leave-one-out training data
+    DT_train <- DT[DT$game_id != test_game_id, ]
+
+    # Run answer key sampling
+    sample_result <- tryCatch({
+      run_answer_key_sample(
+        id = test_game_id,
+        parent_spread = parent_spread,
+        parent_total = parent_total,
+        target_cover = target_cover,
+        target_over = target_over,
+        DT = DT_train,
+        ss = ss, st = st, N = N,
+        use_spread_line = TRUE
+      )
+    }, error = function(e) NULL)
+
+    if (is.null(sample_result)) next
+
+    sample <- sample_result$sample
+
+    # Generate predictions for each market
+    for (market_name in names(markets)) {
+      market <- markets[[market_name]]
+
+      if (market$type == "spread") {
+        # Spread: predict P(home covers) at line 0 (since we're testing the prediction accuracy)
+        margin_col <- market$margin_col
+        if (!(margin_col %in% names(sample))) next
+
+        margins <- sample[[margin_col]]
+        actual_margin <- test_game[[margin_col]]
+        if (is.na(actual_margin)) next
+
+        # Predict home cover prob (margin > 0)
+        non_push <- margins != 0
+        if (sum(non_push) == 0) next
+
+        home_win_prob <- mean(margins[non_push] > 0)
+        away_win_prob <- 1 - home_win_prob
+
+        # Actual outcome (at 0 line = moneyline result for this period)
+        if (actual_margin == 0) next
+        actual_home_win <- ifelse(actual_margin > 0, 1, 0)
+
+        # Home side
+        all_predictions[[length(all_predictions) + 1]] <- list(
+          game_id = test_game_id,
+          market = market_name,
+          market_type = "spread",
+          period = market$period,
+          display_name = market$display_name,
+          bet_side = "home",
+          algo_prob = home_win_prob,
+          actual_outcome = actual_home_win,
+          has_book_odds = FALSE,
+          book_prob = NA_real_,
+          book_odds = NA_real_,
+          ev = NA_real_
+        )
+
+        # Away side
+        all_predictions[[length(all_predictions) + 1]] <- list(
+          game_id = test_game_id,
+          market = market_name,
+          market_type = "spread",
+          period = market$period,
+          display_name = market$display_name,
+          bet_side = "away",
+          algo_prob = away_win_prob,
+          actual_outcome = 1 - actual_home_win,
+          has_book_odds = FALSE,
+          book_prob = NA_real_,
+          book_odds = NA_real_,
+          ev = NA_real_
+        )
+
+      } else if (market$type == "total") {
+        # Total: predict P(over) at the average total for this period
+        total_col <- market$total_col
+        if (!(total_col %in% names(sample))) next
+
+        totals <- sample[[total_col]]
+        actual_total <- test_game[[total_col]]
+        if (is.na(actual_total)) next
+
+        # Use median as reference line
+        ref_line <- median(totals, na.rm = TRUE)
+
+        non_push <- totals != ref_line
+        if (sum(non_push) == 0) next
+
+        over_prob <- mean(totals[non_push] > ref_line)
+        under_prob <- 1 - over_prob
+
+        # Actual outcome
+        if (actual_total == ref_line) next
+        actual_over <- ifelse(actual_total > ref_line, 1, 0)
+
+        # Over side
+        all_predictions[[length(all_predictions) + 1]] <- list(
+          game_id = test_game_id,
+          market = market_name,
+          market_type = "total",
+          period = market$period,
+          display_name = market$display_name,
+          bet_side = "over",
+          algo_prob = over_prob,
+          actual_outcome = actual_over,
+          has_book_odds = FALSE,
+          book_prob = NA_real_,
+          book_odds = NA_real_,
+          ev = NA_real_
+        )
+
+        # Under side
+        all_predictions[[length(all_predictions) + 1]] <- list(
+          game_id = test_game_id,
+          market = market_name,
+          market_type = "total",
+          period = market$period,
+          display_name = market$display_name,
+          bet_side = "under",
+          algo_prob = under_prob,
+          actual_outcome = 1 - actual_over,
+          has_book_odds = FALSE,
+          book_prob = NA_real_,
+          book_odds = NA_real_,
+          ev = NA_real_
+        )
+
+      } else if (market$type == "moneyline") {
+        # Moneyline: predict P(home wins)
+        margin_col <- market$margin_col
+        if (!(margin_col %in% names(sample))) next
+
+        margins <- sample[[margin_col]]
+        actual_margin <- test_game[[margin_col]]
+        if (is.na(actual_margin)) next
+
+        # 2-way moneyline (excluding ties)
+        non_tie <- margins != 0
+        if (sum(non_tie) == 0) next
+
+        home_win_prob <- mean(margins[non_tie] > 0)
+        away_win_prob <- 1 - home_win_prob
+
+        # Skip ties in actual outcome
+        if (actual_margin == 0) next
+        actual_home_win <- ifelse(actual_margin > 0, 1, 0)
+
+        # Home side
+        all_predictions[[length(all_predictions) + 1]] <- list(
+          game_id = test_game_id,
+          market = market_name,
+          market_type = "moneyline",
+          period = market$period,
+          display_name = market$display_name,
+          bet_side = "home",
+          algo_prob = home_win_prob,
+          actual_outcome = actual_home_win,
+          has_book_odds = FALSE,
+          book_prob = NA_real_,
+          book_odds = NA_real_,
+          ev = NA_real_
+        )
+
+        # Away side
+        all_predictions[[length(all_predictions) + 1]] <- list(
+          game_id = test_game_id,
+          market = market_name,
+          market_type = "moneyline",
+          period = market$period,
+          display_name = market$display_name,
+          bet_side = "away",
+          algo_prob = away_win_prob,
+          actual_outcome = 1 - actual_home_win,
+          has_book_odds = FALSE,
+          book_prob = NA_real_,
+          book_odds = NA_real_,
+          ev = NA_real_
+        )
+
+      } else if (market$type == "team_total") {
+        # Team total: predict P(team scores > median)
+        score_col <- market$score_col
+        if (!(score_col %in% names(sample))) next
+
+        scores <- sample[[score_col]]
+        actual_score <- test_game[[score_col]]
+        if (is.na(actual_score)) next
+
+        # Use median as reference line
+        ref_line <- median(scores, na.rm = TRUE)
+
+        non_push <- scores != ref_line
+        if (sum(non_push) == 0) next
+
+        over_prob <- mean(scores[non_push] > ref_line)
+        under_prob <- 1 - over_prob
+
+        # Actual outcome
+        if (actual_score == ref_line) next
+        actual_over <- ifelse(actual_score > ref_line, 1, 0)
+
+        # Over side
+        all_predictions[[length(all_predictions) + 1]] <- list(
+          game_id = test_game_id,
+          market = market_name,
+          market_type = "team_total",
+          period = market$period,
+          display_name = market$display_name,
+          bet_side = paste0(market$side, "_over"),
+          algo_prob = over_prob,
+          actual_outcome = actual_over,
+          has_book_odds = FALSE,
+          book_prob = NA_real_,
+          book_odds = NA_real_,
+          ev = NA_real_
+        )
+
+        # Under side
+        all_predictions[[length(all_predictions) + 1]] <- list(
+          game_id = test_game_id,
+          market = market_name,
+          market_type = "team_total",
+          period = market$period,
+          display_name = market$display_name,
+          bet_side = paste0(market$side, "_under"),
+          algo_prob = under_prob,
+          actual_outcome = 1 - actual_over,
+          has_book_odds = FALSE,
+          book_prob = NA_real_,
+          book_odds = NA_real_,
+          ev = NA_real_
+        )
+      }
+    }
+  }
+
+  # Convert to data frame
+  results <- map_dfr(all_predictions, as_tibble)
+
+  if (nrow(results) == 0) {
+    warning("No predictions generated!")
+    return(NULL)
+  }
+
+  if (verbose) cat("\nTotal predictions:", nrow(results), "\n")
+  if (verbose) cat("Unique games:", n_distinct(results$game_id), "\n\n")
+
+  # ============================================================================
+  # CALCULATE METRICS
+  # ============================================================================
+
+  # Log-loss for algorithm predictions
+  results <- results %>%
+    mutate(
+      algo_logloss = -(actual_outcome * log(pmax(algo_prob, 1e-10)) +
+                       (1 - actual_outcome) * log(pmax(1 - algo_prob, 1e-10)))
+    )
+
+  # ============================================================================
+  # RESULTS BY MARKET
+  # ============================================================================
+
+  by_market <- results %>%
+    group_by(market, market_type, period, display_name) %>%
+    summarize(
+      n_predictions = n(),
+      n_games = n_distinct(game_id),
+      algo_logloss = mean(algo_logloss, na.rm = TRUE),
+      avg_algo_prob = mean(algo_prob),
+      avg_actual = mean(actual_outcome),
+      calibration_error = mean(algo_prob) - mean(actual_outcome),
+      abs_cal_error = abs(mean(algo_prob) - mean(actual_outcome)),
+      .groups = "drop"
+    ) %>%
+    arrange(market_type, period)
+
+  # ============================================================================
+  # RESULTS BY PERIOD
+  # ============================================================================
+
+  by_period <- results %>%
+    group_by(period) %>%
+    summarize(
+      n_predictions = n(),
+      n_games = n_distinct(game_id),
+      algo_logloss = mean(algo_logloss, na.rm = TRUE),
+      avg_algo_prob = mean(algo_prob),
+      avg_actual = mean(actual_outcome),
+      calibration_error = mean(algo_prob) - mean(actual_outcome),
+      .groups = "drop"
+    )
+
+  # ============================================================================
+  # OVERALL SUMMARY
+  # ============================================================================
+
+  overall <- results %>%
+    summarize(
+      total_predictions = n(),
+      total_games = n_distinct(game_id),
+      algo_logloss = mean(algo_logloss, na.rm = TRUE),
+      avg_algo_prob = mean(algo_prob),
+      avg_actual = mean(actual_outcome),
+      calibration_error = mean(algo_prob) - mean(actual_outcome)
+    )
+
+  # ============================================================================
+  # CALIBRATION ANALYSIS
+  # ============================================================================
+
+  # Bin predictions into deciles for calibration plot
+  calibration <- results %>%
+    mutate(prob_bin = cut(algo_prob, breaks = seq(0, 1, 0.1), include.lowest = TRUE)) %>%
+    group_by(prob_bin) %>%
+    summarize(
+      n = n(),
+      avg_predicted = mean(algo_prob),
+      avg_actual = mean(actual_outcome),
+      .groups = "drop"
+    ) %>%
+    filter(!is.na(prob_bin))
+
+  # ============================================================================
+  # PRINT RESULTS
+  # ============================================================================
+
+  if (verbose) {
+    cat("===========================================\n")
+    cat("RESULTS BY MARKET\n")
+    cat("===========================================\n\n")
+    print(by_market %>% select(display_name, n_predictions, n_games, algo_logloss, calibration_error))
+
+    cat("\n===========================================\n")
+    cat("RESULTS BY PERIOD\n")
+    cat("===========================================\n\n")
+    print(by_period)
+
+    cat("\n===========================================\n")
+    cat("OVERALL SUMMARY\n")
+    cat("===========================================\n\n")
+    cat("Total predictions:", overall$total_predictions, "\n")
+    cat("Total games:", overall$total_games, "\n")
+    cat("Algorithm log-loss:", round(overall$algo_logloss, 4), "\n")
+    cat("Calibration error:", round(overall$calibration_error, 4), "\n")
+
+    cat("\n===========================================\n")
+    cat("CALIBRATION TABLE\n")
+    cat("===========================================\n\n")
+    print(calibration)
+  }
+
+  # ============================================================================
+  # RETURN RESULTS
+  # ============================================================================
+
+  list(
+    predictions = results,
+    by_market = by_market,
+    by_period = by_period,
+    overall = overall,
+    calibration = calibration,
+    config = sport_config
+  )
+}
+
+
+#' Create sport-specific configuration for derivative backtest
+#'
+#' @param sport One of "nfl", "cbb"
+#' @return List with sport-specific column mappings and period definitions
+get_sport_backtest_config <- function(sport) {
+
+  if (sport == "cbb") {
+    list(
+      sport = "cbb",
+      margin_col_prefix = "game_home_margin_",
+      total_col_prefix = "game_total_",
+      home_score_prefix = "home_",
+      away_score_prefix = "away_",
+      parent_spread_col = "home_spread",
+      parent_total_col = "total_line",
+      consensus_home_odds_col = "consensus_home_cover_prob",
+      consensus_over_odds_col = "consensus_over_prob",
+      periods = list(
+        h1 = list(suffix = "h1", display = "H1"),
+        h2 = list(suffix = "h2", display = "H2")
+      )
+    )
+
+  } else if (sport == "nfl") {
+    list(
+      sport = "nfl",
+      margin_col_prefix = "game_home_margin_period_",
+      total_col_prefix = "game_total_period_",
+      home_score_prefix = "home_score_period_",
+      away_score_prefix = "away_score_period_",
+      parent_spread_col = "home_spread",
+      parent_total_col = "total_line",
+      consensus_home_odds_col = "consensus_devig_home_odds",
+      consensus_over_odds_col = "consensus_devig_over_odds",
+      periods = list(
+        q1 = list(suffix = "1", display = "Q1"),
+        q2 = list(suffix = "2", display = "Q2"),
+        q3 = list(suffix = "3", display = "Q3"),
+        q4 = list(suffix = "4", display = "Q4"),
+        h1 = list(suffix = "Half1", display = "H1"),
+        h2 = list(suffix = "Half2", display = "H2")
+      )
+    )
+
+  } else {
+    stop(paste("Unknown sport:", sport))
+  }
 }
 

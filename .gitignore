@@ -42,5 +42,12 @@ report.html
 # Session files
 .pikkit_session.json
 
+# Browser profiles (Playwright)
+.betonline_profile/
+
+# Symlinked venvs
+bfa_odds/venv
+hoop88_odds/venv
+
 # Logs
 logs/

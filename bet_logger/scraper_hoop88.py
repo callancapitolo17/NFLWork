@@ -10,6 +10,14 @@ import re
 from datetime import datetime
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from utils import (
+    calculate_american_odds,
+    calculate_american_odds_from_line,
+    calculate_decimal_odds_from_american,
+    parse_status,
+    parse_sport,
+    parse_risk_win,
+)
 
 # Playwright import
 try:
@@ -26,58 +34,6 @@ HOOP88_URL = os.getenv("HOOP88_URL", "https://hoop88.com")
 HOOP88_USERNAME = os.getenv("HOOP88_USERNAME")
 HOOP88_PASSWORD = os.getenv("HOOP88_PASSWORD")
 HOOP88_HISTORY_URL = "https://hoop88.com/sports.html?v=1768432347363"
-
-
-def calculate_american_odds_from_line(line_text: str) -> int:
-    """Extract American odds from line text like '+120' or '-110'."""
-    match = re.search(r'([+-]\d+)', line_text)
-    if match:
-        return int(match.group(1))
-    return 0
-
-
-def calculate_decimal_odds_from_american(american_odds: int) -> float:
-    """Convert American odds to decimal odds format."""
-    if american_odds > 0:
-        return (american_odds / 100) + 1
-    elif american_odds < 0:
-        return (100 / abs(american_odds)) + 1
-    return 1.0
-
-
-def parse_status(status_text: str) -> str:
-    """Extract result from status text."""
-    status_upper = status_text.upper()
-    if 'WIN' in status_upper or 'WON' in status_upper:
-        return 'W'
-    elif 'LOST' in status_upper or 'LOSS' in status_upper:
-        return 'L'
-    elif 'CANCELLED' in status_upper or 'PUSHED' in status_upper or 'PUSH' in status_upper:
-        return 'X'
-    return ''
-
-
-def parse_sport(selection_text: str, note_text: str = '') -> str:
-    """Determine sport from selection or note text."""
-    combined_text = (selection_text + ' ' + note_text).upper()
-    
-    if 'NFL' in combined_text:
-        return 'NFL'
-    elif 'NBA' in combined_text:
-        return 'NBA'
-    elif 'NHL' in combined_text:
-        return 'NHL'
-    elif 'MLB' in combined_text:
-        return 'MLB'
-    elif 'NCAAF' in combined_text or 'COLLEGE FOOTBALL' in combined_text:
-        return 'NCAAF'
-    elif 'COLLEGE' in combined_text or 'BOWL' in combined_text or 'PEACH' in combined_text:
-        # Generic college detection - includes bowl games
-        return 'NCAAF'
-    elif 'NCAAB' in combined_text or 'NCAAM' in combined_text or 'COLLEGE BASKETBALL' in combined_text:
-        return 'NCAAM'
-    
-    return ''
 
 
 def parse_bet_type(type_label: str) -> str:
@@ -139,20 +95,6 @@ def parse_date(date_str: str) -> str:
         return dt.strftime("%-m/%-d/%y")
     except:
         return date_str
-
-
-def parse_risk_win(risk_win_text: str) -> tuple:
-    """Parse risk/win text into separate values."""
-    # Format: "$ 125.00 / $ 325.00" or "$ 0.00 / $ 603.48"
-    try:
-        parts = risk_win_text.split('/')
-        if len(parts) == 2:
-            risk = float(parts[0].replace('$', '').replace(',', '').strip())
-            win = float(parts[1].replace('$', '').replace(',', '').strip())
-            return risk, win
-    except:
-        pass
-    return 0.0, 0.0
 
 
 def parse_contest_bet(row) -> dict:
@@ -226,12 +168,8 @@ def parse_contest_bet(row) -> dict:
         # Detect sport from description
         sport = parse_sport(description, '')
 
-        # Calculate decimal odds from risk/win
-        if risk > 0 and win > 0:
-            american_odds = int(round((win / risk) * 100))
-        else:
-            american_odds = 0
-
+        # Calculate odds from risk/win
+        american_odds = calculate_american_odds(risk, win)
         decimal_odds = calculate_decimal_odds_from_american(american_odds)
 
         return {

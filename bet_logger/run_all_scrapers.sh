@@ -1,27 +1,63 @@
 #!/bin/bash
 
 # Run All Bet Scrapers
-# This script runs all betting platform scrapers in sequence
+# Runs all betting platform scrapers in sequence.
+# Continues to the next scraper even if one fails.
 
 cd "/Users/callancapitolo/NFLWork/bet_logger"
 
+FAILED=0
+
 echo "========================================"
 echo "MULTI-PLATFORM BET SCRAPER"
+echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================"
 echo ""
 
 # Run Wagerzon scraper
-echo "🎯 Running Wagerzon scraper..."
+echo "[$(date '+%H:%M:%S')] Running Wagerzon scraper..."
 echo "----------------------------------------"
-./venv/bin/python3 scraper.py
+if ./venv/bin/python3 scraper_wagerzon.py; then
+    echo "[$(date '+%H:%M:%S')] Wagerzon: done"
+else
+    echo "[$(date '+%H:%M:%S')] Wagerzon: FAILED (exit $?)"
+    FAILED=$((FAILED + 1))
+fi
 echo ""
 
 # Run Hoop88 scraper
-echo "🎯 Running Hoop88 scraper..."
+echo "[$(date '+%H:%M:%S')] Running Hoop88 scraper..."
 echo "----------------------------------------"
-./venv/bin/python3 scraper_hoop88.py
+if ./venv/bin/python3 scraper_hoop88.py; then
+    echo "[$(date '+%H:%M:%S')] Hoop88: done"
+else
+    echo "[$(date '+%H:%M:%S')] Hoop88: FAILED (exit $?)"
+    FAILED=$((FAILED + 1))
+fi
+echo ""
+
+# Run BFA Gaming scraper
+echo "[$(date '+%H:%M:%S')] Running BFA Gaming scraper..."
+echo "----------------------------------------"
+if ./venv/bin/python3 scraper_bfa.py; then
+    echo "[$(date '+%H:%M:%S')] BFA: done"
+else
+    echo "[$(date '+%H:%M:%S')] BFA: FAILED (exit $?)"
+    FAILED=$((FAILED + 1))
+fi
 echo ""
 
 echo "========================================"
-echo "✅ All scrapers completed!"
+if [ $FAILED -eq 0 ]; then
+    MSG="All 3 scrapers completed successfully."
+    echo "$MSG"
+    osascript -e "display notification \"$MSG\" with title \"Bet Logger\" sound name \"Glass\""
+else
+    MSG="Completed with $FAILED scraper(s) failed. Check logs."
+    echo "$MSG"
+    osascript -e "display notification \"$MSG\" with title \"Bet Logger\" sound name \"Basso\""
+fi
+echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================"
+
+exit $FAILED
