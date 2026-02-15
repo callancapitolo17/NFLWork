@@ -140,3 +140,29 @@ This repo contains tools for:
 2. Keep files in check, do not spam create new files.
 3. **No temp files** - Avoid creating temporary files (`.rds`, `.csv`, `.tmp`) on disk. Use DuckDB tables for shared state between processes instead.
 
+## Version Control Rules
+
+**What gets committed (source code only):**
+- `.R`, `.py`, `.sh`, `.sql` scripts
+- Config files: `.json`, `.env.example`, `requirements.txt`, `CLAUDE.md`
+- Documentation: `README.md`, `.txt` descriptions
+
+**What NEVER gets committed (enforced by `.gitignore`):**
+- **Data files:** `*.duckdb`, `*.csv`, `*.rds` — use DuckDB tables for persistent data
+- **Secrets:** `.env`, `*.pem`, `credentials.json` — use `.env.example` templates instead
+- **Generated artifacts:** `report.html`, `**/lib/`, `Rplots.pdf`, `output/`
+- **Debug files:** `debug_*.html`, `debug_*.png`
+- **OS/IDE junk:** `.DS_Store`, `.Rhistory`, `__pycache__/`, `venv/`
+
+**Before creating a new file, ask:**
+1. Is it source code? → Track it in git
+2. Is it data or generated output? → Store in DuckDB or gitignore it
+3. Is it a secret/credential? → Use `.env` (gitignored) + `.env.example` (tracked)
+4. Is it a temp/debug artifact? → Don't create it, or clean it up immediately
+
+**Commit discipline:**
+- Write clear commit messages that explain *why*, not just *what*
+- Never commit binary files, databases, or large data files
+- If adding a new data source, load it into a DuckDB table — not a CSV in the repo
+- When replacing a file (e.g., scraper v1 → v2), remove the old one in the same commit
+
