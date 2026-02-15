@@ -1,0 +1,110 @@
+{
+  "market_groups": {
+    "h2h": {
+      "description": "Head-to-head moneyline (team to win period)",
+      "markets": ["h2h_q1", "h2h_q2", "h2h_q3", "h2h_q4", "h2h_h1", "h2h_h2"],
+      "correlation_type": "directional"
+    },
+    "h2h_3way": {
+      "description": "3-way moneyline (includes tie outcome)",
+      "markets": ["h2h_3_way_q1", "h2h_3_way_q2", "h2h_3_way_q3", "h2h_3_way_q4", "h2h_3_way_h1", "h2h_3_way_h2"],
+      "correlation_type": "directional"
+    },
+    "spreads": {
+      "description": "Point spread bets",
+      "markets": ["spreads_q1", "spreads_q2", "spreads_q3", "spreads_q4", "spreads_h1", "spreads_h2"],
+      "correlation_type": "directional"
+    },
+    "alternate_spreads": {
+      "description": "Alternate point spreads",
+      "markets": ["alternate_spreads_q1", "alternate_spreads_q2", "alternate_spreads_q3", "alternate_spreads_q4", "alternate_spreads_h1", "alternate_spreads_h2"],
+      "correlation_type": "directional"
+    },
+    "totals": {
+      "description": "Game totals (over/under)",
+      "markets": ["totals_q1", "totals_q2", "totals_q3", "totals_q4", "totals_h1", "totals_h2"],
+      "correlation_type": "total"
+    },
+    "alternate_totals": {
+      "description": "Alternate game totals",
+      "markets": ["alternate_totals_q1", "alternate_totals_q2", "alternate_totals_q3", "alternate_totals_q4", "alternate_totals_h1", "alternate_totals_h2"],
+      "correlation_type": "total"
+    },
+    "team_totals": {
+      "description": "Individual team scoring totals",
+      "markets": ["team_totals_q1", "team_totals_q2", "team_totals_q3", "team_totals_q4", "team_totals_h1", "team_totals_h2"],
+      "correlation_type": "team_total"
+    },
+    "alternate_team_totals": {
+      "description": "Alternate team totals",
+      "markets": ["alternate_team_totals_q1", "alternate_team_totals_q2", "alternate_team_totals_q3", "alternate_team_totals_q4", "alternate_team_totals_h1", "alternate_team_totals_h2"],
+      "correlation_type": "team_total"
+    }
+  },
+  "cross_group_correlations": [
+    {
+      "group1": "h2h",
+      "group2": "h2h_3way",
+      "strength": 0.90,
+      "description": "Same outcome, different vig structure"
+    },
+    {
+      "group1": "h2h",
+      "group2": "spreads",
+      "strength": 0.75,
+      "description": "Covering spread implies winning"
+    },
+    {
+      "group1": "h2h_3way",
+      "group2": "spreads",
+      "strength": 0.70,
+      "description": "Spread and moneyline are directionally correlated"
+    },
+    {
+      "group1": "spreads",
+      "group2": "alternate_spreads",
+      "strength": 0.85,
+      "description": "Same spread family, different lines"
+    },
+    {
+      "group1": "totals",
+      "group2": "alternate_totals",
+      "strength": 0.85,
+      "description": "Same totals family, different lines"
+    },
+    {
+      "group1": "totals",
+      "group2": "team_totals",
+      "strength": 0.60,
+      "description": "Game total = sum of team totals"
+    },
+    {
+      "group1": "team_totals",
+      "group2": "alternate_team_totals",
+      "strength": 0.85,
+      "description": "Same team totals family"
+    },
+    {
+      "group1": "spreads",
+      "group2": "team_totals",
+      "strength": 0.50,
+      "description": "Favorite covering often means higher team total"
+    }
+  ],
+  "period_correlations": {
+    "q1_to_h1": 0.80,
+    "q2_to_h1": 0.70,
+    "q1_to_q2": 0.40,
+    "h1_to_h2": 0.30,
+    "description": "Earlier periods contribute to later periods (Q1+Q2=H1)"
+  },
+  "exposure_rules": {
+    "max_bets_per_game": 5,
+    "max_correlated_bets": 3,
+    "warning_thresholds": {
+      "low": 0.40,
+      "medium": 0.60,
+      "high": 0.80
+    }
+  }
+}
