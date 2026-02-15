@@ -1,4 +1,46 @@
+# R
 .Rproj.user
 .Rhistory
 .RData
 .Ruserdata
+Rplots.pdf
+
+# Credentials
+.env
+*.pem
+*-private-key.pem
+credentials.json
+
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# macOS
+.DS_Store
+
+# Debug artifacts
+debug_*.html
+debug_*.png
+
+# Data files
+*.duckdb
+*.duckdb-journal
+*.rds
+*.csv
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Generated output
+output/
+
+# Dashboard generated artifacts (R htmlwidgets)
+**/lib/
+report.html
+
+# Session files
+.pikkit_session.json
+
+# Logs
+logs/
