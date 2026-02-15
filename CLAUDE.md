@@ -166,3 +166,11 @@ This repo contains tools for:
 - If adding a new data source, load it into a DuckDB table — not a CSV in the repo
 - When replacing a file (e.g., scraper v1 → v2), remove the old one in the same commit
 
+**Branching workflow:**
+- `main` is the stable branch — it should always have working code
+- Create a feature branch for any non-trivial change: `git checkout -b feature/description`
+- Branch naming: `feature/add-xyz`, `fix/broken-xyz`, `refactor/xyz`
+- Merge back to `main` only when the work is complete and tested
+- Delete the branch after merging: `git branch -d feature/description`
+- For quick, isolated fixes (typo, one-liner) committing directly to `main` is fine
+
