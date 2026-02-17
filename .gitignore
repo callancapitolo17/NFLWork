@@ -23,6 +23,7 @@ venv/
 debug_*.html
 debug_*.png
 recon_*.html
+recon_*.json
 
 # Data files
 *.duckdb
