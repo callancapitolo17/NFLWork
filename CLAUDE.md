@@ -174,6 +174,17 @@ This repo contains tools for:
 - Delete the branch after merging: `git branch -d feature/description`
 - For quick, isolated fixes (typo, one-liner) committing directly to `main` is fine
 
+**Documentation discipline:**
+- Before merging any feature branch, always ask: "Does a README or doc need updating?"
+- Documentation updates are **required** when:
+  - Adding a new tool, scraper, pipeline, or major feature
+  - Changing setup steps, dependencies, or environment variables
+  - Adding new CLI flags, arguments, or usage patterns
+  - Modifying architecture (new files, changed data flow)
+- Documentation updates go in the **same commit** as the feature, not as an afterthought
+- Each subdirectory with its own tools should have its own README (e.g., `bet_logger/README.md`)
+- Keep READMEs practical: setup steps, usage examples, troubleshooting — not prose
+
 **Planning requirement:**
 - Every implementation plan must include a version control section: what branch to use, what files will be created/modified, and how commits will be structured
 
