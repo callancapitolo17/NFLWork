@@ -47,9 +47,20 @@ else
 fi
 echo ""
 
+# Run BetOnline scraper
+echo "[$(date '+%H:%M:%S')] Running BetOnline scraper..."
+echo "----------------------------------------"
+if ./venv/bin/python3 scraper_betonline.py --since-last; then
+    echo "[$(date '+%H:%M:%S')] BetOnline: done"
+else
+    echo "[$(date '+%H:%M:%S')] BetOnline: FAILED (exit $?)"
+    FAILED=$((FAILED + 1))
+fi
+echo ""
+
 echo "========================================"
 if [ $FAILED -eq 0 ]; then
-    MSG="All 3 scrapers completed successfully."
+    MSG="All 4 scrapers completed successfully."
     echo "$MSG"
     osascript -e "display notification \"$MSG\" with title \"Bet Logger\" sound name \"Glass\""
 else

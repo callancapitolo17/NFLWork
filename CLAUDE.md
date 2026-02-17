@@ -177,3 +177,7 @@ This repo contains tools for:
 **Planning requirement:**
 - Every implementation plan must include a version control section: what branch to use, what files will be created/modified, and how commits will be structured
 
+**Approval required:**
+- Never merge to `main` or push to remote without explicit user approval
+- Always confirm before any action that affects the remote repository
+
