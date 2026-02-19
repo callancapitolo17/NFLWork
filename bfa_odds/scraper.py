@@ -1,60 +1,58 @@
 #!/usr/bin/env python3
 """
 BFA Gaming Odds Scraper for Answer Key Pipeline
-Scrapes derivative markets (1H, 1Q, 2Q, 3Q, 4Q) and saves to DuckDB
+Fetches derivative markets (1H, 1Q, 2Q, 3Q, 4Q) via REST API and saves to DuckDB.
+
+No auth required — the BFA odds API is publicly accessible.
 """
 
-import os
-import re
 import sys
 import duckdb
-import sys
+import requests
 from datetime import datetime, timezone
 from pathlib import Path
-from dotenv import load_dotenv
 
 # Add Answer Keys to path for shared team name resolution
 sys.path.insert(0, str(Path(__file__).parent.parent / "Answer Keys"))
 from canonical_match import load_team_dict, load_canonical_games, resolve_team_names
 
-try:
-    from playwright.sync_api import sync_playwright
-except ImportError:
-    sync_playwright = None
-
-# Load .env from bet_logger directory
-env_path = Path(__file__).parent.parent / "bet_logger" / ".env"
-load_dotenv(env_path)
-
-BFA_URL = os.getenv("BFA_URL", "https://bfagaming.com")
-BFA_USERNAME = os.getenv("BFA_USERNAME")
-BFA_PASSWORD = os.getenv("BFA_PASSWORD")
-
 DB_PATH = Path(__file__).parent / "bfa.duckdb"
+
+# API configuration
+API_BASE = "https://api.bfagaming.com"
+API_PARAMS = {"playerId": 0, "agentId": 0, "fixtureType": 0}
+API_HEADERS = {
+    "Authorization": "Bearer",
+    "User-Agent": "bfa-client/1.0.0",
+    "Referer": "https://bfagaming.com/",
+}
 
 # Sport configurations
 SPORT_CONFIGS = {
     "nfl": {
         "sport_key": "americanfootball_nfl",
         "table_name": "nfl_odds",
-        "nav_text": "NFL",
+        "api_slug": "nfl",
+        "league_id": 889,
         "periods": ["1H", "1Q", "2Q", "3Q", "4Q"],
     },
     "nba": {
         "sport_key": "basketball_nba",
         "table_name": "nba_odds",
-        "nav_text": "NBA",
+        "api_slug": "nba",
+        "league_id": 487,
         "periods": ["1H", "1Q", "2Q", "3Q", "4Q"],
     },
     "cbb": {
         "sport_key": "basketball_ncaab",
         "table_name": "cbb_odds",
-        "nav_text": "NCAA(B)",
+        "api_slug": "ncaa_b",
+        "league_id": 493,
         "periods": ["1H"],
     },
 }
 
-# Map period short names to display names (for finding in UI)
+# Map period short names to display names (must match API period "name" field)
 PERIOD_DISPLAY = {
     "1H": "1st Half",
     "1Q": "1st Quarter",
@@ -115,39 +113,6 @@ NFL_TEAM_NAMES = {
     "Texans": "Houston Texans",
     "Titans": "Tennessee Titans",
     "Vikings": "Minnesota Vikings",
-    # Full names map to themselves
-    "San Francisco 49ers": "San Francisco 49ers",
-    "Chicago Bears": "Chicago Bears",
-    "Cincinnati Bengals": "Cincinnati Bengals",
-    "Buffalo Bills": "Buffalo Bills",
-    "Denver Broncos": "Denver Broncos",
-    "Cleveland Browns": "Cleveland Browns",
-    "Tampa Bay Buccaneers": "Tampa Bay Buccaneers",
-    "Arizona Cardinals": "Arizona Cardinals",
-    "Los Angeles Chargers": "Los Angeles Chargers",
-    "Kansas City Chiefs": "Kansas City Chiefs",
-    "Indianapolis Colts": "Indianapolis Colts",
-    "Washington Commanders": "Washington Commanders",
-    "Dallas Cowboys": "Dallas Cowboys",
-    "Miami Dolphins": "Miami Dolphins",
-    "Philadelphia Eagles": "Philadelphia Eagles",
-    "Atlanta Falcons": "Atlanta Falcons",
-    "New York Giants": "New York Giants",
-    "Jacksonville Jaguars": "Jacksonville Jaguars",
-    "New York Jets": "New York Jets",
-    "Detroit Lions": "Detroit Lions",
-    "Green Bay Packers": "Green Bay Packers",
-    "Carolina Panthers": "Carolina Panthers",
-    "New England Patriots": "New England Patriots",
-    "Las Vegas Raiders": "Las Vegas Raiders",
-    "Los Angeles Rams": "Los Angeles Rams",
-    "Baltimore Ravens": "Baltimore Ravens",
-    "New Orleans Saints": "New Orleans Saints",
-    "Seattle Seahawks": "Seattle Seahawks",
-    "Pittsburgh Steelers": "Pittsburgh Steelers",
-    "Houston Texans": "Houston Texans",
-    "Tennessee Titans": "Tennessee Titans",
-    "Minnesota Vikings": "Minnesota Vikings",
 }
 
 
@@ -166,33 +131,243 @@ def normalize_team_name(name: str, sport: str) -> str:
     return name
 
 
-def parse_spread(text: str) -> float:
-    """Extract spread value from text like '-3', '+4.5'."""
-    if not text:
-        return None
-    text = text.replace('½', '.5').replace('¼', '.25').replace('¾', '.75')
-    text = text.replace('−', '-')
-    match = re.search(r'([+-]?\d+\.?\d*)', text)
-    return float(match.group(1)) if match else None
+# =============================================================================
+# API CLIENT
+# =============================================================================
 
 
-def parse_american_odds(text: str) -> int:
-    """Extract American odds from text like '-110' or '+150' or 'EV'."""
-    if not text:
-        return None
-    if text.upper() == 'EV':
-        return 100  # Even money
-    match = re.search(r'([+-]\d+)', text.replace('−', '-'))
-    return int(match.group(1)) if match else None
+def fetch_games(session: requests.Session, sport: str) -> list:
+    """Fetch game list from BFA API.
+
+    Tries the popular endpoint first, falls back to league-based endpoint.
+    Returns list of game objects (type=1 regular games only).
+    """
+    config = SPORT_CONFIGS[sport]
+
+    # Try popular endpoint first
+    url = f"{API_BASE}/oddsservice/events/popular/{config['api_slug']}"
+    resp = session.get(url, params={**API_PARAMS, "set": "Auto"}, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+    games = [g for g in data.get("games", []) if g.get("type") == 1]
+
+    # Fall back to league endpoint if popular returns empty
+    if not games and config.get("league_id"):
+        url = f"{API_BASE}/oddsservice/events/leagues"
+        resp = session.get(
+            url,
+            params={**API_PARAMS, "id": config["league_id"], "set": "Auto"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        games = [g for g in data.get("games", []) if g.get("type") == 1]
+
+    return games
 
 
-def parse_total(text: str) -> float:
-    """Extract total value from text like 'o22.5' or 'u45'."""
-    if not text:
-        return None
-    text = text.replace('½', '.5').replace('¼', '.25').replace('¾', '.75')
-    match = re.search(r'(\d+\.?\d*)', text)
-    return float(match.group(1)) if match else None
+def fetch_game_detail(session: requests.Session, game_id: int) -> dict:
+    """Fetch full game detail (all markets, periods, alt lines)."""
+    url = f"{API_BASE}/oddsservice/event/{game_id}"
+    resp = session.get(url, params=API_PARAMS, timeout=15)
+    resp.raise_for_status()
+    return resp.json()
+
+
+# =============================================================================
+# JSON PARSING
+# =============================================================================
+
+
+def parse_game_odds(game: dict, config: dict, game_index: int,
+                    away_team: str, home_team: str, fetch_time) -> list:
+    """Parse API game detail JSON into DuckDB record format.
+
+    Returns list of dicts matching the existing 18-column DuckDB schema.
+    """
+    records = []
+
+    fixture = game.get("fixtures", [{}])[0]
+    contestants = fixture.get("contestants", [])
+    if len(contestants) < 2:
+        return records
+
+    # Determine away/home by contestant order (first listed = away, matching Playwright scraper)
+    away_id = contestants[0]["id"]
+    home_id = contestants[1]["id"]
+
+    # Parse game date/time from ISO format
+    game_dt = fixture.get("date", "")
+    game_date = game_dt.split("T")[0] if game_dt else ""
+    game_time = game_dt.split("T")[1].replace("Z", "") if "T" in game_dt else ""
+
+    # Build period name → number mapping from the game data
+    period_name_to_num = {}
+    for p in game.get("periods", []):
+        period_name_to_num[p["name"]] = p["number"]
+
+    markets = game.get("markets", [])
+
+    for period_short in config["periods"]:
+        period_display = PERIOD_DISPLAY[period_short]
+        period_number = period_name_to_num.get(period_display)
+        if period_number is None:
+            continue
+
+        period_standard = PERIOD_TO_STANDARD[period_short]
+        market_suffix = PERIOD_TO_MARKET_SUFFIX[period_short]
+
+        # Filter markets for this period
+        period_markets = [m for m in markets if m["periodNumber"] == period_number]
+
+        # Find market objects by type
+        spread_market = next((m for m in period_markets if m["type"] == 2), None)
+        total_market = next((m for m in period_markets if m["type"] == 3), None)
+        ml_market = next((m for m in period_markets if m["type"] == 1), None)
+
+        # Parse main spread (index=0)
+        away_spread = home_spread = away_spread_price = home_spread_price = None
+        if spread_market:
+            for odd in spread_market.get("odds", []):
+                if odd["index"] == 0 and odd.get("status", 0) == 0:
+                    if odd.get("contestantId") == away_id:
+                        away_spread = odd["line"]
+                        away_spread_price = odd["price"]
+                    elif odd.get("contestantId") == home_id:
+                        home_spread = odd["line"]
+                        home_spread_price = odd["price"]
+
+        # Parse main total (index=0)
+        total = over_price = under_price = None
+        if total_market:
+            for odd in total_market.get("odds", []):
+                if odd["index"] == 0 and odd.get("status", 0) == 0:
+                    if odd.get("side") == 4:  # over
+                        total = odd["line"]
+                        over_price = odd["price"]
+                    elif odd.get("side") == 5:  # under
+                        under_price = odd["price"]
+
+        # Parse main moneyline (index=0)
+        away_ml = home_ml = None
+        if ml_market:
+            for odd in ml_market.get("odds", []):
+                if odd["index"] == 0 and odd.get("status", 0) == 0:
+                    if odd.get("contestantId") == away_id:
+                        away_ml = odd["price"]
+                    elif odd.get("contestantId") == home_id:
+                        home_ml = odd["price"]
+
+        game_base = {
+            "fetch_time": fetch_time,
+            "sport_key": config["sport_key"],
+            "game_date": game_date,
+            "game_time": game_time,
+            "away_team": away_team,
+            "home_team": home_team,
+            "period": period_standard,
+        }
+
+        # Add main record
+        if away_spread is not None or total is not None or away_ml is not None:
+            records.append({
+                **game_base,
+                "game_id": f"bfa-{game_index}-{period_short}",
+                "market": f"spreads_{market_suffix}",
+                "away_spread": away_spread,
+                "away_spread_price": away_spread_price,
+                "home_spread": home_spread,
+                "home_spread_price": home_spread_price,
+                "total": total,
+                "over_price": over_price,
+                "under_price": under_price,
+                "away_ml": away_ml,
+                "home_ml": home_ml,
+            })
+
+        # Alt spreads (index > 0)
+        if spread_market:
+            alt_indices = sorted(set(
+                o["index"] for o in spread_market.get("odds", []) if o["index"] > 0
+            ))
+            alt_count = 0
+            for idx in alt_indices:
+                alt_away_spread = alt_away_price = alt_home_spread = alt_home_price = None
+                for odd in spread_market["odds"]:
+                    if odd["index"] == idx and odd.get("status", 0) == 0:
+                        if odd.get("contestantId") == away_id:
+                            alt_away_spread = odd["line"]
+                            alt_away_price = odd["price"]
+                        elif odd.get("contestantId") == home_id:
+                            alt_home_spread = odd["line"]
+                            alt_home_price = odd["price"]
+
+                # Sanity check: alt spread within 15 pts of main
+                if alt_away_spread is not None and away_spread is not None:
+                    if abs(alt_away_spread - away_spread) > 15:
+                        continue
+
+                if alt_away_spread is not None:
+                    records.append({
+                        **game_base,
+                        "game_id": f"bfa-{game_index}-{period_short}-alt-s{alt_count}",
+                        "market": f"alternate_spreads_{market_suffix}",
+                        "away_spread": alt_away_spread,
+                        "away_spread_price": alt_away_price,
+                        "home_spread": alt_home_spread,
+                        "home_spread_price": alt_home_price,
+                        "total": None,
+                        "over_price": None,
+                        "under_price": None,
+                        "away_ml": None,
+                        "home_ml": None,
+                    })
+                    alt_count += 1
+
+        # Alt totals (index > 0)
+        if total_market:
+            alt_indices = sorted(set(
+                o["index"] for o in total_market.get("odds", []) if o["index"] > 0
+            ))
+            alt_count = 0
+            for idx in alt_indices:
+                alt_total = alt_over_price = alt_under_price = None
+                for odd in total_market["odds"]:
+                    if odd["index"] == idx and odd.get("status", 0) == 0:
+                        if odd.get("side") == 4:
+                            alt_total = odd["line"]
+                            alt_over_price = odd["price"]
+                        elif odd.get("side") == 5:
+                            alt_under_price = odd["price"]
+
+                # Sanity check: alt total within 25 pts of main
+                if alt_total is not None and total is not None:
+                    if abs(alt_total - total) > 25:
+                        continue
+
+                if alt_total is not None:
+                    records.append({
+                        **game_base,
+                        "game_id": f"bfa-{game_index}-{period_short}-alt-t{alt_count}",
+                        "market": f"alternate_totals_{market_suffix}",
+                        "away_spread": None,
+                        "away_spread_price": None,
+                        "home_spread": None,
+                        "home_spread_price": None,
+                        "total": alt_total,
+                        "over_price": alt_over_price,
+                        "under_price": alt_under_price,
+                        "away_ml": None,
+                        "home_ml": None,
+                    })
+                    alt_count += 1
+
+    return records
+
+
+# =============================================================================
+# DATABASE
+# =============================================================================
 
 
 def init_database(sport: str):
@@ -201,7 +376,6 @@ def init_database(sport: str):
     table_name = config["table_name"]
 
     conn = duckdb.connect(str(DB_PATH))
-
     conn.execute(f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
             fetch_time TIMESTAMP,
@@ -224,529 +398,7 @@ def init_database(sport: str):
             home_ml INTEGER
         )
     """)
-
     conn.close()
-
-
-def login_bfa(page) -> bool:
-    """Login to BFA using Keycloak auth flow."""
-    print("Checking login status...")
-
-    must_login = page.locator('text=You must log in').count() > 0
-    login_button = page.locator('button:has-text("Log In"), button:has-text("Log in")')
-
-    if not must_login and login_button.count() == 0:
-        print("Already logged in")
-        return True
-
-    print("Login required. Clicking login button...")
-    try:
-        header_login = page.locator('.header-auth-container button:has-text("Log In")')
-        if header_login.count() > 0:
-            header_login.click()
-        else:
-            login_button.first.click()
-
-        print("Waiting for Keycloak login page...")
-        page.wait_for_url('**/realms/**', timeout=15000)
-        page.wait_for_timeout(2000)
-
-        username_field = page.locator('#username')
-        if username_field.count() > 0:
-            username_field.fill(BFA_USERNAME)
-        else:
-            page.fill('input[name="username"]', BFA_USERNAME)
-
-        page.wait_for_timeout(500)
-
-        password_field = page.locator('#password')
-        if password_field.count() > 0:
-            password_field.fill(BFA_PASSWORD)
-        else:
-            page.fill('input[name="password"]', BFA_PASSWORD)
-
-        page.wait_for_timeout(500)
-
-        login_submit = page.locator('#kc-login')
-        if login_submit.count() > 0:
-            login_submit.click()
-        else:
-            page.click('input[type="submit"]')
-
-        print("Waiting for redirect back to BFA...")
-        page.wait_for_url('**bfagaming.com**', timeout=30000)
-        page.wait_for_load_state('networkidle', timeout=30000)
-        page.wait_for_timeout(3000)
-
-        print("Login successful")
-        return True
-
-    except Exception as e:
-        print(f"Login failed: {e}")
-        return False
-
-
-def extract_games_from_main_page(page) -> list:
-    """Extract game info from the main sport page."""
-    return page.evaluate('''() => {
-        const games = [];
-        const fixtures = document.querySelectorAll('.threeopt-fixture-component');
-
-        fixtures.forEach((fixture, idx) => {
-            try {
-                const teamNames = fixture.querySelectorAll('.team-name-value');
-                if (teamNames.length < 2) return;
-
-                const awayTeam = teamNames[0].textContent.trim();
-                const homeTeam = teamNames[1].textContent.trim();
-
-                // Get "More wagers" link (single ID: /details/fixtureId) which has period tabs
-                // NOT the Props link (two IDs: /details/eventId/fixtureId)
-                const allLinks = fixture.closest('.fixture-view-component')?.querySelectorAll('a[href*="/details/"]');
-                let detailsUrl = null;
-                allLinks?.forEach(link => {
-                    const href = link.getAttribute('href');
-                    const text = link.textContent.toLowerCase();
-                    // Main markets URL has single ID (e.g., /details/2648238)
-                    // Props URL has two IDs (e.g., /details/2648233/2648238)
-                    if (href && text.includes('more wagers')) {
-                        detailsUrl = href;
-                    }
-                });
-                // Fallback: get the shortest details URL (single ID)
-                if (!detailsUrl && allLinks?.length > 0) {
-                    let shortest = null;
-                    allLinks.forEach(link => {
-                        const href = link.getAttribute('href');
-                        if (href && (!shortest || href.length < shortest.length)) {
-                            shortest = href;
-                        }
-                    });
-                    detailsUrl = shortest;
-                }
-
-                // Get game date/time
-                const footer = fixture.closest('.fixture-view-component')?.querySelector('.fixture-live-info span');
-                const gameDateTime = footer ? footer.textContent.trim() : '';
-
-                games.push({
-                    away_team: awayTeam,
-                    home_team: homeTeam,
-                    details_url: detailsUrl,
-                    game_date_time: gameDateTime
-                });
-            } catch (e) {}
-        });
-
-        return games;
-    }''')
-
-
-def extract_period_odds(page) -> dict:
-    """Extract odds from the current period tab.
-
-    BFA structure: first 6 odd-buttons are the main lines:
-    - Away spread + price
-    - Away ML
-    - Over total + price
-    - Home spread + price
-    - Home ML
-    - Under total + price
-    """
-    return page.evaluate('''() => {
-        const odds = {
-            away_spread: null, away_spread_price: null,
-            home_spread: null, home_spread_price: null,
-            total: null, over_price: null, under_price: null,
-            away_ml: null, home_ml: null
-        };
-
-        // Get all odd buttons
-        const buttons = document.querySelectorAll('.odd-button');
-        if (buttons.length < 6) return odds;
-
-        function parseButton(button) {
-            const spans = button.querySelectorAll('span');
-            const values = [];
-            spans.forEach(s => {
-                const text = s.textContent.trim();
-                if (text && !text.includes('<') && text.length < 20) {
-                    values.push(text);
-                }
-            });
-            return values;
-        }
-
-        // Button 0: Away spread (e.g., ["-3-110", "-3", "-110"])
-        const awaySpreadVals = parseButton(buttons[0]);
-        if (awaySpreadVals.length >= 2) {
-            odds.away_spread = awaySpreadVals[1];  // "-3"
-            odds.away_spread_price = awaySpreadVals[2] || awaySpreadVals[1].match(/[+-]\\d+$/)?.[0];  // "-110"
-        }
-
-        // Button 1: Away ML (e.g., ["-184", "-184"])
-        const awayMLVals = parseButton(buttons[1]);
-        if (awayMLVals.length >= 1) {
-            odds.away_ml = awayMLVals[1] || awayMLVals[0];
-        }
-
-        // Button 2: Over total (e.g., ["o22.5-110", "o22.5", "-110"])
-        const overVals = parseButton(buttons[2]);
-        if (overVals.length >= 2) {
-            odds.total = overVals[1];  // "o22.5"
-            odds.over_price = overVals[2] || overVals[1].match(/[+-]\\d+$/)?.[0];  // "-110"
-        }
-
-        // Button 3: Home spread (e.g., ["+3-110", "+3", "-110"])
-        const homeSpreadVals = parseButton(buttons[3]);
-        if (homeSpreadVals.length >= 2) {
-            odds.home_spread = homeSpreadVals[1];  // "+3"
-            odds.home_spread_price = homeSpreadVals[2] || homeSpreadVals[1].match(/[+-]\\d+$/)?.[0];  // "-110"
-        }
-
-        // Button 4: Home ML (e.g., ["+155", "+155"])
-        const homeMLVals = parseButton(buttons[4]);
-        if (homeMLVals.length >= 1) {
-            odds.home_ml = homeMLVals[1] || homeMLVals[0];
-        }
-
-        // Button 5: Under total (e.g., ["u22.5-110", "u22.5", "-110"])
-        const underVals = parseButton(buttons[5]);
-        if (underVals.length >= 2) {
-            odds.under_price = underVals[2] || underVals[1].match(/[+-]\\d+$/)?.[0];  // "-110"
-        }
-
-        return odds;
-    }''')
-
-
-def extract_alt_lines(page) -> list:
-    """Extract alternative spread/total/team-total lines from the current period tab.
-
-    BFA renders alt lines in .alternate-fixture-view containers with .market-row
-    divs containing 2 .odd-button elements each. Layout patterns:
-      - Alt spreads: [away_spread+price, home_spread+price] per row
-      - Alt totals:  [over+price, under+price] per row
-      - Team totals: [over_away+price, over_home+price] then [under_away+price, under_home+price]
-
-    Returns list of dicts with keys:
-      - type: "alt_spread" | "alt_total"
-      - For spreads: away_spread, away_spread_price, home_spread, home_spread_price
-      - For totals: total, over_price, under_price
-    """
-    return page.evaluate('''() => {
-        const lines = [];
-
-        function parseButton(button) {
-            const spans = button.querySelectorAll('span');
-            const values = [];
-            spans.forEach(s => {
-                const text = s.textContent.trim();
-                if (text && !text.includes('<') && text.length < 20) {
-                    values.push(text);
-                }
-            });
-            return values;
-        }
-
-        // Get all market-row divs inside alternate-fixture-view containers
-        const rows = document.querySelectorAll('.alternate-fixture-view .market-row');
-        const allRows = Array.from(rows);
-
-        for (let ri = 0; ri < allRows.length; ri++) {
-            const row = allRows[ri];
-            const buttons = row.querySelectorAll('.odd-button');
-            if (buttons.length < 2) continue;
-
-            const vals1 = parseButton(buttons[0]);
-            const vals2 = parseButton(buttons[1]);
-            if (vals1.length < 2 || vals2.length < 2) continue;
-
-            const text1 = vals1[1] || '';
-            const text2 = vals2[1] || '';
-
-            // Pattern 1: Spread pair — both have +/- prefix
-            if (text1.match(/^[+-]/) && text2.match(/^[+-]/)) {
-                lines.push({
-                    type: 'alt_spread',
-                    away_spread: text1,
-                    away_spread_price: vals1[2] || null,
-                    home_spread: text2,
-                    home_spread_price: vals2[2] || null
-                });
-            }
-            // Pattern 2: Total pair — one over, one under
-            else if (text1.match(/^[oO]/) && text2.match(/^[uU]/)) {
-                lines.push({
-                    type: 'alt_total',
-                    total: text1,
-                    over_price: vals1[2] || null,
-                    under_price: vals2[2] || null
-                });
-            }
-            // Pattern 3: Team totals — both overs or both unders in same row
-            // Skip these for now (team totals need away/home disambiguation
-            // which requires pairing over-row with under-row)
-        }
-
-        return lines;
-    }''')
-
-
-def scrape_bfa(sport: str, headless: bool = True):
-    """Scrape BFA derivative odds and save to DuckDB."""
-    if not BFA_USERNAME or not BFA_PASSWORD:
-        raise ValueError("BFA_USERNAME and BFA_PASSWORD must be set in .env")
-
-    if sport not in SPORT_CONFIGS:
-        raise ValueError(f"Unknown sport: {sport}. Available: {list(SPORT_CONFIGS.keys())}")
-
-    config = SPORT_CONFIGS[sport]
-    init_database(sport)
-
-    fetch_time = datetime.now(timezone.utc)
-    all_odds = []
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
-        context = browser.new_context(viewport={'width': 1920, 'height': 1080})
-        page = context.new_page()
-
-        print(f"Navigating to {BFA_URL}...")
-        page.goto(BFA_URL, wait_until='networkidle', timeout=60000)
-        page.wait_for_timeout(3000)
-
-        if not login_bfa(page):
-            print("Could not login to BFA")
-            browser.close()
-            return []
-
-        # Navigate to sportsbook
-        print("Navigating to sportsbook...")
-        page.goto(f"{BFA_URL}/sports", wait_until='networkidle', timeout=60000)
-
-        # Wait for content
-        print("Waiting for sports content...")
-        for i in range(10):
-            page.wait_for_timeout(2000)
-            content = page.content()
-            if config['nav_text'] in content and 'threeopt-fixture-component' in content:
-                print(f"  Sports content loaded after {(i+1)*2} seconds")
-                break
-            print(f"  Waiting... ({(i+1)*2}s)")
-
-        # Navigate to sport
-        print(f"Navigating to {config['nav_text']}...")
-        sport_nav = page.locator(f'.main-nav-item:has-text("{config["nav_text"]}")')
-        if sport_nav.count() > 0:
-            sport_nav.first.click()
-            page.wait_for_timeout(3000)
-            print(f"  Clicked {config['nav_text']} in navigation")
-
-        page.wait_for_timeout(5000)
-
-        # Wait for all games to render (Blazor lazy-loads fixtures)
-        prev_count = 0
-        for attempt in range(15):
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(2000)
-            curr_count = page.locator(".threeopt-fixture-component").count()
-            if curr_count > prev_count:
-                print(f"  Loading games... {curr_count} found")
-                prev_count = curr_count
-            elif curr_count == prev_count and curr_count > 0:
-                # Stable count — check if "Straight" tab has more
-                straight_tab = page.locator('.scroller-item:has-text("Straight")')
-                if straight_tab.count() > 0:
-                    straight_tab.first.click()
-                    page.wait_for_timeout(3000)
-                    new_count = page.locator(".threeopt-fixture-component").count()
-                    if new_count > curr_count:
-                        print(f"  Switched to Straight view: {new_count} games (was {curr_count})")
-                        prev_count = new_count
-                    else:
-                        # Switch back
-                        games_tab = page.locator('.scroller-item:has-text("Games")')
-                        if games_tab.count() > 0:
-                            games_tab.first.click()
-                            page.wait_for_timeout(2000)
-                break
-
-        # Extract games
-        print("Extracting games from main page...")
-        games = extract_games_from_main_page(page)
-        print(f"Found {len(games)} games")
-
-        for game in games[:3]:
-            print(f"  {game['away_team']} @ {game['home_team']}")
-            if game.get('details_url'):
-                print(f"    Details: {game['details_url']}")
-
-        # Load team name resolution data for non-NFL sports
-        team_dict = load_team_dict(sport) if sport != "nfl" else {}
-        canonical_games = load_canonical_games(sport) if sport != "nfl" else []
-
-        # Process each game
-        for i, game in enumerate(games):
-            if team_dict or canonical_games:
-                away_team, home_team = resolve_team_names(
-                    game['away_team'], game['home_team'],
-                    team_dict, canonical_games
-                )
-            else:
-                away_team = normalize_team_name(game['away_team'], sport)
-                home_team = normalize_team_name(game['home_team'], sport)
-
-            print(f"\nProcessing game {i+1}/{len(games)}: {away_team} @ {home_team}")
-
-            if not game.get('details_url'):
-                print("  No details URL, skipping")
-                continue
-
-            # Navigate to game details
-            details_url = f"{BFA_URL}{game['details_url']}"
-            print(f"  Navigating to: {details_url}")
-
-            try:
-                page.goto(details_url, wait_until='networkidle', timeout=30000)
-                page.wait_for_timeout(3000)  # Wait for Blazor content to load
-
-                # Capture initial button state (before any tab click) to detect content change
-                initial_btn_text = page.evaluate('''() => {
-                    const btn = document.querySelector('.odd-button span');
-                    return btn ? btn.textContent.trim() : '';
-                }''')
-
-                # Extract odds for each period
-                for period_short in config['periods']:
-                    period_display = PERIOD_DISPLAY[period_short]
-                    period_standard = PERIOD_TO_STANDARD[period_short]
-                    market_suffix = PERIOD_TO_MARKET_SUFFIX[period_short]
-
-                    # Click the period tab
-                    tab = page.locator(f'.scroller-item:has-text("{period_display}")')
-                    if tab.count() == 0:
-                        print(f"    {period_short}: Tab not found")
-                        continue
-
-                    tab.first.click()
-                    # Wait for content to actually change (poll up to 5s)
-                    for _ in range(10):
-                        page.wait_for_timeout(500)
-                        new_btn_text = page.evaluate('''() => {
-                            const btn = document.querySelector('.odd-button span');
-                            return btn ? btn.textContent.trim() : '';
-                        }''')
-                        if new_btn_text and new_btn_text != initial_btn_text:
-                            break
-
-                    # Extract odds
-                    raw_odds = extract_period_odds(page)
-
-                    # Parse values
-                    away_spread = parse_spread(raw_odds.get('away_spread'))
-                    away_spread_price = parse_american_odds(raw_odds.get('away_spread_price'))
-                    home_spread = parse_spread(raw_odds.get('home_spread'))
-                    home_spread_price = parse_american_odds(raw_odds.get('home_spread_price'))
-                    total = parse_total(raw_odds.get('total'))
-                    over_price = parse_american_odds(raw_odds.get('over_price'))
-                    under_price = parse_american_odds(raw_odds.get('under_price'))
-                    away_ml = parse_american_odds(raw_odds.get('away_ml'))
-                    home_ml = parse_american_odds(raw_odds.get('home_ml'))
-
-                    # Build shared fields for this game/period
-                    game_base = {
-                        "fetch_time": fetch_time,
-                        "sport_key": config["sport_key"],
-                        "game_date": game.get('game_date_time', '').split(',')[0].strip() if game.get('game_date_time') else '',
-                        "game_time": game.get('game_date_time', '').split(',')[1].strip() if ',' in game.get('game_date_time', '') else '',
-                        "away_team": away_team,
-                        "home_team": home_team,
-                        "period": period_standard,
-                    }
-
-                    if away_spread is not None or total is not None:
-                        print(f"    {period_short}: Spread {away_spread}/{home_spread}, Total {total}, ML {away_ml}/{home_ml}")
-
-                        all_odds.append({
-                            **game_base,
-                            "game_id": f"bfa-{i}-{period_short}",
-                            "market": f"spreads_{market_suffix}",
-                            "away_spread": away_spread,
-                            "away_spread_price": away_spread_price,
-                            "home_spread": home_spread,
-                            "home_spread_price": home_spread_price,
-                            "total": total,
-                            "over_price": over_price,
-                            "under_price": under_price,
-                            "away_ml": away_ml,
-                            "home_ml": home_ml,
-                        })
-                    else:
-                        print(f"    {period_short}: No odds found")
-
-                    # Extract alternative lines from the same page
-                    alt_lines = extract_alt_lines(page)
-                    alt_spread_count = 0
-                    alt_total_count = 0
-
-                    for j, alt in enumerate(alt_lines):
-                        if alt['type'] == 'alt_spread':
-                            alt_val = parse_spread(alt.get('away_spread'))
-                            # Sanity check: alt spread should be within 15 pts of main
-                            if alt_val is not None and away_spread is not None:
-                                if abs(alt_val - away_spread) > 15:
-                                    continue
-                            alt_spread_count += 1
-                            all_odds.append({
-                                **game_base,
-                                "game_id": f"bfa-{i}-{period_short}-alt-s{j}",
-                                "market": f"alternate_spreads_{market_suffix}",
-                                "away_spread": alt_val,
-                                "away_spread_price": parse_american_odds(alt.get('away_spread_price')),
-                                "home_spread": parse_spread(alt.get('home_spread')),
-                                "home_spread_price": parse_american_odds(alt.get('home_spread_price')),
-                                "total": None,
-                                "over_price": None,
-                                "under_price": None,
-                                "away_ml": None,
-                                "home_ml": None,
-                            })
-                        elif alt['type'] == 'alt_total':
-                            alt_total_val = parse_total(alt.get('total'))
-                            # Sanity check: alt total should be within 25 pts of main
-                            if alt_total_val is not None and total is not None:
-                                if abs(alt_total_val - total) > 25:
-                                    continue
-                            alt_total_count += 1
-                            all_odds.append({
-                                **game_base,
-                                "game_id": f"bfa-{i}-{period_short}-alt-t{j}",
-                                "market": f"alternate_totals_{market_suffix}",
-                                "away_spread": None,
-                                "away_spread_price": None,
-                                "home_spread": None,
-                                "home_spread_price": None,
-                                "total": alt_total_val,
-                                "over_price": parse_american_odds(alt.get('over_price')),
-                                "under_price": parse_american_odds(alt.get('under_price')),
-                                "away_ml": None,
-                                "home_ml": None,
-                            })
-                    if alt_spread_count or alt_total_count:
-                        print(f"    {period_short} alts: {alt_spread_count} spreads, {alt_total_count} totals")
-
-            except Exception as e:
-                print(f"  Error: {e}")
-
-        browser.close()
-
-    # Save to DuckDB
-    if all_odds:
-        save_to_database(sport, all_odds)
-
-    print(f"\nScraped {len(all_odds)} total records for {sport.upper()}")
-    return all_odds
 
 
 def save_to_database(sport: str, odds_data: list):
@@ -782,7 +434,85 @@ def save_to_database(sport: str, odds_data: list):
     conn.close()
 
 
+# =============================================================================
+# MAIN SCRAPER
+# =============================================================================
+
+
+def scrape_bfa(sport: str, headless: bool = True):
+    """Scrape BFA derivative odds via REST API and save to DuckDB.
+
+    The headless parameter is kept for backward compatibility but is ignored —
+    no browser is needed.
+    """
+    if sport not in SPORT_CONFIGS:
+        raise ValueError(f"Unknown sport: {sport}. Available: {list(SPORT_CONFIGS.keys())}")
+
+    config = SPORT_CONFIGS[sport]
+    init_database(sport)
+
+    fetch_time = datetime.now(timezone.utc)
+    session = requests.Session()
+    session.headers.update(API_HEADERS)
+
+    # Step 1: Fetch game list
+    print(f"Fetching {sport.upper()} games from BFA API...")
+    games = fetch_games(session, sport)
+    print(f"Found {len(games)} games")
+
+    if not games:
+        print("No games found.")
+        return []
+
+    # Load team name resolution
+    team_dict = load_team_dict(sport) if sport != "nfl" else {}
+    canonical_games = load_canonical_games(sport) if sport != "nfl" else []
+
+    all_odds = []
+
+    for i, game in enumerate(games):
+        fixture = game.get("fixtures", [{}])[0]
+        contestants = fixture.get("contestants", [])
+        if len(contestants) < 2:
+            continue
+
+        # Get raw team names (first listed = away, second = home)
+        away_raw = contestants[0]["name"]
+        home_raw = contestants[1]["name"]
+
+        # Resolve team names
+        if team_dict or canonical_games:
+            away_team, home_team = resolve_team_names(
+                away_raw, home_raw, team_dict, canonical_games
+            )
+        else:
+            away_team = normalize_team_name(away_raw, sport)
+            home_team = normalize_team_name(home_raw, sport)
+
+        print(f"  [{i+1}/{len(games)}] {away_team} @ {home_team}", end="")
+
+        try:
+            # Step 2: Fetch game detail for all markets
+            detail = fetch_game_detail(session, game["id"])
+            records = parse_game_odds(detail, config, i, away_team, home_team, fetch_time)
+            all_odds.extend(records)
+
+            # Count main vs alt records
+            main_count = sum(1 for r in records if "alt" not in r["game_id"])
+            alt_count = len(records) - main_count
+            print(f" — {main_count} main, {alt_count} alts")
+
+        except Exception as e:
+            print(f" — Error: {e}")
+
+    # Save to DuckDB
+    if all_odds:
+        save_to_database(sport, all_odds)
+
+    print(f"\nScraped {len(all_odds)} total records for {sport.upper()}")
+    return all_odds
+
+
 if __name__ == "__main__":
     sport = sys.argv[1] if len(sys.argv) > 1 else "nfl"
-    headless = "--headless" in sys.argv or len(sys.argv) <= 2
-    scrape_bfa(sport, headless=headless)
+    scrape_bfa(sport)

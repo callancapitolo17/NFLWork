@@ -174,6 +174,14 @@ This repo contains tools for:
 - Delete the branch after merging: `git branch -d feature/description`
 - For quick, isolated fixes (typo, one-liner) committing directly to `main` is fine
 
+**Branch hygiene (CRITICAL):**
+- Before making ANY code change, run `git branch` to confirm you're on the correct branch
+- NEVER use `git stash` to move changes between branches — it leads to lost or misplaced work
+- If changes end up on the wrong branch, use `git stash` + `git checkout` + `git stash pop` as a ONE-TIME fix, then verify with `git diff` that all expected changes are present
+- Before committing, always `git diff --stat` to confirm all intended files are included
+- After committing on a feature branch, re-run the full pipeline/tests BEFORE merging to `main`
+- Never merge to `main` based on a test run from a different branch
+
 **Documentation discipline:**
 - Before merging any feature branch, always ask: "Does a README or doc need updating?"
 - Documentation updates are **required** when:
