@@ -3682,6 +3682,167 @@ compare_moneylines_to_wagerzon <- function(
 }
 
 
+#' Compare offshore alt lines directly against samples (no API dependency)
+#'
+#' For alt markets not covered by the Odds API (e.g., CBB alternate_spreads_h1),
+#' compute probabilities from the sample distribution and calculate EV against
+#' the offshore book's prices.
+#'
+#' @param samples Named list of samples (keyed by game_id from Odds API)
+#' @param offshore_odds Data frame from get_bfa_odds() / get_wagerzon_odds() etc.
+#' @param consensus_odds API consensus odds (needs id, home_team, away_team, commence_time)
+#' @param bankroll Bankroll for Kelly sizing
+#' @param kelly_mult Kelly multiplier (fraction of Kelly)
+#' @param ev_threshold Minimum EV to include bet
+#' @param margin_col Column prefix for margin data in samples
+#' @param total_col Column prefix for total data in samples
+#' @return Data frame of bets in standard format (same as format_bets_table output)
+compare_alts_to_samples <- function(
+    samples,
+    offshore_odds,
+    consensus_odds,
+    bankroll = 100,
+    kelly_mult = 0.25,
+    ev_threshold = 0.05,
+    margin_col = "game_home_margin_period",
+    total_col = "game_total_period"
+) {
+  # Market suffix → sample period column suffix
+  period_map <- c(h1 = "Half1", h2 = "Half2", q1 = "1", q2 = "2", q3 = "3", q4 = "4")
+
+  # Filter to alt markets only
+  alt_odds <- offshore_odds %>%
+    filter(grepl("^alternate_", market))
+
+  if (nrow(alt_odds) == 0) return(tibble())
+
+  # Match offshore games to API game_ids via team names
+  game_lookup <- consensus_odds %>%
+    select(id, home_team, away_team, commence_time) %>%
+    distinct(home_team, away_team, .keep_all = TRUE)
+
+  alt_odds <- alt_odds %>%
+    inner_join(game_lookup, by = c("home_team", "away_team"))
+
+  if (nrow(alt_odds) == 0) {
+    cat("No alt line games matched to API games.\n")
+    return(tibble())
+  }
+
+  book_key <- unique(alt_odds$bookmaker_key)[1]
+  all_bets <- list()
+
+  for (i in seq_len(nrow(alt_odds))) {
+    row <- alt_odds[i, ]
+    game_id <- row$id
+
+    # Look up sample for this game
+    if (!game_id %in% names(samples)) next
+    sample_df <- samples[[game_id]]$sample
+    if (is.null(sample_df) || nrow(sample_df) == 0) next
+
+    # Extract period from market name (e.g., "alternate_spreads_h1" → "h1" → "Half1")
+    suffix <- sub(".*_", "", row$market)
+    period <- period_map[suffix]
+    if (is.na(period)) next
+
+    pt_start_time <- tryCatch(
+      lubridate::with_tz(as.POSIXct(row$commence_time, tz = "UTC"), tzone = "America/Los_Angeles"),
+      error = function(e) as.POSIXct(NA)
+    )
+
+    if (grepl("spread", row$market) && !is.na(row$home_spread)) {
+      # Alt spread: compute P(home covers) from sample margins
+      col_name <- paste0(margin_col, "_", period)
+      if (!col_name %in% names(sample_df)) next
+      margins <- sample_df[[col_name]]
+      margins <- margins[!is.na(margins)]
+      if (length(margins) == 0) next
+
+      home_spread <- row$home_spread
+      non_push <- margins[margins != -home_spread]
+      if (length(non_push) == 0) next
+      p_home_cover <- sum(non_push > -home_spread) / length(non_push)
+      p_away_cover <- 1 - p_home_cover
+
+      # Convert BFA odds to implied probabilities (devigged)
+      probs <- american_prob(row$odds_away, row$odds_home)
+      if (any(is.na(probs)) || any(probs == 0)) next
+
+      home_ev <- compute_ev(p_home_cover, probs$p2)
+      away_ev <- compute_ev(p_away_cover, probs$p1)
+      home_size <- kelly_stake(home_ev, probs$p2, bankroll, kelly_mult)
+      away_size <- kelly_stake(away_ev, probs$p1, bankroll, kelly_mult)
+
+      if (home_ev >= ev_threshold) {
+        all_bets[[length(all_bets) + 1]] <- tibble(
+          id = game_id, home_team = row$home_team, away_team = row$away_team,
+          pt_start_time = pt_start_time, bookmaker_key = book_key,
+          market = row$market, bet_on = row$home_team,
+          line = home_spread, bet_size = home_size, ev = home_ev,
+          odds = row$odds_home, prob = p_home_cover
+        )
+      }
+      if (away_ev >= ev_threshold) {
+        all_bets[[length(all_bets) + 1]] <- tibble(
+          id = game_id, home_team = row$home_team, away_team = row$away_team,
+          pt_start_time = pt_start_time, bookmaker_key = book_key,
+          market = row$market, bet_on = row$away_team,
+          line = row$away_spread, bet_size = away_size, ev = away_ev,
+          odds = row$odds_away, prob = p_away_cover
+        )
+      }
+
+    } else if (grepl("total", row$market) && !is.na(row$line)) {
+      # Alt total: compute P(over) from sample totals
+      col_name <- paste0(total_col, "_", period)
+      if (!col_name %in% names(sample_df)) next
+      total_vals <- sample_df[[col_name]]
+      total_vals <- total_vals[!is.na(total_vals)]
+      if (length(total_vals) == 0) next
+
+      total_line <- row$line
+      non_push <- total_vals[total_vals != total_line]
+      if (length(non_push) == 0) next
+      p_over <- sum(non_push > total_line) / length(non_push)
+      p_under <- 1 - p_over
+
+      probs <- american_prob(row$odds_over, row$odds_under)
+      if (any(is.na(probs)) || any(probs == 0)) next
+
+      over_ev <- compute_ev(p_over, probs$p1)
+      under_ev <- compute_ev(p_under, probs$p2)
+      over_size <- kelly_stake(over_ev, probs$p1, bankroll, kelly_mult)
+      under_size <- kelly_stake(under_ev, probs$p2, bankroll, kelly_mult)
+
+      if (over_ev >= ev_threshold) {
+        all_bets[[length(all_bets) + 1]] <- tibble(
+          id = game_id, home_team = row$home_team, away_team = row$away_team,
+          pt_start_time = pt_start_time, bookmaker_key = book_key,
+          market = row$market, bet_on = "Over",
+          line = total_line, bet_size = over_size, ev = over_ev,
+          odds = row$odds_over, prob = p_over
+        )
+      }
+      if (under_ev >= ev_threshold) {
+        all_bets[[length(all_bets) + 1]] <- tibble(
+          id = game_id, home_team = row$home_team, away_team = row$away_team,
+          pt_start_time = pt_start_time, bookmaker_key = book_key,
+          market = row$market, bet_on = "Under",
+          line = total_line, bet_size = under_size, ev = under_ev,
+          odds = row$odds_under, prob = p_under
+        )
+      }
+    }
+  }
+
+  if (length(all_bets) == 0) return(tibble())
+  result <- bind_rows(all_bets) %>% arrange(desc(ev))
+  cat(sprintf("Generated %d %s alt line bets from samples\n", nrow(result), book_key))
+  result
+}
+
+
 #' Run full Wagerzon comparison pipeline
 #'
 #' Scrapes Wagerzon, then compares predictions to Wagerzon odds

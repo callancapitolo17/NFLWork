@@ -310,8 +310,24 @@ if (nrow(bfa_odds) > 0) {
     bfa_ml_bets$bets %>% mutate(market_type = "moneyline")
   )
   cat(sprintf("Added %d BFA bets to predictions.\n", nrow(bfa_bets)))
+
+  # Compute EV for BFA alt lines directly from samples (no API dependency)
+  bfa_alt_bets <- compare_alts_to_samples(
+    samples = samples,
+    offshore_odds = bfa_odds,
+    consensus_odds = cbb_odds,
+    bankroll = bankroll,
+    kelly_mult = kelly_mult,
+    ev_threshold = 0.05
+  )
+  if (nrow(bfa_alt_bets) > 0) {
+    bfa_alt_bets <- bfa_alt_bets %>%
+      mutate(market_type = ifelse(grepl("spread", market), "spreads", "totals"))
+  }
+  cat(sprintf("Added %d BFA alt line bets from samples.\n", nrow(bfa_alt_bets)))
 } else {
   bfa_bets <- tibble()
+  bfa_alt_bets <- tibble()
 }
 
 # =============================================================================
@@ -322,7 +338,8 @@ all_bets_combined <- bind_rows(
   all_bets,
   wagerzon_bets,
   hoop88_bets,
-  bfa_bets
+  bfa_bets,
+  bfa_alt_bets
 ) %>%
   # Filter out games that have already started
   filter(is.na(pt_start_time) | pt_start_time > Sys.time()) %>%
