@@ -3104,8 +3104,8 @@ get_bfa_odds <- function(
       result_list[[length(result_list) + 1]] <- spread_rec
     }
 
-    # Totals record
-    if (!is.na(row$total)) {
+    # Totals record — skip team totals (handled separately below)
+    if (!is.na(row$total) && !grepl("team_totals_", row$market)) {
       totals_market <- gsub("spreads", "totals", row$market)
       totals_rec <- c(base, list(
         market = totals_market,
@@ -3133,6 +3133,20 @@ get_bfa_odds <- function(
       ))
       result_list[[length(result_list) + 1]] <- ml_rec
     }
+
+    # Team totals record
+    if (grepl("team_totals_", row$market) && !is.na(row$total)) {
+      tt_rec <- c(base, list(
+        market = row$market,
+        market_type = "team_totals",
+        line = row$total,
+        odds_away = NA_integer_,
+        odds_home = NA_integer_,
+        odds_over = row$over_price,
+        odds_under = row$under_price
+      ))
+      result_list[[length(result_list) + 1]] <- tt_rec
+    }
   }
 
   if (length(result_list) == 0) {
@@ -3141,11 +3155,12 @@ get_bfa_odds <- function(
 
   result <- bind_rows(lapply(result_list, as.data.frame))
 
-  cat(sprintf("Loaded %d BFA odds records (%d spreads, %d totals, %d ML)\n",
+  cat(sprintf("Loaded %d BFA odds records (%d spreads, %d totals, %d ML, %d team_totals)\n",
               nrow(result),
               sum(result$market_type == "spreads"),
               sum(result$market_type == "totals"),
-              sum(result$market_type == "h2h")))
+              sum(result$market_type == "h2h"),
+              sum(result$market_type == "team_totals")))
 
   result <- resolve_offshore_teams(result, sport = sport)
   return(result)
@@ -3710,9 +3725,9 @@ compare_alts_to_samples <- function(
   # Market suffix → sample period column suffix
   period_map <- c(h1 = "Half1", h2 = "Half2", q1 = "1", q2 = "2", q3 = "3", q4 = "4")
 
-  # Filter to alt markets only
+  # Filter to alt markets and team totals
   alt_odds <- offshore_odds %>%
-    filter(grepl("^alternate_", market))
+    filter(grepl("^alternate_", market) | grepl("^team_totals_", market))
 
   if (nrow(alt_odds) == 0) return(tibble())
 
@@ -3833,12 +3848,56 @@ compare_alts_to_samples <- function(
           odds = row$odds_under, prob = p_under
         )
       }
+
+    } else if (grepl("team_totals_", row$market) && !is.na(row$line)) {
+      # Team total: compute P(over) from team-specific score samples
+      team_side <- ifelse(grepl("_home_", row$market), "home", "away")
+      score_col <- paste0(team_side, "_score_period_", period)
+      if (!score_col %in% names(sample_df)) next
+      scores <- sample_df[[score_col]]
+      scores <- scores[!is.na(scores)]
+      if (length(scores) == 0) next
+
+      total_line <- row$line
+      non_push <- scores[scores != total_line]
+      if (length(non_push) == 0) next
+      p_over <- sum(non_push > total_line) / length(non_push)
+      p_under <- 1 - p_over
+
+      probs <- american_prob(row$odds_over, row$odds_under)
+      if (any(is.na(probs)) || any(probs == 0)) next
+
+      team_name <- ifelse(team_side == "home", row$home_team, row$away_team)
+
+      over_ev <- compute_ev(p_over, probs$p1)
+      under_ev <- compute_ev(p_under, probs$p2)
+      over_size <- kelly_stake(over_ev, probs$p1, bankroll, kelly_mult)
+      under_size <- kelly_stake(under_ev, probs$p2, bankroll, kelly_mult)
+
+      if (over_ev >= ev_threshold) {
+        all_bets[[length(all_bets) + 1]] <- tibble(
+          id = game_id, home_team = row$home_team, away_team = row$away_team,
+          pt_start_time = pt_start_time, bookmaker_key = book_key,
+          market = row$market, bet_on = paste(team_name, "Over"),
+          line = total_line, bet_size = over_size, ev = over_ev,
+          odds = row$odds_over, prob = p_over
+        )
+      }
+      if (under_ev >= ev_threshold) {
+        all_bets[[length(all_bets) + 1]] <- tibble(
+          id = game_id, home_team = row$home_team, away_team = row$away_team,
+          pt_start_time = pt_start_time, bookmaker_key = book_key,
+          market = row$market, bet_on = paste(team_name, "Under"),
+          line = total_line, bet_size = under_size, ev = under_ev,
+          odds = row$odds_under, prob = p_under
+        )
+      }
     }
   }
 
   if (length(all_bets) == 0) return(tibble())
   result <- bind_rows(all_bets) %>% arrange(desc(ev))
-  cat(sprintf("Generated %d %s alt line bets from samples\n", nrow(result), book_key))
+  cat(sprintf("Generated %d %s alt/team-total bets from samples\n", nrow(result), book_key))
   result
 }
 

@@ -362,6 +362,38 @@ def parse_game_odds(game: dict, config: dict, game_index: int,
                     })
                     alt_count += 1
 
+        # Team totals: type 4 = home, type 5 = away
+        home_tt_market = next((m for m in period_markets if m["type"] == 4), None)
+        away_tt_market = next((m for m in period_markets if m["type"] == 5), None)
+
+        for tt_market, tt_side in [(home_tt_market, "home"), (away_tt_market, "away")]:
+            if tt_market is None:
+                continue
+            tt_line = tt_over_price = tt_under_price = None
+            for odd in tt_market.get("odds", []):
+                if odd["index"] == 0 and odd.get("status", 0) == 0:
+                    if odd.get("side") == 4:  # over
+                        tt_line = odd["line"]
+                        tt_over_price = odd["price"]
+                    elif odd.get("side") == 5:  # under
+                        tt_under_price = odd["price"]
+
+            if tt_line is not None:
+                records.append({
+                    **game_base,
+                    "game_id": f"bfa-{game_index}-{period_short}-tt-{tt_side}",
+                    "market": f"team_totals_{tt_side}_{market_suffix}",
+                    "away_spread": None,
+                    "away_spread_price": None,
+                    "home_spread": None,
+                    "home_spread_price": None,
+                    "total": tt_line,
+                    "over_price": tt_over_price,
+                    "under_price": tt_under_price,
+                    "away_ml": None,
+                    "home_ml": None,
+                })
+
     return records
 
 
