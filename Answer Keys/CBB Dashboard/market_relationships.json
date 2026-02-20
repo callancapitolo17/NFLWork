@@ -27,7 +27,7 @@
     },
     "team_totals": {
       "description": "Individual team scoring totals",
-      "markets": ["team_totals_h1", "team_totals_h2"],
+      "markets": ["team_totals_h1", "team_totals_h2", "team_totals_home_h1", "team_totals_away_h1", "team_totals_home_h2", "team_totals_away_h2"],
       "correlation_type": "team_total"
     },
     "alternate_team_totals": {

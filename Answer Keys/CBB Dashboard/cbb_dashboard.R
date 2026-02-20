@@ -92,7 +92,7 @@ find_correlated_bets <- function(bet, placed_bets, relationships) {
 
     # Cross-group correlations (JSON loads as data frame)
     cross_df <- relationships$cross_group_correlations
-    if (!is.null(cross_df) && nrow(cross_df) > 0) {
+    if (!is.null(cross_df) && nrow(cross_df) > 0 && !is.na(bet_group) && !is.na(placed_group)) {
       for (j in seq_len(nrow(cross_df))) {
         g1 <- cross_df$group1[j]
         g2 <- cross_df$group2[j]
