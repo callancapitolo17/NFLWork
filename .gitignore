@@ -47,6 +47,8 @@ report.html
 # Browser profiles (Playwright)
 .betonline_profile/
 .bfa_profile/
+.wagerzon_profile/
+.hoop88_profile/
 
 # Symlinked venvs
 bfa_odds/venv

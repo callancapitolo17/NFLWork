@@ -1,28 +1,22 @@
 #!/usr/bin/env python3
 """
-Wagerzon Odds Scraper v2 - Sport-Agnostic
-Scrapes odds from Wagerzon and stores in format compatible with The Odds API
+Wagerzon Odds Scraper v2 - REST API
+Fetches odds via NewScheduleHelper.aspx JSON endpoint using requests.Session.
+No browser required — auth via ASP.NET form POST, data via JSON API.
 """
 
 import os
 import re
-import time
+import sys
 import duckdb
+import requests
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
-from bs4 import BeautifulSoup
+
 from dotenv import load_dotenv
-from playwright.sync_api import sync_playwright
 
-import sys
-
-from config import (
-    get_sport_url,
-    get_sport_config,
-    SKIP_SECTIONS,
-    WAGERZON_BASE_URL,
-)
+from config import get_sport_config, WAGERZON_BASE_URL, WAGERZON_HELPER_URL
 from team_mapping import normalize_team_name
 
 # Add Answer Keys to path for shared team name resolution
@@ -39,14 +33,328 @@ WAGERZON_PASSWORD = os.getenv("WAGERZON_PASSWORD")
 DB_PATH = Path(__file__).parent / "wagerzon.duckdb"
 
 
+# =============================================================================
+# HELPERS
+# =============================================================================
+
+
+def safe_float(val) -> Optional[float]:
+    """Convert string to float, returning None for empty/invalid values."""
+    if not val:
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+
+def safe_int(val) -> Optional[int]:
+    """Convert string to int, returning None for empty/invalid values."""
+    if not val:
+        return None
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return None
+
+
+# =============================================================================
+# AUTH
+# =============================================================================
+
+
+def login(session: requests.Session):
+    """Login to Wagerzon via ASP.NET form POST.
+
+    1. GET the login page to capture __VIEWSTATE and other hidden fields
+    2. POST credentials with the hidden fields
+    3. Session cookie (ASP.NET_SessionId) maintains auth for subsequent requests
+    """
+    resp = session.get(WAGERZON_BASE_URL, timeout=15)
+    resp.raise_for_status()
+
+    # If already redirected to schedule, session is still valid
+    if "NewSchedule" in resp.url:
+        print("Already authenticated")
+        return
+
+    html = resp.text
+
+    # Extract ASP.NET hidden fields from login form
+    fields = {}
+    for name in ["__VIEWSTATE", "__VIEWSTATEGENERATOR", "__EVENTVALIDATION",
+                 "__EVENTTARGET", "__EVENTARGUMENT"]:
+        match = re.search(rf'(?:name|id)="{name}"[^>]*value="([^"]*)"', html)
+        if match:
+            fields[name] = match.group(1)
+
+    if "__VIEWSTATE" not in fields:
+        raise RuntimeError("Could not find __VIEWSTATE on login page — page structure may have changed")
+
+    fields["Account"] = WAGERZON_USERNAME
+    fields["Password"] = WAGERZON_PASSWORD
+    fields["BtnSubmit"] = ""
+
+    resp = session.post(WAGERZON_BASE_URL, data=fields, timeout=15)
+    resp.raise_for_status()
+    print("Logged in successfully")
+
+
+# =============================================================================
+# API CLIENT
+# =============================================================================
+
+
+def fetch_odds_json(session: requests.Session, sport: str) -> dict:
+    """Fetch odds JSON from NewScheduleHelper.aspx."""
+    config = get_sport_config(sport)
+    url = f"{WAGERZON_HELPER_URL}?WT=0&{config['url_params']}"
+
+    resp = session.get(url, timeout=30, headers={
+        "Accept": "application/json, text/plain, */*",
+        "X-Requested-With": "XMLHttpRequest",
+    })
+    resp.raise_for_status()
+    return resp.json()
+
+
+# =============================================================================
+# JSON PARSING
+# =============================================================================
+
+
+def parse_game_line(line: dict, game_id: str, period: str, market: str,
+                    base: dict) -> Optional[dict]:
+    """Parse a GameLine object (spread + total + ML) into a DuckDB record."""
+    away_spread = safe_float(line.get("vsprdt"))
+    away_spread_price = safe_int(line.get("vsprdoddst"))
+    home_spread = safe_float(line.get("hsprdt"))
+    home_spread_price = safe_int(line.get("hsprdoddst"))
+
+    # unt is the positive total value; ovt is negative (same number)
+    total = safe_float(line.get("unt"))
+    over_price = safe_int(line.get("ovoddst"))
+    under_price = safe_int(line.get("unoddst"))
+
+    away_ml = safe_int(line.get("voddst"))
+    home_ml = safe_int(line.get("hoddst"))
+
+    if all(v is None for v in [away_spread, total, away_ml]):
+        return None
+
+    return {
+        **base,
+        "game_id": game_id,
+        "market": market,
+        "period": period,
+        "away_spread": away_spread,
+        "away_spread_price": away_spread_price,
+        "home_spread": home_spread,
+        "home_spread_price": home_spread_price,
+        "total": total,
+        "over_price": over_price,
+        "under_price": under_price,
+        "away_ml": away_ml,
+        "home_ml": home_ml,
+    }
+
+
+def parse_team_total(line: dict, game_id: str, period: str, market: str,
+                     base: dict) -> Optional[dict]:
+    """Parse a team total GameLine (over/under only) into a DuckDB record."""
+    total = safe_float(line.get("unt"))
+    over_price = safe_int(line.get("ovoddst"))
+    under_price = safe_int(line.get("unoddst"))
+
+    if total is None:
+        return None
+
+    return {
+        **base,
+        "game_id": game_id,
+        "market": market,
+        "period": period,
+        "away_spread": None,
+        "away_spread_price": None,
+        "home_spread": None,
+        "home_spread_price": None,
+        "total": total,
+        "over_price": over_price,
+        "under_price": under_price,
+        "away_ml": None,
+        "home_ml": None,
+    }
+
+
+def parse_odds(data: dict, sport: str) -> list[dict]:
+    """Parse NewScheduleHelper JSON response into DuckDB records.
+
+    Processes the first league (parent game lines) and extracts derivatives
+    from each game's GameChilds array:
+      - idgmtyp 10: Full game (parent)
+      - idgmtyp 15: First half
+      - idgmtyp 35: Team total (full game)
+      - idgmtyp 66: Team total (1H)
+      - idgmtyp 25: Alternate line (spread + total paired)
+    """
+    config = get_sport_config(sport)
+    sport_key = config["sport_key"]
+    fetch_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    team_dict = load_team_dict(sport) if sport != "nfl" else {}
+    canonical_games = load_canonical_games(sport) if sport != "nfl" else []
+
+    records = []
+
+    leagues = data.get("result", {}).get("listLeagues", [[]])[0]
+    if not leagues:
+        print("No leagues in response")
+        return records
+
+    # Process only the first league (parent game lines)
+    parent_league = leagues[0]
+    games = parent_league.get("Games", [])
+    print(f"Found {len(games)} games in '{parent_league.get('Description', '')}'")
+
+    for game in games:
+        if not game.get("GameLines"):
+            continue
+
+        away_raw = game["vtm"]
+        home_raw = game["htm"]
+
+        # Format date: YYYYMMDD -> MM/DD
+        gmdt = game.get("gmdt", "")
+        game_date = f"{gmdt[4:6]}/{gmdt[6:8]}" if len(gmdt) == 8 else ""
+        game_time = game.get("gmtm", "")[:5]  # "18:30:00" -> "18:30"
+
+        # Resolve team names
+        if team_dict or canonical_games:
+            away_team, home_team = resolve_team_names(
+                away_raw, home_raw, team_dict, canonical_games
+            )
+        else:
+            away_team = normalize_team_name(away_raw, sport)
+            home_team = normalize_team_name(home_raw, sport)
+
+        away_rot = str(game["vnum"])
+        home_rot = str(game["hnum"])
+        game_id = f"{away_rot}-{home_rot}"
+
+        base = {
+            "fetch_time": fetch_time,
+            "sport_key": sport_key,
+            "game_date": game_date,
+            "game_time": game_time,
+            "away_team": away_team,
+            "home_team": home_team,
+        }
+
+        # --- Full game line (parent) ---
+        line = game["GameLines"][0]
+        rec = parse_game_line(line, game_id, "fg", "spreads", base)
+        if rec:
+            records.append(rec)
+            print(f"  spreads: {away_team} @ {home_team} | "
+                  f"{rec['away_spread']}/{rec['home_spread']} | {rec['total']}")
+
+        # --- Child games (derivatives) ---
+        alt_counter = 0
+        for child in game.get("GameChilds", []):
+            child_type = child.get("idgmtyp")
+            child_lines = child.get("GameLines", [])
+            if not child_lines:
+                continue
+            child_line = child_lines[0]
+
+            if child_type == 15:
+                # First half line
+                cid = f"{child['vnum']}-{child['hnum']}"
+                rec = parse_game_line(child_line, cid, "h1", "spreads_h1", base)
+                if rec:
+                    records.append(rec)
+
+            elif child_type == 35:
+                # Full game team total
+                tt_name = child["vtm"].upper().replace(" TEAM TOTAL", "").strip()
+                tt_side = "away" if tt_name == away_raw.upper() else "home"
+                rec = parse_team_total(
+                    child_line, f"{game_id}-tt-{tt_side}", "fg",
+                    f"team_totals_{tt_side}_fg", base
+                )
+                if rec:
+                    records.append(rec)
+
+            elif child_type == 66:
+                # 1H team total
+                tt_name = child["vtm"].upper()
+                tt_name = tt_name.replace("1H ", "").replace(" TEAM TOTAL", "").strip()
+                tt_side = "away" if tt_name == away_raw.upper() else "home"
+                rec = parse_team_total(
+                    child_line, f"{game_id}-tt-{tt_side}-h1", "h1",
+                    f"team_totals_{tt_side}_h1", base
+                )
+                if rec:
+                    records.append(rec)
+
+            elif child_type == 25:
+                # Alt line — spread and total are paired in each entry
+                child_id = str(child.get("idgm", alt_counter))
+
+                # Alt spread
+                alt_away_spread = safe_float(child_line.get("vsprdt"))
+                if alt_away_spread is not None:
+                    records.append({
+                        **base,
+                        "game_id": f"{game_id}-alts-{child_id}",
+                        "market": "alternate_spreads_fg",
+                        "period": "fg",
+                        "away_spread": alt_away_spread,
+                        "away_spread_price": safe_int(child_line.get("vsprdoddst")),
+                        "home_spread": safe_float(child_line.get("hsprdt")),
+                        "home_spread_price": safe_int(child_line.get("hsprdoddst")),
+                        "total": None,
+                        "over_price": None,
+                        "under_price": None,
+                        "away_ml": None,
+                        "home_ml": None,
+                    })
+
+                # Alt total
+                alt_total = safe_float(child_line.get("unt"))
+                if alt_total is not None:
+                    records.append({
+                        **base,
+                        "game_id": f"{game_id}-altt-{child_id}",
+                        "market": "alternate_totals_fg",
+                        "period": "fg",
+                        "away_spread": None,
+                        "away_spread_price": None,
+                        "home_spread": None,
+                        "home_spread_price": None,
+                        "total": alt_total,
+                        "over_price": safe_int(child_line.get("ovoddst")),
+                        "under_price": safe_int(child_line.get("unoddst")),
+                        "away_ml": None,
+                        "home_ml": None,
+                    })
+
+                alt_counter += 1
+
+    return records
+
+
+# =============================================================================
+# DATABASE
+# =============================================================================
+
+
 def init_database(sport: str):
     """Initialize DuckDB with the odds table for a sport."""
     config = get_sport_config(sport)
     table_name = config["table_name"]
 
     conn = duckdb.connect(str(DB_PATH))
-
-    # Create table matching The Odds API format
     conn.execute(f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
             fetch_time TIMESTAMP,
@@ -58,16 +366,13 @@ def init_database(sport: str):
             home_team VARCHAR,
             market VARCHAR,
             period VARCHAR,
-            -- Spread fields
             away_spread FLOAT,
             away_spread_price INTEGER,
             home_spread FLOAT,
             home_spread_price INTEGER,
-            -- Total fields
             total FLOAT,
             over_price INTEGER,
             under_price INTEGER,
-            -- Moneyline fields
             away_ml INTEGER,
             home_ml INTEGER
         )
@@ -75,294 +380,8 @@ def init_database(sport: str):
     conn.close()
 
 
-def login_to_wagerzon(page, sport_url: str):
-    """Log into Wagerzon and navigate to sport page."""
-    print(f"Navigating to {sport_url}...")
-    page.goto(sport_url)
-    page.wait_for_load_state('networkidle')
-
-    # Check if we need to login
-    if "NewSchedule" not in page.url:
-        print("Login required...")
-
-        # Fill credentials
-        account_field = page.locator('input#Account')
-        account_field.fill(WAGERZON_USERNAME)
-
-        password_field = page.locator('input#Password')
-        password_field.fill(WAGERZON_PASSWORD)
-
-        # Submit
-        submit_btn = page.locator('button[name="BtnSubmit"]')
-        submit_btn.click()
-
-        page.wait_for_load_state('networkidle')
-        time.sleep(2)
-
-        # Navigate to sport page after login
-        if "NewSchedule" not in page.url:
-            page.goto(sport_url)
-            page.wait_for_load_state('networkidle')
-
-    print(f"Current URL: {page.url}")
-    return page
-
-
-def parse_spread(text: str) -> tuple[Optional[float], Optional[int]]:
-    """Parse spread text like '+1½-110' into (spread, odds)."""
-    if not text:
-        return None, None
-    text = text.strip().replace('½', '.5')
-
-    # Match patterns like "+1.5-110", "-3-110", "PK-110", "PK+100", "-.5-110", "+.5-110"
-    # The spread can be: PK, or [+-]?[digits]?[.digits]? (allowing -.5 without leading 0)
-    match = re.match(r'(PK|[+-]?\d*\.?\d+)\s*([+-]\d+)', text)
-    if match:
-        spread_str = match.group(1)
-        odds_str = match.group(2)
-        spread = 0.0 if spread_str == 'PK' else float(spread_str)
-        odds = int(odds_str)
-        return spread, odds
-
-    return None, None
-
-
-def parse_total(text: str) -> tuple[Optional[float], Optional[int]]:
-    """Parse total text like 'o137-110' into (total, odds)."""
-    if not text:
-        return None, None
-    text = text.strip().replace('½', '.5')
-
-    # Match patterns like "o137-110", "u137-110", "o7½+101"
-    match = re.match(r'[ou](\d+\.?\d*)\s*([+-]?\d+|EV)', text)
-    if match:
-        total = float(match.group(1))
-        odds_str = match.group(2)
-        odds = 100 if odds_str == 'EV' else int(odds_str)
-        return total, odds
-
-    return None, None
-
-
-def parse_moneyline(text: str) -> Optional[int]:
-    """Parse moneyline text like '+105' or '-125'."""
-    if not text:
-        return None
-    text = text.strip()
-
-    if text == 'EV':
-        return 100
-
-    try:
-        # Handle both "+150" and "150" formats
-        return int(text.replace('+', ''))
-    except ValueError:
-        return None
-
-
-def determine_period_from_rotation(rotation: str, config: dict) -> str:
-    """Determine period from rotation number prefix."""
-    if not rotation:
-        return "fg"
-
-    # 3-digit rotations are full game
-    if len(rotation) <= 3:
-        return "fg"
-
-    # 4+ digit rotations: first digit indicates period
-    prefix = rotation[0]
-    return config.get("rotation_periods", {}).get(prefix, "fg")
-
-
-def clean_team_name(team: str, config: dict) -> str:
-    """Remove period prefixes from team names."""
-    for prefix in config.get("team_prefix_patterns", []):
-        if team.startswith(prefix):
-            team = team[len(prefix):]
-    return team.strip()
-
-
-def should_skip_section(section_header: str) -> bool:
-    """Check if a section should be skipped (props, futures, etc.)."""
-    upper = section_header.upper()
-    return any(skip in upper for skip in SKIP_SECTIONS)
-
-
-def determine_market_from_section(section_header: str, config: dict) -> Optional[str]:
-    """Determine market type from section header."""
-    upper = section_header.upper()
-
-    for pattern, market in config.get("section_markets", {}).items():
-        if pattern in upper:
-            return market
-
-    return None
-
-
-def scrape_odds(page, sport: str) -> list[dict]:
-    """Scrape odds from the current page."""
-    config = get_sport_config(sport)
-
-    time.sleep(3)  # Wait for dynamic content
-
-    html = page.content()
-    soup = BeautifulSoup(html, 'html.parser')
-
-    # Save for debugging
-    debug_path = Path(__file__).parent / f"debug_{sport}.html"
-    with open(debug_path, 'w') as f:
-        f.write(html)
-
-    # Load team name resolution data for non-NFL sports
-    team_dict = load_team_dict(sport) if sport != "nfl" else {}
-    canonical_games = load_canonical_games(sport) if sport != "nfl" else []
-
-    odds_data = []
-    fetch_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    sport_key = config["sport_key"]
-
-    competitions = soup.find_all('div', class_='Competition')
-    print(f"Found {len(competitions)} competitions")
-
-    for comp in competitions:
-        # Find section header for this competition
-        section_h1 = comp.find_previous('h1')
-        section_header = section_h1.get_text().strip() if section_h1 else ""
-
-        # Skip props and futures
-        if should_skip_section(section_header):
-            continue
-
-        # Determine base market from section
-        base_market = determine_market_from_section(section_header, config)
-        if not base_market:
-            continue
-
-        game_rows = comp.find_all('div', class_='GameRow')
-        if len(game_rows) < 2:
-            continue
-
-        away_row = game_rows[0]
-        home_row = game_rows[1]
-
-        # Get team names
-        away_team_span = away_row.find('span', class_='Team')
-        home_team_span = home_row.find('span', class_='Team')
-
-        if not away_team_span or not home_team_span:
-            continue
-
-        away_team_raw = away_team_span.get_text().strip()
-        home_team_raw = home_team_span.get_text().strip()
-
-        # Clean team names (remove period prefixes) and normalize to standard names
-        away_team_cleaned = clean_team_name(away_team_raw, config)
-        home_team_cleaned = clean_team_name(home_team_raw, config)
-        if team_dict or canonical_games:
-            away_team, home_team = resolve_team_names(
-                away_team_cleaned, home_team_cleaned,
-                team_dict, canonical_games
-            )
-        else:
-            away_team = normalize_team_name(away_team_cleaned, sport)
-            home_team = normalize_team_name(home_team_cleaned, sport)
-
-        # Get rotation numbers
-        away_cols = away_row.find_all('div', class_='col-xs-1')
-        home_cols = home_row.find_all('div', class_='col-xs-1')
-
-        away_rot = ""
-        game_date = ""
-        game_time = ""
-
-        for col in away_cols:
-            text = col.get_text().strip()
-            if text.isdigit() and len(text) >= 3:
-                away_rot = text
-            elif text and not game_date:
-                game_date = text
-
-        for col in home_cols:
-            text = col.get_text().strip()
-            if not text.isdigit() and text and not game_time:
-                game_time = text
-
-        # Determine period from rotation number
-        period = determine_period_from_rotation(away_rot, config)
-
-        # Build market name with period
-        if base_market == "spreads_quarters":
-            market = f"spreads_{period}"
-        elif base_market.endswith("_h1") or base_market.endswith("_q1"):
-            market = base_market
-        else:
-            market = base_market if period == "fg" else f"{base_market}_{period}"
-
-        # Parse odds from buttons
-        away_btns = away_row.find_all('div', class_='btn-odds')
-        home_btns = home_row.find_all('div', class_='btn-odds')
-
-        # Away team odds
-        away_spread, away_spread_price = None, None
-        total, over_price = None, None
-        away_ml = None
-
-        if len(away_btns) >= 1:
-            away_spread, away_spread_price = parse_spread(away_btns[0].get_text())
-        if len(away_btns) >= 2:
-            total, over_price = parse_total(away_btns[1].get_text())
-        if len(away_btns) >= 3:
-            away_ml = parse_moneyline(away_btns[2].get_text())
-
-        # Home team odds
-        home_spread, home_spread_price = None, None
-        _, under_price = None, None
-        home_ml = None
-
-        if len(home_btns) >= 1:
-            home_spread, home_spread_price = parse_spread(home_btns[0].get_text())
-        if len(home_btns) >= 2:
-            _, under_price = parse_total(home_btns[1].get_text())
-        if len(home_btns) >= 3:
-            home_ml = parse_moneyline(home_btns[2].get_text())
-
-        # Create game ID from rotation
-        home_rot = ""
-        for col in home_cols:
-            text = col.get_text().strip()
-            if text.isdigit() and len(text) >= 3:
-                home_rot = text
-        game_id = f"{away_rot}-{home_rot}"
-
-        record = {
-            "fetch_time": fetch_time,
-            "sport_key": sport_key,
-            "game_id": game_id,
-            "game_date": game_date,
-            "game_time": game_time,
-            "away_team": away_team,
-            "home_team": home_team,
-            "market": market,
-            "period": period,
-            "away_spread": away_spread,
-            "away_spread_price": away_spread_price,
-            "home_spread": home_spread,
-            "home_spread_price": home_spread_price,
-            "total": total,
-            "over_price": over_price,
-            "under_price": under_price,
-            "away_ml": away_ml,
-            "home_ml": home_ml,
-        }
-
-        odds_data.append(record)
-        print(f"  {market}: {away_team} @ {home_team} | {away_spread}/{home_spread} | {total}")
-
-    return odds_data
-
-
 def save_odds(odds_data: list[dict], sport: str):
-    """Save odds to DuckDB."""
+    """Save odds to DuckDB (replaces previous scrape)."""
     if not odds_data:
         print("No odds data to save")
         return
@@ -372,7 +391,6 @@ def save_odds(odds_data: list[dict], sport: str):
 
     conn = duckdb.connect(str(DB_PATH))
 
-    # Insert records
     columns = [
         "fetch_time", "sport_key", "game_id", "game_date", "game_time",
         "away_team", "home_team", "market", "period",
@@ -399,43 +417,54 @@ def save_odds(odds_data: list[dict], sport: str):
     conn.close()
 
 
+# =============================================================================
+# MAIN
+# =============================================================================
+
+
 def scrape_wagerzon(sport: str, headless: bool = True):
-    """Main function to scrape odds for a sport."""
+    """Scrape Wagerzon odds via REST API and save to DuckDB.
+
+    The headless parameter is kept for backward compatibility but is ignored —
+    no browser is needed.
+    """
     if not WAGERZON_USERNAME or not WAGERZON_PASSWORD:
         raise ValueError("WAGERZON_USERNAME and WAGERZON_PASSWORD must be set in bet_logger/.env")
 
-    sport_url = get_sport_url(sport)
     init_database(sport)
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
-        context = browser.new_context()
-        page = context.new_page()
+    session = requests.Session()
 
-        try:
-            login_to_wagerzon(page, sport_url)
-            time.sleep(3)
+    # Step 1: Authenticate
+    print("Logging in to Wagerzon...")
+    login(session)
 
-            odds_data = scrape_odds(page, sport)
+    # Step 2: Fetch odds JSON
+    print(f"Fetching {sport.upper()} odds...")
+    data = fetch_odds_json(session, sport)
 
-            if odds_data:
-                save_odds(odds_data, sport)
-                print(f"\nSaved {len(odds_data)} records for {sport}")
-            else:
-                print("No odds data scraped")
+    # Step 3: Parse JSON into records
+    odds_data = parse_odds(data, sport)
 
-            return odds_data
+    # Count by market type
+    market_counts = {}
+    for rec in odds_data:
+        m = rec["market"]
+        market_counts[m] = market_counts.get(m, 0) + 1
+    for m, c in sorted(market_counts.items()):
+        print(f"  {m}: {c} records")
 
-        finally:
-            browser.close()
+    # Step 4: Save to DuckDB
+    if odds_data:
+        save_odds(odds_data, sport)
+        print(f"\nSaved {len(odds_data)} total records for {sport.upper()}")
+    else:
+        print("No odds data scraped")
+
+    return odds_data
 
 
 if __name__ == "__main__":
-    import sys
-
-    # Default to NFL, can pass sport as argument
     sport = sys.argv[1] if len(sys.argv) > 1 else "nfl"
-    headless = "--no-headless" not in sys.argv
-
-    print(f"Starting Wagerzon {sport.upper()} odds scraper...")
-    scrape_wagerzon(sport, headless=headless)
+    print(f"Starting Wagerzon {sport.upper()} odds scraper (REST API)...")
+    scrape_wagerzon(sport)

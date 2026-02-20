@@ -175,6 +175,7 @@ This repo contains tools for:
 - For quick, isolated fixes (typo, one-liner) committing directly to `main` is fine
 
 **Branch hygiene (CRITICAL):**
+- **FIRST action after exiting plan mode**: run `git branch` and create/switch to the correct feature branch BEFORE writing any code. No exceptions.
 - Before making ANY code change, run `git branch` to confirm you're on the correct branch
 - NEVER use `git stash` to move changes between branches — it leads to lost or misplaced work
 - If changes end up on the wrong branch, use `git stash` + `git checkout` + `git stash pop` as a ONE-TIME fix, then verify with `git diff` that all expected changes are present
