@@ -343,11 +343,14 @@ all_bets_combined <- bind_rows(
 ) %>%
   # Filter out games that have already started
   filter(is.na(pt_start_time) | pt_start_time > Sys.time()) %>%
-  # Global dedup: keep best EV per (game, market, side, line) across all books
-  group_by(id, market, bet_on, line) %>%
+  # Collapse main + alt into one base market (e.g., alternate_spreads_h1 -> spreads_h1)
+  mutate(base_market = gsub("^alternate_", "", market)) %>%
+  # Global dedup: keep best EV per (game, base_market, side) across all books/lines
+  group_by(id, base_market, bet_on) %>%
   filter(ev == max(ev)) %>%
   slice_head(n = 1) %>%
   ungroup() %>%
+  select(-base_market) %>%
   arrange(desc(ev))
 
 # Final summary by market type
