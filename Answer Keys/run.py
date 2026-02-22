@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # Force unbuffered output so prints appear in correct order with subprocess output
@@ -70,6 +71,7 @@ async def run_scraper(name: str, script: str, sport: str) -> dict:
     else:
         python_exe = sys.executable
 
+    t0 = time.time()
     proc = await asyncio.create_subprocess_exec(
         python_exe, str(script_path), sport,
         stdout=asyncio.subprocess.PIPE,
@@ -77,15 +79,16 @@ async def run_scraper(name: str, script: str, sport: str) -> dict:
         cwd=str(script_dir)
     )
     stdout, stderr = await proc.communicate()
+    elapsed = time.time() - t0
 
     success = proc.returncode == 0
     status = "✓" if success else "✗"
-    print(f"  [scraper] {status} {name} complete", flush=True)
+    print(f"  [scraper] {status} {name} complete ({elapsed:.1f}s)", flush=True)
 
     if not success:
         print(f"  [scraper] Error: {stderr.decode()[-2000:]}", flush=True)
 
-    return {"name": name, "success": success, "type": "scraper"}
+    return {"name": name, "success": success, "type": "scraper", "elapsed": elapsed}
 
 
 async def run_r_prepare(sport: str) -> dict:
@@ -94,6 +97,7 @@ async def run_r_prepare(sport: str) -> dict:
 
     script_path = Path(__file__).parent / R_SCRIPTS[sport]["prepare"]
 
+    t0 = time.time()
     proc = await asyncio.create_subprocess_exec(
         "Rscript", str(script_path),
         stdout=asyncio.subprocess.PIPE,
@@ -101,15 +105,16 @@ async def run_r_prepare(sport: str) -> dict:
         cwd=str(script_path.parent)
     )
     stdout, stderr = await proc.communicate()
+    elapsed = time.time() - t0
 
     success = proc.returncode == 0
     status = "✓" if success else "✗"
-    print(f"  [R] {status} Sample generation complete", flush=True)
+    print(f"  [R] {status} Sample generation complete ({elapsed:.1f}s)", flush=True)
 
     if not success:
         print(f"  [R] Error: {stderr.decode()[:500]}", flush=True)
 
-    return {"name": "r_prepare", "success": success, "type": "r"}
+    return {"name": "r_prepare", "success": success, "type": "r", "elapsed": elapsed}
 
 
 async def run_parallel_phase(sport: str) -> list:
@@ -136,16 +141,18 @@ async def run_parallel_phase(sport: str) -> list:
     return results
 
 
-def run_r_combine(sport: str) -> int:
+def run_r_combine(sport: str) -> tuple[int, float]:
     """Run R Part 2: load samples + scraped odds, find edge."""
     script_path = Path(__file__).parent / R_SCRIPTS[sport]["combine"]
     print(f"\n[R] Combining odds and finding edge...", flush=True)
 
+    t0 = time.time()
     result = subprocess.run(
         ["Rscript", str(script_path)],
         cwd=str(script_path.parent)
     )
-    return result.returncode
+    elapsed = time.time() - t0
+    return result.returncode, elapsed
 
 
 def fetch_canonical_games(sport: str):
@@ -190,6 +197,40 @@ def cleanup_canonical_games(sport: str):
         path.unlink()
 
 
+def save_run_history(sport: str, timings: dict):
+    """Save pipeline timing to DuckDB run history table via R subprocess."""
+    db_path = Path(__file__).parent / f"{sport}.duckdb"
+    if not db_path.exists():
+        return
+    try:
+        vals = {k: timings.get(k) for k in [
+            "phase0", "phase1", "phase2", "total",
+            "wagerzon", "hoop88", "bfa", "r_prepare", "r_combine"
+        ]}
+        # Use R since DuckDB Python package isn't in system Python
+        r_code = f"""
+        suppressPackageStartupMessages({{ library(duckdb); library(DBI) }})
+        con <- dbConnect(duckdb(), dbdir = "{db_path}")
+        dbExecute(con, "CREATE TABLE IF NOT EXISTS cbb_run_history (
+            run_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            phase0_secs DOUBLE, phase1_secs DOUBLE, phase2_secs DOUBLE, total_secs DOUBLE,
+            scraper_wagerzon_secs DOUBLE, scraper_hoop88_secs DOUBLE, scraper_bfa_secs DOUBLE,
+            r_prepare_secs DOUBLE, r_combine_secs DOUBLE
+        )")
+        dbExecute(con, "INSERT INTO cbb_run_history (phase0_secs, phase1_secs, phase2_secs, total_secs,
+            scraper_wagerzon_secs, scraper_hoop88_secs, scraper_bfa_secs, r_prepare_secs, r_combine_secs)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            list({vals.get('phase0', 'NA')}, {vals.get('phase1', 'NA')}, {vals.get('phase2', 'NA')},
+                 {vals.get('total', 'NA')},
+                 {vals.get('wagerzon', 'NA')}, {vals.get('hoop88', 'NA')}, {vals.get('bfa', 'NA')},
+                 {vals.get('r_prepare', 'NA')}, {vals.get('r_combine', 'NA')}))
+        dbDisconnect(con)
+        """
+        subprocess.run(["Rscript", "-e", r_code], capture_output=True, timeout=10)
+    except Exception as e:
+        print(f"Warning: Could not save run history: {e}", flush=True)
+
+
 def main():
     sport = sys.argv[1] if len(sys.argv) > 1 else "nfl"
     print(f"=== {sport.upper()} Answer Key ===\n", flush=True)
@@ -198,11 +239,23 @@ def main():
         print(f"Error: Sport '{sport}' not configured. Available: {list(R_SCRIPTS.keys())}", flush=True)
         return 1
 
+    timings = {}
+    t_total = time.time()
+
     # Phase 0: Fetch canonical game list for team name resolution
+    t0 = time.time()
     fetch_canonical_games(sport)
+    timings["phase0"] = time.time() - t0
 
     # Phase 1: Run scrapers + R samples in parallel
+    t0 = time.time()
     results = asyncio.run(run_parallel_phase(sport))
+    timings["phase1"] = time.time() - t0
+
+    # Extract per-task timings
+    for r in results:
+        if isinstance(r, dict) and "elapsed" in r:
+            timings[r["name"]] = r["elapsed"]
 
     # Check for failures
     failures = [r for r in results if isinstance(r, dict) and not r.get("success")]
@@ -212,10 +265,27 @@ def main():
             print(f"  - {f.get('name', 'unknown')}", flush=True)
 
     # Phase 2: Combine and find edge
-    rc = run_r_combine(sport)
+    rc, combine_elapsed = run_r_combine(sport)
+    timings["phase2"] = combine_elapsed
+    timings["r_combine"] = combine_elapsed
 
     # Cleanup temp files
     cleanup_canonical_games(sport)
+
+    timings["total"] = time.time() - t_total
+
+    # Print timing summary
+    print(f"\n=== PIPELINE TIMING ===", flush=True)
+    print(f"  Phase 0 (canonical games): {timings.get('phase0', 0):5.1f}s", flush=True)
+    print(f"  Phase 1 (parallel):        {timings.get('phase1', 0):5.1f}s", flush=True)
+    for name in ["wagerzon", "hoop88", "bfa", "r_prepare"]:
+        if name in timings:
+            print(f"    - {name:20s}  {timings[name]:5.1f}s", flush=True)
+    print(f"  Phase 2 (R combine):       {timings.get('phase2', 0):5.1f}s", flush=True)
+    print(f"  Total:                     {timings.get('total', 0):5.1f}s", flush=True)
+
+    # Save to DuckDB
+    save_run_history(sport, timings)
 
     return rc
 

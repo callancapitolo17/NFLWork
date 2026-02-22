@@ -2,6 +2,7 @@
 # Runs in parallel with scrapers
 # Generates samples and saves to DuckDB for CBBCombine.R
 
+.t_script_start <- Sys.time()
 setwd("~/NFLWork/Answer Keys")
 suppressPackageStartupMessages({
   library(data.table)
@@ -17,6 +18,10 @@ suppressPackageStartupMessages({
   library(hoopR)
 })
 source("Tools.R")
+timer <- pipeline_timer()
+# Backfill startup time (packages + source before timer existed)
+startup_secs <- as.numeric(difftime(Sys.time(), .t_script_start, units = "secs"))
+timer$mark(sprintf("r_startup (%.1fs total)", startup_secs))
 
 cat("=== CBB PREPARE: Starting sample generation ===\n")
 
@@ -121,6 +126,7 @@ if (!"cbb_weights" %in% tables) {
 # Close DB before forking (DuckDB doesn't support concurrent access)
 dbDisconnect(con)
 cat("Historical data loaded.\n")
+timer$mark("historical_load")
 
 # =============================================================================
 # GET CURRENT GAME ODDS & BUILD CONSENSUS
@@ -218,6 +224,7 @@ cat(sprintf("After inner_join (spread+total): %d games.\n", nrow(cbb_odds)))
 cbb_odds <- cbb_odds %>%
   filter(if_all(everything(), ~ !is.na(.)))
 cat(sprintf("After NA filter: %d games.\n", nrow(cbb_odds)))
+timer$mark("consensus")
 
 # =============================================================================
 # BUILD TEAM NAME DICTIONARY (ESPN + Odds API)
@@ -260,6 +267,7 @@ if (nrow(espn_teams) > 0) {
   dbWriteTable(con_dict, "cbb_team_dict", team_dict, overwrite = TRUE)
   dbDisconnect(con_dict)
 }
+timer$mark("espn_teams")
 
 # =============================================================================
 # SETUP PREDICTION PARAMETERS
@@ -332,6 +340,7 @@ samples <- generate_all_samples(
   use_spread_line = TRUE
 )
 cat(sprintf("Generated %d samples.\n", length(samples)))
+timer$mark("sample_gen")
 
 # Collect derivative odds from child process
 prefetched_raw <- NULL
@@ -342,6 +351,7 @@ if (!is.null(odds_job)) {
   cat(sprintf("Pre-fetched %d API responses (%d events x %d markets).\n",
               nrow(prefetched_raw), n_distinct(events$id), length(all_deriv_markets)))
 }
+timer$mark("prefetch_odds")
 
 # =============================================================================
 # SAVE TO DUCKDB (shared state, no temp files)
@@ -374,6 +384,16 @@ dbWriteTable(con, "cbb_params_temp", params_df, overwrite = TRUE)
 
 # Save generation timestamp for freshness checking
 dbExecute(con, "CREATE OR REPLACE TABLE cbb_samples_meta AS SELECT CURRENT_TIMESTAMP as generated_at")
+
+# Save timing data
+timer$mark("duckdb_save")
+timing_df <- tibble(
+  section = names(timer$results()),
+  secs = unlist(timer$results()),
+  script = "CBBPrepare",
+  run_at = Sys.time()
+)
+dbWriteTable(con, "cbb_timing_prepare", timing_df, overwrite = TRUE)
 
 dbDisconnect(con)
 

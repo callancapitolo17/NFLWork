@@ -2,6 +2,7 @@
 # Runs after scrapers and CBBPrepare.R complete
 # Loads samples from DuckDB, merges with scraped odds, finds edge
 
+.t_script_start <- Sys.time()
 setwd("~/NFLWork/Answer Keys")
 suppressPackageStartupMessages({
   library(data.table)
@@ -16,6 +17,9 @@ suppressPackageStartupMessages({
   library(tidyverse)
 })
 source("Tools.R")
+timer <- pipeline_timer()
+startup_secs <- as.numeric(difftime(Sys.time(), .t_script_start, units = "secs"))
+timer$mark(sprintf("r_startup (%.1fs total)", startup_secs))
 
 cat("=== CBB COMBINE: Loading data and finding edge ===\n")
 
@@ -72,6 +76,7 @@ if (file.exists(dashboard_db)) {
 }
 
 cat(sprintf("Loaded samples for %d games.\n", n_distinct(samples_df$game_id)))
+timer$mark("load_data")
 
 # Reconstruct samples list from dataframe
 game_ids <- unique(samples_df$game_id)
@@ -93,6 +98,7 @@ cat(sprintf("Loaded %d Hoop88 records.\n", nrow(hoop88_odds)))
 
 bfa_odds <- get_bfa_odds("cbb")
 cat(sprintf("Loaded %d BFA records.\n", nrow(bfa_odds)))
+timer$mark("load_scrapers")
 
 # =============================================================================
 # GENERATE PREDICTIONS FOR CBB MARKETS
@@ -118,6 +124,7 @@ ml_results <- build_moneylines_from_samples(
 )
 
 ml_bets <- ml_results$bets
+timer$mark("build_moneylines")
 
 # --- TOTALS (H1 + H2) + ALTERNATE TOTALS ---
 cat("Building totals predictions...\n")
@@ -144,6 +151,7 @@ total_results <- build_totals_from_samples(
 )
 
 total_bets <- total_results$bets
+timer$mark("build_totals")
 
 # --- SPREADS (H1 + H2) + ALTERNATE SPREADS ---
 cat("Building spread predictions...\n")
@@ -170,6 +178,7 @@ spread_results <- build_spreads_from_samples(
 )
 
 spread_bets <- spread_results$bets
+timer$mark("build_spreads")
 
 # --- TEAM TOTALS (H1 + H2) + ALTERNATE TEAM TOTALS ---
 cat("Building team totals predictions...\n")
@@ -196,6 +205,7 @@ team_totals_results <- build_team_totals_from_samples(
 )
 
 team_totals_bets <- team_totals_results$bets
+timer$mark("build_team_totals")
 
 # =============================================================================
 # COMBINE ALL API BETS
@@ -329,6 +339,7 @@ if (nrow(bfa_odds) > 0) {
   bfa_bets <- tibble()
   bfa_alt_bets <- tibble()
 }
+timer$mark("compare_offshore")
 
 # =============================================================================
 # COMBINE ALL BETS (API + OFFSHORE)
@@ -378,6 +389,16 @@ con <- dbConnect(duckdb(), dbdir = "cbb.duckdb")
 
 dbExecute(con, "DROP TABLE IF EXISTS cbb_bets_combined")
 dbWriteTable(con, "cbb_bets_combined", all_bets_combined)
+
+# Save timing data
+timer$mark("save_bets")
+timing_df <- tibble(
+  section = names(timer$results()),
+  secs = unlist(timer$results()),
+  script = "CBBCombine",
+  run_at = Sys.time()
+)
+dbWriteTable(con, "cbb_timing_combine", timing_df, overwrite = TRUE)
 
 dbDisconnect(con)
 
