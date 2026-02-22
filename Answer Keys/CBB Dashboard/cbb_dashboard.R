@@ -273,14 +273,15 @@ create_bets_table <- function(all_bets, placed_bets, relationships) {
         cell = function(value, index) {
           level <- table_data$correlation_level[index]
           tooltip <- table_data$correlation_tooltip[index]
+          corr_attr <- sprintf('data-corr-level="%s"', level)
           if (level == "high") {
-            sprintf('<span class="warning-icon high" data-tooltip="%s">&#9888;</span>', htmltools::htmlEscape(tooltip))
+            sprintf('<span class="warning-icon high" %s data-tooltip="%s">&#9888;</span>', corr_attr, htmltools::htmlEscape(tooltip))
           } else if (level == "medium") {
-            sprintf('<span class="warning-icon medium" data-tooltip="%s">&#9888;</span>', htmltools::htmlEscape(tooltip))
+            sprintf('<span class="warning-icon medium" %s data-tooltip="%s">&#9888;</span>', corr_attr, htmltools::htmlEscape(tooltip))
           } else if (level == "low") {
-            sprintf('<span class="warning-icon low" data-tooltip="%s">&#9675;</span>', htmltools::htmlEscape(tooltip))
+            sprintf('<span class="warning-icon low" %s data-tooltip="%s">&#9675;</span>', corr_attr, htmltools::htmlEscape(tooltip))
           } else {
-            ""
+            sprintf('<span %s></span>', corr_attr)
           }
         }
       ),
@@ -876,6 +877,13 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             ),
             tags$div(class = "filter-menu", id = "filter-market-menu")
           ),
+          tags$div(class = "filter-group",
+            tags$span(class = "filter-label", "Correlation"),
+            tags$div(class = "filter-dropdown", id = "filter-correlation-btn", onclick = "toggleFilter('correlation')",
+              tags$span(id = "filter-correlation-text", "All Levels")
+            ),
+            tags$div(class = "filter-menu", id = "filter-correlation-menu")
+          ),
           tags$button(class = "clear-filters-btn", onclick = "clearAllFilters()", "Clear Filters")
         ),
 
@@ -893,7 +901,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         const activeFilters = {
           game: new Set(),
           book: new Set(),
-          market: new Set()
+          market: new Set(),
+          correlation: new Set()
         };
 
         document.addEventListener("DOMContentLoaded", function() {
@@ -932,6 +941,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           populateFilterMenu("book", allBooksSorted);
 
           populateFilterMenu("market", opts.markets);
+          populateFilterMenu("correlation", opts.correlations);
 
           // Auto-discover: register new books as disabled
           var knownBooks = Object.keys(window.BOOK_SETTINGS || {});
@@ -1046,7 +1056,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           }
 
           const textEl = document.getElementById("filter-" + type + "-text");
-          const allLabel = type === "game" ? "All Games" : type === "book" ? "All Books" : "All Markets";
+          const allLabel = type === "game" ? "All Games" : type === "book" ? "All Books" :
+                           type === "correlation" ? "All Levels" : "All Markets";
 
           if (checkedVals.length === checkboxes.length) {
             textEl.textContent = allLabel;
@@ -1109,11 +1120,22 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               marketType = "Totals";
             }
 
+            // Correlation level from data attribute
+            var corrLevel = "None";
+            var corrSpan = row.querySelector("[data-corr-level]");
+            if (corrSpan) {
+              var raw = corrSpan.getAttribute("data-corr-level");
+              if (raw === "high") corrLevel = "High";
+              else if (raw === "medium") corrLevel = "Medium";
+              else if (raw === "low") corrLevel = "Low";
+            }
+
             var gameMatch = activeFilters.game.size === 0 || activeFilters.game.has(gameText);
             var bookMatch = activeFilters.book.size === 0 || activeFilters.book.has(bookText);
             var marketMatch = activeFilters.market.size === 0 || activeFilters.market.has(marketType);
+            var corrMatch = activeFilters.correlation.size === 0 || activeFilters.correlation.has(corrLevel);
 
-            var visible = gameMatch && bookMatch && marketMatch;
+            var visible = gameMatch && bookMatch && marketMatch && corrMatch;
             row.style.display = visible ? "" : "none";
             if (visible) visibleCount++;
           });
@@ -1129,8 +1151,9 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
 
         function clearAllFilters() {
-          ["game", "market"].forEach(function(type) {
+          ["game", "market", "correlation"].forEach(function(type) {
             var menu = document.getElementById("filter-" + type + "-menu");
+            if (!menu) return;
             var checkboxes = menu.querySelectorAll("input[type=checkbox]");
             var vals = [];
 
@@ -1142,7 +1165,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
             activeFilters[type] = new Set(vals);
             var textEl = document.getElementById("filter-" + type + "-text");
-            var allLabel = type === "game" ? "All Games" : type === "book" ? "All Books" : "All Markets";
+            var allLabel = type === "game" ? "All Games" : type === "book" ? "All Books" :
+                           type === "correlation" ? "All Levels" : "All Markets";
             textEl.textContent = allLabel;
           });
           applyFilters();
@@ -1409,7 +1433,8 @@ filter_markets <- if (nrow(all_bets) > 0) {
 filter_options_json <- toJSON(list(
   games = I(filter_games),
   books = I(filter_books),
-  markets = I(filter_markets)
+  markets = I(filter_markets),
+  correlations = I(c("None", "Low", "Medium", "High"))
 ), auto_unbox = FALSE)
 
 # Create report
