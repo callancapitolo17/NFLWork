@@ -308,7 +308,7 @@ events <- tryCatch({
 })
 
 # =============================================================================
-# GENERATE SAMPLES + FETCH DERIVATIVE ODDS (IN PARALLEL)
+# GENERATE SAMPLES + FETCH DERIVATIVE ODDS
 # =============================================================================
 
 # All derivative markets to pre-fetch for CBBCombine
@@ -319,17 +319,6 @@ all_deriv_markets <- c(
   "team_totals_h1", "team_totals_h2", "alternate_team_totals_h1", "alternate_team_totals_h2"
 )
 
-# Fork child process to fetch derivative odds SIMULTANEOUSLY with sample generation
-odds_job <- NULL
-if (nrow(events) > 0) {
-  n_combos <- nrow(events) * length(all_deriv_markets)
-  cat(sprintf("Forking child process to fetch %d derivative odds (parallel with samples)...\n", n_combos))
-  odds_job <- parallel::mcparallel({
-    fetch_odds_bulk(events$id, all_deriv_markets, "basketball_ncaab")
-  })
-}
-
-# Main process: generate samples (this takes ~5 min)
 cat("Generating samples for all games...\n")
 samples <- generate_all_samples(
   targets         = targets,
@@ -342,13 +331,14 @@ samples <- generate_all_samples(
 cat(sprintf("Generated %d samples.\n", length(samples)))
 timer$mark("sample_gen")
 
-# Collect derivative odds from child process
+# Fetch derivative odds (sequential — mcparallel fork causes 14x slowdown on macOS)
 prefetched_raw <- NULL
-if (!is.null(odds_job)) {
-  cat("Collecting pre-fetched derivative odds from child process...\n")
-  prefetched_raw <- parallel::mccollect(odds_job)[[1]]
+if (nrow(events) > 0) {
+  n_combos <- nrow(events) * length(all_deriv_markets)
+  cat(sprintf("Fetching %d derivative odds...\n", n_combos))
+  prefetched_raw <- fetch_odds_bulk(events$id, all_deriv_markets, "basketball_ncaab")
   prefetched_raw <- prefetched_raw[!is.na(prefetched_raw$json_response), ]
-  cat(sprintf("Pre-fetched %d API responses (%d events x %d markets).\n",
+  cat(sprintf("Fetched %d API responses (%d events x %d markets).\n",
               nrow(prefetched_raw), n_distinct(events$id), length(all_deriv_markets)))
 }
 timer$mark("prefetch_odds")
