@@ -26,16 +26,13 @@
 # --- Pipeline timing utility ---
 pipeline_timer <- function() {
   t0 <- Sys.time()
-  timings <- list()
   list(
     mark = function(label) {
       elapsed <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
-      timings[[label]] <<- elapsed
       cat(sprintf("  [%5.1fs] %s\n", elapsed, label))
       t0 <<- Sys.time()
       invisible(elapsed)
-    },
-    results = function() as.data.frame(timings)
+    }
   )
 }
 

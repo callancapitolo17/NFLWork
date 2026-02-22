@@ -197,40 +197,6 @@ def cleanup_canonical_games(sport: str):
         path.unlink()
 
 
-def save_run_history(sport: str, timings: dict):
-    """Save pipeline timing to DuckDB run history table via R subprocess."""
-    db_path = Path(__file__).parent / f"{sport}.duckdb"
-    if not db_path.exists():
-        return
-    try:
-        vals = {k: timings.get(k) for k in [
-            "phase0", "phase1", "phase2", "total",
-            "wagerzon", "hoop88", "bfa", "r_prepare", "r_combine"
-        ]}
-        # Use R since DuckDB Python package isn't in system Python
-        r_code = f"""
-        suppressPackageStartupMessages({{ library(duckdb); library(DBI) }})
-        con <- dbConnect(duckdb(), dbdir = "{db_path}")
-        dbExecute(con, "CREATE TABLE IF NOT EXISTS cbb_run_history (
-            run_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            phase0_secs DOUBLE, phase1_secs DOUBLE, phase2_secs DOUBLE, total_secs DOUBLE,
-            scraper_wagerzon_secs DOUBLE, scraper_hoop88_secs DOUBLE, scraper_bfa_secs DOUBLE,
-            r_prepare_secs DOUBLE, r_combine_secs DOUBLE
-        )")
-        dbExecute(con, "INSERT INTO cbb_run_history (phase0_secs, phase1_secs, phase2_secs, total_secs,
-            scraper_wagerzon_secs, scraper_hoop88_secs, scraper_bfa_secs, r_prepare_secs, r_combine_secs)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            list({vals.get('phase0', 'NA')}, {vals.get('phase1', 'NA')}, {vals.get('phase2', 'NA')},
-                 {vals.get('total', 'NA')},
-                 {vals.get('wagerzon', 'NA')}, {vals.get('hoop88', 'NA')}, {vals.get('bfa', 'NA')},
-                 {vals.get('r_prepare', 'NA')}, {vals.get('r_combine', 'NA')}))
-        dbDisconnect(con)
-        """
-        subprocess.run(["Rscript", "-e", r_code], capture_output=True, timeout=10)
-    except Exception as e:
-        print(f"Warning: Could not save run history: {e}", flush=True)
-
-
 def main():
     sport = sys.argv[1] if len(sys.argv) > 1 else "nfl"
     print(f"=== {sport.upper()} Answer Key ===\n", flush=True)
@@ -283,9 +249,6 @@ def main():
             print(f"    - {name:20s}  {timings[name]:5.1f}s", flush=True)
     print(f"  Phase 2 (R combine):       {timings.get('phase2', 0):5.1f}s", flush=True)
     print(f"  Total:                     {timings.get('total', 0):5.1f}s", flush=True)
-
-    # Save to DuckDB
-    save_run_history(sport, timings)
 
     return rc
 

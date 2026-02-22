@@ -390,15 +390,7 @@ con <- dbConnect(duckdb(), dbdir = "cbb.duckdb")
 dbExecute(con, "DROP TABLE IF EXISTS cbb_bets_combined")
 dbWriteTable(con, "cbb_bets_combined", all_bets_combined)
 
-# Save timing data
 timer$mark("save_bets")
-timing_df <- tibble(
-  section = names(timer$results()),
-  secs = unlist(timer$results()),
-  script = "CBBCombine",
-  run_at = Sys.time()
-)
-dbWriteTable(con, "cbb_timing_combine", timing_df, overwrite = TRUE)
 
 dbDisconnect(con)
 

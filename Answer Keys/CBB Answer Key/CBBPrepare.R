@@ -385,15 +385,7 @@ dbWriteTable(con, "cbb_params_temp", params_df, overwrite = TRUE)
 # Save generation timestamp for freshness checking
 dbExecute(con, "CREATE OR REPLACE TABLE cbb_samples_meta AS SELECT CURRENT_TIMESTAMP as generated_at")
 
-# Save timing data
 timer$mark("duckdb_save")
-timing_df <- tibble(
-  section = names(timer$results()),
-  secs = unlist(timer$results()),
-  script = "CBBPrepare",
-  run_at = Sys.time()
-)
-dbWriteTable(con, "cbb_timing_prepare", timing_df, overwrite = TRUE)
 
 dbDisconnect(con)
 
