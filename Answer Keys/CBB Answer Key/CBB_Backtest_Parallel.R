@@ -15,9 +15,10 @@ source("Tools.R")
 # =============================================================================
 
 N_TEST_GAMES <- 1000    # Number of games to test (NULL for all)
-SAMPLE_PCT <- 0.05      # 5% sample for answer key
-KELLY_MULT <- 0.25      # Fractional Kelly
-BANKROLL <- 1000        # Starting bankroll for ROI simulation
+SAMPLE_PCT <- 0.02         # 2% sample (matches production: CBBPrepare.R)
+KELLY_MULT <- 0.25         # Fractional Kelly
+BANKROLL <- 1000           # Starting bankroll for ROI simulation
+EV_THRESHOLD <- 0.05       # 5% min EV (matches production: CBBCombine.R)
 N_CORES <- detectCores() - 1  # Leave 1 core free
 
 cat("Using", N_CORES, "cores for parallel processing\n\n")
@@ -464,9 +465,9 @@ cat("\n===========================================\n")
 cat("ROI ANALYSIS (+EV BETS)\n")
 cat("===========================================\n\n")
 
-# Filter to +EV bets only
+# Filter to +EV bets (using production threshold)
 ev_bets <- results %>%
-  filter(ev > 0) %>%
+  filter(ev > EV_THRESHOLD) %>%
   mutate(
     stake = mapply(kelly_stake, ev, book_odds,
                    MoreArgs = list(bankroll = BANKROLL, kelly_mult = KELLY_MULT)),
