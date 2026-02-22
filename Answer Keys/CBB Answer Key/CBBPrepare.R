@@ -317,32 +317,7 @@ if (nrow(events) > 0) {
   n_combos <- nrow(events) * length(all_deriv_markets)
   cat(sprintf("Forking child process to fetch %d derivative odds (parallel with samples)...\n", n_combos))
   odds_job <- parallel::mcparallel({
-    combos <- expand.grid(event_id = events$id, market = all_deriv_markets,
-                          stringsAsFactors = FALSE)
-    results <- vector("list", nrow(combos))
-    for (i in seq_len(nrow(combos))) {
-      json_text <- tryCatch({
-        res <- GET(
-          paste0("https://api.the-odds-api.com/v4/sports/basketball_ncaab/events/",
-                 combos$event_id[i], "/odds"),
-          query = list(
-            apiKey = Sys.getenv("ODDS_API_KEY"),
-            regions = "us,us2,us_ex",
-            markets = combos$market[i],
-            oddsFormat = "american",
-            dateFormat = "iso"
-          )
-        )
-        if (!http_error(res)) content(res, "text") else NA_character_
-      }, error = function(e) NA_character_)
-      results[[i]] <- data.frame(
-        event_id = combos$event_id[i],
-        market = combos$market[i],
-        json_response = json_text,
-        stringsAsFactors = FALSE
-      )
-    }
-    do.call(rbind, results)
+    fetch_odds_bulk(events$id, all_deriv_markets, "basketball_ncaab")
   })
 }
 

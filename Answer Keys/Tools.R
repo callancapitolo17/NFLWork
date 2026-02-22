@@ -695,6 +695,58 @@ fetch_event_odds <- function(event_id, market, sport_key = "baseball_mlb") {
   as_tibble(odds_data)
 }
 
+fetch_odds_bulk <- function(event_ids, markets, sport_key = "basketball_ncaab",
+                            batch_size = 5) {
+  combos <- expand.grid(event_id = event_ids, market = markets,
+                        stringsAsFactors = FALSE)
+  api_key <- Sys.getenv("ODDS_API_KEY")
+  n <- nrow(combos)
+  # Use environment for reference semantics (callbacks can write from any scope)
+  res_env <- new.env(parent = emptyenv())
+
+  # Process in batches to avoid overwhelming the API with concurrent connections
+  for (batch_start in seq(1, n, by = batch_size)) {
+    batch_end <- min(batch_start + batch_size - 1, n)
+    pool <- curl::new_pool()
+
+    for (i in batch_start:batch_end) {
+      local({
+        idx <- i
+        eid <- combos$event_id[i]
+        mkt <- combos$market[i]
+        url <- paste0(
+          "https://api.the-odds-api.com/v4/sports/", sport_key, "/events/",
+          eid, "/odds?",
+          "apiKey=", utils::URLencode(api_key, reserved = TRUE),
+          "&regions=us,us2,us_ex",
+          "&markets=", mkt,
+          "&oddsFormat=american",
+          "&dateFormat=iso"
+        )
+        curl::curl_fetch_multi(url, done = function(resp) {
+          res_env[[as.character(idx)]] <- data.frame(
+            event_id = eid,
+            market = mkt,
+            json_response = if (resp$status_code == 200) rawToChar(resp$content) else NA_character_,
+            stringsAsFactors = FALSE
+          )
+        }, fail = function(msg) {
+          res_env[[as.character(idx)]] <- data.frame(
+            event_id = eid,
+            market = mkt,
+            json_response = NA_character_,
+            stringsAsFactors = FALSE
+          )
+        }, pool = pool)
+      })
+    }
+
+    curl::multi_run(pool = pool)
+  }
+
+  do.call(rbind, as.list(res_env))
+}
+
 prob_to_american <- function(prob) {
   ifelse(prob >= 0.5,
          # For favorites
@@ -1429,27 +1481,29 @@ build_moneylines_from_samples <- function(
       unnest(data) %>%
       select(-json_response, -event_id)
   } else {
-    cat(sprintf("Fetching %d markets for %d events...\n", length(markets), length(events$id)))
-    all_odds <- expand_grid(event_id = events$id, market = markets) %>%
-      mutate(
-        data = map2(event_id, market, possibly(
-          ~ {
-            result <- fetch_event_odds(.x, .y, sport_key)
-            if (nrow(result) > 0 && "bookmakers" %in% names(result)) {
-              result
-            } else {
-              tibble()
-            }
-          },
-          otherwise = tibble()
-        ))
-      ) %>%
+    cat(sprintf("Fetching %d markets for %d events (bulk)...\n", length(markets), length(events$id)))
+    cached <- fetch_odds_bulk(events$id, markets, sport_key)
+    all_odds <- cached %>%
+      filter(!is.na(json_response)) %>%
+      mutate(data = map(json_response, ~ {
+        parsed <- tryCatch(fromJSON(.x, flatten = TRUE), error = function(e) NULL)
+        if (!is.null(parsed) && length(parsed) > 0 && "bookmakers" %in% names(parsed)) {
+          as_tibble(parsed)
+        } else {
+          tibble()
+        }
+      })) %>%
       filter(map_lgl(data, ~ nrow(.x) > 0)) %>%
       unnest(data) %>%
-      select(-event_id)
+      select(-json_response, -event_id)
   }
 
-  if (nrow(all_odds) == 0) stop("No odds data returned")
+  if (nrow(all_odds) == 0) {
+    cat("No moneyline odds data returned from API\n")
+    return(list(predictions = tibble(), prediction_set = tibble(), bets = tibble(),
+                markets_summary = tibble(market = character(), n_bets = integer(),
+                                         total_stake = numeric(), avg_ev = numeric(), max_ev = numeric())))
+  }
 
   # 2) Flatten odds - each row has a 2-element list (home/away outcomes)
   # unnest_wider expands these into _1 and _2 columns
@@ -1594,26 +1648,23 @@ build_3way_from_samples <- function(
     stop("periods and markets must be same length and correspond to each other")
   }
 
-  cat(sprintf("Fetching %d 3-way markets for %d events...\n", length(markets), length(events$id)))
+  cat(sprintf("Fetching %d 3-way markets for %d events (bulk)...\n", length(markets), length(events$id)))
 
   # 1) Batch fetch all markets for all events
-  all_odds <- expand_grid(event_id = events$id, market = markets) %>%
-    mutate(
-      data = map2(event_id, market, possibly(
-        ~ {
-          result <- fetch_event_odds(.x, .y, sport_key)
-          if (nrow(result) > 0 && "bookmakers" %in% names(result)) {
-            result
-          } else {
-            tibble()
-          }
-        },
-        otherwise = tibble()
-      ))
-    ) %>%
+  cached <- fetch_odds_bulk(events$id, markets, sport_key)
+  all_odds <- cached %>%
+    filter(!is.na(json_response)) %>%
+    mutate(data = map(json_response, ~ {
+      parsed <- tryCatch(fromJSON(.x, flatten = TRUE), error = function(e) NULL)
+      if (!is.null(parsed) && length(parsed) > 0 && "bookmakers" %in% names(parsed)) {
+        as_tibble(parsed)
+      } else {
+        tibble()
+      }
+    })) %>%
     filter(map_lgl(data, ~ nrow(.x) > 0)) %>%
     unnest(data) %>%
-    select(-event_id)
+    select(-json_response, -event_id)
 
   if (nrow(all_odds) == 0) {
     cat("No 3-way odds data returned\n")
@@ -1819,27 +1870,29 @@ build_totals_from_samples <- function(
       unnest(data) %>%
       select(-json_response, -event_id)
   } else {
-    cat(sprintf("Fetching %d totals markets for %d events...\n", length(markets), length(events$id)))
-    all_odds <- expand_grid(event_id = events$id, market = markets) %>%
-      mutate(
-        data = map2(event_id, market, possibly(
-          ~ {
-            result <- fetch_event_odds(.x, .y, sport_key)
-            if (nrow(result) > 0 && "bookmakers" %in% names(result)) {
-              result
-            } else {
-              tibble()
-            }
-          },
-          otherwise = tibble()
-        ))
-      ) %>%
+    cat(sprintf("Fetching %d totals markets for %d events (bulk)...\n", length(markets), length(events$id)))
+    cached <- fetch_odds_bulk(events$id, markets, sport_key)
+    all_odds <- cached %>%
+      filter(!is.na(json_response)) %>%
+      mutate(data = map(json_response, ~ {
+        parsed <- tryCatch(fromJSON(.x, flatten = TRUE), error = function(e) NULL)
+        if (!is.null(parsed) && length(parsed) > 0 && "bookmakers" %in% names(parsed)) {
+          as_tibble(parsed)
+        } else {
+          tibble()
+        }
+      })) %>%
       filter(map_lgl(data, ~ nrow(.x) > 0)) %>%
       unnest(data) %>%
-      select(-event_id)
+      select(-json_response, -event_id)
   }
 
-  if (nrow(all_odds) == 0) stop("No totals odds data returned")
+  if (nrow(all_odds) == 0) {
+    cat("No totals odds data returned from API\n")
+    return(list(predictions = tibble(), prediction_set = tibble(), bets = tibble(),
+                markets_summary = tibble(market = character(), n_bets = integer(),
+                                         total_stake = numeric(), avg_ev = numeric(), max_ev = numeric())))
+  }
 
   # 2) Flatten odds - each row has a 2-element list (over/under outcomes)
   # unnest_wider expands these into _1 and _2 columns
@@ -2005,27 +2058,29 @@ build_spreads_from_samples <- function(
       unnest(data) %>%
       select(-json_response, -event_id)
   } else {
-    cat(sprintf("Fetching %d spreads markets for %d events...\n", length(markets), length(events$id)))
-    all_odds <- expand_grid(event_id = events$id, market = markets) %>%
-      mutate(
-        data = map2(event_id, market, possibly(
-          ~ {
-            result <- fetch_event_odds(.x, .y, sport_key)
-            if (nrow(result) > 0 && "bookmakers" %in% names(result)) {
-              result
-            } else {
-              tibble()
-            }
-          },
-          otherwise = tibble()
-        ))
-      ) %>%
+    cat(sprintf("Fetching %d spreads markets for %d events (bulk)...\n", length(markets), length(events$id)))
+    cached <- fetch_odds_bulk(events$id, markets, sport_key)
+    all_odds <- cached %>%
+      filter(!is.na(json_response)) %>%
+      mutate(data = map(json_response, ~ {
+        parsed <- tryCatch(fromJSON(.x, flatten = TRUE), error = function(e) NULL)
+        if (!is.null(parsed) && length(parsed) > 0 && "bookmakers" %in% names(parsed)) {
+          as_tibble(parsed)
+        } else {
+          tibble()
+        }
+      })) %>%
       filter(map_lgl(data, ~ nrow(.x) > 0)) %>%
       unnest(data) %>%
-      select(-event_id)
+      select(-json_response, -event_id)
   }
 
-  if (nrow(all_odds) == 0) stop("No spreads odds data returned")
+  if (nrow(all_odds) == 0) {
+    cat("No spreads odds data returned from API\n")
+    return(list(predictions = tibble(), prediction_set = tibble(), bets = tibble(),
+                markets_summary = tibble(market = character(), n_bets = integer(),
+                                         total_stake = numeric(), avg_ev = numeric(), max_ev = numeric())))
+  }
 
   # 2) Flatten odds - each bookmaker row has LISTS of outcomes (multiple spread lines)
   # First unnest_longer to get one row per outcome, then group to pair home/away
@@ -2501,29 +2556,21 @@ build_team_totals_from_samples <- function(
       unnest(data) %>%
       select(-json_response, -event_id)
   } else {
-    cat(sprintf("Fetching %d team totals markets for %d events...\n", length(markets), nrow(events)))
-    raw_odds <- map_dfr(markets, function(m) {
-      event_ids <- events$id
-      map_dfr(event_ids, function(eid) {
-        tryCatch({
-          res <- httr::GET(
-            paste0("https://api.the-odds-api.com/v4/sports/", sport_key, "/events/", eid, "/odds"),
-            query = list(
-              apiKey = Sys.getenv("ODDS_API_KEY"),
-              regions = "us,us2,eu",
-              markets = m,
-              oddsFormat = "american"
-            )
-          )
-          httr::stop_for_status(res)
-
-          out <- fromJSON(content(res, "text"), flatten = FALSE)
-          if (length(out$bookmakers) == 0) return(tibble())
-          out$market <- m
-          as_tibble(out)
-        }, error = function(e) tibble())
-      })
-    })
+    cat(sprintf("Fetching %d team totals markets for %d events (bulk)...\n", length(markets), nrow(events)))
+    cached <- fetch_odds_bulk(events$id, markets, sport_key)
+    raw_odds <- cached %>%
+      filter(!is.na(json_response)) %>%
+      mutate(data = map(json_response, ~ {
+        parsed <- tryCatch(fromJSON(.x, flatten = FALSE), error = function(e) NULL)
+        if (!is.null(parsed) && length(parsed$bookmakers) > 0) {
+          as_tibble(parsed)
+        } else {
+          tibble()
+        }
+      })) %>%
+      filter(map_lgl(data, ~ nrow(.x) > 0)) %>%
+      unnest(data) %>%
+      select(-json_response, -event_id)
   }
 
   if (nrow(raw_odds) == 0) {
@@ -3808,8 +3855,8 @@ compare_alts_to_samples <- function(
         )
       }
 
-    } else if (grepl("total", row$market) && !is.na(row$line)) {
-      # Alt total: compute P(over) from sample totals
+    } else if (grepl("total", row$market) && !grepl("team_totals_", row$market) && !is.na(row$line)) {
+      # Alt total: compute P(over) from sample totals (skip team totals, handled below)
       col_name <- paste0(total_col, "_", period)
       if (!col_name %in% names(sample_df)) next
       total_vals <- sample_df[[col_name]]
