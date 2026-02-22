@@ -1,3 +1,10 @@
+# Claude Code worktrees
+.claude/worktrees/
+
+# Pipeline sentinel files
+.scrapers_done_*
+.canonical_games_*
+
 # R
 .Rproj.user
 .Rhistory
