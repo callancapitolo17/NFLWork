@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
 Sports betting orchestrator
-Runs scrapers AND R sample generation in parallel, then combines
+Runs scrapers AND R answer key in parallel, with sentinel signaling
 """
 import asyncio
 import json
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -47,12 +46,10 @@ R_SCRIPTS = {
         "combine": "NFL Answer Key/NFLCombine.R",
     },
     "cbb": {
-        "prepare": "CBB Answer Key/CBBPrepare.R",
-        "combine": "CBB Answer Key/CBBCombine.R",
+        "script": "CBB Answer Key/CBB.R",
     },
     # "nba": {
-    #     "prepare": "NBA Answer Key/NBAPrepare.R",
-    #     "combine": "NBA Answer Key/NBACombine.R",
+    #     "script": "NBA Answer Key/NBA.R",
     # },
 }
 
@@ -91,11 +88,9 @@ async def run_scraper(name: str, script: str, sport: str) -> dict:
     return {"name": name, "success": success, "type": "scraper", "elapsed": elapsed}
 
 
-async def run_r_prepare(sport: str) -> dict:
-    """Run R Part 1: load data, generate samples, save to DuckDB."""
-    print(f"  [R] Starting sample generation...", flush=True)
-
-    script_path = Path(__file__).parent / R_SCRIPTS[sport]["prepare"]
+async def run_r(sport: str, script_path: Path) -> dict:
+    """Run R answer key script asynchronously."""
+    print(f"  [R] Starting answer key...", flush=True)
 
     t0 = time.time()
     proc = await asyncio.create_subprocess_exec(
@@ -103,6 +98,34 @@ async def run_r_prepare(sport: str) -> dict:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=str(script_path.parent)
+    )
+    stdout, stderr = await proc.communicate()
+    elapsed = time.time() - t0
+
+    success = proc.returncode == 0
+    status = "✓" if success else "✗"
+    print(f"  [R] {status} Answer key complete ({elapsed:.1f}s)", flush=True)
+
+    if not success:
+        print(f"  [R] Error: {stderr.decode()[:500]}", flush=True)
+
+    return {"name": "r_answer_key", "success": success, "type": "r", "elapsed": elapsed}
+
+
+async def run_r_two_phase(sport: str) -> dict:
+    """Run R prepare + combine as two separate processes (legacy sports)."""
+    config = R_SCRIPTS[sport]
+    prepare_path = Path(__file__).parent / config["prepare"]
+    combine_path = Path(__file__).parent / config["combine"]
+
+    # Phase 1: prepare
+    print(f"  [R] Starting sample generation...", flush=True)
+    t0 = time.time()
+    proc = await asyncio.create_subprocess_exec(
+        "Rscript", str(prepare_path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(prepare_path.parent)
     )
     stdout, stderr = await proc.communicate()
     elapsed = time.time() - t0
@@ -117,42 +140,70 @@ async def run_r_prepare(sport: str) -> dict:
     return {"name": "r_prepare", "success": success, "type": "r", "elapsed": elapsed}
 
 
-async def run_parallel_phase(sport: str) -> list:
-    """Run scrapers AND R preparation in parallel."""
-    tasks = []
+async def run_pipeline(sport: str) -> tuple[list, int]:
+    """Run scrapers + R in parallel with sentinel signaling."""
+    config = R_SCRIPTS[sport]
+    is_merged = "script" in config  # merged single-script sports
 
-    # Add all applicable scrapers
-    for name, config in SCRAPER_CONFIGS.items():
-        if sport in config["sports"]:
-            tasks.append(run_scraper(name, config["script"], sport))
+    # Create scraper tasks
+    scraper_tasks = []
+    for name, scraper_config in SCRAPER_CONFIGS.items():
+        if sport in scraper_config["sports"]:
+            task = asyncio.create_task(
+                run_scraper(name, scraper_config["script"], sport)
+            )
+            scraper_tasks.append(task)
 
-    # Add R sample generation
-    if sport in R_SCRIPTS:
-        tasks.append(run_r_prepare(sport))
+    # Create R task
+    if is_merged:
+        script_path = Path(__file__).parent / config["script"]
+        r_task = asyncio.create_task(run_r(sport, script_path))
     else:
-        print(f"Warning: No R scripts configured for {sport}", flush=True)
+        r_task = asyncio.create_task(run_r_two_phase(sport))
 
-    if not tasks:
-        print(f"No tasks configured for {sport}", flush=True)
-        return []
+    n_tasks = len(scraper_tasks) + 1
+    print(f"Running {n_tasks} tasks in parallel...", flush=True)
 
-    print(f"Running {len(tasks)} tasks in parallel...", flush=True)
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    return results
+    # Wait for all scrapers first, then signal R
+    scraper_results = await asyncio.gather(*scraper_tasks, return_exceptions=True)
 
+    if is_merged:
+        # Write sentinel file so merged R script knows scraper data is ready
+        sentinel = Path(__file__).parent / f".scrapers_done_{sport}"
+        sentinel.touch()
 
-def run_r_combine(sport: str) -> tuple[int, float]:
-    """Run R Part 2: load samples + scraped odds, find edge."""
-    script_path = Path(__file__).parent / R_SCRIPTS[sport]["combine"]
-    print(f"\n[R] Combining odds and finding edge...", flush=True)
+    # Wait for R to finish (it detects sentinel and does combine phase)
+    r_result = await r_task
 
-    t0 = time.time()
-    result = subprocess.run(
-        ["Rscript", str(script_path)],
-        cwd=str(script_path.parent)
-    )
-    elapsed = time.time() - t0
-    return result.returncode, elapsed
+    # Cleanup sentinel
+    if is_merged:
+        sentinel.unlink(missing_ok=True)
+
+    results = list(scraper_results) + [r_result]
+
+    # For legacy two-phase sports, run combine after everything
+    rc = 0
+    if not is_merged and r_result.get("success"):
+        combine_path = Path(__file__).parent / config["combine"]
+        print(f"\n[R] Combining odds and finding edge...", flush=True)
+        t0 = time.time()
+        import subprocess
+        result = subprocess.run(
+            ["Rscript", str(combine_path)],
+            cwd=str(combine_path.parent)
+        )
+        combine_elapsed = time.time() - t0
+        rc = result.returncode
+        results.append({
+            "name": "r_combine", "success": rc == 0,
+            "type": "r", "elapsed": combine_elapsed
+        })
+
+    # Check R exit code for merged scripts
+    if is_merged and not r_result.get("success"):
+        rc = 1
+
+    return results, rc
 
 
 def fetch_canonical_games(sport: str):
@@ -213,9 +264,9 @@ def main():
     fetch_canonical_games(sport)
     timings["phase0"] = time.time() - t0
 
-    # Phase 1: Run scrapers + R samples in parallel
+    # Phase 1: Run scrapers + R in parallel (with sentinel signaling for merged scripts)
     t0 = time.time()
-    results = asyncio.run(run_parallel_phase(sport))
+    results, rc = asyncio.run(run_pipeline(sport))
     timings["phase1"] = time.time() - t0
 
     # Extract per-task timings
@@ -230,11 +281,6 @@ def main():
         for f in failures:
             print(f"  - {f.get('name', 'unknown')}", flush=True)
 
-    # Phase 2: Combine and find edge
-    rc, combine_elapsed = run_r_combine(sport)
-    timings["phase2"] = combine_elapsed
-    timings["r_combine"] = combine_elapsed
-
     # Cleanup temp files
     cleanup_canonical_games(sport)
 
@@ -244,10 +290,9 @@ def main():
     print(f"\n=== PIPELINE TIMING ===", flush=True)
     print(f"  Phase 0 (canonical games): {timings.get('phase0', 0):5.1f}s", flush=True)
     print(f"  Phase 1 (parallel):        {timings.get('phase1', 0):5.1f}s", flush=True)
-    for name in ["wagerzon", "hoop88", "bfa", "r_prepare"]:
+    for name in ["wagerzon", "hoop88", "bfa", "r_answer_key", "r_prepare", "r_combine"]:
         if name in timings:
             print(f"    - {name:20s}  {timings[name]:5.1f}s", flush=True)
-    print(f"  Phase 2 (R combine):       {timings.get('phase2', 0):5.1f}s", flush=True)
     print(f"  Total:                     {timings.get('total', 0):5.1f}s", flush=True)
 
     return rc
