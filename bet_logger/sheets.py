@@ -56,53 +56,86 @@ def get_next_empty_row(service) -> int:
         return START_ROW
 
 
-def get_existing_bets(service) -> set:
+def _normalize_date(date_str: str) -> str:
+    """Normalize date string to M/D/YYYY for consistent comparison."""
+    from datetime import datetime as dt
+    date_str = date_str.strip()
+    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
+        try:
+            parsed = dt.strptime(date_str, fmt)
+            return parsed.strftime("%-m/%-d/%Y")
+        except ValueError:
+            continue
+    return date_str
+
+
+def _normalize_amount(amount_str: str) -> str:
+    """Normalize bet amount to plain float string for consistent comparison."""
+    amount_str = amount_str.strip().replace("$", "").replace(",", "")
+    try:
+        return f"{float(amount_str):.2f}"
+    except (ValueError, TypeError):
+        return amount_str
+
+
+def get_existing_bets(service) -> dict:
     """
     Get existing bets from sheet for duplicate detection.
-    Returns a set of (date, description, bet_amount) tuples.
+    Returns a dict mapping (date, platform, description, amount) -> count,
+    so legitimate duplicate bets (same game placed twice) are tracked.
     """
     try:
-        # Get columns A (date), D (description), H (bet_amount)
         result = service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
             range=f"{SHEET_NAME}!A:H"
         ).execute()
 
         values = result.get('values', [])
-        existing = set()
+        existing = {}
 
         for row in values[1:]:  # Skip header row
             if len(row) >= 8:
-                date = row[0].strip() if row[0] else ''
+                date = _normalize_date(row[0]) if row[0] else ''
+                platform = row[1].strip() if len(row) > 1 and row[1] else ''
                 description = row[3].strip() if len(row) > 3 and row[3] else ''
-                bet_amount = row[7].strip() if len(row) > 7 and row[7] else ''
+                bet_amount = _normalize_amount(row[7]) if len(row) > 7 and row[7] else ''
 
                 if date and description and bet_amount:
-                    existing.add((date, description, bet_amount))
+                    key = (date, platform, description, bet_amount)
+                    existing[key] = existing.get(key, 0) + 1
 
         return existing
 
     except HttpError as e:
         print(f"Error fetching existing bets: {e}")
-        return set()
+        return {}
 
 
-def filter_duplicates(bets: list, existing: set) -> list:
-    """Filter out bets that already exist in the sheet."""
+def filter_duplicates(bets: list, existing: dict) -> list:
+    """
+    Filter out bets that already exist in the sheet.
+    Uses count-based tracking so legitimate duplicate bets
+    (same game placed twice) aren't wrongly filtered.
+    """
     new_bets = []
+    # Track how many times each key appears in the incoming batch
+    seen_counts = {}
 
     for bet in bets:
-        # Create key matching format in sheet
-        date = bet.get('date', '')
-        description = bet.get('description', '')
-        bet_amount = f"${bet.get('bet_amount', 0):.2f}" if bet.get('bet_amount') else ''
+        date = _normalize_date(bet.get('date', ''))
+        platform = bet.get('platform', '')
+        description = bet.get('description', '').strip()
+        bet_amount = _normalize_amount(f"{bet.get('bet_amount', 0):.2f}") if bet.get('bet_amount') else ''
 
-        key = (date, description, bet_amount)
+        key = (date, platform, description, bet_amount)
+        seen_counts[key] = seen_counts.get(key, 0) + 1
 
-        if key not in existing:
-            new_bets.append(bet)
-        else:
+        existing_count = existing.get(key, 0)
+
+        if seen_counts[key] <= existing_count:
             print(f"  Skipping duplicate: {date} - {description[:50]}...")
+        else:
+            new_bets.append(bet)
 
     return new_bets
 

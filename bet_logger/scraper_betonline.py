@@ -253,18 +253,18 @@ def clean_description(desc: str, wager_type: str) -> str:
     if wager_type == 'Same Game Parlay':
         match = re.match(r'[A-Z]+\s*-\s*[A-Z]+\s*-\s*', desc)
         if match:
-            return desc[match.end():]
+            return desc[match.end():].strip()
         match = re.match(r'[A-Z]+\s*-\s*', desc)
         if match:
-            return desc[match.end():]
-        return desc
+            return desc[match.end():].strip()
+        return desc.strip()
 
     # Straight bet: SPORT - NUM Description
     match = re.match(r'[A-Z]+\s*-\s*\d+\s+', desc)
     if match:
-        return desc[match.end():]
+        return desc[match.end():].strip()
 
-    return desc
+    return desc.strip()
 
 
 def detect_sport(desc: str) -> str:
