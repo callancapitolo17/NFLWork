@@ -474,7 +474,7 @@ timer$mark("load_scrapers")
 
 # --- WAGERZON ---
 if (nrow(wagerzon_odds) > 0) {
-  invisible(capture.output(suppressWarnings({
+  suppressWarnings({
     wz_spread_bets <- compare_spreads_to_wagerzon(
       spread_results, wagerzon_odds,
       bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
@@ -487,7 +487,7 @@ if (nrow(wagerzon_odds) > 0) {
       ml_results, wagerzon_odds,
       bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
     )
-  })))
+  })
 
   wagerzon_bets <- bind_rows(
     wz_spread_bets$bets %>% mutate(market_type = "spreads"),
@@ -501,7 +501,7 @@ if (nrow(wagerzon_odds) > 0) {
 
 # --- HOOP88 ---
 if (nrow(hoop88_odds) > 0) {
-  invisible(capture.output(suppressWarnings({
+  suppressWarnings({
     h88_spread_bets <- compare_spreads_to_wagerzon(
       spread_results, hoop88_odds,
       bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
@@ -514,7 +514,7 @@ if (nrow(hoop88_odds) > 0) {
       ml_results, hoop88_odds,
       bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
     )
-  })))
+  })
 
   hoop88_bets <- bind_rows(
     h88_spread_bets$bets %>% mutate(market_type = "spreads"),
@@ -528,7 +528,7 @@ if (nrow(hoop88_odds) > 0) {
 
 # --- BFA ---
 if (nrow(bfa_odds) > 0) {
-  invisible(capture.output(suppressWarnings({
+  suppressWarnings({
     bfa_spread_bets <- compare_spreads_to_wagerzon(
       spread_results, bfa_odds,
       bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
@@ -541,7 +541,7 @@ if (nrow(bfa_odds) > 0) {
       ml_results, bfa_odds,
       bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
     )
-  })))
+  })
 
   bfa_bets <- bind_rows(
     bfa_spread_bets$bets %>% mutate(market_type = "spreads"),
