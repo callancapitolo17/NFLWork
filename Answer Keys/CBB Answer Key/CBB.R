@@ -301,11 +301,11 @@ timer$mark("sample_gen")
 
 prefetched_odds <- NULL
 if (nrow(events) > 0) {
-  n_combos <- nrow(events) * length(all_deriv_markets)
-  cat(sprintf("Fetching %d derivative odds...\n", n_combos))
+  cat(sprintf("Fetching derivative odds for %d events (%d markets per call)...\n",
+              nrow(events), length(all_deriv_markets)))
   prefetched_odds <- fetch_odds_bulk(events$id, all_deriv_markets, "basketball_ncaab")
   prefetched_odds <- prefetched_odds[!is.na(prefetched_odds$json_response), ]
-  cat(sprintf("Pre-fetched %d/%d API responses.\n", nrow(prefetched_odds), n_combos))
+  cat(sprintf("Pre-fetched %d/%d event responses.\n", nrow(prefetched_odds), nrow(events)))
 }
 timer$mark("prefetch_odds")
 

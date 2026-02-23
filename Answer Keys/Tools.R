@@ -710,10 +710,9 @@ fetch_event_odds <- function(event_id, market, sport_key = "baseball_mlb") {
 
 fetch_odds_bulk <- function(event_ids, markets, sport_key = "basketball_ncaab",
                             batch_size = 5) {
-  combos <- expand.grid(event_id = event_ids, market = markets,
-                        stringsAsFactors = FALSE)
   api_key <- Sys.getenv("ODDS_API_KEY")
-  n <- nrow(combos)
+  markets_param <- paste(markets, collapse = ",")
+  n <- length(event_ids)
   # Use environment for reference semantics (callbacks can write from any scope)
   res_env <- new.env(parent = emptyenv())
 
@@ -725,28 +724,25 @@ fetch_odds_bulk <- function(event_ids, markets, sport_key = "basketball_ncaab",
     for (i in batch_start:batch_end) {
       local({
         idx <- i
-        eid <- combos$event_id[i]
-        mkt <- combos$market[i]
+        eid <- event_ids[i]
         url <- paste0(
           "https://api.the-odds-api.com/v4/sports/", sport_key, "/events/",
           eid, "/odds?",
           "apiKey=", utils::URLencode(api_key, reserved = TRUE),
           "&regions=us,us2,us_ex",
-          "&markets=", mkt,
+          "&markets=", markets_param,
           "&oddsFormat=american",
           "&dateFormat=iso"
         )
         curl::curl_fetch_multi(url, done = function(resp) {
           res_env[[as.character(idx)]] <- data.frame(
             event_id = eid,
-            market = mkt,
             json_response = if (resp$status_code == 200) rawToChar(resp$content) else NA_character_,
             stringsAsFactors = FALSE
           )
         }, fail = function(msg) {
           res_env[[as.character(idx)]] <- data.frame(
             event_id = eid,
-            market = mkt,
             json_response = NA_character_,
             stringsAsFactors = FALSE
           )
@@ -834,12 +830,20 @@ flatten_event_odds <- function(raw_odds) {
     # 1. one row per bookmaker
     unnest_longer(bookmakers) %>%
     unnest_wider(bookmakers, names_sep = "_") %>%
-    # 2. one row per market (h2h, totals, spreads, etc.)
-    unnest_longer(bookmakers_markets) %>%
-    unnest_wider(bookmakers_markets, names_sep = "_") %>%
-    # 3. one row per single outcome (e.g. "Detroit Tigers" @ -113)
-    unnest_longer(bookmakers_markets_outcomes) %>%
-    unnest_wider(bookmakers_markets_outcomes, names_sep = "_") %>%
+    # 2. one row per market (handles multi-market JSON responses)
+    mutate(bookmakers_markets = map(bookmakers_markets, ~ {
+      if (is.list(.x) && !is.data.frame(.x)) bind_rows(.x) else .x
+    })) %>%
+    unnest(bookmakers_markets, names_sep = "_") %>%
+    # 3. extract outcome columns as list columns (one row per bookmaker-market)
+    mutate(
+      bookmakers_markets_outcomes_name = map(bookmakers_markets_outcomes, "name"),
+      bookmakers_markets_outcomes_price = map(bookmakers_markets_outcomes, "price"),
+      bookmakers_markets_outcomes_point = map(bookmakers_markets_outcomes, ~ {
+        if ("point" %in% names(.x)) .x$point else NULL
+      })
+    ) %>%
+    select(-bookmakers_markets_outcomes) %>%
     # 4. parse datetimes + standardize column names
     mutate(
       commence_time = ymd_hms(commence_time, tz = "UTC"),
@@ -1479,9 +1483,8 @@ build_moneylines_from_samples <- function(
 
   # 1) Get odds: either from pre-fetched cache or live API
   if (!is.null(pre_fetched_odds)) {
-    cached <- pre_fetched_odds %>% filter(market %in% markets)
-    cat(sprintf("Using %d cached API responses for %d markets\n", nrow(cached), length(markets)))
-    all_odds <- cached %>%
+    cat(sprintf("Using %d cached event responses for %d markets\n", nrow(pre_fetched_odds), length(markets)))
+    all_odds <- pre_fetched_odds %>%
       mutate(data = map(json_response, ~ {
         parsed <- tryCatch(fromJSON(.x, flatten = TRUE), error = function(e) NULL)
         if (!is.null(parsed) && length(parsed) > 0 && "bookmakers" %in% names(parsed)) {
@@ -1522,7 +1525,8 @@ build_moneylines_from_samples <- function(
   # unnest_wider expands these into _1 and _2 columns
   flat_odds <- all_odds %>%
     flatten_event_odds() %>%
-    select(-market_key) %>%
+    filter(market_key %in% markets) %>%
+    rename(market = market_key) %>%
     unnest_wider(outcome_name, names_sep = "_") %>%
     unnest_wider(closing_odds, names_sep = "_") %>%
     mutate(
@@ -1689,7 +1693,7 @@ build_3way_from_samples <- function(
   # 2) Flatten 3-way odds - each row has 3 outcomes (home/away/tie)
   flat_odds <- all_odds %>%
     flatten_event_odds() %>%
-    select(-market_key) %>%
+    rename(market = market_key) %>%
     unnest_longer(c(outcome_name, closing_odds)) %>%
     mutate(
       side = case_when(
@@ -1868,9 +1872,8 @@ build_totals_from_samples <- function(
 
   # 1) Get odds: either from pre-fetched cache or live API
   if (!is.null(pre_fetched_odds)) {
-    cached <- pre_fetched_odds %>% filter(market %in% markets)
-    cat(sprintf("Using %d cached API responses for %d totals markets\n", nrow(cached), length(markets)))
-    all_odds <- cached %>%
+    cat(sprintf("Using %d cached event responses for %d totals markets\n", nrow(pre_fetched_odds), length(markets)))
+    all_odds <- pre_fetched_odds %>%
       mutate(data = map(json_response, ~ {
         parsed <- tryCatch(fromJSON(.x, flatten = TRUE), error = function(e) NULL)
         if (!is.null(parsed) && length(parsed) > 0 && "bookmakers" %in% names(parsed)) {
@@ -1911,7 +1914,8 @@ build_totals_from_samples <- function(
   # unnest_wider expands these into _1 and _2 columns
   flat_odds <- all_odds %>%
     flatten_event_odds() %>%
-    select(-market_key) %>%
+    filter(market_key %in% markets) %>%
+    rename(market = market_key) %>%
     unnest_wider(outcome_name, names_sep = "_") %>%
     unnest_wider(closing_odds, names_sep = "_") %>%
     unnest_wider(bookmakers_markets_outcomes_point, names_sep = "_") %>%
@@ -2056,9 +2060,8 @@ build_spreads_from_samples <- function(
 
   # 1) Get odds: either from pre-fetched cache or live API
   if (!is.null(pre_fetched_odds)) {
-    cached <- pre_fetched_odds %>% filter(market %in% markets)
-    cat(sprintf("Using %d cached API responses for %d spreads markets\n", nrow(cached), length(markets)))
-    all_odds <- cached %>%
+    cat(sprintf("Using %d cached event responses for %d spreads markets\n", nrow(pre_fetched_odds), length(markets)))
+    all_odds <- pre_fetched_odds %>%
       mutate(data = map(json_response, ~ {
         parsed <- tryCatch(fromJSON(.x, flatten = TRUE), error = function(e) NULL)
         if (!is.null(parsed) && length(parsed) > 0 && "bookmakers" %in% names(parsed)) {
@@ -2099,7 +2102,8 @@ build_spreads_from_samples <- function(
   # First unnest_longer to get one row per outcome, then group to pair home/away
   flat_odds <- all_odds %>%
     flatten_event_odds() %>%
-    select(-market_key) %>%
+    filter(market_key %in% markets) %>%
+    rename(market = market_key) %>%
     # Each row has lists of 24+ outcomes - unnest to get 1 row per outcome
     unnest_longer(c(outcome_name, closing_odds, bookmakers_markets_outcomes_point)) %>%
     # Assign home/away side based on team name
@@ -2554,9 +2558,8 @@ build_team_totals_from_samples <- function(
 
   # 1) Get odds: either from pre-fetched cache or live API
   if (!is.null(pre_fetched_odds)) {
-    cached <- pre_fetched_odds %>% filter(market %in% markets)
-    cat(sprintf("Using %d cached API responses for %d team totals markets\n", nrow(cached), length(markets)))
-    raw_odds <- cached %>%
+    cat(sprintf("Using %d cached event responses for %d team totals markets\n", nrow(pre_fetched_odds), length(markets)))
+    raw_odds <- pre_fetched_odds %>%
       mutate(data = map(json_response, ~ {
         parsed <- tryCatch(fromJSON(.x, flatten = FALSE), error = function(e) NULL)
         if (!is.null(parsed) && length(parsed$bookmakers) > 0) {
@@ -2597,8 +2600,12 @@ build_team_totals_from_samples <- function(
   flat_odds <- raw_odds %>%
     unnest_longer(bookmakers) %>%
     unnest_wider(bookmakers, names_sep = "_") %>%
-    unnest_longer(bookmakers_markets) %>%
-    unnest_wider(bookmakers_markets, names_sep = "_") %>%
+    # Properly handle multi-market data frames
+    mutate(bookmakers_markets = map(bookmakers_markets, ~ {
+      if (is.list(.x) && !is.data.frame(.x)) bind_rows(.x) else .x
+    })) %>%
+    unnest(bookmakers_markets, names_sep = "_") %>%
+    filter(bookmakers_markets_key %in% markets) %>%
     # outcomes is a list of lists - unnest to individual rows
     unnest_longer(bookmakers_markets_outcomes) %>%
     unnest_wider(bookmakers_markets_outcomes, names_sep = "_") %>%
@@ -2613,6 +2620,7 @@ build_team_totals_from_samples <- function(
     rename(
       bookmaker_key = bookmakers_key,
       bookmaker_title = bookmakers_title,
+      market = bookmakers_markets_key,
       outcome_name = bookmakers_markets_outcomes_name,  # "Over" or "Under"
       closing_odds = bookmakers_markets_outcomes_price,
       team_total_line = bookmakers_markets_outcomes_point,
