@@ -514,6 +514,8 @@ if __name__ == "__main__":
                 from_date = get_last_betonline_date()
                 if from_date:
                     print(f"Last BetOnline bet: {from_date}")
+                    # Start from day after last bet to avoid re-fetching existing bets
+                    from_date = (datetime.strptime(from_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
                     print(f"Scraping from {from_date} to today")
                 else:
                     print("No existing BetOnline bets found in sheet, using default range")
