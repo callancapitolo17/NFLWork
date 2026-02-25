@@ -27,7 +27,7 @@ playwright install chromium
 cp .env.example .env
 ```
 
-Edit `.env` with credentials for each platform (Wagerzon, Hoop88, BFA) and your Google Sheet ID.
+Edit `.env` with credentials for each platform (Wagerzon, Hoop88) and your Google Sheet ID.
 
 ## Usage
 
@@ -44,19 +44,21 @@ Runs Wagerzon, Hoop88, BFA, and BetOnline sequentially. Continues to the next sc
 ```bash
 ./venv/bin/python3 scraper_wagerzon.py
 ./venv/bin/python3 scraper_hoop88.py    [--weeks 1] [--visible] [--dry-run]
-./venv/bin/python3 scraper_bfa.py       [--weeks 1] [--visible] [--dry-run]
+./venv/bin/python3 scraper_bfa.py       [--days 7] [--since-last] [--dry-run]
 ./venv/bin/python3 scraper_betonline.py [--days 7] [--since-last] [--dry-run]
 ```
 
 **Common flags:**
-- `--weeks N` — How many weeks back to fetch (0=this week, 1=last week, default: 1)
-- `--visible` — Show the browser window instead of running headless
 - `--dry-run` — Scrape but don't upload to Google Sheets
 - `--test` — Parse from a saved HTML/JSON file (offline testing)
 
-**BetOnline-specific flags:**
+**Hoop88 flags:**
+- `--weeks N` — How many weeks back to fetch (0=this week, 1=last week, default: 1)
+- `--visible` — Show the browser window instead of running headless
+
+**BFA and BetOnline flags (API scrapers):**
 - `--days N` — Days of history to fetch (default: 7)
-- `--since-last` — Scrape from the date of the last BetOnline bet in Google Sheets
+- `--since-last` — Scrape from the date of the last bet for that platform in Google Sheets
 - `--refresh-only` — Just refresh the auth token and exit (keeps token alive)
 
 ### Automated Monday runs (launchd)
@@ -89,7 +91,7 @@ launchctl unload ~/Library/LaunchAgents/com.callancapitolo.betlogger.plist
 | I | Decimal Odds | 5.50 |
 | J | Result | win / loss / push |
 
-Duplicate detection uses (date + description + bet amount) as the key.
+Duplicate detection uses (date + platform + description + bet amount) as the key, with count-based tracking so legitimate duplicate bets (same game placed twice) aren't wrongly filtered.
 
 ## Platform Notes
 
@@ -97,15 +99,33 @@ Duplicate detection uses (date + description + bet amount) as the key.
 
 **Hoop88** — Navigates the bet history UI by clicking the Balance box, selecting a week from the dropdown, and expanding bet details. Handles parlays by combining legs with `|`. Converts fractional lines (1/2, 1/4, 3/4).
 
-**BFA Gaming** — Uses Keycloak SSO authentication (redirects to `auth.bfagaming.com`). Blazor SPA with date range filters. Parses teasers with adjusted lines.
+**BFA Gaming** — Browser-free API scraper. Uses a one-time recon script (`recon_bfa.py`) to capture auth tokens via Chrome, then hits BFA's REST API (`api.bfagaming.com/history/api/GetPlayerHistory`) directly with `requests`. Handles pagination automatically (100 records/page). Keycloak refresh token rotates on each use and expires after ~1 hour of inactivity. If the token expires, re-run `recon_bfa.py` to re-authenticate.
 
 **BetOnline** — Browser-free API scraper. Uses a one-time recon script (`recon_betonline.py`) to capture auth tokens via Chrome, then hits BetOnline's REST API directly with `requests`. Refresh token rotates on each use and expires after 3 days of inactivity. A daily LaunchAgent (`com.callancapitolo.betonline-token-refresh`) runs `--refresh-only` at noon to keep the token alive. If the token expires, re-run `recon_betonline.py` to re-authenticate.
+
+### BFA/BetOnline: Initial Setup (one-time)
+
+Both API scrapers require a one-time recon step to capture auth tokens:
+
+```bash
+# BFA: Opens Chrome, log in, navigate to Settled bets, apply filter
+./venv/bin/python3 recon_bfa.py
+# Saves: recon_bfa_auth.json (refresh_token + player_id)
+
+# BetOnline: Opens Chrome, log in, navigate to bet history
+./venv/bin/python3 recon_betonline.py
+# Saves: recon_betonline_cookies.json (refresh_token in cookies)
+```
+
+After recon, the scrapers work without a browser.
 
 ## Troubleshooting
 
 - **Login fails** — Check credentials in `.env`. If auto-login fails, run with `--visible` to log in manually.
 - **No bets found** — Check the time period filter. Verify bets exist on the site for that week.
-- **Duplicates still appearing** — Detection matches on exact (date, description, amount). Any small difference bypasses it.
+- **Token expired (BFA)** — BFA refresh tokens expire after ~1 hour. Re-run `recon_bfa.py`.
+- **Token expired (BetOnline)** — BetOnline tokens expire after ~3 days. Re-run `recon_betonline.py`.
+- **Duplicates still appearing** — Detection matches on exact (date, platform, description, amount). Any small difference bypasses it.
 - **Permission denied on Sheets** — Share the spreadsheet with the service account email from `credentials.json`.
 
 ## Architecture
@@ -114,9 +134,10 @@ Duplicate detection uses (date + description + bet amount) as the key.
 run_all_scrapers.sh          # Entry point (runs all 4)
   scraper_wagerzon.py        # Wagerzon scraper (headless Chromium)
   scraper_hoop88.py          # Hoop88 scraper (headless Chromium)
-  scraper_bfa.py             # BFA Gaming scraper (headless Chromium)
+  scraper_bfa.py             # BFA Gaming scraper (REST API, no browser)
   scraper_betonline.py       # BetOnline scraper (REST API, no browser)
-recon_betonline.py           # One-time token capture via Chrome
+recon_bfa.py                 # One-time token capture for BFA via Chrome
+recon_betonline.py           # One-time token capture for BetOnline via Chrome
 utils.py                     # Shared: odds calc, sport detection, parsing
 sheets.py                    # Google Sheets upload + duplicate detection
 ```

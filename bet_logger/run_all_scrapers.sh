@@ -36,9 +36,10 @@ else
 fi
 echo ""
 
-# Run BFA Gaming scraper
-echo "[$(date '+%H:%M:%S')] Running BFA Gaming scraper..."
+# Run BFA Gaming scraper (recon first to get fresh auth token)
+echo "[$(date '+%H:%M:%S')] Running BFA Gaming recon + scraper..."
 echo "----------------------------------------"
+./venv/bin/python3 recon_bfa.py
 if ./venv/bin/python3 scraper_bfa.py; then
     echo "[$(date '+%H:%M:%S')] BFA: done"
 else
