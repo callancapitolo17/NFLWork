@@ -95,7 +95,8 @@ find_correlated_bets <- function(bet, placed_bets, relationships) {
         bet_on = placed$bet_on,
         line = placed$line,
         odds = placed$odds,
-        size = coalesce(placed$actual_size, placed$recommended_size),
+        actual_size = placed$actual_size,
+        recommended_size = placed$recommended_size,
         bookmaker = placed$bookmaker,
         strength = 0.90,
         level = "high"
@@ -118,7 +119,8 @@ find_correlated_bets <- function(bet, placed_bets, relationships) {
             bet_on = placed$bet_on,
             line = placed$line,
             odds = placed$odds,
-            size = coalesce(placed$actual_size, placed$recommended_size),
+            actual_size = placed$actual_size,
+            recommended_size = placed$recommended_size,
             bookmaker = placed$bookmaker,
             strength = strength,
             level = level
@@ -260,8 +262,15 @@ create_bets_table <- function(all_bets, placed_bets, relationships) {
           odds_str <- if (!is.null(d$odds) && !is.na(d$odds)) {
             if (d$odds > 0) sprintf(" (%+d)", d$odds) else sprintf(" (%d)", d$odds)
           } else ""
-          size_str <- if (!is.null(d$size) && !is.na(d$size)) {
-            sprintf(" $%.2f", d$size)
+          act <- d$actual_size
+          rec <- d$recommended_size
+          size_str <- if (!is.null(act) && !is.na(act)) {
+            rec_part <- if (!is.null(rec) && !is.na(rec) && abs(act - rec) > 0.01) {
+              sprintf(" (rec $%.0f)", rec)
+            } else ""
+            sprintf(" $%.0f%s", act, rec_part)
+          } else if (!is.null(rec) && !is.na(rec)) {
+            sprintf(" $%.0f", rec)
           } else ""
           book_str <- if (!is.null(d$bookmaker) && !is.na(d$bookmaker)) {
             sprintf(" @ %s", d$bookmaker)
