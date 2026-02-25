@@ -166,7 +166,9 @@ create_placed_bets_table <- function(placed_bets) {
       game = paste(away_team, "@", home_team),
       ev_display = ifelse(model_ev >= 0, sprintf("+%.1f%%", model_ev * 100), sprintf("%.1f%%", model_ev * 100)),
       odds_display = ifelse(odds > 0, paste0("+", odds), as.character(odds)),
-      size_display = sprintf("$%.2f", coalesce(actual_size, recommended_size)),
+      actual_display = sprintf("$%.2f", coalesce(actual_size, recommended_size)),
+      rec_display = sprintf("$%.2f", recommended_size),
+      sizes_differ = !is.na(actual_size) & abs(actual_size - recommended_size) > 0.005,
       line_display = case_when(
         is.na(line) ~ "",
         line > 0 ~ paste0("+", line),
@@ -174,7 +176,8 @@ create_placed_bets_table <- function(placed_bets) {
       ),
       market_display = format_market_name(market)
     ) %>%
-    select(bet_hash, game, market_display, bet_on, line_display, ev_display, odds_display, size_display, bookmaker)
+    select(bet_hash, game, market_display, bet_on, line_display, ev_display, odds_display,
+           actual_display, rec_display, sizes_differ, bookmaker)
 
   reactable(
     table_data,
@@ -194,7 +197,19 @@ create_placed_bets_table <- function(placed_bets) {
       line_display = colDef(show = FALSE),
       ev_display = colDef(name = "EV", minWidth = 70, align = "right", style = list(color = "#3fb950", fontWeight = "600")),
       odds_display = colDef(name = "Odds", minWidth = 60, align = "right"),
-      size_display = colDef(name = "Size", minWidth = 60, align = "right"),
+      actual_display = colDef(name = "Actual", minWidth = 70, align = "right",
+        cell = function(value, index) {
+          if (table_data$sizes_differ[index]) {
+            span(class = "size-actual", value)
+          } else {
+            value
+          }
+        }
+      ),
+      rec_display = colDef(name = "Rec", minWidth = 70, align = "right",
+        style = list(color = "#8b949e", fontSize = "0.8rem")
+      ),
+      sizes_differ = colDef(show = FALSE),
       bookmaker = colDef(name = "Book", minWidth = 90)
     ),
     theme = reactableTheme(
@@ -591,59 +606,124 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           color: #f85149;
         }
 
-        /* Inline bet confirmation */
-        .bet-confirm-group {
+        /* Place-bet modal */
+        .modal-overlay {
+          position: fixed;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background: rgba(0, 0, 0, 0.6);
+          z-index: 999;
           display: flex;
           align-items: center;
-          gap: 4px;
+          justify-content: center;
         }
 
-        .bet-size-input {
-          width: 70px;
-          background: #0d1117;
-          border: 1px solid #58a6ff;
-          border-radius: 4px;
+        .modal-box {
+          background: #161b22;
+          border: 1px solid #30363d;
+          border-radius: 8px;
+          padding: 24px;
+          min-width: 320px;
+          max-width: 400px;
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-title {
+          font-size: 1rem;
+          font-weight: 600;
+          color: #f0f6fc;
+          margin: 0 0 16px 0;
+        }
+
+        .modal-detail {
+          font-size: 0.8rem;
+          color: #8b949e;
+          margin-bottom: 4px;
+        }
+
+        .modal-detail span {
           color: #c9d1d9;
-          padding: 4px 6px;
+          font-weight: 500;
+        }
+
+        .modal-recommended {
+          font-size: 0.85rem;
+          color: #3fb950;
+          font-weight: 600;
+          margin: 12px 0 16px 0;
+        }
+
+        .modal-input-group {
+          margin-bottom: 20px;
+        }
+
+        .modal-input-label {
+          display: block;
           font-size: 0.75rem;
-          text-align: right;
+          color: #8b949e;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          margin-bottom: 6px;
+        }
+
+        .modal-input {
+          width: 100%;
+          background: #0d1117;
+          border: 1px solid #30363d;
+          border-radius: 6px;
+          color: #c9d1d9;
+          padding: 10px 12px;
+          font-size: 1rem;
           font-family: monospace;
         }
 
-        .bet-size-input:focus {
+        .modal-input:focus {
           outline: none;
-          border-color: #79c0ff;
+          border-color: #58a6ff;
         }
 
-        .btn-confirm {
+        .modal-actions {
+          display: flex;
+          gap: 8px;
+          justify-content: flex-end;
+        }
+
+        .modal-btn-confirm {
           background: #238636;
           border: 1px solid #2ea043;
           color: #fff;
-          padding: 4px 8px;
-          border-radius: 4px;
-          font-size: 0.75rem;
+          padding: 8px 20px;
+          border-radius: 6px;
+          font-size: 0.85rem;
+          font-weight: 500;
           cursor: pointer;
-          line-height: 1;
         }
 
-        .btn-confirm:hover {
-          background: #2ea043;
-        }
+        .modal-btn-confirm:hover { background: #2ea043; }
 
-        .btn-cancel {
+        .modal-btn-cancel {
           background: transparent;
           border: 1px solid #30363d;
           color: #8b949e;
-          padding: 4px 8px;
-          border-radius: 4px;
-          font-size: 0.75rem;
+          padding: 8px 16px;
+          border-radius: 6px;
+          font-size: 0.85rem;
           cursor: pointer;
-          line-height: 1;
         }
 
-        .btn-cancel:hover {
+        .modal-btn-cancel:hover {
           border-color: #f85149;
           color: #f85149;
+        }
+
+        /* Size display in placed bets */
+        .size-actual {
+          font-weight: 600;
+          color: #c9d1d9;
+        }
+
+        .size-recommended {
+          font-size: 0.75rem;
+          color: #8b949e;
         }
 
         /* Toast */
@@ -1393,108 +1473,100 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
 
         function placeBet(btn) {
-          var cell = btn.closest('.rt-td');
-          if (!cell) return;
+          var recommended = parseFloat(btn.dataset.size) || 0;
+          var betOn = btn.dataset.betOn || \'\';
+          var odds = btn.dataset.odds || \'\';
+          var book = btn.dataset.book || \'\';
+          var oddsDisplay = (parseInt(odds) > 0 ? \'+\' : \'\') + odds;
 
-          // Save original HTML for cancel
-          cell.setAttribute('data-original', cell.innerHTML);
+          // Build modal
+          var overlay = document.createElement(\'div\');
+          overlay.className = \'modal-overlay\';
+          overlay.innerHTML =
+            \'<div class="modal-box">\' +
+              \'<div class="modal-title">Place Bet</div>\' +
+              \'<div class="modal-detail">Pick: <span>\' + escapeHtml(betOn) + \' \' + escapeHtml(oddsDisplay) + \'</span></div>\' +
+              \'<div class="modal-detail">Book: <span>\' + escapeHtml(book) + \'</span></div>\' +
+              \'<div class="modal-recommended">Recommended: $\' + recommended.toFixed(2) + \'</div>\' +
+              \'<div class="modal-input-group">\' +
+                \'<label class="modal-input-label">Actual Amount ($)</label>\' +
+                \'<input type="number" class="modal-input" value="\' + recommended.toFixed(2) + \'" step="0.01" min="0.01">\' +
+              \'</div>\' +
+              \'<div class="modal-actions">\' +
+                \'<button class="modal-btn-cancel">Cancel</button>\' +
+                \'<button class="modal-btn-confirm">Confirm</button>\' +
+              \'</div>\' +
+            \'</div>\';
 
-          var suggestedSize = parseFloat(btn.dataset.size) || 0;
+          document.body.appendChild(overlay);
 
-          cell.innerHTML = '<div class="bet-confirm-group">' +
-            '<input type="number" class="bet-size-input" value="' + suggestedSize.toFixed(2) + '" step="0.01" min="0.01">' +
-            '<button class="btn-confirm" onclick="confirmBet(this)">&#10003;</button>' +
-            '<button class="btn-cancel" onclick="cancelBet(this)">&#10005;</button>' +
-            '</div>';
-
-          // Focus and select the input
-          var input = cell.querySelector('.bet-size-input');
+          var input = overlay.querySelector(\'.modal-input\');
           input.focus();
           input.select();
 
-          // Allow Enter to confirm, Escape to cancel
-          input.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              confirmBet(cell.querySelector('.btn-confirm'));
-            } else if (e.key === 'Escape') {
-              e.preventDefault();
-              cancelBet(cell.querySelector('.btn-cancel'));
+          // Confirm handler
+          function doConfirm() {
+            var actualSize = parseFloat(input.value);
+            if (!actualSize || actualSize <= 0) {
+              showToast("Enter a valid bet amount", "error");
+              input.focus();
+              return;
             }
-          });
-        }
 
-        function confirmBet(confirmBtn) {
-          var cell = confirmBtn.closest('.rt-td');
-          var input = cell.querySelector('.bet-size-input');
-          var actualSize = parseFloat(input.value);
+            var data = {
+              bet_hash: btn.dataset.hash,
+              game_id: btn.dataset.gameId,
+              home_team: btn.dataset.home,
+              away_team: btn.dataset.away,
+              game_time: btn.dataset.time,
+              market: btn.dataset.market,
+              bet_on: btn.dataset.betOn,
+              line: btn.dataset.line === "" ? null : parseFloat(btn.dataset.line),
+              model_prob: parseFloat(btn.dataset.prob),
+              model_ev: parseFloat(btn.dataset.ev),
+              recommended_size: recommended,
+              actual_size: actualSize,
+              odds: parseInt(btn.dataset.odds),
+              bookmaker: btn.dataset.book
+            };
 
-          if (!actualSize || actualSize <= 0) {
-            showToast("Enter a valid bet amount", "error");
-            input.focus();
-            return;
-          }
+            var confirmBtn = overlay.querySelector(\'.modal-btn-confirm\');
+            confirmBtn.disabled = true;
+            confirmBtn.textContent = \'Placing...\';
 
-          // Parse the original button to extract data attributes
-          var tmp = document.createElement('div');
-          tmp.innerHTML = cell.getAttribute('data-original');
-          var origBtn = tmp.querySelector('button');
-
-          var data = {
-            bet_hash: origBtn.dataset.hash,
-            game_id: origBtn.dataset.gameId,
-            home_team: origBtn.dataset.home,
-            away_team: origBtn.dataset.away,
-            game_time: origBtn.dataset.time,
-            market: origBtn.dataset.market,
-            bet_on: origBtn.dataset.betOn,
-            line: origBtn.dataset.line === "" ? null : parseFloat(origBtn.dataset.line),
-            model_prob: parseFloat(origBtn.dataset.prob),
-            model_ev: parseFloat(origBtn.dataset.ev),
-            recommended_size: parseFloat(origBtn.dataset.size),
-            actual_size: actualSize,
-            odds: parseInt(origBtn.dataset.odds),
-            bookmaker: origBtn.dataset.book
-          };
-
-          // Disable buttons during request
-          confirmBtn.disabled = true;
-          cell.querySelector('.btn-cancel').disabled = true;
-
-          fetch("/api/place-bet", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(data)
-          })
-            .then(function(r) { return r.json(); })
-            .then(function(result) {
-              if (result.success) {
-                // Restore original button HTML, then restyle as Placed
-                cell.innerHTML = cell.getAttribute('data-original');
-                var btn = cell.querySelector('button');
-                btn.className = 'btn-placed';
-                btn.textContent = 'Placed';
-                btn.onclick = function() { removeBet(this); };
-                showToast("Bet placed: $" + actualSize.toFixed(2), "success");
-              } else {
-                showToast(result.error, "error");
-                confirmBtn.disabled = false;
-                cell.querySelector('.btn-cancel').disabled = false;
-              }
+            fetch("/api/place-bet", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(data)
             })
-            .catch(function() {
-              showToast("Server error", "error");
-              confirmBtn.disabled = false;
-              cell.querySelector('.btn-cancel').disabled = false;
-            });
-        }
-
-        function cancelBet(cancelBtn) {
-          var cell = cancelBtn.closest('.rt-td');
-          var original = cell.getAttribute('data-original');
-          if (original) {
-            cell.innerHTML = original;
+              .then(function(r) { return r.json(); })
+              .then(function(result) {
+                if (result.success) {
+                  overlay.remove();
+                  btn.className = \'btn-placed\';
+                  btn.textContent = \'Placed\';
+                  btn.onclick = function() { removeBet(this); };
+                  showToast("Bet placed: $" + actualSize.toFixed(2), "success");
+                } else {
+                  showToast(result.error, "error");
+                  confirmBtn.disabled = false;
+                  confirmBtn.textContent = \'Confirm\';
+                }
+              })
+              .catch(function() {
+                showToast("Server error", "error");
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = \'Confirm\';
+              });
           }
+
+          overlay.querySelector(\'.modal-btn-confirm\').addEventListener(\'click\', doConfirm);
+          overlay.querySelector(\'.modal-btn-cancel\').addEventListener(\'click\', function() { overlay.remove(); });
+          overlay.addEventListener(\'click\', function(e) { if (e.target === overlay) overlay.remove(); });
+          input.addEventListener(\'keydown\', function(e) {
+            if (e.key === \'Enter\') { e.preventDefault(); doConfirm(); }
+            else if (e.key === \'Escape\') { e.preventDefault(); overlay.remove(); }
+          });
         }
 
         function removeBet(btn) {
