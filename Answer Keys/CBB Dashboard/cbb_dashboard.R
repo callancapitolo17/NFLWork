@@ -84,6 +84,9 @@ find_correlated_bets <- function(bet, placed_bets, relationships) {
         market = placed$market,
         bet_on = placed$bet_on,
         line = placed$line,
+        odds = placed$odds,
+        size = coalesce(placed$actual_size, placed$recommended_size),
+        bookmaker = placed$bookmaker,
         strength = 0.90,
         level = "high"
       )))
@@ -104,6 +107,9 @@ find_correlated_bets <- function(bet, placed_bets, relationships) {
             market = placed$market,
             bet_on = placed$bet_on,
             line = placed$line,
+            odds = placed$odds,
+            size = coalesce(placed$actual_size, placed$recommended_size),
+            bookmaker = placed$bookmaker,
             strength = strength,
             level = level
           )))
@@ -134,6 +140,12 @@ format_market_name <- function(market) {
     str_replace("spreads", "Spread") %>%
     str_replace("h2h", "ML") %>%
     str_replace("_h", " H")
+}
+
+escape_tooltip <- function(text) {
+  text %>%
+    str_replace_all(fixed('"'), "'") %>%
+    str_replace_all(fixed("\\"), "")
 }
 
 create_placed_bets_table <- function(placed_bets) {
@@ -220,9 +232,18 @@ create_bets_table <- function(all_bets, placed_bets, relationships) {
           line_str <- if (!is.null(d$line) && !is.na(d$line)) {
             if (d$line > 0) paste0(" +", d$line) else paste0(" ", d$line)
           } else ""
-          sprintf("%s - %s%s", market_name, d$bet_on, line_str)
+          odds_str <- if (!is.null(d$odds) && !is.na(d$odds)) {
+            if (d$odds > 0) sprintf(" (%+d)", d$odds) else sprintf(" (%d)", d$odds)
+          } else ""
+          size_str <- if (!is.null(d$size) && !is.na(d$size)) {
+            sprintf(" $%.2f", d$size)
+          } else ""
+          book_str <- if (!is.null(d$bookmaker) && !is.na(d$bookmaker)) {
+            sprintf(" @ %s", d$bookmaker)
+          } else ""
+          sprintf("%s - %s%s%s%s%s", market_name, d$bet_on, line_str, odds_str, size_str, book_str)
         })
-        paste("Correlated with:", paste(lines, collapse = ", "))
+        paste("Correlated with:\n", paste(lines, collapse = "\n"))
       }),
       # Simplify market names
       market_display = format_market_name(market)
@@ -275,11 +296,11 @@ create_bets_table <- function(all_bets, placed_bets, relationships) {
           tooltip <- table_data$correlation_tooltip[index]
           corr_attr <- sprintf('data-corr-level="%s"', level)
           if (level == "high") {
-            sprintf('<span class="warning-icon high" %s data-tooltip="%s">&#9888;</span>', corr_attr, htmltools::htmlEscape(tooltip))
+            sprintf('<span class="warning-icon high" %s data-tooltip="%s">&#9888;</span>', corr_attr, escape_tooltip(tooltip))
           } else if (level == "medium") {
-            sprintf('<span class="warning-icon medium" %s data-tooltip="%s">&#9888;</span>', corr_attr, htmltools::htmlEscape(tooltip))
+            sprintf('<span class="warning-icon medium" %s data-tooltip="%s">&#9888;</span>', corr_attr, escape_tooltip(tooltip))
           } else if (level == "low") {
-            sprintf('<span class="warning-icon low" %s data-tooltip="%s">&#9675;</span>', corr_attr, htmltools::htmlEscape(tooltip))
+            sprintf('<span class="warning-icon low" %s data-tooltip="%s">&#9675;</span>', corr_attr, escape_tooltip(tooltip))
           } else {
             sprintf('<span %s></span>', corr_attr)
           }
@@ -596,10 +617,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
 
         /* Warning icons with tooltips */
-        .rt-td { overflow: visible !important; }
-
         .warning-icon {
-          position: relative;
           cursor: help;
           font-size: 1.1em;
           display: inline-block;
@@ -608,20 +626,19 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .warning-icon.medium { color: #d29922; }
         .warning-icon.low { color: #8b949e; font-size: 0.9em; }
 
-        .warning-icon:hover::after {
-          content: attr(data-tooltip);
+        .corr-tooltip {
           position: fixed;
           background: #161b22;
           color: #c9d1d9;
           padding: 8px 12px;
           border-radius: 6px;
           font-size: 0.75rem;
-          white-space: nowrap;
+          white-space: pre-line;
           z-index: 9999;
           border: 1px solid #30363d;
           box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-          margin-top: -40px;
-          margin-left: 20px;
+          pointer-events: none;
+          max-width: 320px;
         }
 
         /* Warning colors in rows */
@@ -897,6 +914,40 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
       # JavaScript
       tags$script(HTML('
+        // ============ CORRELATION TOOLTIPS ============
+        (function() {
+          var tip = document.createElement("div");
+          tip.className = "corr-tooltip";
+          tip.style.display = "none";
+          document.body.appendChild(tip);
+
+          document.addEventListener("mouseover", function(e) {
+            var icon = e.target.closest(".warning-icon[data-tooltip]");
+            if (!icon) return;
+            var text = icon.getAttribute("data-tooltip");
+            if (!text) return;
+            tip.textContent = text;
+            tip.style.display = "block";
+            var rect = icon.getBoundingClientRect();
+            var tipW = tip.offsetWidth;
+            var tipH = tip.offsetHeight;
+            // Vertical: prefer above, flip below if clipped
+            var top = rect.top - tipH - 6;
+            if (top < 4) top = rect.bottom + 6;
+            // Horizontal: center on icon, clamp to viewport
+            var left = rect.left + rect.width / 2 - tipW / 2;
+            left = Math.max(4, Math.min(left, window.innerWidth - tipW - 4));
+            tip.style.top = top + "px";
+            tip.style.left = left + "px";
+          });
+
+          document.addEventListener("mouseout", function(e) {
+            var icon = e.target.closest(".warning-icon[data-tooltip]");
+            if (!icon) return;
+            tip.style.display = "none";
+          });
+        })();
+
         // ============ BETS FILTERING ============
         const activeFilters = {
           game: new Set(),
