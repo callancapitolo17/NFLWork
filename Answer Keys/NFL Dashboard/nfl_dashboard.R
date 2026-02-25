@@ -14,7 +14,17 @@ library(lubridate)
 # CONFIGURATION
 # =============================================================================
 
-DASHBOARD_DIR <- normalizePath("~/NFLWork/Answer Keys/NFL Dashboard", mustWork = FALSE)
+# Resolve DASHBOARD_DIR from script location (works in worktrees)
+# R encodes spaces as ~+~ in commandArgs --file=, so decode before using
+.args <- commandArgs(trailingOnly = FALSE)
+.file_arg <- grep("^--file=", .args, value = TRUE)
+DASHBOARD_DIR <- if (length(.file_arg) > 0) {
+  .raw <- sub("^--file=", "", .file_arg)
+  .raw <- gsub("~\\+~", " ", .raw)  # R encodes spaces as ~+~
+  normalizePath(dirname(.raw), mustWork = FALSE)
+} else {
+  normalizePath("~/NFLWork/Answer Keys/NFL Dashboard", mustWork = FALSE)
+}
 DB_PATH <- file.path(DASHBOARD_DIR, "nfl_dashboard.duckdb")
 OUTPUT_PATH <- file.path(DASHBOARD_DIR, "report.html")
 
@@ -2280,7 +2290,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, games_json
 # MAIN
 # =============================================================================
 
-setwd("~/NFLWork")
+setwd(dirname(dirname(DASHBOARD_DIR)))  # NFLWork root, derived from DASHBOARD_DIR
 
 cat("=== NFL +EV Dashboard ===\n\n")
 
