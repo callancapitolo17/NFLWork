@@ -1,259 +1,331 @@
 #!/usr/bin/env python3
 """
 BFA Gaming Bet History Scraper
-Scrapes bet history from https://bfagaming.com and uploads to Google Sheets
+Fetches bet history via BFA's REST API (no browser needed).
+
+Auth flow:
+  1. Read saved auth from recon_bfa_auth.json
+  2. Use refresh token to get a fresh access token from Keycloak
+  3. Call the GetPlayerHistory API endpoint with pagination
+  4. Save rotated refresh token for next run
+
+If the refresh token has expired (~1 hour without use), re-run recon_bfa.py
+to capture fresh tokens via the browser.
 """
 
 import os
 import sys
 import re
+import json
+import requests
 from datetime import datetime, timedelta
-from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from utils import (
     calculate_american_odds,
     calculate_decimal_odds_from_american,
-    parse_status,
     parse_sport,
-    parse_risk_win,
 )
 
-# Playwright import
-try:
-    from playwright.sync_api import sync_playwright
-except ImportError:
-    sync_playwright = None
-
-from sheets import append_bets_to_sheet
+from sheets import append_bets_to_sheet, get_sheets_service, SPREADSHEET_ID, SHEET_NAME
 
 load_dotenv()
 
-# Configuration
-BFA_URL = os.getenv("BFA_URL", "https://bfagaming.com")
-BFA_USERNAME = os.getenv("BFA_USERNAME")
-BFA_PASSWORD = os.getenv("BFA_PASSWORD")
-BFA_HISTORY_URL = "https://bfagaming.com/my-bets"
+# Paths
+SCRIPT_DIR = os.path.dirname(__file__)
+AUTH_FILE = os.path.join(SCRIPT_DIR, "recon_bfa_auth.json")
+
+# API endpoints
+TOKEN_URL = "https://auth.bfagaming.com/realms/players_realm/protocol/openid-connect/token"
+BET_HISTORY_URL = "https://api.bfagaming.com/history/api/GetPlayerHistory"
+
+# Shared request headers
+BASE_HEADERS = {
+    "Accept": "application/json",
+    "Origin": "https://bfagaming.com",
+    "Referer": "https://bfagaming.com/",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+    ),
+}
+
+RECORDS_PER_PAGE = 100
 
 
-def parse_bet_type(description: str) -> str:
-    """Extract bet type from description header."""
-    desc_upper = description.upper()
+def load_auth() -> dict:
+    """Load saved auth data (refresh_token, player_id)."""
+    if not os.path.exists(AUTH_FILE):
+        raise FileNotFoundError(
+            f"Auth file not found: {AUTH_FILE}\n"
+            "Run recon_bfa.py first to capture auth tokens."
+        )
+    with open(AUTH_FILE, 'r') as f:
+        return json.load(f)
 
-    if 'TEASER' in desc_upper:
-        return 'Teaser'
-    elif 'PARLAY' in desc_upper:
-        return 'Parlay'
-    elif 'STRAIGHT' in desc_upper:
-        return 'Straight'
-    elif 'PROP' in desc_upper:
-        return 'Prop'
 
-    # Check if it's a single bet (no multi-leg indicators)
-    if 'TEAM' not in desc_upper:
-        return 'Straight'
+def refresh_access_token(auth: dict) -> str:
+    """
+    Use the saved refresh token to get a fresh access token.
+    Saves the rotated refresh token back to the auth file.
 
-    return 'Parlay'
+    Returns the new access token.
+    Raises RuntimeError if the refresh token has expired.
+    """
+    refresh_token = auth.get('refresh_token')
+    if not refresh_token:
+        raise RuntimeError("No refresh_token in auth file. Run recon_bfa.py.")
+
+    resp = requests.post(
+        TOKEN_URL,
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": "bfagaming",
+        },
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            **{k: v for k, v in BASE_HEADERS.items() if k in ("User-Agent", "Origin", "Referer")},
+        },
+        timeout=15,
+    )
+
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Token refresh failed (HTTP {resp.status_code}). "
+            "Refresh token likely expired (~1 hour). Run recon_bfa.py to re-authenticate."
+        )
+
+    token_data = resp.json()
+    new_access = token_data["access_token"]
+    new_refresh = token_data.get("refresh_token")
+
+    # Save rotated refresh token
+    if new_refresh and new_refresh != refresh_token:
+        auth['refresh_token'] = new_refresh
+        with open(AUTH_FILE, 'w') as f:
+            json.dump(auth, f, indent=2)
+
+    return new_access
+
+
+def fetch_bet_history(access_token: str, player_id: str,
+                      start_date: str, end_date: str) -> list:
+    """
+    Fetch all bet history pages from the API.
+
+    Args:
+        start_date: YYYY-MM-DD
+        end_date: YYYY-MM-DD
+
+    Returns:
+        List of wager dicts from the API
+    """
+    all_wagers = []
+    page = 0
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        **BASE_HEADERS,
+    }
+
+    while True:
+        resp = requests.get(
+            BET_HISTORY_URL,
+            params={
+                "playerId": player_id,
+                "startDate": start_date,
+                "endDate": end_date,
+                "page": page,
+                "recordsByPage": RECORDS_PER_PAGE,
+            },
+            headers=headers,
+            timeout=15,
+        )
+
+        if resp.status_code != 200:
+            print(f"API error: HTTP {resp.status_code}")
+            break
+
+        data = resp.json()
+        wagers = data.get("wagers", [])
+        total_records = data.get("totalRecords", 0)
+
+        all_wagers.extend(wagers)
+
+        if not wagers or len(all_wagers) >= total_records:
+            break
+
+        page += 1
+
+    return all_wagers
+
+
+# ── Parsing helpers ──────────────────────────────────────────────
 
 
 def parse_date(date_str: str) -> str:
-    """Convert BFA date string to MM/DD/YY format."""
-    # Input format: "Jan 10, 2:23PM PST" or "Jan 12, 9:51AM PST"
+    """Convert API date (ISO 8601) to sheet format (M/D/YY)."""
     try:
-        # Remove timezone
-        date_part = re.sub(r'\s*(PST|EST|CST|MST|PDT|EDT|CDT|MDT)\s*$', '', date_str.strip())
-
-        # Try parsing with year
-        try:
-            dt = datetime.strptime(date_part, "%b %d, %Y %I:%M%p")
-        except ValueError:
-            # No year in date string - prepend current year to avoid deprecation warning
-            now = datetime.now()
-            date_with_year = f"{date_part}, {now.year}"
-            dt = datetime.strptime(date_with_year, "%b %d, %I:%M%p, %Y")
-            if dt > now + timedelta(days=1):  # If more than 1 day in future, use last year
-                dt = dt.replace(year=now.year - 1)
-
+        dt = datetime.fromisoformat(date_str)
         return dt.strftime("%-m/%-d/%y")
-    except Exception as e:
-        print(f"  Warning: Could not parse date '{date_str}': {e}")
+    except (ValueError, TypeError):
         return date_str
 
 
-def parse_leg(leg_text: str) -> dict:
+def parse_description(raw_desc: str) -> dict:
     """
-    Parse a single bet leg from BFA format.
-    Example: "[378] CHICAGO BEARS +8-110 (B+6)"
-    Returns: {'team': 'CHICAGO BEARS', 'line': '+8', 'odds': -110, 'game_id': '378'}
+    Parse BFA bet description into structured components.
+
+    Formats seen:
+      [1601] TOTAL o67½+116 \\r(WASHINGTON 1H vrs RUTGERS 1H)
+      [96072] TOTAL u38½-115 \\r(SAINT LOUIS 1H TEAM PTS vrs ...)
+      [1306551] GRAMBLING 1H +168
+      [1306564] LAMAR 1H -2-110
+
+    Returns:
+        {'clean_desc': str, 'line': str, 'odds': int}
     """
-    leg_text = leg_text.strip()
+    # Normalize unicode fractions and whitespace
+    desc = raw_desc.replace('\u00bd', '.5').replace('\u00bc', '.25').replace('\u00be', '.75')
+    desc = desc.replace('\r', ' ').replace('\n', ' ')
+    desc = re.sub(r'^\[\d+\]\s*', '', desc).strip()
+    desc = re.sub(r'\s+', ' ', desc)
 
-    # Extract game ID if present: [378]
-    game_id = ''
-    game_match = re.match(r'\[(\d+)\]\s*', leg_text)
-    if game_match:
-        game_id = game_match.group(1)
-        leg_text = leg_text[game_match.end():]
+    # Pattern 1: TOTAL o/u LINE ODDS (CONTEXT)
+    # Odds can be +/-NNN or "EV" (even money = +100)
+    total_match = re.match(
+        r'TOTAL\s+([ou])([\d.]+)((?:[+-]\d+)|EV)\s*\((.+?)\)\s*$',
+        desc, re.IGNORECASE
+    )
+    if total_match:
+        direction = 'Over' if total_match.group(1).lower() == 'o' else 'Under'
+        line_val = total_match.group(2)
+        odds_str = total_match.group(3)
+        odds = 100 if odds_str.upper() == 'EV' else int(odds_str)
+        context = total_match.group(4).strip()
 
-    # Remove teaser points at end: (B+6)
-    leg_text = re.sub(r'\s*\([^)]+\)\s*$', '', leg_text)
+        is_team_total = 'TEAM PTS' in context.upper()
 
-    # Extract odds from end: -110 or +120
-    odds = -110
-    odds_match = re.search(r'([+-]\d+)\s*$', leg_text)
+        if is_team_total:
+            # "SAINT LOUIS 1H TEAM PTS vrs SAINT LOUIS 1H TEAM PTS"
+            team_match = re.match(r'(.+?)\s+\d+H\s+TEAM PTS', context, re.IGNORECASE)
+            team = team_match.group(1).strip() if team_match else context.split(' vrs ')[0].strip()
+            clean = f"{team} 1H Team Total {direction} {line_val}"
+        else:
+            # "WASHINGTON 1H vrs RUTGERS 1H"
+            clean = f"{context} {direction} {line_val}"
+
+        return {'clean_desc': clean, 'line': f"{direction} {line_val}", 'odds': odds}
+
+    # Pattern 2: TEAM PERIOD SPREAD ODDS (e.g., "LAMAR 1H -2-110")
+    spread_match = re.match(r'(.+?)\s+(\d+H)\s+([+-][\d.]+)([+-]\d+)\s*$', desc)
+    if spread_match:
+        team = spread_match.group(1).strip()
+        period = spread_match.group(2)
+        spread = spread_match.group(3)
+        odds = int(spread_match.group(4))
+        return {'clean_desc': f"{team} {period} {spread}", 'line': spread, 'odds': odds}
+
+    # Pattern 3: TEAM PERIOD ODDS (moneyline, e.g., "GRAMBLING 1H +168")
+    ml_match = re.match(r'(.+?)\s+(\d+H)\s+([+-]\d+)\s*$', desc)
+    if ml_match:
+        team = ml_match.group(1).strip()
+        period = ml_match.group(2)
+        odds = int(ml_match.group(3))
+        return {'clean_desc': f"{team} {period} {'+' if odds > 0 else ''}{odds}", 'line': '', 'odds': odds}
+
+    # Pattern 4: Full game spread (TEAM SPREAD ODDS, no period)
+    spread_fg = re.match(r'(.+?)\s+([+-][\d.]+)([+-]\d+)\s*$', desc)
+    if spread_fg:
+        team = spread_fg.group(1).strip()
+        spread = spread_fg.group(2)
+        odds = int(spread_fg.group(3))
+        return {'clean_desc': f"{team} {spread}", 'line': spread, 'odds': odds}
+
+    # Pattern 5: Full game ML (TEAM ODDS, no period)
+    ml_fg = re.match(r'(.+?)\s+([+-]\d+)\s*$', desc)
+    if ml_fg:
+        team = ml_fg.group(1).strip()
+        odds = int(ml_fg.group(2))
+        return {'clean_desc': team, 'line': '', 'odds': odds}
+
+    # Fallback
+    odds = 0
+    odds_match = re.search(r'([+-]\d+)\s*$', desc)
     if odds_match:
         odds = int(odds_match.group(1))
-        leg_text = leg_text[:odds_match.start()].strip()
 
-    # Extract line/spread: +8, -3.5, O 45.5, U 42
-    line = ''
-    # Look for spread pattern
-    spread_match = re.search(r'\s+([+-]?\d+\.?\d*)\s*$', leg_text)
-    if spread_match:
-        line = spread_match.group(1)
-        if not line.startswith('+') and not line.startswith('-'):
-            line = '+' + line if float(line) > 0 else line
-        leg_text = leg_text[:spread_match.start()].strip()
-
-    # Over/Under pattern
-    ou_match = re.search(r'\s+([OU])\s*(\d+\.?\d*)\s*$', leg_text, re.IGNORECASE)
-    if ou_match:
-        direction = 'Over' if ou_match.group(1).upper() == 'O' else 'Under'
-        line = f"{direction} {ou_match.group(2)}"
-        leg_text = leg_text[:ou_match.start()].strip()
-
-    team = leg_text.strip()
-
-    return {
-        'team': team,
-        'line': line,
-        'odds': odds,
-        'game_id': game_id
-    }
+    return {'clean_desc': desc, 'line': '', 'odds': odds}
 
 
-def clean_description(description_lines: list) -> str:
-    """Create clean bet description from parsed legs."""
-    # First line is the bet type header, skip it
-    if not description_lines:
-        return ''
-
-    legs = []
-    for line in description_lines[1:]:  # Skip header line
-        line = line.strip()
-        if not line:
-            continue
-
-        leg = parse_leg(line)
-        if leg['team']:
-            leg_desc = leg['team']
-            if leg['line']:
-                leg_desc += f" {leg['line']}"
-            legs.append(leg_desc)
-
-    return ' | '.join(legs) if legs else description_lines[0]
-
-
-def parse_bets_from_html(html_content: str) -> list:
-    """Parse bet data from BFA Gaming HTML table."""
-    soup = BeautifulSoup(html_content, 'html.parser')
-
+def parse_api_bets(wagers: list) -> list:
+    """Convert API wager objects to the standard bet dict format."""
     bets = []
 
-    # Find the table - BFA uses a standard table structure
-    table = soup.find('table')
-    if not table:
-        print("Could not find table element")
-        return []
-
-    # Get all rows
-    rows = table.find_all('tr')
-    print(f"Found {len(rows)} table rows")
-
-    # Skip header row
-    for row in rows[1:]:
+    for w in wagers:
         try:
-            cells = row.find_all('td')
-            if len(cells) < 6:
+            raw_desc = w.get('description', '')
+            wager_type = w.get('type', '')
+            result = w.get('result', '')
+            risk = w.get('risk', 0) or 0
+            win_amount = w.get('win', 0) or 0
+
+            # Skip pending/open bets
+            if not result or result.upper() in ('PENDING', 'OPEN'):
                 continue
 
-            # Column mapping from screenshot:
-            # 0: Ticket (ID)
-            # 1: Description
-            # 2: Risk/Win
-            # 3: W/L (profit/loss amount)
-            # 4: Result
-            # 5: Placed Time
-            # 6: Settled Time (optional)
+            # Parse description
+            parsed = parse_description(raw_desc)
 
-            ticket_text = cells[0].get_text(strip=True)
-            description_text = cells[1].get_text(separator='\n', strip=True)
-            risk_win_text = cells[2].get_text(strip=True)
-            wl_amount = cells[3].get_text(strip=True)
-            result_text = cells[4].get_text(strip=True)
-            placed_time = cells[5].get_text(strip=True)
+            # If parsing didn't extract odds, calculate from risk/win
+            american_odds = parsed['odds']
+            if american_odds == 0 and risk > 0 and win_amount > 0:
+                american_odds = calculate_american_odds(risk, win_amount)
 
-            # Skip non-bet rows (transfers, deposits, etc.)
-            if 'Transfer' in description_text or 'Deposit' in description_text:
-                print(f"  Skipping non-bet row: {description_text[:50]}...")
-                continue
+            decimal_odds = calculate_decimal_odds_from_american(american_odds) if american_odds != 0 else 0
 
-            # Skip rows without proper bet data
-            if not risk_win_text or '/' not in risk_win_text:
-                continue
+            # Map bet type
+            bet_type = 'Straight'
+            wt = wager_type.upper()
+            if 'PARLAY' in wt:
+                bet_type = 'Parlay'
+            elif 'TEASER' in wt:
+                bet_type = 'Teaser'
 
-            # Parse description lines
-            desc_lines = [line.strip() for line in description_text.split('\n') if line.strip()]
-            if not desc_lines:
-                continue
+            # Map result
+            result_mapped = ''
+            r = result.upper()
+            if r == 'WIN':
+                result_mapped = 'win'
+            elif r == 'LOSE':
+                result_mapped = 'loss'
+            elif r in ('PUSH', 'CANCELLED', 'VOID'):
+                result_mapped = 'push'
 
-            # Get bet type from first line
-            bet_type = parse_bet_type(desc_lines[0])
-
-            # Build clean description
-            description = clean_description(desc_lines)
-            if not description:
-                description = description_text.replace('\n', ' | ')
-
-            # Parse risk/win
-            risk, win = parse_risk_win(risk_win_text)
-
-            # Parse date
-            date = parse_date(placed_time)
-
-            # Parse result
-            result = parse_status(result_text)
-
-            # Detect sport
-            sport = parse_sport(description_text)
-
-            # Calculate odds from risk/win ratio
-            american_odds = calculate_american_odds(risk, win)
-            decimal_odds = calculate_decimal_odds_from_american(american_odds)
-
-            # Extract first leg's line for the 'line' column
-            first_line = ''
-            if len(desc_lines) > 1:
-                first_leg = parse_leg(desc_lines[1])
-                first_line = first_leg.get('line', '')
+            # Sport detection — BFA is primarily CBB, default to NCAAM
+            sport = parse_sport(raw_desc)
+            if not sport:
+                sport = 'NCAAM'
 
             bet = {
-                'date': date,
+                'date': parse_date(w.get('placedDate', '')),
                 'platform': 'BFA',
                 'sport': sport,
-                'description': description,
+                'description': parsed['clean_desc'].strip(),
                 'bet_type': bet_type,
-                'line': first_line,
+                'line': parsed['line'],
                 'odds': american_odds,
                 'bet_amount': risk,
                 'dec': decimal_odds,
-                'result': 'win' if result == 'W' else 'loss' if result == 'L' else 'push' if result == 'X' else ''
+                'result': result_mapped,
             }
 
             bets.append(bet)
-            print(f"  ✓ {date} - {bet_type} - {description[:60]}... - ${risk:.2f} - {result_text}")
+            desc_preview = bet['description'][:60]
+            print(f"  {bet['date']} - {bet_type} - {desc_preview} - ${risk:.2f} - {bet['result']}")
 
         except Exception as e:
-            print(f"  ✗ Error parsing bet row: {e}")
+            print(f"  Error parsing wager: {e}")
             import traceback
             traceback.print_exc()
             continue
@@ -261,263 +333,148 @@ def parse_bets_from_html(html_content: str) -> list:
     return bets
 
 
-def scrape_bfa(weeks_back: int = 1, headless: bool = True) -> list:
+# ── Sheet lookup ─────────────────────────────────────────────────
+
+
+def get_last_bfa_date() -> str:
     """
-    Log into BFA Gaming and scrape bet history.
+    Query Google Sheets for the most recent BFA bet date.
+    Returns date as YYYY-MM-DD for the API, or '' if none found.
+    """
+    try:
+        service = get_sheets_service()
+        result = service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{SHEET_NAME}!A:B"
+        ).execute()
+
+        values = result.get('values', [])
+        latest = None
+
+        for row in values[1:]:
+            if len(row) >= 2 and row[1].strip() == 'BFA':
+                date_str = row[0].strip()
+                dt = None
+                for fmt in ("%m/%d/%Y", "%m/%d/%y"):
+                    try:
+                        dt = datetime.strptime(date_str, fmt)
+                        break
+                    except ValueError:
+                        continue
+                if dt and (latest is None or dt > latest):
+                    latest = dt
+
+        if latest:
+            return latest.strftime("%Y-%m-%d")
+        return ''
+
+    except Exception as e:
+        print(f"Could not fetch last BFA date from sheet: {e}")
+        return ''
+
+
+# ── Main scraper ─────────────────────────────────────────────────
+
+
+def scrape_bfa(days_back: int = 7, from_date: str = None) -> list:
+    """
+    Fetch bet history from BFA's API.
 
     Args:
-        weeks_back: Number of weeks back to fetch (0=current week, 1=last week, etc.)
-        headless: Run browser in headless mode (no visible window)
+        days_back: Number of days of history to fetch (default: 7).
+                   Ignored if from_date is provided.
+        from_date: Explicit start date as YYYY-MM-DD.
 
     Returns:
-        List of parsed bet dictionaries
+        List of parsed bet dictionaries.
     """
-    if not BFA_USERNAME or not BFA_PASSWORD:
-        raise ValueError("BFA_USERNAME and BFA_PASSWORD must be set in .env file")
+    # Load auth
+    auth = load_auth()
+    player_id = auth.get('player_id')
+    if not player_id:
+        raise RuntimeError("No player_id in auth file. Run recon_bfa.py.")
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
-        context = browser.new_context(viewport={'width': 1920, 'height': 1080})
-        page = context.new_page()
+    print("Refreshing access token...")
+    access_token = refresh_access_token(auth)
+    print("Token refreshed")
 
-        print(f"Navigating to {BFA_HISTORY_URL}...")
-        page.goto(BFA_HISTORY_URL, wait_until='networkidle', timeout=60000)
-        page.wait_for_timeout(3000)  # Wait for Blazor app to initialize
+    # Build date range
+    today = datetime.now().strftime("%Y-%m-%d")
+    if from_date:
+        start = from_date
+    else:
+        start = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
-        # Check if we need to login by looking for "You must log in" message
-        print("Checking login status...")
-        must_login = page.locator('text=You must log in').count() > 0
-        login_button = page.locator('button:has-text("Log In"), button:has-text("Log in")')
+    print(f"Fetching bets from {start} to {today}...")
+    wagers = fetch_bet_history(access_token, player_id, start, today)
 
-        if must_login or login_button.count() > 0:
-            print("Login required. Clicking login button...")
-            try:
-                # Click the Log In button in the header - this redirects to Keycloak auth
-                header_login = page.locator('.header-auth-container button:has-text("Log In")')
-                if header_login.count() > 0:
-                    header_login.click()
-                else:
-                    login_button.first.click()
-
-                # Wait for redirect to Keycloak auth page
-                print("Waiting for Keycloak login page...")
-                page.wait_for_url('**/realms/**', timeout=15000)
-                page.wait_for_timeout(2000)
-
-                # Keycloak uses specific IDs for the login form
-                print("Filling Keycloak login form...")
-
-                # Fill username using Keycloak's #username field
-                username_field = page.locator('#username')
-                if username_field.count() > 0:
-                    username_field.fill(BFA_USERNAME)
-                    print("✅ Filled username")
-                else:
-                    # Fallback to name attribute
-                    page.fill('input[name="username"]', BFA_USERNAME)
-                    print("✅ Filled username (fallback)")
-
-                page.wait_for_timeout(500)
-
-                # Fill password using Keycloak's #password field
-                password_field = page.locator('#password')
-                if password_field.count() > 0:
-                    password_field.fill(BFA_PASSWORD)
-                    print("✅ Filled password")
-                else:
-                    page.fill('input[name="password"]', BFA_PASSWORD)
-                    print("✅ Filled password (fallback)")
-
-                page.wait_for_timeout(500)
-
-                # Click the Keycloak login button
-                login_submit = page.locator('#kc-login')
-                if login_submit.count() > 0:
-                    login_submit.click()
-                    print("✅ Clicked Keycloak login button")
-                else:
-                    page.click('input[type="submit"]')
-                    print("✅ Clicked submit button (fallback)")
-
-                # Wait for redirect back to BFA after successful login
-                print("Waiting for redirect back to BFA...")
-                page.wait_for_url('**/bfagaming.com/**', timeout=30000)
-                page.wait_for_load_state('networkidle', timeout=30000)
-                page.wait_for_timeout(3000)
-
-                print("✅ Login successful! Redirected back to BFA")
-
-            except Exception as e:
-                print(f"Auto-login failed: {e}")
-                page.screenshot(path="debug_bfa_login_error.png")
-                if not headless:
-                    print("Please log in manually (60 seconds)...")
-                    page.wait_for_timeout(60000)
-                else:
-                    raise RuntimeError(f"Login failed in headless mode: {e}")
-        else:
-            print("Already logged in")
-
-        # Click on "Settled" tab to see bet history
-        print("Clicking 'Settled' tab...")
-        try:
-            settled_tab = page.locator('.scroller-item:has-text("Settled"), div:has-text("Settled"):not(:has(*))')
-            if settled_tab.count() > 0:
-                settled_tab.first.click()
-                page.wait_for_load_state('networkidle', timeout=30000)
-                page.wait_for_timeout(2000)
-                print("✅ Clicked Settled tab")
-            else:
-                print("Settled tab not found")
-        except Exception as e:
-            print(f"Could not click Settled tab: {e}")
-
-        # Set date filter - BFA uses HTML5 date inputs requiring ISO format (YYYY-MM-DD)
-        # weeks_back: 0 = current week (Monday to today), 1 = last week (Mon-Sun), 2 = 2 weeks ago, etc.
-        week_label = "current week" if weeks_back == 0 else f"{weeks_back} week(s) back"
-        print(f"Setting date filter for {week_label}...")
-        try:
-            today = datetime.now()
-
-            if weeks_back == 0:
-                # Current week: this Monday to today
-                days_since_monday = today.weekday()  # Monday=0
-                start_date = today - timedelta(days=days_since_monday)
-                end_date = today
-            else:
-                # Previous week(s): Monday to Sunday
-                # Find last Sunday (end of most recent complete week)
-                days_since_sunday = (today.weekday() + 1) % 7  # Monday=0, Sunday=6
-                if days_since_sunday == 0:
-                    days_since_sunday = 7  # If today is Sunday, go back to previous Sunday
-                last_sunday = today - timedelta(days=days_since_sunday)
-
-                # Go back additional weeks if needed
-                end_date = last_sunday - timedelta(weeks=weeks_back - 1)
-                start_date = end_date - timedelta(days=6)
-
-            # HTML5 date inputs require ISO format: YYYY-MM-DD
-            start_str = start_date.strftime("%Y-%m-%d")
-            end_str = end_date.strftime("%Y-%m-%d")
-
-            # Fill the from-date input
-            from_date = page.locator('#from-date')
-            if from_date.count() > 0:
-                from_date.fill(start_str)
-                print(f"✅ Set from-date: {start_str} ({start_date.strftime('%A')})")
-            else:
-                print("from-date input not found")
-
-            page.wait_for_timeout(500)
-
-            # Fill the to-date input
-            to_date = page.locator('#to-date')
-            if to_date.count() > 0:
-                to_date.fill(end_str)
-                print(f"✅ Set to-date: {end_str} ({end_date.strftime('%A')})")
-            else:
-                print("to-date input not found")
-
-            page.wait_for_timeout(500)
-
-            # Click Apply Filter button
-            apply_btn = page.locator('.apply-filter-btn, button:has-text("Apply Filter")')
-            if apply_btn.count() > 0:
-                apply_btn.first.click()
-                print("✅ Clicked Apply Filter")
-                page.wait_for_load_state('networkidle', timeout=30000)
-                page.wait_for_timeout(3000)  # Wait for table to update
-            else:
-                print("Apply Filter button not found")
-
-        except Exception as e:
-            print(f"Could not set date filter: {e}")
-
-        # Wait for bet table to load
-        print("Waiting for bet table to load...")
-        try:
-            page.wait_for_selector('table', timeout=15000)
-            page.wait_for_timeout(2000)
-            print("✅ Table loaded")
-        except:
-            print("Warning: Table not found, checking for data...")
-
-        # Get the page HTML
-        page_html = page.content()
-
-        browser.close()
-        return parse_bets_from_html(page_html)
-
-
-def scrape_from_file(filepath: str) -> list:
-    """Parse bets from a saved HTML file (for testing)."""
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
-
-    return parse_bets_from_html(content)
+    print(f"\nAPI returned {len(wagers)} wagers")
+    return parse_api_bets(wagers)
 
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description='Scrape bet history from BFA Gaming')
-    parser.add_argument('--test', action='store_true', help='Parse from saved HTML file instead of live scrape')
-    parser.add_argument('--weeks', type=int, default=1, help='Weeks back to fetch (0=current week, 1=last week, default: 1)')
-    parser.add_argument('--visible', action='store_true', help='Show browser window (default is headless)')
+    parser.add_argument('--days', type=int, default=7, help='Days of history to fetch (default: 7)')
+    parser.add_argument('--since-last', action='store_true', help='Scrape from the date of the last BFA bet in Google Sheets')
     parser.add_argument('--dry-run', action='store_true', help='Scrape but do not upload to Google Sheets')
+    parser.add_argument('--refresh-only', action='store_true', help='Just refresh the auth token and exit')
     args = parser.parse_args()
 
-    if args.test:
-        print("TEST MODE: Parsing from saved HTML file")
-        test_file = "debug_bfa_page.html"
-
-        if not os.path.exists(test_file):
-            print(f"Error: {test_file} not found")
-            print("Run the scraper first to generate this file, or provide your own HTML")
-            sys.exit(1)
-
-        bets = scrape_from_file(test_file)
-        print(f"\nParsed {len(bets)} bets:")
-        for i, bet in enumerate(bets, 1):
-            print(f"\n{i}. {bet['date']} - {bet['bet_type']}")
-            print(f"   Sport: {bet['sport']}")
-            print(f"   Description: {bet['description']}")
-            print(f"   Line: {bet['line']}")
-            print(f"   Odds: {bet['odds']:+d} (Decimal: {bet['dec']:.2f})")
-            print(f"   Amount: ${bet['bet_amount']:.2f}")
-            print(f"   Result: {bet['result']}")
-    else:
-        print("=" * 60)
-        print("BFA GAMING BET HISTORY SCRAPER")
-        print("=" * 60)
-
+    if args.refresh_only:
         try:
-            bets = scrape_bfa(weeks_back=args.weeks, headless=not args.visible)
-
-            print(f"\n{'=' * 60}")
-            print(f"Successfully scraped {len(bets)} bets from BFA Gaming")
-            print(f"{'=' * 60}\n")
-
-            if bets and not args.dry_run:
-                print("Uploading to Google Sheets...")
-                result = append_bets_to_sheet(bets)
-
-                if result['status'] == 'success':
-                    print(f"\n✅ SUCCESS! Added {result['rows_added']} new bets to sheet")
-                    print(f"   Rows {result['start_row']} to {result['end_row']}")
-                elif result['status'] == 'skipped':
-                    print(f"\n⚠️  {result['message']}")
-                else:
-                    print(f"\n❌ Error uploading to sheets: {result.get('message', 'Unknown error')}")
-            elif args.dry_run:
-                print("Dry run - skipping upload to Google Sheets")
-            else:
-                print("No bets found to upload")
-
+            auth = load_auth()
+            refresh_access_token(auth)
+            print("Token refreshed successfully")
         except Exception as e:
-            print(f"\n❌ Error: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"Token refresh failed: {e}")
             sys.exit(1)
+        sys.exit(0)
+
+    print("=" * 60)
+    print("BFA GAMING BET HISTORY SCRAPER")
+    print("=" * 60)
+
+    try:
+        from_date = None
+        if args.since_last:
+            print("Looking up last BFA bet date from Google Sheets...")
+            from_date = get_last_bfa_date()
+            if from_date:
+                print(f"Last BFA bet: {from_date}")
+                # Start from day after last bet to avoid re-fetching
+                from_date = (datetime.strptime(from_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+                print(f"Scraping from {from_date} to today")
+            else:
+                print("No existing BFA bets found in sheet, using default range")
+
+        bets = scrape_bfa(days_back=args.days, from_date=from_date)
+
+        print(f"\n{'=' * 60}")
+        print(f"Successfully scraped {len(bets)} bets from BFA Gaming")
+        print(f"{'=' * 60}\n")
+
+        if bets and not args.dry_run:
+            print("Uploading to Google Sheets...")
+            result = append_bets_to_sheet(bets)
+
+            if result['status'] == 'success':
+                print(f"\nSUCCESS! Added {result['rows_added']} new bets to sheet")
+                print(f"   Rows {result['start_row']} to {result['end_row']}")
+            elif result['status'] == 'skipped':
+                print(f"\n{result['message']}")
+            else:
+                print(f"\nError uploading to sheets: {result.get('message', 'Unknown error')}")
+        elif args.dry_run:
+            print("Dry run - skipping upload to Google Sheets")
+        else:
+            print("No bets found to upload")
+
+    except Exception as e:
+        print(f"\nError: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
     sys.exit(0)
