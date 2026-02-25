@@ -309,7 +309,7 @@ def parse_api_bets(wagers: list) -> list:
 
             bet = {
                 'date': parse_date(w.get('placedDate', '')),
-                'platform': 'BFA',
+                'platform': 'Betfastaction',
                 'sport': sport,
                 'description': parsed['clean_desc'].strip(),
                 'bet_type': bet_type,
@@ -352,7 +352,7 @@ def get_last_bfa_date() -> str:
         latest = None
 
         for row in values[1:]:
-            if len(row) >= 2 and row[1].strip() == 'BFA':
+            if len(row) >= 2 and row[1].strip() == 'Betfastaction':
                 date_str = row[0].strip()
                 dt = None
                 for fmt in ("%m/%d/%Y", "%m/%d/%y"):
