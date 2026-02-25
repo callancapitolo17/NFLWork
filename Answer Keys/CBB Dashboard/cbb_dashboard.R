@@ -166,8 +166,8 @@ create_placed_bets_table <- function(placed_bets) {
       game = paste(away_team, "@", home_team),
       ev_display = ifelse(model_ev >= 0, sprintf("+%.1f%%", model_ev * 100), sprintf("%.1f%%", model_ev * 100)),
       odds_display = ifelse(odds > 0, paste0("+", odds), as.character(odds)),
-      actual_display = sprintf("$%.2f", coalesce(actual_size, recommended_size)),
-      rec_display = sprintf("$%.2f", recommended_size),
+      actual_display = sprintf("$%.0f", coalesce(actual_size, recommended_size)),
+      rec_display = sprintf("$%.0f", recommended_size),
       sizes_differ = !is.na(actual_size) & abs(actual_size - recommended_size) > 0.005,
       line_display = case_when(
         is.na(line) ~ "",
@@ -245,7 +245,7 @@ create_bets_table <- function(all_bets, placed_bets, relationships) {
         TRUE ~ as.character(line)
       ),
       odds_display = ifelse(odds > 0, paste0("+", odds), as.character(odds)),
-      size_display = sprintf("$%.2f", bet_size),
+      size_display = sprintf("$%.0f", bet_size),
       # Correlation warnings
       has_correlation = sapply(correlation_info, function(x) x$has_correlation),
       correlation_level = sapply(correlation_info, function(x) if (x$has_correlation) x$level else "none"),
@@ -1410,10 +1410,10 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
             if (prob && odds && sizeCell) {
               var newSize = calculateKellyBet(prob, odds, bankroll, kellyMult);
-              sizeCell.textContent = "$" + newSize.toFixed(2);
+              sizeCell.textContent = "$" + newSize.toFixed(0);
 
               if (btn) {
-                btn.setAttribute("data-size", newSize.toFixed(2));
+                btn.setAttribute("data-size", newSize.toFixed(0));
               }
             }
           });
@@ -1487,10 +1487,10 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               \'<div class="modal-title">Place Bet</div>\' +
               \'<div class="modal-detail">Pick: <span>\' + escapeHtml(betOn) + \' \' + escapeHtml(oddsDisplay) + \'</span></div>\' +
               \'<div class="modal-detail">Book: <span>\' + escapeHtml(book) + \'</span></div>\' +
-              \'<div class="modal-recommended">Recommended: $\' + recommended.toFixed(2) + \'</div>\' +
+              \'<div class="modal-recommended">Recommended: $\' + recommended.toFixed(0) + \'</div>\' +
               \'<div class="modal-input-group">\' +
                 \'<label class="modal-input-label">Actual Amount ($)</label>\' +
-                \'<input type="number" class="modal-input" value="\' + recommended.toFixed(2) + \'" step="0.01" min="0.01">\' +
+                \'<input type="number" class="modal-input" value="\' + recommended.toFixed(0) + \'" step="1" min="1">\' +
               \'</div>\' +
               \'<div class="modal-actions">\' +
                 \'<button class="modal-btn-cancel">Cancel</button>\' +
@@ -1546,7 +1546,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                   btn.className = \'btn-placed\';
                   btn.textContent = \'Placed\';
                   btn.onclick = function() { removeBet(this); };
-                  showToast("Bet placed: $" + actualSize.toFixed(2), "success");
+                  showToast("Bet placed: $" + actualSize.toFixed(0), "success");
                 } else {
                   showToast(result.error, "error");
                   confirmBtn.disabled = false;
