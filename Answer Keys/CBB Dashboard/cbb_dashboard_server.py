@@ -200,6 +200,35 @@ def remove_bet():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/update-bet", methods=["POST"])
+def update_bet():
+    """Update a placed bet's actual size."""
+    data = request.json
+    bet_hash = data.get("bet_hash")
+    actual_size = data.get("actual_size")
+
+    if not bet_hash:
+        return jsonify({"success": False, "error": "bet_hash required"}), 400
+    if actual_size is None:
+        return jsonify({"success": False, "error": "actual_size required"}), 400
+
+    try:
+        con = duckdb.connect(str(DB_PATH))
+        result = con.execute(
+            "UPDATE placed_bets SET actual_size = ? WHERE bet_hash = ? RETURNING bet_hash",
+            [float(actual_size), bet_hash]
+        ).fetchone()
+        con.close()
+
+        if result:
+            return jsonify({"success": True, "message": "Bet updated"})
+        else:
+            return jsonify({"success": False, "error": "Bet not found"}), 404
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/placed-bets", methods=["GET"])
 def get_placed_bets():
     """Get all placed bets."""
