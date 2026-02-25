@@ -225,6 +225,15 @@ create_placed_bets_table <- function(placed_bets) {
 
 create_bets_table <- function(all_bets, placed_bets, relationships) {
   placed_hashes <- if (nrow(placed_bets) > 0) placed_bets$bet_hash else character()
+  # Build lookups for placed bet actual_size and recommended_size by hash
+  placed_actual <- setNames(
+    if (nrow(placed_bets) > 0) placed_bets$actual_size else numeric(),
+    if (nrow(placed_bets) > 0) placed_bets$bet_hash else character()
+  )
+  placed_recommended <- setNames(
+    if (nrow(placed_bets) > 0) placed_bets$recommended_size else numeric(),
+    if (nrow(placed_bets) > 0) placed_bets$bet_hash else character()
+  )
 
   # Check correlations for each bet
   correlation_info <- lapply(seq_len(nrow(all_bets)), function(i) {
@@ -248,6 +257,15 @@ create_bets_table <- function(all_bets, placed_bets, relationships) {
       ),
       odds_display = ifelse(odds > 0, paste0("+", odds), as.character(odds)),
       size_display = sprintf("$%.0f", bet_size),
+      # Fill status: compare actual vs recommended at time of placement (not current bet_size)
+      placed_actual = ifelse(is_placed, placed_actual[bet_hash], NA_real_),
+      placed_rec = ifelse(is_placed, placed_recommended[bet_hash], NA_real_),
+      fill_status = case_when(
+        !is_placed ~ "not_placed",
+        is.na(placed_actual) | is.na(placed_rec) | round(placed_actual) >= round(placed_rec) ~ "placed",
+        TRUE ~ "partial"
+      ),
+      fill_diff = ifelse(fill_status == "partial", round(placed_rec) - round(placed_actual), NA_real_),
       # Correlation warnings
       has_correlation = sapply(correlation_info, function(x) x$has_correlation),
       correlation_level = sapply(correlation_info, function(x) if (x$has_correlation) x$level else "none"),
@@ -287,7 +305,8 @@ create_bets_table <- function(all_bets, placed_bets, relationships) {
     select(
       bet_hash, id, warning, game, game_time, market, market_display, bet_on, line, line_display,
       ev_pct, ev_display, odds, odds_display, bet_size, size_display,
-      bookmaker_key, is_placed, home_team, away_team, pt_start_time, prob,
+      bookmaker_key, is_placed, fill_status, fill_diff, placed_actual, placed_rec,
+      home_team, away_team, pt_start_time, prob,
       has_correlation, correlation_level, correlation_tooltip
     )
 
@@ -314,6 +333,10 @@ create_bets_table <- function(all_bets, placed_bets, relationships) {
       odds = colDef(show = FALSE),
       bet_size = colDef(show = FALSE),
       prob = colDef(show = FALSE),
+      fill_status = colDef(show = FALSE),
+      fill_diff = colDef(show = FALSE),
+      placed_actual = colDef(show = FALSE),
+      placed_rec = colDef(show = FALSE),
       has_correlation = colDef(show = FALSE),
       correlation_level = colDef(show = FALSE),
       correlation_tooltip = colDef(show = FALSE),
@@ -409,21 +432,27 @@ create_bets_table <- function(all_bets, placed_bets, relationships) {
       ),
       is_placed = colDef(
         name = "Action",
-        minWidth = 90,
+        minWidth = 110,
         align = "center",
         filterable = FALSE,
         html = TRUE,
         cell = function(value, index) {
           row <- table_data[index, ]
           data_attrs <- sprintf(
-            'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-market="%s" data-bet-on="%s" data-line="%s" data-prob="%s" data-ev="%s" data-size="%s" data-odds="%s" data-book="%s"',
+            'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-market="%s" data-bet-on="%s" data-line="%s" data-prob="%s" data-ev="%s" data-size="%s" data-odds="%s" data-book="%s" data-actual="%s" data-fill-status="%s"',
             row$bet_hash, row$id, row$home_team, row$away_team,
             as.character(row$pt_start_time), row$market, row$bet_on,
             ifelse(is.na(row$line), "", row$line),
-            row$prob, row$ev_pct / 100, row$bet_size, row$odds, row$bookmaker_key
+            row$prob, row$ev_pct / 100, row$bet_size, row$odds, row$bookmaker_key,
+            ifelse(is.na(row$placed_actual), "", row$placed_actual),
+            row$fill_status
           )
 
-          if (value) {
+          status <- row$fill_status
+          if (status == "partial") {
+            diff_label <- sprintf("-$%.0f", row$fill_diff)
+            sprintf('<button class="btn-partial" onclick="updateBet(this)" %s>Partial %s</button>', data_attrs, diff_label)
+          } else if (status == "placed") {
             sprintf('<button class="btn-placed" onclick="removeBet(this)" %s>Placed</button>', data_attrs)
           } else {
             sprintf('<button class="btn-place" onclick="placeBet(this)" %s>Place</button>', data_attrs)
@@ -613,6 +642,23 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .btn-placed:hover {
           border-color: #f85149;
           color: #f85149;
+        }
+
+        .btn-partial {
+          background: transparent;
+          border: 1px solid #d29922;
+          color: #d29922;
+          padding: 5px 12px;
+          border-radius: 6px;
+          font-size: 0.75rem;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.15s;
+        }
+
+        .btn-partial:hover {
+          background: #d29922;
+          color: #fff;
         }
 
         /* Place-bet modal */
@@ -1055,6 +1101,13 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             ),
             tags$div(class = "filter-menu", id = "filter-correlation-menu")
           ),
+          tags$div(class = "filter-group",
+            tags$span(class = "filter-label", "Status"),
+            tags$div(class = "filter-dropdown", id = "filter-status-btn", onclick = "toggleFilter('status')",
+              tags$span(id = "filter-status-text", "All Statuses")
+            ),
+            tags$div(class = "filter-menu", id = "filter-status-menu")
+          ),
           tags$button(class = "clear-filters-btn", onclick = "clearAllFilters()", "Clear Filters")
         ),
 
@@ -1107,7 +1160,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           game: new Set(),
           book: new Set(),
           market: new Set(),
-          correlation: new Set()
+          correlation: new Set(),
+          status: new Set()
         };
 
         document.addEventListener("DOMContentLoaded", function() {
@@ -1147,6 +1201,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
           populateFilterMenu("market", opts.markets);
           populateFilterMenu("correlation", opts.correlations);
+          populateFilterMenu("status", opts.statuses);
 
           // Auto-discover: register new books as disabled
           var knownBooks = Object.keys(window.BOOK_SETTINGS || {});
@@ -1262,7 +1317,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
           const textEl = document.getElementById("filter-" + type + "-text");
           const allLabel = type === "game" ? "All Games" : type === "book" ? "All Books" :
-                           type === "correlation" ? "All Levels" : "All Markets";
+                           type === "correlation" ? "All Levels" : type === "status" ? "All Statuses" : "All Markets";
 
           if (checkedVals.length === checkboxes.length) {
             textEl.textContent = allLabel;
@@ -1335,12 +1390,22 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               else if (raw === "low") corrLevel = "Low";
             }
 
+            // Status from Action button data-fill-status
+            var statusLabel = "Not Placed";
+            var statusBtn = row.querySelector("button[data-fill-status]");
+            if (statusBtn) {
+              var fs = statusBtn.getAttribute("data-fill-status");
+              if (fs === "placed") statusLabel = "Placed";
+              else if (fs === "partial") statusLabel = "Partial Fill";
+            }
+
             var gameMatch = activeFilters.game.size === 0 || activeFilters.game.has(gameText);
             var bookMatch = activeFilters.book.size === 0 || activeFilters.book.has(bookText);
             var marketMatch = activeFilters.market.size === 0 || activeFilters.market.has(marketType);
             var corrMatch = activeFilters.correlation.size === 0 || activeFilters.correlation.has(corrLevel);
+            var statusMatch = activeFilters.status.size === 0 || activeFilters.status.has(statusLabel);
 
-            var visible = gameMatch && bookMatch && marketMatch && corrMatch;
+            var visible = gameMatch && bookMatch && marketMatch && corrMatch && statusMatch;
             row.style.display = visible ? "" : "none";
             if (visible) visibleCount++;
           });
@@ -1356,7 +1421,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
 
         function clearAllFilters() {
-          ["game", "market", "correlation"].forEach(function(type) {
+          ["game", "market", "correlation", "status"].forEach(function(type) {
             var menu = document.getElementById("filter-" + type + "-menu");
             if (!menu) return;
             var checkboxes = menu.querySelectorAll("input[type=checkbox]");
@@ -1371,7 +1436,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             activeFilters[type] = new Set(vals);
             var textEl = document.getElementById("filter-" + type + "-text");
             var allLabel = type === "game" ? "All Games" : type === "book" ? "All Books" :
-                           type === "correlation" ? "All Levels" : "All Markets";
+                           type === "correlation" ? "All Levels" : type === "status" ? "All Statuses" : "All Markets";
             textEl.textContent = allLabel;
           });
           applyFilters();
@@ -1552,9 +1617,19 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               .then(function(result) {
                 if (result.success) {
                   overlay.remove();
-                  btn.className = \'btn-placed\';
-                  btn.textContent = \'Placed\';
-                  btn.onclick = function() { removeBet(this); };
+                  btn.dataset.actual = actualSize;
+                  if (actualSize >= recommended) {
+                    btn.className = \'btn-placed\';
+                    btn.textContent = \'Placed\';
+                    btn.setAttribute(\'data-fill-status\', \'placed\');
+                    btn.onclick = function() { removeBet(this); };
+                  } else {
+                    var diff = recommended - actualSize;
+                    btn.className = \'btn-partial\';
+                    btn.textContent = \'Partial -$\' + diff.toFixed(0);
+                    btn.setAttribute(\'data-fill-status\', \'partial\');
+                    btn.onclick = function() { updateBet(this); };
+                  }
                   showToast("Bet placed: $" + actualSize.toFixed(0), "success");
                 } else {
                   showToast(result.error, "error");
@@ -1578,6 +1653,93 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           });
         }
 
+        function updateBet(btn) {
+          var recommended = parseFloat(btn.dataset.size) || 0;
+          var currentActual = parseFloat(btn.dataset.actual) || 0;
+          var betOn = btn.dataset.betOn || \'\';
+          var odds = btn.dataset.odds || \'\';
+          var book = btn.dataset.book || \'\';
+          var oddsDisplay = (parseInt(odds) > 0 ? \'+\' : \'\') + odds;
+
+          var overlay = document.createElement(\'div\');
+          overlay.className = \'modal-overlay\';
+          overlay.innerHTML =
+            \'<div class="modal-box">\' +
+              \'<div class="modal-title">Update Bet Amount</div>\' +
+              \'<div class="modal-detail">Pick: <span>\' + escapeHtml(betOn) + \' \' + escapeHtml(oddsDisplay) + \'</span></div>\' +
+              \'<div class="modal-detail">Book: <span>\' + escapeHtml(book) + \'</span></div>\' +
+              \'<div class="modal-recommended">Recommended: $\' + recommended.toFixed(0) + \'</div>\' +
+              \'<div class="modal-detail">Currently filled: <span>$\' + currentActual.toFixed(0) + \'</span></div>\' +
+              \'<div class="modal-input-group">\' +
+                \'<label class="modal-input-label">New Amount ($)</label>\' +
+                \'<input type="number" class="modal-input" value="\' + currentActual.toFixed(0) + \'" step="1" min="1">\' +
+              \'</div>\' +
+              \'<div class="modal-actions">\' +
+                \'<button class="modal-btn-cancel">Cancel</button>\' +
+                \'<button class="modal-btn-confirm">Update</button>\' +
+              \'</div>\' +
+            \'</div>\';
+
+          document.body.appendChild(overlay);
+          var input = overlay.querySelector(\'.modal-input\');
+          input.focus();
+          input.select();
+
+          function doUpdate() {
+            var newAmount = parseFloat(input.value);
+            if (!newAmount || newAmount <= 0) {
+              showToast("Enter a valid amount", "error");
+              input.focus();
+              return;
+            }
+
+            var confirmBtn = overlay.querySelector(\'.modal-btn-confirm\');
+            confirmBtn.disabled = true;
+            confirmBtn.textContent = \'Updating...\';
+
+            fetch("/api/update-bet", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ bet_hash: btn.dataset.hash, actual_size: newAmount })
+            })
+              .then(function(r) { return r.json(); })
+              .then(function(result) {
+                if (result.success) {
+                  overlay.remove();
+                  btn.dataset.actual = newAmount;
+                  if (newAmount >= recommended) {
+                    btn.className = \'btn-placed\';
+                    btn.textContent = \'Placed\';
+                    btn.setAttribute(\'data-fill-status\', \'placed\');
+                    btn.onclick = function() { removeBet(this); };
+                  } else {
+                    var diff = recommended - newAmount;
+                    btn.textContent = \'Partial -$\' + diff.toFixed(0);
+                    btn.setAttribute(\'data-fill-status\', \'partial\');
+                  }
+                  showToast("Updated to $" + newAmount.toFixed(0), "success");
+                } else {
+                  showToast(result.error, "error");
+                  confirmBtn.disabled = false;
+                  confirmBtn.textContent = \'Update\';
+                }
+              })
+              .catch(function() {
+                showToast("Server error", "error");
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = \'Update\';
+              });
+          }
+
+          overlay.querySelector(\'.modal-btn-confirm\').addEventListener(\'click\', doUpdate);
+          overlay.querySelector(\'.modal-btn-cancel\').addEventListener(\'click\', function() { overlay.remove(); });
+          overlay.addEventListener(\'click\', function(e) { if (e.target === overlay) overlay.remove(); });
+          input.addEventListener(\'keydown\', function(e) {
+            if (e.key === \'Enter\') { e.preventDefault(); doUpdate(); }
+            else if (e.key === \'Escape\') { e.preventDefault(); overlay.remove(); }
+          });
+        }
+
         function removeBet(btn) {
           fetch("/api/remove-bet", {
             method: "POST",
@@ -1589,6 +1751,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               if (result.success) {
                 btn.className = "btn-place";
                 btn.textContent = "Place";
+                btn.setAttribute("data-fill-status", "not_placed");
+                btn.dataset.actual = "";
                 btn.onclick = function() { placeBet(this); };
                 showToast("Removed", "success");
               }
@@ -1701,7 +1865,8 @@ filter_options_json <- toJSON(list(
   games = I(filter_games),
   books = I(filter_books),
   markets = I(filter_markets),
-  correlations = I(c("None", "Low", "Medium", "High"))
+  correlations = I(c("None", "Low", "Medium", "High")),
+  statuses = I(c("Not Placed", "Placed", "Partial Fill"))
 ), auto_unbox = FALSE)
 
 # Create report
