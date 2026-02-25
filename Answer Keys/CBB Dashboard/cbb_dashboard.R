@@ -591,6 +591,61 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           color: #f85149;
         }
 
+        /* Inline bet confirmation */
+        .bet-confirm-group {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+        }
+
+        .bet-size-input {
+          width: 70px;
+          background: #0d1117;
+          border: 1px solid #58a6ff;
+          border-radius: 4px;
+          color: #c9d1d9;
+          padding: 4px 6px;
+          font-size: 0.75rem;
+          text-align: right;
+          font-family: monospace;
+        }
+
+        .bet-size-input:focus {
+          outline: none;
+          border-color: #79c0ff;
+        }
+
+        .btn-confirm {
+          background: #238636;
+          border: 1px solid #2ea043;
+          color: #fff;
+          padding: 4px 8px;
+          border-radius: 4px;
+          font-size: 0.75rem;
+          cursor: pointer;
+          line-height: 1;
+        }
+
+        .btn-confirm:hover {
+          background: #2ea043;
+        }
+
+        .btn-cancel {
+          background: transparent;
+          border: 1px solid #30363d;
+          color: #8b949e;
+          padding: 4px 8px;
+          border-radius: 4px;
+          font-size: 0.75rem;
+          cursor: pointer;
+          line-height: 1;
+        }
+
+        .btn-cancel:hover {
+          border-color: #f85149;
+          color: #f85149;
+        }
+
         /* Toast */
         .toast {
           position: fixed;
@@ -1338,38 +1393,108 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
 
         function placeBet(btn) {
-          const data = {
-            bet_hash: btn.dataset.hash,
-            game_id: btn.dataset.gameId,
-            home_team: btn.dataset.home,
-            away_team: btn.dataset.away,
-            game_time: btn.dataset.time,
-            market: btn.dataset.market,
-            bet_on: btn.dataset.betOn,
-            line: btn.dataset.line === "" ? null : parseFloat(btn.dataset.line),
-            model_prob: parseFloat(btn.dataset.prob),
-            model_ev: parseFloat(btn.dataset.ev),
-            recommended_size: parseFloat(btn.dataset.size),
-            odds: parseInt(btn.dataset.odds),
-            bookmaker: btn.dataset.book
+          var cell = btn.closest('.rt-td');
+          if (!cell) return;
+
+          // Save original HTML for cancel
+          cell.setAttribute('data-original', cell.innerHTML);
+
+          var suggestedSize = parseFloat(btn.dataset.size) || 0;
+
+          cell.innerHTML = '<div class="bet-confirm-group">' +
+            '<input type="number" class="bet-size-input" value="' + suggestedSize.toFixed(2) + '" step="0.01" min="0.01">' +
+            '<button class="btn-confirm" onclick="confirmBet(this)">&#10003;</button>' +
+            '<button class="btn-cancel" onclick="cancelBet(this)">&#10005;</button>' +
+            '</div>';
+
+          // Focus and select the input
+          var input = cell.querySelector('.bet-size-input');
+          input.focus();
+          input.select();
+
+          // Allow Enter to confirm, Escape to cancel
+          input.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              confirmBet(cell.querySelector('.btn-confirm'));
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              cancelBet(cell.querySelector('.btn-cancel'));
+            }
+          });
+        }
+
+        function confirmBet(confirmBtn) {
+          var cell = confirmBtn.closest('.rt-td');
+          var input = cell.querySelector('.bet-size-input');
+          var actualSize = parseFloat(input.value);
+
+          if (!actualSize || actualSize <= 0) {
+            showToast("Enter a valid bet amount", "error");
+            input.focus();
+            return;
+          }
+
+          // Parse the original button to extract data attributes
+          var tmp = document.createElement('div');
+          tmp.innerHTML = cell.getAttribute('data-original');
+          var origBtn = tmp.querySelector('button');
+
+          var data = {
+            bet_hash: origBtn.dataset.hash,
+            game_id: origBtn.dataset.gameId,
+            home_team: origBtn.dataset.home,
+            away_team: origBtn.dataset.away,
+            game_time: origBtn.dataset.time,
+            market: origBtn.dataset.market,
+            bet_on: origBtn.dataset.betOn,
+            line: origBtn.dataset.line === "" ? null : parseFloat(origBtn.dataset.line),
+            model_prob: parseFloat(origBtn.dataset.prob),
+            model_ev: parseFloat(origBtn.dataset.ev),
+            recommended_size: parseFloat(origBtn.dataset.size),
+            actual_size: actualSize,
+            odds: parseInt(origBtn.dataset.odds),
+            bookmaker: origBtn.dataset.book
           };
+
+          // Disable buttons during request
+          confirmBtn.disabled = true;
+          cell.querySelector('.btn-cancel').disabled = true;
 
           fetch("/api/place-bet", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(data)
           })
-            .then(r => r.json())
-            .then(result => {
+            .then(function(r) { return r.json(); })
+            .then(function(result) {
               if (result.success) {
-                btn.className = "btn-placed";
-                btn.textContent = "Placed";
+                // Restore original button HTML, then restyle as Placed
+                cell.innerHTML = cell.getAttribute('data-original');
+                var btn = cell.querySelector('button');
+                btn.className = 'btn-placed';
+                btn.textContent = 'Placed';
                 btn.onclick = function() { removeBet(this); };
-                showToast("Bet placed!", "success");
+                showToast("Bet placed: $" + actualSize.toFixed(2), "success");
               } else {
                 showToast(result.error, "error");
+                confirmBtn.disabled = false;
+                cell.querySelector('.btn-cancel').disabled = false;
               }
+            })
+            .catch(function() {
+              showToast("Server error", "error");
+              confirmBtn.disabled = false;
+              cell.querySelector('.btn-cancel').disabled = false;
             });
+        }
+
+        function cancelBet(cancelBtn) {
+          var cell = cancelBtn.closest('.rt-td');
+          var original = cell.getAttribute('data-original');
+          if (original) {
+            cell.innerHTML = original;
+          }
         }
 
         function removeBet(btn) {
