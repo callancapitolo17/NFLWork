@@ -1618,13 +1618,13 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 if (result.success) {
                   overlay.remove();
                   btn.dataset.actual = actualSize;
-                  if (actualSize >= recommended) {
+                  if (Math.round(actualSize) >= Math.round(recommended)) {
                     btn.className = \'btn-placed\';
                     btn.textContent = \'Placed\';
                     btn.setAttribute(\'data-fill-status\', \'placed\');
                     btn.onclick = function() { removeBet(this); };
                   } else {
-                    var diff = recommended - actualSize;
+                    var diff = Math.round(recommended) - Math.round(actualSize);
                     btn.className = \'btn-partial\';
                     btn.textContent = \'Partial -$\' + diff.toFixed(0);
                     btn.setAttribute(\'data-fill-status\', \'partial\');
@@ -1707,13 +1707,13 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 if (result.success) {
                   overlay.remove();
                   btn.dataset.actual = newAmount;
-                  if (newAmount >= recommended) {
+                  if (Math.round(newAmount) >= Math.round(recommended)) {
                     btn.className = \'btn-placed\';
                     btn.textContent = \'Placed\';
                     btn.setAttribute(\'data-fill-status\', \'placed\');
                     btn.onclick = function() { removeBet(this); };
                   } else {
-                    var diff = recommended - newAmount;
+                    var diff = Math.round(recommended) - Math.round(newAmount);
                     btn.textContent = \'Partial -$\' + diff.toFixed(0);
                     btn.setAttribute(\'data-fill-status\', \'partial\');
                   }
