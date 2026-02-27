@@ -46,13 +46,13 @@ fi
 
 echo ""
 echo "Starting server..."
-echo "Dashboard will be available at: http://127.0.0.1:8082"
+echo "Dashboard will be available at: http://localhost:8082"
 echo ""
 echo "Press Ctrl+C to stop the server"
 echo ""
 
 # Open browser after a short delay (in background)
-(sleep 2 && open "http://127.0.0.1:8082") &
+(sleep 2 && open "http://localhost:8082") &
 
 # Start the server
 python3 "$SCRIPT_DIR/cbb_dashboard_server.py"

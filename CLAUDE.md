@@ -172,6 +172,7 @@ This repo contains tools for:
 - Branch naming: `feature/add-xyz`, `fix/broken-xyz`, `refactor/xyz`
 - Merge back to `main` only when the work is complete and tested
 - Delete the branch after merging: `git branch -d feature/description`
+- **If using a worktree**, clean it up immediately after merging: `git worktree remove <path>` + `git branch -d <branch>`. Never leave stale worktrees behind.
 - For quick, isolated fixes (typo, one-liner) committing directly to `main` is fine
 
 **Branch hygiene (CRITICAL):**

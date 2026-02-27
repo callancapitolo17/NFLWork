@@ -416,6 +416,6 @@ if __name__ == "__main__":
     print("\n" + "=" * 50)
     print("CBB +EV Betting Dashboard")
     print("=" * 50)
-    print(f"\nOpen in browser: http://127.0.0.1:8082")
+    print(f"\nOpen in browser: http://localhost:8082")
     print("Press Ctrl+C to stop\n")
-    app.run(host="127.0.0.1", port=8082, debug=False)
+    app.run(host="0.0.0.0", port=8082, debug=False)
