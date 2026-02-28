@@ -72,6 +72,42 @@
       "group2": "team_totals",
       "strength": 0.50,
       "description": "Favorite covering often means higher team total"
+    },
+    {
+      "group1": "h2h",
+      "group2": "alternate_spreads",
+      "strength": 0.70,
+      "description": "Alt spread covering implies winning"
+    },
+    {
+      "group1": "h2h",
+      "group2": "team_totals",
+      "strength": 0.45,
+      "description": "Winner tends to score more"
+    },
+    {
+      "group1": "alternate_spreads",
+      "group2": "team_totals",
+      "strength": 0.50,
+      "description": "Alt spread covering often means higher team total"
+    },
+    {
+      "group1": "alternate_totals",
+      "group2": "team_totals",
+      "strength": 0.60,
+      "description": "Alt game totals relate to team totals"
+    },
+    {
+      "group1": "alternate_totals",
+      "group2": "alternate_team_totals",
+      "strength": 0.85,
+      "description": "Same totals family across alt lines"
+    },
+    {
+      "group1": "totals",
+      "group2": "alternate_team_totals",
+      "strength": 0.60,
+      "description": "Game totals relate to alt team totals"
     }
   ],
   "period_correlations": {
