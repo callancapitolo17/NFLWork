@@ -507,7 +507,7 @@ create_bets_table <- function(all_bets, placed_bets, relationships) {
 # HTML REPORT
 # =============================================================================
 
-create_report <- function(bets_table, placed_table, stats, timestamp, filter_options_json) {
+create_report <- function(bets_table, placed_table, stats, timestamp, filter_options_json, market_relationships_json) {
   page <- tagList(
     tags$head(
       tags$meta(charset = "UTF-8"),
@@ -519,6 +519,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       ),
       # Inject filter options for bets table
       tags$script(HTML(sprintf("window.FILTER_OPTIONS = %s;", filter_options_json))),
+      # Inject market relationships for client-side correlation recalculation
+      tags$script(HTML(sprintf("window.MARKET_RELATIONSHIPS = %s;", market_relationships_json))),
       tags$style(HTML('
         * { box-sizing: border-box; }
 
@@ -1155,6 +1157,183 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           });
         })();
 
+        // ============ LIVE CORRELATION RECALCULATION ============
+        var _corrRecalcRunning = false;
+        function getMarketGroup(market) {
+          var groups = window.MARKET_RELATIONSHIPS.market_groups;
+          for (var gName in groups) {
+            if (groups[gName].markets.indexOf(market) !== -1) return gName;
+          }
+          return null;
+        }
+
+        function getCrossGroupStrength(g1, g2) {
+          if (g1 === g2) return 0.90;
+          var cross = window.MARKET_RELATIONSHIPS.cross_group_correlations;
+          for (var i = 0; i < cross.length; i++) {
+            var c = cross[i];
+            if ((c.group1 === g1 && c.group2 === g2) || (c.group2 === g1 && c.group1 === g2)) return c.strength;
+          }
+          return 0;
+        }
+
+        function strengthToLevel(s) {
+          if (s >= 0.80) return "high";
+          if (s >= 0.60) return "medium";
+          if (s >= 0.40) return "low";
+          return "none";
+        }
+
+        function formatMarketNameJS(market) {
+          return market
+            .replace("alternate_", "Alt ")
+            .replace("team_totals", "Team Tot")
+            .replace("totals", "Total")
+            .replace("spreads", "Spread")
+            .replace("h2h", "ML")
+            .replace(/_h(\d)/g, " H$1");
+        }
+
+        function recalcCorrelations(gameId) {
+          _corrRecalcRunning = true;
+          // Find all rows in the bets table
+          var tables = document.querySelectorAll(".table-container:not(.placed-section)");
+          var table = tables.length > 0 ? tables[tables.length - 1] : null;
+          if (!table) { _corrRecalcRunning = false; return; }
+
+          var allRows = table.querySelectorAll(".rt-tr-group");
+          var placedBets = [];
+          var gameRows = [];
+
+          allRows.forEach(function(row) {
+            var btn = row.querySelector("button[data-game-id]");
+            if (!btn || btn.dataset.gameId !== gameId) return;
+            gameRows.push({ row: row, btn: btn });
+
+            var fs = btn.getAttribute("data-fill-status");
+            if (fs === "placed" || fs === "partial") {
+              placedBets.push({
+                hash: btn.dataset.hash,
+                market: btn.dataset.market,
+                betOn: btn.dataset.betOn,
+                line: btn.dataset.line,
+                odds: btn.dataset.odds,
+                book: btn.dataset.book,
+                actual: btn.dataset.actual,
+                size: btn.dataset.size
+              });
+            }
+          });
+
+          gameRows.forEach(function(item) {
+            var btn = item.btn;
+            var row = item.row;
+            var myHash = btn.dataset.hash;
+            var myGroup = getMarketGroup(btn.dataset.market);
+            var correlations = [];
+
+            placedBets.forEach(function(placed) {
+              if (placed.hash === myHash) return;
+              var placedGroup = getMarketGroup(placed.market);
+              if (!myGroup || !placedGroup) return;
+              var strength = getCrossGroupStrength(myGroup, placedGroup);
+              if (strength <= 0) return;
+              correlations.push({
+                market: placed.market, betOn: placed.betOn, line: placed.line,
+                odds: placed.odds, actual: placed.actual, size: placed.size,
+                book: placed.book, strength: strength, level: strengthToLevel(strength)
+              });
+            });
+
+            var span = row.querySelector("[data-corr-level]");
+            if (!span) return;
+
+            if (correlations.length === 0) {
+              span.setAttribute("data-corr-level", "none");
+              span.className = "";
+              span.textContent = "";
+              span.removeAttribute("data-tooltip");
+              row.classList.remove("correlation-high", "correlation-medium");
+            } else {
+              var maxS = 0;
+              correlations.forEach(function(c) { if (c.strength > maxS) maxS = c.strength; });
+              var maxLevel = strengthToLevel(maxS);
+              span.setAttribute("data-corr-level", maxLevel);
+
+              // Build tooltip
+              var lines = correlations.map(function(d) {
+                var mName = formatMarketNameJS(d.market);
+                var lineStr = "";
+                if (d.line && d.line !== "" && d.line !== "NA") {
+                  lineStr = parseFloat(d.line) > 0 ? " +" + d.line : " " + d.line;
+                }
+                var oddsStr = "";
+                if (d.odds && d.odds !== "") {
+                  var o = parseInt(d.odds);
+                  oddsStr = o > 0 ? " (+" + o + ")" : " (" + o + ")";
+                }
+                var sizeStr = "";
+                var act = parseFloat(d.actual);
+                var rec = parseFloat(d.size);
+                if (!isNaN(act) && act > 0) {
+                  var recPart = (!isNaN(rec) && Math.abs(act - rec) > 0.01) ? " (rec $" + Math.round(rec) + ")" : "";
+                  sizeStr = " $" + Math.round(act) + recPart;
+                } else if (!isNaN(rec) && rec > 0) {
+                  sizeStr = " $" + Math.round(rec);
+                }
+                var bookStr = d.book ? " @ " + d.book : "";
+                return mName + " - " + d.betOn + lineStr + oddsStr + sizeStr + bookStr;
+              });
+              span.setAttribute("data-tooltip", "Correlated with:\\n " + lines.join("\\n"));
+
+              if (maxLevel === "high") {
+                span.className = "warning-icon high";
+                span.innerHTML = "&#9888;";
+              } else if (maxLevel === "medium") {
+                span.className = "warning-icon medium";
+                span.innerHTML = "&#9888;";
+              } else if (maxLevel === "low") {
+                span.className = "warning-icon low";
+                span.innerHTML = "&#9675;";
+              }
+
+              row.classList.remove("correlation-high", "correlation-medium");
+              if (maxLevel === "high") row.classList.add("correlation-high");
+              else if (maxLevel === "medium") row.classList.add("correlation-medium");
+            }
+          });
+
+          // Re-apply filters so correlation filter stays consistent
+          if (typeof applyFilters === "function") applyFilters();
+          // Delay flag reset so MutationObserver callbacks see it as still running
+          setTimeout(function() { _corrRecalcRunning = false; }, 150);
+        }
+
+        // Re-run correlations after reactable pagination re-renders
+        (function() {
+          var corrTimer = null;
+          function scheduleRecalc() {
+            if (_corrRecalcRunning) return;
+            if (corrTimer) clearTimeout(corrTimer);
+            corrTimer = setTimeout(function() {
+              var tables = document.querySelectorAll(".table-container:not(.placed-section)");
+              var table = tables.length > 0 ? tables[tables.length - 1] : null;
+              if (table) {
+                var ids = new Set();
+                table.querySelectorAll("button[data-game-id]").forEach(function(btn) { ids.add(btn.dataset.gameId); });
+                ids.forEach(function(gid) { recalcCorrelations(gid); });
+              }
+            }, 100);
+          }
+          document.addEventListener("DOMContentLoaded", function() {
+            var tables = document.querySelectorAll(".table-container:not(.placed-section)");
+            var table = tables.length > 0 ? tables[tables.length - 1] : null;
+            if (!table) return;
+            var observer = new MutationObserver(scheduleRecalc);
+            observer.observe(table, { childList: true, subtree: true });
+          });
+        })();
+
         // ============ BETS FILTERING ============
         const activeFilters = {
           game: new Set(),
@@ -1631,6 +1810,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                     btn.onclick = function() { updateBet(this); };
                   }
                   showToast("Bet placed: $" + actualSize.toFixed(0), "success");
+                  recalcCorrelations(btn.dataset.gameId);
                 } else {
                   showToast(result.error, "error");
                   confirmBtn.disabled = false;
@@ -1718,6 +1898,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                     btn.setAttribute(\'data-fill-status\', \'partial\');
                   }
                   showToast("Updated to $" + newAmount.toFixed(0), "success");
+                  recalcCorrelations(btn.dataset.gameId);
                 } else {
                   showToast(result.error, "error");
                   confirmBtn.disabled = false;
@@ -1755,6 +1936,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 btn.dataset.actual = "";
                 btn.onclick = function() { placeBet(this); };
                 showToast("Removed", "success");
+                recalcCorrelations(btn.dataset.gameId);
               }
             });
         }
@@ -1871,7 +2053,8 @@ filter_options_json <- toJSON(list(
 
 # Create report
 timestamp <- format(Sys.time(), "%b %d, %Y %I:%M %p")
-page <- create_report(bets_table, placed_table, stats, timestamp, filter_options_json)
+market_relationships_json <- toJSON(relationships, auto_unbox = TRUE)
+page <- create_report(bets_table, placed_table, stats, timestamp, filter_options_json, market_relationships_json)
 
 # Save
 save_html(page, OUTPUT_PATH, libdir = "lib")
