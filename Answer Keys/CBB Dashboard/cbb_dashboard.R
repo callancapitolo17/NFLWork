@@ -1191,7 +1191,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             .replace("totals", "Total")
             .replace("spreads", "Spread")
             .replace("h2h", "ML")
-            .replace(/_h(\d)/g, " H$1");
+            .replace(/_h(\\d)/g, " H$1");
         }
 
         function recalcCorrelations(gameId) {
