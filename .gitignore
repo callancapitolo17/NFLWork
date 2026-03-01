@@ -56,10 +56,13 @@ report.html
 .bfa_profile/
 .wagerzon_profile/
 .hoop88_profile/
+.bookmaker_profile/
+.bookmaker_cookies.json
 
 # Symlinked venvs
 bfa_odds/venv
 hoop88_odds/venv
+bookmaker_odds/venv
 
 # Logs
 logs/

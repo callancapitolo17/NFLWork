@@ -28,6 +28,10 @@ SCRAPER_CONFIGS = {
         "script": "../bfa_odds/scraper.py",
         "sports": ["nfl", "nba", "cbb"]
     },
+    "bookmaker": {
+        "script": "../bookmaker_odds/scraper.py",
+        "sports": ["cbb"]
+    },
 }
 
 # Sport key mapping for Odds API
