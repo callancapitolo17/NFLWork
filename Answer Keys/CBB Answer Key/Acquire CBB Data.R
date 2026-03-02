@@ -281,7 +281,46 @@ acquire_cbb_odds <- function(start_date, end_date, resume = TRUE) {
 # acquire_cbb_odds("2024-11-01", "2025-04-15")  # 2024-25 season
 
 # ============================================================================
-# PLAY-BY-PLAY DATA ACQUISITION
+# CLI: --daily mode (dynamic gap fill)
+# ============================================================================
+cli_args <- commandArgs(trailingOnly = TRUE)
+if ("--daily" %in% cli_args) {
+  message("Running in --daily mode: filling gap from last acquired date to yesterday")
+
+  con <- dbConnect(duckdb(), dbdir = DB_PATH)
+
+  last_date <- tryCatch({
+    dbGetQuery(con, sprintf("SELECT MAX(DATE(commence_time)) as d FROM %s", TABLE_NAME))$d
+  }, error = function(e) NA)
+
+  dbDisconnect(con, shutdown = TRUE)
+
+  if (is.na(last_date)) {
+    # No data yet — start from current season
+    today <- Sys.Date()
+    start_date <- if (as.integer(format(today, "%m")) >= 11) {
+      as.Date(paste0(format(today, "%Y"), "-11-01"))
+    } else {
+      as.Date(paste0(as.integer(format(today, "%Y")) - 1, "-11-01"))
+    }
+  } else {
+    start_date <- as.Date(last_date)
+  }
+
+  end_date <- Sys.Date() - 1
+
+  if (start_date > end_date) {
+    message("Already up to date — nothing to fetch.")
+  } else {
+    acquire_cbb_odds(as.character(start_date), as.character(end_date))
+  }
+
+  # Exit after daily run — don't load hoopR section below
+  quit(save = "no", status = 0)
+}
+
+# ============================================================================
+# PLAY-BY-PLAY DATA ACQUISITION (hoopR - only loaded when not in --daily mode)
 # ============================================================================
 
 # Load hoopR for CBB play-by-play data
