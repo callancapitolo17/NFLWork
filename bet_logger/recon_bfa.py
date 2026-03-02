@@ -1,38 +1,56 @@
 """
 BFA Gaming Auth Capture Script
-Launches Chrome to capture Keycloak auth tokens for the API scraper.
-Uses persistent profile + auto-login from .env credentials.
-Fully automated — no manual interaction needed.
+Performs Keycloak OIDC login via pure HTTP (no browser needed).
 
 Usage:
     cd bet_logger
-    ./venv/bin/python3 recon_bfa.py
+    ./venv/bin/python3 recon_bfa.py              # primary account
+    ./venv/bin/python3 recon_bfa.py --account j   # second account (BFAJ)
 
-Saves recon_bfa_auth.json with refresh_token + player_id for scraper_bfa.py.
+Saves auth JSON with refresh_token + player_id for scraper_bfa.py.
 """
 
-from playwright.sync_api import sync_playwright
 import os
 import sys
 import json
 import re
 import base64
+import hashlib
+import secrets
+import argparse
+from urllib.parse import urlparse, parse_qs
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
-BFA_URL = "https://bfagaming.com"
-BFA_MY_BETS = "https://bfagaming.com/my-bets"
 SCRIPT_DIR = os.path.dirname(__file__)
-PROFILE_DIR = os.path.join(SCRIPT_DIR, ".bfa_bet_profile")
-AUTH_FILE = os.path.join(SCRIPT_DIR, "recon_bfa_auth.json")
 
-BFA_USERNAME = os.getenv("BFA_USERNAME")
-BFA_PASSWORD = os.getenv("BFA_PASSWORD")
+ACCOUNTS = {
+    'default': {
+        'username_env': 'BFA_USERNAME',
+        'password_env': 'BFA_PASSWORD',
+        'auth_file': os.path.join(SCRIPT_DIR, 'recon_bfa_auth.json'),
+    },
+    'j': {
+        'username_env': 'BFAJ_USERNAME',
+        'password_env': 'BFAJ_PASSWORD',
+        'auth_file': os.path.join(SCRIPT_DIR, 'recon_bfaj_auth.json'),
+    },
+}
+
+KEYCLOAK_BASE = "https://auth.bfagaming.com/realms/players_realm/protocol/openid-connect"
+CLIENT_ID = "bfagaming"
+REDIRECT_URI = "https://bfagaming.com/"
+
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+)
 
 
 def decode_jwt_payload(token: str) -> dict:
-    """Decode JWT payload without verification (just base64)."""
+    """Decode JWT payload without verification."""
     parts = token.split('.')
     if len(parts) != 3:
         return {}
@@ -44,141 +62,146 @@ def decode_jwt_payload(token: str) -> dict:
         return {}
 
 
-def run_recon():
-    captured = {"refresh_token": None, "access_token": None, "player_id": None}
+def generate_pkce():
+    """Generate PKCE code_verifier and code_challenge."""
+    verifier = secrets.token_urlsafe(32)
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()
+    ).rstrip(b'=').decode()
+    return verifier, challenge
 
-    def handle_response(response):
-        """Capture token endpoint responses."""
-        if response.request.resource_type not in ("xhr", "fetch"):
-            return
 
-        url = response.url
+def run_recon(account: dict):
+    username = os.getenv(account['username_env'])
+    password = os.getenv(account['password_env'])
+    auth_file = account['auth_file']
 
-        # Capture Keycloak token refresh response
-        if "openid-connect/token" in url and response.status == 200:
-            try:
-                body = response.text()
-                data = json.loads(body)
-                if "refresh_token" in data:
-                    captured["refresh_token"] = data["refresh_token"]
-                    captured["access_token"] = data.get("access_token", "")
-                    print(f"  [AUTH] Captured refresh token")
+    if not username or not password:
+        print(f"ERROR: {account['username_env']}/{account['password_env']} not set in .env")
+        sys.exit(1)
 
-                    # Extract player_id from JWT payload
-                    payload = decode_jwt_payload(captured["access_token"])
-                    pid = payload.get("player_id")
-                    if pid:
-                        captured["player_id"] = pid
-                        print(f"  [AUTH] Player ID: {pid}")
-            except Exception:
-                pass
+    session = requests.Session()
+    session.headers['User-Agent'] = USER_AGENT
 
-        # Fallback: get player_id from API URL params
-        if "playerId=" in url and not captured["player_id"]:
-            pid_match = re.search(r'playerId=(\d+)', url)
-            if pid_match:
-                captured["player_id"] = pid_match.group(1)
-                print(f"  [API]  Player ID: {captured['player_id']}")
+    # Step 1: Generate PKCE and start auth flow
+    code_verifier, code_challenge = generate_pkce()
 
-    with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=PROFILE_DIR,
-            channel="chrome",
-            headless=True,
-            viewport={"width": 1400, "height": 900},
-            args=["--disable-blink-features=AutomationControlled"],
+    auth_url = (
+        f"{KEYCLOAK_BASE}/auth"
+        f"?client_id={CLIENT_ID}"
+        f"&redirect_uri={REDIRECT_URI}"
+        f"&response_type=code"
+        f"&scope=openid"
+        f"&code_challenge={code_challenge}"
+        f"&code_challenge_method=S256"
+    )
+
+    print("Starting Keycloak auth flow...")
+    resp = session.get(auth_url, allow_redirects=True, timeout=15)
+    if resp.status_code != 200:
+        print(f"ERROR: Failed to load Keycloak login page (HTTP {resp.status_code})")
+        sys.exit(1)
+
+    # Step 2: Extract the login form action URL
+    action_match = re.search(r'action="([^"]+)"', resp.text)
+    if not action_match:
+        print("ERROR: Could not find login form action URL")
+        sys.exit(1)
+
+    login_url = action_match.group(1).replace('&amp;', '&')
+
+    # Step 3: Submit credentials
+    print("Submitting credentials...")
+    resp = session.post(
+        login_url,
+        data={"username": username, "password": password},
+        allow_redirects=False,
+        timeout=15,
+    )
+
+    # Keycloak returns 302 redirect to BFA with ?code=xxx
+    if resp.status_code not in (302, 303):
+        print(f"ERROR: Login failed (HTTP {resp.status_code})")
+        if "Invalid username or password" in resp.text:
+            print("  Invalid credentials")
+        sys.exit(1)
+
+    redirect_url = resp.headers.get('Location', '')
+    parsed = urlparse(redirect_url)
+    code = parse_qs(parsed.query).get('code', [None])[0]
+
+    if not code:
+        print(f"ERROR: No auth code in redirect URL: {redirect_url[:100]}")
+        sys.exit(1)
+
+    print("Login successful, got auth code")
+
+    # Step 4: Exchange auth code for tokens
+    print("Exchanging code for tokens...")
+    resp = session.post(
+        f"{KEYCLOAK_BASE}/token",
+        data={
+            "grant_type": "authorization_code",
+            "client_id": CLIENT_ID,
+            "code": code,
+            "redirect_uri": REDIRECT_URI,
+            "code_verifier": code_verifier,
+        },
+        timeout=15,
+    )
+
+    if resp.status_code != 200:
+        # Retry without PKCE in case Keycloak doesn't require it
+        resp = session.post(
+            f"{KEYCLOAK_BASE}/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": CLIENT_ID,
+                "code": code,
+                "redirect_uri": REDIRECT_URI,
+            },
+            timeout=15,
         )
-        page = context.pages[0] if context.pages else context.new_page()
-        page.on("response", handle_response)
 
-        # Navigate to BFA
-        print("Navigating to BFA...")
-        page.goto(BFA_URL, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(3000)
+    if resp.status_code != 200:
+        print(f"ERROR: Token exchange failed (HTTP {resp.status_code})")
+        print(f"  {resp.text[:200]}")
+        sys.exit(1)
 
-        # Check if login is needed
-        needs_login = page.locator('text=You must log in').count() > 0
-        login_btn = page.locator(
-            '.header-auth-container button:has-text("Log In"), '
-            'button:has-text("Log in")'
-        )
+    tokens = resp.json()
+    refresh_token = tokens.get("refresh_token")
+    access_token = tokens.get("access_token")
 
-        if needs_login or login_btn.count() > 0:
-            if not BFA_USERNAME or not BFA_PASSWORD:
-                print("ERROR: Login required but BFA_USERNAME/BFA_PASSWORD not set in .env")
-                context.close()
-                sys.exit(1)
+    if not refresh_token:
+        print("ERROR: No refresh_token in token response")
+        sys.exit(1)
 
-            print("Login required. Auto-logging in via Keycloak...")
+    # Extract player_id from JWT
+    payload = decode_jwt_payload(access_token)
+    player_id = payload.get("player_id")
 
-            # Click login button → redirects to Keycloak
-            header_login = page.locator('.header-auth-container button:has-text("Log In")')
-            if header_login.count() > 0:
-                header_login.click()
-            else:
-                login_btn.first.click()
+    if not player_id:
+        print("WARNING: No player_id in JWT, will need fallback")
 
-            page.wait_for_url('**/realms/**', timeout=15000)
-            page.wait_for_timeout(2000)
+    # Save auth
+    auth_data = {
+        "refresh_token": refresh_token,
+        "player_id": str(player_id) if player_id else "",
+    }
+    with open(auth_file, "w") as f:
+        json.dump(auth_data, f, indent=2)
 
-            # Fill Keycloak login form
-            username_field = page.locator('#username')
-            if username_field.count() > 0:
-                username_field.fill(BFA_USERNAME)
-            else:
-                page.fill('input[name="username"]', BFA_USERNAME)
-
-            page.wait_for_timeout(500)
-
-            password_field = page.locator('#password')
-            if password_field.count() > 0:
-                password_field.fill(BFA_PASSWORD)
-            else:
-                page.fill('input[name="password"]', BFA_PASSWORD)
-
-            page.wait_for_timeout(500)
-
-            # Submit
-            login_submit = page.locator('#kc-login')
-            if login_submit.count() > 0:
-                login_submit.click()
-            else:
-                page.click('input[type="submit"]')
-
-            # Wait for redirect back to BFA
-            page.wait_for_url('**/bfagaming.com/**', timeout=30000)
-            page.wait_for_load_state('networkidle', timeout=30000)
-            page.wait_for_timeout(3000)
-            print("Login successful")
-        else:
-            print("Already logged in (persistent session)")
-
-        # Navigate to my-bets — triggers token refresh automatically
-        print("Navigating to my-bets (captures token refresh)...")
-        page.goto(BFA_MY_BETS, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(8000)
-
-        # Save auth if captured
-        if captured["refresh_token"] and captured["player_id"]:
-            auth_data = {
-                "refresh_token": captured["refresh_token"],
-                "player_id": captured["player_id"],
-            }
-            with open(AUTH_FILE, "w") as f:
-                json.dump(auth_data, f, indent=2)
-            print(f"Saved auth to {AUTH_FILE}")
-        else:
-            print("WARNING: Could not capture auth data.")
-            if not captured["refresh_token"]:
-                print("  Missing refresh token — session may have expired")
-            if not captured["player_id"]:
-                print("  Missing player_id")
-            context.close()
-            sys.exit(1)
-
-        context.close()
-        print("Done.")
+    print(f"Saved auth to {auth_file}")
+    print(f"  Player ID: {player_id}")
+    print("Done.")
 
 
 if __name__ == "__main__":
-    run_recon()
+    parser = argparse.ArgumentParser(description='Capture BFA auth tokens')
+    parser.add_argument('--account', choices=list(ACCOUNTS.keys()), default='default',
+                        help='Which BFA account to authenticate (default or j)')
+    args = parser.parse_args()
+
+    account = ACCOUNTS[args.account]
+    print(f"Account: {args.account}")
+    run_recon(account)

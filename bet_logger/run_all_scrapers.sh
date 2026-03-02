@@ -36,14 +36,26 @@ else
 fi
 echo ""
 
-# Run BFA Gaming scraper (recon first to get fresh auth token)
-echo "[$(date '+%H:%M:%S')] Running BFA Gaming recon + scraper..."
+# Run BFA Gaming scraper — primary account (recon first to get fresh auth token)
+echo "[$(date '+%H:%M:%S')] Running BFA Gaming recon + scraper (primary)..."
 echo "----------------------------------------"
 ./venv/bin/python3 recon_bfa.py
 if ./venv/bin/python3 scraper_bfa.py; then
-    echo "[$(date '+%H:%M:%S')] BFA: done"
+    echo "[$(date '+%H:%M:%S')] BFA primary: done"
 else
-    echo "[$(date '+%H:%M:%S')] BFA: FAILED (exit $?)"
+    echo "[$(date '+%H:%M:%S')] BFA primary: FAILED (exit $?)"
+    FAILED=$((FAILED + 1))
+fi
+echo ""
+
+# Run BFA Gaming scraper — BFAJ account
+echo "[$(date '+%H:%M:%S')] Running BFA Gaming recon + scraper (BFAJ)..."
+echo "----------------------------------------"
+./venv/bin/python3 recon_bfa.py --account j
+if ./venv/bin/python3 scraper_bfa.py --account j; then
+    echo "[$(date '+%H:%M:%S')] BFAJ: done"
+else
+    echo "[$(date '+%H:%M:%S')] BFAJ: FAILED (exit $?)"
     FAILED=$((FAILED + 1))
 fi
 echo ""
@@ -61,7 +73,7 @@ echo ""
 
 echo "========================================"
 if [ $FAILED -eq 0 ]; then
-    MSG="All 4 scrapers completed successfully."
+    MSG="All 5 scrapers completed successfully."
     echo "$MSG"
     osascript -e "display notification \"$MSG\" with title \"Bet Logger\" sound name \"Glass\""
 else
