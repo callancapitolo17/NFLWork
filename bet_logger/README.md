@@ -1,6 +1,6 @@
 # Bet Logger
 
-Multi-platform bet history scraper. Scrapes settled bets from Wagerzon, Hoop88, BFA Gaming, and BetOnline, then uploads to Google Sheets with automatic duplicate detection.
+Multi-platform bet history scraper. Scrapes settled bets from Wagerzon, Hoop88, BFA Gaming (2 accounts), and BetOnline, then uploads to Google Sheets with automatic duplicate detection.
 
 ## Setup
 
@@ -27,7 +27,7 @@ playwright install chromium
 cp .env.example .env
 ```
 
-Edit `.env` with credentials for each platform (Wagerzon, Hoop88) and your Google Sheet ID.
+Edit `.env` with credentials for each platform (Wagerzon, Hoop88, BFA primary, BFAJ) and your Google Sheet ID.
 
 ## Usage
 
@@ -37,14 +37,14 @@ Edit `.env` with credentials for each platform (Wagerzon, Hoop88) and your Googl
 ./run_all_scrapers.sh
 ```
 
-Runs Wagerzon, Hoop88, BFA, and BetOnline sequentially. Continues to the next scraper if one fails.
+Runs Wagerzon, Hoop88, BFA (primary + BFAJ), and BetOnline sequentially. Continues to the next scraper if one fails.
 
 ### Run individual scrapers
 
 ```bash
 ./venv/bin/python3 scraper_wagerzon.py
 ./venv/bin/python3 scraper_hoop88.py    [--weeks 1] [--visible] [--dry-run]
-./venv/bin/python3 scraper_bfa.py       [--days 7] [--since-last] [--dry-run]
+./venv/bin/python3 scraper_bfa.py       [--days 7] [--since-last] [--dry-run] [--account j]
 ./venv/bin/python3 scraper_betonline.py [--days 7] [--since-last] [--dry-run]
 ```
 
@@ -60,6 +60,7 @@ Runs Wagerzon, Hoop88, BFA, and BetOnline sequentially. Continues to the next sc
 - `--days N` — Days of history to fetch (default: 7)
 - `--since-last` — Scrape from the date of the last bet for that platform in Google Sheets
 - `--refresh-only` — Just refresh the auth token and exit (keeps token alive)
+- `--account j` — (BFA only) Scrape the BFAJ second account instead of primary
 
 ### Automated Monday runs (launchd)
 
@@ -81,7 +82,7 @@ launchctl unload ~/Library/LaunchAgents/com.callancapitolo.betlogger.plist
 | Column | Field | Example |
 |--------|-------|---------|
 | A | Date | 1/6/26 |
-| B | Platform | Wagerzon / Hoop88 / BFA / BetOnline |
+| B | Platform | Wagerzon / Hoop88 / Betfastaction / BFAJ / BetOnline |
 | C | Sport | NFL, NBA, NHL, NCAAF, NCAAM |
 | D | Description | Houston Texans -0.5 +130 - 1st Quarter |
 | E | Bet Type | Parlay, Straight, Prop, Teaser, Contest |
@@ -99,20 +100,23 @@ Duplicate detection uses (date + platform + description + bet amount) as the key
 
 **Hoop88** — Navigates the bet history UI by clicking the Balance box, selecting a week from the dropdown, and expanding bet details. Handles parlays by combining legs with `|`. Converts fractional lines (1/2, 1/4, 3/4).
 
-**BFA Gaming** — Browser-free API scraper. Uses a one-time recon script (`recon_bfa.py`) to capture auth tokens via Chrome, then hits BFA's REST API (`api.bfagaming.com/history/api/GetPlayerHistory`) directly with `requests`. Handles pagination automatically (100 records/page). Keycloak refresh token rotates on each use and expires after ~1 hour of inactivity. If the token expires, re-run `recon_bfa.py` to re-authenticate.
+**BFA Gaming** — Browser-free API scraper. Supports two accounts: primary ("Betfastaction") and second ("BFAJ"). The recon script (`recon_bfa.py`) performs a pure HTTP Keycloak OIDC login (no browser needed) to capture auth tokens. The scraper then hits BFA's REST API (`api.bfagaming.com/history/api/GetPlayerHistory`) directly with `requests`. Handles pagination automatically (100 records/page). For the BFAJ account, $15 is subtracted from each bet amount (adjusted bets go to Sheet1, raw bets go to the "Shared" tab for verification). Keycloak refresh tokens expire after ~1 hour of inactivity; `run_all_scrapers.sh` runs recon immediately before each scrape.
 
 **BetOnline** — Browser-free API scraper. Uses a one-time recon script (`recon_betonline.py`) to capture auth tokens via Chrome, then hits BetOnline's REST API directly with `requests`. Refresh token rotates on each use and expires after 3 days of inactivity. A daily LaunchAgent (`com.callancapitolo.betonline-token-refresh`) runs `--refresh-only` at noon to keep the token alive. If the token expires, re-run `recon_betonline.py` to re-authenticate.
 
-### BFA/BetOnline: Initial Setup (one-time)
+### BFA/BetOnline: Initial Setup
 
-Both API scrapers require a one-time recon step to capture auth tokens:
+**BFA** recon is fully automated (pure HTTP, no browser). It runs automatically before each scrape in `run_all_scrapers.sh`. You can also run it manually:
 
 ```bash
-# BFA: Opens Chrome, log in, navigate to Settled bets, apply filter
-./venv/bin/python3 recon_bfa.py
-# Saves: recon_bfa_auth.json (refresh_token + player_id)
+./venv/bin/python3 recon_bfa.py              # primary account
+./venv/bin/python3 recon_bfa.py --account j  # BFAJ account
+# Saves: recon_bfa_auth.json / recon_bfaj_auth.json
+```
 
-# BetOnline: Opens Chrome, log in, navigate to bet history
+**BetOnline** recon requires a one-time browser step to capture auth tokens:
+
+```bash
 ./venv/bin/python3 recon_betonline.py
 # Saves: recon_betonline_cookies.json (refresh_token in cookies)
 ```
@@ -123,7 +127,7 @@ After recon, the scrapers work without a browser.
 
 - **Login fails** — Check credentials in `.env`. If auto-login fails, run with `--visible` to log in manually.
 - **No bets found** — Check the time period filter. Verify bets exist on the site for that week.
-- **Token expired (BFA)** — BFA refresh tokens expire after ~1 hour. Re-run `recon_bfa.py`.
+- **Token expired (BFA)** — BFA refresh tokens expire after ~1 hour. Re-run `recon_bfa.py` (or `--account j` for BFAJ). No browser needed.
 - **Token expired (BetOnline)** — BetOnline tokens expire after ~3 days. Re-run `recon_betonline.py`.
 - **Duplicates still appearing** — Detection matches on exact (date, platform, description, amount). Any small difference bypasses it.
 - **Permission denied on Sheets** — Share the spreadsheet with the service account email from `credentials.json`.
@@ -131,12 +135,12 @@ After recon, the scrapers work without a browser.
 ## Architecture
 
 ```
-run_all_scrapers.sh          # Entry point (runs all 4)
+run_all_scrapers.sh          # Entry point (runs all 5: Wagerzon, Hoop88, BFA×2, BetOnline)
   scraper_wagerzon.py        # Wagerzon scraper (headless Chromium)
   scraper_hoop88.py          # Hoop88 scraper (headless Chromium)
-  scraper_bfa.py             # BFA Gaming scraper (REST API, no browser)
+  scraper_bfa.py             # BFA Gaming scraper (REST API, supports --account j)
   scraper_betonline.py       # BetOnline scraper (REST API, no browser)
-recon_bfa.py                 # One-time token capture for BFA via Chrome
+recon_bfa.py                 # BFA auth via pure HTTP Keycloak login (supports --account j)
 recon_betonline.py           # One-time token capture for BetOnline via Chrome
 utils.py                     # Shared: odds calc, sport detection, parsing
 sheets.py                    # Google Sheets upload + duplicate detection

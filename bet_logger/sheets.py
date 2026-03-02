@@ -39,13 +39,14 @@ def get_sheets_service():
     return service
 
 
-def get_next_empty_row(service) -> int:
+def get_next_empty_row(service, sheet_name: str = None) -> int:
     """Find the next empty row in the sheet."""
+    tab = sheet_name or SHEET_NAME
     try:
         # Get all values in column A to find last row with data
         result = service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"{SHEET_NAME}!A:A"
+            range=f"{tab}!A:A"
         ).execute()
 
         values = result.get('values', [])
@@ -78,16 +79,17 @@ def _normalize_amount(amount_str: str) -> str:
         return amount_str
 
 
-def get_existing_bets(service) -> dict:
+def get_existing_bets(service, sheet_name: str = None) -> dict:
     """
     Get existing bets from sheet for duplicate detection.
     Returns a dict mapping (date, platform, description, amount) -> count,
     so legitimate duplicate bets (same game placed twice) are tracked.
     """
+    tab = sheet_name or SHEET_NAME
     try:
         result = service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"{SHEET_NAME}!A:H"
+            range=f"{tab}!A:H"
         ).execute()
 
         values = result.get('values', [])
@@ -165,7 +167,23 @@ def format_bet_row(bet: dict) -> list:
     return row
 
 
-def append_bets_to_sheet(bets: list, start_row: int = None) -> dict:
+def ensure_sheet_exists(service, sheet_name: str):
+    """Create a sheet tab if it doesn't already exist."""
+    try:
+        meta = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+        existing = [s['properties']['title'] for s in meta.get('sheets', [])]
+        if sheet_name in existing:
+            return
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=SPREADSHEET_ID,
+            body={'requests': [{'addSheet': {'properties': {'title': sheet_name}}}]}
+        ).execute()
+        print(f"Created new sheet tab: {sheet_name}")
+    except HttpError as e:
+        print(f"Warning: could not ensure sheet '{sheet_name}' exists: {e}")
+
+
+def append_bets_to_sheet(bets: list, start_row: int = None, sheet_name: str = None) -> dict:
     """
     Append bet data to Google Sheet.
 
@@ -179,33 +197,39 @@ def append_bets_to_sheet(bets: list, start_row: int = None) -> dict:
     if not bets:
         return {"status": "skipped", "message": "No bets to upload"}
 
+    tab = sheet_name or SHEET_NAME
+
     try:
         service = get_sheets_service()
 
+        # Create tab if it doesn't exist (only for non-default tabs)
+        if sheet_name:
+            ensure_sheet_exists(service, sheet_name)
+
         # Check for duplicates
         print("Checking for duplicates...")
-        existing = get_existing_bets(service)
-        print(f"Found {len(existing)} existing bets in sheet")
+        existing = get_existing_bets(service, sheet_name=tab)
+        print(f"Found {len(existing)} existing bets in {tab}")
 
         original_count = len(bets)
         bets = filter_duplicates(bets, existing)
 
         if not bets:
-            print(f"All {original_count} bets already exist in sheet. Nothing to upload.")
+            print(f"All {original_count} bets already exist in {tab}. Nothing to upload.")
             return {"status": "skipped", "message": "All bets already exist", "duplicates": original_count}
 
         print(f"Uploading {len(bets)} new bets ({original_count - len(bets)} duplicates skipped)")
 
         # Find next empty row if not specified
         if start_row is None:
-            start_row = get_next_empty_row(service)
+            start_row = get_next_empty_row(service, sheet_name=tab)
 
         # Format all bets as rows
         rows = [format_bet_row(bet) for bet in bets]
 
         # Calculate range (A through I for 9 columns)
         end_col = chr(ord('A') + len(COLUMN_ORDER) - 1)  # 'I' for 9 columns
-        range_str = f"{SHEET_NAME}!A{start_row}:{end_col}{start_row + len(rows) - 1}"
+        range_str = f"{tab}!A{start_row}:{end_col}{start_row + len(rows) - 1}"
 
         print(f"Uploading {len(rows)} bets to {range_str}...")
 

@@ -34,6 +34,22 @@ load_dotenv()
 SCRIPT_DIR = os.path.dirname(__file__)
 AUTH_FILE = os.path.join(SCRIPT_DIR, "recon_bfa_auth.json")
 
+# Account configurations
+ACCOUNTS = {
+    'default': {
+        'auth_file': os.path.join(SCRIPT_DIR, 'recon_bfa_auth.json'),
+        'platform': 'Betfastaction',
+        'bet_adjustment': 0,
+        'shared_sheet': None,
+    },
+    'j': {
+        'auth_file': os.path.join(SCRIPT_DIR, 'recon_bfaj_auth.json'),
+        'platform': 'BFAJ',
+        'bet_adjustment': -15,
+        'shared_sheet': 'Shared',
+    },
+}
+
 # API endpoints
 TOKEN_URL = "https://auth.bfagaming.com/realms/players_realm/protocol/openid-connect/token"
 BET_HISTORY_URL = "https://api.bfagaming.com/history/api/GetPlayerHistory"
@@ -52,15 +68,18 @@ BASE_HEADERS = {
 RECORDS_PER_PAGE = 100
 
 
-def load_auth() -> dict:
+def load_auth(auth_file: str = None) -> dict:
     """Load saved auth data (refresh_token, player_id)."""
-    if not os.path.exists(AUTH_FILE):
+    path = auth_file or AUTH_FILE
+    if not os.path.exists(path):
         raise FileNotFoundError(
-            f"Auth file not found: {AUTH_FILE}\n"
+            f"Auth file not found: {path}\n"
             "Run recon_bfa.py first to capture auth tokens."
         )
-    with open(AUTH_FILE, 'r') as f:
-        return json.load(f)
+    with open(path, 'r') as f:
+        data = json.load(f)
+    data['_auth_file'] = path  # store path for token rotation save-back
+    return data
 
 
 def refresh_access_token(auth: dict) -> str:
@@ -102,8 +121,10 @@ def refresh_access_token(auth: dict) -> str:
     # Save rotated refresh token
     if new_refresh and new_refresh != refresh_token:
         auth['refresh_token'] = new_refresh
-        with open(AUTH_FILE, 'w') as f:
-            json.dump(auth, f, indent=2)
+        save_path = auth.get('_auth_file', AUTH_FILE)
+        save_data = {k: v for k, v in auth.items() if not k.startswith('_')}
+        with open(save_path, 'w') as f:
+            json.dump(save_data, f, indent=2)
 
     return new_access
 
@@ -258,8 +279,14 @@ def parse_description(raw_desc: str) -> dict:
     return {'clean_desc': desc, 'line': '', 'odds': odds}
 
 
-def parse_api_bets(wagers: list) -> list:
-    """Convert API wager objects to the standard bet dict format."""
+def parse_api_bets(wagers: list, platform: str = 'Betfastaction',
+                   bet_adjustment: float = 0) -> list:
+    """Convert API wager objects to the standard bet dict format.
+
+    Args:
+        platform: Platform label for the sheet (e.g. 'Betfastaction', 'BFAJ')
+        bet_adjustment: Amount to add to each bet_amount (negative to subtract)
+    """
     bets = []
 
     for w in wagers:
@@ -307,17 +334,20 @@ def parse_api_bets(wagers: list) -> list:
             if not sport:
                 sport = 'NCAAM'
 
+            adjusted_risk = risk + bet_adjustment if bet_adjustment else risk
+
             bet = {
                 'date': parse_date(w.get('placedDate', '')),
-                'platform': 'Betfastaction',
+                'platform': platform,
                 'sport': sport,
                 'description': parsed['clean_desc'].strip(),
                 'bet_type': bet_type,
                 'line': parsed['line'],
                 'odds': american_odds,
-                'bet_amount': risk,
+                'bet_amount': adjusted_risk,
                 'dec': decimal_odds,
                 'result': result_mapped,
+                '_raw_risk': risk,  # original amount for verification
             }
 
             bets.append(bet)
@@ -336,9 +366,9 @@ def parse_api_bets(wagers: list) -> list:
 # ── Sheet lookup ─────────────────────────────────────────────────
 
 
-def get_last_bfa_date() -> str:
+def get_last_bfa_date(platform: str = 'Betfastaction') -> str:
     """
-    Query Google Sheets for the most recent BFA bet date.
+    Query Google Sheets for the most recent bet date for a given platform.
     Returns date as YYYY-MM-DD for the API, or '' if none found.
     """
     try:
@@ -352,7 +382,7 @@ def get_last_bfa_date() -> str:
         latest = None
 
         for row in values[1:]:
-            if len(row) >= 2 and row[1].strip() == 'Betfastaction':
+            if len(row) >= 2 and row[1].strip() == platform:
                 date_str = row[0].strip()
                 dt = None
                 for fmt in ("%m/%d/%Y", "%m/%d/%y"):
@@ -369,14 +399,15 @@ def get_last_bfa_date() -> str:
         return ''
 
     except Exception as e:
-        print(f"Could not fetch last BFA date from sheet: {e}")
+        print(f"Could not fetch last {platform} date from sheet: {e}")
         return ''
 
 
 # ── Main scraper ─────────────────────────────────────────────────
 
 
-def scrape_bfa(days_back: int = 7, from_date: str = None) -> list:
+def scrape_bfa(days_back: int = 7, from_date: str = None,
+               account_name: str = 'default') -> list:
     """
     Fetch bet history from BFA's API.
 
@@ -384,12 +415,15 @@ def scrape_bfa(days_back: int = 7, from_date: str = None) -> list:
         days_back: Number of days of history to fetch (default: 7).
                    Ignored if from_date is provided.
         from_date: Explicit start date as YYYY-MM-DD.
+        account_name: Account key ('default' or 'j').
 
     Returns:
         List of parsed bet dictionaries.
     """
+    acct = ACCOUNTS[account_name]
+
     # Load auth
-    auth = load_auth()
+    auth = load_auth(acct['auth_file'])
     player_id = auth.get('player_id')
     if not player_id:
         raise RuntimeError("No player_id in auth file. Run recon_bfa.py.")
@@ -409,22 +443,28 @@ def scrape_bfa(days_back: int = 7, from_date: str = None) -> list:
     wagers = fetch_bet_history(access_token, player_id, start, today)
 
     print(f"\nAPI returned {len(wagers)} wagers")
-    return parse_api_bets(wagers)
+    return parse_api_bets(wagers, platform=acct['platform'],
+                          bet_adjustment=acct['bet_adjustment'])
 
 
 if __name__ == "__main__":
     import argparse
+    import copy
 
     parser = argparse.ArgumentParser(description='Scrape bet history from BFA Gaming')
     parser.add_argument('--days', type=int, default=7, help='Days of history to fetch (default: 7)')
-    parser.add_argument('--since-last', action='store_true', help='Scrape from the date of the last BFA bet in Google Sheets')
+    parser.add_argument('--since-last', action='store_true', help='Scrape from the date of the last bet in Google Sheets')
     parser.add_argument('--dry-run', action='store_true', help='Scrape but do not upload to Google Sheets')
     parser.add_argument('--refresh-only', action='store_true', help='Just refresh the auth token and exit')
+    parser.add_argument('--account', choices=list(ACCOUNTS.keys()), default='default',
+                        help='Which BFA account to scrape (default or j)')
     args = parser.parse_args()
+
+    acct = ACCOUNTS[args.account]
 
     if args.refresh_only:
         try:
-            auth = load_auth()
+            auth = load_auth(acct['auth_file'])
             refresh_access_token(auth)
             print("Token refreshed successfully")
         except Exception as e:
@@ -433,41 +473,63 @@ if __name__ == "__main__":
         sys.exit(0)
 
     print("=" * 60)
-    print("BFA GAMING BET HISTORY SCRAPER")
+    print(f"BFA GAMING BET HISTORY SCRAPER — {acct['platform']}")
     print("=" * 60)
 
     try:
         from_date = None
         if args.since_last:
-            print("Looking up last BFA bet date from Google Sheets...")
-            from_date = get_last_bfa_date()
+            print(f"Looking up last {acct['platform']} bet date from Google Sheets...")
+            from_date = get_last_bfa_date(platform=acct['platform'])
             if from_date:
-                print(f"Last BFA bet: {from_date}")
-                # Start from day after last bet to avoid re-fetching
+                print(f"Last {acct['platform']} bet: {from_date}")
                 from_date = (datetime.strptime(from_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
                 print(f"Scraping from {from_date} to today")
             else:
-                print("No existing BFA bets found in sheet, using default range")
+                print(f"No existing {acct['platform']} bets found in sheet, using default range")
 
-        bets = scrape_bfa(days_back=args.days, from_date=from_date)
+        bets = scrape_bfa(days_back=args.days, from_date=from_date,
+                          account_name=args.account)
 
         print(f"\n{'=' * 60}")
-        print(f"Successfully scraped {len(bets)} bets from BFA Gaming")
+        print(f"Successfully scraped {len(bets)} bets from {acct['platform']}")
         print(f"{'=' * 60}\n")
 
         if bets and not args.dry_run:
-            print("Uploading to Google Sheets...")
+            # Upload adjusted bets to main sheet (Sheet1)
+            print("Uploading to Google Sheets (main)...")
             result = append_bets_to_sheet(bets)
 
             if result['status'] == 'success':
-                print(f"\nSUCCESS! Added {result['rows_added']} new bets to sheet")
+                print(f"\nSUCCESS! Added {result['rows_added']} new bets to Sheet1")
                 print(f"   Rows {result['start_row']} to {result['end_row']}")
             elif result['status'] == 'skipped':
                 print(f"\n{result['message']}")
             else:
                 print(f"\nError uploading to sheets: {result.get('message', 'Unknown error')}")
+
+            # For accounts with shared_sheet, also upload raw (unadjusted) bets
+            if acct['shared_sheet']:
+                print(f"\nUploading raw bets to '{acct['shared_sheet']}' tab...")
+                raw_bets = []
+                for bet in bets:
+                    raw = copy.copy(bet)
+                    raw['bet_amount'] = raw.pop('_raw_risk', raw['bet_amount'])
+                    raw_bets.append(raw)
+                raw_result = append_bets_to_sheet(raw_bets, sheet_name=acct['shared_sheet'])
+                if raw_result['status'] == 'success':
+                    print(f"Added {raw_result['rows_added']} raw bets to {acct['shared_sheet']}")
+                elif raw_result['status'] == 'skipped':
+                    print(f"{raw_result['message']}")
+
         elif args.dry_run:
             print("Dry run - skipping upload to Google Sheets")
+            if acct['bet_adjustment']:
+                print(f"\nBet adjustment: ${acct['bet_adjustment']:+.0f} per bet")
+                raw_total = sum(b.get('_raw_risk', 0) for b in bets)
+                adj_total = sum(b['bet_amount'] for b in bets)
+                print(f"Raw total wagered:      ${raw_total:,.2f}")
+                print(f"Adjusted total wagered: ${adj_total:,.2f}")
         else:
             print("No bets found to upload")
 
