@@ -4304,6 +4304,290 @@ print_parlay_result <- function(result, legs) {
 
 
 # =============================================================================
+# CORRELATION-ADJUSTED KELLY SIZING
+# =============================================================================
+
+#' Convert a bet table row into an evaluate_leg() spec
+#'
+#' @param bet_row A single row from the bets table (as a list or 1-row data frame)
+#' @return List with market, period, side, line (compatible with evaluate_leg())
+bet_to_leg <- function(bet_row) {
+  market_raw <- bet_row$market
+
+  # Strip alternate_ prefix
+  clean_market <- gsub("^alternate_", "", market_raw)
+
+  # Parse period from suffix
+  period <- if (grepl("_h1$", clean_market)) {
+    "Half1"
+  } else if (grepl("_h2$", clean_market)) {
+    "Half2"
+  } else {
+    "Full"
+  }
+
+  # Parse market type
+  market_base <- gsub("_(h1|h2)$", "", clean_market)
+  leg_market <- switch(market_base,
+    "h2h"          = "moneyline",
+    "spreads"      = "spread",
+    "totals"       = "total",
+    "team_totals"  = "team_total",
+    stop(paste("Unknown market base:", market_base))
+  )
+
+  # Parse side from bet_on
+  bet_on <- bet_row$bet_on
+  home_team <- bet_row$home_team
+  away_team <- bet_row$away_team
+
+  if (leg_market == "team_total") {
+    # bet_on is like "Duke Over" or "Duke Under"
+    is_over <- grepl(" Over$", bet_on)
+    team_name <- sub(" (Over|Under)$", "", bet_on)
+    team_side <- if (team_name == home_team) "home" else "away"
+    side <- paste0(team_side, "_", ifelse(is_over, "over", "under"))
+  } else if (leg_market %in% c("spread", "moneyline")) {
+    side <- if (bet_on == home_team) "home" else "away"
+  } else {
+    # totals: bet_on is "Over" or "Under"
+    side <- tolower(bet_on)
+  }
+
+  list(
+    market = leg_market,
+    period = period,
+    side   = side,
+    line   = bet_row$line
+  )
+}
+
+
+#' Compute portfolio-optimal Kelly fractions for correlated bets on one game
+#'
+#' Uses the multivariate Kelly approximation: f* = Σ⁻¹ · μ
+#' where Σ is the covariance matrix of bet returns and μ is the EV vector.
+#'
+#' @param bets_group Data frame of bets on the same game (2+ rows)
+#' @param sample Data frame of historical sample games for this game
+#' @return Named list with f_star (optimal fractions) and cor_matrix, or NULL if ill-conditioned
+multivariate_kelly <- function(bets_group, sample) {
+  n <- nrow(bets_group)
+
+  # Convert each bet to a leg and evaluate on the sample
+  outcome_matrix <- matrix(NA_real_, nrow = nrow(sample), ncol = n)
+  for (i in seq_len(n)) {
+    leg <- bet_to_leg(bets_group[i, ])
+    outcomes <- evaluate_leg(sample, leg)
+    # Convert TRUE/FALSE/NA to 1/0/NA
+    outcome_matrix[, i] <- as.numeric(outcomes)
+  }
+
+  # Remove rows with any NA (pushes on any leg)
+  complete_rows <- complete.cases(outcome_matrix)
+  if (sum(complete_rows) < 30) return(NULL)  # too few resolved samples
+  outcome_matrix <- outcome_matrix[complete_rows, , drop = FALSE]
+
+  # Compute Pearson correlation matrix of binary outcomes
+  R <- cor(outcome_matrix)
+  if (any(is.na(R))) return(NULL)
+
+  # Build return covariance matrix
+  # For binary bet: σ_i = sqrt(p_i * (1-p_i)) * (b_i + 1)
+  # where b_i = decimal_odds - 1, p_i = predicted probability
+  pred_probs <- bets_group$prob
+  odds_american <- bets_group$odds
+  decimal_odds <- ifelse(odds_american > 0, 1 + odds_american / 100, 1 + 100 / abs(odds_american))
+  b <- decimal_odds - 1
+
+  sigmas <- sqrt(pred_probs * (1 - pred_probs)) * (b + 1)
+
+  # Covariance matrix: Σ_ij = R_ij * σ_i * σ_j
+  Sigma <- R * outer(sigmas, sigmas)
+
+  # Check condition number
+  if (kappa(Sigma) > 100) return(NULL)
+
+  # EV vector (already computed in the bet table)
+  mu <- bets_group$ev
+
+  # Solve: f* = Σ⁻¹ · μ
+  f_star <- tryCatch(
+    solve(Sigma, mu),
+    error = function(e) NULL
+  )
+  if (is.null(f_star)) return(NULL)
+
+  # Clamp negatives to 0
+  f_star <- pmax(f_star, 0)
+
+  list(
+    f_star     = f_star,
+    cor_matrix = R
+  )
+}
+
+
+#' Adjust Kelly bet sizes for within-game correlation
+#'
+#' Groups bets by game, measures empirical correlations from the game's sample,
+#' and adjusts sizes using multivariate Kelly (primary) or per-bet average ρ (fallback).
+#'
+#' @param bets_df Data frame of bets (output of Phase 7 dedup)
+#' @param samples Named list of sample results, keyed by game id
+#' @param bankroll Current bankroll
+#' @param kelly_mult Fractional Kelly multiplier
+#' @return bets_df with adjusted bet_size and new correlation_adj column
+adjust_kelly_for_correlation <- function(bets_df, samples, bankroll, kelly_mult,
+                                         placed_bets = NULL) {
+  if (nrow(bets_df) == 0) return(mutate(bets_df, correlation_adj = numeric(0)))
+
+  bets_df$correlation_adj <- 1.0
+
+  # Normalize placed_bets to match bets_df column names
+  has_placed <- !is.null(placed_bets) && nrow(placed_bets) > 0
+  if (has_placed) {
+    # Rename game_id -> id to match bets_df
+    if ("game_id" %in% names(placed_bets) && !"id" %in% names(placed_bets)) {
+      placed_bets$id <- placed_bets$game_id
+    }
+    placed_bets$.is_placed <- TRUE
+    n_placed_games <- length(unique(placed_bets$id[placed_bets$id %in% unique(bets_df$id)]))
+    cat(sprintf("Placed bets loaded: %d bets on %d games overlapping with new bets\n",
+                nrow(placed_bets), n_placed_games))
+  }
+
+  game_ids <- unique(bets_df$id)
+  n_mv <- 0L
+  n_fb <- 0L
+  n_skip <- 0L
+  n_placed_used <- 0L
+
+  for (gid in game_ids) {
+    idx <- which(bets_df$id == gid)
+    new_bets <- bets_df[idx, ]
+    new_bets$.is_placed <- FALSE
+
+    # Check for already-placed bets on this game
+    placed_game <- NULL
+    if (has_placed) {
+      placed_game <- placed_bets[placed_bets$id == gid, , drop = FALSE]
+      if (nrow(placed_game) == 0) placed_game <- NULL
+    }
+
+    # Dedup: remove new bets that match placed bets (same market + bet_on + line)
+    if (!is.null(placed_game)) {
+      # Use coalesce for NA lines (moneylines) to avoid fragile paste(NA) matching
+      placed_keys <- paste(placed_game$market, placed_game$bet_on,
+                           ifelse(is.na(placed_game$line), "ML", placed_game$line))
+      new_keys <- paste(new_bets$market, new_bets$bet_on,
+                        ifelse(is.na(new_bets$line), "ML", new_bets$line))
+      dup_mask <- new_keys %in% placed_keys
+      if (any(dup_mask)) {
+        # These bets are already placed — leave them at adj=1.0, don't re-adjust
+        idx <- idx[!dup_mask]
+        new_bets <- new_bets[!dup_mask, , drop = FALSE]
+      }
+    }
+
+    # After dedup, if no new bets remain, skip this game
+    if (nrow(new_bets) == 0) next
+
+    # Build full correlation group: new bets + placed bets
+    n_total <- nrow(new_bets) + ifelse(is.null(placed_game), 0L, nrow(placed_game))
+    if (n_total < 2) next  # need 2+ bets in the group for correlation
+
+    # Look up game sample
+    if (is.null(samples[[gid]])) {
+      n_skip <- n_skip + 1L
+      next
+    }
+    game_sample <- samples[[gid]]$sample
+
+    # Combine placed + new for correlation computation
+    if (!is.null(placed_game)) {
+      # Ensure placed_game has the columns multivariate_kelly needs
+      bets_group <- bind_rows(placed_game, new_bets)
+      n_placed_used <- n_placed_used + 1L
+    } else {
+      bets_group <- new_bets
+    }
+
+    n_new <- nrow(new_bets)
+    n_placed_in_group <- nrow(bets_group) - n_new
+    new_positions <- (n_placed_in_group + 1):nrow(bets_group)  # indices of new bets in bets_group
+
+    mv_result <- multivariate_kelly(bets_group, game_sample)
+
+    if (!is.null(mv_result)) {
+      # Primary: multivariate Kelly — only apply to new bets
+      mv_fracs <- mv_result$f_star[new_positions]
+      mv_sizes <- mv_fracs * kelly_mult * bankroll
+      mv_sizes <- round(mv_sizes, 2)
+      original_sizes <- new_bets$bet_size
+      mv_sizes <- pmin(mv_sizes, original_sizes * 1.5)
+      mv_sizes <- pmax(mv_sizes, 0)
+
+      bets_df$bet_size[idx] <- mv_sizes
+      bets_df$correlation_adj[idx] <- ifelse(original_sizes > 0, mv_sizes / original_sizes, 1.0)
+      n_mv <- n_mv + 1L
+    } else {
+      # Fallback: per-bet average ρ on the full group
+      n_all <- nrow(bets_group)
+      outcome_matrix <- matrix(NA_real_, nrow = nrow(game_sample), ncol = n_all)
+      leg_failed <- FALSE
+      for (i in seq_len(n_all)) {
+        leg <- tryCatch(bet_to_leg(bets_group[i, ]), error = function(e) NULL)
+        if (is.null(leg)) { leg_failed <- TRUE; break }
+        outcomes <- tryCatch(evaluate_leg(game_sample, leg), error = function(e) NULL)
+        if (is.null(outcomes) || length(outcomes) == 0) { leg_failed <- TRUE; break }
+        outcome_matrix[, i] <- as.numeric(outcomes)
+      }
+      if (leg_failed) { n_skip <- n_skip + 1L; next }
+
+      complete_rows <- complete.cases(outcome_matrix)
+      if (sum(complete_rows) < 30) {
+        n_skip <- n_skip + 1L
+        next
+      }
+      outcome_matrix <- outcome_matrix[complete_rows, , drop = FALSE]
+      R <- cor(outcome_matrix)
+      if (any(is.na(R))) {
+        n_skip <- n_skip + 1L
+        next
+      }
+
+      # Only adjust new bets (positions after placed bets in the group)
+      for (j in seq_len(n_new)) {
+        i <- new_positions[j]  # position in full group
+        avg_rho_i <- mean(R[i, -i])
+        denom <- 1 + (n_all - 1) * avg_rho_i
+        scale_i <- if (denom <= 0) 1.5 else min(1.5, 1 / sqrt(denom))
+        scale_i <- max(scale_i, 0)
+        bets_df$bet_size[idx[j]] <- round(bets_df$bet_size[idx[j]] * scale_i, 2)
+        bets_df$correlation_adj[idx[j]] <- scale_i
+      }
+      n_fb <- n_fb + 1L
+    }
+  }
+
+  cat(sprintf("\n=== CORRELATION ADJUSTMENT ===\n"))
+  cat(sprintf("Games with 2+ bets: %d (multivariate: %d, fallback: %d, skipped: %d)\n",
+              n_mv + n_fb + n_skip, n_mv, n_fb, n_skip))
+  if (n_placed_used > 0) {
+    cat(sprintf("Games using placed bets for correlation: %d\n", n_placed_used))
+  }
+  adjusted <- bets_df$correlation_adj[bets_df$correlation_adj != 1.0]
+  if (length(adjusted) > 0) {
+    cat(sprintf("Adjusted bets: %d, avg scale: %.3f, range: [%.3f, %.3f]\n",
+                length(adjusted), mean(adjusted), min(adjusted), max(adjusted)))
+  }
+
+  bets_df
+}
+
+
+# =============================================================================
 # GENERALIZED DERIVATIVE BACKTEST FUNCTION
 # =============================================================================
 

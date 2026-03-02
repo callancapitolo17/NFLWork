@@ -589,6 +589,35 @@ all_bets_combined <- bind_rows(
   select(-base_market) %>%
   arrange(desc(ev))
 
+# =============================================================================
+# PHASE 7.5: CORRELATION-ADJUSTED KELLY SIZING
+# =============================================================================
+
+# Load already-placed bets for correlation awareness (Cases 2-5)
+placed_bets <- NULL
+if (file.exists(dash_db)) {
+  tryCatch({
+    dash_con <- dbConnect(duckdb(), dbdir = dash_db, read_only = TRUE)
+    # game_time is stored as Pacific time (naive timestamp), so compare against Pacific now
+    now_pacific <- format(Sys.time(), tz = "America/Los_Angeles", usetz = FALSE)
+    placed_bets <- dbGetQuery(dash_con, sprintf("
+      SELECT game_id, home_team, away_team, game_time, market, bet_on,
+             line, model_prob AS prob, model_ev AS ev,
+             COALESCE(actual_size, recommended_size) AS bet_size, odds
+      FROM placed_bets
+      WHERE (game_time > TIMESTAMP '%s' OR game_time IS NULL)
+        AND status = 'pending'
+    ", now_pacific))
+    dbDisconnect(dash_con)
+    if (nrow(placed_bets) == 0) placed_bets <- NULL
+  }, error = function(e) { placed_bets <<- NULL })
+}
+
+all_bets_combined <- adjust_kelly_for_correlation(
+  all_bets_combined, samples, bankroll, kelly_mult, placed_bets = placed_bets
+)
+timer$mark("correlation_adj")
+
 cat("\n=== BETTING SUMMARY ===\n")
 all_bets_combined %>%
   group_by(market_type) %>%
