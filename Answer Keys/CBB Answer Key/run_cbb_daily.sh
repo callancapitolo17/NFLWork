@@ -41,11 +41,13 @@ echo "$(date) - [Step 3/3] Exit code: $STEP3" >> "$LOGFILE"
 # Clean up logs older than 30 days
 find "$LOGDIR" -name "run_*.log" -mtime +30 -delete 2>/dev/null
 
-# Summary
+# Summary + macOS notification
 if [ $STEP1 -eq 0 ] && [ $STEP2 -eq 0 ] && [ $STEP3 -eq 0 ]; then
   echo "$(date) - All steps completed successfully" >> "$LOGFILE"
+  osascript -e 'display notification "All 3 steps completed successfully" with title "CBB Daily Acquire" sound name "Glass"'
   exit 0
 else
   echo "$(date) - FAILED: odds=$STEP1 pbp=$STEP2 build=$STEP3" >> "$LOGFILE"
+  osascript -e "display notification \"FAILED — odds=$STEP1 pbp=$STEP2 build=$STEP3\" with title \"CBB Daily Acquire\" sound name \"Basso\""
   exit 1
 fi
