@@ -317,7 +317,7 @@ timer$mark("prefetch_odds")
 dashboard_db <- file.path(getwd(), "CBB Dashboard", "cbb_dashboard.duckdb")
 if (file.exists(dashboard_db)) {
   dash_con <- dbConnect(duckdb(), dbdir = dashboard_db)
-  for (book in c("wagerzon", "hoop88", "bfa", "bookmaker")) {
+  for (book in c("wagerzon", "hoop88", "bfa", "bookmaker", "bet105")) {
     dbExecute(dash_con, "INSERT INTO book_settings (bookmaker_key, enabled)
       VALUES (?, TRUE) ON CONFLICT (bookmaker_key) DO NOTHING", list(book))
   }
@@ -473,6 +473,9 @@ cat(sprintf("Loaded %d BFA records.\n", nrow(bfa_odds)))
 
 bookmaker_odds <- get_bookmaker_odds("cbb")
 cat(sprintf("Loaded %d Bookmaker records.\n", nrow(bookmaker_odds)))
+
+bet105_odds <- get_bet105_odds("cbb")
+cat(sprintf("Loaded %d Bet105 records.\n", nrow(bet105_odds)))
 timer$mark("load_scrapers")
 
 # --- WAGERZON ---
@@ -597,6 +600,33 @@ if (nrow(bookmaker_odds) > 0) {
 } else {
   bookmaker_bets <- tibble()
 }
+
+# --- BET105 ---
+if (nrow(bet105_odds) > 0) {
+  suppressWarnings({
+    b105_spread_bets <- compare_spreads_to_wagerzon(
+      spread_results, bet105_odds,
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+    )
+    b105_total_bets <- compare_totals_to_wagerzon(
+      total_results, bet105_odds,
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+    )
+    b105_ml_bets <- compare_moneylines_to_wagerzon(
+      ml_results, bet105_odds,
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+    )
+  })
+
+  bet105_bets <- bind_rows(
+    b105_spread_bets$bets %>% mutate(market_type = "spreads"),
+    b105_total_bets$bets %>% mutate(market_type = "totals"),
+    b105_ml_bets$bets %>% mutate(market_type = "moneyline")
+  )
+  cat(sprintf("Added %d Bet105 bets to predictions.\n", nrow(bet105_bets)))
+} else {
+  bet105_bets <- tibble()
+}
 timer$mark("compare_offshore")
 
 # =============================================================================
@@ -609,7 +639,8 @@ all_bets_combined <- bind_rows(
   hoop88_bets,
   bfa_bets,
   bfa_alt_bets,
-  bookmaker_bets
+  bookmaker_bets,
+  bet105_bets
 ) %>%
   filter(is.na(pt_start_time) | pt_start_time > Sys.time()) %>%
   mutate(base_market = gsub("^alternate_", "", market)) %>%
