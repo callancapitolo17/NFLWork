@@ -3345,6 +3345,116 @@ get_bookmaker_odds <- function(
   return(result)
 }
 
+get_bet105_odds <- function(
+    sport = "cbb",
+    db_path = "~/NFLWork/bet105_odds/bet105.duckdb"
+) {
+  db_path <- normalizePath(path.expand(db_path), mustWork = FALSE)
+
+  if (!file.exists(db_path)) {
+    warning(sprintf("Bet105 database not found at %s. Run scraper first.", db_path))
+    return(data.frame())
+  }
+
+  table_name <- paste0(sport, "_odds")
+
+  con <- dbConnect(duckdb(), dbdir = db_path, read_only = TRUE)
+  on.exit(dbDisconnect(con, shutdown = TRUE))
+
+  tables <- dbListTables(con)
+  if (!table_name %in% tables) {
+    warning(sprintf("Table '%s' not found in Bet105 database. Run scraper first.", table_name))
+    return(data.frame())
+  }
+
+  raw_odds <- dbGetQuery(con, sprintf("SELECT * FROM %s", table_name))
+
+  if (nrow(raw_odds) == 0) {
+    warning("No odds found in Bet105 database.")
+    return(data.frame())
+  }
+
+  result_list <- list()
+
+  for (i in seq_len(nrow(raw_odds))) {
+    row <- raw_odds[i, ]
+
+    base <- list(
+      bookmaker_key = "bet105",
+      sport_key = row$sport_key,
+      home_team = row$home_team,
+      away_team = row$away_team,
+      game_date = row$game_date,
+      game_time = row$game_time,
+      bfa_game_id = row$game_id,
+      fetch_time = row$fetch_time,
+      period = row$period
+    )
+
+    # Spreads record
+    if (!is.na(row$away_spread)) {
+      market_name <- row$market
+      spread_rec <- c(base, list(
+        market = market_name,
+        market_type = "spreads",
+        line = row$home_spread,
+        odds_away = row$away_spread_price,
+        odds_home = row$home_spread_price,
+        odds_over = NA_integer_,
+        odds_under = NA_integer_,
+        away_spread = row$away_spread,
+        home_spread = row$home_spread
+      ))
+      result_list[[length(result_list) + 1]] <- spread_rec
+    }
+
+    # Totals record
+    if (!is.na(row$total)) {
+      totals_market <- gsub("spreads", "totals", row$market)
+      totals_rec <- c(base, list(
+        market = totals_market,
+        market_type = "totals",
+        line = row$total,
+        odds_away = NA_integer_,
+        odds_home = NA_integer_,
+        odds_over = row$over_price,
+        odds_under = row$under_price
+      ))
+      result_list[[length(result_list) + 1]] <- totals_rec
+    }
+
+    # Moneyline record
+    if (!is.na(row$away_ml)) {
+      ml_market <- gsub("spreads", "h2h", row$market)
+      ml_rec <- c(base, list(
+        market = ml_market,
+        market_type = "h2h",
+        line = NA_real_,
+        odds_away = row$away_ml,
+        odds_home = row$home_ml,
+        odds_over = NA_integer_,
+        odds_under = NA_integer_
+      ))
+      result_list[[length(result_list) + 1]] <- ml_rec
+    }
+  }
+
+  if (length(result_list) == 0) {
+    return(data.frame())
+  }
+
+  result <- bind_rows(lapply(result_list, as.data.frame))
+
+  cat(sprintf("Loaded %d Bet105 odds records (%d spreads, %d totals, %d ML)\n",
+              nrow(result),
+              sum(result$market_type == "spreads"),
+              sum(result$market_type == "totals"),
+              sum(result$market_type == "h2h")))
+
+  result <- resolve_offshore_teams(result, sport = sport)
+  return(result)
+}
+
 
 #' Resolve offshore scraped team names to Odds API format
 #'
