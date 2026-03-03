@@ -202,6 +202,18 @@ This repo contains tools for:
 **Planning requirement:**
 - Every implementation plan must include a version control section: what branch to use, what files will be created/modified, and how commits will be structured
 
+**Pre-merge review (REQUIRED):**
+- Before merging any feature branch to `main`, perform an executive engineer review of the full diff (`git diff main..HEAD`)
+- Review checklist:
+  - **Data integrity**: No duplicate writes, proper deduplication, incomplete/in-progress records filtered out
+  - **Resource safety**: All DB connections use `on.exit(dbDisconnect(...))`, no lock file leaks on crash
+  - **Edge cases**: Off-season behavior, empty tables, first-run with no existing data, timezone boundaries
+  - **Dead code**: No unused flags, functions, or imports introduced
+  - **Log/disk hygiene**: Log rotation in place, no unbounded file growth
+  - **Security**: No secrets in logs, no API keys exposed in output
+- Document findings as ISSUES TO FIX vs ACCEPTABLE RISKS before proceeding
+- Fix all identified issues, then get explicit user approval to merge
+
 **Approval required:**
 - Never merge to `main` or push to remote without explicit user approval
 - Always confirm before any action that affects the remote repository

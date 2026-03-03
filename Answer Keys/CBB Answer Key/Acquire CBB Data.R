@@ -281,7 +281,213 @@ acquire_cbb_odds <- function(start_date, end_date, resume = TRUE) {
 # acquire_cbb_odds("2024-11-01", "2025-04-15")  # 2024-25 season
 
 # ============================================================================
-# PLAY-BY-PLAY DATA ACQUISITION
+# CLI: --daily mode (dynamic gap fill)
+# ============================================================================
+cli_args <- commandArgs(trailingOnly = TRUE)
+if ("--daily" %in% cli_args) {
+  message("Running in --daily mode: filling gap from last acquired date to yesterday")
+
+  con <- dbConnect(duckdb(), dbdir = DB_PATH)
+  on.exit(dbDisconnect(con, shutdown = TRUE), add = TRUE)
+
+  last_date <- tryCatch({
+    dbGetQuery(con, sprintf("SELECT MAX(DATE(commence_time)) as d FROM %s", TABLE_NAME))$d
+  }, error = function(e) NA)
+
+  dbDisconnect(con, shutdown = TRUE)
+
+  if (is.na(last_date)) {
+    # No data yet — start from current season
+    today <- Sys.Date()
+    start_date <- if (as.integer(format(today, "%m")) >= 11) {
+      as.Date(paste0(format(today, "%Y"), "-11-01"))
+    } else {
+      as.Date(paste0(as.integer(format(today, "%Y")) - 1, "-11-01"))
+    }
+  } else {
+    start_date <- as.Date(last_date)
+  }
+
+  end_date <- Sys.Date() - 1
+
+  if (start_date > end_date) {
+    message("Already up to date — nothing to fetch.")
+  } else {
+    acquire_cbb_odds(as.character(start_date), as.character(end_date))
+  }
+
+  # Exit after daily odds run — don't load hoopR section below
+  quit(save = "no", status = 0)
+}
+
+# ============================================================================
+# CLI: --daily-pbp mode (hoopR PBP to cbb_pbp_v2, matching cbbpy schema)
+# ============================================================================
+if ("--daily-pbp" %in% cli_args) {
+  if (!requireNamespace("hoopR", quietly = TRUE)) install.packages("hoopR")
+  library(hoopR)
+
+  message("Running in --daily-pbp mode: filling PBP gap using hoopR")
+
+  # Determine current season (Nov = new season starts)
+  today <- Sys.Date()
+  current_season <- if (as.integer(format(today, "%m")) >= 11) {
+    as.integer(format(today, "%Y")) + 1L
+  } else {
+    as.integer(format(today, "%Y"))
+  }
+
+  con <- dbConnect(duckdb(), dbdir = DB_PATH)
+  on.exit(dbDisconnect(con, shutdown = TRUE), add = TRUE)
+
+  # Check existing data in cbb_pbp_v2
+  existing_ids <- tryCatch({
+    dbGetQuery(con, "SELECT DISTINCT game_id FROM cbb_pbp_v2") %>% pull(game_id)
+  }, error = function(e) character(0))
+  message(sprintf("Existing games in cbb_pbp_v2: %d", length(existing_ids)))
+
+  # Load PBP from hoopR for current season
+  message(sprintf("Loading hoopR PBP for season %d...", current_season))
+  pbp <- load_mbb_pbp(current_season)
+  message(sprintf("Loaded %d PBP records", nrow(pbp)))
+
+  # Compute per-half scores (regulation halves 1 & 2)
+  game_by_half <- pbp %>%
+    filter(half <= 2) %>%
+    group_by(game_id, half) %>%
+    summarize(
+      home_team = first(home_team_name),
+      away_team = first(away_team_name),
+      game_date = as.character(as.Date(first(game_date))),
+      home_score_end = max(home_score, na.rm = TRUE),
+      away_score_end = max(away_score, na.rm = TRUE),
+      home_score_start = min(home_score, na.rm = TRUE),
+      away_score_start = min(away_score, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      home_half_score = home_score_end - home_score_start,
+      away_half_score = away_score_end - away_score_start
+    )
+
+  # Compute OT info
+  ot_games <- pbp %>%
+    filter(half > 2) %>%
+    group_by(game_id) %>%
+    summarize(
+      went_to_ot = 1L,
+      ot_home_end = max(home_score, na.rm = TRUE),
+      ot_away_end = max(away_score, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  # End of regulation scores (end of half 2)
+  reg_end <- game_by_half %>%
+    filter(half == 2) %>%
+    select(game_id, reg_home_end = home_score_end, reg_away_end = away_score_end)
+
+  ot_info <- ot_games %>%
+    left_join(reg_end, by = "game_id") %>%
+    mutate(
+      home_ot_score = as.integer(ot_home_end - reg_home_end),
+      away_ot_score = as.integer(ot_away_end - reg_away_end),
+      game_home_margin_ot = as.integer(home_ot_score - away_ot_score),
+      game_total_ot = as.integer(home_ot_score + away_ot_score)
+    ) %>%
+    select(game_id, went_to_ot, home_ot_score, away_ot_score, game_home_margin_ot, game_total_ot)
+
+  # Pivot to wide format - one row per game
+  game_margins <- game_by_half %>%
+    select(game_id, game_date, home_team, away_team, half,
+           home_half_score, away_half_score, home_score_end, away_score_end) %>%
+    pivot_wider(
+      id_cols = c(game_id, game_date, home_team, away_team),
+      names_from = half,
+      values_from = c(home_half_score, away_half_score, home_score_end, away_score_end),
+      names_glue = "{.value}_h{half}"
+    ) %>%
+    # Final scores = end of regulation if no OT, or max overall
+    left_join(ot_info, by = "game_id") %>%
+    mutate(
+      home_h1_score = as.integer(home_half_score_h1),
+      away_h1_score = as.integer(away_half_score_h1),
+      game_home_margin_h1 = as.integer(home_h1_score - away_h1_score),
+      game_total_h1 = as.integer(home_h1_score + away_h1_score),
+      home_h2_score = as.integer(home_half_score_h2),
+      away_h2_score = as.integer(away_half_score_h2),
+      game_home_margin_h2 = as.integer(home_h2_score - away_h2_score),
+      game_total_h2 = as.integer(home_h2_score + away_h2_score),
+      # OT defaults
+      went_to_ot = coalesce(went_to_ot, 0L),
+      home_ot_score = coalesce(home_ot_score, 0L),
+      away_ot_score = coalesce(away_ot_score, 0L),
+      game_home_margin_ot = coalesce(game_home_margin_ot, 0L),
+      game_total_ot = coalesce(game_total_ot, 0L),
+      # Final scores (regulation end + OT)
+      home_final_score = as.integer(home_score_end_h2 + home_ot_score),
+      away_final_score = as.integer(away_score_end_h2 + away_ot_score),
+      game_home_margin_fg = as.integer(home_final_score - away_final_score),
+      game_total_fg = as.integer(home_final_score + away_final_score),
+      home_winner = case_when(
+        home_final_score > away_final_score ~ 1L,
+        home_final_score < away_final_score ~ 0L,
+        TRUE ~ NA_integer_
+      ),
+      game_id = as.character(game_id)
+    ) %>%
+    select(
+      game_id, game_date, home_team, away_team,
+      home_h1_score, away_h1_score, game_home_margin_h1, game_total_h1,
+      home_h2_score, away_h2_score, game_home_margin_h2, game_total_h2,
+      home_ot_score, away_ot_score, game_home_margin_ot, game_total_ot,
+      home_final_score, away_final_score, game_home_margin_fg, game_total_fg,
+      home_winner, went_to_ot
+    )
+
+  # Filter to completed games only (must have both halves with valid scores)
+  # Without this, in-progress games get inserted with NAs and are never corrected
+  # (PRIMARY KEY dedup would skip them on future runs)
+  game_margins <- game_margins %>%
+    filter(!is.na(home_h2_score) & !is.na(home_final_score))
+
+  # Filter to new games only (dedup against existing cbb_pbp_v2)
+  new_games <- game_margins %>%
+    filter(!(game_id %in% existing_ids))
+
+  message(sprintf("Computed %d games, %d are new", nrow(game_margins), nrow(new_games)))
+
+  if (nrow(new_games) > 0) {
+    # Ensure table exists
+    tryCatch(
+      dbGetQuery(con, "SELECT 1 FROM cbb_pbp_v2 LIMIT 0"),
+      error = function(e) {
+        dbExecute(con, "CREATE TABLE cbb_pbp_v2 (
+          game_id VARCHAR PRIMARY KEY, game_date VARCHAR,
+          home_team VARCHAR, away_team VARCHAR,
+          home_h1_score INTEGER, away_h1_score INTEGER,
+          game_home_margin_h1 INTEGER, game_total_h1 INTEGER,
+          home_h2_score INTEGER, away_h2_score INTEGER,
+          game_home_margin_h2 INTEGER, game_total_h2 INTEGER,
+          home_ot_score INTEGER, away_ot_score INTEGER,
+          game_home_margin_ot INTEGER, game_total_ot INTEGER,
+          home_final_score INTEGER, away_final_score INTEGER,
+          game_home_margin_fg INTEGER, game_total_fg INTEGER,
+          home_winner INTEGER, went_to_ot INTEGER
+        )")
+      }
+    )
+    dbWriteTable(con, "cbb_pbp_v2", new_games, append = TRUE)
+    message(sprintf("Added %d new games to cbb_pbp_v2", nrow(new_games)))
+  }
+
+  total <- dbGetQuery(con, "SELECT COUNT(*) as n FROM cbb_pbp_v2")$n
+  message(sprintf("Complete. Total games in cbb_pbp_v2: %d", total))
+
+  quit(save = "no", status = 0)
+}
+
+# ============================================================================
+# PLAY-BY-PLAY DATA ACQUISITION (hoopR - legacy function for manual use)
 # ============================================================================
 
 # Load hoopR for CBB play-by-play data

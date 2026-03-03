@@ -2,6 +2,7 @@
 """
 Acquire CBB game scores using CBBpy - Simple sequential version.
 Run overnight: nohup python -u acquire_cbb_pbp.py --all > acquire.log 2>&1 &
+Note: Daily cron uses hoopR (R) instead — see Acquire CBB Data.R --daily-pbp
 """
 
 import cbbpy.mens_scraper as scraper
@@ -72,6 +73,60 @@ def extract_game_scores(game_id, game_date):
         return None
 
 
+def process_date_range(con, existing, start_date, end_date, label):
+    """Process games in a date range, returning count of new games added."""
+    current = start_date
+    games_buf = []
+    count = 0
+
+    print(f"\n{'='*50}")
+    print(f"{label}: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+    print(f"{'='*50}", flush=True)
+
+    while current <= end_date:
+        date_str = current.strftime("%Y-%m-%d")
+
+        try:
+            game_ids = scraper.get_game_ids(date_str)
+            if game_ids:
+                new_ids = [g for g in game_ids if g not in existing]
+
+                for gid in new_ids:
+                    result = extract_game_scores(gid, date_str)
+                    if result:
+                        games_buf.append(result)
+                        existing.add(gid)
+                        count += 1
+                        print(f"    {gid}: OK", flush=True)
+                    else:
+                        print(f"    {gid}: skip", flush=True)
+                    time.sleep(0.05)
+
+                # Save every 500 games
+                if len(games_buf) >= 500:
+                    df = pd.DataFrame(games_buf)
+                    con.execute(f"INSERT INTO {TABLE_NAME} SELECT * FROM df")
+                    print(f"  Checkpoint: {len(games_buf)} games saved (total: {count})", flush=True)
+                    games_buf = []
+
+                # Progress every 50 games
+                if count > 0 and count % 50 == 0:
+                    print(f"  {date_str}: {count} games", flush=True)
+
+        except Exception as e:
+            print(f"  {date_str}: Error - {str(e)[:40]}", flush=True)
+
+        current += timedelta(days=1)
+
+    # Save remaining
+    if games_buf:
+        df = pd.DataFrame(games_buf)
+        con.execute(f"INSERT INTO {TABLE_NAME} SELECT * FROM df")
+
+    print(f"{label} complete: {count} new games")
+    return count
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--season', type=int)
@@ -83,11 +138,7 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    seasons = [args.season] if args.season else [2021, 2022, 2023, 2024, 2025, 2026]
     db_path = args.db if args.db else DB_PATH
-
-    print(f"CBB PBP Acquisition - Season {args.season if args.season else 'ALL'}")
-    print("=" * 50)
 
     con = duckdb.connect(db_path)
     con.execute(f"""
@@ -124,59 +175,15 @@ def main():
 
     print(f"Existing: {len(existing)} games")
 
+    seasons = [args.season] if args.season else [2021, 2022, 2023, 2024, 2025, 2026]
+    print(f"CBB PBP Acquisition - Season {args.season if args.season else 'ALL'}")
+    print("=" * 50)
+
     for season in seasons:
         start_date = datetime(season - 1, 11, 1)
         end_date = datetime(season, 4, 15)
-        current = start_date
-
-        season_games = []
-        season_count = 0
-
-        print(f"\n{'='*50}")
-        print(f"Season {season-1}-{str(season)[2:]}")
-        print(f"{'='*50}", flush=True)
-
-        while current <= end_date:
-            date_str = current.strftime("%Y-%m-%d")
-
-            try:
-                game_ids = scraper.get_game_ids(date_str)
-                if game_ids:
-                    new_ids = [g for g in game_ids if g not in existing]
-
-                    for i, gid in enumerate(new_ids):
-                        result = extract_game_scores(gid, date_str)
-                        if result:
-                            season_games.append(result)
-                            existing.add(gid)
-                            season_count += 1
-                            print(f"    {gid}: OK", flush=True)
-                        else:
-                            print(f"    {gid}: skip", flush=True)
-                        time.sleep(0.05)
-
-                    # Save every 500 games
-                    if len(season_games) >= 500:
-                        df = pd.DataFrame(season_games)
-                        con.execute(f"INSERT INTO {TABLE_NAME} SELECT * FROM df")
-                        print(f"  Checkpoint: {len(season_games)} games saved (total: {season_count})", flush=True)
-                        season_games = []
-
-                    # Progress every 50 games
-                    if season_count > 0 and season_count % 50 == 0:
-                        print(f"  {date_str}: {season_count} games", flush=True)
-
-            except Exception as e:
-                print(f"  {date_str}: Error - {str(e)[:40]}", flush=True)
-
-            current += timedelta(days=1)
-
-        # Save remaining
-        if season_games:
-            df = pd.DataFrame(season_games)
-            con.execute(f"INSERT INTO {TABLE_NAME} SELECT * FROM df")
-
-        print(f"Season complete: {season_count} games")
+        process_date_range(con, existing, start_date, end_date,
+                           f"Season {season-1}-{str(season)[2:]}")
 
     total = con.execute(f"SELECT COUNT(*) FROM {TABLE_NAME}").fetchone()[0]
     print(f"\n{'='*50}")
