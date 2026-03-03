@@ -201,6 +201,7 @@ This repo contains tools for:
 
 **Planning requirement:**
 - Every implementation plan must include a version control section: what branch to use, what files will be created/modified, and how commits will be structured
+- Every implementation plan must include a **worktree section**: create worktree before code changes, test, merge, then clean up worktree + branch
 
 **Pre-merge review (REQUIRED):**
 - Before merging any feature branch to `main`, perform an executive engineer review of the full diff (`git diff main..HEAD`)
