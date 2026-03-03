@@ -26,21 +26,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import websocket
+from dotenv import load_dotenv
 
 # Add Answer Keys to path for shared team name resolution
 sys.path.insert(0, str(Path(__file__).parent.parent / "Answer Keys"))
 from canonical_match import load_team_dict, load_canonical_games, resolve_team_names
+
+# Load credentials from shared .env
+env_path = Path(__file__).parent.parent / "bet_logger" / ".env"
+load_dotenv(env_path)
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
 WS_URL = "wss://pandora.ganchrow.com/socket.io/?EIO=4&transport=websocket"
-PARTNER_ID = "111"
-PREMATCH_KEY = "VEZBZ1VFbE9Ua0ZEVEVVZ1MwbENUQT09"
-# Prematch user/group — account-level IDs from HAR
-PREMATCH_USER_ID = 402574
-PREMATCH_GROUP_ID = 41548
+PARTNER_ID = os.getenv("BET105_PARTNER_ID", "111")
+PREMATCH_KEY = os.getenv("BET105_PREMATCH_KEY")
+PREMATCH_USER_ID = int(os.getenv("BET105_USER_ID", "0"))
+PREMATCH_GROUP_ID = int(os.getenv("BET105_GROUP_ID", "0"))
 
 DB_PATH = Path(__file__).parent / "bet105.duckdb"
 
@@ -147,8 +151,8 @@ class Bet105Scraper:
             try:
                 arr = json.loads(inner[1:])
                 self._on_sio_event(arr[0], arr[1:])
-            except (json.JSONDecodeError, IndexError):
-                pass
+            except (json.JSONDecodeError, IndexError) as e:
+                print(f"  Warning: Failed to parse SIO event: {e}")
             return
 
         # Socket.IO BINARY_EVENT (51-)
@@ -159,8 +163,8 @@ class Bet105Scraper:
                 arr = json.loads(inner[dash_idx + 1:])
                 if isinstance(arr, list) and len(arr) >= 1:
                     self.pending_binary_room = arr[0]
-            except (json.JSONDecodeError, ValueError):
-                pass
+            except (json.JSONDecodeError, ValueError) as e:
+                print(f"  Warning: Failed to parse binary event header: {e}")
             return
 
     def _on_binary_message(self, data: bytes):
@@ -173,7 +177,8 @@ class Bet105Scraper:
         try:
             decompressed = gzip.decompress(data).decode("utf-8")
             payload = json.loads(decompressed)
-        except Exception:
+        except Exception as e:
+            print(f"  Warning: Failed to decompress binary from {room}: {e}")
             return
 
         inner = payload.get("payload", {})
@@ -244,6 +249,10 @@ class Bet105Scraper:
                     }
 
         print(f"  Found {len(self.events)} {self.sport.upper()} events")
+        if len(self.events) == 0:
+            print(f"  WARNING: 0 events found for {self.sport.upper()}. "
+                  f"If games should exist, the PREMATCH_KEY may have rotated. "
+                  f"Check BET105_PREMATCH_KEY in .env.")
         self.event_data_done = True
 
         # Subscribe to coefficients for each event
@@ -361,6 +370,10 @@ class Bet105Scraper:
             self.ws.close()
         except Exception:
             pass
+
+        if not self.event_data_done:
+            print("  WARNING: Never received eventData. Connection may have been rejected. "
+                  "Check BET105_USER_ID and BET105_GROUP_ID in .env.")
 
         print(f"\n  Received coefficients for {len(self.coefficients)} events "
               f"({len(self.coeff_received)}/{len(self.coeff_subscribed)} responses)")
@@ -507,6 +520,11 @@ def scrape_bet105(sport: str):
     """Scrape Bet105 odds via LinePros WebSocket feed."""
     if sport not in SPORT_CONFIGS:
         raise ValueError(f"Unknown sport: {sport}. Available: {list(SPORT_CONFIGS.keys())}")
+
+    if not PREMATCH_KEY or not PREMATCH_USER_ID or not PREMATCH_GROUP_ID:
+        raise ValueError(
+            "BET105_PREMATCH_KEY, BET105_USER_ID, and BET105_GROUP_ID must be set in bet_logger/.env"
+        )
 
     init_database(sport)
 
