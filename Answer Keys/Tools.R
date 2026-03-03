@@ -4440,10 +4440,12 @@ bet_to_leg <- function(bet_row) {
   # Parse market type
   market_base <- gsub("_(h1|h2)$", "", clean_market)
   leg_market <- switch(market_base,
-    "h2h"          = "moneyline",
-    "spreads"      = "spread",
-    "totals"       = "total",
-    "team_totals"  = "team_total",
+    "h2h"               = "moneyline",
+    "spreads"            = "spread",
+    "totals"             = "total",
+    "team_totals"        = "team_total",
+    "team_totals_home"   = "team_total",
+    "team_totals_away"   = "team_total",
     stop(paste("Unknown market base:", market_base))
   )
 
@@ -4488,9 +4490,10 @@ multivariate_kelly <- function(bets_group, sample) {
   # Convert each bet to a leg and evaluate on the sample
   outcome_matrix <- matrix(NA_real_, nrow = nrow(sample), ncol = n)
   for (i in seq_len(n)) {
-    leg <- bet_to_leg(bets_group[i, ])
-    outcomes <- evaluate_leg(sample, leg)
-    # Convert TRUE/FALSE/NA to 1/0/NA
+    leg <- tryCatch(bet_to_leg(bets_group[i, ]), error = function(e) NULL)
+    if (is.null(leg)) return(NULL)
+    outcomes <- tryCatch(evaluate_leg(sample, leg), error = function(e) NULL)
+    if (is.null(outcomes) || length(outcomes) == 0) return(NULL)
     outcome_matrix[, i] <- as.numeric(outcomes)
   }
 
