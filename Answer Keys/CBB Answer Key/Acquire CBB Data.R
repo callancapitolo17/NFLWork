@@ -438,6 +438,12 @@ if ("--daily-pbp" %in% cli_args) {
       home_winner, went_to_ot
     )
 
+  # Filter to completed games only (must have both halves with valid scores)
+  # Without this, in-progress games get inserted with NAs and are never corrected
+  # (PRIMARY KEY dedup would skip them on future runs)
+  game_margins <- game_margins %>%
+    filter(!is.na(home_h2_score) & !is.na(home_final_score))
+
   # Filter to new games only (dedup against existing cbb_pbp_v2)
   new_games <- game_margins %>%
     filter(!(game_id %in% existing_ids))
