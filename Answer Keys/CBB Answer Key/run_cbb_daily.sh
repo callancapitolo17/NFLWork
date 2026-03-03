@@ -38,6 +38,9 @@ Rscript "$SCRIPT_DIR/build_betting_pbp.R" >> "$LOGFILE" 2>&1
 STEP3=$?
 echo "$(date) - [Step 3/3] Exit code: $STEP3" >> "$LOGFILE"
 
+# Clean up logs older than 30 days
+find "$LOGDIR" -name "run_*.log" -mtime +30 -delete 2>/dev/null
+
 # Summary
 if [ $STEP1 -eq 0 ] && [ $STEP2 -eq 0 ] && [ $STEP3 -eq 0 ]; then
   echo "$(date) - All steps completed successfully" >> "$LOGFILE"

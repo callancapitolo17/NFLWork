@@ -288,6 +288,7 @@ if ("--daily" %in% cli_args) {
   message("Running in --daily mode: filling gap from last acquired date to yesterday")
 
   con <- dbConnect(duckdb(), dbdir = DB_PATH)
+  on.exit(dbDisconnect(con, shutdown = TRUE), add = TRUE)
 
   last_date <- tryCatch({
     dbGetQuery(con, sprintf("SELECT MAX(DATE(commence_time)) as d FROM %s", TABLE_NAME))$d
@@ -337,6 +338,7 @@ if ("--daily-pbp" %in% cli_args) {
   }
 
   con <- dbConnect(duckdb(), dbdir = DB_PATH)
+  on.exit(dbDisconnect(con, shutdown = TRUE), add = TRUE)
 
   # Check existing data in cbb_pbp_v2
   existing_ids <- tryCatch({
@@ -426,7 +428,11 @@ if ("--daily-pbp" %in% cli_args) {
       away_final_score = as.integer(away_score_end_h2 + away_ot_score),
       game_home_margin_fg = as.integer(home_final_score - away_final_score),
       game_total_fg = as.integer(home_final_score + away_final_score),
-      home_winner = as.integer(home_final_score > away_final_score),
+      home_winner = case_when(
+        home_final_score > away_final_score ~ 1L,
+        home_final_score < away_final_score ~ 0L,
+        TRUE ~ NA_integer_
+      ),
       game_id = as.character(game_id)
     ) %>%
     select(
@@ -477,7 +483,6 @@ if ("--daily-pbp" %in% cli_args) {
   total <- dbGetQuery(con, "SELECT COUNT(*) as n FROM cbb_pbp_v2")$n
   message(sprintf("Complete. Total games in cbb_pbp_v2: %d", total))
 
-  dbDisconnect(con, shutdown = TRUE)
   quit(save = "no", status = 0)
 }
 

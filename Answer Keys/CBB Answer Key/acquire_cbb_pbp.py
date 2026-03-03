@@ -2,7 +2,7 @@
 """
 Acquire CBB game scores using CBBpy - Simple sequential version.
 Run overnight: nohup python -u acquire_cbb_pbp.py --all > acquire.log 2>&1 &
-Daily cron:    python3 acquire_cbb_pbp.py --daily
+Note: Daily cron uses hoopR (R) instead — see Acquire CBB Data.R --daily-pbp
 """
 
 import cbbpy.mens_scraper as scraper
@@ -131,12 +131,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--season', type=int)
     parser.add_argument('--all', action='store_true')
-    parser.add_argument('--daily', action='store_true',
-                        help='Fill gap from last acquired date to yesterday')
     parser.add_argument('--db', type=str, help='Custom database path')
     args = parser.parse_args()
 
-    if not args.season and not args.all and not args.daily:
+    if not args.season and not args.all:
         parser.print_help()
         sys.exit(1)
 
@@ -177,38 +175,15 @@ def main():
 
     print(f"Existing: {len(existing)} games")
 
-    if args.daily:
-        # Dynamic lookback: query DB for last acquired date, fill to yesterday
-        try:
-            last_date_str = con.execute(
-                f"SELECT MAX(game_date) FROM {TABLE_NAME}"
-            ).fetchone()[0]
-            start_date = datetime.strptime(last_date_str, "%Y-%m-%d")
-        except:
-            # No data yet — start from current season
-            now = datetime.now()
-            start_date = datetime(now.year if now.month >= 11 else now.year - 1, 11, 1)
+    seasons = [args.season] if args.season else [2021, 2022, 2023, 2024, 2025, 2026]
+    print(f"CBB PBP Acquisition - Season {args.season if args.season else 'ALL'}")
+    print("=" * 50)
 
-        end_date = datetime.now() - timedelta(days=1)
-
-        if start_date > end_date:
-            print("Already up to date — nothing to fetch.")
-        else:
-            print(f"CBB PBP Daily Acquisition")
-            print("=" * 50)
-            process_date_range(con, existing, start_date, end_date, "Daily fill")
-
-    else:
-        # Season-based acquisition
-        seasons = [args.season] if args.season else [2021, 2022, 2023, 2024, 2025, 2026]
-        print(f"CBB PBP Acquisition - Season {args.season if args.season else 'ALL'}")
-        print("=" * 50)
-
-        for season in seasons:
-            start_date = datetime(season - 1, 11, 1)
-            end_date = datetime(season, 4, 15)
-            process_date_range(con, existing, start_date, end_date,
-                               f"Season {season-1}-{str(season)[2:]}")
+    for season in seasons:
+        start_date = datetime(season - 1, 11, 1)
+        end_date = datetime(season, 4, 15)
+        process_date_range(con, existing, start_date, end_date,
+                           f"Season {season-1}-{str(season)[2:]}")
 
     total = con.execute(f"SELECT COUNT(*) FROM {TABLE_NAME}").fetchone()[0]
     print(f"\n{'='*50}")
