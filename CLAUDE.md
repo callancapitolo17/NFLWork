@@ -139,6 +139,9 @@ This repo contains tools for:
 1. Make sure to keep everything organized. If you are creating a file temporarily, make sure to remove it after.
 2. Keep files in check, do not spam create new files.
 3. **No temp files** - Avoid creating temporary files (`.rds`, `.csv`, `.tmp`) on disk. Use DuckDB tables for shared state between processes instead.
+4. **Never use backslash-escaped spaces in file paths** - Always use double quotes instead. Backslash escapes trigger a hardcoded Claude Code security prompt that cannot be suppressed.
+   - Bad: `ls /Users/callancapitolo/NFLWork/Answer\ Keys/Tools.R`
+   - Good: `ls "/Users/callancapitolo/NFLWork/Answer Keys/Tools.R"`
 
 ## Version Control Rules
 
