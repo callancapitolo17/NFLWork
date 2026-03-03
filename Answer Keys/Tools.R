@@ -591,6 +591,28 @@ format_bets_table <- function(
     select(home_team, away_team, pt_start_time, bookmaker_key, market, bet_on, bet_size = size, ev, odds, prob)
 }
 
+#searchable bets table viewer
+search_bets <- function(bets) {
+  if (!requireNamespace("DT", quietly = TRUE)) install.packages("DT")
+
+  DT::datatable(
+    bets,
+    filter = "top",
+    options = list(
+      pageLength = 25,
+      order = list(list(6, "desc")),  # sort by bet_size descending
+      autoWidth = TRUE,
+      search = list(regex = TRUE, caseInsensitive = TRUE)
+    ),
+    rownames = FALSE
+  ) %>%
+    DT::formatRound(columns = c("bet_size", "ev", "prob"), digits = 3) %>%
+    DT::formatRound(columns = "odds", digits = 0) %>%
+    DT::formatStyle(
+      "ev",
+      background = DT::styleInterval(c(0, 0.05), c("#ffcccc", "#ffffcc", "#ccffcc"))
+    )
+}
 
 # Entire Moneyline Process ----
 build_moneyline_market <- function(
