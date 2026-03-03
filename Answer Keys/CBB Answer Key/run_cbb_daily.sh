@@ -24,10 +24,10 @@ Rscript "$SCRIPT_DIR/Acquire CBB Data.R" --daily >> "$LOGFILE" 2>&1
 STEP1=$?
 echo "$(date) - [Step 1/3] Exit code: $STEP1" >> "$LOGFILE"
 
-# Step 2: Acquire PBP scores (dynamic gap fill)
+# Step 2: Acquire PBP scores via hoopR (dynamic dedup against cbb_pbp_v2)
 echo "$(date) - [Step 2/3] Acquiring PBP scores..." >> "$LOGFILE"
-cd "$SCRIPT_DIR"
-python3 "$SCRIPT_DIR/acquire_cbb_pbp.py" --daily >> "$LOGFILE" 2>&1
+cd "$ANSWER_KEYS_DIR"
+Rscript "$SCRIPT_DIR/Acquire CBB Data.R" --daily-pbp >> "$LOGFILE" 2>&1
 STEP2=$?
 echo "$(date) - [Step 2/3] Exit code: $STEP2" >> "$LOGFILE"
 
