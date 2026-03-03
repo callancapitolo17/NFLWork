@@ -41,12 +41,37 @@ load_dotenv(env_path)
 # =============================================================================
 
 WS_URL = "wss://pandora.ganchrow.com/socket.io/?EIO=4&transport=websocket"
-PARTNER_ID = os.getenv("BET105_PARTNER_ID", "111")
-PREMATCH_KEY = os.getenv("BET105_PREMATCH_KEY")
-PREMATCH_USER_ID = int(os.getenv("BET105_USER_ID", "0"))
-PREMATCH_GROUP_ID = int(os.getenv("BET105_GROUP_ID", "0"))
-
 DB_PATH = Path(__file__).parent / "bet105.duckdb"
+SESSION_PATH = Path(__file__).parent / ".bet105_session.json"
+
+
+def _load_auth_params() -> dict:
+    """Load auth params from session file (preferred) or .env (fallback)."""
+    # Try session file first (recon output, most up-to-date)
+    if SESSION_PATH.exists():
+        try:
+            with open(SESSION_PATH) as f:
+                session = json.load(f)
+            if session.get("prematch_key") and session.get("user_id") and session.get("group_id"):
+                return {
+                    "partner_id": session.get("partner_id", "111"),
+                    "prematch_key": session["prematch_key"],
+                    "user_id": int(session["user_id"]),
+                    "group_id": int(session["group_id"]),
+                }
+        except (json.JSONDecodeError, OSError, ValueError):
+            pass
+
+    # Fall back to .env
+    return {
+        "partner_id": os.getenv("BET105_PARTNER_ID", "111"),
+        "prematch_key": os.getenv("BET105_PREMATCH_KEY", ""),
+        "user_id": int(os.getenv("BET105_USER_ID", "0")),
+        "group_id": int(os.getenv("BET105_GROUP_ID", "0")),
+    }
+
+
+AUTH = _load_auth_params()
 
 SPORT_CONFIGS = {
     "cbb": {
@@ -196,19 +221,19 @@ class Bet105Scraper:
 
         # Set metadata
         self._send_sio_event("setSocketMetadata", {
-            "partnerId": PARTNER_ID,
+            "partnerId": AUTH["partner_id"],
             "flavor": "prematch",
         })
 
         # Subscribe to system events
         self._send_sio_event("subscribeSystemEvents", {
-            "partnerId": PARTNER_ID,
-            "groupId": PREMATCH_GROUP_ID,
-            "userId": PREMATCH_USER_ID,
+            "partnerId": AUTH["partner_id"],
+            "groupId": AUTH["group_id"],
+            "userId": AUTH["user_id"],
         })
 
         # Subscribe to event data (game list)
-        room = f"prematch.main.{PREMATCH_KEY}.eventData"
+        room = f"prematch.main.{AUTH['prematch_key']}.eventData"
         self._send_sio_subscribe([room])
 
     def _on_sio_event(self, event_name: str, args: list):
@@ -257,7 +282,7 @@ class Bet105Scraper:
 
         # Subscribe to coefficients for each event
         for event_id in self.events:
-            room = f"prematch.main.{PREMATCH_KEY}.eventCoefficients.{event_id}"
+            room = f"prematch.main.{AUTH['prematch_key']}.eventCoefficients.{event_id}"
             self._send_sio_subscribe([room])
             self.coeff_subscribed.add(event_id)
 
@@ -516,15 +541,39 @@ def save_to_database(sport: str, odds_data: list):
 # =============================================================================
 
 
+def refresh_session():
+    """Run recon_bet105.py to capture fresh auth params from browser."""
+    import subprocess
+    recon_script = Path(__file__).parent / "recon_bet105.py"
+    python = sys.executable
+    print(f"\nRunning recon script to refresh session...")
+    try:
+        subprocess.run([python, str(recon_script)], check=True)
+    except subprocess.CalledProcessError:
+        print("  Recon script failed.")
+        return False
+
+    if SESSION_PATH.exists():
+        # Reload auth params from fresh session
+        global AUTH
+        AUTH = _load_auth_params()
+        print(f"  Session refreshed: prematch_key={AUTH['prematch_key'][:20]}...")
+        return True
+    return False
+
+
 def scrape_bet105(sport: str):
     """Scrape Bet105 odds via LinePros WebSocket feed."""
     if sport not in SPORT_CONFIGS:
         raise ValueError(f"Unknown sport: {sport}. Available: {list(SPORT_CONFIGS.keys())}")
 
-    if not PREMATCH_KEY or not PREMATCH_USER_ID or not PREMATCH_GROUP_ID:
-        raise ValueError(
-            "BET105_PREMATCH_KEY, BET105_USER_ID, and BET105_GROUP_ID must be set in bet_logger/.env"
-        )
+    if not AUTH["prematch_key"] or not AUTH["user_id"] or not AUTH["group_id"]:
+        print("No auth params in .env or session file. Running recon...")
+        if not refresh_session():
+            raise ValueError(
+                "BET105_PREMATCH_KEY, BET105_USER_ID, and BET105_GROUP_ID must be set in "
+                "bet_logger/.env, or run recon_bet105.py to capture them from the browser."
+            )
 
     init_database(sport)
 
