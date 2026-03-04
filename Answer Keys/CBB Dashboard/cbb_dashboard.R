@@ -1159,6 +1159,33 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
         // ============ LIVE CORRELATION RECALCULATION ============
         var _corrRecalcRunning = false;
+
+        // Track bets placed/updated/removed during this session so we can
+        // re-apply their visual state after reactable re-renders (React
+        // rebuilds the DOM from its initial state, wiping JS modifications).
+        var _sessionPlaced = {};
+
+        function reapplyPlacedStates() {
+          var tables = document.querySelectorAll(".table-container:not(.placed-section)");
+          var table = tables.length > 0 ? tables[tables.length - 1] : null;
+          if (!table) return;
+          table.querySelectorAll("button[data-hash]").forEach(function(btn) {
+            var hash = btn.dataset.hash;
+            var state = _sessionPlaced[hash];
+            if (!state) return;
+            btn.className = state.className;
+            btn.textContent = state.text;
+            btn.setAttribute("data-fill-status", state.fillStatus);
+            btn.dataset.actual = state.actual || "";
+            if (state.action === "remove") {
+              btn.onclick = function() { removeBet(this); };
+            } else if (state.action === "update") {
+              btn.onclick = function() { updateBet(this); };
+            } else if (state.action === "place") {
+              btn.onclick = function() { placeBet(this); };
+            }
+          });
+        }
         function getMarketGroup(market) {
           var groups = window.MARKET_RELATIONSHIPS.market_groups;
           for (var gName in groups) {
@@ -1316,6 +1343,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             if (_corrRecalcRunning) return;
             if (corrTimer) clearTimeout(corrTimer);
             corrTimer = setTimeout(function() {
+              // Re-apply placed states first (React re-renders wipe JS modifications)
+              reapplyPlacedStates();
               var tables = document.querySelectorAll(".table-container:not(.placed-section)");
               var table = tables.length > 0 ? tables[tables.length - 1] : null;
               if (table) {
@@ -1847,12 +1876,14 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                     btn.textContent = \'Placed\';
                     btn.setAttribute(\'data-fill-status\', \'placed\');
                     btn.onclick = function() { removeBet(this); };
+                    _sessionPlaced[btn.dataset.hash] = { className: \'btn-placed\', text: \'Placed\', fillStatus: \'placed\', actual: actualSize, action: \'remove\' };
                   } else {
                     var diff = Math.round(recommended) - Math.round(actualSize);
                     btn.className = \'btn-partial\';
                     btn.textContent = \'Partial -$\' + diff.toFixed(0);
                     btn.setAttribute(\'data-fill-status\', \'partial\');
                     btn.onclick = function() { updateBet(this); };
+                    _sessionPlaced[btn.dataset.hash] = { className: \'btn-partial\', text: \'Partial -$\' + diff.toFixed(0), fillStatus: \'partial\', actual: actualSize, action: \'update\' };
                   }
                   showToast("Bet placed: $" + actualSize.toFixed(0), "success");
                   recalcCorrelations(btn.dataset.gameId);
@@ -1937,10 +1968,12 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                     btn.textContent = \'Placed\';
                     btn.setAttribute(\'data-fill-status\', \'placed\');
                     btn.onclick = function() { removeBet(this); };
+                    _sessionPlaced[btn.dataset.hash] = { className: \'btn-placed\', text: \'Placed\', fillStatus: \'placed\', actual: newAmount, action: \'remove\' };
                   } else {
                     var diff = Math.round(recommended) - Math.round(newAmount);
                     btn.textContent = \'Partial -$\' + diff.toFixed(0);
                     btn.setAttribute(\'data-fill-status\', \'partial\');
+                    _sessionPlaced[btn.dataset.hash] = { className: \'btn-partial\', text: \'Partial -$\' + diff.toFixed(0), fillStatus: \'partial\', actual: newAmount, action: \'update\' };
                   }
                   showToast("Updated to $" + newAmount.toFixed(0), "success");
                   recalcCorrelations(btn.dataset.gameId);
@@ -1980,6 +2013,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 btn.setAttribute("data-fill-status", "not_placed");
                 btn.dataset.actual = "";
                 btn.onclick = function() { placeBet(this); };
+                _sessionPlaced[btn.dataset.hash] = { className: "btn-place", text: "Place", fillStatus: "not_placed", actual: "", action: "place" };
                 showToast("Removed", "success");
                 recalcCorrelations(btn.dataset.gameId);
               }

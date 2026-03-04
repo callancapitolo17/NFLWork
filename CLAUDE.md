@@ -142,6 +142,7 @@ This repo contains tools for:
 4. **Never use backslash-escaped spaces in file paths** - Always use double quotes instead. Backslash escapes trigger a hardcoded Claude Code security prompt that cannot be suppressed.
    - Bad: `ls /Users/callancapitolo/NFLWork/Answer\ Keys/Tools.R`
    - Good: `ls "/Users/callancapitolo/NFLWork/Answer Keys/Tools.R"`
+5. **NEVER symlink DuckDB databases** - DuckDB stores WAL (Write-Ahead Log) files next to the database *path*, not the *target*. Symlinking a `.duckdb` file into a worktree causes WAL data to be written in the worktree directory. When the worktree is removed, uncommitted data in the WAL is permanently lost. **Always copy `.duckdb` files instead**, or better yet, test from `main` after merging.
 
 ## Version Control Rules
 
