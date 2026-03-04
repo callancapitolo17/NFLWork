@@ -4644,7 +4644,11 @@ multivariate_kelly <- function(bets_group, sample) {
   # Covariance matrix: Σ_ij = R_ij * σ_i * σ_j
   Sigma <- R * outer(sigmas, sigmas)
 
-  # Check condition number
+  # Ridge regularization: prevents singularity from near-duplicate bets
+  # (e.g., Under +75.5 placed vs Under +75 pipeline have ρ ≈ 0.99)
+  Sigma <- Sigma + diag(ncol(Sigma)) * 0.01
+
+  # Check condition number (rarely triggers after regularization)
   if (kappa(Sigma) > 100) return(NULL)
 
   # EV vector (already computed in the bet table)
@@ -4662,7 +4666,8 @@ multivariate_kelly <- function(bets_group, sample) {
 
   list(
     f_star     = f_star,
-    cor_matrix = R
+    cor_matrix = R,
+    cov_matrix = Sigma
   )
 }
 
@@ -4756,19 +4761,53 @@ adjust_kelly_for_correlation <- function(bets_df, samples, bankroll, kelly_mult,
 
     mv_result <- multivariate_kelly(bets_group, game_sample)
 
-    if (!is.null(mv_result)) {
-      # Primary: multivariate Kelly — only apply to new bets
-      mv_fracs <- mv_result$f_star[new_positions]
-      mv_sizes <- mv_fracs * kelly_mult * bankroll
-      mv_sizes <- round(mv_sizes, 2)
-      original_sizes <- new_bets$bet_size
-      mv_sizes <- pmin(mv_sizes, original_sizes * 1.5)
-      mv_sizes <- pmax(mv_sizes, 0)
+    kelly_applied <- FALSE
 
-      bets_df$bet_size[idx] <- mv_sizes
-      bets_df$correlation_adj[idx] <- ifelse(original_sizes > 0, mv_sizes / original_sizes, 1.0)
-      n_mv <- n_mv + 1L
-    } else {
+    if (!is.null(mv_result)) {
+      original_sizes <- new_bets$bet_size
+
+      if (n_placed_in_group > 0) {
+        # Conditional Kelly: account for existing placed exposure
+        # f_new* = Σ_nn⁻¹ × (μ_new − Σ_np × f_placed)
+        # Penalty term reduces recommendations proportionally to how much
+        # is already wagered on correlated positions
+        p_idx <- 1:n_placed_in_group
+        n_idx <- new_positions
+        Sigma <- mv_result$cov_matrix
+        Sigma_nn <- Sigma[n_idx, n_idx, drop = FALSE]
+        Sigma_np <- Sigma[n_idx, p_idx, drop = FALSE]
+
+        f_placed <- bets_group$bet_size[p_idx] / (kelly_mult * bankroll)
+        mu_new <- bets_group$ev[n_idx]
+        adjusted_mu <- as.numeric(mu_new - Sigma_np %*% f_placed)
+
+        f_new_star <- tryCatch(solve(Sigma_nn, adjusted_mu), error = function(e) NULL)
+        if (!is.null(f_new_star)) {
+          mv_sizes <- pmax(as.numeric(f_new_star), 0) * kelly_mult * bankroll
+          mv_sizes <- round(mv_sizes, 2)
+          mv_sizes <- pmin(mv_sizes, original_sizes * 1.5)
+
+          bets_df$bet_size[idx] <- mv_sizes
+          bets_df$correlation_adj[idx] <- ifelse(original_sizes > 0, mv_sizes / original_sizes, 1.0)
+          n_mv <- n_mv + 1L
+          kelly_applied <- TRUE
+        }
+      } else {
+        # Standard multivariate Kelly (no placed bets in group)
+        mv_fracs <- mv_result$f_star[new_positions]
+        mv_sizes <- mv_fracs * kelly_mult * bankroll
+        mv_sizes <- round(mv_sizes, 2)
+        mv_sizes <- pmin(mv_sizes, original_sizes * 1.5)
+        mv_sizes <- pmax(mv_sizes, 0)
+
+        bets_df$bet_size[idx] <- mv_sizes
+        bets_df$correlation_adj[idx] <- ifelse(original_sizes > 0, mv_sizes / original_sizes, 1.0)
+        n_mv <- n_mv + 1L
+        kelly_applied <- TRUE
+      }
+    }
+
+    if (!kelly_applied) {
       # Fallback: per-bet average ρ on the full group
       n_all <- nrow(bets_group)
       outcome_matrix <- matrix(NA_real_, nrow = nrow(game_sample), ncol = n_all)
@@ -4795,8 +4834,18 @@ adjust_kelly_for_correlation <- function(bets_df, samples, bankroll, kelly_mult,
       }
 
       # Only adjust new bets (positions after placed bets in the group)
+      p_idx <- if (n_placed_in_group > 0) 1:n_placed_in_group else integer(0)
       for (j in seq_len(n_new)) {
         i <- new_positions[j]  # position in full group
+
+        # If any placed bet is highly correlated (ρ > 0.90), set to $0
+        # (fallback can't properly compute conditional Kelly subtraction)
+        if (n_placed_in_group > 0 && max(R[i, p_idx]) > 0.90) {
+          bets_df$bet_size[idx[j]] <- 0
+          bets_df$correlation_adj[idx[j]] <- 0
+          next
+        }
+
         avg_rho_i <- mean(R[i, -i])
         denom <- 1 + (n_all - 1) * avg_rho_i
         scale_i <- if (denom <= 0) 1.5 else min(1.5, 1 / sqrt(denom))

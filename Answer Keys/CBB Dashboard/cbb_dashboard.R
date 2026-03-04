@@ -265,7 +265,7 @@ create_bets_table <- function(all_bets, placed_bets, relationships) {
         is.na(placed_actual) | is.na(placed_rec) | round(placed_actual) >= round(placed_rec) ~ "placed",
         TRUE ~ "partial"
       ),
-      fill_diff = ifelse(fill_status == "partial", round(placed_rec) - round(placed_actual), NA_real_),
+      fill_diff = ifelse(fill_status == "partial", round(bet_size) - round(placed_actual), NA_real_),
       # Correlation warnings
       has_correlation = sapply(correlation_info, function(x) x$has_correlation),
       correlation_level = sapply(correlation_info, function(x) if (x$has_correlation) x$level else "none"),
