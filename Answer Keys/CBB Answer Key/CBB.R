@@ -624,8 +624,23 @@ if (nrow(bet105_odds) > 0) {
     b105_ml_bets$bets %>% mutate(market_type = "moneyline")
   )
   cat(sprintf("Added %d Bet105 bets to predictions.\n", nrow(bet105_bets)))
+
+  bet105_alt_bets <- compare_alts_to_samples(
+    samples = samples,
+    offshore_odds = bet105_odds,
+    consensus_odds = cbb_odds,
+    bankroll = bankroll,
+    kelly_mult = kelly_mult,
+    ev_threshold = 0.05
+  )
+  if (nrow(bet105_alt_bets) > 0) {
+    bet105_alt_bets <- bet105_alt_bets %>%
+      mutate(market_type = ifelse(grepl("spread", market), "spreads", "totals"))
+  }
+  cat(sprintf("Added %d Bet105 alt line bets from samples.\n", nrow(bet105_alt_bets)))
 } else {
   bet105_bets <- tibble()
+  bet105_alt_bets <- tibble()
 }
 timer$mark("compare_offshore")
 
@@ -640,7 +655,8 @@ all_bets_combined <- bind_rows(
   bfa_bets,
   bfa_alt_bets,
   bookmaker_bets,
-  bet105_bets
+  bet105_bets,
+  bet105_alt_bets
 ) %>%
   filter(is.na(pt_start_time) | pt_start_time > Sys.time()) %>%
   mutate(base_market = gsub("^alternate_", "", market)) %>%
