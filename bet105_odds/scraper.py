@@ -132,6 +132,7 @@ class Bet105Scraper:
         self.event_data_done = False
         self.coeff_subscribed = set()
         self.coeff_received = set()
+        self._unknown_types = set()
 
     def _send_sio_event(self, event: str, data):
         """Send a Socket.IO event (type 42 = EIO message + SIO event)."""
@@ -287,7 +288,7 @@ class Bet105Scraper:
             self.coeff_subscribed.add(event_id)
 
     def _handle_coefficients(self, event_id: str, payload: dict):
-        """Parse eventCoefficients to extract spread/total/ML odds."""
+        """Parse eventCoefficients to extract spread/total/ML odds + alt lines."""
         self.coeff_received.add(event_id)
 
         coeffs = payload.get("c", {})
@@ -309,23 +310,42 @@ class Bet105Scraper:
                 record["away_ml"] = decimal_to_american(ml_odds["1"])
                 record["home_ml"] = decimal_to_american(ml_odds["2"])
 
-            # Type 5 = Total
+            # Type 5 = Total (main + alts)
             total_data = period_data.get("5", {})
             total_odds = total_data.get("o", {})
             main_total = total_data.get("r")
+            main_total_key = None
             if main_total is not None:
-                key = str(main_total)
-                # Try int key if float key doesn't exist
-                if key not in total_odds and "." not in key:
-                    key = str(float(main_total))
-                if key in total_odds:
-                    arr = total_odds[key]
+                main_total_key = str(main_total)
+                if main_total_key not in total_odds and "." not in main_total_key:
+                    main_total_key = str(float(main_total))
+                if main_total_key in total_odds:
+                    arr = total_odds[main_total_key]
                     if isinstance(arr, list) and len(arr) >= 2:
                         record["total"] = float(main_total)
                         record["over_price"] = decimal_to_american(arr[0])
                         record["under_price"] = decimal_to_american(arr[1])
 
-            # Type 6 = Spread
+            # Alt totals
+            alt_totals = []
+            for line_key, arr in total_odds.items():
+                if not isinstance(arr, list) or len(arr) < 2:
+                    continue
+                try:
+                    line_val = float(line_key)
+                except (ValueError, TypeError):
+                    continue
+                if main_total is not None and abs(line_val - float(main_total)) < 0.001:
+                    continue
+                if main_total is not None and abs(line_val - float(main_total)) > 25:
+                    continue
+                over = decimal_to_american(arr[0])
+                under = decimal_to_american(arr[1])
+                if over is not None and under is not None:
+                    alt_totals.append({"total": line_val, "over_price": over, "under_price": under})
+            record["alt_totals"] = alt_totals
+
+            # Type 6 = Spread (main + alts)
             spread_data = period_data.get("6", {})
             spread_odds = spread_data.get("o", {})
             main_spread = spread_data.get("r")
@@ -340,6 +360,36 @@ class Bet105Scraper:
                         record["away_spread_price"] = decimal_to_american(arr[0])
                         record["home_spread"] = -float(main_spread)
                         record["home_spread_price"] = decimal_to_american(arr[1])
+
+            # Alt spreads
+            alt_spreads = []
+            for line_key, arr in spread_odds.items():
+                if not isinstance(arr, list) or len(arr) < 2:
+                    continue
+                try:
+                    line_val = float(line_key)
+                except (ValueError, TypeError):
+                    continue
+                if main_spread is not None and abs(line_val - float(main_spread)) < 0.001:
+                    continue
+                if main_spread is not None and abs(line_val - float(main_spread)) > 15:
+                    continue
+                away_price = decimal_to_american(arr[0])
+                home_price = decimal_to_american(arr[1])
+                if away_price is not None and home_price is not None:
+                    alt_spreads.append({
+                        "away_spread": line_val,
+                        "away_spread_price": away_price,
+                        "home_spread": -line_val,
+                        "home_spread_price": home_price,
+                    })
+            record["alt_spreads"] = alt_spreads
+
+            # Track unknown coefficient types for discovery (logged as summary)
+            known_types = {"3", "5", "6"}
+            unknown = set(period_data.keys()) - known_types
+            if unknown:
+                self._unknown_types.update(unknown)
 
             if record:
                 parsed[period_label] = record
@@ -402,6 +452,8 @@ class Bet105Scraper:
 
         print(f"\n  Received coefficients for {len(self.coefficients)} events "
               f"({len(self.coeff_received)}/{len(self.coeff_subscribed)} responses)")
+        if self._unknown_types:
+            print(f"  Note: Unknown coefficient types found: {self._unknown_types} (possible team totals)")
 
         return self._build_records()
 
@@ -443,8 +495,10 @@ class Bet105Scraper:
 
             for period_label, odds in coeffs.items():
                 market = "spreads" if period_label == "fg" else "spreads_h1"
+                suffix = "" if period_label == "fg" else "_h1"
 
-                record = {
+                # Main line record
+                base = {
                     "fetch_time": fetch_time,
                     "sport_key": sport_key,
                     "game_id": str(event_id),
@@ -452,8 +506,11 @@ class Bet105Scraper:
                     "game_time": game_time,
                     "away_team": away_team,
                     "home_team": home_team,
-                    "market": market,
                     "period": period_label,
+                }
+                record = {
+                    **base,
+                    "market": market,
                     "away_spread": odds.get("away_spread"),
                     "away_spread_price": odds.get("away_spread_price"),
                     "home_spread": odds.get("home_spread"),
@@ -465,6 +522,32 @@ class Bet105Scraper:
                     "home_ml": odds.get("home_ml"),
                 }
                 records.append(record)
+
+                # Alt spread records
+                for alt in odds.get("alt_spreads", []):
+                    records.append({
+                        **base,
+                        "market": f"alternate_spreads{suffix}",
+                        "away_spread": alt["away_spread"],
+                        "away_spread_price": alt["away_spread_price"],
+                        "home_spread": alt["home_spread"],
+                        "home_spread_price": alt["home_spread_price"],
+                        "total": None, "over_price": None, "under_price": None,
+                        "away_ml": None, "home_ml": None,
+                    })
+
+                # Alt total records
+                for alt in odds.get("alt_totals", []):
+                    records.append({
+                        **base,
+                        "market": f"alternate_totals{suffix}",
+                        "away_spread": None, "away_spread_price": None,
+                        "home_spread": None, "home_spread_price": None,
+                        "total": alt["total"],
+                        "over_price": alt["over_price"],
+                        "under_price": alt["under_price"],
+                        "away_ml": None, "home_ml": None,
+                    })
 
         return records
 
