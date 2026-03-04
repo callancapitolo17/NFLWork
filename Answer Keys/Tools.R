@@ -3408,8 +3408,8 @@ get_bet105_odds <- function(
       result_list[[length(result_list) + 1]] <- spread_rec
     }
 
-    # Totals record
-    if (!is.na(row$total)) {
+    # Totals record (exclude team totals which have their own block)
+    if (!is.na(row$total) && !grepl("team_totals_", row$market)) {
       totals_market <- gsub("spreads", "totals", row$market)
       totals_rec <- c(base, list(
         market = totals_market,
@@ -3437,6 +3437,20 @@ get_bet105_odds <- function(
       ))
       result_list[[length(result_list) + 1]] <- ml_rec
     }
+
+    # Team totals record
+    if (grepl("team_totals_", row$market) && !is.na(row$total)) {
+      tt_rec <- c(base, list(
+        market = row$market,
+        market_type = "team_totals",
+        line = row$total,
+        odds_away = NA_integer_,
+        odds_home = NA_integer_,
+        odds_over = row$over_price,
+        odds_under = row$under_price
+      ))
+      result_list[[length(result_list) + 1]] <- tt_rec
+    }
   }
 
   if (length(result_list) == 0) {
@@ -3445,11 +3459,12 @@ get_bet105_odds <- function(
 
   result <- bind_rows(lapply(result_list, as.data.frame))
 
-  cat(sprintf("Loaded %d Bet105 odds records (%d spreads, %d totals, %d ML)\n",
+  cat(sprintf("Loaded %d Bet105 odds records (%d spreads, %d totals, %d ML, %d team_totals)\n",
               nrow(result),
               sum(result$market_type == "spreads"),
               sum(result$market_type == "totals"),
-              sum(result$market_type == "h2h")))
+              sum(result$market_type == "h2h"),
+              sum(result$market_type == "team_totals")))
 
   result <- resolve_offshore_teams(result, sport = sport)
   return(result)

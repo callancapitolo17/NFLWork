@@ -385,8 +385,43 @@ class Bet105Scraper:
                     })
             record["alt_spreads"] = alt_spreads
 
-            # Track unknown coefficient types for discovery (logged as summary)
-            known_types = {"3", "5", "6"}
+            # Type 7 = Away team total, Type 8 = Home team total
+            for tt_type, tt_key in [("7", "away_tt"), ("8", "home_tt")]:
+                tt_data = period_data.get(tt_type, {})
+                tt_odds = tt_data.get("o", {})
+                tt_main = tt_data.get("r")
+                if tt_main is not None:
+                    key = str(tt_main)
+                    if key not in tt_odds and "." not in key:
+                        key = str(float(tt_main))
+                    if key in tt_odds:
+                        arr = tt_odds[key]
+                        if isinstance(arr, list) and len(arr) >= 2:
+                            record[f"{tt_key}_total"] = float(tt_main)
+                            record[f"{tt_key}_over"] = decimal_to_american(arr[0])
+                            record[f"{tt_key}_under"] = decimal_to_american(arr[1])
+
+                # Alt team totals
+                tt_alts = []
+                for line_key, arr in tt_odds.items():
+                    if not isinstance(arr, list) or len(arr) < 2:
+                        continue
+                    try:
+                        line_val = float(line_key)
+                    except (ValueError, TypeError):
+                        continue
+                    if tt_main is not None and abs(line_val - float(tt_main)) < 0.001:
+                        continue
+                    if tt_main is not None and abs(line_val - float(tt_main)) > 15:
+                        continue
+                    over = decimal_to_american(arr[0])
+                    under = decimal_to_american(arr[1])
+                    if over is not None and under is not None:
+                        tt_alts.append({"total": line_val, "over_price": over, "under_price": under})
+                record[f"{tt_key}_alts"] = tt_alts
+
+            # Track unknown coefficient types for discovery
+            known_types = {"3", "5", "6", "7", "8"}
             unknown = set(period_data.keys()) - known_types
             if unknown:
                 self._unknown_types.update(unknown)
@@ -548,6 +583,33 @@ class Bet105Scraper:
                         "under_price": alt["under_price"],
                         "away_ml": None, "home_ml": None,
                     })
+
+                # Team total records (main + alts)
+                tt_null = {
+                    "away_spread": None, "away_spread_price": None,
+                    "home_spread": None, "home_spread_price": None,
+                    "away_ml": None, "home_ml": None,
+                }
+                for tt_key, side in [("away_tt", "away"), ("home_tt", "home")]:
+                    tt_total = odds.get(f"{tt_key}_total")
+                    tt_over = odds.get(f"{tt_key}_over")
+                    tt_under = odds.get(f"{tt_key}_under")
+                    if tt_total is not None:
+                        records.append({
+                            **base, **tt_null,
+                            "market": f"team_totals_{side}{suffix}",
+                            "total": tt_total,
+                            "over_price": tt_over,
+                            "under_price": tt_under,
+                        })
+                    for alt in odds.get(f"{tt_key}_alts", []):
+                        records.append({
+                            **base, **tt_null,
+                            "market": f"team_totals_{side}{suffix}",
+                            "total": alt["total"],
+                            "over_price": alt["over_price"],
+                            "under_price": alt["under_price"],
+                        })
 
         return records
 
