@@ -80,6 +80,19 @@ def init_db():
         ON CONFLICT (param) DO NOTHING
     """)
 
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS filter_settings (
+            filter_type TEXT PRIMARY KEY,
+            selected_values TEXT NOT NULL
+        )
+    """)
+    # Default: Status shows only "Not Placed" (hide already-placed bets)
+    con.execute("""
+        INSERT INTO filter_settings (filter_type, selected_values)
+        VALUES ('status', '["Not Placed"]')
+        ON CONFLICT (filter_type) DO NOTHING
+    """)
+
     con.close()
     print(f"Database initialized at: {DB_PATH}")
 
@@ -352,6 +365,41 @@ def update_sizing_settings():
                     INSERT INTO sizing_settings (param, value) VALUES (?, ?)
                     ON CONFLICT (param) DO UPDATE SET value = ?
                 """, [param, float(data[param]), float(data[param])])
+        con.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/filter-settings", methods=["GET"])
+def get_filter_settings():
+    """Get persisted filter states (market, correlation, status)."""
+    try:
+        con = duckdb.connect(str(DB_PATH))
+        rows = con.execute("SELECT filter_type, selected_values FROM filter_settings").fetchall()
+        con.close()
+        return jsonify({row[0]: json.loads(row[1]) for row in rows})
+    except Exception as e:
+        return jsonify({}), 200
+
+
+@app.route("/api/filter-settings", methods=["POST"])
+def update_filter_settings():
+    """Save a filter type's selected values."""
+    data = request.json
+    filter_type = data.get("filter_type")
+    selected_values = data.get("selected_values")
+
+    if not filter_type or filter_type not in ("market", "correlation", "status"):
+        return jsonify({"success": False, "error": "Invalid filter_type"}), 400
+
+    try:
+        con = duckdb.connect(str(DB_PATH))
+        con.execute("""
+            INSERT INTO filter_settings (filter_type, selected_values)
+            VALUES (?, ?)
+            ON CONFLICT (filter_type) DO UPDATE SET selected_values = ?
+        """, [filter_type, json.dumps(selected_values), json.dumps(selected_values)])
         con.close()
         return jsonify({"success": True})
     except Exception as e:

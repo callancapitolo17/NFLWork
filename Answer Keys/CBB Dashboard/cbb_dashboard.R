@@ -1354,16 +1354,20 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             })
             .catch(function() {});
 
-          fetch(\'/api/book-settings\')
+          // Load book settings and filter settings in parallel, init filters when both ready
+          var bookReady = fetch(\'/api/book-settings\')
             .then(function(r) { return r.json(); })
-            .then(function(settings) {
-              window.BOOK_SETTINGS = settings;
-              initBetsFilters();
-            })
-            .catch(function() {
-              window.BOOK_SETTINGS = {};
-              initBetsFilters();
-            });
+            .then(function(settings) { window.BOOK_SETTINGS = settings; })
+            .catch(function() { window.BOOK_SETTINGS = {}; });
+
+          var filterReady = fetch(\'/api/filter-settings\')
+            .then(function(r) { return r.json(); })
+            .then(function(fs) { window.FILTER_SETTINGS = fs; })
+            .catch(function() { window.FILTER_SETTINGS = {}; });
+
+          Promise.all([bookReady, filterReady]).then(function() {
+            initBetsFilters();
+          });
         });
 
         function initBetsFilters() {
@@ -1397,6 +1401,9 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           // Apply saved book settings to checkboxes
           applyBookSettings();
 
+          // Apply saved filter settings (market, correlation, status)
+          applyFilterSettings();
+
           document.addEventListener("click", function(e) {
             if (!e.target.closest(".filter-group")) {
               document.querySelectorAll(".filter-menu").forEach(m => m.classList.remove("open"));
@@ -1425,6 +1432,26 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
           // Sync activeFilters and label
           updateFilter("book");
+        }
+
+        function applyFilterSettings() {
+          var settings = window.FILTER_SETTINGS || {};
+          ["market", "correlation", "status"].forEach(function(type) {
+            if (!settings[type]) return;  // no saved state = keep "all checked" default
+            var saved = new Set(settings[type]);
+            var menu = document.getElementById("filter-" + type + "-menu");
+            if (!menu) return;
+            var checkboxes = menu.querySelectorAll("input[data-val]");
+            checkboxes.forEach(function(cb) {
+              cb.checked = saved.has(cb.getAttribute("data-val"));
+            });
+            var selectAllCb = menu.querySelector(".select-all input");
+            if (selectAllCb) {
+              selectAllCb.checked = saved.size === checkboxes.length;
+              selectAllCb.indeterminate = saved.size > 0 && saved.size < checkboxes.length;
+            }
+            updateFilter(type);
+          });
         }
 
         function populateFilterMenu(type, options) {
@@ -1491,6 +1518,15 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                   body: JSON.stringify({ book: val, enabled: enabled })
                 });
               }
+            });
+          }
+
+          // Persist filter settings for market/correlation/status
+          if (["market", "correlation", "status"].indexOf(type) !== -1) {
+            fetch(\'/api/filter-settings\', {
+              method: \'POST\',
+              headers: {\'Content-Type\': \'application/json\'},
+              body: JSON.stringify({ filter_type: type, selected_values: checkedVals })
             });
           }
 
@@ -1617,6 +1653,15 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             var allLabel = type === "game" ? "All Games" : type === "book" ? "All Books" :
                            type === "correlation" ? "All Levels" : type === "status" ? "All Statuses" : "All Markets";
             textEl.textContent = allLabel;
+
+            // Persist "all" state for persistable filters
+            if (["market", "correlation", "status"].indexOf(type) !== -1) {
+              fetch(\'/api/filter-settings\', {
+                method: \'POST\',
+                headers: {\'Content-Type\': \'application/json\'},
+                body: JSON.stringify({ filter_type: type, selected_values: vals })
+              });
+            }
           });
           applyFilters();
         }
