@@ -4719,20 +4719,25 @@ adjust_kelly_for_correlation <- function(bets_df, samples, bankroll, kelly_mult,
       if (nrow(placed_game) == 0) placed_game <- NULL
     }
 
-    # Dedup: remove placed bets that already appear in the pipeline output
-    # (to avoid double-counting in the correlation group). New bets always stay
-    # because they still need their sizes adjusted.
+    # When a placed bet matches a pipeline bet (same market/bet_on/line),
+    # keep the placed bet as a fixed position and remove the matching
+    # pipeline bet (already acted on). This ensures other correlated
+    # pipeline bets are penalized for actual placed exposure.
     if (!is.null(placed_game)) {
       placed_keys <- paste(placed_game$market, placed_game$bet_on,
                            ifelse(is.na(placed_game$line), "ML", placed_game$line))
       new_keys <- paste(new_bets$market, new_bets$bet_on,
                         ifelse(is.na(new_bets$line), "ML", new_bets$line))
-      dup_mask <- placed_keys %in% new_keys
-      if (all(dup_mask)) {
-        placed_game <- NULL  # all placed bets are in the pipeline output
-      } else if (any(dup_mask)) {
-        placed_game <- placed_game[!dup_mask, , drop = FALSE]
+
+      # Remove pipeline bets that have already been placed
+      pipeline_dup_mask <- new_keys %in% placed_keys
+      if (any(pipeline_dup_mask)) {
+        idx <- idx[!pipeline_dup_mask]
+        new_bets <- new_bets[!pipeline_dup_mask, , drop = FALSE]
       }
+
+      # No new bets left to size — all were already placed
+      if (nrow(new_bets) == 0) next
     }
 
     # Build full correlation group: new bets + placed bets

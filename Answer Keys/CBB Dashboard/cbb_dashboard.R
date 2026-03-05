@@ -231,12 +231,13 @@ create_bets_table <- function(all_bets, placed_bets) {
       ),
       odds_display = ifelse(odds > 0, paste0("+", odds), as.character(odds)),
       size_display = sprintf("$%.0f", bet_size),
-      # Fill status: compare actual vs recommended at time of placement (not current bet_size)
+      # Fill status: compare actual vs current bet_size (not stale placed_rec)
       placed_actual = ifelse(is_placed, placed_actual[bet_hash], NA_real_),
       placed_rec = ifelse(is_placed, placed_recommended[bet_hash], NA_real_),
       fill_status = case_when(
         !is_placed ~ "not_placed",
-        is.na(placed_actual) | is.na(placed_rec) | round(placed_actual) >= round(placed_rec) ~ "placed",
+        is.na(placed_actual) ~ "placed",
+        round(placed_actual) >= round(bet_size) ~ "placed",
         TRUE ~ "partial"
       ),
       fill_diff = ifelse(fill_status == "partial", round(bet_size) - round(placed_actual), NA_real_),
