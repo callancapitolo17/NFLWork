@@ -246,7 +246,7 @@ create_bets_table <- function(all_bets, placed_bets) {
       correlation_tooltip = {
         dot <- intToUtf8(0xB7)     # middle dot separator
         chk <- intToUtf8(0x2713)   # checkmark for placed
-        cir <- intToUtf8(0x25CB)   # open circle for unplaced
+        cir <- intToUtf8(0x2013)   # en-dash for unplaced
         sapply(same_game_info, function(x) {
           if (!x$has_same_game) return("")
           details <- x$details
@@ -280,7 +280,7 @@ create_bets_table <- function(all_bets, placed_bets) {
               size_str, book_str
             )), collapse = paste0(" ", dot, " ")))
           })
-          paste("Same game:\n", paste(lines, collapse = "\n"))
+          paste(lines, collapse = "\n")
         })
       },
       # Simplify market names
@@ -1232,7 +1232,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               span.innerHTML = "&#9679;";
 
               var chk = String.fromCharCode(0x2713);
-              var cir = String.fromCharCode(0x25CB);
+              var cir = String.fromCharCode(0x2013);
               var dot = String.fromCharCode(0xB7);
               var lines = others.map(function(d) {
                 var mName = formatMarketNameJS(d.market);
@@ -1260,7 +1260,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 if (d.book) parts.push(d.book);
                 return prefix + " " + parts.join(" " + dot + " ");
               });
-              span.setAttribute("data-tooltip", "Same game:\\n " + lines.join("\\n"));
+              span.setAttribute("data-tooltip", lines.join("\\n"));
             }
           });
 
