@@ -15,16 +15,47 @@ import subprocess
 import sys
 import json
 import hashlib
+import logging
 import mimetypes
-from datetime import datetime
+import threading
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import duckdb
 from flask import Flask, Response, jsonify, request
 
 BASE_DIR = Path(__file__).parent.resolve()
+PROJECT_ROOT = BASE_DIR.parent.parent  # NFLWork/
 DB_PATH = BASE_DIR / "cbb_dashboard.duckdb"
 app = Flask(__name__)
+log = logging.getLogger("clv")
+
+# Scraper configs for closing-odds capture (paths relative to PROJECT_ROOT)
+OFFSHORE_SCRAPERS = {
+    "wagerzon": {
+        "script": "wagerzon_odds/scraper_v2.py",
+        "db": "wagerzon_odds/wagerzon.duckdb",
+        "table": "cbb_odds",
+    },
+    "hoop88": {
+        "script": "hoop88_odds/scraper.py",
+        "db": "hoop88_odds/hoop88.duckdb",
+        "table": "cbb_odds",
+    },
+    "bfa": {
+        "script": "bfa_odds/scraper.py",
+        "db": "bfa_odds/bfa.duckdb",
+        "table": "cbb_odds",
+    },
+    "bookmaker": {
+        "script": "bookmaker_odds/scraper.py",
+        "db": "bookmaker_odds/bookmaker.duckdb",
+        "table": "cbb_odds",
+    },
+}
+
+# Active capture timers: game_id -> threading.Timer
+scheduled_captures = {}
 
 
 # =============================================================================
@@ -93,8 +124,237 @@ def init_db():
         ON CONFLICT (filter_type) DO NOTHING
     """)
 
+    # CLV tracking tables
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS closing_snapshots (
+            snapshot_time TIMESTAMP NOT NULL,
+            bookmaker TEXT NOT NULL,
+            game_id TEXT,
+            home_team TEXT NOT NULL,
+            away_team TEXT NOT NULL,
+            market TEXT NOT NULL,
+            bet_on TEXT NOT NULL,
+            line REAL,
+            odds INTEGER NOT NULL,
+            counter_odds INTEGER
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS bet_clv (
+            bet_hash TEXT PRIMARY KEY,
+            game_id TEXT,
+            game_time TIMESTAMP,
+            bookmaker TEXT,
+            market TEXT,
+            bet_on TEXT,
+            placement_line REAL,
+            placement_odds INTEGER,
+            placement_novig_prob REAL,
+            market_closing_line REAL,
+            market_closing_odds INTEGER,
+            market_closing_counter_odds INTEGER,
+            market_closing_novig_prob REAL,
+            market_clv REAL,
+            book_closing_line REAL,
+            book_closing_odds INTEGER,
+            book_closing_counter_odds INTEGER,
+            book_closing_novig_prob REAL,
+            book_clv REAL,
+            line_moved BOOLEAN,
+            clv_method TEXT,
+            sigma_used REAL,
+            computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     con.close()
     print(f"Database initialized at: {DB_PATH}")
+
+
+# =============================================================================
+# CLV CLOSING-ODDS CAPTURE
+# =============================================================================
+
+def run_scraper(name: str, config: dict):
+    """Run a single offshore scraper and return success status."""
+    script = PROJECT_ROOT / config["script"]
+    venv_python = script.parent / "venv" / "bin" / "python"
+    python_exe = str(venv_python) if venv_python.exists() else sys.executable
+
+    result = subprocess.run(
+        [python_exe, str(script), "cbb"],
+        capture_output=True, text=True,
+        cwd=str(script.parent),
+        timeout=120,
+    )
+    if result.returncode != 0:
+        log.warning("Scraper %s failed: %s", name, result.stderr[-500:])
+    return result.returncode == 0
+
+
+def snapshot_book_odds(bookmaker: str, config: dict, game_teams: list[tuple[str, str]]):
+    """Read current odds from a scraper's DuckDB and save to closing_snapshots."""
+    db_path = PROJECT_ROOT / config["db"]
+    if not db_path.exists():
+        log.warning("DB not found for %s: %s", bookmaker, db_path)
+        return 0
+
+    now = datetime.now()
+    rows = []
+
+    try:
+        src = duckdb.connect(str(db_path), read_only=True)
+        odds = src.execute(f"SELECT * FROM {config['table']}").fetchall()
+        cols = [d[0] for d in src.description]
+        src.close()
+    except Exception as e:
+        log.warning("Failed to read %s DB: %s", bookmaker, e)
+        return 0
+
+    for row in odds:
+        r = dict(zip(cols, row))
+        home = r.get("home_team", "")
+        away = r.get("away_team", "")
+        market = r.get("market", "")
+        game_id = r.get("game_id", "")
+
+        # Spread records
+        if r.get("away_spread") is not None and r.get("away_spread_price") is not None:
+            rows.append((now, bookmaker, game_id, home, away, market,
+                         "away", r["away_spread"], r["away_spread_price"], r.get("home_spread_price")))
+            rows.append((now, bookmaker, game_id, home, away, market,
+                         "home", r["home_spread"], r["home_spread_price"], r.get("away_spread_price")))
+
+        # Total records
+        if r.get("total") is not None and r.get("over_price") is not None:
+            rows.append((now, bookmaker, game_id, home, away, market,
+                         "over", r["total"], r["over_price"], r.get("under_price")))
+            rows.append((now, bookmaker, game_id, home, away, market,
+                         "under", r["total"], r["under_price"], r.get("over_price")))
+
+    if not rows:
+        return 0
+
+    try:
+        dst = duckdb.connect(str(DB_PATH))
+        dst.executemany("""
+            INSERT INTO closing_snapshots
+                (snapshot_time, bookmaker, game_id, home_team, away_team,
+                 market, bet_on, line, odds, counter_odds)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, rows)
+        dst.close()
+    except Exception as e:
+        log.warning("Failed to write closing_snapshots for %s: %s", bookmaker, e)
+        return 0
+
+    return len(rows)
+
+
+def run_closing_capture(game_id: str, bookmakers: list[str]):
+    """Run offshore scrapers and snapshot odds for a specific game."""
+    log.info("Capturing closing odds for game %s (books: %s)", game_id, bookmakers)
+
+    for book in bookmakers:
+        config = OFFSHORE_SCRAPERS.get(book)
+        if not config:
+            continue
+        run_scraper(book, config)
+
+        # Get teams for this game from placed_bets
+        try:
+            con = duckdb.connect(str(DB_PATH), read_only=True)
+            teams = con.execute(
+                "SELECT DISTINCT home_team, away_team FROM placed_bets WHERE game_id = ?",
+                [game_id]
+            ).fetchall()
+            con.close()
+        except Exception:
+            teams = []
+
+        n = snapshot_book_odds(book, config, teams)
+        log.info("Snapshotted %d odds rows for %s", n, book)
+
+    # Cleanup timer reference
+    scheduled_captures.pop(game_id, None)
+
+
+def schedule_capture(game_id: str, game_time_str: str, bookmaker: str):
+    """Schedule a closing-odds capture for 15 min before game time."""
+    if game_id in scheduled_captures:
+        # Already scheduled — just note the additional bookmaker
+        return
+
+    try:
+        game_time = datetime.fromisoformat(str(game_time_str))
+    except (ValueError, TypeError):
+        log.warning("Cannot parse game_time for CLV capture: %s", game_time_str)
+        return
+
+    capture_at = game_time - timedelta(minutes=15)
+    delay = (capture_at - datetime.now()).total_seconds()
+
+    if delay <= 0:
+        log.info("Game %s already within 15 min of tipoff, capturing now", game_id)
+        threading.Thread(
+            target=run_closing_capture, args=(game_id, [bookmaker]), daemon=True
+        ).start()
+        return
+
+    # Gather all bookmakers with bets on this game
+    try:
+        con = duckdb.connect(str(DB_PATH), read_only=True)
+        books = [r[0] for r in con.execute(
+            "SELECT DISTINCT bookmaker FROM placed_bets WHERE game_id = ? AND status = 'pending'",
+            [game_id]
+        ).fetchall()]
+        con.close()
+    except Exception:
+        books = [bookmaker]
+
+    timer = threading.Timer(delay, run_closing_capture, args=[game_id, books])
+    timer.daemon = True
+    timer.start()
+    scheduled_captures[game_id] = timer
+
+    log.info("Scheduled CLV capture for game %s at %s (in %.0f min)",
+             game_id, capture_at.strftime("%H:%M"), delay / 60)
+
+
+def schedule_pending_captures():
+    """On startup, schedule captures for any upcoming games with placed bets."""
+    try:
+        con = duckdb.connect(str(DB_PATH), read_only=True)
+        upcoming = con.execute("""
+            SELECT game_id, game_time, STRING_AGG(DISTINCT bookmaker, ',') as books
+            FROM placed_bets
+            WHERE status = 'pending'
+              AND game_time > CURRENT_TIMESTAMP
+            GROUP BY game_id, game_time
+        """).fetchall()
+        con.close()
+    except Exception as e:
+        log.warning("Failed to load pending captures on startup: %s", e)
+        return
+
+    for game_id, game_time, books_csv in upcoming:
+        books = books_csv.split(",")
+        capture_at = game_time - timedelta(minutes=15)
+        delay = (capture_at - datetime.now()).total_seconds()
+
+        if delay <= 0:
+            continue  # Game already started or too close
+
+        timer = threading.Timer(delay, run_closing_capture, args=[game_id, books])
+        timer.daemon = True
+        timer.start()
+        scheduled_captures[game_id] = timer
+        log.info("Startup: scheduled CLV capture for game %s at %s",
+                 game_id, capture_at.strftime("%H:%M"))
+
+    if upcoming:
+        log.info("Scheduled %d CLV captures on startup", len(scheduled_captures))
 
 
 # =============================================================================
@@ -181,6 +441,14 @@ def place_bet():
         ])
 
         con.close()
+
+        # Schedule CLV closing-odds capture for this game (best-effort, don't fail the bet)
+        try:
+            if data.get("game_time") not in ("NA", "", None):
+                schedule_capture(data["game_id"], data["game_time"], data["bookmaker"])
+        except Exception as e:
+            log.warning("Failed to schedule CLV capture: %s", e)
+
         return jsonify({"success": True, "message": "Bet placed successfully"})
 
     except Exception as e:
@@ -406,6 +674,113 @@ def update_filter_settings():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+# =============================================================================
+# CLV API ENDPOINTS
+# =============================================================================
+
+@app.route("/api/clv-summary", methods=["GET"])
+def clv_summary():
+    """Aggregate CLV stats: overall, by market type, and by book."""
+    try:
+        con = duckdb.connect(str(DB_PATH), read_only=True)
+
+        overall = con.execute("""
+            SELECT
+                COUNT(*) as total_bets,
+                COUNT(market_clv) as market_clv_count,
+                COUNT(book_clv) as book_clv_count,
+                AVG(market_clv) as avg_market_clv,
+                AVG(book_clv) as avg_book_clv,
+                COUNT(CASE WHEN market_clv > 0 THEN 1 END) as market_clv_positive,
+                COUNT(CASE WHEN book_clv > 0 THEN 1 END) as book_clv_positive
+            FROM bet_clv
+        """).fetchdf().to_dict(orient="records")[0]
+
+        by_market = con.execute("""
+            SELECT
+                market,
+                COUNT(*) as n,
+                AVG(market_clv) as avg_market_clv,
+                AVG(book_clv) as avg_book_clv,
+                COUNT(CASE WHEN market_clv > 0 THEN 1 END) as positive_pct
+            FROM bet_clv
+            WHERE market_clv IS NOT NULL
+            GROUP BY market
+            ORDER BY n DESC
+        """).fetchdf().to_dict(orient="records")
+
+        by_book = con.execute("""
+            SELECT
+                bookmaker,
+                COUNT(*) as n,
+                AVG(market_clv) as avg_market_clv,
+                AVG(book_clv) as avg_book_clv
+            FROM bet_clv
+            WHERE market_clv IS NOT NULL
+            GROUP BY bookmaker
+            ORDER BY n DESC
+        """).fetchdf().to_dict(orient="records")
+
+        con.close()
+        return jsonify({
+            "overall": overall,
+            "by_market": by_market,
+            "by_book": by_book,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/clv-details", methods=["GET"])
+def clv_details():
+    """Per-bet CLV data for inspection."""
+    try:
+        con = duckdb.connect(str(DB_PATH), read_only=True)
+        rows = con.execute("""
+            SELECT c.*, p.home_team, p.away_team, p.model_ev
+            FROM bet_clv c
+            JOIN placed_bets p ON c.bet_hash = p.bet_hash
+            ORDER BY c.game_time DESC
+        """).fetchdf()
+        con.close()
+
+        return jsonify(rows.to_dict(orient="records"))
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/clv-compute", methods=["POST"])
+def trigger_clv_compute():
+    """Trigger CLV computation for completed games."""
+    try:
+        script = BASE_DIR.parent / "CBB Answer Key" / "clv_compute.py"
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True, text=True,
+            cwd=str(script.parent),
+            timeout=300,
+        )
+        if result.returncode == 0:
+            return jsonify({"success": True, "output": result.stdout[-1000:]})
+        else:
+            return jsonify({"success": False, "error": result.stderr[-500:]}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/scheduled-captures", methods=["GET"])
+def get_scheduled_captures():
+    """Show currently scheduled CLV capture timers."""
+    captures = []
+    for game_id, timer in scheduled_captures.items():
+        captures.append({
+            "game_id": game_id,
+            "active": timer.is_alive() if timer else False,
+        })
+    return jsonify(captures)
+
+
+
 def run_pipeline():
     """Run full pipeline (scrapers + predictions) and regenerate dashboard."""
     nfl_work_dir = BASE_DIR.parent.parent  # NFLWork directory
@@ -459,7 +834,14 @@ def refresh():
 # =============================================================================
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     init_db()
+    schedule_pending_captures()
 
     print("\n" + "=" * 50)
     print("CBB +EV Betting Dashboard")
