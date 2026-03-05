@@ -4732,6 +4732,11 @@ adjust_kelly_for_correlation <- function(bets_df, samples, bankroll, kelly_mult,
       # Remove pipeline bets that have already been placed
       pipeline_dup_mask <- new_keys %in% placed_keys
       if (any(pipeline_dup_mask)) {
+        # Zero out matched pipeline bets in bets_df so they don't appear in output
+        removed_idx <- idx[pipeline_dup_mask]
+        bets_df$bet_size[removed_idx] <- 0
+        bets_df$correlation_adj[removed_idx] <- 0
+
         idx <- idx[!pipeline_dup_mask]
         new_bets <- new_bets[!pipeline_dup_mask, , drop = FALSE]
       }
