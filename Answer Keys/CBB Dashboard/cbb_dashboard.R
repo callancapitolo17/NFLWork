@@ -409,8 +409,7 @@ create_bets_table <- function(all_bets, placed_bets) {
         html = TRUE,
         cell = function(value, index) {
           sz <- table_data$bet_size[index]
-          cat <- if (sz > 0) ">$0" else "$0"
-          sprintf('<span data-size-cat="%s">%s</span>', cat, value)
+          sprintf('<span data-bet-size="%.2f">%s</span>', sz, value)
         }
       ),
       bookmaker_key = colDef(
@@ -1086,11 +1085,13 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             tags$div(class = "filter-menu", id = "filter-correlation-menu")
           ),
           tags$div(class = "filter-group",
-            tags$span(class = "filter-label", "Size"),
-            tags$div(class = "filter-dropdown", id = "filter-size-btn", onclick = "toggleFilter('size')",
-              tags$span(id = "filter-size-text", "All Sizes")
-            ),
-            tags$div(class = "filter-menu", id = "filter-size-menu")
+            tags$span(class = "filter-label", "Min Size"),
+            tags$div(style = "display: flex; align-items: center; background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 8px 12px; gap: 4px;",
+              tags$span(style = "color: #8b949e; font-size: 0.85rem;", "$"),
+              tags$input(id = "filter-size-input", type = "number", min = "0", value = "0",
+                style = "width: 50px; padding: 0; background: transparent; border: none; color: #c9d1d9; font-size: 0.85rem; outline: none;",
+                onchange = "updateSizeFilter()", oninput = "updateSizeFilter()")
+            )
           ),
           tags$div(class = "filter-group",
             tags$span(class = "filter-label", "Status"),
@@ -1300,7 +1301,6 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           book: new Set(),
           market: new Set(),
           correlation: new Set(),
-          size: new Set(),
           status: new Set()
         };
 
@@ -1345,7 +1345,6 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
           populateFilterMenu("market", opts.markets);
           populateFilterMenu("correlation", opts.correlations);
-          populateFilterMenu("size", opts.sizes);
           populateFilterMenu("status", opts.statuses);
 
           // Auto-discover: register new books as disabled
@@ -1398,7 +1397,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
         function applyFilterSettings() {
           var settings = window.FILTER_SETTINGS || {};
-          ["market", "correlation", "size", "status"].forEach(function(type) {
+          ["market", "correlation", "status"].forEach(function(type) {
             if (!settings[type]) return;  // no saved state = keep "all checked" default
             var saved = new Set(settings[type]);
             var menu = document.getElementById("filter-" + type + "-menu");
@@ -1414,6 +1413,12 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             }
             updateFilter(type);
           });
+          // Restore numeric size filter
+          if (settings.size && Array.isArray(settings.size) && settings.size.length > 0) {
+            var savedSize = parseFloat(settings.size[0]) || 0;
+            document.getElementById("filter-size-input").value = savedSize;
+          }
+          applyFilters();
         }
 
         function populateFilterMenu(type, options) {
@@ -1483,8 +1488,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             });
           }
 
-          // Persist filter settings for market/correlation/size/status
-          if (["market", "correlation", "size", "status"].indexOf(type) !== -1) {
+          // Persist filter settings for market/correlation/status
+          if (["market", "correlation", "status"].indexOf(type) !== -1) {
             fetch(\'/api/filter-settings\', {
               method: \'POST\',
               headers: {\'Content-Type\': \'application/json\'},
@@ -1494,7 +1499,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
           const textEl = document.getElementById("filter-" + type + "-text");
           const allLabel = type === "game" ? "All Games" : type === "book" ? "All Books" :
-                           type === "correlation" ? "All" : type === "size" ? "All Sizes" :
+                           type === "correlation" ? "All" :
                            type === "status" ? "All Statuses" : "All Markets";
 
           if (checkedVals.length === checkboxes.length) {
@@ -1513,6 +1518,16 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             selectAllCb.indeterminate = checkedVals.length > 0 && checkedVals.length < checkboxes.length;
           }
 
+          applyFilters();
+        }
+
+        function updateSizeFilter() {
+          var val = parseFloat(document.getElementById("filter-size-input").value) || 0;
+          fetch(\'/api/filter-settings\', {
+            method: \'POST\',
+            headers: {\'Content-Type\': \'application/json\'},
+            body: JSON.stringify({ filter_type: "size", selected_values: [val] })
+          });
           applyFilters();
         }
 
@@ -1565,10 +1580,10 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               corrLevel = "Same Game";
             }
 
-            // Size from data attribute
-            var sizeLabel = "$0";
-            var sizeSpan = row.querySelector("[data-size-cat]");
-            if (sizeSpan) sizeLabel = sizeSpan.getAttribute("data-size-cat");
+            // Size from data attribute (numeric)
+            var betSize = 0;
+            var sizeSpan = row.querySelector("[data-bet-size]");
+            if (sizeSpan) betSize = parseFloat(sizeSpan.getAttribute("data-bet-size")) || 0;
 
             // Status from Action button data-fill-status
             var statusLabel = "Not Placed";
@@ -1583,7 +1598,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             var bookMatch = activeFilters.book.size === 0 || activeFilters.book.has(bookText);
             var marketMatch = activeFilters.market.size === 0 || activeFilters.market.has(marketType);
             var corrMatch = activeFilters.correlation.size === 0 || activeFilters.correlation.has(corrLevel);
-            var sizeMatch = activeFilters.size.size === 0 || activeFilters.size.has(sizeLabel);
+            var minSize = parseFloat(document.getElementById("filter-size-input").value) || 0;
+            var sizeMatch = betSize >= minSize;
             var statusMatch = activeFilters.status.size === 0 || activeFilters.status.has(statusLabel);
 
             var visible = gameMatch && bookMatch && marketMatch && corrMatch && sizeMatch && statusMatch;
@@ -1602,7 +1618,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
 
         function clearAllFilters() {
-          ["game", "market", "correlation", "size", "status"].forEach(function(type) {
+          ["game", "market", "correlation", "status"].forEach(function(type) {
             var menu = document.getElementById("filter-" + type + "-menu");
             if (!menu) return;
             var checkboxes = menu.querySelectorAll("input[type=checkbox]");
@@ -1617,18 +1633,25 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             activeFilters[type] = new Set(vals);
             var textEl = document.getElementById("filter-" + type + "-text");
             var allLabel = type === "game" ? "All Games" : type === "book" ? "All Books" :
-                           type === "correlation" ? "All" : type === "size" ? "All Sizes" :
+                           type === "correlation" ? "All" :
                            type === "status" ? "All Statuses" : "All Markets";
             textEl.textContent = allLabel;
 
             // Persist "all" state for persistable filters
-            if (["market", "correlation", "size", "status"].indexOf(type) !== -1) {
+            if (["market", "correlation", "status"].indexOf(type) !== -1) {
               fetch(\'/api/filter-settings\', {
                 method: \'POST\',
                 headers: {\'Content-Type\': \'application/json\'},
                 body: JSON.stringify({ filter_type: type, selected_values: vals })
               });
             }
+          });
+          // Reset numeric size filter
+          document.getElementById("filter-size-input").value = "0";
+          fetch(\'/api/filter-settings\', {
+            method: \'POST\',
+            headers: {\'Content-Type\': \'application/json\'},
+            body: JSON.stringify({ filter_type: "size", selected_values: [0] })
           });
           applyFilters();
         }
@@ -1675,7 +1698,13 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
             if (prob && odds && sizeCell) {
               var newSize = calculateKellyBet(prob, odds, bankroll, kellyMult);
-              sizeCell.textContent = "$" + newSize.toFixed(0);
+              var sizeSpan = sizeCell.querySelector("[data-bet-size]");
+              if (sizeSpan) {
+                sizeSpan.textContent = "$" + newSize.toFixed(0);
+                sizeSpan.setAttribute("data-bet-size", newSize.toFixed(2));
+              } else {
+                sizeCell.textContent = "$" + newSize.toFixed(0);
+              }
 
               if (btn) {
                 btn.setAttribute("data-size", newSize.toFixed(0));
@@ -2062,7 +2091,6 @@ filter_options_json <- toJSON(list(
   books = I(filter_books),
   markets = I(filter_markets),
   correlations = I(c("Standalone", "Same Game")),
-  sizes = I(c("$0", ">$0")),
   statuses = I(c("Not Placed", "Placed", "Partial Fill"))
 ), auto_unbox = FALSE)
 
