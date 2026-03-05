@@ -53,91 +53,65 @@ generate_bet_hash <- function(game_id, market, bet_on, line) {
 }
 
 # =============================================================================
-# CORRELATION DETECTION
+# SAME-GAME DETECTION
 # =============================================================================
 
-load_market_relationships <- function() {
-  json_path <- file.path(DASHBOARD_DIR, "market_relationships.json")
-  if (file.exists(json_path)) {
-    fromJSON(json_path)
-  } else {
-    list(market_groups = list(), cross_group_correlations = list())
+find_same_game_bets <- function(row_idx, all_bets, placed_bets) {
+  game_id <- all_bets$id[row_idx]
+  details <- list()
+
+  # Other pipeline bets on this game (from the table)
+  other_idx <- which(all_bets$id == game_id & seq_len(nrow(all_bets)) != row_idx)
+  for (j in other_idx) {
+    details <- append(details, list(list(
+      market = all_bets$market[j],
+      bet_on = all_bets$bet_on[j],
+      line = all_bets$line[j],
+      odds = all_bets$odds[j],
+      bet_size = all_bets$bet_size[j],
+      bookmaker = all_bets$bookmaker_key[j],
+      is_placed = FALSE
+    )))
   }
-}
 
-get_market_group <- function(market, relationships) {
-  for (group_name in names(relationships$market_groups)) {
-    if (market %in% relationships$market_groups[[group_name]]$markets) {
-      return(group_name)
-    }
-  }
-  return(NA)
-}
-
-find_correlated_bets <- function(bet, placed_bets, relationships) {
-  if (nrow(placed_bets) == 0) return(list(has_correlation = FALSE, details = NULL))
-
-  # Same game only
-  same_game <- placed_bets %>% filter(game_id == bet$id)
-  if (nrow(same_game) == 0) return(list(has_correlation = FALSE, details = NULL))
-
-  bet_group <- get_market_group(bet$market, relationships)
-  correlations <- list()
-
-  for (i in seq_len(nrow(same_game))) {
-    placed <- same_game[i, ]
-    placed_group <- get_market_group(placed$market, relationships)
-
-    # Same market group = high correlation
-    if (!is.na(bet_group) && !is.na(placed_group) && bet_group == placed_group) {
-      correlations <- append(correlations, list(list(
-        market = placed$market,
-        bet_on = placed$bet_on,
-        line = placed$line,
-        odds = placed$odds,
-        actual_size = placed$actual_size,
-        recommended_size = placed$recommended_size,
-        bookmaker = placed$bookmaker,
-        strength = 0.90,
-        level = "high"
-      )))
-      next
-    }
-
-    # Cross-group correlations (JSON loads as data frame)
-    cross_df <- relationships$cross_group_correlations
-    if (!is.null(cross_df) && nrow(cross_df) > 0 && !is.na(bet_group) && !is.na(placed_group)) {
-      for (j in seq_len(nrow(cross_df))) {
-        g1 <- cross_df$group1[j]
-        g2 <- cross_df$group2[j]
-        strength <- cross_df$strength[j]
-        if ((bet_group == g1 && placed_group == g2) ||
-            (bet_group == g2 && placed_group == g1)) {
-          level <- if (strength >= 0.80) "high" else if (strength >= 0.60) "medium" else "low"
-          correlations <- append(correlations, list(list(
-            market = placed$market,
-            bet_on = placed$bet_on,
-            line = placed$line,
-            odds = placed$odds,
-            actual_size = placed$actual_size,
-            recommended_size = placed$recommended_size,
-            bookmaker = placed$bookmaker,
-            strength = strength,
-            level = level
-          )))
-          break
+  # Placed bets on this game not already in pipeline output
+  if (nrow(placed_bets) > 0) {
+    same_game_placed <- placed_bets[placed_bets$game_id == game_id, ]
+    for (k in seq_len(nrow(same_game_placed))) {
+      p <- same_game_placed[k, ]
+      match_idx <- which(all_bets$id == game_id &
+                         all_bets$market == p$market &
+                         all_bets$bet_on == p$bet_on &
+                         all_bets$line == p$line)
+      if (length(match_idx) > 0) {
+        # Already in table — mark as placed
+        for (d in seq_along(details)) {
+          if (details[[d]]$market == p$market &&
+              details[[d]]$bet_on == p$bet_on &&
+              identical(details[[d]]$line, p$line)) {
+            details[[d]]$is_placed <- TRUE
+            details[[d]]$actual_size <- p$actual_size
+            details[[d]]$recommended_size <- p$recommended_size
+          }
         }
+      } else {
+        # Placed bet NOT in pipeline — add as extra entry
+        details <- append(details, list(list(
+          market = p$market,
+          bet_on = p$bet_on,
+          line = p$line,
+          odds = p$odds,
+          bet_size = p$recommended_size,
+          bookmaker = p$bookmaker,
+          is_placed = TRUE,
+          actual_size = p$actual_size,
+          recommended_size = p$recommended_size
+        )))
       }
     }
   }
 
-  if (length(correlations) > 0) {
-    max_strength <- max(sapply(correlations, function(x) x$strength))
-    max_level <- if (max_strength >= 0.80) "high" else if (max_strength >= 0.60) "medium" else "low"
-    return(list(has_correlation = TRUE, level = max_level, details = correlations))
-  }
-
-  return(list(has_correlation = FALSE, details = NULL))
+  list(has_same_game = length(details) > 0, details = details)
 }
 
 # =============================================================================
@@ -223,7 +197,7 @@ create_placed_bets_table <- function(placed_bets) {
   )
 }
 
-create_bets_table <- function(all_bets, placed_bets, relationships) {
+create_bets_table <- function(all_bets, placed_bets) {
   placed_hashes <- if (nrow(placed_bets) > 0) placed_bets$bet_hash else character()
   # Build lookups for placed bet actual_size and recommended_size by hash
   placed_actual <- setNames(
@@ -235,9 +209,9 @@ create_bets_table <- function(all_bets, placed_bets, relationships) {
     if (nrow(placed_bets) > 0) placed_bets$bet_hash else character()
   )
 
-  # Check correlations for each bet
-  correlation_info <- lapply(seq_len(nrow(all_bets)), function(i) {
-    find_correlated_bets(all_bets[i, ], placed_bets, relationships)
+  # Find same-game bets for each bet
+  same_game_info <- lapply(seq_len(nrow(all_bets)), function(i) {
+    find_same_game_bets(i, all_bets, placed_bets)
   })
 
   # Prepare table data
@@ -266,11 +240,11 @@ create_bets_table <- function(all_bets, placed_bets, relationships) {
         TRUE ~ "partial"
       ),
       fill_diff = ifelse(fill_status == "partial", round(bet_size) - round(placed_actual), NA_real_),
-      # Correlation warnings
-      has_correlation = sapply(correlation_info, function(x) x$has_correlation),
-      correlation_level = sapply(correlation_info, function(x) if (x$has_correlation) x$level else "none"),
-      correlation_tooltip = sapply(correlation_info, function(x) {
-        if (!x$has_correlation) return("")
+      # Same-game indicators
+      has_correlation = sapply(same_game_info, function(x) x$has_same_game),
+      correlation_level = sapply(same_game_info, function(x) if (x$has_same_game) "same_game" else "none"),
+      correlation_tooltip = sapply(same_game_info, function(x) {
+        if (!x$has_same_game) return("")
         details <- x$details
         lines <- sapply(details, function(d) {
           market_name <- format_market_name(d$market)
@@ -280,22 +254,28 @@ create_bets_table <- function(all_bets, placed_bets, relationships) {
           odds_str <- if (!is.null(d$odds) && !is.na(d$odds)) {
             if (d$odds > 0) sprintf(" (%+d)", d$odds) else sprintf(" (%d)", d$odds)
           } else ""
-          act <- d$actual_size
-          rec <- d$recommended_size
-          size_str <- if (!is.null(act) && !is.na(act)) {
-            rec_part <- if (!is.null(rec) && !is.na(rec) && abs(act - rec) > 0.01) {
-              sprintf(" (rec $%.0f)", rec)
+          if (isTRUE(d$is_placed)) {
+            act <- d$actual_size
+            rec <- d$recommended_size
+            size_str <- if (!is.null(act) && !is.na(act)) {
+              rec_part <- if (!is.null(rec) && !is.na(rec) && abs(act - rec) > 0.01) {
+                sprintf(" (rec $%.0f)", rec)
+              } else ""
+              sprintf(" $%.0f%s", act, rec_part)
             } else ""
-            sprintf(" $%.0f%s", act, rec_part)
-          } else if (!is.null(rec) && !is.na(rec)) {
-            sprintf(" $%.0f", rec)
-          } else ""
+            placed_str <- "  \u2713 Placed"
+          } else {
+            size_str <- if (!is.null(d$bet_size) && !is.na(d$bet_size)) {
+              sprintf(" $%.0f", d$bet_size)
+            } else ""
+            placed_str <- ""
+          }
           book_str <- if (!is.null(d$bookmaker) && !is.na(d$bookmaker)) {
             sprintf(" @ %s", d$bookmaker)
           } else ""
-          sprintf("%s - %s%s%s%s%s", market_name, d$bet_on, line_str, odds_str, size_str, book_str)
+          sprintf("%s - %s%s%s%s%s%s", market_name, d$bet_on, line_str, odds_str, size_str, book_str, placed_str)
         })
-        paste("Correlated with:\n", paste(lines, collapse = "\n"))
+        paste("Same game:\n", paste(lines, collapse = "\n"))
       }),
       # Simplify market names
       market_display = format_market_name(market)
@@ -352,12 +332,8 @@ create_bets_table <- function(all_bets, placed_bets, relationships) {
           level <- table_data$correlation_level[index]
           tooltip <- table_data$correlation_tooltip[index]
           corr_attr <- sprintf('data-corr-level="%s"', level)
-          if (level == "high") {
-            sprintf('<span class="warning-icon high" %s data-tooltip="%s">&#9888;</span>', corr_attr, escape_tooltip(tooltip))
-          } else if (level == "medium") {
-            sprintf('<span class="warning-icon medium" %s data-tooltip="%s">&#9888;</span>', corr_attr, escape_tooltip(tooltip))
-          } else if (level == "low") {
-            sprintf('<span class="warning-icon low" %s data-tooltip="%s">&#9675;</span>', corr_attr, escape_tooltip(tooltip))
+          if (level == "same_game") {
+            sprintf('<span class="warning-icon same-game" %s data-tooltip="%s">&#9679;</span>', corr_attr, escape_tooltip(tooltip))
           } else {
             sprintf('<span %s></span>', corr_attr)
           }
@@ -423,7 +399,13 @@ create_bets_table <- function(all_bets, placed_bets, relationships) {
       size_display = colDef(
         name = "Size",
         minWidth = 70,
-        align = "right"
+        align = "right",
+        html = TRUE,
+        cell = function(value, index) {
+          sz <- table_data$bet_size[index]
+          cat <- if (sz > 0) ">$0" else "$0"
+          sprintf('<span data-size-cat="%s">%s</span>', cat, value)
+        }
       ),
       bookmaker_key = colDef(
         name = "Book",
@@ -507,7 +489,7 @@ create_bets_table <- function(all_bets, placed_bets, relationships) {
 # HTML REPORT
 # =============================================================================
 
-create_report <- function(bets_table, placed_table, stats, timestamp, filter_options_json, market_relationships_json) {
+create_report <- function(bets_table, placed_table, stats, timestamp, filter_options_json) {
   page <- tagList(
     tags$head(
       tags$meta(charset = "UTF-8"),
@@ -519,8 +501,6 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       ),
       # Inject filter options for bets table
       tags$script(HTML(sprintf("window.FILTER_OPTIONS = %s;", filter_options_json))),
-      # Inject market relationships for client-side correlation recalculation
-      tags$script(HTML(sprintf("window.MARKET_RELATIONSHIPS = %s;", market_relationships_json))),
       tags$style(HTML('
         * { box-sizing: border-box; }
 
@@ -824,9 +804,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           font-size: 1.1em;
           display: inline-block;
         }
-        .warning-icon.high { color: #f85149; }
-        .warning-icon.medium { color: #d29922; }
-        .warning-icon.low { color: #8b949e; font-size: 0.9em; }
+        .warning-icon.same-game { color: #58a6ff; }
 
         .corr-tooltip {
           position: fixed;
@@ -844,8 +822,6 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
 
         /* Warning colors in rows */
-        .correlation-high { background: rgba(248, 81, 73, 0.1) !important; }
-        .correlation-medium { background: rgba(210, 153, 34, 0.1) !important; }
 
         /* Reactable overrides */
         .reactable { font-size: 0.875rem; }
@@ -1097,11 +1073,18 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             tags$div(class = "filter-menu", id = "filter-market-menu")
           ),
           tags$div(class = "filter-group",
-            tags$span(class = "filter-label", "Correlation"),
+            tags$span(class = "filter-label", "Same Game"),
             tags$div(class = "filter-dropdown", id = "filter-correlation-btn", onclick = "toggleFilter('correlation')",
-              tags$span(id = "filter-correlation-text", "All Levels")
+              tags$span(id = "filter-correlation-text", "All")
             ),
             tags$div(class = "filter-menu", id = "filter-correlation-menu")
+          ),
+          tags$div(class = "filter-group",
+            tags$span(class = "filter-label", "Size"),
+            tags$div(class = "filter-dropdown", id = "filter-size-btn", onclick = "toggleFilter('size')",
+              tags$span(id = "filter-size-text", "All Sizes")
+            ),
+            tags$div(class = "filter-menu", id = "filter-size-menu")
           ),
           tags$div(class = "filter-group",
             tags$span(class = "filter-label", "Status"),
@@ -1186,31 +1169,6 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             }
           });
         }
-        function getMarketGroup(market) {
-          var groups = window.MARKET_RELATIONSHIPS.market_groups;
-          for (var gName in groups) {
-            if (groups[gName].markets.indexOf(market) !== -1) return gName;
-          }
-          return null;
-        }
-
-        function getCrossGroupStrength(g1, g2) {
-          if (g1 === g2) return 0.90;
-          var cross = window.MARKET_RELATIONSHIPS.cross_group_correlations;
-          for (var i = 0; i < cross.length; i++) {
-            var c = cross[i];
-            if ((c.group1 === g1 && c.group2 === g2) || (c.group2 === g1 && c.group1 === g2)) return c.strength;
-          }
-          return 0;
-        }
-
-        function strengthToLevel(s) {
-          if (s >= 0.80) return "high";
-          if (s >= 0.60) return "medium";
-          if (s >= 0.40) return "low";
-          return "none";
-        }
-
         function formatMarketNameJS(market) {
           return market
             .replace("alternate_", "Alt ")
@@ -1221,136 +1179,98 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             .replace(/_h(\\d)/g, " H$1");
         }
 
-        function recalcCorrelations(gameId) {
+        function recalcSameGame(gameId) {
           _corrRecalcRunning = true;
-          // Find all rows in the bets table
           var tables = document.querySelectorAll(".table-container:not(.placed-section)");
           var table = tables.length > 0 ? tables[tables.length - 1] : null;
           if (!table) { _corrRecalcRunning = false; return; }
 
           var allRows = table.querySelectorAll(".rt-tr-group");
-          var placedBets = [];
           var gameRows = [];
 
           allRows.forEach(function(row) {
             var btn = row.querySelector("button[data-game-id]");
             if (!btn || btn.dataset.gameId !== gameId) return;
             gameRows.push({ row: row, btn: btn });
-
-            var fs = btn.getAttribute("data-fill-status");
-            if (fs === "placed" || fs === "partial") {
-              placedBets.push({
-                hash: btn.dataset.hash,
-                market: btn.dataset.market,
-                betOn: btn.dataset.betOn,
-                line: btn.dataset.line,
-                odds: btn.dataset.odds,
-                book: btn.dataset.book,
-                actual: btn.dataset.actual,
-                size: btn.dataset.size
-              });
-            }
           });
 
           gameRows.forEach(function(item) {
             var btn = item.btn;
             var row = item.row;
             var myHash = btn.dataset.hash;
-            var myGroup = getMarketGroup(btn.dataset.market);
-            var correlations = [];
-
-            placedBets.forEach(function(placed) {
-              if (placed.hash === myHash) return;
-              var placedGroup = getMarketGroup(placed.market);
-              if (!myGroup || !placedGroup) return;
-              var strength = getCrossGroupStrength(myGroup, placedGroup);
-              if (strength <= 0) return;
-              correlations.push({
-                market: placed.market, betOn: placed.betOn, line: placed.line,
-                odds: placed.odds, actual: placed.actual, size: placed.size,
-                book: placed.book, strength: strength, level: strengthToLevel(strength)
-              });
-            });
-
             var span = row.querySelector("[data-corr-level]");
             if (!span) return;
 
-            if (correlations.length === 0) {
+            var others = [];
+            gameRows.forEach(function(other) {
+              if (other.btn.dataset.hash === myHash) return;
+              var ob = other.btn;
+              var fs = ob.getAttribute("data-fill-status");
+              var isPlaced = (fs === "placed" || fs === "partial");
+              others.push({
+                market: ob.dataset.market, betOn: ob.dataset.betOn,
+                line: ob.dataset.line, odds: ob.dataset.odds,
+                size: ob.dataset.size, actual: ob.dataset.actual,
+                book: ob.dataset.book, isPlaced: isPlaced
+              });
+            });
+
+            if (others.length === 0) {
               span.setAttribute("data-corr-level", "none");
               span.className = "";
               span.textContent = "";
               span.removeAttribute("data-tooltip");
-              row.classList.remove("correlation-high", "correlation-medium");
             } else {
-              var maxS = 0;
-              correlations.forEach(function(c) { if (c.strength > maxS) maxS = c.strength; });
-              var maxLevel = strengthToLevel(maxS);
-              span.setAttribute("data-corr-level", maxLevel);
+              span.setAttribute("data-corr-level", "same_game");
+              span.className = "warning-icon same-game";
+              span.innerHTML = "&#9679;";
 
-              // Build tooltip
-              var lines = correlations.map(function(d) {
+              var lines = others.map(function(d) {
                 var mName = formatMarketNameJS(d.market);
-                var lineStr = "";
-                if (d.line && d.line !== "" && d.line !== "NA") {
-                  lineStr = parseFloat(d.line) > 0 ? " +" + d.line : " " + d.line;
-                }
-                var oddsStr = "";
-                if (d.odds && d.odds !== "") {
-                  var o = parseInt(d.odds);
-                  oddsStr = o > 0 ? " (+" + o + ")" : " (" + o + ")";
-                }
+                var lineStr = (d.line && d.line !== "" && d.line !== "NA") ?
+                  (parseFloat(d.line) > 0 ? " +" + d.line : " " + d.line) : "";
+                var oddsStr = (d.odds && d.odds !== "") ?
+                  (parseInt(d.odds) > 0 ? " (+" + d.odds + ")" : " (" + d.odds + ")") : "";
                 var sizeStr = "";
-                var act = parseFloat(d.actual);
-                var rec = parseFloat(d.size);
-                if (!isNaN(act) && act > 0) {
-                  var recPart = (!isNaN(rec) && Math.abs(act - rec) > 0.01) ? " (rec $" + Math.round(rec) + ")" : "";
-                  sizeStr = " $" + Math.round(act) + recPart;
-                } else if (!isNaN(rec) && rec > 0) {
-                  sizeStr = " $" + Math.round(rec);
+                var placedStr = "";
+                if (d.isPlaced) {
+                  var act = parseFloat(d.actual);
+                  var rec = parseFloat(d.size);
+                  if (!isNaN(act) && act > 0) {
+                    var recPart = (!isNaN(rec) && Math.abs(act - rec) > 0.01) ?
+                      " (rec $" + Math.round(rec) + ")" : "";
+                    sizeStr = " $" + Math.round(act) + recPart;
+                  }
+                  placedStr = "  \u2713 Placed";
+                } else {
+                  var sz = parseFloat(d.size);
+                  if (!isNaN(sz)) sizeStr = " $" + Math.round(sz);
                 }
                 var bookStr = d.book ? " @ " + d.book : "";
-                return mName + " - " + d.betOn + lineStr + oddsStr + sizeStr + bookStr;
+                return mName + " - " + d.betOn + lineStr + oddsStr + sizeStr + bookStr + placedStr;
               });
-              span.setAttribute("data-tooltip", "Correlated with:\\n " + lines.join("\\n"));
-
-              if (maxLevel === "high") {
-                span.className = "warning-icon high";
-                span.innerHTML = "&#9888;";
-              } else if (maxLevel === "medium") {
-                span.className = "warning-icon medium";
-                span.innerHTML = "&#9888;";
-              } else if (maxLevel === "low") {
-                span.className = "warning-icon low";
-                span.innerHTML = "&#9675;";
-              }
-
-              row.classList.remove("correlation-high", "correlation-medium");
-              if (maxLevel === "high") row.classList.add("correlation-high");
-              else if (maxLevel === "medium") row.classList.add("correlation-medium");
+              span.setAttribute("data-tooltip", "Same game:\\n " + lines.join("\\n"));
             }
           });
 
-          // Re-apply filters so correlation filter stays consistent
           if (typeof applyFilters === "function") applyFilters();
-          // Delay flag reset so MutationObserver callbacks see it as still running
           setTimeout(function() { _corrRecalcRunning = false; }, 150);
         }
 
-        // Re-run correlations after reactable pagination re-renders
+        // Re-run same-game indicators after reactable pagination re-renders
         (function() {
           var corrTimer = null;
           function scheduleRecalc() {
             if (_corrRecalcRunning) return;
             if (corrTimer) clearTimeout(corrTimer);
             corrTimer = setTimeout(function() {
-              // Re-apply placed states first (React re-renders wipe JS modifications)
               reapplyPlacedStates();
               var tables = document.querySelectorAll(".table-container:not(.placed-section)");
               var table = tables.length > 0 ? tables[tables.length - 1] : null;
               if (table) {
                 var ids = new Set();
                 table.querySelectorAll("button[data-game-id]").forEach(function(btn) { ids.add(btn.dataset.gameId); });
-                ids.forEach(function(gid) { recalcCorrelations(gid); });
+                ids.forEach(function(gid) { recalcSameGame(gid); });
               }
             }, 100);
           }
@@ -1369,6 +1289,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           book: new Set(),
           market: new Set(),
           correlation: new Set(),
+          size: new Set(),
           status: new Set()
         };
 
@@ -1413,6 +1334,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
           populateFilterMenu("market", opts.markets);
           populateFilterMenu("correlation", opts.correlations);
+          populateFilterMenu("size", opts.sizes);
           populateFilterMenu("status", opts.statuses);
 
           // Auto-discover: register new books as disabled
@@ -1465,7 +1387,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
         function applyFilterSettings() {
           var settings = window.FILTER_SETTINGS || {};
-          ["market", "correlation", "status"].forEach(function(type) {
+          ["market", "correlation", "size", "status"].forEach(function(type) {
             if (!settings[type]) return;  // no saved state = keep "all checked" default
             var saved = new Set(settings[type]);
             var menu = document.getElementById("filter-" + type + "-menu");
@@ -1550,8 +1472,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             });
           }
 
-          // Persist filter settings for market/correlation/status
-          if (["market", "correlation", "status"].indexOf(type) !== -1) {
+          // Persist filter settings for market/correlation/size/status
+          if (["market", "correlation", "size", "status"].indexOf(type) !== -1) {
             fetch(\'/api/filter-settings\', {
               method: \'POST\',
               headers: {\'Content-Type\': \'application/json\'},
@@ -1561,7 +1483,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
           const textEl = document.getElementById("filter-" + type + "-text");
           const allLabel = type === "game" ? "All Games" : type === "book" ? "All Books" :
-                           type === "correlation" ? "All Levels" : type === "status" ? "All Statuses" : "All Markets";
+                           type === "correlation" ? "All" : type === "size" ? "All Sizes" :
+                           type === "status" ? "All Statuses" : "All Markets";
 
           if (checkedVals.length === checkboxes.length) {
             textEl.textContent = allLabel;
@@ -1624,15 +1547,17 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               marketType = "Totals";
             }
 
-            // Correlation level from data attribute
-            var corrLevel = "None";
+            // Same-game level from data attribute
+            var corrLevel = "Standalone";
             var corrSpan = row.querySelector("[data-corr-level]");
-            if (corrSpan) {
-              var raw = corrSpan.getAttribute("data-corr-level");
-              if (raw === "high") corrLevel = "High";
-              else if (raw === "medium") corrLevel = "Medium";
-              else if (raw === "low") corrLevel = "Low";
+            if (corrSpan && corrSpan.getAttribute("data-corr-level") === "same_game") {
+              corrLevel = "Same Game";
             }
+
+            // Size from data attribute
+            var sizeLabel = "$0";
+            var sizeSpan = row.querySelector("[data-size-cat]");
+            if (sizeSpan) sizeLabel = sizeSpan.getAttribute("data-size-cat");
 
             // Status from Action button data-fill-status
             var statusLabel = "Not Placed";
@@ -1647,9 +1572,10 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             var bookMatch = activeFilters.book.size === 0 || activeFilters.book.has(bookText);
             var marketMatch = activeFilters.market.size === 0 || activeFilters.market.has(marketType);
             var corrMatch = activeFilters.correlation.size === 0 || activeFilters.correlation.has(corrLevel);
+            var sizeMatch = activeFilters.size.size === 0 || activeFilters.size.has(sizeLabel);
             var statusMatch = activeFilters.status.size === 0 || activeFilters.status.has(statusLabel);
 
-            var visible = gameMatch && bookMatch && marketMatch && corrMatch && statusMatch;
+            var visible = gameMatch && bookMatch && marketMatch && corrMatch && sizeMatch && statusMatch;
             row.style.display = visible ? "" : "none";
             if (visible) visibleCount++;
           });
@@ -1665,7 +1591,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
 
         function clearAllFilters() {
-          ["game", "market", "correlation", "status"].forEach(function(type) {
+          ["game", "market", "correlation", "size", "status"].forEach(function(type) {
             var menu = document.getElementById("filter-" + type + "-menu");
             if (!menu) return;
             var checkboxes = menu.querySelectorAll("input[type=checkbox]");
@@ -1680,11 +1606,12 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             activeFilters[type] = new Set(vals);
             var textEl = document.getElementById("filter-" + type + "-text");
             var allLabel = type === "game" ? "All Games" : type === "book" ? "All Books" :
-                           type === "correlation" ? "All Levels" : type === "status" ? "All Statuses" : "All Markets";
+                           type === "correlation" ? "All" : type === "size" ? "All Sizes" :
+                           type === "status" ? "All Statuses" : "All Markets";
             textEl.textContent = allLabel;
 
             // Persist "all" state for persistable filters
-            if (["market", "correlation", "status"].indexOf(type) !== -1) {
+            if (["market", "correlation", "size", "status"].indexOf(type) !== -1) {
               fetch(\'/api/filter-settings\', {
                 method: \'POST\',
                 headers: {\'Content-Type\': \'application/json\'},
@@ -1886,7 +1813,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                     _sessionPlaced[btn.dataset.hash] = { className: \'btn-partial\', text: \'Partial -$\' + diff.toFixed(0), fillStatus: \'partial\', actual: actualSize, action: \'update\' };
                   }
                   showToast("Bet placed: $" + actualSize.toFixed(0), "success");
-                  recalcCorrelations(btn.dataset.gameId);
+                  recalcSameGame(btn.dataset.gameId);
                 } else {
                   showToast(result.error, "error");
                   confirmBtn.disabled = false;
@@ -1976,7 +1903,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                     _sessionPlaced[btn.dataset.hash] = { className: \'btn-partial\', text: \'Partial -$\' + diff.toFixed(0), fillStatus: \'partial\', actual: newAmount, action: \'update\' };
                   }
                   showToast("Updated to $" + newAmount.toFixed(0), "success");
-                  recalcCorrelations(btn.dataset.gameId);
+                  recalcSameGame(btn.dataset.gameId);
                 } else {
                   showToast(result.error, "error");
                   confirmBtn.disabled = false;
@@ -2015,7 +1942,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 btn.onclick = function() { placeBet(this); };
                 _sessionPlaced[btn.dataset.hash] = { className: "btn-place", text: "Place", fillStatus: "not_placed", actual: "", action: "place" };
                 showToast("Removed", "success");
-                recalcCorrelations(btn.dataset.gameId);
+                recalcSameGame(btn.dataset.gameId);
               }
             });
         }
@@ -2067,9 +1994,6 @@ cat(sprintf("Loaded %d bets\n", nrow(all_bets)))
 placed_bets <- load_placed_bets(DB_PATH)
 cat(sprintf("Found %d placed bets\n", nrow(placed_bets)))
 
-# Load market relationships for correlation detection
-relationships <- load_market_relationships()
-
 # Calculate stats
 stats <- list(
   total_bets = nrow(all_bets),
@@ -2080,7 +2004,7 @@ stats <- list(
 
 # Create tables
 if (nrow(all_bets) > 0) {
-  bets_table <- create_bets_table(all_bets, placed_bets, relationships)
+  bets_table <- create_bets_table(all_bets, placed_bets)
 } else {
   bets_table <- tags$div(
     style = "text-align: center; padding: 48px; color: #8b949e;",
@@ -2126,14 +2050,14 @@ filter_options_json <- toJSON(list(
   games = I(filter_games),
   books = I(filter_books),
   markets = I(filter_markets),
-  correlations = I(c("None", "Low", "Medium", "High")),
+  correlations = I(c("Standalone", "Same Game")),
+  sizes = I(c("$0", ">$0")),
   statuses = I(c("Not Placed", "Placed", "Partial Fill"))
 ), auto_unbox = FALSE)
 
 # Create report
 timestamp <- format(Sys.time(), "%b %d, %Y %I:%M %p")
-market_relationships_json <- toJSON(relationships, auto_unbox = TRUE)
-page <- create_report(bets_table, placed_table, stats, timestamp, filter_options_json, market_relationships_json)
+page <- create_report(bets_table, placed_table, stats, timestamp, filter_options_json)
 
 # Save
 save_html(page, OUTPUT_PATH, libdir = "lib")
