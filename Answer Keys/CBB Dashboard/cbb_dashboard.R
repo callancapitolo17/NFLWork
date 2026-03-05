@@ -263,7 +263,7 @@ create_bets_table <- function(all_bets, placed_bets) {
               } else ""
               sprintf(" $%.0f%s", act, rec_part)
             } else ""
-            placed_str <- "  \u2713 Placed"
+            placed_str <- "  [Placed]"
           } else {
             size_str <- if (!is.null(d$bet_size) && !is.na(d$bet_size)) {
               sprintf(" $%.0f", d$bet_size)
@@ -1241,7 +1241,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                       " (rec $" + Math.round(rec) + ")" : "";
                     sizeStr = " $" + Math.round(act) + recPart;
                   }
-                  placedStr = "  \u2713 Placed";
+                  placedStr = "  [Placed]";
                 } else {
                   var sz = parseFloat(d.size);
                   if (!isNaN(sz)) sizeStr = " $" + Math.round(sz);
