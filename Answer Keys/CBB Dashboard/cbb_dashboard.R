@@ -243,40 +243,46 @@ create_bets_table <- function(all_bets, placed_bets) {
       # Same-game indicators
       has_correlation = sapply(same_game_info, function(x) x$has_same_game),
       correlation_level = sapply(same_game_info, function(x) if (x$has_same_game) "same_game" else "none"),
-      correlation_tooltip = sapply(same_game_info, function(x) {
-        if (!x$has_same_game) return("")
-        details <- x$details
-        lines <- sapply(details, function(d) {
-          market_name <- format_market_name(d$market)
-          line_str <- if (!is.null(d$line) && !is.na(d$line)) {
-            if (d$line > 0) paste0(" +", d$line) else paste0(" ", d$line)
-          } else ""
-          odds_str <- if (!is.null(d$odds) && !is.na(d$odds)) {
-            if (d$odds > 0) sprintf(" (%+d)", d$odds) else sprintf(" (%d)", d$odds)
-          } else ""
-          if (isTRUE(d$is_placed)) {
-            act <- d$actual_size
-            rec <- d$recommended_size
-            size_str <- if (!is.null(act) && !is.na(act)) {
-              rec_part <- if (!is.null(rec) && !is.na(rec) && abs(act - rec) > 0.01) {
-                sprintf(" (rec $%.0f)", rec)
+      correlation_tooltip = {
+        dot <- intToUtf8(0xB7)     # middle dot separator
+        chk <- intToUtf8(0x2713)   # checkmark for placed
+        cir <- intToUtf8(0x25CB)   # open circle for unplaced
+        sapply(same_game_info, function(x) {
+          if (!x$has_same_game) return("")
+          details <- x$details
+          lines <- sapply(details, function(d) {
+            market_name <- format_market_name(d$market)
+            line_str <- if (!is.null(d$line) && !is.na(d$line)) {
+              if (d$line > 0) paste0(" +", d$line) else paste0(" ", d$line)
+            } else ""
+            odds_str <- if (!is.null(d$odds) && !is.na(d$odds)) {
+              if (d$odds > 0) sprintf(" (%+d)", d$odds) else sprintf(" (%d)", d$odds)
+            } else ""
+            if (isTRUE(d$is_placed)) {
+              act <- d$actual_size
+              rec <- d$recommended_size
+              size_str <- if (!is.null(act) && !is.na(act)) {
+                rec_part <- if (!is.null(rec) && !is.na(rec) && abs(act - rec) > 0.01) {
+                  sprintf(" (rec $%.0f)", rec)
+                } else ""
+                sprintf("$%.0f%s", act, rec_part)
               } else ""
-              sprintf(" $%.0f%s", act, rec_part)
-            } else ""
-            placed_str <- "  [Placed]"
-          } else {
-            size_str <- if (!is.null(d$bet_size) && !is.na(d$bet_size)) {
-              sprintf(" $%.0f", d$bet_size)
-            } else ""
-            placed_str <- ""
-          }
-          book_str <- if (!is.null(d$bookmaker) && !is.na(d$bookmaker)) {
-            sprintf(" @ %s", d$bookmaker)
-          } else ""
-          sprintf("%s - %s%s%s%s%s%s", market_name, d$bet_on, line_str, odds_str, size_str, book_str, placed_str)
+              prefix <- chk
+            } else {
+              size_str <- if (!is.null(d$bet_size) && !is.na(d$bet_size)) {
+                sprintf("$%.0f", d$bet_size)
+              } else ""
+              prefix <- cir
+            }
+            book_str <- if (!is.null(d$bookmaker) && !is.na(d$bookmaker)) d$bookmaker else ""
+            paste(prefix, paste(Filter(nzchar, c(
+              paste0(market_name, " - ", d$bet_on, line_str, odds_str),
+              size_str, book_str
+            )), collapse = paste0(" ", dot, " ")))
+          })
+          paste("Same game:\n", paste(lines, collapse = "\n"))
         })
-        paste("Same game:\n", paste(lines, collapse = "\n"))
-      }),
+      },
       # Simplify market names
       market_display = format_market_name(market)
     ) %>%
@@ -1225,6 +1231,9 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               span.className = "warning-icon same-game";
               span.innerHTML = "&#9679;";
 
+              var chk = String.fromCharCode(0x2713);
+              var cir = String.fromCharCode(0x25CB);
+              var dot = String.fromCharCode(0xB7);
               var lines = others.map(function(d) {
                 var mName = formatMarketNameJS(d.market);
                 var lineStr = (d.line && d.line !== "" && d.line !== "NA") ?
@@ -1232,22 +1241,24 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 var oddsStr = (d.odds && d.odds !== "") ?
                   (parseInt(d.odds) > 0 ? " (+" + d.odds + ")" : " (" + d.odds + ")") : "";
                 var sizeStr = "";
-                var placedStr = "";
+                var prefix = cir;
                 if (d.isPlaced) {
+                  prefix = chk;
                   var act = parseFloat(d.actual);
                   var rec = parseFloat(d.size);
                   if (!isNaN(act) && act > 0) {
                     var recPart = (!isNaN(rec) && Math.abs(act - rec) > 0.01) ?
                       " (rec $" + Math.round(rec) + ")" : "";
-                    sizeStr = " $" + Math.round(act) + recPart;
+                    sizeStr = "$" + Math.round(act) + recPart;
                   }
-                  placedStr = "  [Placed]";
                 } else {
                   var sz = parseFloat(d.size);
-                  if (!isNaN(sz)) sizeStr = " $" + Math.round(sz);
+                  if (!isNaN(sz)) sizeStr = "$" + Math.round(sz);
                 }
-                var bookStr = d.book ? " @ " + d.book : "";
-                return mName + " - " + d.betOn + lineStr + oddsStr + sizeStr + bookStr + placedStr;
+                var parts = [mName + " - " + d.betOn + lineStr + oddsStr];
+                if (sizeStr) parts.push(sizeStr);
+                if (d.book) parts.push(d.book);
+                return prefix + " " + parts.join(" " + dot + " ");
               });
               span.setAttribute("data-tooltip", "Same game:\\n " + lines.join("\\n"));
             }
