@@ -18,7 +18,7 @@ import hashlib
 import logging
 import mimetypes
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
@@ -287,13 +287,17 @@ def schedule_capture(game_id: str, game_time_str: str, bookmaker: str):
         return
 
     try:
-        game_time = datetime.fromisoformat(str(game_time_str))
+        # game_time from dashboard is UTC (formatted with trailing Z)
+        raw = str(game_time_str).replace("Z", "+00:00")
+        game_time = datetime.fromisoformat(raw)
+        if game_time.tzinfo is None:
+            game_time = game_time.replace(tzinfo=timezone.utc)
     except (ValueError, TypeError):
         log.warning("Cannot parse game_time for CLV capture: %s", game_time_str)
         return
 
     capture_at = game_time - timedelta(minutes=15)
-    delay = (capture_at - datetime.now()).total_seconds()
+    delay = (capture_at - datetime.now(timezone.utc)).total_seconds()
 
     if delay <= 0:
         log.info("Game %s already within 15 min of tipoff, capturing now", game_id)
@@ -340,8 +344,10 @@ def schedule_pending_captures():
 
     for game_id, game_time, books_csv in upcoming:
         books = books_csv.split(",")
-        capture_at = game_time - timedelta(minutes=15)
-        delay = (capture_at - datetime.now()).total_seconds()
+        # game_time from DB is naive UTC; compare against UTC now
+        game_time_utc = game_time.replace(tzinfo=timezone.utc) if game_time.tzinfo is None else game_time
+        capture_at = game_time_utc - timedelta(minutes=15)
+        delay = (capture_at - datetime.now(timezone.utc)).total_seconds()
 
         if delay <= 0:
             continue  # Game already started or too close
