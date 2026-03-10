@@ -164,8 +164,14 @@ def resolve_home_away(away_raw, home_raw, team_dict, canonical_games):
 def parse_spread_records(markets, team_dict, canonical_games, fetch_time):
     """Parse 1H spread markets into 18-column records.
 
-    Each event has multiple lines. Each line has 2 contracts (one per team).
-    We pair them by event_ticker + floor_strike.
+    Each Kalshi spread contract like "Team wins by >X" independently provides
+    BOTH sides of a traditional spread:
+      - YES = Team -X (team covers)   → use yes_ask
+      - NO  = Opponent +X (team doesn't cover) → use no_ask (100 - yes_bid)
+
+    We process each contract individually — no pairing needed.
+    Multiple contracts at the same strike for the same event will produce
+    multiple records; the R pipeline picks the best line.
     """
     records = []
     by_event = defaultdict(list)
@@ -173,16 +179,7 @@ def parse_spread_records(markets, team_dict, canonical_games, fetch_time):
         by_event[m["event_ticker"]].append(m)
 
     for event_ticker, event_markets in by_event.items():
-        # Group by floor_strike to pair teams
-        by_strike = defaultdict(list)
-        for m in event_markets:
-            strike = m.get("floor_strike")
-            if strike is not None:
-                by_strike[strike].append(m)
-
-        # Determine teams from event title (use first market's title)
-        # We need to figure out which team is home/away from any spread title
-        # Collect all team names mentioned
+        # Collect all team names mentioned across contracts
         team_names = set()
         for m in event_markets:
             team = parse_spread_team(m.get("title", ""))
@@ -194,13 +191,12 @@ def parse_spread_records(markets, team_dict, canonical_games, fetch_time):
 
         team_list = sorted(team_names)
 
-        # Resolve teams: pass alphabetically, resolve_team_names handles mapping
+        # Resolve teams
         away_resolved, home_resolved = resolve_home_away(
             team_list[0], team_list[1], team_dict, canonical_games
         )
 
-        # Map raw Kalshi names to home/away sides using fuzzy matching
-        # against the resolved canonical names
+        # Map raw Kalshi names to home/away
         raw_to_side = {}
         for raw_name in team_list:
             if _fuzzy_team_match(raw_name.lower(), away_resolved.lower()):
@@ -208,79 +204,73 @@ def parse_spread_records(markets, team_dict, canonical_games, fetch_time):
             elif _fuzzy_team_match(raw_name.lower(), home_resolved.lower()):
                 raw_to_side[raw_name] = "home"
 
-        # Fallback: if fuzzy match failed, use the resolution order
         if len(raw_to_side) != 2:
             raw_to_side = {team_list[0]: "away", team_list[1]: "home"}
 
-        # Get game time from close_time
         close_time = event_markets[0].get("close_time", "")
         game_date, game_time_str = _parse_datetime(close_time)
 
-        for strike, strike_markets in by_strike.items():
-            if len(strike_markets) != 2:
+        for m in event_markets:
+            strike = m.get("floor_strike")
+            if strike is None:
                 continue
 
-            # Identify which market is for which team
-            home_market = None
-            away_market = None
-            for m in strike_markets:
-                team = parse_spread_team(m.get("title", ""))
-                if team and team in raw_to_side:
-                    if raw_to_side[team] == "home":
-                        home_market = m
-                    else:
-                        away_market = m
-
-            if not home_market or not away_market:
+            if not _is_liquid(m):
                 continue
 
-            # Skip illiquid markets
-            if not _is_liquid(home_market) or not _is_liquid(away_market):
+            contract_team = parse_spread_team(m.get("title", ""))
+            if not contract_team or contract_team not in raw_to_side:
                 continue
 
-            # Home spread: "Home wins by over X" means home_spread = -X
-            # (negative because it's points the home team needs to win by)
-            # Actually in standard format: home_spread = -strike means home is favored by strike
-            # Kalshi "Team wins by over X.5" → buying YES = team covers -X.5
-            # For the home team's contract: home_spread = -strike (home favored)
-            # The away team's contract at same strike: away_spread = +strike
-            home_spread = -strike
-            away_spread = strike
+            side = raw_to_side[contract_team]
 
-            # Convert ask prices to American odds (with fee)
-            # YES on "Home wins by >X" = betting home covers
-            # YES on "Away wins by >X" = betting away covers
-            home_ask = home_market.get("yes_ask", 0)
-            away_ask = away_market.get("yes_ask", 0)
+            # "Team wins by >X" → YES = team -X, NO = opponent +X
+            yes_ask = m.get("yes_ask", 0)
+            # NO ask = 100 - yes_bid (what you pay to bet NO)
+            yes_bid = m.get("yes_bid", 0)
+            no_ask = 100 - yes_bid if yes_bid > 0 else 0
 
-            # The NO side is the opposite: NO on "Home wins by >X" = away covers
-            # But we have both team contracts, so use YES ask for each
-            home_odds = cents_to_american(home_ask)
-            away_odds = cents_to_american(away_ask)
+            cover_odds = cents_to_american(yes_ask)     # team -X
+            opponent_odds = cents_to_american(no_ask)    # opponent +X
 
-            if home_odds is None or away_odds is None:
+            if cover_odds is None or opponent_odds is None:
                 continue
 
-            records.append({
+            if side == "home":
+                # Contract is for home team: home -X, away +X
+                record = {
+                    "home_spread": -strike,
+                    "home_spread_price": cover_odds,
+                    "away_spread": strike,
+                    "away_spread_price": opponent_odds,
+                }
+            else:
+                # Contract is for away team: away -X, home +X
+                record = {
+                    "away_spread": -strike,
+                    "away_spread_price": cover_odds,
+                    "home_spread": strike,
+                    "home_spread_price": opponent_odds,
+                }
+
+            record.update({
                 "fetch_time": fetch_time,
                 "sport_key": "basketball_ncaab",
-                "game_id": f"kalshi-{event_ticker}-{int(strike)}",
+                "game_id": f"kalshi-{event_ticker}-{m['ticker']}",
                 "game_date": game_date,
                 "game_time": game_time_str,
                 "away_team": away_resolved,
                 "home_team": home_resolved,
                 "market": "spreads_h1",
                 "period": "Half1",
-                "away_spread": away_spread,
-                "away_spread_price": away_odds,
-                "home_spread": home_spread,
-                "home_spread_price": home_odds,
                 "total": None,
                 "over_price": None,
                 "under_price": None,
                 "away_ml": None,
                 "home_ml": None,
             })
+
+            records.append(record)
 
     return records
 
