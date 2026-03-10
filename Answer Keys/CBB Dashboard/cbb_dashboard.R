@@ -231,10 +231,10 @@ create_bets_table <- function(all_bets, placed_bets) {
       ),
       odds_display = {
         base <- ifelse(odds > 0, paste0("+", odds), as.character(odds))
-        # For Kalshi, append contract price in cents (implied prob from fee-adjusted odds)
-        implied_cents <- round(ifelse(odds < 0, -odds / (-odds + 100), 100 / (odds + 100)) * 100)
+        # For Kalshi, show implied probability (fee-adjusted) so user sees effective cost
+        implied_pct <- round(ifelse(odds < 0, -odds / (-odds + 100), 100 / (odds + 100)) * 100)
         ifelse(bookmaker_key == "kalshi",
-          paste0(base, " (", implied_cents, "\u00A2)"),
+          paste0(base, " (", implied_pct, "\u00A2)"),
           base)
       },
       size_display = sprintf("$%.0f", bet_size),

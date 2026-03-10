@@ -3533,11 +3533,10 @@ get_kalshi_odds <- function(
       result_list[[length(result_list) + 1]] <- spread_rec
     }
 
-    # Totals record
+    # Totals record (Kalshi writes separate rows per market, so market is already correct)
     if (!is.na(row$total) && !grepl("team_totals_", row$market)) {
-      totals_market <- gsub("spreads", "totals", row$market)
       totals_rec <- c(base, list(
-        market = totals_market,
+        market = row$market,
         market_type = "totals",
         line = row$total,
         odds_away = NA_integer_,
@@ -3550,9 +3549,8 @@ get_kalshi_odds <- function(
 
     # Moneyline record
     if (!is.na(row$away_ml)) {
-      ml_market <- gsub("spreads", "h2h", row$market)
       ml_rec <- c(base, list(
-        market = ml_market,
+        market = row$market,
         market_type = "h2h",
         line = NA_real_,
         odds_away = row$away_ml,

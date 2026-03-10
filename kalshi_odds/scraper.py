@@ -194,28 +194,23 @@ def parse_spread_records(markets, team_dict, canonical_games, fetch_time):
 
         team_list = sorted(team_names)
 
-        # Try to determine home/away from canonical games
+        # Resolve teams: pass alphabetically, resolve_team_names handles mapping
         away_resolved, home_resolved = resolve_home_away(
             team_list[0], team_list[1], team_dict, canonical_games
         )
 
-        # If resolution swapped the order, track which raw name maps to which
-        # We need to know which Kalshi team name corresponds to home vs away
+        # Map raw Kalshi names to home/away sides using fuzzy matching
+        # against the resolved canonical names
         raw_to_side = {}
         for raw_name in team_list:
-            # Check if this raw name matches the resolved away or home
-            test_a, test_h = resolve_team_names(raw_name, raw_name, team_dict, canonical_games)
-            if test_a == away_resolved:
+            if _fuzzy_team_match(raw_name.lower(), away_resolved.lower()):
                 raw_to_side[raw_name] = "away"
-            elif test_a == home_resolved:
+            elif _fuzzy_team_match(raw_name.lower(), home_resolved.lower()):
                 raw_to_side[raw_name] = "home"
 
-        # Fallback: if we couldn't determine, assign alphabetically
+        # Fallback: if fuzzy match failed, use the resolution order
         if len(raw_to_side) != 2:
             raw_to_side = {team_list[0]: "away", team_list[1]: "home"}
-            away_resolved, home_resolved = resolve_home_away(
-                team_list[0], team_list[1], team_dict, canonical_games
-            )
 
         # Get game time from close_time
         close_time = event_markets[0].get("close_time", "")
@@ -502,58 +497,60 @@ def _fuzzy_team_match(name1, name2):
 def init_database():
     """Initialize DuckDB with the cbb_odds table."""
     conn = duckdb.connect(str(DB_PATH))
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS cbb_odds (
-            fetch_time TIMESTAMP,
-            sport_key VARCHAR,
-            game_id VARCHAR,
-            game_date VARCHAR,
-            game_time VARCHAR,
-            away_team VARCHAR,
-            home_team VARCHAR,
-            market VARCHAR,
-            period VARCHAR,
-            away_spread FLOAT,
-            away_spread_price INTEGER,
-            home_spread FLOAT,
-            home_spread_price INTEGER,
-            total FLOAT,
-            over_price INTEGER,
-            under_price INTEGER,
-            away_ml INTEGER,
-            home_ml INTEGER
-        )
-    """)
-    conn.close()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS cbb_odds (
+                fetch_time TIMESTAMP,
+                sport_key VARCHAR,
+                game_id VARCHAR,
+                game_date VARCHAR,
+                game_time VARCHAR,
+                away_team VARCHAR,
+                home_team VARCHAR,
+                market VARCHAR,
+                period VARCHAR,
+                away_spread FLOAT,
+                away_spread_price INTEGER,
+                home_spread FLOAT,
+                home_spread_price INTEGER,
+                total FLOAT,
+                over_price INTEGER,
+                under_price INTEGER,
+                away_ml INTEGER,
+                home_ml INTEGER
+            )
+        """)
+    finally:
+        conn.close()
 
 
 def save_to_database(odds_data):
     """Save scraped odds to DuckDB (clear + insert)."""
     conn = duckdb.connect(str(DB_PATH))
+    try:
+        columns = [
+            "fetch_time", "sport_key", "game_id", "game_date", "game_time",
+            "away_team", "home_team", "market", "period",
+            "away_spread", "away_spread_price", "home_spread", "home_spread_price",
+            "total", "over_price", "under_price", "away_ml", "home_ml"
+        ]
 
-    columns = [
-        "fetch_time", "sport_key", "game_id", "game_date", "game_time",
-        "away_team", "home_team", "market", "period",
-        "away_spread", "away_spread_price", "home_spread", "home_spread_price",
-        "total", "over_price", "under_price", "away_ml", "home_ml"
-    ]
+        placeholders = ", ".join(["?" for _ in columns])
 
-    placeholders = ", ".join(["?" for _ in columns])
+        conn.execute("DELETE FROM cbb_odds")
 
-    conn.execute("DELETE FROM cbb_odds")
+        conn.executemany(f"""
+            INSERT INTO cbb_odds ({", ".join(columns)})
+            VALUES ({placeholders})
+        """, [
+            tuple(d[col] for col in columns)
+            for d in odds_data
+        ])
 
-    conn.executemany(f"""
-        INSERT INTO cbb_odds ({", ".join(columns)})
-        VALUES ({placeholders})
-    """, [
-        tuple(d[col] for col in columns)
-        for d in odds_data
-    ])
-
-    result = conn.execute("SELECT COUNT(*) FROM cbb_odds").fetchone()
-    print(f"Database now has {result[0]} total records in cbb_odds")
-
-    conn.close()
+        result = conn.execute("SELECT COUNT(*) FROM cbb_odds").fetchone()
+        print(f"Database now has {result[0]} total records in cbb_odds")
+    finally:
+        conn.close()
 
 
 # =============================================================================
