@@ -229,7 +229,14 @@ create_bets_table <- function(all_bets, placed_bets) {
         line > 0 ~ paste0("+", line),
         TRUE ~ as.character(line)
       ),
-      odds_display = ifelse(odds > 0, paste0("+", odds), as.character(odds)),
+      odds_display = {
+        base <- ifelse(odds > 0, paste0("+", odds), as.character(odds))
+        # For Kalshi, append contract price in cents (implied prob from fee-adjusted odds)
+        implied_cents <- round(ifelse(odds < 0, -odds / (-odds + 100), 100 / (odds + 100)) * 100)
+        ifelse(bookmaker_key == "kalshi",
+          paste0(base, " (", implied_cents, "\u00A2)"),
+          base)
+      },
       size_display = sprintf("$%.0f", bet_size),
       # Fill status: compare actual vs current bet_size (not stale placed_rec)
       placed_actual = ifelse(is_placed, placed_actual[bet_hash], NA_real_),
