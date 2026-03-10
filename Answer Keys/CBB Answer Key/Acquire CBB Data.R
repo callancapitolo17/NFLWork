@@ -356,8 +356,8 @@ if ("--daily-pbp" %in% cli_args) {
     filter(half <= 2) %>%
     group_by(game_id, half) %>%
     summarize(
-      home_team = first(home_team_name),
-      away_team = first(away_team_name),
+      home_team = paste(first(home_team_name), first(home_team_mascot)),
+      away_team = paste(first(away_team_name), first(away_team_mascot)),
       game_date = as.character(as.Date(first(game_date))),
       home_score_end = max(home_score, na.rm = TRUE),
       away_score_end = max(away_score, na.rm = TRUE),
@@ -511,8 +511,8 @@ acquire_cbb_pbp <- function(seasons = 2021:2026) {
     filter(half <= 2) %>%  # Only regulation halves
     group_by(game_id, half) %>%
     summarize(
-      home_team = first(home_team_name),
-      away_team = first(away_team_name),
+      home_team = paste(first(home_team_name), first(home_team_mascot)),
+      away_team = paste(first(away_team_name), first(away_team_mascot)),
       game_date = as.Date(first(game_date)),
       # Get max score at end of each half
       home_score_end = max(home_score, na.rm = TRUE),
