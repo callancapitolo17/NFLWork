@@ -29,7 +29,7 @@ import risk
 
 # Add kalshi_odds to path for market fetching
 sys.path.insert(0, str(config.PROJECT_ROOT / "kalshi_odds"))
-from scraper import fetch_markets, parse_spread_team, parse_matchup_title
+from scraper import fetch_markets, parse_spread_team
 
 # Add Answer Keys for team name resolution
 sys.path.insert(0, str(config.ANSWER_KEYS_DIR))
@@ -373,6 +373,17 @@ def main():
 
     # Init
     db.init_database()
+
+    # SAFETY: Cancel any resting orders from previous sessions (crash recovery)
+    if not DRY_RUN:
+        print("Checking for stale orders from previous sessions...")
+        stale = orders.get_resting_orders()
+        if stale:
+            print(f"  Found {len(stale)} stale resting orders — cancelling all.")
+            orders.cancel_all_orders()
+        else:
+            print("  No stale orders found.")
+
     db.start_session(SESSION_ID)
 
     # Load predictions
@@ -468,6 +479,7 @@ def main():
                                         oid = info.get(side_key)
                                         if oid:
                                             orders.cancel_order(oid)
+                                            db.remove_resting_order(oid)
                                 del resting_by_ticker[ticker]
                 last_monitor_time = now
 
@@ -503,9 +515,10 @@ def main():
         import traceback
         traceback.print_exc()
     finally:
-        # Kill switch: cancel everything — retry up to 3 times
+        # Kill switch: always cancel ALL orders on Kalshi (catches phantom orders
+        # from failed API responses and orders we lost track of)
         print("\n\nShutting down...")
-        if not DRY_RUN and resting_by_ticker:
+        if not DRY_RUN:
             print("Cancelling all resting orders...")
             for attempt in range(3):
                 if orders.cancel_all_orders():
