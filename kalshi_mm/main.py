@@ -165,8 +165,6 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
     Returns:
         Updated resting_by_ticker dict.
     """
-    global TOTAL_FILLS
-
     # Check overall risk
     is_fresh, pred_age = risk.check_staleness(prediction_updated_at)
     if not is_fresh:
@@ -324,29 +322,35 @@ def poll_for_fills(resting_by_ticker):
 
             remaining = api_order.get("remaining_count", api_order.get("count", 0))
             original = api_order.get("count", 0)
-            filled_count = original - remaining
+            cumulative_filled = original - remaining
 
-            if filled_count > 0:
-                # Partial or full fill
+            # Track previously seen fills to compute incremental delta
+            prev_filled_key = f"{side_key}_filled"
+            prev_filled = info.get(prev_filled_key, 0)
+            new_fills = cumulative_filled - prev_filled
+
+            if new_fills > 0:
                 price = api_order.get("yes_price", 0) if side == "yes" else api_order.get("no_price", 0)
 
-                print(f"  FILL: {side} {filled_count}x @ {price}c on {ticker}"
+                print(f"  FILL: {side} {new_fills}x @ {price}c on {ticker}"
                       f"{' (partial)' if remaining > 0 else ''}")
-                TOTAL_FILLS += filled_count
+                TOTAL_FILLS += new_fills
 
-                # Update position
-                db.update_position(ticker, side, price, filled_count)
+                # Update position with incremental fills only
+                db.update_position(ticker, side, price, new_fills)
                 db.record_fill(
-                    fill_id=f"{oid}-fill-{filled_count}",
+                    fill_id=f"{oid}-fill-{cumulative_filled}",
                     ticker=ticker, side=side, action="buy",
-                    price=price, count=filled_count, fee_cents=0,
+                    price=price, count=new_fills, fee_cents=0,
                     order_id=oid
                 )
+                info[prev_filled_key] = cumulative_filled
 
                 if remaining == 0:
                     # Fully filled — remove
                     db.remove_resting_order(oid)
                     info.pop(side_key, None)
+                    info.pop(prev_filled_key, None)
                     price_key = "bid_price" if side == "yes" else "ask_price"
                     info.pop(price_key, None)
 
