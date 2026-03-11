@@ -85,6 +85,7 @@ def lookup_game(bookmaker: str, home_team: str, away_team: str) -> Optional[dict
     if not db_path or not db_path.exists():
         return None
 
+    con = None
     try:
         con = duckdb.connect(str(db_path), read_only=True)
         row = con.execute("""
@@ -93,7 +94,6 @@ def lookup_game(bookmaker: str, home_team: str, away_team: str) -> Optional[dict
             WHERE home_team = ? AND away_team = ?
             LIMIT 1
         """, [home_team, away_team]).fetchone()
-        con.close()
 
         if row:
             return {
@@ -105,6 +105,9 @@ def lookup_game(bookmaker: str, home_team: str, away_team: str) -> Optional[dict
             }
     except Exception as e:
         print(f"  Game lookup failed for {bookmaker}: {e}")
+    finally:
+        if con:
+            con.close()
 
     return None
 
@@ -113,19 +116,22 @@ def update_bet_status(bet_hash: str, status: str):
     """Update placed_bets.status in the dashboard DuckDB (with retry for lock contention)."""
     import time as _time
     for attempt in range(5):
+        con = None
         try:
             con = duckdb.connect(str(DASHBOARD_DB))
             con.execute(
                 "UPDATE placed_bets SET status = ? WHERE bet_hash = ?",
                 [status, bet_hash],
             )
-            con.close()
             return
         except Exception as e:
             if attempt < 4 and "lock" in str(e).lower():
                 _time.sleep(0.5 * (attempt + 1))
             else:
                 print(f"  Status update failed: {e}")
+        finally:
+            if con:
+                con.close()
 
 
 class BaseNavigator:
@@ -169,8 +175,11 @@ class BaseNavigator:
             line_str = f" {bet_data['line']}"
 
         odds = bet_data.get("odds", "")
-        if odds and int(odds) > 0:
-            odds = f"+{odds}"
+        try:
+            if odds and int(odds) > 0:
+                odds = f"+{odds}"
+        except (ValueError, TypeError):
+            pass
 
         size = bet_data.get("recommended_size", "?")
 

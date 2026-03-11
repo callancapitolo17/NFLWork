@@ -654,119 +654,6 @@ class Hoop88Navigator(BaseNavigator):
             except Exception as e:
                 print(f"  Bet {i+1}: failed to fill ${sizes[i]}: {e}", flush=True)
 
-    def _fill_latest_amount(self, page, bet_data: dict):
-        """Fill the bet amount in the LAST betslip input (for multi-bet support).
-
-        Hoop88 betslip uses input[data-field="risk"] and needs manual
-        event dispatching (input, change, keyup) for the SPA to react.
-        Targeting the last input ensures we fill the most recently added bet.
-        """
-        import time as _time
-        size = bet_data.get("recommended_size", 0)
-        if not size:
-            return
-
-        print(f"  Looking for bet slip amount field...", flush=True)
-        _time.sleep(2)  # Wait for betslip to update after odds click
-
-        # DEBUG: Dump all risk-related inputs so we can see what's available
-        try:
-            debug_info = page.evaluate("""() => {
-                const inputs = document.querySelectorAll('input[data-field="risk"], input[type="number"]');
-                return Array.from(inputs).map((el, i) => ({
-                    i, type: el.type, dataField: el.dataset.field || '',
-                    disabled: el.disabled, readOnly: el.readOnly,
-                    visible: el.offsetParent !== null,
-                    value: el.value,
-                    rect: { t: Math.round(el.getBoundingClientRect().top),
-                            l: Math.round(el.getBoundingClientRect().left),
-                            w: Math.round(el.getBoundingClientRect().width),
-                            h: Math.round(el.getBoundingClientRect().height) },
-                    parentClass: (el.parentElement?.className || '').substring(0, 60)
-                }));
-            }""")
-            print(f"  DEBUG: Found {len(debug_info)} risk/number inputs:", flush=True)
-            for d in debug_info:
-                print(f"    [{d['i']}] data-field='{d['dataField']}' disabled={d['disabled']} "
-                      f"visible={d['visible']} rect={d['rect']} parent='{d['parentClass']}'", flush=True)
-        except Exception as dbg_e:
-            print(f"  DEBUG dump error: {dbg_e}", flush=True)
-
-        # Scope selectors to the betslip panel and exclude disabled inputs.
-        # Hoop88 has disabled input[data-field="risk"] in odds display rows —
-        # we must target only the betslip's enabled inputs.
-        for selector in [
-            '.slide-up[data-panel="bets"] input[data-field="risk"]:not([disabled])',
-            '[data-wager-panel="Straight"] input[data-field="risk"]:not([disabled])',
-            '[data-panel="bets"] input[data-field="risk"]:not([disabled])',
-            'input[data-field="risk"]:not([disabled])',
-            ".slide-up input[type='number']:not([disabled])",
-            "input[placeholder*='Risk' i]:not([disabled])",
-            "input[placeholder*='Amount' i]:not([disabled])",
-            "input[type='number']:not([disabled])",
-        ]:
-            try:
-                fields = page.locator(selector)
-                count = fields.count()
-                if count > 0:
-                    # Find the LAST *visible* input (visible = has nonzero rect).
-                    # Hoop88 betslip has hidden duplicates; we must skip them.
-                    target_field = None
-                    for idx in range(count - 1, -1, -1):
-                        candidate = fields.nth(idx)
-                        try:
-                            is_vis = candidate.evaluate("el => el.getBoundingClientRect().width > 0")
-                            if is_vis:
-                                target_field = candidate
-                                print(f"  Selected input #{idx+1} of {count} (visible)", flush=True)
-                                break
-                        except Exception:
-                            continue
-
-                    if not target_field:
-                        print(f"  All {count} inputs invisible for {selector}", flush=True)
-                        continue
-
-                    # Use execCommand('insertText') which triggers native SPA
-                    # event handlers correctly (works with any framework).
-                    # Must click() first to truly transfer browser focus
-                    # (el.focus() alone may not work for subsequent inputs).
-                    val_str = str(int(size))
-                    target_field.evaluate(f"""el => {{
-                        el.scrollIntoView();
-                        el.click();
-                        el.focus();
-                        el.select();
-                        el.value = '';
-                        document.execCommand('insertText', false, '{val_str}');
-                        el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                        el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                    }}""")
-                    print(f"  Filled amount: ${int(size)} (selector: {selector}, input #{count})", flush=True)
-                    return
-            except Exception:
-                continue
-
-        # Diagnostic: dump visible inputs
-        print(f"  Could not find amount input. Dumping visible inputs...", flush=True)
-        try:
-            all_inputs = page.locator("input:visible")
-            input_count = all_inputs.count()
-            print(f"  Found {input_count} visible <input> elements:", flush=True)
-            for i in range(min(input_count, 15)):
-                inp = all_inputs.nth(i)
-                attrs = page.evaluate("""el => ({
-                    type: el.type, placeholder: el.placeholder,
-                    className: el.className, id: el.id, name: el.name,
-                    inputMode: el.inputMode, dataField: el.dataset.field || ''
-                })""", inp.element_handle())
-                print(f"    [{i}] type={attrs.get('type')} data-field='{attrs.get('dataField')}' "
-                      f"placeholder='{attrs.get('placeholder')}' class='{attrs.get('className', '')[:60]}'", flush=True)
-        except Exception as e:
-            print(f"  Input dump failed: {e}", flush=True)
-
-        print(f"  Enter ${int(size)} manually.", flush=True)
-
     # Common state/word abbreviations used by sportsbooks
     _ABBREVS = {
         "va": "virginia", "n": "north", "s": "south", "e": "east", "w": "west",
@@ -777,7 +664,7 @@ class Hoop88Navigator(BaseNavigator):
         "ind": "indiana", "penn": "pennsylvania", "md": "maryland",
         "ala": "alabama", "ga": "georgia", "colo": "colorado",
         "ore": "oregon", "wash": "washington", "okla": "oklahoma",
-        "neb": "nebraska", "ore": "oregon", "tex": "texas",
+        "neb": "nebraska", "tex": "texas",
         "nc": "north carolina", "sc": "south carolina",
     }
 

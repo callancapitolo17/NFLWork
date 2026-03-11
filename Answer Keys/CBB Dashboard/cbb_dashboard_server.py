@@ -480,6 +480,7 @@ def run_auto_queue():
         return {"queued": 0, "message": msg}
 
     # Insert into placed_bets with status='queued'
+    dash_con = None
     try:
         dash_con = duckdb.connect(str(DB_PATH))
         for bet in to_queue:
@@ -499,11 +500,15 @@ def run_auto_queue():
                     bet["odds"], bet["bookmaker_key"],
                     datetime.now().isoformat(),
                 ])
-            except Exception:
+            except duckdb.ConstraintException:
                 pass  # Skip duplicates (race condition with manual placement)
-        dash_con.close()
+            except Exception as e:
+                print(f"  Warning: failed to insert bet {bet['bet_hash']}: {e}")
     except Exception as e:
         return {"error": f"Failed to insert queued bets: {e}", "queued": 0}
+    finally:
+        if dash_con:
+            dash_con.close()
 
     # Schedule CLV captures for queued bets
     for bet in to_queue:
@@ -546,12 +551,14 @@ def run_auto_queue():
             log_file = open(log_path, "a")
             log_file.write(f"\n{'='*60}\nAuto-queue dispatch: {book} ({len(book_bets)} bets) at {datetime.now()}\n{'='*60}\n")
             log_file.flush()
-            subprocess.Popen(
+            # Popen inherits the fd; close our handle so subprocess owns it
+            proc = subprocess.Popen(
                 [placer_python, placer_script, bet_json],
                 cwd=str(local_root / "bet_placer"),
                 stdout=log_file,
                 stderr=log_file,
             )
+            log_file.close()
             dispatched[book] = len(book_bets)
             print(f"  Dispatched {len(book_bets)} bets to {book} navigator")
         except Exception as e:
@@ -921,6 +928,7 @@ def auto_place():
             stdout=log_file,
             stderr=log_file,
         )
+        log_file.close()
 
         return jsonify({"success": True, "message": f"Browser launching for {bookmaker}..."})
 

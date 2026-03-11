@@ -1,23 +1,10 @@
 #!/usr/bin/env python3
 """
 Wagerzon bet navigator.
-Uses the NewScheduleHelper API to find internal game/line IDs,
-then constructs a direct CreateWager URL to pre-fill the bet slip.
-User confirms manually.
+Navigates to the schedule page, clicks odds buttons to add bets to the
+betslip, fills amounts, then waits for user confirmation.
 
-URL pattern discovered via recon:
-  https://backend.wagerzon.com/wager/CreateWager.aspx?sel={sel_type}_{idgm}_{line}_{odds}&WT=0&lg={league_id}
-
-API response structure (key fields):
-  game.idgm     = internal game ID (used in sel parameter)
-  game.idgp     = parent game group ID
-  game.idlg     = league ID
-  game.vnum     = away rotation number
-  game.hnum     = home rotation number
-  game.vtm      = away team name (Wagerzon format)
-  game.htm      = home team name (Wagerzon format)
-  child.idgm    = derivative line ID (1H, team totals, etc.)
-  child.idgmtyp = type: 10=FG, 15=1H, 25=Alt, 35=TT(FG), 66=TT(1H)
+Uses the NewScheduleHelper API for game pre-fetch and line verification.
 """
 
 import os
@@ -25,7 +12,6 @@ import re
 import sys
 import time
 import requests
-from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
@@ -37,22 +23,6 @@ from config import WAGERZON_BASE_URL, WAGERZON_HELPER_URL, SPORTS
 
 WAGERZON_USERNAME = os.getenv("WAGERZON_USERNAME")
 WAGERZON_PASSWORD = os.getenv("WAGERZON_PASSWORD")
-
-# Map market periods to Wagerzon child game types
-PERIOD_TO_GMTYP = {
-    "fg": 10,   # Full game (parent)
-    "h1": 15,   # First half
-}
-
-# Map market types to which line fields to use for the sel parameter
-MARKET_SEL_FIELDS = {
-    "spreads": {"away": ("vsprdt", "vsprdoddst"), "home": ("hsprdt", "hsprdoddst")},
-    "totals": {"Over": ("ovt", "ovoddst"), "Under": ("unt", "unoddst")},
-    "h2h": {"away": ("voddst", None), "home": ("hoddst", None)},
-    "team_totals": {"Over": ("ovt", "ovoddst"), "Under": ("unt", "unoddst")},
-    "alternate_spreads": {"away": ("vsprdt", "vsprdoddst"), "home": ("hsprdt", "hsprdoddst")},
-    "alternate_totals": {"Over": ("ovt", "ovoddst"), "Under": ("unt", "unoddst")},
-}
 
 
 class WagerzonNavigator(BaseNavigator):
@@ -576,128 +546,6 @@ class WagerzonNavigator(BaseNavigator):
         resp.raise_for_status()
         return session
 
-    def _build_wager_url(self, bet_data: dict, parsed) -> tuple[str | None, int | None]:
-        """Find the internal game ID via API and construct CreateWager URL.
-
-        Returns (url, league_id) or (None, None) if game not found.
-        """
-        print("  Fetching game data from Wagerzon API...")
-
-        try:
-            session = self._api_login()
-        except Exception as e:
-            print(f"  API login failed: {e}")
-            return None, None
-
-        # Fetch CBB odds
-        url = f"{WAGERZON_HELPER_URL}?WT=0&{SPORTS['cbb']['url_params']}"
-        try:
-            resp = session.get(url, timeout=30, headers={
-                "Accept": "application/json, text/plain, */*",
-                "X-Requested-With": "XMLHttpRequest",
-            })
-            data = resp.json()
-        except Exception as e:
-            print(f"  API fetch failed: {e}")
-            return None, None
-
-        leagues_wrapper = data.get("result", {}).get("listLeagues", [[]])[0]
-        if not leagues_wrapper:
-            print("  No leagues in API response")
-            return None, None
-
-        # Search through all leagues for matching game
-        away_target = bet_data["away_team"].upper()
-        home_target = bet_data["home_team"].upper()
-        bet_on = bet_data["bet_on"]
-        line = bet_data.get("line")
-        odds = bet_data.get("odds")
-
-        for league in leagues_wrapper:
-            for game in league.get("Games", []):
-                away_raw = game.get("vtm", "").upper()
-                home_raw = game.get("htm", "").upper()
-
-                # Match by team name (partial match — API uses abbreviated names)
-                if not (away_target in away_raw or away_raw in away_target or
-                        home_target in home_raw or home_raw in home_target):
-                    continue
-
-                # Check both directions (sometimes away/home are flipped)
-                if not (home_target in home_raw or home_raw in home_target):
-                    continue
-
-                print(f"  Found game: {away_raw} @ {home_raw} (idgm={game.get('idgm')})")
-
-                # Find the right line (parent or derivative)
-                target_gmtyp = PERIOD_TO_GMTYP.get(parsed.period, 10)
-
-                if target_gmtyp == 10:
-                    # Full game — use parent
-                    return self._construct_url(
-                        game, game.get("GameLines", [{}])[0],
-                        parsed, bet_data, game.get("idlg")
-                    )
-                else:
-                    # Derivative — search GameChilds
-                    for child in game.get("GameChilds", []):
-                        if child.get("idgmtyp") == target_gmtyp:
-                            # For team totals, match the team name
-                            if parsed.market_type in ("team_totals", "alternate_team_totals"):
-                                child_team = child.get("vtm", "").upper()
-                                target_team = bet_on.upper() if bet_on not in ("Over", "Under") else ""
-                                if parsed.side == "home":
-                                    target_team = home_target
-                                elif parsed.side == "away":
-                                    target_team = away_target
-
-                                if target_team and target_team not in child_team:
-                                    continue
-
-                            print(f"  Found derivative: idgm={child.get('idgm')} (type={target_gmtyp})")
-                            return self._construct_url(
-                                child, child.get("GameLines", [{}])[0],
-                                parsed, bet_data, child.get("idlg")
-                            )
-
-                    print(f"  Game found but no matching derivative (type={target_gmtyp})")
-                    # Fall back to parent game
-                    return self._construct_url(
-                        game, game.get("GameLines", [{}])[0],
-                        parsed, bet_data, game.get("idlg")
-                    )
-
-        print(f"  Game not found in API response: {bet_data['away_team']} @ {bet_data['home_team']}")
-        return None, None
-
-    def _construct_url(self, game: dict, game_line: dict, parsed, bet_data: dict,
-                       league_id: int | None) -> tuple[str | None, int | None]:
-        """Build the CreateWager.aspx URL from game data.
-
-        URL format: CreateWager.aspx?sel={sel_type}_{idgm}_{line}_{odds}&WT=0&lg={league_id}
-        """
-        idgm = game.get("idgm")
-        if not idgm:
-            return None, None
-
-        bet_on = bet_data["bet_on"]
-        line = bet_data.get("line")
-        odds = bet_data.get("odds")
-
-        # Determine sel_type (1 seems to be the standard for straight bets)
-        sel_type = 1
-
-        # Build the sel value: {sel_type}_{idgm}_{line}_{odds}
-        line_str = str(line) if line is not None else "0"
-        odds_str = str(odds) if odds else "-110"
-
-        sel = f"{sel_type}_{idgm}_{line_str}_{odds_str}"
-        lg = league_id or 43  # Default to CBB league
-
-        url = f"{WAGERZON_BASE_URL}/wager/CreateWager.aspx?sel={sel}&WT=0&lg={lg}"
-        print(f"  Constructed URL: {url}")
-        return url, lg
-
     def _login(self, page):
         """Log in to Wagerzon via browser."""
         print("  Logging in to Wagerzon...")
@@ -736,36 +584,6 @@ class WagerzonNavigator(BaseNavigator):
                 page.wait_for_url("**/wager/**", timeout=60000)
             except Exception:
                 print("  Continuing anyway...")
-
-    def _fill_amount(self, page, bet_data: dict):
-        """Try to fill the bet amount on the wager page."""
-        size = bet_data.get("recommended_size", 0)
-        if not size:
-            return
-
-        print(f"  Looking for amount input field...")
-        time.sleep(2)
-
-        # Try common selectors for bet amount input
-        for selector in [
-            "input[name*='Risk']", "input[name*='risk']",
-            "input[name*='Amount']", "input[name*='amount']",
-            "input[name*='Stake']", "input[name*='stake']",
-            "input[name*='Wager']", "input[name*='wager']",
-            "input[type='number']",
-            "input[type='text'][id*='risk']",
-            "input[type='text'][id*='amount']",
-        ]:
-            try:
-                field = page.locator(selector).first
-                if field.is_visible(timeout=2000):
-                    field.fill(str(int(size)))
-                    print(f"  Filled amount: ${int(size)} (selector: {selector})")
-                    return
-            except Exception:
-                continue
-
-        print(f"  Could not find amount input. Enter ${int(size)} manually.")
 
     def _print_manual_instructions(self, bet_data: dict, parsed):
         """Print instructions for manual placement."""
