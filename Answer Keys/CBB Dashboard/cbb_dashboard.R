@@ -231,8 +231,11 @@ create_bets_table <- function(all_bets, placed_bets) {
       ),
       odds_display = {
         base <- ifelse(odds > 0, paste0("+", odds), as.character(odds))
-        # For Kalshi, show implied probability (fee-adjusted) to 2 decimal places
-        implied_pct <- sprintf("%.2f", ifelse(odds < 0, -odds / (-odds + 100), 100 / (odds + 100)) * 100)
+        # For Kalshi, show effective cents (fee-adjusted) — use precise value from scraper when available
+        eff_cents <- if ("cents" %in% names(.)) cents else NA_real_
+        implied_pct <- ifelse(!is.na(eff_cents),
+          sprintf("%.2f", eff_cents),
+          sprintf("%.2f", ifelse(odds < 0, -odds / (-odds + 100), 100 / (odds + 100)) * 100))
         ifelse(bookmaker_key == "kalshi",
           paste0(base, " (", implied_pct, "\u00A2)"),
           base)

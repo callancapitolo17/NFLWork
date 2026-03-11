@@ -64,18 +64,21 @@ def cents_to_american(ask_cents):
 
     The taker fee is 7% * P * (1-P) per contract. We add this to the ask price
     to get the effective cost, then convert to American odds.
+
+    Returns (american_odds, effective_cents) tuple.
     """
     if ask_cents is None or ask_cents <= 0 or ask_cents >= 100:
-        return None
+        return None, None
     p = ask_cents / 100.0
     fee = TAKER_FEE_RATE * p * (1 - p)
     effective_p = p + fee
     if effective_p >= 1.0:
-        return None
+        return None, None
+    effective_cents = round(effective_p * 100, 2)
     if effective_p > 0.5:
-        return round(-100 * effective_p / (1 - effective_p))
+        return round(-100 * effective_p / (1 - effective_p)), effective_cents
     else:
-        return round(100 * (1 - effective_p) / effective_p)
+        return round(100 * (1 - effective_p) / effective_p), effective_cents
 
 
 # =============================================================================
@@ -230,8 +233,8 @@ def parse_spread_records(markets, team_dict, canonical_games, fetch_time):
             yes_bid = m.get("yes_bid", 0)
             no_ask = 100 - yes_bid if yes_bid > 0 else 0
 
-            cover_odds = cents_to_american(yes_ask)     # team -X
-            opponent_odds = cents_to_american(no_ask)    # opponent +X
+            cover_odds, cover_eff = cents_to_american(yes_ask)     # team -X
+            opponent_odds, opponent_eff = cents_to_american(no_ask)    # opponent +X
 
             if cover_odds is None or opponent_odds is None:
                 continue
@@ -241,16 +244,20 @@ def parse_spread_records(markets, team_dict, canonical_games, fetch_time):
                 record = {
                     "home_spread": -strike,
                     "home_spread_price": cover_odds,
+                    "home_spread_cents": cover_eff,
                     "away_spread": strike,
                     "away_spread_price": opponent_odds,
+                    "away_spread_cents": opponent_eff,
                 }
             else:
                 # Contract is for away team: away -X, home +X
                 record = {
                     "away_spread": -strike,
                     "away_spread_price": cover_odds,
+                    "away_spread_cents": cover_eff,
                     "home_spread": strike,
                     "home_spread_price": opponent_odds,
+                    "home_spread_cents": opponent_eff,
                 }
 
             record.update({
@@ -265,9 +272,13 @@ def parse_spread_records(markets, team_dict, canonical_games, fetch_time):
                 "period": "Half1",
                 "total": None,
                 "over_price": None,
+                "over_cents": None,
                 "under_price": None,
+                "under_cents": None,
                 "away_ml": None,
+                "away_ml_cents": None,
                 "home_ml": None,
+                "home_ml_cents": None,
             })
 
             records.append(record)
@@ -311,8 +322,8 @@ def parse_total_records(markets, team_dict, canonical_games, fetch_time):
             over_ask = m.get("yes_ask", 0)
             under_ask = m.get("no_ask", 0)
 
-            over_odds = cents_to_american(over_ask)
-            under_odds = cents_to_american(under_ask)
+            over_odds, over_eff = cents_to_american(over_ask)
+            under_odds, under_eff = cents_to_american(under_ask)
 
             if over_odds is None or under_odds is None:
                 continue
@@ -329,13 +340,19 @@ def parse_total_records(markets, team_dict, canonical_games, fetch_time):
                 "period": "Half1",
                 "away_spread": None,
                 "away_spread_price": None,
+                "away_spread_cents": None,
                 "home_spread": None,
                 "home_spread_price": None,
+                "home_spread_cents": None,
                 "total": strike,
                 "over_price": over_odds,
+                "over_cents": over_eff,
                 "under_price": under_odds,
+                "under_cents": under_eff,
                 "away_ml": None,
+                "away_ml_cents": None,
                 "home_ml": None,
+                "home_ml_cents": None,
             })
 
     return records
@@ -411,8 +428,8 @@ def parse_moneyline_records(markets, team_dict, canonical_games, fetch_time):
         home_ask = home_contract.get("yes_ask", 0)
         away_ask = away_contract.get("yes_ask", 0)
 
-        home_odds = cents_to_american(home_ask)
-        away_odds = cents_to_american(away_ask)
+        home_odds, home_eff = cents_to_american(home_ask)
+        away_odds, away_eff = cents_to_american(away_ask)
 
         if home_odds is None or away_odds is None:
             continue
@@ -429,13 +446,19 @@ def parse_moneyline_records(markets, team_dict, canonical_games, fetch_time):
             "period": "Half1",
             "away_spread": None,
             "away_spread_price": None,
+            "away_spread_cents": None,
             "home_spread": None,
             "home_spread_price": None,
+            "home_spread_cents": None,
             "total": None,
             "over_price": None,
+            "over_cents": None,
             "under_price": None,
+            "under_cents": None,
             "away_ml": away_odds,
+            "away_ml_cents": away_eff,
             "home_ml": home_odds,
+            "home_ml_cents": home_eff,
         })
 
     return records
@@ -488,8 +511,10 @@ def init_database():
     """Initialize DuckDB with the cbb_odds table."""
     conn = duckdb.connect(str(DB_PATH))
     try:
+        # Recreate table to pick up schema changes (data is ephemeral — cleared each run)
+        conn.execute("DROP TABLE IF EXISTS cbb_odds")
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS cbb_odds (
+            CREATE TABLE cbb_odds (
                 fetch_time TIMESTAMP,
                 sport_key VARCHAR,
                 game_id VARCHAR,
@@ -501,13 +526,19 @@ def init_database():
                 period VARCHAR,
                 away_spread FLOAT,
                 away_spread_price INTEGER,
+                away_spread_cents FLOAT,
                 home_spread FLOAT,
                 home_spread_price INTEGER,
+                home_spread_cents FLOAT,
                 total FLOAT,
                 over_price INTEGER,
+                over_cents FLOAT,
                 under_price INTEGER,
+                under_cents FLOAT,
                 away_ml INTEGER,
-                home_ml INTEGER
+                away_ml_cents FLOAT,
+                home_ml INTEGER,
+                home_ml_cents FLOAT
             )
         """)
     finally:
@@ -521,8 +552,10 @@ def save_to_database(odds_data):
         columns = [
             "fetch_time", "sport_key", "game_id", "game_date", "game_time",
             "away_team", "home_team", "market", "period",
-            "away_spread", "away_spread_price", "home_spread", "home_spread_price",
-            "total", "over_price", "under_price", "away_ml", "home_ml"
+            "away_spread", "away_spread_price", "away_spread_cents",
+            "home_spread", "home_spread_price", "home_spread_cents",
+            "total", "over_price", "over_cents", "under_price", "under_cents",
+            "away_ml", "away_ml_cents", "home_ml", "home_ml_cents"
         ]
 
         placeholders = ", ".join(["?" for _ in columns])

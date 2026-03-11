@@ -916,6 +916,7 @@ format_bets_table <- function(
     size1, size2,          # names of bet size columns     (e.g. "home_bet_size", "away_bet_size")
     odds1, odds2,          # names of odds columns         (e.g. "book_home_market", "book_away_market")
     pred3 = NULL, ev3 = NULL, size3 = NULL, odds3 = NULL,  # optional 3rd side for 3-way markets
+    cents1 = NULL, cents2 = NULL, cents3 = NULL,  # optional: effective cents (Kalshi precision)
     line_col = NULL,       # optional: single line column (e.g. "book_total_line" for totals)
     line_col_1 = NULL,     # optional: line for side 1 (e.g. "book_home_spread" for spreads)
     line_col_2 = NULL,     # optional: line for side 2 (e.g. "book_away_spread" for spreads)
@@ -937,6 +938,14 @@ format_bets_table <- function(
     set_names(odds1, paste0("odds_", s1)), set_names(odds2, paste0("odds_", s2))
   )
 
+  # Add cents columns if provided (for Kalshi effective price precision)
+  if (!is.null(cents1) && cents1 %in% names(df)) {
+    cols_map <- c(cols_map,
+      set_names(cents1, paste0("cents_", s1)),
+      set_names(cents2, paste0("cents_", s2))
+    )
+  }
+
   # Add 3rd side if provided (for 3-way markets)
   if (!is.null(size3)) {
     s3 <- str_extract(size3, "home|away|over|under|tie")
@@ -946,6 +955,9 @@ format_bets_table <- function(
       set_names(size3, paste0("size_", s3)),
       set_names(odds3, paste0("odds_", s3))
     )
+    if (!is.null(cents3) && cents3 %in% names(df)) {
+      cols_map <- c(cols_map, set_names(cents3, paste0("cents_", s3)))
+    }
   }
 
   # Handle line columns - support both single line_col and separate line_col_1/line_col_2
@@ -1004,7 +1016,7 @@ format_bets_table <- function(
     # Filter by EV threshold
     filter(ev >= ev_threshold) %>%
     arrange(desc(size)) %>%
-    select(id, home_team, away_team, pt_start_time, bookmaker_key, market, bet_on, line, bet_size = size, ev, odds, prob)
+    select(id, home_team, away_team, pt_start_time, bookmaker_key, market, bet_on, line, bet_size = size, ev, odds, prob, any_of("cents"))
 }
 
 
@@ -3525,6 +3537,8 @@ get_kalshi_odds <- function(
         line = row$home_spread,
         odds_away = row$away_spread_price,
         odds_home = row$home_spread_price,
+        cents_away = if ("away_spread_cents" %in% names(row)) row$away_spread_cents else NA_real_,
+        cents_home = if ("home_spread_cents" %in% names(row)) row$home_spread_cents else NA_real_,
         odds_over = NA_integer_,
         odds_under = NA_integer_,
         away_spread = row$away_spread,
@@ -3542,7 +3556,9 @@ get_kalshi_odds <- function(
         odds_away = NA_integer_,
         odds_home = NA_integer_,
         odds_over = row$over_price,
-        odds_under = row$under_price
+        odds_under = row$under_price,
+        cents_over = if ("over_cents" %in% names(row)) row$over_cents else NA_real_,
+        cents_under = if ("under_cents" %in% names(row)) row$under_cents else NA_real_
       ))
       result_list[[length(result_list) + 1]] <- totals_rec
     }
@@ -3555,6 +3571,8 @@ get_kalshi_odds <- function(
         line = NA_real_,
         odds_away = row$away_ml,
         odds_home = row$home_ml,
+        cents_away = if ("away_ml_cents" %in% names(row)) row$away_ml_cents else NA_real_,
+        cents_home = if ("home_ml_cents" %in% names(row)) row$home_ml_cents else NA_real_,
         odds_over = NA_integer_,
         odds_under = NA_integer_
       ))
@@ -3933,6 +3951,7 @@ compare_spreads_to_wagerzon <- function(
       ev1 = "home_ev", ev2 = "away_ev",
       size1 = "home_bet_size", size2 = "away_bet_size",
       odds1 = "odds_home", odds2 = "odds_away",
+      cents1 = "cents_home", cents2 = "cents_away",
       line_col_1 = "home_spread",
       line_col_2 = "away_spread",
       books = book_key,
@@ -4015,6 +4034,7 @@ compare_totals_to_wagerzon <- function(
       ev1 = "over_ev", ev2 = "under_ev",
       size1 = "over_bet_size", size2 = "under_bet_size",
       odds1 = "odds_over", odds2 = "odds_under",
+      cents1 = "cents_over", cents2 = "cents_under",
       line_col_1 = "line", line_col_2 = "line",
       books = book_key,
       ev_threshold = ev_threshold
@@ -4094,6 +4114,7 @@ compare_moneylines_to_wagerzon <- function(
       ev1 = "home_ev", ev2 = "away_ev",
       size1 = "home_bet_size", size2 = "away_bet_size",
       odds1 = "odds_home", odds2 = "odds_away",
+      cents1 = "cents_home", cents2 = "cents_away",
       books = book_key,
       ev_threshold = ev_threshold
     )
