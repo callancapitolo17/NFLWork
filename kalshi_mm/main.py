@@ -324,6 +324,22 @@ def poll_for_fills(resting_by_ticker, quotable_markets_ref=None):
     api_orders = orders.get_resting_orders()
     api_order_map = {o["order_id"]: o for o in api_orders}
 
+    # SAFETY: Cancel any orders we don't recognize (phantom orders from
+    # place_order responses that were lost — order went through on Kalshi
+    # but we never stored the order_id, so we'd re-place every cycle)
+    tracked_oids = set()
+    for info in resting_by_ticker.values():
+        for key in ["bid_order_id", "ask_order_id"]:
+            oid = info.get(key)
+            if oid:
+                tracked_oids.add(oid)
+
+    for api_order in api_orders:
+        oid = api_order["order_id"]
+        if oid not in tracked_oids:
+            print(f"  PHANTOM ORDER detected: {oid} — cancelling")
+            orders.cancel_order(oid)
+
     for ticker, info in list(resting_by_ticker.items()):
         for side_key, side in [("bid_order_id", "yes"), ("ask_order_id", "no")]:
             oid = info.get(side_key)
@@ -524,10 +540,26 @@ def main():
                     kalshi_markets = fresh_markets
 
                 # Re-match with latest predictions + markets
-                quotable = match_kalshi_to_predictions(
+                new_quotable = match_kalshi_to_predictions(
                     kalshi_markets, predictions, team_dict, canonical_games
                 )
-                print(f"  Refreshed: {len(quotable)} quotable markets")
+                print(f"  Refreshed: {len(new_quotable)} quotable markets")
+
+                # Cancel orders for tickers that are no longer quotable
+                # (game tipped off, market settled, prediction dropped)
+                new_tickers = {m["ticker"] for m in new_quotable}
+                for ticker, info in list(resting_by_ticker.items()):
+                    if ticker not in new_tickers:
+                        print(f"  Orphaned ticker {ticker} — cancelling orders")
+                        if not DRY_RUN:
+                            for side_key in ["bid_order_id", "ask_order_id"]:
+                                oid = info.get(side_key)
+                                if oid:
+                                    orders.cancel_order(oid)
+                                    db.remove_resting_order(oid)
+                        del resting_by_ticker[ticker]
+
+                quotable = new_quotable
 
                 # Update reference lines
                 ref_lines = risk.run_line_monitor()
