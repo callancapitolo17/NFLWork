@@ -745,6 +745,33 @@ print(all_bets_combined %>% head(20))
 con <- dbConnect(duckdb(), dbdir = "cbb.duckdb")
 dbExecute(con, "DROP TABLE IF EXISTS cbb_bets_combined")
 dbWriteTable(con, "cbb_bets_combined", all_bets_combined)
+
+# --- Export raw predictions for market maker consumption ---
+raw_preds <- bind_rows(
+  spread_results$predictions %>%
+    filter(market == "spreads_h1") %>%
+    transmute(id, home_team, away_team, commence_time, market, period,
+              line_value = book_home_spread, prob_side1 = home_cover_prob,
+              prob_side2 = away_cover_prob),
+  total_results$predictions %>%
+    filter(market == "totals_h1") %>%
+    transmute(id, home_team, away_team, commence_time, market, period,
+              line_value = book_total, prob_side1 = over_prob,
+              prob_side2 = under_prob),
+  ml_results$predictions %>%
+    filter(market == "h2h_h1") %>%
+    transmute(id, home_team, away_team, commence_time, market, period,
+              line_value = NA_real_, prob_side1 = home_win_prob,
+              prob_side2 = away_win_prob)
+)
+dbExecute(con, "DROP TABLE IF EXISTS cbb_raw_predictions")
+dbWriteTable(con, "cbb_raw_predictions", raw_preds)
+dbExecute(con, "DROP TABLE IF EXISTS cbb_prediction_meta")
+dbExecute(con, "CREATE TABLE cbb_prediction_meta (updated_at TIMESTAMP)")
+dbExecute(con, sprintf("INSERT INTO cbb_prediction_meta VALUES ('%s')",
+                       format(Sys.time(), "%Y-%m-%d %H:%M:%S")))
+cat(sprintf("Exported %d raw predictions to cbb_raw_predictions.\n", nrow(raw_preds)))
+
 timer$mark("save_bets")
 dbDisconnect(con)
 
