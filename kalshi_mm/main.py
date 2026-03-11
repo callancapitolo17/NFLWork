@@ -473,20 +473,27 @@ def main():
 
             # Periodic prediction refresh (every 15 min)
             if now - last_refresh_time >= 900:
-                print("\n--- Refreshing predictions ---")
+                print("\n--- Refreshing predictions + markets ---")
                 new_preds, new_ts = db.load_predictions()
                 if new_preds and new_ts != prediction_updated_at:
                     predictions = new_preds
                     prediction_updated_at = new_ts
-                    # Re-match
-                    quotable = match_kalshi_to_predictions(
-                        kalshi_markets, predictions, team_dict, canonical_games
-                    )
-                    print(f"  Refreshed: {len(quotable)} quotable markets")
-                    # Update reference lines
-                    ref_lines = risk.run_line_monitor()
-                    if ref_lines:
-                        db.save_reference_lines(ref_lines)
+
+                # Re-fetch Kalshi markets (picks up new markets, drops settled)
+                fresh_markets = fetch_markets(config.SPREAD_SERIES)
+                if fresh_markets:
+                    kalshi_markets = fresh_markets
+
+                # Re-match with latest predictions + markets
+                quotable = match_kalshi_to_predictions(
+                    kalshi_markets, predictions, team_dict, canonical_games
+                )
+                print(f"  Refreshed: {len(quotable)} quotable markets")
+
+                # Update reference lines
+                ref_lines = risk.run_line_monitor()
+                if ref_lines:
+                    db.save_reference_lines(ref_lines)
                 last_refresh_time = now
 
             time.sleep(1)

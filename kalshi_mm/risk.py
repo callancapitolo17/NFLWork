@@ -97,9 +97,9 @@ def run_line_monitor():
     """
     current_lines = []
 
-    for scraper_path, book_name, db_name in [
-        (BOOKMAKER_SCRAPER, "bookmaker", "bookmaker_odds/bookmaker.duckdb"),
-        (BET105_SCRAPER, "bet105", "bet105_odds/bet105.duckdb"),
+    for scraper_path, book_name in [
+        (BOOKMAKER_SCRAPER, "bookmaker"),
+        (BET105_SCRAPER, "bet105"),
     ]:
         if not scraper_path.exists():
             continue
