@@ -216,6 +216,11 @@ def log_quote(ticker, fair_prob, bid_yes, ask_yes, net_position, skew, predictio
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [datetime.now(timezone.utc), ticker, fair_prob, bid_yes, ask_yes,
               spread, net_position, skew, prediction_age])
+        # Prune old entries to prevent unbounded growth (keep last 24h)
+        conn.execute("""
+            DELETE FROM quote_log
+            WHERE logged_at < current_timestamp - INTERVAL '24 hours'
+        """)
     finally:
         conn.close()
 
@@ -259,13 +264,19 @@ def save_reference_lines(lines):
     """Save reference lines from Bookmaker/Bet105 for line-move detection."""
     conn = duckdb.connect(str(MM_DB_PATH))
     try:
+        conn.execute("BEGIN TRANSACTION")
         conn.execute("DELETE FROM reference_lines")
+        now = datetime.now(timezone.utc)
         for line in lines:
             conn.execute("""
                 INSERT INTO reference_lines (home_team, away_team, market, line_value, snapshot_at)
                 VALUES (?, ?, ?, ?, ?)
             """, [line["home_team"], line["away_team"], line["market"],
-                  line["line_value"], datetime.now(timezone.utc)])
+                  line["line_value"], now])
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
     finally:
         conn.close()
 

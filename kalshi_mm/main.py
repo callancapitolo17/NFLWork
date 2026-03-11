@@ -129,20 +129,14 @@ def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonica
             if pred is None:
                 continue
 
-            # Fair probability for YES on this contract
-            # YES = "team wins by >X" = team covers
+            # Fair probability for YES on this contract ("team wins by >strike")
+            # pred has prob_side1 = home_cover_prob at line_value = home_spread
             if is_home:
-                fair_prob = pred["prob_side1"]  # home_cover_prob
+                # Home team -strike: home_spread = -strike, prob_side1 = P(home covers)
+                fair_prob = pred["prob_side1"]
             else:
-                fair_prob = pred["prob_side2"]  # away_cover_prob... wait
-                # Actually: if contract is for away team winning by >X,
-                # and prediction has home_cover_prob at home_spread = +strike,
-                # then away_cover_prob = 1 - home_cover_prob at that spread
-                # But our predictions export prob_side1 = home_cover_prob
-                # at the given line_value (which is home_spread)
-                # For away team -X, home_spread = +X
-                # prob_side1 at home_spread=+X = P(home covers +X) = P(home margin > -X)
-                # But we want P(away wins by >X) = P(home margin < -X) = 1 - prob_side1
+                # Away team -strike: home_spread = +strike (away is favored)
+                # P(away wins by >strike) = P(home margin < -strike) = 1 - P(home covers +strike)
                 fair_prob = 1 - pred["prob_side1"]
 
             quotable.append({
@@ -160,12 +154,13 @@ def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonica
     return quotable
 
 
-def run_quote_cycle(quotable_markets, resting_by_ticker):
+def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
     """Compute quotes and place/amend/cancel orders for all quotable markets.
 
     Args:
         quotable_markets: List of markets with fair values
         resting_by_ticker: Dict of ticker -> resting order info
+        prediction_updated_at: Timestamp of when predictions were last updated
 
     Returns:
         Updated resting_by_ticker dict.
@@ -316,34 +311,53 @@ def poll_for_fills(resting_by_ticker):
                 continue
 
             api_order = api_order_map.get(oid)
-            if api_order is None:
-                # Order no longer resting — either filled or cancelled
-                # Check via direct API call
-                pass  # For MVP, we'll detect via position reconciliation
 
-            elif api_order.get("remaining_count", 0) == 0:
-                # Fully filled
-                filled_count = api_order.get("count", 0)
+            if api_order is None:
+                # Order no longer resting — filled, cancelled, or expired.
+                # Clean up our local state so we don't leak stale entries.
+                print(f"  Order {oid} no longer resting (filled/cancelled externally)")
+                db.remove_resting_order(oid)
+                info.pop(side_key, None)
+                price_key = "bid_price" if side == "yes" else "ask_price"
+                info.pop(price_key, None)
+                continue
+
+            remaining = api_order.get("remaining_count", api_order.get("count", 0))
+            original = api_order.get("count", 0)
+            filled_count = original - remaining
+
+            if filled_count > 0:
+                # Partial or full fill
                 price = api_order.get("yes_price", 0) if side == "yes" else api_order.get("no_price", 0)
 
-                print(f"  FILL: {side} {filled_count}x @ {price}c on {ticker}")
+                print(f"  FILL: {side} {filled_count}x @ {price}c on {ticker}"
+                      f"{' (partial)' if remaining > 0 else ''}")
                 TOTAL_FILLS += filled_count
 
                 # Update position
                 db.update_position(ticker, side, price, filled_count)
                 db.record_fill(
-                    fill_id=f"{oid}-fill",
+                    fill_id=f"{oid}-fill-{filled_count}",
                     ticker=ticker, side=side, action="buy",
                     price=price, count=filled_count, fee_cents=0,
                     order_id=oid
                 )
-                db.remove_resting_order(oid)
-                info.pop(side_key, None)
-                info.pop(f"{'bid' if side == 'yes' else 'ask'}_price", None)
+
+                if remaining == 0:
+                    # Fully filled — remove
+                    db.remove_resting_order(oid)
+                    info.pop(side_key, None)
+                    price_key = "bid_price" if side == "yes" else "ask_price"
+                    info.pop(price_key, None)
+
+    # Clean up empty ticker entries to prevent state drift
+    for ticker in [t for t, info in resting_by_ticker.items()
+                   if not info.get("bid_order_id") and not info.get("ask_order_id")]:
+        del resting_by_ticker[ticker]
 
 
 def main():
-    global prediction_updated_at, RUNNING
+    global RUNNING
 
     print("=" * 60)
     print(f"  Kalshi CBB 1H Market Maker — Session {SESSION_ID}")
@@ -367,9 +381,10 @@ def main():
 
     pred_age = "?"
     if prediction_updated_at:
-        age_sec = (datetime.now(timezone.utc) - prediction_updated_at.replace(
-            tzinfo=timezone.utc) if prediction_updated_at.tzinfo is None
-            else prediction_updated_at).total_seconds()
+        ts = prediction_updated_at
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age_sec = (datetime.now(timezone.utc) - ts).total_seconds()
         pred_age = f"{age_sec:.0f}s"
     print(f"  Loaded {len(predictions)} predictions (age: {pred_age})")
 
@@ -422,7 +437,7 @@ def main():
             # Quote cycle
             if now - last_quote_time >= config.QUOTE_CYCLE_SEC:
                 print(f"\n--- Quote cycle @ {datetime.now().strftime('%H:%M:%S')} ---")
-                resting_by_ticker = run_quote_cycle(quotable, resting_by_ticker)
+                resting_by_ticker = run_quote_cycle(quotable, resting_by_ticker, prediction_updated_at)
                 last_quote_time = now
 
             # Fill polling
@@ -477,11 +492,15 @@ def main():
         import traceback
         traceback.print_exc()
     finally:
-        # Kill switch: cancel everything
+        # Kill switch: cancel everything — retry up to 3 times
         print("\n\nShutting down...")
         if not DRY_RUN and resting_by_ticker:
             print("Cancelling all resting orders...")
-            orders.cancel_all_orders()
+            for attempt in range(3):
+                if orders.cancel_all_orders():
+                    break
+                print(f"  Kill switch retry {attempt + 1}/3...")
+                time.sleep(1)
 
         # Log session summary
         positions = db.get_all_positions()
