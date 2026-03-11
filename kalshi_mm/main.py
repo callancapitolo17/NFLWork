@@ -83,21 +83,35 @@ def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonica
 
         team_list = sorted(team_names)
 
-        # Resolve to canonical names
-        away_resolved, home_resolved = resolve_team_names(
+        # Resolve to canonical names (resolve_team_names preserves input order,
+        # so we don't know home/away yet — try both orderings against predictions)
+        resolved_a, resolved_b = resolve_team_names(
             team_list[0], team_list[1], team_dict, canonical_games
         )
 
-        # Find matching predictions
+        # Try both orderings to find matching predictions
         matching_preds = [
             p for p in predictions
             if p["market"] == "spreads_h1"
-            and _fuzzy_team_match(p["home_team"].lower(), home_resolved.lower())
-            and _fuzzy_team_match(p["away_team"].lower(), away_resolved.lower())
+            and _fuzzy_team_match(p["home_team"].lower(), resolved_b.lower())
+            and _fuzzy_team_match(p["away_team"].lower(), resolved_a.lower())
         ]
+        home_resolved, away_resolved = resolved_b, resolved_a
+
+        if not matching_preds:
+            # Try swapped ordering
+            matching_preds = [
+                p for p in predictions
+                if p["market"] == "spreads_h1"
+                and _fuzzy_team_match(p["home_team"].lower(), resolved_a.lower())
+                and _fuzzy_team_match(p["away_team"].lower(), resolved_b.lower())
+            ]
+            home_resolved, away_resolved = resolved_a, resolved_b
 
         if not matching_preds:
             continue
+
+        # Now home_resolved/away_resolved match the prediction's home/away
 
         # For each contract in this event, check if we have a prediction at that strike
         for m in event_markets:
