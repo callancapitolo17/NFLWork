@@ -199,8 +199,16 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
         return resting_by_ticker
 
     quoted_count = 0
+    quoted_events = set()
+    # Count events we're already quoting
+    for t in resting_by_ticker:
+        m = next((m for m in quotable_markets if m["ticker"] == t), None)
+        if m:
+            quoted_events.add(m["event_ticker"])
+
     for market in quotable_markets:
         ticker = market["ticker"]
+        event_ticker = market.get("event_ticker", "")
 
         # Check tipoff proximity
         if not risk.check_tipoff_proximity(market.get("commence_time")):
@@ -216,8 +224,14 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
                 del resting_by_ticker[ticker]
             continue
 
-        # Check market count limit
+        # Check ticker limit
         if quoted_count >= config.MAX_MARKETS and ticker not in resting_by_ticker:
+            continue
+
+        # Check game limit (MAX_EVENTS caps distinct games)
+        if (event_ticker not in quoted_events
+                and len(quoted_events) >= config.MAX_EVENTS
+                and ticker not in resting_by_ticker):
             continue
 
         # Get current position (per-ticker and per-event)
@@ -306,8 +320,9 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
 
         resting_by_ticker[ticker] = existing
         quoted_count += 1
+        quoted_events.add(event_ticker)
 
-    print(f"  Quoting {quoted_count} markets (exposure: ${exposure:.2f})")
+    print(f"  Quoting {quoted_count} tickers across {len(quoted_events)} games (exposure: ${exposure:.2f})")
     return resting_by_ticker
 
 
