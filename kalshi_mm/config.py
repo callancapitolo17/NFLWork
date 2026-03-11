@@ -47,7 +47,7 @@ SKEW_PER_CONTRACT = int(_env.get("SKEW_PER_CONTRACT", "1"))
 # --- Risk Limits ---
 MAX_POSITION_PER_MARKET = int(_env.get("MAX_POSITION_PER_MARKET", "5"))
 MAX_POSITION_PER_EVENT = int(_env.get("MAX_POSITION_PER_EVENT", "8"))  # Across all strikes for one game
-MAX_TOTAL_EXPOSURE_DOLLARS = float(_env.get("MAX_TOTAL_EXPOSURE", "50.0"))
+MAX_TOTAL_EXPOSURE_DOLLARS = float(_env.get("MAX_TOTAL_EXPOSURE", "250.0"))
 MAX_MARKETS = int(_env.get("MAX_MARKETS", "20"))
 MAX_EVENTS = int(_env.get("MAX_EVENTS", "10"))  # Max simultaneous games to quote
 MAX_STALENESS_SEC = int(_env.get("MAX_STALENESS_SEC", "600"))
