@@ -449,16 +449,13 @@ def main():
         while RUNNING:
             now = time.time()
 
-            # Quote cycle
+            # Quote cycle — always poll fills first so position/skew is current
             if now - last_quote_time >= config.QUOTE_CYCLE_SEC:
+                poll_for_fills(resting_by_ticker)
+                last_fill_poll = now
                 print(f"\n--- Quote cycle @ {datetime.now().strftime('%H:%M:%S')} ---")
                 resting_by_ticker = run_quote_cycle(quotable, resting_by_ticker, prediction_updated_at)
                 last_quote_time = now
-
-            # Fill polling
-            if now - last_fill_poll >= config.FILL_POLL_SEC:
-                poll_for_fills(resting_by_ticker)
-                last_fill_poll = now
 
             # Line-move monitoring
             if now - last_monitor_time >= config.MONITOR_CYCLE_SEC:

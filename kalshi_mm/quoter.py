@@ -23,6 +23,11 @@ def compute_quotes(fair_prob, net_position=0):
         dict with bid_yes, ask_yes, or None if no quote should be posted.
         Also returns the side labels for clarity.
     """
+    # Guard against NaN/invalid probabilities (one bad prediction row
+    # would otherwise crash the entire bot via math.floor(NaN) → ValueError)
+    if fair_prob is None or not (0 <= fair_prob <= 1):
+        return None
+
     fair_cents = fair_prob * 100
 
     # Don't quote at extremes where model is unreliable
