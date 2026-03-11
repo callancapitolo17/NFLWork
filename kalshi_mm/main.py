@@ -126,6 +126,8 @@ def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonica
             # Determine if this contract's team is home or away
             is_home = _fuzzy_team_match(team.lower(), home_resolved.lower())
             is_away = _fuzzy_team_match(team.lower(), away_resolved.lower())
+            if is_home and is_away:
+                continue  # Ambiguous match (e.g. both contain "State") — skip
             if not is_home and not is_away:
                 continue
 
@@ -218,13 +220,16 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
         if quoted_count >= config.MAX_MARKETS and ticker not in resting_by_ticker:
             continue
 
-        # Get current position
+        # Get current position (per-ticker and per-event)
         pos = db.get_position(ticker)
         net = pos["net_yes"]
+        event_net = db.get_event_net_position(market.get("event_ticker", ""))
 
-        # Check position limit — skip bid side if at max long, skip ask side if at max short
-        at_max_long = net >= config.MAX_POSITION_PER_MARKET
-        at_max_short = net <= -config.MAX_POSITION_PER_MARKET
+        # Check position limit — per-ticker AND per-event (correlated strikes)
+        at_max_long = (net >= config.MAX_POSITION_PER_MARKET
+                       or event_net >= config.MAX_POSITION_PER_EVENT)
+        at_max_short = (net <= -config.MAX_POSITION_PER_MARKET
+                        or event_net <= -config.MAX_POSITION_PER_EVENT)
 
         # Compute quote
         quote = quoter.compute_quotes(market["fair_prob"], net)
@@ -306,12 +311,15 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
     return resting_by_ticker
 
 
-def poll_for_fills(resting_by_ticker):
+def poll_for_fills(resting_by_ticker, quotable_markets_ref=None):
     """Check resting orders for fills and update positions."""
     global TOTAL_FILLS, TOTAL_FEES
 
     if DRY_RUN:
         return
+
+    if quotable_markets_ref is None:
+        quotable_markets_ref = []
 
     api_orders = orders.get_resting_orders()
     api_order_map = {o["order_id"]: o for o in api_orders}
@@ -350,8 +358,16 @@ def poll_for_fills(resting_by_ticker):
                       f"{' (partial)' if remaining > 0 else ''}")
                 TOTAL_FILLS += new_fills
 
+                # Find event_ticker for this order's ticker
+                event_ticker = None
+                for m in quotable_markets_ref:
+                    if m["ticker"] == ticker:
+                        event_ticker = m.get("event_ticker")
+                        break
+
                 # Update position with incremental fills only
-                db.update_position(ticker, side, price, new_fills)
+                db.update_position(ticker, side, price, new_fills,
+                                   event_ticker=event_ticker)
                 db.record_fill(
                     fill_id=f"{oid}-fill-{cumulative_filled}",
                     ticker=ticker, side=side, action="buy",
@@ -465,7 +481,7 @@ def main():
 
             # Quote cycle — always poll fills first so position/skew is current
             if now - last_quote_time >= config.QUOTE_CYCLE_SEC:
-                poll_for_fills(resting_by_ticker)
+                poll_for_fills(resting_by_ticker, quotable)
                 last_fill_poll = now
                 print(f"\n--- Quote cycle @ {datetime.now().strftime('%H:%M:%S')} ---")
                 resting_by_ticker = run_quote_cycle(quotable, resting_by_ticker, prediction_updated_at)

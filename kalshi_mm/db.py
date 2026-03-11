@@ -134,6 +134,23 @@ def get_position(ticker):
         conn.close()
 
 
+def get_event_net_position(event_ticker):
+    """Get aggregate net YES position across all tickers in an event.
+
+    Prevents correlated exposure: a sharp filling Duke -1.5, Duke -3.5,
+    Duke -5.5 would accumulate directional risk that per-ticker limits miss.
+    """
+    conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(net_yes), 0) FROM positions WHERE event_ticker = ?",
+            [event_ticker]
+        ).fetchone()
+        return row[0]
+    finally:
+        conn.close()
+
+
 def get_all_positions():
     """Get all open positions."""
     conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
@@ -291,19 +308,18 @@ def get_reference_lines():
 
 
 def compute_total_exposure():
-    """Compute total dollars at risk across all positions."""
+    """Compute total dollars at risk across all positions.
+
+    Max loss = what we paid. For YES long, we paid avg_entry_price per contract.
+    For NO long (net_yes < 0), avg_entry_price is the NO price we paid.
+    In both cases, worst case = contract expires worthless, we lose our cost basis.
+    """
     conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
     try:
-        # Worst case loss per position: if net_yes > 0, lose avg_entry * count
-        # If net_yes < 0, lose (100 - avg_entry) * abs(count)
         result = conn.execute("""
             SELECT COALESCE(SUM(
-                CASE
-                    WHEN net_yes > 0 THEN (avg_entry_price * net_yes) / 100.0
-                    WHEN net_yes < 0 THEN ((100 - avg_entry_price) * ABS(net_yes)) / 100.0
-                    ELSE 0
-                END
-            ), 0) FROM positions
+                avg_entry_price * ABS(net_yes) / 100.0
+            ), 0) FROM positions WHERE net_yes != 0
         """).fetchone()
         return result[0]
     finally:
