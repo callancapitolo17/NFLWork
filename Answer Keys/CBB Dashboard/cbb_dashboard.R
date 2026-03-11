@@ -41,7 +41,7 @@ load_placed_bets <- function(db_path) {
   con <- dbConnect(duckdb(), db_path, read_only = TRUE)
   on.exit(dbDisconnect(con, shutdown = TRUE))
   tryCatch({
-    dbGetQuery(con, "SELECT * FROM placed_bets WHERE status = 'pending' AND (game_time IS NULL OR game_time > NOW())")
+    dbGetQuery(con, "SELECT * FROM placed_bets WHERE status IN ('pending', 'queued', 'ready_to_confirm') AND (game_time IS NULL OR game_time > NOW())")
   }, error = function(e) {
     tibble(bet_hash = character())
   })
@@ -49,7 +49,7 @@ load_placed_bets <- function(db_path) {
 
 generate_bet_hash <- function(game_id, market, bet_on, line) {
   line_str <- ifelse(is.na(line), "NA", as.character(line))
-  digest(paste(game_id, market, bet_on, line_str, sep = "|"), algo = "sha256")
+  digest(paste(game_id, market, bet_on, line_str, sep = "|"), algo = "sha256", serialize = FALSE)
 }
 
 # =============================================================================
@@ -572,6 +572,23 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           background: #2ea043;
         }
 
+        .queue-btn {
+          background: #1f6feb;
+          border: 1px solid #388bfd;
+          color: #fff;
+          padding: 8px 16px;
+          border-radius: 6px;
+          font-size: 0.85rem;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.15s;
+          margin-left: 8px;
+        }
+
+        .queue-btn:hover {
+          background: #388bfd;
+        }
+
         .stats-row {
           display: flex;
           gap: 12px;
@@ -1019,7 +1036,10 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             tags$h1("CBB +EV Dashboard"),
             tags$div(class = "subtitle", paste("Updated", timestamp))
           ),
-          tags$button(class = "refresh-btn", onclick = "refreshData()", "Refresh")
+          tags$div(
+            tags$button(class = "refresh-btn", onclick = "refreshData()", "Refresh"),
+            tags$button(class = "queue-btn", onclick = "queueAllBets()", "Queue All")
+          )
         ),
 
         # Stats
@@ -1753,6 +1773,34 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           return Math.min(betSize, bankroll);
         }
 
+        function queueAllBets() {
+          const btn = document.querySelector(".queue-btn");
+          btn.textContent = "Queuing...";
+          btn.disabled = true;
+
+          fetch("/api/auto-queue", { method: "POST" })
+            .then(r => r.json())
+            .then(data => {
+              if (data.success) {
+                var msg = data.queued + " bets queued.";
+                if (data.dispatched) {
+                  var books = Object.keys(data.dispatched).join(", ");
+                  msg += " Browsers opening for: " + books;
+                }
+                showToast(msg, "success");
+              } else {
+                showToast("Error: " + (data.error || data.message), "error");
+              }
+              btn.textContent = "Queue All";
+              btn.disabled = false;
+            })
+            .catch(() => {
+              showToast("Server error", "error");
+              btn.textContent = "Queue All";
+              btn.disabled = false;
+            });
+        }
+
         function refreshData() {
           const btn = document.querySelector(".refresh-btn");
           btn.textContent = "Refreshing...";
@@ -1762,7 +1810,11 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             .then(r => r.json())
             .then(data => {
               if (data.success) {
-                showToast("Refreshed!", "success");
+                var msg = "Refreshed!";
+                if (data.auto_queue && data.auto_queue.queued > 0) {
+                  msg += " " + data.auto_queue.queued + " bets queued.";
+                }
+                showToast(msg, "success");
                 setTimeout(() => location.reload(), 800);
               } else {
                 showToast("Error: " + data.error, "error");
@@ -1864,6 +1916,24 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                     _sessionPlaced[btn.dataset.hash] = { className: \'btn-partial\', text: \'Partial -$\' + diff.toFixed(0), fillStatus: \'partial\', actual: actualSize, action: \'update\' };
                   }
                   showToast("Bet placed: $" + actualSize.toFixed(0), "success");
+
+                  // Trigger auto-placement if book is supported
+                  var autoBooks = ["wagerzon", "hoop88", "bfa"];
+                  if (autoBooks.indexOf(data.bookmaker) !== -1) {
+                    fetch("/api/auto-place", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(data)
+                    })
+                      .then(function(r) { return r.json(); })
+                      .then(function(res) {
+                        if (res.success) {
+                          showToast("Browser opening for " + data.bookmaker + "...", "success");
+                        }
+                      })
+                      .catch(function() {});
+                  }
+
                   recalcSameGame(btn.dataset.gameId);
                 } else {
                   showToast(result.error, "error");
@@ -2022,7 +2092,12 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 # MAIN
 # =============================================================================
 
-setwd(dirname(dirname(DASHBOARD_DIR)))  # NFLWork root, derived from DASHBOARD_DIR
+# Resolve NFLWork root — if running from a worktree, use main repo for cbb.duckdb
+NFLWORK_ROOT <- dirname(dirname(DASHBOARD_DIR))
+if (grepl(".claude/worktrees", NFLWORK_ROOT, fixed = TRUE)) {
+  NFLWORK_ROOT <- sub("/.claude/worktrees.*", "", NFLWORK_ROOT)
+}
+setwd(NFLWORK_ROOT)
 
 cat("=== CBB +EV Dashboard ===\n\n")
 

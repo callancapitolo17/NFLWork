@@ -30,6 +30,15 @@ DB_PATH = BASE_DIR / "cbb_dashboard.duckdb"
 app = Flask(__name__)
 log = logging.getLogger("clv")
 
+# Books with working navigators for auto-queue
+SUPPORTED_AUTO_BOOKS = ("wagerzon", "hoop88", "bfa")
+
+# DuckDB with pipeline bets — always in main repo (not worktree)
+_REPO_ROOT = PROJECT_ROOT
+if ".claude/worktrees" in str(_REPO_ROOT):
+    _REPO_ROOT = Path(str(_REPO_ROOT).split(".claude/worktrees")[0])
+CBB_DB_PATH = _REPO_ROOT / "Answer Keys" / "cbb.duckdb"
+
 # Scraper configs for closing-odds capture (paths relative to PROJECT_ROOT)
 OFFSHORE_SCRAPERS = {
     "wagerzon": {
@@ -364,6 +373,201 @@ def schedule_pending_captures():
 
 
 # =============================================================================
+# AUTO-QUEUE HELPERS
+# =============================================================================
+
+def kelly_bet_size(prob: float, american_odds: int, bankroll: float, kelly_mult: float) -> float:
+    """Calculate Kelly bet size matching the dashboard's JS calculateKellyBet."""
+    if american_odds > 0:
+        decimal_odds = 1 + (american_odds / 100)
+    else:
+        decimal_odds = 1 + (100 / abs(american_odds))
+
+    edge = (prob * decimal_odds) - 1
+    if edge <= 0:
+        return 0
+
+    kelly_fraction = edge / (decimal_odds - 1)
+    return min(bankroll * kelly_fraction * kelly_mult, bankroll)
+
+
+def compute_bet_hash(game_id: str, market: str, bet_on: str, line) -> str:
+    """Compute bet hash matching R's generate_bet_hash (serialize=FALSE)."""
+    line_str = "NA" if line is None else str(line)
+    raw = f"{game_id}|{market}|{bet_on}|{line_str}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def run_auto_queue():
+    """Queue all unplaced +EV bets and dispatch navigators.
+
+    Reads cbb_bets_combined from cbb.duckdb, diffs against placed_bets,
+    inserts unplaced bets as 'queued', and spawns one placer.py per book.
+
+    Returns dict with queue results.
+    """
+    if not CBB_DB_PATH.exists():
+        return {"error": "cbb.duckdb not found — run pipeline first", "queued": 0}
+
+    # Read all +EV bets from pipeline (future games only)
+    try:
+        cbb_con = duckdb.connect(str(CBB_DB_PATH), read_only=True)
+        all_bets = cbb_con.execute("""
+            SELECT id, home_team, away_team, pt_start_time, bookmaker_key,
+                   market, bet_on, line, bet_size, ev, odds, prob
+            FROM cbb_bets_combined
+            WHERE pt_start_time > CURRENT_TIMESTAMP
+        """).fetchall()
+        cbb_cols = [d[0] for d in cbb_con.description]
+        cbb_con.close()
+    except Exception as e:
+        return {"error": f"Failed to read cbb_bets_combined: {e}", "queued": 0}
+
+    if not all_bets:
+        return {"queued": 0, "message": "No future bets in pipeline"}
+
+    # Read enabled books, placed hashes, and sizing settings
+    try:
+        dash_con = duckdb.connect(str(DB_PATH), read_only=True)
+        enabled_books = {
+            r[0] for r in
+            dash_con.execute("SELECT bookmaker_key FROM book_settings WHERE enabled = TRUE").fetchall()
+        }
+        placed_hashes = {
+            r[0] for r in
+            dash_con.execute("SELECT bet_hash FROM placed_bets").fetchall()
+        }
+        sizing = {
+            r[0]: r[1] for r in
+            dash_con.execute("SELECT param, value FROM sizing_settings").fetchall()
+        }
+        dash_con.close()
+    except Exception as e:
+        return {"error": f"Failed to read dashboard DB: {e}", "queued": 0}
+
+    bankroll = sizing.get("bankroll", 100)
+    kelly_mult = sizing.get("kelly_mult", 0.25)
+
+    # Filter to supported + enabled books, apply Kelly sizing, find unplaced
+    to_queue = []  # list of dicts ready for placer.py
+    skipped_sizing = 0
+    for row in all_bets:
+        bet = dict(zip(cbb_cols, row))
+        book = bet["bookmaker_key"]
+
+        if book not in SUPPORTED_AUTO_BOOKS:
+            continue
+        if book not in enabled_books:
+            continue
+
+        bet_hash = compute_bet_hash(bet["id"], bet["market"], bet["bet_on"], bet["line"])
+        if bet_hash in placed_hashes:
+            continue
+
+        # Recalculate bet size using dashboard's bankroll/kelly settings
+        sized = kelly_bet_size(bet["prob"], bet["odds"], bankroll, kelly_mult)
+        if sized <= 0:
+            skipped_sizing += 1
+            continue
+
+        bet["bet_size"] = sized
+        to_queue.append({**bet, "bet_hash": bet_hash})
+
+    if not to_queue:
+        msg = "All bets already placed or no enabled books"
+        if skipped_sizing > 0:
+            msg = f"{skipped_sizing} bets skipped (below Kelly threshold)"
+        return {"queued": 0, "message": msg}
+
+    # Insert into placed_bets with status='queued'
+    try:
+        dash_con = duckdb.connect(str(DB_PATH))
+        for bet in to_queue:
+            try:
+                dash_con.execute("""
+                    INSERT INTO placed_bets (
+                        bet_hash, game_id, home_team, away_team, game_time,
+                        market, bet_on, line, model_prob, model_ev, recommended_size,
+                        actual_size, odds, bookmaker, placed_at, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')
+                """, [
+                    bet["bet_hash"], bet["id"], bet["home_team"], bet["away_team"],
+                    str(bet["pt_start_time"]) if bet["pt_start_time"] else None,
+                    bet["market"], bet["bet_on"], bet["line"],
+                    bet["prob"], bet["ev"], bet["bet_size"],
+                    bet["bet_size"],  # actual_size = recommended initially
+                    bet["odds"], bet["bookmaker_key"],
+                    datetime.now().isoformat(),
+                ])
+            except Exception:
+                pass  # Skip duplicates (race condition with manual placement)
+        dash_con.close()
+    except Exception as e:
+        return {"error": f"Failed to insert queued bets: {e}", "queued": 0}
+
+    # Schedule CLV captures for queued bets
+    for bet in to_queue:
+        try:
+            if bet.get("pt_start_time"):
+                schedule_capture(bet["id"], str(bet["pt_start_time"]), bet["bookmaker_key"])
+        except Exception:
+            pass
+
+    # Group by bookmaker and dispatch navigators
+    from collections import defaultdict
+    by_book = defaultdict(list)
+    for bet in to_queue:
+        by_book[bet["bookmaker_key"]].append({
+            "bookmaker": bet["bookmaker_key"],
+            "home_team": bet["home_team"],
+            "away_team": bet["away_team"],
+            "market": bet["market"],
+            "bet_on": bet["bet_on"],
+            "line": bet["line"],
+            "odds": bet["odds"],
+            "recommended_size": bet["bet_size"],
+            "bet_hash": bet["bet_hash"],
+        })
+
+    dispatched = {}
+    local_root = PROJECT_ROOT
+    repo_root = _REPO_ROOT
+
+    placer_script = str(local_root / "bet_placer" / "placer.py")
+    placer_python = str(repo_root / "wagerzon_odds" / "venv" / "bin" / "python3")
+    if not Path(placer_python).exists():
+        placer_python = sys.executable
+
+    log_path = str(local_root / "bet_placer" / "placer.log")
+
+    for book, book_bets in by_book.items():
+        try:
+            bet_json = json.dumps(book_bets)
+            log_file = open(log_path, "a")
+            log_file.write(f"\n{'='*60}\nAuto-queue dispatch: {book} ({len(book_bets)} bets) at {datetime.now()}\n{'='*60}\n")
+            log_file.flush()
+            subprocess.Popen(
+                [placer_python, placer_script, bet_json],
+                cwd=str(local_root / "bet_placer"),
+                stdout=log_file,
+                stderr=log_file,
+            )
+            dispatched[book] = len(book_bets)
+            print(f"  Dispatched {len(book_bets)} bets to {book} navigator")
+        except Exception as e:
+            print(f"  Failed to dispatch {book}: {e}")
+            dispatched[book] = f"error: {e}"
+
+    return {
+        "queued": len(to_queue),
+        "skipped_sizing": skipped_sizing,
+        "dispatched": dispatched,
+        "by_book": {book: len(bets) for book, bets in by_book.items()},
+        "sizing": {"bankroll": bankroll, "kelly_mult": kelly_mult},
+    }
+
+
+# =============================================================================
 # ROUTES
 # =============================================================================
 
@@ -523,7 +727,7 @@ def get_placed_bets():
         con = duckdb.connect(str(DB_PATH))
         bets = con.execute("""
             SELECT * FROM placed_bets
-            WHERE status = 'pending'
+            WHERE status IN ('pending', 'queued', 'ready_to_confirm')
             ORDER BY placed_at DESC
         """).fetchdf()
         con.close()
@@ -548,7 +752,7 @@ def get_exposure():
                 SUM(COALESCE(actual_size, recommended_size)) as total_exposure,
                 STRING_AGG(DISTINCT market, ', ') as markets
             FROM placed_bets
-            WHERE status = 'pending'
+            WHERE status IN ('pending', 'queued', 'ready_to_confirm')
             GROUP BY game_id, home_team, away_team
             ORDER BY total_exposure DESC
         """).fetchdf()
@@ -676,6 +880,62 @@ def update_filter_settings():
         """, [filter_type, json.dumps(selected_values), json.dumps(selected_values)])
         con.close()
         return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/auto-place", methods=["POST"])
+def auto_place():
+    """Launch Playwright to navigate to book and pre-fill bet.
+
+    Spawns placer.py as a non-blocking subprocess with the bet data as JSON arg.
+    The subprocess opens a visible browser, logs in, navigates to the game,
+    and pre-fills the bet slip. User confirms manually on the book's site.
+    """
+    data = request.json
+    bookmaker = data.get("bookmaker")
+
+    if bookmaker not in SUPPORTED_AUTO_BOOKS:
+        return jsonify({
+            "success": False,
+            "error": f"Auto-place not supported for '{bookmaker}'. Supported: {SUPPORTED_AUTO_BOOKS}"
+        }), 400
+
+    try:
+        local_root = PROJECT_ROOT
+        repo_root = _REPO_ROOT
+
+        placer_script = str(local_root / "bet_placer" / "placer.py")
+        bet_json = json.dumps(data)
+
+        # Use wagerzon_odds venv (has playwright + duckdb + dotenv)
+        placer_python = str(repo_root / "wagerzon_odds" / "venv" / "bin" / "python3")
+        if not Path(placer_python).exists():
+            placer_python = sys.executable  # fallback
+
+        log_path = str(local_root / "bet_placer" / "placer.log")
+        log_file = open(log_path, "a")
+        subprocess.Popen(
+            [placer_python, placer_script, bet_json],
+            cwd=str(local_root / "bet_placer"),
+            stdout=log_file,
+            stderr=log_file,
+        )
+
+        return jsonify({"success": True, "message": f"Browser launching for {bookmaker}..."})
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/auto-queue", methods=["POST"])
+def auto_queue():
+    """Queue all unplaced +EV bets and dispatch navigators (without re-running pipeline)."""
+    try:
+        result = run_auto_queue()
+        if "error" in result:
+            return jsonify({"success": False, **result}), 500
+        return jsonify({"success": True, **result})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -824,13 +1084,19 @@ def run_pipeline():
 
 @app.route("/refresh", methods=["POST"])
 def refresh():
-    """Run full pipeline and regenerate dashboard."""
+    """Run full pipeline, regenerate dashboard, then auto-queue bets."""
     try:
         success, message = run_pipeline()
-        if success:
-            return jsonify({"success": True, "message": message})
-        else:
+        if not success:
             return jsonify({"success": False, "error": message}), 500
+
+        # Auto-queue after successful pipeline run
+        queue_result = run_auto_queue()
+        return jsonify({
+            "success": True,
+            "message": message,
+            "auto_queue": queue_result,
+        })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

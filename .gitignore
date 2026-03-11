@@ -76,3 +76,10 @@ logs/
 *.o
 *.so
 *.dll
+
+# Bet placer runtime artifacts
+bet_placer/placer.log
+bet_placer/recon_*.py
+bet_placer/.bfa_nav_profile/
+bet_placer/.hoop88_nav_profile/
+bet_placer/.wagerzon_nav_profile/
