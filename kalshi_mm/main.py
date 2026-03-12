@@ -111,6 +111,18 @@ def check_pipeline_completion(resting_by_ticker):
         return False
 
 
+def refresh_book_data(quotable_markets):
+    """Fetch fresh yes_bid/yes_ask from Kalshi and update quotable markets in-place."""
+    fresh = fetch_markets(config.SPREAD_SERIES)
+    if not fresh:
+        return
+    book = {m["ticker"]: (m.get("yes_bid", 0), m.get("yes_ask", 0)) for m in fresh}
+    for market in quotable_markets:
+        bid_ask = book.get(market["ticker"])
+        if bid_ask:
+            market["book_bid"], market["book_ask"] = bid_ask
+
+
 def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonical_games):
     """Match Kalshi spread markets to answer key predictions.
 
@@ -236,6 +248,8 @@ def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonica
                 "is_home_contract": is_home,
                 "fair_prob": fair_prob,
                 "commence_time": pred.get("commence_time"),
+                "book_bid": m.get("yes_bid", 0),
+                "book_ask": m.get("yes_ask", 0),
             })
 
     return quotable
@@ -316,8 +330,12 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
         at_max_short = (net <= -config.MAX_POSITION_PER_MARKET
                         or event_net <= -config.MAX_POSITION_PER_EVENT)
 
-        # Compute quote
-        quote = quoter.compute_quotes(market["fair_prob"], net)
+        # Compute quote (orderbook-aware)
+        quote = quoter.compute_quotes(
+            market["fair_prob"], net,
+            book_bid=market.get("book_bid", 0),
+            book_ask=market.get("book_ask", 0)
+        )
         if quote is None:
             # Cancel existing orders if any
             if ticker in resting_by_ticker:
@@ -331,7 +349,9 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
 
         # Log the quote
         db.log_quote(ticker, market["fair_prob"], quote["bid_yes"], quote["ask_yes"],
-                     net, quote["skew"], pred_age)
+                     net, quote["skew"], pred_age,
+                     book_bid=market.get("book_bid", 0),
+                     book_ask=market.get("book_ask", 0))
 
         if DRY_RUN:
             print(quoter.format_quote_summary(ticker, quote))
@@ -499,7 +519,7 @@ def main():
     print("=" * 60)
     print(f"  Kalshi CBB 1H Market Maker — Session {SESSION_ID}")
     print(f"  {'DRY RUN' if DRY_RUN else 'LIVE'}")
-    print(f"  Half-spread: {config.HALF_SPREAD_CENTS}c | Size: {config.CONTRACT_SIZE}")
+    print(f"  Min EV: {config.MIN_EV_PCT:.0%} | Size: {config.CONTRACT_SIZE}")
     print(f"  Max position: {config.MAX_POSITION_PER_MARKET} | Max exposure: ${config.MAX_TOTAL_EXPOSURE_DOLLARS}")
     print(f"  API: {config.KALSHI_BASE_URL}")
     print("=" * 60)
@@ -628,6 +648,7 @@ def main():
             if now - last_quote_time >= config.QUOTE_CYCLE_SEC:
                 poll_for_fills(resting_by_ticker, quotable)
                 last_fill_poll = now
+                refresh_book_data(quotable)  # Fresh orderbook each cycle
                 print(f"\n--- Quote cycle @ {datetime.now().strftime('%H:%M:%S')} ---")
                 resting_by_ticker = run_quote_cycle(quotable, resting_by_ticker, prediction_updated_at)
                 last_quote_time = now

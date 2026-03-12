@@ -40,7 +40,7 @@ KALSHI_API_KEY_ID = _env.get("KALSHI_API_KEY_ID", "")
 KALSHI_PRIVATE_KEY_PATH = _env.get("KALSHI_PRIVATE_KEY_PATH", "")
 
 # --- Quoting Parameters ---
-HALF_SPREAD_CENTS = int(_env.get("HALF_SPREAD_CENTS", "5"))
+MIN_EV_PCT = float(_env.get("MIN_EV_PCT", "0.05"))  # 5% minimum EV to quote
 CONTRACT_SIZE = int(_env.get("CONTRACT_SIZE", "2"))
 SKEW_PER_CONTRACT = int(_env.get("SKEW_PER_CONTRACT", "1"))
 
