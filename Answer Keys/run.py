@@ -231,6 +231,17 @@ def fetch_canonical_games(sport: str):
     if not api_key or not sport_key:
         return
 
+    out_path = Path(__file__).parent / f".canonical_games_{sport}.json"
+
+    # Reuse cached canonical games if <2 hours old (saves Odds API credits)
+    if out_path.exists():
+        age_sec = time.time() - out_path.stat().st_mtime
+        if age_sec < 7200:
+            with open(out_path) as f:
+                games = json.load(f)
+            print(f"Using cached canonical games for {sport} ({len(games)} games, {age_sec/60:.0f}m old)", flush=True)
+            return
+
     try:
         resp = requests.get(
             f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds",
@@ -245,7 +256,6 @@ def fetch_canonical_games(sport: str):
         games = [{"home_team": g["home_team"], "away_team": g["away_team"]}
                  for g in resp.json()]
 
-        out_path = Path(__file__).parent / f".canonical_games_{sport}.json"
         with open(out_path, "w") as f:
             json.dump(games, f)
         print(f"Fetched {len(games)} canonical games for {sport}", flush=True)
@@ -254,10 +264,8 @@ def fetch_canonical_games(sport: str):
 
 
 def cleanup_canonical_games(sport: str):
-    """Remove temporary canonical game files."""
-    path = Path(__file__).parent / f".canonical_games_{sport}.json"
-    if path.exists():
-        path.unlink()
+    """Keep canonical games cache for reuse (saves Odds API credits)."""
+    pass
 
 
 def main():

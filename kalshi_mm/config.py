@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 MM_DIR = Path(__file__).parent
 KALSHI_DRAFT_DIR = PROJECT_ROOT / "kalshi_draft"
 ANSWER_KEYS_DIR = PROJECT_ROOT / "Answer Keys"
-CBB_DB_PATH = ANSWER_KEYS_DIR / "CBB Answer Key" / "cbb.duckdb"
+CBB_DB_PATH = ANSWER_KEYS_DIR / "cbb.duckdb"
 MM_DB_PATH = MM_DIR / "kalshi_mm.duckdb"
 BOOKMAKER_SCRAPER = PROJECT_ROOT / "bookmaker_odds" / "scraper.py"
 BET105_SCRAPER = PROJECT_ROOT / "bet105_odds" / "scraper.py"
@@ -63,6 +63,7 @@ LINE_MOVE_THRESHOLD = float(_env.get("LINE_MOVE_THRESHOLD", "1.0"))
 QUOTE_CYCLE_SEC = 10
 FILL_POLL_SEC = 30
 MONITOR_CYCLE_SEC = 60
+PIPELINE_REFRESH_SEC = int(_env.get("PIPELINE_REFRESH_SEC", "600"))  # Auto-refresh predictions
 
 # --- Kalshi Series ---
 SPREAD_SERIES = "KXNCAAMB1HSPREAD"

@@ -81,7 +81,7 @@ def place_order(ticker, side, price, count, post_only=True):
         "side": side,
         "type": "limit",
         "count": count,
-        "time_in_force": "gtc",
+        "time_in_force": "good_till_canceled",
     }
 
     if side == "yes":

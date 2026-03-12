@@ -11,6 +11,7 @@ Usage:
     python main.py --dry-run    # Compute quotes but don't place orders
 """
 
+import subprocess
 import sys
 import time
 import signal
@@ -53,6 +54,61 @@ def signal_handler(sig, frame):
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
+
+# --- Background pipeline runner ---
+_pipeline_proc = None
+_pipeline_start_time = None
+_pipeline_backoff = config.PIPELINE_REFRESH_SEC
+
+
+def start_pipeline():
+    """Launch prediction pipeline as background subprocess. Non-blocking."""
+    global _pipeline_proc, _pipeline_start_time
+    if _pipeline_proc and _pipeline_proc.poll() is None:
+        return  # Already running
+    print(f"\n--- Starting pipeline @ {datetime.now().strftime('%H:%M:%S')} ---")
+    _pipeline_proc = subprocess.Popen(
+        [sys.executable, "run.py", "cbb"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        cwd=str(config.ANSWER_KEYS_DIR)
+    )
+    _pipeline_start_time = time.time()
+
+
+def check_pipeline_completion(resting_by_ticker):
+    """Check if background pipeline finished. Returns True if new predictions ready."""
+    global _pipeline_proc, _pipeline_start_time, _pipeline_backoff
+    if _pipeline_proc is None:
+        return False
+
+    rc = _pipeline_proc.poll()
+    if rc is None:
+        # Still running — check timeout (120s)
+        if time.time() - _pipeline_start_time > 120:
+            _pipeline_proc.kill()
+            _pipeline_proc = None
+            print("  Pipeline timed out (120s) — killed. Pulling all quotes.")
+            _pipeline_backoff = min(_pipeline_backoff * 2, 2400)
+            if not DRY_RUN:
+                orders.cancel_all_orders()
+                resting_by_ticker.clear()
+            return False
+        return False
+
+    elapsed = time.time() - _pipeline_start_time
+    _pipeline_proc = None
+
+    if rc == 0:
+        print(f"  Pipeline complete ({elapsed:.0f}s)")
+        _pipeline_backoff = config.PIPELINE_REFRESH_SEC
+        return True
+    else:
+        print(f"  Pipeline FAILED (exit {rc}, {elapsed:.0f}s). Pulling all quotes. Retry in {_pipeline_backoff}s")
+        _pipeline_backoff = min(_pipeline_backoff * 2, 2400)
+        if not DRY_RUN:
+            orders.cancel_all_orders()
+            resting_by_ticker.clear()
+        return False
 
 
 def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonical_games):
@@ -107,6 +163,21 @@ def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonica
                 and _fuzzy_team_match(p["away_team"].lower(), resolved_b.lower())
             ]
             home_resolved, away_resolved = resolved_a, resolved_b
+
+        if not matching_preds:
+            # Fallback: try raw Kalshi names directly against predictions
+            # (handles cases where resolve_team_names fails but "Indiana" still
+            # fuzzy-matches "Indiana Hoosiers" in predictions)
+            for raw_a, raw_b in [(team_list[0], team_list[1]), (team_list[1], team_list[0])]:
+                matching_preds = [
+                    p for p in predictions
+                    if p["market"] == "spreads_h1"
+                    and _fuzzy_team_match(p["home_team"].lower(), raw_b.lower())
+                    and _fuzzy_team_match(p["away_team"].lower(), raw_a.lower())
+                ]
+                if matching_preds:
+                    home_resolved, away_resolved = raw_b, raw_a
+                    break
 
         if not matching_preds:
             continue
@@ -265,6 +336,7 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
         if DRY_RUN:
             print(quoter.format_quote_summary(ticker, quote))
             quoted_count += 1
+            quoted_events.add(event_ticker)
             continue
 
         # Manage bid (buy YES)
@@ -504,64 +576,29 @@ def main():
     last_quote_time = 0
     last_fill_poll = 0
     last_monitor_time = 0
-    last_refresh_time = time.time()
+    last_pipeline_time = time.time()  # Pipeline assumed fresh at startup
 
     try:
         while RUNNING:
             now = time.time()
 
-            # Quote cycle — always poll fills first so position/skew is current
-            if now - last_quote_time >= config.QUOTE_CYCLE_SEC:
-                poll_for_fills(resting_by_ticker, quotable)
-                last_fill_poll = now
-                print(f"\n--- Quote cycle @ {datetime.now().strftime('%H:%M:%S')} ---")
-                resting_by_ticker = run_quote_cycle(quotable, resting_by_ticker, prediction_updated_at)
-                last_quote_time = now
-
-            # Line-move monitoring
-            if now - last_monitor_time >= config.MONITOR_CYCLE_SEC:
-                print(f"\n--- Line monitor @ {datetime.now().strftime('%H:%M:%S')} ---")
-                current_lines = risk.run_line_monitor()
-                ref_lines = db.get_reference_lines()
-
-                if current_lines and ref_lines:
-                    moved = risk.detect_line_moves(current_lines, ref_lines)
-                    if moved:
-                        print(f"  {len(moved)} games with line moves. Pulling quotes.")
-                        # Pull quotes for moved games
-                        for ticker, info in list(resting_by_ticker.items()):
-                            market = next((m for m in quotable if m["ticker"] == ticker), None)
-                            if market and (market["home_team"], market["away_team"]) in moved:
-                                if not DRY_RUN:
-                                    for side_key in ["bid_order_id", "ask_order_id"]:
-                                        oid = info.get(side_key)
-                                        if oid:
-                                            orders.cancel_order(oid)
-                                            db.remove_resting_order(oid)
-                                del resting_by_ticker[ticker]
-                last_monitor_time = now
-
-            # Periodic prediction refresh (every 15 min)
-            if now - last_refresh_time >= 900:
-                print("\n--- Refreshing predictions + markets ---")
+            # Check if background pipeline finished
+            if check_pipeline_completion(resting_by_ticker):
                 new_preds, new_ts = db.load_predictions()
                 if new_preds and new_ts != prediction_updated_at:
                     predictions = new_preds
                     prediction_updated_at = new_ts
 
-                # Re-fetch Kalshi markets (picks up new markets, drops settled)
+                # Re-fetch Kalshi markets + re-match
                 fresh_markets = fetch_markets(config.SPREAD_SERIES)
                 if fresh_markets:
                     kalshi_markets = fresh_markets
-
-                # Re-match with latest predictions + markets
                 new_quotable = match_kalshi_to_predictions(
                     kalshi_markets, predictions, team_dict, canonical_games
                 )
                 print(f"  Refreshed: {len(new_quotable)} quotable markets")
 
-                # Cancel orders for tickers that are no longer quotable
-                # (game tipped off, market settled, prediction dropped)
+                # Cancel orders for orphaned tickers
                 new_tickers = {m["ticker"] for m in new_quotable}
                 for ticker, info in list(resting_by_ticker.items()):
                     if ticker not in new_tickers:
@@ -580,7 +617,45 @@ def main():
                 ref_lines = risk.run_line_monitor()
                 if ref_lines:
                     db.save_reference_lines(ref_lines)
-                last_refresh_time = now
+                last_pipeline_time = now
+
+            # Scheduled pipeline refresh (with backoff on failure)
+            if now - last_pipeline_time >= _pipeline_backoff:
+                start_pipeline()
+                last_pipeline_time = now  # Reset timer even if start_pipeline skips (already running)
+
+            # Quote cycle — always poll fills first so position/skew is current
+            if now - last_quote_time >= config.QUOTE_CYCLE_SEC:
+                poll_for_fills(resting_by_ticker, quotable)
+                last_fill_poll = now
+                print(f"\n--- Quote cycle @ {datetime.now().strftime('%H:%M:%S')} ---")
+                resting_by_ticker = run_quote_cycle(quotable, resting_by_ticker, prediction_updated_at)
+                last_quote_time = now
+
+            # Line-move monitoring
+            if now - last_monitor_time >= config.MONITOR_CYCLE_SEC:
+                print(f"\n--- Line monitor @ {datetime.now().strftime('%H:%M:%S')} ---")
+                current_lines = risk.run_line_monitor()
+                ref_lines = db.get_reference_lines()
+
+                if current_lines and ref_lines:
+                    moved = risk.detect_line_moves(current_lines, ref_lines)
+                    if moved:
+                        print(f"  {len(moved)} games with line moves — pulling quotes, triggering refresh")
+                        # Pull quotes for moved games
+                        for ticker, info in list(resting_by_ticker.items()):
+                            market = next((m for m in quotable if m["ticker"] == ticker), None)
+                            if market and (market["home_team"], market["away_team"]) in moved:
+                                if not DRY_RUN:
+                                    for side_key in ["bid_order_id", "ask_order_id"]:
+                                        oid = info.get(side_key)
+                                        if oid:
+                                            orders.cancel_order(oid)
+                                            db.remove_resting_order(oid)
+                                del resting_by_ticker[ticker]
+                        # Trigger immediate pipeline refresh
+                        start_pipeline()
+                last_monitor_time = now
 
             time.sleep(1)
 
@@ -589,6 +664,11 @@ def main():
         import traceback
         traceback.print_exc()
     finally:
+        # Kill background pipeline if running
+        if _pipeline_proc and _pipeline_proc.poll() is None:
+            _pipeline_proc.kill()
+            print("  Killed background pipeline subprocess.")
+
         # Kill switch: always cancel ALL orders on Kalshi (catches phantom orders
         # from failed API responses and orders we lost track of)
         print("\n\nShutting down...")

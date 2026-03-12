@@ -493,12 +493,25 @@ def _parse_datetime(iso_str):
         return "", ""
 
 
+def _normalize_team_name(name):
+    """Normalize team name for matching: strip accents, punctuation, common abbreviations."""
+    import unicodedata
+    # Strip accents (é → e, etc.)
+    name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    # Remove punctuation
+    name = re.sub(r"['\.\-]", "", name).lower().strip()
+    # Normalize common abbreviations
+    name = re.sub(r"\buniversity\b", "univ", name)
+    name = re.sub(r"\bstate\b", "st", name)
+    return name
+
+
 def _fuzzy_team_match(name1, name2):
-    """Simple fuzzy check: one name is a substring of the other (case-insensitive)."""
+    """Fuzzy check: one normalized name is a substring of the other."""
     if not name1 or not name2:
         return False
-    n1 = re.sub(r"['\.\-]", "", name1).lower().strip()
-    n2 = re.sub(r"['\.\-]", "", name2).lower().strip()
+    n1 = _normalize_team_name(name1)
+    n2 = _normalize_team_name(name2)
     return n1 in n2 or n2 in n1
 
 

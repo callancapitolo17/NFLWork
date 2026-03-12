@@ -52,13 +52,12 @@ def check_staleness(prediction_updated_at):
     if prediction_updated_at is None:
         return False, float("inf")
 
-    now = datetime.now(timezone.utc)
-    if prediction_updated_at.tzinfo is None:
-        # Assume UTC if naive
-        from datetime import timezone as tz
-        prediction_updated_at = prediction_updated_at.replace(tzinfo=tz.utc)
+    # CBB.R writes local time (no timezone), so compare against local time
+    now = datetime.now()
+    if prediction_updated_at.tzinfo is not None:
+        now = datetime.now(timezone.utc)
 
-    age = (now - prediction_updated_at).total_seconds()
+    age = (now - prediction_updated_at.replace(tzinfo=now.tzinfo)).total_seconds()
     return age < MAX_STALENESS_SEC, age
 
 
