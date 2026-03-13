@@ -622,40 +622,55 @@ def place_bet():
     try:
         con = duckdb.connect(str(DB_PATH))
 
-        # Check if already placed
+        # Check if already placed — allow overwrite if status is not 'pending' (i.e. queued/nav_error/ready_to_confirm)
         existing = con.execute(
-            "SELECT bet_hash FROM placed_bets WHERE bet_hash = ?",
+            "SELECT bet_hash, status FROM placed_bets WHERE bet_hash = ?",
             [data["bet_hash"]]
         ).fetchone()
 
-        if existing:
+        if existing and existing[1] == "pending":
             con.close()
             return jsonify({"success": False, "error": "Bet already placed"}), 409
 
-        # Insert new placed bet
-        con.execute("""
-            INSERT INTO placed_bets (
-                bet_hash, game_id, home_team, away_team, game_time,
-                market, bet_on, line, model_prob, model_ev, recommended_size,
-                actual_size, odds, bookmaker, placed_at, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-        """, [
-            data["bet_hash"],
-            data["game_id"],
-            data["home_team"],
-            data["away_team"],
-            None if data["game_time"] in ("NA", "", None) else data["game_time"],
-            data["market"],
-            data["bet_on"],
-            data.get("line"),
-            data["model_prob"],
-            data["model_ev"],
-            data["recommended_size"],
-            data.get("actual_size", data["recommended_size"]),
-            data["odds"],
-            data["bookmaker"],
-            datetime.now().isoformat()
-        ])
+        if existing:
+            # Overwrite non-confirmed bet (queued, nav_error, ready_to_confirm)
+            con.execute("""
+                UPDATE placed_bets SET
+                    actual_size = ?, recommended_size = ?, odds = ?,
+                    placed_at = ?, status = 'pending'
+                WHERE bet_hash = ?
+            """, [
+                float(data.get("actual_size", data["recommended_size"])),
+                float(data["recommended_size"]),
+                int(data["odds"]),
+                datetime.now().isoformat(),
+                data["bet_hash"],
+            ])
+        else:
+            # Insert new placed bet
+            con.execute("""
+                INSERT INTO placed_bets (
+                    bet_hash, game_id, home_team, away_team, game_time,
+                    market, bet_on, line, model_prob, model_ev, recommended_size,
+                    actual_size, odds, bookmaker, placed_at, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+            """, [
+                data["bet_hash"],
+                data["game_id"],
+                data["home_team"],
+                data["away_team"],
+                None if data["game_time"] in ("NA", "", None) else data["game_time"],
+                data["market"],
+                data["bet_on"],
+                data.get("line"),
+                data["model_prob"],
+                data["model_ev"],
+                data["recommended_size"],
+                data.get("actual_size", data["recommended_size"]),
+                data["odds"],
+                data["bookmaker"],
+                datetime.now().isoformat()
+            ])
 
         con.close()
 
@@ -734,7 +749,7 @@ def get_placed_bets():
         con = duckdb.connect(str(DB_PATH))
         bets = con.execute("""
             SELECT * FROM placed_bets
-            WHERE status IN ('pending', 'queued', 'ready_to_confirm')
+            WHERE status = 'pending'
             ORDER BY placed_at DESC
         """).fetchdf()
         con.close()
@@ -759,7 +774,7 @@ def get_exposure():
                 SUM(COALESCE(actual_size, recommended_size)) as total_exposure,
                 STRING_AGG(DISTINCT market, ', ') as markets
             FROM placed_bets
-            WHERE status IN ('pending', 'queued', 'ready_to_confirm')
+            WHERE status = 'pending'
             GROUP BY game_id, home_team, away_team
             ORDER BY total_exposure DESC
         """).fetchdf()

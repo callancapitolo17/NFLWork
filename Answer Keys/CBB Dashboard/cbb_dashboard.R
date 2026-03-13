@@ -41,7 +41,7 @@ load_placed_bets <- function(db_path) {
   con <- dbConnect(duckdb(), db_path, read_only = TRUE)
   on.exit(dbDisconnect(con, shutdown = TRUE))
   tryCatch({
-    dbGetQuery(con, "SELECT * FROM placed_bets WHERE status IN ('pending', 'queued', 'ready_to_confirm') AND (game_time IS NULL OR game_time > NOW())")
+    dbGetQuery(con, "SELECT * FROM placed_bets WHERE status = 'pending' AND (game_time IS NULL OR game_time > NOW())")
   }, error = function(e) {
     tibble(bet_hash = character())
   })
