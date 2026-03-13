@@ -113,14 +113,17 @@ def lookup_game(bookmaker: str, home_team: str, away_team: str) -> Optional[dict
 
 
 def update_bet_status(bet_hash: str, status: str):
-    """Update placed_bets.status in the dashboard DuckDB (with retry for lock contention)."""
+    """Update placed_bets.status in the dashboard DuckDB (with retry for lock contention).
+
+    Never overwrites 'pending' status — that means the user manually confirmed the bet.
+    """
     import time as _time
     for attempt in range(5):
         con = None
         try:
             con = duckdb.connect(str(DASHBOARD_DB))
             con.execute(
-                "UPDATE placed_bets SET status = ? WHERE bet_hash = ?",
+                "UPDATE placed_bets SET status = ? WHERE bet_hash = ? AND status != 'pending'",
                 [status, bet_hash],
             )
             return
