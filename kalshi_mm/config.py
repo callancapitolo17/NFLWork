@@ -40,8 +40,8 @@ KALSHI_API_KEY_ID = _env.get("KALSHI_API_KEY_ID", "")
 KALSHI_PRIVATE_KEY_PATH = _env.get("KALSHI_PRIVATE_KEY_PATH", "")
 
 # --- Quoting Parameters ---
-HALF_SPREAD_CENTS = int(_env.get("HALF_SPREAD_CENTS", "5"))
-CONTRACT_SIZE = int(_env.get("CONTRACT_SIZE", "2"))
+MIN_EV_PCT = float(_env.get("MIN_EV_PCT", "0.05"))  # 5% minimum EV to quote
+CONTRACT_SIZE = int(_env.get("CONTRACT_SIZE", "5"))
 SKEW_PER_CONTRACT = int(_env.get("SKEW_PER_CONTRACT", "1"))
 
 # --- Risk Limits ---
@@ -57,7 +57,7 @@ MAX_FAIR_VALUE = 90  # Don't quote if fair_yes > 90 cents
 TIPOFF_PULLBACK_MIN = 30  # Pull quotes this many min before tipoff
 
 # --- Line Move Monitoring ---
-LINE_MOVE_THRESHOLD = float(_env.get("LINE_MOVE_THRESHOLD", "1.0"))
+LINE_MOVE_THRESHOLD = float(_env.get("LINE_MOVE_THRESHOLD", "0.5"))
 
 # --- Timing (seconds) ---
 QUOTE_CYCLE_SEC = 10

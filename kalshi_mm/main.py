@@ -11,6 +11,7 @@ Usage:
     python main.py --dry-run    # Compute quotes but don't place orders
 """
 
+import random
 import subprocess
 import sys
 import time
@@ -109,6 +110,44 @@ def check_pipeline_completion(resting_by_ticker):
             orders.cancel_all_orders()
             resting_by_ticker.clear()
         return False
+
+
+def enforce_monotonicity(quotable_markets):
+    """Clamp fair probabilities so P(team wins by >N) >= P(team wins by >N+k).
+
+    Without this, a sharp can arb mispriced strikes against each other.
+    For each event+team direction, sort by strike and ensure probabilities
+    are non-increasing. Clamp violations to the neighbor's value.
+    """
+    from collections import defaultdict
+
+    # Group by (event_ticker, is_home_contract)
+    groups = defaultdict(list)
+    for m in quotable_markets:
+        key = (m["event_ticker"], m["is_home_contract"])
+        groups[key].append(m)
+
+    for key, markets in groups.items():
+        # Sort by strike ascending — probability should decrease
+        markets.sort(key=lambda m: m["strike"])
+        for i in range(1, len(markets)):
+            if markets[i]["fair_prob"] > markets[i - 1]["fair_prob"]:
+                # Violation: higher strike has higher probability
+                # Clamp to previous value (conservative — preserves the
+                # more liquid/reliable lower-strike estimate)
+                markets[i]["fair_prob"] = markets[i - 1]["fair_prob"]
+
+
+def refresh_book_data(quotable_markets):
+    """Fetch fresh yes_bid/yes_ask from Kalshi and update quotable markets in-place."""
+    fresh = fetch_markets(config.SPREAD_SERIES)
+    if not fresh:
+        return
+    book = {m["ticker"]: (m.get("yes_bid", 0), m.get("yes_ask", 0)) for m in fresh}
+    for market in quotable_markets:
+        bid_ask = book.get(market["ticker"])
+        if bid_ask:
+            market["book_bid"], market["book_ask"] = bid_ask
 
 
 def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonical_games):
@@ -236,6 +275,8 @@ def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonica
                 "is_home_contract": is_home,
                 "fair_prob": fair_prob,
                 "commence_time": pred.get("commence_time"),
+                "book_bid": m.get("yes_bid", 0),
+                "book_ask": m.get("yes_ask", 0),
             })
 
     return quotable
@@ -310,14 +351,30 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
         net = pos["net_yes"]
         event_net = db.get_event_net_position(market.get("event_ticker", ""))
 
-        # Check position limit — per-ticker AND per-event (correlated strikes)
-        at_max_long = (net >= config.MAX_POSITION_PER_MARKET
-                       or event_net >= config.MAX_POSITION_PER_EVENT)
-        at_max_short = (net <= -config.MAX_POSITION_PER_MARKET
-                        or event_net <= -config.MAX_POSITION_PER_EVENT)
+        # Count resting order exposure toward event limit — prevents a sharp
+        # from filling multiple strikes simultaneously to breach the limit
+        resting_event_long = 0
+        resting_event_short = 0
+        for other_m in quotable_markets:
+            if other_m["event_ticker"] == event_ticker and other_m["ticker"] != ticker:
+                other_info = resting_by_ticker.get(other_m["ticker"], {})
+                if other_info.get("bid_order_id"):
+                    resting_event_long += config.CONTRACT_SIZE
+                if other_info.get("ask_order_id"):
+                    resting_event_short += config.CONTRACT_SIZE
 
-        # Compute quote
-        quote = quoter.compute_quotes(market["fair_prob"], net)
+        # Check position limit — per-ticker AND per-event (filled + resting)
+        at_max_long = (net >= config.MAX_POSITION_PER_MARKET
+                       or (event_net + resting_event_long) >= config.MAX_POSITION_PER_EVENT)
+        at_max_short = (net <= -config.MAX_POSITION_PER_MARKET
+                        or (event_net + resting_event_short) <= -config.MAX_POSITION_PER_EVENT)
+
+        # Compute quote (orderbook-aware)
+        quote = quoter.compute_quotes(
+            market["fair_prob"], net,
+            book_bid=market.get("book_bid", 0),
+            book_ask=market.get("book_ask", 0)
+        )
         if quote is None:
             # Cancel existing orders if any
             if ticker in resting_by_ticker:
@@ -331,7 +388,9 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
 
         # Log the quote
         db.log_quote(ticker, market["fair_prob"], quote["bid_yes"], quote["ask_yes"],
-                     net, quote["skew"], pred_age)
+                     net, quote["skew"], pred_age,
+                     book_bid=market.get("book_bid", 0),
+                     book_ask=market.get("book_ask", 0))
 
         if DRY_RUN:
             print(quoter.format_quote_summary(ticker, quote))
@@ -499,7 +558,7 @@ def main():
     print("=" * 60)
     print(f"  Kalshi CBB 1H Market Maker — Session {SESSION_ID}")
     print(f"  {'DRY RUN' if DRY_RUN else 'LIVE'}")
-    print(f"  Half-spread: {config.HALF_SPREAD_CENTS}c | Size: {config.CONTRACT_SIZE}")
+    print(f"  Min EV: {config.MIN_EV_PCT:.0%} | Size: {config.CONTRACT_SIZE}")
     print(f"  Max position: {config.MAX_POSITION_PER_MARKET} | Max exposure: ${config.MAX_TOTAL_EXPOSURE_DOLLARS}")
     print(f"  API: {config.KALSHI_BASE_URL}")
     print("=" * 60)
@@ -553,6 +612,7 @@ def main():
     # Match to predictions
     print("Matching Kalshi markets to predictions...")
     quotable = match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonical_games)
+    enforce_monotonicity(quotable)
     print(f"  {len(quotable)} quotable markets found")
 
     if not quotable:
@@ -596,6 +656,7 @@ def main():
                 new_quotable = match_kalshi_to_predictions(
                     kalshi_markets, predictions, team_dict, canonical_games
                 )
+                enforce_monotonicity(new_quotable)
                 print(f"  Refreshed: {len(new_quotable)} quotable markets")
 
                 # Cancel orders for orphaned tickers
@@ -628,6 +689,7 @@ def main():
             if now - last_quote_time >= config.QUOTE_CYCLE_SEC:
                 poll_for_fills(resting_by_ticker, quotable)
                 last_fill_poll = now
+                refresh_book_data(quotable)  # Fresh orderbook each cycle
                 print(f"\n--- Quote cycle @ {datetime.now().strftime('%H:%M:%S')} ---")
                 resting_by_ticker = run_quote_cycle(quotable, resting_by_ticker, prediction_updated_at)
                 last_quote_time = now
@@ -657,7 +719,7 @@ def main():
                         start_pipeline()
                 last_monitor_time = now
 
-            time.sleep(1)
+            time.sleep(random.uniform(0.5, 1.5))  # Jitter to avoid predictable timing
 
     except Exception as e:
         print(f"\n  UNHANDLED ERROR: {e}")

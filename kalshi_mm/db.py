@@ -62,7 +62,9 @@ def init_database():
                 spread_cents INTEGER,
                 net_position INTEGER,
                 skew_applied INTEGER,
-                prediction_age_sec FLOAT
+                prediction_age_sec FLOAT,
+                book_bid INTEGER,
+                book_ask INTEGER
             )
         """)
         conn.execute("""
@@ -85,6 +87,15 @@ def init_database():
                 snapshot_at TIMESTAMP
             )
         """)
+        # Migrate: add book columns if missing (existing DBs won't have them)
+        try:
+            conn.execute("ALTER TABLE quote_log ADD COLUMN book_bid INTEGER")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE quote_log ADD COLUMN book_ask INTEGER")
+        except Exception:
+            pass
     finally:
         conn.close()
 
@@ -222,17 +233,19 @@ def record_fill(fill_id, ticker, side, action, price, count, fee_cents, order_id
         conn.close()
 
 
-def log_quote(ticker, fair_prob, bid_yes, ask_yes, net_position, skew, prediction_age):
+def log_quote(ticker, fair_prob, bid_yes, ask_yes, net_position, skew, prediction_age,
+              book_bid=0, book_ask=0):
     """Log a quoting decision for post-analysis."""
     conn = duckdb.connect(str(MM_DB_PATH))
     try:
         spread = (ask_yes - bid_yes) if bid_yes and ask_yes else 0
         conn.execute("""
             INSERT INTO quote_log (logged_at, ticker, fair_prob, bid_yes, ask_yes,
-                                   spread_cents, net_position, skew_applied, prediction_age_sec)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   spread_cents, net_position, skew_applied, prediction_age_sec,
+                                   book_bid, book_ask)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [datetime.now(timezone.utc), ticker, fair_prob, bid_yes, ask_yes,
-              spread, net_position, skew, prediction_age])
+              spread, net_position, skew, prediction_age, book_bid, book_ask])
         # Prune old entries to prevent unbounded growth (keep last 24h)
         conn.execute("""
             DELETE FROM quote_log
