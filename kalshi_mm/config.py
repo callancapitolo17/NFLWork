@@ -57,7 +57,7 @@ MAX_FAIR_VALUE = 90  # Don't quote if fair_yes > 90 cents
 TIPOFF_PULLBACK_MIN = 30  # Pull quotes this many min before tipoff
 
 # --- Line Move Monitoring ---
-LINE_MOVE_THRESHOLD = float(_env.get("LINE_MOVE_THRESHOLD", "1.0"))
+LINE_MOVE_THRESHOLD = float(_env.get("LINE_MOVE_THRESHOLD", "0.5"))
 
 # --- Timing (seconds) ---
 QUOTE_CYCLE_SEC = 10

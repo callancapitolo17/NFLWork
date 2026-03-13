@@ -11,6 +11,7 @@ Usage:
     python main.py --dry-run    # Compute quotes but don't place orders
 """
 
+import random
 import subprocess
 import sys
 import time
@@ -109,6 +110,32 @@ def check_pipeline_completion(resting_by_ticker):
             orders.cancel_all_orders()
             resting_by_ticker.clear()
         return False
+
+
+def enforce_monotonicity(quotable_markets):
+    """Clamp fair probabilities so P(team wins by >N) >= P(team wins by >N+k).
+
+    Without this, a sharp can arb mispriced strikes against each other.
+    For each event+team direction, sort by strike and ensure probabilities
+    are non-increasing. Clamp violations to the neighbor's value.
+    """
+    from collections import defaultdict
+
+    # Group by (event_ticker, is_home_contract)
+    groups = defaultdict(list)
+    for m in quotable_markets:
+        key = (m["event_ticker"], m["is_home_contract"])
+        groups[key].append(m)
+
+    for key, markets in groups.items():
+        # Sort by strike ascending — probability should decrease
+        markets.sort(key=lambda m: m["strike"])
+        for i in range(1, len(markets)):
+            if markets[i]["fair_prob"] > markets[i - 1]["fair_prob"]:
+                # Violation: higher strike has higher probability
+                # Clamp to previous value (conservative — preserves the
+                # more liquid/reliable lower-strike estimate)
+                markets[i]["fair_prob"] = markets[i - 1]["fair_prob"]
 
 
 def refresh_book_data(quotable_markets):
@@ -573,6 +600,7 @@ def main():
     # Match to predictions
     print("Matching Kalshi markets to predictions...")
     quotable = match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonical_games)
+    enforce_monotonicity(quotable)
     print(f"  {len(quotable)} quotable markets found")
 
     if not quotable:
@@ -616,6 +644,7 @@ def main():
                 new_quotable = match_kalshi_to_predictions(
                     kalshi_markets, predictions, team_dict, canonical_games
                 )
+                enforce_monotonicity(new_quotable)
                 print(f"  Refreshed: {len(new_quotable)} quotable markets")
 
                 # Cancel orders for orphaned tickers
@@ -678,7 +707,7 @@ def main():
                         start_pipeline()
                 last_monitor_time = now
 
-            time.sleep(1)
+            time.sleep(random.uniform(0.5, 1.5))  # Jitter to avoid predictable timing
 
     except Exception as e:
         print(f"\n  UNHANDLED ERROR: {e}")
