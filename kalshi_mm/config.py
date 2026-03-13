@@ -41,7 +41,7 @@ KALSHI_PRIVATE_KEY_PATH = _env.get("KALSHI_PRIVATE_KEY_PATH", "")
 
 # --- Quoting Parameters ---
 MIN_EV_PCT = float(_env.get("MIN_EV_PCT", "0.05"))  # 5% minimum EV to quote
-CONTRACT_SIZE = int(_env.get("CONTRACT_SIZE", "2"))
+CONTRACT_SIZE = int(_env.get("CONTRACT_SIZE", "5"))
 SKEW_PER_CONTRACT = int(_env.get("SKEW_PER_CONTRACT", "1"))
 
 # --- Risk Limits ---
