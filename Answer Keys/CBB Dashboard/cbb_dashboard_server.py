@@ -1107,18 +1107,15 @@ def run_pipeline():
 
 @app.route("/refresh", methods=["POST"])
 def refresh():
-    """Run full pipeline, regenerate dashboard, then auto-queue bets."""
+    """Run full pipeline and regenerate dashboard."""
     try:
         success, message = run_pipeline()
         if not success:
             return jsonify({"success": False, "error": message}), 500
 
-        # Auto-queue after successful pipeline run
-        queue_result = run_auto_queue()
         return jsonify({
             "success": True,
             "message": message,
-            "auto_queue": queue_result,
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500

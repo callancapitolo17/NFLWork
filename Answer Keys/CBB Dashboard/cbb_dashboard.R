@@ -572,23 +572,6 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           background: #2ea043;
         }
 
-        .queue-btn {
-          background: #1f6feb;
-          border: 1px solid #388bfd;
-          color: #fff;
-          padding: 8px 16px;
-          border-radius: 6px;
-          font-size: 0.85rem;
-          font-weight: 500;
-          cursor: pointer;
-          transition: all 0.15s;
-          margin-left: 8px;
-        }
-
-        .queue-btn:hover {
-          background: #388bfd;
-        }
-
         .stats-row {
           display: flex;
           gap: 12px;
@@ -1036,10 +1019,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             tags$h1("CBB +EV Dashboard"),
             tags$div(class = "subtitle", paste("Updated", timestamp))
           ),
-          tags$div(
-            tags$button(class = "refresh-btn", onclick = "refreshData()", "Refresh"),
-            tags$button(class = "queue-btn", onclick = "queueAllBets()", "Queue All")
-          )
+          tags$button(class = "refresh-btn", onclick = "refreshData()", "Refresh")
         ),
 
         # Stats
@@ -1773,34 +1753,6 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           return Math.min(betSize, bankroll);
         }
 
-        function queueAllBets() {
-          const btn = document.querySelector(".queue-btn");
-          btn.textContent = "Queuing...";
-          btn.disabled = true;
-
-          fetch("/api/auto-queue", { method: "POST" })
-            .then(r => r.json())
-            .then(data => {
-              if (data.success) {
-                var msg = data.queued + " bets queued.";
-                if (data.dispatched) {
-                  var books = Object.keys(data.dispatched).join(", ");
-                  msg += " Browsers opening for: " + books;
-                }
-                showToast(msg, "success");
-              } else {
-                showToast("Error: " + (data.error || data.message), "error");
-              }
-              btn.textContent = "Queue All";
-              btn.disabled = false;
-            })
-            .catch(() => {
-              showToast("Server error", "error");
-              btn.textContent = "Queue All";
-              btn.disabled = false;
-            });
-        }
-
         function refreshData() {
           const btn = document.querySelector(".refresh-btn");
           btn.textContent = "Refreshing...";
@@ -1810,11 +1762,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             .then(r => r.json())
             .then(data => {
               if (data.success) {
-                var msg = "Refreshed!";
-                if (data.auto_queue && data.auto_queue.queued > 0) {
-                  msg += " " + data.auto_queue.queued + " bets queued.";
-                }
-                showToast(msg, "success");
+                showToast("Refreshed!", "success");
                 setTimeout(() => location.reload(), 800);
               } else {
                 showToast("Error: " + data.error, "error");
@@ -1916,24 +1864,6 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                     _sessionPlaced[btn.dataset.hash] = { className: \'btn-partial\', text: \'Partial -$\' + diff.toFixed(0), fillStatus: \'partial\', actual: actualSize, action: \'update\' };
                   }
                   showToast("Bet placed: $" + actualSize.toFixed(0), "success");
-
-                  // Trigger auto-placement if book is supported
-                  var autoBooks = ["wagerzon", "hoop88", "bfa"];
-                  if (autoBooks.indexOf(data.bookmaker) !== -1) {
-                    fetch("/api/auto-place", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify(data)
-                    })
-                      .then(function(r) { return r.json(); })
-                      .then(function(res) {
-                        if (res.success) {
-                          showToast("Browser opening for " + data.bookmaker + "...", "success");
-                        }
-                      })
-                      .catch(function() {});
-                  }
-
                   recalcSameGame(btn.dataset.gameId);
                 } else {
                   showToast(result.error, "error");
