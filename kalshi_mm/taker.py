@@ -28,6 +28,10 @@ import risk
 # Cooldown: {ticker: prediction_updated_at} — skip ticker until predictions refresh
 TAKEN_THIS_CYCLE = {}
 
+# Event-level cooldown: {event_ticker: prediction_updated_at}
+# After taking ANY strike in an event, block all strikes until predictions refresh
+EVENT_COOLDOWN = {}
+
 # Prediction cache to avoid re-reading DB every 2s
 PRED_CACHE = {"predictions": [], "updated_at": None, "checked_at": 0}
 
@@ -65,21 +69,25 @@ def compute_take_ev(fair_cents, book_price, side):
     return ev_pct, fee
 
 
-def is_on_cooldown(ticker, current_pred_ts):
-    """Check if ticker was already taken on this prediction cycle."""
-    if ticker not in TAKEN_THIS_CYCLE:
-        return False
-    return TAKEN_THIS_CYCLE[ticker] == current_pred_ts
+def is_on_cooldown(ticker, event_ticker, current_pred_ts):
+    """Check if ticker or its event was already taken on this prediction cycle."""
+    if ticker in TAKEN_THIS_CYCLE and TAKEN_THIS_CYCLE[ticker] == current_pred_ts:
+        return True
+    if event_ticker in EVENT_COOLDOWN and EVENT_COOLDOWN[event_ticker] == current_pred_ts:
+        return True
+    return False
 
 
-def set_cooldown(ticker, pred_ts):
-    """Mark ticker as taken for this prediction cycle."""
+def set_cooldown(ticker, event_ticker, pred_ts):
+    """Mark ticker AND its event as taken for this prediction cycle."""
     TAKEN_THIS_CYCLE[ticker] = pred_ts
+    EVENT_COOLDOWN[event_ticker] = pred_ts
 
 
 def clear_cooldowns():
     """Clear all cooldowns (called when predictions refresh)."""
     TAKEN_THIS_CYCLE.clear()
+    EVENT_COOLDOWN.clear()
 
 
 def refresh_predictions():
@@ -102,20 +110,64 @@ def refresh_predictions():
     return PRED_CACHE["predictions"], PRED_CACHE["updated_at"]
 
 
+def _confirm_book_price(ticker, side):
+    """Re-fetch the book for a single ticker to confirm price before taking.
+
+    Returns (yes_bid, yes_ask) in cents, or (0, 0) if fetch fails.
+    Prevents taking on stale cached book data.
+    """
+    try:
+        from scraper import fetch_markets
+        fresh = fetch_markets(config.SPREAD_SERIES)
+        if not fresh:
+            return 0, 0
+        for m in fresh:
+            if m["ticker"] == ticker:
+                bid = int(round(float(m.get("yes_bid_dollars", 0)) * 100))
+                ask = int(round(float(m.get("yes_ask_dollars", 0)) * 100))
+                return bid, ask
+    except Exception:
+        pass
+    return 0, 0
+
+
 def execute_take(market, side, price, ev_pct, fee_cents, pred_ts, dry_run=False):
     """Place a taker order (post_only=False), then cancel unfilled remainder.
 
     Returns number of contracts actually filled (0 if failed).
     """
     ticker = market["ticker"]
+    event_ticker = market.get("event_ticker", "")
     take_id = f"take-{uuid.uuid4().hex[:8]}"
 
-    print(f"  [TAKER] TAKE: {side.upper()} {config.TAKE_CONTRACT_SIZE}x @ {price}c on {ticker} "
-          f"(fair={market['fair_prob']*100:.1f}c, EV={ev_pct:.1%}, fee={fee_cents:.1f}c)")
-
     if dry_run:
-        set_cooldown(ticker, pred_ts)
+        print(f"  [TAKER] TAKE (dry): {side.upper()} {config.TAKE_CONTRACT_SIZE}x @ {price}c on {ticker} "
+              f"(fair={market['fair_prob']*100:.1f}c, EV={ev_pct:.1%}, fee={fee_cents:.1f}c)")
+        set_cooldown(ticker, event_ticker, pred_ts)
         return 0
+
+    # CONFIRM: re-fetch book to make sure the price is still there
+    live_bid, live_ask = _confirm_book_price(ticker, side)
+    if side == "yes":
+        if live_ask <= 0 or live_ask > price:
+            # Ask disappeared or moved up — opportunity gone
+            return 0
+        # Use the live price (might be even better)
+        price = live_ask
+    else:
+        live_no_price = 100 - live_bid if live_bid > 0 else 0
+        if live_no_price <= 0 or live_no_price > price:
+            return 0
+        price = live_no_price
+
+    # Re-check EV with confirmed price
+    fair_cents = market["fair_prob"] * 100
+    ev_pct, fee_cents = compute_take_ev(fair_cents, price, side)
+    if ev_pct is None:
+        return 0  # No longer +EV at confirmed price
+
+    print(f"  [TAKER] TAKE: {side.upper()} {config.TAKE_CONTRACT_SIZE}x @ {price}c on {ticker} "
+          f"(fair={fair_cents:.1f}c, EV={ev_pct:.1%}, fee={fee_cents:.1f}c)")
 
     # Place order with post_only=False to cross the spread
     result = orders.place_order(
@@ -140,7 +192,7 @@ def execute_take(market, side, price, ev_pct, fee_cents, pred_ts, dry_run=False)
     if filled > 0:
         db.update_position(
             ticker, side, price, filled,
-            event_ticker=market.get("event_ticker"),
+            event_ticker=event_ticker,
             home_team=market.get("home_team"),
             away_team=market.get("away_team"),
         )
@@ -153,21 +205,33 @@ def execute_take(market, side, price, ev_pct, fee_cents, pred_ts, dry_run=False)
         )
         db.log_take(
             take_id=take_id, ticker=ticker,
-            event_ticker=market.get("event_ticker", ""),
+            event_ticker=event_ticker,
             side=side, price=price,
-            fair_cents=market["fair_prob"] * 100,
+            fair_cents=fair_cents,
             ev_pct=ev_pct, fee_cents=fee_cents,
             count_requested=config.TAKE_CONTRACT_SIZE,
             count_filled=filled, order_id=order_id,
         )
 
     # Cooldown regardless of fill count — don't re-attempt until predictions refresh
-    set_cooldown(ticker, pred_ts)
+    # Event-level: blocks ALL strikes in this game
+    set_cooldown(ticker, event_ticker, pred_ts)
     return filled
 
 
-def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False):
-    """Scan all markets for +EV takes and execute."""
+def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
+                   resting_by_ticker=None):
+    """Scan all markets for +EV takes and execute.
+
+    Args:
+        quotable_markets: Markets with fair values
+        prediction_updated_at: Timestamp of current predictions
+        dry_run: If True, scan only
+        resting_by_ticker: MM's resting order state — used to avoid doubling up
+    """
+    if resting_by_ticker is None:
+        resting_by_ticker = {}
+
     # Global risk checks
     is_fresh, pred_age = risk.check_staleness(prediction_updated_at)
     if not is_fresh:
@@ -184,8 +248,8 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False):
         event_ticker = market.get("event_ticker", "")
         fair_cents = market["fair_prob"] * 100
 
-        # Skip if already taken on this prediction cycle
-        if is_on_cooldown(ticker, prediction_updated_at):
+        # Skip if already taken on this prediction cycle (ticker OR event level)
+        if is_on_cooldown(ticker, event_ticker, prediction_updated_at):
             continue
 
         # Skip tipoff proximity
@@ -197,37 +261,77 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False):
         net = pos["net_yes"]
         event_net = db.get_event_net_position(event_ticker)
 
+        # Check what resting orders the MM has on this ticker
+        mm_resting = resting_by_ticker.get(ticker, {})
+
         yes_ask = market.get("book_ask", 0)
         yes_bid = market.get("book_bid", 0)
 
         # --- Evaluate YES take (buy YES at ask) ---
         if yes_ask > 0:
-            proposed_net = net + config.TAKE_CONTRACT_SIZE
-            if (abs(proposed_net) <= config.MAX_POSITION_PER_MARKET
-                    and abs(event_net + config.TAKE_CONTRACT_SIZE) <= config.MAX_POSITION_PER_EVENT):
-                ev_pct, fee = compute_take_ev(fair_cents, yes_ask, "yes")
-                if ev_pct is not None:
-                    filled = execute_take(market, "yes", yes_ask, ev_pct, fee,
-                                          prediction_updated_at, dry_run=dry_run)
-                    if filled > 0:
-                        takes_this_cycle += 1
-                        continue  # Don't also check NO for same ticker
+            # Don't take YES if MM already has a resting YES bid (would double up)
+            if mm_resting.get("bid_order_id"):
+                pass  # Skip — MM is already bidding YES on this ticker
+            else:
+                # Account for MM resting order exposure in event limit
+                resting_event_exposure = _count_resting_event_exposure(
+                    event_ticker, quotable_markets, resting_by_ticker
+                )
+                proposed_net = net + config.TAKE_CONTRACT_SIZE
+                proposed_event = event_net + config.TAKE_CONTRACT_SIZE + resting_event_exposure
+                if (abs(proposed_net) <= config.MAX_POSITION_PER_MARKET
+                        and abs(proposed_event) <= config.MAX_POSITION_PER_EVENT):
+                    ev_pct, fee = compute_take_ev(fair_cents, yes_ask, "yes")
+                    if ev_pct is not None:
+                        filled = execute_take(market, "yes", yes_ask, ev_pct, fee,
+                                              prediction_updated_at, dry_run=dry_run)
+                        if filled > 0:
+                            takes_this_cycle += 1
+                            continue  # Don't also check NO for same ticker
 
         # --- Evaluate NO take (buy NO at 100-bid) ---
         if yes_bid > 0:
-            no_price = 100 - yes_bid
-            proposed_net = net - config.TAKE_CONTRACT_SIZE
-            if (abs(proposed_net) <= config.MAX_POSITION_PER_MARKET
-                    and abs(event_net - config.TAKE_CONTRACT_SIZE) <= config.MAX_POSITION_PER_EVENT):
-                ev_pct, fee = compute_take_ev(fair_cents, no_price, "no")
-                if ev_pct is not None:
-                    filled = execute_take(market, "no", no_price, ev_pct, fee,
-                                          prediction_updated_at, dry_run=dry_run)
-                    if filled > 0:
-                        takes_this_cycle += 1
+            # Don't take NO if MM already has a resting NO ask (would double up)
+            if mm_resting.get("ask_order_id"):
+                pass  # Skip — MM is already asking (selling YES / buying NO)
+            else:
+                no_price = 100 - yes_bid
+                resting_event_exposure = _count_resting_event_exposure(
+                    event_ticker, quotable_markets, resting_by_ticker
+                )
+                proposed_net = net - config.TAKE_CONTRACT_SIZE
+                proposed_event = event_net - config.TAKE_CONTRACT_SIZE - resting_event_exposure
+                if (abs(proposed_net) <= config.MAX_POSITION_PER_MARKET
+                        and abs(proposed_event) <= config.MAX_POSITION_PER_EVENT):
+                    ev_pct, fee = compute_take_ev(fair_cents, no_price, "no")
+                    if ev_pct is not None:
+                        filled = execute_take(market, "no", no_price, ev_pct, fee,
+                                              prediction_updated_at, dry_run=dry_run)
+                        if filled > 0:
+                            takes_this_cycle += 1
 
     if takes_this_cycle > 0:
         print(f"  [TAKER] Executed {takes_this_cycle} takes this cycle")
+
+
+def _count_resting_event_exposure(event_ticker, quotable_markets, resting_by_ticker):
+    """Count worst-case resting order exposure for an event.
+
+    Returns the max directional resting exposure (in contracts) across all
+    strikes in the event. This prevents the taker from piling on when the MM
+    already has significant resting exposure that could fill simultaneously.
+    """
+    long_exposure = 0
+    short_exposure = 0
+    for m in quotable_markets:
+        if m.get("event_ticker") != event_ticker:
+            continue
+        info = resting_by_ticker.get(m["ticker"], {})
+        if info.get("bid_order_id"):
+            long_exposure += config.CONTRACT_SIZE
+        if info.get("ask_order_id"):
+            short_exposure += config.CONTRACT_SIZE
+    return max(long_exposure, short_exposure)
 
 
 # --- Standalone mode (only when MM is not running) ---
@@ -253,7 +357,7 @@ def main():
     print(f"  {'DRY RUN' if dry_run else 'LIVE'}")
     print(f"  Min Take EV: {config.MIN_TAKE_EV_PCT:.0%} (after {config.TAKER_FEE_RATE:.0%} fee)")
     print(f"  Take Size: {config.TAKE_CONTRACT_SIZE} contracts")
-    print(f"  Poll: {config.TAKE_POLL_SEC}s | Cooldown: per prediction refresh")
+    print(f"  Poll: {config.TAKE_POLL_SEC}s | Cooldown: per prediction refresh (event-level)")
     print(f"  Max position: {config.MAX_POSITION_PER_MARKET} | Max exposure: ${config.MAX_TOTAL_EXPOSURE_DOLLARS}")
     print("=" * 60)
 

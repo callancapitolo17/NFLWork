@@ -373,11 +373,15 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
         at_max_short = (net <= -config.MAX_POSITION_PER_MARKET
                         or (event_net + resting_event_short) <= -config.MAX_POSITION_PER_EVENT)
 
-        # Compute quote (orderbook-aware)
+        # Compute quote (orderbook-aware, with anti-penny-loop)
+        book_bid = market.get("book_bid", 0)
+        book_ask = market.get("book_ask", 0)
+        if quoter._detect_penny_loop(ticker, book_bid, book_ask):
+            # Someone is walking our price — quote at EV floor, ignore book
+            book_bid, book_ask = 0, 0
         quote = quoter.compute_quotes(
             market["fair_prob"], net,
-            book_bid=market.get("book_bid", 0),
-            book_ask=market.get("book_ask", 0)
+            book_bid=book_bid, book_ask=book_ask
         )
         if quote is None:
             # Cancel existing orders if any
@@ -740,7 +744,9 @@ def main():
 
             # Taker scan — runs every iteration (~1s) for fast execution
             try:
-                taker.run_take_cycle(quotable, prediction_updated_at, dry_run=DRY_RUN)
+                taker.run_take_cycle(quotable, prediction_updated_at,
+                                     dry_run=DRY_RUN,
+                                     resting_by_ticker=resting_by_ticker)
             except Exception as e:
                 print(f"  [TAKER] Cycle error (will retry): {e}")
 

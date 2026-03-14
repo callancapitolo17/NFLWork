@@ -364,20 +364,26 @@ def get_reference_lines():
 
 
 def compute_total_exposure():
-    """Compute total dollars at risk across all positions.
+    """Compute total dollars at risk across all positions AND resting orders.
 
-    Max loss = what we paid. For YES long, we paid avg_entry_price per contract.
-    For NO long (net_yes < 0), avg_entry_price is the NO price we paid.
-    In both cases, worst case = contract expires worthless, we lose our cost basis.
+    Filled exposure: avg_entry_price * |net_yes| / 100.
+    Resting exposure: price * remaining_count / 100 (worst case: all fill, expire worthless).
     """
     conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
     try:
-        result = conn.execute("""
+        filled = conn.execute("""
             SELECT COALESCE(SUM(
                 avg_entry_price * ABS(net_yes) / 100.0
             ), 0) FROM positions WHERE net_yes != 0
-        """).fetchone()
-        return result[0]
+        """).fetchone()[0]
+
+        resting = conn.execute("""
+            SELECT COALESCE(SUM(
+                price * remaining_count / 100.0
+            ), 0) FROM resting_orders
+        """).fetchone()[0]
+
+        return filled + resting
     finally:
         conn.close()
 

@@ -2,13 +2,48 @@
 Quoting logic: converts answer key fair values into Kalshi bid/ask prices.
 
 Orderbook-aware: 5% minimum EV floor + penny-the-book for top-of-book priority.
+Anti-penny-loop: detects when a counterparty is walking our price and stops chasing.
 """
 
 import math
+import time
+from collections import defaultdict
 from config import (
     MIN_EV_PCT, SKEW_PER_CONTRACT, MIN_QUOTE_SPREAD_CENTS,
     MIN_FAIR_VALUE, MAX_FAIR_VALUE, CONTRACT_SIZE
 )
+
+# Anti-penny tracking: {ticker: [(timestamp, book_bid, book_ask), ...]}
+# If the book moves by exactly 1c more than PENNY_LOOP_MAX times in
+# PENNY_LOOP_WINDOW seconds, stop pennying and quote at EV floor instead.
+_book_history = defaultdict(list)
+PENNY_LOOP_WINDOW = 120   # 2 minutes
+PENNY_LOOP_MAX = 4        # 4 x 1c moves in 2 min = someone is walking us
+
+
+def _detect_penny_loop(ticker, book_bid, book_ask):
+    """Detect if someone is pennying us in a loop.
+
+    Returns True if we should stop pennying and quote at EV floor.
+    """
+    now = time.time()
+    history = _book_history[ticker]
+
+    # Prune old entries
+    history[:] = [(t, b, a) for t, b, a in history if now - t < PENNY_LOOP_WINDOW]
+
+    # Count 1c bid increases (someone is walking our bid up)
+    penny_count = 0
+    for i in range(1, len(history)):
+        prev_bid = history[i - 1][1]
+        curr_bid = history[i][1]
+        if curr_bid - prev_bid == 1 and prev_bid > 0:
+            penny_count += 1
+
+    # Record current observation
+    history.append((now, book_bid, book_ask))
+
+    return penny_count >= PENNY_LOOP_MAX
 
 
 def compute_quotes(fair_prob, net_position=0, book_bid=0, book_ask=0):
@@ -49,9 +84,12 @@ def compute_quotes(fair_prob, net_position=0, book_bid=0, book_ask=0):
     min_ask -= skew
 
     # --- Orderbook-aware pricing: penny the book ---
+    # But first check for penny-loop (counterparty walking our price)
+    pennied = False
     if book_bid > 0 and book_bid < max_bid:
         # Improve best bid by 1c, but cap at our EV floor
         bid_yes = min(book_bid + 1, max_bid)
+        pennied = True
     else:
         # No book or book already at/above our limit
         bid_yes = max_bid
@@ -59,6 +97,7 @@ def compute_quotes(fair_prob, net_position=0, book_bid=0, book_ask=0):
     if book_ask > 0 and book_ask > min_ask:
         # Improve best ask by 1c, but floor at our EV limit
         ask_yes = max(book_ask - 1, min_ask)
+        pennied = True
     else:
         # No book or book already at/below our limit
         ask_yes = min_ask
@@ -90,6 +129,7 @@ def compute_quotes(fair_prob, net_position=0, book_bid=0, book_ask=0):
         "size": CONTRACT_SIZE,
         "book_bid": book_bid,
         "book_ask": book_ask,
+        "pennied": pennied,
     }
 
 
@@ -102,11 +142,12 @@ def format_quote_summary(ticker, quote):
     """Format a quote for logging."""
     if quote is None:
         return f"  {ticker}: NO QUOTE (out of range or invalid)"
+    penny_flag = " [PENNY]" if quote.get("pennied") else ""
     return (
         f"  {ticker}: "
         f"fair={quote['fair_cents']:.1f}c  "
         f"bid={quote['bid_yes']}c  ask={quote['ask_yes']}c  "
         f"spread={quote['spread']}c  skew={quote['skew']}  "
         f"book=[{quote.get('book_bid', 0)}/{quote.get('book_ask', 0)}]  "
-        f"size={quote['size']}"
+        f"size={quote['size']}{penny_flag}"
     )
