@@ -340,6 +340,17 @@ def remove_resting_order(order_id):
     _with_retry(_write)
 
 
+def clear_all_resting_orders():
+    """Flush all resting order records from DB (startup cleanup)."""
+    def _write():
+        conn = duckdb.connect(str(MM_DB_PATH))
+        try:
+            conn.execute("DELETE FROM resting_orders")
+        finally:
+            conn.close()
+    _with_retry(_write)
+
+
 def get_resting_orders():
     """Get all our resting orders."""
     conn = duckdb.connect(str(MM_DB_PATH), read_only=True)

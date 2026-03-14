@@ -593,6 +593,9 @@ def main():
             orders.cancel_all_orders()
         else:
             print("  No stale orders found.")
+        # Flush DB resting_orders table — stale entries from previous sessions
+        # inflate exposure calculations and block quoting
+        db.clear_all_resting_orders()
 
     db.start_session(SESSION_ID)
 
