@@ -535,13 +535,18 @@ def poll_for_fills(resting_by_ticker, quotable_markets_ref=None):
                         event_ticker = m.get("event_ticker")
                         break
 
+                # Compute maker fee: fee_rate * P * (1-P) * 100 per contract
+                p = price / 100.0
+                maker_fee_per = config.MAKER_FEE_RATE * p * (1 - p) * 100
+                total_fee = maker_fee_per * new_fills
+
                 # Update position with incremental fills only
                 db.update_position(ticker, side, price, new_fills,
                                    event_ticker=event_ticker)
                 db.record_fill(
                     fill_id=f"{oid}-fill-{cumulative_filled}",
                     ticker=ticker, side=side, action="buy",
-                    price=price, count=new_fills, fee_cents=0,
+                    price=price, count=new_fills, fee_cents=total_fee,
                     order_id=oid
                 )
                 info[prev_filled_key] = cumulative_filled

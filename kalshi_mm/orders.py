@@ -161,6 +161,14 @@ def batch_cancel(order_ids):
     return True
 
 
+def get_order(order_id):
+    """Get a single order by ID (any status: resting, cancelled, filled)."""
+    result = _authenticated_request("GET", f"/portfolio/orders/{order_id}")
+    if result and "order" in result:
+        return result["order"]
+    return None
+
+
 def get_resting_orders(ticker=None):
     """Get all resting orders, optionally filtered by ticker."""
     path = "/portfolio/orders?status=resting&limit=200"

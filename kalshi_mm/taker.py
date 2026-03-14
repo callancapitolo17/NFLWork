@@ -110,25 +110,50 @@ def refresh_predictions():
     return PRED_CACHE["predictions"], PRED_CACHE["updated_at"]
 
 
+# Cached book snapshot to avoid multiple API calls per cycle
+_BOOK_CACHE = {"data": {}, "fetched_at": 0}
+_BOOK_CACHE_TTL = 1.5  # seconds — fresh enough for taker, saves rate limit
+
+
 def _confirm_book_price(ticker, side):
     """Re-fetch the book for a single ticker to confirm price before taking.
 
     Returns (yes_bid, yes_ask) in cents, or (0, 0) if fetch fails.
-    Prevents taking on stale cached book data.
+    Uses a short-lived cache so multiple takes in one cycle share one API call.
     """
-    try:
-        from scraper import fetch_markets
-        fresh = fetch_markets(config.SPREAD_SERIES)
-        if not fresh:
-            return 0, 0
-        for m in fresh:
-            if m["ticker"] == ticker:
-                bid = int(round(float(m.get("yes_bid_dollars", 0)) * 100))
-                ask = int(round(float(m.get("yes_ask_dollars", 0)) * 100))
-                return bid, ask
-    except Exception:
-        pass
-    return 0, 0
+    now = time.time()
+    if now - _BOOK_CACHE["fetched_at"] > _BOOK_CACHE_TTL:
+        try:
+            from scraper import fetch_markets
+            fresh = fetch_markets(config.SPREAD_SERIES)
+            if fresh:
+                _BOOK_CACHE["data"] = {
+                    m["ticker"]: (
+                        int(round(float(m.get("yes_bid_dollars", 0)) * 100)),
+                        int(round(float(m.get("yes_ask_dollars", 0)) * 100))
+                    ) for m in fresh
+                }
+                _BOOK_CACHE["fetched_at"] = now
+        except Exception:
+            pass
+
+    result = _BOOK_CACHE["data"].get(ticker)
+    return result if result else (0, 0)
+
+
+def _reconcile_fill_count(order_id, total_requested):
+    """Query the API for the actual fill count on an order.
+
+    Handles the gap between place_order response and cancel: additional
+    fills can happen in that window. This is the source of truth.
+    """
+    order = orders.get_order(order_id)
+    if not order:
+        return 0
+    remaining = order.get("remaining_count", 0)
+    # For cancelled orders, remaining_count reflects what was left at cancel time.
+    # filled = original - remaining
+    return total_requested - remaining
 
 
 def execute_take(market, side, price, ev_pct, fee_cents, pred_ts, dry_run=False):
@@ -179,14 +204,29 @@ def execute_take(market, side, price, ev_pct, fee_cents, pred_ts, dry_run=False)
 
     order_id = result.get("order_id", "")
     remaining = result.get("remaining_count", 0)
-    filled = config.TAKE_CONTRACT_SIZE - remaining
 
-    # Cancel unfilled remainder immediately — we're a taker, not a maker
+    # Cancel unfilled remainder immediately — we're a taker, not a maker.
+    # Retry up to 3 times: a failed cancel leaves a toxic resting order
+    # at a price chosen to cross the spread (easy pickings for sharps).
     if remaining > 0:
-        orders.cancel_order(order_id)
-        print(f"    Cancelled {remaining} unfilled (filled {filled}/{config.TAKE_CONTRACT_SIZE})")
-    elif filled > 0:
-        print(f"    Fully filled {filled} contracts")
+        cancelled = False
+        for attempt in range(3):
+            if orders.cancel_order(order_id):
+                cancelled = True
+                break
+            time.sleep(0.1 * (attempt + 1))
+        if not cancelled:
+            print(f"    WARNING: Failed to cancel remainder for {order_id} after 3 attempts!")
+
+    # RECONCILE: re-check the order via API to get actual final fill count.
+    # Fills can happen between place_order response and cancel_order.
+    # The place_order response's remaining_count may be stale.
+    filled = _reconcile_fill_count(order_id, config.TAKE_CONTRACT_SIZE)
+
+    if filled > 0:
+        print(f"    Filled {filled}/{config.TAKE_CONTRACT_SIZE} contracts")
+    else:
+        print(f"    No fills (order cancelled or rejected)")
 
     # Record fill and update position
     if filled > 0:

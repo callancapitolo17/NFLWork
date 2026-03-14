@@ -70,6 +70,7 @@ MIN_TAKE_EV_PCT = float(_env.get("MIN_TAKE_EV_PCT", "0.05"))  # 5% minimum EV af
 TAKE_CONTRACT_SIZE = int(_env.get("TAKE_CONTRACT_SIZE", "5"))
 TAKE_POLL_SEC = float(_env.get("TAKE_POLL_SEC", "2.0"))
 TAKER_FEE_RATE = 0.07  # Kalshi taker fee: 7% * P * (1-P)
+MAKER_FEE_RATE = float(_env.get("MAKER_FEE_RATE", "0.0"))  # Currently 0% for most accounts
 
 # --- Kalshi Series ---
 SPREAD_SERIES = "KXNCAAMB1HSPREAD"
