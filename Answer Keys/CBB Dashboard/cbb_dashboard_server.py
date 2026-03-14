@@ -737,6 +737,7 @@ def auto_place():
             cwd=str(local_root / "bet_placer"),
             stdout=log_file,
             stderr=log_file,
+            start_new_session=True,
         )
         log_file.close()
 
