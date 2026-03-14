@@ -31,6 +31,7 @@ debug_*.html
 debug_*.png
 recon_*.html
 recon_*.json
+recon_*.png
 
 # Data files
 *.duckdb
@@ -83,3 +84,4 @@ bet_placer/recon_*.py
 bet_placer/.bfa_nav_profile/
 bet_placer/.hoop88_nav_profile/
 bet_placer/.wagerzon_nav_profile/
+bet_placer/.betonline_nav_profile/
