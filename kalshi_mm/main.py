@@ -417,7 +417,7 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
             if bid_oid:
                 # Amend if price changed
                 if quoter.should_amend(existing.get("bid_price", 0), quote["bid_yes"]):
-                    result = orders.amend_order(bid_oid, "yes", price=quote["bid_yes"], count=quote["size"])
+                    result = orders.amend_order(bid_oid, ticker, "yes", price=quote["bid_yes"], count=quote["size"])
                     if result:
                         existing["bid_price"] = quote["bid_yes"]
                         db.save_resting_order(bid_oid, ticker, "yes", "buy",
@@ -442,7 +442,7 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
             no_price = 100 - quote["ask_yes"]  # Buying NO at this price = selling YES at ask_yes
             if ask_oid:
                 if quoter.should_amend(existing.get("ask_price", 0), quote["ask_yes"]):
-                    result = orders.amend_order(ask_oid, "no", price=no_price, count=quote["size"])
+                    result = orders.amend_order(ask_oid, ticker, "no", price=no_price, count=quote["size"])
                     if result:
                         existing["ask_price"] = quote["ask_yes"]
                         db.save_resting_order(ask_oid, ticker, "no", "buy",

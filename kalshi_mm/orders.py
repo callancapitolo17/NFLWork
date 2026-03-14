@@ -100,11 +100,12 @@ def place_order(ticker, side, price, count, post_only=True):
     return None
 
 
-def amend_order(order_id, side, price=None, count=None):
+def amend_order(order_id, ticker, side, price=None, count=None):
     """Amend a resting order's price and/or quantity.
 
     Args:
         order_id: The order to amend
+        ticker: Market ticker (required by Kalshi API)
         side: "yes" or "no" — determines which price field to send
         price: New price in cents (optional)
         count: New count (optional)
@@ -112,7 +113,11 @@ def amend_order(order_id, side, price=None, count=None):
     Returns:
         Amended order dict or None.
     """
-    body = {}
+    body = {
+        "ticker": ticker,
+        "side": side,
+        "action": "buy",
+    }
     if price is not None:
         if side == "yes":
             body["yes_price"] = price
@@ -121,7 +126,7 @@ def amend_order(order_id, side, price=None, count=None):
     if count is not None:
         body["count"] = count
 
-    if not body:
+    if price is None and count is None:
         return None
 
     result = _authenticated_request("POST", f"/portfolio/orders/{order_id}/amend", body=body)
