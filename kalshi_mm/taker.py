@@ -307,8 +307,11 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
         yes_ask = market.get("book_ask", 0)
         yes_bid = market.get("book_bid", 0)
 
+        # Global directional check
+        can_long, can_short = risk.check_directional_limit()
+
         # --- Evaluate YES take (buy YES at ask) ---
-        if yes_ask > 0:
+        if yes_ask > 0 and can_long:
             # Don't take YES if MM already has a resting YES bid (would double up)
             if mm_resting.get("bid_order_id"):
                 pass  # Skip — MM is already bidding YES on this ticker
@@ -330,7 +333,7 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
                             continue  # Don't also check NO for same ticker
 
         # --- Evaluate NO take (buy NO at 100-bid) ---
-        if yes_bid > 0:
+        if yes_bid > 0 and can_short:
             # Don't take NO if MM already has a resting NO ask (would double up)
             if mm_resting.get("ask_order_id"):
                 pass  # Skip — MM is already asking (selling YES / buying NO)

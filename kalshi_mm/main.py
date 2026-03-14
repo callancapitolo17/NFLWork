@@ -367,11 +367,14 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
                 if other_info.get("ask_order_id"):
                     resting_event_short += config.CONTRACT_SIZE
 
-        # Check position limit — per-ticker AND per-event (filled + resting)
+        # Check position limit — per-ticker, per-event, AND global directional
+        can_long, can_short = risk.check_directional_limit()
         at_max_long = (net >= config.MAX_POSITION_PER_MARKET
-                       or (event_net + resting_event_long) >= config.MAX_POSITION_PER_EVENT)
+                       or (event_net + resting_event_long) >= config.MAX_POSITION_PER_EVENT
+                       or not can_long)
         at_max_short = (net <= -config.MAX_POSITION_PER_MARKET
-                        or (event_net + resting_event_short) <= -config.MAX_POSITION_PER_EVENT)
+                        or (event_net + resting_event_short) <= -config.MAX_POSITION_PER_EVENT
+                        or not can_short)
 
         # Compute quote (orderbook-aware, with anti-penny-loop)
         book_bid = market.get("book_bid", 0)

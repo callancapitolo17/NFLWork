@@ -11,8 +11,8 @@ from pathlib import Path
 import db
 from config import (
     MAX_POSITION_PER_MARKET, MAX_TOTAL_EXPOSURE_DOLLARS, MAX_MARKETS,
-    MAX_STALENESS_SEC, LINE_MOVE_THRESHOLD, TIPOFF_PULLBACK_MIN,
-    BOOKMAKER_SCRAPER, BET105_SCRAPER
+    MAX_TOTAL_DIRECTIONAL, MAX_STALENESS_SEC, LINE_MOVE_THRESHOLD,
+    TIPOFF_PULLBACK_MIN, BOOKMAKER_SCRAPER, BET105_SCRAPER
 )
 
 
@@ -35,6 +35,34 @@ def check_exposure_limit():
     return exposure < MAX_TOTAL_EXPOSURE_DOLLARS, exposure
 
 
+def check_directional_limit(proposed_side=None, proposed_count=0):
+    """Check if global net directional exposure is within limits.
+
+    Prevents correlated risk across events: a sharp filling YES bids
+    on 10 different games simultaneously creates massive directional
+    exposure that per-event limits don't catch.
+
+    Args:
+        proposed_side: "yes" or "no" for a proposed new trade (optional)
+        proposed_count: contracts for the proposed trade (optional)
+
+    Returns:
+        (can_go_long, can_go_short) — True if allowed in that direction.
+    """
+    net = db.get_global_net_position()
+
+    proposed_delta = 0
+    if proposed_side == "yes":
+        proposed_delta = proposed_count
+    elif proposed_side == "no":
+        proposed_delta = -proposed_count
+
+    can_long = (net + proposed_delta) <= MAX_TOTAL_DIRECTIONAL
+    can_short = (net + proposed_delta) >= -MAX_TOTAL_DIRECTIONAL
+
+    return can_long, can_short
+
+
 def check_market_count(current_count):
     """Check if we're quoting too many markets."""
     return current_count < MAX_MARKETS
@@ -52,12 +80,24 @@ def check_staleness(prediction_updated_at):
     if prediction_updated_at is None:
         return False, float("inf")
 
-    # CBB.R writes local time (no timezone), so compare against local time
-    now = datetime.now()
+    # Normalize both timestamps to the same basis before comparing.
+    # CBB.R may write naive local time or UTC — handle both.
     if prediction_updated_at.tzinfo is not None:
+        # Timezone-aware: compare in UTC
         now = datetime.now(timezone.utc)
+        pred_ts = prediction_updated_at
+    else:
+        # Naive (assumed local time from R): compare in local time
+        now = datetime.now()
+        pred_ts = prediction_updated_at
 
-    age = (now - prediction_updated_at.replace(tzinfo=now.tzinfo)).total_seconds()
+    age = (now - pred_ts).total_seconds()
+
+    # Sanity: negative age means clock skew or timezone mismatch.
+    # Treat as stale rather than trading on potentially wrong data.
+    if age < -60:
+        return False, age
+
     return age < MAX_STALENESS_SEC, age
 
 

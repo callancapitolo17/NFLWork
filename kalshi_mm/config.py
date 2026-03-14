@@ -50,6 +50,7 @@ MAX_POSITION_PER_EVENT = int(_env.get("MAX_POSITION_PER_EVENT", "8"))  # Across 
 MAX_TOTAL_EXPOSURE_DOLLARS = float(_env.get("MAX_TOTAL_EXPOSURE", "250.0"))
 MAX_MARKETS = int(_env.get("MAX_MARKETS", "20"))
 MAX_EVENTS = int(_env.get("MAX_EVENTS", "10"))  # Max simultaneous games to quote
+MAX_TOTAL_DIRECTIONAL = int(_env.get("MAX_TOTAL_DIRECTIONAL", "40"))  # Max net contracts in one direction across ALL events
 MAX_STALENESS_SEC = int(_env.get("MAX_STALENESS_SEC", "600"))
 MIN_QUOTE_SPREAD_CENTS = int(_env.get("MIN_QUOTE_SPREAD", "4"))
 MIN_FAIR_VALUE = 10  # Don't quote if fair_yes < 10 cents

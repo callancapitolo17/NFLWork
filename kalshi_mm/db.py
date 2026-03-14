@@ -198,6 +198,22 @@ def get_event_net_position(event_ticker):
         conn.close()
 
 
+def get_global_net_position():
+    """Get total net YES position across ALL tickers.
+
+    Used for global directional limit: prevents correlated exposure
+    across events (e.g., all favorites covering simultaneously).
+    """
+    conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(net_yes), 0) FROM positions"
+        ).fetchone()
+        return row[0]
+    finally:
+        conn.close()
+
+
 def get_all_positions():
     """Get all open positions."""
     conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
