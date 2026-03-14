@@ -35,32 +35,18 @@ def check_exposure_limit():
     return exposure < MAX_TOTAL_EXPOSURE_DOLLARS, exposure
 
 
-def check_directional_limit(proposed_side=None, proposed_count=0):
+def check_directional_limit():
     """Check if global net directional exposure is within limits.
 
     Prevents correlated risk across events: a sharp filling YES bids
     on 10 different games simultaneously creates massive directional
     exposure that per-event limits don't catch.
 
-    Args:
-        proposed_side: "yes" or "no" for a proposed new trade (optional)
-        proposed_count: contracts for the proposed trade (optional)
-
     Returns:
         (can_go_long, can_go_short) — True if allowed in that direction.
     """
     net = db.get_global_net_position()
-
-    proposed_delta = 0
-    if proposed_side == "yes":
-        proposed_delta = proposed_count
-    elif proposed_side == "no":
-        proposed_delta = -proposed_count
-
-    can_long = (net + proposed_delta) <= MAX_TOTAL_DIRECTIONAL
-    can_short = (net + proposed_delta) >= -MAX_TOTAL_DIRECTIONAL
-
-    return can_long, can_short
+    return net <= MAX_TOTAL_DIRECTIONAL, net >= -MAX_TOTAL_DIRECTIONAL
 
 
 def check_market_count(current_count):
