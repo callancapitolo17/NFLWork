@@ -453,7 +453,14 @@ create_bets_table <- function(all_bets, placed_bets) {
           } else if (status == "placed") {
             sprintf('<button class="btn-placed" onclick="removeBet(this)" %s>Placed</button>', data_attrs)
           } else {
-            sprintf('<button class="btn-place" onclick="placeBet(this)" %s>Place</button>', data_attrs)
+            auto_books <- c("wagerzon", "hoop88", "bfa")
+            place_btn <- sprintf('<button class="btn-place" onclick="placeBet(this)" %s>Place</button>', data_attrs)
+            if (row$bookmaker_key %in% auto_books) {
+              auto_btn <- sprintf('<button class="btn-auto" onclick="autoPlaceBet(this)" %s>Auto</button>', data_attrs)
+              paste0(place_btn, auto_btn)
+            } else {
+              place_btn
+            }
           }
         }
       )
@@ -657,6 +664,64 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .btn-partial:hover {
           background: #d29922;
           color: #fff;
+        }
+
+        .btn-auto {
+          background: transparent;
+          border: 1px solid #1f6feb;
+          color: #58a6ff;
+          padding: 5px 8px;
+          border-radius: 6px;
+          font-size: 0.7rem;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.15s;
+          margin-left: 4px;
+        }
+
+        .btn-auto:hover {
+          background: #1f6feb;
+          color: #fff;
+        }
+
+        .btn-navigating {
+          background: transparent;
+          border: 1px solid #1f6feb;
+          color: #58a6ff;
+          padding: 5px 8px;
+          border-radius: 6px;
+          font-size: 0.7rem;
+          font-weight: 500;
+          cursor: default;
+          animation: pulse-border 1.5s ease-in-out infinite;
+        }
+
+        .btn-nav-ready {
+          background: transparent;
+          border: 1px solid #3fb950;
+          color: #3fb950;
+          padding: 5px 8px;
+          border-radius: 6px;
+          font-size: 0.7rem;
+          font-weight: 500;
+          cursor: default;
+          animation: pulse-border 1.5s ease-in-out infinite;
+        }
+
+        .btn-nav-error {
+          background: transparent;
+          border: 1px solid #f85149;
+          color: #f85149;
+          padding: 5px 8px;
+          border-radius: 6px;
+          font-size: 0.7rem;
+          font-weight: 500;
+          cursor: pointer;
+        }
+
+        @keyframes pulse-border {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
         }
 
         /* Place-bet modal */
@@ -1885,6 +1950,166 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             if (e.key === \'Enter\') { e.preventDefault(); doConfirm(); }
             else if (e.key === \'Escape\') { e.preventDefault(); overlay.remove(); }
           });
+        }
+
+        function autoPlaceBet(autoBtn) {
+          // Find the Place button (sibling) to get data attributes
+          var btn = autoBtn.previousElementSibling;
+          if (!btn || !btn.dataset.hash) btn = autoBtn; // fallback if no sibling
+
+          var recommended = parseFloat(btn.dataset.size) || 0;
+          var betOn = btn.dataset.betOn || \'\';
+          var odds = btn.dataset.odds || \'\';
+          var book = btn.dataset.book || \'\';
+          var oddsDisplay = (parseInt(odds) > 0 ? \'+\' : \'\') + odds;
+
+          var overlay = document.createElement(\'div\');
+          overlay.className = \'modal-overlay\';
+          overlay.innerHTML =
+            \'<div class="modal-box">\' +
+              \'<div class="modal-title">Auto-Place Bet</div>\' +
+              \'<div class="modal-detail">Pick: <span>\' + escapeHtml(betOn) + \' \' + escapeHtml(oddsDisplay) + \'</span></div>\' +
+              \'<div class="modal-detail">Book: <span>\' + escapeHtml(book) + \'</span></div>\' +
+              \'<div class="modal-recommended">Recommended: $\' + recommended.toFixed(0) + \'</div>\' +
+              \'<div class="modal-input-group">\' +
+                \'<label class="modal-input-label">Actual Amount ($)</label>\' +
+                \'<input type="number" class="modal-input" value="\' + recommended.toFixed(0) + \'" step="1" min="1">\' +
+              \'</div>\' +
+              \'<div class="modal-actions">\' +
+                \'<button class="modal-btn-cancel">Cancel</button>\' +
+                \'<button class="modal-btn-confirm">Launch Browser</button>\' +
+              \'</div>\' +
+            \'</div>\';
+
+          document.body.appendChild(overlay);
+          var input = overlay.querySelector(\'.modal-input\');
+          input.focus();
+          input.select();
+
+          function doConfirm() {
+            var actualSize = parseFloat(input.value);
+            if (!actualSize || actualSize <= 0) {
+              showToast("Enter a valid bet amount", "error");
+              input.focus();
+              return;
+            }
+
+            var data = {
+              bet_hash: btn.dataset.hash,
+              game_id: btn.dataset.gameId,
+              home_team: btn.dataset.home,
+              away_team: btn.dataset.away,
+              game_time: btn.dataset.time,
+              market: btn.dataset.market,
+              bet_on: btn.dataset.betOn,
+              line: btn.dataset.line === "" ? null : parseFloat(btn.dataset.line),
+              model_prob: parseFloat(btn.dataset.prob),
+              model_ev: parseFloat(btn.dataset.ev),
+              recommended_size: recommended,
+              actual_size: actualSize,
+              odds: parseInt(btn.dataset.odds),
+              bookmaker: btn.dataset.book
+            };
+
+            var confirmBtn = overlay.querySelector(\'.modal-btn-confirm\');
+            confirmBtn.disabled = true;
+            confirmBtn.textContent = \'Launching...\';
+
+            // Step 1: Save bet as pending
+            fetch("/api/place-bet", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(data)
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(result) {
+              if (!result.success) {
+                showToast(result.error, "error");
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = \'Launch Browser\';
+                return;
+              }
+
+              // Step 2: Launch navigator
+              return fetch("/api/auto-place", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(data)
+              })
+              .then(function(r2) { return r2.json(); })
+              .then(function(navResult) {
+                overlay.remove();
+
+                // Update Place button to Placed state
+                btn.className = \'btn-placed\';
+                btn.textContent = \'Placed\';
+                btn.setAttribute(\'data-fill-status\', \'placed\');
+                btn.onclick = function() { removeBet(this); };
+                btn.dataset.actual = actualSize;
+                _sessionPlaced[btn.dataset.hash] = { className: \'btn-placed\', text: \'Placed\', fillStatus: \'placed\', actual: actualSize, action: \'remove\' };
+
+                // Update Auto button to show navigating status
+                autoBtn.className = \'btn-navigating\';
+                autoBtn.textContent = \'Navigating...\';
+                autoBtn.onclick = null;
+
+                showToast("Bet placed, browser launching for " + book, "success");
+                recalcSameGame(btn.dataset.gameId);
+
+                // Step 3: Poll navigator status
+                pollNavStatus(btn.dataset.hash, autoBtn);
+              });
+            })
+            .catch(function() {
+              showToast("Server error", "error");
+              confirmBtn.disabled = false;
+              confirmBtn.textContent = \'Launch Browser\';
+            });
+          }
+
+          overlay.querySelector(\'.modal-btn-confirm\').addEventListener(\'click\', doConfirm);
+          overlay.querySelector(\'.modal-btn-cancel\').addEventListener(\'click\', function() { overlay.remove(); });
+          overlay.addEventListener(\'click\', function(e) { if (e.target === overlay) overlay.remove(); });
+          input.addEventListener(\'keydown\', function(e) {
+            if (e.key === \'Enter\') { e.preventDefault(); doConfirm(); }
+            else if (e.key === \'Escape\') { e.preventDefault(); overlay.remove(); }
+          });
+        }
+
+        function pollNavStatus(betHash, statusBtn) {
+          var pollInterval = setInterval(function() {
+            fetch("/api/nav-status/" + betHash)
+              .then(function(r) { return r.json(); })
+              .then(function(data) {
+                if (data.status === \'navigating\') {
+                  statusBtn.className = \'btn-navigating\';
+                  statusBtn.textContent = \'Navigating...\';
+                } else if (data.status === \'ready_to_confirm\') {
+                  clearInterval(pollInterval);
+                  statusBtn.className = \'btn-nav-ready\';
+                  statusBtn.textContent = \'Ready\';
+                } else if (data.status === \'nav_error\') {
+                  clearInterval(pollInterval);
+                  statusBtn.className = \'btn-nav-error\';
+                  statusBtn.textContent = \'Retry\';
+                  statusBtn.onclick = function() { autoPlaceBet(statusBtn); };
+                  showToast("Navigator failed — click Retry", "error");
+                } else if (data.status === \'nav_timeout\') {
+                  clearInterval(pollInterval);
+                  statusBtn.className = \'btn-nav-error\';
+                  statusBtn.textContent = \'Timeout\';
+                  statusBtn.onclick = function() { autoPlaceBet(statusBtn); };
+                  showToast("Navigator timed out", "error");
+                } else if (data.status === \'pending\') {
+                  // Already confirmed or placed normally, stop polling
+                  clearInterval(pollInterval);
+                  statusBtn.style.display = \'none\';
+                }
+              })
+              .catch(function() {
+                // Network error — keep polling
+              });
+          }, 3000);
         }
 
         function updateBet(btn) {

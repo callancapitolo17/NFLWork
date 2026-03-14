@@ -29,7 +29,10 @@ import requests
 
 from playwright.sync_api import sync_playwright
 
-from base_navigator import BaseNavigator, parse_market, update_bet_status, _REPO_ROOT
+from base_navigator import (
+    BaseNavigator, parse_market, update_bet_status, cleanup_singleton_lock,
+    wait_for_confirmation, _REPO_ROOT,
+)
 
 BFA_USERNAME = os.getenv("BFA_USERNAME")
 BFA_PASSWORD = os.getenv("BFA_PASSWORD")
@@ -85,7 +88,7 @@ class BFANavigator(BaseNavigator):
         """Place a single bet. Delegates to place_bets()."""
         self.place_bets([bet_data])
 
-    def place_bets(self, bets: list[dict]):
+    def place_bets(self, bets: list[dict], timeout: int = 300):
         """Place multiple bets in a single BFA browser session."""
         print(f"\n  BFA Batch: {len(bets)} bet(s)", flush=True)
         for i, bet in enumerate(bets):
@@ -103,21 +106,18 @@ class BFANavigator(BaseNavigator):
                 api_cache[key] = (game_id, detail, bfa_names)
 
         with sync_playwright() as p:
-            # Remove stale lock file if a previous browser crashed
-            singleton_lock = os.path.join(BFA_PROFILE_DIR, "SingletonLock")
-            if os.path.exists(singleton_lock):
-                try:
-                    os.remove(singleton_lock)
-                    print("  Removed stale SingletonLock")
-                except OSError:
-                    pass
+            cleanup_singleton_lock(BFA_PROFILE_DIR)
 
             context = p.chromium.launch_persistent_context(
                 user_data_dir=BFA_PROFILE_DIR,
                 channel="chrome",
                 headless=False,
-                viewport={"width": 1920, "height": 1080},
-                args=["--disable-blink-features=AutomationControlled"],
+                no_viewport=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--window-size=1400,900",
+                    "--window-position=50,50",
+                ],
             )
             page = context.pages[0] if context.pages else context.new_page()
 
@@ -132,7 +132,8 @@ class BFANavigator(BaseNavigator):
             time.sleep(3)  # Give Blazor time to render
             team_spans = page.locator("span.team-name-value")
             if team_spans.count() == 0:
-                print("  Page content didn't load — forcing re-login...", flush=True)
+                print("  Page content didn't load — clearing cookies and re-login...", flush=True)
+                context.clear_cookies()
                 self._login(page)
                 self._navigate_to_league(page)
                 time.sleep(3)
@@ -184,11 +185,11 @@ class BFANavigator(BaseNavigator):
 
             print(f"\n  {len(clicked_bets)}/{len(bets)} bets added to betslip.", flush=True)
             print("  Confirm manually on the book's site.", flush=True)
-            print("  Browser will stay open for 10 minutes.", flush=True)
-            try:
-                input()
-            except EOFError:
-                time.sleep(600)
+            print(f"  Browser will close after {timeout}s or when bets are confirmed.", flush=True)
+
+            confirmed_hashes = [b["bet_hash"] for b in clicked_bets if b.get("bet_hash")]
+            if confirmed_hashes:
+                wait_for_confirmation(confirmed_hashes, timeout=timeout)
 
             context.close()
 
