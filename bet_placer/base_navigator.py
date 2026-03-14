@@ -169,7 +169,7 @@ def cleanup_singleton_lock(profile_dir: str):
             os.kill(pid, signal.SIGTERM)
             import time as _time
             _time.sleep(2)
-        except ProcessNotFoundError:
+        except ProcessLookupError:
             pass  # Already dead
         except PermissionError:
             pass  # Can't kill, try removing lock anyway
