@@ -9,6 +9,9 @@ Usage:
 
     # Batch (all bets for one book):
     python placer.py '[{"bookmaker": "bfa", ...}, {"bookmaker": "bfa", ...}]'
+
+    # With custom timeout (default 300s):
+    python placer.py '<json>' --timeout 120
 """
 
 import sys
@@ -34,10 +37,16 @@ def get_navigator(bookmaker: str):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python placer.py '<bet_json_or_array>'")
+        print("Usage: python placer.py '<bet_json_or_array>' [--timeout N]")
         sys.exit(1)
 
     raw = json.loads(sys.argv[1])
+
+    # Parse --timeout flag
+    timeout = 300
+    for i, arg in enumerate(sys.argv[2:], start=2):
+        if arg == "--timeout" and i + 1 < len(sys.argv):
+            timeout = int(sys.argv[i + 1])
 
     # Normalize to list
     if isinstance(raw, dict):
@@ -67,12 +76,13 @@ def main():
         for bet in bets:
             if bet.get("bet_hash"):
                 update_bet_status(bet["bet_hash"], "navigating")
-        navigator.place_bets(bets)
+        navigator.place_bets(bets, timeout=timeout)
     except Exception as e:
         print(f"Navigation failed: {e}", flush=True)
         for bet in bets:
             if bet.get("bet_hash"):
-                update_bet_status(bet["bet_hash"], "nav_error")
+                # Only mark as error if still navigating (don't overwrite ready_to_confirm)
+                update_bet_status(bet["bet_hash"], "nav_error", only_if="navigating")
         sys.exit(1)
 
 

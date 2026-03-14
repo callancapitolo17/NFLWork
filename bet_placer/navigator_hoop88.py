@@ -28,7 +28,10 @@ import requests
 
 from playwright.sync_api import sync_playwright
 
-from base_navigator import BaseNavigator, parse_market, update_bet_status, _REPO_ROOT
+from base_navigator import (
+    BaseNavigator, parse_market, update_bet_status, cleanup_singleton_lock,
+    wait_for_confirmation, _REPO_ROOT,
+)
 
 HOOP88_URL = os.getenv("HOOP88_URL", "https://hoop88.com")
 HOOP88_USERNAME = os.getenv("HOOP88_USERNAME")
@@ -74,7 +77,7 @@ class Hoop88Navigator(BaseNavigator):
         """Place a single bet. Delegates to place_bets()."""
         self.place_bets([bet_data])
 
-    def place_bets(self, bets: list[dict]):
+    def place_bets(self, bets: list[dict], timeout: int = 300):
         """Place multiple bets in a single Hoop88 browser session.
 
         Groups bets by period to minimize sidebar switching.
@@ -103,6 +106,8 @@ class Hoop88Navigator(BaseNavigator):
             period_groups[parsed.period].append(bet)
 
         with sync_playwright() as p:
+            cleanup_singleton_lock(HOOP88_PROFILE_DIR)
+
             context = p.chromium.launch_persistent_context(
                 user_data_dir=HOOP88_PROFILE_DIR,
                 channel="chrome",
@@ -167,11 +172,11 @@ class Hoop88Navigator(BaseNavigator):
 
             print(f"\n  {len(clicked_bets)}/{len(bets)} bets added to betslip.", flush=True)
             print("  Confirm manually on the book's site.", flush=True)
-            print("  Browser will stay open for 10 minutes.", flush=True)
-            try:
-                input()
-            except EOFError:
-                time.sleep(600)
+            print(f"  Browser will close after {timeout}s or when bets are confirmed.", flush=True)
+
+            confirmed_hashes = [b["bet_hash"] for b in clicked_bets if b.get("bet_hash")]
+            if confirmed_hashes:
+                wait_for_confirmation(confirmed_hashes, timeout=timeout)
 
             context.close()
 

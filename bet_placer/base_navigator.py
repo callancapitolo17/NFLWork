@@ -112,20 +112,28 @@ def lookup_game(bookmaker: str, home_team: str, away_team: str) -> Optional[dict
     return None
 
 
-def update_bet_status(bet_hash: str, status: str):
+def update_bet_status(bet_hash: str, status: str, only_if: str = None):
     """Update placed_bets.status in the dashboard DuckDB (with retry for lock contention).
 
     Never overwrites 'pending' status — that means the user manually confirmed the bet.
+    If only_if is set, only update if the current status matches (prevents overwriting
+    bets that already progressed past the expected state).
     """
     import time as _time
     for attempt in range(5):
         con = None
         try:
             con = duckdb.connect(str(DASHBOARD_DB))
-            con.execute(
-                "UPDATE placed_bets SET status = ? WHERE bet_hash = ? AND status != 'pending'",
-                [status, bet_hash],
-            )
+            if only_if:
+                con.execute(
+                    "UPDATE placed_bets SET status = ? WHERE bet_hash = ? AND status = ?",
+                    [status, bet_hash, only_if],
+                )
+            else:
+                con.execute(
+                    "UPDATE placed_bets SET status = ? WHERE bet_hash = ? AND status != 'pending'",
+                    [status, bet_hash],
+                )
             return
         except Exception as e:
             if attempt < 4 and "lock" in str(e).lower():
@@ -137,12 +145,85 @@ def update_bet_status(bet_hash: str, status: str):
                 con.close()
 
 
+def cleanup_singleton_lock(profile_dir: str):
+    """Remove stale SingletonLock from a Chromium profile directory.
+
+    SingletonLock is a symlink to 'hostname-PID'. If the PID is dead, remove it.
+    If alive, send SIGTERM and wait briefly.
+    """
+    import signal
+    lock_path = os.path.join(profile_dir, "SingletonLock")
+    if not os.path.exists(lock_path) and not os.path.islink(lock_path):
+        return
+
+    try:
+        # SingletonLock is a symlink to "hostname-PID"
+        target = os.readlink(lock_path)
+        pid_str = target.rsplit("-", 1)[-1]
+        pid = int(pid_str)
+
+        try:
+            os.kill(pid, 0)  # Check if alive
+            # Process alive — send SIGTERM
+            print(f"  Killing stale Chrome process (PID {pid})...", flush=True)
+            os.kill(pid, signal.SIGTERM)
+            import time as _time
+            _time.sleep(2)
+        except ProcessNotFoundError:
+            pass  # Already dead
+        except PermissionError:
+            pass  # Can't kill, try removing lock anyway
+    except (ValueError, OSError):
+        pass  # Not a valid symlink or can't read it
+
+    # Remove the lock file
+    try:
+        os.remove(lock_path)
+        print("  Removed stale SingletonLock", flush=True)
+    except OSError:
+        pass
+
+
+def wait_for_confirmation(bet_hashes: list[str], timeout: int = 300):
+    """Wait for user to confirm bets on the book's site, or timeout.
+
+    Polls placed_bets every 5s. Returns when all bets reach 'pending' (user confirmed
+    via dashboard) or timeout expires. Sets remaining bets to 'nav_timeout' on expiry.
+    """
+    import time as _time
+    start = _time.time()
+    remaining = set(bet_hashes)
+
+    while remaining and (_time.time() - start) < timeout:
+        _time.sleep(5)
+        con = None
+        try:
+            con = duckdb.connect(str(DASHBOARD_DB), read_only=True)
+            for h in list(remaining):
+                row = con.execute(
+                    "SELECT status FROM placed_bets WHERE bet_hash = ?", [h]
+                ).fetchone()
+                if row and row[0] == "pending":
+                    remaining.discard(h)
+        except Exception:
+            pass
+        finally:
+            if con:
+                con.close()
+
+    if remaining:
+        elapsed = int(_time.time() - start)
+        print(f"  Timeout after {elapsed}s — {len(remaining)} bets not confirmed", flush=True)
+        for h in remaining:
+            update_bet_status(h, "nav_timeout", only_if="ready_to_confirm")
+
+
 class BaseNavigator:
     """Base class for book-specific navigators."""
 
     BOOK_NAME = "unknown"
 
-    def place_bets(self, bets: list[dict]):
+    def place_bets(self, bets: list[dict], timeout: int = 300):
         """Place multiple bets in one browser session. Override for batch betslip.
 
         Default: falls back to place_bet() per bet (N sessions).

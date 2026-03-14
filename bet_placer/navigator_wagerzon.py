@@ -15,7 +15,9 @@ import requests
 
 from playwright.sync_api import sync_playwright
 
-from base_navigator import BaseNavigator, parse_market, update_bet_status, _REPO_ROOT
+from base_navigator import (
+    BaseNavigator, parse_market, update_bet_status, wait_for_confirmation, _REPO_ROOT,
+)
 
 # Add wagerzon_odds to path for config (use main repo, not worktree)
 sys.path.insert(0, str(_REPO_ROOT / "wagerzon_odds"))
@@ -33,7 +35,7 @@ class WagerzonNavigator(BaseNavigator):
         """Place a single bet. Delegates to place_bets()."""
         self.place_bets([bet_data])
 
-    def place_bets(self, bets: list[dict]):
+    def place_bets(self, bets: list[dict], timeout: int = 300):
         """Place multiple bets in a single Wagerzon browser session.
 
         Strategy: Navigate to the schedule page, click odds cells in the DOM
@@ -143,11 +145,11 @@ class WagerzonNavigator(BaseNavigator):
 
             print(f"\n  {success_count}/{len(bets)} bets added to betslip.", flush=True)
             print("  Review amounts and confirm on the book's site.", flush=True)
-            print("  Browser will stay open for 10 minutes.", flush=True)
-            try:
-                input()
-            except EOFError:
-                time.sleep(600)
+            print(f"  Browser will close after {timeout}s or when bets are confirmed.", flush=True)
+
+            confirmed_hashes = [b["bet_hash"] for b in bets if b.get("bet_hash")]
+            if confirmed_hashes:
+                wait_for_confirmation(confirmed_hashes, timeout=timeout)
 
             browser.close()
 
@@ -241,8 +243,15 @@ class WagerzonNavigator(BaseNavigator):
             print(f"  Clicked odds: '{text}' (score={best_score})", flush=True)
             return True
 
+        # For H2H/ML markets, odds may be behind a "More Bets" expander
+        if parsed.market_type == "h2h":
+            print(f"  ML not found inline — trying 'More Bets' expansion...", flush=True)
+            ml_clicked = self._click_ml_via_more_bets(page, bet_data, parsed)
+            if ml_clicked:
+                return True
+
         print(f"  No matching odds button found (best_score={best_score})", flush=True)
-        # Debug: show all odds buttons
+        # Debug: show first 20 odds buttons
         for j in range(min(btn_count, 20)):
             try:
                 text = odds_buttons.nth(j).inner_text(timeout=200).strip()
@@ -250,6 +259,118 @@ class WagerzonNavigator(BaseNavigator):
                     print(f"    [{j}] '{text}'", flush=True)
             except Exception:
                 pass
+        return False
+
+    def _click_ml_via_more_bets(self, page, bet_data: dict, parsed) -> bool:
+        """Expand 'More Bets' for a game and click the ML odds button.
+
+        Wagerzon hides moneyline odds behind a per-game 'More Bets' link on the
+        schedule page. This method:
+        1. Finds the game row by team names
+        2. Clicks the 'More Bets'/'More Wagers' link within that game
+        3. Searches the expanded section for the ML odds button
+        """
+        away = bet_data["away_team"]
+        home = bet_data["home_team"]
+        odds = bet_data.get("odds")
+        odds_str = str(odds) if odds else ""
+        if odds and int(odds) > 0:
+            odds_str = f"+{odds}"
+
+        away_terms = self._search_terms(away)
+        home_terms = self._search_terms(home)
+
+        # Find game containers by looking for team name spans
+        game_container = page.evaluate("""([awayTerms, homeTerms]) => {
+            // Find all span.Team elements and group by their parent game container
+            const teamSpans = document.querySelectorAll('span.Team');
+            for (const span of teamSpans) {
+                const text = span.textContent.trim().toUpperCase();
+                const isAway = awayTerms.some(t => text.includes(t.toUpperCase()));
+                if (!isAway) continue;
+
+                // Walk up to find the game-level container
+                let container = span.parentElement;
+                for (let i = 0; i < 15 && container; i++) {
+                    const allTeams = container.querySelectorAll('span.Team');
+                    if (allTeams.length >= 2) {
+                        const teamTexts = Array.from(allTeams).map(s => s.textContent.trim().toUpperCase());
+                        const joined = teamTexts.join(' ');
+                        const hasHome = homeTerms.some(t => joined.includes(t.toUpperCase()));
+                        if (hasHome) {
+                            // Found the game container — look for More Bets link
+                            const links = container.querySelectorAll('a, span[style*="cursor"], div[onclick]');
+                            for (const link of links) {
+                                const lt = link.textContent.trim().toLowerCase();
+                                if (lt.includes('more') && (lt.includes('bet') || lt.includes('wager'))) {
+                                    // Return a selector path
+                                    link.setAttribute('data-placer-target', 'more-bets');
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }
+                    }
+                    container = container.parentElement;
+                }
+            }
+            return false;
+        }""", [away_terms, home_terms])
+
+        if not game_container:
+            print(f"  Could not find 'More Bets' link for this game", flush=True)
+            return False
+
+        # Click the "More Bets" link we tagged
+        try:
+            more_btn = page.locator("[data-placer-target='more-bets']")
+            if more_btn.count() > 0:
+                more_btn.first.scroll_into_view_if_needed()
+                time.sleep(0.5)
+                more_btn.first.click()
+                time.sleep(2)
+                print(f"  Expanded 'More Bets' section", flush=True)
+
+                # Clean up the marker attribute
+                page.evaluate("document.querySelector('[data-placer-target]')?.removeAttribute('data-placer-target')")
+
+                # Now search for ML odds in the expanded section
+                # ML buttons show bare odds like "+480" or "-700"
+                all_buttons = page.locator("div.btn-odds")
+                btn_count = all_buttons.count()
+                print(f"  Searching {btn_count} buttons for ML {odds_str}...", flush=True)
+
+                for j in range(btn_count):
+                    btn = all_buttons.nth(j)
+                    try:
+                        text = btn.evaluate("el => el.textContent").strip().replace("\n", "")
+                    except Exception:
+                        continue
+
+                    # ML buttons show just the odds (e.g., "+480" or "-700")
+                    # Match if the text is exactly or contains the odds
+                    if odds_str and text.strip() == odds_str:
+                        # Verify correct game
+                        is_correct = page.evaluate("""(el) => {
+                            let container = el.parentElement;
+                            for (let i = 0; i < 10 && container; i++) {
+                                const teams = container.querySelectorAll('span.Team');
+                                if (teams.length >= 2) return true;
+                                container = container.parentElement;
+                            }
+                            return false;
+                        }""", btn.element_handle())
+                        if is_correct:
+                            btn.scroll_into_view_if_needed()
+                            time.sleep(0.5)
+                            btn.click()
+                            print(f"  Clicked ML odds: '{text}'", flush=True)
+                            return True
+
+                print(f"  ML odds {odds_str} not found in expanded section", flush=True)
+        except Exception as e:
+            print(f"  Error expanding More Bets: {e}", flush=True)
+
         return False
 
     def _build_odds_text_patterns(self, parsed, bet_on, line, odds, away, home) -> list[str]:
