@@ -143,7 +143,10 @@ def refresh_book_data(quotable_markets):
     fresh = fetch_markets(config.SPREAD_SERIES)
     if not fresh:
         return
-    book = {m["ticker"]: (m.get("yes_bid", 0), m.get("yes_ask", 0)) for m in fresh}
+    book = {m["ticker"]: (
+        int(round(float(m.get("yes_bid_dollars", 0)) * 100)),
+        int(round(float(m.get("yes_ask_dollars", 0)) * 100))
+    ) for m in fresh}
     for market in quotable_markets:
         bid_ask = book.get(market["ticker"])
         if bid_ask:
@@ -275,8 +278,8 @@ def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonica
                 "is_home_contract": is_home,
                 "fair_prob": fair_prob,
                 "commence_time": pred.get("commence_time"),
-                "book_bid": m.get("yes_bid", 0),
-                "book_ask": m.get("yes_ask", 0),
+                "book_bid": int(round(float(m.get("yes_bid_dollars", 0)) * 100)),
+                "book_ask": int(round(float(m.get("yes_ask_dollars", 0)) * 100)),
             })
 
     return quotable
@@ -406,7 +409,7 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
             if bid_oid:
                 # Amend if price changed
                 if quoter.should_amend(existing.get("bid_price", 0), quote["bid_yes"]):
-                    result = orders.amend_order(bid_oid, price=quote["bid_yes"], count=quote["size"])
+                    result = orders.amend_order(bid_oid, "yes", price=quote["bid_yes"], count=quote["size"])
                     if result:
                         existing["bid_price"] = quote["bid_yes"]
                         db.save_resting_order(bid_oid, ticker, "yes", "buy",
@@ -431,7 +434,7 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
             no_price = 100 - quote["ask_yes"]  # Buying NO at this price = selling YES at ask_yes
             if ask_oid:
                 if quoter.should_amend(existing.get("ask_price", 0), quote["ask_yes"]):
-                    result = orders.amend_order(ask_oid, price=no_price, count=quote["size"])
+                    result = orders.amend_order(ask_oid, "no", price=no_price, count=quote["size"])
                     if result:
                         existing["ask_price"] = quote["ask_yes"]
                         db.save_resting_order(ask_oid, ticker, "no", "buy",
@@ -643,86 +646,100 @@ def main():
             now = time.time()
 
             # Check if background pipeline finished
-            if check_pipeline_completion(resting_by_ticker):
-                new_preds, new_ts = db.load_predictions()
-                if new_preds and new_ts != prediction_updated_at:
-                    predictions = new_preds
-                    prediction_updated_at = new_ts
+            try:
+                if check_pipeline_completion(resting_by_ticker):
+                    new_preds, new_ts = db.load_predictions()
+                    if new_preds and new_ts != prediction_updated_at:
+                        predictions = new_preds
+                        prediction_updated_at = new_ts
 
-                # Re-fetch Kalshi markets + re-match
-                fresh_markets = fetch_markets(config.SPREAD_SERIES)
-                if fresh_markets:
-                    kalshi_markets = fresh_markets
-                new_quotable = match_kalshi_to_predictions(
-                    kalshi_markets, predictions, team_dict, canonical_games
-                )
-                enforce_monotonicity(new_quotable)
-                print(f"  Refreshed: {len(new_quotable)} quotable markets")
+                    # Re-fetch Kalshi markets + re-match
+                    fresh_markets = fetch_markets(config.SPREAD_SERIES)
+                    if fresh_markets:
+                        kalshi_markets = fresh_markets
+                    new_quotable = match_kalshi_to_predictions(
+                        kalshi_markets, predictions, team_dict, canonical_games
+                    )
+                    enforce_monotonicity(new_quotable)
+                    print(f"  Refreshed: {len(new_quotable)} quotable markets")
 
-                # Cancel orders for orphaned tickers
-                new_tickers = {m["ticker"] for m in new_quotable}
-                for ticker, info in list(resting_by_ticker.items()):
-                    if ticker not in new_tickers:
-                        print(f"  Orphaned ticker {ticker} — cancelling orders")
-                        if not DRY_RUN:
-                            for side_key in ["bid_order_id", "ask_order_id"]:
-                                oid = info.get(side_key)
-                                if oid:
-                                    orders.cancel_order(oid)
-                                    db.remove_resting_order(oid)
-                        del resting_by_ticker[ticker]
+                    # Cancel orders for orphaned tickers
+                    new_tickers = {m["ticker"] for m in new_quotable}
+                    for ticker, info in list(resting_by_ticker.items()):
+                        if ticker not in new_tickers:
+                            print(f"  Orphaned ticker {ticker} — cancelling orders")
+                            if not DRY_RUN:
+                                for side_key in ["bid_order_id", "ask_order_id"]:
+                                    oid = info.get(side_key)
+                                    if oid:
+                                        orders.cancel_order(oid)
+                                        db.remove_resting_order(oid)
+                            del resting_by_ticker[ticker]
 
-                quotable = new_quotable
+                    quotable = new_quotable
 
-                # Update reference lines
-                ref_lines = risk.run_line_monitor()
-                if ref_lines:
-                    db.save_reference_lines(ref_lines)
-                last_pipeline_time = now
+                    # Update reference lines
+                    ref_lines = risk.run_line_monitor()
+                    if ref_lines:
+                        db.save_reference_lines(ref_lines)
+                    last_pipeline_time = now
+            except Exception as e:
+                print(f"  Pipeline refresh error (will retry): {e}")
 
             # Scheduled pipeline refresh (with backoff on failure)
-            if now - last_pipeline_time >= _pipeline_backoff:
-                start_pipeline()
-                last_pipeline_time = now  # Reset timer even if start_pipeline skips (already running)
+            try:
+                if now - last_pipeline_time >= _pipeline_backoff:
+                    start_pipeline()
+                    last_pipeline_time = now
+            except Exception as e:
+                print(f"  Pipeline start error: {e}")
 
             # Quote cycle — always poll fills first so position/skew is current
             if now - last_quote_time >= config.QUOTE_CYCLE_SEC:
-                poll_for_fills(resting_by_ticker, quotable)
-                last_fill_poll = now
-                refresh_book_data(quotable)  # Fresh orderbook each cycle
-                print(f"\n--- Quote cycle @ {datetime.now().strftime('%H:%M:%S')} ---")
-                resting_by_ticker = run_quote_cycle(quotable, resting_by_ticker, prediction_updated_at)
+                try:
+                    poll_for_fills(resting_by_ticker, quotable)
+                    last_fill_poll = now
+                    refresh_book_data(quotable)  # Fresh orderbook each cycle
+                    print(f"\n--- Quote cycle @ {datetime.now().strftime('%H:%M:%S')} ---")
+                    resting_by_ticker = run_quote_cycle(quotable, resting_by_ticker, prediction_updated_at)
+                except Exception as e:
+                    print(f"  Quote cycle error (will retry next cycle): {e}")
                 last_quote_time = now
 
             # Line-move monitoring
             if now - last_monitor_time >= config.MONITOR_CYCLE_SEC:
-                print(f"\n--- Line monitor @ {datetime.now().strftime('%H:%M:%S')} ---")
-                current_lines = risk.run_line_monitor()
-                ref_lines = db.get_reference_lines()
+                try:
+                    print(f"\n--- Line monitor @ {datetime.now().strftime('%H:%M:%S')} ---")
+                    current_lines = risk.run_line_monitor()
+                    ref_lines = db.get_reference_lines()
 
-                if current_lines and ref_lines:
-                    moved = risk.detect_line_moves(current_lines, ref_lines)
-                    if moved:
-                        print(f"  {len(moved)} games with line moves — pulling quotes, triggering refresh")
-                        # Pull quotes for moved games
-                        for ticker, info in list(resting_by_ticker.items()):
-                            market = next((m for m in quotable if m["ticker"] == ticker), None)
-                            if market and (market["home_team"], market["away_team"]) in moved:
-                                if not DRY_RUN:
-                                    for side_key in ["bid_order_id", "ask_order_id"]:
-                                        oid = info.get(side_key)
-                                        if oid:
-                                            orders.cancel_order(oid)
-                                            db.remove_resting_order(oid)
-                                del resting_by_ticker[ticker]
-                        # Trigger immediate pipeline refresh
-                        start_pipeline()
+                    if current_lines and ref_lines:
+                        moved = risk.detect_line_moves(current_lines, ref_lines)
+                        if moved:
+                            print(f"  {len(moved)} games with line moves — pulling quotes, triggering refresh")
+                            # Pull quotes for moved games
+                            for ticker, info in list(resting_by_ticker.items()):
+                                market = next((m for m in quotable if m["ticker"] == ticker), None)
+                                if market and (market["home_team"], market["away_team"]) in moved:
+                                    if not DRY_RUN:
+                                        for side_key in ["bid_order_id", "ask_order_id"]:
+                                            oid = info.get(side_key)
+                                            if oid:
+                                                orders.cancel_order(oid)
+                                                db.remove_resting_order(oid)
+                                    del resting_by_ticker[ticker]
+                            # Trigger immediate pipeline refresh
+                            start_pipeline()
+                except Exception as e:
+                    print(f"  Line monitor error (will retry next cycle): {e}")
                 last_monitor_time = now
 
             time.sleep(random.uniform(0.5, 1.5))  # Jitter to avoid predictable timing
 
+    except KeyboardInterrupt:
+        print("\n  Received interrupt signal, shutting down...")
     except Exception as e:
-        print(f"\n  UNHANDLED ERROR: {e}")
+        print(f"\n  FATAL ERROR: {e}")
         import traceback
         traceback.print_exc()
     finally:

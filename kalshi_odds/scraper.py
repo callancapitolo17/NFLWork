@@ -228,9 +228,8 @@ def parse_spread_records(markets, team_dict, canonical_games, fetch_time):
             side = raw_to_side[contract_team]
 
             # "Team wins by >X" → YES = team -X, NO = opponent +X
-            yes_ask = m.get("yes_ask", 0)
+            yes_bid, yes_ask = _get_book(m)
             # NO ask = 100 - yes_bid (what you pay to bet NO)
-            yes_bid = m.get("yes_bid", 0)
             no_ask = 100 - yes_bid if yes_bid > 0 else 0
 
             cover_odds, cover_eff = cents_to_american(yes_ask)     # team -X
@@ -319,8 +318,9 @@ def parse_total_records(markets, team_dict, canonical_games, fetch_time):
             if not _is_liquid(m):
                 continue
 
-            over_ask = m.get("yes_ask", 0)
-            under_ask = m.get("no_ask", 0)
+            yes_bid, yes_ask = _get_book(m)
+            over_ask = yes_ask
+            under_ask = 100 - yes_bid if yes_bid > 0 else 0
 
             over_odds, over_eff = cents_to_american(over_ask)
             under_odds, under_eff = cents_to_american(under_ask)
@@ -425,8 +425,8 @@ def parse_moneyline_records(markets, team_dict, canonical_games, fetch_time):
         if not _is_liquid(home_contract) or not _is_liquid(away_contract):
             continue
 
-        home_ask = home_contract.get("yes_ask", 0)
-        away_ask = away_contract.get("yes_ask", 0)
+        _, home_ask = _get_book(home_contract)
+        _, away_ask = _get_book(away_contract)
 
         home_odds, home_eff = cents_to_american(home_ask)
         away_odds, away_eff = cents_to_american(away_ask)
@@ -469,10 +469,16 @@ def parse_moneyline_records(markets, team_dict, canonical_games, fetch_time):
 # =============================================================================
 
 
+def _get_book(market):
+    """Extract yes_ask and yes_bid in cents from API dollar fields."""
+    ask = int(round(float(market.get("yes_ask_dollars", 0)) * 100))
+    bid = int(round(float(market.get("yes_bid_dollars", 0)) * 100))
+    return bid, ask
+
+
 def _is_liquid(market, max_spread=20):
     """Check if a market has sufficient liquidity to be actionable."""
-    ask = market.get("yes_ask", 0)
-    bid = market.get("yes_bid", 0)
+    bid, ask = _get_book(market)
     if ask <= 0:
         return False
     if bid <= 0:

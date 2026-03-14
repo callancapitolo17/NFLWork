@@ -65,5 +65,11 @@ FILL_POLL_SEC = 30
 MONITOR_CYCLE_SEC = 60
 PIPELINE_REFRESH_SEC = int(_env.get("PIPELINE_REFRESH_SEC", "600"))  # Auto-refresh predictions
 
+# --- Taker Parameters ---
+MIN_TAKE_EV_PCT = float(_env.get("MIN_TAKE_EV_PCT", "0.05"))  # 5% minimum EV after fees
+TAKE_CONTRACT_SIZE = int(_env.get("TAKE_CONTRACT_SIZE", "5"))
+TAKE_POLL_SEC = float(_env.get("TAKE_POLL_SEC", "2.0"))
+TAKER_FEE_RATE = 0.07  # Kalshi taker fee: 7% * P * (1-P)
+
 # --- Kalshi Series ---
 SPREAD_SERIES = "KXNCAAMB1HSPREAD"

@@ -100,11 +100,12 @@ def place_order(ticker, side, price, count, post_only=True):
     return None
 
 
-def amend_order(order_id, price=None, count=None):
+def amend_order(order_id, side, price=None, count=None):
     """Amend a resting order's price and/or quantity.
 
     Args:
         order_id: The order to amend
+        side: "yes" or "no" — determines which price field to send
         price: New price in cents (optional)
         count: New count (optional)
 
@@ -113,7 +114,10 @@ def amend_order(order_id, price=None, count=None):
     """
     body = {}
     if price is not None:
-        body["price"] = price
+        if side == "yes":
+            body["yes_price"] = price
+        else:
+            body["no_price"] = price
     if count is not None:
         body["count"] = count
 
@@ -122,7 +126,7 @@ def amend_order(order_id, price=None, count=None):
 
     result = _authenticated_request("POST", f"/portfolio/orders/{order_id}/amend", body=body)
     if result and "order" in result:
-        print(f"  Amended order {order_id}: price={price}, count={count}")
+        print(f"  Amended order {order_id}: {side}_price={price}, count={count}")
         return result["order"]
     return None
 
