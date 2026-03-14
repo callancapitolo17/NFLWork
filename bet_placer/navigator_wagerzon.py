@@ -68,9 +68,10 @@ class WagerzonNavigator(BaseNavigator):
             browser = p.chromium.launch(
                 headless=False,
                 channel="chrome",
+                args=["--window-size=1400,900", "--window-position=50,50"],
             )
             context = browser.new_context(
-                viewport={"width": 1920, "height": 1080},
+                viewport={"width": 1400, "height": 900},
             )
             page = context.new_page()
 

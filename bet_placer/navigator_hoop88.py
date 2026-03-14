@@ -112,8 +112,12 @@ class Hoop88Navigator(BaseNavigator):
                 user_data_dir=HOOP88_PROFILE_DIR,
                 channel="chrome",
                 headless=False,
-                viewport={"width": 1920, "height": 1080},
-                args=["--disable-blink-features=AutomationControlled"],
+                no_viewport=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--window-size=1400,900",
+                    "--window-position=50,50",
+                ],
             )
             page = context.pages[0] if context.pages else context.new_page()
 
