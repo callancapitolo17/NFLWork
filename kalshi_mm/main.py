@@ -28,6 +28,7 @@ import db
 import orders
 import quoter
 import risk
+import taker
 
 # Add kalshi_odds to path for market fetching
 sys.path.insert(0, str(config.PROJECT_ROOT / "kalshi_odds"))
@@ -561,13 +562,15 @@ def main():
     print("=" * 60)
     print(f"  Kalshi CBB 1H Market Maker — Session {SESSION_ID}")
     print(f"  {'DRY RUN' if DRY_RUN else 'LIVE'}")
-    print(f"  Min EV: {config.MIN_EV_PCT:.0%} | Size: {config.CONTRACT_SIZE}")
+    print(f"  Maker: EV>{config.MIN_EV_PCT:.0%} | Size: {config.CONTRACT_SIZE}")
+    print(f"  Taker: EV>{config.MIN_TAKE_EV_PCT:.0%} (after {config.TAKER_FEE_RATE:.0%} fee) | Size: {config.TAKE_CONTRACT_SIZE}")
     print(f"  Max position: {config.MAX_POSITION_PER_MARKET} | Max exposure: ${config.MAX_TOTAL_EXPOSURE_DOLLARS}")
     print(f"  API: {config.KALSHI_BASE_URL}")
     print("=" * 60)
 
     # Init
     db.init_database()
+    db.init_taker_tables()
 
     # SAFETY: Cancel any resting orders from previous sessions (crash recovery)
     if not DRY_RUN:
@@ -652,6 +655,7 @@ def main():
                     if new_preds and new_ts != prediction_updated_at:
                         predictions = new_preds
                         prediction_updated_at = new_ts
+                        taker.clear_cooldowns()  # Fresh predictions → fresh taker signals
 
                     # Re-fetch Kalshi markets + re-match
                     fresh_markets = fetch_markets(config.SPREAD_SERIES)
@@ -733,6 +737,12 @@ def main():
                 except Exception as e:
                     print(f"  Line monitor error (will retry next cycle): {e}")
                 last_monitor_time = now
+
+            # Taker scan — runs every iteration (~1s) for fast execution
+            try:
+                taker.run_take_cycle(quotable, prediction_updated_at, dry_run=DRY_RUN)
+            except Exception as e:
+                print(f"  [TAKER] Cycle error (will retry): {e}")
 
             time.sleep(random.uniform(0.5, 1.5))  # Jitter to avoid predictable timing
 

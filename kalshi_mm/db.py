@@ -27,94 +27,113 @@ def _with_retry(fn, max_retries=3, base_delay=0.1):
                 raise
 
 
-def init_database():
-    """Create all market maker tables if they don't exist."""
-    conn = duckdb.connect(str(MM_DB_PATH))
+def _tables_exist(required):
+    """Check if all required tables exist using a read-only connection."""
+    if not Path(str(MM_DB_PATH)).exists():
+        return False
+    conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
     try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS positions (
-                ticker VARCHAR PRIMARY KEY,
-                event_ticker VARCHAR,
-                home_team VARCHAR,
-                away_team VARCHAR,
-                market_type VARCHAR,
-                line_value FLOAT,
-                net_yes INTEGER DEFAULT 0,
-                avg_entry_price FLOAT DEFAULT 0,
-                updated_at TIMESTAMP
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS fills (
-                fill_id VARCHAR PRIMARY KEY,
-                ticker VARCHAR,
-                side VARCHAR,
-                action VARCHAR,
-                price INTEGER,
-                count INTEGER,
-                fee_cents FLOAT,
-                filled_at TIMESTAMP,
-                order_id VARCHAR
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS resting_orders (
-                order_id VARCHAR PRIMARY KEY,
-                ticker VARCHAR,
-                side VARCHAR,
-                action VARCHAR,
-                price INTEGER,
-                remaining_count INTEGER,
-                created_at TIMESTAMP,
-                last_amended_at TIMESTAMP
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS quote_log (
-                logged_at TIMESTAMP,
-                ticker VARCHAR,
-                fair_prob FLOAT,
-                bid_yes INTEGER,
-                ask_yes INTEGER,
-                spread_cents INTEGER,
-                net_position INTEGER,
-                skew_applied INTEGER,
-                prediction_age_sec FLOAT,
-                book_bid INTEGER,
-                book_ask INTEGER
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS sessions (
-                session_id VARCHAR PRIMARY KEY,
-                started_at TIMESTAMP,
-                ended_at TIMESTAMP,
-                total_fills INTEGER DEFAULT 0,
-                realized_pnl FLOAT DEFAULT 0,
-                fees_paid FLOAT DEFAULT 0,
-                markets_quoted INTEGER DEFAULT 0
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS reference_lines (
-                home_team VARCHAR,
-                away_team VARCHAR,
-                market VARCHAR,
-                line_value FLOAT,
-                snapshot_at TIMESTAMP
-            )
-        """)
-        # Migrate: add book columns if missing (existing DBs won't have them)
-        try:
-            conn.execute("ALTER TABLE quote_log ADD COLUMN book_bid INTEGER")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE quote_log ADD COLUMN book_ask INTEGER")
-        except Exception:
-            pass
+        existing = {r[0] for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables"
+        ).fetchall()}
+        return all(t in existing for t in required)
     finally:
         conn.close()
+
+
+def init_database():
+    """Create all market maker tables if they don't exist."""
+    required = ["positions", "fills", "resting_orders", "quote_log", "sessions", "reference_lines"]
+    if _tables_exist(required):
+        return  # Skip write lock — tables already exist
+    def _init():
+        conn = duckdb.connect(str(MM_DB_PATH))
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS positions (
+                    ticker VARCHAR PRIMARY KEY,
+                    event_ticker VARCHAR,
+                    home_team VARCHAR,
+                    away_team VARCHAR,
+                    market_type VARCHAR,
+                    line_value FLOAT,
+                    net_yes INTEGER DEFAULT 0,
+                    avg_entry_price FLOAT DEFAULT 0,
+                    updated_at TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS fills (
+                    fill_id VARCHAR PRIMARY KEY,
+                    ticker VARCHAR,
+                    side VARCHAR,
+                    action VARCHAR,
+                    price INTEGER,
+                    count INTEGER,
+                    fee_cents FLOAT,
+                    filled_at TIMESTAMP,
+                    order_id VARCHAR
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS resting_orders (
+                    order_id VARCHAR PRIMARY KEY,
+                    ticker VARCHAR,
+                    side VARCHAR,
+                    action VARCHAR,
+                    price INTEGER,
+                    remaining_count INTEGER,
+                    created_at TIMESTAMP,
+                    last_amended_at TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS quote_log (
+                    logged_at TIMESTAMP,
+                    ticker VARCHAR,
+                    fair_prob FLOAT,
+                    bid_yes INTEGER,
+                    ask_yes INTEGER,
+                    spread_cents INTEGER,
+                    net_position INTEGER,
+                    skew_applied INTEGER,
+                    prediction_age_sec FLOAT,
+                    book_bid INTEGER,
+                    book_ask INTEGER
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS sessions (
+                    session_id VARCHAR PRIMARY KEY,
+                    started_at TIMESTAMP,
+                    ended_at TIMESTAMP,
+                    total_fills INTEGER DEFAULT 0,
+                    realized_pnl FLOAT DEFAULT 0,
+                    fees_paid FLOAT DEFAULT 0,
+                    markets_quoted INTEGER DEFAULT 0
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS reference_lines (
+                    home_team VARCHAR,
+                    away_team VARCHAR,
+                    market VARCHAR,
+                    line_value FLOAT,
+                    snapshot_at TIMESTAMP
+                )
+            """)
+            # Migrate: add book columns if missing (existing DBs won't have them)
+            try:
+                conn.execute("ALTER TABLE quote_log ADD COLUMN book_bid INTEGER")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE quote_log ADD COLUMN book_ask INTEGER")
+            except Exception:
+                pass
+        finally:
+            conn.close()
+    _with_retry(_init, max_retries=10, base_delay=0.5)
 
 
 def load_predictions():
@@ -393,26 +412,30 @@ def end_session(session_id, total_fills, realized_pnl, fees_paid, markets_quoted
 
 def init_taker_tables():
     """Create taker-specific tables if they don't exist."""
-    conn = duckdb.connect(str(MM_DB_PATH))
-    try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS take_log (
-                take_id VARCHAR PRIMARY KEY,
-                ticker VARCHAR,
-                event_ticker VARCHAR,
-                side VARCHAR,
-                price INTEGER,
-                fair_cents FLOAT,
-                ev_pct FLOAT,
-                fee_cents FLOAT,
-                count_requested INTEGER,
-                count_filled INTEGER,
-                order_id VARCHAR,
-                taken_at TIMESTAMP
-            )
-        """)
-    finally:
-        conn.close()
+    if _tables_exist(["take_log"]):
+        return
+    def _init():
+        conn = duckdb.connect(str(MM_DB_PATH))
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS take_log (
+                    take_id VARCHAR PRIMARY KEY,
+                    ticker VARCHAR,
+                    event_ticker VARCHAR,
+                    side VARCHAR,
+                    price INTEGER,
+                    fair_cents FLOAT,
+                    ev_pct FLOAT,
+                    fee_cents FLOAT,
+                    count_requested INTEGER,
+                    count_filled INTEGER,
+                    order_id VARCHAR,
+                    taken_at TIMESTAMP
+                )
+            """)
+        finally:
+            conn.close()
+    _with_retry(_init, max_retries=10, base_delay=0.5)
 
 
 def log_take(take_id, ticker, event_ticker, side, price, fair_cents, ev_pct,
