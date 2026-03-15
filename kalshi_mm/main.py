@@ -93,6 +93,7 @@ def check_pipeline_completion(resting_by_ticker):
             _pipeline_backoff = min(_pipeline_backoff * 2, 2400)
             if not DRY_RUN:
                 orders.cancel_all_orders()
+                db.clear_all_resting_orders()
                 resting_by_ticker.clear()
             return False
         return False
@@ -109,6 +110,7 @@ def check_pipeline_completion(resting_by_ticker):
         _pipeline_backoff = min(_pipeline_backoff * 2, 2400)
         if not DRY_RUN:
             orders.cancel_all_orders()
+            db.clear_all_resting_orders()
             resting_by_ticker.clear()
         return False
 
@@ -303,6 +305,7 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
         print(f"  STALE PREDICTIONS ({pred_age:.0f}s old). Pulling all quotes.")
         if not DRY_RUN:
             orders.cancel_all_orders()
+            db.clear_all_resting_orders()
             resting_by_ticker.clear()
         return resting_by_ticker
 
@@ -311,6 +314,7 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
         print(f"  EXPOSURE LIMIT (${exposure:.2f}). Pulling all quotes.")
         if not DRY_RUN:
             orders.cancel_all_orders()
+            db.clear_all_resting_orders()
             resting_by_ticker.clear()
         return resting_by_ticker
 
