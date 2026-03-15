@@ -4156,15 +4156,7 @@ compare_moneylines_3way_to_kalshi <- function(
     return(list(bets = tibble()))
   }
 
-  # Generate 3-way predictions from samples
-  predictions_raw <- map_dfr(names(samples), function(game_id) {
-    sample_result <- samples[[game_id]]
-    preds <- predict_moneyline_from_sample(sample_result$sample, margin_col = margin_col)
-    preds$id <- game_id
-    preds
-  })
-
-  # Join with consensus for team names
+  # Build consensus lookup for team name → game_id mapping
   consensus_info <- consensus_odds %>%
     ungroup() %>%
     select(id, home_team, away_team, commence_time)
@@ -4172,6 +4164,27 @@ compare_moneylines_3way_to_kalshi <- function(
     consensus_info <- consensus_info %>%
       mutate(commence_time = ymd_hms(commence_time, tz = "UTC"))
   }
+
+  # Only generate predictions for games that have Kalshi 3-way odds
+  needed_ids <- consensus_info %>%
+    inner_join(kal_3way, by = c("home_team", "away_team")) %>%
+    pull(id) %>%
+    unique()
+
+  needed_samples <- samples[intersect(names(samples), needed_ids)]
+  if (length(needed_samples) == 0) {
+    cat("No matching samples for Kalshi 3-way games.\n")
+    return(list(bets = tibble()))
+  }
+
+  # Generate 3-way predictions only for matched games
+  predictions_raw <- map_dfr(names(needed_samples), function(game_id) {
+    sample_result <- needed_samples[[game_id]]
+    preds <- predict_moneyline_from_sample(sample_result$sample, margin_col = margin_col)
+    preds$id <- game_id
+    preds
+  })
+
   predictions <- predictions_raw %>%
     inner_join(consensus_info, by = "id")
 
