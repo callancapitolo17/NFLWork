@@ -278,6 +278,8 @@ def parse_spread_records(markets, team_dict, canonical_games, fetch_time):
                 "away_ml_cents": None,
                 "home_ml": None,
                 "home_ml_cents": None,
+                "tie_ml": None,
+                "tie_ml_cents": None,
             })
 
             records.append(record)
@@ -353,16 +355,18 @@ def parse_total_records(markets, team_dict, canonical_games, fetch_time):
                 "away_ml_cents": None,
                 "home_ml": None,
                 "home_ml_cents": None,
+                "tie_ml": None,
+                "tie_ml_cents": None,
             })
 
     return records
 
 
 def parse_moneyline_records(markets, team_dict, canonical_games, fetch_time):
-    """Parse 1H winner (3-way) markets into 18-column records.
+    """Parse 1H winner (3-way) markets into records.
 
     Each event has 3 contracts: team A, team B, and tie.
-    We only output the two team contracts as a moneyline pair.
+    All three are captured — tie odds stored in tie_ml/tie_ml_cents.
     """
     records = []
     by_event = defaultdict(list)
@@ -372,11 +376,13 @@ def parse_moneyline_records(markets, team_dict, canonical_games, fetch_time):
     for event_ticker, event_markets in by_event.items():
         # Separate tie from team contracts
         team_contracts = []
+        tie_contract = None
         for m in event_markets:
             sub = (m.get("yes_sub_title") or "").lower()
             if "tie" in sub:
-                continue
-            team_contracts.append(m)
+                tie_contract = m
+            else:
+                team_contracts.append(m)
 
         if len(team_contracts) != 2:
             continue
@@ -434,6 +440,13 @@ def parse_moneyline_records(markets, team_dict, canonical_games, fetch_time):
         if home_odds is None or away_odds is None:
             continue
 
+        # Extract tie contract odds (3-way market)
+        tie_odds, tie_eff = None, None
+        if tie_contract:
+            _, tie_ask = _get_book(tie_contract)
+            if tie_ask > 0:
+                tie_odds, tie_eff = cents_to_american(tie_ask)
+
         records.append({
             "fetch_time": fetch_time,
             "sport_key": "basketball_ncaab",
@@ -459,6 +472,8 @@ def parse_moneyline_records(markets, team_dict, canonical_games, fetch_time):
             "away_ml_cents": away_eff,
             "home_ml": home_odds,
             "home_ml_cents": home_eff,
+            "tie_ml": tie_odds,
+            "tie_ml_cents": tie_eff,
         })
 
     return records
@@ -557,7 +572,9 @@ def init_database():
                 away_ml INTEGER,
                 away_ml_cents FLOAT,
                 home_ml INTEGER,
-                home_ml_cents FLOAT
+                home_ml_cents FLOAT,
+                tie_ml INTEGER,
+                tie_ml_cents FLOAT
             )
         """)
     finally:
@@ -574,7 +591,8 @@ def save_to_database(odds_data):
             "away_spread", "away_spread_price", "away_spread_cents",
             "home_spread", "home_spread_price", "home_spread_cents",
             "total", "over_price", "over_cents", "under_price", "under_cents",
-            "away_ml", "away_ml_cents", "home_ml", "home_ml_cents"
+            "away_ml", "away_ml_cents", "home_ml", "home_ml_cents",
+            "tie_ml", "tie_ml_cents"
         ]
 
         placeholders = ", ".join(["?" for _ in columns])

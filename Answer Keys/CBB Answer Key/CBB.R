@@ -657,16 +657,28 @@ if (nrow(kalshi_odds) > 0) {
       total_results, kalshi_odds,
       bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
     )
-    kal_ml_bets <- compare_moneylines_to_wagerzon(
+    kal_ml_3way <- compare_moneylines_3way_to_kalshi(
       ml_results, kalshi_odds,
+      samples = samples, consensus_odds = cbb_odds,
       bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
     )
+    # Any 2-way Kalshi MLs (future-proofing)
+    kalshi_2way <- kalshi_odds %>% filter(market_type == "h2h")
+    if (nrow(kalshi_2way) > 0) {
+      kal_ml_2way <- compare_moneylines_to_wagerzon(
+        ml_results, kalshi_2way,
+        bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      )
+    } else {
+      kal_ml_2way <- list(bets = tibble())
+    }
   })
 
   kalshi_bets <- bind_rows(
     kal_spread_bets$bets %>% mutate(market_type = "spreads"),
     kal_total_bets$bets %>% mutate(market_type = "totals"),
-    kal_ml_bets$bets %>% mutate(market_type = "moneyline")
+    kal_ml_3way$bets %>% mutate(market_type = "moneyline"),
+    kal_ml_2way$bets %>% mutate(market_type = "moneyline")
   )
   cat(sprintf("Added %d Kalshi bets to predictions.\n", nrow(kalshi_bets)))
 } else {
@@ -756,7 +768,7 @@ raw_preds <- bind_rows(
   total_results$predictions %>%
     filter(market == "totals_h1") %>%
     transmute(id, home_team, away_team, commence_time, market, period,
-              line_value = book_total, prob_side1 = over_prob,
+              line_value = book_total_line, prob_side1 = over_prob,
               prob_side2 = under_prob),
   ml_results$predictions %>%
     filter(market == "h2h_h1") %>%
