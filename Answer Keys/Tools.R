@@ -3565,14 +3565,17 @@ get_kalshi_odds <- function(
 
     # Moneyline record
     if (!is.na(row$away_ml)) {
+      has_tie <- "tie_ml" %in% names(row) && !is.na(row$tie_ml)
       ml_rec <- c(base, list(
         market = row$market,
-        market_type = "h2h",
+        market_type = if (has_tie) "h2h_3way" else "h2h",
         line = NA_real_,
         odds_away = row$away_ml,
         odds_home = row$home_ml,
+        odds_tie = if (has_tie) row$tie_ml else NA_integer_,
         cents_away = if ("away_ml_cents" %in% names(row)) row$away_ml_cents else NA_real_,
         cents_home = if ("home_ml_cents" %in% names(row)) row$home_ml_cents else NA_real_,
+        cents_tie = if (has_tie && "tie_ml_cents" %in% names(row)) row$tie_ml_cents else NA_real_,
         odds_over = NA_integer_,
         odds_under = NA_integer_
       ))
@@ -3586,11 +3589,12 @@ get_kalshi_odds <- function(
 
   result <- bind_rows(lapply(result_list, as.data.frame))
 
-  cat(sprintf("Loaded %d Kalshi odds records (%d spreads, %d totals, %d ML)\n",
+  cat(sprintf("Loaded %d Kalshi odds records (%d spreads, %d totals, %d ML 2-way, %d ML 3-way)\n",
               nrow(result),
               sum(result$market_type == "spreads"),
               sum(result$market_type == "totals"),
-              sum(result$market_type == "h2h")))
+              sum(result$market_type == "h2h"),
+              sum(result$market_type == "h2h_3way")))
 
   result <- resolve_offshore_teams(result, sport = sport)
   return(result)
@@ -4127,6 +4131,124 @@ compare_moneylines_to_wagerzon <- function(
   cat(sprintf("Generated %d %s moneyline bets\n", nrow(bets), book_key))
 
   list(predictions = predictions, prediction_set = prediction_set, bets = bets, markets_summary = summary)
+}
+
+
+#' Compare Kalshi 3-way moneylines (home/away/tie) using 3-way predictions
+#'
+#' Kalshi 1H winner markets are 3-way: tie is a distinct losing outcome (not a push).
+#' Uses devig_american_3way() to properly normalize all 3 outcomes, and
+#' predict_moneyline_from_sample() which already computes _3way_home/_3way_away/_3way_tie.
+compare_moneylines_3way_to_kalshi <- function(
+    ml_results,
+    kalshi_odds,
+    samples,
+    consensus_odds,
+    bankroll = 100,
+    kelly_mult = 0.25,
+    ev_threshold = 0.05,
+    margin_col = "game_home_margin_period"
+) {
+  # Filter to 3-way Kalshi records only
+  kal_3way <- kalshi_odds %>% filter(market_type == "h2h_3way")
+
+  if (nrow(kal_3way) == 0) {
+    return(list(bets = tibble()))
+  }
+
+  # Build consensus lookup for team name → game_id mapping
+  consensus_info <- consensus_odds %>%
+    ungroup() %>%
+    select(id, home_team, away_team, commence_time)
+  if (is.character(consensus_info$commence_time)) {
+    consensus_info <- consensus_info %>%
+      mutate(commence_time = ymd_hms(commence_time, tz = "UTC"))
+  }
+
+  # Only generate predictions for games that have Kalshi 3-way odds
+  needed_ids <- consensus_info %>%
+    inner_join(kal_3way, by = c("home_team", "away_team")) %>%
+    pull(id) %>%
+    unique()
+
+  needed_samples <- samples[intersect(names(samples), needed_ids)]
+  if (length(needed_samples) == 0) {
+    cat("No matching samples for Kalshi 3-way games.\n")
+    return(list(bets = tibble()))
+  }
+
+  # Generate 3-way predictions only for matched games
+  predictions_raw <- map_dfr(names(needed_samples), function(game_id) {
+    sample_result <- needed_samples[[game_id]]
+    preds <- predict_moneyline_from_sample(sample_result$sample, margin_col = margin_col)
+    preds$id <- game_id
+    preds
+  })
+
+  predictions <- predictions_raw %>%
+    inner_join(consensus_info, by = "id")
+
+  # Extract Half1 3-way predictions
+  home_col <- paste0(margin_col, "_Half1_3way_home")
+  away_col <- paste0(margin_col, "_Half1_3way_away")
+  tie_col  <- paste0(margin_col, "_Half1_3way_tie")
+
+  if (!home_col %in% names(predictions)) {
+    cat("No Half1 3-way prediction columns found\n")
+    return(list(bets = tibble()))
+  }
+
+  half1_preds <- predictions %>%
+    transmute(
+      id, home_team, away_team, commence_time,
+      home_prob = .data[[home_col]],
+      away_prob = .data[[away_col]],
+      tie_prob  = .data[[tie_col]]
+    )
+
+  # Join with Kalshi odds
+  joined <- kal_3way %>%
+    inner_join(half1_preds, by = c("home_team", "away_team"))
+
+  if (nrow(joined) == 0) {
+    cat("No matches between 3-way predictions and Kalshi moneylines.\n")
+    return(list(bets = tibble()))
+  }
+
+  cat(sprintf("Found %d matches between 3-way predictions and Kalshi moneylines\n", nrow(joined)))
+
+  # Devig 3-way and compute EV
+  prediction_set <- joined %>%
+    mutate(bookmaker_key = "kalshi") %>%
+    mutate(devigged = pmap(list(odds_home, odds_away, odds_tie),
+                           ~ devig_american_3way(..1, ..2, ..3))) %>%
+    unnest_wider(devigged) %>%
+    rename(book_prob_home = p_home, book_prob_away = p_away, book_prob_tie = p_tie) %>%
+    mutate(
+      home_ev = compute_ev(home_prob, book_prob_home),
+      away_ev = compute_ev(away_prob, book_prob_away),
+      tie_ev  = compute_ev(tie_prob, book_prob_tie),
+      home_bet_size = kelly_stake(home_ev, book_prob_home, bankroll, kelly_mult),
+      away_bet_size = kelly_stake(away_ev, book_prob_away, bankroll, kelly_mult),
+      tie_bet_size  = kelly_stake(tie_ev, book_prob_tie, bankroll, kelly_mult)
+    )
+
+  # Format using format_bets_table with 3rd side
+  bets <- prediction_set %>%
+    format_bets_table(
+      pred1 = "home_prob", pred2 = "away_prob",
+      ev1 = "home_ev", ev2 = "away_ev",
+      size1 = "home_bet_size", size2 = "away_bet_size",
+      odds1 = "odds_home", odds2 = "odds_away",
+      cents1 = "cents_home", cents2 = "cents_away",
+      pred3 = "tie_prob", ev3 = "tie_ev", size3 = "tie_bet_size", odds3 = "odds_tie",
+      cents3 = "cents_tie",
+      books = "kalshi",
+      ev_threshold = ev_threshold
+    )
+
+  cat(sprintf("Generated %d Kalshi 3-way moneyline bets\n", nrow(bets)))
+  list(bets = bets)
 }
 
 
