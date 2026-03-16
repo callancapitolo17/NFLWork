@@ -74,4 +74,12 @@ TAKER_FEE_RATE = 0.07  # Kalshi taker fee: 7% * P * (1-P)
 MAKER_FEE_RATE = float(_env.get("MAKER_FEE_RATE", "0.0"))  # Currently 0% for most accounts
 
 # --- Kalshi Series ---
-SPREAD_SERIES = "KXNCAAMB1HSPREAD"
+MARKET_SERIES = {
+    "spreads": "KXNCAAMB1HSPREAD",
+    "totals": "KXNCAAMB1HTOTAL",
+    "moneyline": "KXNCAAMB1HWINNER",
+}
+ENABLED_MARKET_TYPES = set(_env.get("ENABLED_MARKETS", "spreads,totals,moneyline").split(","))
+SPREAD_SERIES = MARKET_SERIES["spreads"]  # backward compat
+MAX_POSITION_PER_GAME = int(_env.get("MAX_POSITION_PER_GAME", "12"))
+MAX_BOOK_STALENESS_SEC = int(_env.get("MAX_BOOK_STALENESS_SEC", "10"))

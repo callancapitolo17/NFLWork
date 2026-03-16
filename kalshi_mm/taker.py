@@ -32,6 +32,24 @@ TAKEN_THIS_CYCLE = {}
 # After taking ANY strike in an event, block all strikes until predictions refresh
 EVENT_COOLDOWN = {}
 
+# Game-level cooldown: {(home_team, away_team, cooldown_group): prediction_updated_at}
+# Correlation-aware: spreads and MLs share "directional" group (correlated),
+# totals have their own "totals" group (independent).
+GAME_COOLDOWN = {}
+
+
+def _cooldown_group(market_type):
+    """Map market type to cooldown group.
+
+    Spreads and moneylines are directionally correlated (both pay when same
+    team wins big). Totals are independent — a game can go under and the
+    favorite still covers. So taking a spread blocks ML on same game and
+    vice versa, but NOT totals.
+    """
+    if market_type in ("spreads", "moneyline"):
+        return "directional"
+    return "totals"
+
 # Prediction cache to avoid re-reading DB every 2s
 PRED_CACHE = {"predictions": [], "updated_at": None, "checked_at": 0}
 
@@ -69,25 +87,37 @@ def compute_take_ev(fair_cents, book_price, side):
     return ev_pct, fee
 
 
-def is_on_cooldown(ticker, event_ticker, current_pred_ts):
-    """Check if ticker or its event was already taken on this prediction cycle."""
+def is_on_cooldown(ticker, event_ticker, current_pred_ts,
+                   home_team=None, away_team=None, market_type=None):
+    """Check if ticker, event, or game+cooldown_group was already taken."""
     if ticker in TAKEN_THIS_CYCLE and TAKEN_THIS_CYCLE[ticker] == current_pred_ts:
         return True
     if event_ticker in EVENT_COOLDOWN and EVENT_COOLDOWN[event_ticker] == current_pred_ts:
         return True
+    # Game-level correlation-aware cooldown
+    if home_team and away_team and market_type:
+        group = _cooldown_group(market_type)
+        game_key = (home_team, away_team, group)
+        if game_key in GAME_COOLDOWN and GAME_COOLDOWN[game_key] == current_pred_ts:
+            return True
     return False
 
 
-def set_cooldown(ticker, event_ticker, pred_ts):
-    """Mark ticker AND its event as taken for this prediction cycle."""
+def set_cooldown(ticker, event_ticker, pred_ts,
+                 home_team=None, away_team=None, market_type=None):
+    """Mark ticker, event, AND game+cooldown_group as taken."""
     TAKEN_THIS_CYCLE[ticker] = pred_ts
     EVENT_COOLDOWN[event_ticker] = pred_ts
+    if home_team and away_team and market_type:
+        group = _cooldown_group(market_type)
+        GAME_COOLDOWN[(home_team, away_team, group)] = pred_ts
 
 
 def clear_cooldowns():
     """Clear all cooldowns (called when predictions refresh)."""
     TAKEN_THIS_CYCLE.clear()
     EVENT_COOLDOWN.clear()
+    GAME_COOLDOWN.clear()
 
 
 def refresh_predictions():
@@ -125,14 +155,19 @@ def _confirm_book_price(ticker, side):
     if now - _BOOK_CACHE["fetched_at"] > _BOOK_CACHE_TTL:
         try:
             from scraper import fetch_markets
-            fresh = fetch_markets(config.SPREAD_SERIES)
-            if fresh:
-                _BOOK_CACHE["data"] = {
-                    m["ticker"]: (
-                        int(round(float(m.get("yes_bid_dollars", 0)) * 100)),
-                        int(round(float(m.get("yes_ask_dollars", 0)) * 100))
-                    ) for m in fresh
-                }
+            new_data = {}
+            for mtype, series in config.MARKET_SERIES.items():
+                if mtype not in config.ENABLED_MARKET_TYPES:
+                    continue
+                fresh = fetch_markets(series)
+                if fresh:
+                    for m in fresh:
+                        new_data[m["ticker"]] = (
+                            int(round(float(m.get("yes_bid_dollars", 0)) * 100)),
+                            int(round(float(m.get("yes_ask_dollars", 0)) * 100))
+                        )
+            if new_data:
+                _BOOK_CACHE["data"] = new_data
                 _BOOK_CACHE["fetched_at"] = now
         except Exception:
             pass
@@ -165,10 +200,15 @@ def execute_take(market, side, price, ev_pct, fee_cents, pred_ts, dry_run=False)
     event_ticker = market.get("event_ticker", "")
     take_id = f"take-{uuid.uuid4().hex[:8]}"
 
+    home_team = market.get("home_team")
+    away_team = market.get("away_team")
+    market_type = market.get("market_type", "spreads")
+
     if dry_run:
         print(f"  [TAKER] TAKE (dry): {side.upper()} {config.TAKE_CONTRACT_SIZE}x @ {price}c on {ticker} "
-              f"(fair={market['fair_prob']*100:.1f}c, EV={ev_pct:.1%}, fee={fee_cents:.1f}c)")
-        set_cooldown(ticker, event_ticker, pred_ts)
+              f"(fair={market['fair_prob']*100:.1f}c, EV={ev_pct:.1%}, fee={fee_cents:.1f}c) [{market_type}]")
+        set_cooldown(ticker, event_ticker, pred_ts,
+                     home_team=home_team, away_team=away_team, market_type=market_type)
         return 0
 
     # CONFIRM: re-fetch book to make sure the price is still there
@@ -235,6 +275,7 @@ def execute_take(market, side, price, ev_pct, fee_cents, pred_ts, dry_run=False)
             event_ticker=event_ticker,
             home_team=market.get("home_team"),
             away_team=market.get("away_team"),
+            market_type=market_type,
         )
         db.record_fill(
             fill_id=f"{take_id}-fill",
@@ -254,8 +295,9 @@ def execute_take(market, side, price, ev_pct, fee_cents, pred_ts, dry_run=False)
         )
 
     # Cooldown regardless of fill count — don't re-attempt until predictions refresh
-    # Event-level: blocks ALL strikes in this game
-    set_cooldown(ticker, event_ticker, pred_ts)
+    # Event-level + game-level (correlation-aware)
+    set_cooldown(ticker, event_ticker, pred_ts,
+                 home_team=home_team, away_team=away_team, market_type=market_type)
     return filled
 
 
@@ -286,20 +328,27 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
     for market in quotable_markets:
         ticker = market["ticker"]
         event_ticker = market.get("event_ticker", "")
+        home_team = market.get("home_team")
+        away_team = market.get("away_team")
+        market_type = market.get("market_type", "spreads")
         fair_cents = market["fair_prob"] * 100
 
-        # Skip if already taken on this prediction cycle (ticker OR event level)
-        if is_on_cooldown(ticker, event_ticker, prediction_updated_at):
+        # Skip if already taken on this prediction cycle (ticker, event, or game+group)
+        if is_on_cooldown(ticker, event_ticker, prediction_updated_at,
+                          home_team=home_team, away_team=away_team,
+                          market_type=market_type):
             continue
 
         # Skip tipoff proximity
         if not risk.check_tipoff_proximity(market.get("commence_time")):
             continue
 
-        # Get current position
+        # Get current position (per-ticker, per-event, per-game)
         pos = db.get_position(ticker)
         net = pos["net_yes"]
         event_net = db.get_event_net_position(event_ticker)
+        game_key = market.get("game_key", (home_team or "", away_team or ""))
+        game_net = db.get_game_net_position(game_key[0], game_key[1]) if game_key[0] else 0
 
         # Check what resting orders the MM has on this ticker
         mm_resting = resting_by_ticker.get(ticker, {})
@@ -322,8 +371,10 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
                 )
                 proposed_net = net + config.TAKE_CONTRACT_SIZE
                 proposed_event = event_net + config.TAKE_CONTRACT_SIZE + resting_event_exposure
+                proposed_game = game_net + config.TAKE_CONTRACT_SIZE
                 if (abs(proposed_net) <= config.MAX_POSITION_PER_MARKET
-                        and abs(proposed_event) <= config.MAX_POSITION_PER_EVENT):
+                        and abs(proposed_event) <= config.MAX_POSITION_PER_EVENT
+                        and abs(proposed_game) <= config.MAX_POSITION_PER_GAME):
                     ev_pct, fee = compute_take_ev(fair_cents, yes_ask, "yes")
                     if ev_pct is not None:
                         filled = execute_take(market, "yes", yes_ask, ev_pct, fee,
@@ -344,8 +395,10 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
                 )
                 proposed_net = net - config.TAKE_CONTRACT_SIZE
                 proposed_event = event_net - config.TAKE_CONTRACT_SIZE - resting_event_exposure
+                proposed_game = game_net - config.TAKE_CONTRACT_SIZE
                 if (abs(proposed_net) <= config.MAX_POSITION_PER_MARKET
-                        and abs(proposed_event) <= config.MAX_POSITION_PER_EVENT):
+                        and abs(proposed_event) <= config.MAX_POSITION_PER_EVENT
+                        and abs(proposed_game) <= config.MAX_POSITION_PER_GAME):
                     ev_pct, fee = compute_take_ev(fair_cents, no_price, "no")
                     if ev_pct is not None:
                         filled = execute_take(market, "no", no_price, ev_pct, fee,
@@ -383,7 +436,8 @@ def main():
     """Run taker as standalone process. Only use when MM is NOT running."""
     from scraper import fetch_markets
     from canonical_match import load_team_dict, load_canonical_games
-    from main import match_kalshi_to_predictions, enforce_monotonicity, refresh_book_data
+    from main import (match_kalshi_to_predictions, enforce_monotonicity,
+                      refresh_book_data, fetch_all_markets, match_all_markets)
 
     dry_run = "--dry-run" in sys.argv
     running = True
@@ -433,13 +487,13 @@ def main():
     team_dict = load_team_dict("cbb")
     canonical_games = load_canonical_games("cbb")
 
-    print(f"Fetching Kalshi 1H spread markets ({config.SPREAD_SERIES})...")
-    kalshi_markets = fetch_markets(config.SPREAD_SERIES)
-    print(f"  Found {len(kalshi_markets)} open markets")
+    enabled = ", ".join(sorted(config.ENABLED_MARKET_TYPES))
+    print(f"Fetching Kalshi 1H markets (enabled: {enabled})...")
+    all_kalshi = fetch_all_markets()
+    total_markets = sum(len(v) for v in all_kalshi.values())
+    print(f"  Found {total_markets} open markets")
 
-    quotable = match_kalshi_to_predictions(
-        kalshi_markets, predictions, team_dict, canonical_games
-    )
+    quotable = match_all_markets(all_kalshi, predictions, team_dict, canonical_games)
     enforce_monotonicity(quotable)
     print(f"  {len(quotable)} quotable markets")
 
@@ -459,11 +513,11 @@ def main():
                 predictions, prediction_updated_at = refresh_predictions()
 
                 if now - last_full_refresh >= 60:
-                    fresh_markets = fetch_markets(config.SPREAD_SERIES)
-                    if fresh_markets:
-                        kalshi_markets = fresh_markets
-                    quotable = match_kalshi_to_predictions(
-                        kalshi_markets, predictions, team_dict, canonical_games
+                    fresh_all = fetch_all_markets()
+                    if fresh_all:
+                        all_kalshi = fresh_all
+                    quotable = match_all_markets(
+                        all_kalshi, predictions, team_dict, canonical_games
                     )
                     enforce_monotonicity(quotable)
                     last_full_refresh = now

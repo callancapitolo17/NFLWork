@@ -3,6 +3,7 @@ DuckDB state management for the market maker and taker.
 Tracks positions, fills, resting orders, quote history, and takes.
 """
 
+import math
 import time as _time
 import duckdb
 from datetime import datetime, timezone
@@ -136,6 +137,18 @@ def init_database():
     _with_retry(_init, max_retries=10, base_delay=0.5)
 
 
+def _safe_float(val):
+    """Return val if it's a valid float, else None. Guards against NaN from pandas."""
+    if val is None:
+        return None
+    try:
+        if math.isnan(val):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return val
+
+
 def load_predictions():
     """Load raw predictions from the answer key's DuckDB."""
     db_path = str(CBB_DB_PATH)
@@ -163,7 +176,14 @@ def load_predictions():
         ).fetchone()
         updated_at = meta[0] if meta else None
 
-        return predictions.to_dict("records"), updated_at
+        # Sanitize NaN values from pandas — DuckDB NULL → pandas NaN
+        records = predictions.to_dict("records")
+        for rec in records:
+            for key in ("prob_side1", "prob_side2", "prob_tie", "line_value"):
+                if key in rec:
+                    rec[key] = _safe_float(rec[key])
+
+        return records, updated_at
     finally:
         conn.close()
 
@@ -192,6 +212,24 @@ def get_event_net_position(event_ticker):
         row = conn.execute(
             "SELECT COALESCE(SUM(net_yes), 0) FROM positions WHERE event_ticker = ?",
             [event_ticker]
+        ).fetchone()
+        return row[0]
+    finally:
+        conn.close()
+
+
+def get_game_net_position(home_team, away_team):
+    """Get aggregate net YES position across all market types for one game.
+
+    Prevents correlated exposure: different market types on the same game
+    use different event_tickers on Kalshi, so per-event limits don't catch
+    cross-market-type stacking on the same physical game.
+    """
+    conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(net_yes), 0) FROM positions WHERE home_team = ? AND away_team = ?",
+            [home_team, away_team]
         ).fetchone()
         return row[0]
     finally:

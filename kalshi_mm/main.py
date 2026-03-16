@@ -32,7 +32,7 @@ import taker
 
 # Add kalshi_odds to path for market fetching
 sys.path.insert(0, str(config.PROJECT_ROOT / "kalshi_odds"))
-from scraper import fetch_markets, parse_spread_team
+from scraper import fetch_markets, parse_spread_team, parse_matchup_title, _fuzzy_team_match
 
 # Add Answer Keys for team name resolution
 sys.path.insert(0, str(config.ANSWER_KEYS_DIR))
@@ -116,18 +116,27 @@ def check_pipeline_completion(resting_by_ticker):
 
 
 def enforce_monotonicity(quotable_markets):
-    """Clamp fair probabilities so P(team wins by >N) >= P(team wins by >N+k).
+    """Clamp fair probabilities so strike ordering is consistent.
+
+    Spreads: P(team wins by >N) >= P(team wins by >N+k) — non-increasing.
+    Totals: P(over N) >= P(over N+k) — higher total = lower over prob.
+    Moneylines: No strikes, skip.
 
     Without this, a sharp can arb mispriced strikes against each other.
-    For each event+team direction, sort by strike and ensure probabilities
-    are non-increasing. Clamp violations to the neighbor's value.
     """
     from collections import defaultdict
 
-    # Group by (event_ticker, is_home_contract)
     groups = defaultdict(list)
     for m in quotable_markets:
-        key = (m["event_ticker"], m["is_home_contract"])
+        mtype = m.get("market_type", "spreads")
+        if mtype == "moneyline":
+            continue  # No strikes to enforce
+        if mtype == "totals":
+            # Totals: group by event_ticker alone (no team direction)
+            key = ("totals", m["event_ticker"])
+        else:
+            # Spreads: group by (event_ticker, is_home_contract)
+            key = ("spreads", m["event_ticker"], m["is_home_contract"])
         groups[key].append(m)
 
     for key, markets in groups.items():
@@ -135,25 +144,28 @@ def enforce_monotonicity(quotable_markets):
         markets.sort(key=lambda m: m["strike"])
         for i in range(1, len(markets)):
             if markets[i]["fair_prob"] > markets[i - 1]["fair_prob"]:
-                # Violation: higher strike has higher probability
-                # Clamp to previous value (conservative — preserves the
-                # more liquid/reliable lower-strike estimate)
                 markets[i]["fair_prob"] = markets[i - 1]["fair_prob"]
 
 
 def refresh_book_data(quotable_markets):
-    """Fetch fresh yes_bid/yes_ask from Kalshi and update quotable markets in-place."""
-    fresh = fetch_markets(config.SPREAD_SERIES)
-    if not fresh:
-        return
-    book = {m["ticker"]: (
-        int(round(float(m.get("yes_bid_dollars", 0)) * 100)),
-        int(round(float(m.get("yes_ask_dollars", 0)) * 100))
-    ) for m in fresh}
+    """Fetch fresh yes_bid/yes_ask from all enabled series and update in-place."""
+    now = time.time()
+    book = {}
+    for mtype, series in config.MARKET_SERIES.items():
+        if mtype not in config.ENABLED_MARKET_TYPES:
+            continue
+        fresh = fetch_markets(series)
+        if fresh:
+            for m in fresh:
+                book[m["ticker"]] = (
+                    int(round(float(m.get("yes_bid_dollars", 0)) * 100)),
+                    int(round(float(m.get("yes_ask_dollars", 0)) * 100))
+                )
     for market in quotable_markets:
         bid_ask = book.get(market["ticker"])
         if bid_ask:
             market["book_bid"], market["book_ask"] = bid_ask
+            market["book_fetched_at"] = now
 
 
 def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonical_games):
@@ -254,7 +266,7 @@ def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonica
 
             pred = None
             for p in matching_preds:
-                if abs(p["line_value"] - target_spread) < 0.1:
+                if p["line_value"] is not None and abs(p["line_value"] - target_spread) < 0.1:
                     pred = p
                     break
 
@@ -274,8 +286,8 @@ def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonica
             quotable.append({
                 "ticker": m["ticker"],
                 "event_ticker": event_ticker,
-                "home_team": home_resolved,
-                "away_team": away_resolved,
+                "home_team": pred["home_team"],
+                "away_team": pred["away_team"],
                 "contract_team": team,
                 "strike": strike,
                 "is_home_contract": is_home,
@@ -284,6 +296,313 @@ def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonica
                 "book_bid": int(round(float(m.get("yes_bid_dollars", 0)) * 100)),
                 "book_ask": int(round(float(m.get("yes_ask_dollars", 0)) * 100)),
             })
+
+    return quotable
+
+
+def fetch_all_markets():
+    """Fetch markets from all enabled series. Returns {market_type: [markets]}."""
+    result = {}
+    for mtype, series in config.MARKET_SERIES.items():
+        if mtype not in config.ENABLED_MARKET_TYPES:
+            continue
+        markets = fetch_markets(series)
+        if markets:
+            result[mtype] = markets
+    return result
+
+
+def match_total_markets(kalshi_markets, predictions, team_dict, canonical_games):
+    """Match Kalshi 1H total markets to answer key predictions.
+
+    Each total contract: YES = over, NO = under. Strike is the total line.
+    """
+    from collections import defaultdict
+
+    quotable = []
+    by_event = defaultdict(list)
+    for m in kalshi_markets:
+        by_event[m["event_ticker"]].append(m)
+
+    for event_ticker, event_markets in by_event.items():
+        # Parse teams from event title
+        title = event_markets[0].get("title", "")
+        away_raw, home_raw = parse_matchup_title(title)
+        if not away_raw or not home_raw:
+            continue
+
+        away_resolved, home_resolved = resolve_team_names(
+            away_raw, home_raw, team_dict, canonical_games
+        )
+
+        # Find matching totals predictions — try both orderings
+        matching_preds = [
+            p for p in predictions
+            if p["market"] == "totals_h1"
+            and _fuzzy_team_match(p["home_team"].lower(), home_resolved.lower())
+            and _fuzzy_team_match(p["away_team"].lower(), away_resolved.lower())
+        ]
+        if not matching_preds:
+            matching_preds = [
+                p for p in predictions
+                if p["market"] == "totals_h1"
+                and _fuzzy_team_match(p["home_team"].lower(), away_resolved.lower())
+                and _fuzzy_team_match(p["away_team"].lower(), home_resolved.lower())
+            ]
+            if matching_preds:
+                home_resolved, away_resolved = away_resolved, home_resolved
+
+        if not matching_preds:
+            # Fallback: try raw Kalshi names
+            for raw_h, raw_a in [(home_raw, away_raw), (away_raw, home_raw)]:
+                matching_preds = [
+                    p for p in predictions
+                    if p["market"] == "totals_h1"
+                    and _fuzzy_team_match(p["home_team"].lower(), raw_h.lower())
+                    and _fuzzy_team_match(p["away_team"].lower(), raw_a.lower())
+                ]
+                if matching_preds:
+                    home_resolved, away_resolved = raw_h, raw_a
+                    break
+
+        if not matching_preds:
+            continue
+
+        for m in event_markets:
+            strike = m.get("floor_strike")
+            if strike is None:
+                continue
+
+            # Find prediction at this total line
+            pred = None
+            for p in matching_preds:
+                if p["line_value"] is not None and abs(p["line_value"] - strike) < 0.1:
+                    pred = p
+                    break
+            if pred is None:
+                continue
+
+            # Use prediction's team names for game_key — guarantees consistency
+            # across matchers even when raw/resolved names differ
+            pred_home = pred["home_team"]
+            pred_away = pred["away_team"]
+
+            # fair_prob for YES = over probability = prob_side1
+            quotable.append({
+                "ticker": m["ticker"],
+                "event_ticker": event_ticker,
+                "home_team": pred_home,
+                "away_team": pred_away,
+                "game_key": (pred_home, pred_away),
+                "market_type": "totals",
+                "contract_team": None,
+                "strike": strike,
+                "is_home_contract": None,
+                "fair_prob": pred["prob_side1"],
+                "commence_time": pred.get("commence_time"),
+                "book_bid": int(round(float(m.get("yes_bid_dollars", 0)) * 100)),
+                "book_ask": int(round(float(m.get("yes_ask_dollars", 0)) * 100)),
+                "book_fetched_at": time.time(),
+            })
+
+    return quotable
+
+
+def match_moneyline_markets(kalshi_markets, predictions, team_dict, canonical_games):
+    """Match Kalshi 1H winner (3-way) markets to answer key predictions.
+
+    Each event has 3 contracts: home, away, tie. Each is an independent binary market.
+    Uses 3-way probabilities from the answer key (home/away/tie sum to 1.0).
+    """
+    from collections import defaultdict
+
+    quotable = []
+    by_event = defaultdict(list)
+    for m in kalshi_markets:
+        by_event[m["event_ticker"]].append(m)
+
+    for event_ticker, event_markets in by_event.items():
+        # Separate tie from team contracts
+        team_contracts = []
+        tie_contract = None
+        for m in event_markets:
+            sub = (m.get("yes_sub_title") or "").lower()
+            if "tie" in sub:
+                tie_contract = m
+            else:
+                team_contracts.append(m)
+
+        if len(team_contracts) != 2:
+            continue
+
+        # Parse teams from event title
+        title = event_markets[0].get("title", "")
+        away_raw, home_raw = parse_matchup_title(title)
+        if not away_raw or not home_raw:
+            continue
+
+        away_resolved, home_resolved = resolve_team_names(
+            away_raw, home_raw, team_dict, canonical_games
+        )
+
+        # Find matching h2h_h1 prediction (one per game, no line matching)
+        matching_preds = [
+            p for p in predictions
+            if p["market"] == "h2h_h1"
+            and _fuzzy_team_match(p["home_team"].lower(), home_resolved.lower())
+            and _fuzzy_team_match(p["away_team"].lower(), away_resolved.lower())
+        ]
+        if not matching_preds:
+            matching_preds = [
+                p for p in predictions
+                if p["market"] == "h2h_h1"
+                and _fuzzy_team_match(p["home_team"].lower(), away_resolved.lower())
+                and _fuzzy_team_match(p["away_team"].lower(), home_resolved.lower())
+            ]
+            if matching_preds:
+                home_resolved, away_resolved = away_resolved, home_resolved
+
+        if not matching_preds:
+            # Fallback: raw names
+            for raw_h, raw_a in [(home_raw, away_raw), (away_raw, home_raw)]:
+                matching_preds = [
+                    p for p in predictions
+                    if p["market"] == "h2h_h1"
+                    and _fuzzy_team_match(p["home_team"].lower(), raw_h.lower())
+                    and _fuzzy_team_match(p["away_team"].lower(), raw_a.lower())
+                ]
+                if matching_preds:
+                    home_resolved, away_resolved = raw_h, raw_a
+                    break
+
+        if not matching_preds:
+            continue
+
+        pred = matching_preds[0]
+        home_prob = pred["prob_side1"]
+
+        # Use prediction's team names for game_key — guarantees consistency
+        # across matchers even when raw/resolved names differ
+        pred_home = pred["home_team"]
+        pred_away = pred["away_team"]
+
+        # Require 3-way probabilities from the answer key.
+        # 2-way probs (ties excluded) systematically overvalue both team contracts
+        # by the tie probability (~5-10% for CBB halves), giving sharps free edge.
+        if pred.get("prob_side2") is None or pred.get("prob_tie") is None:
+            continue  # Refuse to quote — pipeline must export 3-way probs
+
+        away_prob = pred["prob_side2"]
+        tie_prob = pred["prob_tie"]
+
+        # Match team contracts to home/away
+        home_contract = None
+        away_contract = None
+        for m in team_contracts:
+            sub = (m.get("yes_sub_title") or "").strip()
+            sub_lower = sub.lower()
+            if _fuzzy_team_match(sub_lower, home_raw):
+                home_contract = m
+            elif _fuzzy_team_match(sub_lower, away_raw):
+                away_contract = m
+
+        if not home_contract or not away_contract:
+            # Fallback: assign by title order
+            c0_sub = (team_contracts[0].get("yes_sub_title") or "").strip().lower()
+            if _fuzzy_team_match(c0_sub, away_raw):
+                away_contract = team_contracts[0]
+                home_contract = team_contracts[1]
+            else:
+                home_contract = team_contracts[0]
+                away_contract = team_contracts[1]
+
+        if not home_contract or not away_contract:
+            continue
+
+        now_ts = time.time()
+
+        # Home YES contract
+        quotable.append({
+            "ticker": home_contract["ticker"],
+            "event_ticker": event_ticker,
+            "home_team": pred_home,
+            "away_team": pred_away,
+            "game_key": (pred_home, pred_away),
+            "market_type": "moneyline",
+            "contract_team": pred_home,
+            "strike": None,
+            "is_home_contract": True,
+            "fair_prob": home_prob,
+            "commence_time": pred.get("commence_time"),
+            "book_bid": int(round(float(home_contract.get("yes_bid_dollars", 0)) * 100)),
+            "book_ask": int(round(float(home_contract.get("yes_ask_dollars", 0)) * 100)),
+            "book_fetched_at": now_ts,
+        })
+
+        # Away YES contract
+        quotable.append({
+            "ticker": away_contract["ticker"],
+            "event_ticker": event_ticker,
+            "home_team": pred_home,
+            "away_team": pred_away,
+            "game_key": (pred_home, pred_away),
+            "market_type": "moneyline",
+            "contract_team": pred_away,
+            "strike": None,
+            "is_home_contract": False,
+            "fair_prob": away_prob,
+            "commence_time": pred.get("commence_time"),
+            "book_bid": int(round(float(away_contract.get("yes_bid_dollars", 0)) * 100)),
+            "book_ask": int(round(float(away_contract.get("yes_ask_dollars", 0)) * 100)),
+            "book_fetched_at": now_ts,
+        })
+
+        # Tie contract (if exists and we have tie probability)
+        if tie_contract and tie_prob is not None and tie_prob > 0:
+            quotable.append({
+                "ticker": tie_contract["ticker"],
+                "event_ticker": event_ticker,
+                "home_team": pred_home,
+                "away_team": pred_away,
+                "game_key": (pred_home, pred_away),
+                "market_type": "moneyline",
+                "contract_team": "Tie",
+                "strike": None,
+                "is_home_contract": None,
+                "fair_prob": tie_prob,
+                "commence_time": pred.get("commence_time"),
+                "book_bid": int(round(float(tie_contract.get("yes_bid_dollars", 0)) * 100)),
+                "book_ask": int(round(float(tie_contract.get("yes_ask_dollars", 0)) * 100)),
+                "book_fetched_at": now_ts,
+            })
+
+    return quotable
+
+
+def match_all_markets(all_kalshi, predictions, team_dict, canonical_games):
+    """Match all enabled market types to predictions. Returns unified quotable list."""
+    quotable = []
+
+    if "spreads" in all_kalshi:
+        spread_q = match_kalshi_to_predictions(
+            all_kalshi["spreads"], predictions, team_dict, canonical_games
+        )
+        # Add game_key and market_type to spread markets (backward compat)
+        for m in spread_q:
+            m.setdefault("game_key", (m["home_team"], m["away_team"]))
+            m.setdefault("market_type", "spreads")
+            m.setdefault("book_fetched_at", time.time())
+        quotable.extend(spread_q)
+
+    if "totals" in all_kalshi:
+        quotable.extend(match_total_markets(
+            all_kalshi["totals"], predictions, team_dict, canonical_games
+        ))
+
+    if "moneyline" in all_kalshi:
+        quotable.extend(match_moneyline_markets(
+            all_kalshi["moneyline"], predictions, team_dict, canonical_games
+        ))
 
     return quotable
 
@@ -354,30 +673,54 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
                 and ticker not in resting_by_ticker):
             continue
 
-        # Get current position (per-ticker and per-event)
+        # Skip markets with stale book data
+        book_age = time.time() - market.get("book_fetched_at", 0)
+        if book_age > config.MAX_BOOK_STALENESS_SEC:
+            continue
+
+        # Get current position (per-ticker, per-event, and per-game)
         pos = db.get_position(ticker)
         net = pos["net_yes"]
         event_net = db.get_event_net_position(market.get("event_ticker", ""))
+        game_key = market.get("game_key", (market.get("home_team", ""), market.get("away_team", "")))
+        game_net = db.get_game_net_position(game_key[0], game_key[1])
 
         # Count resting order exposure toward event limit — prevents a sharp
         # from filling multiple strikes simultaneously to breach the limit
         resting_event_long = 0
         resting_event_short = 0
+        resting_game_long = 0
+        resting_game_short = 0
         for other_m in quotable_markets:
-            if other_m["event_ticker"] == event_ticker and other_m["ticker"] != ticker:
-                other_info = resting_by_ticker.get(other_m["ticker"], {})
+            if other_m["ticker"] == ticker:
+                continue
+            other_info = resting_by_ticker.get(other_m["ticker"], {})
+            # Per-event resting
+            if other_m["event_ticker"] == event_ticker:
                 if other_info.get("bid_order_id"):
                     resting_event_long += config.CONTRACT_SIZE
                 if other_info.get("ask_order_id"):
                     resting_event_short += config.CONTRACT_SIZE
+            # Per-game resting (across market types)
+            other_game = other_m.get("game_key", (other_m.get("home_team", ""), other_m.get("away_team", "")))
+            if other_game == game_key:
+                if other_info.get("bid_order_id"):
+                    resting_game_long += config.CONTRACT_SIZE
+                if other_info.get("ask_order_id"):
+                    resting_game_short += config.CONTRACT_SIZE
 
-        # Check position limit — per-ticker, per-event, AND global directional
+        # Check position limit — per-ticker, per-event, per-game, AND global directional
+        # Include CONTRACT_SIZE for the order we're about to place — otherwise
+        # simultaneous fills on N tickers can breach the limit by (N-1)*CONTRACT_SIZE
         can_long, can_short = risk.check_directional_limit()
+        size = config.CONTRACT_SIZE
         at_max_long = (net >= config.MAX_POSITION_PER_MARKET
-                       or (event_net + resting_event_long) >= config.MAX_POSITION_PER_EVENT
+                       or (event_net + resting_event_long + size) > config.MAX_POSITION_PER_EVENT
+                       or (game_net + resting_game_long + size) > config.MAX_POSITION_PER_GAME
                        or not can_long)
         at_max_short = (net <= -config.MAX_POSITION_PER_MARKET
-                        or (event_net + resting_event_short) <= -config.MAX_POSITION_PER_EVENT
+                        or (event_net - resting_event_short - size) < -config.MAX_POSITION_PER_EVENT
+                        or (game_net - resting_game_short - size) < -config.MAX_POSITION_PER_GAME
                         or not can_short)
 
         # Compute quote (orderbook-aware, with anti-penny-loop)
@@ -464,6 +807,12 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
             db.remove_resting_order(existing["ask_order_id"])
             existing.pop("ask_order_id", None)
 
+        # Store market metadata so poll_for_fills can find it even after
+        # quotable list refreshes (prevents ghost positions with NULL home/away)
+        existing["_home_team"] = market.get("home_team")
+        existing["_away_team"] = market.get("away_team")
+        existing["_market_type"] = market.get("market_type")
+        existing["_event_ticker"] = event_ticker
         resting_by_ticker[ticker] = existing
         quoted_count += 1
         quoted_events.add(event_ticker)
@@ -535,12 +884,24 @@ def poll_for_fills(resting_by_ticker, quotable_markets_ref=None):
                       f"{' (partial)' if remaining > 0 else ''}")
                 TOTAL_FILLS += new_fills
 
-                # Find event_ticker for this order's ticker
-                event_ticker = None
-                for m in quotable_markets_ref:
-                    if m["ticker"] == ticker:
-                        event_ticker = m.get("event_ticker")
-                        break
+                # Find market metadata — prefer resting_by_ticker (survives quotable
+                # refreshes) over quotable_markets_ref (may not contain this ticker
+                # after a refresh, causing ghost positions with NULL home/away)
+                resting_info = resting_by_ticker.get(ticker, {})
+                event_ticker = resting_info.get("_event_ticker")
+                fill_home = resting_info.get("_home_team")
+                fill_away = resting_info.get("_away_team")
+                fill_market_type = resting_info.get("_market_type")
+
+                # Fallback to quotable_markets_ref if resting metadata missing
+                if not event_ticker:
+                    for m in quotable_markets_ref:
+                        if m["ticker"] == ticker:
+                            event_ticker = m.get("event_ticker")
+                            fill_home = fill_home or m.get("home_team")
+                            fill_away = fill_away or m.get("away_team")
+                            fill_market_type = fill_market_type or m.get("market_type")
+                            break
 
                 # Compute maker fee: fee_rate * P * (1-P) * 100 per contract
                 p = price / 100.0
@@ -549,7 +910,10 @@ def poll_for_fills(resting_by_ticker, quotable_markets_ref=None):
 
                 # Update position with incremental fills only
                 db.update_position(ticker, side, price, new_fills,
-                                   event_ticker=event_ticker)
+                                   event_ticker=event_ticker,
+                                   home_team=fill_home,
+                                   away_team=fill_away,
+                                   market_type=fill_market_type)
                 db.record_fill(
                     fill_id=f"{oid}-fill-{cumulative_filled}",
                     ticker=ticker, side=side, action="buy",
@@ -580,7 +944,9 @@ def main():
     print(f"  {'DRY RUN' if DRY_RUN else 'LIVE'}")
     print(f"  Maker: EV>{config.MIN_EV_PCT:.0%} | Size: {config.CONTRACT_SIZE}")
     print(f"  Taker: EV>{config.MIN_TAKE_EV_PCT:.0%} (after {config.TAKER_FEE_RATE:.0%} fee) | Size: {config.TAKE_CONTRACT_SIZE}")
-    print(f"  Max position: {config.MAX_POSITION_PER_MARKET} | Max exposure: ${config.MAX_TOTAL_EXPOSURE_DOLLARS}")
+    print(f"  Markets: {', '.join(sorted(config.ENABLED_MARKET_TYPES))}")
+    print(f"  Max position: {config.MAX_POSITION_PER_MARKET}/ticker, {config.MAX_POSITION_PER_EVENT}/event, {config.MAX_POSITION_PER_GAME}/game")
+    print(f"  Max exposure: ${config.MAX_TOTAL_EXPOSURE_DOLLARS}")
     print(f"  API: {config.KALSHI_BASE_URL}")
     print("=" * 60)
 
@@ -625,20 +991,30 @@ def main():
     team_dict = load_team_dict("cbb")
     canonical_games = load_canonical_games("cbb")
 
-    # Fetch Kalshi 1H spread markets
-    print(f"Fetching Kalshi 1H spread markets ({config.SPREAD_SERIES})...")
-    kalshi_markets = fetch_markets(config.SPREAD_SERIES)
-    print(f"  Found {len(kalshi_markets)} open markets")
+    # Fetch Kalshi 1H markets (all enabled types)
+    enabled = ", ".join(sorted(config.ENABLED_MARKET_TYPES))
+    print(f"Fetching Kalshi 1H markets (enabled: {enabled})...")
+    all_kalshi = fetch_all_markets()
+    total_markets = sum(len(v) for v in all_kalshi.values())
+    for mtype, markets in all_kalshi.items():
+        print(f"  {mtype}: {len(markets)} open contracts")
+    print(f"  Total: {total_markets} open markets")
 
-    if not kalshi_markets:
-        print("No open Kalshi 1H spread markets found.")
+    if not all_kalshi:
+        print("No open Kalshi 1H markets found.")
         return
 
     # Match to predictions
     print("Matching Kalshi markets to predictions...")
-    quotable = match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonical_games)
+    quotable = match_all_markets(all_kalshi, predictions, team_dict, canonical_games)
     enforce_monotonicity(quotable)
-    print(f"  {len(quotable)} quotable markets found")
+    # Count by type
+    by_type = {}
+    for m in quotable:
+        t = m.get("market_type", "spreads")
+        by_type[t] = by_type.get(t, 0) + 1
+    type_summary = ", ".join(f"{t}={c}" for t, c in sorted(by_type.items()))
+    print(f"  {len(quotable)} quotable markets ({type_summary})")
 
     if not quotable:
         print("No markets matched predictions. Check team name resolution.")
@@ -676,12 +1052,12 @@ def main():
                         prediction_updated_at = new_ts
                         taker.clear_cooldowns()  # Fresh predictions → fresh taker signals
 
-                    # Re-fetch Kalshi markets + re-match
-                    fresh_markets = fetch_markets(config.SPREAD_SERIES)
-                    if fresh_markets:
-                        kalshi_markets = fresh_markets
-                    new_quotable = match_kalshi_to_predictions(
-                        kalshi_markets, predictions, team_dict, canonical_games
+                    # Re-fetch Kalshi markets + re-match (all enabled types)
+                    fresh_all = fetch_all_markets()
+                    if fresh_all:
+                        all_kalshi = fresh_all
+                    new_quotable = match_all_markets(
+                        all_kalshi, predictions, team_dict, canonical_games
                     )
                     enforce_monotonicity(new_quotable)
                     print(f"  Refreshed: {len(new_quotable)} quotable markets")

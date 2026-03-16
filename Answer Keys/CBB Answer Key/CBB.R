@@ -759,22 +759,52 @@ dbExecute(con, "DROP TABLE IF EXISTS cbb_bets_combined")
 dbWriteTable(con, "cbb_bets_combined", all_bets_combined)
 
 # --- Export raw predictions for market maker consumption ---
+# Generate 3-way ML probabilities (home/away/tie) for Kalshi 1H winner markets.
+# build_moneylines_from_samples() only exports 2-way (ties excluded), but
+# Kalshi 1H winner is 3-way — using 2-way probs would overvalue both sides
+# by the tie probability, giving sharps free edge.
+ml_3way_raw <- map_dfr(names(samples), function(game_id) {
+  preds <- predict_moneyline_from_sample(samples[[game_id]]$sample,
+                                         margin_col = "game_home_margin_period")
+  preds$id <- game_id
+  preds
+})
+ml_3way_preds <- ml_3way_raw %>%
+  inner_join(
+    consensus_odds %>% ungroup() %>% select(id, home_team, away_team, commence_time),
+    by = "id"
+  )
+# Extract Half1 3-way columns
+ml_3way_h1_col <- "game_home_margin_period_Half1_3way_home"
+if (ml_3way_h1_col %in% names(ml_3way_preds)) {
+  ml_preds_export <- ml_3way_preds %>%
+    transmute(id, home_team, away_team, commence_time,
+              market = "h2h_h1", period = "Half1",
+              line_value = NA_real_,
+              prob_side1 = game_home_margin_period_Half1_3way_home,
+              prob_side2 = game_home_margin_period_Half1_3way_away,
+              prob_tie   = game_home_margin_period_Half1_3way_tie)
+} else {
+  # Fallback to 2-way if 3-way columns missing
+  ml_preds_export <- ml_results$predictions %>%
+    filter(market == "h2h_h1") %>%
+    transmute(id, home_team, away_team, commence_time, market, period,
+              line_value = NA_real_, prob_side1 = home_win_prob,
+              prob_side2 = away_win_prob, prob_tie = NA_real_)
+}
+
 raw_preds <- bind_rows(
   spread_results$predictions %>%
     filter(market == "spreads_h1") %>%
     transmute(id, home_team, away_team, commence_time, market, period,
               line_value = book_home_spread, prob_side1 = home_cover_prob,
-              prob_side2 = away_cover_prob),
+              prob_side2 = away_cover_prob, prob_tie = NA_real_),
   total_results$predictions %>%
     filter(market == "totals_h1") %>%
     transmute(id, home_team, away_team, commence_time, market, period,
               line_value = book_total_line, prob_side1 = over_prob,
-              prob_side2 = under_prob),
-  ml_results$predictions %>%
-    filter(market == "h2h_h1") %>%
-    transmute(id, home_team, away_team, commence_time, market, period,
-              line_value = NA_real_, prob_side1 = home_win_prob,
-              prob_side2 = away_win_prob)
+              prob_side2 = under_prob, prob_tie = NA_real_),
+  ml_preds_export
 )
 dbExecute(con, "DROP TABLE IF EXISTS cbb_raw_predictions")
 dbWriteTable(con, "cbb_raw_predictions", raw_preds)

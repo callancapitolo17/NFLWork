@@ -12,7 +12,8 @@ import db
 from config import (
     MAX_POSITION_PER_MARKET, MAX_TOTAL_EXPOSURE_DOLLARS, MAX_MARKETS,
     MAX_TOTAL_DIRECTIONAL, MAX_STALENESS_SEC, LINE_MOVE_THRESHOLD,
-    TIPOFF_PULLBACK_MIN, BOOKMAKER_SCRAPER, BET105_SCRAPER
+    TIPOFF_PULLBACK_MIN, BOOKMAKER_SCRAPER, BET105_SCRAPER,
+    MAX_POSITION_PER_GAME
 )
 
 
@@ -140,7 +141,7 @@ def run_line_monitor():
                 print(f"  Warning: {book_name} scraper failed: {result.stderr[:200]}")
                 continue
 
-            # Read 1H spreads from the scraper's DuckDB
+            # Read 1H spreads and totals from the scraper's DuckDB
             import duckdb
             db_path = str(scraper_path.parent / f"{book_name}.duckdb")
             if not Path(db_path).exists():
@@ -148,6 +149,7 @@ def run_line_monitor():
 
             conn = duckdb.connect(db_path, read_only=True)
             try:
+                # Spread lines
                 rows = conn.execute("""
                     SELECT home_team, away_team, market, home_spread as line_value
                     FROM cbb_odds
@@ -161,6 +163,23 @@ def run_line_monitor():
                         "line_value": row[3],
                         "source": book_name,
                     })
+                # Total lines
+                try:
+                    total_rows = conn.execute("""
+                        SELECT home_team, away_team, market, total as line_value
+                        FROM cbb_odds
+                        WHERE market = 'totals_h1' AND total IS NOT NULL
+                    """).fetchall()
+                    for row in total_rows:
+                        current_lines.append({
+                            "home_team": row[0],
+                            "away_team": row[1],
+                            "market": row[2],
+                            "line_value": row[3],
+                            "source": book_name,
+                        })
+                except Exception:
+                    pass  # Table may not have totals column
             finally:
                 conn.close()
 
@@ -184,19 +203,20 @@ def detect_line_moves(current_lines, reference_lines):
     """
     moved_games = []
 
-    # Build reference lookup: (home_team, away_team) -> line_value
+    # Build reference lookup: (home_team, away_team, market) -> line_value
     ref_lookup = {}
     for ref in reference_lines:
-        key = (ref["home_team"], ref["away_team"])
+        key = (ref["home_team"], ref["away_team"], ref.get("market", "spreads_h1"))
         ref_lookup[key] = ref["line_value"]
 
     for line in current_lines:
-        key = (line["home_team"], line["away_team"])
+        key = (line["home_team"], line["away_team"], line.get("market", "spreads_h1"))
         if key in ref_lookup:
             delta = abs(line["line_value"] - ref_lookup[key])
             if delta > LINE_MOVE_THRESHOLD:
-                moved_games.append(key)
-                print(f"  LINE MOVE: {key[1]} vs {key[0]}: "
+                game = (line["home_team"], line["away_team"])
+                moved_games.append(game)
+                print(f"  LINE MOVE: {game[1]} vs {game[0]} ({line.get('market', '?')}): "
                       f"{ref_lookup[key]} → {line['line_value']} (delta={delta:.1f})")
 
     return list(set(moved_games))
