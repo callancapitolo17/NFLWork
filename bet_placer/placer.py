@@ -31,6 +31,9 @@ def get_navigator(bookmaker: str):
     elif bookmaker == "bfa":
         from navigator_bfa import BFANavigator
         return BFANavigator()
+    elif bookmaker in ("betonline", "betonlineag"):
+        from navigator_betonline import BetOnlineNavigator
+        return BetOnlineNavigator()
     else:
         return None
 

@@ -30,7 +30,7 @@ app = Flask(__name__)
 log = logging.getLogger("clv")
 
 # Books with working navigators for auto-queue
-SUPPORTED_AUTO_BOOKS = ("wagerzon", "hoop88", "bfa")
+SUPPORTED_AUTO_BOOKS = ("wagerzon", "hoop88", "bfa", "betonlineag")
 
 # DuckDB with pipeline bets — always in main repo (not worktree)
 _REPO_ROOT = PROJECT_ROOT
