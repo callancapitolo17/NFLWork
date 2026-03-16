@@ -1167,17 +1167,20 @@ def main():
                 time.sleep(1)
 
         # Log session summary
-        positions = db.get_all_positions()
-        print(f"\n{'=' * 60}")
-        print(f"  Session {SESSION_ID} complete")
-        print(f"  Total fills: {TOTAL_FILLS}")
-        print(f"  Open positions: {len(positions)}")
-        for p in positions:
-            print(f"    {p['ticker']}: net_yes={p['net_yes']}, avg={p['avg_entry_price']:.1f}c")
-        print(f"{'=' * 60}")
-
-        db.end_session(SESSION_ID, TOTAL_FILLS, 0.0, TOTAL_FEES,
-                       len(resting_by_ticker))
+        try:
+            positions = db.get_all_positions()
+            print(f"\n{'=' * 60}")
+            print(f"  Session {SESSION_ID} complete")
+            print(f"  Total fills: {TOTAL_FILLS}")
+            print(f"  Open positions: {len(positions)}")
+            for p in positions:
+                print(f"    {p['ticker']}: net_yes={p['net_yes']}, avg={p['avg_entry_price']:.1f}c")
+            print(f"{'=' * 60}")
+            db.end_session(SESSION_ID, TOTAL_FILLS, 0.0, TOTAL_FEES,
+                           len(resting_by_ticker))
+        except Exception as e:
+            print(f"  Shutdown DB error (non-fatal): {e}")
+            print(f"  Session {SESSION_ID}: {TOTAL_FILLS} fills, ${TOTAL_FEES:.2f} fees")
 
 
 if __name__ == "__main__":
