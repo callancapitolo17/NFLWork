@@ -771,7 +771,7 @@ ml_3way_raw <- map_dfr(names(samples), function(game_id) {
 })
 ml_3way_preds <- ml_3way_raw %>%
   inner_join(
-    consensus_odds %>% ungroup() %>% select(id, home_team, away_team, commence_time),
+    cbb_odds %>% ungroup() %>% select(id, home_team, away_team, commence_time),
     by = "id"
   )
 # Extract Half1 3-way columns
