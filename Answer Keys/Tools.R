@@ -1815,11 +1815,12 @@ build_3way_from_samples <- function(
         select(id, spread, total_line, starts_with("consensus")),
       by = "id"
     ) %>%
-    # Devig 3-way odds
-    mutate(devigged = pmap(list(book_home_odds, book_away_odds, book_tie_odds),
-                           ~ devig_american_3way(..1, ..2, ..3))) %>%
-    unnest_wider(devigged) %>%
-    rename(book_prob_home = p_home, book_prob_away = p_away, book_prob_tie = p_tie) %>%
+    # Raw implied probs (with vig) — matches 2-way pattern
+    mutate(
+      book_prob_home = american_to_implied(book_home_odds),
+      book_prob_away = american_to_implied(book_away_odds),
+      book_prob_tie  = american_to_implied(book_tie_odds)
+    ) %>%
     filter(!is.na(spread), !is.na(home_prob)) %>%
     mutate(
       home_ev = compute_ev(home_prob, book_prob_home),
@@ -4217,13 +4218,14 @@ compare_moneylines_3way_to_kalshi <- function(
 
   cat(sprintf("Found %d matches between 3-way predictions and Kalshi moneylines\n", nrow(joined)))
 
-  # Devig 3-way and compute EV
+  # Raw implied probs (with vig) — matches 2-way pattern
   prediction_set <- joined %>%
     mutate(bookmaker_key = "kalshi") %>%
-    mutate(devigged = pmap(list(odds_home, odds_away, odds_tie),
-                           ~ devig_american_3way(..1, ..2, ..3))) %>%
-    unnest_wider(devigged) %>%
-    rename(book_prob_home = p_home, book_prob_away = p_away, book_prob_tie = p_tie) %>%
+    mutate(
+      book_prob_home = american_to_implied(odds_home),
+      book_prob_away = american_to_implied(odds_away),
+      book_prob_tie  = american_to_implied(odds_tie)
+    ) %>%
     mutate(
       home_ev = compute_ev(home_prob, book_prob_home),
       away_ev = compute_ev(away_prob, book_prob_away),
