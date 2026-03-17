@@ -9,8 +9,7 @@ source("espn_bracket.R")
 
 # --- 1. Load bracket + ratings ---
 bracket_result <- fetch_espn_bracket()
-teams_std <- espn_mbb_teams(current_year) %>%
-  mutate(team = ifelse(team == "McNeese", "McNeese State", team))
+teams_std <- get_teams_std()
 
 # Use all 68 teams (ignoring elimination status from actual results)
 final_bracket <- bracket_result$bracket %>% select(team, seed, region, play_in)
@@ -18,8 +17,8 @@ bracket_with_ratings <- fetch_bracket_with_ratings(final_bracket, teams_std)
 
 # --- 2. Simulation Functions ---
 
-simulate_round <- function(teams, game_number = 1) {
-  teams <- get_bracket_matchups(teams)
+simulate_round <- function(teams, game_number = 1, region_order_auto = NULL) {
+  teams <- get_bracket_matchups(teams, region_order_auto)
   team_pairs <- split(teams, rep(1:(nrow(teams) / 2), each = 2))
   winners <- map(team_pairs, ~ {
     if (nrow(.x) < 2) return(.x[1, ])
@@ -31,13 +30,14 @@ simulate_round <- function(teams, game_number = 1) {
 simulate_tournament <- function(bracket) {
   round_num <- 1
   teams_round <- bracket
+  region_order_auto <- get_region_order(bracket)
 
   team_progress <- teams_round %>%
     select(team, seed) %>%
     mutate(Round_32 = 0, Sweet_16 = 0, Elite_8 = 0, Final_4 = 0, Title_Game = 0, Champion = 0)
 
   while (nrow(teams_round) > 1) {
-    teams_round <- simulate_round(teams_round, game_number = round_num)
+    teams_round <- simulate_round(teams_round, game_number = round_num, region_order_auto = region_order_auto)
     team_progress <- team_progress %>%
       mutate(
         Round_32   = ifelse(nrow(teams_round) < 64 & team %in% teams_round$team, 1, Round_32),
