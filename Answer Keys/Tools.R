@@ -1817,9 +1817,9 @@ build_3way_from_samples <- function(
     ) %>%
     # Raw implied probs (with vig) — matches 2-way pattern
     mutate(
-      book_prob_home = american_to_implied(book_home_odds),
-      book_prob_away = american_to_implied(book_away_odds),
-      book_prob_tie  = american_to_implied(book_tie_odds)
+      book_prob_home = odds_to_prob(book_home_odds),
+      book_prob_away = odds_to_prob(book_away_odds),
+      book_prob_tie  = odds_to_prob(book_tie_odds)
     ) %>%
     filter(!is.na(spread), !is.na(home_prob)) %>%
     mutate(
@@ -4222,9 +4222,9 @@ compare_moneylines_3way_to_kalshi <- function(
   prediction_set <- joined %>%
     mutate(bookmaker_key = "kalshi") %>%
     mutate(
-      book_prob_home = american_to_implied(odds_home),
-      book_prob_away = american_to_implied(odds_away),
-      book_prob_tie  = american_to_implied(odds_tie)
+      book_prob_home = odds_to_prob(odds_home),
+      book_prob_away = odds_to_prob(odds_away),
+      book_prob_tie  = odds_to_prob(odds_tie)
     ) %>%
     mutate(
       home_ev = compute_ev(home_prob, book_prob_home),
