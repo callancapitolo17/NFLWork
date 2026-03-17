@@ -109,8 +109,18 @@ clean_evan_miya_wide <- tryCatch({
     "Tempo Rank", "Injury Rank", "Home Rank", "Roster Rank",
     "Kill Shots Per Game", "Kill Shots Conceded Per Game", "Kill Shots Margin Per Game",
     "Total Kill Shots", "Total Kill Shots Conceded", "D1 Wins", "D1 Losses")
+  if (any(grepl("^[0-9.]+$", evan_miya_wide$Team))) {
+    stop("EvanMiya pivot failed: Team column contains numeric values. Sheet format may have changed.")
+  }
   evan_miya_wide %>%
-    mutate(Team = ifelse(Team == "Connecticut", "UConn", ifelse(Team == "Mississippi", "Ole Miss", Team))) %>%
+    mutate(Team = case_when(
+      Team == "Connecticut" ~ "UConn",
+      Team == "Mississippi" ~ "Ole Miss",
+      grepl("^Texas AM$", Team) ~ "Texas A&M",
+      grepl("^Prairie View AM$", Team) ~ "Prairie View A&M",
+      grepl("^Florida AM$", Team) ~ "Florida A&M",
+      TRUE ~ Team
+    )) %>%
     mutate(standard_team = map_chr(Team, ~ get_standard_team(.x, teams_std = teams_std))) %>%
     select(standard_team, `Relative Rating`) %>%
     mutate(`Relative Rating` = map_dbl(`Relative Rating`, ~ ifelse(is.null(.x), NA_real_, as.numeric(.x))))
@@ -191,15 +201,18 @@ get_bracket_matchups <- function(teams, region_order_auto = NULL) {
 }
 
 # Standard game simulation (same as before)
-simulate_game <- function(team1, team2, game_number = 1, beta1 = 0.1, beta2 = 0.05, sd_margin = 11.2) {
+simulate_game <- function(team1, team2, game_number = 1, beta1 = 0.1, beta2 = 0.05,
+                          sd_margin = 11.2, sd_rating_shift = 0.5) {
   if(is.na(team1$composite_rating)) team1$composite_rating <- 0
   if(is.na(team2$composite_rating)) team2$composite_rating <- 0
   expected_diff <- team1$composite_rating - team2$composite_rating
   actual_margin <- rnorm(1, mean = expected_diff, sd = sd_margin)
   winner <- if(actual_margin > 0) team1 else team2
   loser <- if(actual_margin > 0) team2 else team1
+  # Rating update with residual sampling (per Unabated article)
   rating_change <- beta1 * (actual_margin - expected_diff) +
-    beta2 * (actual_margin - expected_diff) * log(game_number + 1)
+    beta2 * (actual_margin - expected_diff) * log(game_number + 1) +
+    rnorm(1, 0, sd_rating_shift)
   winner$composite_rating <- winner$composite_rating + rating_change
   loser$composite_rating <- loser$composite_rating - rating_change
   list(winner = winner)
