@@ -730,15 +730,28 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
             bid_size = config.CONTRACT_SIZE
             ask_size = config.CONTRACT_SIZE
 
+        # Kelly says don't quote either side → skip entirely
+        if bid_size <= 0 and ask_size <= 0:
+            if ticker in resting_by_ticker:
+                if not DRY_RUN:
+                    for side_key in ["bid_order_id", "ask_order_id"]:
+                        oid = resting_by_ticker[ticker].get(side_key)
+                        if oid:
+                            orders.cancel_order(oid)
+                del resting_by_ticker[ticker]
+            continue
+
         # Check position limit — per-ticker, per-event, per-game, AND global directional
         # Include size for the order we're about to place — otherwise
         # simultaneous fills on N tickers can breach the limit by (N-1)*size
         can_long, can_short = risk.check_directional_limit()
-        at_max_long = (net >= config.MAX_POSITION_PER_MARKET
+        at_max_long = (bid_size <= 0
+                       or net >= config.MAX_POSITION_PER_MARKET
                        or (event_net + resting_event_long + bid_size) > config.MAX_POSITION_PER_EVENT
                        or (game_net + resting_game_long + bid_size) > config.MAX_POSITION_PER_GAME
                        or not can_long)
-        at_max_short = (net <= -config.MAX_POSITION_PER_MARKET
+        at_max_short = (ask_size <= 0
+                        or net <= -config.MAX_POSITION_PER_MARKET
                         or (event_net - resting_event_short - ask_size) < -config.MAX_POSITION_PER_EVENT
                         or (game_net - resting_game_short - ask_size) < -config.MAX_POSITION_PER_GAME
                         or not can_short)
@@ -966,7 +979,7 @@ def main():
     print(f"  Kalshi CBB 1H Market Maker — Session {SESSION_ID}")
     print(f"  {'DRY RUN' if DRY_RUN else 'LIVE'}")
     if config.USE_KELLY_SIZING:
-        size_str = f"Kelly (f={config.KELLY_FRACTION}, B=${config.BANKROLL:.0f}, [{config.MIN_KELLY_CONTRACTS}-{config.MAX_KELLY_CONTRACTS}])"
+        size_str = f"Kelly (f={config.KELLY_FRACTION}, B=${config.BANKROLL:.0f}, max={config.MAX_KELLY_CONTRACTS})"
     else:
         size_str = str(config.CONTRACT_SIZE)
     print(f"  Maker: EV>{config.MIN_EV_PCT:.0%} | Size: {size_str}")

@@ -12,7 +12,7 @@ import numpy as np
 import duckdb
 from config import (
     CBB_DB_PATH, BANKROLL, KELLY_FRACTION,
-    MIN_KELLY_CONTRACTS, MAX_KELLY_CONTRACTS, CONTRACT_SIZE
+    MAX_KELLY_CONTRACTS
 )
 
 import db as _db
@@ -206,7 +206,7 @@ def kelly_size_single(fair_prob, kalshi_price_cents, bankroll, kelly_mult):
     # Convert fraction to contracts: each contract costs price dollars, pays $1
     cost_per_contract = price
     contracts = f * kelly_mult * bankroll / cost_per_contract
-    contracts = max(MIN_KELLY_CONTRACTS, min(MAX_KELLY_CONTRACTS, round(contracts)))
+    contracts = max(0, min(MAX_KELLY_CONTRACTS, round(contracts)))
     return int(contracts)
 
 
@@ -280,8 +280,7 @@ def conditional_kelly_sizes(new_positions, placed_positions, samples,
                 for i, pos in enumerate(new_positions):
                     cost = pos["kalshi_price"] / 100.0
                     contracts = f_new[i] * kelly_mult * bankroll / cost
-                    contracts = max(MIN_KELLY_CONTRACTS,
-                                    min(MAX_KELLY_CONTRACTS, round(contracts)))
+                    contracts = max(0, min(MAX_KELLY_CONTRACTS, round(contracts)))
                     sizes.append(int(contracts))
                 return sizes
 
@@ -334,8 +333,7 @@ def _fallback_rho_scaling(new_positions, placed_positions, samples,
                     pos["fair_prob"], pos["kalshi_price"],
                     bankroll, kelly_mult
                 )
-                adjusted = max(MIN_KELLY_CONTRACTS,
-                               min(MAX_KELLY_CONTRACTS, round(base * scale)))
+                adjusted = max(0, min(MAX_KELLY_CONTRACTS, round(base * scale)))
                 sizes.append(int(adjusted))
             return sizes
 
@@ -361,11 +359,11 @@ def kelly_size_for_quote(market, side, placed_positions, bankroll, kelly_mult):
     """
     game_id = market.get("game_id")
     if not game_id:
-        return CONTRACT_SIZE  # no game_id → can't load samples
+        return 0  # no game_id → can't compute Kelly → don't quote
 
     samples = load_game_samples(game_id)
     if samples is None:
-        return CONTRACT_SIZE  # no samples → fall back to fixed size
+        return 0  # no samples → can't compute Kelly → don't quote
 
     # Build the new position dict
     if side == "bid":
@@ -379,7 +377,7 @@ def kelly_size_for_quote(market, side, placed_positions, bankroll, kelly_mult):
                                                 int((1 - market["fair_prob"]) * 100))
 
     if pos["kalshi_price"] <= 0 or pos["kalshi_price"] >= 100:
-        return CONTRACT_SIZE
+        return 0
 
     if not placed_positions:
         return kelly_size_single(pos["fair_prob"], pos["kalshi_price"],
@@ -387,7 +385,7 @@ def kelly_size_for_quote(market, side, placed_positions, bankroll, kelly_mult):
 
     sizes = conditional_kelly_sizes([pos], placed_positions, samples,
                                     bankroll, kelly_mult)
-    return sizes[0] if sizes else CONTRACT_SIZE
+    return sizes[0] if sizes else 0
 
 
 def _market_to_position(market, yes_or_no):
