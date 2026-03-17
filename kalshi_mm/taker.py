@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import config
 import db
+import kelly
 import orders
 import risk
 
@@ -191,11 +192,14 @@ def _reconcile_fill_count(order_id, total_requested):
     return total_requested - remaining
 
 
-def execute_take(market, side, price, ev_pct, fee_cents, pred_ts, dry_run=False):
+def execute_take(market, side, price, ev_pct, fee_cents, pred_ts, dry_run=False,
+                 take_size=None):
     """Place a taker order (post_only=False), then cancel unfilled remainder.
 
     Returns number of contracts actually filled (0 if failed).
     """
+    if take_size is None:
+        take_size = config.TAKE_CONTRACT_SIZE
     ticker = market["ticker"]
     event_ticker = market.get("event_ticker", "")
     take_id = f"take-{uuid.uuid4().hex[:8]}"
@@ -205,7 +209,7 @@ def execute_take(market, side, price, ev_pct, fee_cents, pred_ts, dry_run=False)
     market_type = market.get("market_type", "spreads")
 
     if dry_run:
-        print(f"  [TAKER] TAKE (dry): {side.upper()} {config.TAKE_CONTRACT_SIZE}x @ {price}c on {ticker} "
+        print(f"  [TAKER] TAKE (dry): {side.upper()} {take_size}x @ {price}c on {ticker} "
               f"(fair={market['fair_prob']*100:.1f}c, EV={ev_pct:.1%}, fee={fee_cents:.1f}c) [{market_type}]")
         set_cooldown(ticker, event_ticker, pred_ts,
                      home_team=home_team, away_team=away_team, market_type=market_type)
@@ -231,12 +235,12 @@ def execute_take(market, side, price, ev_pct, fee_cents, pred_ts, dry_run=False)
     if ev_pct is None:
         return 0  # No longer +EV at confirmed price
 
-    print(f"  [TAKER] TAKE: {side.upper()} {config.TAKE_CONTRACT_SIZE}x @ {price}c on {ticker} "
+    print(f"  [TAKER] TAKE: {side.upper()} {take_size}x @ {price}c on {ticker} "
           f"(fair={fair_cents:.1f}c, EV={ev_pct:.1%}, fee={fee_cents:.1f}c)")
 
     # Place order with post_only=False to cross the spread
     result = orders.place_order(
-        ticker, side, price, config.TAKE_CONTRACT_SIZE, post_only=False
+        ticker, side, price, take_size, post_only=False
     )
 
     if not result:
@@ -261,10 +265,10 @@ def execute_take(market, side, price, ev_pct, fee_cents, pred_ts, dry_run=False)
     # RECONCILE: re-check the order via API to get actual final fill count.
     # Fills can happen between place_order response and cancel_order.
     # The place_order response's remaining_count may be stale.
-    filled = _reconcile_fill_count(order_id, config.TAKE_CONTRACT_SIZE)
+    filled = _reconcile_fill_count(order_id, take_size)
 
     if filled > 0:
-        print(f"    Filled {filled}/{config.TAKE_CONTRACT_SIZE} contracts")
+        print(f"    Filled {filled}/{take_size} contracts")
     else:
         print(f"    No fills (order cancelled or rejected)")
 
@@ -290,7 +294,7 @@ def execute_take(market, side, price, ev_pct, fee_cents, pred_ts, dry_run=False)
             side=side, price=price,
             fair_cents=fair_cents,
             ev_pct=ev_pct, fee_cents=fee_cents,
-            count_requested=config.TAKE_CONTRACT_SIZE,
+            count_requested=take_size,
             count_filled=filled, order_id=order_id,
         )
 
@@ -359,6 +363,19 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
         # Global directional check
         can_long, can_short = risk.check_directional_limit()
 
+        # Compute Kelly size for this take
+        if config.USE_KELLY_SIZING:
+            game_id = market.get("game_id")
+            placed = []
+            if game_id and game_key[0]:
+                placed = kelly.get_placed_positions_for_game(game_key, game_id)
+            take_size = kelly.kelly_size_for_quote(
+                market, side="bid", placed_positions=placed,
+                bankroll=config.BANKROLL, kelly_mult=config.KELLY_FRACTION
+            )
+        else:
+            take_size = config.TAKE_CONTRACT_SIZE
+
         # --- Evaluate YES take (buy YES at ask) ---
         if yes_ask > 0 and can_long:
             # Don't take YES if MM already has a resting YES bid (would double up)
@@ -369,16 +386,17 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
                 resting_event_exposure = _count_resting_event_exposure(
                     event_ticker, quotable_markets, resting_by_ticker
                 )
-                proposed_net = net + config.TAKE_CONTRACT_SIZE
-                proposed_event = event_net + config.TAKE_CONTRACT_SIZE + resting_event_exposure
-                proposed_game = game_net + config.TAKE_CONTRACT_SIZE
+                proposed_net = net + take_size
+                proposed_event = event_net + take_size + resting_event_exposure
+                proposed_game = game_net + take_size
                 if (abs(proposed_net) <= config.MAX_POSITION_PER_MARKET
                         and abs(proposed_event) <= config.MAX_POSITION_PER_EVENT
                         and abs(proposed_game) <= config.MAX_POSITION_PER_GAME):
                     ev_pct, fee = compute_take_ev(fair_cents, yes_ask, "yes")
                     if ev_pct is not None:
                         filled = execute_take(market, "yes", yes_ask, ev_pct, fee,
-                                              prediction_updated_at, dry_run=dry_run)
+                                              prediction_updated_at, dry_run=dry_run,
+                                              take_size=take_size)
                         if filled > 0:
                             takes_this_cycle += 1
                             continue  # Don't also check NO for same ticker
@@ -393,16 +411,17 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
                 resting_event_exposure = _count_resting_event_exposure(
                     event_ticker, quotable_markets, resting_by_ticker
                 )
-                proposed_net = net - config.TAKE_CONTRACT_SIZE
-                proposed_event = event_net - config.TAKE_CONTRACT_SIZE - resting_event_exposure
-                proposed_game = game_net - config.TAKE_CONTRACT_SIZE
+                proposed_net = net - take_size
+                proposed_event = event_net - take_size - resting_event_exposure
+                proposed_game = game_net - take_size
                 if (abs(proposed_net) <= config.MAX_POSITION_PER_MARKET
                         and abs(proposed_event) <= config.MAX_POSITION_PER_EVENT
                         and abs(proposed_game) <= config.MAX_POSITION_PER_GAME):
                     ev_pct, fee = compute_take_ev(fair_cents, no_price, "no")
                     if ev_pct is not None:
                         filled = execute_take(market, "no", no_price, ev_pct, fee,
-                                              prediction_updated_at, dry_run=dry_run)
+                                              prediction_updated_at, dry_run=dry_run,
+                                              take_size=take_size)
                         if filled > 0:
                             takes_this_cycle += 1
 
@@ -453,7 +472,8 @@ def main():
     print(f"  Kalshi CBB 1H Taker Bot (standalone)")
     print(f"  {'DRY RUN' if dry_run else 'LIVE'}")
     print(f"  Min Take EV: {config.MIN_TAKE_EV_PCT:.0%} (after {config.TAKER_FEE_RATE:.0%} fee)")
-    print(f"  Take Size: {config.TAKE_CONTRACT_SIZE} contracts")
+    size_str = "Kelly-sized" if config.USE_KELLY_SIZING else f"{config.TAKE_CONTRACT_SIZE} contracts"
+    print(f"  Take Size: {size_str}")
     print(f"  Poll: {config.TAKE_POLL_SEC}s | Cooldown: per prediction refresh (event-level)")
     print(f"  Max position: {config.MAX_POSITION_PER_MARKET} | Max exposure: ${config.MAX_TOTAL_EXPOSURE_DOLLARS}")
     print("=" * 60)

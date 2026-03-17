@@ -46,7 +46,8 @@ def _detect_penny_loop(ticker, book_bid, book_ask):
     return penny_count >= PENNY_LOOP_MAX
 
 
-def compute_quotes(fair_prob, net_position=0, book_bid=0, book_ask=0):
+def compute_quotes(fair_prob, net_position=0, book_bid=0, book_ask=0,
+                   bid_size=None, ask_size=None):
     """Compute bid/ask in Kalshi cents given a fair probability and orderbook.
 
     Uses 5% minimum EV floor, then pennies the book to get top-of-book
@@ -126,7 +127,8 @@ def compute_quotes(fair_prob, net_position=0, book_bid=0, book_ask=0):
         "fair_cents": round(fair_cents, 2),
         "spread": ask_yes - bid_yes,
         "skew": skew,
-        "size": CONTRACT_SIZE,
+        "bid_size": bid_size if bid_size is not None else CONTRACT_SIZE,
+        "ask_size": ask_size if ask_size is not None else CONTRACT_SIZE,
         "book_bid": book_bid,
         "book_ask": book_ask,
         "pennied": pennied,
@@ -143,11 +145,14 @@ def format_quote_summary(ticker, quote):
     if quote is None:
         return f"  {ticker}: NO QUOTE (out of range or invalid)"
     penny_flag = " [PENNY]" if quote.get("pennied") else ""
+    bid_sz = quote.get("bid_size", quote.get("size", "?"))
+    ask_sz = quote.get("ask_size", quote.get("size", "?"))
+    size_str = f"size={bid_sz}" if bid_sz == ask_sz else f"bid_sz={bid_sz} ask_sz={ask_sz}"
     return (
         f"  {ticker}: "
         f"fair={quote['fair_cents']:.1f}c  "
         f"bid={quote['bid_yes']}c  ask={quote['ask_yes']}c  "
         f"spread={quote['spread']}c  skew={quote['skew']}  "
         f"book=[{quote.get('book_bid', 0)}/{quote.get('book_ask', 0)}]  "
-        f"size={quote['size']}{penny_flag}"
+        f"{size_str}{penny_flag}"
     )
