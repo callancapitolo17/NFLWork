@@ -73,11 +73,27 @@ get_standard_team <- function(team, teams_std) {
 # Power Rating Fetchers
 # =============================================================================
 
-fetch_bpi <- function() {
+fetch_bpi <- function(teams_std) {
   cat("Fetching BPI ratings...\n")
+  # cbbdata BPI uses short names that don't always match hoopR display_name
+  bpi_name_fixes <- c(
+    "Connecticut"  = "UConn",
+    "Miami FL"     = "Miami",
+    "Hawaii"       = "Hawai'i",
+    "LIU Brooklyn" = "LIU",
+    "Long Island University" = "LIU",
+    "Cal Baptist"  = "California Baptist",
+    "Queens"       = "Queens University",
+    "NC State"     = "NC State",
+    "North Carolina St." = "NC State"
+  )
   tryCatch({
-    result <- cbd_bpi_ratings() %>%
-      transmute(team = team, bpi = bpi_value, standard_team = team)
+    bpi_raw <- cbd_bpi_ratings() %>%
+      transmute(team = team, bpi = bpi_value) %>%
+      mutate(team = ifelse(team %in% names(bpi_name_fixes), bpi_name_fixes[team], team))
+    # Resolve to full display names ("Duke" -> "Duke Blue Devils")
+    result <- bpi_raw %>%
+      mutate(standard_team = map_chr(team, ~ get_standard_team(.x, teams_std = teams_std)))
     cat(sprintf("BPI: %d teams\n", nrow(result)))
     result
   }, error = function(e) {
@@ -192,7 +208,7 @@ fetch_evan_miya <- function(teams_std) {
 
 #' Fetch all power ratings and merge into a single table
 fetch_power_ratings <- function(teams_std) {
-  clean_bpi_data <- fetch_bpi()
+  clean_bpi_data <- fetch_bpi(teams_std)
   clean_kenpom_data <- fetch_kenpom(teams_std)
   clean_torvik_data <- fetch_torvik(teams_std)
   clean_evan_miya_data <- fetch_evan_miya(teams_std)
