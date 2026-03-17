@@ -83,3 +83,10 @@ ENABLED_MARKET_TYPES = set(_env.get("ENABLED_MARKETS", "spreads,totals,moneyline
 SPREAD_SERIES = MARKET_SERIES["spreads"]  # backward compat
 MAX_POSITION_PER_GAME = int(_env.get("MAX_POSITION_PER_GAME", "12"))
 MAX_BOOK_STALENESS_SEC = int(_env.get("MAX_BOOK_STALENESS_SEC", "10"))
+
+# --- Kelly Sizing ---
+BANKROLL = float(_env.get("BANKROLL", "1000.0"))
+KELLY_FRACTION = float(_env.get("KELLY_FRACTION", "0.25"))  # Quarter Kelly
+MIN_KELLY_CONTRACTS = int(_env.get("MIN_KELLY_CONTRACTS", "1"))
+MAX_KELLY_CONTRACTS = int(_env.get("MAX_KELLY_CONTRACTS", "10"))
+USE_KELLY_SIZING = _env.get("USE_KELLY_SIZING", "false").lower() == "true"
