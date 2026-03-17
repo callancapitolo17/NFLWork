@@ -10,8 +10,7 @@ source("espn_bracket.R")
 
 # --- 1. Load bracket + ratings + current state ---
 bracket_result <- fetch_espn_bracket()
-teams_std <- espn_mbb_teams(current_year) %>%
-  mutate(team = ifelse(team == "McNeese", "McNeese State", team))
+teams_std <- get_teams_std()
 
 final_bracket <- bracket_result$bracket %>% select(team, seed, region, play_in)
 bracket_with_ratings <- fetch_bracket_with_ratings(final_bracket, teams_std)
@@ -32,10 +31,6 @@ cat(sprintf("Tournament: %s | Round: %s | Teams remaining: %d\n",
             tourney_state$state, tourney_state$current_round %||% "N/A", nrow(current_bracket)))
 
 # --- 2. Simulation Functions ---
-
-get_region_order <- function(bracket) {
-  bracket %>% distinct(region) %>% pull(region)
-}
 
 simulate_round <- function(teams, game_number = 1, region_order_auto = NULL) {
   teams <- get_bracket_matchups(teams, region_order_auto)

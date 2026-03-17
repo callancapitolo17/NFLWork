@@ -38,6 +38,16 @@ current_year <- if (as.integer(format(Sys.Date(), "%m")) >= 11) {
 }
 
 # =============================================================================
+# ESPN Team Dictionary
+# =============================================================================
+
+#' Load ESPN team dictionary for the current season
+get_teams_std <- function() {
+  espn_mbb_teams(current_year) %>%
+    mutate(team = ifelse(team == "McNeese", "McNeese State", team))
+}
+
+# =============================================================================
 # Team Name Matching
 # =============================================================================
 
@@ -270,6 +280,11 @@ get_bracket_matchups <- function(teams, region_order_auto = NULL) {
       arrange(region, matchup_order) %>%
       select(-matchup_order)
   }
+}
+
+#' Extract region order from bracket data
+get_region_order <- function(bracket) {
+  bracket %>% distinct(region) %>% pull(region)
 }
 
 #' Get remaining round names based on current bracket size
