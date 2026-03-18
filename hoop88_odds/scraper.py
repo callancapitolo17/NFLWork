@@ -75,6 +75,15 @@ SPORT_CONFIGS = {
             {"short": "1Q", "api_name": "1st Quarter", "api_num": 3, "suffix": "q1", "standard": "1"},
         ],
     },
+    "college_baseball": {
+        "sport_key": "baseball_ncaa",
+        "table_name": "college_baseball_odds",
+        "sport_type": "BASEBALL",
+        "sport_sub_type": "NCAA Baseball",  # verify via recon_hoop88.py
+        "periods": [
+            {"short": "FG", "api_name": "Game", "api_num": 0, "suffix": "fg", "standard": "Full"},
+        ],
+    },
 }
 
 # NFL team name mapping (Hoop88 short names -> Odds API full names)

@@ -20,6 +20,11 @@ SPORTS = {
         "url_params": "lg=535,443,626,2917,761",
         "table_name": "nba_odds",
     },
+    "college_baseball": {
+        "sport_key": "baseball_ncaa",
+        "url_params": "lg=TBD",  # discover via Wagerzon schedule API recon
+        "table_name": "college_baseball_odds",
+    },
 }
 
 # Wagerzon backend URLs
