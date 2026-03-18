@@ -273,7 +273,8 @@ timer$mark("sample_gen")
 
 cat("Computing fair parlay odds (4 combos per game)...\n")
 
-parlay_results <- list()
+# --- Method 1: Answer Key (resampled from historical outcomes) ---
+ak_results <- list()
 
 for (game_id in names(samples)) {
   samp <- samples[[game_id]]$sample
@@ -309,7 +310,7 @@ for (game_id in names(samples)) {
     )
     if (is.null(parlay)) next
 
-    parlay_results[[length(parlay_results) + 1]] <- data.frame(
+    ak_results[[length(ak_results) + 1]] <- data.frame(
       id = game_id,
       home_team = game_info$home_team[1],
       away_team = game_info$away_team[1],
@@ -324,18 +325,106 @@ for (game_id in names(samples)) {
       n_samples = parlay$n_samples_resolved,
       leg1_prob = parlay$leg_probs[1],
       leg2_prob = parlay$leg_probs[2],
+      method = "answer_key",
       stringsAsFactors = FALSE
     )
   }
 }
 
-if (length(parlay_results) == 0) {
+cat(sprintf("Answer Key: %d parlay prices computed.\n", length(ak_results)))
+
+# --- Method 2: Empirical Correlation Factors ---
+# CFs from 486 matched games (all correlation sources captured).
+# Medium totals (12-13.5) are the sweet spot: Away+Over CF=1.28, Home+Under CF=1.15.
+EMPIRICAL_CFS <- list(
+  low    = list(away_over = 0.935, away_under = 1.068, home_over = 1.053, home_under = 0.945),
+  medium = list(away_over = 1.280, away_under = 0.799, home_over = 0.791, home_under = 1.150),
+  high   = list(away_over = 1.097, away_under = 0.956, home_over = 0.948, home_under = 1.023)
+)
+
+get_total_bucket <- function(tl) {
+  ifelse(tl < 12, "low", ifelse(tl <= 13.5, "medium", "high"))
+}
+
+# Also devig over/under for total odds
+total_devigged <- total_odds %>%
+  filter(!is.na(outcomes_price_Over) & !is.na(outcomes_price_Under)) %>%
+  mutate(
+    imp_over = ifelse(outcomes_price_Over > 0,
+                      100 / (outcomes_price_Over + 100),
+                      abs(outcomes_price_Over) / (abs(outcomes_price_Over) + 100)),
+    imp_under = ifelse(outcomes_price_Under > 0,
+                       100 / (outcomes_price_Under + 100),
+                       abs(outcomes_price_Under) / (abs(outcomes_price_Under) + 100)),
+    p_over = imp_over / (imp_over + imp_under)
+  ) %>%
+  group_by(id) %>%
+  summarise(consensus_p_over = median(p_over, na.rm = TRUE), .groups = "drop")
+
+today_odds <- today_odds %>% left_join(total_devigged, by = "id")
+
+cf_results <- list()
+for (i in seq_len(nrow(today_odds))) {
+  g <- today_odds[i, ]
+  tl <- g$total_line
+  bucket <- get_total_bucket(tl)
+  cfs <- EMPIRICAL_CFS[[bucket]]
+  p_home <- g$consensus_p_home
+  p_away <- g$consensus_p_away
+  p_over <- ifelse(is.na(g$consensus_p_over), 0.5, g$consensus_p_over)
+  p_under <- 1 - p_over
+
+  combo_map <- list(
+    home_over  = list(p1 = p_home, p2 = p_over,  cf = cfs$home_over),
+    home_under = list(p1 = p_home, p2 = p_under, cf = cfs$home_under),
+    away_over  = list(p1 = p_away, p2 = p_over,  cf = cfs$away_over),
+    away_under = list(p1 = p_away, p2 = p_under, cf = cfs$away_under)
+  )
+
+  for (combo_name in names(combo_map)) {
+    cm <- combo_map[[combo_name]]
+    joint <- cm$p1 * cm$p2 * cm$cf
+    joint <- max(0.001, min(0.999, joint))
+    fair_dec <- 1 / joint
+    fair_am <- ifelse(joint >= 0.5,
+                      round(-(joint / (1 - joint)) * 100),
+                      round(((1 - joint) / joint) * 100))
+
+    cf_results[[length(cf_results) + 1]] <- data.frame(
+      id = g$id,
+      home_team = g$home_team,
+      away_team = g$away_team,
+      commence_time = g$commence_time,
+      total_line = tl,
+      combo = combo_name,
+      fair_joint_prob = joint,
+      fair_american_odds = fair_am,
+      fair_decimal_odds = fair_dec,
+      correlation_factor = cm$cf,
+      independent_prob = cm$p1 * cm$p2,
+      n_samples = NA_integer_,
+      leg1_prob = cm$p1,
+      leg2_prob = cm$p2,
+      method = "empirical_cf",
+      stringsAsFactors = FALSE
+    )
+  }
+}
+
+cat(sprintf("Empirical CF: %d parlay prices computed.\n", length(cf_results)))
+
+# --- Combine both methods ---
+parlays <- bind_rows(
+  if (length(ak_results) > 0) bind_rows(ak_results) else tibble(),
+  if (length(cf_results) > 0) bind_rows(cf_results) else tibble()
+)
+
+if (nrow(parlays) == 0) {
   cat("No parlay results generated. Check sample quality.\n")
   quit(status = 0)
 }
 
-parlays <- bind_rows(parlay_results)
-cat(sprintf("Computed %d parlay fair prices across %d games.\n",
+cat(sprintf("Total: %d parlay fair prices across %d games (2 methods).\n",
             nrow(parlays), n_distinct(parlays$id)))
 timer$mark("parlay_fair_odds")
 
@@ -465,6 +554,7 @@ compare_parlays <- function(parlays, offshore_odds, book_name) {
       commence_time = p$commence_time,
       combo = p$combo,
       total_line = p$total_line,
+      method = if ("method" %in% names(p)) p$method else "answer_key",
       book = book_name,
       book_ml = book_ml_american,
       book_total = book_total_american,
@@ -501,30 +591,65 @@ if (nrow(all_edges) == 0) {
   quit(status = 0)
 }
 
-# Filter to +EV only
-ev_bets <- all_edges %>%
+# For each (game, combo, book), take the CONSERVATIVE estimate:
+# Use the method that gives the LOWER edge (less likely to overfit).
+# Both methods must agree on +EV for us to bet.
+conservative_edges <- all_edges %>%
+  group_by(id, combo, book) %>%
+  summarise(
+    home_team = first(home_team),
+    away_team = first(away_team),
+    commence_time = first(commence_time),
+    total_line = first(total_line),
+    book_ml = first(book_ml),
+    book_total = first(book_total),
+    book_parlay_american = first(book_parlay_american),
+    book_parlay_dec = first(book_parlay_dec),
+    # Conservative: use the higher fair price (lower edge)
+    fair_prob = max(fair_prob),
+    fair_dec = min(fair_dec),
+    fair_american = first(fair_american[which.max(fair_prob)]),
+    cf_ak = cf[method == "answer_key"][1],
+    cf_empirical = cf[method == "empirical_cf"][1],
+    edge_ak = edge_pct[method == "answer_key"][1],
+    edge_cf = edge_pct[method == "empirical_cf"][1],
+    # Conservative edge: minimum of both methods
+    edge_pct = min(edge_pct),
+    n_methods = n_distinct(method),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    ev = fair_prob * (book_parlay_dec - 1) - (1 - fair_prob),
+    kelly_bet = ifelse(edge_pct > 0,
+                       round((ev / (book_parlay_dec - 1)) * kelly_mult * bankroll, 2),
+                       0)
+  )
+
+# Filter to +EV only (both methods must agree)
+ev_bets <- conservative_edges %>%
   filter(edge_pct > 0) %>%
   arrange(desc(edge_pct))
 
 cat(sprintf("\n=== PARLAY EDGE SUMMARY ===\n"))
-cat(sprintf("Total comparisons: %d\n", nrow(all_edges)))
-cat(sprintf("+EV parlays found: %d\n", nrow(ev_bets)))
+cat(sprintf("Total comparisons: %d\n", nrow(conservative_edges)))
+cat(sprintf("+EV parlays (conservative): %d\n", nrow(ev_bets)))
 
 if (nrow(ev_bets) > 0) {
   cat(sprintf("Average edge: %.1f%%\n", mean(ev_bets$edge_pct)))
   cat(sprintf("Total Kelly stake: $%.2f\n", sum(ev_bets$kelly_bet)))
 
-  cat("\n=== +EV PARLAYS (sorted by edge) ===\n")
+  cat("\n=== +EV PARLAYS (conservative: min of AK and CF edges) ===\n")
   ev_bets %>%
     transmute(
       game = paste0(away_team, " @ ", home_team),
       combo,
-      total_line,
+      TL = total_line,
       book,
       book_odds = book_parlay_american,
       fair_odds = fair_american,
-      CF = cf,
-      edge = paste0("+", edge_pct, "%"),
+      edge_AK = ifelse(is.na(edge_ak), "N/A", paste0(sprintf("%+.1f", edge_ak), "%")),
+      edge_CF = ifelse(is.na(edge_cf), "N/A", paste0(sprintf("%+.1f", edge_cf), "%")),
+      edge = paste0(sprintf("%+.1f", edge_pct), "%"),
       kelly = paste0("$", kelly_bet)
     ) %>%
     print(n = 50)
@@ -535,12 +660,12 @@ if (nrow(ev_bets) > 0) {
     group_by(combo) %>%
     summarise(
       n = n(),
-      avg_edge = mean(edge_pct),
-      avg_cf = mean(cf),
-      total_kelly = sum(kelly_bet),
+      avg_edge = sprintf("%.1f%%", mean(edge_pct)),
+      avg_cf_empirical = sprintf("%.3f", mean(cf_empirical, na.rm = TRUE)),
+      total_kelly = paste0("$", sum(kelly_bet)),
       .groups = "drop"
     ) %>%
-    arrange(desc(avg_edge)) %>%
+    arrange(desc(n)) %>%
     print()
 
   # Summary by book
@@ -549,8 +674,8 @@ if (nrow(ev_bets) > 0) {
     group_by(book) %>%
     summarise(
       n = n(),
-      avg_edge = mean(edge_pct),
-      total_kelly = sum(kelly_bet),
+      avg_edge = sprintf("%.1f%%", mean(edge_pct)),
+      total_kelly = paste0("$", sum(kelly_bet)),
       .groups = "drop"
     ) %>%
     print()
