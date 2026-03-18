@@ -75,10 +75,12 @@ simulate_remaining_tournament_dynamic <- function(bracket, region_order_auto = N
   team_progress
 }
 
-# --- 3. Monte Carlo Simulation ---
-set.seed(12)
+# --- 3. Monte Carlo Simulation (parallelized) ---
+library(furrr)
+plan(multisession, workers = max(1, parallel::detectCores() - 1))
 n_simulations <- 10000
-sim_results <- map_dfr(1:n_simulations, ~ simulate_remaining_tournament_dynamic(current_bracket))
+sim_results <- future_map_dfr(1:n_simulations, ~ simulate_remaining_tournament_dynamic(current_bracket),
+                               .options = furrr_options(seed = TRUE))
 
 # --- 4. Results with Survivor Value ---
 team_results <- sim_results %>%
