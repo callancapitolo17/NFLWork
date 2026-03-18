@@ -56,6 +56,7 @@ matched <- dbGetQuery(con, "
   SELECT
     g.game_id,
     g.home_team, g.away_team,
+    g.date as game_date,
     g.home_score, g.away_score,
     g.total_runs, g.home_margin,
     CASE WHEN g.home_won THEN 1 ELSE 0 END as home_won,
@@ -88,6 +89,7 @@ DT <- data.table(
   id = matched$game_id,
   home_team = matched$home_team,
   away_team = matched$away_team,
+  game_date = as.Date(matched$game_date),
   home_spread = qlogis(p_home),  # logit(P(home)) as pseudo-spread
   total_line = matched$total_line,
   home_margin = matched$home_margin,
@@ -434,14 +436,18 @@ timer$mark("parlay_fair_odds")
 
 sentinel <- file.path(getwd(), ".scrapers_done_college_baseball")
 waited <- 0
-while (!file.exists(sentinel) && waited < 120) {
+max_wait <- ifelse(file.exists(sentinel), 0,
+                   ifelse(any(commandArgs(TRUE) == "--no-wait"), 0, 120))
+while (!file.exists(sentinel) && waited < max_wait) {
   Sys.sleep(0.5)
   waited <- waited + 0.5
 }
 if (file.exists(sentinel)) {
   cat(sprintf("Scrapers done (waited %.1fs for sentinel).\n", waited))
-} else {
+} else if (max_wait > 0) {
   cat("Warning: Scraper sentinel not found after 120s, proceeding anyway.\n")
+} else {
+  cat("Standalone mode: skipping sentinel wait.\n")
 }
 
 # Load scraped odds
@@ -450,6 +456,93 @@ cat(sprintf("Loaded %d Wagerzon records.\n", nrow(wagerzon_odds)))
 
 hoop88_odds <- tryCatch(get_hoop88_odds("college_baseball"), error = function(e) data.frame())
 cat(sprintf("Loaded %d Hoop88 records.\n", nrow(hoop88_odds)))
+
+# --- Fuzzy team name resolution for college baseball ---
+# Offshore books use short names like "OHIO STATE (BB)" while Odds API uses
+# "Ohio State Buckeyes". Strip suffix, normalize, and fuzzy-match.
+resolve_college_baseball_teams <- function(offshore_df, api_teams) {
+  if (nrow(offshore_df) == 0 || length(api_teams) == 0) return(offshore_df)
+
+  # Normalize: strip (BB) suffix, extra spaces, lowercase, trim
+  normalize <- function(x) {
+    x <- gsub("\\s*\\(BB\\)\\s*$", "", x, ignore.case = TRUE)
+    x <- gsub("\\s+", " ", trimws(tolower(x)))
+    x
+  }
+
+  # Known aliases (offshore -> normalized query)
+  aliases <- c(
+    "miami florida"  = "miami hurricanes",
+    "usc upstate"    = "south carolina upstate",
+    "connecticut"    = "uconn",
+    "cs bakersfield" = "csu bakersfield",
+    "michigan state" = "michigan st"
+  )
+
+  # Build index: for each API team, store no-mascot and full lowercase
+  api_no_mascot <- setNames(api_teams, sapply(api_teams, function(n) {
+    trimws(tolower(sub(" [^ ]+$", "", n)))
+  }))
+  api_full <- setNames(api_teams, tolower(api_teams))
+
+  resolve_one <- function(raw) {
+    norm <- normalize(raw)
+
+    # Check aliases first
+    if (norm %in% names(aliases)) norm <- aliases[norm]
+
+    # Exact match on no-mascot
+    hit <- api_no_mascot[norm]
+    if (!is.na(hit)) return(unname(hit))
+
+    # Exact match on full name
+    hit <- api_full[norm]
+    if (!is.na(hit)) return(unname(hit))
+
+    # Prefer longest substring match (avoids "michigan" matching before "michigan st")
+    best <- NULL; best_len <- 0
+    for (api_short in names(api_no_mascot)) {
+      if (grepl(paste0("\\b", norm, "\\b"), api_short) ||
+          grepl(paste0("\\b", api_short, "\\b"), norm)) {
+        match_len <- nchar(api_short)
+        if (match_len > best_len) {
+          best <- unname(api_no_mascot[api_short])
+          best_len <- match_len
+        }
+      }
+    }
+    if (!is.null(best)) return(best)
+
+    # agrep fuzzy match (last resort)
+    ag <- agrep(norm, names(api_no_mascot), max.distance = 0.2, value = TRUE)
+    if (length(ag) > 0) return(unname(api_no_mascot[ag[1]]))
+    return(raw)  # no match
+  }
+
+  # Get unique raw names and resolve
+  all_raw <- unique(c(offshore_df$home_team, offshore_df$away_team))
+  mapping <- setNames(sapply(all_raw, resolve_one), all_raw)
+
+  n_resolved <- sum(mapping != names(mapping))
+  cat(sprintf("  Team resolution: %d/%d names resolved\n", n_resolved, length(all_raw)))
+  for (raw in names(mapping)) {
+    if (mapping[raw] != raw) cat(sprintf("    %s -> %s\n", raw, mapping[raw]))
+  }
+
+  offshore_df$home_team <- unname(mapping[offshore_df$home_team])
+  offshore_df$away_team <- unname(mapping[offshore_df$away_team])
+  offshore_df
+}
+
+# Apply to both books using today's Odds API game names
+api_team_names <- unique(c(today_odds$home_team, today_odds$away_team))
+if (nrow(wagerzon_odds) > 0) {
+  wagerzon_odds <- resolve_college_baseball_teams(wagerzon_odds, api_team_names)
+}
+if (nrow(hoop88_odds) > 0) {
+  hoop88_odds <- resolve_college_baseball_teams(hoop88_odds, api_team_names)
+}
+
 timer$mark("load_scrapers")
 
 # =============================================================================
@@ -483,12 +576,14 @@ compare_parlays <- function(parlays, offshore_odds, book_name) {
   if (nrow(offshore_odds) == 0) return(tibble())
 
   # Get ML and total odds per game
+  # Period can be "Full", "fg", or "Game" depending on book
+  full_periods <- c("Full", "fg", "Game")
   ml_odds <- offshore_odds %>%
-    filter(market_type == "h2h", period == "Full") %>%
+    filter(market_type == "h2h", period %in% full_periods) %>%
     select(home_team, away_team, odds_home, odds_away)
 
   total_offshore <- offshore_odds %>%
-    filter(market_type == "totals", period == "Full") %>%
+    filter(market_type == "totals", period %in% full_periods) %>%
     select(home_team, away_team, line, odds_over, odds_under)
 
   if (nrow(ml_odds) == 0 || nrow(total_offshore) == 0) return(tibble())
@@ -682,4 +777,4 @@ if (nrow(ev_bets) > 0) {
 }
 
 cat("\n=== COLLEGE BASEBALL ANSWER KEY: Complete ===\n")
-timer$report()
+timer$mark("total")
