@@ -86,8 +86,9 @@ TEAM_NAME_FIXES <- c(
   "N.C. State"           = "NC State",
   "Mississippi"          = "Ole Miss",
   "Nebraska Omaha"       = "Omaha",
-  # Queens (new D1 program, not in hoopR — map to bracket name)
-  "Queens"               = "Queens University"
+  # Queens (new D1 program, not in hoopR — map to exact ESPN bracket name)
+  "Queens"               = "Queens University Royals",
+  "Queens University"    = "Queens University Royals"
 )
 
 clean_text <- function(x) {
@@ -317,6 +318,42 @@ simulate_game <- function(team1, team2, game_number = 1, beta1 = 0.1, beta2 = 0.
   loser$composite_rating  <- loser$composite_rating - rating_change
 
   list(winner = winner)
+}
+
+#' Resolve First Four: reduce 68-team bracket to 64 teams.
+#' If a First Four game has been played (in games_df), use the actual winner.
+#' If not yet played, simulate the game. Returns a 64-team bracket.
+resolve_first_four <- function(bracket_with_ratings, games_df = NULL) {
+  play_in_teams <- bracket_with_ratings %>% filter(play_in == 1)
+  main_teams    <- bracket_with_ratings %>% filter(play_in == 0)
+
+  if (nrow(play_in_teams) == 0) return(bracket_with_ratings)
+
+  # Group play-in teams into matchups (same region + same seed)
+  matchups <- play_in_teams %>%
+    group_by(region, seed) %>%
+    group_split()
+
+  first_four_winners <- map_dfr(matchups, function(pair) {
+    if (nrow(pair) != 2) return(pair[1, ])
+
+    # Check if this game has already been played
+    if (!is.null(games_df) && nrow(games_df) > 0) {
+      played <- games_df %>%
+        filter(round == "First Four", status == "final",
+               (team1 == pair$team[1] & team2 == pair$team[2]) |
+               (team1 == pair$team[2] & team2 == pair$team[1]))
+      if (nrow(played) > 0) {
+        winner_name <- played$winner[1]
+        return(pair %>% filter(team == winner_name))
+      }
+    }
+
+    # Not yet played — simulate
+    simulate_game(pair[1, ], pair[2, ])$winner
+  })
+
+  bind_rows(main_teams, first_four_winners)
 }
 
 #' Order teams by NCAA bracket seeding for correct matchups
