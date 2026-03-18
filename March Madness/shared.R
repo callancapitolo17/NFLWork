@@ -123,11 +123,27 @@ get_standard_team <- function(team, teams_std) {
 # =============================================================================
 
 fetch_bpi <- function(teams_std) {
-  cat("Fetching BPI ratings...\n")
+  cat("Fetching BPI ratings (direct ESPN API)...\n")
+  base_url <- "https://site.web.api.espn.com/apis/fitt/v3/sports/basketball/mens-college-basketball/powerindex?region=us&lang=en&groups=50&limit=50&page="
   tryCatch({
-    bpi_raw <- cbd_bpi_ratings() %>%
-      transmute(team = team, bpi = bpi_value)
-    # Resolve to full display names ("Duke" -> "Duke Blue Devils")
+    all_teams <- list()
+    for (page in 1:8) {
+      resp <- GET(paste0(base_url, page))
+      if (status_code(resp) != 200) next
+      data <- fromJSON(content(resp, "text", encoding = "UTF-8"))
+      team_names <- data$teams$team$displayName
+      bpi_values <- map_dbl(data$teams$categories, function(cat) {
+        if (is.data.frame(cat) && "name" %in% names(cat)) {
+          bpi_row <- cat %>% filter(name == "bpi")
+          if (nrow(bpi_row) > 0 && !is.null(bpi_row$values[[1]][1])) {
+            return(bpi_row$values[[1]][1])
+          }
+        }
+        NA_real_
+      })
+      all_teams[[page]] <- tibble(team = team_names, bpi = bpi_values)
+    }
+    bpi_raw <- bind_rows(all_teams)
     result <- bpi_raw %>%
       mutate(standard_team = map_chr(team, ~ get_standard_team(.x, teams_std = teams_std)))
     cat(sprintf("BPI: %d teams\n", nrow(result)))
