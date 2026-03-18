@@ -51,12 +51,60 @@ get_teams_std <- function() {
 # Team Name Matching
 # =============================================================================
 
+# Centralized name fixes: maps short/alternate names to the canonical form
+# that hoopR's get_standard_team() can resolve. Add entries here when a
+# rating source uses a name that doesn't match any hoopR variant.
+TEAM_NAME_FIXES <- c(
+  # BPI / cbbdata short names
+  "Connecticut"          = "UConn",
+  "Miami FL"             = "Miami",
+  "Hawaii"               = "Hawai'i",
+  "LIU Brooklyn"         = "LIU",
+  "Long Island University" = "LIU",
+  "Cal Baptist"          = "California Baptist",
+  "NC State"             = "NC State",
+  "North Carolina St."   = "NC State",
+  # TeamRankings short names
+  "Ohio St"              = "Ohio State",
+  "Iowa St"              = "Iowa State",
+  "Utah St"              = "Utah State",
+  "South Fla"            = "South Florida",
+  "USF"                  = "South Florida",
+  "N Iowa"               = "Northern Iowa",
+  "UNI"                  = "Northern Iowa",
+  # EvanMiya names (after punctuation stripping)
+  "Texas AM"             = "Texas A&M",
+  "Prairie View AM"      = "Prairie View A&M",
+  "Florida AM"           = "Florida A&M",
+  "Saint Marys"          = "Saint Mary's",
+  "St Johns"             = "St. John's",
+  "Miami Ohio"           = "Miami (OH)",
+  "Miami Fla"            = "Miami",
+  # TeamRankings names
+  "S Florida"            = "South Florida",
+  # KenPom names
+  "N.C. State"           = "NC State",
+  "Mississippi"          = "Ole Miss",
+  "Nebraska Omaha"       = "Omaha",
+  # Queens (new D1 program, not in hoopR — map to bracket name)
+  "Queens"               = "Queens University"
+)
+
 clean_text <- function(x) {
   sub("St\\.$", "State", x, ignore.case = TRUE)
 }
 
+#' Normalize a team name: apply TEAM_NAME_FIXES first, then match against hoopR
+normalize_team_name <- function(team) {
+  if (team %in% names(TEAM_NAME_FIXES)) {
+    return(TEAM_NAME_FIXES[[team]])
+  }
+  team
+}
+
 get_standard_team <- function(team, teams_std) {
   if (is.na(team)) return(NA_character_)
+  team <- normalize_team_name(team)
   team_clean <- clean_text(team)
   for (i in 1:nrow(teams_std)) {
     variants <- teams_std[i, c("abbreviation", "display_name", "short_name", "mascot", "nickname", "team")]
@@ -75,22 +123,9 @@ get_standard_team <- function(team, teams_std) {
 
 fetch_bpi <- function(teams_std) {
   cat("Fetching BPI ratings...\n")
-  # cbbdata BPI uses short names that don't always match hoopR display_name
-  bpi_name_fixes <- c(
-    "Connecticut"  = "UConn",
-    "Miami FL"     = "Miami",
-    "Hawaii"       = "Hawai'i",
-    "LIU Brooklyn" = "LIU",
-    "Long Island University" = "LIU",
-    "Cal Baptist"  = "California Baptist",
-    "Queens"       = "Queens University",
-    "NC State"     = "NC State",
-    "North Carolina St." = "NC State"
-  )
   tryCatch({
     bpi_raw <- cbd_bpi_ratings() %>%
-      transmute(team = team, bpi = bpi_value) %>%
-      mutate(team = ifelse(team %in% names(bpi_name_fixes), bpi_name_fixes[team], team))
+      transmute(team = team, bpi = bpi_value)
     # Resolve to full display names ("Duke" -> "Duke Blue Devils")
     result <- bpi_raw %>%
       mutate(standard_team = map_chr(team, ~ get_standard_team(.x, teams_std = teams_std)))
@@ -108,10 +143,7 @@ fetch_kenpom <- function(teams_std) {
   tryCatch({
     kenpom_data <- read_sheet(sheet_url) %>%
       mutate(Team = str_replace(Team, "\\s\\d+$", "")) %>%
-      as.data.frame() %>%
-      mutate(Team = ifelse(Team == "Connecticut", "UConn",
-                    ifelse(Team == "Mississippi", "Ole Miss",
-                    ifelse(Team == "Nebraska Omaha", "Omaha", Team))))
+      as.data.frame()
     result <- kenpom_data %>%
       mutate(standard_team = map_chr(Team, ~ get_standard_team(.x, teams_std = teams_std))) %>%
       select(standard_team, NetRtg) %>%
@@ -183,14 +215,7 @@ fetch_evan_miya <- function(teams_std) {
       stop("EvanMiya pivot failed: Team column contains numeric values. Sheet format may have changed.")
     }
     result <- evan_miya_wide %>%
-      mutate(Team = case_when(
-        Team == "Connecticut" ~ "UConn",
-        Team == "Mississippi" ~ "Ole Miss",
-        grepl("^Texas AM$", Team) ~ "Texas A&M",
-        grepl("^Prairie View AM$", Team) ~ "Prairie View A&M",
-        grepl("^Florida AM$", Team) ~ "Florida A&M",
-        TRUE ~ Team
-      )) %>%
+      mutate(Team = ifelse(Team == "Mississippi", "Ole Miss", Team)) %>%
       mutate(standard_team = map_chr(Team, ~ get_standard_team(.x, teams_std = teams_std))) %>%
       select(standard_team, `Relative Rating`) %>%
       mutate(`Relative Rating` = map_dbl(`Relative Rating`, ~ ifelse(is.null(.x), NA_real_, as.numeric(.x))))
