@@ -54,13 +54,18 @@ simulate_tournament <- function(bracket, games_df = NULL) {
   team_progress
 }
 
-# --- 3. Monte Carlo Simulation (parallelized) ---
+# --- 3. Monte Carlo Simulation (parallelized in batches) ---
 library(furrr)
-plan(multisession, workers = max(1, parallel::detectCores() - 1))
+n_workers <- max(1, parallel::detectCores() - 1)
+plan(multisession, workers = n_workers)
 n_simulations <- 10000
 games_df <- bracket_result$games
-sim_results <- future_map_dfr(1:n_simulations, ~ simulate_tournament(bracket_with_ratings, games_df),
-                               .options = furrr_options(seed = TRUE))
+
+# Batch: each worker runs n_simulations/n_workers sims (reduces overhead)
+batch_size <- ceiling(n_simulations / n_workers)
+sim_results <- future_map_dfr(1:n_workers, function(w) {
+  map_dfr(1:batch_size, ~ simulate_tournament(bracket_with_ratings, games_df))
+}, .options = furrr_options(seed = TRUE))
 
 # --- 4. Results ---
 team_results <- sim_results %>%

@@ -193,11 +193,18 @@ fetch_torvik <- function(teams_std) {
         AdjDE = as.numeric(str_replace(AdjDE, "\n.*$", ""))
       ) %>%
       filter(!is.na(AdjOE), !is.na(AdjDE), Team != "Team") %>%
+      distinct(Team, .keep_all = TRUE) %>%  # Remove duplicate pastes
       mutate(
         TorvikMargin = ((AdjOE - AdjDE) / 100) * 70,
         standard_team = map_chr(Team, ~ get_standard_team(.x, teams_std = teams_std))
       ) %>%
       select(standard_team, TorvikMargin)
+    # Validate: should have 300+ unique teams, reject if too few
+    n_unique <- n_distinct(torvik_df$standard_team)
+    if (n_unique < 300) {
+      cat(sprintf("  Warning: Torvik sheet only has %d unique teams (expected 350+). Data may be corrupt.\n", n_unique))
+      stop("Torvik sheet data quality too low")
+    }
     cat(sprintf("Torvik: %d teams\n", nrow(torvik_df)))
     torvik_df
   }, error = function(e) {

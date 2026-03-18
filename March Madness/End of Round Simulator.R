@@ -67,12 +67,15 @@ simulate_remaining_tournament <- function(bracket, region_order_auto = NULL) {
   team_progress
 }
 
-# --- 3. Monte Carlo Simulation (parallelized) ---
+# --- 3. Monte Carlo Simulation (parallelized in batches) ---
 library(furrr)
-plan(multisession, workers = max(1, parallel::detectCores() - 1))
+n_workers <- max(1, parallel::detectCores() - 1)
+plan(multisession, workers = n_workers)
 n_simulations <- 10000
-sim_results <- future_map_dfr(1:n_simulations, ~ simulate_remaining_tournament(current_bracket),
-                               .options = furrr_options(seed = TRUE))
+batch_size <- ceiling(n_simulations / n_workers)
+sim_results <- future_map_dfr(1:n_workers, function(w) {
+  map_dfr(1:batch_size, ~ simulate_remaining_tournament(current_bracket))
+}, .options = furrr_options(seed = TRUE))
 
 # --- 4. Results with Survivor Value Rank ---
 team_results <- sim_results %>%
