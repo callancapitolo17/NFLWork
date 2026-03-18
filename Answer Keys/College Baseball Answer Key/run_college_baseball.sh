@@ -19,7 +19,7 @@ echo "$(date) - Starting college baseball parlay edge finder" >> "$LOGFILE"
 
 # Run pipeline via orchestrator (scrapers + R in parallel)
 cd "$ANSWER_KEYS_DIR"
-python3 run.py --sport college_baseball >> "$LOGFILE" 2>&1
+python3 run.py college_baseball >> "$LOGFILE" 2>&1
 RC=$?
 
 echo "$(date) - Pipeline exit code: $RC" >> "$LOGFILE"
