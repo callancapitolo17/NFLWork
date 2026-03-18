@@ -175,37 +175,54 @@ fetch_kenpom <- function(teams_std) {
 
 fetch_torvik <- function(teams_std) {
   cat("Fetching Torvik ratings...\n")
-  tryCatch({
+  # Try 1: cbbdata package
+  result <- tryCatch({
     torvik <- cbd_torvik_ratings(year = current_year)
     if (nrow(torvik) == 0) stop("No data for current year")
-    result <- torvik %>%
+    torvik %>%
       mutate(TorvikMargin = ((adj_o - adj_d) / 100) * 70) %>%
       transmute(standard_team = team, TorvikMargin)
-    cat(sprintf("Torvik: %d teams\n", nrow(result)))
-    result
   }, error = function(e) {
-    cat(sprintf("  cbbdata Torvik failed (%s), trying direct API...\n", e$message))
-    tryCatch({
-      resp <- GET(
-        sprintf("https://barttorvik.com/trank.php?year=%d&t=0&json=1", current_year),
-        add_headers("User-Agent" = "Mozilla/5.0")
-      )
-      txt <- content(resp, "text", encoding = "UTF-8")
-      if (!startsWith(trimws(txt), "[")) stop("Cloudflare blocked")
-      torvik_data <- as.data.frame(fromJSON(txt))
-      colnames(torvik_data)[c(1, 2, 3)] <- c("Team", "OffEff", "DefEff")
-      result <- torvik_data %>%
-        mutate(OffEff = as.numeric(OffEff), DefEff = as.numeric(DefEff),
-               TorvikMargin = ((OffEff - DefEff) / 100) * 70,
-               standard_team = map_chr(Team, ~ get_standard_team(.x, teams_std = teams_std))) %>%
-        select(standard_team, TorvikMargin)
-      cat(sprintf("Torvik: %d teams\n", nrow(result)))
-      result
-    }, error = function(e2) {
-      cat(sprintf("  Warning: Torvik unavailable: %s\n", e2$message))
-      tibble(standard_team = character(), TorvikMargin = numeric())
-    })
+    cat(sprintf("  cbbdata failed (%s), trying Playwright...\n", e$message))
+    NULL
   })
+  if (!is.null(result) && nrow(result) > 0) {
+    cat(sprintf("Torvik (cbbdata): %d teams\n", nrow(result)))
+    return(result)
+  }
+  # Try 2: Playwright via fetch_torvik.py (bypasses Cloudflare)
+  result <- tryCatch({
+    # Find Python with Playwright installed
+    python_paths <- c(
+      file.path(dirname(getwd()), "hoop88_odds", "venv", "bin", "python"),
+      "python3", "python"
+    )
+    py <- NULL
+    for (p in python_paths) {
+      if (file.exists(p) || nchar(Sys.which(p)) > 0) { py <- p; break }
+    }
+    if (is.null(py)) stop("No Python found")
+    script <- file.path(getwd(), "fetch_torvik.py")
+    if (!file.exists(script)) stop("fetch_torvik.py not found")
+    cat(sprintf("  Running: %s %s %d\n", py, script, current_year))
+    json_txt <- system2(py, args = c(script, current_year), stdout = TRUE, stderr = FALSE)
+    json_txt <- paste(json_txt, collapse = "")
+    if (!startsWith(trimws(json_txt), "[")) stop("Playwright returned no data")
+    data <- fromJSON(json_txt)
+    if (length(data) == 0) stop("Empty result")
+    torvik_df <- as.data.frame(data, stringsAsFactors = FALSE)
+    colnames(torvik_df) <- c("Team", "OffEff", "DefEff", "Barthag", "Record")
+    torvik_df %>%
+      mutate(OffEff = as.numeric(OffEff), DefEff = as.numeric(DefEff),
+             TorvikMargin = ((OffEff - DefEff) / 100) * 70,
+             standard_team = map_chr(Team, ~ get_standard_team(.x, teams_std = teams_std))) %>%
+      select(standard_team, TorvikMargin)
+  }, error = function(e) {
+    cat(sprintf("  Warning: Torvik unavailable: %s\n", e$message))
+    tibble(standard_team = character(), TorvikMargin = numeric())
+  })
+  cat(sprintf("Torvik (Playwright): %d teams\n", nrow(result)))
+  result
 }
 
 fetch_evan_miya <- function(teams_std) {
