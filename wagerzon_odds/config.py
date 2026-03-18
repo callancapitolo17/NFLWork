@@ -22,7 +22,7 @@ SPORTS = {
     },
     "college_baseball": {
         "sport_key": "baseball_ncaa",
-        "url_params": "lg=TBD",  # discover via Wagerzon schedule API recon
+        "url_params": "lg=762,1554,4321",  # 762=College Baseball, 1554=NCAA Game, 4321=1st 5 Innings
         "table_name": "college_baseball_odds",
     },
 }
