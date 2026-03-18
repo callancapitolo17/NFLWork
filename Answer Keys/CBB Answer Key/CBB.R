@@ -148,11 +148,15 @@ if (nrow(bookmaker_rows) > 0 || nrow(bet105_rows) > 0) {
 }
 
 # --- Build sharp-only weights ---
+# Use match + vapply to avoid list-column from ifelse + sapply(NULL)
+sharp_names <- names(SHARP_BOOKS)
+sharp_weights <- vapply(sharp_names, function(bk) SHARP_BOOKS[[bk]], numeric(1))
+
 all_books <- unique(game_odds$bookmaker_key)
 book_weights <- data.frame(bookmaker_key = all_books, stringsAsFactors = FALSE) %>%
   mutate(
-    spread_weight = ifelse(bookmaker_key %in% names(SHARP_BOOKS),
-                           sapply(bookmaker_key, function(bk) SHARP_BOOKS[[bk]]), 0.0),
+    spread_weight = ifelse(bookmaker_key %in% sharp_names,
+                           sharp_weights[match(bookmaker_key, sharp_names)], 0.0),
     totals_weight = spread_weight
   )
 
@@ -161,6 +165,18 @@ if (all(book_weights$spread_weight == 0)) {
   warning("No sharp books in odds data. Falling back to all-book consensus.")
   book_weights$spread_weight <- 1.0
   book_weights$totals_weight <- 1.0
+} else {
+  # Drop games where NO sharp book posts a line (avoids 0/0 = NaN in consensus)
+  sharp_book_keys <- book_weights$bookmaker_key[book_weights$spread_weight > 0]
+  games_with_sharp <- game_odds %>%
+    filter(bookmaker_key %in% sharp_book_keys) %>%
+    pull(id) %>% unique()
+  n_before_sharp <- n_distinct(game_odds$id)
+  game_odds <- game_odds %>% filter(id %in% games_with_sharp)
+  n_dropped <- n_before_sharp - n_distinct(game_odds$id)
+  if (n_dropped > 0) {
+    cat(sprintf("Dropped %d games with no sharp book coverage.\n", n_dropped))
+  }
 }
 
 sharp_books_found <- book_weights %>% filter(spread_weight > 0)

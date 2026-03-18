@@ -174,9 +174,10 @@ scraper_to_odds_api_format <- function(offshore_odds, game_odds) {
 
   if (nrow(offshore_odds) == 0 || nrow(game_odds) == 0) return(data.frame())
 
-  # Build lookup: canonical home/away -> game id + commence_time
+  # Build lookup: canonical home/away -> game id + commence_time (one row per game)
   game_lookup <- game_odds %>%
-    distinct(id, home_team, away_team, commence_time)
+    group_by(id, home_team, away_team) %>%
+    summarize(commence_time = first(commence_time), .groups = "drop")
 
   # Join scraper rows to canonical games (full-game main lines only)
   matched <- offshore_odds %>%
