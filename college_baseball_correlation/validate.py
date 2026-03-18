@@ -42,6 +42,15 @@ ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/baseball/colleg
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "")
 
+# Fall back to ~/.Renviron if not in environment
+if not ODDS_API_KEY:
+    renviron = Path.home() / ".Renviron"
+    if renviron.exists():
+        for line in renviron.read_text().splitlines():
+            if line.startswith("ODDS_API_KEY"):
+                ODDS_API_KEY = line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
+
 
 # =============================================================================
 # DATABASE
@@ -96,7 +105,6 @@ def pull_scores_for_date(session: requests.Session, date_str: str) -> list[dict]
     params = {
         "dates": date_str,
         "limit": 500,
-        "groups": 50,  # D1 college baseball
     }
     resp = session.get(ESPN_SCOREBOARD, params=params, timeout=30)
     resp.raise_for_status()
