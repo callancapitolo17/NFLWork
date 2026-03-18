@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.callan.college-baseball</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>"/Users/callancapitolo/NFLWork/Answer Keys/College Baseball Answer Key/run_college_baseball.sh"</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/callancapitolo/NFLWork/Answer Keys</string>
+  <key>StartCalendarInterval</key>
+  <array>
+    <!-- 10:00 AM PT - catch early games -->
+    <dict>
+      <key>Hour</key><integer>10</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <!-- 1:00 PM PT - midday refresh -->
+    <dict>
+      <key>Hour</key><integer>13</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <!-- 4:00 PM PT - late afternoon games -->
+    <dict>
+      <key>Hour</key><integer>16</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+  </array>
+  <key>StandardOutPath</key>
+  <string>/Users/callancapitolo/Library/Logs/college-baseball/launchd_stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/callancapitolo/Library/Logs/college-baseball/launchd_stderr.log</string>
+  <key>RunAtLoad</key><false/>
+  <key>Disabled</key><false/>
+</dict>
+</plist>
