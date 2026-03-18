@@ -82,6 +82,16 @@ american_prob <- function(odd1, odd2) {
     )
   )
 }
+# Sharp books for live consensus — weight > 0 included, 0 excluded.
+# Pinnacle + Bookmaker at 1.1 = tiebreaker preference over 1.0-weight sharps.
+SHARP_BOOKS <- list(
+  pinnacle    = 1.1,
+  bookmaker   = 1.1,
+  lowvig      = 1.0,
+  circasports = 1.0,
+  bet105      = 1.0
+)
+
 logit_ <- function(p) log(p / (1 - p))
 invlogit_ <- function(x) 1 / (1 + exp(-x))
 logloss_ <- function(p, y) -(y * log(p) + (1 - y) * log(1 - p))
@@ -153,6 +163,65 @@ moneyline_consensus <- function(df,
     rename(!!paste0("consensus_",market1,sep = "") := consensus_market1,
            !!paste0("consensus_",market2,sep = "") := consensus_market2)
   
+}
+
+scraper_to_odds_api_format <- function(offshore_odds, game_odds) {
+  # Convert scraper output (wide format) to Odds API long format so it can
+
+  # be fed into prepare_two_way_odds() -> pick_consensus_line() for consensus.
+  # Joins to game_odds on team names to get `id` and `commence_time`.
+  # Returns data frame with Odds API columns, or empty data frame on failure.
+
+  if (nrow(offshore_odds) == 0 || nrow(game_odds) == 0) return(data.frame())
+
+  # Build lookup: canonical home/away -> game id + commence_time
+  game_lookup <- game_odds %>%
+    distinct(id, home_team, away_team, commence_time)
+
+  # Join scraper rows to canonical games (full-game main lines only)
+  matched <- offshore_odds %>%
+    filter(market %in% c("spreads", "totals")) %>%
+    inner_join(game_lookup, by = c("home_team", "away_team"))
+
+  if (nrow(matched) == 0) return(data.frame())
+
+  # Build spread rows (long format: one row per outcome)
+  spread_rows <- matched %>%
+    filter(market_type == "spreads", !is.na(line)) %>%
+    rowwise() %>%
+    reframe(
+      id = id, commence_time = commence_time,
+      home_team = home_team, away_team = away_team,
+      bookmaker_key = bookmaker_key, market_key = "spreads",
+      outcomes_name  = c(home_team, away_team),
+      outcomes_price = c(odds_home, odds_away),
+      outcomes_point = c(line, -line)
+    )
+
+  # Build total rows
+  total_rows <- matched %>%
+    filter(market_type == "totals", !is.na(line)) %>%
+    rowwise() %>%
+    reframe(
+      id = id, commence_time = commence_time,
+      home_team = home_team, away_team = away_team,
+      bookmaker_key = bookmaker_key, market_key = "totals",
+      outcomes_name  = c("Over", "Under"),
+      outcomes_price = c(odds_over, odds_under),
+      outcomes_point = c(line, line)
+    )
+
+  result <- bind_rows(spread_rows, total_rows)
+
+  if (nrow(result) > 0) {
+    bk <- unique(result$bookmaker_key)[1]
+    cat(sprintf("Added %d %s rows to consensus pool (spreads=%d, totals=%d)\n",
+                nrow(result), bk,
+                sum(result$market_key == "spreads"),
+                sum(result$market_key == "totals")))
+  }
+
+  result
 }
 
 get_event_odds_by_id <- function(event_id, commence_time,

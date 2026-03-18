@@ -92,23 +92,6 @@ disp <- compute_dispersion(DT, moneyline = FALSE)
 ss <- disp$ss
 st <- disp$st
 
-book_weights <- dbGetQuery(con, "
-  SELECT DISTINCT bookmaker_key
-  FROM cbb_closing_odds
-") %>%
-  mutate(
-    spread_weight = 1.0,
-    totals_weight = 1.0
-  )
-
-tables <- dbListTables(con)
-if (!"cbb_weights" %in% tables) {
-  dbWriteTable(con, "cbb_weights", book_weights, overwrite = TRUE)
-  cat("Created cbb_weights table with equal weights.\n")
-} else {
-  book_weights <- dbGetQuery(con, "SELECT * FROM cbb_weights")
-}
-
 dbDisconnect(con)
 cat("Historical data loaded.\n")
 timer$mark("historical_load")
@@ -149,6 +132,42 @@ if (nrow(game_odds) == 0) {
   cat("No upcoming games found from Odds API. Exiting.\n")
   quit(status = 0)
 }
+
+# --- Load sharp scraper data into consensus pool ---
+bookmaker_rows <- tryCatch({
+  scraper_to_odds_api_format(get_bookmaker_odds("cbb"), game_odds)
+}, error = function(e) { cat(sprintf("Bookmaker scraper skip: %s\n", e$message)); data.frame() })
+
+bet105_rows <- tryCatch({
+  scraper_to_odds_api_format(get_bet105_odds("cbb"), game_odds)
+}, error = function(e) { cat(sprintf("Bet105 scraper skip: %s\n", e$message)); data.frame() })
+
+if (nrow(bookmaker_rows) > 0 || nrow(bet105_rows) > 0) {
+  game_odds <- bind_rows(game_odds, bookmaker_rows, bet105_rows)
+  cat(sprintf("Consensus pool: %d total rows after adding scrapers.\n", nrow(game_odds)))
+}
+
+# --- Build sharp-only weights ---
+all_books <- unique(game_odds$bookmaker_key)
+book_weights <- data.frame(bookmaker_key = all_books, stringsAsFactors = FALSE) %>%
+  mutate(
+    spread_weight = ifelse(bookmaker_key %in% names(SHARP_BOOKS),
+                           sapply(bookmaker_key, function(bk) SHARP_BOOKS[[bk]]), 0.0),
+    totals_weight = spread_weight
+  )
+
+# Fallback: if zero sharp books found, use all books equally
+if (all(book_weights$spread_weight == 0)) {
+  warning("No sharp books in odds data. Falling back to all-book consensus.")
+  book_weights$spread_weight <- 1.0
+  book_weights$totals_weight <- 1.0
+}
+
+sharp_books_found <- book_weights %>% filter(spread_weight > 0)
+cat(sprintf("Sharp consensus: %d sharp books (%s), %d rec books zeroed out.\n",
+            nrow(sharp_books_found),
+            paste(sharp_books_found$bookmaker_key, collapse = ", "),
+            sum(book_weights$spread_weight == 0)))
 
 consensus_spread <- prepare_two_way_odds(
   game_odds    = game_odds,

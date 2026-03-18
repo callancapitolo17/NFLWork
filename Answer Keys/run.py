@@ -157,27 +157,42 @@ async def run_pipeline(sport: str) -> tuple[list, int]:
     config = R_SCRIPTS[sport]
     is_merged = "script" in config  # merged single-script sports
 
-    # Create scraper tasks
-    scraper_tasks = []
+    # Sharp scrapers (bookmaker, bet105) must finish BEFORE R starts Phase 2
+    # so their data is in DuckDB when CBB.R reads it for consensus.
+    SHARP_SCRAPERS = {"bookmaker", "bet105"}
+
+    sharp_tasks = []
+    other_tasks = []
     for name, scraper_config in SCRAPER_CONFIGS.items():
         if sport in scraper_config["sports"]:
             task = asyncio.create_task(
                 run_scraper(name, scraper_config["script"], sport)
             )
-            scraper_tasks.append(task)
+            if name in SHARP_SCRAPERS:
+                sharp_tasks.append(task)
+            else:
+                other_tasks.append(task)
 
-    # Create R task
+    # Run sharp scrapers first (in parallel with each other)
+    if sharp_tasks:
+        print(f"Running {len(sharp_tasks)} sharp scrapers first...", flush=True)
+        sharp_results = await asyncio.gather(*sharp_tasks, return_exceptions=True)
+    else:
+        sharp_results = []
+
+    # Now start R (which reads sharp scraper DBs in Phase 2) + remaining scrapers
     if is_merged:
         script_path = Path(__file__).parent / config["script"]
         r_task = asyncio.create_task(run_r(sport, script_path))
     else:
         r_task = asyncio.create_task(run_r_two_phase(sport))
 
-    n_tasks = len(scraper_tasks) + 1
-    print(f"Running {n_tasks} tasks in parallel...", flush=True)
+    n_tasks = len(sharp_tasks) + len(other_tasks) + 1
+    print(f"Running {n_tasks} tasks total ({len(other_tasks)} scrapers + R in parallel)...", flush=True)
 
-    # Wait for all scrapers first, then signal R
-    scraper_results = await asyncio.gather(*scraper_tasks, return_exceptions=True)
+    # Wait for remaining scrapers
+    other_results = await asyncio.gather(*other_tasks, return_exceptions=True)
+    scraper_results = list(sharp_results) + list(other_results)
 
     if is_merged:
         # Write sentinel file so merged R script knows scraper data is ready
@@ -310,7 +325,7 @@ def main():
     print(f"\n=== PIPELINE TIMING ===", flush=True)
     print(f"  Phase 0 (canonical games): {timings.get('phase0', 0):5.1f}s", flush=True)
     print(f"  Phase 1 (parallel):        {timings.get('phase1', 0):5.1f}s", flush=True)
-    for name in ["wagerzon", "hoop88", "bfa", "r_answer_key", "r_prepare", "r_combine"]:
+    for name in ["bookmaker", "bet105", "wagerzon", "hoop88", "bfa", "kalshi", "r_answer_key", "r_prepare", "r_combine"]:
         if name in timings:
             print(f"    - {name:20s}  {timings[name]:5.1f}s", flush=True)
     print(f"  Total:                     {timings.get('total', 0):5.1f}s", flush=True)
