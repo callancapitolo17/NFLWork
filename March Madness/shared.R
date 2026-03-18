@@ -264,6 +264,25 @@ fetch_teamrankings <- function(teams_std) {
   })
 }
 
+fetch_powerrank <- function(teams_std) {
+  cat("Fetching Power Rank ratings...\n")
+  tryCatch({
+    page <- rvest::read_html("https://thepowerrank.com/college-basketball-rankings/")
+    df <- (page %>% rvest::html_table())[[1]]
+    result <- df %>%
+      transmute(
+        team = str_replace(Team, "\\s*\\(.*\\)$", ""),
+        PowerRankMargin = Rating
+      ) %>%
+      mutate(standard_team = map_chr(team, ~ get_standard_team(.x, teams_std = teams_std)))
+    cat(sprintf("PowerRank: %d teams\n", nrow(result)))
+    result
+  }, error = function(e) {
+    cat(sprintf("Warning: PowerRank fetch failed: %s\n", e$message))
+    tibble(team = character(), PowerRankMargin = numeric(), standard_team = character())
+  })
+}
+
 # =============================================================================
 # Combined Power Ratings + Bracket Merge
 # =============================================================================
@@ -275,19 +294,21 @@ fetch_power_ratings <- function(teams_std) {
   clean_torvik_data <- fetch_torvik(teams_std)
   clean_evan_miya_data <- fetch_evan_miya(teams_std)
   clean_teamrankings_data <- fetch_teamrankings(teams_std)
+  clean_powerrank_data <- fetch_powerrank(teams_std)
 
   clean_bpi_data %>%
     left_join(clean_kenpom_data %>% rename(KenPomRating = NetRtg), by = "standard_team") %>%
     left_join(clean_torvik_data, by = "standard_team") %>%
     left_join(clean_evan_miya_data %>% rename(EvanMiyaRating = `Relative Rating`), by = "standard_team") %>%
     left_join(clean_teamrankings_data %>% select(standard_team, TeamRankingsMargin), by = "standard_team") %>%
+    left_join(clean_powerrank_data %>% select(standard_team, PowerRankMargin), by = "standard_team") %>%
     mutate(
       EvanMiyaRating = as.numeric(unlist(EvanMiyaRating)),
       KenPomMargin = (as.numeric(KenPomRating) / 100) * 70,
       EvanMiyaMargin = (EvanMiyaRating / 100) * 70,
       BPIMargin = bpi
     ) %>%
-    select(standard_team, KenPomMargin, BPIMargin, EvanMiyaMargin, TorvikMargin, TeamRankingsMargin)
+    select(standard_team, KenPomMargin, BPIMargin, EvanMiyaMargin, TorvikMargin, TeamRankingsMargin, PowerRankMargin)
 }
 
 #' Fetch bracket from ESPN, merge with power ratings, compute composite
@@ -301,7 +322,7 @@ fetch_bracket_with_ratings <- function(bracket_df, teams_std) {
     ) %>%
     left_join(power_ratings, by = "standard_team") %>%
     rowwise() %>%
-    mutate(composite_rating = median(c_across(KenPomMargin:TeamRankingsMargin), na.rm = TRUE)) %>%
+    mutate(composite_rating = median(c_across(KenPomMargin:PowerRankMargin), na.rm = TRUE)) %>%
     ungroup()
 
   n_matched <- sum(!is.na(bracket_merged$composite_rating))
