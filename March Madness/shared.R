@@ -175,54 +175,45 @@ fetch_kenpom <- function(teams_std) {
 
 fetch_torvik <- function(teams_std) {
   cat("Fetching Torvik ratings...\n")
-  # Try 1: cbbdata package
+  # Try 1: Google Sheets (manual paste from barttorvik.com)
+  torvik_sheet <- "https://docs.google.com/spreadsheets/d/1Vt6AXl0rACgTAF1oBaO55mFOLtYsnbMMp0WKbXZFQug/edit?gid=0#gid=0"
   result <- tryCatch({
-    torvik <- cbd_torvik_ratings(year = current_year)
-    if (nrow(torvik) == 0) stop("No data for current year")
-    torvik %>%
-      mutate(TorvikMargin = ((adj_o - adj_d) / 100) * 70) %>%
-      transmute(standard_team = team, TorvikMargin)
-  }, error = function(e) {
-    cat(sprintf("  cbbdata failed (%s), trying Playwright...\n", e$message))
-    NULL
-  })
-  if (!is.null(result) && nrow(result) > 0) {
-    cat(sprintf("Torvik (cbbdata): %d teams\n", nrow(result)))
-    return(result)
-  }
-  # Try 2: Playwright via fetch_torvik.py (bypasses Cloudflare)
-  result <- tryCatch({
-    # Find Python with Playwright installed
-    python_paths <- c(
-      file.path(dirname(getwd()), "hoop88_odds", "venv", "bin", "python"),
-      "python3", "python"
-    )
-    py <- NULL
-    for (p in python_paths) {
-      if (file.exists(p) || nchar(Sys.which(p)) > 0) { py <- p; break }
-    }
-    if (is.null(py)) stop("No Python found")
-    script <- file.path(getwd(), "fetch_torvik.py")
-    if (!file.exists(script)) stop("fetch_torvik.py not found")
-    cat(sprintf("  Running: %s %s %d\n", py, script, current_year))
-    json_txt <- system2(py, args = c(shQuote(script), current_year), stdout = TRUE, stderr = TRUE)
-    json_txt <- paste(json_txt, collapse = "")
-    if (!startsWith(trimws(json_txt), "[")) stop("Playwright returned no data")
-    data <- fromJSON(json_txt)
-    if (length(data) == 0) stop("Empty result")
-    torvik_df <- as.data.frame(data, stringsAsFactors = FALSE)
-    colnames(torvik_df) <- c("Team", "OffEff", "DefEff", "Barthag", "Record")
-    torvik_df %>%
-      mutate(OffEff = as.numeric(OffEff), DefEff = as.numeric(DefEff),
-             TorvikMargin = ((OffEff - DefEff) / 100) * 70,
-             standard_team = map_chr(Team, ~ get_standard_team(.x, teams_std = teams_std))) %>%
+    raw <- read_sheet(torvik_sheet)
+    # Skip header row (row 1 = column labels), data starts at row 2
+    # Col 2 = Team (with seed/info on newline), Col 6 = AdjOE (with rank on newline), Col 7 = AdjDE (with rank on newline)
+    torvik_df <- tibble(
+      Team = as.character(raw[[2]][-1]),
+      AdjOE = as.character(raw[[6]][-1]),
+      AdjDE = as.character(raw[[7]][-1])
+    ) %>%
+      # Strip newline suffixes (rank numbers, seed info)
+      mutate(
+        Team = str_replace(Team, "\n.*$", ""),
+        AdjOE = as.numeric(str_replace(AdjOE, "\n.*$", "")),
+        AdjDE = as.numeric(str_replace(AdjDE, "\n.*$", ""))
+      ) %>%
+      filter(!is.na(AdjOE), !is.na(AdjDE), Team != "Team") %>%
+      mutate(
+        TorvikMargin = ((AdjOE - AdjDE) / 100) * 70,
+        standard_team = map_chr(Team, ~ get_standard_team(.x, teams_std = teams_std))
+      ) %>%
       select(standard_team, TorvikMargin)
+    cat(sprintf("Torvik: %d teams\n", nrow(torvik_df)))
+    torvik_df
   }, error = function(e) {
-    cat(sprintf("  Warning: Torvik unavailable: %s\n", e$message))
-    tibble(standard_team = character(), TorvikMargin = numeric())
+    cat(sprintf("  Google Sheet failed (%s), trying cbbdata...\n", e$message))
+    # Try 2: cbbdata package (may have older season data)
+    tryCatch({
+      torvik <- cbd_torvik_ratings(year = current_year)
+      if (nrow(torvik) == 0) stop("No data for current year")
+      torvik %>%
+        mutate(TorvikMargin = ((adj_o - adj_d) / 100) * 70) %>%
+        transmute(standard_team = team, TorvikMargin)
+    }, error = function(e2) {
+      cat(sprintf("  Warning: Torvik unavailable: %s\n", e2$message))
+      tibble(standard_team = character(), TorvikMargin = numeric())
+    })
   })
-  cat(sprintf("Torvik (Playwright): %d teams\n", nrow(result)))
-  result
 }
 
 fetch_evan_miya <- function(teams_std) {
