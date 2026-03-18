@@ -205,7 +205,7 @@ fetch_torvik <- function(teams_std) {
     script <- file.path(getwd(), "fetch_torvik.py")
     if (!file.exists(script)) stop("fetch_torvik.py not found")
     cat(sprintf("  Running: %s %s %d\n", py, script, current_year))
-    json_txt <- system2(py, args = c(script, current_year), stdout = TRUE, stderr = FALSE)
+    json_txt <- system2(py, args = c(shQuote(script), current_year), stdout = TRUE, stderr = TRUE)
     json_txt <- paste(json_txt, collapse = "")
     if (!startsWith(trimws(json_txt), "[")) stop("Playwright returned no data")
     data <- fromJSON(json_txt)
