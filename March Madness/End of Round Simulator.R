@@ -19,10 +19,14 @@ bracket_with_ratings <- fetch_bracket_with_ratings(final_bracket, teams_std)
 tourney_state <- bracket_result$tournament_state
 games_played  <- bracket_result$games
 
-current_bracket <- bracket_with_ratings %>%
+# Resolve First Four (use actual results where available, simulate the rest)
+bracket_64 <- resolve_first_four(bracket_with_ratings, games_played)
+
+# Then filter out any additional losers from later rounds
+current_bracket <- bracket_64 %>%
   filter(!team %in% {
     games_played %>%
-      filter(status == "final", !is.na(winner)) %>%
+      filter(status == "final", round != "First Four", !is.na(winner)) %>%
       mutate(loser = ifelse(winner == team1, team2, team1)) %>%
       pull(loser)
   })

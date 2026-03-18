@@ -27,13 +27,15 @@ simulate_round <- function(teams, game_number = 1, region_order_auto = NULL) {
   bind_rows(winners)
 }
 
-simulate_tournament <- function(bracket) {
+simulate_tournament <- function(bracket, games_df = NULL) {
+  # Resolve First Four (68 -> 64): use actual results if available, else simulate
+  teams_round <- resolve_first_four(bracket, games_df)
   round_num <- 1
-  teams_round <- bracket
-  region_order_auto <- get_region_order(bracket)
+  region_order_auto <- get_region_order(teams_round)
 
-  team_progress <- teams_round %>%
-    select(team, seed) %>%
+  # Track all 68 original teams (First Four losers get 0s)
+  team_progress <- bracket %>%
+    select(team, seed) %>% distinct() %>%
     mutate(Round_32 = 0, Sweet_16 = 0, Elite_8 = 0, Final_4 = 0, Title_Game = 0, Champion = 0)
 
   while (nrow(teams_round) > 1) {
@@ -54,7 +56,8 @@ simulate_tournament <- function(bracket) {
 
 # --- 3. Monte Carlo Simulation ---
 n_simulations <- 10000
-sim_results <- map_dfr(1:n_simulations, ~ simulate_tournament(bracket_with_ratings))
+games_df <- bracket_result$games
+sim_results <- map_dfr(1:n_simulations, ~ simulate_tournament(bracket_with_ratings, games_df))
 
 # --- 4. Results ---
 team_results <- sim_results %>%

@@ -86,7 +86,7 @@ TEAM_NAME_FIXES <- c(
   "N.C. State"           = "NC State",
   "Mississippi"          = "Ole Miss",
   "Nebraska Omaha"       = "Omaha",
-  # Queens (new D1 program, not in hoopR — map to exact ESPN bracket name)
+  # Queens (new D1 program, not in hoopR — map to bracket name)
   "Queens"               = "Queens University Royals",
   "Queens University"    = "Queens University Royals"
 )
@@ -329,7 +329,6 @@ resolve_first_four <- function(bracket_with_ratings, games_df = NULL) {
 
   if (nrow(play_in_teams) == 0) return(bracket_with_ratings)
 
-  # Group play-in teams into matchups (same region + same seed)
   matchups <- play_in_teams %>%
     group_by(region, seed) %>%
     group_split()
@@ -337,7 +336,6 @@ resolve_first_four <- function(bracket_with_ratings, games_df = NULL) {
   first_four_winners <- map_dfr(matchups, function(pair) {
     if (nrow(pair) != 2) return(pair[1, ])
 
-    # Check if this game has already been played
     if (!is.null(games_df) && nrow(games_df) > 0) {
       played <- games_df %>%
         filter(round == "First Four", status == "final",
@@ -349,7 +347,6 @@ resolve_first_four <- function(bracket_with_ratings, games_df = NULL) {
       }
     }
 
-    # Not yet played — simulate
     simulate_game(pair[1, ], pair[2, ])$winner
   })
 
