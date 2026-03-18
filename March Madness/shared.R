@@ -301,7 +301,7 @@ fetch_bracket_with_ratings <- function(bracket_df, teams_std) {
     ) %>%
     left_join(power_ratings, by = "standard_team") %>%
     rowwise() %>%
-    mutate(composite_rating = mean(c_across(KenPomMargin:TeamRankingsMargin), na.rm = TRUE)) %>%
+    mutate(composite_rating = median(c_across(KenPomMargin:TeamRankingsMargin), na.rm = TRUE)) %>%
     ungroup()
 
   n_matched <- sum(!is.na(bracket_merged$composite_rating))
