@@ -78,6 +78,18 @@ def init_db():
         )
     """)
     con.execute("""
+        CREATE TABLE IF NOT EXISTS linescores (
+            game_id VARCHAR,
+            inning INTEGER,
+            half VARCHAR,  -- 'top' or 'bottom'
+            team VARCHAR,
+            runs INTEGER,
+            hits INTEGER,
+            errors INTEGER,
+            PRIMARY KEY (game_id, inning, half)
+        )
+    """)
+    con.execute("""
         CREATE TABLE IF NOT EXISTS odds (
             game_id VARCHAR,
             commence_time TIMESTAMP,
@@ -219,6 +231,130 @@ def pull_scores(seasons: list[int]):
     count = con.execute("SELECT COUNT(*) FROM games").fetchone()[0]
     con.close()
     print(f"Database now has {count} total games")
+
+
+# =============================================================================
+# ESPN LINESCORE PULLING
+# =============================================================================
+
+ESPN_SUMMARY = "https://site.api.espn.com/apis/site/v2/sports/baseball/college-baseball/summary"
+
+
+def _fetch_linescore(session, game_id):
+    """Fetch linescore for a single game. Returns list of row tuples or None."""
+    try:
+        resp = session.get(ESPN_SUMMARY, params={"event": game_id}, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+
+        header = data.get("header", {})
+        comps = header.get("competitions", [])
+        if not comps:
+            return None
+
+        competitors = comps[0].get("competitors", [])
+        if len(competitors) != 2:
+            return None
+
+        rows = []
+        for comp in competitors:
+            team_name = comp.get("team", {}).get("displayName", "")
+            is_home = comp.get("homeAway") == "home"
+            linescores = comp.get("linescores", [])
+
+            if not linescores:
+                return None
+
+            for inning_idx, ls in enumerate(linescores):
+                inning = inning_idx + 1
+                half = "bottom" if is_home else "top"
+                runs = int(ls.get("displayValue", 0))
+                hits = int(ls.get("hits", 0))
+                errs = int(ls.get("errors", 0))
+                rows.append((game_id, inning, half, team_name, runs, hits, errs))
+
+        return rows if rows else None
+    except Exception:
+        return "error"
+
+
+def pull_linescores(seasons: list[int]):
+    """Pull inning-by-inning linescores from ESPN summary API for given seasons.
+
+    Uses concurrent requests (8 workers) and batch DB inserts for speed.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    init_db()
+    con = duckdb.connect(str(DB_PATH))
+
+    # Get game IDs for requested seasons that don't already have linescores
+    game_ids = [r[0] for r in con.execute("""
+        SELECT g.game_id
+        FROM games g
+        WHERE g.season = ANY(?)
+          AND g.game_id NOT IN (SELECT DISTINCT game_id FROM linescores)
+        ORDER BY g.date
+    """, [seasons]).fetchall()]
+
+    con.close()
+    print(f"Found {len(game_ids)} games needing linescores for seasons {seasons}")
+
+    if not game_ids:
+        print("All games already have linescores.")
+        return
+
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0"})
+
+    success = 0
+    skipped = 0
+    errors = 0
+    batch = []
+    batch_size = 100
+
+    def flush_batch(batch):
+        if not batch:
+            return
+        con = duckdb.connect(str(DB_PATH))
+        for row in batch:
+            con.execute("INSERT OR REPLACE INTO linescores VALUES (?, ?, ?, ?, ?, ?, ?)", list(row))
+        con.close()
+
+    # Process in parallel with 8 workers
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(_fetch_linescore, session, gid): gid for gid in game_ids}
+
+        for i, future in enumerate(as_completed(futures)):
+            result = future.result()
+
+            if result is None:
+                skipped += 1
+            elif result == "error":
+                errors += 1
+            else:
+                batch.extend(result)
+                success += 1
+
+            # Flush batch periodically
+            if len(batch) >= batch_size * 17:  # ~17 rows per game
+                flush_batch(batch)
+                batch = []
+
+            if (i + 1) % 500 == 0:
+                flush_batch(batch)
+                batch = []
+                print(f"  Progress: {i+1}/{len(game_ids)} ({success} ok, {skipped} skipped, {errors} errors)")
+
+    # Final flush
+    flush_batch(batch)
+
+    print(f"\nDone: {success} linescores pulled, {skipped} skipped, {errors} errors")
+
+    con = duckdb.connect(str(DB_PATH))
+    total = con.execute("SELECT COUNT(DISTINCT game_id) FROM linescores").fetchone()[0]
+    con.close()
+    print(f"Database now has linescores for {total} games")
 
 
 # =============================================================================
@@ -638,6 +774,8 @@ def main():
                         help="Pull ESPN scores for given seasons")
     parser.add_argument("--pull-odds", nargs="+", type=int, metavar="YEAR",
                         help="Pull Odds API closing lines for given seasons")
+    parser.add_argument("--pull-linescores", nargs="+", type=int, metavar="YEAR",
+                        help="Pull ESPN inning-by-inning linescores for given seasons")
     parser.add_argument("--match-teams", action="store_true",
                         help="Normalize ESPN team names to match Odds API")
     parser.add_argument("--analyze", action="store_true",
@@ -645,7 +783,7 @@ def main():
 
     args = parser.parse_args()
 
-    if not any([args.pull_scores, args.pull_odds, args.match_teams, args.analyze]):
+    if not any([args.pull_scores, args.pull_odds, args.pull_linescores, args.match_teams, args.analyze]):
         parser.print_help()
         return
 
@@ -656,6 +794,10 @@ def main():
     if args.pull_odds:
         print(f"\nPulling Odds API closing lines for seasons: {args.pull_odds}")
         pull_odds(args.pull_odds)
+
+    if args.pull_linescores:
+        print(f"\nPulling ESPN linescores for seasons: {args.pull_linescores}")
+        pull_linescores(args.pull_linescores)
 
     if args.match_teams:
         print("\nMatching team names...")
