@@ -44,6 +44,7 @@ recon_*.png
 
 # Generated output
 output/
+model_params.json
 
 # Dashboard generated artifacts (R htmlwidgets)
 **/lib/

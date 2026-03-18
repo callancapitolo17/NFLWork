@@ -75,6 +75,16 @@ SPORT_CONFIGS = {
             {"short": "1Q", "api_name": "1st Quarter", "api_num": 3, "suffix": "q1", "standard": "1"},
         ],
     },
+    "college_baseball": {
+        "sport_key": "baseball_ncaa",
+        "table_name": "college_baseball_odds",
+        "sport_type": "BASEBALL",
+        "sport_sub_type": "",  # empty returns all baseball; filter by rot num to get college only
+        "periods": [
+            {"short": "FG", "api_name": "Game", "api_num": 0, "suffix": "fg", "standard": "Full"},
+        ],
+        "rot_range": (3001, 3999),  # college baseball rotation numbers are in 3xxx range
+    },
 }
 
 # NFL team name mapping (Hoop88 short names -> Odds API full names)
@@ -204,9 +214,19 @@ def parse_lines(lines: list, config: dict, period: dict,
     suffix = period["suffix"]
     period_standard = period["standard"]
 
+    rot_range = config.get("rot_range")
+
     for game in lines:
         if game.get("Status") != "O":
             continue
+
+        # Filter by rotation number range (e.g., college baseball = 3xxx)
+        if rot_range:
+            rot1 = game.get("Team1RotNum", 0) or 0
+            rot2 = game.get("Team2RotNum", 0) or 0
+            if not (rot_range[0] <= rot1 <= rot_range[1] and
+                    rot_range[0] <= rot2 <= rot_range[1]):
+                continue
 
         # Team names: Team1 = away, Team2 = home
         away_raw = (game.get("Team1ID") or "").strip()

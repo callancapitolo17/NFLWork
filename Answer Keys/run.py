@@ -18,11 +18,11 @@ sys.stdout.reconfigure(line_buffering=True)
 SCRAPER_CONFIGS = {
     "wagerzon": {
         "script": "../wagerzon_odds/scraper_v2.py",
-        "sports": ["nfl", "nba", "cbb"]
+        "sports": ["nfl", "nba", "cbb", "college_baseball"]
     },
     "hoop88": {
         "script": "../hoop88_odds/scraper.py",
-        "sports": ["nfl", "ncaaf", "cbb"]
+        "sports": ["nfl", "ncaaf", "cbb", "college_baseball"]
     },
     "bfa": {
         "script": "../bfa_odds/scraper.py",
@@ -48,6 +48,7 @@ SPORT_KEYS = {
     "ncaaf": "americanfootball_ncaaf",
     "cbb": "basketball_ncaab",
     "nba": "basketball_nba",
+    "college_baseball": "baseball_ncaa",
 }
 
 # R script configurations - add new sports here
@@ -59,6 +60,9 @@ R_SCRIPTS = {
     },
     "cbb": {
         "script": "CBB Answer Key/CBB.R",
+    },
+    "college_baseball": {
+        "script": "College Baseball Answer Key/CollegeBaseball.R",
     },
     # "nba": {
     #     "script": "NBA Answer Key/NBA.R",
