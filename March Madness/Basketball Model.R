@@ -15,57 +15,18 @@ teams_std <- get_teams_std()
 final_bracket <- bracket_result$bracket %>% select(team, seed, region, play_in)
 bracket_with_ratings <- fetch_bracket_with_ratings(final_bracket, teams_std)
 
-# --- 2. Simulation Functions ---
-
-simulate_round <- function(teams, game_number = 1, region_order_auto = NULL) {
-  teams <- get_bracket_matchups(teams, region_order_auto)
-  team_pairs <- split(teams, rep(1:(nrow(teams) / 2), each = 2))
-  winners <- map(team_pairs, ~ {
-    if (nrow(.x) < 2) return(.x[1, ])
-    simulate_game(.x[1, ], .x[2, ], game_number)$winner
-  })
-  bind_rows(winners)
-}
-
-simulate_tournament <- function(bracket, games_df = NULL) {
-  # Resolve First Four (68 -> 64): use actual results if available, else simulate
-  teams_round <- resolve_first_four(bracket, games_df)
-  round_num <- 1
-  region_order_auto <- get_region_order(teams_round)
-
-  # Track all 68 original teams (First Four losers get 0s)
-  team_progress <- bracket %>%
-    select(team, seed) %>% distinct() %>%
-    mutate(Round_32 = 0, Sweet_16 = 0, Elite_8 = 0, Final_4 = 0, Title_Game = 0, Champion = 0)
-
-  while (nrow(teams_round) > 1) {
-    teams_round <- simulate_round(teams_round, game_number = round_num, region_order_auto = region_order_auto)
-    team_progress <- team_progress %>%
-      mutate(
-        Round_32   = ifelse(nrow(teams_round) < 64 & team %in% teams_round$team, 1, Round_32),
-        Sweet_16   = ifelse(nrow(teams_round) < 32 & team %in% teams_round$team, 1, Sweet_16),
-        Elite_8    = ifelse(nrow(teams_round) < 16 & team %in% teams_round$team, 1, Elite_8),
-        Final_4    = ifelse(nrow(teams_round) <  8 & team %in% teams_round$team, 1, Final_4),
-        Title_Game = ifelse(nrow(teams_round) <  4 & team %in% teams_round$team, 1, Title_Game),
-        Champion   = ifelse(nrow(teams_round) == 1 & team %in% teams_round$team, 1, Champion)
-      )
-    round_num <- round_num + 1
-  }
-  team_progress
-}
-
-# --- 3. Monte Carlo Simulation (parallelized in batches) ---
-library(furrr)
-n_workers <- max(1, parallel::detectCores() - 1)
-plan(multisession, workers = n_workers)
-n_simulations <- 10000
+# --- 2. Monte Carlo Simulation (vectorized) ---
+# Pre-resolve First Four once (not 10K times)
 games_df <- bracket_result$games
+bracket_64 <- as.data.frame(resolve_first_four(bracket_with_ratings, games_df))
+region_order <- get_region_order(bracket_64)
+cat(sprintf("Bracket after First Four: %d teams\n", nrow(bracket_64)))
 
-# Batch: each worker runs n_simulations/n_workers sims (reduces overhead)
-batch_size <- ceiling(n_simulations / n_workers)
-sim_results <- future_map_dfr(1:n_workers, function(w) {
-  map_dfr(1:batch_size, ~ simulate_tournament(bracket_with_ratings, games_df))
-}, .options = furrr_options(seed = TRUE))
+n_simulations <- 10000
+cat(sprintf("Running %s simulations...\n", format(n_simulations, big.mark = ",")))
+t0 <- Sys.time()
+sim_results <- map_dfr(1:n_simulations, ~ simulate_tournament_fast(bracket_64, region_order))
+cat(sprintf("Done in %.0f seconds.\n", as.numeric(difftime(Sys.time(), t0, units = "secs"))))
 
 # --- 4. Results ---
 team_results <- sim_results %>%

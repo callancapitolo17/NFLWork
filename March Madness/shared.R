@@ -303,13 +303,41 @@ fetch_powerrank <- function(teams_std) {
 # =============================================================================
 
 #' Fetch all power ratings and merge into a single table
+#' Uses parallel fetching to speed up (6 sources simultaneously)
 fetch_power_ratings <- function(teams_std) {
-  clean_bpi_data <- fetch_bpi(teams_std)
-  clean_kenpom_data <- fetch_kenpom(teams_std)
-  clean_torvik_data <- fetch_torvik(teams_std)
-  clean_evan_miya_data <- fetch_evan_miya(teams_std)
-  clean_teamrankings_data <- fetch_teamrankings(teams_std)
-  clean_powerrank_data <- fetch_powerrank(teams_std)
+  # Parallel fetch: all 6 sources at once
+  if (requireNamespace("future", quietly = TRUE) && requireNamespace("future.apply", quietly = TRUE)) {
+    cat("Fetching ratings in parallel...\n")
+    future::plan(future::multisession, workers = 6)
+    fetchers <- list(
+      bpi = function() fetch_bpi(teams_std),
+      kenpom = function() fetch_kenpom(teams_std),
+      torvik = function() fetch_torvik(teams_std),
+      evanmiya = function() fetch_evan_miya(teams_std),
+      teamrankings = function() fetch_teamrankings(teams_std),
+      powerrank = function() fetch_powerrank(teams_std)
+    )
+    results <- future.apply::future_lapply(fetchers, function(f) f(), future.seed = TRUE)
+    future::plan(future::sequential)  # Reset
+    clean_bpi_data <- results$bpi
+    clean_kenpom_data <- results$kenpom
+    clean_torvik_data <- results$torvik
+    clean_evan_miya_data <- results$evanmiya
+    clean_teamrankings_data <- results$teamrankings
+    clean_powerrank_data <- results$powerrank
+  } else {
+    # Fallback: sequential
+    clean_bpi_data <- fetch_bpi(teams_std)
+    clean_kenpom_data <- fetch_kenpom(teams_std)
+    clean_torvik_data <- fetch_torvik(teams_std)
+    clean_evan_miya_data <- fetch_evan_miya(teams_std)
+    clean_teamrankings_data <- fetch_teamrankings(teams_std)
+    clean_powerrank_data <- fetch_powerrank(teams_std)
+  }
+
+  # Deduplicate each source before joining (prevents many-to-many)
+  clean_kenpom_data <- clean_kenpom_data %>% filter(!is.na(standard_team), standard_team != "Team") %>% distinct(standard_team, .keep_all = TRUE)
+  clean_evan_miya_data <- clean_evan_miya_data %>% filter(!is.na(standard_team)) %>% distinct(standard_team, .keep_all = TRUE)
 
   clean_bpi_data %>%
     left_join(clean_kenpom_data %>% rename(KenPomRating = NetRtg), by = "standard_team") %>%
@@ -370,6 +398,87 @@ simulate_game <- function(team1, team2, game_number = 1, beta1 = 0.1, beta2 = 0.
   loser$composite_rating  <- loser$composite_rating - rating_change
 
   list(winner = winner)
+}
+
+#' Fast vectorized tournament simulation
+#' Pre-resolves First Four, uses vectorized rnorm for all games per round,
+#' tracks progress with base R matrix (no dplyr in hot loop).
+#'
+#' @param bracket_64 A 64-team data.frame (First Four already resolved)
+#' @param region_order Character vector of region names for F4 pairing
+simulate_tournament_fast <- function(bracket_64, region_order = NULL) {
+  # Convert to base R data.frame and extract key vectors
+  df <- as.data.frame(bracket_64)
+  if (is.null(region_order)) region_order <- unique(df$region)
+
+  all_teams <- df$team
+  all_seeds <- df$seed
+  n_all <- length(all_teams)
+  progress <- matrix(0L, nrow = n_all, ncol = 6)
+
+  # Seed-based matchup order (1v16, 8v9, 5v12, 4v13, 6v11, 3v14, 7v10, 2v15)
+  seed_order <- c(1, 16, 8, 9, 5, 12, 4, 13, 6, 11, 3, 14, 7, 10, 2, 15)
+
+  # Working copies
+  teams <- df$team
+  seeds <- df$seed
+  regions <- df$region
+  ratings <- ifelse(is.na(df$composite_rating), 0, df$composite_rating)
+  n <- length(teams)
+  round_num <- 1
+
+  while (n > 1) {
+    if (n == 4) {
+      # Final Four: pair by region order (1v3, 2v4)
+      reg_idx <- match(regions, region_order)
+      ord <- order(reg_idx)
+      ord <- ord[c(1, 3, 2, 4)]  # Cross-bracket pairing
+    } else if (n == 2) {
+      ord <- 1:2
+    } else {
+      # Regional rounds: order by region then seed bracket position
+      seed_pos <- match(seeds, seed_order)
+      ord <- order(match(regions, region_order), seed_pos)
+    }
+
+    # Reorder
+    teams <- teams[ord]
+    seeds <- seeds[ord]
+    regions <- regions[ord]
+    ratings <- ratings[ord]
+
+    # Vectorized game sim: odd indices vs even indices
+    n_games <- n %/% 2
+    i1 <- seq(1, n, by = 2)
+    i2 <- seq(2, n, by = 2)
+
+    expected_diff <- ratings[i1] - ratings[i2]
+    actual_margin <- rnorm(n_games, mean = expected_diff, sd = 11.2)
+    w <- ifelse(actual_margin > 0, i1, i2)
+
+    # Rating update
+    residual <- actual_margin - expected_diff
+    rating_change <- 0.1 * residual + 0.05 * residual * log(round_num + 1) + rnorm(n_games, 0, 0.5)
+
+    # Keep winners
+    teams <- teams[w]
+    seeds <- seeds[w]
+    regions <- regions[w]
+    ratings <- ratings[w] + abs(rating_change)
+    n <- length(teams)
+
+    # Track progress
+    col <- min(round_num, 6)
+    progress[match(teams, all_teams), col] <- 1L
+    round_num <- round_num + 1
+  }
+
+  data.frame(
+    team = all_teams, seed = all_seeds,
+    Round_32 = progress[, 1], Sweet_16 = progress[, 2], Elite_8 = progress[, 3],
+    Final_4 = progress[, 4], Title_Game = progress[, 5], Champion = progress[, 6],
+    stringsAsFactors = FALSE
+  )
 }
 
 #' Resolve First Four: reduce 68-team bracket to 64 teams.
