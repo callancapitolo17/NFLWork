@@ -814,6 +814,21 @@ dbExecute(con, sprintf("INSERT INTO cbb_prediction_meta VALUES ('%s')",
                        format(Sys.time(), "%Y-%m-%d %H:%M:%S")))
 cat(sprintf("Exported %d raw predictions to cbb_raw_predictions.\n", nrow(raw_preds)))
 
+# Export game samples for MM Kelly sizing
+sample_rows <- map_dfr(names(samples), function(game_id) {
+  s <- samples[[game_id]]$sample
+  tibble(
+    game_id = game_id,
+    sim_idx = seq_len(nrow(s)),
+    home_margin_h1 = s$game_home_margin_period_Half1,
+    total_h1 = s$game_total_period_Half1
+  )
+})
+dbExecute(con, "DROP TABLE IF EXISTS cbb_game_samples")
+dbWriteTable(con, "cbb_game_samples", sample_rows)
+cat(sprintf("Exported %d game samples (%d games) for Kelly sizing.\n",
+            nrow(sample_rows), length(unique(sample_rows$game_id))))
+
 timer$mark("save_bets")
 dbDisconnect(con)
 

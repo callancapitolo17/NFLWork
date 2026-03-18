@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import config
 import db
+import kelly
 import orders
 import quoter
 import risk
@@ -288,6 +289,9 @@ def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonica
                 "event_ticker": event_ticker,
                 "home_team": pred["home_team"],
                 "away_team": pred["away_team"],
+                "game_key": (pred["home_team"], pred["away_team"]),
+                "game_id": pred.get("id"),
+                "market_type": "spreads",
                 "contract_team": team,
                 "strike": strike,
                 "is_home_contract": is_home,
@@ -394,6 +398,7 @@ def match_total_markets(kalshi_markets, predictions, team_dict, canonical_games)
                 "home_team": pred_home,
                 "away_team": pred_away,
                 "game_key": (pred_home, pred_away),
+                "game_id": pred.get("id"),
                 "market_type": "totals",
                 "contract_team": None,
                 "strike": strike,
@@ -528,6 +533,7 @@ def match_moneyline_markets(kalshi_markets, predictions, team_dict, canonical_ga
             "home_team": pred_home,
             "away_team": pred_away,
             "game_key": (pred_home, pred_away),
+            "game_id": pred.get("id"),
             "market_type": "moneyline",
             "contract_team": pred_home,
             "strike": None,
@@ -546,6 +552,7 @@ def match_moneyline_markets(kalshi_markets, predictions, team_dict, canonical_ga
             "home_team": pred_home,
             "away_team": pred_away,
             "game_key": (pred_home, pred_away),
+            "game_id": pred.get("id"),
             "market_type": "moneyline",
             "contract_team": pred_away,
             "strike": None,
@@ -565,6 +572,7 @@ def match_moneyline_markets(kalshi_markets, predictions, team_dict, canonical_ga
                 "home_team": pred_home,
                 "away_team": pred_away,
                 "game_key": (pred_home, pred_away),
+                "game_id": pred.get("id"),
                 "market_type": "moneyline",
                 "contract_team": "Tie",
                 "strike": None,
@@ -587,10 +595,7 @@ def match_all_markets(all_kalshi, predictions, team_dict, canonical_games):
         spread_q = match_kalshi_to_predictions(
             all_kalshi["spreads"], predictions, team_dict, canonical_games
         )
-        # Add game_key and market_type to spread markets (backward compat)
         for m in spread_q:
-            m.setdefault("game_key", (m["home_team"], m["away_team"]))
-            m.setdefault("market_type", "spreads")
             m.setdefault("book_fetched_at", time.time())
         quotable.extend(spread_q)
 
@@ -618,6 +623,9 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
     Returns:
         Updated resting_by_ticker dict.
     """
+    # Clear per-cycle Kelly position cache (avoids N redundant DB reads)
+    kelly.clear_positions_cache()
+
     # Check overall risk
     is_fresh, pred_age = risk.check_staleness(prediction_updated_at)
     if not is_fresh:
@@ -628,14 +636,7 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
             resting_by_ticker.clear()
         return resting_by_ticker
 
-    exposure_ok, exposure = risk.check_exposure_limit()
-    if not exposure_ok:
-        print(f"  EXPOSURE LIMIT (${exposure:.2f}). Pulling all quotes.")
-        if not DRY_RUN:
-            orders.cancel_all_orders()
-            db.clear_all_resting_orders()
-            resting_by_ticker.clear()
-        return resting_by_ticker
+    exposure = db.compute_total_exposure()  # For logging only
 
     quoted_count = 0
     quoted_events = set()
@@ -678,50 +679,36 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
         if book_age > config.MAX_BOOK_STALENESS_SEC:
             continue
 
-        # Get current position (per-ticker, per-event, and per-game)
-        pos = db.get_position(ticker)
-        net = pos["net_yes"]
-        event_net = db.get_event_net_position(market.get("event_ticker", ""))
+        # Get current position for inventory skew (uses Kelly's per-cycle cache)
+        net = kelly.get_net_position(ticker)
         game_key = market.get("game_key", (market.get("home_team", ""), market.get("away_team", "")))
-        game_net = db.get_game_net_position(game_key[0], game_key[1])
 
-        # Count resting order exposure toward event limit — prevents a sharp
-        # from filling multiple strikes simultaneously to breach the limit
-        resting_event_long = 0
-        resting_event_short = 0
-        resting_game_long = 0
-        resting_game_short = 0
-        for other_m in quotable_markets:
-            if other_m["ticker"] == ticker:
-                continue
-            other_info = resting_by_ticker.get(other_m["ticker"], {})
-            # Per-event resting
-            if other_m["event_ticker"] == event_ticker:
-                if other_info.get("bid_order_id"):
-                    resting_event_long += config.CONTRACT_SIZE
-                if other_info.get("ask_order_id"):
-                    resting_event_short += config.CONTRACT_SIZE
-            # Per-game resting (across market types)
-            other_game = other_m.get("game_key", (other_m.get("home_team", ""), other_m.get("away_team", "")))
-            if other_game == game_key:
-                if other_info.get("bid_order_id"):
-                    resting_game_long += config.CONTRACT_SIZE
-                if other_info.get("ask_order_id"):
-                    resting_game_short += config.CONTRACT_SIZE
+        # Kelly sizing: compute per-side sizes
+        if config.USE_KELLY_SIZING:
+            game_id = market.get("game_id")
+            placed = kelly.get_placed_positions_for_game(game_key, game_id, current_markets=quotable_markets) if game_id else []
+            bid_size = kelly.kelly_size_for_quote(
+                market, side="bid", placed_positions=placed,
+                bankroll=config.BANKROLL, kelly_mult=config.KELLY_FRACTION
+            )
+            ask_size = kelly.kelly_size_for_quote(
+                market, side="ask", placed_positions=placed,
+                bankroll=config.BANKROLL, kelly_mult=config.KELLY_FRACTION
+            )
+        else:
+            bid_size = config.CONTRACT_SIZE
+            ask_size = config.CONTRACT_SIZE
 
-        # Check position limit — per-ticker, per-event, per-game, AND global directional
-        # Include CONTRACT_SIZE for the order we're about to place — otherwise
-        # simultaneous fills on N tickers can breach the limit by (N-1)*CONTRACT_SIZE
-        can_long, can_short = risk.check_directional_limit()
-        size = config.CONTRACT_SIZE
-        at_max_long = (net >= config.MAX_POSITION_PER_MARKET
-                       or (event_net + resting_event_long + size) > config.MAX_POSITION_PER_EVENT
-                       or (game_net + resting_game_long + size) > config.MAX_POSITION_PER_GAME
-                       or not can_long)
-        at_max_short = (net <= -config.MAX_POSITION_PER_MARKET
-                        or (event_net - resting_event_short - size) < -config.MAX_POSITION_PER_EVENT
-                        or (game_net - resting_game_short - size) < -config.MAX_POSITION_PER_GAME
-                        or not can_short)
+        # Kelly says don't quote either side → skip entirely
+        if bid_size <= 0 and ask_size <= 0:
+            if ticker in resting_by_ticker:
+                if not DRY_RUN:
+                    for side_key in ["bid_order_id", "ask_order_id"]:
+                        oid = resting_by_ticker[ticker].get(side_key)
+                        if oid:
+                            orders.cancel_order(oid)
+                del resting_by_ticker[ticker]
+            continue
 
         # Compute quote (orderbook-aware, with anti-penny-loop)
         book_bid = market.get("book_bid", 0)
@@ -731,7 +718,8 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
             book_bid, book_ask = 0, 0
         quote = quoter.compute_quotes(
             market["fair_prob"], net,
-            book_bid=book_bid, book_ask=book_ask
+            book_bid=book_bid, book_ask=book_ask,
+            bid_size=bid_size, ask_size=ask_size
         )
         if quote is None:
             # Cancel existing orders if any
@@ -759,49 +747,49 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
         # Manage bid (buy YES)
         existing = resting_by_ticker.get(ticker, {})
 
-        if not at_max_long:
+        if bid_size > 0:
             bid_oid = existing.get("bid_order_id")
             if bid_oid:
                 # Amend if price changed
                 if quoter.should_amend(existing.get("bid_price", 0), quote["bid_yes"]):
-                    result = orders.amend_order(bid_oid, ticker, "yes", price=quote["bid_yes"], count=quote["size"])
+                    result = orders.amend_order(bid_oid, ticker, "yes", price=quote["bid_yes"], count=quote["bid_size"])
                     if result:
                         existing["bid_price"] = quote["bid_yes"]
                         db.save_resting_order(bid_oid, ticker, "yes", "buy",
-                                              quote["bid_yes"], quote["size"])
+                                              quote["bid_yes"], quote["bid_size"])
             else:
                 # Place new bid
-                result = orders.place_order(ticker, "yes", quote["bid_yes"], quote["size"])
+                result = orders.place_order(ticker, "yes", quote["bid_yes"], quote["bid_size"])
                 if result:
                     bid_oid = result.get("order_id")
                     existing["bid_order_id"] = bid_oid
                     existing["bid_price"] = quote["bid_yes"]
                     db.save_resting_order(bid_oid, ticker, "yes", "buy",
-                                          quote["bid_yes"], quote["size"])
+                                          quote["bid_yes"], quote["bid_size"])
         elif existing.get("bid_order_id"):
             orders.cancel_order(existing["bid_order_id"])
             db.remove_resting_order(existing["bid_order_id"])
             existing.pop("bid_order_id", None)
 
         # Manage ask (buy NO, which is selling YES)
-        if not at_max_short:
+        if ask_size > 0:
             ask_oid = existing.get("ask_order_id")
             no_price = 100 - quote["ask_yes"]  # Buying NO at this price = selling YES at ask_yes
             if ask_oid:
                 if quoter.should_amend(existing.get("ask_price", 0), quote["ask_yes"]):
-                    result = orders.amend_order(ask_oid, ticker, "no", price=no_price, count=quote["size"])
+                    result = orders.amend_order(ask_oid, ticker, "no", price=no_price, count=quote["ask_size"])
                     if result:
                         existing["ask_price"] = quote["ask_yes"]
                         db.save_resting_order(ask_oid, ticker, "no", "buy",
-                                              no_price, quote["size"])
+                                              no_price, quote["ask_size"])
             else:
-                result = orders.place_order(ticker, "no", no_price, quote["size"])
+                result = orders.place_order(ticker, "no", no_price, quote["ask_size"])
                 if result:
                     ask_oid = result.get("order_id")
                     existing["ask_order_id"] = ask_oid
                     existing["ask_price"] = quote["ask_yes"]
                     db.save_resting_order(ask_oid, ticker, "no", "buy",
-                                          no_price, quote["size"])
+                                          no_price, quote["ask_size"])
         elif existing.get("ask_order_id"):
             orders.cancel_order(existing["ask_order_id"])
             db.remove_resting_order(existing["ask_order_id"])
@@ -813,6 +801,19 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
         existing["_away_team"] = market.get("away_team")
         existing["_market_type"] = market.get("market_type")
         existing["_event_ticker"] = event_ticker
+        existing["_fair_prob"] = market.get("fair_prob")
+        existing["_bid_size"] = quote["bid_size"]
+        existing["_ask_size"] = quote["ask_size"]
+        existing["_contract_team"] = market.get("contract_team")
+        # Compute line_value in home-spread convention for position tracking
+        mt = market.get("market_type", "spreads")
+        strike = market.get("strike")
+        if mt == "spreads" and strike is not None:
+            existing["_line_value"] = -strike if market.get("is_home_contract") else strike
+        elif mt == "totals" and strike is not None:
+            existing["_line_value"] = strike
+        else:
+            existing["_line_value"] = None
         resting_by_ticker[ticker] = existing
         quoted_count += 1
         quoted_events.add(event_ticker)
@@ -892,6 +893,9 @@ def poll_for_fills(resting_by_ticker, quotable_markets_ref=None):
                 fill_home = resting_info.get("_home_team")
                 fill_away = resting_info.get("_away_team")
                 fill_market_type = resting_info.get("_market_type")
+                fill_fair_prob = resting_info.get("_fair_prob")
+                fill_line_value = resting_info.get("_line_value")
+                fill_contract_team = resting_info.get("_contract_team")
 
                 # Fallback to quotable_markets_ref if resting metadata missing
                 if not event_ticker:
@@ -901,6 +905,16 @@ def poll_for_fills(resting_by_ticker, quotable_markets_ref=None):
                             fill_home = fill_home or m.get("home_team")
                             fill_away = fill_away or m.get("away_team")
                             fill_market_type = fill_market_type or m.get("market_type")
+                            fill_fair_prob = fill_fair_prob or m.get("fair_prob")
+                            fill_contract_team = fill_contract_team or m.get("contract_team")
+                            # Compute line_value from market if not in resting metadata
+                            if fill_line_value is None:
+                                mt = m.get("market_type", "spreads")
+                                strike = m.get("strike")
+                                if mt == "spreads" and strike is not None:
+                                    fill_line_value = -strike if m.get("is_home_contract") else strike
+                                elif mt == "totals" and strike is not None:
+                                    fill_line_value = strike
                             break
 
                 # Compute maker fee: fee_rate * P * (1-P) * 100 per contract
@@ -913,7 +927,10 @@ def poll_for_fills(resting_by_ticker, quotable_markets_ref=None):
                                    event_ticker=event_ticker,
                                    home_team=fill_home,
                                    away_team=fill_away,
-                                   market_type=fill_market_type)
+                                   market_type=fill_market_type,
+                                   fair_prob=fill_fair_prob,
+                                   line_value=fill_line_value,
+                                   contract_team=fill_contract_team)
                 db.record_fill(
                     fill_id=f"{oid}-fill-{cumulative_filled}",
                     ticker=ticker, side=side, action="buy",
@@ -942,11 +959,15 @@ def main():
     print("=" * 60)
     print(f"  Kalshi CBB 1H Market Maker — Session {SESSION_ID}")
     print(f"  {'DRY RUN' if DRY_RUN else 'LIVE'}")
-    print(f"  Maker: EV>{config.MIN_EV_PCT:.0%} | Size: {config.CONTRACT_SIZE}")
-    print(f"  Taker: EV>{config.MIN_TAKE_EV_PCT:.0%} (after {config.TAKER_FEE_RATE:.0%} fee) | Size: {config.TAKE_CONTRACT_SIZE}")
+    if config.USE_KELLY_SIZING:
+        size_str = f"Kelly (f={config.KELLY_FRACTION}, B=${config.BANKROLL:.0f})"
+    else:
+        size_str = str(config.CONTRACT_SIZE)
+    print(f"  Maker: EV>{config.MIN_EV_PCT:.0%} | Size: {size_str}")
+    take_size_str = "Kelly-sized" if config.USE_KELLY_SIZING else str(config.TAKE_CONTRACT_SIZE)
+    print(f"  Taker: EV>{config.MIN_TAKE_EV_PCT:.0%} (after {config.TAKER_FEE_RATE:.0%} fee) | Size: {take_size_str}")
     print(f"  Markets: {', '.join(sorted(config.ENABLED_MARKET_TYPES))}")
-    print(f"  Max position: {config.MAX_POSITION_PER_MARKET}/ticker, {config.MAX_POSITION_PER_EVENT}/event, {config.MAX_POSITION_PER_GAME}/game")
-    print(f"  Max exposure: ${config.MAX_TOTAL_EXPOSURE_DOLLARS}")
+    print(f"  Risk: Kelly-only (no hard position limits)")
     print(f"  API: {config.KALSHI_BASE_URL}")
     print("=" * 60)
 
@@ -1051,6 +1072,7 @@ def main():
                         predictions = new_preds
                         prediction_updated_at = new_ts
                         taker.clear_cooldowns()  # Fresh predictions → fresh taker signals
+                        kelly.clear_sample_cache()  # Reload samples with new predictions
 
                     # Re-fetch Kalshi markets + re-match (all enabled types)
                     fresh_all = fetch_all_markets()
