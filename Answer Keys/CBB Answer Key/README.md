@@ -16,26 +16,32 @@ cd "Answer Keys/CBB Dashboard"
 
 ## Architecture
 
-The pipeline runs in two phases orchestrated by `run.py`:
+The pipeline runs in three phases orchestrated by `run.py`:
 
-### Phase 1: Parallel Execution
-Runs simultaneously:
-- **Scrapers** - wagerzon, hoop88, bfa, bet105 (fetch offshore odds)
-- **CBB.R Phases 1-5** - Load data, build consensus, generate samples, build API predictions
+### Phase 1: Sharp Scrapers First
+- **bookmaker, bet105** — Run first (in parallel with each other). Must complete before R starts Phase 2 so sharp data is available for consensus.
 
-### Phase 2: Combine + Size
-- **CBB.R Phases 6-7.5** - Wait for scrapers, load offshore odds, find +EV bets, apply correlation-adjusted Kelly sizing
+### Phase 2: Parallel Execution
+Runs simultaneously after sharp scrapers finish:
+- **Other scrapers** — wagerzon, hoop88, bfa, kalshi (fetch rec/offshore odds)
+- **CBB.R Phases 1-5** — Load data, build sharp consensus, generate samples, build API predictions
+
+### Phase 3: Combine + Size
+- **CBB.R Phases 6-7.5** — Wait for scrapers, load offshore odds, find +EV bets, apply correlation-adjusted Kelly sizing
 
 ```
 run.py cbb
     │
-    ├── [parallel] wagerzon scraper → wagerzon.duckdb
-    ├── [parallel] hoop88 scraper   → hoop88.duckdb
-    ├── [parallel] bfa scraper      → bfa.duckdb
-    ├── [parallel] bet105 scraper   → bet105.duckdb
+    ├── [first]    bookmaker scraper → bookmaker.duckdb  (sharp)
+    ├── [first]    bet105 scraper    → bet105.duckdb     (sharp)
+    │
+    ├── [parallel] wagerzon scraper  → wagerzon.duckdb
+    ├── [parallel] hoop88 scraper    → hoop88.duckdb
+    ├── [parallel] bfa scraper       → bfa.duckdb
+    ├── [parallel] kalshi scraper    → kalshi.duckdb
     ├── [parallel] CBB.R (Phases 1-5)
     │       ├── Phase 1: Load historical PBP data
-    │       ├── Phase 2: Fetch odds, build consensus lines
+    │       ├── Phase 2: Fetch odds, load sharp scrapers, build sharp-only consensus
     │       ├── Phase 3: Build team name dictionary
     │       ├── Phase 4: Generate samples + fetch derivative odds
     │       └── Phase 5: Build predictions (API bets)
@@ -45,6 +51,22 @@ run.py cbb
             ├── Phase 7: Combine all bets, deduplicate
             └── Phase 7.5: Correlation-adjusted Kelly sizing
 ```
+
+### Consensus Strategy
+
+**Historical (Phase 1):** All-book median, 0.5 prob hardcode. Used for sample building from PBP data.
+
+**Live (Phase 2):** Sharp books only. Defined in `SHARP_BOOKS` (`Tools.R`):
+
+| Book | Weight | Source |
+|------|--------|--------|
+| Pinnacle | 1.1 | Odds API |
+| Bookmaker.eu | 1.1 | Scraper |
+| LowVig | 1.0 | Odds API |
+| Circa | 1.0 | Odds API |
+| Bet105 | 1.0 | Scraper |
+
+Rec books (DraftKings, FanDuel, etc.) get weight=0 — present in data but excluded from consensus. Games with no sharp book coverage are dropped. Fallback: if zero sharp books exist in the entire dataset, all books weighted equally.
 
 ## Correlation-Adjusted Kelly Sizing (Phase 7.5)
 
@@ -97,7 +119,7 @@ If the multivariate solve fails, a per-bet fallback scales each bet by average p
 
 **Database:** `cbb.duckdb` in the Answer Keys directory containing:
 - `cbb_betting_pbp` - Play-by-play betting data
-- `cbb_weights` - Book weights for consensus building
+- `cbb_closing_odds` - Historical closing odds (used for historical consensus)
 
 **Dashboard DB:** `cbb_dashboard.duckdb` containing:
 - `placed_bets` - Already-placed bets (read during Phase 7.5 for conditional Kelly)
@@ -107,15 +129,17 @@ If the multivariate solve fails, a per-bet fallback scales each bet by average p
 **API:** The Odds API key set as environment variable `ODDS_API_KEY`
 
 **Scrapers:** Python venvs set up in:
+- `~/NFLWork/bookmaker_odds/` (sharp — runs before R)
+- `~/NFLWork/bet105_odds/` (sharp — runs before R)
 - `~/NFLWork/wagerzon_odds/`
 - `~/NFLWork/hoop88_odds/`
 - `~/NFLWork/bfa_odds/`
-- `~/NFLWork/bet105_odds/`
+- `~/NFLWork/kalshi_odds/`
 
 ## How It Works
 
 ### 1. Build Consensus Lines
-Fetches current odds from multiple books, weights by book sharpness, and calculates consensus spread/total for each game.
+Fetches current odds from Odds API + sharp scraper DuckDBs. Only sharp books (Pinnacle, Bookmaker, LowVig, Circa, Bet105) participate in consensus — rec books are zeroed out. `scraper_to_odds_api_format()` converts scraper data to Odds API format, then `pick_consensus_line()` picks the line with highest total sharp weight.
 
 ### 2. Generate Historical Samples
 For each upcoming game, samples historical games with similar spread/total profiles. Uses distance-weighted sampling based on how close historical games match current consensus.

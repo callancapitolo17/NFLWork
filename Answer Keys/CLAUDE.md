@@ -8,10 +8,17 @@ The pricing engine for the entire betting operation. Generates fair odds for any
 ### Pipeline Flow (CBB — primary active sport)
 ```
 run.py (orchestrator)
-  ├── Parallel: 6 scrapers write to their own DuckDB files
-  ├── Sentinel: .scrapers_done_cbb signals completion
+  ├── [first]    Sharp scrapers (bookmaker, bet105) → their DuckDB files
+  ├── [parallel] Other scrapers (wagerzon, hoop88, bfa, kalshi) + CBB.R
+  ├── Sentinel: .scrapers_done_cbb signals all scrapers complete
   └── CBB.R reads scraper DBs, generates fair prices, writes pipeline output
 ```
+
+### Consensus Architecture
+- **Historical consensus** (Phase 1): All-book median with 0.5 prob hardcode. Used for sample building. Do not change.
+- **Live consensus** (Phase 2): Sharp books only via `SHARP_BOOKS` in `Tools.R`. Rec books get weight=0. Pinnacle + Bookmaker at 1.1 weight (tiebreaker), LowVig/Circa/Bet105 at 1.0. Games with no sharp coverage are dropped.
+- **Scraper integration**: `scraper_to_odds_api_format()` converts offshore scraper output to Odds API long format so sharp scrapers (bookmaker, bet105) can participate in consensus.
+- Sharp scrapers run before R starts so their DuckDB data is fresh when CBB.R Phase 2 reads it.
 
 ### Team Name Resolution (THE #1 source of bugs)
 - Python side: `canonical_match.py` — two-layer matching (dict → game-level fallback)
