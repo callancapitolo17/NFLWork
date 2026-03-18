@@ -42,11 +42,42 @@ def _tables_exist(required):
         conn.close()
 
 
+def _migrate_positions():
+    """Add missing columns to positions table (Kelly sizing migrations)."""
+    if not Path(str(MM_DB_PATH)).exists():
+        return
+    conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
+    try:
+        cols = {r[0] for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'positions'"
+        ).fetchall()}
+    finally:
+        conn.close()
+
+    migrations = []
+    if "fair_prob" not in cols:
+        migrations.append("ALTER TABLE positions ADD COLUMN fair_prob FLOAT DEFAULT 0.5")
+    if "contract_team" not in cols:
+        migrations.append("ALTER TABLE positions ADD COLUMN contract_team VARCHAR")
+
+    if migrations:
+        def _add_cols():
+            c = duckdb.connect(str(MM_DB_PATH))
+            try:
+                for sql in migrations:
+                    c.execute(sql)
+            finally:
+                c.close()
+        _with_retry(_add_cols)
+
+
 def init_database():
     """Create all market maker tables if they don't exist."""
     required = ["positions", "fills", "resting_orders", "quote_log", "sessions", "reference_lines"]
     if _tables_exist(required):
-        return  # Skip write lock — tables already exist
+        _migrate_positions()
+        return
     def _init():
         conn = duckdb.connect(str(MM_DB_PATH))
         try:
@@ -60,6 +91,8 @@ def init_database():
                     line_value FLOAT,
                     net_yes INTEGER DEFAULT 0,
                     avg_entry_price FLOAT DEFAULT 0,
+                    fair_prob FLOAT DEFAULT 0.5,
+                    contract_team VARCHAR,
                     updated_at TIMESTAMP
                 )
             """)
@@ -201,57 +234,6 @@ def get_position(ticker):
         conn.close()
 
 
-def get_event_net_position(event_ticker):
-    """Get aggregate net YES position across all tickers in an event.
-
-    Prevents correlated exposure: a sharp filling Duke -1.5, Duke -3.5,
-    Duke -5.5 would accumulate directional risk that per-ticker limits miss.
-    """
-    conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
-    try:
-        row = conn.execute(
-            "SELECT COALESCE(SUM(net_yes), 0) FROM positions WHERE event_ticker = ?",
-            [event_ticker]
-        ).fetchone()
-        return row[0]
-    finally:
-        conn.close()
-
-
-def get_game_net_position(home_team, away_team):
-    """Get aggregate net YES position across all market types for one game.
-
-    Prevents correlated exposure: different market types on the same game
-    use different event_tickers on Kalshi, so per-event limits don't catch
-    cross-market-type stacking on the same physical game.
-    """
-    conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
-    try:
-        row = conn.execute(
-            "SELECT COALESCE(SUM(net_yes), 0) FROM positions WHERE home_team = ? AND away_team = ?",
-            [home_team, away_team]
-        ).fetchone()
-        return row[0]
-    finally:
-        conn.close()
-
-
-def get_global_net_position():
-    """Get total net YES position across ALL tickers.
-
-    Used for global directional limit: prevents correlated exposure
-    across events (e.g., all favorites covering simultaneously).
-    """
-    conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
-    try:
-        row = conn.execute(
-            "SELECT COALESCE(SUM(net_yes), 0) FROM positions"
-        ).fetchone()
-        return row[0]
-    finally:
-        conn.close()
-
-
 def get_all_positions():
     """Get all open positions."""
     conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
@@ -264,7 +246,8 @@ def get_all_positions():
 
 
 def update_position(ticker, side, price, count, event_ticker=None,
-                    home_team=None, away_team=None, market_type=None, line_value=None):
+                    home_team=None, away_team=None, market_type=None,
+                    line_value=None, fair_prob=None, contract_team=None):
     """Update position after a fill."""
     def _write():
         conn = duckdb.connect(str(MM_DB_PATH))
@@ -288,22 +271,37 @@ def update_position(ticker, side, price, count, event_ticker=None,
             new_net = net_yes + delta
 
             if delta > 0 and net_yes >= 0:
+                # Adding to a long (or opening long from flat)
                 total_cost = avg_price * net_yes + price * delta
                 new_avg = total_cost / new_net if new_net > 0 else 0
             elif delta < 0 and net_yes <= 0:
+                # Adding to a short (or opening short from flat)
                 total_cost = avg_price * abs(net_yes) + price * abs(delta)
                 new_avg = total_cost / abs(new_net) if new_net != 0 else 0
             else:
-                new_avg = avg_price
+                # Closing (partially or fully) or reversing direction.
+                # If reversed (new_net crossed zero), reset avg to the new trade's price.
+                if new_net == 0:
+                    new_avg = 0
+                elif (net_yes > 0 and new_net < 0) or (net_yes < 0 and new_net > 0):
+                    new_avg = price  # Reversed — new position entered at this price
+                else:
+                    new_avg = avg_price  # Partial close — avg unchanged
 
             conn.execute("""
                 INSERT INTO positions (ticker, event_ticker, home_team, away_team,
-                                       market_type, line_value, net_yes, avg_entry_price, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                       market_type, line_value, net_yes, avg_entry_price,
+                                       fair_prob, contract_team, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (ticker) DO UPDATE SET
-                    net_yes = ?, avg_entry_price = ?, updated_at = ?
+                    net_yes = ?, avg_entry_price = ?,
+                    fair_prob = COALESCE(?, fair_prob, 0.5),
+                    line_value = COALESCE(?, line_value),
+                    contract_team = COALESCE(?, contract_team),
+                    updated_at = ?
             """, [ticker, event_ticker, home_team, away_team, market_type, line_value,
-                  new_net, new_avg, now, new_net, new_avg, now])
+                  new_net, new_avg, fair_prob or 0.5, contract_team, now,
+                  new_net, new_avg, fair_prob, line_value, contract_team, now])
         finally:
             conn.close()
     _with_retry(_write)
@@ -400,23 +398,25 @@ def get_resting_orders():
 
 def save_reference_lines(lines):
     """Save reference lines from Bookmaker/Bet105 for line-move detection."""
-    conn = duckdb.connect(str(MM_DB_PATH))
-    try:
-        conn.execute("BEGIN TRANSACTION")
-        conn.execute("DELETE FROM reference_lines")
-        now = datetime.now(timezone.utc)
-        for line in lines:
-            conn.execute("""
-                INSERT INTO reference_lines (home_team, away_team, market, line_value, snapshot_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, [line["home_team"], line["away_team"], line["market"],
-                  line["line_value"], now])
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-    finally:
-        conn.close()
+    def _write():
+        conn = duckdb.connect(str(MM_DB_PATH))
+        try:
+            conn.execute("BEGIN TRANSACTION")
+            conn.execute("DELETE FROM reference_lines")
+            now = datetime.now(timezone.utc)
+            for line in lines:
+                conn.execute("""
+                    INSERT INTO reference_lines (home_team, away_team, market, line_value, snapshot_at)
+                    VALUES (?, ?, ?, ?, ?)
+                """, [line["home_team"], line["away_team"], line["market"],
+                      line["line_value"], now])
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+    _with_retry(_write)
 
 
 def get_reference_lines():

@@ -32,12 +32,17 @@ def _detect_penny_loop(ticker, book_bid, book_ask):
     # Prune old entries
     history[:] = [(t, b, a) for t, b, a in history if now - t < PENNY_LOOP_WINDOW]
 
-    # Count 1c bid increases (someone is walking our bid up)
+    # Count 1c bid increases (someone walking our bid up)
+    # AND 1c ask decreases (someone walking our ask down)
     penny_count = 0
     for i in range(1, len(history)):
         prev_bid = history[i - 1][1]
         curr_bid = history[i][1]
+        prev_ask = history[i - 1][2]
+        curr_ask = history[i][2]
         if curr_bid - prev_bid == 1 and prev_bid > 0:
+            penny_count += 1
+        if prev_ask - curr_ask == 1 and curr_ask > 0:
             penny_count += 1
 
     # Record current observation

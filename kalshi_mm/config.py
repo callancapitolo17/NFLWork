@@ -42,15 +42,11 @@ KALSHI_PRIVATE_KEY_PATH = _env.get("KALSHI_PRIVATE_KEY_PATH", "")
 # --- Quoting Parameters ---
 MIN_EV_PCT = float(_env.get("MIN_EV_PCT", "0.05"))  # 5% minimum EV to quote
 CONTRACT_SIZE = int(_env.get("CONTRACT_SIZE", "5"))
-SKEW_PER_CONTRACT = int(_env.get("SKEW_PER_CONTRACT", "1"))
+SKEW_PER_CONTRACT = int(_env.get("SKEW_PER_CONTRACT", "0"))  # Disabled — Kelly handles inventory
 
-# --- Risk Limits ---
-MAX_POSITION_PER_MARKET = int(_env.get("MAX_POSITION_PER_MARKET", "5"))
-MAX_POSITION_PER_EVENT = int(_env.get("MAX_POSITION_PER_EVENT", "8"))  # Across all strikes for one game
-MAX_TOTAL_EXPOSURE_DOLLARS = float(_env.get("MAX_TOTAL_EXPOSURE", "250.0"))
-MAX_MARKETS = int(_env.get("MAX_MARKETS", "20"))
-MAX_EVENTS = int(_env.get("MAX_EVENTS", "10"))  # Max simultaneous games to quote
-MAX_TOTAL_DIRECTIONAL = int(_env.get("MAX_TOTAL_DIRECTIONAL", "40"))  # Max net contracts in one direction across ALL events
+# --- Operational Limits ---
+MAX_MARKETS = int(_env.get("MAX_MARKETS", "50"))
+MAX_EVENTS = int(_env.get("MAX_EVENTS", "30"))  # API rate limit guard
 MAX_STALENESS_SEC = int(_env.get("MAX_STALENESS_SEC", "600"))
 MIN_QUOTE_SPREAD_CENTS = int(_env.get("MIN_QUOTE_SPREAD", "4"))
 MIN_FAIR_VALUE = 10  # Don't quote if fair_yes < 10 cents
@@ -81,11 +77,9 @@ MARKET_SERIES = {
 }
 ENABLED_MARKET_TYPES = set(_env.get("ENABLED_MARKETS", "spreads,totals,moneyline").split(","))
 SPREAD_SERIES = MARKET_SERIES["spreads"]  # backward compat
-MAX_POSITION_PER_GAME = int(_env.get("MAX_POSITION_PER_GAME", "12"))
 MAX_BOOK_STALENESS_SEC = int(_env.get("MAX_BOOK_STALENESS_SEC", "10"))
 
 # --- Kelly Sizing ---
 BANKROLL = float(_env.get("BANKROLL", "1000.0"))
 KELLY_FRACTION = float(_env.get("KELLY_FRACTION", "0.25"))  # Quarter Kelly
-MAX_KELLY_CONTRACTS = int(_env.get("MAX_KELLY_CONTRACTS", "10"))
-USE_KELLY_SIZING = _env.get("USE_KELLY_SIZING", "false").lower() == "true"
+USE_KELLY_SIZING = _env.get("USE_KELLY_SIZING", "true").lower() == "true"

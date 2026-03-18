@@ -12,7 +12,6 @@ import numpy as np
 import duckdb
 from config import (
     CBB_DB_PATH, BANKROLL, KELLY_FRACTION,
-    MAX_KELLY_CONTRACTS
 )
 
 import db as _db
@@ -21,6 +20,30 @@ log = logging.getLogger(__name__)
 
 # In-memory cache: game_id -> DataFrame with (home_margin_h1, total_h1)
 _sample_cache = {}
+
+# Per-cycle cache for positions (cleared each quote/take cycle)
+_positions_cache = None
+
+
+def clear_positions_cache():
+    """Clear the per-cycle positions cache. Call at start of each quote/take cycle."""
+    global _positions_cache
+    _positions_cache = None
+
+
+def get_net_position(ticker):
+    """Get net YES position for a ticker from the per-cycle cache.
+
+    Uses the same cache as get_placed_positions_for_game() — no extra DB call.
+    Returns 0 if no position exists.
+    """
+    global _positions_cache
+    if _positions_cache is None:
+        _positions_cache = _db.get_all_positions()
+    for pos in _positions_cache:
+        if pos.get("ticker") == ticker:
+            return pos.get("net_yes", 0)
+    return 0
 
 
 def clear_sample_cache():
@@ -110,6 +133,14 @@ def evaluate_outcomes(samples, market_type, side, line=None):
         elif side == "away":
             out[:] = np.where(margin < 0, 1.0,
                               np.where(margin > 0, 0.0, np.nan))
+        elif side == "not_home":
+            # NOT(home wins) = away wins or tie
+            out[:] = np.where(margin > 0, 0.0, 1.0)
+        elif side == "not_away":
+            # NOT(away wins) = home wins or tie
+            out[:] = np.where(margin < 0, 0.0, 1.0)
+        elif side == "not_tie":
+            out[:] = np.where(margin != 0, 1.0, 0.0)
         else:  # tie
             out[:] = np.where(margin == 0, 1.0, 0.0)
     else:
@@ -206,7 +237,7 @@ def kelly_size_single(fair_prob, kalshi_price_cents, bankroll, kelly_mult):
     # Convert fraction to contracts: each contract costs price dollars, pays $1
     cost_per_contract = price
     contracts = f * kelly_mult * bankroll / cost_per_contract
-    contracts = max(0, min(MAX_KELLY_CONTRACTS, round(contracts)))
+    contracts = max(0, round(contracts))
     return int(contracts)
 
 
@@ -239,9 +270,9 @@ def conditional_kelly_sizes(new_positions, placed_positions, samples,
         Sigma = _compute_covariance(outcome_matrix, fair_probs, kalshi_prices)
 
         if Sigma is not None:
-            # EV vector: edge as fraction of cost
+            # EV vector: expected return per dollar wagered
             mu = np.array([
-                (p["fair_prob"] - p["kalshi_price"] / 100.0)
+                (p["fair_prob"] * 100 - p["kalshi_price"]) / p["kalshi_price"]
                 for p in all_positions
             ])
 
@@ -280,7 +311,7 @@ def conditional_kelly_sizes(new_positions, placed_positions, samples,
                 for i, pos in enumerate(new_positions):
                     cost = pos["kalshi_price"] / 100.0
                     contracts = f_new[i] * kelly_mult * bankroll / cost
-                    contracts = max(0, min(MAX_KELLY_CONTRACTS, round(contracts)))
+                    contracts = max(0, round(contracts))
                     sizes.append(int(contracts))
                 return sizes
 
@@ -333,7 +364,7 @@ def _fallback_rho_scaling(new_positions, placed_positions, samples,
                     pos["fair_prob"], pos["kalshi_price"],
                     bankroll, kelly_mult
                 )
-                adjusted = max(0, min(MAX_KELLY_CONTRACTS, round(base * scale)))
+                adjusted = max(0, round(base * scale))
                 sizes.append(int(adjusted))
             return sizes
 
@@ -366,15 +397,25 @@ def kelly_size_for_quote(market, side, placed_positions, bankroll, kelly_mult):
         return 0  # no samples → can't compute Kelly → don't quote
 
     # Build the new position dict
+    fair_cents = market["fair_prob"] * 100
     if side == "bid":
         # Buying YES: we profit when the event happens
         pos = _market_to_position(market, "yes")
-        pos["kalshi_price"] = market.get("book_bid", int(market["fair_prob"] * 100))
+        book_bid = market.get("book_bid", 0)
+        if book_bid > 0:
+            pos["kalshi_price"] = book_bid
+        else:
+            # Empty book — use EV-floor price (same formula as quoter)
+            pos["kalshi_price"] = int(math.floor(fair_cents / 1.05))
     else:
         # Selling YES (buying NO): we profit when the event doesn't happen
         pos = _market_to_position(market, "no")
-        pos["kalshi_price"] = 100 - market.get("book_ask",
-                                                int((1 - market["fair_prob"]) * 100))
+        book_ask = market.get("book_ask", 0)
+        if book_ask > 0:
+            pos["kalshi_price"] = 100 - book_ask
+        else:
+            # Empty book — use EV-floor price for NO side
+            pos["kalshi_price"] = 100 - int(math.ceil((fair_cents + 5) / 1.05))
 
     if pos["kalshi_price"] <= 0 or pos["kalshi_price"] >= 100:
         return 0
@@ -389,8 +430,24 @@ def kelly_size_for_quote(market, side, placed_positions, bankroll, kelly_mult):
 
 
 def _market_to_position(market, yes_or_no):
-    """Convert a quotable market dict to a Kelly position dict."""
+    """Convert a quotable market dict to a Kelly position dict.
+
+    For spreads, converts the Kalshi strike to home-spread convention
+    (negative = home favorite) so evaluate_outcomes computes correctly:
+      threshold = -line → home covers when margin > threshold.
+    """
     mt = market["market_type"]
+    strike = market.get("strike")
+
+    # Convert strike to home-spread convention for evaluate_outcomes
+    if mt == "spreads" and strike is not None:
+        # Home contract strike=3 ("home wins by >3") → home_spread = -3
+        # Away contract strike=5 ("away wins by >5") → home_spread = +5
+        line = -strike if market.get("is_home_contract") else strike
+    elif mt == "totals":
+        line = strike  # total line is used as-is
+    else:
+        line = None
 
     if yes_or_no == "yes":
         fair_prob = market["fair_prob"]
@@ -399,7 +456,6 @@ def _market_to_position(market, yes_or_no):
         elif mt == "totals":
             side = "over"
         elif mt == "moneyline":
-            # Determine from contract_team or yes_sub_title
             ct = market.get("contract_team", "")
             if ct == market.get("home_team"):
                 side = "home"
@@ -419,35 +475,97 @@ def _market_to_position(market, yes_or_no):
         elif mt == "moneyline":
             ct = market.get("contract_team", "")
             if ct == market.get("home_team"):
-                side = "away"
+                side = "not_home"
             elif ct == market.get("away_team"):
-                side = "home"
+                side = "not_away"
             else:
-                # Tie NO is complex (home or away wins) — use simple Kelly
-                return {
-                    "market_type": mt, "side": "home",
-                    "line": None, "fair_prob": fair_prob,
-                    "kalshi_price": 50,
-                }
+                side = "not_tie"
         else:
             side = "away"
 
     return {
         "market_type": mt,
         "side": side,
-        "line": market.get("strike"),
+        "line": line,
         "fair_prob": fair_prob,
         "kalshi_price": 0,  # caller fills this in
     }
 
 
-def get_placed_positions_for_game(game_key, game_id):
+def kelly_size_for_take(market, take_side, execution_price, fee_cents,
+                       placed_positions, bankroll, kelly_mult):
+    """Compute Kelly size for a taker order at the actual execution price.
+
+    Unlike kelly_size_for_quote (which uses the book bid/ask for resting
+    orders), this uses the confirmed execution price and accounts for
+    the taker fee — producing smaller sizes that reflect true edge.
+
+    Args:
+        market: quotable market dict
+        take_side: "yes" or "no"
+        execution_price: price in cents we'll pay (ask for YES, 100-bid for NO)
+        fee_cents: taker fee in cents per contract
+        placed_positions: existing positions for conditional adjustment
+        bankroll: total bankroll
+        kelly_mult: fractional Kelly
+
+    Returns:
+        int contract count
+    """
+    game_id = market.get("game_id")
+    if not game_id:
+        return 0
+
+    samples = load_game_samples(game_id)
+    if samples is None:
+        return 0
+
+    # Build position at fee-adjusted price
+    if take_side == "yes":
+        pos = _market_to_position(market, "yes")
+    else:
+        pos = _market_to_position(market, "no")
+
+    # Effective price includes the taker fee
+    effective_price = int(round(execution_price + fee_cents))
+    effective_price = max(1, min(99, effective_price))
+    pos["kalshi_price"] = effective_price
+
+    if pos["fair_prob"] <= effective_price / 100.0:
+        return 0  # No edge after fees
+
+    if not placed_positions:
+        return kelly_size_single(pos["fair_prob"], effective_price,
+                                 bankroll, kelly_mult)
+
+    sizes = conditional_kelly_sizes([pos], placed_positions, samples,
+                                    bankroll, kelly_mult)
+    return sizes[0] if sizes else 0
+
+
+def get_placed_positions_for_game(game_key, game_id, current_markets=None):
     """Build placed position dicts for Kelly from DB positions on this game.
+
+    Args:
+        game_key: (home_team, away_team) tuple.
+        game_id: game ID for sample lookup.
+        current_markets: list of quotable market dicts with current fair_prob.
+            Used to override stale DB fair_prob with live model values.
 
     Returns list of position dicts with market_type, side, line, fair_prob,
     kalshi_price, and size fields.
     """
-    positions = _db.get_all_positions()
+    global _positions_cache
+    if _positions_cache is None:
+        _positions_cache = _db.get_all_positions()
+    positions = _positions_cache
+
+    # Build ticker → current fair_prob lookup from live markets
+    live_fair = {}
+    if current_markets:
+        for m in current_markets:
+            live_fair[m["ticker"]] = m["fair_prob"]
+
     placed = []
     for pos in positions:
         pos_home = pos.get("home_team", "")
@@ -458,21 +576,50 @@ def get_placed_positions_for_game(game_key, game_id):
         if net == 0:
             continue
 
+        ticker = pos.get("ticker", "")
         mt = pos.get("market_type", "spreads")
+        ct = pos.get("contract_team", "")
+
         if mt == "spreads":
             side = "home" if net > 0 else "away"
         elif mt == "totals":
             side = "over" if net > 0 else "under"
         elif mt == "moneyline":
-            side = "home" if net > 0 else "away"
+            # Use contract_team to determine correct side
+            if ct == pos_home:
+                side = "home" if net > 0 else "not_home"
+            elif ct == pos_away:
+                side = "away" if net > 0 else "not_away"
+            elif ct:  # tie contract
+                side = "tie" if net > 0 else "not_tie"
+            else:
+                # No contract_team stored (legacy position) — skip
+                continue
         else:
             continue
+
+        # line_value is stored in home-spread convention (see _market_to_position)
+        line = pos.get("line_value")
+
+        # Spreads/totals require a line for evaluate_outcomes (threshold = -line).
+        # Legacy positions without line_value would crash — skip them.
+        if mt in ("spreads", "totals") and line is None:
+            continue
+
+        # Use live fair_prob if available, fall back to DB value
+        fair_prob = live_fair.get(ticker, pos.get("fair_prob", 0.5))
+        # For NO positions (net < 0), the DB stores the YES-side ticker.
+        # The live_fair lookup uses the same ticker, giving YES fair_prob.
+        # We need the side's fair_prob: if we're short YES, our position
+        # is effectively long NO, so fair_prob for the position = 1 - fair_yes.
+        if net < 0:
+            fair_prob = 1 - fair_prob
 
         placed.append({
             "market_type": mt,
             "side": side,
-            "line": pos.get("line_value"),
-            "fair_prob": pos.get("fair_prob", 0.5),
+            "line": line,
+            "fair_prob": fair_prob,
             "kalshi_price": int(pos.get("avg_entry_price", 50)),
             "size": abs(net),
         })

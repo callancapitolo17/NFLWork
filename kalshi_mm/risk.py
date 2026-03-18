@@ -1,6 +1,7 @@
 """
 Risk controls for the market maker.
-Enforces position limits, staleness checks, and kill switch logic.
+Staleness checks, tipoff proximity, and line move detection.
+Position sizing is delegated to Kelly criterion (kelly.py).
 """
 
 import subprocess
@@ -10,49 +11,9 @@ from pathlib import Path
 
 import db
 from config import (
-    MAX_POSITION_PER_MARKET, MAX_TOTAL_EXPOSURE_DOLLARS, MAX_MARKETS,
-    MAX_TOTAL_DIRECTIONAL, MAX_STALENESS_SEC, LINE_MOVE_THRESHOLD,
+    MAX_STALENESS_SEC, LINE_MOVE_THRESHOLD,
     TIPOFF_PULLBACK_MIN, BOOKMAKER_SCRAPER, BET105_SCRAPER,
-    MAX_POSITION_PER_GAME
 )
-
-
-def check_position_limit(ticker, proposed_delta):
-    """Check if a proposed fill would exceed position limits.
-
-    Returns True if the trade is allowed, False if it would breach limits.
-    """
-    pos = db.get_position(ticker)
-    new_net = pos["net_yes"] + proposed_delta
-    return abs(new_net) <= MAX_POSITION_PER_MARKET
-
-
-def check_exposure_limit():
-    """Check if total exposure is within limits.
-
-    Returns (is_ok, current_exposure).
-    """
-    exposure = db.compute_total_exposure()
-    return exposure < MAX_TOTAL_EXPOSURE_DOLLARS, exposure
-
-
-def check_directional_limit():
-    """Check if global net directional exposure is within limits.
-
-    Prevents correlated risk across events: a sharp filling YES bids
-    on 10 different games simultaneously creates massive directional
-    exposure that per-event limits don't catch.
-
-    Returns:
-        (can_go_long, can_go_short) — True if allowed in that direction.
-    """
-    net = db.get_global_net_position()
-    return net <= MAX_TOTAL_DIRECTIONAL, net >= -MAX_TOTAL_DIRECTIONAL
-
-
-def check_market_count(current_count):
-    """Check if we're quoting too many markets."""
-    return current_count < MAX_MARKETS
 
 
 def check_staleness(prediction_updated_at):
