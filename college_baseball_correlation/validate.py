@@ -347,6 +347,151 @@ def pull_odds(seasons: list[int]):
 # ANALYSIS
 # =============================================================================
 
+def normalize_team(name: str) -> str:
+    """Normalize team name for fuzzy matching (ESPN vs Odds API differences)."""
+    s = name.strip()
+    # Common abbreviation differences
+    replacements = [
+        ("State ", "St "),
+        ("App St ", "Appalachian St "),
+        ("-Pine Bluff ", "-PB "),
+        ("Little Rock", "Little Rock"),
+        ("UConn Huskies", "Connecticut Huskies"),
+        ("UMass ", "Massachusetts "),
+        ("UNLV ", "UNLV "),
+        ("UCF ", "UCF "),
+        ("USC ", "Southern California "),
+        ("LSU ", "LSU "),
+        ("SMU ", "SMU "),
+        ("TCU ", "TCU "),
+        ("UTEP ", "UTEP "),
+        ("UTSA ", "UT San Antonio "),
+        ("UNC ", "North Carolina "),
+        ("Ole Miss ", "Ole Miss "),
+        ("Pitt ", "Pittsburgh "),
+    ]
+    return s
+
+
+def build_team_mapping(con) -> dict:
+    """Build ESPN -> Odds API team name mapping using fuzzy matching."""
+    espn_teams = [r[0] for r in con.execute("SELECT DISTINCT home_team FROM games").fetchall()]
+    odds_teams = [r[0] for r in con.execute("SELECT DISTINCT home_team FROM odds").fetchall()]
+
+    mapping = {}
+
+    # Pass 1: exact match
+    odds_set = set(odds_teams)
+    for et in espn_teams:
+        if et in odds_set:
+            mapping[et] = et
+
+    # Pass 2: normalize common differences
+    def make_key(name):
+        k = name
+        k = k.replace(" State ", " St ")
+        k = k.replace("App St ", "Appalachian St ")
+        # Hyphen vs space
+        k = k.replace("-", " ")
+        k = k.replace("SIU Edwardsville", "SIU-Edwardsville")
+        return k.lower().strip()
+
+    odds_by_key = {make_key(ot): ot for ot in odds_teams}
+    for et in espn_teams:
+        if et not in mapping:
+            k = make_key(et)
+            if k in odds_by_key:
+                mapping[et] = odds_by_key[k]
+
+    # Pass 3: hardcoded known mismatches (ESPN -> Odds API)
+    hardcoded = {
+        "Army Black Knights": "Army Knights",
+        "Purdue Fort Wayne Mastodons": "Fort Wayne Mastodons",
+        "Long Island University Sharks": "LIU Sharks",
+        "Prairie View A&M Panthers": "Prairie View Panthers",
+        "South Dakota State Jackrabbits": "South Dakota St Jackrabbits",
+        "UT Arlington Mavericks": "UT-Arlington Mavericks",
+        "Youngstown State Penguins": "Youngstown St Penguins",
+        "Morehead State Eagles": "Morehead St Eagles",
+    }
+    for espn_name, odds_name in hardcoded.items():
+        if espn_name in espn_teams and odds_name in odds_set and espn_name not in mapping:
+            mapping[espn_name] = odds_name
+
+    # Pass 4: match on last word (mascot) + first word similarity
+    unmatched_espn = [et for et in espn_teams if et not in mapping]
+    unmatched_odds = [ot for ot in odds_teams if ot not in mapping.values()]
+
+    for et in unmatched_espn:
+        et_parts = et.split()
+        et_mascot = et_parts[-1].lower() if et_parts else ""
+        for ot in unmatched_odds:
+            ot_parts = ot.split()
+            ot_mascot = ot_parts[-1].lower() if ot_parts else ""
+            if et_mascot == ot_mascot and et_mascot:
+                # Same mascot — check if location words overlap
+                et_loc = set(w.lower() for w in et_parts[:-1])
+                ot_loc = set(w.lower() for w in ot_parts[:-1])
+                if et_loc & ot_loc:  # at least one location word in common
+                    mapping[et] = ot
+                    unmatched_odds.remove(ot)
+                    break
+
+    return mapping
+
+
+def match_teams():
+    """Normalize ESPN team names to match Odds API names in the games table."""
+    con = duckdb.connect(str(DB_PATH))
+
+    mapping = build_team_mapping(con)
+    print(f"Built team mapping: {len(mapping)} ESPN -> Odds API pairs")
+
+    # Show unmatched
+    espn_teams = set(r[0] for r in con.execute(
+        "SELECT DISTINCT home_team FROM games UNION SELECT DISTINCT away_team FROM games"
+    ).fetchall())
+    odds_teams = set(r[0] for r in con.execute(
+        "SELECT DISTINCT home_team FROM odds UNION SELECT DISTINCT away_team FROM odds"
+    ).fetchall())
+
+    mapped_odds = set(mapping.values())
+    unmatched_odds = odds_teams - mapped_odds
+    if unmatched_odds:
+        print(f"Unmatched Odds API teams ({len(unmatched_odds)}): {sorted(unmatched_odds)[:10]}...")
+
+    # Apply mapping: update games table team names to match Odds API
+    updated = 0
+    for espn_name, odds_name in mapping.items():
+        if espn_name != odds_name:
+            n1 = con.execute(
+                "UPDATE games SET home_team = ? WHERE home_team = ?",
+                [odds_name, espn_name]
+            ).fetchone()
+            n2 = con.execute(
+                "UPDATE games SET away_team = ? WHERE away_team = ?",
+                [odds_name, espn_name]
+            ).fetchone()
+            updated += 1
+
+    print(f"Updated {updated} team name mappings in games table")
+
+    # Verify match count
+    matched = con.execute("""
+        SELECT COUNT(DISTINCT g.game_id)
+        FROM games g
+        INNER JOIN (
+            SELECT home_team, away_team, CAST(commence_time AS DATE) as game_date
+            FROM odds WHERE total_line IS NOT NULL AND home_ml IS NOT NULL
+            GROUP BY 1,2,3
+        ) o ON g.home_team = o.home_team AND g.away_team = o.away_team AND g.date = o.game_date
+        WHERE NOT g.went_extras AND NOT g.mercy_rule
+    """).fetchone()[0]
+    print(f"Games with matched odds (regulation, no mercy): {matched}")
+
+    con.close()
+
+
 def analyze():
     """Run structural analysis on historical data."""
     con = duckdb.connect(str(DB_PATH))
@@ -493,12 +638,14 @@ def main():
                         help="Pull ESPN scores for given seasons")
     parser.add_argument("--pull-odds", nargs="+", type=int, metavar="YEAR",
                         help="Pull Odds API closing lines for given seasons")
+    parser.add_argument("--match-teams", action="store_true",
+                        help="Normalize ESPN team names to match Odds API")
     parser.add_argument("--analyze", action="store_true",
                         help="Run structural analysis on historical data")
 
     args = parser.parse_args()
 
-    if not any([args.pull_scores, args.pull_odds, args.analyze]):
+    if not any([args.pull_scores, args.pull_odds, args.match_teams, args.analyze]):
         parser.print_help()
         return
 
@@ -509,6 +656,10 @@ def main():
     if args.pull_odds:
         print(f"\nPulling Odds API closing lines for seasons: {args.pull_odds}")
         pull_odds(args.pull_odds)
+
+    if args.match_teams:
+        print("\nMatching team names...")
+        match_teams()
 
     if args.analyze:
         print()
