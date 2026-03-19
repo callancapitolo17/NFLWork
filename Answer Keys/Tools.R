@@ -325,13 +325,15 @@ mean_match <- function(dt, N, parent_spread, parent_total,
     return(list(
       dt = dt,
       parent_spread = parent_spread,
-      parent_total = parent_total
+      parent_total = parent_total,
+      converged = result$converged
     ))
   }
 
   # --- Pure R fallback ---
   adj_spread <- parent_spread
   adj_total <- parent_total
+  mm_converged <- FALSE
 
   for (iter in seq_len(max_iter_mean)) {
     distance_index_generic(dt, adj_spread, adj_total, ss, st, spread_col)
@@ -345,7 +347,10 @@ mean_match <- function(dt, N, parent_spread, parent_total,
     err_s <- mean_s - parent_spread
     err_t <- mean_t - parent_total
 
-    if (abs(err_s) < tol_mean && abs(err_t) < tol_mean) break
+    if (abs(err_s) < tol_mean && abs(err_t) < tol_mean) {
+      mm_converged <- TRUE
+      break
+    }
 
     adj_spread <- adj_spread - err_s
     adj_total <- adj_total - err_t
@@ -353,7 +358,8 @@ mean_match <- function(dt, N, parent_spread, parent_total,
   list(
     dt = dt,
     parent_spread = parent_spread,
-    parent_total = parent_total
+    parent_total = parent_total,
+    converged = mm_converged
   )
 }
 
@@ -534,6 +540,7 @@ run_answer_key_sample <- function(
     DT, ss, st, N,
     max_iter_mean = 500,
     tol_mean = 0.005,
+    tol_mean_gate = 0.1,
     tol_error = 1,
     use_spread_line = FALSE,
     shrink_factor = 0.9,
@@ -545,12 +552,34 @@ run_answer_key_sample <- function(
     stop(paste("Invalid N in run_answer_key_sample. N =", N))
   }
 
+  spread_col <- if (use_spread_line) "home_spread" else "home_ml_odds"
   current_N <- N
 
   repeat {
     # Step 1: mean_match to get sample with correct spread/total means
     mm <- mean_match(DT, current_N, parent_spread, parent_total, ss, st,
                      max_iter_mean, tol_mean, use_spread_line)
+
+    # Per Feustel: if mean is meaningfully off, restart with smaller sample.
+    # Use tol_mean_gate (looser) for the shrink decision — tol_mean (tight) is
+    # only the iteration target inside mean_match.
+    inc <- mm$dt[mm$dt$included == TRUE, ]
+    mean_err_s <- abs(mean(inc[[spread_col]], na.rm = TRUE) - parent_spread)
+    mean_err_t <- abs(mean(inc[["total_line"]], na.rm = TRUE) - parent_total)
+    mm_acceptable <- mean_err_s < tol_mean_gate && mean_err_t < tol_mean_gate
+
+    if (!mm_acceptable) {
+      current_N <- as.integer(current_N * shrink_factor)
+      if (current_N < min_N) {
+        warning(paste("mean_match could not converge at min_N =", min_N,
+                      "for spread =", parent_spread, "total =", parent_total,
+                      "(err_s =", round(mean_err_s, 3), "err_t =", round(mean_err_t, 3), ")"))
+        # Run balance on what we have
+        bal <- balance_sample(mm$dt, min_N, target_cover, target_over, tol_error)
+        break
+      }
+      next
+    }
 
     # Step 2: balance_sample to match cover/over rates
     bal <- balance_sample(mm$dt, current_N, target_cover, target_over, tol_error)
