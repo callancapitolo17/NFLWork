@@ -166,24 +166,24 @@ ml_odds <- game_odds %>%
   pivot_wider(
     id_cols = c(id, commence_time, home_team, away_team, bookmaker_key, date),
     names_from = odds_type,
-    values_from = c(outcomes_price, outcomes_point)
+    values_from = outcomes_price
   )
 
 # Devig each book's ML
-if (!"outcomes_price_home" %in% names(ml_odds) || !"outcomes_price_away" %in% names(ml_odds)) {
+if (!"home" %in% names(ml_odds) || !"away" %in% names(ml_odds)) {
   cat("No moneyline odds found. Exiting.\n")
   quit(status = 0)
 }
 
 ml_devigged <- ml_odds %>%
-  filter(!is.na(outcomes_price_home) & !is.na(outcomes_price_away)) %>%
+  filter(!is.na(home) & !is.na(away)) %>%
   mutate(
-    imp_home = ifelse(outcomes_price_home > 0,
-                      100 / (outcomes_price_home + 100),
-                      abs(outcomes_price_home) / (abs(outcomes_price_home) + 100)),
-    imp_away = ifelse(outcomes_price_away > 0,
-                      100 / (outcomes_price_away + 100),
-                      abs(outcomes_price_away) / (abs(outcomes_price_away) + 100)),
+    imp_home = ifelse(home > 0,
+                      100 / (home + 100),
+                      abs(home) / (abs(home) + 100)),
+    imp_away = ifelse(away > 0,
+                      100 / (away + 100),
+                      abs(away) / (abs(away) + 100)),
     total_imp = imp_home + imp_away,
     p_home = imp_home / total_imp,
     p_away = imp_away / total_imp
@@ -200,8 +200,14 @@ consensus_ml <- ml_devigged %>%
   )
 
 # Build consensus total
-total_odds <- game_odds %>%
-  filter(market_key == "totals") %>%
+totals_raw <- game_odds %>% filter(market_key == "totals")
+
+if (nrow(totals_raw) == 0 || !"outcomes_point" %in% names(game_odds)) {
+  cat("No totals found from Odds API. Exiting.\n")
+  quit(status = 0)
+}
+
+total_odds <- totals_raw %>%
   mutate(
     date = as.Date(commence_time),
     odds_type = ifelse(
@@ -216,7 +222,7 @@ total_odds <- game_odds %>%
   )
 
 if (!"outcomes_point_Over" %in% names(total_odds)) {
-  cat("No totals found. Exiting.\n")
+  cat("No totals found after pivot. Exiting.\n")
   quit(status = 0)
 }
 

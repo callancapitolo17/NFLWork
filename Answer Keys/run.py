@@ -122,6 +122,11 @@ async def run_r(sport: str, script_path: Path) -> dict:
     status = "✓" if success else "✗"
     print(f"  [R] {status} Answer key complete ({elapsed:.1f}s)", flush=True)
 
+    # Print R output (contains edge summary)
+    r_output = stdout.decode()
+    if r_output.strip():
+        print(r_output, flush=True)
+
     if not success:
         print(f"  [R] Error: {stderr.decode()[:500]}", flush=True)
 
