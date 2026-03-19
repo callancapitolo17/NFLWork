@@ -45,13 +45,11 @@ CONTRACT_SIZE = int(_env.get("CONTRACT_SIZE", "5"))
 SKEW_PER_CONTRACT = int(_env.get("SKEW_PER_CONTRACT", "0"))  # Disabled — Kelly handles inventory
 
 # --- Operational Limits ---
-MAX_MARKETS = int(_env.get("MAX_MARKETS", "50"))
-MAX_EVENTS = int(_env.get("MAX_EVENTS", "30"))  # API rate limit guard
 MAX_STALENESS_SEC = int(_env.get("MAX_STALENESS_SEC", "600"))
 MIN_QUOTE_SPREAD_CENTS = int(_env.get("MIN_QUOTE_SPREAD", "4"))
 MIN_FAIR_VALUE = 10  # Don't quote if fair_yes < 10 cents
 MAX_FAIR_VALUE = 90  # Don't quote if fair_yes > 90 cents
-TIPOFF_PULLBACK_MIN = 30  # Pull quotes this many min before tipoff
+TIPOFF_PULLBACK_MIN = 1  # Cancel all orders & stop quoting/taking this many min before tipoff
 
 # --- Line Move Monitoring ---
 LINE_MOVE_THRESHOLD = float(_env.get("LINE_MOVE_THRESHOLD", "0.5"))
