@@ -180,9 +180,9 @@ def batch_place(order_specs):
             api_orders.append(order)
 
         # Rate limit: each order = 1 write unit; Basic tier = 10 writes/sec.
-        # 20 orders/batch → need 2s between batches to stay at 10/sec.
+        # 20 orders/batch at once → 5s between batches to stay well under limit.
         if i > 0:
-            time.sleep(2)
+            time.sleep(5)
 
         result = _authenticated_request("POST", "/portfolio/orders/batched", body={"orders": api_orders})
 
@@ -216,8 +216,10 @@ def batch_cancel(order_ids):
     if not order_ids:
         return True
 
-    # Batch cancel up to 20 at a time
+    # Batch cancel up to 20 at a time (0.2 units each = 4 units per batch)
     for i in range(0, len(order_ids), 20):
+        if i > 0:
+            time.sleep(2)
         batch = order_ids[i:i+20]
         body = {"ids": batch}
         result = _authenticated_request("DELETE", "/portfolio/orders/batched", body=body)
