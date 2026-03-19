@@ -67,7 +67,7 @@ sim_one <- function() {
     stringsAsFactors=FALSE)
 }
 
-n_sims <- 100000
+n_sims <- 50000
 cat(sprintf("Running %dk simulations...\n", n_sims/1000))
 t0 <- Sys.time()
 raw <- map_dfr(1:n_sims, function(i) {
@@ -398,4 +398,4 @@ server <- function(input, output, session) {
   })
 }
 
-shinyApp(ui, server, options = list(port = 8084, host = "0.0.0.0"))
+shinyApp(ui, server, options = list(port = 8085, host = "0.0.0.0", launch.browser = TRUE))
