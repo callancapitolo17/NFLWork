@@ -187,18 +187,23 @@ def batch_place(order_specs):
         result = _authenticated_request("POST", "/portfolio/orders/batched", body={"orders": api_orders})
 
         if result and "orders" in result:
-            resp_orders = result["orders"]
-            for j, resp in enumerate(resp_orders):
-                # Unwrap if API returns {"order": {...}} per entry
-                if resp and "order" in resp and isinstance(resp["order"], dict):
-                    resp = resp["order"]
-                    resp_orders[j] = resp
-                if resp and resp.get("order_id"):
-                    all_results.append(resp)
+            placed = 0
+            for j, entry in enumerate(result["orders"]):
+                # Response format: {"order": {...} | null, "error": {...} | null}
+                order_obj = None
+                if isinstance(entry, dict):
+                    if entry.get("order") and isinstance(entry["order"], dict):
+                        order_obj = entry["order"]
+                    elif entry.get("order_id"):
+                        order_obj = entry  # flat format fallback
+
+                if order_obj and order_obj.get("order_id"):
+                    all_results.append(order_obj)
+                    placed += 1
                 else:
-                    print(f"  Batch place failed for {batch[j]['ticker']}: {resp}")
+                    err = entry.get("error", {}) if isinstance(entry, dict) else {}
+                    print(f"  Batch place failed for {batch[j]['ticker']}: {err.get('message', entry)}")
                     all_results.append(None)
-            placed = len([r for r in resp_orders if r and r.get('order_id')])
             print(f"  Batch placed {placed} / {len(batch)} orders")
         else:
             print(f"  Warning: batch place failed for {len(batch)} orders")
