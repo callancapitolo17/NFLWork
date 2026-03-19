@@ -184,6 +184,38 @@ ui <- fluidPage(
       br(),
       h4("Upset Count Distribution (total upsets in Round of 64)"),
       tableOutput("upset_count_table")
+    ),
+
+    # --- Tab 7: Highest Seed by Round ---
+    tabPanel("Highest Seed",
+      br(),
+      fluidRow(
+        column(4, selectInput("hs_round", "Round:",
+          choices = c("Round_32", "Sweet_16", "Elite_8", "Final_4", "Title_Game", "Champion"),
+          selected = "Round_32"))
+      ),
+      h4(textOutput("hs_title")),
+      tableOutput("hs_table")
+    ),
+
+    # --- Tab 8: Seed Sum by Round ---
+    tabPanel("Seed Sum",
+      br(),
+      fluidRow(
+        column(4, selectInput("ss_round", "Round:",
+          choices = c("Final_4", "Elite_8", "Sweet_16", "Title_Game"),
+          selected = "Final_4"))
+      ),
+      h4(textOutput("ss_title")),
+      tableOutput("ss_buckets"),
+      br(),
+      h4("Exact Distribution:"),
+      tableOutput("ss_exact"),
+      br(),
+      fluidRow(
+        column(4, numericInput("ss_line", "Custom Over/Under:", value = 10, min = 2, max = 60))
+      ),
+      h4(textOutput("ss_custom_result"))
     )
   )
 )
@@ -395,6 +427,99 @@ server <- function(input, output, session) {
       `Cumulative (>=)` = sapply(0:max_u, function(k) sprintf("%.1f%%", mean(upsets_per_sim$n_upsets >= k)*100)),
       check.names = FALSE
     )
+  })
+
+  # --- Highest Seed by Round ---
+  output$hs_title <- renderText({
+    sprintf("Highest numerical seed to qualify for %s:", gsub("_", " ", input$hs_round))
+  })
+
+  output$hs_table <- renderTable({
+    r <- input$hs_round
+    highest <- raw %>% filter(.data[[r]] == 1) %>%
+      group_by(sim_id) %>% summarise(highest = max(seed), .groups = "drop")
+
+    results <- data.frame(
+      `Highest Seed` = paste0("#", 1:16),
+      `P(Exactly)` = sapply(1:16, function(s) sprintf("%.1f%%", mean(highest$highest == s)*100)),
+      `P(>= this seed)` = sapply(1:16, function(s) sprintf("%.1f%%", mean(highest$highest >= s)*100)),
+      Odds = sapply(1:16, function(s) {
+        p <- mean(highest$highest == s)
+        if (p > 0.001 & p < 0.999) prob_to_american(p) else "N/A"
+      }),
+      check.names = FALSE
+    )
+    results %>% filter(as.numeric(gsub("[^0-9]", "", `P(Exactly)`)) > 0)
+  })
+
+  # --- Seed Sum by Round ---
+  output$ss_title <- renderText({
+    sprintf("Sum of seeds in %s:", gsub("_", " ", input$ss_round))
+  })
+
+  output$ss_buckets <- renderTable({
+    r <- input$ss_round
+    sums <- raw %>% filter(.data[[r]] == 1) %>%
+      group_by(sim_id) %>% summarise(seed_sum = sum(seed), .groups = "drop")
+
+    # Kalshi-style buckets (adjust based on round)
+    n_teams <- switch(r, "Final_4" = 4, "Elite_8" = 8, "Sweet_16" = 16, "Title_Game" = 2, 4)
+    min_sum <- n_teams  # all 1-seeds
+
+    if (n_teams == 4) {
+      buckets <- list("4"=c(4,4), "5-6"=c(5,6), "7-8"=c(7,8), "9-10"=c(9,10),
+                       "11-14"=c(11,14), "15-20"=c(15,20), "21-30"=c(21,30), "31+"=c(31,100))
+    } else if (n_teams == 2) {
+      buckets <- list("2"=c(2,2), "3-4"=c(3,4), "5-6"=c(5,6), "7-10"=c(7,10), "11+"=c(11,40))
+    } else {
+      # Generic
+      max_s <- max(sums$seed_sum)
+      step <- max(1, round((max_s - min_sum) / 8))
+      buckets <- list()
+      lo <- min_sum
+      while (lo <= max_s) {
+        hi <- min(lo + step - 1, max_s + 10)
+        buckets[[sprintf("%d-%d", lo, hi)]] <- c(lo, hi)
+        lo <- hi + 1
+      }
+    }
+
+    data.frame(
+      Bucket = names(buckets),
+      Probability = sapply(buckets, function(b) sprintf("%.1f%%", mean(sums$seed_sum >= b[1] & sums$seed_sum <= b[2])*100)),
+      Odds = sapply(buckets, function(b) {
+        p <- mean(sums$seed_sum >= b[1] & sums$seed_sum <= b[2])
+        if (p > 0.001 & p < 0.999) prob_to_american(p) else "N/A"
+      }),
+      check.names = FALSE
+    )
+  })
+
+  output$ss_exact <- renderTable({
+    r <- input$ss_round
+    sums <- raw %>% filter(.data[[r]] == 1) %>%
+      group_by(sim_id) %>% summarise(seed_sum = sum(seed), .groups = "drop")
+
+    vals <- sort(unique(sums$seed_sum))
+    data.frame(
+      `Seed Sum` = vals,
+      Probability = sapply(vals, function(v) sprintf("%.1f%%", mean(sums$seed_sum == v)*100)),
+      `Cumulative (<=)` = sapply(vals, function(v) sprintf("%.1f%%", mean(sums$seed_sum <= v)*100)),
+      check.names = FALSE
+    ) %>% filter(as.numeric(gsub("[^0-9.]", "", Probability)) >= 0.1)
+  })
+
+  output$ss_custom_result <- renderText({
+    r <- input$ss_round
+    sums <- raw %>% filter(.data[[r]] == 1) %>%
+      group_by(sim_id) %>% summarise(seed_sum = sum(seed), .groups = "drop")
+    p_over <- mean(sums$seed_sum > input$ss_line)
+    p_under <- mean(sums$seed_sum < input$ss_line)
+    p_exact <- mean(sums$seed_sum == input$ss_line)
+    sprintf("Over %d: %.1f%% (%s) | Under %d: %.1f%% (%s) | Exactly %d: %.1f%%",
+      input$ss_line, p_over*100, prob_to_american(p_over),
+      input$ss_line, p_under*100, prob_to_american(p_under),
+      input$ss_line, p_exact*100)
   })
 }
 
