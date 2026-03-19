@@ -5,6 +5,7 @@ Handles authenticated requests for placing, amending, and cancelling orders.
 
 import sys
 import json
+import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,7 +52,7 @@ def _authenticated_request(method, path, body=None):
     req.add_header("Content-Type", "application/json")
 
     try:
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=30) as response:
             return json.loads(response.read().decode())
     except urllib.error.HTTPError as e:
         body_text = e.read().decode()
@@ -178,7 +179,21 @@ def batch_place(order_specs):
                 order["post_only"] = True
             api_orders.append(order)
 
+        # Rate limit: pause between batches (Kalshi 429s on rapid-fire)
+        if i > 0:
+            time.sleep(3)
+
         result = _authenticated_request("POST", "/portfolio/orders/batched", body={"orders": api_orders})
+
+        # Retry with exponential backoff on failure (likely 429)
+        if result is None:
+            for attempt, delay in enumerate([5, 10, 20], 1):
+                print(f"  Retry {attempt}/3 after {delay}s...")
+                time.sleep(delay)
+                result = _authenticated_request("POST", "/portfolio/orders/batched", body={"orders": api_orders})
+                if result is not None:
+                    break
+
         if result and "orders" in result:
             resp_orders = result["orders"]
             for j, resp in enumerate(resp_orders):
@@ -187,12 +202,12 @@ def batch_place(order_specs):
                     resp = resp["order"]
                     resp_orders[j] = resp
                 if resp and resp.get("order_id"):
-                    print(f"  Placed {batch[j]['side']} {batch[j]['count']}x @ {batch[j]['price']}c on {batch[j]['ticker']} → order_id={resp['order_id']}")
                     all_results.append(resp)
                 else:
                     print(f"  Batch place failed for {batch[j]['ticker']}: {resp}")
                     all_results.append(None)
-            print(f"  Batch placed {len([r for r in resp_orders if r and r.get('order_id')])} / {len(batch)} orders")
+            placed = len([r for r in resp_orders if r and r.get('order_id')])
+            print(f"  Batch placed {placed} / {len(batch)} orders")
         else:
             print(f"  Warning: batch place failed for {len(batch)} orders")
             all_results.extend([None] * len(batch))
