@@ -159,8 +159,9 @@ def batch_place(order_specs):
         return []
 
     all_results = []
-    for i in range(0, len(order_specs), 20):
-        batch = order_specs[i:i+20]
+    BATCH_SIZE = 10  # Smaller batches to stay under rate limit (10 units/burst)
+    for i in range(0, len(order_specs), BATCH_SIZE):
+        batch = order_specs[i:i+BATCH_SIZE]
         api_orders = []
         for spec in batch:
             order = {
@@ -180,9 +181,9 @@ def batch_place(order_specs):
             api_orders.append(order)
 
         # Rate limit: each order = 1 write unit; Basic tier = 10 writes/sec.
-        # 20 orders/batch at once → 5s between batches to stay well under limit.
+        # 10 orders/batch → 3s between batches ≈ 3.3 writes/sec (well under limit).
         if i > 0:
-            time.sleep(5)
+            time.sleep(3)
 
         result = _authenticated_request("POST", "/portfolio/orders/batched", body={"orders": api_orders})
 
