@@ -251,6 +251,14 @@ def fetch_canonical_games(sport: str):
         return
 
     api_key = os.environ.get("ODDS_API_KEY")
+    # Fallback: read from ~/.Renviron (where R stores it)
+    if not api_key:
+        renviron = Path.home() / ".Renviron"
+        if renviron.exists():
+            for line in renviron.read_text().splitlines():
+                if line.strip().startswith("ODDS_API_KEY"):
+                    api_key = line.split("=", 1)[1].strip()
+                    break
     sport_key = SPORT_KEYS.get(sport)
     if not api_key or not sport_key:
         return
