@@ -59,7 +59,7 @@ def check_tipoff_proximity(commence_time):
         True if safe to quote, False if too close to tipoff.
     """
     if commence_time is None:
-        return True  # Unknown tipoff, allow quoting
+        return False  # Unknown tipoff — fail-safe: refuse to quote
 
     now = datetime.now(timezone.utc)
 
@@ -68,7 +68,7 @@ def check_tipoff_proximity(commence_time):
         try:
             commence_time = dt.fromisoformat(commence_time.replace("Z", "+00:00"))
         except (ValueError, TypeError):
-            return True
+            return False  # Parse failure — fail-safe: refuse to quote
 
     if commence_time.tzinfo is None:
         commence_time = commence_time.replace(tzinfo=timezone.utc)

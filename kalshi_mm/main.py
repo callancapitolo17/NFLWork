@@ -150,7 +150,6 @@ def enforce_monotonicity(quotable_markets):
 
 def refresh_book_data(quotable_markets):
     """Fetch fresh yes_bid/yes_ask from all enabled series and update in-place."""
-    now = time.time()
     book = {}
     for mtype, series in config.MARKET_SERIES.items():
         if mtype not in config.ENABLED_MARKET_TYPES:
@@ -162,6 +161,8 @@ def refresh_book_data(quotable_markets):
                     int(round(float(m.get("yes_bid_dollars", 0)) * 100)),
                     int(round(float(m.get("yes_ask_dollars", 0)) * 100))
                 )
+    # Timestamp AFTER all API calls complete so staleness check is accurate
+    now = time.time()
     for market in quotable_markets:
         bid_ask = book.get(market["ticker"])
         if bid_ask:
@@ -640,11 +641,7 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
 
     quoted_count = 0
     quoted_events = set()
-    # Count events we're already quoting
-    for t in resting_by_ticker:
-        m = next((m for m in quotable_markets if m["ticker"] == t), None)
-        if m:
-            quoted_events.add(m["event_ticker"])
+    cycle_ts = time.time()
 
     for market in quotable_markets:
         ticker = market["ticker"]
@@ -664,18 +661,9 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
                 del resting_by_ticker[ticker]
             continue
 
-        # Check ticker limit
-        if quoted_count >= config.MAX_MARKETS and ticker not in resting_by_ticker:
-            continue
-
-        # Check game limit (MAX_EVENTS caps distinct games)
-        if (event_ticker not in quoted_events
-                and len(quoted_events) >= config.MAX_EVENTS
-                and ticker not in resting_by_ticker):
-            continue
-
-        # Skip markets with stale book data
-        book_age = time.time() - market.get("book_fetched_at", 0)
+        # Skip markets with stale book data (use cycle start time, not wall clock,
+        # since order placement for earlier markets can take 10+ seconds)
+        book_age = cycle_ts - market.get("book_fetched_at", 0)
         if book_age > config.MAX_BOOK_STALENESS_SEC:
             continue
 
@@ -814,12 +802,37 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
             existing["_line_value"] = strike
         else:
             existing["_line_value"] = None
+        existing["_commence_time"] = market.get("commence_time")
         resting_by_ticker[ticker] = existing
         quoted_count += 1
         quoted_events.add(event_ticker)
 
     print(f"  Quoting {quoted_count} tickers across {len(quoted_events)} games (exposure: ${exposure:.2f})")
     return resting_by_ticker
+
+
+def sweep_tipoff_cancel(resting_by_ticker):
+    """Cancel all resting orders for games within tipoff proximity.
+
+    Runs every quote cycle, independent of quotable_markets.
+    Uses _commence_time stored on each resting order entry.
+    """
+    cancelled = []
+    for ticker, info in list(resting_by_ticker.items()):
+        ct = info.get("_commence_time")
+        if not risk.check_tipoff_proximity(ct):
+            print(f"  TIPOFF CANCEL: {ticker} (commence={ct})")
+            if not DRY_RUN:
+                for side_key in ["bid_order_id", "ask_order_id"]:
+                    oid = info.get(side_key)
+                    if oid:
+                        orders.cancel_order(oid)
+                        db.remove_resting_order(oid)
+            del resting_by_ticker[ticker]
+            cancelled.append(ticker)
+
+    if cancelled:
+        print(f"  Tipoff-cancelled {len(cancelled)} tickers")
 
 
 def poll_for_fills(resting_by_ticker, quotable_markets_ref=None):
@@ -1058,7 +1071,13 @@ def main():
     last_quote_time = 0
     last_fill_poll = 0
     last_monitor_time = 0
-    last_pipeline_time = time.time()  # Pipeline assumed fresh at startup
+    # If predictions are already stale at startup, trigger pipeline immediately
+    _, pred_age = risk.check_staleness(prediction_updated_at)
+    if pred_age > config.MAX_STALENESS_SEC:
+        last_pipeline_time = 0
+        print(f"  Predictions stale at startup ({pred_age:.0f}s) — triggering immediate pipeline refresh")
+    else:
+        last_pipeline_time = time.time()
 
     try:
         while RUNNING:
@@ -1121,6 +1140,7 @@ def main():
                     poll_for_fills(resting_by_ticker, quotable)
                     last_fill_poll = now
                     refresh_book_data(quotable)  # Fresh orderbook each cycle
+                    sweep_tipoff_cancel(resting_by_ticker)  # Cancel orders near tipoff
                     print(f"\n--- Quote cycle @ {datetime.now().strftime('%H:%M:%S')} ---")
                     resting_by_ticker = run_quote_cycle(quotable, resting_by_ticker, prediction_updated_at)
                 except Exception as e:

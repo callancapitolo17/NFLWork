@@ -21,6 +21,9 @@ Fair value comes from offshore scraper databases (Bookmaker, Bet105). If those s
 ### DuckDB File
 `kalshi_mm.duckdb` — NEVER symlink. WAL files must be co-located with the database.
 
+### Tipoff Safety
+Bot cancels all resting orders and stops quoting/taking 1 minute before game tipoff (`TIPOFF_PULLBACK_MIN`). `sweep_tipoff_cancel()` runs every quote cycle (10s), independent of market matching — it sweeps ALL entries in `resting_by_ticker` using stored `_commence_time`. If `commence_time` is missing or unparseable, the bot refuses to quote (fail-safe).
+
 ### Kalshi API Auth
 Uses `KALSHI_API_KEY` and `KALSHI_PRIVATE_KEY` from `.env`. Keys are RSA — the private key file path goes in `.env`.
 
