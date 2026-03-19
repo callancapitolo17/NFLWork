@@ -574,9 +574,7 @@ run_answer_key_sample <- function(
         warning(paste("mean_match could not converge at min_N =", min_N,
                       "for spread =", parent_spread, "total =", parent_total,
                       "(err_s =", round(mean_err_s, 3), "err_t =", round(mean_err_t, 3), ")"))
-        # Run balance on what we have
-        bal <- balance_sample(mm$dt, min_N, target_cover, target_over, tol_error)
-        break
+        return(NULL)
       }
       next
     }
@@ -774,8 +772,11 @@ generate_all_samples <- function(
 
   # Name the list by game id for easy lookup
   names(samples) <- targets$id
+  # Drop games where mean_match could not converge (returned NULL)
+  samples <- samples[!vapply(samples, is.null, logical(1))]
 
-  cat(sprintf("Generated %d samples\n", length(samples)))
+  cat(sprintf("Generated %d samples (%d skipped)\n",
+              length(samples), nrow(targets) - length(samples)))
   samples
 }
 
@@ -1170,6 +1171,7 @@ build_moneyline_market <- function(
           use_spread_line = use_spread_line,
           max_iter_mean = 500
         )
+        if (is.null(sample_result)) return(NULL)
         # Step 2: Generate moneyline predictions from sample
         predict_moneyline_from_sample(sample_result$sample, margin_col = margin_col)
       }
@@ -1332,6 +1334,7 @@ build_totals_market <- function(
           target_cover = tc, target_over = to,
           DT = DT, ss = ss, st = st, N = N
         )
+        if (is.null(sample_result)) return(NULL)
         # Step 2: Generate total predictions from sample
         predict_totals_from_sample(sample_result$sample, totals = totals_list, period = period)
       }
@@ -1474,6 +1477,7 @@ build_spread_market <- function(
           target_cover = tc, target_over = to,
           DT = DT, ss = ss, st = st, N = N
         )
+        if (is.null(sample_result)) return(NULL)
         # Step 2: Generate spread predictions from sample
         predict_spreads_from_sample(sample_result$sample, spreads = spreads_list, period = period)
       }
