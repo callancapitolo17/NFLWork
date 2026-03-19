@@ -50,6 +50,8 @@ Rcpp::List mean_match_cpp(
     double inv_ss = 1.0 / ss;
     double inv_st = 1.0 / st;
 
+    bool mm_converged = false;
+
     for (int iter = 0; iter < max_iter_mean; ++iter) {
         // Step 1: Compute squared Euclidean distances (vectorized, O(M))
         for (int i = 0; i < M; ++i) {
@@ -78,7 +80,10 @@ Rcpp::List mean_match_cpp(
         // Step 4: Check convergence
         double err_s = mean_s - parent_spread;
         double err_t = mean_t - parent_total;
-        if (std::abs(err_s) < tol_mean && std::abs(err_t) < tol_mean) break;
+        if (std::abs(err_s) < tol_mean && std::abs(err_t) < tol_mean) {
+            mm_converged = true;
+            break;
+        }
 
         // Step 5: Adjust targets
         adj_spread -= err_s;
@@ -102,7 +107,8 @@ Rcpp::List mean_match_cpp(
 
     return Rcpp::List::create(
         Rcpp::Named("order") = order,
-        Rcpp::Named("N") = N
+        Rcpp::Named("N") = N,
+        Rcpp::Named("converged") = mm_converged
     );
 }
 
