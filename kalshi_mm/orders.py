@@ -179,20 +179,12 @@ def batch_place(order_specs):
                 order["post_only"] = True
             api_orders.append(order)
 
-        # Rate limit: pause between batches (Kalshi 429s on rapid-fire)
+        # Rate limit: each order = 1 write unit; Basic tier = 10 writes/sec.
+        # 20 orders/batch → need 2s between batches to stay at 10/sec.
         if i > 0:
-            time.sleep(3)
+            time.sleep(2)
 
         result = _authenticated_request("POST", "/portfolio/orders/batched", body={"orders": api_orders})
-
-        # Retry with exponential backoff on failure (likely 429)
-        if result is None:
-            for attempt, delay in enumerate([5, 10, 20], 1):
-                print(f"  Retry {attempt}/3 after {delay}s...")
-                time.sleep(delay)
-                result = _authenticated_request("POST", "/portfolio/orders/batched", body={"orders": api_orders})
-                if result is not None:
-                    break
 
         if result and "orders" in result:
             resp_orders = result["orders"]
