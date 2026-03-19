@@ -27,13 +27,20 @@ echo "$(date) - Pipeline exit code: $RC" >> "$LOGFILE"
 # Clean up logs older than 30 days
 find "$LOGDIR" -name "run_*.log" -mtime +30 -delete 2>/dev/null
 
-# macOS notification
+# macOS notification (click opens log file)
 if [ $RC -eq 0 ]; then
-  # Extract edge summary from log
   EDGES=$(grep "+EV parlays" "$LOGFILE" | tail -1)
-  osascript -e "display notification \"${EDGES:-Complete}\" with title \"College Baseball AK\" sound name \"Glass\""
+  terminal-notifier \
+    -title "College Baseball AK" \
+    -message "${EDGES:-Complete — no edges}" \
+    -sound Glass \
+    -execute "open -a Console '$LOGFILE'"
 else
-  osascript -e 'display notification "Pipeline failed — check logs" with title "College Baseball AK" sound name "Basso"'
+  terminal-notifier \
+    -title "College Baseball AK" \
+    -message "Pipeline failed — click to view log" \
+    -sound Basso \
+    -execute "open -a Console '$LOGFILE'"
 fi
 
 exit $RC
