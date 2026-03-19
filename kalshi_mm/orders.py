@@ -145,6 +145,61 @@ def cancel_order(order_id):
     return False
 
 
+def batch_place(order_specs):
+    """Place multiple orders in one API call (max 20 per batch).
+
+    Args:
+        order_specs: List of dicts with keys: ticker, side, price, count, post_only
+
+    Returns:
+        List of order dicts (1:1 with input), None for failed orders.
+    """
+    if not order_specs:
+        return []
+
+    all_results = []
+    for i in range(0, len(order_specs), 20):
+        batch = order_specs[i:i+20]
+        api_orders = []
+        for spec in batch:
+            order = {
+                "ticker": spec["ticker"],
+                "action": "buy",
+                "side": spec["side"],
+                "type": "limit",
+                "count": spec["count"],
+                "time_in_force": "good_till_canceled",
+            }
+            if spec["side"] == "yes":
+                order["yes_price"] = spec["price"]
+            else:
+                order["no_price"] = spec["price"]
+            if spec.get("post_only", True):
+                order["post_only"] = True
+            api_orders.append(order)
+
+        result = _authenticated_request("POST", "/portfolio/orders/batched", body={"orders": api_orders})
+        if result and "orders" in result:
+            resp_orders = result["orders"]
+            for j, resp in enumerate(resp_orders):
+                # Unwrap if API returns {"order": {...}} per entry
+                if resp and "order" in resp and isinstance(resp["order"], dict):
+                    resp = resp["order"]
+                    resp_orders[j] = resp
+                if resp and resp.get("order_id"):
+                    print(f"  Placed {batch[j]['side']} {batch[j]['count']}x @ {batch[j]['price']}c on {batch[j]['ticker']} → order_id={resp['order_id']}")
+                    all_results.append(resp)
+                else:
+                    print(f"  Batch place failed for {batch[j]['ticker']}: {resp}")
+                    all_results.append(None)
+            print(f"  Batch placed {len([r for r in resp_orders if r and r.get('order_id')])} / {len(batch)} orders")
+        else:
+            print(f"  Warning: batch place failed for {len(batch)} orders")
+            all_results.extend([None] * len(batch))
+
+    return all_results
+
+
 def batch_cancel(order_ids):
     """Cancel multiple orders in one API call (0.2 rate limit units each).
 
