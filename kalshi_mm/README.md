@@ -22,11 +22,46 @@ pip install cryptography duckdb numpy
 
 # 3. Run the CBB pipeline first to generate predictions + game samples
 cd "../Answer Keys" && python run.py --sport cbb
-
-# 4. Run the market maker
-python main.py              # Live mode
-python main.py --dry-run    # Compute quotes without placing orders
 ```
+
+## Running the Bot
+
+**This is a single process that handles both making (quoting) and taking (crossing the spread).** There is no separate taker bot.
+
+```bash
+cd ~/NFLWork/kalshi_mm
+
+# Live mode (backgrounded, output to log file)
+python3 -u main.py >> mm_bot.log 2>&1 &
+
+# Dry run (foreground, no real orders placed)
+python3 main.py --dry-run
+```
+
+- `-u` disables Python output buffering so logs appear in real time
+- `>> mm_bot.log 2>&1 &` appends stdout+stderr to the log and backgrounds the process
+- Monitor with: `tail -f mm_bot.log`
+
+### Stopping the bot
+
+```bash
+# Graceful shutdown (cancels all resting orders before exit)
+kill $(pgrep -f "python3.*main.py")
+```
+
+The bot handles SIGTERM gracefully — it cancels all resting orders on Kalshi before exiting. If you `kill -9` (force kill), orders will remain live on Kalshi until the next startup, which auto-detects and cancels phantom orders.
+
+### What happens on startup
+
+1. Cancels any stale/phantom orders left from a previous session
+2. Loads predictions from the answer key (`cbb_raw_predictions` table)
+3. Loads game samples for Kelly sizing (`cbb_game_samples` table)
+4. Fetches all open Kalshi 1H markets and matches them to predictions
+5. Enters the main loop: quote cycle (10s), fill polling, line monitoring (60s), pipeline refresh (600s)
+
+### Auto-refresh
+
+The bot automatically re-runs the CBB answer key pipeline every 10 minutes (`PIPELINE_REFRESH_SEC`) to pick up fresh odds and recalculate fair values. No manual pipeline runs needed while the bot is active.
 
 ## Kelly Criterion Sizing
 
@@ -76,7 +111,7 @@ If game simulation samples aren't available (pipeline hasn't run, R export faile
 What's still enforced:
 - **5% minimum EV** on all maker quotes and taker fills (after fees)
 - **Staleness check** — pulls all quotes if predictions are >10 min old
-- **Tipoff pullback** — pulls quotes 30 min before game start
+- **Tipoff cancel** — cancels all resting orders and stops quoting/taking 1 min before tipoff (`sweep_tipoff_cancel()` runs every 10s, independent of market matching)
 - **Line move detection** — monitors Bookmaker/Bet105 for sharp moves
 - **Fair value range** — won't quote if fair prob is <10c or >90c (model unreliable at extremes)
 - **Anti-penny-loop** — stops chasing if counterparty is walking our bid up or ask down
@@ -110,8 +145,6 @@ All settings in `.env` (see `.env.example`):
 | `CONTRACT_SIZE` | 5 | Fallback size when Kelly is off |
 | `TAKE_CONTRACT_SIZE` | 5 | Fallback taker size when Kelly is off |
 | `SKEW_PER_CONTRACT` | 0 | Inventory skew per contract (disabled) |
-| `MAX_MARKETS` | 50 | Max tickers to quote (API rate guard) |
-| `MAX_EVENTS` | 30 | Max games to quote (API rate guard) |
 | `MAX_STALENESS_SEC` | 600 | Pull quotes if predictions older than this |
 | `LINE_MOVE_THRESHOLD` | 0.5 | Pull quotes if offshore line moves by this much |
 | `ENABLED_MARKETS` | spreads,totals,moneyline | Market types to quote |
