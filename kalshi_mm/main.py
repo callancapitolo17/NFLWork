@@ -641,6 +641,8 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
 
     quoted_count = 0
     quoted_events = set()
+    pending_placements = []   # New orders to batch-place after the loop
+    pending_cancel_ids = []   # Order IDs to batch-cancel after the loop
     cycle_ts = time.time()
 
     for market in quotable_markets:
@@ -655,9 +657,7 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
                     for side_key in ["bid_order_id", "ask_order_id"]:
                         oid = resting_by_ticker[ticker].get(side_key)
                         if oid:
-                            orders.cancel_order(oid)
-                    db.remove_resting_order(resting_by_ticker[ticker].get("bid_order_id", ""))
-                    db.remove_resting_order(resting_by_ticker[ticker].get("ask_order_id", ""))
+                            pending_cancel_ids.append(oid)
                 del resting_by_ticker[ticker]
             continue
 
@@ -694,7 +694,7 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
                     for side_key in ["bid_order_id", "ask_order_id"]:
                         oid = resting_by_ticker[ticker].get(side_key)
                         if oid:
-                            orders.cancel_order(oid)
+                            pending_cancel_ids.append(oid)
                 del resting_by_ticker[ticker]
             continue
 
@@ -716,7 +716,7 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
                     for side_key in ["bid_order_id", "ask_order_id"]:
                         oid = resting_by_ticker[ticker].get(side_key)
                         if oid:
-                            orders.cancel_order(oid)
+                            pending_cancel_ids.append(oid)
                 del resting_by_ticker[ticker]
             continue
 
@@ -732,7 +732,7 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
             quoted_events.add(event_ticker)
             continue
 
-        # Manage bid (buy YES)
+        # Manage bid and ask: amend existing, collect new placements, collect cancels
         existing = resting_by_ticker.get(ticker, {})
 
         if bid_size > 0:
@@ -746,17 +746,15 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
                         db.save_resting_order(bid_oid, ticker, "yes", "buy",
                                               quote["bid_yes"], quote["bid_size"])
             else:
-                # Place new bid
-                result = orders.place_order(ticker, "yes", quote["bid_yes"], quote["bid_size"])
-                if result:
-                    bid_oid = result.get("order_id")
-                    existing["bid_order_id"] = bid_oid
-                    existing["bid_price"] = quote["bid_yes"]
-                    db.save_resting_order(bid_oid, ticker, "yes", "buy",
-                                          quote["bid_yes"], quote["bid_size"])
+                # Defer new bid to batch placement
+                pending_placements.append({
+                    "ticker": ticker, "side": "yes",
+                    "price": quote["bid_yes"], "count": quote["bid_size"],
+                    "post_only": True,
+                    "_side_key": "bid",  # internal: which side to wire up
+                })
         elif existing.get("bid_order_id"):
-            orders.cancel_order(existing["bid_order_id"])
-            db.remove_resting_order(existing["bid_order_id"])
+            pending_cancel_ids.append(existing["bid_order_id"])
             existing.pop("bid_order_id", None)
 
         # Manage ask (buy NO, which is selling YES)
@@ -771,16 +769,15 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
                         db.save_resting_order(ask_oid, ticker, "no", "buy",
                                               no_price, quote["ask_size"])
             else:
-                result = orders.place_order(ticker, "no", no_price, quote["ask_size"])
-                if result:
-                    ask_oid = result.get("order_id")
-                    existing["ask_order_id"] = ask_oid
-                    existing["ask_price"] = quote["ask_yes"]
-                    db.save_resting_order(ask_oid, ticker, "no", "buy",
-                                          no_price, quote["ask_size"])
+                pending_placements.append({
+                    "ticker": ticker, "side": "no",
+                    "price": no_price, "count": quote["ask_size"],
+                    "post_only": True,
+                    "_side_key": "ask",
+                    "_ask_yes": quote["ask_yes"],  # store for metadata
+                })
         elif existing.get("ask_order_id"):
-            orders.cancel_order(existing["ask_order_id"])
-            db.remove_resting_order(existing["ask_order_id"])
+            pending_cancel_ids.append(existing["ask_order_id"])
             existing.pop("ask_order_id", None)
 
         # Store market metadata so poll_for_fills can find it even after
@@ -807,7 +804,38 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
         quoted_count += 1
         quoted_events.add(event_ticker)
 
+    # --- Batch cancel collected order IDs ---
+    if pending_cancel_ids:
+        orders.batch_cancel(pending_cancel_ids)
+        for oid in pending_cancel_ids:
+            db.remove_resting_order(oid)
+
+    # --- Batch place collected new orders ---
+    if pending_placements:
+        results = orders.batch_place(pending_placements)
+        for spec, result in zip(pending_placements, results):
+            if not result:
+                continue
+            oid = result.get("order_id")
+            if not oid:
+                continue
+            ticker = spec["ticker"]
+            existing = resting_by_ticker.get(ticker, {})
+            if spec["_side_key"] == "bid":
+                existing["bid_order_id"] = oid
+                existing["bid_price"] = spec["price"]
+                db.save_resting_order(oid, ticker, "yes", "buy",
+                                      spec["price"], spec["count"])
+            else:  # ask
+                existing["ask_order_id"] = oid
+                existing["ask_price"] = spec.get("_ask_yes", 100 - spec["price"])
+                db.save_resting_order(oid, ticker, "no", "buy",
+                                      spec["price"], spec["count"])
+            resting_by_ticker[ticker] = existing
+
     print(f"  Quoting {quoted_count} tickers across {len(quoted_events)} games (exposure: ${exposure:.2f})")
+    if pending_placements:
+        print(f"  Batch placed {len([r for r in results if r])} / {len(pending_placements)} new orders")
     return resting_by_ticker
 
 

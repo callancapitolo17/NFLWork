@@ -24,6 +24,9 @@ Fair value comes from offshore scraper databases (Bookmaker, Bet105). If those s
 ### Tipoff Safety
 Bot cancels all resting orders and stops quoting/taking 1 minute before game tipoff (`TIPOFF_PULLBACK_MIN`). `sweep_tipoff_cancel()` runs every quote cycle (10s), independent of market matching — it sweeps ALL entries in `resting_by_ticker` using stored `_commence_time`. If `commence_time` is missing or unparseable, the bot refuses to quote (fail-safe).
 
+### Batch Order Placement
+New orders are batched via `POST /portfolio/orders/batched` (max 20 per call) instead of placed individually. This reduces first-cycle startup from ~30 min to ~2 min for ~710 orders. Amends remain individual API calls. Cancels within the quote cycle are also batched via `batch_cancel()`. The `batch_place()` function in `orders.py` handles chunking and per-order failure logging.
+
 ### Kalshi API Auth
 Uses `KALSHI_API_KEY` and `KALSHI_PRIVATE_KEY` from `.env`. Keys are RSA — the private key file path goes in `.env`.
 
