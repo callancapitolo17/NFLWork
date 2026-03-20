@@ -17,6 +17,7 @@ import sys
 import time
 import signal
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -645,6 +646,25 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
     pending_cancel_ids = []   # Order IDs to batch-cancel after the loop
     cycle_ts = time.time()
 
+    # Pre-compute Kelly sizes for all markets, grouped by game (one matrix
+    # solve per game instead of per-market — ~10x faster)
+    kelly_sizes = {}  # ticker -> {"bid_size": int, "ask_size": int}
+    if config.USE_KELLY_SIZING:
+        games = defaultdict(list)
+        for m in quotable_markets:
+            gid = m.get("game_id")
+            if gid:
+                games[gid].append(m)
+        for game_id, game_markets in games.items():
+            gk = game_markets[0].get("game_key",
+                    (game_markets[0].get("home_team", ""),
+                     game_markets[0].get("away_team", "")))
+            placed = kelly.get_placed_positions_for_game(
+                gk, game_id, current_markets=quotable_markets)
+            sizes = kelly.batch_kelly_sizes_for_game(
+                game_markets, placed, config.BANKROLL, config.KELLY_FRACTION)
+            kelly_sizes.update(sizes)
+
     for market in quotable_markets:
         ticker = market["ticker"]
         event_ticker = market.get("event_ticker", "")
@@ -671,18 +691,11 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
         net = kelly.get_net_position(ticker)
         game_key = market.get("game_key", (market.get("home_team", ""), market.get("away_team", "")))
 
-        # Kelly sizing: compute per-side sizes
+        # Kelly sizing: look up pre-computed sizes (batched by game above)
         if config.USE_KELLY_SIZING:
-            game_id = market.get("game_id")
-            placed = kelly.get_placed_positions_for_game(game_key, game_id, current_markets=quotable_markets) if game_id else []
-            bid_size = kelly.kelly_size_for_quote(
-                market, side="bid", placed_positions=placed,
-                bankroll=config.BANKROLL, kelly_mult=config.KELLY_FRACTION
-            )
-            ask_size = kelly.kelly_size_for_quote(
-                market, side="ask", placed_positions=placed,
-                bankroll=config.BANKROLL, kelly_mult=config.KELLY_FRACTION
-            )
+            ks = kelly_sizes.get(ticker, {"bid_size": 0, "ask_size": 0})
+            bid_size = ks["bid_size"]
+            ask_size = ks["ask_size"]
         else:
             bid_size = config.CONTRACT_SIZE
             ask_size = config.CONTRACT_SIZE
