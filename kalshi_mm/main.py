@@ -1077,10 +1077,7 @@ def main():
 
     pred_age = "?"
     if prediction_updated_at:
-        ts = prediction_updated_at
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        age_sec = (datetime.now(timezone.utc) - ts).total_seconds()
+        _, age_sec = risk.check_staleness(prediction_updated_at)
         pred_age = f"{age_sec:.0f}s"
     print(f"  Loaded {len(predictions)} predictions (age: {pred_age})")
 
@@ -1127,6 +1124,11 @@ def main():
     else:
         print("  No reference lines available (scrapers may have no 1H data)")
 
+    # Pre-warm Kelly sample cache (avoids ~15 min cold start on first cycle)
+    print("Pre-warming Kelly sample cache...")
+    n_games = kelly.prewarm_sample_cache()
+    print(f"  Cached samples for {n_games} games")
+
     # Main loop
     print(f"\nStarting main loop (quote every {config.QUOTE_CYCLE_SEC}s, "
           f"monitor every {config.MONITOR_CYCLE_SEC}s)...\n")
@@ -1135,6 +1137,7 @@ def main():
     last_quote_time = 0
     last_fill_poll = 0
     last_monitor_time = 0
+    last_pred_check = 0
     # If predictions are already stale at startup, trigger pipeline immediately
     _, pred_age = risk.check_staleness(prediction_updated_at)
     if pred_age > config.MAX_STALENESS_SEC:
@@ -1188,6 +1191,46 @@ def main():
                     last_pipeline_time = now
             except Exception as e:
                 print(f"  Pipeline refresh error (will retry): {e}")
+
+            # Periodic prediction check — catches external pipeline runs
+            if now - last_pred_check >= 30:
+                last_pred_check = now
+                try:
+                    meta_ts = db.get_prediction_timestamp()
+                    if meta_ts and meta_ts != prediction_updated_at:
+                        new_preds, new_ts = db.load_predictions()
+                        if new_preds and new_ts:
+                            predictions = new_preds
+                            prediction_updated_at = new_ts
+                            kelly.clear_sample_cache()
+                            fresh_all = fetch_all_markets()
+                            if fresh_all:
+                                all_kalshi = fresh_all
+                            new_quotable = match_all_markets(
+                                all_kalshi, predictions, team_dict, canonical_games
+                            )
+                            enforce_monotonicity(new_quotable)
+
+                            # Cancel orders for orphaned tickers
+                            new_tickers = {m["ticker"] for m in new_quotable}
+                            for ticker, info in list(resting_by_ticker.items()):
+                                if ticker not in new_tickers:
+                                    print(f"  Orphaned ticker {ticker} — cancelling orders")
+                                    if not DRY_RUN:
+                                        for side_key in ["bid_order_id", "ask_order_id"]:
+                                            oid = info.get(side_key)
+                                            if oid:
+                                                orders.cancel_order(oid)
+                                                db.remove_resting_order(oid)
+                                    del resting_by_ticker[ticker]
+
+                            quotable = new_quotable
+                            ref_lines = risk.run_line_monitor()
+                            if ref_lines:
+                                db.save_reference_lines(ref_lines)
+                            print(f"  External predictions detected — refreshed {len(quotable)} markets, cache rewarmed")
+                except Exception as e:
+                    print(f"  Prediction check error: {e}")
 
             # Scheduled pipeline refresh (with backoff on failure)
             try:
