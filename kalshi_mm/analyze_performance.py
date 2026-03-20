@@ -18,7 +18,7 @@ import sys
 import re
 from pathlib import Path
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 
 # Auth lives in kalshi_draft/ — resolve to the actual repo root
 # (worktrees may not contain all directories)
@@ -41,6 +41,11 @@ if not creds["api_key_id"]:
     creds = load_credentials(env_dir=_kalshi_draft.parent / "kalshi_mm")
 API_KEY = creds["api_key_id"]
 PK_PATH = creds["private_key_path"]
+if not API_KEY or not PK_PATH:
+    print("ERROR: Kalshi credentials not found.")
+    print("  Checked .env in:", MM_DIR)
+    print("  Set KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY_PATH in kalshi_mm/.env")
+    sys.exit(1)
 
 CBB_PREFIX = "KXNCAAMB"
 
@@ -184,16 +189,13 @@ def pull_data():
 
     print("  Checking market settlement status...")
     market_results = {}  # ticker -> "yes" | "no" | None
-    market_status = {}   # ticker -> "active" | "closed" | "settled"
     checked = 0
     for ticker in unique_tickers:
         mdata = public_request(f"/markets/{ticker}")
         if mdata and mdata.get("market"):
             mk = mdata["market"]
             result = mk.get("result") or None
-            status = mk.get("status", "")
             market_results[ticker] = result
-            market_status[ticker] = status
         checked += 1
         if checked % 50 == 0:
             print(f"    ...checked {checked}/{len(unique_tickers)} markets")
@@ -209,7 +211,6 @@ def pull_data():
         "all_market_pos": all_market_pos,
         "all_event_pos": all_event_pos,
         "market_results": market_results,
-        "market_status": market_status,
     }
 
 
@@ -324,7 +325,7 @@ def _show_open_summary(data, fills):
 # ── 2. CLV Analysis ─────────────────────────────────────────────────
 def report_clv(data):
     print("\n" + "=" * 60)
-    print("  2. CLOSING LINE VALUE (CLV)")
+    print("  2. SETTLEMENT P&L BY MAKER / TAKER")
     print("=" * 60)
 
     fills = data["cbb_fills"]
