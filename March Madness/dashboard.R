@@ -30,21 +30,27 @@ bwr <- fetch_bracket_with_ratings(fb, ts)
 bracket_64 <- as.data.frame(resolve_first_four(bwr, br$games))
 region_order <- get_region_order(bracket_64)
 
-# Filter out eliminated teams (respect completed game results)
+# Build current bracket: keep all 64 teams, mark winners as "advanced"
+# so the dynamic sim auto-advances them past eliminated opponents
 games_played <- br$games
-eliminated <- games_played %>%
-  filter(status == "final", round != "First Four", !is.na(winner)) %>%
+completed_games <- games_played %>%
+  filter(status == "final", round != "First Four", !is.na(winner))
+
+eliminated <- completed_games %>%
   mutate(loser = ifelse(winner == team1, team2, team1)) %>%
   pull(loser)
 
+advanced <- completed_games %>% pull(winner) %>% unique()
+
 current_bracket <- bracket_64 %>%
   filter(!team %in% eliminated) %>%
-  mutate(status = "pending")
+  mutate(status = ifelse(team %in% advanced, "advanced", "pending"))
 
 n_remaining <- nrow(current_bracket)
 tourney_state <- br$tournament_state
-cat(sprintf("Tournament: %s | Round: %s | %d teams remaining\n",
-            tourney_state$state, tourney_state$current_round %||% "N/A", n_remaining))
+cat(sprintf("Tournament: %s | Round: %s | %d teams remaining (%d advanced)\n",
+            tourney_state$state, tourney_state$current_round %||% "N/A",
+            n_remaining, sum(current_bracket$status == "advanced")))
 
 # Add conference
 conf_map <- tryCatch({
@@ -69,7 +75,9 @@ simulate_round_dynamic <- function(teams, game_number = 1, region_order_auto = N
 
 simulate_remaining <- function(bracket, region_order_auto = NULL) {
   if (is.null(region_order_auto)) region_order_auto <- get_region_order(bracket)
-  round_names <- get_remaining_rounds(nrow(bracket))
+  # Round up to next power of 2 for get_remaining_rounds (partial rounds have non-power-of-2 teams)
+  n_padded <- 2^ceiling(log2(nrow(bracket)))
+  round_names <- get_remaining_rounds(n_padded)
   team_progress <- bracket %>% select(team, seed)
   for (r in round_names) team_progress[[r]] <- 0
   round_num <- 1; teams_round <- bracket
