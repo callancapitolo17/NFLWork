@@ -1061,6 +1061,8 @@ def main():
     db.init_taker_tables()
 
     # SAFETY: Cancel any resting orders from previous sessions (crash recovery)
+    # Then adopt any survivors into resting_by_ticker to prevent duplicates.
+    resting_by_ticker = {}
     if not DRY_RUN:
         print("Checking for stale orders from previous sessions...")
         stale = orders.get_resting_orders()
@@ -1069,6 +1071,27 @@ def main():
             orders.cancel_all_orders()
         else:
             print("  No stale orders found.")
+
+        # Re-query Kalshi to find any orders that survived the cancel (rate limit,
+        # partial failure, etc). Adopt them into resting_by_ticker so the bot
+        # knows they exist and won't place duplicates.
+        survivors = orders.get_resting_orders()
+        if survivors:
+            print(f"  WARNING: {len(survivors)} orders survived cancel — adopting into tracking")
+            for o in survivors:
+                ticker = o.get("ticker", "")
+                oid = o.get("order_id", "")
+                side = o.get("side", "")
+                price = int(round(float(o.get("yes_price_dollars", 0)) * 100))
+                existing = resting_by_ticker.get(ticker, {})
+                if side == "yes":
+                    existing["bid_order_id"] = oid
+                    existing["bid_price"] = price
+                elif side == "no":
+                    existing["ask_order_id"] = oid
+                    existing["ask_price"] = 100 - price
+                resting_by_ticker[ticker] = existing
+
         # Flush DB resting_orders table — stale entries from previous sessions
         # inflate exposure calculations and block quoting
         db.clear_all_resting_orders()
@@ -1141,7 +1164,7 @@ def main():
     print(f"\nStarting main loop (quote every {config.QUOTE_CYCLE_SEC}s, "
           f"monitor every {config.MONITOR_CYCLE_SEC}s)...\n")
 
-    resting_by_ticker = {}
+    # resting_by_ticker initialized above (startup cancel + adopt survivors)
     last_quote_time = 0
     last_fill_poll = 0
     last_monitor_time = 0
