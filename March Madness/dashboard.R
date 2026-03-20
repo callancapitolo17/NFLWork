@@ -203,7 +203,8 @@ fetch_all_kalshi_edges <- function(raw, team_probs) {
   library(stringr)
   all_edges <- tibble()
 
-  # Detect rows per sim
+  # Filter to living teams and assign sim_id
+  raw <- raw %>% filter(!team %in% eliminated)
   first_team <- raw$team[1]
   n_per_sim <- which(raw$team == first_team)[2] - 1L
   n_sims_local <- nrow(raw) / n_per_sim
@@ -227,11 +228,14 @@ fetch_all_kalshi_edges <- function(raw, team_probs) {
       if (length(sim_prob) == 0) next
       ya <- round(as.numeric(m$yes_ask_dollars %||% 0) * 100)
       yb <- round(as.numeric(m$yes_bid_dollars %||% 0) * 100)
+      spread <- ya - yb
+      vol <- as.numeric(m$volume_fp %||% 0)
       ev <- kalshi_compute_ev(sim_prob, ya, yb)
       all_edges <- bind_rows(all_edges, tibble(
         ticker=m$ticker %||% "", category=paste0("Round: ", re$label),
         title=m$title %||% "", team=sim_team, sim_prob=sim_prob,
-        yes_ask=ya, yes_bid=yb, yes_fee=ev$yes_fee, no_fee=ev$no_fee,
+        yes_ask=ya, yes_bid=yb, spread=spread, volume=vol,
+        yes_fee=ev$yes_fee, no_fee=ev$no_fee,
         yes_ev=ev$yes_ev, no_ev=ev$no_ev,
         best_side=ev$best_side, best_ev=ev$best_ev))
     }
@@ -251,10 +255,13 @@ fetch_all_kalshi_edges <- function(raw, team_probs) {
       if (is.na(sp)) next
       ya <- round(as.numeric(m$yes_ask_dollars %||% 0) * 100)
       yb <- round(as.numeric(m$yes_bid_dollars %||% 0) * 100)
+      spread <- ya - yb
+      vol <- as.numeric(m$volume_fp %||% 0)
       ev <- kalshi_compute_ev(sp, ya, yb)
       all_edges <- bind_rows(all_edges, tibble(
         ticker=m$ticker %||% "", category=category, title=ttl, team=NA_character_,
-        sim_prob=sp, yes_ask=ya, yes_bid=yb, yes_fee=ev$yes_fee, no_fee=ev$no_fee,
+        sim_prob=sp, yes_ask=ya, yes_bid=yb, spread=spread, volume=vol,
+        yes_fee=ev$yes_fee, no_fee=ev$no_fee,
         yes_ev=ev$yes_ev, no_ev=ev$no_ev,
         best_side=ev$best_side, best_ev=ev$best_ev))
     }
@@ -318,8 +325,9 @@ fetch_all_kalshi_edges <- function(raw, team_probs) {
   all_edges %>% arrange(desc(best_ev))
 }
 
-# Pre-compute team probs for Kalshi matching
+# Pre-compute team probs for Kalshi matching (exclude eliminated teams)
 team_probs <- raw %>%
+  filter(!team %in% eliminated) %>%
   group_by(team, seed) %>%
   summarise(Round_32=mean(Round_32), Sweet_16=mean(Sweet_16), Elite_8=mean(Elite_8),
             Final_4=mean(Final_4), Title_Game=mean(Title_Game), Champion=mean(Champion),
@@ -868,53 +876,64 @@ server <- function(input, output, session) {
     d <- d %>% filter(best_ev >= min_ev)
     if (isTRUE(input$ke_positive_only)) d <- d %>% filter(best_ev > 0)
 
-    # Build table with numeric columns for sorting, formatted for display
+    # Filter out illiquid (no bid or ask) markets
+    d <- d %>% filter(yes_ask > 0, yes_bid > 0)
+
+    # Build table with numeric columns for proper sorting
     tbl <- d %>%
       transmute(
         Category = category,
         Market = title,
-        `Fair %` = round(sim_prob * 100, 1),
-        `YES Ask` = yes_ask,
-        `NO Ask` = 100L - yes_bid,
-        `YES EV %` = round(yes_ev * 100, 1),
-        `NO EV %` = round(no_ev * 100, 1),
+        Fair = round(sim_prob * 100, 1),
+        `YES` = yes_ask,
+        `NO` = 100L - yes_bid,
+        Spread = spread,
+        `YES EV` = round(yes_ev * 100, 1),
+        `NO EV` = round(no_ev * 100, 1),
         Side = best_side,
-        `Best EV %` = round(best_ev * 100, 1)
-      ) %>%
-      arrange(desc(`Best EV %`))
+        `Best EV` = round(best_ev * 100, 1),
+        Vol = volume
+      )
 
     DT::datatable(
       tbl,
       options = list(
         pageLength = 50,
-        order = list(list(8, "desc")),  # Sort by Best EV % descending (0-indexed col 8)
+        order = list(list(9, "desc")),  # Sort by Best EV descending (0-indexed)
         columnDefs = list(
-          list(className = "dt-right", targets = 2:8)
-        )
+          list(className = "dt-right", targets = 2:10),
+          list(width = "250px", targets = 1)  # Market column wider
+        ),
+        scrollX = TRUE
       ),
       rownames = FALSE,
       filter = "top"
     ) %>%
-      DT::formatStyle("Best EV %",
+      DT::formatStyle("Best EV",
         color = DT::styleInterval(c(0, 5, 10, 15), c("#d9534f", "#8b949e", "#7ee787", "#56d364", "#3fb950")),
         fontWeight = "bold"
       ) %>%
-      DT::formatStyle("YES EV %",
+      DT::formatStyle("YES EV",
         color = DT::styleInterval(c(0), c("#d9534f", "#3fb950"))
       ) %>%
-      DT::formatStyle("NO EV %",
+      DT::formatStyle("NO EV",
         color = DT::styleInterval(c(0), c("#d9534f", "#3fb950"))
       ) %>%
       DT::formatStyle("Side",
         color = DT::styleEqual(c("YES", "NO"), c("#58a6ff", "#d29922")),
         fontWeight = "bold"
       ) %>%
-      DT::formatString("YES Ask", suffix = "\u00A2") %>%
-      DT::formatString("NO Ask", suffix = "\u00A2") %>%
-      DT::formatString("Fair %", suffix = "%") %>%
-      DT::formatString("YES EV %", suffix = "%") %>%
-      DT::formatString("NO EV %", suffix = "%") %>%
-      DT::formatString("Best EV %", suffix = "%")
+      DT::formatStyle("Spread",
+        color = DT::styleInterval(c(5, 10, 20), c("#3fb950", "#7ee787", "#d29922", "#d9534f"))
+      ) %>%
+      DT::formatString("YES", suffix = "\u00A2") %>%
+      DT::formatString("NO", suffix = "\u00A2") %>%
+      DT::formatString("Spread", suffix = "\u00A2") %>%
+      DT::formatString("Fair", suffix = "%") %>%
+      DT::formatString("YES EV", suffix = "%") %>%
+      DT::formatString("NO EV", suffix = "%") %>%
+      DT::formatString("Best EV", suffix = "%") %>%
+      DT::formatRound("Vol", digits = 0)
   })
 }
 
