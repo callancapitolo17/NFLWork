@@ -29,6 +29,12 @@ ts <- get_teams_std()
 fb <- br$bracket %>% select(team, seed, region, play_in)
 bwr <- fetch_bracket_with_ratings(fb, ts)
 bracket_64 <- as.data.frame(resolve_first_four(bwr, br$games))
+# Deduplicate: resolve_first_four can leave duplicates if play-in isn't fully resolved
+if (nrow(bracket_64) > 64) {
+  bracket_64 <- bracket_64 %>% distinct(team, .keep_all = TRUE)
+  if (nrow(bracket_64) > 64) bracket_64 <- bracket_64 %>% slice_head(n = 64)
+  cat(sprintf("Warning: deduped bracket to %d teams\n", nrow(bracket_64)))
+}
 region_order <- get_region_order(bracket_64)
 
 # Keep full 64-team bracket to preserve positional pairings.
