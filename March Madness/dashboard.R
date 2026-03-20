@@ -15,7 +15,6 @@ library(shiny)
 library(dplyr)
 library(DT)
 library(Rcpp)
-library(RcppArmadillo)
 
 # =============================================================================
 # 1. Run simulation and prepare data
