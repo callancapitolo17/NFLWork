@@ -458,11 +458,12 @@ ui <- fluidPage(
     tabPanel("Kalshi Edges",
       br(),
       fluidRow(
-        column(4, selectInput("ke_category", "Category:",
+        column(3, selectInput("ke_category", "Category:",
           choices = c("All", sort(unique(kalshi_edges$category))), selected = "All")),
-        column(4, selectInput("ke_min_ev", "Min EV%:",
+        column(2, selectInput("ke_min_ev", "Min EV%:",
           choices = c("All", "1%", "3%", "5%", "10%", "15%"), selected = "All")),
-        column(4, actionButton("ke_refresh", "Refresh Kalshi Prices", class = "btn-primary"))
+        column(2, checkboxInput("ke_positive_only", "+EV only", value = FALSE)),
+        column(2, actionButton("ke_refresh", "Refresh Prices", class = "btn-primary"))
       ),
       h4(textOutput("ke_summary")),
       DT::dataTableOutput("ke_table")
@@ -858,34 +859,63 @@ server <- function(input, output, session) {
 
   output$ke_table <- DT::renderDataTable({
     d <- ke_data()
-    if (nrow(d) == 0) return(data.frame(Message = "No markets"))
+    if (nrow(d) == 0) return(DT::datatable(data.frame(Message = "No markets")))
 
-    # Filter by category
+    # Filters
     if (input$ke_category != "All") d <- d %>% filter(category == input$ke_category)
-
-    # Filter by min EV
     min_ev <- switch(input$ke_min_ev,
       "1%" = 0.01, "3%" = 0.03, "5%" = 0.05, "10%" = 0.10, "15%" = 0.15, -Inf)
     d <- d %>% filter(best_ev >= min_ev)
+    if (isTRUE(input$ke_positive_only)) d <- d %>% filter(best_ev > 0)
 
-    d %>%
+    # Build table with numeric columns for sorting, formatted for display
+    tbl <- d %>%
       transmute(
         Category = category,
         Market = title,
-        `Fair` = sprintf("%.1f%%", sim_prob * 100),
-        `YES Ask` = paste0(yes_ask, "\u00A2"),
-        `NO Ask` = paste0(100 - yes_bid, "\u00A2"),
-        `YES Fee` = sprintf("%.1f\u00A2", yes_fee),
-        `NO Fee` = sprintf("%.1f\u00A2", no_fee),
-        `YES EV` = sprintf("%+.1f%%", yes_ev * 100),
-        `NO EV` = sprintf("%+.1f%%", no_ev * 100),
+        `Fair %` = round(sim_prob * 100, 1),
+        `YES Ask` = yes_ask,
+        `NO Ask` = 100L - yes_bid,
+        `YES EV %` = round(yes_ev * 100, 1),
+        `NO EV %` = round(no_ev * 100, 1),
         Side = best_side,
-        `Best EV` = sprintf("%+.1f%%", best_ev * 100),
-        .sort_ev = best_ev
+        `Best EV %` = round(best_ev * 100, 1)
       ) %>%
-      arrange(desc(.sort_ev)) %>%
-      select(-.sort_ev)
-  }, options = list(pageLength = 50))
+      arrange(desc(`Best EV %`))
+
+    DT::datatable(
+      tbl,
+      options = list(
+        pageLength = 50,
+        order = list(list(8, "desc")),  # Sort by Best EV % descending (0-indexed col 8)
+        columnDefs = list(
+          list(className = "dt-right", targets = 2:8)
+        )
+      ),
+      rownames = FALSE,
+      filter = "top"
+    ) %>%
+      DT::formatStyle("Best EV %",
+        color = DT::styleInterval(c(0, 5, 10, 15), c("#d9534f", "#8b949e", "#7ee787", "#56d364", "#3fb950")),
+        fontWeight = "bold"
+      ) %>%
+      DT::formatStyle("YES EV %",
+        color = DT::styleInterval(c(0), c("#d9534f", "#3fb950"))
+      ) %>%
+      DT::formatStyle("NO EV %",
+        color = DT::styleInterval(c(0), c("#d9534f", "#3fb950"))
+      ) %>%
+      DT::formatStyle("Side",
+        color = DT::styleEqual(c("YES", "NO"), c("#58a6ff", "#d29922")),
+        fontWeight = "bold"
+      ) %>%
+      DT::formatString("YES Ask", suffix = "\u00A2") %>%
+      DT::formatString("NO Ask", suffix = "\u00A2") %>%
+      DT::formatString("Fair %", suffix = "%") %>%
+      DT::formatString("YES EV %", suffix = "%") %>%
+      DT::formatString("NO EV %", suffix = "%") %>%
+      DT::formatString("Best EV %", suffix = "%")
+  })
 }
 
 shinyApp(ui, server, options = list(port = 8085, host = "0.0.0.0", launch.browser = TRUE))
