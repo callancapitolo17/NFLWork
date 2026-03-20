@@ -26,30 +26,11 @@ import orders
 import risk
 
 # --- Global state ---
-# Cooldown: {ticker: prediction_updated_at} — skip ticker until predictions refresh
-TAKEN_THIS_CYCLE = {}
-
-# Event-level cooldown: {event_ticker: prediction_updated_at}
-# After taking ANY strike in an event, block all strikes until predictions refresh
-EVENT_COOLDOWN = {}
-
-# Game-level cooldown: {(home_team, away_team, cooldown_group): prediction_updated_at}
-# Correlation-aware: spreads and MLs share "directional" group (correlated),
-# totals have their own "totals" group (independent).
-GAME_COOLDOWN = {}
-
-
-def _cooldown_group(market_type):
-    """Map market type to cooldown group.
-
-    Spreads and moneylines are directionally correlated (both pay when same
-    team wins big). Totals are independent — a game can go under and the
-    favorite still covers. So taking a spread blocks ML on same game and
-    vice versa, but NOT totals.
-    """
-    if market_type in ("spreads", "moneyline"):
-        return "directional"
-    return "totals"
+# Per-ticker tactical cooldown: {ticker: last_take_timestamp}
+# Prevents hammering the same contract. Expires after 10s.
+# Cross-market correlation is handled by Kelly conditional sizing.
+TICKER_COOLDOWN = {}
+_TICKER_COOLDOWN_SEC = 10
 
 # Prediction cache to avoid re-reading DB every 2s
 PRED_CACHE = {"predictions": [], "updated_at": None, "checked_at": 0}
@@ -88,37 +69,17 @@ def compute_take_ev(fair_cents, book_price, side):
     return ev_pct, fee
 
 
-def is_on_cooldown(ticker, event_ticker, current_pred_ts,
-                   home_team=None, away_team=None, market_type=None):
-    """Check if ticker, event, or game+cooldown_group was already taken."""
-    if ticker in TAKEN_THIS_CYCLE and TAKEN_THIS_CYCLE[ticker] == current_pred_ts:
+def is_on_cooldown(ticker):
+    """Check if ticker was recently taken (10s tactical cooldown)."""
+    last_take = TICKER_COOLDOWN.get(ticker)
+    if last_take and (time.time() - last_take) < _TICKER_COOLDOWN_SEC:
         return True
-    if event_ticker in EVENT_COOLDOWN and EVENT_COOLDOWN[event_ticker] == current_pred_ts:
-        return True
-    # Game-level correlation-aware cooldown
-    if home_team and away_team and market_type:
-        group = _cooldown_group(market_type)
-        game_key = (home_team, away_team, group)
-        if game_key in GAME_COOLDOWN and GAME_COOLDOWN[game_key] == current_pred_ts:
-            return True
     return False
 
 
-def set_cooldown(ticker, event_ticker, pred_ts,
-                 home_team=None, away_team=None, market_type=None):
-    """Mark ticker, event, AND game+cooldown_group as taken."""
-    TAKEN_THIS_CYCLE[ticker] = pred_ts
-    EVENT_COOLDOWN[event_ticker] = pred_ts
-    if home_team and away_team and market_type:
-        group = _cooldown_group(market_type)
-        GAME_COOLDOWN[(home_team, away_team, group)] = pred_ts
-
-
-def clear_cooldowns():
-    """Clear all cooldowns (called when predictions refresh)."""
-    TAKEN_THIS_CYCLE.clear()
-    EVENT_COOLDOWN.clear()
-    GAME_COOLDOWN.clear()
+def set_cooldown(ticker):
+    """Mark ticker as recently taken."""
+    TICKER_COOLDOWN[ticker] = time.time()
 
 
 def refresh_predictions():
@@ -134,9 +95,7 @@ def refresh_predictions():
     if updated_at != PRED_CACHE["updated_at"] and predictions:
         PRED_CACHE["predictions"] = predictions
         PRED_CACHE["updated_at"] = updated_at
-        # Clear all cooldowns — fresh predictions mean fresh signals
-        clear_cooldowns()
-        print(f"  [TAKER] Predictions refreshed ({len(predictions)} rows, cooldowns cleared)")
+        print(f"  [TAKER] Predictions refreshed ({len(predictions)} rows)")
 
     return PRED_CACHE["predictions"], PRED_CACHE["updated_at"]
 
@@ -192,7 +151,7 @@ def _reconcile_fill_count(order_id, total_requested):
     return total_requested - remaining
 
 
-def execute_take(market, side, price, ev_pct, fee_cents, pred_ts, dry_run=False,
+def execute_take(market, side, price, ev_pct, fee_cents, dry_run=False,
                  take_size=None):
     """Place a taker order (post_only=False), then cancel unfilled remainder.
 
@@ -211,8 +170,7 @@ def execute_take(market, side, price, ev_pct, fee_cents, pred_ts, dry_run=False,
     if dry_run:
         print(f"  [TAKER] TAKE (dry): {side.upper()} {take_size}x @ {price}c on {ticker} "
               f"(fair={market['fair_prob']*100:.1f}c, EV={ev_pct:.1%}, fee={fee_cents:.1f}c) [{market_type}]")
-        set_cooldown(ticker, event_ticker, pred_ts,
-                     home_team=home_team, away_team=away_team, market_type=market_type)
+        set_cooldown(ticker)
         return 0
 
     # CONFIRM: re-fetch book to make sure the price is still there
@@ -310,10 +268,8 @@ def execute_take(market, side, price, ev_pct, fee_cents, pred_ts, dry_run=False,
             count_filled=filled, order_id=order_id,
         )
 
-    # Cooldown regardless of fill count — don't re-attempt until predictions refresh
-    # Event-level + game-level (correlation-aware)
-    set_cooldown(ticker, event_ticker, pred_ts,
-                 home_team=home_team, away_team=away_team, market_type=market_type)
+    # Tactical cooldown — prevent hammering the same contract
+    set_cooldown(ticker)
     return filled
 
 
@@ -348,10 +304,8 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
         market_type = market.get("market_type", "spreads")
         fair_cents = market["fair_prob"] * 100
 
-        # Skip if already taken on this prediction cycle (ticker, event, or game+group)
-        if is_on_cooldown(ticker, event_ticker, prediction_updated_at,
-                          home_team=home_team, away_team=away_team,
-                          market_type=market_type):
+        # Skip if recently taken (10s tactical cooldown)
+        if is_on_cooldown(ticker):
             continue
 
         # Skip tipoff proximity
@@ -405,7 +359,7 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
                 ev_pct, fee = compute_take_ev(fair_cents, yes_ask, "yes")
                 if ev_pct is not None:
                     filled = execute_take(market, "yes", yes_ask, ev_pct, fee,
-                                          prediction_updated_at, dry_run=dry_run,
+                                          dry_run=dry_run,
                                           take_size=yes_take_size)
                     if filled > 0:
                         takes_this_cycle += 1
@@ -420,7 +374,7 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
                 ev_pct, fee = compute_take_ev(fair_cents, no_price, "no")
                 if ev_pct is not None:
                     filled = execute_take(market, "no", no_price, ev_pct, fee,
-                                          prediction_updated_at, dry_run=dry_run,
+                                          dry_run=dry_run,
                                           take_size=no_take_size)
                     if filled > 0:
                         takes_this_cycle += 1
@@ -455,7 +409,7 @@ def main():
     print(f"  Min Take EV: {config.MIN_TAKE_EV_PCT:.0%} (after {config.TAKER_FEE_RATE:.0%} fee)")
     size_str = "Kelly-sized" if config.USE_KELLY_SIZING else f"{config.TAKE_CONTRACT_SIZE} contracts"
     print(f"  Take Size: {size_str}")
-    print(f"  Poll: {config.TAKE_POLL_SEC}s | Cooldown: per prediction refresh (event-level)")
+    print(f"  Poll: {config.TAKE_POLL_SEC}s | Cooldown: 10s per ticker")
     print(f"  Risk: Kelly-only (no hard position limits)")
     print("=" * 60)
 

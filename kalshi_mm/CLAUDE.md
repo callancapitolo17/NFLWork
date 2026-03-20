@@ -22,13 +22,19 @@ Fair value comes from offshore scraper databases (Bookmaker, Bet105). If those s
 `kalshi_mm.duckdb` — NEVER symlink. WAL files must be co-located with the database.
 
 ### Tipoff Safety
-Bot cancels all resting orders and stops quoting/taking 1 minute before game tipoff (`TIPOFF_PULLBACK_MIN`). `sweep_tipoff_cancel()` runs every quote cycle (10s), independent of market matching — it sweeps ALL entries in `resting_by_ticker` using stored `_commence_time`. If `commence_time` is missing or unparseable, the bot refuses to quote (fail-safe).
+Bot cancels all resting orders and stops quoting/taking 1 minute before game tipoff (`TIPOFF_PULLBACK_MIN`). `sweep_tipoff_cancel()` runs every quote cycle (10s), independent of market matching — it sweeps ALL entries in `resting_by_ticker` using stored `_commence_time`. Cancels use `batch_cancel()` and only remove local tracking after confirmed API success. If cancel fails, the sweep retries next cycle. If `commence_time` is missing or unparseable, the bot refuses to quote (fail-safe).
+
+### Line Move Cancel
+When the line monitor detects a sharp move, all resting orders for affected games are immediately batch-cancelled using stored `_home_team`/`_away_team` metadata in `resting_by_ticker`. This avoids stale quotes while the prediction pipeline refreshes.
 
 ### Batch Order Placement
 New orders are batched via `POST /portfolio/orders/batched` (max 20 per call) instead of placed individually. This reduces first-cycle startup from ~30 min to ~2 min for ~710 orders. Amends remain individual API calls. Cancels within the quote cycle are also batched via `batch_cancel()`. The `batch_place()` function in `orders.py` handles chunking and per-order failure logging.
 
 ### Batch Kelly Sizing
 Kelly sizes are pre-computed for all markets grouped by game before the main quote loop. Instead of calling `conditional_kelly_sizes()` twice per market (~610 calls), `batch_kelly_sizes_for_game()` computes all bid+ask sizes for a game in one matrix solve (~57 calls). This reduces the Kelly loop from ~15 min to ~1.5 min.
+
+### Taker Cooldowns
+The taker uses a simple 10s per-ticker tactical cooldown to prevent hammering the same contract. Cross-market correlation (same game, same event) is handled entirely by Kelly conditional sizing — `kelly.clear_positions_cache()` is called after each fill so subsequent takes see updated positions. No event-level or game-level cooldowns.
 
 ### Kalshi API Auth
 Uses `KALSHI_API_KEY` and `KALSHI_PRIVATE_KEY` from `.env`. Keys are RSA — the private key file path goes in `.env`.
