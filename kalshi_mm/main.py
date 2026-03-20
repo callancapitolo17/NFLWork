@@ -637,6 +637,24 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
             orders.cancel_all_orders()
             db.clear_all_resting_orders()
             resting_by_ticker.clear()
+            # Re-query Kalshi for survivors — if cancel partially failed,
+            # adopt them to prevent duplicate placements next cycle
+            survivors = orders.get_resting_orders()
+            if survivors:
+                print(f"  WARNING: {len(survivors)} orders survived stale cancel — adopting")
+                for o in survivors:
+                    ticker = o.get("ticker", "")
+                    oid = o.get("order_id", "")
+                    side = o.get("side", "")
+                    price = int(round(float(o.get("yes_price_dollars", 0)) * 100))
+                    existing = resting_by_ticker.get(ticker, {})
+                    if side == "yes":
+                        existing["bid_order_id"] = oid
+                        existing["bid_price"] = price
+                    elif side == "no":
+                        existing["ask_order_id"] = oid
+                        existing["ask_price"] = 100 - price
+                    resting_by_ticker[ticker] = existing
         return resting_by_ticker
 
     exposure = db.compute_total_exposure()  # For logging only
