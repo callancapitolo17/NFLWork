@@ -312,10 +312,11 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
         if not risk.check_tipoff_proximity(market.get("commence_time")):
             continue
 
-        # Hard exposure cap
-        allowed, _, _ = risk.check_game_type_exposure(
+        # Hard exposure cap — compute remaining room
+        allowed, cur_exp, max_exp = risk.check_game_type_exposure(
             home_team or "", away_team or "", market_type)
-        if not allowed:
+        exposure_room = max_exp - cur_exp if allowed else 0
+        if exposure_room <= 0:
             continue
 
         game_key = market.get("game_key", (home_team or "", away_team or ""))
@@ -357,6 +358,15 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
         else:
             yes_take_size = config.TAKE_CONTRACT_SIZE
             no_take_size = config.TAKE_CONTRACT_SIZE
+
+        # Clamp take sizes to remaining exposure room
+        if yes_ask > 0 and yes_take_size > 0:
+            max_contracts = int(exposure_room / (yes_ask / 100))
+            yes_take_size = min(yes_take_size, max_contracts)
+        if yes_bid > 0 and no_take_size > 0:
+            no_price_for_cap = 100 - yes_bid
+            max_contracts = int(exposure_room / (no_price_for_cap / 100)) if no_price_for_cap > 0 else 0
+            no_take_size = min(no_take_size, max_contracts)
 
         # --- Evaluate YES take (buy YES at ask) ---
         if yes_ask > 0 and yes_take_size > 0:
