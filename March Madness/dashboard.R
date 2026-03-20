@@ -30,6 +30,22 @@ bwr <- fetch_bracket_with_ratings(fb, ts)
 bracket_64 <- as.data.frame(resolve_first_four(bwr, br$games))
 region_order <- get_region_order(bracket_64)
 
+# Filter out eliminated teams (respect completed game results)
+games_played <- br$games
+eliminated <- games_played %>%
+  filter(status == "final", round != "First Four", !is.na(winner)) %>%
+  mutate(loser = ifelse(winner == team1, team2, team1)) %>%
+  pull(loser)
+
+current_bracket <- bracket_64 %>% filter(!team %in% eliminated)
+n_remaining <- nrow(current_bracket)
+n_eliminated <- length(eliminated)
+
+tourney_state <- br$tournament_state
+cat(sprintf("Tournament: %s | Round: %s | %d teams remaining (%d eliminated)\n",
+            tourney_state$state, tourney_state$current_round %||% "N/A",
+            n_remaining, n_eliminated))
+
 # Add conference
 conf_map <- tryCatch({
   cbd_bpi_ratings() %>%
@@ -38,15 +54,21 @@ conf_map <- tryCatch({
     select(team, conference) %>% distinct(team, .keep_all = TRUE)
 }, error = function(e) NULL)
 
-# Sim with fitted params
+# Sim with fitted params — uses current_bracket (surviving teams only)
 sim_one <- function() {
-  df <- bracket_64
+  df <- current_bracket
   all_teams <- df$team; all_seeds <- df$seed; n_all <- length(all_teams)
+  n_rounds <- ceiling(log2(n_all))
   progress <- matrix(0L, nrow = n_all, ncol = 6)
   seed_order <- c(1,16,8,9,5,12,4,13,6,11,3,14,7,10,2,15)
   teams <- df$team; seeds <- df$seed; regions <- df$region
   ratings <- ifelse(is.na(df$composite_rating), 0, df$composite_rating)
   n <- length(teams); round_num <- 1
+
+  # Determine which progress column to start at based on teams remaining
+  # 64 teams = start at col 1 (R32), 32 = col 2 (S16), etc.
+  start_col <- max(1, 7 - n_rounds)
+
   while (n > 1) {
     if (n == 4) { reg_idx <- match(regions, region_order); ord <- order(reg_idx); ord <- ord[c(1,3,2,4)]
     } else if (n == 2) { ord <- 1:2
@@ -58,7 +80,8 @@ sim_one <- function() {
     w <- ifelse(actual_margin > 0, i1, i2)
     teams <- teams[w]; seeds <- seeds[w]; regions <- regions[w]
     ratings <- ratings[w] + rnorm(n_games, 0, 0.17)
-    n <- length(teams); col <- min(round_num, 6)
+    n <- length(teams)
+    col <- min(start_col + round_num - 1, 6)
     progress[match(teams, all_teams), col] <- 1L; round_num <- round_num + 1
   }
   data.frame(team=all_teams, seed=all_seeds, region=df$region,
@@ -68,7 +91,7 @@ sim_one <- function() {
 }
 
 n_sims <- 50000
-cat(sprintf("Running %dk simulations...\n", n_sims/1000))
+cat(sprintf("Running %dk simulations (%d teams)...\n", n_sims/1000, n_remaining))
 t0 <- Sys.time()
 raw <- map_dfr(1:n_sims, function(i) {
   r <- sim_one()
@@ -301,7 +324,8 @@ prob_to_american <- function(prob) {
 }
 
 ui <- fluidPage(
-  titlePanel(sprintf("March Madness Simulator (%dk sims)", n_sims/1000)),
+  titlePanel(sprintf("March Madness Simulator (%dk sims | %d teams remaining)",
+                     n_sims/1000, n_remaining)),
 
   tabsetPanel(
     # --- Tab 1: Team Advancement ---
