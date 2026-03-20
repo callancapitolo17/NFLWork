@@ -545,16 +545,19 @@ get_region_order <- function(bracket) {
   bracket %>% distinct(region) %>% pull(region)
 }
 
-#' Get remaining round names based on current bracket size
+#' Get remaining round names based on current bracket size.
+#' For mid-round brackets (non-power-of-2), rounds up to the next power of 2.
 get_remaining_rounds <- function(current_N) {
-  switch(as.character(current_N),
+  # Round up to next power of 2 for mid-round brackets
+  n <- 2^ceiling(log2(max(current_N, 2)))
+  switch(as.character(n),
     "64" = c("Round 32", "Sweet 16", "Elite 8", "Final 4", "Title Game", "Champion"),
     "32" = c("Sweet 16", "Elite 8", "Final 4", "Title Game", "Champion"),
     "16" = c("Elite 8", "Final 4", "Title Game", "Champion"),
     "8"  = c("Final 4", "Title Game", "Champion"),
     "4"  = c("Title Game", "Champion"),
     "2"  = c("Champion"),
-    stop("Bracket size must be 2, 4, 8, 16, 32, or 64.")
+    stop("Bracket size must be <= 64.")
   )
 }
 
