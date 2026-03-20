@@ -296,26 +296,20 @@ def load_predictions():
 
 def get_position(ticker):
     """Get current position for a ticker."""
-    conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
-    try:
-        row = conn.execute(
-            "SELECT net_yes, avg_entry_price FROM positions WHERE ticker = ?",
-            [ticker]
-        ).fetchone()
-        return {"net_yes": row[0], "avg_entry_price": row[1]} if row else {"net_yes": 0, "avg_entry_price": 0}
-    finally:
-        conn.close()
+    conn = get_write_conn()
+    row = conn.execute(
+        "SELECT net_yes, avg_entry_price FROM positions WHERE ticker = ?",
+        [ticker]
+    ).fetchone()
+    return {"net_yes": row[0], "avg_entry_price": row[1]} if row else {"net_yes": 0, "avg_entry_price": 0}
 
 
 def get_all_positions():
     """Get all open positions."""
-    conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
-    try:
-        return conn.execute(
-            "SELECT * FROM positions WHERE net_yes != 0"
-        ).fetchdf().to_dict("records")
-    finally:
-        conn.close()
+    conn = get_write_conn()
+    return conn.execute(
+        "SELECT * FROM positions WHERE net_yes != 0"
+    ).fetchdf().to_dict("records")
 
 
 # ---------------------------------------------------------------------------
@@ -500,11 +494,8 @@ def clear_all_resting_orders():
 
 def get_resting_orders():
     """Get all our resting orders."""
-    conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
-    try:
-        return conn.execute("SELECT * FROM resting_orders").fetchdf().to_dict("records")
-    finally:
-        conn.close()
+    conn = get_write_conn()
+    return conn.execute("SELECT * FROM resting_orders").fetchdf().to_dict("records")
 
 
 # ---------------------------------------------------------------------------
@@ -535,11 +526,8 @@ def save_reference_lines(lines):
 
 def get_reference_lines():
     """Get stored reference lines."""
-    conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
-    try:
-        return conn.execute("SELECT * FROM reference_lines").fetchdf().to_dict("records")
-    finally:
-        conn.close()
+    conn = get_write_conn()
+    return conn.execute("SELECT * FROM reference_lines").fetchdf().to_dict("records")
 
 
 # ---------------------------------------------------------------------------
@@ -548,23 +536,20 @@ def get_reference_lines():
 
 def compute_total_exposure():
     """Compute total dollars at risk across all positions AND resting orders."""
-    conn = duckdb.connect(str(MM_DB_PATH), read_only=True)
-    try:
-        filled = conn.execute("""
-            SELECT COALESCE(SUM(
-                avg_entry_price * ABS(net_yes) / 100.0
-            ), 0) FROM positions WHERE net_yes != 0
-        """).fetchone()[0]
+    conn = get_write_conn()
+    filled = conn.execute("""
+        SELECT COALESCE(SUM(
+            avg_entry_price * ABS(net_yes) / 100.0
+        ), 0) FROM positions WHERE net_yes != 0
+    """).fetchone()[0]
 
-        resting = conn.execute("""
-            SELECT COALESCE(SUM(
-                price * remaining_count / 100.0
-            ), 0) FROM resting_orders
-        """).fetchone()[0]
+    resting = conn.execute("""
+        SELECT COALESCE(SUM(
+            price * remaining_count / 100.0
+        ), 0) FROM resting_orders
+    """).fetchone()[0]
 
-        return filled + resting
-    finally:
-        conn.close()
+    return filled + resting
 
 
 # ---------------------------------------------------------------------------
