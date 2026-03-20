@@ -29,7 +29,10 @@ def clear_exposure_cache():
 def check_game_type_exposure(home_team, away_team, market_type):
     """Check if filled exposure for a game+market_type exceeds the hard cap.
 
-    Returns (allowed, current_exposure, max_exposure).
+    Returns (allowed, current_exposure, max_exposure, net_direction).
+    net_direction: positive = net long YES, negative = net short YES, 0 = flat.
+    When over cap, caller should block the side that increases exposure
+    but allow the side that reduces it.
     """
     max_exposure = BANKROLL * MAX_GAME_TYPE_EXPOSURE_PCT
 
@@ -39,19 +42,21 @@ def check_game_type_exposure(home_team, away_team, market_type):
 
     cache_key = (home_team, away_team, market_type)
     if cache_key in _exposure_cache["computed"]:
-        current = _exposure_cache["computed"][cache_key]
-        return current < max_exposure, current, max_exposure
+        current, net_dir = _exposure_cache["computed"][cache_key]
+        return current < max_exposure, current, max_exposure, net_dir
 
-    # Sum filled exposure for this game + market type
+    # Sum filled exposure and net direction for this game + market type
     current = 0.0
+    net_direction = 0
     for p in _exposure_cache["positions"]:
         if (p.get("home_team") == home_team and
                 p.get("away_team") == away_team and
                 p.get("market_type") == market_type):
             current += abs(p.get("net_yes", 0)) * p.get("avg_entry_price", 0) / 100.0
+            net_direction += p.get("net_yes", 0)
 
-    _exposure_cache["computed"][cache_key] = current
-    return current < max_exposure, current, max_exposure
+    _exposure_cache["computed"][cache_key] = (current, net_direction)
+    return current < max_exposure, current, max_exposure, net_direction
 
 
 def check_staleness(prediction_updated_at):

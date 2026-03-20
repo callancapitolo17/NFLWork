@@ -710,22 +710,20 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
         if book_age > config.MAX_BOOK_STALENESS_SEC:
             continue
 
-        # Hard exposure cap: skip if filled exposure for this game+type exceeds limit
+        # Hard exposure cap: check filled exposure for this game+type
         home_team = market.get("home_team", "")
         away_team = market.get("away_team", "")
         market_type = market.get("market_type", "spreads")
-        allowed, cur_exp, max_exp = risk.check_game_type_exposure(
+        allowed, cur_exp, max_exp, net_dir = risk.check_game_type_exposure(
             home_team, away_team, market_type)
-        if not allowed:
-            # Cancel existing orders — we're over the cap
-            if ticker in resting_by_ticker:
-                if not DRY_RUN:
-                    for side_key in ["bid_order_id", "ask_order_id"]:
-                        oid = resting_by_ticker[ticker].get(side_key)
-                        if oid:
-                            pending_cancel_ids.append(oid)
-                del resting_by_ticker[ticker]
-            continue
+        # When over cap, only block the side that increases exposure.
+        # If net long (net_dir > 0): block bids (buying YES), allow asks (selling YES).
+        # If net short (net_dir < 0): block asks, allow bids.
+        cap_block_bids = not allowed and net_dir > 0
+        cap_block_asks = not allowed and net_dir < 0
+        if not allowed and net_dir == 0:
+            cap_block_bids = True
+            cap_block_asks = True
 
         # Get current position for inventory skew (uses Kelly's per-cycle cache)
         net = kelly.get_net_position(ticker)
@@ -739,6 +737,12 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
         else:
             bid_size = config.CONTRACT_SIZE
             ask_size = config.CONTRACT_SIZE
+
+        # Apply exposure cap: zero out the side that would increase exposure
+        if cap_block_bids:
+            bid_size = 0
+        if cap_block_asks:
+            ask_size = 0
 
         # Kelly says don't quote either side → skip entirely
         if bid_size <= 0 and ask_size <= 0:

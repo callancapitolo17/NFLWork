@@ -313,7 +313,7 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
             continue
 
         # Hard exposure cap — compute remaining room
-        allowed, cur_exp, max_exp = risk.check_game_type_exposure(
+        allowed, cur_exp, max_exp, _ = risk.check_game_type_exposure(
             home_team or "", away_team or "", market_type)
         exposure_room = max_exp - cur_exp if allowed else 0
         if exposure_room <= 0:
