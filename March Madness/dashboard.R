@@ -88,10 +88,212 @@ raw <- raw %>% mutate(
   total_wins = Round_32 + Sweet_16 + Elite_8 + Final_4 + Title_Game + Champion
 )
 
-cat("Dashboard ready. Starting server...\n")
+cat("Dashboard ready.\n")
 
 # =============================================================================
-# 2. Shiny App
+# 2. Kalshi Edge Finder
+# =============================================================================
+
+KALSHI_BASE <- "https://api.elections.kalshi.com/trade-api/v2"
+TAKER_FEE_RATE <- 0.07
+
+kalshi_request <- function(path) {
+  tryCatch(fromJSON(paste0(KALSHI_BASE, path), simplifyDataFrame = FALSE),
+           error = function(e) { warning(sprintf("Kalshi API: %s", e$message)); NULL })
+}
+
+fetch_kalshi_markets <- function(series_ticker = NULL, event_ticker = NULL) {
+  markets <- list(); cursor <- NULL
+  repeat {
+    path <- "/markets?"
+    if (!is.null(series_ticker)) path <- paste0(path, "series_ticker=", series_ticker, "&")
+    if (!is.null(event_ticker)) path <- paste0(path, "event_ticker=", event_ticker, "&")
+    path <- paste0(path, "status=open&limit=200")
+    if (!is.null(cursor) && nchar(cursor) > 0) path <- paste0(path, "&cursor=", cursor)
+    data <- kalshi_request(path)
+    if (is.null(data)) break
+    batch <- data$markets
+    if (length(batch) == 0) break
+    markets <- c(markets, batch)
+    cursor <- data$cursor
+    if (is.null(cursor) || nchar(cursor) == 0) break
+    Sys.sleep(0.1)
+  }
+  markets
+}
+
+kalshi_fee_cents <- function(price_cents) {
+  p <- price_cents / 100
+  TAKER_FEE_RATE * p * (1 - p) * 100
+}
+
+kalshi_compute_ev <- function(sim_prob, yes_ask_cents, yes_bid_cents) {
+  fair <- sim_prob * 100; no_ask <- 100 - yes_bid_cents
+  yes_fee <- kalshi_fee_cents(yes_ask_cents)
+  yes_edge <- fair - yes_ask_cents - yes_fee
+  yes_ev <- if (yes_ask_cents > 0) yes_edge / yes_ask_cents else -Inf
+  no_fee <- kalshi_fee_cents(no_ask)
+  no_edge <- (100 - fair) - no_ask - no_fee
+  no_ev <- if (no_ask > 0) no_edge / no_ask else -Inf
+  list(yes_ev = yes_ev, no_ev = no_ev, yes_fee = yes_fee, no_fee = no_fee,
+       best_side = if (yes_ev >= no_ev) "YES" else "NO",
+       best_ev = max(yes_ev, no_ev))
+}
+
+# Team name matching: Kalshi title → sim team name
+match_kalshi_team <- function(title, team_probs) {
+  m <- str_match(title, "^Will (.+?) qualify for")
+  if (is.na(m[1,2])) return(NA_character_)
+  kn <- tolower(str_replace_all(m[1,2], "['\\.\\-]", ""))
+  kn <- str_replace_all(kn, "\\bst\\.?\\b", "st")
+  kn <- str_squish(kn)
+  cn <- tolower(str_replace_all(team_probs$team, "['\\.\\-]", ""))
+  cn <- str_replace_all(cn, "\\bst\\.?\\b", "st")
+  cn <- str_squish(cn)
+  idx <- which(cn == kn)
+  if (length(idx) == 1) return(team_probs$team[idx])
+  idx <- which(str_detect(cn, fixed(kn)) | str_detect(kn, cn))
+  if (length(idx) == 1) return(team_probs$team[idx])
+  NA_character_
+}
+
+fetch_all_kalshi_edges <- function(raw, team_probs) {
+  cat("Fetching Kalshi tournament props...\n")
+  library(stringr)
+  all_edges <- tibble()
+
+  # Detect rows per sim
+  first_team <- raw$team[1]
+  n_per_sim <- which(raw$team == first_team)[2] - 1L
+  n_sims_local <- nrow(raw) / n_per_sim
+  raw$sim_id <- rep(1:n_sims_local, each = n_per_sim)
+
+  # --- Round Advancement ---
+  round_events <- list(
+    list(event="KXMARMADROUND-26RO32", col="Round_32", label="Round 32"),
+    list(event="KXMARMADROUND-26S16", col="Sweet_16", label="Sweet 16"),
+    list(event="KXMARMADROUND-26E8", col="Elite_8", label="Elite 8"),
+    list(event="KXMARMADROUND-26F4", col="Final_4", label="Final 4"),
+    list(event="KXMARMADROUND-26T2", col="Title_Game", label="Title Game"))
+
+  for (re in round_events) {
+    markets <- fetch_kalshi_markets(event_ticker = re$event)
+    cat(sprintf("  %s: %d markets\n", re$label, length(markets)))
+    for (m in markets) {
+      sim_team <- match_kalshi_team(m$title %||% "", team_probs)
+      if (is.na(sim_team)) next
+      sim_prob <- team_probs[[re$col]][team_probs$team == sim_team]
+      if (length(sim_prob) == 0) next
+      ya <- round(as.numeric(m$yes_ask_dollars %||% 0) * 100)
+      yb <- round(as.numeric(m$yes_bid_dollars %||% 0) * 100)
+      ev <- kalshi_compute_ev(sim_prob, ya, yb)
+      all_edges <- bind_rows(all_edges, tibble(
+        ticker=m$ticker %||% "", category=paste0("Round: ", re$label),
+        title=m$title %||% "", team=sim_team, sim_prob=sim_prob,
+        yes_ask=ya, yes_bid=yb, yes_fee=ev$yes_fee, no_fee=ev$no_fee,
+        yes_ev=ev$yes_ev, no_ev=ev$no_ev,
+        best_side=ev$best_side, best_ev=ev$best_ev))
+    }
+  }
+
+  # --- Seed-level props helper ---
+  add_seed_props <- function(series, category, compute_fn) {
+    markets <- fetch_kalshi_markets(series_ticker = series)
+    cat(sprintf("  %s: %d markets\n", series, length(markets)))
+    for (m in markets) {
+      fs <- as.numeric(m$floor_strike %||% NA)
+      cs <- as.numeric(m$cap_strike %||% NA)
+      st <- m$strike_type %||% "greater_or_equal"
+      et <- m$event_ticker %||% ""
+      ttl <- m$title %||% ""
+      sp <- compute_fn(raw, fs, cs, st, et, ttl, n_sims_local)
+      if (is.na(sp)) next
+      ya <- round(as.numeric(m$yes_ask_dollars %||% 0) * 100)
+      yb <- round(as.numeric(m$yes_bid_dollars %||% 0) * 100)
+      ev <- kalshi_compute_ev(sp, ya, yb)
+      all_edges <- bind_rows(all_edges, tibble(
+        ticker=m$ticker %||% "", category=category, title=ttl, team=NA_character_,
+        sim_prob=sp, yes_ask=ya, yes_bid=yb, yes_fee=ev$yes_fee, no_fee=ev$no_fee,
+        yes_ev=ev$yes_ev, no_ev=ev$no_ev,
+        best_side=ev$best_side, best_ev=ev$best_ev))
+    }
+    all_edges
+  }
+
+  # Seed Sum
+  all_edges <- add_seed_props("KXMARMADSEEDSUM", "Seed Sum", function(raw, fs, cs, st, et, ttl, ns) {
+    rc <- if (grepl("F4", et)) "Final_4" else if (grepl("T2", et)) "Title_Game" else return(NA_real_)
+    adv <- raw %>% filter(.data[[rc]]==1) %>% group_by(sim_id) %>% summarise(ss=sum(seed), .groups="drop")
+    adv <- tibble(sim_id=1:ns) %>% left_join(adv, by="sim_id") %>% mutate(ss=coalesce(ss, 0L))
+    if (st=="between" && !is.na(cs)) mean(adv$ss>=fs & adv$ss<=cs) else mean(adv$ss>=fs)
+  })
+
+  # Seed Count Per Round
+  all_edges <- add_seed_props("KXMARMADSEEDROUND", "Seed Count", function(raw, fs, cs, st, et, ttl, ns) {
+    sm <- str_match(et, "S(\\d+)"); if (is.na(sm[1,2])) return(NA_real_)
+    ts <- as.integer(sm[1,2])
+    rc <- case_when(grepl("R8",et)~"Elite_8", grepl("R16",et)~"Sweet_16",
+                    grepl("R32",et)~"Round_32", grepl("F4",et)~"Final_4", TRUE~NA_character_)
+    if (is.na(rc)) return(NA_real_)
+    sc <- raw %>% filter(seed==ts, .data[[rc]]==1) %>% group_by(sim_id) %>% summarise(n=n(), .groups="drop")
+    sc <- tibble(sim_id=1:ns) %>% left_join(sc, by="sim_id") %>% mutate(n=coalesce(n, 0L))
+    if (grepl("exactly",ttl,ignore.case=TRUE) || st=="between") mean(sc$n==fs) else mean(sc$n>=fs)
+  })
+
+  # Highest Seed
+  all_edges <- add_seed_props("KXMARMADSEED", "Highest Seed", function(raw, fs, cs, st, et, ttl, ns) {
+    rc <- case_when(grepl("-26R32$",et)~"Round_32", grepl("-26R16$",et)~"Sweet_16",
+                    grepl("-26R8$",et)~"Elite_8", grepl("-26F4$",et)~"Final_4",
+                    grepl("-26$",et)~"Champion", TRUE~NA_character_)
+    if (is.na(rc)) return(NA_real_)
+    ms <- raw %>% filter(.data[[rc]]==1) %>% group_by(sim_id) %>% summarise(mx=max(seed), .groups="drop")
+    ms <- tibble(sim_id=1:ns) %>% left_join(ms, by="sim_id") %>% mutate(mx=coalesce(mx, 0L))
+    if (st=="between" && !is.na(cs)) mean(ms$mx>=fs & ms$mx<=cs)
+    else if (grepl("exactly",ttl,ignore.case=TRUE)) mean(ms$mx==fs) else mean(ms$mx>=fs)
+  })
+
+  # Upsets
+  all_edges <- add_seed_props("KXMARMADUPSET", "Upsets", function(raw, fs, cs, st, et, ttl, ns) {
+    rc <- case_when(grepl("R64",et)~"Round_32", grepl("R32",et)~"Sweet_16",
+                    grepl("R16",et)~"Elite_8", grepl("R8",et)~"Final_4", TRUE~NA_character_)
+    if (is.na(rc)) return(NA_real_)
+    us <- if (rc=="Round_32") 9:16 else if (rc=="Sweet_16") 5:16 else if (rc=="Elite_8") 3:16 else 2:16
+    uc <- raw %>% filter(.data[[rc]]==1, seed %in% us) %>% group_by(sim_id) %>% summarise(n=n(), .groups="drop")
+    uc <- tibble(sim_id=1:ns) %>% left_join(uc, by="sim_id") %>% mutate(n=coalesce(n, 0L))
+    if (grepl("exactly",ttl,ignore.case=TRUE)) mean(uc$n==fs) else mean(uc$n>=fs)
+  })
+
+  # Seed Wins
+  all_edges <- add_seed_props("KXMARMADSEEDWIN", "Seed Wins", function(raw, fs, cs, st, et, ttl, ns) {
+    sm <- str_match(et, "S(\\d+)$")
+    if (!is.na(sm[1,2])) { ts <- as.integer(sm[1,2]) }
+    else { nums <- as.integer(str_extract_all(et, "\\d+")[[1]]); nums <- nums[nums>=10 & nums<=16]
+           if (length(nums)==0) return(NA_real_); ts <- nums }
+    w <- raw %>% filter(seed %in% ts, Round_32==1) %>% group_by(sim_id) %>% summarise(n=n(), .groups="drop")
+    w <- tibble(sim_id=1:ns) %>% left_join(w, by="sim_id") %>% mutate(n=coalesce(n, 0L))
+    if (grepl("exactly",ttl,ignore.case=TRUE)) mean(w$n==fs) else mean(w$n>=fs)
+  })
+
+  all_edges %>% arrange(desc(best_ev))
+}
+
+# Pre-compute team probs for Kalshi matching
+team_probs <- raw %>%
+  group_by(team, seed) %>%
+  summarise(Round_32=mean(Round_32), Sweet_16=mean(Sweet_16), Elite_8=mean(Elite_8),
+            Final_4=mean(Final_4), Title_Game=mean(Title_Game), Champion=mean(Champion),
+            .groups="drop")
+
+# Fetch Kalshi edges at startup
+kalshi_edges <- tryCatch(fetch_all_kalshi_edges(raw, team_probs), error = function(e) {
+  cat(sprintf("Kalshi edge error: %s\n", e$message)); tibble()
+})
+cat(sprintf("Kalshi: %d markets, %d +EV\n", nrow(kalshi_edges), sum(kalshi_edges$best_ev > 0, na.rm=TRUE)))
+
+cat("Starting server...\n")
+
+# =============================================================================
+# 3. Shiny App
 # =============================================================================
 
 prob_to_american <- function(prob) {
@@ -198,7 +400,21 @@ ui <- fluidPage(
       tableOutput("hs_table")
     ),
 
-    # --- Tab 8: Seed Sum by Round ---
+    # --- Tab 8: Kalshi Edges ---
+    tabPanel("Kalshi Edges",
+      br(),
+      fluidRow(
+        column(4, selectInput("ke_category", "Category:",
+          choices = c("All", sort(unique(kalshi_edges$category))), selected = "All")),
+        column(4, selectInput("ke_min_ev", "Min EV%:",
+          choices = c("All", "1%", "3%", "5%", "10%", "15%"), selected = "All")),
+        column(4, actionButton("ke_refresh", "Refresh Kalshi Prices", class = "btn-primary"))
+      ),
+      h4(textOutput("ke_summary")),
+      DT::dataTableOutput("ke_table")
+    ),
+
+    # --- Tab 9: Seed Sum by Round ---
     tabPanel("Seed Sum",
       br(),
       fluidRow(
@@ -521,6 +737,57 @@ server <- function(input, output, session) {
       input$ss_line, p_under*100, prob_to_american(p_under),
       input$ss_line, p_exact*100)
   })
+
+  # --- Kalshi Edges ---
+  ke_data <- reactiveVal(kalshi_edges)
+
+  observeEvent(input$ke_refresh, {
+    showNotification("Refreshing Kalshi prices...", type = "message")
+    new_edges <- tryCatch(fetch_all_kalshi_edges(raw, team_probs), error = function(e) {
+      showNotification(sprintf("Error: %s", e$message), type = "error"); ke_data()
+    })
+    ke_data(new_edges)
+    showNotification(sprintf("Refreshed: %d markets", nrow(new_edges)), type = "message")
+  })
+
+  output$ke_summary <- renderText({
+    d <- ke_data()
+    if (nrow(d) == 0) return("No Kalshi markets found.")
+    pos <- sum(d$best_ev > 0, na.rm = TRUE)
+    best <- if (pos > 0) max(d$best_ev[d$best_ev > 0], na.rm = TRUE) * 100 else 0
+    sprintf("%d markets | %d +EV edges | Best: +%.1f%%", nrow(d), pos, best)
+  })
+
+  output$ke_table <- DT::renderDataTable({
+    d <- ke_data()
+    if (nrow(d) == 0) return(data.frame(Message = "No markets"))
+
+    # Filter by category
+    if (input$ke_category != "All") d <- d %>% filter(category == input$ke_category)
+
+    # Filter by min EV
+    min_ev <- switch(input$ke_min_ev,
+      "1%" = 0.01, "3%" = 0.03, "5%" = 0.05, "10%" = 0.10, "15%" = 0.15, -Inf)
+    d <- d %>% filter(best_ev >= min_ev)
+
+    d %>%
+      transmute(
+        Category = category,
+        Market = title,
+        `Fair` = sprintf("%.1f%%", sim_prob * 100),
+        `YES Ask` = paste0(yes_ask, "\u00A2"),
+        `NO Ask` = paste0(100 - yes_bid, "\u00A2"),
+        `YES Fee` = sprintf("%.1f\u00A2", yes_fee),
+        `NO Fee` = sprintf("%.1f\u00A2", no_fee),
+        `YES EV` = sprintf("%+.1f%%", yes_ev * 100),
+        `NO EV` = sprintf("%+.1f%%", no_ev * 100),
+        Side = best_side,
+        `Best EV` = sprintf("%+.1f%%", best_ev * 100),
+        .sort_ev = best_ev
+      ) %>%
+      arrange(desc(.sort_ev)) %>%
+      select(-.sort_ev)
+  }, options = list(pageLength = 50))
 }
 
 shinyApp(ui, server, options = list(port = 8085, host = "0.0.0.0", launch.browser = TRUE))
