@@ -286,8 +286,9 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
     if resting_by_ticker is None:
         resting_by_ticker = {}
 
-    # Clear per-cycle Kelly position cache
+    # Clear per-cycle caches
     kelly.clear_positions_cache()
+    risk.clear_exposure_cache()
 
     # Staleness check (safety — don't trade on stale predictions)
     is_fresh, pred_age = risk.check_staleness(prediction_updated_at)
