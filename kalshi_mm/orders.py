@@ -214,15 +214,15 @@ def batch_place(order_specs):
 
 
 def batch_cancel(order_ids):
-    """Cancel multiple orders in one API call (0.2 rate limit units each).
+    """Cancel multiple orders in batches of 20.
 
-    Args:
-        order_ids: List of order IDs to cancel (max 20)
+    Returns set of order IDs from successful chunks. Continues on chunk
+    failure so partial success is usable by callers.
     """
     if not order_ids:
-        return True
+        return set()
 
-    # Batch cancel up to 20 at a time (0.2 units each = 4 units per batch)
+    cancelled = set()
     for i in range(0, len(order_ids), 20):
         if i > 0:
             time.sleep(2)
@@ -231,9 +231,10 @@ def batch_cancel(order_ids):
         result = _authenticated_request("DELETE", "/portfolio/orders/batched", body=body)
         if result is None:
             print(f"  Warning: batch cancel failed for {len(batch)} orders")
-            return False
-        print(f"  Batch cancelled {len(batch)} orders")
-    return True
+        else:
+            cancelled.update(batch)
+            print(f"  Batch cancelled {len(batch)} orders")
+    return cancelled
 
 
 def get_order(order_id):
@@ -273,4 +274,8 @@ def cancel_all_orders():
 
     order_ids = [o["order_id"] for o in orders]
     print(f"  KILL SWITCH: Cancelling {len(order_ids)} orders...")
-    return batch_cancel(order_ids)
+    cancelled = batch_cancel(order_ids)
+    if len(cancelled) < len(order_ids):
+        print(f"  WARNING: Kill switch only cancelled {len(cancelled)}/{len(order_ids)}")
+        return False
+    return True

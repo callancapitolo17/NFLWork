@@ -819,8 +819,8 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
 
     # --- Batch cancel collected order IDs ---
     if pending_cancel_ids:
-        orders.batch_cancel(pending_cancel_ids)
-        for oid in pending_cancel_ids:
+        cancelled = orders.batch_cancel(pending_cancel_ids)
+        for oid in cancelled:
             db.remove_resting_order(oid)
 
     # --- Batch place collected new orders ---
@@ -860,7 +860,7 @@ def sweep_tipoff_cancel(resting_by_ticker):
     Only removes tracking after confirmed cancel to prevent orphaned orders.
     """
     cancel_ids = []
-    tickers_to_remove = []
+    oid_to_ticker = {}  # map order ID → ticker for partial-success cleanup
     for ticker, info in list(resting_by_ticker.items()):
         ct = info.get("_commence_time")
         if not risk.check_tipoff_proximity(ct):
@@ -869,26 +869,34 @@ def sweep_tipoff_cancel(resting_by_ticker):
                 oid = info.get(side_key)
                 if oid:
                     cancel_ids.append(oid)
-            tickers_to_remove.append(ticker)
+                    oid_to_ticker[oid] = ticker
 
-    if not tickers_to_remove:
+    if not cancel_ids:
         return
 
     if DRY_RUN:
-        for ticker in tickers_to_remove:
+        for ticker in set(oid_to_ticker.values()):
             del resting_by_ticker[ticker]
-        print(f"  Tipoff-cancelled {len(tickers_to_remove)} tickers (dry run)")
+        print(f"  Tipoff-cancelled {len(oid_to_ticker)} orders (dry run)")
         return
 
-    success = orders.batch_cancel(cancel_ids)
-    if success:
-        for oid in cancel_ids:
-            db.remove_resting_order(oid)
-        for ticker in tickers_to_remove:
-            del resting_by_ticker[ticker]
-        print(f"  Tipoff-cancelled {len(tickers_to_remove)} tickers")
-    else:
-        print(f"  WARNING: Tipoff cancel failed for {len(cancel_ids)} orders — will retry next sweep")
+    cancelled = orders.batch_cancel(cancel_ids)
+    for oid in cancelled:
+        db.remove_resting_order(oid)
+    # Remove ticker only if ALL its orders were cancelled
+    cancelled_tickers = set()
+    failed_tickers = set()
+    for oid, ticker in oid_to_ticker.items():
+        if oid in cancelled:
+            cancelled_tickers.add(ticker)
+        else:
+            failed_tickers.add(ticker)
+    for ticker in cancelled_tickers - failed_tickers:
+        del resting_by_ticker[ticker]
+    if cancelled:
+        print(f"  Tipoff-cancelled {len(cancelled_tickers - failed_tickers)} tickers")
+    if failed_tickers:
+        print(f"  WARNING: Tipoff cancel failed for {len(failed_tickers)} tickers — will retry next sweep")
 
 
 def poll_for_fills(resting_by_ticker, quotable_markets_ref=None):
@@ -1216,7 +1224,7 @@ def main():
                             print(f"  {len(moved_set)} games with line moves — pulling quotes, triggering refresh")
                             # Batch cancel orders for moved games
                             cancel_ids = []
-                            tickers_to_remove = []
+                            oid_to_ticker = {}
                             for ticker, info in list(resting_by_ticker.items()):
                                 game = (info.get("_home_team"), info.get("_away_team"))
                                 if game in moved_set:
@@ -1224,18 +1232,24 @@ def main():
                                         oid = info.get(side_key)
                                         if oid:
                                             cancel_ids.append(oid)
-                                    tickers_to_remove.append(ticker)
+                                            oid_to_ticker[oid] = ticker
                             if cancel_ids and not DRY_RUN:
-                                success = orders.batch_cancel(cancel_ids)
-                                if success:
-                                    for oid in cancel_ids:
-                                        db.remove_resting_order(oid)
-                                    for ticker in tickers_to_remove:
-                                        del resting_by_ticker[ticker]
-                                else:
-                                    print(f"  WARNING: Line-move cancel failed for {len(cancel_ids)} orders — will retry")
+                                cancelled = orders.batch_cancel(cancel_ids)
+                                for oid in cancelled:
+                                    db.remove_resting_order(oid)
+                                cancelled_tickers = set()
+                                failed_tickers = set()
+                                for oid, ticker in oid_to_ticker.items():
+                                    if oid in cancelled:
+                                        cancelled_tickers.add(ticker)
+                                    else:
+                                        failed_tickers.add(ticker)
+                                for ticker in cancelled_tickers - failed_tickers:
+                                    del resting_by_ticker[ticker]
+                                if failed_tickers:
+                                    print(f"  WARNING: Line-move cancel failed for {len(failed_tickers)} tickers — will retry")
                             elif DRY_RUN:
-                                for ticker in tickers_to_remove:
+                                for ticker in set(oid_to_ticker.values()):
                                     del resting_by_ticker[ticker]
                             # Trigger immediate pipeline refresh
                             start_pipeline()
