@@ -46,10 +46,46 @@ def get_net_position(ticker):
     return 0
 
 
-def clear_sample_cache():
-    """Clear cached samples (call on pipeline refresh)."""
+def prewarm_sample_cache():
+    """Bulk-load all game samples into cache in one query.
+
+    Replaces clear_sample_cache() — clears stale data and reloads fresh.
+    Called at startup and after prediction refresh to avoid cold-cache
+    Kelly cycles (~15 min → seconds).
+    """
     _sample_cache.clear()
-    log.info("Kelly sample cache cleared")
+    try:
+        con = duckdb.connect(str(CBB_DB_PATH), read_only=True)
+        try:
+            result = con.execute(
+                "SELECT game_id, home_margin_h1, total_h1 "
+                "FROM cbb_game_samples ORDER BY game_id, sim_idx"
+            ).fetchall()
+        finally:
+            con.close()
+
+        if not result:
+            log.info("Sample cache prewarm: no samples found")
+            return 0
+
+        # Group rows by game_id
+        from itertools import groupby
+        from operator import itemgetter
+        for game_id, rows in groupby(result, key=itemgetter(0)):
+            data = [(r[1], r[2]) for r in rows]
+            _sample_cache[game_id] = np.array(data, dtype=np.float64)
+
+        log.info("Sample cache prewarmed: %d games", len(_sample_cache))
+        return len(_sample_cache)
+
+    except Exception as e:
+        log.warning("Sample cache prewarm failed: %s", e)
+        return 0
+
+
+def clear_sample_cache():
+    """Clear and reload sample cache. Alias for prewarm_sample_cache()."""
+    return prewarm_sample_cache()
 
 
 def load_game_samples(game_id):

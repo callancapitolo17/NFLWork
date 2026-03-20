@@ -36,6 +36,12 @@ Kelly sizes are pre-computed for all markets grouped by game before the main quo
 ### Taker Cooldowns
 The taker uses a simple 10s per-ticker tactical cooldown to prevent hammering the same contract. Cross-market correlation (same game, same event) is handled entirely by Kelly conditional sizing — `kelly.clear_positions_cache()` is called after each fill so subsequent takes see updated positions. No event-level or game-level cooldowns.
 
+### Sample Cache Pre-warm
+At startup and after every prediction refresh, `kelly.prewarm_sample_cache()` bulk-loads all game simulation samples in one DuckDB query (~15K rows, <1MB). This eliminates the ~15 min cold-cache Kelly cycle on first boot. `clear_sample_cache()` is now an alias that clears and reloads.
+
+### Prediction Auto-Reload
+The main loop checks `cbb_prediction_meta.updated_at` every 30s. If predictions were updated externally (manual pipeline run, cron), the bot reloads predictions, re-matches markets, and rewarms the sample cache — no restart needed.
+
 ### Kalshi API Auth
 Uses `KALSHI_API_KEY` and `KALSHI_PRIVATE_KEY` from `.env`. Keys are RSA — the private key file path goes in `.env`.
 

@@ -182,6 +182,24 @@ def _safe_float(val):
     return val
 
 
+def get_prediction_timestamp():
+    """Check when predictions were last updated (lightweight — 1 row read)."""
+    db_path = str(CBB_DB_PATH)
+    if not Path(db_path).exists():
+        return None
+    try:
+        conn = duckdb.connect(db_path, read_only=True)
+        try:
+            meta = conn.execute(
+                "SELECT updated_at FROM cbb_prediction_meta LIMIT 1"
+            ).fetchone()
+            return meta[0] if meta else None
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
 def load_predictions():
     """Load raw predictions from the answer key's DuckDB."""
     db_path = str(CBB_DB_PATH)
