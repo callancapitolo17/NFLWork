@@ -352,7 +352,15 @@ ui <- fluidPage(
       DT::dataTableOutput("team_table")
     ),
 
-    # --- Tab 2: Seed Props ---
+    # --- Tab 2: Survivor Pool ---
+    tabPanel("Survivor",
+      br(),
+      h4("Survivor Value = P(win this round) × (1 - avg P(future rounds))"),
+      p("High value = safe pick now that you won't need later. Sorted by Survivor Value."),
+      DT::dataTableOutput("survivor_table")
+    ),
+
+    # --- Tab 3: Seed Props ---
     tabPanel("Seed Props",
       br(),
       fluidRow(
@@ -479,6 +487,34 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
+
+  # --- Survivor Pool ---
+  output$survivor_table <- DT::renderDataTable({
+    # Determine remaining round columns
+    all_rounds <- c("Round_32", "Sweet_16", "Elite_8", "Final_4", "Title_Game", "Champion")
+    sim_rounds <- intersect(all_rounds, names(raw))
+    # Only include rounds that aren't 100% for all teams (i.e. still being simulated)
+    active_rounds <- sim_rounds[sapply(sim_rounds, function(r) mean(raw[[r]]) < 1)]
+    if (length(active_rounds) == 0) active_rounds <- sim_rounds
+
+    raw %>%
+      filter(!team %in% eliminated) %>%
+      group_by(team, seed, region) %>%
+      summarise(across(all_of(active_rounds), mean), .groups = "drop") %>%
+      {
+        df <- .
+        p_current <- df[[active_rounds[1]]]
+        future_rounds <- active_rounds[-1]
+        f_future <- if (length(future_rounds) > 0) rowMeans(df[, future_rounds, drop = FALSE]) else 0
+        df$`Survivor Value` <- round(p_current * (1 - f_future), 3)
+        df$Rank <- min_rank(-df$`Survivor Value`)
+        # Format round columns as percentages
+        for (r in active_rounds) df[[r]] <- sprintf("%.1f%%", df[[r]] * 100)
+        df
+      } %>%
+      arrange(Rank) %>%
+      select(Rank, team, seed, region, all_of(active_rounds), `Survivor Value`)
+  }, options = list(pageLength = 25))
 
   # --- Team Advancement ---
   output$team_table <- DT::renderDataTable({
