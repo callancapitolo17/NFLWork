@@ -857,23 +857,38 @@ def sweep_tipoff_cancel(resting_by_ticker):
 
     Runs every quote cycle, independent of quotable_markets.
     Uses _commence_time stored on each resting order entry.
+    Only removes tracking after confirmed cancel to prevent orphaned orders.
     """
-    cancelled = []
+    cancel_ids = []
+    tickers_to_remove = []
     for ticker, info in list(resting_by_ticker.items()):
         ct = info.get("_commence_time")
         if not risk.check_tipoff_proximity(ct):
             print(f"  TIPOFF CANCEL: {ticker} (commence={ct})")
-            if not DRY_RUN:
-                for side_key in ["bid_order_id", "ask_order_id"]:
-                    oid = info.get(side_key)
-                    if oid:
-                        orders.cancel_order(oid)
-                        db.remove_resting_order(oid)
-            del resting_by_ticker[ticker]
-            cancelled.append(ticker)
+            for side_key in ["bid_order_id", "ask_order_id"]:
+                oid = info.get(side_key)
+                if oid:
+                    cancel_ids.append(oid)
+            tickers_to_remove.append(ticker)
 
-    if cancelled:
-        print(f"  Tipoff-cancelled {len(cancelled)} tickers")
+    if not tickers_to_remove:
+        return
+
+    if DRY_RUN:
+        for ticker in tickers_to_remove:
+            del resting_by_ticker[ticker]
+        print(f"  Tipoff-cancelled {len(tickers_to_remove)} tickers (dry run)")
+        return
+
+    success = orders.batch_cancel(cancel_ids)
+    if success:
+        for oid in cancel_ids:
+            db.remove_resting_order(oid)
+        for ticker in tickers_to_remove:
+            del resting_by_ticker[ticker]
+        print(f"  Tipoff-cancelled {len(tickers_to_remove)} tickers")
+    else:
+        print(f"  WARNING: Tipoff cancel failed for {len(cancel_ids)} orders — will retry next sweep")
 
 
 def poll_for_fills(resting_by_ticker, quotable_markets_ref=None):
@@ -1131,7 +1146,6 @@ def main():
                     if new_preds and new_ts != prediction_updated_at:
                         predictions = new_preds
                         prediction_updated_at = new_ts
-                        taker.clear_cooldowns()  # Fresh predictions → fresh taker signals
                         kelly.clear_sample_cache()  # Reload samples with new predictions
 
                     # Re-fetch Kalshi markets + re-match (all enabled types)
@@ -1198,18 +1212,25 @@ def main():
                     if current_lines and ref_lines:
                         moved = risk.detect_line_moves(current_lines, ref_lines)
                         if moved:
-                            print(f"  {len(moved)} games with line moves — pulling quotes, triggering refresh")
-                            # Pull quotes for moved games
+                            moved_set = set(moved)
+                            print(f"  {len(moved_set)} games with line moves — pulling quotes, triggering refresh")
+                            # Batch cancel orders for moved games
+                            cancel_ids = []
+                            tickers_to_remove = []
                             for ticker, info in list(resting_by_ticker.items()):
-                                market = next((m for m in quotable if m["ticker"] == ticker), None)
-                                if market and (market["home_team"], market["away_team"]) in moved:
-                                    if not DRY_RUN:
-                                        for side_key in ["bid_order_id", "ask_order_id"]:
-                                            oid = info.get(side_key)
-                                            if oid:
-                                                orders.cancel_order(oid)
-                                                db.remove_resting_order(oid)
-                                    del resting_by_ticker[ticker]
+                                game = (info.get("_home_team"), info.get("_away_team"))
+                                if game in moved_set:
+                                    for side_key in ["bid_order_id", "ask_order_id"]:
+                                        oid = info.get(side_key)
+                                        if oid:
+                                            cancel_ids.append(oid)
+                                    tickers_to_remove.append(ticker)
+                            if cancel_ids and not DRY_RUN:
+                                orders.batch_cancel(cancel_ids)
+                                for oid in cancel_ids:
+                                    db.remove_resting_order(oid)
+                            for ticker in tickers_to_remove:
+                                del resting_by_ticker[ticker]
                             # Trigger immediate pipeline refresh
                             start_pipeline()
                 except Exception as e:
