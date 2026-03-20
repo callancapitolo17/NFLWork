@@ -926,11 +926,15 @@ def poll_for_fills(resting_by_ticker, quotable_markets_ref=None):
             if oid:
                 tracked_oids.add(oid)
 
+    phantom_ids = []
     for api_order in api_orders:
         oid = api_order["order_id"]
         if oid not in tracked_oids:
-            print(f"  PHANTOM ORDER detected: {oid} — cancelling")
-            orders.cancel_order(oid)
+            print(f"  PHANTOM ORDER detected: {oid}")
+            phantom_ids.append(oid)
+    if phantom_ids:
+        print(f"  Batch cancelling {len(phantom_ids)} phantom orders...")
+        orders.batch_cancel(phantom_ids)
 
     for ticker, info in list(resting_by_ticker.items()):
         for side_key, side in [("bid_order_id", "yes"), ("ask_order_id", "no")]:

@@ -49,7 +49,7 @@ MAX_STALENESS_SEC = int(_env.get("MAX_STALENESS_SEC", "600"))
 MIN_QUOTE_SPREAD_CENTS = int(_env.get("MIN_QUOTE_SPREAD", "4"))
 MIN_FAIR_VALUE = 10  # Don't quote if fair_yes < 10 cents
 MAX_FAIR_VALUE = 90  # Don't quote if fair_yes > 90 cents
-TIPOFF_PULLBACK_MIN = 1  # Cancel all orders & stop quoting/taking this many min before tipoff
+TIPOFF_PULLBACK_MIN = 5  # Cancel all orders & stop quoting/taking this many min before tipoff
 
 # --- Line Move Monitoring ---
 LINE_MOVE_THRESHOLD = float(_env.get("LINE_MOVE_THRESHOLD", "0.5"))

@@ -246,15 +246,31 @@ def get_order(order_id):
 
 
 def get_resting_orders(ticker=None):
-    """Get all resting orders, optionally filtered by ticker."""
-    path = "/portfolio/orders?status=resting&limit=200"
-    if ticker:
-        path += f"&ticker={ticker}"
+    """Get all resting orders, optionally filtered by ticker.
 
-    result = _authenticated_request("GET", path)
-    if result and "orders" in result:
-        return result["orders"]
-    return []
+    Paginates through all pages — Kalshi returns max 200 per request.
+    """
+    all_orders = []
+    cursor = None
+    while True:
+        path = "/portfolio/orders?status=resting&limit=200"
+        if ticker:
+            path += f"&ticker={ticker}"
+        if cursor:
+            path += f"&cursor={cursor}"
+
+        result = _authenticated_request("GET", path)
+        if not result or "orders" not in result:
+            break
+
+        page = result["orders"]
+        all_orders.extend(page)
+
+        cursor = result.get("cursor")
+        if not cursor or len(page) < 200:
+            break
+
+    return all_orders
 
 
 def get_positions():
