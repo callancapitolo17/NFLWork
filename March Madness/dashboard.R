@@ -31,7 +31,8 @@ bwr <- fetch_bracket_with_ratings(fb, ts)
 bracket_64 <- as.data.frame(resolve_first_four(bwr, br$games))
 region_order <- get_region_order(bracket_64)
 
-# Dynamic bracket: remove eliminated teams, mark winners as "advanced"
+# Keep full 64-team bracket to preserve positional pairings.
+# Eliminated teams get status="eliminated" and will always lose.
 games_played <- br$games
 completed_games <- games_played %>%
   filter(status == "final", round != "First Four", !is.na(winner))
@@ -43,10 +44,13 @@ eliminated <- completed_games %>%
 advanced_teams <- completed_games %>% pull(winner) %>% unique()
 
 current_bracket <- bracket_64 %>%
-  filter(!team %in% eliminated) %>%
-  mutate(status = ifelse(team %in% advanced_teams, "advanced", "pending"))
+  mutate(status = case_when(
+    team %in% eliminated ~ "eliminated",
+    team %in% advanced_teams ~ "advanced",
+    TRUE ~ "pending"
+  ))
 
-n_remaining <- nrow(current_bracket)
+n_remaining <- sum(current_bracket$status != "eliminated")
 tourney_state <- br$tournament_state
 cat(sprintf("Tournament: %s | Round: %s | %d teams remaining (%d advanced)\n",
             tourney_state$state, tourney_state$current_round %||% "N/A",
@@ -72,7 +76,12 @@ t0 <- Sys.time()
 cb_ratings <- ifelse(is.na(current_bracket$composite_rating), 0, current_bracket$composite_rating)
 cb_seeds <- as.integer(current_bracket$seed)
 cb_region_idx <- as.integer(match(current_bracket$region, region_order))
-cb_status <- as.integer(ifelse(current_bracket$status == "advanced", 1L, 0L))
+# Status: 0=pending, 1=advanced, 2=eliminated
+cb_status <- as.integer(case_when(
+  current_bracket$status == "advanced" ~ 1L,
+  current_bracket$status == "eliminated" ~ 2L,
+  TRUE ~ 0L
+))
 seed_order_vec <- as.integer(c(1,16,8,9,5,12,4,13,6,11,3,14,7,10,2,15))
 region_order_vec <- seq_along(region_order)
 round_names <- get_remaining_rounds(n_remaining)
@@ -474,6 +483,7 @@ server <- function(input, output, session) {
   # --- Team Advancement ---
   output$team_table <- DT::renderDataTable({
     raw %>%
+      filter(!team %in% eliminated) %>%
       group_by(team, seed, region) %>%
       summarise(
         R32 = sprintf("%.1f%%", mean(Round_32)*100),

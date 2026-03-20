@@ -87,9 +87,13 @@ IntegerMatrix simulate_tournament_cpp(
       for (int g = 0; g < n_games; g++) {
         int i1 = 2 * g, i2 = 2 * g + 1;
 
-        // Auto-advance logic
-        if (statuses[i1] == 1 && statuses[i2] == 0) {
-          winners[g] = i1;
+        // Auto-advance logic: 0=pending, 1=advanced, 2=eliminated
+        if (statuses[i2] == 2) {
+          winners[g] = i1;  // opponent eliminated
+        } else if (statuses[i1] == 2) {
+          winners[g] = i2;  // this team eliminated
+        } else if (statuses[i1] == 1 && statuses[i2] == 0) {
+          winners[g] = i1;  // advanced vs pending
         } else if (statuses[i2] == 1 && statuses[i1] == 0) {
           winners[g] = i2;
         } else {
