@@ -59,57 +59,74 @@ conf_map <- tryCatch({
     select(team, conference) %>% distinct(team, .keep_all = TRUE)
 }, error = function(e) NULL)
 
-# Dynamic round sim: auto-advance teams whose opponent is eliminated
-simulate_round_dynamic <- function(teams, game_number = 1, region_order_auto = NULL) {
-  teams_ordered <- get_bracket_matchups(teams, region_order_auto)
-  team_pairs <- split(teams_ordered, rep(1:(nrow(teams_ordered)/2), each = 2))
-  winners <- map(team_pairs, function(pair) {
-    if (all(pair$status == "advanced")) { pair[1, ] }
-    else if (any(pair$status == "advanced") && any(pair$status == "pending")) {
-      pair %>% filter(status == "advanced") %>% slice(1)
-    } else { simulate_game(pair[1, ], pair[2, ], game_number)$winner }
-  })
-  bind_rows(winners)
-}
+# Fast vectorized sim with dynamic bracket support.
+# Uses vectorized rnorm for all games per round (like simulate_tournament_fast)
+# but auto-advances teams whose opponent was eliminated.
+sim_one_fast <- function() {
+  df <- current_bracket
+  all_teams <- df$team; all_seeds <- df$seed; n_all <- length(all_teams)
+  round_names <- get_remaining_rounds(n_all)
+  progress <- matrix(0L, nrow = n_all, ncol = length(round_names))
+  seed_order <- c(1,16,8,9,5,12,4,13,6,11,3,14,7,10,2,15)
 
-simulate_remaining <- function(bracket, region_order_auto = NULL) {
-  if (is.null(region_order_auto)) region_order_auto <- get_region_order(bracket)
-  round_names <- get_remaining_rounds(nrow(bracket))
-  team_progress <- bracket %>% select(team, seed)
-  for (r in round_names) team_progress[[r]] <- 0
-  round_num <- 1; teams_round <- bracket
-  while (nrow(teams_round) > 1) {
-    teams_round <- simulate_round_dynamic(teams_round, game_number = round_num, region_order_auto = region_order_auto)
-    if (round_num <= length(round_names)) {
-      rn <- round_names[round_num]
-      team_progress <- team_progress %>%
-        mutate("{rn}" := ifelse(team %in% teams_round$team, 1, .data[[rn]]))
-    }
+  teams <- df$team; seeds <- df$seed; regions <- df$region
+  statuses <- df$status
+  ratings <- ifelse(is.na(df$composite_rating), 0, df$composite_rating)
+  n <- length(teams); round_num <- 1
+
+  while (n > 1) {
+    # Order teams by bracket position
+    if (n == 4) {
+      reg_idx <- match(regions, region_order); ord <- order(reg_idx); ord <- ord[c(1,3,2,4)]
+    } else if (n == 2) { ord <- 1:2
+    } else { seed_pos <- match(seeds, seed_order); ord <- order(match(regions, region_order), seed_pos) }
+
+    teams <- teams[ord]; seeds <- seeds[ord]; regions <- regions[ord]
+    ratings <- ratings[ord]; statuses <- statuses[ord]
+
+    n_games <- n %/% 2; i1 <- seq(1,n,by=2); i2 <- seq(2,n,by=2)
+
+    # Vectorized game sim
+    expected_diff <- ratings[i1] - ratings[i2]
+    actual_margin <- rnorm(n_games, mean = expected_diff, sd = 11.2)
+    sim_winners <- ifelse(actual_margin > 0, i1, i2)
+
+    # Override: if one team is "advanced" and opponent is "pending", advanced wins
+    s1 <- statuses[i1]; s2 <- statuses[i2]
+    w <- ifelse(s1 == "advanced" & s2 == "pending", i1,
+         ifelse(s2 == "advanced" & s1 == "pending", i2,
+                sim_winners))
+
+    teams <- teams[w]; seeds <- seeds[w]; regions <- regions[w]
+    ratings <- ratings[w] + rnorm(n_games, 0, 0.17)
+    statuses <- rep("pending", n_games)  # after first round, all are pending
+    n <- length(teams)
+
+    col <- min(round_num, length(round_names))
+    progress[match(teams, all_teams), col] <- 1L
     round_num <- round_num + 1
   }
-  team_progress
-}
 
-# Standardize column names (Dynamic Sim uses spaces, dashboard expects underscores)
-standardize_cols <- function(df) {
+  result <- data.frame(team=all_teams, seed=all_seeds, stringsAsFactors=FALSE)
+  # Map round_names (with spaces) to standard column names (with underscores)
   name_map <- c("Round 32"="Round_32", "Sweet 16"="Sweet_16", "Elite 8"="Elite_8",
-                "Final 4"="Final_4", "Title Game"="Title_Game")
-  for (old in names(name_map)) {
-    if (old %in% names(df)) names(df)[names(df) == old] <- name_map[old]
+                "Final 4"="Final_4", "Title Game"="Title_Game", "Champion"="Champion")
+  for (i in seq_along(round_names)) {
+    std <- name_map[round_names[i]]
+    if (!is.na(std)) result[[std]] <- progress[, i]
   }
-  # Add any missing round columns as 1 (team already passed those rounds)
+  # Earlier rounds that are complete: all surviving teams passed them
   for (r in c("Round_32", "Sweet_16", "Elite_8", "Final_4", "Title_Game", "Champion")) {
-    if (!r %in% names(df)) df[[r]] <- 1L
+    if (!r %in% names(result)) result[[r]] <- 1L
   }
-  df
+  result
 }
 
-n_sims <- 10000
+n_sims <- 50000
 cat(sprintf("Running %dk simulations (%d teams)...\n", n_sims/1000, n_remaining))
 t0 <- Sys.time()
 raw <- map_dfr(1:n_sims, function(i) {
-  r <- simulate_remaining(current_bracket, region_order)
-  r <- standardize_cols(r)
+  r <- sim_one_fast()
   r$region <- current_bracket$region[match(r$team, current_bracket$team)]
   r$sim_id <- i
   r
