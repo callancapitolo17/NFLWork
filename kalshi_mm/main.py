@@ -11,6 +11,7 @@ Usage:
     python main.py --dry-run    # Compute quotes but don't place orders
 """
 
+import duckdb
 import random
 import subprocess
 import sys
@@ -820,12 +821,12 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
     # --- Batch cancel collected order IDs ---
     if pending_cancel_ids:
         cancelled = orders.batch_cancel(pending_cancel_ids)
-        for oid in cancelled:
-            db.remove_resting_order(oid)
+        db.batch_remove_resting_orders(cancelled)
 
     # --- Batch place collected new orders ---
     if pending_placements:
         results = orders.batch_place(pending_placements)
+        db_specs = []
         for spec, result in zip(pending_placements, results):
             if not result:
                 continue
@@ -837,14 +838,18 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
             if spec["_side_key"] == "bid":
                 existing["bid_order_id"] = oid
                 existing["bid_price"] = spec["price"]
-                db.save_resting_order(oid, ticker, "yes", "buy",
-                                      spec["price"], spec["count"])
+                db_specs.append({"order_id": oid, "ticker": ticker, "side": "yes",
+                                 "action": "buy", "price": spec["price"], "count": spec["count"]})
             else:  # ask
                 existing["ask_order_id"] = oid
                 existing["ask_price"] = spec.get("_ask_yes", 100 - spec["price"])
-                db.save_resting_order(oid, ticker, "no", "buy",
-                                      spec["price"], spec["count"])
+                db_specs.append({"order_id": oid, "ticker": ticker, "side": "no",
+                                 "action": "buy", "price": spec["price"], "count": spec["count"]})
             resting_by_ticker[ticker] = existing
+        db.batch_save_resting_orders(db_specs)
+
+    # Flush buffered quote logs in one write
+    db.flush_quote_log()
 
     print(f"  Quoting {quoted_count} tickers across {len(quoted_events)} games (exposure: ${exposure:.2f})")
     if pending_placements:
@@ -881,8 +886,7 @@ def sweep_tipoff_cancel(resting_by_ticker):
         return
 
     cancelled = orders.batch_cancel(cancel_ids)
-    for oid in cancelled:
-        db.remove_resting_order(oid)
+    db.batch_remove_resting_orders(cancelled)
     # Remove ticker only if ALL its orders were cancelled
     cancelled_tickers = set()
     failed_tickers = set()
@@ -1249,6 +1253,9 @@ def main():
                     sweep_tipoff_cancel(resting_by_ticker)  # Cancel orders near tipoff
                     print(f"\n--- Quote cycle @ {datetime.now().strftime('%H:%M:%S')} ---")
                     resting_by_ticker = run_quote_cycle(quotable, resting_by_ticker, prediction_updated_at)
+                except duckdb.Error as e:
+                    print(f"  Quote cycle DB error — resetting connection: {e}")
+                    db._reset_write_conn()
                 except Exception as e:
                     print(f"  Quote cycle error (will retry next cycle): {e}")
                 last_quote_time = now
@@ -1278,8 +1285,7 @@ def main():
                                             oid_to_ticker[oid] = ticker
                             if cancel_ids and not DRY_RUN:
                                 cancelled = orders.batch_cancel(cancel_ids)
-                                for oid in cancelled:
-                                    db.remove_resting_order(oid)
+                                db.batch_remove_resting_orders(cancelled)
                                 cancelled_tickers = set()
                                 failed_tickers = set()
                                 for oid, ticker in oid_to_ticker.items():
@@ -1348,6 +1354,8 @@ def main():
         except Exception as e:
             print(f"  Shutdown DB error (non-fatal): {e}")
             print(f"  Session {SESSION_ID}: {TOTAL_FILLS} fills, ${TOTAL_FEES:.2f} fees")
+        finally:
+            db.close_write_conn()
 
 
 if __name__ == "__main__":
