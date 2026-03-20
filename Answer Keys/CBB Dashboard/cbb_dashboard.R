@@ -1,6 +1,5 @@
 # CBB +EV Betting Dashboard
 # Bets tab with filtering, Kelly sizing, bet placement, and correlation detection
-# Kalshi Edges tab with tournament prop edge finding
 
 suppressPackageStartupMessages({
   library(tidyverse)
@@ -510,116 +509,10 @@ create_bets_table <- function(all_bets, placed_bets) {
 }
 
 # =============================================================================
-# KALSHI EDGES TABLE
-# =============================================================================
-
-create_kalshi_edges_table <- function(edges) {
-  if (nrow(edges) == 0) return(NULL)
-
-  table_data <- edges %>%
-    mutate(
-      sim_pct = sprintf("%.1f%%", sim_prob * 100),
-      yes_ask_display = paste0(yes_ask, "\u00A2"),
-      no_ask_display = paste0(100 - yes_bid, "\u00A2"),
-      yes_ev_display = sprintf("%+.1f%%", yes_ev_pct * 100),
-      no_ev_display = sprintf("%+.1f%%", no_ev_pct * 100),
-      best_ev_display = sprintf("%+.1f%%", best_ev_pct * 100),
-      yes_fee_display = sprintf("%.1f\u00A2", yes_fee),
-      no_fee_display = sprintf("%.1f\u00A2", no_fee)
-    )
-
-  reactable(
-    table_data,
-    searchable = TRUE,
-    filterable = TRUE,
-    defaultPageSize = 50,
-    showPageSizeOptions = TRUE,
-    pageSizeOptions = c(25, 50, 100, 200),
-    striped = TRUE,
-    highlight = TRUE,
-    compact = TRUE,
-    defaultSorted = list(best_ev_pct = "desc"),
-    columns = list(
-      sim_prob = colDef(show = FALSE),
-      yes_ask = colDef(show = FALSE),
-      yes_bid = colDef(show = FALSE),
-      yes_fee = colDef(show = FALSE),
-      no_fee = colDef(show = FALSE),
-      yes_ev_pct = colDef(show = FALSE),
-      no_ev_pct = colDef(show = FALSE),
-      best_ev_pct = colDef(show = FALSE),
-      yes_edge = colDef(show = FALSE),
-      no_edge = colDef(show = FALSE),
-      team = colDef(show = FALSE),
-      ticker = colDef(name = "Ticker", minWidth = 180, style = list(fontFamily = "monospace", fontSize = "0.8rem")),
-      category = colDef(name = "Category", minWidth = 110, filterable = TRUE),
-      title = colDef(name = "Market", minWidth = 280),
-      sim_pct = colDef(name = "Fair", minWidth = 60, align = "right",
-        style = list(fontWeight = "600", color = "#58a6ff")),
-      yes_ask_display = colDef(name = "YES Ask", minWidth = 65, align = "right"),
-      no_ask_display = colDef(name = "NO Ask", minWidth = 65, align = "right"),
-      yes_fee_display = colDef(name = "YES Fee", minWidth = 60, align = "right",
-        style = list(color = "#8b949e", fontSize = "0.8rem")),
-      no_fee_display = colDef(name = "NO Fee", minWidth = 60, align = "right",
-        style = list(color = "#8b949e", fontSize = "0.8rem")),
-      yes_ev_display = colDef(name = "YES EV", minWidth = 70, align = "right",
-        cell = function(value, index) {
-          ev <- table_data$yes_ev_pct[index]
-          color <- if (ev > 0.15) "#3fb950" else if (ev > 0.10) "#56d364"
-                   else if (ev > 0.05) "#7ee787" else if (ev > 0) "#a5d6a7"
-                   else "#f85149"
-          span(style = list(color = color, fontWeight = if (ev > 0) "600" else "400"), value)
-        }),
-      no_ev_display = colDef(name = "NO EV", minWidth = 70, align = "right",
-        cell = function(value, index) {
-          ev <- table_data$no_ev_pct[index]
-          color <- if (ev > 0.15) "#3fb950" else if (ev > 0.10) "#56d364"
-                   else if (ev > 0.05) "#7ee787" else if (ev > 0) "#a5d6a7"
-                   else "#f85149"
-          span(style = list(color = color, fontWeight = if (ev > 0) "600" else "400"), value)
-        }),
-      best_side = colDef(name = "Side", minWidth = 50, align = "center",
-        cell = function(value, index) {
-          color <- if (table_data$best_ev_pct[index] > 0) "#3fb950" else "#8b949e"
-          span(style = list(color = color, fontWeight = "600"), value)
-        }),
-      best_ev_display = colDef(name = "Best EV", minWidth = 80, align = "right",
-        cell = function(value, index) {
-          ev <- table_data$best_ev_pct[index]
-          color <- if (ev > 0.15) "#3fb950" else if (ev > 0.10) "#56d364"
-                   else if (ev > 0.05) "#7ee787" else if (ev > 0) "#a5d6a7"
-                   else "#f85149"
-          span(style = list(color = color, fontWeight = "700", fontSize = "0.95rem"), value)
-        })
-    ),
-    theme = reactableTheme(
-      color = "#c9d1d9",
-      backgroundColor = "#1c2128",
-      borderColor = "#373e47",
-      stripedColor = "#22272e",
-      highlightColor = "#2d333b",
-      headerStyle = list(
-        backgroundColor = "#161b22", color = "#8b949e", fontWeight = "600",
-        fontSize = "0.7rem", textTransform = "uppercase", letterSpacing = "0.5px",
-        borderBottom = "1px solid #373e47"),
-      searchInputStyle = list(
-        backgroundColor = "#161b22", color = "#c9d1d9",
-        border = "1px solid #373e47", borderRadius = "6px", padding = "8px 12px"),
-      filterInputStyle = list(
-        backgroundColor = "#161b22", color = "#c9d1d9", border = "1px solid #373e47"),
-      paginationStyle = list(backgroundColor = "#161b22", color = "#c9d1d9"),
-      pageButtonStyle = list(backgroundColor = "#2d333b", color = "#c9d1d9"),
-      pageButtonActiveStyle = list(backgroundColor = "#58a6ff", color = "#0d1117")
-    )
-  )
-}
-
-# =============================================================================
 # HTML REPORT
 # =============================================================================
 
-create_report <- function(bets_table, placed_table, stats, timestamp, filter_options_json,
-                          kalshi_edges_table = NULL, kalshi_stats = NULL) {
+create_report <- function(bets_table, placed_table, stats, timestamp, filter_options_json) {
   page <- tagList(
     tags$head(
       tags$meta(charset = "UTF-8"),
@@ -1011,45 +904,6 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
         /* Warning colors in rows */
 
-        /* Tab navigation */
-        .tab-bar {
-          display: flex;
-          gap: 0;
-          border-bottom: 1px solid #21262d;
-          margin-bottom: 24px;
-        }
-
-        .tab-btn {
-          background: transparent;
-          border: none;
-          border-bottom: 2px solid transparent;
-          color: #8b949e;
-          padding: 10px 20px;
-          font-size: 0.9rem;
-          font-weight: 500;
-          cursor: pointer;
-          transition: all 0.15s;
-          font-family: inherit;
-        }
-
-        .tab-btn:hover {
-          color: #c9d1d9;
-          border-bottom-color: #30363d;
-        }
-
-        .tab-btn.active {
-          color: #f0f6fc;
-          border-bottom-color: #58a6ff;
-        }
-
-        .tab-content {
-          display: none;
-        }
-
-        .tab-content.active {
-          display: block;
-        }
-
         /* Reactable overrides */
         .reactable { font-size: 0.875rem; }
         .rt-search { margin-bottom: 12px !important; }
@@ -1233,15 +1087,6 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           tags$button(class = "refresh-btn", onclick = "refreshData()", "Refresh")
         ),
 
-        # Tab Navigation
-        tags$div(class = "tab-bar",
-          tags$button(class = "tab-btn active", onclick = "switchTab('bets')", "Bets"),
-          tags$button(class = "tab-btn", onclick = "switchTab('kalshi-edges')", "Kalshi Edges")
-        ),
-
-        # ==================== BETS TAB ====================
-        tags$div(class = "tab-content active", id = "tab-bets",
-
         # Stats
         tags$div(class = "stats-row",
           tags$div(class = "stat-card",
@@ -1340,54 +1185,10 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           tags$span(id = "filtered-count", style = "margin-left: 8px; color: #8b949e; font-size: 0.8rem;")
         ),
         tags$div(class = "table-container", bets_table)
-
-        ), # end tab-bets
-
-        # ==================== KALSHI EDGES TAB ====================
-        tags$div(class = "tab-content", id = "tab-kalshi-edges",
-          if (!is.null(kalshi_edges_table) && !is.null(kalshi_stats)) {
-            tagList(
-              tags$div(class = "stats-row",
-                tags$div(class = "stat-card",
-                  tags$div(class = "stat-value", kalshi_stats$total_markets),
-                  tags$div(class = "stat-label", "Markets")
-                ),
-                tags$div(class = "stat-card",
-                  tags$div(class = "stat-value", kalshi_stats$pos_ev_count),
-                  tags$div(class = "stat-label", "+EV Edges")
-                ),
-                tags$div(class = "stat-card",
-                  tags$div(class = "stat-value", sprintf("+%.1f%%", kalshi_stats$best_ev)),
-                  tags$div(class = "stat-label", "Best EV")
-                ),
-                tags$div(class = "stat-card",
-                  tags$div(class = "stat-value", format(kalshi_stats$n_sims, big.mark = ",")),
-                  tags$div(class = "stat-label", "Sims")
-                )
-              ),
-              tags$div(class = "section-header", "Tournament Prop Edges"),
-              tags$div(class = "table-container", kalshi_edges_table)
-            )
-          } else {
-            tags$div(
-              style = "text-align: center; padding: 48px; color: #8b949e;",
-              tags$p(style = "font-size: 1.1rem;", "Kalshi edges not loaded."),
-              tags$p(style = "font-size: 0.85rem;", "Run with --kalshi-edges flag to enable.")
-            )
-          }
-        ) # end tab-kalshi-edges
       ),
 
       # JavaScript
       tags$script(HTML('
-        // ============ TAB SWITCHING ============
-        function switchTab(tabId) {
-          document.querySelectorAll(".tab-content").forEach(function(t) { t.classList.remove("active"); });
-          document.querySelectorAll(".tab-btn").forEach(function(b) { b.classList.remove("active"); });
-          document.getElementById("tab-" + tabId).classList.add("active");
-          event.target.classList.add("active");
-        }
-
         // ============ CORRELATION TOOLTIPS ============
         (function() {
           var tip = document.createElement("div");
@@ -2534,39 +2335,9 @@ filter_options_json <- toJSON(list(
   statuses = I(c("Not Placed", "Placed", "Partial Fill"))
 ), auto_unbox = FALSE)
 
-# =============================================================================
-# KALSHI EDGES (enabled with --kalshi-edges flag)
-# =============================================================================
-
-kalshi_edges_table <- NULL
-kalshi_stats <- NULL
-
-if ("--kalshi-edges" %in% commandArgs(trailingOnly = TRUE)) {
-  source(file.path(DASHBOARD_DIR, "kalshi_edges.R"))
-  n_sims <- 10000
-  kalshi_edges <- tryCatch(
-    fetch_kalshi_edges(NFLWORK_ROOT, n_sims = n_sims),
-    error = function(e) {
-      cat(sprintf("Kalshi edge finder error: %s\n", e$message))
-      tibble()
-    }
-  )
-
-  if (nrow(kalshi_edges) > 0) {
-    kalshi_edges_table <- create_kalshi_edges_table(kalshi_edges)
-    kalshi_stats <- list(
-      total_markets = nrow(kalshi_edges),
-      pos_ev_count = sum(kalshi_edges$best_ev_pct > 0),
-      best_ev = if (any(kalshi_edges$best_ev_pct > 0)) max(kalshi_edges$best_ev_pct) * 100 else 0,
-      n_sims = n_sims
-    )
-  }
-}
-
 # Create report
 timestamp <- format(Sys.time(), "%b %d, %Y %I:%M %p")
-page <- create_report(bets_table, placed_table, stats, timestamp, filter_options_json,
-                      kalshi_edges_table, kalshi_stats)
+page <- create_report(bets_table, placed_table, stats, timestamp, filter_options_json)
 
 # Save
 save_html(page, OUTPUT_PATH, libdir = "lib")

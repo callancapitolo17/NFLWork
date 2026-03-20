@@ -37,9 +37,8 @@ if [ $? -ne 0 ]; then
     echo "Warning: Pipeline had errors, but continuing..."
 fi
 
-# Pass through any flags (e.g., --kalshi-edges for tournament prop analysis)
 echo "Generating dashboard HTML..."
-Rscript "$SCRIPT_DIR/cbb_dashboard.R" "$@"
+Rscript "$SCRIPT_DIR/cbb_dashboard.R"
 if [ $? -ne 0 ]; then
     echo "Warning: Failed to generate dashboard."
     echo "The server will start anyway - use the Refresh button to try again."

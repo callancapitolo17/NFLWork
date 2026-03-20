@@ -51,21 +51,10 @@ CBB.R (pipeline output)  →  cbb_dashboard.R (HTML generation)  →  cbb_dashbo
 # Full pipeline + dashboard
 bash run.sh
 
-# With Kalshi tournament prop edge finder
-bash run.sh --kalshi-edges
-
 # Dashboard server only (if pipeline already ran)
 python cbb_dashboard_server.py
 # → http://localhost:8082
 ```
-
-## Kalshi Edges Tab
-
-The `--kalshi-edges` flag enables tournament prop analysis:
-
-- **kalshi_edges.R**: Runs 10,000 Monte Carlo bracket simulations, fetches all Kalshi March Madness prop markets (round advancement, seed sum, highest seed, upset count, seed win), maps each to a sim probability, and computes EV after Kalshi's 7% taker fee
-- EV calculation matches `kalshi_mm/taker.py` exactly: `fee = 0.07 * P * (1-P) * 100`, `ev% = (fair - price - fee) / price`
-- Markets covered: team round advancement (R32 through Championship), seed sum (F4/Title), seed count per round, highest seed, upset count, seed wins
 
 ## CLV Tracking
 
