@@ -375,6 +375,90 @@ def _fallback_rho_scaling(new_positions, placed_positions, samples,
     ]
 
 
+def batch_kelly_sizes_for_game(markets, placed_positions, bankroll, kelly_mult):
+    """Compute Kelly sizes for all markets on a game in two passes (bid/ask).
+
+    Instead of calling kelly_size_for_quote() twice per market (610 calls for
+    305 markets), this batches all bid positions into one conditional_kelly_sizes
+    call and all ask positions into another — 2 calls per game (~114 total)
+    instead of ~610. ~5x speedup.
+
+    Bids and asks are computed separately because bid (YES) and ask (NO) on the
+    same ticker are perfectly anti-correlated, which makes the covariance matrix
+    singular. Positions on the same side (e.g., all bids) are correlated but not
+    perfectly, so the matrix is well-conditioned.
+
+    Args:
+        markets: list of quotable market dicts for this game
+        placed_positions: existing positions on this game
+        bankroll, kelly_mult: Kelly params
+
+    Returns:
+        dict: ticker -> {"bid_size": int, "ask_size": int}
+    """
+    result = {m["ticker"]: {"bid_size": 0, "ask_size": 0} for m in markets}
+    if not markets:
+        return result
+
+    game_id = markets[0].get("game_id")
+    if not game_id:
+        return result
+
+    samples = load_game_samples(game_id)
+    if samples is None:
+        return result
+
+    # Build bid and ask positions separately to avoid anti-correlation singularity
+    bid_positions = []
+    bid_tickers = []
+    ask_positions = []
+    ask_tickers = []
+
+    for market in markets:
+        ticker = market["ticker"]
+        fair_cents = market["fair_prob"] * 100
+
+        # Bid (buying YES)
+        bid_pos = _market_to_position(market, "yes")
+        book_bid = market.get("book_bid", 0)
+        if book_bid > 0:
+            bid_pos["kalshi_price"] = book_bid
+        else:
+            bid_pos["kalshi_price"] = int(math.floor(fair_cents / 1.05))
+
+        if 0 < bid_pos["kalshi_price"] < 100:
+            bid_positions.append(bid_pos)
+            bid_tickers.append(ticker)
+
+        # Ask (selling YES = buying NO)
+        ask_pos = _market_to_position(market, "no")
+        book_ask = market.get("book_ask", 0)
+        if book_ask > 0:
+            ask_pos["kalshi_price"] = 100 - book_ask
+        else:
+            ask_pos["kalshi_price"] = 100 - int(math.ceil((fair_cents + 5) / 1.05))
+
+        if 0 < ask_pos["kalshi_price"] < 100:
+            ask_positions.append(ask_pos)
+            ask_tickers.append(ticker)
+
+    # Compute bid sizes (one call for all bids on this game)
+    if bid_positions:
+        bid_sizes = conditional_kelly_sizes(bid_positions, placed_positions,
+                                            samples, bankroll, kelly_mult)
+        for ticker, size in zip(bid_tickers, bid_sizes):
+            result[ticker]["bid_size"] = size
+
+    # Compute ask sizes (one call for all asks on this game)
+    if ask_positions:
+        ask_sizes = conditional_kelly_sizes(ask_positions, placed_positions,
+                                            samples, bankroll, kelly_mult)
+        for ticker, size in zip(ask_tickers, ask_sizes):
+            result[ticker]["ask_size"] = size
+
+    return result
+
+
 def kelly_size_for_quote(market, side, placed_positions, bankroll, kelly_mult):
     """Compute Kelly size for one side of a quote on a market.
 
