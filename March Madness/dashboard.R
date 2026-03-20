@@ -356,7 +356,11 @@ ui <- fluidPage(
     tabPanel("Survivor",
       br(),
       h4("Survivor Value = P(win this round) × (1 - avg P(future rounds))"),
-      p("High value = safe pick now that you won't need later. Sorted by Survivor Value."),
+      p("High value = safe pick now that you won't need later."),
+      fluidRow(
+        column(4, checkboxInput("sv_hide_advanced", "Hide teams that already advanced this round", value = TRUE)),
+        column(4, textInput("sv_used_teams", "Already used (comma-separated):", value = ""))
+      ),
       DT::dataTableOutput("survivor_table")
     ),
 
@@ -493,28 +497,43 @@ server <- function(input, output, session) {
     # Determine remaining round columns
     all_rounds <- c("Round_32", "Sweet_16", "Elite_8", "Final_4", "Title_Game", "Champion")
     sim_rounds <- intersect(all_rounds, names(raw))
-    # Only include rounds that aren't 100% for all teams (i.e. still being simulated)
-    active_rounds <- sim_rounds[sapply(sim_rounds, function(r) mean(raw[[r]]) < 1)]
-    if (length(active_rounds) == 0) active_rounds <- sim_rounds
+    # Active rounds = those that aren't 100% for all surviving teams
+    surviving <- raw %>% filter(!team %in% eliminated)
+    active_rounds <- sim_rounds[sapply(sim_rounds, function(r) mean(surviving[[r]]) < 0.999)]
+    if (length(active_rounds) == 0) active_rounds <- tail(sim_rounds, 1)
 
-    raw %>%
-      filter(!team %in% eliminated) %>%
+    df <- surviving %>%
       group_by(team, seed, region) %>%
-      summarise(across(all_of(active_rounds), mean), .groups = "drop") %>%
-      {
-        df <- .
-        p_current <- df[[active_rounds[1]]]
-        future_rounds <- active_rounds[-1]
-        f_future <- if (length(future_rounds) > 0) rowMeans(df[, future_rounds, drop = FALSE]) else 0
-        df$`Survivor Value` <- round(p_current * (1 - f_future), 3)
-        df$Rank <- min_rank(-df$`Survivor Value`)
-        # Format round columns as percentages
-        for (r in active_rounds) df[[r]] <- sprintf("%.1f%%", df[[r]] * 100)
-        df
-      } %>%
-      arrange(Rank) %>%
-      select(Rank, team, seed, region, all_of(active_rounds), `Survivor Value`)
-  }, options = list(pageLength = 25))
+      summarise(across(all_of(active_rounds), mean), .groups = "drop")
+
+    # Compute survivor value
+    p_current <- df[[active_rounds[1]]]
+    future_rounds <- active_rounds[-1]
+    f_future <- if (length(future_rounds) > 0) rowMeans(df[, future_rounds, drop = FALSE]) else 0
+    df$sv <- p_current * (1 - f_future)
+
+    # Filter: hide teams that already won this round (they're "used" for this round)
+    if (isTRUE(input$sv_hide_advanced)) {
+      df <- df %>% filter(!team %in% advanced_teams)
+    }
+
+    # Filter: hide manually entered used teams
+    used_input <- trimws(input$sv_used_teams)
+    if (nchar(used_input) > 0) {
+      used_list <- tolower(trimws(strsplit(used_input, ",")[[1]]))
+      df <- df %>% filter(!tolower(team) %in% used_list)
+    }
+
+    # Format for display
+    for (r in active_rounds) df[[r]] <- sprintf("%.1f%%", df[[r]] * 100)
+    df$`Survivor Value` <- round(df$sv, 3)
+
+    df %>%
+      arrange(desc(sv)) %>%
+      select(team, seed, region, all_of(active_rounds), `Survivor Value`) %>%
+      mutate(Rank = row_number()) %>%
+      select(Rank, everything())
+  }, options = list(pageLength = 25, order = list(list(0, "asc"))))
 
   # --- Team Advancement ---
   output$team_table <- DT::renderDataTable({
