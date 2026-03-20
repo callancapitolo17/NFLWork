@@ -736,6 +736,7 @@ all_bets_combined <- bind_rows(
   bet105_alt_bets,
   kalshi_bets
 ) %>%
+  { if (!is.null(enabled_books)) filter(., bookmaker_key %in% enabled_books) else . } %>%
   filter(is.na(pt_start_time) | pt_start_time > Sys.time()) %>%
   mutate(base_market = gsub("^alternate_", "", market)) %>%
   group_by(id, base_market, bet_on) %>%
