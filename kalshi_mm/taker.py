@@ -312,6 +312,12 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
         if not risk.check_tipoff_proximity(market.get("commence_time")):
             continue
 
+        # Hard exposure cap
+        allowed, _, _ = risk.check_game_type_exposure(
+            home_team or "", away_team or "", market_type)
+        if not allowed:
+            continue
+
         game_key = market.get("game_key", (home_team or "", away_team or ""))
 
         # Check what resting orders the MM has on this ticker

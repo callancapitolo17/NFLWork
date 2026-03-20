@@ -13,7 +13,45 @@ import db
 from config import (
     MAX_STALENESS_SEC, LINE_MOVE_THRESHOLD,
     TIPOFF_PULLBACK_MIN, BOOKMAKER_SCRAPER, BET105_SCRAPER,
+    BANKROLL, MAX_GAME_TYPE_EXPOSURE_PCT,
 )
+
+# Cache positions per cycle to avoid repeated DB reads
+_exposure_cache = {"positions": None, "computed": {}}
+
+
+def clear_exposure_cache():
+    """Clear cached exposure data (call at start of each quote cycle)."""
+    _exposure_cache["positions"] = None
+    _exposure_cache["computed"].clear()
+
+
+def check_game_type_exposure(home_team, away_team, market_type):
+    """Check if filled exposure for a game+market_type exceeds the hard cap.
+
+    Returns (allowed, current_exposure, max_exposure).
+    """
+    max_exposure = BANKROLL * MAX_GAME_TYPE_EXPOSURE_PCT
+
+    # Lazy-load positions once per cycle
+    if _exposure_cache["positions"] is None:
+        _exposure_cache["positions"] = db.get_all_positions()
+
+    cache_key = (home_team, away_team, market_type)
+    if cache_key in _exposure_cache["computed"]:
+        current = _exposure_cache["computed"][cache_key]
+        return current < max_exposure, current, max_exposure
+
+    # Sum filled exposure for this game + market type
+    current = 0.0
+    for p in _exposure_cache["positions"]:
+        if (p.get("home_team") == home_team and
+                p.get("away_team") == away_team and
+                p.get("market_type") == market_type):
+            current += abs(p.get("net_yes", 0)) * p.get("avg_entry_price", 0) / 100.0
+
+    _exposure_cache["computed"][cache_key] = current
+    return current < max_exposure, current, max_exposure
 
 
 def check_staleness(prediction_updated_at):

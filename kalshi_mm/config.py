@@ -81,3 +81,8 @@ MAX_BOOK_STALENESS_SEC = int(_env.get("MAX_BOOK_STALENESS_SEC", "10"))
 BANKROLL = float(_env.get("BANKROLL", "1000.0"))
 KELLY_FRACTION = float(_env.get("KELLY_FRACTION", "0.25"))  # Quarter Kelly
 USE_KELLY_SIZING = _env.get("USE_KELLY_SIZING", "true").lower() == "true"
+
+# --- Hard Position Limits (circuit breakers, independent of Kelly) ---
+# Max filled exposure per game per market type as fraction of bankroll.
+# e.g., 0.30 = 30% of $2K bankroll = $600 max on spreads for one game.
+MAX_GAME_TYPE_EXPOSURE_PCT = float(_env.get("MAX_GAME_TYPE_EXPOSURE_PCT", "0.30"))
