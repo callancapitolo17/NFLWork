@@ -60,6 +60,33 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
+def _nuke_and_adopt(resting_by_ticker):
+    """Cancel all orders and adopt any survivors to prevent duplicates.
+
+    Used when predictions are stale, pipeline fails, etc. After cancelling,
+    re-queries Kalshi to catch orders that survived (rate limit, partial failure).
+    """
+    orders.cancel_all_orders()
+    db.clear_all_resting_orders()
+    resting_by_ticker.clear()
+    survivors = orders.get_resting_orders()
+    if survivors:
+        print(f"  WARNING: {len(survivors)} orders survived cancel — adopting")
+        for o in survivors:
+            ticker = o.get("ticker", "")
+            oid = o.get("order_id", "")
+            side = o.get("side", "")
+            price = int(round(float(o.get("yes_price_dollars", 0)) * 100))
+            existing = resting_by_ticker.get(ticker, {})
+            if side == "yes":
+                existing["bid_order_id"] = oid
+                existing["bid_price"] = price
+            elif side == "no":
+                existing["ask_order_id"] = oid
+                existing["ask_price"] = 100 - price
+            resting_by_ticker[ticker] = existing
+
+
 # --- Background pipeline runner ---
 _pipeline_proc = None
 _pipeline_start_time = None
@@ -95,9 +122,7 @@ def check_pipeline_completion(resting_by_ticker):
             print("  Pipeline timed out (120s) — killed. Pulling all quotes.")
             _pipeline_backoff = min(_pipeline_backoff * 2, 2400)
             if not DRY_RUN:
-                orders.cancel_all_orders()
-                db.clear_all_resting_orders()
-                resting_by_ticker.clear()
+                _nuke_and_adopt(resting_by_ticker)
             return False
         return False
 
@@ -112,9 +137,7 @@ def check_pipeline_completion(resting_by_ticker):
         print(f"  Pipeline FAILED (exit {rc}, {elapsed:.0f}s). Pulling all quotes. Retry in {_pipeline_backoff}s")
         _pipeline_backoff = min(_pipeline_backoff * 2, 2400)
         if not DRY_RUN:
-            orders.cancel_all_orders()
-            db.clear_all_resting_orders()
-            resting_by_ticker.clear()
+            _nuke_and_adopt(resting_by_ticker)
         return False
 
 
@@ -634,27 +657,7 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
     if not is_fresh:
         print(f"  STALE PREDICTIONS ({pred_age:.0f}s old). Pulling all quotes.")
         if not DRY_RUN:
-            orders.cancel_all_orders()
-            db.clear_all_resting_orders()
-            resting_by_ticker.clear()
-            # Re-query Kalshi for survivors — if cancel partially failed,
-            # adopt them to prevent duplicate placements next cycle
-            survivors = orders.get_resting_orders()
-            if survivors:
-                print(f"  WARNING: {len(survivors)} orders survived stale cancel — adopting")
-                for o in survivors:
-                    ticker = o.get("ticker", "")
-                    oid = o.get("order_id", "")
-                    side = o.get("side", "")
-                    price = int(round(float(o.get("yes_price_dollars", 0)) * 100))
-                    existing = resting_by_ticker.get(ticker, {})
-                    if side == "yes":
-                        existing["bid_order_id"] = oid
-                        existing["bid_price"] = price
-                    elif side == "no":
-                        existing["ask_order_id"] = oid
-                        existing["ask_price"] = 100 - price
-                    resting_by_ticker[ticker] = existing
+            _nuke_and_adopt(resting_by_ticker)
         return resting_by_ticker
 
     exposure = db.compute_total_exposure()  # For logging only
@@ -1086,33 +1089,9 @@ def main():
         stale = orders.get_resting_orders()
         if stale:
             print(f"  Found {len(stale)} stale resting orders — cancelling all.")
-            orders.cancel_all_orders()
+            _nuke_and_adopt(resting_by_ticker)
         else:
             print("  No stale orders found.")
-
-        # Re-query Kalshi to find any orders that survived the cancel (rate limit,
-        # partial failure, etc). Adopt them into resting_by_ticker so the bot
-        # knows they exist and won't place duplicates.
-        survivors = orders.get_resting_orders()
-        if survivors:
-            print(f"  WARNING: {len(survivors)} orders survived cancel — adopting into tracking")
-            for o in survivors:
-                ticker = o.get("ticker", "")
-                oid = o.get("order_id", "")
-                side = o.get("side", "")
-                price = int(round(float(o.get("yes_price_dollars", 0)) * 100))
-                existing = resting_by_ticker.get(ticker, {})
-                if side == "yes":
-                    existing["bid_order_id"] = oid
-                    existing["bid_price"] = price
-                elif side == "no":
-                    existing["ask_order_id"] = oid
-                    existing["ask_price"] = 100 - price
-                resting_by_ticker[ticker] = existing
-
-        # Flush DB resting_orders table — stale entries from previous sessions
-        # inflate exposure calculations and block quoting
-        db.clear_all_resting_orders()
 
     db.start_session(SESSION_ID)
 
