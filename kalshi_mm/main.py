@@ -1226,11 +1226,17 @@ def main():
                                             cancel_ids.append(oid)
                                     tickers_to_remove.append(ticker)
                             if cancel_ids and not DRY_RUN:
-                                orders.batch_cancel(cancel_ids)
-                                for oid in cancel_ids:
-                                    db.remove_resting_order(oid)
-                            for ticker in tickers_to_remove:
-                                del resting_by_ticker[ticker]
+                                success = orders.batch_cancel(cancel_ids)
+                                if success:
+                                    for oid in cancel_ids:
+                                        db.remove_resting_order(oid)
+                                    for ticker in tickers_to_remove:
+                                        del resting_by_ticker[ticker]
+                                else:
+                                    print(f"  WARNING: Line-move cancel failed for {len(cancel_ids)} orders — will retry")
+                            elif DRY_RUN:
+                                for ticker in tickers_to_remove:
+                                    del resting_by_ticker[ticker]
                             # Trigger immediate pipeline refresh
                             start_pipeline()
                 except Exception as e:
