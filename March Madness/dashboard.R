@@ -122,15 +122,22 @@ sim_one_fast <- function() {
   result
 }
 
-n_sims <- 50000
-cat(sprintf("Running %dk simulations (%d teams)...\n", n_sims/1000, n_remaining))
+library(furrr)
+n_workers <- max(1, parallel::detectCores() - 1)
+plan(multisession, workers = n_workers)
+
+n_sims <- 10000
+batch_size <- ceiling(n_sims / n_workers)
+cat(sprintf("Running %dk simulations (%d teams, %d cores)...\n", n_sims/1000, n_remaining, n_workers))
 t0 <- Sys.time()
-raw <- map_dfr(1:n_sims, function(i) {
-  r <- sim_one_fast()
-  r$region <- current_bracket$region[match(r$team, current_bracket$team)]
-  r$sim_id <- i
-  r
-})
+raw <- future_map_dfr(1:n_workers, function(w) {
+  map_dfr(1:batch_size, function(i) {
+    r <- sim_one_fast()
+    r$region <- current_bracket$region[match(r$team, current_bracket$team)]
+    r$sim_id <- (w - 1) * batch_size + i
+    r
+  })
+}, .options = furrr_options(seed = TRUE))
 elapsed <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
 cat(sprintf("Done in %.0f seconds.\n", elapsed))
 
