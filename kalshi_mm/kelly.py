@@ -412,17 +412,15 @@ def _fallback_rho_scaling(new_positions, placed_positions, samples,
 
 
 def batch_kelly_sizes_for_game(markets, placed_positions, bankroll, kelly_mult):
-    """Compute Kelly sizes for all markets on a game in two passes (bid/ask).
+    """Compute Kelly sizes for all markets on a game with cross-side awareness.
 
-    Instead of calling kelly_size_for_quote() twice per market (610 calls for
-    305 markets), this batches all bid positions into one conditional_kelly_sizes
-    call and all ask positions into another — 2 calls per game (~114 total)
-    instead of ~610. ~5x speedup.
+    Bids are batched into one conditional_kelly_sizes call (all YES positions
+    are correlated but not perfectly, so the matrix is well-conditioned).
 
-    Bids and asks are computed separately because bid (YES) and ask (NO) on the
-    same ticker are perfectly anti-correlated, which makes the covariance matrix
-    singular. Positions on the same side (e.g., all bids) are correlated but not
-    perfectly, so the matrix is well-conditioned.
+    Asks are computed per-ticker. Each ask includes bid results from OTHER
+    tickers as "placed" positions, so Kelly sees the cross-side correlation
+    (e.g., YES SLU and NO MICH are both directional bets on Saint Louis).
+    Same-ticker bid results are excluded to avoid the ρ=-1 singularity.
 
     Args:
         markets: list of quotable market dicts for this game
@@ -444,7 +442,7 @@ def batch_kelly_sizes_for_game(markets, placed_positions, bankroll, kelly_mult):
     if samples is None:
         return result
 
-    # Build bid and ask positions separately to avoid anti-correlation singularity
+    # Build bid and ask positions
     bid_positions = []
     bid_tickers = []
     ask_positions = []
@@ -478,19 +476,33 @@ def batch_kelly_sizes_for_game(markets, placed_positions, bankroll, kelly_mult):
             ask_positions.append(ask_pos)
             ask_tickers.append(ticker)
 
-    # Compute bid sizes (one call for all bids on this game)
+    # Pass 1: Compute bid sizes (one batch call — all YES, well-conditioned)
+    bid_results = {}  # ticker -> (position_dict, size)
     if bid_positions:
         bid_sizes = conditional_kelly_sizes(bid_positions, placed_positions,
                                             samples, bankroll, kelly_mult)
-        for ticker, size in zip(bid_tickers, bid_sizes):
+        for ticker, pos, size in zip(bid_tickers, bid_positions, bid_sizes):
             result[ticker]["bid_size"] = size
+            if size > 0:
+                bid_results[ticker] = (pos, size)
 
-    # Compute ask sizes (one call for all asks on this game)
+    # Pass 2: Compute ask sizes per-ticker with cross-ticker bid awareness.
+    # For each ask, include bid results from OTHER tickers as placed positions
+    # so Kelly sees the correlation. Exclude same-ticker bids (ρ=-1 singularity).
     if ask_positions:
-        ask_sizes = conditional_kelly_sizes(ask_positions, placed_positions,
+        for ask_pos, ask_ticker in zip(ask_positions, ask_tickers):
+            # Build placed = existing positions + bid results from other tickers
+            cross_placed = list(placed_positions)
+            for bid_ticker, (bid_pos, bid_size) in bid_results.items():
+                if bid_ticker != ask_ticker:
+                    cross_placed.append({
+                        **bid_pos,
+                        "size": bid_size,
+                    })
+
+            sizes = conditional_kelly_sizes([ask_pos], cross_placed,
                                             samples, bankroll, kelly_mult)
-        for ticker, size in zip(ask_tickers, ask_sizes):
-            result[ticker]["ask_size"] = size
+            result[ask_ticker]["ask_size"] = sizes[0] if sizes else 0
 
     return result
 
