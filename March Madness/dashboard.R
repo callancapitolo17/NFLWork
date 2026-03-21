@@ -327,58 +327,54 @@ fetch_all_kalshi_edges <- function(raw, team_probs) {
     else if (grepl("exactly",ttl,ignore.case=TRUE)) mean(ms$mx==fs) else mean(ms$mx>=fs)
   })
 
-  # Upsets — count games where higher-seeded team (underdog) beats lower-seeded team
-  # For R64: matchups are fixed (1v16, 2v15, etc.) so seed > 8 advancing = upset
-  # For R32+: we can't reconstruct exact matchups from sim output, but we CAN
-  # use bracket structure. In each region, R32 matchups are: R64 winner from
-  # (1v16) vs (8v9), (5v12) vs (4v13), etc. The "favorite" is the lower seed.
-  # Approximation: in each region per round, pair advancing teams by seed rank
-  # and count when the higher seed in a pair advances to the next round.
+  # Upsets — precompute upset counts per sim for each round (once, not per market)
+  # R64: seeds 9-16 advancing = upset (fixed bracket: 1v16, 2v15, etc.)
+  # R32+: within each region, pair advancing teams by seed rank, count when
+  #   higher seed advances. Precompute all at once for speed.
+  cat("  Computing upset distributions...\n")
+
+  compute_upsets_for_round <- function(raw, rc, prev_rc = NULL) {
+    if (is.null(prev_rc)) {
+      # R64: simple — seeds 9-16 advancing = upsets
+      raw %>% filter(.data[[rc]]==1, seed >= 9) %>%
+        group_by(sim_id) %>% summarise(n=n(), .groups="drop") %>%
+        { tibble(sim_id=1:n_sims_local) %>% left_join(., by="sim_id") %>% mutate(n=coalesce(n, 0L)) }
+    } else {
+      # R32+: pair by seed rank within region, count when higher seed advances
+      prev <- raw %>% filter(.data[[prev_rc]]==1)
+      next_adv <- raw %>% filter(.data[[rc]]==1) %>% distinct(sim_id, team)
+
+      # Vectorized: split by sim_id and region, pair by seed order
+      upset_counts <- prev %>%
+        left_join(next_adv %>% mutate(adv=TRUE), by=c("sim_id","team")) %>%
+        mutate(adv=coalesce(adv, FALSE)) %>%
+        arrange(sim_id, region, seed) %>%
+        group_by(sim_id, region) %>%
+        mutate(pair_id = (row_number()-1) %/% 2) %>%
+        group_by(sim_id, region, pair_id) %>%
+        filter(n()==2) %>%
+        summarise(upset = adv[2] & !adv[1], .groups="drop") %>%  # [2]=higher seed, [1]=lower seed
+        group_by(sim_id) %>%
+        summarise(n=sum(upset), .groups="drop")
+
+      tibble(sim_id=1:n_sims_local) %>% left_join(upset_counts, by="sim_id") %>% mutate(n=coalesce(n, 0L))
+    }
+  }
+
+  # Precompute once for all rounds
+  upset_cache <- list(
+    Round_32 = compute_upsets_for_round(raw, "Round_32"),
+    Sweet_16 = compute_upsets_for_round(raw, "Sweet_16", "Round_32"),
+    Elite_8  = compute_upsets_for_round(raw, "Elite_8", "Sweet_16"),
+    Final_4  = compute_upsets_for_round(raw, "Final_4", "Elite_8")
+  )
+
   all_edges <- add_seed_props("KXMARMADUPSET", "Upsets", function(raw, fs, cs, st, et, ttl, ns) {
-    # Map event round to the column where winners appear
     rc <- case_when(grepl("R64",et)~"Round_32", grepl("R32",et)~"Sweet_16",
                     grepl("R16",et)~"Elite_8", grepl("R8",et)~"Final_4", TRUE~NA_character_)
-    if (is.na(rc)) return(NA_real_)
+    if (is.na(rc) || !rc %in% names(upset_cache)) return(NA_real_)
 
-    if (rc == "Round_32") {
-      # R64: fixed matchups — seeds 9-16 advancing = upsets (always correct)
-      uc <- raw %>% filter(.data[[rc]]==1, seed >= 9) %>%
-        group_by(sim_id) %>% summarise(n=n(), .groups="drop")
-    } else {
-      # R32+: determine the previous round column
-      prev_rc <- case_when(rc=="Sweet_16"~"Round_32", rc=="Elite_8"~"Sweet_16",
-                           rc=="Final_4"~"Elite_8", TRUE~NA_character_)
-      if (is.na(prev_rc)) return(NA_real_)
-
-      # For each sim+region, look at teams that made prev_rc, pair by seed rank,
-      # and count how many times the higher seed advances to rc
-      upsets_by_sim <- raw %>%
-        filter(.data[[prev_rc]] == 1) %>%
-        group_by(sim_id, region) %>%
-        arrange(seed) %>%
-        mutate(
-          pair_id = (row_number() + 1) %/% 2,
-          is_fav = row_number() %% 2 == 1  # odd rows = lower seed = favorite
-        ) %>%
-        ungroup() %>%
-        group_by(sim_id, region, pair_id) %>%
-        mutate(n_in_pair = n()) %>%
-        filter(n_in_pair == 2) %>%  # only complete pairs
-        summarise(
-          fav_seed = min(seed),
-          dog_seed = max(seed),
-          fav_advanced = any(seed == min(seed) & .data[[rc]] == 1),
-          dog_advanced = any(seed == max(seed) & .data[[rc]] == 1),
-          upset = dog_advanced & !fav_advanced,
-          .groups = "drop"
-        ) %>%
-        group_by(sim_id) %>%
-        summarise(n = sum(upset), .groups = "drop")
-
-      uc <- upsets_by_sim
-    }
-
-    uc <- tibble(sim_id=1:ns) %>% left_join(uc, by="sim_id") %>% mutate(n=coalesce(n, 0L))
+    uc <- upset_cache[[rc]]
     if (grepl("exactly",ttl,ignore.case=TRUE)) mean(uc$n==fs) else mean(uc$n>=fs)
   })
 
