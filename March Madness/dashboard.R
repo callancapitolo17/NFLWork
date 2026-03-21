@@ -90,7 +90,8 @@ cb_status <- as.integer(case_when(
 ))
 seed_order_vec <- as.integer(c(1,16,8,9,5,12,4,13,6,11,3,14,7,10,2,15))
 region_order_vec <- seq_along(region_order)
-round_names <- get_remaining_rounds(n_remaining)
+# C++ sim operates on all 64 teams (including eliminated), so use full bracket size for rounds
+round_names <- get_remaining_rounds(nrow(current_bracket))
 n_rounds <- length(round_names)
 
 # Run C++ sim — returns matrix: (n_teams * n_sims) x n_rounds
