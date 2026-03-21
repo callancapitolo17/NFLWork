@@ -335,30 +335,30 @@ fetch_all_kalshi_edges <- function(raw, team_probs) {
   cat("  Computing upset distributions...\n")
 
   compute_upsets_for_round <- function(raw, rc, prev_rc = NULL) {
+    all_sims <- tibble(sim_id = 1:n_sims_local)
     if (is.null(prev_rc)) {
       # R64: simple — seeds 9-16 advancing = upsets
-      raw %>% filter(.data[[rc]]==1, seed >= 9) %>%
-        group_by(sim_id) %>% summarise(n=n(), .groups="drop") %>%
-        { tibble(sim_id=1:n_sims_local) %>% left_join(., by="sim_id") %>% mutate(n=coalesce(n, 0L)) }
+      uc <- raw %>% filter(.data[[rc]]==1, seed >= 9) %>%
+        group_by(sim_id) %>% summarise(n=n(), .groups="drop")
+      all_sims %>% left_join(uc, by="sim_id") %>% mutate(n=coalesce(n, 0L))
     } else {
       # R32+: pair by seed rank within region, count when higher seed advances
       prev <- raw %>% filter(.data[[prev_rc]]==1)
-      next_adv <- raw %>% filter(.data[[rc]]==1) %>% distinct(sim_id, team)
+      next_adv <- raw %>% filter(.data[[rc]]==1) %>% distinct(sim_id, team) %>% mutate(adv=TRUE)
 
-      # Vectorized: split by sim_id and region, pair by seed order
       upset_counts <- prev %>%
-        left_join(next_adv %>% mutate(adv=TRUE), by=c("sim_id","team")) %>%
+        left_join(next_adv, by=c("sim_id","team")) %>%
         mutate(adv=coalesce(adv, FALSE)) %>%
         arrange(sim_id, region, seed) %>%
         group_by(sim_id, region) %>%
         mutate(pair_id = (row_number()-1) %/% 2) %>%
         group_by(sim_id, region, pair_id) %>%
         filter(n()==2) %>%
-        summarise(upset = adv[2] & !adv[1], .groups="drop") %>%  # [2]=higher seed, [1]=lower seed
+        summarise(upset = adv[2] & !adv[1], .groups="drop") %>%
         group_by(sim_id) %>%
         summarise(n=sum(upset), .groups="drop")
 
-      tibble(sim_id=1:n_sims_local) %>% left_join(upset_counts, by="sim_id") %>% mutate(n=coalesce(n, 0L))
+      all_sims %>% left_join(upset_counts, by="sim_id") %>% mutate(n=coalesce(n, 0L))
     }
   }
 
