@@ -615,8 +615,10 @@ server <- function(input, output, session) {
     f_future <- if (length(future_rounds) > 0) rowMeans(df[, future_rounds, drop = FALSE]) else 0
     df$sv <- p_current * (1 - f_future)
 
-    # Filter: hide teams that already won this round (they're "used" for this round)
-    if (isTRUE(input$sv_hide_advanced)) {
+    # Filter: hide teams that already won this round
+    # Only applies during a partially completed round; if all teams are advanced, show all
+    n_pending <- sum(current_bracket$status == "pending")
+    if (isTRUE(input$sv_hide_advanced) && n_pending > 0) {
       df <- df %>% filter(!team %in% advanced_teams)
     }
 
