@@ -191,16 +191,35 @@ kalshi_compute_ev <- function(sim_prob, yes_ask_cents, yes_bid_cents) {
 match_kalshi_team <- function(title, team_probs) {
   m <- str_match(title, "^Will (.+?) qualify for")
   if (is.na(m[1,2])) return(NA_character_)
-  kn <- tolower(str_replace_all(m[1,2], "['\\.\\-]", ""))
-  kn <- str_replace_all(kn, "\\bst\\.?\\b", "st")
-  kn <- str_squish(kn)
-  cn <- tolower(str_replace_all(team_probs$team, "['\\.\\-]", ""))
-  cn <- str_replace_all(cn, "\\bst\\.?\\b", "st")
-  cn <- str_squish(cn)
+  kalshi_name <- m[1,2]
+
+  normalize <- function(x) {
+    x <- tolower(x)
+    x <- str_replace_all(x, "['\\.\\-]", "")
+    x <- str_replace_all(x, "\\bstate\\b", "st")
+    str_squish(x)
+  }
+
+  kn <- normalize(kalshi_name)
+  candidates <- team_probs$team
+  cn <- normalize(candidates)
+
+  # Exact match first
   idx <- which(cn == kn)
-  if (length(idx) == 1) return(team_probs$team[idx])
-  idx <- which(str_detect(cn, fixed(kn)) | str_detect(kn, cn))
-  if (length(idx) == 1) return(team_probs$team[idx])
+  if (length(idx) == 1) return(candidates[idx])
+
+  # Substring match — but require the LONGER string contains the shorter
+  # to avoid "Iowa" matching "Iowa State" or "Northern Iowa"
+  idx <- which(cn == kn | (nchar(cn) >= nchar(kn) & str_detect(cn, fixed(kn))))
+  # If multiple matches, pick the shortest candidate (most specific)
+  if (length(idx) > 1) idx <- idx[which.min(nchar(cn[idx]))]
+  if (length(idx) == 1) return(candidates[idx])
+
+  # Reverse substring: kalshi name contains sim name
+  idx <- which(str_detect(kn, fixed(cn)))
+  if (length(idx) > 1) idx <- idx[which.max(nchar(cn[idx]))]
+  if (length(idx) == 1) return(candidates[idx])
+
   NA_character_
 }
 
@@ -291,7 +310,9 @@ fetch_all_kalshi_edges <- function(raw, team_probs) {
     if (is.na(rc)) return(NA_real_)
     sc <- raw %>% filter(seed==ts, .data[[rc]]==1) %>% group_by(sim_id) %>% summarise(n=n(), .groups="drop")
     sc <- tibble(sim_id=1:ns) %>% left_join(sc, by="sim_id") %>% mutate(n=coalesce(n, 0L))
-    if (grepl("exactly",ttl,ignore.case=TRUE) || st=="between") mean(sc$n==fs) else mean(sc$n>=fs)
+    if (st=="between" && !is.na(cs)) mean(sc$n>=fs & sc$n<=cs)
+    else if (grepl("exactly",ttl,ignore.case=TRUE)) mean(sc$n==fs)
+    else mean(sc$n>=fs)
   })
 
   # Highest Seed
@@ -306,23 +327,93 @@ fetch_all_kalshi_edges <- function(raw, team_probs) {
     else if (grepl("exactly",ttl,ignore.case=TRUE)) mean(ms$mx==fs) else mean(ms$mx>=fs)
   })
 
-  # Upsets
+  # Upsets — count games where higher-seeded team (underdog) beats lower-seeded team
+  # For R64: matchups are fixed (1v16, 2v15, etc.) so seed > 8 advancing = upset
+  # For R32+: we can't reconstruct exact matchups from sim output, but we CAN
+  # use bracket structure. In each region, R32 matchups are: R64 winner from
+  # (1v16) vs (8v9), (5v12) vs (4v13), etc. The "favorite" is the lower seed.
+  # Approximation: in each region per round, pair advancing teams by seed rank
+  # and count when the higher seed in a pair advances to the next round.
   all_edges <- add_seed_props("KXMARMADUPSET", "Upsets", function(raw, fs, cs, st, et, ttl, ns) {
+    # Map event round to the column where winners appear
     rc <- case_when(grepl("R64",et)~"Round_32", grepl("R32",et)~"Sweet_16",
                     grepl("R16",et)~"Elite_8", grepl("R8",et)~"Final_4", TRUE~NA_character_)
     if (is.na(rc)) return(NA_real_)
-    us <- if (rc=="Round_32") 9:16 else if (rc=="Sweet_16") 5:16 else if (rc=="Elite_8") 3:16 else 2:16
-    uc <- raw %>% filter(.data[[rc]]==1, seed %in% us) %>% group_by(sim_id) %>% summarise(n=n(), .groups="drop")
+
+    if (rc == "Round_32") {
+      # R64: fixed matchups — seeds 9-16 advancing = upsets (always correct)
+      uc <- raw %>% filter(.data[[rc]]==1, seed >= 9) %>%
+        group_by(sim_id) %>% summarise(n=n(), .groups="drop")
+    } else {
+      # R32+: determine the previous round column
+      prev_rc <- case_when(rc=="Sweet_16"~"Round_32", rc=="Elite_8"~"Sweet_16",
+                           rc=="Final_4"~"Elite_8", TRUE~NA_character_)
+      if (is.na(prev_rc)) return(NA_real_)
+
+      # For each sim+region, look at teams that made prev_rc, pair by seed rank,
+      # and count how many times the higher seed advances to rc
+      upsets_by_sim <- raw %>%
+        filter(.data[[prev_rc]] == 1) %>%
+        group_by(sim_id, region) %>%
+        arrange(seed) %>%
+        mutate(
+          pair_id = (row_number() + 1) %/% 2,
+          is_fav = row_number() %% 2 == 1  # odd rows = lower seed = favorite
+        ) %>%
+        ungroup() %>%
+        group_by(sim_id, region, pair_id) %>%
+        mutate(n_in_pair = n()) %>%
+        filter(n_in_pair == 2) %>%  # only complete pairs
+        summarise(
+          fav_seed = min(seed),
+          dog_seed = max(seed),
+          fav_advanced = any(seed == min(seed) & .data[[rc]] == 1),
+          dog_advanced = any(seed == max(seed) & .data[[rc]] == 1),
+          upset = dog_advanced & !fav_advanced,
+          .groups = "drop"
+        ) %>%
+        group_by(sim_id) %>%
+        summarise(n = sum(upset), .groups = "drop")
+
+      uc <- upsets_by_sim
+    }
+
     uc <- tibble(sim_id=1:ns) %>% left_join(uc, by="sim_id") %>% mutate(n=coalesce(n, 0L))
     if (grepl("exactly",ttl,ignore.case=TRUE)) mean(uc$n==fs) else mean(uc$n>=fs)
   })
 
   # Seed Wins
   all_edges <- add_seed_props("KXMARMADSEEDWIN", "Seed Wins", function(raw, fs, cs, st, et, ttl, ns) {
-    sm <- str_match(et, "S(\\d+)$")
-    if (!is.na(sm[1,2])) { ts <- as.integer(sm[1,2]) }
-    else { nums <- as.integer(str_extract_all(et, "\\d+")[[1]]); nums <- nums[nums>=10 & nums<=16]
-           if (length(nums)==0) return(NA_real_); ts <- nums }
+    # Parse target seeds from event ticker
+    # Single seed: KXMARMADSEEDWIN-26S16R64 → seed 16
+    # Combined: KXMARMADSEEDWIN-261516R64 → seeds 15, 16
+    # Combined: KXMARMADSEEDWIN-26S141516 → seeds 14, 15, 16
+    sm <- str_match(et, "S(\\d+)R")  # Single seed before R
+    if (!is.na(sm[1,2]) && nchar(sm[1,2]) <= 2) {
+      ts <- as.integer(sm[1,2])
+    } else {
+      # Extract the part between "26" and "R64" or end
+      middle <- str_match(et, "-26(.+?)(?:R\\d+)?$")[1,2]
+      if (is.na(middle)) return(NA_real_)
+      # Remove leading "S" if present
+      middle <- str_replace(middle, "^S", "")
+      # Parse as consecutive 1-2 digit seed numbers (14, 15, 16 → "141516")
+      ts <- c()
+      remaining <- middle
+      while (nchar(remaining) > 0) {
+        # Try 2-digit first (10-16), then 1-digit
+        if (nchar(remaining) >= 2 && as.integer(substr(remaining, 1, 2)) >= 10 && as.integer(substr(remaining, 1, 2)) <= 16) {
+          ts <- c(ts, as.integer(substr(remaining, 1, 2)))
+          remaining <- substr(remaining, 3, nchar(remaining))
+        } else if (as.integer(substr(remaining, 1, 1)) >= 1 && as.integer(substr(remaining, 1, 1)) <= 9) {
+          ts <- c(ts, as.integer(substr(remaining, 1, 1)))
+          remaining <- substr(remaining, 2, nchar(remaining))
+        } else {
+          break
+        }
+      }
+      if (length(ts) == 0) return(NA_real_)
+    }
     w <- raw %>% filter(seed %in% ts, Round_32==1) %>% group_by(sim_id) %>% summarise(n=n(), .groups="drop")
     w <- tibble(sim_id=1:ns) %>% left_join(w, by="sim_id") %>% mutate(n=coalesce(n, 0L))
     if (grepl("exactly",ttl,ignore.case=TRUE)) mean(w$n==fs) else mean(w$n>=fs)
