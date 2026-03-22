@@ -104,9 +104,12 @@ def clear_positions_cache(current_markets=None):
         _positions_markets_ref = current_markets
 
 
+_positions_api_ok = True  # Track if last API call succeeded
+
+
 def _ensure_positions_loaded():
     """Lazy-load positions from Kalshi if cache is stale (>TTL seconds old)."""
-    global _positions_cache, _positions_cache_time
+    global _positions_cache, _positions_cache_time, _positions_api_ok
     import time as _t
     now = _t.time()
     if _positions_cache is not None and (now - _positions_cache_time) < _POSITIONS_CACHE_TTL:
@@ -115,14 +118,23 @@ def _ensure_positions_loaded():
     if loaded is not None:
         _positions_cache = loaded
         _positions_cache_time = now
-    elif _positions_cache is None:
-        _positions_cache = []  # API failed and no prior cache — empty
+        _positions_api_ok = True
+    else:
+        _positions_api_ok = False
+        if _positions_cache is None:
+            _positions_cache = []  # API failed and no prior cache — empty
 
 
 def get_cached_positions():
     """Return the current positions cache (for use by risk.py exposure cap)."""
     _ensure_positions_loaded()
     return _positions_cache
+
+
+def positions_api_healthy():
+    """Check if the last Kalshi positions API call succeeded."""
+    _ensure_positions_loaded()
+    return _positions_api_ok
 
 
 def get_net_position(ticker):

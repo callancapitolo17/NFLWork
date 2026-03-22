@@ -654,6 +654,13 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
     kelly.clear_positions_cache(current_markets=quotable_markets)
     risk.clear_exposure_cache()
 
+    # SAFETY: verify Kalshi positions loaded successfully before sizing.
+    # If API fails, refuse to quote — sizing with no position data causes
+    # unbounded accumulation (the root cause of the Tennessee disaster).
+    if not kelly.positions_api_healthy():
+        print("  WARNING: Kalshi positions API failed — skipping quote cycle")
+        return resting_by_ticker
+
     # Check overall risk
     is_fresh, pred_age = risk.check_staleness(prediction_updated_at)
     if not is_fresh:

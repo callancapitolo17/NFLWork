@@ -290,6 +290,10 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
     kelly.clear_positions_cache(current_markets=quotable_markets)
     risk.clear_exposure_cache()
 
+    # SAFETY: don't take if Kalshi positions API failed
+    if not kelly.positions_api_healthy():
+        return
+
     # Staleness check (safety — don't trade on stale predictions)
     is_fresh, pred_age = risk.check_staleness(prediction_updated_at)
     if not is_fresh:
