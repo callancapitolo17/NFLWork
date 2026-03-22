@@ -36,7 +36,10 @@ def check_game_type_exposure(home_team, away_team, market_type):
     """
     max_exposure = BANKROLL * MAX_GAME_TYPE_EXPOSURE_PCT
 
-    # Lazy-load positions once per cycle
+    # Lazy-load positions once per cycle (from Kalshi API via kelly cache)
+    if _exposure_cache["positions"] is None:
+        import kelly
+        _exposure_cache["positions"] = kelly.get_cached_positions()
     if _exposure_cache["positions"] is None:
         _exposure_cache["positions"] = db.get_all_positions()
 

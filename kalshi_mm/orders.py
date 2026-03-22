@@ -281,6 +281,32 @@ def get_positions():
     return []
 
 
+def get_kalshi_positions():
+    """Get all unsettled portfolio positions from Kalshi (source of truth).
+
+    Paginates through all pages. Returns raw Kalshi market_positions list.
+    Each entry has: ticker, position_fp, market_exposure_dollars, etc.
+    Returns None on API failure (caller should refuse to quote).
+    """
+    all_positions = []
+    cursor = None
+    while True:
+        path = "/portfolio/positions?limit=200&settlement_status=unsettled"
+        if cursor:
+            path += f"&cursor={cursor}"
+        result = _authenticated_request("GET", path)
+        if result is None:
+            return None  # API failure — caller must handle
+        if "market_positions" not in result:
+            break
+        page = result["market_positions"]
+        all_positions.extend(page)
+        cursor = result.get("cursor")
+        if not cursor or len(page) < 200:
+            break
+    return all_positions
+
+
 def cancel_all_orders():
     """Emergency: cancel ALL resting orders."""
     orders = get_resting_orders()

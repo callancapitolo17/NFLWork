@@ -45,6 +45,9 @@ The main loop checks `cbb_prediction_meta.updated_at` every 30s. If predictions 
 ### Shared DB Write Connection
 `db.py` uses a single shared write connection (`get_write_conn()`) opened lazily on first use and closed on shutdown (`close_write_conn()`). All write functions use it instead of opening/closing their own connections. This eliminates ~1,200 connection open/close cycles per quote cycle. Init functions (`init_database`, `init_taker_tables`) keep their own connections since they run before the shared connection is available. Batch versions exist for hot-path writes: `batch_save_resting_orders()`, `batch_remove_resting_orders()`, `flush_quote_log()`.
 
+### Positions: Kalshi API is Source of Truth
+Kelly sizing and the exposure cap read positions from the Kalshi API (`GET /portfolio/positions`), NOT the local DuckDB. This prevents position drift when fills are missed by `poll_for_fills` (e.g., fully-filled orders that disappear between poll cycles). The local DB is still updated on fills for audit logging, but is never used for sizing decisions. Positions are cached per cycle with a 5s TTL to avoid hammering the API from the taker's 1s poll loop.
+
 ### Kalshi API Auth
 Uses `KALSHI_API_KEY` and `KALSHI_PRIVATE_KEY` from `.env`. Keys are RSA — the private key file path goes in `.env`.
 

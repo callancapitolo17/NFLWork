@@ -286,8 +286,8 @@ def run_take_cycle(quotable_markets, prediction_updated_at, dry_run=False,
     if resting_by_ticker is None:
         resting_by_ticker = {}
 
-    # Clear per-cycle caches
-    kelly.clear_positions_cache()
+    # Clear per-cycle caches — pass quotable_markets for Kalshi position mapping
+    kelly.clear_positions_cache(current_markets=quotable_markets)
     risk.clear_exposure_cache()
 
     # Staleness check (safety — don't trade on stale predictions)

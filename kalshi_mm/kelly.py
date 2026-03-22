@@ -21,25 +21,116 @@ log = logging.getLogger(__name__)
 # In-memory cache: game_id -> DataFrame with (home_margin_h1, total_h1)
 _sample_cache = {}
 
-# Per-cycle cache for positions (cleared each quote/take cycle)
+# Per-cycle cache for positions from Kalshi API (source of truth)
 _positions_cache = None
+_positions_cache_time = 0
+_positions_markets_ref = None  # quotable_markets for ticker→metadata mapping
+_POSITIONS_CACHE_TTL = 5  # seconds — prevents taker from hammering API
 
 
-def clear_positions_cache():
-    """Clear the per-cycle positions cache. Call at start of each quote/take cycle."""
-    global _positions_cache
+def _load_kalshi_positions():
+    """Load positions from Kalshi API and map to internal format.
+
+    Returns list of dicts matching db.get_all_positions() format, or None on failure.
+    """
+    import orders as _orders
+    raw = _orders.get_kalshi_positions()
+    if raw is None:
+        log.warning("Kalshi positions API failed — cannot size")
+        return None
+
+    # Build ticker→market lookup from quotable_markets
+    market_lookup = {}
+    if _positions_markets_ref:
+        for m in _positions_markets_ref:
+            market_lookup[m["ticker"]] = m
+
+    positions = []
+    unmapped = []
+    for kp in raw:
+        ticker = kp.get("ticker", "")
+        position = int(float(kp.get("position_fp", "0")))
+        if position == 0:
+            continue
+
+        market = market_lookup.get(ticker)
+        if not market:
+            unmapped.append(ticker)
+            continue
+
+        # Compute avg_entry_price from Kalshi's exposure data
+        exposure_dollars = float(kp.get("market_exposure_dollars", "0"))
+        avg_price = (exposure_dollars / abs(position) * 100) if position != 0 else 0
+
+        mt = market.get("market_type", "spreads")
+        strike = market.get("strike")
+        if mt == "spreads" and strike is not None:
+            line_value = -strike if market.get("is_home_contract") else strike
+        elif mt == "totals" and strike is not None:
+            line_value = strike
+        else:
+            line_value = None
+
+        positions.append({
+            "ticker": ticker,
+            "event_ticker": market.get("event_ticker", ""),
+            "home_team": market.get("home_team", ""),
+            "away_team": market.get("away_team", ""),
+            "market_type": mt,
+            "line_value": line_value,
+            "net_yes": position,
+            "avg_entry_price": avg_price,
+            "fair_prob": market.get("fair_prob", 0.5),
+            "contract_team": market.get("contract_team", ""),
+        })
+
+    if unmapped:
+        log.info("Kalshi positions: %d mapped, %d unmapped (settled/removed games)",
+                 len(positions), len(unmapped))
+    return positions
+
+
+def clear_positions_cache(current_markets=None):
+    """Mark positions cache as stale. Next read re-fetches from Kalshi API.
+
+    Args:
+        current_markets: quotable_markets list for ticker→metadata mapping.
+            Only updated if provided (not None).
+    """
+    global _positions_cache, _positions_cache_time, _positions_markets_ref
     _positions_cache = None
+    _positions_cache_time = 0
+    if current_markets is not None:
+        _positions_markets_ref = current_markets
+
+
+def _ensure_positions_loaded():
+    """Lazy-load positions from Kalshi if cache is stale (>TTL seconds old)."""
+    global _positions_cache, _positions_cache_time
+    import time as _t
+    now = _t.time()
+    if _positions_cache is not None and (now - _positions_cache_time) < _POSITIONS_CACHE_TTL:
+        return  # Cache is fresh
+    loaded = _load_kalshi_positions()
+    if loaded is not None:
+        _positions_cache = loaded
+        _positions_cache_time = now
+    elif _positions_cache is None:
+        _positions_cache = []  # API failed and no prior cache — empty
+
+
+def get_cached_positions():
+    """Return the current positions cache (for use by risk.py exposure cap)."""
+    _ensure_positions_loaded()
+    return _positions_cache
 
 
 def get_net_position(ticker):
-    """Get net YES position for a ticker from the per-cycle cache.
+    """Get net YES position for a ticker from Kalshi positions.
 
-    Uses the same cache as get_placed_positions_for_game() — no extra DB call.
     Returns 0 if no position exists.
     """
-    global _positions_cache
-    if _positions_cache is None:
-        _positions_cache = _db.get_all_positions()
+    _ensure_positions_loaded()
     for pos in _positions_cache:
         if pos.get("ticker") == ticker:
             return pos.get("net_yes", 0)
@@ -476,6 +567,13 @@ def batch_kelly_sizes_for_game(markets, placed_positions, bankroll, kelly_mult):
             ask_positions.append(ask_pos)
             ask_tickers.append(ticker)
 
+    # Diagnostic: log placed position count per game
+    if placed_positions:
+        total_size = sum(p["size"] for p in placed_positions)
+        log.info("Game %s: %d placed positions (%d total contracts), %d bid + %d ask markets",
+                 markets[0].get("game_key", "?"), len(placed_positions), total_size,
+                 len(bid_positions), len(ask_positions))
+
     # Pass 1: Compute bid sizes (one batch call — all YES, well-conditioned)
     bid_results = {}  # ticker -> (position_dict, size)
     if bid_positions:
@@ -676,20 +774,18 @@ def kelly_size_for_take(market, take_side, execution_price, fee_cents,
 
 
 def get_placed_positions_for_game(game_key, game_id, current_markets=None):
-    """Build placed position dicts for Kelly from DB positions on this game.
+    """Build placed position dicts for Kelly from Kalshi positions on this game.
 
     Args:
         game_key: (home_team, away_team) tuple.
         game_id: game ID for sample lookup.
         current_markets: list of quotable market dicts with current fair_prob.
-            Used to override stale DB fair_prob with live model values.
+            Used to override stale fair_prob with live model values.
 
     Returns list of position dicts with market_type, side, line, fair_prob,
     kalshi_price, and size fields.
     """
-    global _positions_cache
-    if _positions_cache is None:
-        _positions_cache = _db.get_all_positions()
+    _ensure_positions_loaded()
     positions = _positions_cache
 
     # Build ticker → current fair_prob lookup from live markets
@@ -699,10 +795,15 @@ def get_placed_positions_for_game(game_key, game_id, current_markets=None):
             live_fair[m["ticker"]] = m["fair_prob"]
 
     placed = []
+    skipped_team = []
+    skipped_line = []
     for pos in positions:
         pos_home = pos.get("home_team", "")
         pos_away = pos.get("away_team", "")
         if (pos_home, pos_away) != game_key:
+            # Track skipped non-zero positions for diagnostics
+            if pos.get("net_yes", 0) != 0:
+                skipped_team.append((pos.get("ticker", "?"), pos_home, pos_away))
             continue
         net = pos.get("net_yes", 0)
         if net == 0:
@@ -736,6 +837,7 @@ def get_placed_positions_for_game(game_key, game_id, current_markets=None):
         # Spreads/totals require a line for evaluate_outcomes (threshold = -line).
         # Legacy positions without line_value would crash — skip them.
         if mt in ("spreads", "totals") and line is None:
+            skipped_line.append((ticker, mt, net))
             continue
 
         # Use live fair_prob if available, fall back to DB value
@@ -755,4 +857,24 @@ def get_placed_positions_for_game(game_key, game_id, current_markets=None):
             "kalshi_price": int(pos.get("avg_entry_price", 50)),
             "size": abs(net),
         })
+
+    # Diagnostic: warn if positions exist but were filtered out
+    if skipped_line:
+        log.warning("Skipped %d positions with NULL line_value for %s: %s",
+                     len(skipped_line), game_key,
+                     [(t, mt, n) for t, mt, n in skipped_line])
+    # Only log team mismatches if we have few placed positions
+    # (otherwise it's just other games, not a bug)
+    if not placed and skipped_team:
+        # Check if any skipped position's ticker matches this game's market tickers
+        game_ticker_prefix = None
+        if current_markets:
+            game_ticker_prefix = current_markets[0].get("ticker", "")[:30]
+        matching_skips = [s for s in skipped_team
+                          if game_ticker_prefix and game_ticker_prefix[:20] in s[0]]
+        if matching_skips:
+            log.warning("NO placed positions for %s but found %d with matching tickers "
+                        "and different team names: %s",
+                        game_key, len(matching_skips), matching_skips[:3])
+
     return placed

@@ -649,8 +649,9 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
     Returns:
         Updated resting_by_ticker dict.
     """
-    # Clear per-cycle caches
-    kelly.clear_positions_cache()
+    # Clear per-cycle caches — pass quotable_markets so Kalshi positions
+    # can be mapped to game metadata (home_team, market_type, etc.)
+    kelly.clear_positions_cache(current_markets=quotable_markets)
     risk.clear_exposure_cache()
 
     # Check overall risk
