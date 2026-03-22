@@ -30,8 +30,8 @@ When the line monitor detects a sharp move, all resting orders for affected game
 ### Batch Order Placement
 New orders are batched via `POST /portfolio/orders/batched` (max 20 per call) instead of placed individually. This reduces first-cycle startup from ~30 min to ~2 min for ~710 orders. Amends remain individual API calls. Cancels within the quote cycle are also batched via `batch_cancel()`. The `batch_place()` function in `orders.py` handles chunking and per-order failure logging.
 
-### Batch Kelly Sizing
-Kelly sizes are pre-computed for all markets grouped by game before the main quote loop. Instead of calling `conditional_kelly_sizes()` twice per market (~610 calls), `batch_kelly_sizes_for_game()` computes all bid+ask sizes for a game in one matrix solve (~57 calls). This reduces the Kelly loop from ~15 min to ~1.5 min.
+### Budget-Based Maker Sizing
+Maker sizes use a budget approach instead of Kelly matrix optimization. Markets are grouped by game + type (spreads, totals, moneyline). Each group gets a budget = best standalone Kelly fraction × kelly_mult × bankroll, capped at MAX_GAME_TYPE_EXPOSURE_PCT. The budget is distributed within the group by Kelly weight (proportional to each ticker's standalone Kelly fraction). Bids and asks share one budget per group to prevent cross-side directional doubling. Existing Kalshi positions are subtracted from the budget before distributing. When over budget, the bot posts orders to unwind. Kelly matrix sizing (`batch_kelly_sizes_for_game`) is retained for the taker only.
 
 ### Taker Cooldowns
 The taker uses a simple 10s per-ticker tactical cooldown to prevent hammering the same contract. Cross-market correlation (same game, same event) is handled entirely by Kelly conditional sizing — `kelly.clear_positions_cache()` is called after each fill so subsequent takes see updated positions. No event-level or game-level cooldowns.
