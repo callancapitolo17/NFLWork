@@ -890,3 +890,237 @@ def get_placed_positions_for_game(game_key, game_id, current_markets=None):
                         game_key, len(matching_skips), matching_skips[:3])
 
     return placed
+
+
+# ---------------------------------------------------------------------------
+# Budget-based maker sizing (replaces Kelly matrix for resting orders)
+# ---------------------------------------------------------------------------
+
+def kelly_fraction(fair_prob, price_cents):
+    """Single-bet Kelly fraction. Returns 0 if no edge.
+
+    This is used for:
+    1. Setting group budgets (best fraction in the group)
+    2. Weighting within-group distribution (higher edge+better odds = more weight)
+    """
+    if price_cents <= 0 or price_cents >= 100:
+        return 0
+    if fair_prob is None or not (0 < fair_prob < 1):
+        return 0
+    b = (100 - price_cents) / price_cents
+    p = fair_prob
+    q = 1 - p
+    f = (b * p - q) / b
+    return max(0, f)
+
+
+def build_maker_groups(quotable_markets):
+    """Group quotable markets by (game_key, market_type).
+
+    Each group shares a budget — bids and asks together.
+    """
+    groups = {}
+    for market in quotable_markets:
+        key = (market.get("game_key", ("", "")), market.get("market_type", "spreads"))
+        groups.setdefault(key, []).append(market)
+    return groups
+
+
+def compute_group_budget(markets, bankroll, kelly_mult, max_exposure_pct):
+    """Compute budget for a group = best standalone Kelly × kelly_mult × bankroll.
+
+    Capped at max_exposure_pct × bankroll.
+    """
+    best_f = 0
+    for market in markets:
+        book_bid = market.get("book_bid", 0)
+        book_ask = market.get("book_ask", 0)
+        fair = market.get("fair_prob")
+        if fair is None:
+            continue
+
+        # Bid edge (YES side)
+        if book_bid > 0:
+            f = kelly_fraction(fair, book_bid)
+            best_f = max(best_f, f)
+
+        # Ask edge (NO side)
+        if book_ask > 0:
+            no_fair = 1 - fair
+            no_price = 100 - book_ask
+            if no_price > 0:
+                f = kelly_fraction(no_fair, no_price)
+                best_f = max(best_f, f)
+
+    budget = best_f * kelly_mult * bankroll
+    cap = max_exposure_pct * bankroll
+    return min(budget, cap)
+
+
+def compute_maker_sizes(quotable_markets, positions, bankroll, kelly_mult,
+                        max_exposure_pct):
+    """Compute budget-based maker sizes for all quotable markets.
+
+    Args:
+        quotable_markets: list of market dicts with fair_prob, book_bid, book_ask
+        positions: dict {ticker: net_yes} from Kalshi API
+        bankroll: total bankroll in dollars
+        kelly_mult: fractional Kelly multiplier (e.g., 0.25)
+        max_exposure_pct: max exposure per group as fraction of bankroll
+
+    Returns:
+        dict: ticker → {"bid_size": int, "ask_size": int}
+    """
+    groups = build_maker_groups(quotable_markets)
+    all_sizes = {}
+
+    for group_key, group_markets in groups.items():
+        budget = compute_group_budget(group_markets, bankroll, kelly_mult,
+                                      max_exposure_pct)
+        if budget <= 0:
+            continue
+
+        sizes = _distribute_group_budget(group_markets, budget, positions,
+                                         bankroll, kelly_mult)
+        for s in sizes:
+            ticker = s["ticker"]
+            if ticker not in all_sizes:
+                all_sizes[ticker] = {"bid_size": 0, "ask_size": 0}
+            if s["side"] == "yes":
+                all_sizes[ticker]["bid_size"] = s["size"]
+            else:
+                all_sizes[ticker]["ask_size"] = s["size"]
+
+        # Log group budget for diagnostics
+        game_key, mtype = group_key
+        if budget > 0 and sizes:
+            total_new = sum(s["size"] * s["price"] / 100 for s in sizes)
+            log.info("Group %s/%s: budget=$%.2f, held=$%.2f, new=$%.2f, %d orders",
+                     game_key, mtype, budget, budget - total_new, total_new, len(sizes))
+
+    return all_sizes
+
+
+def _distribute_group_budget(markets, budget, positions, bankroll, kelly_mult):
+    """Distribute a group's budget across tickers by Kelly weight.
+
+    Returns list of {"ticker", "side", "price", "size"} dicts.
+    """
+    # Compute raw Kelly per ticker (bid and ask separately)
+    allocations = []
+    for market in markets:
+        ticker = market["ticker"]
+        fair = market.get("fair_prob")
+        if fair is None:
+            continue
+        book_bid = market.get("book_bid", 0)
+        book_ask = market.get("book_ask", 0)
+
+        # Bid (buy YES)
+        if book_bid > 0:
+            f = kelly_fraction(fair, book_bid)
+            raw = f * kelly_mult * bankroll
+            if raw > 0:
+                allocations.append({"ticker": ticker, "side": "yes",
+                                    "price": book_bid, "raw": raw})
+
+        # Ask (sell YES = buy NO)
+        if book_ask > 0:
+            no_fair = 1 - fair
+            no_price = 100 - book_ask
+            if no_price > 0:
+                f = kelly_fraction(no_fair, no_price)
+                raw = f * kelly_mult * bankroll
+                if raw > 0:
+                    allocations.append({"ticker": ticker, "side": "no",
+                                        "price": no_price, "raw": raw})
+
+    if not allocations:
+        return []
+
+    # STEP 1: Compute held exposure — count ALL positions in group
+    group_tickers = {m["ticker"] for m in markets}
+    held = 0
+    for ticker in group_tickers:
+        pos = positions.get(ticker, 0)
+        if pos == 0:
+            continue
+        market = next((m for m in markets if m["ticker"] == ticker), None)
+        if not market:
+            continue
+        if pos > 0:
+            price = market.get("book_bid", 0)
+            if price > 0:
+                held += pos * price / 100
+        elif pos < 0:
+            price = 100 - market.get("book_ask", 0)
+            if price > 0:
+                held += abs(pos) * price / 100
+
+    # STEP 2: Compute remaining room
+    remaining = max(0, budget - held)
+
+    if remaining <= 0:
+        # Over budget — unwind excess
+        return _compute_unwind_orders(markets, group_tickers, positions,
+                                      held, budget)
+
+    # STEP 3: Distribute REMAINING by Kelly weight
+    total_raw = sum(a["raw"] for a in allocations)
+    if total_raw <= 0:
+        return []
+
+    results = []
+    for alloc in allocations:
+        ticker_budget = remaining * (alloc["raw"] / total_raw)
+        contracts = int(ticker_budget / (alloc["price"] / 100))
+
+        # Subtract existing position on this side
+        pos = positions.get(alloc["ticker"], 0)
+        if alloc["side"] == "yes" and pos > 0:
+            contracts = max(0, contracts - pos)
+        elif alloc["side"] == "no" and pos < 0:
+            contracts = max(0, contracts - abs(pos))
+
+        if contracts > 0:
+            results.append({"ticker": alloc["ticker"], "side": alloc["side"],
+                           "price": alloc["price"], "size": contracts})
+
+    return results
+
+
+def _compute_unwind_orders(markets, group_tickers, positions, held, budget):
+    """When over budget, compute orders to reduce exposure back to budget."""
+    results = []
+    excess = held - budget
+
+    for ticker in group_tickers:
+        if excess <= 0:
+            break
+        pos = positions.get(ticker, 0)
+        market = next((m for m in markets if m["ticker"] == ticker), None)
+        if not market or pos == 0:
+            continue
+
+        if pos > 0:
+            price = market.get("book_bid", 0)
+            if price <= 0:
+                continue
+            sell_dollars = min(excess, pos * price / 100)
+            sell_contracts = int(sell_dollars / (price / 100))
+            if sell_contracts > 0:
+                results.append({"ticker": ticker, "side": "no",
+                               "price": 100 - price, "size": sell_contracts})
+                excess -= sell_dollars
+        elif pos < 0:
+            price = 100 - market.get("book_ask", 0)
+            if price <= 0:
+                continue
+            buy_dollars = min(excess, abs(pos) * price / 100)
+            buy_contracts = int(buy_dollars / (price / 100))
+            if buy_contracts > 0:
+                results.append({"ticker": ticker, "side": "yes",
+                               "price": 100 - price, "size": buy_contracts})
+                excess -= buy_dollars
+
+    return results

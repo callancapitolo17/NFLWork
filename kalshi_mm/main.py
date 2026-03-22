@@ -677,24 +677,17 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
     pending_cancel_ids = []   # Order IDs to batch-cancel after the loop
     cycle_ts = time.time()
 
-    # Pre-compute Kelly sizes for all markets, grouped by game (one matrix
-    # solve per game instead of per-market — ~10x faster)
+    # Pre-compute maker sizes using budget-based approach.
+    # Groups markets by game+type, allocates budget using standalone Kelly,
+    # distributes within group by Kelly weight, accounts for Kalshi positions.
     kelly_sizes = {}  # ticker -> {"bid_size": int, "ask_size": int}
     if config.USE_KELLY_SIZING:
-        games = defaultdict(list)
-        for m in quotable_markets:
-            gid = m.get("game_id")
-            if gid:
-                games[gid].append(m)
-        for game_id, game_markets in games.items():
-            gk = game_markets[0].get("game_key",
-                    (game_markets[0].get("home_team", ""),
-                     game_markets[0].get("away_team", "")))
-            placed = kelly.get_placed_positions_for_game(
-                gk, game_id, current_markets=quotable_markets)
-            sizes = kelly.batch_kelly_sizes_for_game(
-                game_markets, placed, config.BANKROLL, config.KELLY_FRACTION)
-            kelly_sizes.update(sizes)
+        positions_map = {p.get("ticker", ""): p.get("net_yes", 0)
+                         for p in kelly.get_cached_positions() or []}
+        kelly_sizes = kelly.compute_maker_sizes(
+            quotable_markets, positions_map,
+            config.BANKROLL, config.KELLY_FRACTION,
+            config.MAX_GAME_TYPE_EXPOSURE_PCT)
 
     for market in quotable_markets:
         ticker = market["ticker"]
@@ -718,26 +711,13 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
         if book_age > config.MAX_BOOK_STALENESS_SEC:
             continue
 
-        # Hard exposure cap: check filled exposure for this game+type
+        # Get current position for inventory skew
+        net = kelly.get_net_position(ticker)
         home_team = market.get("home_team", "")
         away_team = market.get("away_team", "")
-        market_type = market.get("market_type", "spreads")
-        allowed, cur_exp, max_exp, net_dir = risk.check_game_type_exposure(
-            home_team, away_team, market_type)
-        # When over cap, only block the side that increases exposure.
-        # If net long (net_dir > 0): block bids (buying YES), allow asks (selling YES).
-        # If net short (net_dir < 0): block asks, allow bids.
-        cap_block_bids = not allowed and net_dir > 0
-        cap_block_asks = not allowed and net_dir < 0
-        if not allowed and net_dir == 0:
-            cap_block_bids = True
-            cap_block_asks = True
-
-        # Get current position for inventory skew (uses Kelly's per-cycle cache)
-        net = kelly.get_net_position(ticker)
         game_key = market.get("game_key", (home_team, away_team))
 
-        # Kelly sizing: look up pre-computed sizes (batched by game above)
+        # Budget-based sizing: look up pre-computed sizes (budget per game+type)
         if config.USE_KELLY_SIZING:
             ks = kelly_sizes.get(ticker, {"bid_size": 0, "ask_size": 0})
             bid_size = ks["bid_size"]
@@ -745,12 +725,6 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
         else:
             bid_size = config.CONTRACT_SIZE
             ask_size = config.CONTRACT_SIZE
-
-        # Apply exposure cap: zero out the side that would increase exposure
-        if cap_block_bids:
-            bid_size = 0
-        if cap_block_asks:
-            ask_size = 0
 
         # Kelly says don't quote either side → skip entirely
         if bid_size <= 0 and ask_size <= 0:
