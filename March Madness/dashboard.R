@@ -82,12 +82,24 @@ t0 <- Sys.time()
 cb_ratings <- ifelse(is.na(current_bracket$composite_rating), 0, current_bracket$composite_rating)
 cb_seeds <- as.integer(current_bracket$seed)
 cb_region_idx <- as.integer(match(current_bracket$region, region_order))
-# Status: 0=pending, 1=advanced, 2=eliminated
-cb_status <- as.integer(case_when(
-  current_bracket$status == "advanced" ~ 1L,
-  current_bracket$status == "eliminated" ~ 2L,
-  TRUE ~ 0L
-))
+# Compute rounds_won per team: -1=eliminated, 0=pending, 1=won R64, 2=won R64+R32, etc.
+round_name_to_num <- c("1st Round" = 1L, "2nd Round" = 2L, "Sweet 16" = 3L,
+                        "Elite 8" = 4L, "Final Four" = 5L, "National Championship" = 6L)
+team_round_wins <- completed_games %>%
+  mutate(round_num = round_name_to_num[round]) %>%
+  group_by(winner) %>%
+  summarise(rounds_won = max(round_num, na.rm = TRUE), .groups = "drop")
+
+cb_rounds_won <- current_bracket %>%
+  left_join(team_round_wins, by = c("team" = "winner")) %>%
+  mutate(rounds_won = case_when(
+    status == "eliminated" ~ -1L,
+    is.na(rounds_won) ~ 0L,
+    TRUE ~ as.integer(rounds_won)
+  )) %>%
+  pull(rounds_won)
+
+cat(sprintf("Rounds won: %s\n", paste(sort(unique(cb_rounds_won)), collapse=", ")))
 seed_order_vec <- as.integer(c(1,16,8,9,5,12,4,13,6,11,3,14,7,10,2,15))
 region_order_vec <- seq_along(region_order)
 # C++ sim operates on all 64 teams (including eliminated), so use full bracket size for rounds
@@ -96,7 +108,7 @@ n_rounds <- length(round_names)
 
 # Run C++ sim — returns matrix: (n_teams * n_sims) x n_rounds
 sim_matrix <- simulate_tournament_cpp(
-  cb_ratings, cb_seeds, cb_region_idx, cb_status,
+  cb_ratings, cb_seeds, cb_region_idx, cb_rounds_won,
   seed_order_vec, region_order_vec, n_sims, n_rounds
 )
 
