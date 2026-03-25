@@ -505,12 +505,29 @@ def scrape_wagerzon(sport: str, headless: bool = True):
     print("Logging in to Wagerzon...")
     login(session)
 
-    # Step 2: Fetch odds JSON
+    # Step 2: Fetch odds JSON (main leagues)
     print(f"Fetching {sport.upper()} odds...")
     data = fetch_odds_json(session, sport)
 
     # Step 3: Parse JSON into records
     odds_data = parse_odds(data, sport)
+
+    # Step 3b: Fetch prop leagues (race_to_10, etc.) — separate API calls
+    config = get_sport_config(sport)
+    for prop_name, prop_params in config.get("prop_params", {}).items():
+        print(f"Fetching {sport.upper()} {prop_name} props...")
+        prop_url = f"{WAGERZON_HELPER_URL}?WT=0&{prop_params}"
+        try:
+            resp = session.get(prop_url, timeout=30, headers={
+                "Accept": "application/json, text/plain, */*",
+                "X-Requested-With": "XMLHttpRequest",
+            })
+            resp.raise_for_status()
+            prop_data = resp.json()
+            prop_records = parse_odds(prop_data, sport)
+            odds_data.extend(prop_records)
+        except Exception as e:
+            print(f"  Warning: failed to fetch {prop_name}: {e}")
 
     # Count by market type
     market_counts = {}

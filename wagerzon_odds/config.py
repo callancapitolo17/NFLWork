@@ -12,7 +12,8 @@ SPORTS = {
     },
     "cbb": {
         "sport_key": "basketball_ncaab",
-        "url_params": "lg=43,403,45,1852",  # 1852=Race to 10
+        "url_params": "lg=43,403,45",
+        "prop_params": {"race_to_10": "lg=1852"},  # separate API call needed
         "table_name": "cbb_odds",
     },
     "nba": {

@@ -4280,10 +4280,11 @@ compare_race_to_10 <- function(
   }
 
   # Join predictions to odds on home_team + away_team
+  # Drop market from predictions to avoid suffix collision with odds
+  pred_subset <- race10_predictions %>%
+    select(any_of(c("id", "home_team", "away_team", "home_prob", "away_prob", "commence_time")))
   joined <- race10_odds %>%
-    inner_join(
-      race10_predictions %>%
-        select(id, home_team, away_team, market, home_prob, away_prob, commence_time),
+    inner_join(pred_subset,
       by = c("home_team", "away_team"),
       suffix = c("_book", "_pred")
     )
