@@ -156,7 +156,7 @@ def enforce_monotonicity(quotable_markets):
     groups = defaultdict(list)
     for m in quotable_markets:
         mtype = m.get("market_type", "spreads")
-        if mtype == "moneyline":
+        if mtype in ("moneyline", "race_to_10"):
             continue  # No strikes to enforce
         if mtype == "totals":
             # Totals: group by event_ticker alone (no team direction)

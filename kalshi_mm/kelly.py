@@ -196,11 +196,10 @@ def prewarm_sample_cache():
         from itertools import groupby
         from operator import itemgetter
         for game_id, rows in groupby(result, key=itemgetter(0)):
-            raw = list(rows)
-            arr = np.full((len(raw), n_full), np.nan, dtype=np.float64)
+            raw = np.array([r[1:] for r in rows], dtype=np.float64)  # skip game_id
+            arr = np.full((raw.shape[0], n_full), np.nan, dtype=np.float64)
             for j, col_idx in enumerate(col_indices):
-                for i, r in enumerate(raw):
-                    arr[i, col_idx] = r[j + 1]  # +1 to skip game_id
+                arr[:, col_idx] = raw[:, j]
             _sample_cache[game_id] = arr
 
         log.info("Sample cache prewarmed: %d games (%d/%d columns)",
@@ -254,10 +253,10 @@ def load_game_samples(game_id):
 
         n_full = len(SAMPLE_COLUMNS)
         col_indices = [SAMPLE_COLUMNS.index(c) for c in available]
-        arr = np.full((len(result), n_full), np.nan, dtype=np.float64)
+        raw = np.array(result, dtype=np.float64)
+        arr = np.full((raw.shape[0], n_full), np.nan, dtype=np.float64)
         for j, col_idx in enumerate(col_indices):
-            for i, r in enumerate(result):
-                arr[i, col_idx] = r[j]
+            arr[:, col_idx] = raw[:, j]
         _sample_cache[game_id] = arr
         return arr
 
