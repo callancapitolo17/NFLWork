@@ -900,8 +900,8 @@ race10_preds <- map_dfr(names(samples), function(game_id) {
 })
 if (nrow(race10_preds) > 0) {
   raw_preds <- bind_rows(raw_preds, race10_preds)
-  dbExecute(con, "DROP TABLE IF EXISTS cbb_raw_predictions")
-  dbWriteTable(con, "cbb_raw_predictions", raw_preds)
+  dbExecute(con_mm, "DROP TABLE IF EXISTS cbb_raw_predictions")
+  dbWriteTable(con_mm, "cbb_raw_predictions", raw_preds)
   cat(sprintf("Added %d race_to_10_h1 predictions.\n", nrow(race10_preds)))
 }
 
