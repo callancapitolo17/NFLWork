@@ -850,20 +850,53 @@ dbExecute(con, sprintf("INSERT INTO cbb_prediction_meta VALUES ('%s')",
                        format(Sys.time(), "%Y-%m-%d %H:%M:%S")))
 cat(sprintf("Exported %d raw predictions to cbb_raw_predictions.\n", nrow(raw_preds)))
 
-# Export game samples for MM Kelly sizing
+# Export game samples for MM Kelly sizing (including first_to_10_h1)
 sample_rows <- map_dfr(names(samples), function(game_id) {
   s <- samples[[game_id]]$sample
+  ft10 <- if ("first_to_10_h1" %in% names(s)) s$first_to_10_h1 else NA_integer_
   tibble(
     game_id = game_id,
     sim_idx = seq_len(nrow(s)),
     home_margin_h1 = s$game_home_margin_period_Half1,
-    total_h1 = s$game_total_period_Half1
+    total_h1 = s$game_total_period_Half1,
+    first_to_10_h1 = ft10
   )
 })
 dbExecute(con, "DROP TABLE IF EXISTS cbb_game_samples")
 dbWriteTable(con, "cbb_game_samples", sample_rows)
 cat(sprintf("Exported %d game samples (%d games) for Kelly sizing.\n",
             nrow(sample_rows), length(unique(sample_rows$game_id))))
+
+# Export race_to_10_h1 predictions (fair prob from sample mean)
+race10_preds <- map_dfr(names(samples), function(game_id) {
+  s <- samples[[game_id]]$sample
+  if (!"first_to_10_h1" %in% names(s)) return(tibble())
+  ft10 <- s$first_to_10_h1
+  valid <- ft10[!is.na(ft10)]
+  if (length(valid) < 30) return(tibble())  # not enough data
+  home_prob <- mean(valid)
+  # Look up game info from raw_preds (any market for this game)
+  ref <- raw_preds %>% filter(id == game_id) %>% slice(1)
+  if (nrow(ref) == 0) return(tibble())
+  tibble(
+    id = game_id,
+    home_team = ref$home_team,
+    away_team = ref$away_team,
+    commence_time = ref$commence_time,
+    market = "race_to_10_h1",
+    period = "Half1",
+    line_value = NA_real_,
+    prob_side1 = home_prob,
+    prob_side2 = 1 - home_prob,
+    prob_tie = NA_real_
+  )
+})
+if (nrow(race10_preds) > 0) {
+  raw_preds <- bind_rows(raw_preds, race10_preds)
+  dbExecute(con, "DROP TABLE IF EXISTS cbb_raw_predictions")
+  dbWriteTable(con, "cbb_raw_predictions", raw_preds)
+  cat(sprintf("Added %d race_to_10_h1 predictions.\n", nrow(race10_preds)))
+}
 
 timer$mark("save_bets")
 dbDisconnect(con)

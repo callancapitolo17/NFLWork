@@ -323,6 +323,43 @@ if ("--daily" %in% cli_args) {
 # ============================================================================
 # CLI: --daily-pbp mode (hoopR PBP to cbb_pbp_v2, matching cbbpy schema)
 # ============================================================================
+# Helper: extract first-to-10 from raw hoopR PBP data
+# Returns tibble with game_id + first_to_10_h1 (1 = home, 0 = away, NA = neither reached 10)
+extract_first_to_10_h1 <- function(pbp) {
+  # Filter to H1 plays with valid running scores
+  h1 <- pbp %>%
+    filter(half == 1, !is.na(home_score), !is.na(away_score)) %>%
+    arrange(game_id, id) %>%
+    group_by(game_id) %>%
+    summarize(
+      # Find first play where home reaches 10
+      home_first_10_idx = {
+        idx <- which(home_score >= 10)
+        if (length(idx) > 0) min(idx) else NA_integer_
+      },
+      # Find first play where away reaches 10
+      away_first_10_idx = {
+        idx <- which(away_score >= 10)
+        if (length(idx) > 0) min(idx) else NA_integer_
+      },
+      .groups = "drop"
+    ) %>%
+    mutate(
+      first_to_10_h1 = case_when(
+        is.na(home_first_10_idx) & is.na(away_first_10_idx) ~ NA_integer_,
+        is.na(away_first_10_idx) ~ 1L,   # only home reached 10
+        is.na(home_first_10_idx) ~ 0L,   # only away reached 10
+        home_first_10_idx < away_first_10_idx ~ 1L,   # home reached first
+        away_first_10_idx < home_first_10_idx ~ 0L,   # away reached first
+        TRUE ~ NA_integer_  # tied (same play) — treat as NA
+      ),
+      game_id = as.character(game_id)
+    ) %>%
+    select(game_id, first_to_10_h1)
+
+  h1
+}
+
 if ("--daily-pbp" %in% cli_args) {
   if (!requireNamespace("hoopR", quietly = TRUE)) install.packages("hoopR")
   library(hoopR)
@@ -396,6 +433,10 @@ if ("--daily-pbp" %in% cli_args) {
     ) %>%
     select(game_id, went_to_ot, home_ot_score, away_ot_score, game_home_margin_ot, game_total_ot)
 
+  # Extract first-to-10 from raw PBP before pivoting
+  first10 <- extract_first_to_10_h1(pbp)
+  message(sprintf("First-to-10: computed for %d games", nrow(first10)))
+
   # Pivot to wide format - one row per game
   game_margins <- game_by_half %>%
     select(game_id, game_date, home_team, away_team, half,
@@ -408,6 +449,7 @@ if ("--daily-pbp" %in% cli_args) {
     ) %>%
     # Final scores = end of regulation if no OT, or max overall
     left_join(ot_info, by = "game_id") %>%
+    left_join(first10, by = c("game_id" = "game_id")) %>%
     mutate(
       home_h1_score = as.integer(home_half_score_h1),
       away_h1_score = as.integer(away_half_score_h1),
@@ -423,6 +465,7 @@ if ("--daily-pbp" %in% cli_args) {
       away_ot_score = coalesce(away_ot_score, 0L),
       game_home_margin_ot = coalesce(game_home_margin_ot, 0L),
       game_total_ot = coalesce(game_total_ot, 0L),
+      first_to_10_h1 = coalesce(first_to_10_h1, NA_integer_),
       # Final scores (regulation end + OT)
       home_final_score = as.integer(home_score_end_h2 + home_ot_score),
       away_final_score = as.integer(away_score_end_h2 + away_ot_score),
@@ -441,7 +484,7 @@ if ("--daily-pbp" %in% cli_args) {
       home_h2_score, away_h2_score, game_home_margin_h2, game_total_h2,
       home_ot_score, away_ot_score, game_home_margin_ot, game_total_ot,
       home_final_score, away_final_score, game_home_margin_fg, game_total_fg,
-      home_winner, went_to_ot
+      home_winner, went_to_ot, first_to_10_h1
     )
 
   # Filter to completed games only (must have both halves with valid scores)
@@ -472,7 +515,8 @@ if ("--daily-pbp" %in% cli_args) {
           game_home_margin_ot INTEGER, game_total_ot INTEGER,
           home_final_score INTEGER, away_final_score INTEGER,
           game_home_margin_fg INTEGER, game_total_fg INTEGER,
-          home_winner INTEGER, went_to_ot INTEGER
+          home_winner INTEGER, went_to_ot INTEGER,
+          first_to_10_h1 INTEGER
         )")
       }
     )
@@ -482,6 +526,80 @@ if ("--daily-pbp" %in% cli_args) {
 
   total <- dbGetQuery(con, "SELECT COUNT(*) as n FROM cbb_pbp_v2")$n
   message(sprintf("Complete. Total games in cbb_pbp_v2: %d", total))
+
+  quit(save = "no", status = 0)
+}
+
+# ============================================================================
+# CLI: --backfill-first10 mode (add first_to_10_h1 to existing cbb_pbp_v2 rows)
+# ============================================================================
+if ("--backfill-first10" %in% cli_args) {
+  if (!requireNamespace("hoopR", quietly = TRUE)) install.packages("hoopR")
+  library(hoopR)
+
+  message("Running in --backfill-first10 mode: adding first_to_10_h1 to existing games")
+
+  # Use --db <path> if provided, otherwise default to parent Answer Keys/cbb.duckdb
+  # (the main PBP database, not the local CBB Answer Key copy)
+  db_idx <- which(cli_args == "--db")
+  backfill_db <- if (length(db_idx) > 0 && db_idx < length(cli_args)) {
+    cli_args[db_idx + 1]
+  } else {
+    DB_PATH  # Answer Keys/cbb.duckdb (same as DB_PATH after setwd)
+  }
+  message(sprintf("Database: %s", backfill_db))
+
+  con <- dbConnect(duckdb(), dbdir = backfill_db)
+  on.exit(dbDisconnect(con, shutdown = TRUE), add = TRUE)
+
+  # Add column if it doesn't exist
+  tryCatch(
+    dbExecute(con, "ALTER TABLE cbb_pbp_v2 ADD COLUMN first_to_10_h1 INTEGER"),
+    error = function(e) message("Column first_to_10_h1 already exists")
+  )
+
+  # Find games missing first_to_10_h1
+  missing <- dbGetQuery(con, "
+    SELECT game_id FROM cbb_pbp_v2 WHERE first_to_10_h1 IS NULL
+  ") %>% pull(game_id)
+  message(sprintf("Games missing first_to_10_h1: %d", length(missing)))
+
+  if (length(missing) == 0) {
+    message("Nothing to backfill.")
+    quit(save = "no", status = 0)
+  }
+
+  # Load PBP for all relevant seasons
+  seasons <- 2021:2026
+  message(sprintf("Loading hoopR PBP for seasons %s...", paste(seasons, collapse = ", ")))
+  pbp <- load_mbb_pbp(seasons)
+  message(sprintf("Loaded %d PBP records", nrow(pbp)))
+
+  # Extract first-to-10
+  first10 <- extract_first_to_10_h1(pbp)
+  message(sprintf("Computed first-to-10 for %d games", nrow(first10)))
+
+  # Update matching rows
+  to_update <- first10 %>% filter(game_id %in% missing, !is.na(first_to_10_h1))
+  message(sprintf("Updating %d games with first_to_10_h1 values", nrow(to_update)))
+
+  if (nrow(to_update) > 0) {
+    # Write to temp table, then UPDATE
+    dbWriteTable(con, "tmp_first10", to_update, overwrite = TRUE)
+    updated <- dbExecute(con, "
+      UPDATE cbb_pbp_v2 SET first_to_10_h1 = t.first_to_10_h1
+      FROM tmp_first10 t WHERE cbb_pbp_v2.game_id = t.game_id
+    ")
+    dbExecute(con, "DROP TABLE IF EXISTS tmp_first10")
+    message(sprintf("Updated %d rows", updated))
+  }
+
+  # Report
+  filled <- dbGetQuery(con, "
+    SELECT COUNT(*) as n FROM cbb_pbp_v2 WHERE first_to_10_h1 IS NOT NULL
+  ")$n
+  total <- dbGetQuery(con, "SELECT COUNT(*) as n FROM cbb_pbp_v2")$n
+  message(sprintf("Complete. %d/%d games have first_to_10_h1", filled, total))
 
   quit(save = "no", status = 0)
 }

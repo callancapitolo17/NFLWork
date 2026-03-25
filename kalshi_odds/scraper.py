@@ -154,6 +154,17 @@ def parse_spread_team(title):
     return None
 
 
+def parse_race_to_10_team(title):
+    """Extract team name from race-to-10 market title.
+
+    Format: "Will TeamName be the first to reach 10 points?"
+    """
+    m = re.match(r"Will (.+?) be the first to reach 10 points", title)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
 def resolve_home_away(away_raw, home_raw, team_dict, canonical_games):
     """Resolve team names and determine home/away using canonical games."""
     return resolve_team_names(away_raw, home_raw, team_dict, canonical_games)

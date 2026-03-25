@@ -18,8 +18,15 @@ import db as _db
 
 log = logging.getLogger(__name__)
 
-# In-memory cache: game_id -> DataFrame with (home_margin_h1, total_h1)
+# In-memory cache: game_id -> numpy array with columns defined by SAMPLE_COLUMNS
 _sample_cache = {}
+
+# Column layout for sample arrays. Order matters — index used in evaluate_outcomes.
+# New columns can be appended without breaking existing market types.
+SAMPLE_COLUMNS = ["home_margin_h1", "total_h1", "first_to_10_h1"]
+_COL_MARGIN = 0
+_COL_TOTAL = 1
+_COL_FIRST_TO_10 = 2
 
 # Per-cycle cache for positions from Kalshi API (source of truth)
 _positions_cache = None
@@ -160,8 +167,19 @@ def prewarm_sample_cache():
     try:
         con = duckdb.connect(str(CBB_DB_PATH), read_only=True)
         try:
+            # Discover which sample columns exist in the table
+            table_cols = [r[0] for r in con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'cbb_game_samples'"
+            ).fetchall()]
+            available = [c for c in SAMPLE_COLUMNS if c in table_cols]
+            if not available:
+                log.warning("Sample cache prewarm: no known columns in cbb_game_samples")
+                return 0
+
+            cols_sql = ", ".join(available)
             result = con.execute(
-                "SELECT game_id, home_margin_h1, total_h1 "
+                f"SELECT game_id, {cols_sql} "
                 "FROM cbb_game_samples ORDER BY game_id, sim_idx"
             ).fetchall()
         finally:
@@ -171,14 +189,22 @@ def prewarm_sample_cache():
             log.info("Sample cache prewarm: no samples found")
             return 0
 
-        # Group rows by game_id
+        # Build array with full SAMPLE_COLUMNS width, NaN-filling missing columns
+        n_full = len(SAMPLE_COLUMNS)
+        col_indices = [SAMPLE_COLUMNS.index(c) for c in available]
+
         from itertools import groupby
         from operator import itemgetter
         for game_id, rows in groupby(result, key=itemgetter(0)):
-            data = [(r[1], r[2]) for r in rows]
-            _sample_cache[game_id] = np.array(data, dtype=np.float64)
+            raw = list(rows)
+            arr = np.full((len(raw), n_full), np.nan, dtype=np.float64)
+            for j, col_idx in enumerate(col_indices):
+                for i, r in enumerate(raw):
+                    arr[i, col_idx] = r[j + 1]  # +1 to skip game_id
+            _sample_cache[game_id] = arr
 
-        log.info("Sample cache prewarmed: %d games", len(_sample_cache))
+        log.info("Sample cache prewarmed: %d games (%d/%d columns)",
+                 len(_sample_cache), len(available), n_full)
         return len(_sample_cache)
 
     except Exception as e:
@@ -194,8 +220,9 @@ def clear_sample_cache():
 def load_game_samples(game_id):
     """Load simulation samples for a game from cbb.duckdb.
 
-    Returns numpy array of shape (n_sims, 2) with columns
-    [home_margin_h1, total_h1], or None if unavailable.
+    Returns numpy array of shape (n_sims, len(SAMPLE_COLUMNS)) with columns
+    defined by SAMPLE_COLUMNS. Missing columns are NaN-filled.
+    Returns None if unavailable.
     """
     if game_id in _sample_cache:
         return _sample_cache[game_id]
@@ -203,24 +230,36 @@ def load_game_samples(game_id):
     try:
         con = duckdb.connect(str(CBB_DB_PATH), read_only=True)
         try:
+            table_cols = [r[0] for r in con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'cbb_game_samples'"
+            ).fetchall()]
+            available = [c for c in SAMPLE_COLUMNS if c in table_cols]
+            if not available:
+                _sample_cache[game_id] = None
+                return None
+
+            cols_sql = ", ".join(available)
             result = con.execute(
-                "SELECT home_margin_h1, total_h1 FROM cbb_game_samples "
+                f"SELECT {cols_sql} FROM cbb_game_samples "
                 "WHERE game_id = ? ORDER BY sim_idx",
                 [game_id]
-            ).fetchnumpy()
+            ).fetchall()
         finally:
             con.close()
 
-        if result is None or len(result["home_margin_h1"]) == 0:
+        if not result:
             _sample_cache[game_id] = None
             return None
 
-        samples = np.column_stack([
-            result["home_margin_h1"].astype(np.float64),
-            result["total_h1"].astype(np.float64),
-        ])
-        _sample_cache[game_id] = samples
-        return samples
+        n_full = len(SAMPLE_COLUMNS)
+        col_indices = [SAMPLE_COLUMNS.index(c) for c in available]
+        arr = np.full((len(result), n_full), np.nan, dtype=np.float64)
+        for j, col_idx in enumerate(col_indices):
+            for i, r in enumerate(result):
+                arr[i, col_idx] = r[j]
+        _sample_cache[game_id] = arr
+        return arr
 
     except Exception as e:
         log.warning("Failed to load samples for %s: %s", game_id, e)
@@ -232,17 +271,18 @@ def evaluate_outcomes(samples, market_type, side, line=None):
     """Evaluate binary outcomes for each simulation row.
 
     Args:
-        samples: (n_sims, 2) array with [home_margin_h1, total_h1].
-        market_type: "spreads", "totals", or "moneyline".
-        side: "home"/"away" for spreads/ML, "over"/"under" for totals,
-              "tie" for ML tie.
-        line: spread or total line (float). None for ML.
+        samples: (n_sims, len(SAMPLE_COLUMNS)) array. Columns indexed by
+                 _COL_MARGIN, _COL_TOTAL, _COL_FIRST_TO_10.
+        market_type: "spreads", "totals", "moneyline", or "race_to_10".
+        side: "home"/"away" for spreads/ML/race_to_10,
+              "over"/"under" for totals, "tie" for ML tie.
+        line: spread or total line (float). None for ML/race_to_10.
 
     Returns:
         (n_sims,) float array with 1.0 (hit), 0.0 (miss), NaN (push).
     """
-    margin = samples[:, 0]
-    total = samples[:, 1]
+    margin = samples[:, _COL_MARGIN]
+    total = samples[:, _COL_TOTAL]
     n = len(margin)
     out = np.empty(n, dtype=np.float64)
 
@@ -282,6 +322,19 @@ def evaluate_outcomes(samples, market_type, side, line=None):
             out[:] = np.where(margin != 0, 1.0, 0.0)
         else:  # tie
             out[:] = np.where(margin == 0, 1.0, 0.0)
+
+    elif market_type == "race_to_10":
+        # first_to_10_h1: 1 = home reached 10 first, 0 = away reached 10 first
+        ft10 = samples[:, _COL_FIRST_TO_10]
+        if np.all(np.isnan(ft10)):
+            # Column not available — cannot evaluate
+            out[:] = np.nan
+        elif side == "home":
+            out[:] = np.where(np.isnan(ft10), np.nan,
+                              np.where(ft10 == 1, 1.0, 0.0))
+        else:  # away
+            out[:] = np.where(np.isnan(ft10), np.nan,
+                              np.where(ft10 == 0, 1.0, 0.0))
     else:
         out[:] = np.nan
 
@@ -292,7 +345,7 @@ def build_outcome_matrix(samples, positions):
     """Build outcome matrix for multiple positions on the same game.
 
     Args:
-        samples: (n_sims, 2) array from load_game_samples().
+        samples: (n_sims, len(SAMPLE_COLUMNS)) array from load_game_samples().
         positions: list of dicts with market_type, side, line.
 
     Returns:
@@ -388,7 +441,7 @@ def conditional_kelly_sizes(new_positions, placed_positions, samples,
         new_positions: list of position dicts (market_type, side, line,
                        fair_prob, kalshi_price).
         placed_positions: list of position dicts with additional 'size' field.
-        samples: (n_sims, 2) array from load_game_samples().
+        samples: (n_sims, len(SAMPLE_COLUMNS)) array from load_game_samples().
         bankroll: total bankroll in dollars.
         kelly_mult: fractional Kelly multiplier.
 
@@ -705,6 +758,9 @@ def _market_to_position(market, yes_or_no):
                 side = "away"
             else:
                 side = "tie"
+        elif mt == "race_to_10":
+            ct = market.get("contract_team", "")
+            side = "home" if ct == market.get("home_team") else "away"
         else:
             side = "home"
     else:
@@ -722,6 +778,9 @@ def _market_to_position(market, yes_or_no):
                 side = "not_away"
             else:
                 side = "not_tie"
+        elif mt == "race_to_10":
+            ct = market.get("contract_team", "")
+            side = "away" if ct == market.get("home_team") else "home"
         else:
             side = "away"
 
@@ -839,6 +898,13 @@ def get_placed_positions_for_game(game_key, game_id, current_markets=None):
                 side = "tie" if net > 0 else "not_tie"
             else:
                 # No contract_team stored (legacy position) — skip
+                continue
+        elif mt == "race_to_10":
+            if ct == pos_home:
+                side = "home" if net > 0 else "away"
+            elif ct == pos_away:
+                side = "away" if net > 0 else "home"
+            else:
                 continue
         else:
             continue

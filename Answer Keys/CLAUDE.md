@@ -32,6 +32,20 @@ run.py (orchestrator)
 - `cbb_dashboard.duckdb` — Dashboard state (placed_bets, settings, CLV)
 - Never symlink DuckDB files. Always copy if needed in worktrees.
 
+### Race-to-10 Data Flow
+```
+Acquire CBB Data.R --daily-pbp
+  └── extract_first_to_10_h1(pbp) → first_to_10_h1 column in cbb_pbp_v2
+build_betting_pbp.R
+  └── Propagates first_to_10_h1 into cbb_betting_pbp
+CBB.R
+  ├── first_to_10_h1 flows into DT via betting_pbp join (no rename needed)
+  ├── Exported as 3rd column in cbb_game_samples
+  └── race_to_10_h1 predictions added to cbb_raw_predictions
+```
+- Backfill existing games: `Rscript "Acquire CBB Data.R" --backfill-first10`
+- Fair value = `mean(first_to_10_h1)` across resampled historical games
+
 ## Common Pitfalls
 
 1. **Odds API commence_time is a string, not POSIXct** — Must parse with `ymd_hms(commence_time, tz = "UTC")` before any time comparison
