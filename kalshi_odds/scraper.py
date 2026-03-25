@@ -49,6 +49,7 @@ SERIES_TICKERS = {
     "spreads": "KXNCAAMB1HSPREAD",
     "totals": "KXNCAAMB1HTOTAL",
     "moneyline": "KXNCAAMB1HWINNER",
+    "race_to_10": "KXNCAAMBFIRST10",
 }
 
 TAKER_FEE_RATE = 0.07
@@ -490,6 +491,96 @@ def parse_moneyline_records(markets, team_dict, canonical_games, fetch_time):
     return records
 
 
+def parse_race_to_10_records(markets, team_dict, canonical_games, fetch_time):
+    """Parse race-to-10 markets into records.
+
+    Each event has 2 contracts: one per team.
+    Title format: "Will [Team] be the first to reach 10 points?"
+    """
+    records = []
+    by_event = defaultdict(list)
+    for m in markets:
+        by_event[m["event_ticker"]].append(m)
+
+    for event_ticker, event_markets in by_event.items():
+        if len(event_markets) != 2:
+            continue
+
+        # Extract team names from titles
+        team_names = []
+        for m in event_markets:
+            team = parse_race_to_10_team(m.get("title", ""))
+            if team:
+                team_names.append((team, m))
+        if len(team_names) != 2:
+            continue
+
+        # Determine home/away using canonical games (no event title available)
+        # Try both orderings — resolve_home_away returns (away, home)
+        team_a, team_b = team_names[0][0], team_names[1][0]
+        away_resolved, home_resolved = resolve_home_away(
+            team_a, team_b, team_dict, canonical_games
+        )
+
+        close_time = event_markets[0].get("close_time", "")
+        game_date, game_time_str = _parse_datetime(close_time)
+
+        # Match contracts to home/away using resolved names
+        home_contract = away_contract = None
+        for team_name, m in team_names:
+            if _fuzzy_team_match(team_name.lower(), home_resolved.lower()):
+                home_contract = m
+            elif _fuzzy_team_match(team_name.lower(), away_resolved.lower()):
+                away_contract = m
+
+        if not home_contract or not away_contract:
+            continue
+
+        # Skip illiquid
+        if not _is_liquid(home_contract) or not _is_liquid(away_contract):
+            continue
+
+        _, home_ask = _get_book(home_contract)
+        _, away_ask = _get_book(away_contract)
+
+        home_odds, home_eff = cents_to_american(home_ask)
+        away_odds, away_eff = cents_to_american(away_ask)
+
+        if home_odds is None or away_odds is None:
+            continue
+
+        records.append({
+            "fetch_time": fetch_time,
+            "sport_key": "basketball_ncaab",
+            "game_id": f"kalshi-{event_ticker}",
+            "game_date": game_date,
+            "game_time": game_time_str,
+            "away_team": away_resolved,
+            "home_team": home_resolved,
+            "market": "race_to_10_h1",
+            "period": "Half1",
+            "away_spread": None,
+            "away_spread_price": None,
+            "away_spread_cents": None,
+            "home_spread": None,
+            "home_spread_price": None,
+            "home_spread_cents": None,
+            "total": None,
+            "over_price": None,
+            "over_cents": None,
+            "under_price": None,
+            "under_cents": None,
+            "away_ml": away_odds,
+            "away_ml_cents": away_eff,
+            "home_ml": home_odds,
+            "home_ml_cents": home_eff,
+            "tie_ml": None,
+            "tie_ml_cents": None,
+        })
+
+    return records
+
+
 # =============================================================================
 # HELPERS
 # =============================================================================
@@ -659,6 +750,8 @@ def scrape_kalshi(sport="cbb"):
             records = parse_total_records(markets, team_dict, canonical_games, fetch_time)
         elif market_type == "moneyline":
             records = parse_moneyline_records(markets, team_dict, canonical_games, fetch_time)
+        elif market_type == "race_to_10":
+            records = parse_race_to_10_records(markets, team_dict, canonical_games, fetch_time)
         else:
             continue
 

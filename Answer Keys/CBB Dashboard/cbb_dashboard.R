@@ -120,6 +120,7 @@ find_same_game_bets <- function(row_idx, all_bets, placed_bets) {
 
 format_market_name <- function(market) {
   market %>%
+    str_replace("race_to_10", "Race10") %>%
     str_replace("alternate_", "Alt ") %>%
     str_replace("team_totals", "Team Tot") %>%
     str_replace("totals", "Total") %>%
@@ -1254,6 +1255,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
         function formatMarketNameJS(market) {
           return market
+            .replace("race_to_10", "Race10")
             .replace("alternate_", "Alt ")
             .replace("team_totals", "Team Tot")
             .replace("totals", "Total")
@@ -1628,7 +1630,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               if (text.includes("@")) {
                 gameText = text;
               }
-              if (["ML", "Spread", "Total", "Team Tot", "Alt"].some(m => text.includes(m))) {
+              if (["ML", "Spread", "Total", "Team Tot", "Alt", "Race10"].some(m => text.includes(m))) {
                 marketText = text;
               }
             });
@@ -1637,7 +1639,9 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             if (bookCell) bookText = bookCell.textContent.trim();
 
             let marketType = "Other";
-            if (marketText.includes("ML")) {
+            if (marketText.includes("Race10")) {
+              marketType = "Race to 10";
+            } else if (marketText.includes("ML")) {
               marketType = "Moneyline";
             } else if (marketText.includes("Alt")) {
               marketType = "Alternates";
@@ -2314,6 +2318,7 @@ filter_books <- if (nrow(all_bets) > 0) {
 filter_markets <- if (nrow(all_bets) > 0) {
   all_bets %>%
     mutate(market_type = case_when(
+      grepl("race_to_10", market) ~ "Race to 10",
       grepl("^h2h", market) ~ "Moneyline",
       grepl("^spread", market) ~ "Spreads",
       grepl("^total", market) ~ "Totals",

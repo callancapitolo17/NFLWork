@@ -3070,12 +3070,13 @@ get_wagerzon_odds <- function(
       result_list[[length(result_list) + 1]] <- totals_rec
     }
 
-    # Moneyline record
+    # Moneyline / race_to_10 record
     if (!is.na(row$away_ml)) {
-      ml_market <- gsub("spreads", "h2h", row$market)
+      is_race10 <- grepl("race_to_10", row$market)
+      ml_market <- if (is_race10) row$market else gsub("spreads", "h2h", row$market)
       ml_rec <- c(base, list(
         market = ml_market,
-        market_type = "h2h",
+        market_type = if (is_race10) "race_to_10" else "h2h",
         line = NA_real_,
         odds_away = row$away_ml,
         odds_home = row$home_ml,
@@ -3093,11 +3094,12 @@ get_wagerzon_odds <- function(
 
   result <- bind_rows(lapply(result_list, as.data.frame))
 
-  cat(sprintf("Loaded %d Wagerzon odds records (%d spreads, %d totals, %d ML)\n",
+  cat(sprintf("Loaded %d Wagerzon odds records (%d spreads, %d totals, %d ML, %d race_to_10)\n",
               nrow(result),
               sum(result$market_type == "spreads"),
               sum(result$market_type == "totals"),
-              sum(result$market_type == "h2h")))
+              sum(result$market_type == "h2h"),
+              sum(result$market_type == "race_to_10")))
 
   result <- resolve_offshore_teams(result, sport = sport)
   return(result)
@@ -3682,12 +3684,13 @@ get_kalshi_odds <- function(
       result_list[[length(result_list) + 1]] <- totals_rec
     }
 
-    # Moneyline record
+    # Moneyline / race_to_10 record
     if (!is.na(row$away_ml)) {
       has_tie <- "tie_ml" %in% names(row) && !is.na(row$tie_ml)
+      is_race10 <- grepl("race_to_10", row$market)
       ml_rec <- c(base, list(
         market = row$market,
-        market_type = if (has_tie) "h2h_3way" else "h2h",
+        market_type = if (is_race10) "race_to_10" else if (has_tie) "h2h_3way" else "h2h",
         line = NA_real_,
         odds_away = row$away_ml,
         odds_home = row$home_ml,
@@ -3708,12 +3711,13 @@ get_kalshi_odds <- function(
 
   result <- bind_rows(lapply(result_list, as.data.frame))
 
-  cat(sprintf("Loaded %d Kalshi odds records (%d spreads, %d totals, %d ML 2-way, %d ML 3-way)\n",
+  cat(sprintf("Loaded %d Kalshi odds records (%d spreads, %d totals, %d ML 2-way, %d ML 3-way, %d race_to_10)\n",
               nrow(result),
               sum(result$market_type == "spreads"),
               sum(result$market_type == "totals"),
               sum(result$market_type == "h2h"),
-              sum(result$market_type == "h2h_3way")))
+              sum(result$market_type == "h2h_3way"),
+              sum(result$market_type == "race_to_10")))
 
   result <- resolve_offshore_teams(result, sport = sport)
   return(result)
@@ -4250,6 +4254,72 @@ compare_moneylines_to_wagerzon <- function(
   cat(sprintf("Generated %d %s moneyline bets\n", nrow(bets), book_key))
 
   list(predictions = predictions, prediction_set = prediction_set, bets = bets, markets_summary = summary)
+}
+
+
+#' Compare race-to-10 predictions against book odds
+#'
+#' Race-to-10 is a 2-way binary prop: home team reaches 10 first vs away.
+#' Works for any book that stores race_to_10 odds in home_ml/away_ml columns.
+compare_race_to_10 <- function(
+    race10_predictions,
+    book_odds,
+    bankroll = 100,
+    kelly_mult = 0.25,
+    ev_threshold = 0.05
+) {
+  if (is.null(race10_predictions) || nrow(race10_predictions) == 0) {
+    return(list(bets = tibble()))
+  }
+
+  race10_odds <- book_odds %>%
+    filter(market_type == "race_to_10")
+
+  if (nrow(race10_odds) == 0) {
+    return(list(bets = tibble()))
+  }
+
+  # Join predictions to odds on home_team + away_team
+  joined <- race10_odds %>%
+    inner_join(
+      race10_predictions %>%
+        select(id, home_team, away_team, market, home_prob, away_prob, commence_time),
+      by = c("home_team", "away_team"),
+      suffix = c("_book", "_pred")
+    )
+
+  if (nrow(joined) == 0) {
+    return(list(bets = tibble()))
+  }
+
+  book_key <- unique(race10_odds$bookmaker_key)[1]
+  cat(sprintf("Found %d matches between race-to-10 predictions and %s odds\n",
+              nrow(joined), book_key))
+
+  prediction_set <- joined %>%
+    mutate(as_tibble(american_prob(odds_away, odds_home))) %>%
+    rename(book_prob_away = p1, book_prob_home = p2) %>%
+    mutate(
+      home_ev = compute_ev(home_prob, book_prob_home),
+      away_ev = compute_ev(away_prob, book_prob_away),
+      home_bet_size = kelly_stake(home_ev, book_prob_home, bankroll, kelly_mult),
+      away_bet_size = kelly_stake(away_ev, book_prob_away, bankroll, kelly_mult)
+    )
+
+  bets <- prediction_set %>%
+    format_bets_table(
+      pred1 = "home_prob", pred2 = "away_prob",
+      ev1 = "home_ev", ev2 = "away_ev",
+      size1 = "home_bet_size", size2 = "away_bet_size",
+      odds1 = "odds_home", odds2 = "odds_away",
+      cents1 = if ("cents_home" %in% names(prediction_set)) "cents_home" else NULL,
+      cents2 = if ("cents_away" %in% names(prediction_set)) "cents_away" else NULL,
+      books = book_key,
+      ev_threshold = ev_threshold
+    )
+
+  cat(sprintf("Generated %d %s race-to-10 bets\n", nrow(bets), book_key))
+  list(bets = bets)
 }
 
 

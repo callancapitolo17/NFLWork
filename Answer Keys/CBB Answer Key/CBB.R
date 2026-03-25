@@ -516,6 +516,30 @@ kalshi_odds <- get_kalshi_odds("cbb")
 cat(sprintf("Loaded %d Kalshi records.\n", nrow(kalshi_odds)))
 timer$mark("load_scrapers")
 
+# --- Race-to-10 predictions (used by offshore comparisons below) ---
+game_ref <- cbb_odds %>% ungroup() %>%
+  select(id, home_team, away_team, commence_time) %>% distinct()
+race10_predictions <- map_dfr(names(samples), function(game_id) {
+  s <- samples[[game_id]]$sample
+  if (!"first_to_10_h1" %in% names(s)) return(tibble())
+  ft10 <- s$first_to_10_h1
+  valid <- ft10[!is.na(ft10)]
+  if (length(valid) < 30) return(tibble())
+  home_prob <- mean(valid)
+  ref <- game_ref %>% filter(id == game_id) %>% slice(1)
+  if (nrow(ref) == 0) return(tibble())
+  tibble(
+    id = game_id,
+    home_team = ref$home_team,
+    away_team = ref$away_team,
+    commence_time = ref$commence_time,
+    market = "race_to_10_h1",
+    home_prob = home_prob,
+    away_prob = 1 - home_prob
+  )
+})
+cat(sprintf("Computed %d race-to-10 predictions.\n", nrow(race10_predictions)))
+
 # --- WAGERZON ---
 if (nrow(wagerzon_odds) > 0) {
   suppressWarnings({
@@ -533,10 +557,16 @@ if (nrow(wagerzon_odds) > 0) {
     )
   })
 
+  wz_race10_bets <- compare_race_to_10(
+      race10_predictions, wagerzon_odds,
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+    )
+
   wagerzon_bets <- bind_rows(
     wz_spread_bets$bets %>% mutate(market_type = "spreads"),
     wz_total_bets$bets %>% mutate(market_type = "totals"),
-    wz_ml_bets$bets %>% mutate(market_type = "moneyline")
+    wz_ml_bets$bets %>% mutate(market_type = "moneyline"),
+    wz_race10_bets$bets %>% mutate(market_type = "race_to_10")
   )
   cat(sprintf("Added %d Wagerzon bets to predictions.\n", nrow(wagerzon_bets)))
 } else {
@@ -707,13 +737,18 @@ if (nrow(kalshi_odds) > 0) {
     } else {
       kal_ml_2way <- list(bets = tibble())
     }
+    kal_race10_bets <- compare_race_to_10(
+      race10_predictions, kalshi_odds,
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+    )
   })
 
   kalshi_bets <- bind_rows(
     kal_spread_bets$bets %>% mutate(market_type = "spreads"),
     kal_total_bets$bets %>% mutate(market_type = "totals"),
     kal_ml_3way$bets %>% mutate(market_type = "moneyline"),
-    kal_ml_2way$bets %>% mutate(market_type = "moneyline")
+    kal_ml_2way$bets %>% mutate(market_type = "moneyline"),
+    kal_race10_bets$bets %>% mutate(market_type = "race_to_10")
   )
   cat(sprintf("Added %d Kalshi bets to predictions.\n", nrow(kalshi_bets)))
 } else {
@@ -874,31 +909,14 @@ dbWriteTable(con_mm, "cbb_game_samples", sample_rows)
 cat(sprintf("Exported %d game samples (%d games) for Kelly sizing.\n",
             nrow(sample_rows), length(unique(sample_rows$game_id))))
 
-# Export race_to_10_h1 predictions (fair prob from sample mean)
-race10_preds <- map_dfr(names(samples), function(game_id) {
-  s <- samples[[game_id]]$sample
-  if (!"first_to_10_h1" %in% names(s)) return(tibble())
-  ft10 <- s$first_to_10_h1
-  valid <- ft10[!is.na(ft10)]
-  if (length(valid) < 30) return(tibble())  # not enough data
-  home_prob <- mean(valid)
-  # Look up game info from raw_preds (any market for this game)
-  ref <- raw_preds %>% filter(id == game_id) %>% slice(1)
-  if (nrow(ref) == 0) return(tibble())
-  tibble(
-    id = game_id,
-    home_team = ref$home_team,
-    away_team = ref$away_team,
-    commence_time = ref$commence_time,
-    market = "race_to_10_h1",
-    period = "Half1",
-    line_value = NA_real_,
-    prob_side1 = home_prob,
-    prob_side2 = 1 - home_prob,
-    prob_tie = NA_real_
-  )
-})
-if (nrow(race10_preds) > 0) {
+# Export race_to_10_h1 predictions (reuse race10_predictions from earlier)
+if (nrow(race10_predictions) > 0) {
+  race10_preds <- race10_predictions %>%
+    transmute(id, home_team, away_team, commence_time,
+              market = "race_to_10_h1", period = "Half1",
+              line_value = NA_real_,
+              prob_side1 = home_prob, prob_side2 = away_prob,
+              prob_tie = NA_real_)
   raw_preds <- bind_rows(raw_preds, race10_preds)
   dbExecute(con_mm, "DROP TABLE IF EXISTS cbb_raw_predictions")
   dbWriteTable(con_mm, "cbb_raw_predictions", raw_preds)
