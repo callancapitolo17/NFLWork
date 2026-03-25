@@ -166,7 +166,7 @@ ml_consensus <- prepare_two_way_odds(
   book_weights = book_weights,
   prob_fun     = devig_american,
   prob_names   = c("prob_home", "prob_away"),
-  odds_names   = c("odds_home", "odds_away")
+  odds_names   = c("outcomes_price_home", "outcomes_price_away")
 ) %>%
   moneyline_consensus(
     game_id_col = "id",

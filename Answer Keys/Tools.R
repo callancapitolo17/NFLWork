@@ -4398,7 +4398,7 @@ compare_alts_to_samples <- function(
     total_col = "game_total_period"
 ) {
   # Market suffix → sample period column suffix
-  period_map <- c(h1 = "Half1", h2 = "Half2", q1 = "1", q2 = "2", q3 = "3", q4 = "4")
+  period_map <- c(h1 = "Half1", h2 = "Half2", q1 = "1", q2 = "2", q3 = "3", q4 = "4", f5 = "F5", fg = "FG")
 
   # Filter to alt markets and team totals
   alt_odds <- offshore_odds %>%
@@ -4925,7 +4925,9 @@ bet_to_leg <- function(bet_row) {
   clean_market <- gsub("^alternate_", "", market_raw)
 
   # Parse period from suffix
-  period <- if (grepl("_h1$", clean_market)) {
+  period <- if (grepl("_1st_5_innings$", clean_market)) {
+    "F5"
+  } else if (grepl("_h1$", clean_market)) {
     "Half1"
   } else if (grepl("_h2$", clean_market)) {
     "Half2"
@@ -4933,8 +4935,8 @@ bet_to_leg <- function(bet_row) {
     "Full"
   }
 
-  # Parse market type
-  market_base <- gsub("_(h1|h2)$", "", clean_market)
+  # Parse market type (strip period suffix)
+  market_base <- gsub("_(h1|h2|1st_5_innings)$", "", clean_market)
   leg_market <- switch(market_base,
     "h2h"               = "moneyline",
     "spreads"            = "spread",
