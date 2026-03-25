@@ -5337,7 +5337,8 @@ run_derivative_backtest <- function(
   DT <- as.data.table(pbp_data)
 
   # Calculate dispersion for sample weighting
-  disp <- compute_dispersion(DT, moneyline = FALSE,
+  use_ml <- isTRUE(sport_config$moneyline)
+  disp <- compute_dispersion(DT, moneyline = use_ml,
                              spread_col = sport_config$parent_spread_col,
                              total_col = sport_config$parent_total_col)
   ss <- disp$ss
@@ -5466,7 +5467,7 @@ run_derivative_backtest <- function(
         target_over = target_over,
         DT = DT_train,
         ss = ss, st = st, N = N,
-        use_spread_line = TRUE
+        use_spread_line = !isTRUE(sport_config$moneyline)
       )
     }, error = function(e) NULL)
 
@@ -5864,6 +5865,24 @@ get_sport_backtest_config <- function(sport) {
         q4 = list(suffix = "4", display = "Q4"),
         h1 = list(suffix = "Half1", display = "H1"),
         h2 = list(suffix = "Half2", display = "H2")
+      )
+    )
+
+  } else if (sport == "mlb") {
+    list(
+      sport = "mlb",
+      margin_col_prefix = "game_home_margin_period_",
+      total_col_prefix = "game_total_period_",
+      home_score_prefix = "home_score_period_",
+      away_score_prefix = "away_score_period_",
+      parent_spread_col = "home_ml_odds",
+      parent_total_col = "total_line",
+      consensus_home_odds_col = "home_ml_odds",
+      consensus_over_odds_col = "over_odds",
+      moneyline = TRUE,
+      use_spread_line = FALSE,
+      periods = list(
+        f5 = list(suffix = "F5", display = "F5")
       )
     )
 
