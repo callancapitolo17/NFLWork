@@ -11,7 +11,9 @@ Usage:
 
 import dash
 from dash import dcc, html, dash_table, callback, Input, Output, ctx
-from dash.dash_table.Format import Format, Scheme
+# Format objects don't serialize in Dash 4.0.0 — use raw dicts instead
+FMT_2F = {"specifier": ".2f"}  # 2 decimal fixed
+FMT_1F = {"specifier": ".1f"}  # 1 decimal fixed
 import plotly.graph_objects as go
 from collections import defaultdict
 from datetime import datetime
@@ -551,15 +553,15 @@ def render_pnl():
          {"name": "Win", "id": "wins", "type": "numeric"},
          {"name": "Loss", "id": "losses", "type": "numeric"},
          {"name": "Cost", "id": "cost", "type": "numeric",
-          "format": Format(precision=2, scheme=Scheme.fixed)},
+          "format": FMT_2F},
          {"name": "P&L", "id": "pnl", "type": "numeric",
-          "format": Format(precision=2, scheme=Scheme.fixed)},
+          "format": FMT_2F},
          {"name": "Fees", "id": "fees", "type": "numeric",
-          "format": Format(precision=2, scheme=Scheme.fixed)},
+          "format": FMT_2F},
          {"name": "Net", "id": "net", "type": "numeric",
-          "format": Format(precision=2, scheme=Scheme.fixed)},
+          "format": FMT_2F},
          {"name": "ROI %", "id": "roi", "type": "numeric",
-          "format": Format(precision=1, scheme=Scheme.fixed)}],
+          "format": FMT_1F}],
         "pnl-type", PNL_COND,
     )
 
@@ -588,11 +590,11 @@ def render_pnl():
         [{"name": "Event", "id": "event"},
          {"name": "Fills", "id": "fills", "type": "numeric"},
          {"name": "Cost", "id": "cost", "type": "numeric",
-          "format": Format(precision=2, scheme=Scheme.fixed)},
+          "format": FMT_2F},
          {"name": "Net", "id": "net", "type": "numeric",
-          "format": Format(precision=2, scheme=Scheme.fixed)},
+          "format": FMT_2F},
          {"name": "ROI %", "id": "roi", "type": "numeric",
-          "format": Format(precision=1, scheme=Scheme.fixed)}],
+          "format": FMT_1F}],
         "pnl-event", PNL_COND,
     )
 
@@ -653,11 +655,11 @@ def render_maker_taker():
          {"name": "Type", "id": "type"},
          {"name": "Fills", "id": "fills", "type": "numeric"},
          {"name": "Cost", "id": "cost", "type": "numeric",
-          "format": Format(precision=2, scheme=Scheme.fixed)},
+          "format": FMT_2F},
          {"name": "Net", "id": "net", "type": "numeric",
-          "format": Format(precision=2, scheme=Scheme.fixed)},
+          "format": FMT_2F},
          {"name": "ROI %", "id": "roi", "type": "numeric",
-          "format": Format(precision=1, scheme=Scheme.fixed)}],
+          "format": FMT_1F}],
         "mt-detail", PNL_COND,
     )
 
@@ -735,7 +737,7 @@ def render_fill_patterns():
          {"name": "Contracts", "id": "contracts", "type": "numeric"},
          {"name": "Status", "id": "status"},
          {"name": "P&L", "id": "pnl", "type": "numeric",
-          "format": Format(precision=2, scheme=Scheme.fixed)}],
+          "format": FMT_2F}],
         "adverse",
         [{"if": {"filter_query": "{pnl} < 0", "column_id": "pnl"},
           "color": COLORS["red"]},
@@ -801,11 +803,11 @@ def render_fill_patterns():
         [{"name": "Type", "id": "type"},
          {"name": "Orders", "id": "orders", "type": "numeric"},
          {"name": "Avg Fill %", "id": "avg_fill", "type": "numeric",
-          "format": Format(precision=1, scheme=Scheme.fixed)},
+          "format": FMT_1F},
          {"name": "Fully Filled %", "id": "fully_filled", "type": "numeric",
-          "format": Format(precision=1, scheme=Scheme.fixed)},
+          "format": FMT_1F},
          {"name": "Avg Bite %", "id": "avg_bite", "type": "numeric",
-          "format": Format(precision=1, scheme=Scheme.fixed)},
+          "format": FMT_1F},
          {"name": "Fills", "id": "bite_fills", "type": "numeric"}],
         "fr-type",
     )
@@ -894,11 +896,11 @@ def render_fill_patterns():
          {"name": "Fills", "id": "fills", "type": "numeric"},
          {"name": "Contracts", "id": "contracts", "type": "numeric"},
          {"name": "Maker %", "id": "maker_pct", "type": "numeric",
-          "format": Format(precision=1, scheme=Scheme.fixed)},
+          "format": FMT_1F},
          {"name": "Net P&L", "id": "pnl", "type": "numeric",
-          "format": Format(precision=2, scheme=Scheme.fixed)},
+          "format": FMT_2F},
          {"name": "Avg P&L/Fill", "id": "avg_pnl", "type": "numeric",
-          "format": Format(precision=2, scheme=Scheme.fixed)}],
+          "format": FMT_2F}],
         "timing",
         [{"if": {"filter_query": "{pnl} < 0", "column_id": "pnl"},
           "color": COLORS["red"]},
@@ -1010,11 +1012,11 @@ def render_concentration():
         [{"name": "Game", "id": "game"},
          {"name": "Type", "id": "type"},
          {"name": "Exposure", "id": "exposure", "type": "numeric",
-          "format": Format(precision=2, scheme=Scheme.fixed)},
+          "format": FMT_2F},
          {"name": "Cost", "id": "cost", "type": "numeric",
-          "format": Format(precision=2, scheme=Scheme.fixed)},
+          "format": FMT_2F},
          {"name": "% of Total", "id": "pct", "type": "numeric",
-          "format": Format(precision=1, scheme=Scheme.fixed)}],
+          "format": FMT_1F}],
         "conc",
     )
 
@@ -1236,11 +1238,11 @@ def render_event(event_name):
              {"name": "Side", "id": "side"},
              {"name": "Cts", "id": "contracts", "type": "numeric"},
              {"name": "Cost", "id": "cost", "type": "numeric",
-              "format": Format(precision=2, scheme=Scheme.fixed)},
+              "format": FMT_2F},
              {"name": "Taker", "id": "taker"},
              {"name": "Result", "id": "result"},
              {"name": "P&L", "id": "pnl", "type": "numeric",
-              "format": Format(precision=2, scheme=Scheme.fixed)}],
+              "format": FMT_2F}],
             "event-fills",
             [{"if": {"filter_query": "{pnl} < 0", "column_id": "pnl"},
               "color": COLORS["red"]},
