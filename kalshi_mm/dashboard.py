@@ -507,7 +507,8 @@ def _truncate(text, max_len=18):
     return text[:max_len] + "\u2026" if len(text) > max_len else text
 
 
-PNL_COND = [
+# Conditional formatting — only reference columns that exist in each table
+NET_ROI_COND = [
     {"if": {"filter_query": "{net} > 0", "column_id": "net"},
      "color": COLORS["green"], "fontWeight": "bold"},
     {"if": {"filter_query": "{net} < 0", "column_id": "net"},
@@ -516,6 +517,10 @@ PNL_COND = [
      "color": COLORS["green"]},
     {"if": {"filter_query": "{roi} < 0", "column_id": "roi"},
      "color": COLORS["red"]},
+]
+
+# For tables that also have a pnl column (P&L by Type)
+PNL_NET_ROI_COND = NET_ROI_COND + [
     {"if": {"filter_query": "{pnl} > 0", "column_id": "pnl"},
      "color": COLORS["green"]},
     {"if": {"filter_query": "{pnl} < 0", "column_id": "pnl"},
@@ -531,7 +536,7 @@ def render_pnl():
     total_pnl = sum(r["net"] for r in d.get("pnl_by_type", []))
     total_cost = sum(r["cost"] for r in d.get("pnl_by_type", []))
     total_roi = pct(total_pnl, total_cost) if total_cost else 0
-    open_cost = sum(r["cost"] for r in d.get("concentration", []))
+    open_exposure = sum(r["exposure"] for r in d.get("concentration", []))
 
     cards = html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "12px",
                              "marginBottom": "16px"}, children=[
@@ -540,7 +545,7 @@ def render_pnl():
         stat_card("Settled P&L", fmt_dollars(total_pnl), pnl_color(total_pnl)),
         stat_card("ROI", f"{total_roi:+.1f}%", pnl_color(total_roi)),
         stat_card("Settled Mkts", str(settled_n)),
-        stat_card("Open Exposure", fmt_dollars(open_cost)),
+        stat_card("Open Exposure", fmt_dollars(open_exposure)),
     ])
 
     type_table = make_table(
@@ -562,7 +567,7 @@ def render_pnl():
           "format": FMT_2F},
          {"name": "ROI %", "id": "roi", "type": "numeric",
           "format": FMT_1F}],
-        "pnl-type", PNL_COND,
+        "pnl-type", PNL_NET_ROI_COND,
     )
 
     # Bar chart by event — truncate labels, add hover for full name
@@ -595,7 +600,7 @@ def render_pnl():
           "format": FMT_2F},
          {"name": "ROI %", "id": "roi", "type": "numeric",
           "format": FMT_1F}],
-        "pnl-event", PNL_COND,
+        "pnl-event", NET_ROI_COND,
     )
 
     return html.Div([
@@ -660,7 +665,7 @@ def render_maker_taker():
           "format": FMT_2F},
          {"name": "ROI %", "id": "roi", "type": "numeric",
           "format": FMT_1F}],
-        "mt-detail", PNL_COND,
+        "mt-detail", NET_ROI_COND,
     )
 
     # Pie chart
