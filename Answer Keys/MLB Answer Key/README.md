@@ -1,30 +1,88 @@
 # MLB Answer Key
 
-Consensus betting odds model for MLB. Aggregates moneyline and totals from multiple sportsbooks, devigs, and weights by historical accuracy.
+Pricing engine for MLB First-5-Innings (F5) markets. Generates fair odds by matching current game lines to historically similar games, then compares predictions to offshore sportsbook odds to identify +EV opportunities.
 
-## Pipeline
+## Architecture
 
-1. **Data Acquisition** (`Acquire New MLB Data.R`): Fetches live odds via Odds API, loads historical outcomes from DuckDB
-2. **Consensus Building** (`MLB Answer Key 2.0.R`): Devigs each book's odds, computes weighted average (sharper books weighted higher)
-3. **Output**: `mlb_odds` table with consensus devigged home/away odds and totals
+```
+run.py mlb (orchestrator)
+  ├── [first]    Sharp scrapers (bookmaker, bet105) → their DuckDB files
+  ├── [parallel] Other scrapers (wagerzon, hoop88, bfa) + MLB.R
+  ├── Sentinel: .scrapers_done_mlb signals scrapers complete
+  └── MLB.R reads scraper DBs, generates fair prices, writes pipeline output
+```
+
+## Markets Priced
+
+| Market | Period | Odds API Key |
+|--------|--------|-------------|
+| Moneyline | F5 | `h2h_1st_5_innings` |
+| Totals | F5 | `totals_1st_5_innings` |
+| Spreads | F5 | `spreads_1st_5_innings` |
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `MLB Answer Key 2.0.R` | Main consensus model (current) |
-| `MLB Answer Key.R` | Legacy version with mean-matching algorithm |
-| `Acquire New MLB Data.R` | Data fetching and preprocessing |
-| `MLB Odds API Scraping.R` | OddsAPI scraper |
-| `MLB Updated API Pitch Data.R` | Pitch data from API |
-| `Back Testing Odds.R` | Backtesting framework |
-| `Consensus Betting History.R` | Historical consensus tracking |
-| `run_fetch.sh` | Friday-only cron scheduler |
+| `MLB.R` | Main merged pipeline (8 phases) |
+| `Acquire New MLB Data.R` | Historical odds + PBP fetching |
+| `clv_compute.py` | Post-game CLV computation |
+| `run_mlb_daily.sh` | Daily acquisition scheduler |
 
-## Scheduling
+## Setup
 
-`run_fetch.sh` runs on Fridays only (date-gated). Logs to `~/Library/Logs/fetch-mlb-odds/`.
+### Prerequisites
+- R with packages: `data.table`, `oddsapiR`, `duckdb`, `dplyr`, `tidyr`, `lubridate`, `httr`, `jsonlite`
+- Python 3.10+ with `flask`, `duckdb`, `requests`, `scipy`
+- `ODDS_API_KEY` in `~/.Renviron`
+- Historical data in `Answer Keys/pbp.duckdb` (table: `mlb_betting_pbp`)
 
-## Data Storage
+### Running
 
-Historical odds and outcomes stored in `pbp.duckdb` (table: `mlb_betting_pbp`).
+```bash
+# Full pipeline (scrapers + predictions + dashboard)
+cd "Answer Keys/MLB Dashboard"
+bash run.sh
+
+# Pipeline only (no dashboard)
+cd "Answer Keys"
+python3 run.py mlb
+
+# R script standalone (no scrapers)
+cd "Answer Keys"
+Rscript "MLB Answer Key/MLB.R"
+```
+
+### Daily Data Acquisition
+
+```bash
+# Manual run
+cd "Answer Keys/MLB Answer Key"
+bash run_mlb_daily.sh
+
+# Logs to ~/Library/Logs/mlb-daily-acquire/ with 30-day rotation
+```
+
+### CLV Computation
+
+```bash
+cd "Answer Keys/MLB Answer Key"
+python3 clv_compute.py
+```
+
+## DuckDB Tables
+
+| Database | Table | Purpose |
+|----------|-------|---------|
+| `pbp.duckdb` | `mlb_betting_pbp` | Historical games with inning-by-inning outcomes (12,719 games) |
+| `mlb.duckdb` | `mlb_bets_combined` | Pipeline output (daily +EV bets) |
+| `mlb.duckdb` | `mlb_team_dict` | Team name dictionary |
+| `mlb_dashboard.duckdb` | `placed_bets` | Bet placement tracking |
+| `mlb_dashboard.duckdb` | `bet_clv` | Post-game CLV results |
+
+## Key Design Decisions
+
+1. **Moneyline-based matching** (`use_spread_line = FALSE`): MLB uses ML probability (not spread) as the primary consensus metric for sample generation.
+2. **Sharp-only consensus**: Uses `SHARP_BOOKS` from Tools.R (Pinnacle 1.1, Bookmaker 1.1, LowVig/Circa/Bet105 1.0). Rec books excluded.
+3. **F5 only (initial)**: Full-game markets deferred as follow-up work.
+4. **Inning columns are cumulative**: `game_home_margin_inning_inning_5` = home margin through first 5 innings.

@@ -56,6 +56,14 @@ SPORT_CONFIGS = {
             {"id": "202", "name": "1st Halves", "market": "spreads_h1", "period": "Half1"},
         ],
     },
+    "mlb": {
+        "sport_key": "baseball_mlb",
+        "table_name": "mlb_odds",
+        "leagues": [
+            {"id": "5", "name": "Game Lines", "market": "spreads", "period": "fg"},
+            {"id": "206", "name": "1st 5 Innings", "market": "spreads_f5", "period": "F5"},
+        ],
+    },
 }
 
 

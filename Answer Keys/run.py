@@ -18,23 +18,23 @@ sys.stdout.reconfigure(line_buffering=True)
 SCRAPER_CONFIGS = {
     "wagerzon": {
         "script": "../wagerzon_odds/scraper_v2.py",
-        "sports": ["nfl", "nba", "cbb", "college_baseball"]
+        "sports": ["nfl", "nba", "cbb", "college_baseball", "mlb"]
     },
     "hoop88": {
         "script": "../hoop88_odds/scraper.py",
-        "sports": ["nfl", "ncaaf", "cbb", "college_baseball"]
+        "sports": ["nfl", "ncaaf", "cbb", "college_baseball", "mlb"]
     },
     "bfa": {
         "script": "../bfa_odds/scraper.py",
-        "sports": ["nfl", "nba", "cbb"]
+        "sports": ["nfl", "nba", "cbb", "mlb"]
     },
     "bookmaker": {
         "script": "../bookmaker_odds/scraper.py",
-        "sports": ["cbb"]
+        "sports": ["cbb", "mlb"]
     },
     "bet105": {
         "script": "../bet105_odds/scraper.py",
-        "sports": ["cbb"]
+        "sports": ["cbb", "mlb"]
     },
     "kalshi": {
         "script": "../kalshi_odds/scraper.py",
@@ -49,6 +49,7 @@ SPORT_KEYS = {
     "cbb": "basketball_ncaab",
     "nba": "basketball_nba",
     "college_baseball": "baseball_ncaa",
+    "mlb": "baseball_mlb",
 }
 
 # R script configurations - add new sports here
@@ -63,6 +64,9 @@ R_SCRIPTS = {
     },
     "college_baseball": {
         "script": "College Baseball Answer Key/CollegeBaseball.R",
+    },
+    "mlb": {
+        "script": "MLB Answer Key/MLB.R",
     },
     # "nba": {
     #     "script": "NBA Answer Key/NBA.R",

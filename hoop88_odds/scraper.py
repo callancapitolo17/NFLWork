@@ -85,6 +85,17 @@ SPORT_CONFIGS = {
         ],
         "rot_range": (3001, 3999),  # college baseball rotation numbers are in 3xxx range
     },
+    "mlb": {
+        "sport_key": "baseball_mlb",
+        "table_name": "mlb_odds",
+        "sport_type": "BASEBALL",
+        "sport_sub_type": "MLB",
+        "periods": [
+            {"short": "FG", "api_name": "Game", "api_num": 0, "suffix": "fg", "standard": "Full"},
+            {"short": "F5", "api_name": "1st 5 Innings", "api_num": 1, "suffix": "f5", "standard": "F5"},
+        ],
+        "rot_range": (901, 999),  # MLB rotation numbers
+    },
 }
 
 # NFL team name mapping (Hoop88 short names -> Odds API full names)

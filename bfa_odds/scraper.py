@@ -50,6 +50,13 @@ SPORT_CONFIGS = {
         "league_id": 493,
         "periods": ["1H"],
     },
+    "mlb": {
+        "sport_key": "baseball_mlb",
+        "table_name": "mlb_odds",
+        "api_slug": "mlb",
+        "league_id": 246,
+        "periods": ["F5"],
+    },
 }
 
 # Map period short names to display names (must match API period "name" field)
@@ -59,6 +66,7 @@ PERIOD_DISPLAY = {
     "2Q": "2nd Quarter",
     "3Q": "3rd Quarter",
     "4Q": "4th Quarter",
+    "F5": "1st 5 Innings",
 }
 
 # Map to standard period names for R

@@ -25,6 +25,11 @@ SPORTS = {
         "url_params": "lg=762,1554,4321",  # 762=College Baseball, 1554=NCAA Game, 4321=1st 5 Innings
         "table_name": "college_baseball_odds",
     },
+    "mlb": {
+        "sport_key": "baseball_mlb",
+        "url_params": "lg=121,2904,4320",  # 121=MLB, 2904=MLB Game, 4320=1st 5 Innings
+        "table_name": "mlb_odds",
+    },
 }
 
 # Wagerzon backend URLs

@@ -86,6 +86,12 @@ SPORT_CONFIGS = {
         "table_name": "nba_odds",
         "leagues": {"6": "NBA"},
     },
+    "mlb": {
+        "sport_key": "baseball_mlb",
+        "sport_id": "3",
+        "table_name": "mlb_odds",
+        "leagues": {"5": "MLB"},
+    },
 }
 
 
