@@ -1,7 +1,7 @@
 # Kalshi Market Maker — AI Context
 
 ## What This Is
-Automated market maker for CBB 1st-half markets on Kalshi. Posts bid/ask quotes, monitors fills, manages risk.
+Automated market maker for CBB 1st-half markets on Kalshi. Posts bid/ask quotes, monitors fills, manages risk. Supports spreads, totals, moneylines, and race-to-10 props.
 
 ## Architecture
 - `main.py` — Bot loop: fetch prices → compute quotes → place orders → monitor
@@ -38,6 +38,17 @@ The taker uses a simple 10s per-ticker tactical cooldown to prevent hammering th
 
 ### Sample Cache Pre-warm
 At startup and after every prediction refresh, `kelly.prewarm_sample_cache()` bulk-loads all game simulation samples in one DuckDB query (~15K rows, <1MB). This eliminates the ~15 min cold-cache Kelly cycle on first boot. `clear_sample_cache()` is now an alias that clears and reloads.
+
+### Sample Column Layout
+`kelly.py` defines `SAMPLE_COLUMNS = ["home_margin_h1", "total_h1", "first_to_10_h1"]` with named column indices. The cache dynamically discovers which columns exist in `cbb_game_samples` and NaN-fills missing ones. This allows the R pipeline to add new columns without breaking the running bot.
+
+### Race-to-10 Markets
+- Series: `KXNCAAMBFIRST10` — 2 contracts per event (one per team)
+- Title format: "Will [Team] be the first to reach 10 points?"
+- Fair value: `mean(first_to_10_h1)` from resampled historical games in `cbb_game_samples`
+- `first_to_10_h1` = 1 (home first), 0 (away first), NA (neither/push)
+- Prediction rows: `race_to_10_h1` in `cbb_raw_predictions` table
+- Backfill: `Rscript "Acquire CBB Data.R" --backfill-first10` to populate existing `cbb_pbp_v2` rows
 
 ### Prediction Auto-Reload
 The main loop checks `cbb_prediction_meta.updated_at` every 30s. If predictions were updated externally (manual pipeline run, cron), the bot reloads predictions, re-matches markets, and rewarms the sample cache — no restart needed.

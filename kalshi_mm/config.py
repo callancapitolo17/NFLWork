@@ -72,8 +72,9 @@ MARKET_SERIES = {
     "spreads": "KXNCAAMB1HSPREAD",
     "totals": "KXNCAAMB1HTOTAL",
     "moneyline": "KXNCAAMB1HWINNER",
+    "race_to_10": "KXNCAAMBFIRST10",
 }
-ENABLED_MARKET_TYPES = set(_env.get("ENABLED_MARKETS", "spreads,totals,moneyline").split(","))
+ENABLED_MARKET_TYPES = set(_env.get("ENABLED_MARKETS", "spreads,totals,moneyline,race_to_10").split(","))
 SPREAD_SERIES = MARKET_SERIES["spreads"]  # backward compat
 MAX_BOOK_STALENESS_SEC = int(_env.get("MAX_BOOK_STALENESS_SEC", "10"))
 

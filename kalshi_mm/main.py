@@ -35,7 +35,8 @@ import taker
 
 # Add kalshi_odds to path for market fetching
 sys.path.insert(0, str(config.PROJECT_ROOT / "kalshi_odds"))
-from scraper import fetch_markets, parse_spread_team, parse_matchup_title, _fuzzy_team_match
+from scraper import (fetch_markets, parse_spread_team, parse_matchup_title,
+                     parse_race_to_10_team, _fuzzy_team_match)
 
 # Add Answer Keys for team name resolution
 sys.path.insert(0, str(config.ANSWER_KEYS_DIR))
@@ -155,7 +156,7 @@ def enforce_monotonicity(quotable_markets):
     groups = defaultdict(list)
     for m in quotable_markets:
         mtype = m.get("market_type", "spreads")
-        if mtype == "moneyline":
+        if mtype in ("moneyline", "race_to_10"):
             continue  # No strikes to enforce
         if mtype == "totals":
             # Totals: group by event_ticker alone (no team direction)
@@ -613,6 +614,104 @@ def match_moneyline_markets(kalshi_markets, predictions, team_dict, canonical_ga
     return quotable
 
 
+def match_race_to_10_markets(kalshi_markets, predictions, team_dict, canonical_games):
+    """Match Kalshi race-to-10 markets to answer key predictions.
+
+    Each event has 2 contracts: one per team. YES = that team reaches 10 first.
+    Fair value comes from race_to_10_h1 prediction rows.
+    """
+    from collections import defaultdict
+
+    quotable = []
+    by_event = defaultdict(list)
+    for m in kalshi_markets:
+        by_event[m["event_ticker"]].append(m)
+
+    for event_ticker, event_markets in by_event.items():
+        if len(event_markets) != 2:
+            continue
+
+        # Extract team names from contract titles
+        team_names = []
+        for m in event_markets:
+            team = parse_race_to_10_team(m.get("title", ""))
+            if team:
+                team_names.append(team)
+        if len(team_names) != 2:
+            continue
+
+        # Resolve to canonical names — try both orderings
+        resolved_a, resolved_b = resolve_team_names(
+            team_names[0], team_names[1], team_dict, canonical_games
+        )
+
+        # Find matching race_to_10_h1 prediction
+        matching_preds = None
+        pred_home = pred_away = None
+        for try_home, try_away in [(resolved_b, resolved_a), (resolved_a, resolved_b)]:
+            matches = [
+                p for p in predictions
+                if p["market"] == "race_to_10_h1"
+                and _fuzzy_team_match(p["home_team"].lower(), try_home.lower())
+                and _fuzzy_team_match(p["away_team"].lower(), try_away.lower())
+            ]
+            if matches:
+                matching_preds = matches
+                pred_home, pred_away = try_home, try_away
+                break
+
+        # Fallback: raw names
+        if not matching_preds:
+            for raw_h, raw_a in [(team_names[0], team_names[1]),
+                                 (team_names[1], team_names[0])]:
+                matches = [
+                    p for p in predictions
+                    if p["market"] == "race_to_10_h1"
+                    and _fuzzy_team_match(p["home_team"].lower(), raw_h.lower())
+                    and _fuzzy_team_match(p["away_team"].lower(), raw_a.lower())
+                ]
+                if matches:
+                    matching_preds = matches
+                    pred_home, pred_away = raw_h, raw_a
+                    break
+
+        if not matching_preds:
+            continue
+
+        pred = matching_preds[0]
+        home_first10_prob = pred["prob_side1"]  # prob home reaches 10 first
+
+        now_ts = time.time()
+        for m in event_markets:
+            contract_team = parse_race_to_10_team(m.get("title", ""))
+            if not contract_team:
+                continue
+
+            # Determine if this contract is for home or away team
+            is_home = _fuzzy_team_match(contract_team.lower(), pred_home.lower())
+            fair_prob = home_first10_prob if is_home else (1 - home_first10_prob)
+
+            quotable.append({
+                "ticker": m["ticker"],
+                "event_ticker": event_ticker,
+                "home_team": pred["home_team"],
+                "away_team": pred["away_team"],
+                "game_key": (pred["home_team"], pred["away_team"]),
+                "game_id": pred.get("id"),
+                "market_type": "race_to_10",
+                "contract_team": pred["home_team"] if is_home else pred["away_team"],
+                "strike": None,
+                "is_home_contract": is_home,
+                "fair_prob": fair_prob,
+                "commence_time": pred.get("commence_time"),
+                "book_bid": int(round(float(m.get("yes_bid_dollars", 0)) * 100)),
+                "book_ask": int(round(float(m.get("yes_ask_dollars", 0)) * 100)),
+                "book_fetched_at": now_ts,
+            })
+
+    return quotable
+
+
 def match_all_markets(all_kalshi, predictions, team_dict, canonical_games):
     """Match all enabled market types to predictions. Returns unified quotable list."""
     quotable = []
@@ -633,6 +732,11 @@ def match_all_markets(all_kalshi, predictions, team_dict, canonical_games):
     if "moneyline" in all_kalshi:
         quotable.extend(match_moneyline_markets(
             all_kalshi["moneyline"], predictions, team_dict, canonical_games
+        ))
+
+    if "race_to_10" in all_kalshi:
+        quotable.extend(match_race_to_10_markets(
+            all_kalshi["race_to_10"], predictions, team_dict, canonical_games
         ))
 
     return quotable
