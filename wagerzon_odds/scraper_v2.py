@@ -341,6 +341,72 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
 
                 alt_counter += 1
 
+    # --- Race-to-10 leagues (separate from main games) ---
+    # lg=1852 comes as a standalone league with idgmtyp=47 moneyline-only games.
+    # Team names embed the prop: "DUKE GET 10PTS 1ST" / "ST. JOHN'S GET 10PTS 1ST"
+    race10_pattern = re.compile(r"(.+?)\s+GET\s+10PTS\s+1ST", re.IGNORECASE)
+    for league in leagues:
+        desc = (league.get("Description", "") or "").upper()
+        if "SCORE FIRST 10" not in desc:
+            continue
+        race10_games = league.get("Games", [])
+        print(f"Found {len(race10_games)} race-to-10 games in '{league.get('Description', '')}'")
+        for game in race10_games:
+            if not game.get("GameLines"):
+                continue
+            line = game["GameLines"][0]
+            away_odds = safe_int(line.get("voddst"))
+            home_odds = safe_int(line.get("hoddst"))
+            if away_odds is None or home_odds is None:
+                continue
+
+            # Strip prop suffix from team names
+            away_raw = game["vtm"]
+            home_raw = game["htm"]
+            away_match = race10_pattern.match(away_raw)
+            home_match = race10_pattern.match(home_raw)
+            if not away_match or not home_match:
+                continue
+            away_clean = away_match.group(1).strip()
+            home_clean = home_match.group(1).strip()
+
+            # Resolve canonical names
+            if team_dict or canonical_games:
+                away_team, home_team = resolve_team_names(
+                    away_clean, home_clean, team_dict, canonical_games
+                )
+            else:
+                away_team = normalize_team_name(away_clean, sport)
+                home_team = normalize_team_name(home_clean, sport)
+
+            gmdt = game.get("gmdt", "")
+            game_date = f"{gmdt[4:6]}/{gmdt[6:8]}" if len(gmdt) == 8 else ""
+            game_time = game.get("gmtm", "")[:5]
+            away_rot = str(game["vnum"])
+            home_rot = str(game["hnum"])
+
+            records.append({
+                "fetch_time": fetch_time,
+                "sport_key": sport_key,
+                "game_id": f"{away_rot}-{home_rot}",
+                "game_date": game_date,
+                "game_time": game_time,
+                "away_team": away_team,
+                "home_team": home_team,
+                "market": "race_to_10_h1",
+                "period": "h1",
+                "away_spread": None,
+                "away_spread_price": None,
+                "home_spread": None,
+                "home_spread_price": None,
+                "total": None,
+                "over_price": None,
+                "under_price": None,
+                "away_ml": away_odds,
+                "home_ml": home_odds,
+            })
+            print(f"  race_to_10: {away_team} @ {home_team} | {away_odds}/{home_odds}")
+
     return records
 
 

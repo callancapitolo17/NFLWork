@@ -12,7 +12,7 @@ SPORTS = {
     },
     "cbb": {
         "sport_key": "basketball_ncaab",
-        "url_params": "lg=43,403,45",
+        "url_params": "lg=43,403,45,1852",  # 1852=Race to 10
         "table_name": "cbb_odds",
     },
     "nba": {
