@@ -189,6 +189,7 @@ def pull_data():
 
     print("  Checking market settlement status...")
     market_results = {}  # ticker -> "yes" | "no" | None
+    market_close_times = {}  # ticker -> ISO close_time string
     checked = 0
     for ticker in unique_tickers:
         mdata = public_request(f"/markets/{ticker}")
@@ -196,6 +197,8 @@ def pull_data():
             mk = mdata["market"]
             result = mk.get("result") or None
             market_results[ticker] = result
+            if mk.get("close_time"):
+                market_close_times[ticker] = mk["close_time"]
         checked += 1
         if checked % 50 == 0:
             print(f"    ...checked {checked}/{len(unique_tickers)} markets")
@@ -204,6 +207,12 @@ def pull_data():
     print(f"  Settlement: {settled_count} settled, "
           f"{len(market_results) - settled_count} still open")
 
+    # Pull orders for fill-rate analysis
+    print("  Pulling orders...")
+    all_orders = list(paginate_auth("/portfolio/orders?limit=200"))
+    cbb_orders = [o for o in all_orders if CBB_PREFIX in o.get("ticker", "")]
+    print(f"  {len(cbb_orders)} CBB orders")
+
     return {
         "balance_cash": bal_cash,
         "balance_portfolio": bal_portfolio,
@@ -211,6 +220,8 @@ def pull_data():
         "all_market_pos": all_market_pos,
         "all_event_pos": all_event_pos,
         "market_results": market_results,
+        "market_close_times": market_close_times,
+        "cbb_orders": cbb_orders,
     }
 
 
@@ -384,14 +395,16 @@ def report_clv(data):
         weighted_profit = sum(e["profit_cents"] * e["count"] for e in entries)
         avg_profit = weighted_profit / max(total_ct, 1)
         total_profit = weighted_profit / 100
+        total_cost = sum(e["cost_cents"] * e["count"] for e in entries) / 100
         total_fees = sum(e["fee_dollars"] for e in entries)
         net = total_profit - total_fees
+        roi = pct(net, total_cost) if total_cost else 0
         print(f"  {label:<12} {total:>5} fills  {total_ct:>6} cts  "
               f"Win: {pct(wins, total):>5.1f}%  "
               f"Avg: {avg_profit:>+6.1f}c/ct  "
-              f"P&L: {fmt_dollars(total_profit):>10}  "
-              f"Fees: {fmt_dollars(total_fees):>8}  "
-              f"Net: {fmt_dollars(net):>10}")
+              f"Cost: {fmt_dollars(total_cost):>10}  "
+              f"Net: {fmt_dollars(net):>10}  "
+              f"ROI: {roi:>+6.1f}%")
 
     if not clv_data["all"]:
         print("\n  No fills matched to settled markets.\n")
@@ -674,9 +687,28 @@ def print_header(data):
     total_fees = sum(dollars(f.get("fee_cost", 0)) for f in data["cbb_fills"])
     total_contracts = sum(contracts(f) for f in data["cbb_fills"])
 
+    # Compute settled P&L for header
+    results = data["market_results"]
+    settled_tickers = {t for t, r in results.items() if r is not None}
+    settled_pnl = 0
+    settled_cost = 0
+    settled_fees = 0
+    for f in data["cbb_fills"]:
+        if f["ticker"] not in settled_tickers:
+            continue
+        cnt = contracts(f)
+        settled_pnl += fill_pnl_cents(f, results[f["ticker"]]) * cnt / 100
+        settled_cost += fill_cost_cents(f) * cnt / 100
+        settled_fees += dollars(f.get("fee_cost", 0))
+    settled_net = settled_pnl - settled_fees
+    settled_roi = pct(settled_net, settled_cost) if settled_cost else 0
+
     print(f"  Fills: {n_fills:,}  |  Contracts: {total_contracts:,}  |  "
           f"Open events: {n_events}  |  Open positions: {n_open}")
     print(f"  Total cost: {fmt_dollars(total_cost)}  |  Fees: {fmt_dollars(total_fees)}")
+    if settled_cost:
+        print(f"  Settled P&L: {fmt_dollars(settled_net)} on {fmt_dollars(settled_cost)} "
+              f"({settled_roi:+.1f}% ROI)")
 
 
 # ── main ─────────────────────────────────────────────────────────────

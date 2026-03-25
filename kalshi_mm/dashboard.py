@@ -10,11 +10,12 @@ Usage:
 """
 
 import dash
-from dash import dcc, html, dash_table, callback, Input, Output
+from dash import dcc, html, dash_table, callback, Input, Output, ctx
 from dash.dash_table.Format import Format, Scheme
 import plotly.graph_objects as go
 from collections import defaultdict
 from datetime import datetime
+import traceback
 
 # Reuse all helpers from analyze_performance
 from analyze_performance import (
@@ -74,21 +75,61 @@ GRAPH_LAYOUT = dict(
     font=dict(color=COLORS["text"]),
 )
 
+# Pie chart color palette (enough for any market type count)
+PIE_COLORS = [COLORS["accent"], COLORS["accent2"], COLORS["yellow"],
+              COLORS["text_muted"], COLORS["green"]]
+
+# CSS for dark-themed dropdown
+DROPDOWN_CSS = """
+#event-dropdown [class*="control"] {
+    background-color: #161b22 !important;
+    border-color: #30363d !important;
+}
+#event-dropdown [class*="menu"] {
+    background-color: #161b22 !important;
+    border-color: #30363d !important;
+}
+#event-dropdown [class*="option"] {
+    background-color: #161b22 !important;
+    color: #c9d1d9 !important;
+}
+#event-dropdown [class*="option"]:hover,
+#event-dropdown [class*="option--is-focused"] {
+    background-color: #30363d !important;
+}
+#event-dropdown [class*="singleValue"],
+#event-dropdown [class*="input"] input {
+    color: #c9d1d9 !important;
+}
+#event-dropdown [class*="placeholder"] {
+    color: #8b949e !important;
+}
+#event-dropdown [class*="indicatorSeparator"] {
+    background-color: #30363d !important;
+}
+"""
+
 
 # ── Data store (refreshed on demand) ────────────────────────────────
-DATA = {"loaded": False}
+DATA = {"loaded": False, "error": None}
 
 
 def load_data():
-    DATA.update(pull_data())
-    DATA["loaded"] = True
-    DATA["ts"] = datetime.now().strftime("%H:%M:%S")
-    # Pre-compute aggregates
-    _compute_all(DATA)
+    try:
+        DATA.update(pull_data())
+        DATA["loaded"] = True
+        DATA["ts"] = datetime.now().strftime("%H:%M:%S")
+        DATA["error"] = None
+        _compute_all(DATA)
+    except Exception as e:
+        DATA["error"] = f"{type(e).__name__}: {e}"
+        DATA["ts"] = datetime.now().strftime("%H:%M:%S")
+        print(f"ERROR loading data: {DATA['error']}")
+        traceback.print_exc()
 
 
 def _compute_all(data):
-    """Pre-compute DataFrames for all tabs."""
+    """Pre-compute aggregates for all tabs."""
     results = data.get("market_results", {})
     fills = data.get("cbb_fills", [])
     settled_tickers = {t for t, r in results.items() if r is not None}
@@ -221,16 +262,158 @@ def _compute_all(data):
             ct = sum(contracts(f) for f in fl)
             if ct > p75 and len(fl) == 1:
                 mtype, game, strike = parse_ticker(fl[0]["ticker"])
-                settled = fl[0]["ticker"] in settled_tickers
-                pnl = fill_pnl_cents(fl[0], results.get(fl[0]["ticker"], "")) * ct / 100 if settled else None
+                is_settled = fl[0]["ticker"] in settled_tickers
+                pnl = (fill_pnl_cents(fl[0], results.get(fl[0]["ticker"], ""))
+                       * ct / 100 if is_settled else None)
                 adverse.append({"game": parse_game_teams(game), "type": mtype,
                                 "strike": strike, "contracts": ct,
-                                "pnl": pnl, "settled": settled})
-        data["adverse_orders"] = sorted(adverse, key=lambda x: x["contracts"], reverse=True)
+                                "pnl": pnl,
+                                "status": "Settled" if is_settled else "Open"})
+        data["adverse_orders"] = sorted(adverse, key=lambda x: x["contracts"],
+                                        reverse=True)
         data["adverse_p75"] = p75
     else:
         data["adverse_orders"] = []
         data["adverse_p75"] = 0
+
+    # --- Fill Rate (maker orders) ---
+    orders = data.get("cbb_orders", [])
+    order_lookup = {o["order_id"]: o for o in orders}
+    maker_order_ids = set(maker_orders.keys()) if order_sizes else set()
+
+    fill_rate_rows = []
+    for oid in maker_order_ids:
+        order = order_lookup.get(oid)
+        if not order:
+            continue
+        initial = int(float(order.get("initial_count_fp", 0)))
+        filled = int(float(order.get("fill_count_fp", 0)))
+        if initial <= 0 and filled <= 0:
+            continue
+        # initial_count_fp reflects last-amended size, not original.
+        # Use max(initial, filled) as the effective order size so
+        # amended-down orders cap at 100% instead of >100%.
+        effective_size = max(initial, filled)
+        fill_pct_val = min(filled / effective_size * 100, 100.0)
+        mtype, game, _ = parse_ticker(order.get("ticker", ""))
+        fill_rate_rows.append({
+            "fill_pct": fill_pct_val,
+            "original": effective_size,
+            "filled": filled,
+            "type": mtype,
+        })
+
+    # Per-fill bite size: each individual fill as % of resting order
+    bite_pcts = []
+    bite_by_type = defaultdict(list)
+    for f in fills:
+        if f.get("is_taker", False):
+            continue
+        order = order_lookup.get(f["order_id"])
+        if not order:
+            continue
+        initial = int(float(order.get("initial_count_fp", 0)))
+        total_filled = int(float(order.get("fill_count_fp", 0)))
+        effective_size = max(initial, total_filled)
+        if effective_size <= 0:
+            continue
+        bite = contracts(f) / effective_size * 100
+        bite_pcts.append(min(bite, 100.0))
+        mtype, _, _ = parse_ticker(f["ticker"])
+        bite_by_type[mtype].append(min(bite, 100.0))
+
+    if bite_pcts:
+        sorted_bites = sorted(bite_pcts)
+        data["bite_stats"] = {
+            "avg": sum(bite_pcts) / len(bite_pcts),
+            "median": sorted_bites[len(sorted_bites) // 2],
+            "count": len(bite_pcts),
+        }
+        data["bite_by_type"] = [
+            {"type": mt, "avg": sum(v) / len(v), "count": len(v)}
+            for mt, v in sorted(bite_by_type.items())
+        ]
+    else:
+        data["bite_stats"] = {"avg": 0, "median": 0, "count": 0}
+        data["bite_by_type"] = []
+    data["bite_pcts"] = bite_pcts
+
+    data["fill_rate_rows"] = fill_rate_rows
+    if fill_rate_rows:
+        pcts = [r["fill_pct"] for r in fill_rate_rows]
+        sorted_pcts = sorted(pcts)
+        data["fill_rate_stats"] = {
+            "avg": sum(pcts) / len(pcts),
+            "median": sorted_pcts[len(sorted_pcts) // 2],
+            "fully_filled": pct(sum(1 for p in pcts if p >= 100), len(pcts)),
+            "partial": pct(sum(1 for p in pcts if 0 < p < 100), len(pcts)),
+            "unfilled": pct(sum(1 for p in pcts if p == 0), len(pcts)),
+            "count": len(pcts),
+        }
+        # By market type
+        by_mt = defaultdict(list)
+        for r in fill_rate_rows:
+            by_mt[r["type"]].append(r["fill_pct"])
+        data["fill_rate_by_type"] = [
+            {"type": mt, "avg": sum(v) / len(v), "count": len(v),
+             "fully_filled": pct(sum(1 for p in v if p >= 100), len(v))}
+            for mt, v in sorted(by_mt.items())
+        ]
+    else:
+        data["fill_rate_stats"] = {
+            "avg": 0, "median": 0, "fully_filled": 0,
+            "partial": 0, "unfilled": 0, "count": 0,
+        }
+        data["fill_rate_by_type"] = []
+
+    # --- Fill Timing (time before market close) ---
+    close_times = data.get("market_close_times", {})
+    timing_buckets = defaultdict(lambda: {"fills": 0, "contracts": 0,
+                                           "maker_fills": 0, "pnl": 0.0,
+                                           "settled_fills": 0})
+    BUCKET_EDGES = [0.25, 0.5, 1, 2, 4, 8, 24, float("inf")]
+    BUCKET_LABELS = ["<15m", "15-30m", "30m-1h", "1-2h",
+                     "2-4h", "4-8h", "8-24h", ">24h"]
+    timing_hours = []
+
+    for f in fills:
+        t = f["ticker"]
+        ct_str = close_times.get(t)
+        if not ct_str:
+            continue
+        try:
+            fill_dt = datetime.fromisoformat(
+                f["created_time"].replace("Z", "+00:00"))
+            close_dt = datetime.fromisoformat(ct_str.replace("Z", "+00:00"))
+            hours_before = (close_dt - fill_dt).total_seconds() / 3600
+        except (ValueError, TypeError):
+            continue
+        if hours_before < 0:
+            continue
+        cnt = contracts(f)
+        is_maker = not f.get("is_taker", False)
+        is_settled = t in settled_tickers
+        fill_pnl = (fill_pnl_cents(f, results.get(t, "")) * cnt / 100
+                     if is_settled else None)
+
+        timing_hours.append(hours_before)
+
+        # Find bucket
+        for i, edge in enumerate(BUCKET_EDGES):
+            if hours_before < edge:
+                b = timing_buckets[BUCKET_LABELS[i]]
+                b["fills"] += 1
+                b["contracts"] += cnt
+                if is_maker:
+                    b["maker_fills"] += 1
+                if fill_pnl is not None:
+                    b["pnl"] += fill_pnl
+                    b["settled_fills"] += 1
+                break
+
+    data["timing_buckets"] = {k: timing_buckets[k] for k in BUCKET_LABELS}
+    data["timing_bucket_labels"] = BUCKET_LABELS
+    data["timing_hours"] = timing_hours
 
     # --- Concentration ---
     event_pos = data.get("all_event_pos", [])
@@ -242,7 +425,8 @@ def _compute_all(data):
             "exposure": dollars(e.get("event_exposure_dollars", 0)),
             "cost": dollars(e.get("total_cost_dollars", 0)),
         })
-    data["concentration"] = sorted(conc_rows, key=lambda x: x["exposure"], reverse=True)
+    data["concentration"] = sorted(conc_rows, key=lambda x: x["exposure"],
+                                   reverse=True)
 
     # Directional correlation
     market_pos = data.get("all_market_pos", [])
@@ -300,10 +484,25 @@ def make_table(data_records, columns, id_prefix, conditional=None, page_size=20)
                      "fontSize": "0.9em"},
         style_cell_conditional=[
             {"if": {"column_id": c}, "textAlign": "left"}
-            for c in ("type", "event", "game", "role", "strike", "direction")
+            for c in ("type", "event", "game", "role", "strike",
+                       "direction", "status")
         ],
         id=f"table-{id_prefix}",
     )
+
+
+def pnl_color(val):
+    """Return green/red/neutral color for a P&L value."""
+    if val > 0:
+        return COLORS["green"]
+    elif val < 0:
+        return COLORS["red"]
+    return COLORS["text_muted"]
+
+
+def _truncate(text, max_len=18):
+    """Truncate long chart labels."""
+    return text[:max_len] + "\u2026" if len(text) > max_len else text
 
 
 PNL_COND = [
@@ -334,11 +533,10 @@ def render_pnl():
 
     cards = html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "12px",
                              "marginBottom": "16px"}, children=[
-        stat_card("Account", fmt_dollars(d.get("balance_cash", 0) + d.get("balance_portfolio", 0))),
-        stat_card("Settled P&L", fmt_dollars(total_pnl),
-                  COLORS["green"] if total_pnl > 0 else COLORS["red"]),
-        stat_card("ROI", f"{total_roi:+.1f}%",
-                  COLORS["green"] if total_roi > 0 else COLORS["red"]),
+        stat_card("Account", fmt_dollars(
+            d.get("balance_cash", 0) + d.get("balance_portfolio", 0))),
+        stat_card("Settled P&L", fmt_dollars(total_pnl), pnl_color(total_pnl)),
+        stat_card("ROI", f"{total_roi:+.1f}%", pnl_color(total_roi)),
         stat_card("Settled Mkts", str(settled_n)),
         stat_card("Open Exposure", fmt_dollars(open_cost)),
     ])
@@ -365,19 +563,23 @@ def render_pnl():
         "pnl-type", PNL_COND,
     )
 
-    # Bar chart by event
-    events = d.get("pnl_by_event", [])[:30]
+    # Bar chart by event — truncate labels, add hover for full name
+    events = d.get("pnl_by_event", [])[:20]
     bar_fig = go.Figure()
     bar_fig.add_bar(
-        x=[e["event"] for e in events],
+        x=[_truncate(e["event"]) for e in events],
         y=[e["net"] for e in events],
-        marker_color=[COLORS["green"] if e["net"] >= 0 else COLORS["red"] for e in events],
+        marker_color=[COLORS["green"] if e["net"] >= 0 else COLORS["red"]
+                      for e in events],
         text=[f"${e['net']:+,.0f}" for e in events],
         textposition="outside",
+        hovertext=[f"{e['event']}<br>Net: ${e['net']:+,.2f}"
+                   f"<br>ROI: {e['roi']:+.1f}%" for e in events],
+        hoverinfo="text",
     )
-    bar_fig.update_layout(**GRAPH_LAYOUT, height=400, xaxis_tickangle=-45,
+    bar_fig.update_layout(**GRAPH_LAYOUT, height=420, xaxis_tickangle=-45,
                           yaxis_title="Net P&L ($)",
-                          title=dict(text="P&L by Game Event", x=0.5))
+                          title=dict(text="P&L by Game Event (top 20)", x=0.5))
 
     event_table = make_table(
         [{**r, "net": round(r["net"], 2), "roi": round(r["roi"], 1),
@@ -397,11 +599,13 @@ def render_pnl():
     return html.Div([
         cards,
         html.Div(style=CARD_STYLE, children=[
-            html.H3("By Market Type", style={"color": COLORS["text"], "marginTop": 0}),
+            html.H3("By Market Type",
+                     style={"color": COLORS["text"], "marginTop": 0}),
             type_table]),
         html.Div(style=CARD_STYLE, children=[dcc.Graph(figure=bar_fig)]),
         html.Div(style=CARD_STYLE, children=[
-            html.H3("By Game Event", style={"color": COLORS["text"], "marginTop": 0}),
+            html.H3("By Game Event",
+                     style={"color": COLORS["text"], "marginTop": 0}),
             event_table]),
     ])
 
@@ -415,11 +619,11 @@ def render_maker_taker():
                              "marginBottom": "16px"}, children=[
         stat_card("Maker Fills", f"{ms.get('fills', 0):,}"),
         stat_card("Maker ROI", f"{ms.get('roi', 0):+.1f}%",
-                  COLORS["green"] if ms.get("roi", 0) > 0 else COLORS["red"]),
+                  pnl_color(ms.get("roi", 0))),
         stat_card("Maker Win%", f"{ms.get('win_pct', 0):.1f}%"),
         stat_card("Taker Fills", f"{ts.get('fills', 0):,}"),
         stat_card("Taker ROI", f"{ts.get('roi', 0):+.1f}%",
-                  COLORS["green"] if ts.get("roi", 0) > 0 else COLORS["red"]),
+                  pnl_color(ts.get("roi", 0))),
         stat_card("Taker Win%", f"{ts.get('win_pct', 0):.1f}%"),
     ])
 
@@ -429,9 +633,13 @@ def render_maker_taker():
     for role in ("Maker", "Taker"):
         rows = [r for r in mt_data if r["role"] == role]
         bar_fig.add_bar(
-            name=role, x=[r["type"] for r in rows], y=[r["roi"] for r in rows],
-            text=[f"{r['roi']:+.1f}%" for r in rows], textposition="outside",
-            marker_color=COLORS["accent"] if role == "Maker" else COLORS["accent2"],
+            name=role,
+            x=[r["type"] for r in rows],
+            y=[r["roi"] for r in rows],
+            text=[f"{r['roi']:+.1f}%" for r in rows],
+            textposition="outside",
+            marker_color=(COLORS["accent"] if role == "Maker"
+                          else COLORS["accent2"]),
         )
     bar_fig.update_layout(**GRAPH_LAYOUT, barmode="group", height=350,
                           yaxis_title="ROI %",
@@ -465,14 +673,16 @@ def render_maker_taker():
 
     return html.Div([
         cards,
-        html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "16px"}, children=[
+        html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "16px"},
+                 children=[
             html.Div(style={**CARD_STYLE, "flex": "1", "minWidth": "300px"},
                      children=[dcc.Graph(figure=bar_fig)]),
             html.Div(style={**CARD_STYLE, "flex": "0 0 300px"},
                      children=[dcc.Graph(figure=pie_fig)]),
         ]),
         html.Div(style=CARD_STYLE, children=[
-            html.H3("Detail", style={"color": COLORS["text"], "marginTop": 0}),
+            html.H3("Detail",
+                     style={"color": COLORS["text"], "marginTop": 0}),
             mt_table]),
     ])
 
@@ -481,19 +691,23 @@ def render_fill_patterns():
     d = DATA
     ms = d.get("maker_fill_stats", {})
     ts = d.get("taker_fill_stats", {})
+    fr = d.get("fill_rate_stats", {})
 
-    cards = html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "12px",
-                             "marginBottom": "16px"}, children=[
+    # ── Section 1: Order size stats ──
+    size_cards = html.Div(style={"display": "flex", "flexWrap": "wrap",
+                                  "gap": "12px", "marginBottom": "16px"},
+                          children=[
         stat_card("Maker Orders", f"{ms.get('orders', 0):,}"),
         stat_card("Maker Avg Size", f"{ms.get('avg_size', 0):.0f} cts"),
         stat_card("Maker Single-Fill", f"{ms.get('single_pct', 0):.0f}%"),
         stat_card("Taker Orders", f"{ts.get('orders', 0):,}"),
         stat_card("Taker Avg Size", f"{ts.get('avg_size', 0):.0f} cts"),
         stat_card("Adverse Flags", str(len(d.get("adverse_orders", []))),
-                  COLORS["yellow"] if d.get("adverse_orders") else COLORS["green"]),
+                  COLORS["yellow"] if d.get("adverse_orders")
+                  else COLORS["green"]),
     ])
 
-    # Histogram
+    # Order size histogram
     hist_fig = go.Figure()
     if ms.get("order_sizes"):
         hist_fig.add_histogram(x=ms["order_sizes"], name="Maker",
@@ -511,27 +725,238 @@ def render_fill_patterns():
     # Adverse selection table
     adverse = d.get("adverse_orders", [])[:20]
     adverse_table = make_table(
-        [{**r, "pnl": round(r["pnl"], 2) if r["pnl"] is not None else "open"}
+        [{"game": r["game"], "type": r["type"], "strike": r["strike"],
+          "contracts": r["contracts"], "status": r["status"],
+          "pnl": round(r["pnl"], 2) if r["pnl"] is not None else None}
          for r in adverse],
         [{"name": "Game", "id": "game"},
          {"name": "Type", "id": "type"},
          {"name": "Strike", "id": "strike"},
          {"name": "Contracts", "id": "contracts", "type": "numeric"},
-         {"name": "P&L", "id": "pnl"}],
+         {"name": "Status", "id": "status"},
+         {"name": "P&L", "id": "pnl", "type": "numeric",
+          "format": Format(precision=2, scheme=Scheme.fixed)}],
         "adverse",
-        [{"if": {"filter_query": '{pnl} contains "-"', "column_id": "pnl"},
+        [{"if": {"filter_query": "{pnl} < 0", "column_id": "pnl"},
           "color": COLORS["red"]},
-         {"if": {"filter_query": '{pnl} > 0', "column_id": "pnl"},
+         {"if": {"filter_query": "{pnl} > 0", "column_id": "pnl"},
+          "color": COLORS["green"]},
+         {"if": {"filter_query": '{status} = "Open"', "column_id": "status"},
+          "color": COLORS["yellow"]}],
+    )
+
+    # ── Section 2: Maker Fill Rate ──
+    bs = d.get("bite_stats", {})
+    fill_rate_cards = html.Div(
+        style={"display": "flex", "flexWrap": "wrap", "gap": "12px",
+               "marginBottom": "16px"},
+        children=[
+            stat_card("Avg Bite Size", f"{bs.get('avg', 0):.1f}%"),
+            stat_card("Median Bite Size", f"{bs.get('median', 0):.1f}%"),
+            stat_card("Order Fill Rate", f"{fr.get('avg', 0):.1f}%"),
+            stat_card("Fully Filled", f"{fr.get('fully_filled', 0):.1f}%"),
+            stat_card("Partial Fill", f"{fr.get('partial', 0):.1f}%",
+                      COLORS["yellow"] if fr.get("partial", 0) > 30
+                      else COLORS["green"]),
+        ])
+
+    # Bite size histogram (per-fill % of order)
+    bite_fig = go.Figure()
+    bite_pcts = d.get("bite_pcts", [])
+    if bite_pcts:
+        bite_fig.add_histogram(
+            x=bite_pcts, marker_color=COLORS["accent"],
+            xbins=dict(start=0, end=105, size=5),
+        )
+    bite_fig.update_layout(
+        **GRAPH_LAYOUT, height=300,
+        xaxis_title="Fill Size as % of Resting Order",
+        yaxis_title="Fills",
+        title=dict(text="Maker Bite Size Distribution", x=0.5))
+
+    # Order fill rate histogram
+    fill_rate_fig = go.Figure()
+    fill_rates = [r["fill_pct"] for r in d.get("fill_rate_rows", [])]
+    if fill_rates:
+        fill_rate_fig.add_histogram(
+            x=fill_rates, marker_color=COLORS["accent2"],
+            xbins=dict(start=0, end=105, size=10),
+        )
+    fill_rate_fig.update_layout(
+        **GRAPH_LAYOUT, height=300,
+        xaxis_title="Total Filled % of Order Size",
+        yaxis_title="Orders",
+        title=dict(text="Maker Order Fill Rate Distribution", x=0.5))
+
+    # Fill rate by market type table (includes bite size)
+    fr_by_type = d.get("fill_rate_by_type", [])
+    bite_by_type = {r["type"]: r for r in d.get("bite_by_type", [])}
+    fr_type_table = make_table(
+        [{"type": r["type"], "orders": r["count"],
+          "avg_fill": round(r["avg"], 1),
+          "fully_filled": round(r["fully_filled"], 1),
+          "avg_bite": round(bite_by_type.get(r["type"], {}).get("avg", 0), 1),
+          "bite_fills": bite_by_type.get(r["type"], {}).get("count", 0)}
+         for r in fr_by_type],
+        [{"name": "Type", "id": "type"},
+         {"name": "Orders", "id": "orders", "type": "numeric"},
+         {"name": "Avg Fill %", "id": "avg_fill", "type": "numeric",
+          "format": Format(precision=1, scheme=Scheme.fixed)},
+         {"name": "Fully Filled %", "id": "fully_filled", "type": "numeric",
+          "format": Format(precision=1, scheme=Scheme.fixed)},
+         {"name": "Avg Bite %", "id": "avg_bite", "type": "numeric",
+          "format": Format(precision=1, scheme=Scheme.fixed)},
+         {"name": "Fills", "id": "bite_fills", "type": "numeric"}],
+        "fr-type",
+    )
+
+    # ── Section 3: Fill Timing ──
+    buckets = d.get("timing_buckets", {})
+    labels = d.get("timing_bucket_labels", [])
+    timing_hours = d.get("timing_hours", [])
+
+    total_timing_fills = sum(b["fills"] for b in buckets.values())
+    last_hour = sum(buckets.get(l, {}).get("fills", 0)
+                    for l in ["<15m", "15-30m", "30m-1h"])
+    avg_hours = (sum(timing_hours) / len(timing_hours)) if timing_hours else 0
+
+    timing_cards = html.Div(
+        style={"display": "flex", "flexWrap": "wrap", "gap": "12px",
+               "marginBottom": "16px"},
+        children=[
+            stat_card("Avg Time Before Close",
+                      f"{avg_hours:.1f}h" if avg_hours < 24
+                      else f"{avg_hours:.0f}h"),
+            stat_card("Fills < 1h Before Close",
+                      f"{pct(last_hour, total_timing_fills):.1f}%"
+                      if total_timing_fills else "N/A",
+                      COLORS["yellow"]
+                      if total_timing_fills and
+                      pct(last_hour, total_timing_fills) > 30
+                      else COLORS["green"]),
+            stat_card("Total Timed Fills", f"{total_timing_fills:,}"),
+        ])
+
+    # Timing bar chart (fills by bucket)
+    bucket_fills = [buckets.get(l, {}).get("fills", 0) for l in labels]
+    bucket_maker = [buckets.get(l, {}).get("maker_fills", 0) for l in labels]
+    bucket_taker = [f - m for f, m in zip(bucket_fills, bucket_maker)]
+
+    timing_fig = go.Figure()
+    timing_fig.add_bar(name="Maker", x=labels, y=bucket_maker,
+                       marker_color=COLORS["accent"])
+    timing_fig.add_bar(name="Taker", x=labels, y=bucket_taker,
+                       marker_color=COLORS["accent2"])
+    timing_fig.update_layout(**GRAPH_LAYOUT, barmode="stack", height=350,
+                             xaxis_title="Time Before Market Close",
+                             yaxis_title="Fills",
+                             title=dict(text="Fill Timing Distribution",
+                                        x=0.5))
+
+    # P&L by timing bucket
+    timing_pnl_fig = go.Figure()
+    bucket_pnl = [buckets.get(l, {}).get("pnl", 0) for l in labels]
+    timing_pnl_fig.add_bar(
+        x=labels, y=bucket_pnl,
+        marker_color=[COLORS["green"] if p >= 0 else COLORS["red"]
+                      for p in bucket_pnl],
+        text=[f"${p:+,.0f}" for p in bucket_pnl],
+        textposition="outside",
+    )
+    timing_pnl_fig.update_layout(
+        **GRAPH_LAYOUT, height=350,
+        xaxis_title="Time Before Market Close",
+        yaxis_title="Settled P&L ($)",
+        title=dict(text="P&L by Fill Timing (settled only)", x=0.5))
+
+    # Timing detail table
+    timing_table_data = []
+    for l in labels:
+        b = buckets.get(l, {})
+        if b.get("fills", 0) == 0:
+            continue
+        avg_pnl = (b["pnl"] / b["settled_fills"]
+                   if b["settled_fills"] else None)
+        timing_table_data.append({
+            "bucket": l,
+            "fills": b["fills"],
+            "contracts": b["contracts"],
+            "maker_pct": round(pct(b["maker_fills"], b["fills"]), 1),
+            "pnl": round(b["pnl"], 2) if b["settled_fills"] else None,
+            "avg_pnl": round(avg_pnl, 2) if avg_pnl is not None else None,
+        })
+
+    timing_table = make_table(
+        timing_table_data,
+        [{"name": "Window", "id": "bucket"},
+         {"name": "Fills", "id": "fills", "type": "numeric"},
+         {"name": "Contracts", "id": "contracts", "type": "numeric"},
+         {"name": "Maker %", "id": "maker_pct", "type": "numeric",
+          "format": Format(precision=1, scheme=Scheme.fixed)},
+         {"name": "Net P&L", "id": "pnl", "type": "numeric",
+          "format": Format(precision=2, scheme=Scheme.fixed)},
+         {"name": "Avg P&L/Fill", "id": "avg_pnl", "type": "numeric",
+          "format": Format(precision=2, scheme=Scheme.fixed)}],
+        "timing",
+        [{"if": {"filter_query": "{pnl} < 0", "column_id": "pnl"},
+          "color": COLORS["red"]},
+         {"if": {"filter_query": "{pnl} > 0", "column_id": "pnl"},
+          "color": COLORS["green"]},
+         {"if": {"filter_query": "{avg_pnl} < 0", "column_id": "avg_pnl"},
+          "color": COLORS["red"]},
+         {"if": {"filter_query": "{avg_pnl} > 0", "column_id": "avg_pnl"},
           "color": COLORS["green"]}],
     )
 
+    # ── Assemble ──
     return html.Div([
-        cards,
+        # Order sizes
+        size_cards,
         html.Div(style=CARD_STYLE, children=[dcc.Graph(figure=hist_fig)]),
         html.Div(style=CARD_STYLE, children=[
-            html.H3(f"Adverse Selection — Maker orders >{d.get('adverse_p75', 0)} cts, single fill",
-                     style={"color": COLORS["text"], "marginTop": 0, "fontSize": "1em"}),
+            html.H3(f"Adverse Selection \u2014 Maker orders "
+                     f">{d.get('adverse_p75', 0)} cts, single fill",
+                     style={"color": COLORS["text"], "marginTop": 0,
+                            "fontSize": "1em"}),
             adverse_table]),
+
+        # Fill rate
+        html.H2("Maker Fill Rate",
+                 style={"color": COLORS["accent"], "marginTop": "28px",
+                        "marginBottom": "12px", "fontSize": "1.2em",
+                        "borderBottom": f"1px solid {COLORS['card_border']}",
+                        "paddingBottom": "8px"}),
+        fill_rate_cards,
+        html.Div(style={"display": "flex", "flexWrap": "wrap",
+                         "gap": "16px"}, children=[
+            html.Div(style={**CARD_STYLE, "flex": "1", "minWidth": "300px"},
+                     children=[dcc.Graph(figure=bite_fig)]),
+            html.Div(style={**CARD_STYLE, "flex": "1", "minWidth": "300px"},
+                     children=[dcc.Graph(figure=fill_rate_fig)]),
+        ]),
+        html.Div(style=CARD_STYLE, children=[
+            html.H3("By Market Type",
+                     style={"color": COLORS["text"], "marginTop": 0}),
+            fr_type_table]),
+
+        # Timing
+        html.H2("Fill Timing",
+                 style={"color": COLORS["accent"], "marginTop": "28px",
+                        "marginBottom": "12px", "fontSize": "1.2em",
+                        "borderBottom": f"1px solid {COLORS['card_border']}",
+                        "paddingBottom": "8px"}),
+        timing_cards,
+        html.Div(style={"display": "flex", "flexWrap": "wrap",
+                         "gap": "16px"}, children=[
+            html.Div(style={**CARD_STYLE, "flex": "1", "minWidth": "300px"},
+                     children=[dcc.Graph(figure=timing_fig)]),
+            html.Div(style={**CARD_STYLE, "flex": "1", "minWidth": "300px"},
+                     children=[dcc.Graph(figure=timing_pnl_fig)]),
+        ]),
+        html.Div(style=CARD_STYLE, children=[
+            html.H3("Timing Detail",
+                     style={"color": COLORS["text"], "marginTop": 0}),
+            timing_table]),
     ])
 
 
@@ -540,36 +965,45 @@ def render_concentration():
     conc = d.get("concentration", [])
     total_exp = sum(r["exposure"] for r in conc)
     top1 = conc[0]["exposure"] if conc else 0
-    top3 = sum(r["exposure"] for r in conc[:3]) if len(conc) >= 3 else total_exp
+    top3 = (sum(r["exposure"] for r in conc[:3])
+            if len(conc) >= 3 else total_exp)
 
     cards = html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "12px",
                              "marginBottom": "16px"}, children=[
         stat_card("Total Exposure", fmt_dollars(total_exp)),
         stat_card("Largest Event", fmt_dollars(top1)),
         stat_card("Top 1 %", f"{pct(top1, total_exp):.1f}%",
-                  COLORS["yellow"] if pct(top1, total_exp) > 20 else COLORS["green"]),
+                  COLORS["yellow"] if total_exp and pct(top1, total_exp) > 20
+                  else COLORS["green"]),
         stat_card("Top 3 %", f"{pct(top3, total_exp):.1f}%",
-                  COLORS["yellow"] if pct(top3, total_exp) > 50 else COLORS["green"]),
+                  COLORS["yellow"] if total_exp and pct(top3, total_exp) > 50
+                  else COLORS["green"]),
         stat_card("Events", str(sum(1 for r in conc if r["exposure"] > 0))),
     ])
 
-    # Pie by market type
+    # Pie by market type — guard against empty
     by_type = defaultdict(float)
     for r in conc:
         by_type[r["type"]] += r["exposure"]
-    pie_fig = go.Figure(data=[go.Pie(
-        labels=list(by_type.keys()), values=list(by_type.values()),
-        marker=dict(colors=[COLORS["accent"], COLORS["accent2"],
-                            COLORS["yellow"], COLORS["text_muted"]]),
-        textinfo="label+percent", hole=0.4,
-    )])
+
+    if by_type and any(v > 0 for v in by_type.values()):
+        pie_fig = go.Figure(data=[go.Pie(
+            labels=list(by_type.keys()),
+            values=list(by_type.values()),
+            marker=dict(colors=PIE_COLORS[:len(by_type)]),
+            textinfo="label+percent", hole=0.4,
+        )])
+    else:
+        pie_fig = go.Figure()
+        pie_fig.add_annotation(text="No positions", showarrow=False,
+                               font=dict(size=16, color=COLORS["text_muted"]))
     pie_fig.update_layout(**GRAPH_LAYOUT, height=300,
                           title=dict(text="Exposure by Market Type", x=0.5))
 
     conc_table = make_table(
         [{"game": r["game"], "type": r["type"],
           "exposure": round(r["exposure"], 2), "cost": round(r["cost"], 2),
-          "pct": round(pct(r["exposure"], total_exp), 1)}
+          "pct": round(pct(r["exposure"], total_exp), 1) if total_exp else 0}
          for r in conc if r["exposure"] > 0],
         [{"name": "Game", "id": "game"},
          {"name": "Type", "id": "type"},
@@ -593,22 +1027,30 @@ def render_concentration():
          {"name": "ML Pos", "id": "ml", "type": "numeric"},
          {"name": "Direction", "id": "direction"}],
         "corr",
-        [{"if": {"filter_query": '{direction} = "SAME"', "column_id": "direction"},
+        [{"if": {"filter_query": '{direction} = "SAME"',
+                 "column_id": "direction"},
           "color": COLORS["yellow"], "fontWeight": "bold"}],
     )
 
     return html.Div([
         cards,
-        html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "16px"}, children=[
+        html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "16px"},
+                 children=[
             html.Div(style={**CARD_STYLE, "flex": "1", "minWidth": "300px"},
                      children=[
-                html.H3("Positions", style={"color": COLORS["text"], "marginTop": 0}),
+                html.H3("Positions",
+                         style={"color": COLORS["text"], "marginTop": 0}),
                 conc_table]),
             html.Div(style={**CARD_STYLE, "flex": "0 0 320px"}, children=[
                 dcc.Graph(figure=pie_fig)]),
         ]),
         html.Div(style=CARD_STYLE, children=[
-            html.H3("Directional Correlation (Spread + ML)", style={"color": COLORS["text"], "marginTop": 0}),
+            html.H3("Directional Correlation (Spread + ML)",
+                     style={"color": COLORS["text"], "marginTop": 0}),
+            html.P("Open positions only \u2014 settled games are zeroed out "
+                   "by Kalshi.",
+                   style={"color": COLORS["text_muted"], "fontSize": "0.8em",
+                           "marginTop": "-8px", "marginBottom": "12px"}),
             corr_table]),
     ])
 
@@ -616,19 +1058,18 @@ def render_concentration():
 def render_event_detail():
     d = DATA
     events_map = d.get("events_map", {})
-    results = d.get("market_results", {})
     options = sorted(events_map.keys())
 
     return html.Div([
         html.Div(style=CARD_STYLE, children=[
-            html.Label("Select Event:", style={"color": COLORS["text_muted"],
-                                                "marginRight": "12px"}),
+            html.Label("Select Event:",
+                        style={"color": COLORS["text_muted"],
+                               "marginRight": "12px"}),
             dcc.Dropdown(
                 id="event-dropdown",
                 options=[{"label": e, "value": e} for e in options],
                 value=options[0] if options else None,
-                style={"backgroundColor": COLORS["card"], "color": "#000",
-                       "minWidth": "300px"},
+                style={"minWidth": "300px"},
             ),
         ]),
         html.Div(id="event-detail-content"),
@@ -636,77 +1077,120 @@ def render_event_detail():
 
 
 # ── App setup ────────────────────────────────────────────────────────
-app = dash.Dash(__name__, title="MM Performance", suppress_callback_exceptions=True)
+app = dash.Dash(__name__, title="MM Performance",
+                suppress_callback_exceptions=True)
 
-TAB_STYLE = {"color": COLORS["text_muted"], "backgroundColor": COLORS["card"],
+app.index_string = (
+    '<!DOCTYPE html><html><head>'
+    '{%metas%}<title>{%title%}</title>{%favicon%}{%css%}'
+    '<style>' + DROPDOWN_CSS + '</style>'
+    '</head><body>{%app_entry%}<footer>'
+    '{%config%}{%scripts%}{%renderer%}'
+    '</footer></body></html>'
+)
+
+TAB_STYLE = {"color": COLORS["text_muted"],
+             "backgroundColor": COLORS["card"],
              "border": "none", "padding": "12px 20px"}
-TAB_SELECTED = {"color": COLORS["accent"], "backgroundColor": COLORS["bg"],
-                "borderTop": f"2px solid {COLORS['accent']}", "padding": "12px 20px"}
+TAB_SELECTED = {"color": COLORS["accent"],
+                "backgroundColor": COLORS["bg"],
+                "borderTop": f"2px solid {COLORS['accent']}",
+                "padding": "12px 20px"}
 
 app.layout = html.Div(
-    style={"backgroundColor": COLORS["bg"], "minHeight": "100vh", "padding": "16px",
-           "fontFamily": "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    style={"backgroundColor": COLORS["bg"], "minHeight": "100vh",
+           "padding": "16px",
+           "fontFamily": ("-apple-system, BlinkMacSystemFont, "
+                          "'Segoe UI', sans-serif"),
            "color": COLORS["text"]},
     children=[
         # Header
-        html.Div(style={"background": COLORS["header_bg"], "padding": "20px 28px",
+        html.Div(style={"background": COLORS["header_bg"],
+                         "padding": "20px 28px",
                          "borderRadius": "12px", "marginBottom": "16px",
                          "display": "flex", "justifyContent": "space-between",
-                         "alignItems": "center", "flexWrap": "wrap"}, children=[
+                         "alignItems": "center", "flexWrap": "wrap"},
+                 children=[
             html.Div([
-                html.H1("CBB 1H Market Maker", style={"margin": 0, "color": "white",
-                                                        "fontSize": "1.6em"}),
-                html.P(id="last-updated", style={"margin": "4px 0 0 0",
-                                                   "color": "rgba(255,255,255,0.85)"}),
+                html.H1("CBB 1H Market Maker",
+                         style={"margin": 0, "color": "white",
+                                "fontSize": "1.6em"}),
+                html.P(id="last-updated",
+                       style={"margin": "4px 0 0 0",
+                              "color": "rgba(255,255,255,0.85)"}),
             ]),
             html.Button("Refresh", id="refresh-btn", n_clicks=0, style={
-                "background": "rgba(255,255,255,0.2)", "border": "1px solid rgba(255,255,255,0.3)",
-                "color": "white", "padding": "10px 20px", "borderRadius": "8px",
-                "fontSize": "0.95em", "fontWeight": "600", "cursor": "pointer"}),
+                "background": "rgba(255,255,255,0.2)",
+                "border": "1px solid rgba(255,255,255,0.3)",
+                "color": "white", "padding": "10px 20px",
+                "borderRadius": "8px", "fontSize": "0.95em",
+                "fontWeight": "600", "cursor": "pointer"}),
         ]),
         # Tabs
         dcc.Tabs(id="main-tabs", value="pnl", colors={
-            "border": COLORS["card_border"], "primary": COLORS["accent"],
+            "border": COLORS["card_border"],
+            "primary": COLORS["accent"],
             "background": COLORS["card"]}, children=[
-            dcc.Tab(label="P&L", value="pnl", style=TAB_STYLE, selected_style=TAB_SELECTED),
-            dcc.Tab(label="Maker / Taker", value="mt", style=TAB_STYLE, selected_style=TAB_SELECTED),
-            dcc.Tab(label="Fill Patterns", value="fills", style=TAB_STYLE, selected_style=TAB_SELECTED),
-            dcc.Tab(label="Concentration", value="conc", style=TAB_STYLE, selected_style=TAB_SELECTED),
-            dcc.Tab(label="Event Detail", value="detail", style=TAB_STYLE, selected_style=TAB_SELECTED),
+            dcc.Tab(label="P&L", value="pnl",
+                    style=TAB_STYLE, selected_style=TAB_SELECTED),
+            dcc.Tab(label="Maker / Taker", value="mt",
+                    style=TAB_STYLE, selected_style=TAB_SELECTED),
+            dcc.Tab(label="Fill Patterns", value="fills",
+                    style=TAB_STYLE, selected_style=TAB_SELECTED),
+            dcc.Tab(label="Concentration", value="conc",
+                    style=TAB_STYLE, selected_style=TAB_SELECTED),
+            dcc.Tab(label="Event Detail", value="detail",
+                    style=TAB_STYLE, selected_style=TAB_SELECTED),
         ]),
-        html.Div(id="tab-content"),
-        dcc.Loading(id="loading", type="circle", children=[
-            html.Div(id="refresh-output", style={"display": "none"})]),
+        # Loading spinner wraps tab content (visible during load + refresh)
+        dcc.Loading(id="loading-tabs", type="circle",
+                    color=COLORS["accent"],
+                    children=[html.Div(id="tab-content")]),
     ],
 )
 
 
-@callback(Output("tab-content", "children"), Input("main-tabs", "value"))
-def render_tab(tab):
-    if not DATA.get("loaded"):
+# Single callback handles both tab switches AND refresh clicks
+@callback(Output("tab-content", "children"),
+          Output("last-updated", "children"),
+          Input("main-tabs", "value"),
+          Input("refresh-btn", "n_clicks"))
+def render_tab(tab, n_clicks):
+    triggered = ctx.triggered_id
+
+    if triggered == "refresh-btn":
         load_data()
-    if tab == "pnl":
-        return render_pnl()
-    elif tab == "mt":
-        return render_maker_taker()
-    elif tab == "fills":
-        return render_fill_patterns()
-    elif tab == "conc":
-        return render_concentration()
-    elif tab == "detail":
-        return render_event_detail()
-    return html.Div("Unknown tab")
+    elif not DATA.get("loaded"):
+        load_data()
+
+    # Handle total failure (no data at all)
+    if DATA.get("error") and not DATA.get("loaded"):
+        return (html.Div(style=CARD_STYLE, children=[
+            html.H3("Error Loading Data",
+                     style={"color": COLORS["red"]}),
+            html.P(DATA["error"], style={"color": COLORS["text"]}),
+            html.P("Check API credentials and try Refresh.",
+                   style={"color": COLORS["text_muted"]}),
+        ]), f"Error: {DATA.get('ts', '?')}")
+
+    ts_text = f"Updated: {DATA.get('ts', '?')}"
+    if DATA.get("error"):
+        ts_text += f"  (refresh failed: {DATA['error']})"
+
+    renderers = {
+        "pnl": render_pnl,
+        "mt": render_maker_taker,
+        "fills": render_fill_patterns,
+        "conc": render_concentration,
+        "detail": render_event_detail,
+    }
+    content = renderers.get(tab, lambda: html.Div("Unknown tab"))()
+    return content, ts_text
 
 
-@callback(Output("refresh-output", "children"), Output("last-updated", "children"),
-          Input("refresh-btn", "n_clicks"), prevent_initial_call=True)
-def refresh(n):
-    load_data()
-    return "", f"Updated: {DATA.get('ts', '?')}"
-
-
+# Event detail — no prevent_initial_call so first event renders immediately
 @callback(Output("event-detail-content", "children"),
-          Input("event-dropdown", "value"), prevent_initial_call=True)
+          Input("event-dropdown", "value"))
 def render_event(event_name):
     if not event_name:
         return html.Div()
@@ -719,23 +1203,30 @@ def render_event(event_name):
         cnt = contracts(f)
         cost = fill_cost_cents(f) * cnt / 100
         settled = t in results and results[t] is not None
-        pnl = fill_pnl_cents(f, results.get(t, "")) * cnt / 100 if settled else None
+        pnl = (fill_pnl_cents(f, results.get(t, "")) * cnt / 100
+               if settled else None)
         rows.append({
             "time": f["created_time"][:19].replace("T", " "),
             "strike": strike, "side": f["side"], "contracts": cnt,
             "cost": round(cost, 2),
             "taker": "Yes" if f.get("is_taker") else "",
             "result": results.get(t, "") or "open",
-            "pnl": round(pnl, 2) if pnl is not None else "open",
+            "pnl": round(pnl, 2) if pnl is not None else None,
         })
     total_cost = sum(r["cost"] for r in rows)
-    total_pnl = sum(r["pnl"] for r in rows if isinstance(r["pnl"], (int, float)))
+    total_pnl = sum(r["pnl"] for r in rows
+                    if isinstance(r["pnl"], (int, float)))
+    has_settled = any(isinstance(r["pnl"], (int, float)) for r in rows)
+
+    pnl_display = fmt_dollars(total_pnl) if has_settled else "open"
+    pnl_card_color = pnl_color(total_pnl) if has_settled else COLORS["text_muted"]
+
     return html.Div(style=CARD_STYLE, children=[
-        html.Div(style={"display": "flex", "gap": "12px", "marginBottom": "12px"}, children=[
+        html.Div(style={"display": "flex", "gap": "12px",
+                         "marginBottom": "12px"}, children=[
             stat_card("Fills", str(len(rows))),
             stat_card("Cost", fmt_dollars(total_cost)),
-            stat_card("P&L", fmt_dollars(total_pnl) if total_pnl else "open",
-                      COLORS["green"] if total_pnl and total_pnl > 0 else COLORS["red"]),
+            stat_card("P&L", pnl_display, pnl_card_color),
         ]),
         make_table(rows,
             [{"name": "Time", "id": "time"},
@@ -746,13 +1237,18 @@ def render_event(event_name):
               "format": Format(precision=2, scheme=Scheme.fixed)},
              {"name": "Taker", "id": "taker"},
              {"name": "Result", "id": "result"},
-             {"name": "P&L", "id": "pnl"}],
+             {"name": "P&L", "id": "pnl", "type": "numeric",
+              "format": Format(precision=2, scheme=Scheme.fixed)}],
             "event-fills",
-            [{"if": {"filter_query": '{pnl} contains "-"', "column_id": "pnl"},
+            [{"if": {"filter_query": "{pnl} < 0", "column_id": "pnl"},
               "color": COLORS["red"]},
-             {"if": {"filter_query": '{result} = "yes"', "column_id": "result"},
+             {"if": {"filter_query": "{pnl} > 0", "column_id": "pnl"},
               "color": COLORS["green"]},
-             {"if": {"filter_query": '{result} = "no"', "column_id": "result"},
+             {"if": {"filter_query": '{result} = "yes"',
+                     "column_id": "result"},
+              "color": COLORS["green"]},
+             {"if": {"filter_query": '{result} = "no"',
+                     "column_id": "result"},
               "color": COLORS["red"]}],
             page_size=50),
     ])
@@ -761,5 +1257,6 @@ def render_event(event_name):
 if __name__ == "__main__":
     print("Loading data from Kalshi API...")
     load_data()
-    print(f"Loaded {len(DATA.get('cbb_fills', []))} fills. Starting dashboard...")
-    app.run(debug=False, host="0.0.0.0", port=8084)
+    print(f"Loaded {len(DATA.get('cbb_fills', []))} fills. "
+          f"Starting dashboard...")
+    app.run(debug=False, host="0.0.0.0", port=8084, threaded=True)
