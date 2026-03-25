@@ -36,6 +36,20 @@ pipeline_timer <- function() {
   )
 }
 
+# --- DuckDB connection with retry (handles transient lock contention) ---
+duckdb_connect_retry <- function(dbdir, read_only = FALSE, max_retries = 5, delay = 2) {
+  for (i in seq_len(max_retries)) {
+    con <- tryCatch(
+      dbConnect(duckdb(), dbdir = dbdir, read_only = read_only),
+      error = function(e) e
+    )
+    if (!inherits(con, "error")) return(con)
+    if (i == max_retries) stop(sprintf("DuckDB connect failed after %d retries: %s", max_retries, con$message))
+    cat(sprintf("  DuckDB lock contention on %s, retry %d/%d in %ds...\n", basename(dbdir), i, max_retries, delay))
+    Sys.sleep(delay)
+  }
+}
+
 odds_to_prob <- function(odds) {
   ifelse(odds > 0, 100 / (odds + 100), -odds / (-odds + 100))
 }

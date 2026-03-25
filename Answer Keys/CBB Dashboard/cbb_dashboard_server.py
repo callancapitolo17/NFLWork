@@ -63,6 +63,9 @@ OFFSHORE_SCRAPERS = {
 # Active capture timers: game_id -> threading.Timer
 scheduled_captures = {}
 
+# Mutex to prevent concurrent pipeline/refresh runs
+_refresh_lock = threading.Lock()
+
 
 # =============================================================================
 # DATABASE INITIALIZATION
@@ -872,37 +875,46 @@ def get_scheduled_captures():
 
 def run_pipeline():
     """Run full pipeline (scrapers + predictions) and regenerate dashboard."""
-    nfl_work_dir = BASE_DIR.parent.parent  # NFLWork directory
-    answer_keys_dir = BASE_DIR.parent  # Answer Keys directory
+    if not _refresh_lock.acquire(blocking=False):
+        return False, "Refresh already in progress — please wait"
 
-    # Step 1: Run the full pipeline (scrapers + R prepare + R combine)
-    print("Running full CBB pipeline (scrapers + predictions)...")
-    result = subprocess.run(
-        [sys.executable, str(answer_keys_dir / "run.py"), "cbb"],
-        capture_output=True,
-        text=True,
-        cwd=nfl_work_dir
-    )
+    try:
+        nfl_work_dir = BASE_DIR.parent.parent  # NFLWork directory
+        answer_keys_dir = BASE_DIR.parent  # Answer Keys directory
 
-    if result.returncode != 0:
-        print(f"Pipeline stderr: {result.stderr}")
-        return False, f"Pipeline failed: {result.stderr[:500]}"
+        # Step 1: Run the full pipeline (scrapers + R prepare + R combine)
+        print("Running full CBB pipeline (scrapers + predictions)...")
+        result = subprocess.run(
+            [sys.executable, str(answer_keys_dir / "run.py"), "cbb"],
+            capture_output=True,
+            text=True,
+            cwd=nfl_work_dir
+        )
 
-    # Step 2: Generate dashboard HTML from the saved data
-    print("Generating CBB dashboard HTML...")
-    result = subprocess.run(
-        ["Rscript", str(BASE_DIR / "cbb_dashboard.R")],
-        capture_output=True,
-        text=True,
-        cwd=nfl_work_dir
-    )
+        if result.returncode != 0:
+            # run.py prints errors to stdout, not stderr — check both
+            error_output = (result.stderr or result.stdout or "Unknown error")[-500:]
+            print(f"Pipeline failed: {error_output}")
+            return False, f"Pipeline failed: {error_output}"
 
-    if result.returncode != 0:
-        print(f"Dashboard stderr: {result.stderr}")
-        return False, f"Dashboard generation failed: {result.stderr[:500]}"
+        # Step 2: Generate dashboard HTML from the saved data
+        print("Generating CBB dashboard HTML...")
+        result = subprocess.run(
+            ["Rscript", str(BASE_DIR / "cbb_dashboard.R")],
+            capture_output=True,
+            text=True,
+            cwd=nfl_work_dir
+        )
 
-    print("CBB refresh complete!")
-    return True, "Dashboard refreshed successfully"
+        if result.returncode != 0:
+            error_output = (result.stderr or result.stdout or "Unknown error")[-500:]
+            print(f"Dashboard failed: {error_output}")
+            return False, f"Dashboard generation failed: {error_output}"
+
+        print("CBB refresh complete!")
+        return True, "Dashboard refreshed successfully"
+    finally:
+        _refresh_lock.release()
 
 
 @app.route("/refresh", methods=["POST"])

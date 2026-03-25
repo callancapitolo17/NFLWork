@@ -27,7 +27,8 @@ run.py (orchestrator)
 - When adding a new scraper or sport, team name mismatches WILL happen. Test exhaustively.
 
 ### DuckDB Databases
-- `cbb.duckdb` — Pipeline data (odds from all scrapers, combined)
+- `cbb.duckdb` — Pipeline data (historical odds, betting PBP, dashboard bets)
+- `cbb_mm.duckdb` — MM export (predictions, game samples). Separate from `cbb.duckdb` to avoid lock contention with the Kalshi MM bot's 30s polling.
 - `pbp.duckdb` — Historical play-by-play data
 - `cbb_dashboard.duckdb` — Dashboard state (placed_bets, settings, CLV)
 - Never symlink DuckDB files. Always copy if needed in worktrees.

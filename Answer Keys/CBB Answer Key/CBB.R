@@ -29,7 +29,7 @@ cat("=== CBB ANSWER KEY ===\n")
 # PHASE 1: LOAD HISTORICAL DATA
 # =============================================================================
 
-con <- dbConnect(duckdb(), dbdir = "cbb.duckdb")
+con <- dbConnect(duckdb(), dbdir = "cbb.duckdb", read_only = TRUE)
 
 betting_pbp <- dbGetQuery(con, "SELECT * FROM cbb_betting_pbp")
 
@@ -790,11 +790,16 @@ all_bets_combined %>%
 cat("\n=== TOP 20 BETS ===\n")
 print(all_bets_combined %>% head(20))
 
-con <- dbConnect(duckdb(), dbdir = "cbb.duckdb")
+# --- Save dashboard bets to cbb.duckdb ---
+con <- duckdb_connect_retry("cbb.duckdb")
 dbExecute(con, "DROP TABLE IF EXISTS cbb_bets_combined")
 dbWriteTable(con, "cbb_bets_combined", all_bets_combined)
+dbDisconnect(con)
 
-# --- Export raw predictions for market maker consumption ---
+# --- Export MM tables to separate DB (avoids lock contention with MM bot) ---
+# The MM bot reads cbb_mm.duckdb every 30s; using a separate file means
+# the pipeline's write lock on cbb.duckdb never blocks the bot.
+
 # Generate 3-way ML probabilities (home/away/tie) for Kalshi 1H winner markets.
 # build_moneylines_from_samples() only exports 2-way (ties excluded), but
 # Kalshi 1H winner is 3-way — using 2-way probs would overvalue both sides
@@ -842,13 +847,15 @@ raw_preds <- bind_rows(
               prob_side2 = under_prob, prob_tie = NA_real_),
   ml_preds_export
 )
-dbExecute(con, "DROP TABLE IF EXISTS cbb_raw_predictions")
-dbWriteTable(con, "cbb_raw_predictions", raw_preds)
-dbExecute(con, "DROP TABLE IF EXISTS cbb_prediction_meta")
-dbExecute(con, "CREATE TABLE cbb_prediction_meta (updated_at TIMESTAMP)")
-dbExecute(con, sprintf("INSERT INTO cbb_prediction_meta VALUES ('%s')",
+
+con_mm <- duckdb_connect_retry("cbb_mm.duckdb")
+dbExecute(con_mm, "DROP TABLE IF EXISTS cbb_raw_predictions")
+dbWriteTable(con_mm, "cbb_raw_predictions", raw_preds)
+dbExecute(con_mm, "DROP TABLE IF EXISTS cbb_prediction_meta")
+dbExecute(con_mm, "CREATE TABLE cbb_prediction_meta (updated_at TIMESTAMP)")
+dbExecute(con_mm, sprintf("INSERT INTO cbb_prediction_meta VALUES ('%s')",
                        format(Sys.time(), "%Y-%m-%d %H:%M:%S")))
-cat(sprintf("Exported %d raw predictions to cbb_raw_predictions.\n", nrow(raw_preds)))
+cat(sprintf("Exported %d raw predictions to cbb_mm.duckdb.\n", nrow(raw_preds)))
 
 # Export game samples for MM Kelly sizing
 sample_rows <- map_dfr(names(samples), function(game_id) {
@@ -860,13 +867,13 @@ sample_rows <- map_dfr(names(samples), function(game_id) {
     total_h1 = s$game_total_period_Half1
   )
 })
-dbExecute(con, "DROP TABLE IF EXISTS cbb_game_samples")
-dbWriteTable(con, "cbb_game_samples", sample_rows)
+dbExecute(con_mm, "DROP TABLE IF EXISTS cbb_game_samples")
+dbWriteTable(con_mm, "cbb_game_samples", sample_rows)
 cat(sprintf("Exported %d game samples (%d games) for Kelly sizing.\n",
             nrow(sample_rows), length(unique(sample_rows$game_id))))
 
 timer$mark("save_bets")
-dbDisconnect(con)
+dbDisconnect(con_mm)
 
 cat(sprintf("Saved %d bets to cbb_bets_combined table.\n", nrow(all_bets_combined)))
 cat("\n=== CBB ANSWER KEY: Complete ===\n")

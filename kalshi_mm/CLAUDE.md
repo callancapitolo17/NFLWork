@@ -16,7 +16,7 @@ Automated market maker for CBB 1st-half markets on Kalshi. Posts bid/ask quotes,
 ## Critical Details
 
 ### Oracle Dependency
-Fair value comes from offshore scraper databases (Bookmaker, Bet105). If those scrapers haven't run recently, the oracle is stale and quotes will be wrong.
+Fair value comes from offshore scraper databases (Bookmaker, Bet105). If those scrapers haven't run recently, the oracle is stale and quotes will be wrong. Predictions and game samples are read from `cbb_mm.duckdb` (separate from `cbb.duckdb` to avoid lock contention during pipeline runs).
 
 ### DuckDB File
 `kalshi_mm.duckdb` — NEVER symlink. WAL files must be co-located with the database.
