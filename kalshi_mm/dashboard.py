@@ -485,7 +485,7 @@ def make_table(data_records, columns, id_prefix, conditional=None, page_size=20)
         style_cell_conditional=[
             {"if": {"column_id": c}, "textAlign": "left"}
             for c in ("type", "event", "game", "role", "strike",
-                       "direction", "status")
+                       "direction", "status", "bucket")
         ],
         id=f"table-{id_prefix}",
     )
@@ -869,15 +869,16 @@ def render_fill_patterns():
         yaxis_title="Settled P&L ($)",
         title=dict(text="P&L by Fill Timing (settled only)", x=0.5))
 
-    # Timing detail table
+    # Timing detail table — add sort key for chronological order
     timing_table_data = []
-    for l in labels:
+    for i, l in enumerate(labels):
         b = buckets.get(l, {})
         if b.get("fills", 0) == 0:
             continue
         avg_pnl = (b["pnl"] / b["settled_fills"]
                    if b["settled_fills"] else None)
         timing_table_data.append({
+            "sort_key": i,
             "bucket": l,
             "fills": b["fills"],
             "contracts": b["contracts"],
@@ -888,7 +889,8 @@ def render_fill_patterns():
 
     timing_table = make_table(
         timing_table_data,
-        [{"name": "Window", "id": "bucket"},
+        [{"name": "#", "id": "sort_key", "type": "numeric"},
+         {"name": "Window", "id": "bucket"},
          {"name": "Fills", "id": "fills", "type": "numeric"},
          {"name": "Contracts", "id": "contracts", "type": "numeric"},
          {"name": "Maker %", "id": "maker_pct", "type": "numeric",
