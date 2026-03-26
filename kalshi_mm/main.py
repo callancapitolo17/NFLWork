@@ -782,16 +782,42 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
     cycle_ts = time.time()
 
     # Pre-compute maker sizes using budget-based approach.
-    # Groups markets by game+type, allocates budget using standalone Kelly,
-    # distributes within group by Kelly weight, accounts for Kalshi positions.
+    # Pass 1: Run quoter on all markets to get posting prices.
+    # Pass 2: Kelly sizes at the quoter's actual price (not book price),
+    # so that contract_count × posting_price never exceeds the dollar budget.
     kelly_sizes = {}  # ticker -> {"bid_size": int, "ask_size": int}
+    # Pre-pass: run quoter on all markets to get posting prices, then
+    # pass those prices to Kelly so dollar→contract conversion uses the
+    # actual posting price (not the stale book price).
+    # Cache full quote dicts to avoid running the quoter twice per ticker.
+    # NOTE: Do NOT call _detect_penny_loop here — it mutates state.
+    # The main loop calls it; the rare case where penny-loop fires will
+    # re-run the quoter with zeroed book prices.
+    _quote_cache = {}  # ticker -> quote dict (from pre-pass, without penny-loop)
     if config.USE_KELLY_SIZING:
+        quoter_prices = {}  # ticker -> {"bid_yes": int, "ask_yes": int}
+        for mkt in quotable_markets:
+            tk = mkt["ticker"]
+            if not risk.check_tipoff_proximity(mkt.get("commence_time")):
+                continue
+            pre_quote = quoter.compute_quotes(
+                mkt["fair_prob"], kelly.get_net_position(tk),
+                book_bid=mkt.get("book_bid", 0),
+                book_ask=mkt.get("book_ask", 0))
+            if pre_quote:
+                quoter_prices[tk] = {
+                    "bid_yes": pre_quote["bid_yes"],
+                    "ask_yes": pre_quote["ask_yes"],
+                }
+                _quote_cache[tk] = pre_quote
+
         positions_map = {p.get("ticker", ""): p.get("net_yes", 0)
                          for p in kelly.get_cached_positions() or []}
         kelly_sizes = kelly.compute_maker_sizes(
             quotable_markets, positions_map,
             config.BANKROLL, config.KELLY_FRACTION,
-            config.MAX_GAME_TYPE_EXPOSURE_PCT)
+            config.MAX_GAME_TYPE_EXPOSURE_PCT,
+            quoter_prices)
 
     for market in quotable_markets:
         ticker = market["ticker"]
@@ -841,17 +867,27 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
                 del resting_by_ticker[ticker]
             continue
 
-        # Compute quote (orderbook-aware, with anti-penny-loop)
+        # Compute quote (orderbook-aware, with anti-penny-loop).
+        # Reuse pre-pass cache when possible; re-run only if penny-loop fires
+        # (which zeros book prices, producing different quotes).
         book_bid = market.get("book_bid", 0)
         book_ask = market.get("book_ask", 0)
-        if quoter._detect_penny_loop(ticker, book_bid, book_ask):
-            # Someone is walking our price — quote at EV floor, ignore book
+        penny_loop = quoter._detect_penny_loop(ticker, book_bid, book_ask)
+        if penny_loop:
             book_bid, book_ask = 0, 0
-        quote = quoter.compute_quotes(
-            market["fair_prob"], net,
-            book_bid=book_bid, book_ask=book_ask,
-            bid_size=bid_size, ask_size=ask_size
-        )
+
+        cached = _quote_cache.get(ticker)
+        if cached and not penny_loop:
+            # Reuse pre-pass quote, just update sizes
+            quote = dict(cached)
+            quote["bid_size"] = bid_size
+            quote["ask_size"] = ask_size
+        else:
+            quote = quoter.compute_quotes(
+                market["fair_prob"], net,
+                book_bid=book_bid, book_ask=book_ask,
+                bid_size=bid_size, ask_size=ask_size
+            )
         if quote is None:
             # Cancel existing orders if any
             if ticker in resting_by_ticker:
