@@ -33,6 +33,8 @@ New orders are batched via `POST /portfolio/orders/batched` (max 20 per call) in
 ### Budget-Based Maker Sizing
 Maker sizes use a budget approach instead of Kelly matrix optimization. Markets are grouped by game + type (spreads, totals, moneyline). Each group gets a budget = best standalone Kelly fraction × kelly_mult × bankroll, capped at MAX_GAME_TYPE_EXPOSURE_PCT. The budget is distributed within the group by Kelly weight (proportional to each ticker's standalone Kelly fraction). Bids and asks share one budget per group to prevent cross-side directional doubling. Existing Kalshi positions are subtracted from the budget before distributing. When over budget, the bot posts orders to unwind. Kelly matrix sizing (`batch_kelly_sizes_for_game`) is retained for the taker only.
 
+**Quoter-price sizing:** The quote cycle runs the quoter first (prices only) on all markets, then passes those prices to `compute_maker_sizes(quoter_prices=...)`. Dollar-to-contract conversion uses the quoter's actual posting price — not the Kalshi book price — so that `contracts × cost_per_contract` never exceeds the dollar budget. The quoter determines the price, Kelly determines the size at that price.
+
 ### Taker Cooldowns
 The taker uses a simple 10s per-ticker tactical cooldown to prevent hammering the same contract. Cross-market correlation (same game, same event) is handled entirely by Kelly conditional sizing — `kelly.clear_positions_cache()` is called after each fill so subsequent takes see updated positions. No event-level or game-level cooldowns.
 

@@ -1023,8 +1023,11 @@ def compute_group_budget(markets, bankroll, kelly_mult, max_exposure_pct):
 
 
 def compute_maker_sizes(quotable_markets, positions, bankroll, kelly_mult,
-                        max_exposure_pct):
+                        max_exposure_pct, quoter_prices=None):
     """Compute budget-based maker sizes for all quotable markets.
+
+    Sizes are computed at the quoter's actual posting price (not book price)
+    so that contract_count × posting_price never exceeds the dollar budget.
 
     Args:
         quotable_markets: list of market dicts with fair_prob, book_bid, book_ask
@@ -1032,10 +1035,15 @@ def compute_maker_sizes(quotable_markets, positions, bankroll, kelly_mult,
         bankroll: total bankroll in dollars
         kelly_mult: fractional Kelly multiplier (e.g., 0.25)
         max_exposure_pct: max exposure per group as fraction of bankroll
+        quoter_prices: dict {ticker: {"bid_yes": int, "ask_yes": int}} from
+            quoter pass. Used to convert dollar budgets to contracts at the
+            actual posting price. Falls back to book price if missing.
 
     Returns:
         dict: ticker → {"bid_size": int, "ask_size": int}
     """
+    if quoter_prices is None:
+        quoter_prices = {}
     groups = build_maker_groups(quotable_markets)
     all_sizes = {}
 
@@ -1046,7 +1054,7 @@ def compute_maker_sizes(quotable_markets, positions, bankroll, kelly_mult,
             continue
 
         sizes = _distribute_group_budget(group_markets, budget, positions,
-                                         bankroll, kelly_mult)
+                                         bankroll, kelly_mult, quoter_prices)
         for s in sizes:
             ticker = s["ticker"]
             if ticker not in all_sizes:
@@ -1066,11 +1074,17 @@ def compute_maker_sizes(quotable_markets, positions, bankroll, kelly_mult,
     return all_sizes
 
 
-def _distribute_group_budget(markets, budget, positions, bankroll, kelly_mult):
+def _distribute_group_budget(markets, budget, positions, bankroll, kelly_mult,
+                             quoter_prices=None):
     """Distribute a group's budget across tickers by Kelly weight.
+
+    Contract counts are computed at the quoter's posting price (not book price)
+    so that size × cost never exceeds the dollar budget.
 
     Returns list of {"ticker", "side", "price", "size"} dicts.
     """
+    if quoter_prices is None:
+        quoter_prices = {}
     # Compute raw Kelly per ticker (bid and ask separately)
     allocations = []
     for market in markets:
@@ -1128,7 +1142,7 @@ def _distribute_group_budget(markets, budget, positions, bankroll, kelly_mult):
     if remaining <= 0:
         # Over budget — unwind excess
         return _compute_unwind_orders(markets, group_tickers, positions,
-                                      held, budget)
+                                      held, budget, quoter_prices)
 
     # STEP 3: Distribute REMAINING by Kelly weight
     total_raw = sum(a["raw"] for a in allocations)
@@ -1138,7 +1152,22 @@ def _distribute_group_budget(markets, budget, positions, bankroll, kelly_mult):
     results = []
     for alloc in allocations:
         ticker_budget = remaining * (alloc["raw"] / total_raw)
-        contracts = int(ticker_budget / (alloc["price"] / 100))
+
+        # Convert dollars to contracts at the QUOTER's posting price (not book
+        # price). This ensures size × cost ≤ budget. Falls back to book price
+        # if quoter didn't produce a quote for this ticker.
+        qp = quoter_prices.get(alloc["ticker"], {})
+        if alloc["side"] == "yes":
+            # Bid: cost per contract = bid_yes cents
+            posting_price = qp.get("bid_yes", alloc["price"])
+        else:
+            # Ask: cost per contract = (100 - ask_yes) cents
+            ask_yes = qp.get("ask_yes")
+            posting_price = (100 - ask_yes) if ask_yes is not None else alloc["price"]
+
+        if posting_price <= 0:
+            continue
+        contracts = int(ticker_budget / (posting_price / 100))
 
         # Subtract existing position on this side
         pos = positions.get(alloc["ticker"], 0)
@@ -1149,13 +1178,19 @@ def _distribute_group_budget(markets, budget, positions, bankroll, kelly_mult):
 
         if contracts > 0:
             results.append({"ticker": alloc["ticker"], "side": alloc["side"],
-                           "price": alloc["price"], "size": contracts})
+                           "price": posting_price, "size": contracts})
 
     return results
 
 
-def _compute_unwind_orders(markets, group_tickers, positions, held, budget):
-    """When over budget, compute orders to reduce exposure back to budget."""
+def _compute_unwind_orders(markets, group_tickers, positions, held, budget,
+                           quoter_prices=None):
+    """When over budget, compute orders to reduce exposure back to budget.
+
+    Uses quoter posting prices for contract conversion when available.
+    """
+    if quoter_prices is None:
+        quoter_prices = {}
     results = []
     excess = held - budget
 
@@ -1167,25 +1202,39 @@ def _compute_unwind_orders(markets, group_tickers, positions, held, budget):
         if not market or pos == 0:
             continue
 
+        qp = quoter_prices.get(ticker, {})
+
         if pos > 0:
-            price = market.get("book_bid", 0)
-            if price <= 0:
+            # Unwind long YES by selling YES (buy NO)
+            book_price = market.get("book_bid", 0)
+            if book_price <= 0:
                 continue
-            sell_dollars = min(excess, pos * price / 100)
-            sell_contracts = int(sell_dollars / (price / 100))
+            sell_dollars = min(excess, pos * book_price / 100)
+            # Convert at quoter's ask price (NO cost), fall back to book
+            ask_yes = qp.get("ask_yes")
+            sell_price = (100 - ask_yes) if ask_yes is not None else (100 - book_price)
+            if sell_price <= 0:
+                sell_price = 100 - book_price
+            sell_contracts = int(sell_dollars / (sell_price / 100))
             if sell_contracts > 0:
                 results.append({"ticker": ticker, "side": "no",
-                               "price": 100 - price, "size": sell_contracts})
+                               "price": sell_price, "size": sell_contracts})
                 excess -= sell_dollars
         elif pos < 0:
-            price = 100 - market.get("book_ask", 0)
-            if price <= 0:
+            # Unwind short YES by buying YES
+            book_price = 100 - market.get("book_ask", 0)
+            if book_price <= 0:
                 continue
-            buy_dollars = min(excess, abs(pos) * price / 100)
-            buy_contracts = int(buy_dollars / (price / 100))
+            buy_dollars = min(excess, abs(pos) * book_price / 100)
+            # Convert at quoter's bid price, fall back to book
+            bid_yes = qp.get("bid_yes")
+            buy_price = bid_yes if bid_yes is not None else (100 - book_price)
+            if buy_price <= 0:
+                buy_price = 100 - book_price
+            buy_contracts = int(buy_dollars / (buy_price / 100))
             if buy_contracts > 0:
                 results.append({"ticker": ticker, "side": "yes",
-                               "price": 100 - price, "size": buy_contracts})
+                               "price": buy_price, "size": buy_contracts})
                 excess -= buy_dollars
 
     return results
