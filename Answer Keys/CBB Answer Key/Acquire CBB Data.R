@@ -360,6 +360,34 @@ extract_first_to_10_h1 <- function(pbp) {
   h1
 }
 
+# Helper: extract race-to-X for full game (any threshold)
+# Returns tibble with game_id + first_to_{threshold}_fg (1 = home, 0 = away, NA = neither/tie)
+extract_race_to_fg <- function(pbp, threshold = 10) {
+  col_name <- paste0("first_to_", threshold, "_fg")
+  fg <- pbp %>%
+    filter(!is.na(home_score), !is.na(away_score)) %>%  # NO half filter — full game
+    arrange(game_id, id) %>%
+    group_by(game_id) %>%
+    summarize(
+      home_first_idx = { idx <- which(home_score >= threshold); if (length(idx) > 0) min(idx) else NA_integer_ },
+      away_first_idx = { idx <- which(away_score >= threshold); if (length(idx) > 0) min(idx) else NA_integer_ },
+      .groups = "drop"
+    ) %>%
+    mutate(
+      !!col_name := case_when(
+        is.na(home_first_idx) & is.na(away_first_idx) ~ NA_integer_,
+        is.na(away_first_idx) ~ 1L,
+        is.na(home_first_idx) ~ 0L,
+        home_first_idx < away_first_idx ~ 1L,
+        away_first_idx < home_first_idx ~ 0L,
+        TRUE ~ NA_integer_  # simultaneous (tie)
+      ),
+      game_id = as.character(game_id)
+    ) %>%
+    select(game_id, all_of(col_name))
+  fg
+}
+
 if ("--daily-pbp" %in% cli_args) {
   if (!requireNamespace("hoopR", quietly = TRUE)) install.packages("hoopR")
   library(hoopR)
@@ -435,7 +463,13 @@ if ("--daily-pbp" %in% cli_args) {
 
   # Extract first-to-10 from raw PBP before pivoting
   first10 <- extract_first_to_10_h1(pbp)
-  message(sprintf("First-to-10: computed for %d games", nrow(first10)))
+  message(sprintf("First-to-10 H1: computed for %d games", nrow(first10)))
+
+  # Extract race-to-X full game for thresholds 10, 20, 40
+  race10_fg <- extract_race_to_fg(pbp, 10)
+  race20_fg <- extract_race_to_fg(pbp, 20)
+  race40_fg <- extract_race_to_fg(pbp, 40)
+  message(sprintf("Race-to-X FG: computed for %d games", nrow(race10_fg)))
 
   # Pivot to wide format - one row per game
   game_margins <- game_by_half %>%
@@ -449,7 +483,10 @@ if ("--daily-pbp" %in% cli_args) {
     ) %>%
     # Final scores = end of regulation if no OT, or max overall
     left_join(ot_info, by = "game_id") %>%
-    left_join(first10, by = c("game_id" = "game_id")) %>%
+    left_join(first10, by = "game_id") %>%
+    left_join(race10_fg, by = "game_id") %>%
+    left_join(race20_fg, by = "game_id") %>%
+    left_join(race40_fg, by = "game_id") %>%
     mutate(
       home_h1_score = as.integer(home_half_score_h1),
       away_h1_score = as.integer(away_half_score_h1),
@@ -466,6 +503,9 @@ if ("--daily-pbp" %in% cli_args) {
       game_home_margin_ot = coalesce(game_home_margin_ot, 0L),
       game_total_ot = coalesce(game_total_ot, 0L),
       first_to_10_h1 = coalesce(first_to_10_h1, NA_integer_),
+      first_to_10_fg = coalesce(first_to_10_fg, NA_integer_),
+      first_to_20_fg = coalesce(first_to_20_fg, NA_integer_),
+      first_to_40_fg = coalesce(first_to_40_fg, NA_integer_),
       # Final scores (regulation end + OT)
       home_final_score = as.integer(home_score_end_h2 + home_ot_score),
       away_final_score = as.integer(away_score_end_h2 + away_ot_score),
@@ -484,7 +524,8 @@ if ("--daily-pbp" %in% cli_args) {
       home_h2_score, away_h2_score, game_home_margin_h2, game_total_h2,
       home_ot_score, away_ot_score, game_home_margin_ot, game_total_ot,
       home_final_score, away_final_score, game_home_margin_fg, game_total_fg,
-      home_winner, went_to_ot, first_to_10_h1
+      home_winner, went_to_ot, first_to_10_h1,
+      first_to_10_fg, first_to_20_fg, first_to_40_fg
     )
 
   # Filter to completed games only (must have both halves with valid scores)
@@ -516,7 +557,8 @@ if ("--daily-pbp" %in% cli_args) {
           home_final_score INTEGER, away_final_score INTEGER,
           game_home_margin_fg INTEGER, game_total_fg INTEGER,
           home_winner INTEGER, went_to_ot INTEGER,
-          first_to_10_h1 INTEGER
+          first_to_10_h1 INTEGER,
+          first_to_10_fg INTEGER, first_to_20_fg INTEGER, first_to_40_fg INTEGER
         )")
       }
     )
@@ -602,6 +644,85 @@ if ("--backfill-first10" %in% cli_args) {
   message(sprintf("Complete. %d/%d games have first_to_10_h1", filled, total))
 
   quit(save = "no", status = 0)
+}
+
+# ============================================================================
+# CLI: --backfill-race-fg <threshold> mode (add first_to_{N}_fg to existing cbb_pbp_v2 rows)
+# ============================================================================
+if ("--backfill-race-fg" %in% cli_args) {
+  if (!requireNamespace("hoopR", quietly = TRUE)) install.packages("hoopR")
+  library(hoopR)
+
+  threshold <- as.integer(cli_args[which(cli_args == "--backfill-race-fg") + 1])
+  if (is.na(threshold)) stop("Usage: --backfill-race-fg <threshold>  (e.g. 10, 20, 40)")
+  col_name <- paste0("first_to_", threshold, "_fg")
+
+  message(sprintf("Running in --backfill-race-fg mode: adding %s to existing games", col_name))
+
+  # Use --db <path> if provided, otherwise default
+  db_idx <- which(cli_args == "--db")
+  backfill_db <- if (length(db_idx) > 0 && db_idx < length(cli_args)) {
+    cli_args[db_idx + 1]
+  } else {
+    DB_PATH
+  }
+  message(sprintf("Database: %s", backfill_db))
+
+  con <- dbConnect(duckdb(), dbdir = backfill_db)
+  on.exit(dbDisconnect(con, shutdown = TRUE), add = TRUE)
+
+  # Add column if missing
+  tryCatch(
+    dbExecute(con, sprintf("ALTER TABLE cbb_pbp_v2 ADD COLUMN %s INTEGER", col_name)),
+    error = function(e) message(sprintf("Column %s already exists", col_name))
+  )
+
+  # Find games with NULL
+  missing <- dbGetQuery(con, sprintf(
+    "SELECT DISTINCT game_id FROM cbb_pbp_v2 WHERE %s IS NULL", col_name
+  ))
+  message(sprintf("Found %d games missing %s", nrow(missing), col_name))
+
+  if (nrow(missing) == 0) {
+    message("Nothing to backfill")
+    quit(save = "no")
+  }
+
+  # Load PBP for each season and extract
+  all_results <- tibble()
+  for (yr in 2021:2026) {
+    message(sprintf("Loading hoopR PBP for %d...", yr))
+    tryCatch({
+      pbp <- load_mbb_pbp(yr)
+      if (nrow(pbp) > 0) {
+        result <- extract_race_to_fg(pbp, threshold)
+        # Only keep games that are in our missing list
+        result <- result %>% filter(game_id %in% missing$game_id)
+        all_results <- bind_rows(all_results, result)
+        message(sprintf("  %d: %d games extracted", yr, nrow(result)))
+      }
+    }, error = function(e) message(sprintf("  %d: skipped (%s)", yr, e$message)))
+  }
+
+  # Update via temp table
+  if (nrow(all_results) > 0) {
+    dbWriteTable(con, "tmp_race_fg", all_results, overwrite = TRUE)
+    updated <- dbExecute(con, sprintf("
+      UPDATE cbb_pbp_v2 SET %s = t.%s
+      FROM tmp_race_fg t WHERE cbb_pbp_v2.game_id = t.game_id
+    ", col_name, col_name))
+    dbExecute(con, "DROP TABLE IF EXISTS tmp_race_fg")
+    message(sprintf("Updated %d rows for %s", updated, col_name))
+  }
+
+  # Summary
+  filled <- dbGetQuery(con, sprintf(
+    "SELECT COUNT(*) n FROM cbb_pbp_v2 WHERE %s IS NOT NULL", col_name
+  ))
+  total <- dbGetQuery(con, "SELECT COUNT(*) n FROM cbb_pbp_v2")
+  message(sprintf("Coverage: %d/%d games have %s (%.1f%%)",
+                  filled$n, total$n, col_name, 100 * filled$n / total$n))
+  quit(save = "no")
 }
 
 # ============================================================================

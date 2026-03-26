@@ -624,7 +624,7 @@ def match_race_to_10_markets(kalshi_markets, predictions, team_dict, canonical_g
     """Match Kalshi race-to-10 markets to answer key predictions.
 
     Each event has 2 contracts: one per team. YES = that team reaches 10 first.
-    Fair value comes from race_to_10_h1 prediction rows.
+    Fair value comes from race_to_10 prediction rows.
     """
     from collections import defaultdict
 
@@ -651,13 +651,13 @@ def match_race_to_10_markets(kalshi_markets, predictions, team_dict, canonical_g
             team_names[0], team_names[1], team_dict, canonical_games
         )
 
-        # Find matching race_to_10_h1 prediction
+        # Find matching race_to_10 prediction
         matching_preds = None
         pred_home = pred_away = None
         for try_home, try_away in [(resolved_b, resolved_a), (resolved_a, resolved_b)]:
             matches = [
                 p for p in predictions
-                if p["market"] == "race_to_10_h1"
+                if p["market"] == "race_to_10"
                 and _fuzzy_team_match(p["home_team"].lower(), try_home.lower())
                 and _fuzzy_team_match(p["away_team"].lower(), try_away.lower())
             ]
@@ -672,7 +672,7 @@ def match_race_to_10_markets(kalshi_markets, predictions, team_dict, canonical_g
                                  (team_names[1], team_names[0])]:
                 matches = [
                     p for p in predictions
-                    if p["market"] == "race_to_10_h1"
+                    if p["market"] == "race_to_10"
                     and _fuzzy_team_match(p["home_team"].lower(), raw_h.lower())
                     and _fuzzy_team_match(p["away_team"].lower(), raw_a.lower())
                 ]

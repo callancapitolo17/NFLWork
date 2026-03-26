@@ -23,10 +23,12 @@ _sample_cache = {}
 
 # Column layout for sample arrays. Order matters — index used in evaluate_outcomes.
 # New columns can be appended without breaking existing market types.
-SAMPLE_COLUMNS = ["home_margin_h1", "total_h1", "first_to_10_h1"]
+SAMPLE_COLUMNS = ["home_margin_h1", "total_h1", "first_to_10_fg", "first_to_20_fg", "first_to_40_fg"]
 _COL_MARGIN = 0
 _COL_TOTAL = 1
 _COL_FIRST_TO_10 = 2
+_COL_FIRST_TO_20 = 3
+_COL_FIRST_TO_40 = 4
 
 # Per-cycle cache for positions from Kalshi API (source of truth)
 _positions_cache = None
@@ -172,12 +174,23 @@ def prewarm_sample_cache():
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = 'cbb_game_samples'"
             ).fetchall()]
-            available = [c for c in SAMPLE_COLUMNS if c in table_cols]
+            # Backward compat: old column name → new
+            _COLUMN_ALIASES = {"first_to_10_fg": "first_to_10_h1"}
+            actual_cols = {}
+            for sc in SAMPLE_COLUMNS:
+                if sc in table_cols:
+                    actual_cols[sc] = sc
+                elif sc in _COLUMN_ALIASES and _COLUMN_ALIASES[sc] in table_cols:
+                    actual_cols[sc] = _COLUMN_ALIASES[sc]
+            available = list(actual_cols.keys())
             if not available:
                 log.warning("Sample cache prewarm: no known columns in cbb_game_samples")
                 return 0
 
-            cols_sql = ", ".join(available)
+            cols_sql = ", ".join(
+                f"{actual_cols[c]} AS {c}" if actual_cols[c] != c else c
+                for c in available
+            )
             result = con.execute(
                 f"SELECT game_id, {cols_sql} "
                 "FROM cbb_game_samples ORDER BY game_id, sim_idx"
@@ -233,12 +246,23 @@ def load_game_samples(game_id):
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = 'cbb_game_samples'"
             ).fetchall()]
-            available = [c for c in SAMPLE_COLUMNS if c in table_cols]
+            # Backward compat: old column name → new
+            _COLUMN_ALIASES = {"first_to_10_fg": "first_to_10_h1"}
+            actual_cols = {}
+            for sc in SAMPLE_COLUMNS:
+                if sc in table_cols:
+                    actual_cols[sc] = sc
+                elif sc in _COLUMN_ALIASES and _COLUMN_ALIASES[sc] in table_cols:
+                    actual_cols[sc] = _COLUMN_ALIASES[sc]
+            available = list(actual_cols.keys())
             if not available:
                 _sample_cache[game_id] = None
                 return None
 
-            cols_sql = ", ".join(available)
+            cols_sql = ", ".join(
+                f"{actual_cols[c]} AS {c}" if actual_cols[c] != c else c
+                for c in available
+            )
             result = con.execute(
                 f"SELECT {cols_sql} FROM cbb_game_samples "
                 "WHERE game_id = ? ORDER BY sim_idx",
@@ -322,18 +346,19 @@ def evaluate_outcomes(samples, market_type, side, line=None):
         else:  # tie
             out[:] = np.where(margin == 0, 1.0, 0.0)
 
-    elif market_type == "race_to_10":
-        # first_to_10_h1: 1 = home reached 10 first, 0 = away reached 10 first
-        ft10 = samples[:, _COL_FIRST_TO_10]
-        if np.all(np.isnan(ft10)):
-            # Column not available — cannot evaluate
+    elif market_type in ("race_to_10", "race_to_20", "race_to_40"):
+        col_idx = {"race_to_10": _COL_FIRST_TO_10,
+                   "race_to_20": _COL_FIRST_TO_20,
+                   "race_to_40": _COL_FIRST_TO_40}[market_type]
+        ft = samples[:, col_idx]
+        if np.all(np.isnan(ft)):
             out[:] = np.nan
         elif side == "home":
-            out[:] = np.where(np.isnan(ft10), np.nan,
-                              np.where(ft10 == 1, 1.0, 0.0))
+            out[:] = np.where(np.isnan(ft), np.nan,
+                              np.where(ft == 1, 1.0, 0.0))
         else:  # away
-            out[:] = np.where(np.isnan(ft10), np.nan,
-                              np.where(ft10 == 0, 1.0, 0.0))
+            out[:] = np.where(np.isnan(ft), np.nan,
+                              np.where(ft == 0, 1.0, 0.0))
     else:
         out[:] = np.nan
 
@@ -757,7 +782,7 @@ def _market_to_position(market, yes_or_no):
                 side = "away"
             else:
                 side = "tie"
-        elif mt == "race_to_10":
+        elif mt in ("race_to_10", "race_to_20", "race_to_40"):
             ct = market.get("contract_team", "")
             side = "home" if ct == market.get("home_team") else "away"
         else:
@@ -898,7 +923,7 @@ def get_placed_positions_for_game(game_key, game_id, current_markets=None):
             else:
                 # No contract_team stored (legacy position) — skip
                 continue
-        elif mt == "race_to_10":
+        elif mt in ("race_to_10", "race_to_20", "race_to_40"):
             if ct == pos_home:
                 side = "home" if net > 0 else "away"
             elif ct == pos_away:
