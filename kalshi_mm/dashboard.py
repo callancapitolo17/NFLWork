@@ -84,29 +84,32 @@ PIE_COLORS = [COLORS["accent"], COLORS["accent2"], COLORS["yellow"],
 # CSS fixes: sortable headers + dark dropdown
 # Dash DataTable v7 sort click target is an 8px icon — make the full header clickable
 CUSTOM_CSS = """
-/* Make entire header cell clickable for sorting */
-.dash-header { cursor: pointer !important; }
-/* Make sort arrows visible on dark theme */
+/* Expand sort click target to fill entire header cell */
+.dash-header {
+    cursor: pointer !important;
+    position: relative !important;
+}
 .dash-header .column-header--sort {
+    position: absolute !important;
+    inset: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-end !important;
+    padding-right: 8px !important;
     color: #00cec9 !important;
-    opacity: 0.6 !important;
-    margin-left: 6px !important;
+    opacity: 0.5 !important;
+    z-index: 2 !important;
 }
 .dash-header .column-header--sort svg {
     width: 12px !important;
     height: 16px !important;
 }
-/* Highlight active sort column */
-.dash-header--is-active {
-    background-color: #1c2333 !important;
+.dash-header .column-header-name {
+    position: relative !important;
+    z-index: 1 !important;
+    pointer-events: none !important;
 }
 .dash-header--is-active .column-header--sort {
-    opacity: 1 !important;
-    color: #00cec9 !important;
-}
-/* Sort ascending/descending indicators */
-.column-header--sort.sort-asc,
-.column-header--sort.sort-desc {
     opacity: 1 !important;
 }
 
@@ -599,7 +602,7 @@ def render_pnl():
 },
          {"name": "ROI %", "id": "roi", "type": "numeric",
           }],
-        "pnl-type", PNL_NET_ROI_COND, default_sort=("net", "desc"),
+        "pnl-type", PNL_NET_ROI_COND,
     )
 
     # Bar chart by event — truncate labels, add hover for full name
@@ -1126,13 +1129,6 @@ app.index_string = (
     '{%metas%}<title>{%title%}</title>{%favicon%}{%css%}'
     '<style>' + CUSTOM_CSS + '</style>'
     '</head><body>{%app_entry%}<footer>'
-    '<script>'
-    'document.addEventListener("click",function(e){'
-    'var th=e.target.closest("th.dash-header");'
-    'if(th){var s=th.querySelector(".column-header--sort");'
-    'if(s&&!s.contains(e.target)){s.click();}}'
-    '});'
-    '</script>'
     '{%config%}{%scripts%}{%renderer%}'
     '</footer></body></html>'
 )
