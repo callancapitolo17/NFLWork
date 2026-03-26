@@ -86,6 +86,29 @@ PIE_COLORS = [COLORS["accent"], COLORS["accent2"], COLORS["yellow"],
 CUSTOM_CSS = """
 /* Make entire header cell clickable for sorting */
 .dash-header { cursor: pointer !important; }
+/* Make sort arrows visible on dark theme */
+.dash-header .column-header--sort {
+    color: #00cec9 !important;
+    opacity: 0.6 !important;
+    margin-left: 6px !important;
+}
+.dash-header .column-header--sort svg {
+    width: 12px !important;
+    height: 16px !important;
+}
+/* Highlight active sort column */
+.dash-header--is-active {
+    background-color: #1c2333 !important;
+}
+.dash-header--is-active .column-header--sort {
+    opacity: 1 !important;
+    color: #00cec9 !important;
+}
+/* Sort ascending/descending indicators */
+.column-header--sort.sort-asc,
+.column-header--sort.sort-desc {
+    opacity: 1 !important;
+}
 
 /* Dropdown dark theme */
 #event-dropdown [class*="control"] {
@@ -475,13 +498,17 @@ def stat_card(label, value, color=None):
     ])
 
 
-def make_table(data_records, columns, id_prefix, conditional=None, page_size=20):
+def make_table(data_records, columns, id_prefix, conditional=None,
+               page_size=20, default_sort=None):
     cond = TABLE_COND + (conditional or [])
+    sort_by = ([{"column_id": default_sort[0], "direction": default_sort[1]}]
+               if default_sort else [])
     return dash_table.DataTable(
         data=data_records,
         columns=columns,
         sort_action="native",
-        sort_mode="multi",
+        sort_mode="single",
+        sort_by=sort_by,
         page_size=page_size,
         style_header=TABLE_HEADER,
         style_data=TABLE_DATA,
@@ -572,7 +599,7 @@ def render_pnl():
 },
          {"name": "ROI %", "id": "roi", "type": "numeric",
           }],
-        "pnl-type", PNL_NET_ROI_COND,
+        "pnl-type", PNL_NET_ROI_COND, default_sort=("net", "desc"),
     )
 
     # Bar chart by event — truncate labels, add hover for full name
@@ -605,7 +632,7 @@ def render_pnl():
 },
          {"name": "ROI %", "id": "roi", "type": "numeric",
           }],
-        "pnl-event", NET_ROI_COND,
+        "pnl-event", NET_ROI_COND, default_sort=("net", "desc"),
     )
 
     return html.Div([
