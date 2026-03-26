@@ -6,6 +6,7 @@ Handles authenticated requests for placing, amending, and cancelling orders.
 import sys
 import json
 import time
+import uuid
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +22,16 @@ _kalshi_draft = _repo_root / "kalshi_draft"
 sys.path.insert(0, str(_kalshi_draft))
 from auth import sign_request
 
-from config import KALSHI_BASE_URL, KALSHI_API_KEY_ID, KALSHI_PRIVATE_KEY_PATH
+from config import KALSHI_BASE_URL, KALSHI_API_KEY_ID, KALSHI_PRIVATE_KEY_PATH, BOT_ORDER_PREFIX
+
+
+def is_bot_order(order):
+    """Check if an order was placed by the bot (has mm_ prefix on client_order_id).
+
+    Manual orders from the Kalshi UI have client_order_id=null, so we use
+    `or ""` to coalesce None to empty string before checking the prefix.
+    """
+    return (order.get("client_order_id") or "").startswith(BOT_ORDER_PREFIX)
 
 
 def _authenticated_request(method, path, body=None):
@@ -83,6 +93,7 @@ def place_order(ticker, side, price, count, post_only=True):
         "type": "limit",
         "count": count,
         "time_in_force": "good_till_canceled",
+        "client_order_id": f"{BOT_ORDER_PREFIX}{uuid.uuid4().hex[:16]}",
     }
 
     if side == "yes":
@@ -171,6 +182,7 @@ def batch_place(order_specs):
                 "type": "limit",
                 "count": spec["count"],
                 "time_in_force": "good_till_canceled",
+                "client_order_id": f"{BOT_ORDER_PREFIX}{uuid.uuid4().hex[:16]}",
             }
             if spec["side"] == "yes":
                 order["yes_price"] = spec["price"]
@@ -307,15 +319,28 @@ def get_kalshi_positions():
     return all_positions
 
 
-def cancel_all_orders():
-    """Emergency: cancel ALL resting orders."""
-    orders = get_resting_orders()
-    if not orders:
+def cancel_all_bot_orders():
+    """Cancel all bot-placed resting orders, preserving manual (user-placed) orders.
+
+    Bot orders are identified by client_order_id starting with BOT_ORDER_PREFIX.
+    Orders placed manually through the Kalshi UI have no prefix and are left alone.
+    """
+    all_orders = get_resting_orders()
+    if not all_orders:
         print("  No resting orders to cancel.")
         return True
 
-    order_ids = [o["order_id"] for o in orders]
-    print(f"  KILL SWITCH: Cancelling {len(order_ids)} orders...")
+    bot_orders = [o for o in all_orders if is_bot_order(o)]
+    manual_count = len(all_orders) - len(bot_orders)
+    if manual_count:
+        print(f"  Preserving {manual_count} manual order(s)")
+
+    if not bot_orders:
+        print("  No bot orders to cancel.")
+        return True
+
+    order_ids = [o["order_id"] for o in bot_orders]
+    print(f"  KILL SWITCH: Cancelling {len(order_ids)} bot orders...")
     cancelled = batch_cancel(order_ids)
     if len(cancelled) < len(order_ids):
         print(f"  WARNING: Kill switch only cancelled {len(cancelled)}/{len(order_ids)}")

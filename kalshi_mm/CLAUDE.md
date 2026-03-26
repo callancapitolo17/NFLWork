@@ -61,6 +61,9 @@ The main loop checks `cbb_prediction_meta.updated_at` every 30s. If predictions 
 ### Positions: Kalshi API is Source of Truth
 Kelly sizing and the exposure cap read positions from the Kalshi API (`GET /portfolio/positions`), NOT the local DuckDB. This prevents position drift when fills are missed by `poll_for_fills` (e.g., fully-filled orders that disappear between poll cycles). The local DB is still updated on fills for audit logging, but is never used for sizing decisions. Positions are cached per cycle with a 5s TTL to avoid hammering the API from the taker's 1s poll loop.
 
+### Manual Order Preservation
+Bot-placed orders are tagged with `client_order_id` prefixed `mm_` (configured via `config.BOT_ORDER_PREFIX`). All cancel logic — phantom detection, `_nuke_and_adopt()`, shutdown kill switch — checks this prefix and skips orders without it. This lets users place manual sell orders on Kalshi without the bot cancelling them. The `is_bot_order(order)` helper in `orders.py` is the single source of truth for this check, using `(order.get("client_order_id") or "")` to handle null values from the API.
+
 ### Kalshi API Auth
 Uses `KALSHI_API_KEY` and `KALSHI_PRIVATE_KEY` from `.env`. Keys are RSA — the private key file path goes in `.env`.
 

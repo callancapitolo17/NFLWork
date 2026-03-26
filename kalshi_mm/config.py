@@ -87,3 +87,8 @@ USE_KELLY_SIZING = _env.get("USE_KELLY_SIZING", "true").lower() == "true"
 # Max filled exposure per game per market type as fraction of bankroll.
 # e.g., 0.30 = 30% of $2K bankroll = $600 max on spreads for one game.
 MAX_GAME_TYPE_EXPOSURE_PCT = float(_env.get("MAX_GAME_TYPE_EXPOSURE_PCT", "0.30"))
+
+# --- Bot Order Tagging ---
+# Prefix for client_order_id on all bot-placed orders.
+# Orders without this prefix are treated as manual (user-placed) and never cancelled.
+BOT_ORDER_PREFIX = "mm_"

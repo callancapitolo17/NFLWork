@@ -62,18 +62,24 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 def _nuke_and_adopt(resting_by_ticker):
-    """Cancel all orders and adopt any survivors to prevent duplicates.
+    """Cancel all bot orders and adopt any survivors to prevent duplicates.
 
     Used when predictions are stale, pipeline fails, etc. After cancelling,
-    re-queries Kalshi to catch orders that survived (rate limit, partial failure).
+    re-queries Kalshi to catch bot orders that survived (rate limit, partial failure).
+    Manual (user-placed) orders are preserved and not adopted into bot tracking.
     """
-    orders.cancel_all_orders()
+    orders.cancel_all_bot_orders()
     db.clear_all_resting_orders()
     resting_by_ticker.clear()
     survivors = orders.get_resting_orders()
-    if survivors:
-        print(f"  WARNING: {len(survivors)} orders survived cancel — adopting")
-        for o in survivors:
+    # Only adopt bot orders — manual orders should not be managed by the bot
+    bot_survivors = [o for o in survivors if orders.is_bot_order(o)]
+    manual_count = len(survivors) - len(bot_survivors)
+    if manual_count:
+        print(f"  Skipping {manual_count} manual order(s) during adopt")
+    if bot_survivors:
+        print(f"  WARNING: {len(bot_survivors)} bot orders survived cancel — adopting")
+        for o in bot_survivors:
             ticker = o.get("ticker", "")
             oid = o.get("order_id", "")
             side = o.get("side", "")
@@ -1095,6 +1101,9 @@ def poll_for_fills(resting_by_ticker, quotable_markets_ref=None):
     for api_order in api_orders:
         oid = api_order["order_id"]
         if oid not in tracked_oids:
+            # Skip manual (user-placed) orders — only cancel bot phantoms
+            if not orders.is_bot_order(api_order):
+                continue
             print(f"  PHANTOM ORDER detected: {oid}")
             phantom_ids.append(oid)
     if phantom_ids:
@@ -1500,9 +1509,9 @@ def main():
         # from failed API responses and orders we lost track of)
         print("\n\nShutting down...")
         if not DRY_RUN:
-            print("Cancelling all resting orders...")
+            print("Cancelling all bot orders (manual orders preserved)...")
             for attempt in range(3):
-                if orders.cancel_all_orders():
+                if orders.cancel_all_bot_orders():
                     break
                 print(f"  Kill switch retry {attempt + 1}/3...")
                 time.sleep(1)
