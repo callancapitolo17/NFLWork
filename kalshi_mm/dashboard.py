@@ -84,7 +84,7 @@ PIE_COLORS = [COLORS["accent"], COLORS["accent2"], COLORS["yellow"],
 # CSS fixes: sortable headers + dark dropdown
 # Dash DataTable v7 sort click target is an 8px icon — make the full header clickable
 CUSTOM_CSS = """
-/* Expand sort click target to fill entire header cell */
+/* Sort: invisible overlay for click target, visible arrow icon only */
 .dash-header {
     cursor: pointer !important;
     position: relative !important;
@@ -92,25 +92,25 @@ CUSTOM_CSS = """
 .dash-header .column-header--sort {
     position: absolute !important;
     inset: 0 !important;
+    z-index: 2 !important;
     display: flex !important;
     align-items: center !important;
     justify-content: flex-end !important;
-    padding-right: 8px !important;
-    color: #00cec9 !important;
-    opacity: 0.5 !important;
-    z-index: 2 !important;
+    padding-right: 6px !important;
+    background: transparent !important;
 }
 .dash-header .column-header--sort svg {
-    width: 12px !important;
-    height: 16px !important;
+    width: 10px !important;
+    height: 14px !important;
+    color: #00cec9 !important;
+    opacity: 0.4 !important;
+    flex-shrink: 0 !important;
+}
+.dash-header--is-active .column-header--sort svg {
+    opacity: 1 !important;
 }
 .dash-header .column-header-name {
-    position: relative !important;
-    z-index: 1 !important;
     pointer-events: none !important;
-}
-.dash-header--is-active .column-header--sort {
-    opacity: 1 !important;
 }
 
 /* Dropdown dark theme */
