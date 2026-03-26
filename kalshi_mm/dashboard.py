@@ -11,9 +11,9 @@ Usage:
 
 import dash
 from dash import dcc, html, dash_table, callback, Input, Output, ctx
-# Format objects don't serialize in Dash 4.0.0 — use raw dicts instead
-FMT_2F = {"specifier": ".2f"}  # 2 decimal fixed
-FMT_1F = {"specifier": ".1f"}  # 1 decimal fixed
+# NOTE: d3 format specs ({"specifier": ".2f"}) cause Dash DataTable v7 to
+# sort on the FORMATTED string (with Unicode minus U+2212) instead of the raw
+# number. All formatting is done via Python rounding instead.
 import plotly.graph_objects as go
 from collections import defaultdict
 from datetime import datetime
@@ -81,8 +81,13 @@ GRAPH_LAYOUT = dict(
 PIE_COLORS = [COLORS["accent"], COLORS["accent2"], COLORS["yellow"],
               COLORS["text_muted"], COLORS["green"]]
 
-# CSS for dark-themed dropdown
-DROPDOWN_CSS = """
+# CSS fixes: sortable headers + dark dropdown
+# Dash DataTable v7 sort click target is an 8px icon — make the full header clickable
+CUSTOM_CSS = """
+/* Make entire header cell clickable for sorting */
+.dash-header { cursor: pointer !important; }
+
+/* Dropdown dark theme */
 #event-dropdown [class*="control"] {
     background-color: #161b22 !important;
     border-color: #30363d !important;
@@ -432,7 +437,7 @@ def _compute_all(data):
 
     # Directional correlation
     market_pos = data.get("all_market_pos", [])
-    games = defaultdict(lambda: {"spread": 0, "total": 0, "moneyline": 0})
+    games = defaultdict(lambda: defaultdict(float))
     for p in market_pos:
         pos = float(p.get("position_fp", 0))
         if pos == 0:
@@ -558,15 +563,15 @@ def render_pnl():
          {"name": "Win", "id": "wins", "type": "numeric"},
          {"name": "Loss", "id": "losses", "type": "numeric"},
          {"name": "Cost", "id": "cost", "type": "numeric",
-          "format": FMT_2F},
+},
          {"name": "P&L", "id": "pnl", "type": "numeric",
-          "format": FMT_2F},
+},
          {"name": "Fees", "id": "fees", "type": "numeric",
-          "format": FMT_2F},
+},
          {"name": "Net", "id": "net", "type": "numeric",
-          "format": FMT_2F},
+},
          {"name": "ROI %", "id": "roi", "type": "numeric",
-          "format": FMT_1F}],
+          }],
         "pnl-type", PNL_NET_ROI_COND,
     )
 
@@ -595,11 +600,11 @@ def render_pnl():
         [{"name": "Event", "id": "event"},
          {"name": "Fills", "id": "fills", "type": "numeric"},
          {"name": "Cost", "id": "cost", "type": "numeric",
-          "format": FMT_2F},
+},
          {"name": "Net", "id": "net", "type": "numeric",
-          "format": FMT_2F},
+},
          {"name": "ROI %", "id": "roi", "type": "numeric",
-          "format": FMT_1F}],
+          }],
         "pnl-event", NET_ROI_COND,
     )
 
@@ -660,11 +665,11 @@ def render_maker_taker():
          {"name": "Type", "id": "type"},
          {"name": "Fills", "id": "fills", "type": "numeric"},
          {"name": "Cost", "id": "cost", "type": "numeric",
-          "format": FMT_2F},
+},
          {"name": "Net", "id": "net", "type": "numeric",
-          "format": FMT_2F},
+},
          {"name": "ROI %", "id": "roi", "type": "numeric",
-          "format": FMT_1F}],
+          }],
         "mt-detail", NET_ROI_COND,
     )
 
@@ -742,7 +747,7 @@ def render_fill_patterns():
          {"name": "Contracts", "id": "contracts", "type": "numeric"},
          {"name": "Status", "id": "status"},
          {"name": "P&L", "id": "pnl", "type": "numeric",
-          "format": FMT_2F}],
+          }],
         "adverse",
         [{"if": {"filter_query": "{pnl} < 0", "column_id": "pnl"},
           "color": COLORS["red"]},
@@ -808,11 +813,11 @@ def render_fill_patterns():
         [{"name": "Type", "id": "type"},
          {"name": "Orders", "id": "orders", "type": "numeric"},
          {"name": "Avg Fill %", "id": "avg_fill", "type": "numeric",
-          "format": FMT_1F},
+},
          {"name": "Fully Filled %", "id": "fully_filled", "type": "numeric",
-          "format": FMT_1F},
+},
          {"name": "Avg Bite %", "id": "avg_bite", "type": "numeric",
-          "format": FMT_1F},
+},
          {"name": "Fills", "id": "bite_fills", "type": "numeric"}],
         "fr-type",
     )
@@ -901,11 +906,11 @@ def render_fill_patterns():
          {"name": "Fills", "id": "fills", "type": "numeric"},
          {"name": "Contracts", "id": "contracts", "type": "numeric"},
          {"name": "Maker %", "id": "maker_pct", "type": "numeric",
-          "format": FMT_1F},
+},
          {"name": "Net P&L", "id": "pnl", "type": "numeric",
-          "format": FMT_2F},
+},
          {"name": "Avg P&L/Fill", "id": "avg_pnl", "type": "numeric",
-          "format": FMT_2F}],
+          }],
         "timing",
         [{"if": {"filter_query": "{pnl} < 0", "column_id": "pnl"},
           "color": COLORS["red"]},
@@ -1017,11 +1022,11 @@ def render_concentration():
         [{"name": "Game", "id": "game"},
          {"name": "Type", "id": "type"},
          {"name": "Exposure", "id": "exposure", "type": "numeric",
-          "format": FMT_2F},
+},
          {"name": "Cost", "id": "cost", "type": "numeric",
-          "format": FMT_2F},
+},
          {"name": "% of Total", "id": "pct", "type": "numeric",
-          "format": FMT_1F}],
+          }],
         "conc",
     )
 
@@ -1092,8 +1097,15 @@ app = dash.Dash(__name__, title="MM Performance",
 app.index_string = (
     '<!DOCTYPE html><html><head>'
     '{%metas%}<title>{%title%}</title>{%favicon%}{%css%}'
-    '<style>' + DROPDOWN_CSS + '</style>'
+    '<style>' + CUSTOM_CSS + '</style>'
     '</head><body>{%app_entry%}<footer>'
+    '<script>'
+    'document.addEventListener("click",function(e){'
+    'var th=e.target.closest("th.dash-header");'
+    'if(th){var s=th.querySelector(".column-header--sort");'
+    'if(s&&!s.contains(e.target)){s.click();}}'
+    '});'
+    '</script>'
     '{%config%}{%scripts%}{%renderer%}'
     '</footer></body></html>'
 )
@@ -1243,11 +1255,11 @@ def render_event(event_name):
              {"name": "Side", "id": "side"},
              {"name": "Cts", "id": "contracts", "type": "numeric"},
              {"name": "Cost", "id": "cost", "type": "numeric",
-              "format": FMT_2F},
+    },
              {"name": "Taker", "id": "taker"},
              {"name": "Result", "id": "result"},
              {"name": "P&L", "id": "pnl", "type": "numeric",
-              "format": FMT_2F}],
+              }],
             "event-fills",
             [{"if": {"filter_query": "{pnl} < 0", "column_id": "pnl"},
               "color": COLORS["red"]},
