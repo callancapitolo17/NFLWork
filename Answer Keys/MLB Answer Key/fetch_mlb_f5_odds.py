@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 import time
 from datetime import datetime, timedelta
@@ -30,7 +31,19 @@ import requests
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-API_KEY = "4c490c81e9b826798390440845c89d50"
+def _load_api_key() -> str:
+    """Load Odds API key from env var or ~/.Renviron fallback."""
+    key = os.environ.get("ODDS_API_KEY")
+    if key:
+        return key
+    renviron = Path.home() / ".Renviron"
+    if renviron.exists():
+        for line in renviron.read_text().splitlines():
+            if line.strip().startswith("ODDS_API_KEY"):
+                return line.split("=", 1)[1].strip()
+    raise RuntimeError("ODDS_API_KEY not found in env or ~/.Renviron")
+
+API_KEY = _load_api_key()
 BASE_URL = "https://api.the-odds-api.com/v4/historical/sports/baseball_mlb"
 MARKETS = "h2h_1st_5_innings,totals_1st_5_innings,spreads_1st_5_innings"
 REGIONS = "us"
@@ -344,16 +357,19 @@ def run(dry_run: bool = False, status_only: bool = False):
             continue  # all games at this snapshot already fetched
         print(f"\n[{snap_dt.strftime('%Y-%m-%d %H:%M UTC')}] "
               f"{n_targeted} game(s) | credits: {remaining_credits:,}", flush=True)
-        events, remaining_credits = fetch_events_at(snap_dt)
+        events, ev_remaining = fetch_events_at(snap_dt)
+        if ev_remaining > 0:
+            remaining_credits = ev_remaining  # only trust non-zero values
         api_calls += 1
         time.sleep(CALL_DELAY_SEC)
 
         if not events:
-            # Mark targeted games as skipped (no events at this snapshot)
-            for g in snap_groups[snap_dt]:
-                pending.pop(g["game_pk"], None)
+            # No events at this snapshot — don't pop games, they may appear
+            # at a different snapshot time. Just increment failure counter.
+            consecutive_422s += 1
             continue
 
+        consecutive_422s = 0  # events list succeeded
         team_index = build_team_index(events)
 
         # --- Step 2: per-event F5 odds for each pending game visible at snap ---
@@ -384,7 +400,9 @@ def run(dry_run: bool = False, status_only: bool = False):
                 print("Budget reserve reached mid-batch. Stopping.")
                 break
 
-            event_data, remaining_credits = fetch_event_f5_odds(event_id, snap_dt)
+            event_data, od_remaining = fetch_event_f5_odds(event_id, snap_dt)
+            if od_remaining > 0:
+                remaining_credits = od_remaining  # only trust non-zero values
             api_calls += 1
             time.sleep(CALL_DELAY_SEC)
 

@@ -17,6 +17,7 @@ cat("=== MLB BACKTEST ===\n")
 
 # Load historical data (same as MLB.R Phase 1)
 con <- dbConnect(duckdb(), dbdir = "pbp.duckdb", read_only = TRUE)
+on.exit(tryCatch(dbDisconnect(con), error = function(e) NULL))
 
 DT <- dbGetQuery(con, "
   SELECT *
