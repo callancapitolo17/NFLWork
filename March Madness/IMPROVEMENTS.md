@@ -14,19 +14,7 @@ and a prioritized roadmap for next year's build.
 
 ## Known Bugs to Fix
 
-### 1. ~~`abs(rating_change)` in `simulate_tournament_fast()` (shared.R line 467)~~ FIXED
-**Severity: HIGH** — Winners always got a positive rating bump regardless of residual direction.
-If a 1-seed barely beats a 16-seed (negative residual = underperformed), their rating went UP.
-This inflated favorites and suppressed upset probabilities.
-
-**Fixed**: Removed `abs()` — now uses signed `rating_change`. (2026-03-29)
-
-### 2. ~~Parameter mismatch between R and C++~~ FIXED
-- R `simulate_game()`: `sd_rating_shift = 0.5`
-- C++ `sim_fast.cpp`: `sd_rating_update` was 0.17, now 0.5
-- Synced to 0.5 to match R's `simulate_game()`. (2026-03-29)
-
-### 3. EvanMiya parser is brittle
+### 1. EvanMiya parser is brittle
 Hard-coded 21-column pivot. When the Google Sheet format changes (it will), the parser silently fails.
 **Fix**: Parse by column name, not position. Add validation: if Team column is numeric, skip source gracefully.
 
@@ -234,8 +222,6 @@ Run the following experiments on 2025 tournament data:
 
 ## 2027 Pre-Tournament Checklist
 
-- [x] Fix `abs(rating_change)` bug (2026-03-29)
-- [x] Sync C++ and R parameters (2026-03-29)
 - [ ] Run backtests on 2020-2026 tournaments
 - [ ] Calibrate source weights from backtest
 - [ ] Implement seed-dependent variance
