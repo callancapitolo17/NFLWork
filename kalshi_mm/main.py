@@ -809,7 +809,8 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
             pre_quote = quoter.compute_quotes(
                 mkt["fair_prob"], kelly.get_net_position(tk),
                 book_bid=mkt.get("book_bid", 0),
-                book_ask=mkt.get("book_ask", 0))
+                book_ask=mkt.get("book_ask", 0),
+                commence_time=mkt.get("commence_time"))
             if pre_quote:
                 quoter_prices[tk] = {
                     "bid_yes": pre_quote["bid_yes"],
@@ -892,7 +893,8 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
             quote = quoter.compute_quotes(
                 market["fair_prob"], net,
                 book_bid=book_bid, book_ask=book_ask,
-                bid_size=bid_size, ask_size=ask_size
+                bid_size=bid_size, ask_size=ask_size,
+                commence_time=market.get("commence_time")
             )
         if quote is None:
             # Cancel existing orders if any
@@ -907,7 +909,7 @@ def run_quote_cycle(quotable_markets, resting_by_ticker, prediction_updated_at):
 
         # Log the quote
         db.log_quote(ticker, market["fair_prob"], quote["bid_yes"], quote["ask_yes"],
-                     net, quote["skew"], pred_age,
+                     net, quote.get("inventory_shift", 0), pred_age,
                      book_bid=market.get("book_bid", 0),
                      book_ask=market.get("book_ask", 0))
 
@@ -1222,7 +1224,7 @@ def main():
         size_str = f"Kelly (f={config.KELLY_FRACTION}, B=${config.BANKROLL:.0f})"
     else:
         size_str = str(config.CONTRACT_SIZE)
-    print(f"  Maker: EV>{config.MIN_EV_PCT:.0%} | Size: {size_str}")
+    print(f"  Maker: AS(γ={config.AS_GAMMA}, hs={config.AS_BASE_HALF_SPREAD}c, urg={config.AS_URGENCY_SCALE}) | Size: {size_str}")
     take_size_str = "Kelly-sized" if config.USE_KELLY_SIZING else str(config.TAKE_CONTRACT_SIZE)
     print(f"  Taker: EV>{config.MIN_TAKE_EV_PCT:.0%} (after {config.TAKER_FEE_RATE:.0%} fee) | Size: {take_size_str}")
     print(f"  Markets: {', '.join(sorted(config.ENABLED_MARKET_TYPES))}")

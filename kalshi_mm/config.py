@@ -40,9 +40,18 @@ KALSHI_API_KEY_ID = _env.get("KALSHI_API_KEY_ID", "")
 KALSHI_PRIVATE_KEY_PATH = _env.get("KALSHI_PRIVATE_KEY_PATH", "")
 
 # --- Quoting Parameters ---
-MIN_EV_PCT = float(_env.get("MIN_EV_PCT", "0.05"))  # 5% minimum EV to quote
+MIN_EV_PCT = float(_env.get("MIN_EV_PCT", "0.05"))  # 5% minimum EV (taker only; maker uses AS spread)
 CONTRACT_SIZE = int(_env.get("CONTRACT_SIZE", "5"))
-SKEW_PER_CONTRACT = int(_env.get("SKEW_PER_CONTRACT", "0"))  # Disabled — Kelly handles inventory
+
+# Avellaneda-Stoikov quoting parameters (maker only)
+# γ: risk aversion — higher = more aggressive inventory-driven price shift per $ held
+AS_GAMMA = float(_env.get("AS_GAMMA", "0.5"))
+# Base half-spread in cents — minimum distance from reservation price to bid/ask
+AS_BASE_HALF_SPREAD = int(_env.get("AS_BASE_HALF_SPREAD", "3"))
+# Urgency scale — fraction of extra spread added near tipoff (0 = none, 1 = 2× width at tipoff)
+AS_URGENCY_SCALE = float(_env.get("AS_URGENCY_SCALE", "0.5"))
+# Games farther than this many hours get no urgency widening (Kalshi posts games 48-72h out)
+AS_URGENCY_CLAMP_HRS = float(_env.get("AS_URGENCY_CLAMP_HRS", "48"))
 
 # --- Operational Limits ---
 MAX_STALENESS_SEC = int(_env.get("MAX_STALENESS_SEC", "600"))
