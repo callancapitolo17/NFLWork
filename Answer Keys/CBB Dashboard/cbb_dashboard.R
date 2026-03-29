@@ -1255,7 +1255,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
         function formatMarketNameJS(market) {
           return market
-            .replace(/race_to_(\d+)/g, "Race$1")
+            .replace(/race_to_(\\d+)/g, "Race$1")
             .replace("alternate_", "Alt ")
             .replace("team_totals", "Team Tot")
             .replace("totals", "Total")
@@ -1639,8 +1639,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             if (bookCell) bookText = bookCell.textContent.trim();
 
             let marketType = "Other";
-            if (marketText.match(/Race\d+/)) {
-              var raceNum = marketText.match(/Race(\d+)/)[1];
+            if (marketText.match(/Race\\d+/)) {
+              var raceNum = marketText.match(/Race(\\d+)/)[1];
               marketType = "Race to " + raceNum;
             } else if (marketText.includes("ML")) {
               marketType = "Moneyline";
