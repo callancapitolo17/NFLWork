@@ -29,6 +29,12 @@ ts <- get_teams_std()
 fb <- br$bracket %>% select(team, seed, region, play_in)
 bwr <- fetch_bracket_with_ratings(fb, ts)
 bracket_64 <- as.data.frame(resolve_first_four(bwr, br$games))
+# Deduplicate: resolve_first_four can leave duplicates if play-in isn't fully resolved
+if (nrow(bracket_64) > 64) {
+  bracket_64 <- bracket_64 %>% distinct(team, .keep_all = TRUE)
+  if (nrow(bracket_64) > 64) bracket_64 <- bracket_64 %>% slice_head(n = 64)
+  cat(sprintf("Warning: deduped bracket to %d teams\n", nrow(bracket_64)))
+}
 region_order <- get_region_order(bracket_64)
 
 # Keep full 64-team bracket to preserve positional pairings.
@@ -76,20 +82,33 @@ t0 <- Sys.time()
 cb_ratings <- ifelse(is.na(current_bracket$composite_rating), 0, current_bracket$composite_rating)
 cb_seeds <- as.integer(current_bracket$seed)
 cb_region_idx <- as.integer(match(current_bracket$region, region_order))
-# Status: 0=pending, 1=advanced, 2=eliminated
-cb_status <- as.integer(case_when(
-  current_bracket$status == "advanced" ~ 1L,
-  current_bracket$status == "eliminated" ~ 2L,
-  TRUE ~ 0L
-))
+# Compute rounds_won per team: -1=eliminated, 0=pending, 1=won R64, 2=won R64+R32, etc.
+round_name_to_num <- c("1st Round" = 1L, "2nd Round" = 2L, "Sweet 16" = 3L,
+                        "Elite 8" = 4L, "Final Four" = 5L, "National Championship" = 6L)
+team_round_wins <- completed_games %>%
+  mutate(round_num = round_name_to_num[round]) %>%
+  group_by(winner) %>%
+  summarise(rounds_won = max(round_num, na.rm = TRUE), .groups = "drop")
+
+cb_rounds_won <- current_bracket %>%
+  left_join(team_round_wins, by = c("team" = "winner")) %>%
+  mutate(rounds_won = case_when(
+    status == "eliminated" ~ -1L,
+    is.na(rounds_won) ~ 0L,
+    TRUE ~ as.integer(rounds_won)
+  )) %>%
+  pull(rounds_won)
+
+cat(sprintf("Rounds won: %s\n", paste(sort(unique(cb_rounds_won)), collapse=", ")))
 seed_order_vec <- as.integer(c(1,16,8,9,5,12,4,13,6,11,3,14,7,10,2,15))
 region_order_vec <- seq_along(region_order)
-round_names <- get_remaining_rounds(n_remaining)
+# C++ sim operates on all 64 teams (including eliminated), so use full bracket size for rounds
+round_names <- get_remaining_rounds(nrow(current_bracket))
 n_rounds <- length(round_names)
 
 # Run C++ sim — returns matrix: (n_teams * n_sims) x n_rounds
 sim_matrix <- simulate_tournament_cpp(
-  cb_ratings, cb_seeds, cb_region_idx, cb_status,
+  cb_ratings, cb_seeds, cb_region_idx, cb_rounds_won,
   seed_order_vec, region_order_vec, n_sims, n_rounds
 )
 
@@ -185,16 +204,35 @@ kalshi_compute_ev <- function(sim_prob, yes_ask_cents, yes_bid_cents) {
 match_kalshi_team <- function(title, team_probs) {
   m <- str_match(title, "^Will (.+?) qualify for")
   if (is.na(m[1,2])) return(NA_character_)
-  kn <- tolower(str_replace_all(m[1,2], "['\\.\\-]", ""))
-  kn <- str_replace_all(kn, "\\bst\\.?\\b", "st")
-  kn <- str_squish(kn)
-  cn <- tolower(str_replace_all(team_probs$team, "['\\.\\-]", ""))
-  cn <- str_replace_all(cn, "\\bst\\.?\\b", "st")
-  cn <- str_squish(cn)
+  kalshi_name <- m[1,2]
+
+  normalize <- function(x) {
+    x <- tolower(x)
+    x <- str_replace_all(x, "['\\.\\-]", "")
+    x <- str_replace_all(x, "\\bstate\\b", "st")
+    str_squish(x)
+  }
+
+  kn <- normalize(kalshi_name)
+  candidates <- team_probs$team
+  cn <- normalize(candidates)
+
+  # Exact match first
   idx <- which(cn == kn)
-  if (length(idx) == 1) return(team_probs$team[idx])
-  idx <- which(str_detect(cn, fixed(kn)) | str_detect(kn, cn))
-  if (length(idx) == 1) return(team_probs$team[idx])
+  if (length(idx) == 1) return(candidates[idx])
+
+  # Substring match — but require the LONGER string contains the shorter
+  # to avoid "Iowa" matching "Iowa State" or "Northern Iowa"
+  idx <- which(cn == kn | (nchar(cn) >= nchar(kn) & str_detect(cn, fixed(kn))))
+  # If multiple matches, pick the shortest candidate (most specific)
+  if (length(idx) > 1) idx <- idx[which.min(nchar(cn[idx]))]
+  if (length(idx) == 1) return(candidates[idx])
+
+  # Reverse substring: kalshi name contains sim name
+  idx <- which(str_detect(kn, fixed(cn)))
+  if (length(idx) > 1) idx <- idx[which.max(nchar(cn[idx]))]
+  if (length(idx) == 1) return(candidates[idx])
+
   NA_character_
 }
 
@@ -203,7 +241,8 @@ fetch_all_kalshi_edges <- function(raw, team_probs) {
   library(stringr)
   all_edges <- tibble()
 
-  # Detect rows per sim
+  # Filter to living teams and assign sim_id
+  raw <- raw %>% filter(!team %in% eliminated)
   first_team <- raw$team[1]
   n_per_sim <- which(raw$team == first_team)[2] - 1L
   n_sims_local <- nrow(raw) / n_per_sim
@@ -227,11 +266,14 @@ fetch_all_kalshi_edges <- function(raw, team_probs) {
       if (length(sim_prob) == 0) next
       ya <- round(as.numeric(m$yes_ask_dollars %||% 0) * 100)
       yb <- round(as.numeric(m$yes_bid_dollars %||% 0) * 100)
+      spread <- ya - yb
+      vol <- as.numeric(m$volume_fp %||% 0)
       ev <- kalshi_compute_ev(sim_prob, ya, yb)
       all_edges <- bind_rows(all_edges, tibble(
         ticker=m$ticker %||% "", category=paste0("Round: ", re$label),
         title=m$title %||% "", team=sim_team, sim_prob=sim_prob,
-        yes_ask=ya, yes_bid=yb, yes_fee=ev$yes_fee, no_fee=ev$no_fee,
+        yes_ask=ya, yes_bid=yb, spread=spread, volume=vol,
+        yes_fee=ev$yes_fee, no_fee=ev$no_fee,
         yes_ev=ev$yes_ev, no_ev=ev$no_ev,
         best_side=ev$best_side, best_ev=ev$best_ev))
     }
@@ -251,10 +293,13 @@ fetch_all_kalshi_edges <- function(raw, team_probs) {
       if (is.na(sp)) next
       ya <- round(as.numeric(m$yes_ask_dollars %||% 0) * 100)
       yb <- round(as.numeric(m$yes_bid_dollars %||% 0) * 100)
+      spread <- ya - yb
+      vol <- as.numeric(m$volume_fp %||% 0)
       ev <- kalshi_compute_ev(sp, ya, yb)
       all_edges <- bind_rows(all_edges, tibble(
         ticker=m$ticker %||% "", category=category, title=ttl, team=NA_character_,
-        sim_prob=sp, yes_ask=ya, yes_bid=yb, yes_fee=ev$yes_fee, no_fee=ev$no_fee,
+        sim_prob=sp, yes_ask=ya, yes_bid=yb, spread=spread, volume=vol,
+        yes_fee=ev$yes_fee, no_fee=ev$no_fee,
         yes_ev=ev$yes_ev, no_ev=ev$no_ev,
         best_side=ev$best_side, best_ev=ev$best_ev))
     }
@@ -278,7 +323,9 @@ fetch_all_kalshi_edges <- function(raw, team_probs) {
     if (is.na(rc)) return(NA_real_)
     sc <- raw %>% filter(seed==ts, .data[[rc]]==1) %>% group_by(sim_id) %>% summarise(n=n(), .groups="drop")
     sc <- tibble(sim_id=1:ns) %>% left_join(sc, by="sim_id") %>% mutate(n=coalesce(n, 0L))
-    if (grepl("exactly",ttl,ignore.case=TRUE) || st=="between") mean(sc$n==fs) else mean(sc$n>=fs)
+    if (st=="between" && !is.na(cs)) mean(sc$n>=fs & sc$n<=cs)
+    else if (grepl("exactly",ttl,ignore.case=TRUE)) mean(sc$n==fs)
+    else mean(sc$n>=fs)
   })
 
   # Highest Seed
@@ -293,23 +340,89 @@ fetch_all_kalshi_edges <- function(raw, team_probs) {
     else if (grepl("exactly",ttl,ignore.case=TRUE)) mean(ms$mx==fs) else mean(ms$mx>=fs)
   })
 
-  # Upsets
+  # Upsets — precompute upset counts per sim for each round (once, not per market)
+  # R64: seeds 9-16 advancing = upset (fixed bracket: 1v16, 2v15, etc.)
+  # R32+: within each region, pair advancing teams by seed rank, count when
+  #   higher seed advances. Precompute all at once for speed.
+  cat("  Computing upset distributions...\n")
+
+  compute_upsets_for_round <- function(raw, rc, prev_rc = NULL) {
+    all_sims <- tibble(sim_id = 1:n_sims_local)
+    if (is.null(prev_rc)) {
+      # R64: simple — seeds 9-16 advancing = upsets
+      uc <- raw %>% filter(.data[[rc]]==1, seed >= 9) %>%
+        group_by(sim_id) %>% summarise(n=n(), .groups="drop")
+      all_sims %>% left_join(uc, by="sim_id") %>% mutate(n=coalesce(n, 0L))
+    } else {
+      # R32+: pair by seed rank within region, count when higher seed advances
+      prev <- raw %>% filter(.data[[prev_rc]]==1)
+      next_adv <- raw %>% filter(.data[[rc]]==1) %>% distinct(sim_id, team) %>% mutate(adv=TRUE)
+
+      upset_counts <- prev %>%
+        left_join(next_adv, by=c("sim_id","team")) %>%
+        mutate(adv=coalesce(adv, FALSE)) %>%
+        arrange(sim_id, region, seed) %>%
+        group_by(sim_id, region) %>%
+        mutate(pair_id = (row_number()-1) %/% 2) %>%
+        group_by(sim_id, region, pair_id) %>%
+        filter(n()==2) %>%
+        summarise(upset = adv[2] & !adv[1], .groups="drop") %>%
+        group_by(sim_id) %>%
+        summarise(n=sum(upset), .groups="drop")
+
+      all_sims %>% left_join(upset_counts, by="sim_id") %>% mutate(n=coalesce(n, 0L))
+    }
+  }
+
+  # Precompute once for all rounds
+  upset_cache <- list(
+    Round_32 = compute_upsets_for_round(raw, "Round_32"),
+    Sweet_16 = compute_upsets_for_round(raw, "Sweet_16", "Round_32"),
+    Elite_8  = compute_upsets_for_round(raw, "Elite_8", "Sweet_16"),
+    Final_4  = compute_upsets_for_round(raw, "Final_4", "Elite_8")
+  )
+
   all_edges <- add_seed_props("KXMARMADUPSET", "Upsets", function(raw, fs, cs, st, et, ttl, ns) {
     rc <- case_when(grepl("R64",et)~"Round_32", grepl("R32",et)~"Sweet_16",
                     grepl("R16",et)~"Elite_8", grepl("R8",et)~"Final_4", TRUE~NA_character_)
-    if (is.na(rc)) return(NA_real_)
-    us <- if (rc=="Round_32") 9:16 else if (rc=="Sweet_16") 5:16 else if (rc=="Elite_8") 3:16 else 2:16
-    uc <- raw %>% filter(.data[[rc]]==1, seed %in% us) %>% group_by(sim_id) %>% summarise(n=n(), .groups="drop")
-    uc <- tibble(sim_id=1:ns) %>% left_join(uc, by="sim_id") %>% mutate(n=coalesce(n, 0L))
+    if (is.na(rc) || !rc %in% names(upset_cache)) return(NA_real_)
+
+    uc <- upset_cache[[rc]]
     if (grepl("exactly",ttl,ignore.case=TRUE)) mean(uc$n==fs) else mean(uc$n>=fs)
   })
 
   # Seed Wins
   all_edges <- add_seed_props("KXMARMADSEEDWIN", "Seed Wins", function(raw, fs, cs, st, et, ttl, ns) {
-    sm <- str_match(et, "S(\\d+)$")
-    if (!is.na(sm[1,2])) { ts <- as.integer(sm[1,2]) }
-    else { nums <- as.integer(str_extract_all(et, "\\d+")[[1]]); nums <- nums[nums>=10 & nums<=16]
-           if (length(nums)==0) return(NA_real_); ts <- nums }
+    # Parse target seeds from event ticker
+    # Single seed: KXMARMADSEEDWIN-26S16R64 → seed 16
+    # Combined: KXMARMADSEEDWIN-261516R64 → seeds 15, 16
+    # Combined: KXMARMADSEEDWIN-26S141516 → seeds 14, 15, 16
+    sm <- str_match(et, "S(\\d+)R")  # Single seed before R
+    if (!is.na(sm[1,2]) && nchar(sm[1,2]) <= 2) {
+      ts <- as.integer(sm[1,2])
+    } else {
+      # Extract the part between "26" and "R64" or end
+      middle <- str_match(et, "-26(.+?)(?:R\\d+)?$")[1,2]
+      if (is.na(middle)) return(NA_real_)
+      # Remove leading "S" if present
+      middle <- str_replace(middle, "^S", "")
+      # Parse as consecutive 1-2 digit seed numbers (14, 15, 16 → "141516")
+      ts <- c()
+      remaining <- middle
+      while (nchar(remaining) > 0) {
+        # Try 2-digit first (10-16), then 1-digit
+        if (nchar(remaining) >= 2 && as.integer(substr(remaining, 1, 2)) >= 10 && as.integer(substr(remaining, 1, 2)) <= 16) {
+          ts <- c(ts, as.integer(substr(remaining, 1, 2)))
+          remaining <- substr(remaining, 3, nchar(remaining))
+        } else if (as.integer(substr(remaining, 1, 1)) >= 1 && as.integer(substr(remaining, 1, 1)) <= 9) {
+          ts <- c(ts, as.integer(substr(remaining, 1, 1)))
+          remaining <- substr(remaining, 2, nchar(remaining))
+        } else {
+          break
+        }
+      }
+      if (length(ts) == 0) return(NA_real_)
+    }
     w <- raw %>% filter(seed %in% ts, Round_32==1) %>% group_by(sim_id) %>% summarise(n=n(), .groups="drop")
     w <- tibble(sim_id=1:ns) %>% left_join(w, by="sim_id") %>% mutate(n=coalesce(n, 0L))
     if (grepl("exactly",ttl,ignore.case=TRUE)) mean(w$n==fs) else mean(w$n>=fs)
@@ -318,8 +431,9 @@ fetch_all_kalshi_edges <- function(raw, team_probs) {
   all_edges %>% arrange(desc(best_ev))
 }
 
-# Pre-compute team probs for Kalshi matching
+# Pre-compute team probs for Kalshi matching (exclude eliminated teams)
 team_probs <- raw %>%
+  filter(!team %in% eliminated) %>%
   group_by(team, seed) %>%
   summarise(Round_32=mean(Round_32), Sweet_16=mean(Sweet_16), Elite_8=mean(Elite_8),
             Final_4=mean(Final_4), Title_Game=mean(Title_Game), Champion=mean(Champion),
@@ -458,11 +572,12 @@ ui <- fluidPage(
     tabPanel("Kalshi Edges",
       br(),
       fluidRow(
-        column(4, selectInput("ke_category", "Category:",
+        column(3, selectInput("ke_category", "Category:",
           choices = c("All", sort(unique(kalshi_edges$category))), selected = "All")),
-        column(4, selectInput("ke_min_ev", "Min EV%:",
+        column(2, selectInput("ke_min_ev", "Min EV%:",
           choices = c("All", "1%", "3%", "5%", "10%", "15%"), selected = "All")),
-        column(4, actionButton("ke_refresh", "Refresh Kalshi Prices", class = "btn-primary"))
+        column(2, checkboxInput("ke_positive_only", "+EV only", value = FALSE)),
+        column(2, actionButton("ke_refresh", "Refresh Prices", class = "btn-primary"))
       ),
       h4(textOutput("ke_summary")),
       DT::dataTableOutput("ke_table")
@@ -512,8 +627,10 @@ server <- function(input, output, session) {
     f_future <- if (length(future_rounds) > 0) rowMeans(df[, future_rounds, drop = FALSE]) else 0
     df$sv <- p_current * (1 - f_future)
 
-    # Filter: hide teams that already won this round (they're "used" for this round)
-    if (isTRUE(input$sv_hide_advanced)) {
+    # Filter: hide teams that already won this round
+    # Only applies during a partially completed round; if all teams are advanced, show all
+    n_pending <- sum(current_bracket$status == "pending")
+    if (isTRUE(input$sv_hide_advanced) && n_pending > 0) {
       df <- df %>% filter(!team %in% advanced_teams)
     }
 
@@ -858,34 +975,74 @@ server <- function(input, output, session) {
 
   output$ke_table <- DT::renderDataTable({
     d <- ke_data()
-    if (nrow(d) == 0) return(data.frame(Message = "No markets"))
+    if (nrow(d) == 0) return(DT::datatable(data.frame(Message = "No markets")))
 
-    # Filter by category
+    # Filters
     if (input$ke_category != "All") d <- d %>% filter(category == input$ke_category)
-
-    # Filter by min EV
     min_ev <- switch(input$ke_min_ev,
       "1%" = 0.01, "3%" = 0.03, "5%" = 0.05, "10%" = 0.10, "15%" = 0.15, -Inf)
     d <- d %>% filter(best_ev >= min_ev)
+    if (isTRUE(input$ke_positive_only)) d <- d %>% filter(best_ev > 0)
 
-    d %>%
+    # Filter out illiquid (no bid or ask) markets
+    d <- d %>% filter(yes_ask > 0, yes_bid > 0)
+
+    # Build table with numeric columns for proper sorting
+    tbl <- d %>%
       transmute(
         Category = category,
         Market = title,
-        `Fair` = sprintf("%.1f%%", sim_prob * 100),
-        `YES Ask` = paste0(yes_ask, "\u00A2"),
-        `NO Ask` = paste0(100 - yes_bid, "\u00A2"),
-        `YES Fee` = sprintf("%.1f\u00A2", yes_fee),
-        `NO Fee` = sprintf("%.1f\u00A2", no_fee),
-        `YES EV` = sprintf("%+.1f%%", yes_ev * 100),
-        `NO EV` = sprintf("%+.1f%%", no_ev * 100),
+        Fair = round(sim_prob * 100, 1),
+        `YES` = yes_ask,
+        `NO` = 100L - yes_bid,
+        Spread = spread,
+        `YES EV` = round(yes_ev * 100, 1),
+        `NO EV` = round(no_ev * 100, 1),
         Side = best_side,
-        `Best EV` = sprintf("%+.1f%%", best_ev * 100),
-        .sort_ev = best_ev
+        `Best EV` = round(best_ev * 100, 1),
+        Vol = volume
+      )
+
+    DT::datatable(
+      tbl,
+      options = list(
+        pageLength = 50,
+        order = list(list(9, "desc")),  # Sort by Best EV descending (0-indexed)
+        columnDefs = list(
+          list(className = "dt-right", targets = 2:10),
+          list(width = "250px", targets = 1)  # Market column wider
+        ),
+        scrollX = TRUE
+      ),
+      rownames = FALSE,
+      filter = "top"
+    ) %>%
+      DT::formatStyle("Best EV",
+        color = DT::styleInterval(c(0, 5, 10, 15), c("#d9534f", "#8b949e", "#7ee787", "#56d364", "#3fb950")),
+        fontWeight = "bold"
       ) %>%
-      arrange(desc(.sort_ev)) %>%
-      select(-.sort_ev)
-  }, options = list(pageLength = 50))
+      DT::formatStyle("YES EV",
+        color = DT::styleInterval(c(0), c("#d9534f", "#3fb950"))
+      ) %>%
+      DT::formatStyle("NO EV",
+        color = DT::styleInterval(c(0), c("#d9534f", "#3fb950"))
+      ) %>%
+      DT::formatStyle("Side",
+        color = DT::styleEqual(c("YES", "NO"), c("#58a6ff", "#d29922")),
+        fontWeight = "bold"
+      ) %>%
+      DT::formatStyle("Spread",
+        color = DT::styleInterval(c(5, 10, 20), c("#3fb950", "#7ee787", "#d29922", "#d9534f"))
+      ) %>%
+      DT::formatString("YES", suffix = "\u00A2") %>%
+      DT::formatString("NO", suffix = "\u00A2") %>%
+      DT::formatString("Spread", suffix = "\u00A2") %>%
+      DT::formatString("Fair", suffix = "%") %>%
+      DT::formatString("YES EV", suffix = "%") %>%
+      DT::formatString("NO EV", suffix = "%") %>%
+      DT::formatString("Best EV", suffix = "%") %>%
+      DT::formatRound("Vol", digits = 0)
+  })
 }
 
 shinyApp(ui, server, options = list(port = 8085, host = "0.0.0.0", launch.browser = TRUE))
