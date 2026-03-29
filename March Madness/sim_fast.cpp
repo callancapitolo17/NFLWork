@@ -19,7 +19,7 @@ IntegerMatrix simulate_tournament_cpp(
     int n_sims,
     int n_rounds,
     double sd_margin = 11.2,
-    double sd_rating_update = 0.17
+    double sd_rating_update = 0.5
 ) {
   int n_teams = ratings_in.size();
   IntegerMatrix result(n_teams * n_sims, n_rounds);

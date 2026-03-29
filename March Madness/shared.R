@@ -464,7 +464,7 @@ simulate_tournament_fast <- function(bracket_64, region_order = NULL) {
     teams <- teams[w]
     seeds <- seeds[w]
     regions <- regions[w]
-    ratings <- ratings[w] + abs(rating_change)
+    ratings <- ratings[w] + rating_change
     n <- length(teams)
 
     # Track progress
