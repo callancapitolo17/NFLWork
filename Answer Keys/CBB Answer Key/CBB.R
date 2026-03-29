@@ -516,29 +516,36 @@ kalshi_odds <- get_kalshi_odds("cbb")
 cat(sprintf("Loaded %d Kalshi records.\n", nrow(kalshi_odds)))
 timer$mark("load_scrapers")
 
-# --- Race-to-10 predictions (used by offshore comparisons below) ---
+# --- Race-to-X predictions (full game, used by offshore comparisons below) ---
 game_ref <- cbb_odds %>% ungroup() %>%
   select(id, home_team, away_team, commence_time) %>% distinct()
-race10_predictions <- map_dfr(names(samples), function(game_id) {
-  s <- samples[[game_id]]$sample
-  if (!"first_to_10_h1" %in% names(s)) return(tibble())
-  ft10 <- s$first_to_10_h1
-  valid <- ft10[!is.na(ft10)]
-  if (length(valid) < 30) return(tibble())
-  home_prob <- mean(valid)
-  ref <- game_ref %>% filter(id == game_id) %>% slice(1)
-  if (nrow(ref) == 0) return(tibble())
-  tibble(
-    id = game_id,
-    home_team = ref$home_team,
-    away_team = ref$away_team,
-    commence_time = ref$commence_time,
-    market = "race_to_10_h1",
-    home_prob = home_prob,
-    away_prob = 1 - home_prob
-  )
+race_fg_predictions <- map_dfr(c(10, 20, 40), function(threshold) {
+  col_name <- paste0("first_to_", threshold, "_fg")
+  map_dfr(names(samples), function(game_id) {
+    s <- samples[[game_id]]$sample
+    if (!(col_name %in% names(s))) return(tibble())
+    vals <- s[[col_name]]
+    valid <- vals[!is.na(vals)]
+    if (length(valid) < 30) return(tibble())
+    home_prob <- mean(valid)
+    ref <- game_ref %>% filter(id == game_id) %>% slice(1)
+    if (nrow(ref) == 0) return(tibble())
+    tibble(
+      id = game_id,
+      home_team = ref$home_team,
+      away_team = ref$away_team,
+      commence_time = ref$commence_time,
+      market = paste0("race_to_", threshold),
+      home_prob = home_prob,
+      away_prob = 1 - home_prob
+    )
+  })
 })
-cat(sprintf("Computed %d race-to-10 predictions.\n", nrow(race10_predictions)))
+for (t in c(10, 20, 40)) {
+  n <- sum(race_fg_predictions$market == paste0("race_to_", t))
+  if (n > 0) cat(sprintf("  race_to_%d: %d predictions\n", t, n))
+}
+cat(sprintf("Computed %d total race-to-X predictions.\n", nrow(race_fg_predictions)))
 
 # --- WAGERZON ---
 if (nrow(wagerzon_odds) > 0) {
@@ -557,16 +564,18 @@ if (nrow(wagerzon_odds) > 0) {
     )
   })
 
-  wz_race10_bets <- compare_race_to_10(
-      race10_predictions, wagerzon_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
-    )
+  wz_race_bets <- map_dfr(c("race_to_10", "race_to_20", "race_to_40"), function(mt) {
+    bets <- compare_race_to_x(race_fg_predictions, wagerzon_odds,
+                              market_type = mt, bankroll = bankroll,
+                              kelly_mult = kelly_mult, ev_threshold = 0.05)$bets
+    if (nrow(bets) > 0) bets %>% mutate(market_type = mt) else tibble()
+  })
 
   wagerzon_bets <- bind_rows(
     wz_spread_bets$bets %>% mutate(market_type = "spreads"),
     wz_total_bets$bets %>% mutate(market_type = "totals"),
     wz_ml_bets$bets %>% mutate(market_type = "moneyline"),
-    wz_race10_bets$bets %>% mutate(market_type = "race_to_10")
+    wz_race_bets
   )
   cat(sprintf("Added %d Wagerzon bets to predictions.\n", nrow(wagerzon_bets)))
 } else {
@@ -737,8 +746,9 @@ if (nrow(kalshi_odds) > 0) {
     } else {
       kal_ml_2way <- list(bets = tibble())
     }
-    kal_race10_bets <- compare_race_to_10(
-      race10_predictions, kalshi_odds,
+    kal_race_bets <- compare_race_to_x(
+      race_fg_predictions, kalshi_odds,
+      market_type = "race_to_10",
       bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
     )
   })
@@ -748,7 +758,7 @@ if (nrow(kalshi_odds) > 0) {
     kal_total_bets$bets %>% mutate(market_type = "totals"),
     kal_ml_3way$bets %>% mutate(market_type = "moneyline"),
     kal_ml_2way$bets %>% mutate(market_type = "moneyline"),
-    kal_race10_bets$bets %>% mutate(market_type = "race_to_10")
+    kal_race_bets$bets %>% mutate(market_type = "race_to_10")
   )
   cat(sprintf("Added %d Kalshi bets to predictions.\n", nrow(kalshi_bets)))
 } else {
@@ -892,16 +902,21 @@ dbExecute(con_mm, sprintf("INSERT INTO cbb_prediction_meta VALUES ('%s')",
                        format(Sys.time(), "%Y-%m-%d %H:%M:%S")))
 cat(sprintf("Exported %d raw predictions to cbb_mm.duckdb.\n", nrow(raw_preds)))
 
-# Export game samples for MM Kelly sizing (including first_to_10_h1)
+# Export game samples for MM Kelly sizing (including race-to-X FG columns)
 sample_rows <- map_dfr(names(samples), function(game_id) {
   s <- samples[[game_id]]$sample
-  ft10 <- if ("first_to_10_h1" %in% names(s)) s$first_to_10_h1 else NA_integer_
+  ft10 <- if ("first_to_10_fg" %in% names(s)) s$first_to_10_fg else
+          if ("first_to_10_h1" %in% names(s)) s$first_to_10_h1 else NA_integer_
+  ft20 <- if ("first_to_20_fg" %in% names(s)) s$first_to_20_fg else NA_integer_
+  ft40 <- if ("first_to_40_fg" %in% names(s)) s$first_to_40_fg else NA_integer_
   tibble(
     game_id = game_id,
     sim_idx = seq_len(nrow(s)),
     home_margin_h1 = s$game_home_margin_period_Half1,
     total_h1 = s$game_total_period_Half1,
-    first_to_10_h1 = ft10
+    first_to_10_fg = ft10,
+    first_to_20_fg = ft20,
+    first_to_40_fg = ft40
   )
 })
 dbExecute(con_mm, "DROP TABLE IF EXISTS cbb_game_samples")
@@ -909,18 +924,18 @@ dbWriteTable(con_mm, "cbb_game_samples", sample_rows)
 cat(sprintf("Exported %d game samples (%d games) for Kelly sizing.\n",
             nrow(sample_rows), length(unique(sample_rows$game_id))))
 
-# Export race_to_10_h1 predictions (reuse race10_predictions from earlier)
-if (nrow(race10_predictions) > 0) {
-  race10_preds <- race10_predictions %>%
+# Export race-to-X predictions (reuse race_fg_predictions from earlier)
+if (nrow(race_fg_predictions) > 0) {
+  race_preds <- race_fg_predictions %>%
     transmute(id, home_team, away_team, commence_time,
-              market = "race_to_10_h1", period = "Half1",
+              market = market, period = "fg",
               line_value = NA_real_,
               prob_side1 = home_prob, prob_side2 = away_prob,
               prob_tie = NA_real_)
-  raw_preds <- bind_rows(raw_preds, race10_preds)
+  raw_preds <- bind_rows(raw_preds, race_preds)
   dbExecute(con_mm, "DROP TABLE IF EXISTS cbb_raw_predictions")
   dbWriteTable(con_mm, "cbb_raw_predictions", raw_preds)
-  cat(sprintf("Added %d race_to_10_h1 predictions.\n", nrow(race10_preds)))
+  cat(sprintf("Added %d race-to-X predictions.\n", nrow(race_preds)))
 }
 
 timer$mark("save_bets")

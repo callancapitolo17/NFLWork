@@ -27,13 +27,17 @@ odds_data <- dbGetQuery(con, "
   left_join(team_mapping, by = c("odds_away" = "odds_name")) %>%
   rename(away_espn = espn_name)
 
-# Check if first_to_10_h1 column exists (may not be backfilled yet)
-has_first10 <- tryCatch({
-  dbGetQuery(con, "SELECT first_to_10_h1 FROM cbb_pbp_v2 LIMIT 0")
-  TRUE
-}, error = function(e) FALSE)
-
-first10_col <- if (has_first10) ", first_to_10_h1" else ""
+# Check which race-to-X columns exist (may not be backfilled yet)
+race_cols <- c("first_to_10_h1", "first_to_10_fg", "first_to_20_fg", "first_to_40_fg")
+available_race_cols <- character()
+for (col in race_cols) {
+  exists <- tryCatch({
+    dbGetQuery(con, sprintf("SELECT %s FROM cbb_pbp_v2 LIMIT 0", col))
+    TRUE
+  }, error = function(e) FALSE)
+  if (exists) available_race_cols <- c(available_race_cols, col)
+}
+race_col_sql <- if (length(available_race_cols) > 0) paste0(", ", paste(available_race_cols, collapse = ", ")) else ""
 
 # Get PBP data (CBBpy uses ESPN names)
 pbp_data <- dbGetQuery(con, sprintf("
@@ -67,11 +71,13 @@ pbp_data <- dbGetQuery(con, sprintf("
     %s
   FROM cbb_pbp_v2
   WHERE game_home_margin_h2 IS NOT NULL
-", first10_col))
+", race_col_sql))
 
-# Ensure column exists in dataframe (NA if not backfilled)
-if (!"first_to_10_h1" %in% names(pbp_data)) {
-  pbp_data$first_to_10_h1 <- NA_integer_
+# Ensure all race-to-X columns exist in dataframe (NA if not backfilled)
+for (col in c("first_to_10_h1", "first_to_10_fg", "first_to_20_fg", "first_to_40_fg")) {
+  if (!(col %in% names(pbp_data))) {
+    pbp_data[[col]] <- NA_integer_
+  }
 }
 
 message(sprintf("Odds: %d unique games", nrow(odds_data)))
@@ -163,7 +169,10 @@ betting_pbp <- joined %>%
     game_total_fg,
     home_winner,
     went_to_ot,
-    first_to_10_h1
+    first_to_10_h1,
+    first_to_10_fg,
+    first_to_20_fg,
+    first_to_40_fg
   ) %>%
   distinct()
 

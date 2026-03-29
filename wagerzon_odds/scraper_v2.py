@@ -344,14 +344,14 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
     # --- Race-to-10 leagues (separate from main games) ---
     # lg=1852 comes as a standalone league with idgmtyp=47 moneyline-only games.
     # Team names embed the prop: "DUKE GET 10PTS 1ST" / "ST. JOHN'S GET 10PTS 1ST"
-    race10_pattern = re.compile(r"(.+?)\s+GET\s+10PTS\s+1ST", re.IGNORECASE)
+    race_pattern = re.compile(r"(.+?)\s+GET\s+(\d+)PTS\s+1ST", re.IGNORECASE)
     for league in leagues:
         desc = (league.get("Description", "") or "").upper()
-        if "SCORE FIRST 10" not in desc:
+        if "SCORE FIRST" not in desc:
             continue
-        race10_games = league.get("Games", [])
-        print(f"Found {len(race10_games)} race-to-10 games in '{league.get('Description', '')}'")
-        for game in race10_games:
+        race_games = league.get("Games", [])
+        print(f"Found {len(race_games)} race-to-X games in '{league.get('Description', '')}'")
+        for game in race_games:
             if not game.get("GameLines"):
                 continue
             line = game["GameLines"][0]
@@ -360,15 +360,16 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
             if away_odds is None or home_odds is None:
                 continue
 
-            # Strip prop suffix from team names
+            # Strip prop suffix from team names and extract threshold
             away_raw = game["vtm"]
             home_raw = game["htm"]
-            away_match = race10_pattern.match(away_raw)
-            home_match = race10_pattern.match(home_raw)
+            away_match = race_pattern.match(away_raw)
+            home_match = race_pattern.match(home_raw)
             if not away_match or not home_match:
                 continue
             away_clean = away_match.group(1).strip()
             home_clean = home_match.group(1).strip()
+            threshold = away_match.group(2)
 
             # Resolve canonical names
             if team_dict or canonical_games:
@@ -385,6 +386,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
             away_rot = str(game["vnum"])
             home_rot = str(game["hnum"])
 
+            market_name = f"race_to_{threshold}"
             records.append({
                 "fetch_time": fetch_time,
                 "sport_key": sport_key,
@@ -393,8 +395,8 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 "game_time": game_time,
                 "away_team": away_team,
                 "home_team": home_team,
-                "market": "race_to_10_h1",
-                "period": "h1",
+                "market": market_name,
+                "period": "fg",
                 "away_spread": None,
                 "away_spread_price": None,
                 "home_spread": None,
@@ -405,7 +407,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 "away_ml": away_odds,
                 "home_ml": home_odds,
             })
-            print(f"  race_to_10: {away_team} @ {home_team} | {away_odds}/{home_odds}")
+            print(f"  {market_name}: {away_team} @ {home_team} | {away_odds}/{home_odds}")
 
     return records
 
