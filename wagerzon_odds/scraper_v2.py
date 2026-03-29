@@ -343,8 +343,8 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
 
     # --- Race-to-10 leagues (separate from main games) ---
     # lg=1852 comes as a standalone league with idgmtyp=47 moneyline-only games.
-    # Team names embed the prop: "DUKE GET 10PTS 1ST" / "ST. JOHN'S GET 10PTS 1ST"
-    race_pattern = re.compile(r"(.+?)\s+GET\s+(\d+)PTS\s+1ST", re.IGNORECASE)
+    # Team names embed the prop: "DUKE GET 10PTS 1ST" or "DUKE GET 10 PTS 1ST"
+    race_pattern = re.compile(r"(.+?)\s+GET\s+(\d+)\s*PTS\s+1ST", re.IGNORECASE)
     for league in leagues:
         desc = (league.get("Description", "") or "").upper()
         if "SCORE FIRST" not in desc:
