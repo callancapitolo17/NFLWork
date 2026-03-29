@@ -5,7 +5,7 @@ Automated market maker for CBB 1st-half markets on Kalshi. Posts bid/ask quotes,
 
 ## Architecture
 - `main.py` — Bot loop: fetch prices → compute quotes → place orders → monitor
-- `quoter.py` — Pricing engine: uses oracle (Bookmaker/Bet105 scrapers) to set fair value, then applies spread
+- `quoter.py` — Pricing engine: Avellaneda-Stoikov reservation price + dynamic spread, with penny-the-book
 - `orders.py` — Order management: cancel stale, place new, track fills
 - `risk.py` — Position limits, exposure tracking, P&L computation
 - `taker.py` — Taker mode: crosses the spread when oracle shows strong edge
@@ -17,6 +17,23 @@ Automated market maker for CBB 1st-half markets on Kalshi. Posts bid/ask quotes,
 
 ### Oracle Dependency
 Fair value comes from offshore scraper databases (Bookmaker, Bet105). If those scrapers haven't run recently, the oracle is stale and quotes will be wrong. Predictions and game samples are read from `cbb_mm.duckdb` (separate from `cbb.duckdb` to avoid lock contention during pipeline runs).
+
+### Avellaneda-Stoikov Quoting
+The maker uses an AS-inspired pricing model instead of a flat EV floor. Two independent levers:
+
+**Reservation price** shifts the quote midpoint against inventory:
+`reservation = fair_cents - (pos_dollars/bankroll) × γ × σ² × 100`
+where `σ² = p(1-p)` (binary variance). Long positions shift reservation below fair, making the ask cheaper to attract offsetting sellers. Short positions do the reverse.
+
+**Dynamic half-spread** widens near tipoff:
+`half_spread = base × urgency` where `urgency = 1 + (1 - hours/clamp) × scale`
+This protects against informed flow (lineups, sharp action) that concentrates near game time.
+
+Config params: `AS_GAMMA` (risk aversion, default 0.5), `AS_BASE_HALF_SPREAD` (3c), `AS_URGENCY_SCALE` (0.5), `AS_URGENCY_CLAMP_HRS` (48h). All configurable via `.env`.
+
+Safety: quotes are clamped so bid < fair and ask > fair, preventing negative EV even at extreme inventory. Penny-the-book and anti-penny-loop detection are unchanged. `MIN_EV_PCT` is retained for the taker only.
+
+**Correlation note:** AS pricing is per-ticker (each market adjusts based on its own position). Cross-market correlation (e.g., spread + total for same game) is handled at the Kelly budget layer, not at the pricing layer.
 
 ### DuckDB File
 `kalshi_mm.duckdb` — NEVER symlink. WAL files must be co-located with the database.
