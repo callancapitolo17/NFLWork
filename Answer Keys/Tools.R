@@ -4281,9 +4281,9 @@ compare_race_to_x <- function(
     return(list(bets = tibble()))
   }
 
-  # Join predictions to odds on home_team + away_team
-  # Drop market from predictions to avoid suffix collision with odds
+  # Filter predictions to this threshold, then drop market to avoid suffix collision
   pred_subset <- race_predictions %>%
+    filter(market == market_type) %>%
     select(any_of(c("id", "home_team", "away_team", "home_prob", "away_prob", "commence_time")))
   joined <- race_odds %>%
     inner_join(pred_subset,

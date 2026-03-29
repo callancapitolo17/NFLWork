@@ -42,15 +42,17 @@ The taker uses a simple 10s per-ticker tactical cooldown to prevent hammering th
 At startup and after every prediction refresh, `kelly.prewarm_sample_cache()` bulk-loads all game simulation samples in one DuckDB query (~15K rows, <1MB). This eliminates the ~15 min cold-cache Kelly cycle on first boot. `clear_sample_cache()` is now an alias that clears and reloads.
 
 ### Sample Column Layout
-`kelly.py` defines `SAMPLE_COLUMNS = ["home_margin_h1", "total_h1", "first_to_10_h1"]` with named column indices. The cache dynamically discovers which columns exist in `cbb_game_samples` and NaN-fills missing ones. This allows the R pipeline to add new columns without breaking the running bot.
+`kelly.py` defines `SAMPLE_COLUMNS = ["home_margin_h1", "total_h1", "first_to_10_fg", "first_to_20_fg", "first_to_40_fg"]` with named column indices. The cache dynamically discovers which columns exist in `cbb_game_samples` and NaN-fills missing ones. Backward compat: if `first_to_10_fg` is missing but `first_to_10_h1` exists, it's aliased via SQL AS.
 
-### Race-to-10 Markets
-- Series: `KXNCAAMBFIRST10` — 2 contracts per event (one per team)
+### Race-to-X Markets
+All race-to-X props are **full game** (not H1). "Which team reaches X points first" at any point during the game.
+- Kalshi series: `KXNCAAMBFIRST10` — 2 contracts per event (one per team), race-to-10 only
 - Title format: "Will [Team] be the first to reach 10 points?"
-- Fair value: `mean(first_to_10_h1)` from resampled historical games in `cbb_game_samples`
-- `first_to_10_h1` = 1 (home first), 0 (away first), NA (neither/push)
-- Prediction rows: `race_to_10_h1` in `cbb_raw_predictions` table
-- Backfill: `Rscript "Acquire CBB Data.R" --backfill-first10` to populate existing `cbb_pbp_v2` rows
+- Fair value: `mean(first_to_X_fg)` from resampled historical games in `cbb_game_samples`
+- `first_to_X_fg` = 1 (home first), 0 (away first), NA (neither reached threshold)
+- Prediction rows: `race_to_10`, `race_to_20`, `race_to_40` in `cbb_raw_predictions` table
+- Backfill: `Rscript "Acquire CBB Data.R" --backfill-race-fg <threshold>` (10, 20, or 40)
+- Wagerzon leagues: race-to-10 (lg=1852), race-to-20 (lg=1089), race-to-40 (lg=4139)
 
 ### Prediction Auto-Reload
 The main loop checks `cbb_prediction_meta.updated_at` every 30s. If predictions were updated externally (manual pipeline run, cron), the bot reloads predictions, re-matches markets, and rewarms the sample cache — no restart needed.

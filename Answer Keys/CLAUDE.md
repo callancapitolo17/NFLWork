@@ -33,19 +33,21 @@ run.py (orchestrator)
 - `cbb_dashboard.duckdb` — Dashboard state (placed_bets, settings, CLV)
 - Never symlink DuckDB files. Always copy if needed in worktrees.
 
-### Race-to-10 Data Flow
+### Race-to-X Data Flow
+All race-to-X props are **full game** — "which team reaches X points first" at any point.
 ```
 Acquire CBB Data.R --daily-pbp
-  └── extract_first_to_10_h1(pbp) → first_to_10_h1 column in cbb_pbp_v2
+  └── extract_race_to_fg(pbp, threshold) → first_to_{10,20,40}_fg in cbb_pbp_v2
 build_betting_pbp.R
-  └── Propagates first_to_10_h1 into cbb_betting_pbp
+  └── Propagates first_to_{10,20,40}_fg into cbb_betting_pbp
 CBB.R
-  ├── first_to_10_h1 flows into DT via betting_pbp join (no rename needed)
-  ├── Exported as 3rd column in cbb_game_samples
-  └── race_to_10_h1 predictions added to cbb_raw_predictions
+  ├── first_to_X_fg flows into DT via betting_pbp join
+  ├── Exported as columns 3-5 in cbb_game_samples
+  └── race_to_{10,20,40} predictions added to cbb_raw_predictions
 ```
-- Backfill existing games: `Rscript "Acquire CBB Data.R" --backfill-first10`
-- Fair value = `mean(first_to_10_h1)` across resampled historical games
+- Backfill: `Rscript "Acquire CBB Data.R" --backfill-race-fg <threshold>` (10, 20, or 40)
+- Fair value = `mean(first_to_X_fg)` across resampled historical games
+- Backward compat: `first_to_10_h1` still extracted alongside FG columns during transition
 
 ## Common Pitfalls
 
