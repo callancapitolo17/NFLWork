@@ -300,6 +300,41 @@ samples <- generate_all_samples(
 cat(sprintf("Generated %d samples.\n", length(samples)))
 timer$mark("sample_gen")
 
+# --- Store samples for downstream tools (parlay edge finder) ---
+cat("Storing samples to DuckDB for parlay analysis...\n")
+sample_rows <- imap_dfr(samples, function(s, game_id) {
+  samp <- s$sample
+  tibble(
+    game_id           = game_id,
+    sim_idx           = seq_len(nrow(samp)),
+    home_margin       = samp$game_home_margin_period_FG,
+    total_final_score = samp$game_total_period_FG
+  )
+})
+
+dbExecute(con_mlb, "DROP TABLE IF EXISTS mlb_game_samples")
+dbWriteTable(con_mlb, "mlb_game_samples", sample_rows)
+
+dbExecute(con_mlb, "DROP TABLE IF EXISTS mlb_samples_meta")
+dbExecute(con_mlb, "CREATE TABLE mlb_samples_meta (generated_at TIMESTAMP)")
+dbExecute(con_mlb, sprintf(
+  "INSERT INTO mlb_samples_meta VALUES ('%s')",
+  format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+))
+
+# Store consensus for game matching (id ↔ team names)
+# Also stored as mlb_odds_temp so resolve_offshore_teams() Layer 2 can
+# resolve Wagerzon team names against canonical Odds API names.
+consensus_export <- mlb_odds %>%
+  select(id, home_team, away_team, total_line, consensus_prob_home)
+dbExecute(con_mlb, "DROP TABLE IF EXISTS mlb_consensus_temp")
+dbWriteTable(con_mlb, "mlb_consensus_temp", consensus_export)
+dbExecute(con_mlb, "DROP TABLE IF EXISTS mlb_odds_temp")
+dbWriteTable(con_mlb, "mlb_odds_temp", consensus_export)
+
+cat(sprintf("Stored %d samples (%d games) + consensus for parlay tool.\n",
+            nrow(sample_rows), length(unique(sample_rows$game_id))))
+
 prefetched_odds <- NULL
 if (nrow(events) > 0) {
   cat(sprintf("Fetching derivative odds for %d events (%d markets per call)...\n",
