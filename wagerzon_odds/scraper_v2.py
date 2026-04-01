@@ -186,16 +186,50 @@ def parse_team_total(line: dict, game_id: str, period: str, market: str,
     }
 
 
+def parse_moneyline_only(line: dict, game_id: str, period: str, market: str,
+                         base: dict) -> Optional[dict]:
+    """Parse a moneyline-only GameLine (no spread/total) into a DuckDB record.
+
+    Used for prop markets like score-first, odd/even, score-in-1st-inning where
+    the only data is two moneyline prices (away_ml / home_ml).
+    """
+    away_ml = safe_int(line.get("voddst"))
+    home_ml = safe_int(line.get("hoddst"))
+
+    if away_ml is None and home_ml is None:
+        return None
+
+    return {
+        **base,
+        "game_id": game_id,
+        "market": market,
+        "period": period,
+        "away_spread": None,
+        "away_spread_price": None,
+        "home_spread": None,
+        "home_spread_price": None,
+        "total": None,
+        "over_price": None,
+        "under_price": None,
+        "away_ml": away_ml,
+        "home_ml": home_ml,
+    }
+
+
 def parse_odds(data: dict, sport: str) -> list[dict]:
     """Parse NewScheduleHelper JSON response into DuckDB records.
 
-    Processes the first league (parent game lines) and extracts derivatives
-    from each game's GameChilds array:
-      - idgmtyp 10: Full game (parent)
-      - idgmtyp 15: First half
-      - idgmtyp 35: Team total (full game)
-      - idgmtyp 66: Team total (1H)
-      - idgmtyp 25: Alternate line (spread + total paired)
+    Processes all leagues and extracts derivatives from each game's GameChilds:
+      - idgmtyp 10: Full game (parent) — spread + total + ML
+      - idgmtyp 15: First half — spread + total + ML
+      - idgmtyp 19: Hits / H+R+E totals — total only
+      - idgmtyp 25: Alt lines OR period totals (3 INN / 7 INN) — spread/total
+      - idgmtyp 30: Pitcher props (outs, hits allowed, walks) — total only
+      - idgmtyp 31: Odd/even total runs — ML only
+      - idgmtyp 35: Team total (full game) — total only
+      - idgmtyp 44: Score first / score first wins game — ML only
+      - idgmtyp 47: Score in 1st inning (yes/no) — ML only
+      - idgmtyp 66: Team total (1H) — total only
     """
     config = get_sport_config(sport)
     sport_key = config["sport_key"]
@@ -285,18 +319,139 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
             if not child_lines:
                 continue
             child_line = child_lines[0]
+            child_vtm = child.get("vtm", "")
+            child_vtm_upper = child_vtm.upper()
+
+            # Helper: determine if a stripped child name belongs to the away
+            # or home team.  Wagerzon child names drop the city abbreviation
+            # (e.g. "GUARDIANS TEAM TOTAL" for parent "CLE GUARDIANS"), so we
+            # check containment rather than exact equality.
+            def _side(stripped_name: str) -> str:
+                s = stripped_name.upper()
+                if s in away_raw.upper():
+                    return "away"
+                return "home"
 
             if child_type == 15:
-                # First half line
+                # First half line (F5 in baseball) — spread + total + ML
                 cid = f"{child['vnum']}-{child['hnum']}"
                 rec = parse_game_line(child_line, cid, "h1", "spreads_h1", base)
                 if rec:
                     records.append(rec)
 
+            elif child_type == 19:
+                # Hits totals or H+R+E totals
+                # "GUARDIANS TOTAL HITS" → team hits total
+                # "H+R+E (SF/SD)" → game-level hits+runs+errors total
+                if "H+R+E" in child_vtm_upper:
+                    rec = parse_team_total(
+                        child_line, f"{game_id}-hre", "fg", "hre_total", base
+                    )
+                elif "TOTAL HITS" in child_vtm_upper:
+                    # Wagerzon labels this with the away team name but it's
+                    # the game total hits (one per game, ~13-16 range)
+                    rec = parse_team_total(
+                        child_line, f"{game_id}-totalhits", "fg",
+                        "total_hits", base
+                    )
+                else:
+                    rec = None
+                if rec:
+                    records.append(rec)
+
+            elif child_type == 25:
+                # Two sub-types share idgmtyp=25:
+                #   1) Period totals: "3 INN TEAM" or "7 INN TEAM" — total only
+                #   2) Alt lines: "TEAM ALT" — spread and/or total
+                period_match = re.match(r"(\d+)\s+INN\s+", child_vtm_upper)
+                if period_match:
+                    # Period total (e.g. first 3 innings, first 7 innings)
+                    innings = period_match.group(1)
+                    rec = parse_team_total(
+                        child_line, f"{game_id}-{innings}inn", f"f{innings}",
+                        f"totals_f{innings}", base
+                    )
+                    if rec:
+                        records.append(rec)
+                else:
+                    # Alt line — spread and total are paired in each entry
+                    child_id = str(child.get("idgm", alt_counter))
+
+                    # Alt spread
+                    alt_away_spread = safe_float(child_line.get("vsprdt"))
+                    if alt_away_spread is not None:
+                        records.append({
+                            **base,
+                            "game_id": f"{game_id}-alts-{child_id}",
+                            "market": "alternate_spreads_fg",
+                            "period": "fg",
+                            "away_spread": alt_away_spread,
+                            "away_spread_price": safe_int(child_line.get("vsprdoddst")),
+                            "home_spread": safe_float(child_line.get("hsprdt")),
+                            "home_spread_price": safe_int(child_line.get("hsprdoddst")),
+                            "total": None,
+                            "over_price": None,
+                            "under_price": None,
+                            "away_ml": None,
+                            "home_ml": None,
+                        })
+
+                    # Alt total
+                    alt_total = safe_float(child_line.get("unt"))
+                    if alt_total is not None:
+                        records.append({
+                            **base,
+                            "game_id": f"{game_id}-altt-{child_id}",
+                            "market": "alternate_totals_fg",
+                            "period": "fg",
+                            "away_spread": None,
+                            "away_spread_price": None,
+                            "home_spread": None,
+                            "home_spread_price": None,
+                            "total": alt_total,
+                            "over_price": safe_int(child_line.get("ovoddst")),
+                            "under_price": safe_int(child_line.get("unoddst")),
+                            "away_ml": None,
+                            "home_ml": None,
+                        })
+
+                alt_counter += 1
+
+            elif child_type == 30:
+                # Pitcher props — "L WEBB (SF) TOTAL OUTS", "L WEBB (SF) HITS ALLOWED"
+                # Extract pitcher name and prop type from the child team name
+                pitcher_match = re.match(
+                    r"(.+?)\s*\([A-Z]+\)\s+(TOTAL OUTS|HITS ALLOWED|WALKS ALLOWED|STRIKEOUTS|EARNED RUNS)",
+                    child_vtm_upper
+                )
+                if pitcher_match:
+                    pitcher_name = pitcher_match.group(1).strip()
+                    prop_type = pitcher_match.group(2).lower().replace(" ", "_")
+                    # Use pitcher name in the game_id so each prop is unique
+                    pitcher_slug = pitcher_name.lower().replace(" ", "_").replace(".", "")
+                    rec = parse_team_total(
+                        child_line,
+                        f"{game_id}-pp-{pitcher_slug}-{prop_type}",
+                        "fg",
+                        f"pitcher_{prop_type}",
+                        {**base, "away_team": pitcher_name, "home_team": f"{away_team} @ {home_team}"},
+                    )
+                    if rec:
+                        records.append(rec)
+
+            elif child_type == 31:
+                # Odd/even total runs — ML only
+                # "TOTAL RUNS ODD(CLE/LAD)" vs "TOTAL RUNS EVEN(CLE/LAD)"
+                rec = parse_moneyline_only(
+                    child_line, f"{game_id}-oddeven", "fg", "odd_even_runs", base
+                )
+                if rec:
+                    records.append(rec)
+
             elif child_type == 35:
                 # Full game team total
-                tt_name = child["vtm"].upper().replace(" TEAM TOTAL", "").strip()
-                tt_side = "away" if tt_name == away_raw.upper() else "home"
+                tt_name = child_vtm_upper.replace(" TEAM TOTAL", "").strip()
+                tt_side = _side(tt_name)
                 rec = parse_team_total(
                     child_line, f"{game_id}-tt-{tt_side}", "fg",
                     f"team_totals_{tt_side}_fg", base
@@ -304,61 +459,42 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 if rec:
                     records.append(rec)
 
+            elif child_type == 44:
+                # Two variants:
+                #   "CLE GUARDIANS SC 1ST" — which team scores first (ML)
+                #   "YES TM SCR 1ST WIN G(CLE/LAD)" — does the team that scores first win?
+                if "SC 1ST" in child_vtm_upper and "WIN" not in child_vtm_upper:
+                    rec = parse_moneyline_only(
+                        child_line, f"{game_id}-scorefirst", "fg", "score_first", base
+                    )
+                else:
+                    rec = parse_moneyline_only(
+                        child_line, f"{game_id}-scorefirst-wins", "fg",
+                        "score_first_wins_game", base
+                    )
+                if rec:
+                    records.append(rec)
+
+            elif child_type == 47:
+                # Score in 1st inning — yes/no ML
+                rec = parse_moneyline_only(
+                    child_line, f"{game_id}-score1stinn", "fg",
+                    "score_1st_inning", base
+                )
+                if rec:
+                    records.append(rec)
+
             elif child_type == 66:
                 # 1H team total
-                tt_name = child["vtm"].upper()
+                tt_name = child_vtm_upper
                 tt_name = tt_name.replace("1H ", "").replace(" TEAM TOTAL", "").strip()
-                tt_side = "away" if tt_name == away_raw.upper() else "home"
+                tt_side = _side(tt_name)
                 rec = parse_team_total(
                     child_line, f"{game_id}-tt-{tt_side}-h1", "h1",
                     f"team_totals_{tt_side}_h1", base
                 )
                 if rec:
                     records.append(rec)
-
-            elif child_type == 25:
-                # Alt line — spread and total are paired in each entry
-                child_id = str(child.get("idgm", alt_counter))
-
-                # Alt spread
-                alt_away_spread = safe_float(child_line.get("vsprdt"))
-                if alt_away_spread is not None:
-                    records.append({
-                        **base,
-                        "game_id": f"{game_id}-alts-{child_id}",
-                        "market": "alternate_spreads_fg",
-                        "period": "fg",
-                        "away_spread": alt_away_spread,
-                        "away_spread_price": safe_int(child_line.get("vsprdoddst")),
-                        "home_spread": safe_float(child_line.get("hsprdt")),
-                        "home_spread_price": safe_int(child_line.get("hsprdoddst")),
-                        "total": None,
-                        "over_price": None,
-                        "under_price": None,
-                        "away_ml": None,
-                        "home_ml": None,
-                    })
-
-                # Alt total
-                alt_total = safe_float(child_line.get("unt"))
-                if alt_total is not None:
-                    records.append({
-                        **base,
-                        "game_id": f"{game_id}-altt-{child_id}",
-                        "market": "alternate_totals_fg",
-                        "period": "fg",
-                        "away_spread": None,
-                        "away_spread_price": None,
-                        "home_spread": None,
-                        "home_spread_price": None,
-                        "total": alt_total,
-                        "over_price": safe_int(child_line.get("ovoddst")),
-                        "under_price": safe_int(child_line.get("unoddst")),
-                        "away_ml": None,
-                        "home_ml": None,
-                    })
-
-                alt_counter += 1
 
     # --- Race-to-10 leagues (separate from main games) ---
     # lg=1852 comes as a standalone league with idgmtyp=47 moneyline-only games.

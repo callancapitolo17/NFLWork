@@ -28,7 +28,11 @@ SPORTS = {
     },
     "mlb": {
         "sport_key": "baseball_mlb",
-        "url_params": "lg=417,1280",  # 417=MLB Game Lines (FG), 1280=1st 5 Innings (F5)
+        # 416=?, 417=Game Lines, 732=?, 2042=?, 1280=F5, 166=?, 418/419=?,
+        # 2156=?, 925/926=?, 1986=?, 1084=?, 4718/4717=?, 3908=?,
+        # 421=?, 927=?, 1081/1080=?, 422=?, 604=?, 2157=?, 1860/1859=?, 424=?
+        # Full market set — API merges these into one league with derivatives as GameChilds
+        "url_params": "lg=416,417,732,2042,1280,166,418,419,2156,925,926,1986,1084,4718,4717,3908,421,927,1081,1080,422,604,2157,1860,1859,424",
         "table_name": "mlb_odds",
     },
 }
