@@ -74,110 +74,110 @@ _refresh_lock = threading.Lock()
 def init_db():
     """Create tables if they don't exist."""
     con = duckdb.connect(str(DB_PATH))
+    try:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS placed_bets (
+                bet_hash TEXT PRIMARY KEY,
+                game_id TEXT NOT NULL,
+                home_team TEXT NOT NULL,
+                away_team TEXT NOT NULL,
+                game_time TIMESTAMP,
+                market TEXT NOT NULL,
+                bet_on TEXT NOT NULL,
+                line REAL,
+                model_prob REAL NOT NULL,
+                model_ev REAL NOT NULL,
+                recommended_size REAL NOT NULL,
+                actual_size REAL,
+                odds INTEGER NOT NULL,
+                bookmaker TEXT NOT NULL,
+                placed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                status TEXT DEFAULT 'pending'
+            )
+        """)
 
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS placed_bets (
-            bet_hash TEXT PRIMARY KEY,
-            game_id TEXT NOT NULL,
-            home_team TEXT NOT NULL,
-            away_team TEXT NOT NULL,
-            game_time TIMESTAMP,
-            market TEXT NOT NULL,
-            bet_on TEXT NOT NULL,
-            line REAL,
-            model_prob REAL NOT NULL,
-            model_ev REAL NOT NULL,
-            recommended_size REAL NOT NULL,
-            actual_size REAL,
-            odds INTEGER NOT NULL,
-            bookmaker TEXT NOT NULL,
-            placed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            status TEXT DEFAULT 'pending'
-        )
-    """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS book_settings (
+                bookmaker_key TEXT PRIMARY KEY,
+                enabled BOOLEAN DEFAULT FALSE,
+                discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS book_settings (
-            bookmaker_key TEXT PRIMARY KEY,
-            enabled BOOLEAN DEFAULT FALSE,
-            discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS sizing_settings (
+                param TEXT PRIMARY KEY,
+                value REAL NOT NULL
+            )
+        """)
+        # Seed defaults if empty
+        con.execute("""
+            INSERT INTO sizing_settings (param, value) VALUES ('bankroll', 100)
+            ON CONFLICT (param) DO NOTHING
+        """)
+        con.execute("""
+            INSERT INTO sizing_settings (param, value) VALUES ('kelly_mult', 0.25)
+            ON CONFLICT (param) DO NOTHING
+        """)
 
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS sizing_settings (
-            param TEXT PRIMARY KEY,
-            value REAL NOT NULL
-        )
-    """)
-    # Seed defaults if empty
-    con.execute("""
-        INSERT INTO sizing_settings (param, value) VALUES ('bankroll', 100)
-        ON CONFLICT (param) DO NOTHING
-    """)
-    con.execute("""
-        INSERT INTO sizing_settings (param, value) VALUES ('kelly_mult', 0.25)
-        ON CONFLICT (param) DO NOTHING
-    """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS filter_settings (
+                filter_type TEXT PRIMARY KEY,
+                selected_values TEXT NOT NULL
+            )
+        """)
+        # Default: Status shows only "Not Placed" (hide already-placed bets)
+        con.execute("""
+            INSERT INTO filter_settings (filter_type, selected_values)
+            VALUES ('status', '["Not Placed"]')
+            ON CONFLICT (filter_type) DO NOTHING
+        """)
 
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS filter_settings (
-            filter_type TEXT PRIMARY KEY,
-            selected_values TEXT NOT NULL
-        )
-    """)
-    # Default: Status shows only "Not Placed" (hide already-placed bets)
-    con.execute("""
-        INSERT INTO filter_settings (filter_type, selected_values)
-        VALUES ('status', '["Not Placed"]')
-        ON CONFLICT (filter_type) DO NOTHING
-    """)
+        # CLV tracking tables
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS closing_snapshots (
+                snapshot_time TIMESTAMP NOT NULL,
+                bookmaker TEXT NOT NULL,
+                game_id TEXT,
+                home_team TEXT NOT NULL,
+                away_team TEXT NOT NULL,
+                market TEXT NOT NULL,
+                bet_on TEXT NOT NULL,
+                line REAL,
+                odds INTEGER NOT NULL,
+                counter_odds INTEGER
+            )
+        """)
 
-    # CLV tracking tables
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS closing_snapshots (
-            snapshot_time TIMESTAMP NOT NULL,
-            bookmaker TEXT NOT NULL,
-            game_id TEXT,
-            home_team TEXT NOT NULL,
-            away_team TEXT NOT NULL,
-            market TEXT NOT NULL,
-            bet_on TEXT NOT NULL,
-            line REAL,
-            odds INTEGER NOT NULL,
-            counter_odds INTEGER
-        )
-    """)
-
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS bet_clv (
-            bet_hash TEXT PRIMARY KEY,
-            game_id TEXT,
-            game_time TIMESTAMP,
-            bookmaker TEXT,
-            market TEXT,
-            bet_on TEXT,
-            placement_line REAL,
-            placement_odds INTEGER,
-            placement_novig_prob REAL,
-            market_closing_line REAL,
-            market_closing_odds INTEGER,
-            market_closing_counter_odds INTEGER,
-            market_closing_novig_prob REAL,
-            market_clv REAL,
-            book_closing_line REAL,
-            book_closing_odds INTEGER,
-            book_closing_counter_odds INTEGER,
-            book_closing_novig_prob REAL,
-            book_clv REAL,
-            line_moved BOOLEAN,
-            clv_method TEXT,
-            sigma_used REAL,
-            computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    con.close()
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS bet_clv (
+                bet_hash TEXT PRIMARY KEY,
+                game_id TEXT,
+                game_time TIMESTAMP,
+                bookmaker TEXT,
+                market TEXT,
+                bet_on TEXT,
+                placement_line REAL,
+                placement_odds INTEGER,
+                placement_novig_prob REAL,
+                market_closing_line REAL,
+                market_closing_odds INTEGER,
+                market_closing_counter_odds INTEGER,
+                market_closing_novig_prob REAL,
+                market_clv REAL,
+                book_closing_line REAL,
+                book_closing_odds INTEGER,
+                book_closing_counter_odds INTEGER,
+                book_closing_novig_prob REAL,
+                book_clv REAL,
+                line_moved BOOLEAN,
+                clv_method TEXT,
+                sigma_used REAL,
+                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    finally:
+        con.close()
     print(f"Database initialized at: {DB_PATH}")
 
 
@@ -214,9 +214,11 @@ def snapshot_book_odds(bookmaker: str, config: dict, game_teams: list[tuple[str,
 
     try:
         src = duckdb.connect(str(db_path), read_only=True)
-        odds = src.execute(f"SELECT * FROM {config['table']}").fetchall()
-        cols = [d[0] for d in src.description]
-        src.close()
+        try:
+            odds = src.execute(f"SELECT * FROM {config['table']}").fetchall()
+            cols = [d[0] for d in src.description]
+        finally:
+            src.close()
     except Exception as e:
         log.warning("Failed to read %s DB: %s", bookmaker, e)
         return 0
@@ -247,13 +249,15 @@ def snapshot_book_odds(bookmaker: str, config: dict, game_teams: list[tuple[str,
 
     try:
         dst = duckdb.connect(str(DB_PATH))
-        dst.executemany("""
-            INSERT INTO closing_snapshots
-                (snapshot_time, bookmaker, game_id, home_team, away_team,
-                 market, bet_on, line, odds, counter_odds)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, rows)
-        dst.close()
+        try:
+            dst.executemany("""
+                INSERT INTO closing_snapshots
+                    (snapshot_time, bookmaker, game_id, home_team, away_team,
+                     market, bet_on, line, odds, counter_odds)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, rows)
+        finally:
+            dst.close()
     except Exception as e:
         log.warning("Failed to write closing_snapshots for %s: %s", bookmaker, e)
         return 0
@@ -274,11 +278,13 @@ def run_closing_capture(game_id: str, bookmakers: list[str]):
         # Get teams for this game from placed_bets
         try:
             con = duckdb.connect(str(DB_PATH), read_only=True)
-            teams = con.execute(
-                "SELECT DISTINCT home_team, away_team FROM placed_bets WHERE game_id = ?",
-                [game_id]
-            ).fetchall()
-            con.close()
+            try:
+                teams = con.execute(
+                    "SELECT DISTINCT home_team, away_team FROM placed_bets WHERE game_id = ?",
+                    [game_id]
+                ).fetchall()
+            finally:
+                con.close()
         except Exception:
             teams = []
 
@@ -318,11 +324,13 @@ def schedule_capture(game_id: str, game_time_str: str, bookmaker: str):
     # Gather all bookmakers with bets on this game
     try:
         con = duckdb.connect(str(DB_PATH), read_only=True)
-        books = [r[0] for r in con.execute(
-            "SELECT DISTINCT bookmaker FROM placed_bets WHERE game_id = ? AND status = 'pending'",
-            [game_id]
-        ).fetchall()]
-        con.close()
+        try:
+            books = [r[0] for r in con.execute(
+                "SELECT DISTINCT bookmaker FROM placed_bets WHERE game_id = ? AND status = 'pending'",
+                [game_id]
+            ).fetchall()]
+        finally:
+            con.close()
     except Exception:
         books = [bookmaker]
 
@@ -339,14 +347,16 @@ def schedule_pending_captures():
     """On startup, schedule captures for any upcoming games with placed bets."""
     try:
         con = duckdb.connect(str(DB_PATH), read_only=True)
-        upcoming = con.execute("""
-            SELECT game_id, game_time, STRING_AGG(DISTINCT bookmaker, ',') as books
-            FROM placed_bets
-            WHERE status = 'pending'
-              AND game_time > CURRENT_TIMESTAMP
-            GROUP BY game_id, game_time
-        """).fetchall()
-        con.close()
+        try:
+            upcoming = con.execute("""
+                SELECT game_id, game_time, STRING_AGG(DISTINCT bookmaker, ',') as books
+                FROM placed_bets
+                WHERE status = 'pending'
+                  AND game_time > CURRENT_TIMESTAMP
+                GROUP BY game_id, game_time
+            """).fetchall()
+        finally:
+            con.close()
     except Exception as e:
         log.warning("Failed to load pending captures on startup: %s", e)
         return
@@ -419,58 +429,57 @@ def place_bet():
 
     try:
         con = duckdb.connect(str(DB_PATH))
+        try:
+            # Check if already placed — allow overwrite if status is not 'pending' (i.e. queued/nav_error/ready_to_confirm)
+            existing = con.execute(
+                "SELECT bet_hash, status FROM placed_bets WHERE bet_hash = ?",
+                [data["bet_hash"]]
+            ).fetchone()
 
-        # Check if already placed — allow overwrite if status is not 'pending' (i.e. queued/nav_error/ready_to_confirm)
-        existing = con.execute(
-            "SELECT bet_hash, status FROM placed_bets WHERE bet_hash = ?",
-            [data["bet_hash"]]
-        ).fetchone()
+            if existing and existing[1] == "pending":
+                return jsonify({"success": False, "error": "Bet already placed"}), 409
 
-        if existing and existing[1] == "pending":
+            if existing:
+                # Overwrite non-confirmed bet (queued, nav_error, ready_to_confirm)
+                con.execute("""
+                    UPDATE placed_bets SET
+                        actual_size = ?, recommended_size = ?, odds = ?,
+                        placed_at = ?, status = 'pending'
+                    WHERE bet_hash = ?
+                """, [
+                    float(data.get("actual_size", data["recommended_size"])),
+                    float(data["recommended_size"]),
+                    int(data["odds"]),
+                    datetime.now().isoformat(),
+                    data["bet_hash"],
+                ])
+            else:
+                # Insert new placed bet
+                con.execute("""
+                    INSERT INTO placed_bets (
+                        bet_hash, game_id, home_team, away_team, game_time,
+                        market, bet_on, line, model_prob, model_ev, recommended_size,
+                        actual_size, odds, bookmaker, placed_at, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                """, [
+                    data["bet_hash"],
+                    data["game_id"],
+                    data["home_team"],
+                    data["away_team"],
+                    None if data["game_time"] in ("NA", "", None) else data["game_time"],
+                    data["market"],
+                    data["bet_on"],
+                    data.get("line"),
+                    data["model_prob"],
+                    data["model_ev"],
+                    data["recommended_size"],
+                    data.get("actual_size", data["recommended_size"]),
+                    data["odds"],
+                    data["bookmaker"],
+                    datetime.now().isoformat()
+                ])
+        finally:
             con.close()
-            return jsonify({"success": False, "error": "Bet already placed"}), 409
-
-        if existing:
-            # Overwrite non-confirmed bet (queued, nav_error, ready_to_confirm)
-            con.execute("""
-                UPDATE placed_bets SET
-                    actual_size = ?, recommended_size = ?, odds = ?,
-                    placed_at = ?, status = 'pending'
-                WHERE bet_hash = ?
-            """, [
-                float(data.get("actual_size", data["recommended_size"])),
-                float(data["recommended_size"]),
-                int(data["odds"]),
-                datetime.now().isoformat(),
-                data["bet_hash"],
-            ])
-        else:
-            # Insert new placed bet
-            con.execute("""
-                INSERT INTO placed_bets (
-                    bet_hash, game_id, home_team, away_team, game_time,
-                    market, bet_on, line, model_prob, model_ev, recommended_size,
-                    actual_size, odds, bookmaker, placed_at, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-            """, [
-                data["bet_hash"],
-                data["game_id"],
-                data["home_team"],
-                data["away_team"],
-                None if data["game_time"] in ("NA", "", None) else data["game_time"],
-                data["market"],
-                data["bet_on"],
-                data.get("line"),
-                data["model_prob"],
-                data["model_ev"],
-                data["recommended_size"],
-                data.get("actual_size", data["recommended_size"]),
-                data["odds"],
-                data["bookmaker"],
-                datetime.now().isoformat()
-            ])
-
-        con.close()
 
         # Schedule CLV closing-odds capture for this game (best-effort, don't fail the bet)
         try:
@@ -496,11 +505,13 @@ def remove_bet():
 
     try:
         con = duckdb.connect(str(DB_PATH))
-        result = con.execute(
-            "DELETE FROM placed_bets WHERE bet_hash = ? RETURNING bet_hash",
-            [bet_hash]
-        ).fetchone()
-        con.close()
+        try:
+            result = con.execute(
+                "DELETE FROM placed_bets WHERE bet_hash = ? RETURNING bet_hash",
+                [bet_hash]
+            ).fetchone()
+        finally:
+            con.close()
 
         if result:
             return jsonify({"success": True, "message": "Bet removed"})
@@ -525,11 +536,13 @@ def update_bet():
 
     try:
         con = duckdb.connect(str(DB_PATH))
-        result = con.execute(
-            "UPDATE placed_bets SET actual_size = ? WHERE bet_hash = ? RETURNING bet_hash",
-            [float(actual_size), bet_hash]
-        ).fetchone()
-        con.close()
+        try:
+            result = con.execute(
+                "UPDATE placed_bets SET actual_size = ? WHERE bet_hash = ? RETURNING bet_hash",
+                [float(actual_size), bet_hash]
+            ).fetchone()
+        finally:
+            con.close()
 
         if result:
             return jsonify({"success": True, "message": "Bet updated"})
@@ -545,12 +558,14 @@ def get_placed_bets():
     """Get all placed bets."""
     try:
         con = duckdb.connect(str(DB_PATH))
-        bets = con.execute("""
-            SELECT * FROM placed_bets
-            WHERE status = 'pending'
-            ORDER BY placed_at DESC
-        """).fetchdf()
-        con.close()
+        try:
+            bets = con.execute("""
+                SELECT * FROM placed_bets
+                WHERE status = 'pending'
+                ORDER BY placed_at DESC
+            """).fetchdf()
+        finally:
+            con.close()
 
         return jsonify(bets.to_dict(orient="records"))
 
@@ -563,21 +578,21 @@ def get_exposure():
     """Get current exposure summary by game."""
     try:
         con = duckdb.connect(str(DB_PATH))
-
-        exposure = con.execute("""
-            SELECT
-                game_id,
-                home_team || ' vs ' || away_team as game,
-                COUNT(*) as num_bets,
-                SUM(COALESCE(actual_size, recommended_size)) as total_exposure,
-                STRING_AGG(DISTINCT market, ', ') as markets
-            FROM placed_bets
-            WHERE status = 'pending'
-            GROUP BY game_id, home_team, away_team
-            ORDER BY total_exposure DESC
-        """).fetchdf()
-
-        con.close()
+        try:
+            exposure = con.execute("""
+                SELECT
+                    game_id,
+                    home_team || ' vs ' || away_team as game,
+                    COUNT(*) as num_bets,
+                    SUM(COALESCE(actual_size, recommended_size)) as total_exposure,
+                    STRING_AGG(DISTINCT market, ', ') as markets
+                FROM placed_bets
+                WHERE status = 'pending'
+                GROUP BY game_id, home_team, away_team
+                ORDER BY total_exposure DESC
+            """).fetchdf()
+        finally:
+            con.close()
         return jsonify(exposure.to_dict(orient="records"))
 
     except Exception as e:
@@ -589,8 +604,10 @@ def get_book_settings():
     """Get all bookmaker enabled/disabled settings."""
     try:
         con = duckdb.connect(str(DB_PATH))
-        rows = con.execute("SELECT bookmaker_key, enabled FROM book_settings").fetchall()
-        con.close()
+        try:
+            rows = con.execute("SELECT bookmaker_key, enabled FROM book_settings").fetchall()
+        finally:
+            con.close()
         return jsonify({row[0]: row[1] for row in rows})
     except Exception as e:
         return jsonify({}), 200
@@ -608,12 +625,14 @@ def update_book_setting():
 
     try:
         con = duckdb.connect(str(DB_PATH))
-        con.execute("""
-            INSERT INTO book_settings (bookmaker_key, enabled)
-            VALUES (?, ?)
-            ON CONFLICT (bookmaker_key) DO UPDATE SET enabled = ?
-        """, [book, enabled, enabled])
-        con.close()
+        try:
+            con.execute("""
+                INSERT INTO book_settings (bookmaker_key, enabled)
+                VALUES (?, ?)
+                ON CONFLICT (bookmaker_key) DO UPDATE SET enabled = ?
+            """, [book, enabled, enabled])
+        finally:
+            con.close()
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -627,13 +646,15 @@ def bulk_add_books():
 
     try:
         con = duckdb.connect(str(DB_PATH))
-        for book in books:
-            con.execute("""
-                INSERT INTO book_settings (bookmaker_key, enabled)
-                VALUES (?, FALSE)
-                ON CONFLICT (bookmaker_key) DO NOTHING
-            """, [book])
-        con.close()
+        try:
+            for book in books:
+                con.execute("""
+                    INSERT INTO book_settings (bookmaker_key, enabled)
+                    VALUES (?, FALSE)
+                    ON CONFLICT (bookmaker_key) DO NOTHING
+                """, [book])
+        finally:
+            con.close()
         return jsonify({"success": True, "added": len(books)})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -644,8 +665,10 @@ def get_sizing_settings():
     """Get bankroll and kelly multiplier settings."""
     try:
         con = duckdb.connect(str(DB_PATH))
-        rows = con.execute("SELECT param, value FROM sizing_settings").fetchall()
-        con.close()
+        try:
+            rows = con.execute("SELECT param, value FROM sizing_settings").fetchall()
+        finally:
+            con.close()
         return jsonify({row[0]: row[1] for row in rows})
     except Exception as e:
         return jsonify({"bankroll": 100, "kelly_mult": 0.25}), 200
@@ -657,13 +680,15 @@ def update_sizing_settings():
     data = request.json
     try:
         con = duckdb.connect(str(DB_PATH))
-        for param in ("bankroll", "kelly_mult"):
-            if param in data:
-                con.execute("""
-                    INSERT INTO sizing_settings (param, value) VALUES (?, ?)
-                    ON CONFLICT (param) DO UPDATE SET value = ?
-                """, [param, float(data[param]), float(data[param])])
-        con.close()
+        try:
+            for param in ("bankroll", "kelly_mult"):
+                if param in data:
+                    con.execute("""
+                        INSERT INTO sizing_settings (param, value) VALUES (?, ?)
+                        ON CONFLICT (param) DO UPDATE SET value = ?
+                    """, [param, float(data[param]), float(data[param])])
+        finally:
+            con.close()
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -674,8 +699,10 @@ def get_filter_settings():
     """Get persisted filter states (market, correlation, status)."""
     try:
         con = duckdb.connect(str(DB_PATH))
-        rows = con.execute("SELECT filter_type, selected_values FROM filter_settings").fetchall()
-        con.close()
+        try:
+            rows = con.execute("SELECT filter_type, selected_values FROM filter_settings").fetchall()
+        finally:
+            con.close()
         return jsonify({row[0]: json.loads(row[1]) for row in rows})
     except Exception as e:
         return jsonify({}), 200
@@ -693,12 +720,14 @@ def update_filter_settings():
 
     try:
         con = duckdb.connect(str(DB_PATH))
-        con.execute("""
-            INSERT INTO filter_settings (filter_type, selected_values)
-            VALUES (?, ?)
-            ON CONFLICT (filter_type) DO UPDATE SET selected_values = ?
-        """, [filter_type, json.dumps(selected_values), json.dumps(selected_values)])
-        con.close()
+        try:
+            con.execute("""
+                INSERT INTO filter_settings (filter_type, selected_values)
+                VALUES (?, ?)
+                ON CONFLICT (filter_type) DO UPDATE SET selected_values = ?
+            """, [filter_type, json.dumps(selected_values), json.dumps(selected_values)])
+        finally:
+            con.close()
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -755,10 +784,12 @@ def nav_status(bet_hash):
     """Get current navigator status for a bet (used by dashboard polling)."""
     try:
         con = duckdb.connect(str(DB_PATH), read_only=True)
-        row = con.execute(
-            "SELECT status FROM placed_bets WHERE bet_hash = ?", [bet_hash]
-        ).fetchone()
-        con.close()
+        try:
+            row = con.execute(
+                "SELECT status FROM placed_bets WHERE bet_hash = ?", [bet_hash]
+            ).fetchone()
+        finally:
+            con.close()
         if row:
             return jsonify({"status": row[0]})
         return jsonify({"status": "unknown"}), 404
@@ -775,45 +806,46 @@ def clv_summary():
     """Aggregate CLV stats: overall, by market type, and by book."""
     try:
         con = duckdb.connect(str(DB_PATH), read_only=True)
+        try:
+            overall = con.execute("""
+                SELECT
+                    COUNT(*) as total_bets,
+                    COUNT(market_clv) as market_clv_count,
+                    COUNT(book_clv) as book_clv_count,
+                    AVG(market_clv) as avg_market_clv,
+                    AVG(book_clv) as avg_book_clv,
+                    COUNT(CASE WHEN market_clv > 0 THEN 1 END) as market_clv_positive,
+                    COUNT(CASE WHEN book_clv > 0 THEN 1 END) as book_clv_positive
+                FROM bet_clv
+            """).fetchdf().to_dict(orient="records")[0]
 
-        overall = con.execute("""
-            SELECT
-                COUNT(*) as total_bets,
-                COUNT(market_clv) as market_clv_count,
-                COUNT(book_clv) as book_clv_count,
-                AVG(market_clv) as avg_market_clv,
-                AVG(book_clv) as avg_book_clv,
-                COUNT(CASE WHEN market_clv > 0 THEN 1 END) as market_clv_positive,
-                COUNT(CASE WHEN book_clv > 0 THEN 1 END) as book_clv_positive
-            FROM bet_clv
-        """).fetchdf().to_dict(orient="records")[0]
+            by_market = con.execute("""
+                SELECT
+                    market,
+                    COUNT(*) as n,
+                    AVG(market_clv) as avg_market_clv,
+                    AVG(book_clv) as avg_book_clv,
+                    COUNT(CASE WHEN market_clv > 0 THEN 1 END) as positive_pct
+                FROM bet_clv
+                WHERE market_clv IS NOT NULL
+                GROUP BY market
+                ORDER BY n DESC
+            """).fetchdf().to_dict(orient="records")
 
-        by_market = con.execute("""
-            SELECT
-                market,
-                COUNT(*) as n,
-                AVG(market_clv) as avg_market_clv,
-                AVG(book_clv) as avg_book_clv,
-                COUNT(CASE WHEN market_clv > 0 THEN 1 END) as positive_pct
-            FROM bet_clv
-            WHERE market_clv IS NOT NULL
-            GROUP BY market
-            ORDER BY n DESC
-        """).fetchdf().to_dict(orient="records")
+            by_book = con.execute("""
+                SELECT
+                    bookmaker,
+                    COUNT(*) as n,
+                    AVG(market_clv) as avg_market_clv,
+                    AVG(book_clv) as avg_book_clv
+                FROM bet_clv
+                WHERE market_clv IS NOT NULL
+                GROUP BY bookmaker
+                ORDER BY n DESC
+            """).fetchdf().to_dict(orient="records")
+        finally:
+            con.close()
 
-        by_book = con.execute("""
-            SELECT
-                bookmaker,
-                COUNT(*) as n,
-                AVG(market_clv) as avg_market_clv,
-                AVG(book_clv) as avg_book_clv
-            FROM bet_clv
-            WHERE market_clv IS NOT NULL
-            GROUP BY bookmaker
-            ORDER BY n DESC
-        """).fetchdf().to_dict(orient="records")
-
-        con.close()
         return jsonify({
             "overall": overall,
             "by_market": by_market,
@@ -828,13 +860,15 @@ def clv_details():
     """Per-bet CLV data for inspection."""
     try:
         con = duckdb.connect(str(DB_PATH), read_only=True)
-        rows = con.execute("""
-            SELECT c.*, p.home_team, p.away_team, p.model_ev
-            FROM bet_clv c
-            JOIN placed_bets p ON c.bet_hash = p.bet_hash
-            ORDER BY c.game_time DESC
-        """).fetchdf()
-        con.close()
+        try:
+            rows = con.execute("""
+                SELECT c.*, p.home_team, p.away_team, p.model_ev
+                FROM bet_clv c
+                JOIN placed_bets p ON c.bet_hash = p.bet_hash
+                ORDER BY c.game_time DESC
+            """).fetchdf()
+        finally:
+            con.close()
 
         return jsonify(rows.to_dict(orient="records"))
     except Exception as e:
