@@ -211,10 +211,28 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
         print("No leagues in response")
         return records
 
-    # Process only the first league (parent game lines)
-    parent_league = leagues[0]
-    games = parent_league.get("Games", [])
-    print(f"Found {len(games)} games in '{parent_league.get('Description', '')}'")
+    # Process all leagues — each may have a different period (FG, F5, H1)
+    all_games = []
+    for parent_league in leagues:
+        league_desc = parent_league.get("Description", "")
+        lg_games = parent_league.get("Games", [])
+
+        # Detect period from league description
+        desc_lower = league_desc.lower()
+        if "1st 5" in desc_lower or "first 5" in desc_lower or "f5" in desc_lower:
+            league_period = "F5"
+        elif "1st half" in desc_lower or "first half" in desc_lower or "1h" in desc_lower:
+            league_period = "Half1"
+        else:
+            league_period = "fg"
+
+        if lg_games:
+            print(f"Found {len(lg_games)} games in '{league_desc}' (period={league_period})")
+        for g in lg_games:
+            g["_league_period"] = league_period
+            all_games.append(g)
+
+    games = all_games
 
     for game in games:
         if not game.get("GameLines"):
@@ -251,8 +269,9 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
         }
 
         # --- Full game line (parent) ---
+        league_period = game.get("_league_period", "fg")
         line = game["GameLines"][0]
-        rec = parse_game_line(line, game_id, "fg", "spreads", base)
+        rec = parse_game_line(line, game_id, league_period, "spreads", base)
         if rec:
             records.append(rec)
             print(f"  spreads: {away_team} @ {home_team} | "

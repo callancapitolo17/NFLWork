@@ -28,7 +28,7 @@ SPORTS = {
     },
     "mlb": {
         "sport_key": "baseball_mlb",
-        "url_params": "lg=417,1280",  # 417=MLB, 1280=MLB F5
+        "url_params": "lg=417,1280",  # 417=MLB Game Lines (FG), 1280=1st 5 Innings (F5)
         "table_name": "mlb_odds",
     },
 }
