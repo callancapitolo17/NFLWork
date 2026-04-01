@@ -26,10 +26,10 @@ source("Tools.R")
 
 args <- commandArgs(trailingOnly = TRUE)
 N_TEST_GAMES <- if (length(args) > 0) as.integer(args[1]) else 500
-SAMPLE_PCT   <- 0.02       # 2% sample (matches production MLB.R)
+SAMPLE_PCT   <- 0.10       # 10% sample — validated via parameter sweep
 KELLY_MULT   <- 0.25       # Fractional Kelly
 BANKROLL     <- 1000       # Starting bankroll for ROI sim
-EV_THRESHOLD <- 0.05       # 5% min EV
+EV_THRESHOLD <- 0.02       # 2% min EV — maximizes total profit per sweep
 N_CORES      <- detectCores() - 1
 
 cat("=== MLB F5 ROI BACKTEST ===\n")
@@ -126,10 +126,16 @@ cat("  F5 odds records:", nrow(f5_raw), "covering", f5_odds_count, "games\n")
 
 cat("\nPreparing F5 odds...\n")
 
+# Helper: find best odds + which book offers them
+pick_best <- function(prices, books) {
+  idx <- which.max(prices)
+  if (length(idx) == 0) return(list(odds = -Inf, book = NA_character_))
+  list(odds = prices[idx], book = books[idx])
+}
+
 # --- F5 Spreads: best home/away spread odds per game/line ---
 spreads_f5 <- f5_raw %>%
   filter(market == "spreads_1st_5_innings") %>%
-  # Join to get home_team for this game_pk
   inner_join(
     DT %>% select(game_pk, home_team, away_team) %>% distinct(),
     by = "game_pk"
@@ -137,14 +143,15 @@ spreads_f5 <- f5_raw %>%
   mutate(
     side = ifelse(key == home_team, "home",
            ifelse(key == away_team, "away", NA_character_)),
-    # Normalize line to home perspective (home point stays, away point flips)
     home_line = ifelse(side == "home", point, -point)
   ) %>%
   filter(!is.na(side)) %>%
   group_by(game_pk, home_line) %>%
   summarize(
     best_home_odds = max(price[side == "home"], na.rm = TRUE),
+    best_home_book = {h <- which(side == "home"); if(length(h)>0) bookmaker[h[which.max(price[h])]] else NA_character_},
     best_away_odds = max(price[side == "away"], na.rm = TRUE),
+    best_away_book = {a <- which(side == "away"); if(length(a)>0) bookmaker[a[which.max(price[a])]] else NA_character_},
     .groups = "drop"
   ) %>%
   rename(line = home_line) %>%
@@ -157,7 +164,9 @@ totals_f5 <- f5_raw %>%
   group_by(game_pk, point) %>%
   summarize(
     best_over_odds = max(price[side == "over"], na.rm = TRUE),
+    best_over_book = {o <- which(side == "over"); if(length(o)>0) bookmaker[o[which.max(price[o])]] else NA_character_},
     best_under_odds = max(price[side == "under"], na.rm = TRUE),
+    best_under_book = {u <- which(side == "under"); if(length(u)>0) bookmaker[u[which.max(price[u])]] else NA_character_},
     .groups = "drop"
   ) %>%
   rename(line = point) %>%
@@ -178,7 +187,9 @@ ml_f5 <- f5_raw %>%
   group_by(game_pk) %>%
   summarize(
     best_home_odds = max(price[side == "home"], na.rm = TRUE),
+    best_home_book = {h <- which(side == "home"); if(length(h)>0) bookmaker[h[which.max(price[h])]] else NA_character_},
     best_away_odds = max(price[side == "away"], na.rm = TRUE),
+    best_away_book = {a <- which(side == "away"); if(length(a)>0) bookmaker[a[which.max(price[a])]] else NA_character_},
     .groups = "drop"
   ) %>%
   filter(is.finite(best_home_odds), is.finite(best_away_odds))
@@ -283,12 +294,14 @@ process_single_game <- function(test_id) {
       results[[length(results) + 1]] <- data.frame(
         game_id = test_id, market = "spreads_f5", line = line,
         side = "home", algo_prob = algo_home, book_prob = book$prob1,
-        book_odds = home_odds, actual = actual_home, stringsAsFactors = FALSE
+        book_odds = home_odds, bookmaker = game_spreads$best_home_book[j],
+        actual = actual_home, stringsAsFactors = FALSE
       )
       results[[length(results) + 1]] <- data.frame(
         game_id = test_id, market = "spreads_f5", line = line,
         side = "away", algo_prob = algo_away, book_prob = book$prob2,
-        book_odds = away_odds, actual = 1 - actual_home, stringsAsFactors = FALSE
+        book_odds = away_odds, bookmaker = game_spreads$best_away_book[j],
+        actual = 1 - actual_home, stringsAsFactors = FALSE
       )
     }
   }
@@ -318,12 +331,14 @@ process_single_game <- function(test_id) {
       results[[length(results) + 1]] <- data.frame(
         game_id = test_id, market = "totals_f5", line = line,
         side = "over", algo_prob = algo_over, book_prob = book$prob1,
-        book_odds = over_odds, actual = actual_over, stringsAsFactors = FALSE
+        book_odds = over_odds, bookmaker = game_totals$best_over_book[j],
+        actual = actual_over, stringsAsFactors = FALSE
       )
       results[[length(results) + 1]] <- data.frame(
         game_id = test_id, market = "totals_f5", line = line,
         side = "under", algo_prob = algo_under, book_prob = book$prob2,
-        book_odds = under_odds, actual = 1 - actual_over, stringsAsFactors = FALSE
+        book_odds = under_odds, bookmaker = game_totals$best_under_book[j],
+        actual = 1 - actual_over, stringsAsFactors = FALSE
       )
     }
   }
@@ -349,12 +364,14 @@ process_single_game <- function(test_id) {
       results[[length(results) + 1]] <- data.frame(
         game_id = test_id, market = "h2h_f5", line = NA_real_,
         side = "home", algo_prob = algo_home, book_prob = book$prob1,
-        book_odds = home_odds, actual = actual_home, stringsAsFactors = FALSE
+        book_odds = home_odds, bookmaker = game_ml$best_home_book[1],
+        actual = actual_home, stringsAsFactors = FALSE
       )
       results[[length(results) + 1]] <- data.frame(
         game_id = test_id, market = "h2h_f5", line = NA_real_,
         side = "away", algo_prob = algo_away, book_prob = book$prob2,
-        book_odds = away_odds, actual = 1 - actual_home, stringsAsFactors = FALSE
+        book_odds = away_odds, bookmaker = game_ml$best_away_book[1],
+        actual = 1 - actual_home, stringsAsFactors = FALSE
       )
     }
   }
@@ -533,6 +550,52 @@ if (nrow(ev_bets) > 0) {
       .groups = "drop"
     )
   print(ev_buckets)
+
+  # ROI by bookmaker (which book provides the winning odds?)
+  cat("\n--- By Bookmaker (where best odds came from) ---\n")
+  roi_by_book <- ev_bets %>%
+    group_by(bookmaker) %>%
+    summarize(
+      n_bets = n(),
+      avg_ev = round(mean(ev) * 100, 1),
+      total_staked = round(sum(stake), 0),
+      total_pnl = round(sum(pnl), 0),
+      roi = round(total_pnl / total_staked * 100, 2),
+      win_rate = round(mean(actual) * 100, 1),
+      .groups = "drop"
+    ) %>%
+    filter(n_bets >= 10) %>%
+    arrange(desc(n_bets))
+  print(roi_by_book, n = 20)
+}
+
+# =============================================================================
+# FLAT-STAKE ROI (removes Kelly noise amplification)
+# =============================================================================
+
+cat("\n===========================================\n")
+cat("FLAT-STAKE ROI ($10/bet, EV >", EV_THRESHOLD * 100, "%)\n")
+cat("===========================================\n\n")
+
+flat_bets <- results %>%
+  filter(ev > EV_THRESHOLD) %>%
+  mutate(
+    decimal_odds = ifelse(book_odds > 0, 1 + book_odds / 100, 1 + 100 / abs(book_odds)),
+    pnl = ifelse(actual == 1, 10 * (decimal_odds - 1), -10)
+  )
+
+if (nrow(flat_bets) > 0) {
+  flat_by_market <- flat_bets %>%
+    group_by(market) %>%
+    summarize(
+      n_bets = n(),
+      total_pnl = round(sum(pnl), 0),
+      roi = round(sum(pnl) / (n() * 10) * 100, 2),
+      win_rate = round(mean(actual) * 100, 1),
+      .groups = "drop"
+    )
+  print(flat_by_market)
+  cat("\nOverall flat-stake ROI:", round(sum(flat_bets$pnl) / (nrow(flat_bets) * 10) * 100, 2), "%\n")
 }
 
 # =============================================================================

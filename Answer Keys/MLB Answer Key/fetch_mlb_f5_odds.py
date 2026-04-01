@@ -51,7 +51,7 @@ RESERVE_CREDITS = 150_000
 COST_PER_GAME = 30      # empirically: 3 F5 markets × us region = 30/game
 COST_EVENTS_LIST = 1    # per events-list call
 CALL_DELAY_SEC = 0.1    # throttle: ~10 calls/sec max (tested safe)
-SNAPSHOT_OFFSET_MIN = 30  # call this many minutes before game start
+SNAPSHOT_OFFSET_MIN = 240  # 4 hours before game start (F5 archive has gaps at T-30min)
 
 DB_PATH = Path(__file__).parent.parent / "pbp.duckdb"
 

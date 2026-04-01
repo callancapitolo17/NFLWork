@@ -257,7 +257,7 @@ if (file.exists(dash_db)) {
   }, error = function(e) NULL)
 }
 cat(sprintf("Using bankroll=$%.0f, kelly=%.2f\n", bankroll, kelly_mult))
-N <- round(nrow(DT) * 0.02, 0)
+N <- round(nrow(DT) * 0.10, 0)  # 10% sample — validated via parameter sweep
 
 events <- tryCatch({
   get_events("baseball_mlb", regions = "us")
@@ -373,7 +373,7 @@ spread_bets <- spread_results$bets
 timer$mark("build_spreads")
 
 # Combine API bets
-EV_THRESHOLD <- 0.05
+EV_THRESHOLD <- 0.02  # 2% — maximizes total profit per parameter sweep
 
 all_bets <- bind_rows(
   ml_bets %>% mutate(market_type = "moneyline"),
