@@ -7,12 +7,25 @@ The pricing engine for the entire betting operation. Generates fair odds for any
 
 ### Pipeline Flow (CBB — primary active sport)
 ```
-run.py (orchestrator)
+run.py cbb (orchestrator)
   ├── [first]    Sharp scrapers (bookmaker, bet105) → their DuckDB files
   ├── [parallel] Other scrapers (wagerzon, hoop88, bfa, kalshi) + CBB.R
   ├── Sentinel: .scrapers_done_cbb signals all scrapers complete
   └── CBB.R reads scraper DBs, generates fair prices, writes pipeline output
 ```
+
+### Pipeline Flow (MLB)
+```
+run.py mlb (orchestrator)
+  ├── [first]    Sharp scrapers (bookmaker, bet105) → their DuckDB files
+  ├── [parallel] Other scrapers (wagerzon, hoop88, bfa) + MLB.R
+  ├── Sentinel: .scrapers_done_mlb signals all scrapers complete
+  └── MLB.R reads scraper DBs, generates F5 fair prices, writes pipeline output
+```
+- MLB uses moneyline-based matching (`use_spread_line = FALSE`)
+- F5 (first 5 innings) markets only: h2h, totals, spreads
+- Historical data: `pbp.duckdb/mlb_betting_pbp` (12,719 games)
+- Dashboard: port 8083
 
 ### Consensus Architecture
 - **Historical consensus** (Phase 1): All-book median with 0.5 prob hardcode. Used for sample building. Do not change.
@@ -27,10 +40,12 @@ run.py (orchestrator)
 - When adding a new scraper or sport, team name mismatches WILL happen. Test exhaustively.
 
 ### DuckDB Databases
-- `cbb.duckdb` — Pipeline data (historical odds, betting PBP, dashboard bets)
-- `cbb_mm.duckdb` — MM export (predictions, game samples). Separate from `cbb.duckdb` to avoid lock contention with the Kalshi MM bot's 30s polling.
-- `pbp.duckdb` — Historical play-by-play data
-- `cbb_dashboard.duckdb` — Dashboard state (placed_bets, settings, CLV)
+- `cbb.duckdb` — CBB pipeline data (historical odds, betting PBP, dashboard bets)
+- `cbb_mm.duckdb` — CBB MM export (predictions, game samples). Separate to avoid lock contention.
+- `mlb.duckdb` — MLB pipeline output (bets_combined, team_dict)
+- `mlb_dashboard.duckdb` — MLB dashboard state (placed_bets, settings, CLV)
+- `pbp.duckdb` — Historical play-by-play data (shared: MLB + others)
+- `cbb_dashboard.duckdb` — CBB dashboard state (placed_bets, settings, CLV)
 - Never symlink DuckDB files. Always copy if needed in worktrees.
 
 ### Race-to-X Data Flow
@@ -62,4 +77,4 @@ CBB.R
 - **Adding a new scraper**: Add to `run.py` scraper config, create DuckDB table with 18-column schema, add team name mappings
 - **Adding a new sport**: Update `run.py` targets, create sport-specific R script, add to canonical_match.py
 - **Adding a new market type**: Update R pricing logic in the sport's answer key, add to dashboard filters
-- **Modifying Tools.R**: Changes affect ALL sports. Test CBB and NFL at minimum.
+- **Modifying Tools.R**: Changes affect ALL sports. Test CBB, NFL, and MLB at minimum.

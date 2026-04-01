@@ -4471,7 +4471,7 @@ compare_alts_to_samples <- function(
     total_col = "game_total_period"
 ) {
   # Market suffix → sample period column suffix
-  period_map <- c(h1 = "Half1", h2 = "Half2", q1 = "1", q2 = "2", q3 = "3", q4 = "4")
+  period_map <- c(h1 = "Half1", h2 = "Half2", q1 = "1", q2 = "2", q3 = "3", q4 = "4", f5 = "F5", fg = "FG")
 
   # Filter to alt markets and team totals
   alt_odds <- offshore_odds %>%
@@ -4998,7 +4998,9 @@ bet_to_leg <- function(bet_row) {
   clean_market <- gsub("^alternate_", "", market_raw)
 
   # Parse period from suffix
-  period <- if (grepl("_h1$", clean_market)) {
+  period <- if (grepl("_1st_5_innings$", clean_market)) {
+    "F5"
+  } else if (grepl("_h1$", clean_market)) {
     "Half1"
   } else if (grepl("_h2$", clean_market)) {
     "Half2"
@@ -5006,8 +5008,8 @@ bet_to_leg <- function(bet_row) {
     "Full"
   }
 
-  # Parse market type
-  market_base <- gsub("_(h1|h2)$", "", clean_market)
+  # Parse market type (strip period suffix)
+  market_base <- gsub("_(h1|h2|1st_5_innings)$", "", clean_market)
   leg_market <- switch(market_base,
     "h2h"               = "moneyline",
     "spreads"            = "spread",
@@ -5408,7 +5410,8 @@ run_derivative_backtest <- function(
   DT <- as.data.table(pbp_data)
 
   # Calculate dispersion for sample weighting
-  disp <- compute_dispersion(DT, moneyline = FALSE,
+  use_ml <- isTRUE(sport_config$moneyline)
+  disp <- compute_dispersion(DT, moneyline = use_ml,
                              spread_col = sport_config$parent_spread_col,
                              total_col = sport_config$parent_total_col)
   ss <- disp$ss
@@ -5537,7 +5540,7 @@ run_derivative_backtest <- function(
         target_over = target_over,
         DT = DT_train,
         ss = ss, st = st, N = N,
-        use_spread_line = TRUE
+        use_spread_line = !isTRUE(sport_config$moneyline)
       )
     }, error = function(e) NULL)
 
@@ -5935,6 +5938,24 @@ get_sport_backtest_config <- function(sport) {
         q4 = list(suffix = "4", display = "Q4"),
         h1 = list(suffix = "Half1", display = "H1"),
         h2 = list(suffix = "Half2", display = "H2")
+      )
+    )
+
+  } else if (sport == "mlb") {
+    list(
+      sport = "mlb",
+      margin_col_prefix = "game_home_margin_period_",
+      total_col_prefix = "game_total_period_",
+      home_score_prefix = "home_score_period_",
+      away_score_prefix = "away_score_period_",
+      parent_spread_col = "home_ml_odds",
+      parent_total_col = "total_line",
+      consensus_home_odds_col = "home_ml_odds",
+      consensus_over_odds_col = "over_odds",
+      moneyline = TRUE,
+      use_spread_line = FALSE,
+      periods = list(
+        f5 = list(suffix = "F5", display = "F5")
       )
     )
 
