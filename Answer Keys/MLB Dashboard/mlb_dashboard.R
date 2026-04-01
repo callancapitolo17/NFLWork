@@ -281,6 +281,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
       corr_factor = colDef(show = FALSE),
       edge_pct = colDef(show = FALSE),
       kelly_bet = colDef(show = FALSE),
+      joint_prob_raw = colDef(show = FALSE),
       joint_prob = colDef(show = FALSE),
       n_samples = colDef(show = FALSE),
 
