@@ -30,7 +30,7 @@ WZ_PARLAY_SHAVE <- 0.989  # Wagerzon takes ~1.1% off independent multiply
 MLB_DB <- "mlb.duckdb"
 
 # Load sizing from dashboard if available
-bankroll   <- 100
+bankroll   <- 4000
 kelly_mult <- 0.25
 dash_db <- "MLB Dashboard/mlb_dashboard.duckdb"
 if (file.exists(dash_db)) {
@@ -235,11 +235,23 @@ for (i in seq_len(nrow(wz_matched))) {
     fair_dec <- fair$fair_decimal_odds
     edge_pct <- (wz_dec - fair_dec) / fair_dec * 100
 
-    # Kelly sizing
+    # Kelly sizing — then nudge wager so WZ "to win" rounds UP (no cents)
     p <- fair$joint_prob
     b <- wz_dec - 1
     kelly_full <- (b * p - (1 - p)) / b
-    kelly_bet  <- max(0, round(kelly_full * kelly_mult * bankroll, 2))
+    kelly_raw  <- max(0, round(kelly_full * kelly_mult * bankroll))
+
+    # Find nearest wager where win rounds up (fractional part >= 0.50)
+    rounds_up <- function(w) (w * b) %% 1 >= 0.50
+    if (kelly_raw > 0 && !rounds_up(kelly_raw)) {
+      # Try +1 first (slightly more than Kelly), then -1
+      if (rounds_up(kelly_raw + 1)) {
+        kelly_raw <- kelly_raw + 1
+      } else if (kelly_raw > 1 && rounds_up(kelly_raw - 1)) {
+        kelly_raw <- kelly_raw - 1
+      }
+    }
+    kelly_bet <- kelly_raw
 
     combo_name <- combo$name
     combo_spread <- if (grepl("Home", combo_name)) row$home_spread else row$away_spread
