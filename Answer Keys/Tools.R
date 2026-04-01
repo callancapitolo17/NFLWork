@@ -1652,9 +1652,11 @@ build_moneylines_from_samples <- function(
 
   # 2) Flatten odds - each row has a 2-element list (home/away outcomes)
   # unnest_wider expands these into _1 and _2 columns
+  # Exclude Kalshi from Odds API — we scrape it directly with taker fee accounted for
   flat_odds <- all_odds %>%
     flatten_event_odds() %>%
     filter(market_key %in% markets) %>%
+    filter(bookmaker_key != "kalshi") %>%
     rename(market = market_key) %>%
     unnest_wider(outcome_name, names_sep = "_") %>%
     unnest_wider(closing_odds, names_sep = "_") %>%
@@ -2042,9 +2044,11 @@ build_totals_from_samples <- function(
 
   # 2) Flatten odds - each row has a 2-element list (over/under outcomes)
   # unnest_wider expands these into _1 and _2 columns
+  # Exclude Kalshi from Odds API — we scrape it directly with taker fee accounted for
   flat_odds <- all_odds %>%
     flatten_event_odds() %>%
     filter(market_key %in% markets) %>%
+    filter(bookmaker_key != "kalshi") %>%
     rename(market = market_key) %>%
     unnest_wider(outcome_name, names_sep = "_") %>%
     unnest_wider(closing_odds, names_sep = "_") %>%
@@ -2230,9 +2234,11 @@ build_spreads_from_samples <- function(
 
   # 2) Flatten odds - each bookmaker row has LISTS of outcomes (multiple spread lines)
   # First unnest_longer to get one row per outcome, then group to pair home/away
+  # Exclude Kalshi from Odds API — we scrape it directly with taker fee accounted for
   flat_odds <- all_odds %>%
     flatten_event_odds() %>%
     filter(market_key %in% markets) %>%
+    filter(bookmaker_key != "kalshi") %>%
     rename(market = market_key) %>%
     # Each row has lists of 24+ outcomes - unnest to get 1 row per outcome
     unnest_longer(c(outcome_name, closing_odds, bookmakers_markets_outcomes_point)) %>%

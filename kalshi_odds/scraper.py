@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Kalshi CBB 1H Odds Scraper for Answer Key Pipeline
-Fetches 1st half spreads, totals, and moneylines from Kalshi's public API.
+Kalshi Odds Scraper for Answer Key Pipeline
+Fetches derivative market odds (CBB 1H, MLB F5) from Kalshi's public API.
 
 Kalshi is a prediction market exchange — prices are probabilities (0-100 cents).
 This scraper converts to American odds with the taker fee baked in so EV
@@ -44,12 +44,41 @@ def public_request(path):
 
 DB_PATH = Path(__file__).parent / "kalshi.duckdb"
 
-# Series tickers for CBB 1H markets
-SERIES_TICKERS = {
-    "spreads": "KXNCAAMB1HSPREAD",
-    "totals": "KXNCAAMB1HTOTAL",
-    "moneyline": "KXNCAAMB1HWINNER",
-    "race_to_10": "KXNCAAMBFIRST10",
+# Per-sport market configuration
+# Each sport maps market types to Kalshi series tickers and output field values.
+SPORT_CONFIGS = {
+    "cbb": {
+        "sport_key": "basketball_ncaab",
+        "tickers": {
+            "spreads": "KXNCAAMB1HSPREAD",
+            "totals": "KXNCAAMB1HTOTAL",
+            "moneyline": "KXNCAAMB1HWINNER",
+            "race_to_10": "KXNCAAMBFIRST10",
+        },
+        "market_names": {
+            "spreads": "spreads_h1",
+            "totals": "totals_h1",
+            "moneyline": "h2h_h1",
+            "race_to_10": "race_to_10",
+        },
+        "period": "Half1",
+        "table": "cbb_odds",
+    },
+    "mlb": {
+        "sport_key": "baseball_mlb",
+        "tickers": {
+            "spreads": "KXMLBF5SPREAD",
+            "totals": "KXMLBF5TOTAL",
+            "moneyline": "KXMLBF5",
+        },
+        "market_names": {
+            "spreads": "spreads_f5",
+            "totals": "totals_f5",
+            "moneyline": "h2h_f5",
+        },
+        "period": "F5",
+        "table": "mlb_odds",
+    },
 }
 
 TAKER_FEE_RATE = 0.07
@@ -122,14 +151,16 @@ def parse_matchup_title(title):
     """Parse game title to extract team names.
 
     Handles formats:
-    - "Away vs Home: First Half Winner?"
-    - "Away at Home: ..."
-    - "Will TeamName win the 1H by over X.5 points?"
-    - "Away vs Home: First Half Total?"
+    - "Away vs Home: First Half Winner?"       (CBB)
+    - "Away at Home: ..."                      (CBB)
+    - "Away vs Home first 5 innings runs?"     (MLB)
+    - "Away vs Home first 5 innings winner?"   (MLB)
     """
     # Remove trailing question mark and common suffixes
     clean = title.strip().rstrip("?")
     clean = re.sub(r":\s*(First Half (Winner|Total))$", "", clean)
+    # MLB F5 suffixes
+    clean = re.sub(r"\s+first \d+ innings (?:runs|winner|spread)$", "", clean)
 
     # "Away vs Home" or "Away at Home"
     for sep in [" vs ", " at "]:
@@ -143,13 +174,15 @@ def parse_matchup_title(title):
 def parse_spread_team(title):
     """Extract team name from spread market title.
 
-    Format: "Will TeamName win the 1H by over X.5 points?"
-    or: "TeamName wins by over X.5 Points?"
+    Handles formats:
+    - "Will TeamName win the 1H by over X.5 points?"   (CBB)
+    - "TeamName wins by over X.5 Points?"               (CBB)
+    - "TeamName wins first 5 innings by over X.X runs?" (MLB)
     """
     m = re.match(r"Will (.+?) win the 1H by over", title)
     if m:
         return m.group(1).strip()
-    m = re.match(r"(.+?) wins (?:the 1H )?by over", title)
+    m = re.match(r"(.+?) wins (?:the 1H |first \d+ innings )?by over", title)
     if m:
         return m.group(1).strip()
     return None
@@ -176,8 +209,8 @@ def resolve_home_away(away_raw, home_raw, team_dict, canonical_games):
 # =============================================================================
 
 
-def parse_spread_records(markets, team_dict, canonical_games, fetch_time):
-    """Parse 1H spread markets into 18-column records.
+def parse_spread_records(markets, team_dict, canonical_games, fetch_time, sport_cfg=None):
+    """Parse spread markets into 18-column records.
 
     Each Kalshi spread contract like "Team wins by >X" independently provides
     BOTH sides of a traditional spread:
@@ -188,6 +221,8 @@ def parse_spread_records(markets, team_dict, canonical_games, fetch_time):
     Multiple contracts at the same strike for the same event will produce
     multiple records; the R pipeline picks the best line.
     """
+    if sport_cfg is None:
+        sport_cfg = SPORT_CONFIGS["cbb"]
     records = []
     by_event = defaultdict(list)
     for m in markets:
@@ -206,10 +241,25 @@ def parse_spread_records(markets, team_dict, canonical_games, fetch_time):
 
         team_list = sorted(team_names)
 
-        # Resolve teams
+        # Resolve teams — use canonical games to determine correct home/away
+        # resolve_home_away preserves input order when both resolve via dict,
+        # so we must also check canonical games to fix home/away assignment.
         away_resolved, home_resolved = resolve_home_away(
             team_list[0], team_list[1], team_dict, canonical_games
         )
+
+        # Double-check home/away against canonical games (dict lookup doesn't
+        # know which team is home — it just preserves alphabetical order)
+        for cg in canonical_games:
+            ca_s = _normalize_team_name(cg["away_team"])
+            ch_s = _normalize_team_name(cg["home_team"])
+            a_s = _normalize_team_name(away_resolved)
+            h_s = _normalize_team_name(home_resolved)
+            if (a_s in ca_s or ca_s in a_s) and (h_s in ch_s or ch_s in h_s):
+                break  # order is correct
+            if (a_s in ch_s or ch_s in a_s) and (h_s in ca_s or ca_s in h_s):
+                away_resolved, home_resolved = home_resolved, away_resolved
+                break
 
         # Map raw Kalshi names to home/away
         raw_to_side = {}
@@ -273,14 +323,14 @@ def parse_spread_records(markets, team_dict, canonical_games, fetch_time):
 
             record.update({
                 "fetch_time": fetch_time,
-                "sport_key": "basketball_ncaab",
+                "sport_key": sport_cfg["sport_key"],
                 "game_id": f"kalshi-{event_ticker}-{m['ticker']}",
                 "game_date": game_date,
                 "game_time": game_time_str,
                 "away_team": away_resolved,
                 "home_team": home_resolved,
-                "market": "spreads_h1",
-                "period": "Half1",
+                "market": sport_cfg["market_names"]["spreads"],
+                "period": sport_cfg["period"],
                 "total": None,
                 "over_price": None,
                 "over_cents": None,
@@ -299,12 +349,14 @@ def parse_spread_records(markets, team_dict, canonical_games, fetch_time):
     return records
 
 
-def parse_total_records(markets, team_dict, canonical_games, fetch_time):
-    """Parse 1H total markets into 18-column records.
+def parse_total_records(markets, team_dict, canonical_games, fetch_time, sport_cfg=None):
+    """Parse total markets into 18-column records.
 
     Each event has multiple total lines. Each line has 1 contract:
     YES = over, NO = under.
     """
+    if sport_cfg is None:
+        sport_cfg = SPORT_CONFIGS["cbb"]
     records = []
     by_event = defaultdict(list)
     for m in markets:
@@ -344,14 +396,14 @@ def parse_total_records(markets, team_dict, canonical_games, fetch_time):
 
             records.append({
                 "fetch_time": fetch_time,
-                "sport_key": "basketball_ncaab",
+                "sport_key": sport_cfg["sport_key"],
                 "game_id": f"kalshi-{event_ticker}-{int(strike)}",
                 "game_date": game_date,
                 "game_time": game_time_str,
                 "away_team": away_resolved,
                 "home_team": home_resolved,
-                "market": "totals_h1",
-                "period": "Half1",
+                "market": sport_cfg["market_names"]["totals"],
+                "period": sport_cfg["period"],
                 "away_spread": None,
                 "away_spread_price": None,
                 "away_spread_cents": None,
@@ -374,12 +426,14 @@ def parse_total_records(markets, team_dict, canonical_games, fetch_time):
     return records
 
 
-def parse_moneyline_records(markets, team_dict, canonical_games, fetch_time):
-    """Parse 1H winner (3-way) markets into records.
+def parse_moneyline_records(markets, team_dict, canonical_games, fetch_time, sport_cfg=None):
+    """Parse winner (3-way) markets into records.
 
     Each event has 3 contracts: team A, team B, and tie.
     All three are captured — tie odds stored in tie_ml/tie_ml_cents.
     """
+    if sport_cfg is None:
+        sport_cfg = SPORT_CONFIGS["cbb"]
     records = []
     by_event = defaultdict(list)
     for m in markets:
@@ -461,14 +515,14 @@ def parse_moneyline_records(markets, team_dict, canonical_games, fetch_time):
 
         records.append({
             "fetch_time": fetch_time,
-            "sport_key": "basketball_ncaab",
+            "sport_key": sport_cfg["sport_key"],
             "game_id": f"kalshi-{event_ticker}",
             "game_date": game_date,
             "game_time": game_time_str,
             "away_team": away_resolved,
             "home_team": home_resolved,
-            "market": "h2h_h1",
-            "period": "Half1",
+            "market": sport_cfg["market_names"]["moneyline"],
+            "period": sport_cfg["period"],
             "away_spread": None,
             "away_spread_price": None,
             "away_spread_cents": None,
@@ -491,12 +545,14 @@ def parse_moneyline_records(markets, team_dict, canonical_games, fetch_time):
     return records
 
 
-def parse_race_to_10_records(markets, team_dict, canonical_games, fetch_time):
+def parse_race_to_10_records(markets, team_dict, canonical_games, fetch_time, sport_cfg=None):
     """Parse race-to-10 markets into records.
 
     Each event has 2 contracts: one per team.
     Title format: "Will [Team] be the first to reach 10 points?"
     """
+    if sport_cfg is None:
+        sport_cfg = SPORT_CONFIGS["cbb"]
     records = []
     by_event = defaultdict(list)
     for m in markets:
@@ -551,14 +607,14 @@ def parse_race_to_10_records(markets, team_dict, canonical_games, fetch_time):
 
         records.append({
             "fetch_time": fetch_time,
-            "sport_key": "basketball_ncaab",
+            "sport_key": sport_cfg["sport_key"],
             "game_id": f"kalshi-{event_ticker}",
             "game_date": game_date,
             "game_time": game_time_str,
             "away_team": away_resolved,
             "home_team": home_resolved,
-            "market": "race_to_10",
-            "period": "fg",
+            "market": sport_cfg["market_names"].get("race_to_10", "race_to_10"),
+            "period": sport_cfg.get("race_period", "fg"),
             "away_spread": None,
             "away_spread_price": None,
             "away_spread_cents": None,
@@ -643,14 +699,14 @@ def _fuzzy_team_match(name1, name2):
 # =============================================================================
 
 
-def init_database():
-    """Initialize DuckDB with the cbb_odds table."""
+def init_database(table_name="cbb_odds"):
+    """Initialize DuckDB with a sport-specific odds table."""
     conn = duckdb.connect(str(DB_PATH))
     try:
         # Recreate table to pick up schema changes (data is ephemeral — cleared each run)
-        conn.execute("DROP TABLE IF EXISTS cbb_odds")
-        conn.execute("""
-            CREATE TABLE cbb_odds (
+        conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+        conn.execute(f"""
+            CREATE TABLE {table_name} (
                 fetch_time TIMESTAMP,
                 sport_key VARCHAR,
                 game_id VARCHAR,
@@ -683,7 +739,7 @@ def init_database():
         conn.close()
 
 
-def save_to_database(odds_data):
+def save_to_database(odds_data, table_name="cbb_odds"):
     """Save scraped odds to DuckDB (clear + insert)."""
     conn = duckdb.connect(str(DB_PATH))
     try:
@@ -699,18 +755,18 @@ def save_to_database(odds_data):
 
         placeholders = ", ".join(["?" for _ in columns])
 
-        conn.execute("DELETE FROM cbb_odds")
+        conn.execute(f"DELETE FROM {table_name}")
 
         conn.executemany(f"""
-            INSERT INTO cbb_odds ({", ".join(columns)})
+            INSERT INTO {table_name} ({", ".join(columns)})
             VALUES ({placeholders})
         """, [
             tuple(d[col] for col in columns)
             for d in odds_data
         ])
 
-        result = conn.execute("SELECT COUNT(*) FROM cbb_odds").fetchone()
-        print(f"Database now has {result[0]} total records in cbb_odds")
+        result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
+        print(f"Database now has {result[0]} total records in {table_name}")
     finally:
         conn.close()
 
@@ -721,22 +777,26 @@ def save_to_database(odds_data):
 
 
 def scrape_kalshi(sport="cbb"):
-    """Scrape Kalshi CBB 1H odds and save to DuckDB."""
-    if sport != "cbb":
-        print(f"Kalshi scraper only supports CBB currently, got: {sport}")
+    """Scrape Kalshi odds for a sport and save to DuckDB."""
+    if sport not in SPORT_CONFIGS:
+        print(f"Kalshi scraper does not support sport: {sport}")
+        print(f"Supported: {', '.join(SPORT_CONFIGS.keys())}")
         return []
 
-    init_database()
+    sport_cfg = SPORT_CONFIGS[sport]
+    table_name = sport_cfg["table"]
+
+    init_database(table_name)
     fetch_time = datetime.now(timezone.utc)
 
     # Load team name resolution
-    team_dict = load_team_dict("cbb")
-    canonical_games = load_canonical_games("cbb")
+    team_dict = load_team_dict(sport)
+    canonical_games = load_canonical_games(sport)
 
     all_records = []
 
     # Fetch and parse each market type
-    for market_type, series_ticker in SERIES_TICKERS.items():
+    for market_type, series_ticker in sport_cfg["tickers"].items():
         print(f"Fetching Kalshi {market_type} ({series_ticker})...")
         markets = fetch_markets(series_ticker)
         print(f"  Found {len(markets)} open markets")
@@ -745,13 +805,13 @@ def scrape_kalshi(sport="cbb"):
             continue
 
         if market_type == "spreads":
-            records = parse_spread_records(markets, team_dict, canonical_games, fetch_time)
+            records = parse_spread_records(markets, team_dict, canonical_games, fetch_time, sport_cfg)
         elif market_type == "totals":
-            records = parse_total_records(markets, team_dict, canonical_games, fetch_time)
+            records = parse_total_records(markets, team_dict, canonical_games, fetch_time, sport_cfg)
         elif market_type == "moneyline":
-            records = parse_moneyline_records(markets, team_dict, canonical_games, fetch_time)
+            records = parse_moneyline_records(markets, team_dict, canonical_games, fetch_time, sport_cfg)
         elif market_type == "race_to_10":
-            records = parse_race_to_10_records(markets, team_dict, canonical_games, fetch_time)
+            records = parse_race_to_10_records(markets, team_dict, canonical_games, fetch_time, sport_cfg)
         else:
             continue
 
@@ -760,9 +820,9 @@ def scrape_kalshi(sport="cbb"):
 
     # Save to DuckDB
     if all_records:
-        save_to_database(all_records)
+        save_to_database(all_records, table_name)
 
-    print(f"\nScraped {len(all_records)} total Kalshi 1H records")
+    print(f"\nScraped {len(all_records)} total Kalshi {sport.upper()} records")
     return all_records
 
 

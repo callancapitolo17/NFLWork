@@ -38,7 +38,7 @@ SCRAPER_CONFIGS = {
     },
     "kalshi": {
         "script": "../kalshi_odds/scraper.py",
-        "sports": ["cbb"]
+        "sports": ["cbb", "mlb"]
     },
 }
 
