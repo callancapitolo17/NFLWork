@@ -37,6 +37,10 @@ if [ $? -ne 0 ]; then
     echo "Warning: Pipeline had errors, but continuing..."
 fi
 
+echo "Finding parlay opportunities..."
+Rscript "$SCRIPT_DIR/../mlb_correlated_parlay.R"
+# Non-fatal if it fails — dashboard still works without parlays
+
 echo "Generating dashboard HTML..."
 Rscript "$SCRIPT_DIR/mlb_dashboard.R"
 if [ $? -ne 0 ]; then

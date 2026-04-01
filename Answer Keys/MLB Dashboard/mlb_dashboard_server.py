@@ -119,6 +119,14 @@ def init_db():
             INSERT INTO sizing_settings (param, value) VALUES ('kelly_mult', 0.25)
             ON CONFLICT (param) DO NOTHING
         """)
+        con.execute("""
+            INSERT INTO sizing_settings (param, value) VALUES ('parlay_bankroll', 100)
+            ON CONFLICT (param) DO NOTHING
+        """)
+        con.execute("""
+            INSERT INTO sizing_settings (param, value) VALUES ('parlay_kelly_mult', 0.25)
+            ON CONFLICT (param) DO NOTHING
+        """)
 
         con.execute("""
             CREATE TABLE IF NOT EXISTS filter_settings (
@@ -131,6 +139,26 @@ def init_db():
             INSERT INTO filter_settings (filter_type, selected_values)
             VALUES ('status', '["Not Placed"]')
             ON CONFLICT (filter_type) DO NOTHING
+        """)
+
+        # Parlay bet tracking
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS placed_parlays (
+                parlay_hash TEXT PRIMARY KEY,
+                game_id TEXT NOT NULL,
+                home_team TEXT NOT NULL,
+                away_team TEXT NOT NULL,
+                combo TEXT NOT NULL,
+                spread_line REAL,
+                total_line REAL,
+                fair_odds INTEGER,
+                wz_odds INTEGER NOT NULL,
+                edge_pct REAL,
+                kelly_bet REAL NOT NULL,
+                actual_size REAL,
+                placed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                status TEXT DEFAULT 'pending'
+            )
         """)
 
         # CLV tracking tables
@@ -573,6 +601,102 @@ def get_placed_bets():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+# =============================================================================
+# PARLAY BET PLACEMENT
+# =============================================================================
+
+
+@app.route("/api/place-parlay", methods=["POST"])
+def place_parlay():
+    """Mark a parlay as placed in the database."""
+    data = request.json
+
+    required = ["parlay_hash", "game_id", "home_team", "away_team", "combo",
+                "wz_odds", "kelly_bet"]
+    missing = [k for k in required if k not in data]
+    if missing:
+        return jsonify({"success": False, "error": f"Missing fields: {missing}"}), 400
+
+    try:
+        con = duckdb.connect(str(DB_PATH))
+        try:
+            existing = con.execute(
+                "SELECT parlay_hash, status FROM placed_parlays WHERE parlay_hash = ?",
+                [data["parlay_hash"]]
+            ).fetchone()
+
+            if existing and existing[1] == "pending":
+                return jsonify({"success": False, "error": "Parlay already placed"}), 409
+
+            if existing:
+                con.execute("""
+                    UPDATE placed_parlays SET
+                        actual_size = ?, placed_at = ?, status = 'pending'
+                    WHERE parlay_hash = ?
+                """, [
+                    float(data.get("actual_size", data["kelly_bet"])),
+                    datetime.now().isoformat(),
+                    data["parlay_hash"],
+                ])
+            else:
+                con.execute("""
+                    INSERT INTO placed_parlays (
+                        parlay_hash, game_id, home_team, away_team, combo,
+                        spread_line, total_line, fair_odds, wz_odds,
+                        edge_pct, kelly_bet, actual_size, placed_at, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                """, [
+                    data["parlay_hash"],
+                    data["game_id"],
+                    data["home_team"],
+                    data["away_team"],
+                    data["combo"],
+                    data.get("spread_line"),
+                    data.get("total_line"),
+                    data.get("fair_odds"),
+                    int(data["wz_odds"]),
+                    data.get("edge_pct"),
+                    float(data["kelly_bet"]),
+                    float(data.get("actual_size", data["kelly_bet"])),
+                    datetime.now().isoformat(),
+                ])
+        finally:
+            con.close()
+
+        return jsonify({"success": True, "message": "Parlay placed successfully"})
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/remove-parlay", methods=["POST"])
+def remove_parlay():
+    """Remove a parlay from placed status."""
+    data = request.json
+    parlay_hash = data.get("parlay_hash")
+
+    if not parlay_hash:
+        return jsonify({"success": False, "error": "parlay_hash required"}), 400
+
+    try:
+        con = duckdb.connect(str(DB_PATH))
+        try:
+            result = con.execute(
+                "DELETE FROM placed_parlays WHERE parlay_hash = ? RETURNING parlay_hash",
+                [parlay_hash]
+            ).fetchone()
+        finally:
+            con.close()
+
+        if result:
+            return jsonify({"success": True, "message": "Parlay removed"})
+        else:
+            return jsonify({"success": False, "error": "Parlay not found"}), 404
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/exposure", methods=["GET"])
 def get_exposure():
     """Get current exposure summary by game."""
@@ -676,17 +800,25 @@ def get_sizing_settings():
 
 @app.route("/api/sizing-settings", methods=["POST"])
 def update_sizing_settings():
-    """Update bankroll and/or kelly multiplier."""
+    """Update bankroll and/or kelly multiplier settings."""
     data = request.json
+    allowed = ("bankroll", "kelly_mult", "parlay_bankroll", "parlay_kelly_mult")
     try:
         con = duckdb.connect(str(DB_PATH))
         try:
-            for param in ("bankroll", "kelly_mult"):
-                if param in data:
-                    con.execute("""
-                        INSERT INTO sizing_settings (param, value) VALUES (?, ?)
-                        ON CONFLICT (param) DO UPDATE SET value = ?
-                    """, [param, float(data[param]), float(data[param])])
+            # Support both {param: "name", value: X} and {bankroll: X, kelly_mult: Y} formats
+            if "param" in data and "value" in data and data["param"] in allowed:
+                con.execute("""
+                    INSERT INTO sizing_settings (param, value) VALUES (?, ?)
+                    ON CONFLICT (param) DO UPDATE SET value = ?
+                """, [data["param"], float(data["value"]), float(data["value"])])
+            else:
+                for param in allowed:
+                    if param in data:
+                        con.execute("""
+                            INSERT INTO sizing_settings (param, value) VALUES (?, ?)
+                            ON CONFLICT (param) DO UPDATE SET value = ?
+                        """, [param, float(data[param]), float(data[param])])
         finally:
             con.close()
         return jsonify({"success": True})
@@ -931,7 +1063,18 @@ def run_pipeline():
             print(f"Pipeline failed: {error_output}")
             return False, f"Pipeline failed: {error_output}"
 
-        # Step 2: Generate dashboard HTML from the saved data
+        # Step 2: Find correlated parlay opportunities (non-fatal)
+        print("Finding parlay opportunities...")
+        parlay_result = subprocess.run(
+            ["Rscript", str(answer_keys_dir / "mlb_correlated_parlay.R")],
+            capture_output=True,
+            text=True,
+            cwd=str(nfl_work_dir)
+        )
+        if parlay_result.returncode != 0:
+            print(f"Parlay finder warning: {(parlay_result.stderr or '')[-300:]}")
+
+        # Step 3: Generate dashboard HTML from the saved data
         print("Generating MLB dashboard HTML...")
         result = subprocess.run(
             ["Rscript", str(BASE_DIR / "mlb_dashboard.R")],
