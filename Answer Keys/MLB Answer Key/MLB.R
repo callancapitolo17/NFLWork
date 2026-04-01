@@ -435,15 +435,15 @@ if (nrow(wagerzon_odds) > 0) {
   suppressWarnings({
     wz_spread_bets <- compare_spreads_to_wagerzon(
       spread_results, wagerzon_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
     wz_total_bets <- compare_totals_to_wagerzon(
       total_results, wagerzon_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
     wz_ml_bets <- compare_moneylines_to_wagerzon(
       ml_results, wagerzon_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
   })
   wagerzon_bets <- bind_rows(
@@ -461,15 +461,15 @@ if (nrow(hoop88_odds) > 0) {
   suppressWarnings({
     h88_spread_bets <- compare_spreads_to_wagerzon(
       spread_results, hoop88_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
     h88_total_bets <- compare_totals_to_wagerzon(
       total_results, hoop88_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
     h88_ml_bets <- compare_moneylines_to_wagerzon(
       ml_results, hoop88_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
   })
   hoop88_bets <- bind_rows(
@@ -487,15 +487,15 @@ if (nrow(bfa_odds) > 0) {
   suppressWarnings({
     bfa_spread_bets <- compare_spreads_to_wagerzon(
       spread_results, bfa_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
     bfa_total_bets <- compare_totals_to_wagerzon(
       total_results, bfa_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
     bfa_ml_bets <- compare_moneylines_to_wagerzon(
       ml_results, bfa_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
   })
   bfa_bets <- bind_rows(
@@ -508,7 +508,7 @@ if (nrow(bfa_odds) > 0) {
   bfa_alt_bets <- compare_alts_to_samples(
     samples = samples, offshore_odds = bfa_odds,
     consensus_odds = mlb_odds,
-    bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+    bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
   )
   if (nrow(bfa_alt_bets) > 0) {
     bfa_alt_bets <- bfa_alt_bets %>%
@@ -525,15 +525,15 @@ if (nrow(bookmaker_odds) > 0) {
   suppressWarnings({
     bkm_spread_bets <- compare_spreads_to_wagerzon(
       spread_results, bookmaker_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
     bkm_total_bets <- compare_totals_to_wagerzon(
       total_results, bookmaker_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
     bkm_ml_bets <- compare_moneylines_to_wagerzon(
       ml_results, bookmaker_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
   })
   bookmaker_bets <- bind_rows(
@@ -551,15 +551,15 @@ if (nrow(bet105_odds) > 0) {
   suppressWarnings({
     b105_spread_bets <- compare_spreads_to_wagerzon(
       spread_results, bet105_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
     b105_total_bets <- compare_totals_to_wagerzon(
       total_results, bet105_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
     b105_ml_bets <- compare_moneylines_to_wagerzon(
       ml_results, bet105_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
   })
   bet105_bets <- bind_rows(
@@ -572,7 +572,7 @@ if (nrow(bet105_odds) > 0) {
   bet105_alt_bets <- compare_alts_to_samples(
     samples = samples, offshore_odds = bet105_odds,
     consensus_odds = mlb_odds,
-    bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+    bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
   )
   if (nrow(bet105_alt_bets) > 0) {
     bet105_alt_bets <- bet105_alt_bets %>%
@@ -589,15 +589,15 @@ if (nrow(kalshi_odds) > 0) {
   suppressWarnings({
     kal_spread_bets <- compare_spreads_to_wagerzon(
       spread_results, kalshi_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
     kal_total_bets <- compare_totals_to_wagerzon(
       total_results, kalshi_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
     kal_ml_bets <- compare_moneylines_to_wagerzon(
       ml_results, kalshi_odds,
-      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = 0.05
+      bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
     )
   })
   kalshi_bets <- bind_rows(
