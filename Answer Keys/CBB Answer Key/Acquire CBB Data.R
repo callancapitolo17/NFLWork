@@ -481,8 +481,12 @@ if ("--daily-pbp" %in% cli_args) {
       values_from = c(home_half_score, away_half_score, home_score_end, away_score_end),
       names_glue = "{.value}_h{half}"
     ) %>%
+    # Cast game_id to character before joining with helper tables
+    # (hoopR returns integer game_id; extract_first_to_10_h1 and
+    # extract_race_to_fg cast theirs to character for DuckDB compat)
+    mutate(game_id = as.character(game_id)) %>%
     # Final scores = end of regulation if no OT, or max overall
-    left_join(ot_info, by = "game_id") %>%
+    left_join(ot_info %>% mutate(game_id = as.character(game_id)), by = "game_id") %>%
     left_join(first10, by = "game_id") %>%
     left_join(race10_fg, by = "game_id") %>%
     left_join(race20_fg, by = "game_id") %>%
@@ -515,8 +519,7 @@ if ("--daily-pbp" %in% cli_args) {
         home_final_score > away_final_score ~ 1L,
         home_final_score < away_final_score ~ 0L,
         TRUE ~ NA_integer_
-      ),
-      game_id = as.character(game_id)
+      )
     ) %>%
     select(
       game_id, game_date, home_team, away_team,

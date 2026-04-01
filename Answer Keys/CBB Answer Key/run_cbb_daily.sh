@@ -41,10 +41,21 @@ echo "$(date) - [Step 3/3] Exit code: $STEP3" >> "$LOGFILE"
 # Clean up logs older than 30 days
 find "$LOGDIR" -name "run_*.log" -mtime +30 -delete 2>/dev/null
 
-# Summary + macOS notification
+# Summary + macOS notification (only on failure or new data)
 if [ $STEP1 -eq 0 ] && [ $STEP2 -eq 0 ] && [ $STEP3 -eq 0 ]; then
-  echo "$(date) - All steps completed successfully" >> "$LOGFILE"
-  osascript -e 'display notification "All 3 steps completed successfully" with title "CBB Daily Acquire" sound name "Glass"'
+  # Check if new odds or games were actually added
+  NEW_ODDS=$(grep -o "Fetched [0-9]* days" "$LOGFILE" | head -1)
+  NEW_GAMES=$(grep -o "Added [0-9]* new games" "$LOGFILE" | head -1)
+
+  if [ -n "$NEW_ODDS" ] || [ -n "$NEW_GAMES" ]; then
+    DETAILS=""
+    [ -n "$NEW_ODDS" ] && DETAILS="$NEW_ODDS"
+    [ -n "$NEW_GAMES" ] && DETAILS="${DETAILS:+$DETAILS, }$NEW_GAMES"
+    echo "$(date) - Success with new data: $DETAILS" >> "$LOGFILE"
+    osascript -e "display notification \"$DETAILS\" with title \"CBB Daily Acquire\" sound name \"Glass\""
+  else
+    echo "$(date) - All steps passed, no new data" >> "$LOGFILE"
+  fi
   exit 0
 else
   echo "$(date) - FAILED: odds=$STEP1 pbp=$STEP2 build=$STEP3" >> "$LOGFILE"
