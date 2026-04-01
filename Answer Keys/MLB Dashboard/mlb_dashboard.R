@@ -1333,7 +1333,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           tags$span("Available Bets"),
           tags$span(id = "filtered-count", style = "margin-left: 8px; color: #8b949e; font-size: 0.8rem;")
         ),
-        tags$div(class = "table-container", bets_table),
+        tags$div(class = "table-container", id = "bets-table-container", bets_table),
 
         # Parlays Section
         if (!is.null(parlays_table) || !is.null(placed_parlays_table)) {
@@ -1423,8 +1423,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         var _sessionPlaced = {};
 
         function reapplyPlacedStates() {
-          var tables = document.querySelectorAll(".table-container:not(.placed-section)");
-          var table = tables.length > 0 ? tables[tables.length - 1] : null;
+          var table = document.getElementById("bets-table-container");
           if (!table) return;
           table.querySelectorAll("button[data-hash]").forEach(function(btn) {
             var hash = btn.dataset.hash;
@@ -1799,8 +1798,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
 
         function applyFilters() {
-          const containers = document.querySelectorAll(".table-container:not(.placed-section)");
-          const table = containers.length > 0 ? containers[containers.length - 1].querySelector(".rt-tbody") : null;
+          const betsContainer = document.getElementById("bets-table-container");
+          const table = betsContainer ? betsContainer.querySelector(".rt-tbody") : null;
           if (!table) return;
 
           const rows = table.querySelectorAll(".rt-tr-group");
@@ -1933,11 +1932,10 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             return;
           }
 
-          var containers = document.querySelectorAll(".table-container:not(.placed-section)");
-          var table = containers.length > 0 ? containers[containers.length - 1] : null;
-          if (!table) return;
+          var betsContainer = document.getElementById("bets-table-container");
+          if (!betsContainer) return;
 
-          var rows = table.querySelectorAll(".rt-tr-group");
+          var rows = betsContainer.querySelectorAll(".rt-tr-group");
 
           rows.forEach(function(row) {
             var cells = row.querySelectorAll(".rt-td");
