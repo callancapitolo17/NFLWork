@@ -241,8 +241,8 @@ for (i in seq_len(nrow(wz_matched))) {
     kelly_full <- (b * p - (1 - p)) / b
     kelly_raw  <- max(0, round(kelly_full * kelly_mult * bankroll))
 
-    # Find nearest wager where win rounds up (fractional part >= 0.50)
-    rounds_up <- function(w) (w * b) %% 1 >= 0.50
+    # Find nearest wager where win rounds up (0.50 rounds DOWN on WZ)
+    rounds_up <- function(w) (w * b) %% 1 > 0.50
     if (kelly_raw > 0 && !rounds_up(kelly_raw)) {
       # Try +1 first (slightly more than Kelly), then -1
       if (rounds_up(kelly_raw + 1)) {
