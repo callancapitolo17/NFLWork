@@ -17,11 +17,15 @@ def strip_punct(name):
 
 
 def load_team_dict(sport="cbb"):
-    """Load ESPN team dictionary from DuckDB.
+    """Load team dictionary from DuckDB.
     Returns {stripped_name: odds_api_name} with multiple keys per team.
     """
     if sport == "nfl":
         return {}
+
+    # MLB has 30 fixed teams — hardcoded dict is more reliable than DB lookup
+    if sport == "mlb":
+        return _MLB_TEAM_DICT
 
     db_path = ANSWER_KEYS_DIR / f"{sport}.duckdb"
     if not db_path.exists():
@@ -50,6 +54,55 @@ def load_team_dict(sport="cbb"):
                 lookup[str(val).strip().lower()] = oa
                 lookup[strip_punct(str(val))] = oa
     return lookup
+
+
+# MLB team name dictionary — maps common abbreviations and short names
+# to Odds API canonical names. Covers Wagerzon, Hoop88, BFA, Bookmaker formats.
+_MLB_TEAMS = {
+    "Arizona Diamondbacks": ["ARI", "DBACKS", "DIAMONDBACKS", "ARI DBACKS", "ARIZONA"],
+    "Atlanta Braves": ["ATL", "BRAVES", "ATL BRAVES", "ATLANTA"],
+    "Baltimore Orioles": ["BAL", "ORIOLES", "BAL ORIOLES", "BALTIMORE"],
+    "Boston Red Sox": ["BOS", "RED SOX", "BOS RED SOX", "BOSTON"],
+    "Chicago Cubs": ["CHC", "CUBS", "CHI CUBS", "CHICAGO CUBS"],
+    "Chicago White Sox": ["CWS", "WHITE SOX", "CHI WHITE SOX", "CHICAGO WHITE SOX"],
+    "Cincinnati Reds": ["CIN", "REDS", "CIN REDS", "CINCINNATI"],
+    "Cleveland Guardians": ["CLE", "GUARDIANS", "CLE GUARDIANS", "CLEVELAND"],
+    "Colorado Rockies": ["COL", "ROCKIES", "COL ROCKIES", "COLORADO"],
+    "Detroit Tigers": ["DET", "TIGERS", "DET TIGERS", "DETROIT"],
+    "Houston Astros": ["HOU", "ASTROS", "HOU ASTROS", "HOUSTON"],
+    "Kansas City Royals": ["KC", "ROYALS", "KC ROYALS", "KANSAS CITY"],
+    "Los Angeles Angels": ["LAA", "ANGELS", "LA ANGELS", "ANAHEIM"],
+    "Los Angeles Dodgers": ["LAD", "DODGERS", "LA DODGERS", "LOS ANGELES DODGERS"],
+    "Miami Marlins": ["MIA", "MARLINS", "MIA MARLINS", "MIAMI"],
+    "Milwaukee Brewers": ["MIL", "BREWERS", "MIL BREWERS", "MILWAUKEE"],
+    "Minnesota Twins": ["MIN", "TWINS", "MIN TWINS", "MINNESOTA"],
+    "New York Mets": ["NYM", "METS", "NY METS", "NEW YORK METS"],
+    "New York Yankees": ["NYY", "YANKEES", "NY YANKEES", "NEW YORK YANKEES"],
+    "Oakland Athletics": ["OAK", "ATHLETICS", "OAK ATHLETICS", "OAKLAND", "A'S"],
+    "Philadelphia Phillies": ["PHI", "PHILLIES", "PHI PHILLIES", "PHILADELPHIA"],
+    "Pittsburgh Pirates": ["PIT", "PIRATES", "PIT PIRATES", "PITTSBURGH"],
+    "San Diego Padres": ["SD", "PADRES", "SD PADRES", "SAN DIEGO"],
+    "San Francisco Giants": ["SF", "GIANTS", "SF GIANTS", "SAN FRANCISCO"],
+    "Seattle Mariners": ["SEA", "MARINERS", "SEA MARINERS", "SEATTLE"],
+    "St. Louis Cardinals": ["STL", "CARDINALS", "STL CARDINALS", "ST LOUIS", "ST. LOUIS"],
+    "Tampa Bay Rays": ["TB", "RAYS", "TB RAYS", "TAMPA BAY", "TAMPA"],
+    "Texas Rangers": ["TEX", "RANGERS", "TEX RANGERS", "TEXAS"],
+    "Toronto Blue Jays": ["TOR", "BLUE JAYS", "TOR BLUE JAYS", "TORONTO"],
+    "Washington Nationals": ["WAS", "WSH", "NATIONALS", "WAS NATIONALS", "WASHINGTON"],
+}
+
+# Build lookup: every alias (lowercased) → canonical name
+# Also add "1h " prefix variants for Wagerzon F5 lines
+_MLB_TEAM_DICT = {}
+for canonical, aliases in _MLB_TEAMS.items():
+    _MLB_TEAM_DICT[canonical.lower()] = canonical
+    _MLB_TEAM_DICT[strip_punct(canonical)] = canonical
+    for alias in aliases:
+        _MLB_TEAM_DICT[alias.lower()] = canonical
+        _MLB_TEAM_DICT[strip_punct(alias)] = canonical
+        # Wagerzon prefixes F5 team names with "1H "
+        _MLB_TEAM_DICT[f"1h {alias.lower()}"] = canonical
+        _MLB_TEAM_DICT[f"1h {strip_punct(alias)}"] = canonical
 
 
 def load_canonical_games(sport):
