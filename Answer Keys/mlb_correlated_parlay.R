@@ -31,7 +31,7 @@ MLB_DB <- "MLB Answer Key/mlb.duckdb"
 # Load sizing from dashboard if available
 bankroll   <- 100
 kelly_mult <- 0.25
-dash_db <- "MLB Answer Key/MLB Dashboard/mlb_dashboard.duckdb"
+dash_db <- "MLB Dashboard/mlb_dashboard.duckdb"
 if (file.exists(dash_db)) {
   tryCatch({
     dash_con <- dbConnect(duckdb(), dbdir = dash_db, read_only = TRUE)

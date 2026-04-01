@@ -323,10 +323,14 @@ dbExecute(con_mlb, sprintf(
 ))
 
 # Store consensus for game matching (id ↔ team names)
+# Also stored as mlb_odds_temp so resolve_offshore_teams() Layer 2 can
+# resolve Wagerzon team names against canonical Odds API names.
 consensus_export <- mlb_odds %>%
   select(id, home_team, away_team, total_line, consensus_prob_home)
 dbExecute(con_mlb, "DROP TABLE IF EXISTS mlb_consensus_temp")
 dbWriteTable(con_mlb, "mlb_consensus_temp", consensus_export)
+dbExecute(con_mlb, "DROP TABLE IF EXISTS mlb_odds_temp")
+dbWriteTable(con_mlb, "mlb_odds_temp", consensus_export)
 
 cat(sprintf("Stored %d samples (%d games) + consensus for parlay tool.\n",
             nrow(sample_rows), length(unique(sample_rows$game_id))))
