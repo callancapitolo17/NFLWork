@@ -1360,6 +1360,12 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 tags$input(id = "parlay-kelly-input", class = "sizing-input", type = "number",
                   value = "0.25", min = "0.01", max = "1", step = "0.05")
               ),
+              tags$div(class = "sizing-group",
+                tags$span(class = "sizing-label", "Min Edge (%)"),
+                tags$input(id = "parlay-min-edge-input", class = "sizing-input", type = "number",
+                  value = "0", min = "0", step = "1",
+                  onchange = "filterParlaysByEdge()", oninput = "filterParlaysByEdge()")
+              ),
               tags$button(class = "apply-sizing-btn", onclick = "applyParlaySizing()", "Apply")
             ),
 
@@ -1371,7 +1377,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                   tags$span(style = "margin-left: 8px; color: #8b949e; font-size: 0.8rem;",
                     sprintf("(%d)", nrow(parlay_opps)))
                 ),
-                tags$div(class = "table-container", parlays_table)
+                tags$div(class = "table-container", id = "parlays-table-container", parlays_table)
               )
             }
           )
@@ -2410,6 +2416,32 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 recalcSameGame(btn.dataset.gameId);
               }
             });
+        }
+
+        // ============ PARLAY EDGE FILTER ============
+        function filterParlaysByEdge() {
+          var minEdge = parseFloat(document.getElementById("parlay-min-edge-input").value) || 0;
+          var container = document.getElementById("parlays-table-container");
+          if (!container) return;
+          var rows = container.querySelectorAll(".rt-tr-group");
+          var visible = 0;
+          rows.forEach(function(row) {
+            // Find edge from the button data-edge attribute
+            var btn = row.querySelector("button[data-edge]");
+            var edge = btn ? parseFloat(btn.dataset.edge) : 0;
+            if (edge >= minEdge) {
+              row.style.display = "";
+              visible++;
+            } else {
+              row.style.display = "none";
+            }
+          });
+          // Update count in section header
+          var header = container.previousElementSibling;
+          if (header) {
+            var countSpan = header.querySelector("span:last-child");
+            if (countSpan) countSpan.textContent = "(" + visible + ")";
+          }
         }
 
         // ============ PARLAY SIZING ============
