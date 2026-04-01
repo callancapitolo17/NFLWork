@@ -148,6 +148,7 @@ def init_db():
                 game_id TEXT NOT NULL,
                 home_team TEXT NOT NULL,
                 away_team TEXT NOT NULL,
+                game_time TIMESTAMP,
                 combo TEXT NOT NULL,
                 spread_line REAL,
                 total_line REAL,
@@ -641,15 +642,16 @@ def place_parlay():
             else:
                 con.execute("""
                     INSERT INTO placed_parlays (
-                        parlay_hash, game_id, home_team, away_team, combo,
+                        parlay_hash, game_id, home_team, away_team, game_time, combo,
                         spread_line, total_line, fair_odds, wz_odds,
                         edge_pct, kelly_bet, actual_size, placed_at, status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
                 """, [
                     data["parlay_hash"],
                     data["game_id"],
                     data["home_team"],
                     data["away_team"],
+                    None if data.get("game_time") in ("NA", "", None) else data.get("game_time"),
                     data["combo"],
                     data.get("spread_line"),
                     data.get("total_line"),

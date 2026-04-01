@@ -271,6 +271,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
       game_id = colDef(show = FALSE),
       home_team = colDef(show = FALSE),
       away_team = colDef(show = FALSE),
+      game_time = colDef(show = FALSE),
       spread_line = colDef(show = FALSE),
       total_line = colDef(show = FALSE),
       fair_odds = colDef(show = FALSE),
@@ -312,8 +313,9 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
         cell = function(value, index) {
           row <- table_data[index, ]
           data_attrs <- sprintf(
-            'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-combo="%s" data-spread="%s" data-total="%s" data-fair-odds="%s" data-wz-odds="%s" data-edge="%s" data-size="%s"',
+            'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-combo="%s" data-spread="%s" data-total="%s" data-fair-odds="%s" data-wz-odds="%s" data-edge="%s" data-size="%s"',
             row$parlay_hash, row$game_id, row$home_team, row$away_team,
+            ifelse(is.na(row$game_time), "", as.character(row$game_time)),
             row$combo, row$spread_line, row$total_line,
             row$fair_odds, row$wz_odds, row$edge_pct, row$kelly_bet
           )
@@ -2438,13 +2440,16 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           });
         }
 
-        // Load parlay sizing from server on page load
+        // Load parlay sizing from server on page load (guard against missing elements)
         (function() {
+          var pbi = document.getElementById("parlay-bankroll-input");
+          var pki = document.getElementById("parlay-kelly-input");
+          if (!pbi || !pki) return;
           fetch("/api/sizing-settings")
             .then(function(r) { return r.json(); })
             .then(function(s) {
-              if (s.parlay_bankroll) document.getElementById("parlay-bankroll-input").value = s.parlay_bankroll;
-              if (s.parlay_kelly_mult) document.getElementById("parlay-kelly-input").value = s.parlay_kelly_mult;
+              if (s.parlay_bankroll) pbi.value = s.parlay_bankroll;
+              if (s.parlay_kelly_mult) pki.value = s.parlay_kelly_mult;
             })
             .catch(function() {});
         })();
@@ -2489,6 +2494,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 game_id: btn.dataset.gameId,
                 home_team: btn.dataset.home,
                 away_team: btn.dataset.away,
+                game_time: btn.dataset.time || null,
                 combo: btn.dataset.combo,
                 spread_line: parseFloat(btn.dataset.spread) || null,
                 total_line: parseFloat(btn.dataset.total) || null,
@@ -2608,19 +2614,21 @@ placed_table <- create_placed_bets_table(placed_bets)
 cat("Loading parlay opportunities...\n")
 parlay_opps <- tryCatch({
   pcon <- dbConnect(duckdb(), dbdir = "Answer Keys/mlb.duckdb", read_only = TRUE)
-  on.exit(dbDisconnect(pcon, shutdown = TRUE), add = TRUE)
-  if ("mlb_parlay_opportunities" %in% dbListTables(pcon)) {
+  result <- if ("mlb_parlay_opportunities" %in% dbListTables(pcon)) {
     dbGetQuery(pcon, "SELECT * FROM mlb_parlay_opportunities")
   } else tibble()
+  dbDisconnect(pcon, shutdown = TRUE)
+  result
 }, error = function(e) { cat(sprintf("  Warning: %s\n", e$message)); tibble() })
 
 placed_parlays <- tryCatch({
   ppcon <- dbConnect(duckdb(), dbdir = DB_PATH, read_only = TRUE)
-  on.exit(dbDisconnect(ppcon, shutdown = TRUE), add = TRUE)
-  tryCatch(
-    dbGetQuery(ppcon, "SELECT * FROM placed_parlays WHERE status = 'pending'"),
+  result <- tryCatch(
+    dbGetQuery(ppcon, "SELECT * FROM placed_parlays WHERE status = 'pending' AND (game_time IS NULL OR game_time > NOW())"),
     error = function(e) tibble(parlay_hash = character())
   )
+  dbDisconnect(ppcon, shutdown = TRUE)
+  result
 }, error = function(e) tibble(parlay_hash = character()))
 
 cat(sprintf("Found %d parlay opportunities, %d placed parlays\n",
