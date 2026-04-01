@@ -199,9 +199,10 @@ check_mlb_samples_fresh <- function(max_age_minutes = 5) {
     on.exit(dbDisconnect(con))
     meta <- dbGetQuery(con, "SELECT generated_at FROM mlb_samples_meta")
     if (nrow(meta) == 0) return(FALSE)
-    generated_at <- as.POSIXct(meta$generated_at, tz = "UTC")
-    now_utc <- as.POSIXct(format(Sys.time(), tz = "UTC"), tz = "UTC")
-    age_minutes <- as.numeric(difftime(now_utc, generated_at, units = "mins"))
+    # MLB.R writes local time via format(Sys.time()), but DuckDB TIMESTAMP
+    # assumes UTC. Re-parse as local to compare correctly against Sys.time().
+    generated_at <- as.POSIXct(format(meta$generated_at), tz = Sys.timezone())
+    age_minutes <- as.numeric(difftime(Sys.time(), generated_at, units = "mins"))
     return(age_minutes <= max_age_minutes)
   }, error = function(e) {
     return(FALSE)
