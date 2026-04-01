@@ -26,7 +26,7 @@ source("Tools.R")
 # =============================================================================
 
 EV_THRESHOLD <- 0.02   # 2% minimum edge to flag
-MLB_DB <- "MLB Answer Key/mlb.duckdb"
+MLB_DB <- "mlb.duckdb"
 
 # Load sizing from dashboard if available
 bankroll   <- 100
@@ -107,9 +107,9 @@ if (nrow(wz) == 0) {
   quit(status = 0)
 }
 
-# Filter to full game spreads and totals
-wz_spreads <- wz %>% filter(period == "fg", market_type == "spreads")
-wz_totals  <- wz %>% filter(period == "fg", market_type == "totals")
+# Filter to full game MAIN line only (exclude alternates and H1)
+wz_spreads <- wz %>% filter(period == "fg", market == "spreads")
+wz_totals  <- wz %>% filter(period == "fg", market == "totals")
 
 if (nrow(wz_spreads) == 0 || nrow(wz_totals) == 0) {
   cat(sprintf("Wagerzon FG data: %d spreads, %d totals. Need both.\n",
@@ -236,10 +236,13 @@ for (i in seq_len(nrow(wz_matched))) {
     kelly_full <- (b * p - (1 - p)) / b
     kelly_bet  <- max(0, round(kelly_full * kelly_mult * bankroll, 2))
 
+    combo_name <- combo$name
+    combo_spread <- if (grepl("Home", combo_name)) row$home_spread else row$away_spread
+
     results[[length(results) + 1]] <- tibble(
       game        = sprintf("%s @ %s", row$away_team, row$home_team),
-      combo       = combo$name,
-      spread_line = ifelse(grepl("Home", combo$name), row$home_spread, row$away_spread),
+      combo       = combo_name,
+      spread_line = combo_spread,
       total_line  = row$total_line,
       fair_odds   = fair$fair_american_odds,
       wz_odds     = wz_american,
