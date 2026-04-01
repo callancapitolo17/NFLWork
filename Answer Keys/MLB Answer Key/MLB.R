@@ -109,16 +109,26 @@ if (nrow(game_odds) == 0) {
 }
 
 # --- Load sharp scraper data into consensus pool ---
+# Filter to FG-only markets: Phase 2 consensus uses full-game h2h + totals.
+# Including F5 markets (h2h_f5, totals_f5) creates duplicate rows in the
+# pivot that crash devig_american().
 bookmaker_rows <- tryCatch({
-  scraper_to_odds_api_format(get_bookmaker_odds("mlb"), game_odds)
+  raw <- get_bookmaker_odds("mlb")
+  if (nrow(raw) > 0) raw <- raw %>% filter(period %in% c("fg", "Full", "full"))
+  scraper_to_odds_api_format(raw, game_odds)
 }, error = function(e) { cat(sprintf("Bookmaker scraper skip: %s\n", e$message)); data.frame() })
 
 bet105_rows <- tryCatch({
-  scraper_to_odds_api_format(get_bet105_odds("mlb"), game_odds)
+  raw <- get_bet105_odds("mlb")
+  if (nrow(raw) > 0) raw <- raw %>% filter(period %in% c("fg", "Full", "full"))
+  scraper_to_odds_api_format(raw, game_odds)
 }, error = function(e) { cat(sprintf("Bet105 scraper skip: %s\n", e$message)); data.frame() })
 
 if (nrow(bookmaker_rows) > 0 || nrow(bet105_rows) > 0) {
-  game_odds <- bind_rows(game_odds, bookmaker_rows, bet105_rows)
+  game_odds <- bind_rows(game_odds, bookmaker_rows, bet105_rows) %>%
+    # Deduplicate: doubleheaders cause many-to-many joins in scraper_to_odds_api_format,
+    # creating duplicate (id, bookmaker, market, outcome) rows that crash the pivot.
+    distinct(id, bookmaker_key, market_key, outcomes_name, .keep_all = TRUE)
   cat(sprintf("Consensus pool: %d total rows after adding scrapers.\n", nrow(game_odds)))
 }
 
@@ -206,7 +216,11 @@ mlb_odds <- ml_consensus %>%
   )
 cat(sprintf("After inner_join (ML+total): %d games.\n", nrow(mlb_odds)))
 
+# Tools.R build_*_from_samples() functions expect a 'spread' column.
+# MLB doesn't have a FG spread — use consensus_prob_home as the equivalent
+# (it's used for joining/filtering, not for spread evaluation).
 mlb_odds <- mlb_odds %>%
+  mutate(spread = consensus_prob_home) %>%
   filter(if_all(everything(), ~ !is.na(.)))
 cat(sprintf("After NA filter: %d games.\n", nrow(mlb_odds)))
 timer$mark("consensus")
@@ -410,6 +424,22 @@ if (file.exists(sentinel)) {
   cat("Warning: Scraper sentinel not found after 120s, proceeding anyway.\n")
 }
 
+# Map scraper market names to Odds API F5 convention so compare_*() can join.
+# Scrapers use short names (spreads, h2h) + period column;
+# predictions use Odds API names (spreads_1st_5_innings, h2h_1st_5_innings).
+map_scraper_markets_f5 <- function(odds) {
+  if (nrow(odds) == 0) return(odds)
+  odds %>% mutate(market = case_when(
+    period == "F5" & market == "spreads"  ~ "spreads_1st_5_innings",
+    period == "F5" & market == "totals"   ~ "totals_1st_5_innings",
+    period == "F5" & market == "h2h"      ~ "h2h_1st_5_innings",
+    market == "spreads_f5"                ~ "spreads_1st_5_innings",
+    market == "totals_f5"                 ~ "totals_1st_5_innings",
+    market == "h2h_f5"                    ~ "h2h_1st_5_innings",
+    TRUE ~ market
+  ))
+}
+
 # Load scraped odds
 wagerzon_odds <- tryCatch(get_wagerzon_odds("mlb"), error = function(e) { cat(sprintf("Wagerzon skip: %s\n", e$message)); tibble() })
 cat(sprintf("Loaded %d Wagerzon records.\n", nrow(wagerzon_odds)))
@@ -428,6 +458,14 @@ cat(sprintf("Loaded %d Bet105 records.\n", nrow(bet105_odds)))
 
 kalshi_odds <- tryCatch(get_kalshi_odds("mlb"), error = function(e) { cat(sprintf("Kalshi skip: %s\n", e$message)); tibble() })
 cat(sprintf("Loaded %d Kalshi records.\n", nrow(kalshi_odds)))
+
+# Map all scraper markets to Odds API F5 convention
+wagerzon_odds  <- map_scraper_markets_f5(wagerzon_odds)
+hoop88_odds    <- map_scraper_markets_f5(hoop88_odds)
+bfa_odds       <- map_scraper_markets_f5(bfa_odds)
+bookmaker_odds <- map_scraper_markets_f5(bookmaker_odds)
+bet105_odds    <- map_scraper_markets_f5(bet105_odds)
+kalshi_odds    <- map_scraper_markets_f5(kalshi_odds)
 timer$mark("load_scrapers")
 
 # --- WAGERZON ---
