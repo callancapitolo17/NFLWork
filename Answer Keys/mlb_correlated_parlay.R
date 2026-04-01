@@ -26,7 +26,7 @@ source("Tools.R")
 # CONFIG
 # =============================================================================
 
-EV_THRESHOLD <- 0.02   # 2% minimum edge to flag
+EV_THRESHOLD <- 0.02   # 2% minimum edge to flag (default, overridden by dashboard)
 KELLY_EDGE_MIN <- 0.03 # 3% minimum edge to enter conditional Kelly sizing
 WZ_PARLAY_SHAVE <- 0.989  # Wagerzon takes ~1.1% off independent multiply
 MLB_DB <- "mlb.duckdb"
@@ -50,6 +50,9 @@ if (file.exists(dash_db)) {
       kelly_mult <- saved$value[saved$param == "parlay_kelly_mult"]
     } else if ("kelly_mult" %in% saved$param) {
       kelly_mult <- saved$value[saved$param == "kelly_mult"]
+    }
+    if ("parlay_min_edge" %in% saved$param) {
+      EV_THRESHOLD <- saved$value[saved$param == "parlay_min_edge"] / 100
     }
   }, error = function(e) NULL)
 }

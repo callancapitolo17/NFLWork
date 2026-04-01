@@ -127,6 +127,10 @@ def init_db():
             INSERT INTO sizing_settings (param, value) VALUES ('parlay_kelly_mult', 0.25)
             ON CONFLICT (param) DO NOTHING
         """)
+        con.execute("""
+            INSERT INTO sizing_settings (param, value) VALUES ('parlay_min_edge', 0)
+            ON CONFLICT (param) DO NOTHING
+        """)
 
         con.execute("""
             CREATE TABLE IF NOT EXISTS filter_settings (
@@ -804,7 +808,7 @@ def get_sizing_settings():
 def update_sizing_settings():
     """Update bankroll and/or kelly multiplier settings."""
     data = request.json
-    allowed = ("bankroll", "kelly_mult", "parlay_bankroll", "parlay_kelly_mult")
+    allowed = ("bankroll", "kelly_mult", "parlay_bankroll", "parlay_kelly_mult", "parlay_min_edge")
     try:
         con = duckdb.connect(str(DB_PATH))
         try:

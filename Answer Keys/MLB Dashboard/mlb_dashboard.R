@@ -2448,12 +2448,13 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         function applyParlaySizing() {
           var bankroll = parseFloat(document.getElementById("parlay-bankroll-input").value);
           var kelly = parseFloat(document.getElementById("parlay-kelly-input").value);
+          var minEdge = parseFloat(document.getElementById("parlay-min-edge-input").value) || 0;
           if (!bankroll || bankroll <= 0 || !kelly || kelly <= 0 || kelly > 1) {
             showToast("Invalid sizing values", "error");
             return;
           }
 
-          // Save both settings then refresh to recalculate parlay sizes
+          // Save all parlay settings then refresh to recalculate
           Promise.all([
             fetch("/api/sizing-settings", {
               method: "POST",
@@ -2464,23 +2465,33 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ param: "parlay_kelly_mult", value: kelly })
+            }),
+            fetch("/api/sizing-settings", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ param: "parlay_min_edge", value: minEdge })
             })
           ]).then(function() {
-            showToast("Parlay sizing saved. Refreshing...", "success");
+            showToast("Parlay settings saved. Refreshing...", "success");
             refreshData();
           });
         }
 
-        // Load parlay sizing from server on page load (guard against missing elements)
+        // Load parlay settings from server on page load (guard against missing elements)
         (function() {
           var pbi = document.getElementById("parlay-bankroll-input");
           var pki = document.getElementById("parlay-kelly-input");
+          var pei = document.getElementById("parlay-min-edge-input");
           if (!pbi || !pki) return;
           fetch("/api/sizing-settings")
             .then(function(r) { return r.json(); })
             .then(function(s) {
               if (s.parlay_bankroll) pbi.value = s.parlay_bankroll;
               if (s.parlay_kelly_mult) pki.value = s.parlay_kelly_mult;
+              if (pei && s.parlay_min_edge != null) {
+                pei.value = s.parlay_min_edge;
+                filterParlaysByEdge();
+              }
             })
             .catch(function() {});
         })();
