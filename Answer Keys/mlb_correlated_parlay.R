@@ -26,6 +26,7 @@ source("Tools.R")
 # =============================================================================
 
 EV_THRESHOLD <- 0.02   # 2% minimum edge to flag
+KELLY_EDGE_MIN <- 0.03 # 3% minimum edge to enter conditional Kelly sizing
 WZ_PARLAY_SHAVE <- 0.989  # Wagerzon takes ~1.1% off independent multiply
 MLB_DB <- "mlb.duckdb"
 
@@ -46,6 +47,136 @@ if (file.exists(dash_db)) {
 # Helper: American odds → decimal odds
 american_to_decimal <- function(odds) {
   ifelse(odds > 0, 1 + odds / 100, 1 + 100 / abs(odds))
+}
+
+# =============================================================================
+# CONDITIONAL KELLY FOR CORRELATED PARLAYS
+# =============================================================================
+#
+# Each parlay is treated as a single "bet" that wins when both legs hit.
+# We build a binary outcome matrix (n_sims x n_parlays) from game samples,
+# compute the covariance of returns across parlays, and solve the multivariate
+# Kelly: f* = Sigma^{-1} * mu. This adjusts sizes downward when parlays on
+# the same game are positively correlated (e.g., Fav+Over and Dog+Under tend
+# to win/lose in the same game states).
+#
+# Same math as multivariate_kelly() in Tools.R, but operates on parlay-level
+# outcomes (both legs ANDed) rather than single-leg outcomes.
+
+parlay_multivariate_kelly <- function(parlay_group, samples, bankroll, kelly_mult) {
+  # parlay_group: list of lists, each with $legs, $joint_prob, $wz_dec
+  # samples: game sample data frame (one game)
+  # Returns: numeric vector of dollar wager amounts (one per parlay)
+
+  n <- length(parlay_group)
+
+  # --- Build parlay outcome matrix: 1 = both legs hit, 0 = miss, NA = push ---
+  outcome_matrix <- matrix(NA_real_, nrow = nrow(samples), ncol = n)
+  for (i in seq_len(n)) {
+    legs <- parlay_group[[i]]$legs
+    # Evaluate each leg, AND them together
+    leg_results <- map(legs, ~evaluate_leg(samples, .x))
+    # Parlay wins only when ALL legs resolve AND all hit
+    all_resolved <- map(leg_results, ~!is.na(.x)) %>% reduce(`&`)
+    all_hit <- map(leg_results, ~.x == TRUE) %>% reduce(`&`)
+    # Mark unresolved (push on any leg) as NA
+    outcomes <- ifelse(all_resolved, as.numeric(all_hit), NA_real_)
+    outcome_matrix[, i] <- outcomes
+  }
+
+  # Drop rows with any NA (push on any parlay in the group)
+  complete_rows <- complete.cases(outcome_matrix)
+  if (sum(complete_rows) < 30) {
+    # Too few resolved samples — fall back to independent Kelly
+    return(independent_kelly(parlay_group, bankroll, kelly_mult))
+  }
+  outcome_matrix <- outcome_matrix[complete_rows, , drop = FALSE]
+
+  # --- Correlation matrix from binary outcomes ---
+  R <- cor(outcome_matrix)
+  if (any(is.na(R))) {
+    return(independent_kelly(parlay_group, bankroll, kelly_mult))
+  }
+
+  # --- Covariance of returns ---
+  # sigma_i = sqrt(p_i * (1 - p_i)) * (b_i + 1)
+  # where p_i = fair joint prob, b_i = wz decimal odds - 1
+  probs <- sapply(parlay_group, `[[`, "joint_prob")
+  b <- sapply(parlay_group, `[[`, "wz_dec") - 1
+  sigmas <- sqrt(probs * (1 - probs)) * (b + 1)
+
+  Sigma <- R * outer(sigmas, sigmas)
+  # Ridge regularization to prevent singularity
+  Sigma <- Sigma + diag(n) * 0.01
+
+  if (kappa(Sigma) > 100) {
+    return(fallback_rho_scaling(parlay_group, R, bankroll, kelly_mult))
+  }
+
+  # --- EV vector: expected return per dollar wagered ---
+  mu <- probs * (b + 1) - 1  # p * wz_dec - 1
+
+  # --- Solve f* = Sigma^{-1} * mu ---
+  f_star <- tryCatch(solve(Sigma, mu), error = function(e) NULL)
+  if (is.null(f_star)) {
+    return(fallback_rho_scaling(parlay_group, R, bankroll, kelly_mult))
+  }
+
+  # Clamp negatives to 0 (Kelly says don't bet these)
+  f_star <- pmax(f_star, 0)
+
+  # Convert fractions to dollar wagers
+  wagers <- f_star * kelly_mult * bankroll
+  round(pmax(wagers, 0))
+}
+
+
+# Fallback: scale independent Kelly by average correlation
+fallback_rho_scaling <- function(parlay_group, R, bankroll, kelly_mult) {
+  n <- length(parlay_group)
+  wagers <- numeric(n)
+  for (i in seq_len(n)) {
+    p <- parlay_group[[i]]$joint_prob
+    b <- parlay_group[[i]]$wz_dec - 1
+    kelly_full <- (b * p - (1 - p)) / b
+    if (kelly_full <= 0) next
+
+    # Average absolute correlation with other parlays in the group
+    rho_vals <- abs(R[i, -i])
+    avg_rho <- mean(rho_vals)
+    # Scale down: more correlated = smaller bet
+    scale <- 1 / sqrt(1 + (n - 1) * avg_rho)
+    wagers[i] <- round(kelly_full * scale * kelly_mult * bankroll)
+  }
+  pmax(wagers, 0)
+}
+
+
+# Independent Kelly: no correlation adjustment (single parlay or fallback)
+independent_kelly <- function(parlay_group, bankroll, kelly_mult) {
+  wagers <- numeric(length(parlay_group))
+  for (i in seq_along(parlay_group)) {
+    p <- parlay_group[[i]]$joint_prob
+    b <- parlay_group[[i]]$wz_dec - 1
+    kelly_full <- (b * p - (1 - p)) / b
+    wagers[i] <- max(0, round(kelly_full * kelly_mult * bankroll))
+  }
+  wagers
+}
+
+
+# Nudge wager so Wagerzon "to win" rounds UP (0.50 rounds DOWN on WZ)
+nudge_wager_rounds_up <- function(wager, b) {
+  if (wager <= 0) return(wager)
+  rounds_up <- function(w) (w * b) %% 1 > 0.50
+  if (!rounds_up(wager)) {
+    if (rounds_up(wager + 1)) {
+      wager <- wager + 1
+    } else if (wager > 1 && rounds_up(wager - 1)) {
+      wager <- wager - 1
+    }
+  }
+  wager
 }
 
 # =============================================================================
@@ -163,6 +294,7 @@ cat(sprintf("Matched %d games between Wagerzon and samples.\n", nrow(wz_matched)
 # =============================================================================
 
 results <- list()
+legs_store <- list()  # stash legs for conditional Kelly pass, keyed by game_id|combo
 
 for (i in seq_len(nrow(wz_matched))) {
   row <- wz_matched[i, ]
@@ -235,29 +367,13 @@ for (i in seq_len(nrow(wz_matched))) {
     fair_dec <- fair$fair_decimal_odds
     edge_pct <- (wz_dec - fair_dec) / fair_dec * 100
 
-    # Kelly sizing — then nudge wager so WZ "to win" rounds UP (no cents)
-    p <- fair$joint_prob
-    b <- wz_dec - 1
-    kelly_full <- (b * p - (1 - p)) / b
-    kelly_raw  <- max(0, round(kelly_full * kelly_mult * bankroll))
-
-    # Find nearest wager where win rounds up (0.50 rounds DOWN on WZ)
-    rounds_up <- function(w) (w * b) %% 1 > 0.50
-    if (kelly_raw > 0 && !rounds_up(kelly_raw)) {
-      # Try +1 first (slightly more than Kelly), then -1
-      if (rounds_up(kelly_raw + 1)) {
-        kelly_raw <- kelly_raw + 1
-      } else if (kelly_raw > 1 && rounds_up(kelly_raw - 1)) {
-        kelly_raw <- kelly_raw - 1
-      }
-    }
-    kelly_bet <- kelly_raw
-
     combo_name <- combo$name
     combo_spread <- if (grepl("Home", combo_name)) row$home_spread else row$away_spread
 
+    # Store WITHOUT sizing — conditional Kelly sizes in pass 2
     results[[length(results) + 1]] <- tibble(
       game        = sprintf("%s @ %s", row$away_team, row$home_team),
+      game_id     = game_id,
       combo       = combo_name,
       spread_line = combo_spread,
       total_line  = row$total_line,
@@ -267,29 +383,86 @@ for (i in seq_len(nrow(wz_matched))) {
       wz_dec      = round(wz_dec, 3),
       corr_factor = fair$correlation_factor,
       edge_pct    = round(edge_pct, 1),
-      kelly_bet   = kelly_bet,
+      joint_prob_raw = fair$joint_prob,  # unrounded, needed for Kelly
       joint_prob  = round(fair$joint_prob * 100, 1),
       n_samples   = fair$n_samples_resolved
     )
+
+    # Stash legs for conditional Kelly pass
+    legs_store[[paste0(game_id, "|", combo_name)]] <- combo$legs
   }
 }
 
 # =============================================================================
-# OUTPUT
+# PASS 2: CONDITIONAL KELLY SIZING
 # =============================================================================
+#
+# Group parlays by game. For each game:
+#   - Filter to parlays above KELLY_EDGE_MIN
+#   - 0 qualify → $0 wager
+#   - 1 qualifies → standard single-bet Kelly
+#   - 2+ qualify → multivariate Kelly accounting for parlay-level correlation
 
 if (length(results) == 0) {
   cat("No parlay combos could be computed. Check data availability.\n")
   quit(status = 0)
 }
 
-all_results <- bind_rows(results) %>% arrange(desc(edge_pct))
+all_results <- bind_rows(results)
+all_results$kelly_bet <- 0  # initialize, fill below
+
+for (gid in unique(all_results$game_id)) {
+  game_mask <- all_results$game_id == gid
+  game_rows <- all_results[game_mask, ]
+
+  # Filter to parlays above the Kelly edge threshold
+  qualifies <- game_rows$edge_pct >= KELLY_EDGE_MIN * 100
+  if (sum(qualifies) == 0) next  # no edges worth sizing
+
+  qual_rows <- game_rows[qualifies, ]
+  samp <- samples_list[[gid]]
+
+  # Build the parlay group list that parlay_multivariate_kelly() expects
+  parlay_group <- list()
+  for (j in seq_len(nrow(qual_rows))) {
+    r <- qual_rows[j, ]
+    leg_key <- paste0(gid, "|", r$combo)
+    parlay_group[[j]] <- list(
+      legs = legs_store[[leg_key]],
+      joint_prob = r$joint_prob_raw,
+      wz_dec = r$wz_dec
+    )
+  }
+
+  # Size with conditional Kelly (multivariate if 2+, independent if 1)
+  if (length(parlay_group) >= 2) {
+    wagers <- parlay_multivariate_kelly(parlay_group, samp, bankroll, kelly_mult)
+  } else {
+    wagers <- independent_kelly(parlay_group, bankroll, kelly_mult)
+  }
+
+  # Apply Wagerzon "rounds up" nudge to each wager
+  for (j in seq_len(length(wagers))) {
+    b <- parlay_group[[j]]$wz_dec - 1
+    wagers[j] <- nudge_wager_rounds_up(wagers[j], b)
+  }
+
+  # Write sized wagers back into the qualifying rows
+  qual_indices <- which(game_mask)[qualifies]
+  all_results$kelly_bet[qual_indices] <- wagers
+}
+
+all_results <- all_results %>% arrange(desc(edge_pct))
+
+# =============================================================================
+# OUTPUT
+# =============================================================================
 
 cat("\n")
 cat("=================================================================\n")
-cat("  MLB CORRELATED PARLAY ANALYSIS\n")
-cat(sprintf("  Bankroll: $%.0f | Kelly: %.0f%% | EV Threshold: %.0f%%\n",
-            bankroll, kelly_mult * 100, EV_THRESHOLD * 100))
+cat("  MLB CORRELATED PARLAY ANALYSIS (Conditional Kelly)\n")
+cat(sprintf("  Bankroll: $%.0f | Kelly: %.0f%% | Edge Min: %.0f%% | Flag: %.0f%%\n",
+            bankroll, kelly_mult * 100, KELLY_EDGE_MIN * 100, EV_THRESHOLD * 100))
 cat("=================================================================\n\n")
 
 # Show all combos grouped by game
@@ -302,7 +475,7 @@ for (game_name in unique(all_results$game)) {
   for (j in seq_len(nrow(game_rows))) {
     r <- game_rows[j, ]
     to_win <- round(r$kelly_bet * (r$wz_dec - 1))
-    edge_flag <- if (r$edge_pct >= EV_THRESHOLD * 100) " ***" else ""
+    edge_flag <- if (r$edge_pct >= KELLY_EDGE_MIN * 100) " ***" else ""
     cat(sprintf("  %-22s  %+6d  %+6d  %5.3f  %+5.1f%%  $%4d  $%4d%s\n",
                 r$combo, r$fair_odds, r$wz_odds, r$corr_factor,
                 r$edge_pct, round(r$kelly_bet), to_win, edge_flag))
@@ -310,13 +483,13 @@ for (game_name in unique(all_results$game)) {
   cat("\n")
 }
 
-# Summary of edges
-edges <- all_results %>% filter(edge_pct >= EV_THRESHOLD * 100)
+# Summary of edges (only sized parlays — above KELLY_EDGE_MIN)
+edges <- all_results %>% filter(kelly_bet > 0)
 if (nrow(edges) > 0) {
   total_wager <- sum(round(edges$kelly_bet))
   total_to_win <- sum(round(edges$kelly_bet * (edges$wz_dec - 1)))
-  cat(sprintf("=== %d EDGES FOUND (>= %.0f%% EV) | Total Wager: $%d | Total To Win: $%d ===\n\n",
-              nrow(edges), EV_THRESHOLD * 100, total_wager, total_to_win))
+  cat(sprintf("=== %d EDGES SIZED (>= %.0f%% EV) | Total Wager: $%d | Total To Win: $%d ===\n\n",
+              nrow(edges), KELLY_EDGE_MIN * 100, total_wager, total_to_win))
   for (j in seq_len(nrow(edges))) {
     e <- edges[j, ]
     wager <- round(e$kelly_bet)
