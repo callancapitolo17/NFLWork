@@ -254,7 +254,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
       wz_display = ifelse(wz_odds > 0, paste0("+", wz_odds), as.character(wz_odds)),
       edge_display = sprintf("+%.1f%%", edge_pct),
       size_display = sprintf("$%.0f", kelly_bet),
-      prob_display = sprintf("%.1f%%", joint_prob),
+      to_win_display = sprintf("$%.0f", round(kelly_bet * (wz_dec - 1))),
       corr_display = sprintf("%.3f", corr_factor)
     ) %>%
     arrange(desc(edge_pct))
@@ -303,8 +303,8 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
         }
       ),
       size_display = colDef(name = "Size", minWidth = 65, align = "right"),
-      prob_display = colDef(name = "Prob", minWidth = 60, align = "right",
-        style = list(color = "#8b949e", fontSize = "0.8rem")),
+      to_win_display = colDef(name = "To Win", minWidth = 65, align = "right",
+        style = list(color = "#3fb950")),
       is_placed = colDef(
         name = "Action",
         minWidth = 90,
