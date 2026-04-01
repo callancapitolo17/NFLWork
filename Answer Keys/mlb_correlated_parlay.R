@@ -26,6 +26,7 @@ source("Tools.R")
 # =============================================================================
 
 EV_THRESHOLD <- 0.02   # 2% minimum edge to flag
+WZ_PARLAY_SHAVE <- 0.989  # Wagerzon takes ~1.1% off independent multiply
 MLB_DB <- "mlb.duckdb"
 
 # Load sizing from dashboard if available
@@ -221,10 +222,14 @@ for (i in seq_len(nrow(wz_matched))) {
     # Our fair price (correlation-adjusted via historical samples)
     fair <- compute_parlay_fair_odds(samp, combo$legs)
 
-    # Wagerzon's price (independent: multiply the two leg decimals)
-    wz_dec <- american_to_decimal(combo$wz_spread_price) *
-              american_to_decimal(combo$wz_total_price)
-    wz_american <- prob_to_american(1 / wz_dec)
+    # Wagerzon's price: multiply the two leg decimals independently,
+    # apply ~1.1% shave, then round to nearest whole American odds.
+    # Verified via ConfirmWagerHelper API recon: independent +344.85 → actual +340.
+    wz_dec_raw <- american_to_decimal(combo$wz_spread_price) *
+                  american_to_decimal(combo$wz_total_price)
+    wz_dec_shaved <- wz_dec_raw * WZ_PARLAY_SHAVE
+    wz_american <- round(prob_to_american(1 / wz_dec_shaved))
+    wz_dec <- american_to_decimal(wz_american)
 
     # Edge: positive means Wagerzon overpays relative to fair
     fair_dec <- fair$fair_decimal_odds
@@ -279,15 +284,16 @@ cat("=================================================================\n\n")
 for (game_name in unique(all_results$game)) {
   game_rows <- all_results %>% filter(game == game_name)
   cat(sprintf("--- %s ---\n", game_name))
-  cat(sprintf("  %-22s  %6s  %6s  %5s  %6s  %6s\n",
-              "Combo", "Fair", "WZ", "Corr", "Edge%", "Kelly$"))
+  cat(sprintf("  %-22s  %6s  %6s  %5s  %6s  %6s  %6s\n",
+              "Combo", "Fair", "WZ", "Corr", "Edge%", "Wager", "ToWin"))
 
   for (j in seq_len(nrow(game_rows))) {
     r <- game_rows[j, ]
+    to_win <- round(r$kelly_bet * (r$wz_dec - 1))
     edge_flag <- if (r$edge_pct >= EV_THRESHOLD * 100) " ***" else ""
-    cat(sprintf("  %-22s  %+6d  %+6d  %5.3f  %+5.1f%%  $%5.2f%s\n",
+    cat(sprintf("  %-22s  %+6d  %+6d  %5.3f  %+5.1f%%  $%4d  $%4d%s\n",
                 r$combo, r$fair_odds, r$wz_odds, r$corr_factor,
-                r$edge_pct, r$kelly_bet, edge_flag))
+                r$edge_pct, round(r$kelly_bet), to_win, edge_flag))
   }
   cat("\n")
 }
@@ -295,14 +301,20 @@ for (game_name in unique(all_results$game)) {
 # Summary of edges
 edges <- all_results %>% filter(edge_pct >= EV_THRESHOLD * 100)
 if (nrow(edges) > 0) {
-  cat(sprintf("=== %d EDGES FOUND (>= %.0f%% EV) ===\n\n", nrow(edges), EV_THRESHOLD * 100))
+  total_wager <- sum(round(edges$kelly_bet))
+  total_to_win <- sum(round(edges$kelly_bet * (edges$wz_dec - 1)))
+  cat(sprintf("=== %d EDGES FOUND (>= %.0f%% EV) | Total Wager: $%d | Total To Win: $%d ===\n\n",
+              nrow(edges), EV_THRESHOLD * 100, total_wager, total_to_win))
   for (j in seq_len(nrow(edges))) {
     e <- edges[j, ]
+    wager <- round(e$kelly_bet)
+    to_win <- round(wager * (e$wz_dec - 1))
     cat(sprintf("  %s | %s\n", e$game, e$combo))
     cat(sprintf("    Spread: %+.1f | Total: %.1f\n", e$spread_line, e$total_line))
     cat(sprintf("    Fair: %+d (%.1f%%) | WZ: %+d | Correlation: %.3f\n",
                 e$fair_odds, e$joint_prob, e$wz_odds, e$corr_factor))
-    cat(sprintf("    Edge: %+.1f%% | Kelly bet: $%.2f\n\n", e$edge_pct, e$kelly_bet))
+    cat(sprintf("    Edge: %+.1f%% | Wager: $%d | To Win: $%d\n\n",
+                e$edge_pct, wager, to_win))
   }
 } else {
   cat("No edges found above threshold.\n")
