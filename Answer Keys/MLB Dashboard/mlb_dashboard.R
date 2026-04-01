@@ -197,6 +197,153 @@ create_placed_bets_table <- function(placed_bets) {
   )
 }
 
+# =============================================================================
+# PARLAY TABLES
+# =============================================================================
+
+create_placed_parlays_table <- function(placed_parlays) {
+  if (nrow(placed_parlays) == 0) return(NULL)
+
+  table_data <- placed_parlays %>%
+    mutate(
+      game = paste(away_team, "@", home_team),
+      spread_display = ifelse(spread_line > 0, paste0("+", spread_line), as.character(spread_line)),
+      odds_display = ifelse(wz_odds > 0, paste0("+", wz_odds), as.character(wz_odds)),
+      edge_display = sprintf("+%.1f%%", edge_pct),
+      actual_display = sprintf("$%.0f", coalesce(actual_size, kelly_bet)),
+      rec_display = sprintf("$%.0f", kelly_bet)
+    ) %>%
+    select(parlay_hash, game, combo, spread_display, total_line,
+           odds_display, edge_display, actual_display, rec_display)
+
+  reactable(
+    table_data,
+    compact = TRUE,
+    columns = list(
+      parlay_hash = colDef(show = FALSE),
+      game = colDef(name = "Game", minWidth = 180),
+      combo = colDef(name = "Combo", minWidth = 160),
+      spread_display = colDef(name = "Spread", minWidth = 65, align = "right"),
+      total_line = colDef(name = "Total", minWidth = 65, align = "right"),
+      odds_display = colDef(name = "WZ Odds", minWidth = 70, align = "right",
+        style = list(fontFamily = "monospace")),
+      edge_display = colDef(name = "Edge", minWidth = 65, align = "right",
+        style = list(color = "#3fb950", fontWeight = "600")),
+      actual_display = colDef(name = "Actual", minWidth = 65, align = "right",
+        style = list(fontWeight = "600")),
+      rec_display = colDef(name = "Rec", minWidth = 65, align = "right",
+        style = list(color = "#8b949e", fontSize = "0.8rem"))
+    ),
+    theme = reactableTheme(
+      color = "#c9d1d9",
+      backgroundColor = "#21262d",
+      borderColor = "#30363d",
+      headerStyle = list(backgroundColor = "#161b22", color = "#8b949e", fontWeight = "600", fontSize = "0.7rem")
+    )
+  )
+}
+
+create_parlays_table <- function(parlay_opps, placed_parlays) {
+  placed_hashes <- if (nrow(placed_parlays) > 0) placed_parlays$parlay_hash else character()
+
+  table_data <- parlay_opps %>%
+    mutate(
+      is_placed = parlay_hash %in% placed_hashes,
+      spread_display = ifelse(spread_line > 0, paste0("+", spread_line), as.character(spread_line)),
+      fair_display = ifelse(fair_odds > 0, paste0("+", fair_odds), as.character(fair_odds)),
+      wz_display = ifelse(wz_odds > 0, paste0("+", wz_odds), as.character(wz_odds)),
+      edge_display = sprintf("+%.1f%%", edge_pct),
+      size_display = sprintf("$%.0f", kelly_bet),
+      prob_display = sprintf("%.1f%%", joint_prob),
+      corr_display = sprintf("%.3f", corr_factor)
+    ) %>%
+    arrange(desc(edge_pct))
+
+  reactable(
+    table_data,
+    compact = TRUE,
+    striped = TRUE,
+    highlight = TRUE,
+    defaultPageSize = 25,
+    columns = list(
+      # Hidden columns for JS data attributes
+      parlay_hash = colDef(show = FALSE),
+      game_id = colDef(show = FALSE),
+      home_team = colDef(show = FALSE),
+      away_team = colDef(show = FALSE),
+      game_time = colDef(show = FALSE),
+      spread_line = colDef(show = FALSE),
+      total_line = colDef(show = FALSE),
+      fair_odds = colDef(show = FALSE),
+      wz_odds = colDef(show = FALSE),
+      fair_dec = colDef(show = FALSE),
+      wz_dec = colDef(show = FALSE),
+      corr_factor = colDef(show = FALSE),
+      edge_pct = colDef(show = FALSE),
+      kelly_bet = colDef(show = FALSE),
+      joint_prob = colDef(show = FALSE),
+      n_samples = colDef(show = FALSE),
+
+      # Visible columns
+      game = colDef(name = "Game", minWidth = 180),
+      combo = colDef(name = "Combo", minWidth = 160),
+      spread_display = colDef(name = "Spread", minWidth = 65, align = "right"),
+      fair_display = colDef(name = "Fair", minWidth = 70, align = "right",
+        style = list(fontFamily = "monospace", color = "#8b949e")),
+      wz_display = colDef(name = "WZ", minWidth = 70, align = "right",
+        style = list(fontFamily = "monospace")),
+      corr_display = colDef(name = "Corr", minWidth = 65, align = "right",
+        style = list(color = "#8b949e")),
+      edge_display = colDef(name = "Edge %", minWidth = 70, align = "right",
+        cell = function(value, index) {
+          ep <- table_data$edge_pct[index]
+          color <- if (ep >= 15) "#3fb950" else if (ep >= 10) "#56d364" else if (ep >= 5) "#7ee787" else "#a5d6a7"
+          span(style = list(color = color, fontWeight = "600"), value)
+        }
+      ),
+      size_display = colDef(name = "Size", minWidth = 65, align = "right"),
+      prob_display = colDef(name = "Prob", minWidth = 60, align = "right",
+        style = list(color = "#8b949e", fontSize = "0.8rem")),
+      is_placed = colDef(
+        name = "Action",
+        minWidth = 90,
+        align = "center",
+        filterable = FALSE,
+        html = TRUE,
+        cell = function(value, index) {
+          row <- table_data[index, ]
+          data_attrs <- sprintf(
+            'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-combo="%s" data-spread="%s" data-total="%s" data-fair-odds="%s" data-wz-odds="%s" data-edge="%s" data-size="%s"',
+            row$parlay_hash, row$game_id, row$home_team, row$away_team,
+            ifelse(is.na(row$game_time), "", as.character(row$game_time)),
+            row$combo, row$spread_line, row$total_line,
+            row$fair_odds, row$wz_odds, row$edge_pct, row$kelly_bet
+          )
+          if (value) {
+            sprintf('<button class="btn-placed" onclick="removeParlay(this)" %s>Placed</button>', data_attrs)
+          } else {
+            sprintf('<button class="btn-place" onclick="placeParlay(this)" %s>Place</button>', data_attrs)
+          }
+        }
+      )
+    ),
+    theme = reactableTheme(
+      color = "#c9d1d9",
+      backgroundColor = "#1c2128",
+      borderColor = "#373e47",
+      stripedColor = "#22272e",
+      highlightColor = "#2d333b",
+      headerStyle = list(
+        backgroundColor = "#161b22",
+        color = "#8b949e",
+        fontWeight = "600",
+        fontSize = "0.7rem",
+        textTransform = "uppercase"
+      )
+    )
+  )
+}
+
 create_bets_table <- function(all_bets, placed_bets) {
   placed_hashes <- if (nrow(placed_bets) > 0) placed_bets$bet_hash else character()
   # Build lookups for placed bet actual_size and recommended_size by hash
@@ -512,7 +659,8 @@ create_bets_table <- function(all_bets, placed_bets) {
 # HTML REPORT
 # =============================================================================
 
-create_report <- function(bets_table, placed_table, stats, timestamp, filter_options_json) {
+create_report <- function(bets_table, placed_table, stats, timestamp, filter_options_json,
+                          parlays_table = NULL, placed_parlays_table = NULL, parlay_opps = tibble()) {
   page <- tagList(
     tags$head(
       tags$meta(charset = "UTF-8"),
@@ -1184,7 +1332,49 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           tags$span("Available Bets"),
           tags$span(id = "filtered-count", style = "margin-left: 8px; color: #8b949e; font-size: 0.8rem;")
         ),
-        tags$div(class = "table-container", bets_table)
+        tags$div(class = "table-container", bets_table),
+
+        # Parlays Section
+        if (!is.null(parlays_table) || !is.null(placed_parlays_table)) {
+          tagList(
+            tags$hr(style = "border: none; border-top: 1px solid #30363d; margin: 24px 0;"),
+
+            # Placed Parlays (if any)
+            if (!is.null(placed_parlays_table)) {
+              tagList(
+                tags$div(class = "section-header", "Placed Parlays"),
+                tags$div(class = "table-container placed-section", placed_parlays_table)
+              )
+            },
+
+            # Parlay Sizing Controls
+            tags$div(class = "sizing-controls",
+              tags$div(class = "sizing-group",
+                tags$span(class = "sizing-label", "Parlay Bankroll ($)"),
+                tags$input(id = "parlay-bankroll-input", class = "sizing-input", type = "number",
+                  value = "100", min = "1", step = "10")
+              ),
+              tags$div(class = "sizing-group",
+                tags$span(class = "sizing-label", "Parlay Kelly"),
+                tags$input(id = "parlay-kelly-input", class = "sizing-input", type = "number",
+                  value = "0.25", min = "0.01", max = "1", step = "0.05")
+              ),
+              tags$button(class = "apply-sizing-btn", onclick = "applyParlaySizing()", "Apply")
+            ),
+
+            # Parlay Opportunities
+            if (!is.null(parlays_table)) {
+              tagList(
+                tags$div(class = "section-header",
+                  tags$span("Parlay Opportunities"),
+                  tags$span(style = "margin-left: 8px; color: #8b949e; font-size: 0.8rem;",
+                    sprintf("(%d)", nrow(parlay_opps)))
+                ),
+                tags$div(class = "table-container", parlays_table)
+              )
+            }
+          )
+        }
       ),
 
       # JavaScript
@@ -2223,6 +2413,131 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             });
         }
 
+        // ============ PARLAY SIZING ============
+        function applyParlaySizing() {
+          var bankroll = parseFloat(document.getElementById("parlay-bankroll-input").value);
+          var kelly = parseFloat(document.getElementById("parlay-kelly-input").value);
+          if (!bankroll || bankroll <= 0 || !kelly || kelly <= 0 || kelly > 1) {
+            showToast("Invalid sizing values", "error");
+            return;
+          }
+
+          // Save both settings then refresh to recalculate parlay sizes
+          Promise.all([
+            fetch("/api/sizing-settings", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ param: "parlay_bankroll", value: bankroll })
+            }),
+            fetch("/api/sizing-settings", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ param: "parlay_kelly_mult", value: kelly })
+            })
+          ]).then(function() {
+            showToast("Parlay sizing saved. Refreshing...", "success");
+            refreshData();
+          });
+        }
+
+        // Load parlay sizing from server on page load (guard against missing elements)
+        (function() {
+          var pbi = document.getElementById("parlay-bankroll-input");
+          var pki = document.getElementById("parlay-kelly-input");
+          if (!pbi || !pki) return;
+          fetch("/api/sizing-settings")
+            .then(function(r) { return r.json(); })
+            .then(function(s) {
+              if (s.parlay_bankroll) pbi.value = s.parlay_bankroll;
+              if (s.parlay_kelly_mult) pki.value = s.parlay_kelly_mult;
+            })
+            .catch(function() {});
+        })();
+
+        // ============ PARLAY PLACEMENT ============
+        function placeParlay(btn) {
+          var combo = btn.dataset.combo;
+          var size = parseFloat(btn.dataset.size);
+          var odds = btn.dataset.wzOdds;
+
+          var overlay = document.createElement(\'div\');
+          overlay.className = \'modal-overlay\';
+          overlay.innerHTML =
+            \'<div class="modal-box">\' +
+              \'<div class="modal-title">Place Parlay</div>\' +
+              \'<div class="modal-detail">Combo: <span>\' + escapeHtml(combo) + \'</span></div>\' +
+              \'<div class="modal-detail">Spread: <span>\' + escapeHtml(btn.dataset.spread) + \'</span> | Total: <span>\' + escapeHtml(btn.dataset.total) + \'</span></div>\' +
+              \'<div class="modal-detail">WZ Odds: <span>\' + escapeHtml(odds) + \'</span> | Edge: <span>+\' + escapeHtml(btn.dataset.edge) + \'%</span></div>\' +
+              \'<div class="modal-recommended">Recommended: $\' + Math.round(size) + \'</div>\' +
+              \'<div class="modal-input-group">\' +
+                \'<label class="modal-input-label">Actual Amount ($)</label>\' +
+                \'<input type="number" class="modal-input" value="\' + Math.round(size) + \'" step="1" min="1">\' +
+              \'</div>\' +
+              \'<div class="modal-actions">\' +
+                \'<button class="modal-btn-cancel">Cancel</button>\' +
+                \'<button class="modal-btn-confirm">Confirm</button>\' +
+              \'</div>\' +
+            \'</div>\';
+
+          document.body.appendChild(overlay);
+
+          overlay.querySelector(\'.modal-btn-cancel\').onclick = function() { overlay.remove(); };
+          overlay.querySelector(\'.modal-btn-confirm\').onclick = function() {
+            var amount = parseFloat(overlay.querySelector(\'.modal-input\').value);
+            if (!amount || amount <= 0) { showToast("Invalid amount", "error"); return; }
+
+            fetch("/api/place-parlay", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                parlay_hash: btn.dataset.hash,
+                game_id: btn.dataset.gameId,
+                home_team: btn.dataset.home,
+                away_team: btn.dataset.away,
+                game_time: btn.dataset.time || null,
+                combo: btn.dataset.combo,
+                spread_line: parseFloat(btn.dataset.spread) || null,
+                total_line: parseFloat(btn.dataset.total) || null,
+                fair_odds: parseInt(btn.dataset.fairOdds) || null,
+                wz_odds: parseInt(btn.dataset.wzOdds),
+                edge_pct: parseFloat(btn.dataset.edge) || null,
+                kelly_bet: size,
+                actual_size: amount
+              })
+            })
+              .then(function(r) { return r.json(); })
+              .then(function(result) {
+                if (result.success) {
+                  btn.className = "btn-placed";
+                  btn.textContent = "Placed";
+                  btn.onclick = function() { removeParlay(this); };
+                  showToast("Parlay placed", "success");
+                } else {
+                  showToast(result.error || "Failed", "error");
+                }
+                overlay.remove();
+              })
+              .catch(function(err) { showToast("Error: " + err, "error"); overlay.remove(); });
+          };
+        }
+
+        function removeParlay(btn) {
+          fetch("/api/remove-parlay", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ parlay_hash: btn.dataset.hash })
+          })
+            .then(function(r) { return r.json(); })
+            .then(function(result) {
+              if (result.success) {
+                btn.className = "btn-place";
+                btn.textContent = "Place";
+                btn.onclick = function() { placeParlay(this); };
+                showToast("Parlay removed", "success");
+              }
+            });
+        }
+
         function showToast(msg, type) {
           const t = document.createElement("div");
           t.className = "toast " + type;
@@ -2295,6 +2610,38 @@ if (nrow(all_bets) > 0) {
 }
 placed_table <- create_placed_bets_table(placed_bets)
 
+# Load parlay opportunities
+cat("Loading parlay opportunities...\n")
+parlay_opps <- tryCatch({
+  pcon <- dbConnect(duckdb(), dbdir = "Answer Keys/mlb.duckdb", read_only = TRUE)
+  result <- if ("mlb_parlay_opportunities" %in% dbListTables(pcon)) {
+    dbGetQuery(pcon, "SELECT * FROM mlb_parlay_opportunities")
+  } else tibble()
+  dbDisconnect(pcon, shutdown = TRUE)
+  result
+}, error = function(e) { cat(sprintf("  Warning: %s\n", e$message)); tibble() })
+
+placed_parlays <- tryCatch({
+  ppcon <- dbConnect(duckdb(), dbdir = DB_PATH, read_only = TRUE)
+  result <- tryCatch(
+    dbGetQuery(ppcon, "SELECT * FROM placed_parlays WHERE status = 'pending' AND (game_time IS NULL OR game_time > NOW())"),
+    error = function(e) tibble(parlay_hash = character())
+  )
+  dbDisconnect(ppcon, shutdown = TRUE)
+  result
+}, error = function(e) tibble(parlay_hash = character()))
+
+cat(sprintf("Found %d parlay opportunities, %d placed parlays\n",
+            nrow(parlay_opps), nrow(placed_parlays)))
+
+# Create parlay tables
+if (nrow(parlay_opps) > 0) {
+  parlays_table <- create_parlays_table(parlay_opps, placed_parlays)
+} else {
+  parlays_table <- NULL
+}
+placed_parlays_table <- create_placed_parlays_table(placed_parlays)
+
 # Extract filter options for bets table
 filter_games <- if (nrow(all_bets) > 0) {
   all_bets %>%
@@ -2337,7 +2684,8 @@ filter_options_json <- toJSON(list(
 
 # Create report
 timestamp <- format(Sys.time(), "%b %d, %Y %I:%M %p")
-page <- create_report(bets_table, placed_table, stats, timestamp, filter_options_json)
+page <- create_report(bets_table, placed_table, stats, timestamp, filter_options_json,
+                       parlays_table, placed_parlays_table, parlay_opps)
 
 # Save
 save_html(page, OUTPUT_PATH, libdir = "lib")

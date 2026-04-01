@@ -16,6 +16,7 @@ suppressPackageStartupMessages({
   library(duckdb)
   library(dplyr)
   library(purrr)
+  library(digest)
 })
 
 setwd("~/NFLWork/Answer Keys")
@@ -30,7 +31,7 @@ KELLY_EDGE_MIN <- 0.03 # 3% minimum edge to enter conditional Kelly sizing
 WZ_PARLAY_SHAVE <- 0.989  # Wagerzon takes ~1.1% off independent multiply
 MLB_DB <- "mlb.duckdb"
 
-# Load sizing from dashboard if available
+# Load sizing from dashboard if available (parlay-specific settings, falls back to main)
 bankroll   <- 4000
 kelly_mult <- 0.25
 dash_db <- "MLB Dashboard/mlb_dashboard.duckdb"
@@ -39,8 +40,17 @@ if (file.exists(dash_db)) {
     dash_con <- dbConnect(duckdb(), dbdir = dash_db, read_only = TRUE)
     saved <- dbGetQuery(dash_con, "SELECT param, value FROM sizing_settings")
     dbDisconnect(dash_con)
-    if ("bankroll" %in% saved$param) bankroll <- saved$value[saved$param == "bankroll"]
-    if ("kelly_mult" %in% saved$param) kelly_mult <- saved$value[saved$param == "kelly_mult"]
+    # Prefer parlay-specific settings, fall back to main bankroll/kelly
+    if ("parlay_bankroll" %in% saved$param) {
+      bankroll <- saved$value[saved$param == "parlay_bankroll"]
+    } else if ("bankroll" %in% saved$param) {
+      bankroll <- saved$value[saved$param == "bankroll"]
+    }
+    if ("parlay_kelly_mult" %in% saved$param) {
+      kelly_mult <- saved$value[saved$param == "parlay_kelly_mult"]
+    } else if ("kelly_mult" %in% saved$param) {
+      kelly_mult <- saved$value[saved$param == "kelly_mult"]
+    }
   }, error = function(e) NULL)
 }
 
@@ -197,13 +207,9 @@ check_mlb_samples_fresh <- function(max_age_minutes = 5) {
   })
 }
 
-if (!check_mlb_samples_fresh(max_age_minutes = 5)) {
-  cat("Samples stale or missing. Regenerating via MLB.R...\n")
-  result <- system("Rscript 'MLB Answer Key/MLB.R'", intern = FALSE)
-  if (result != 0) {
-    cat("Error running MLB.R pipeline.\n")
-    quit(status = 1)
-  }
+if (!check_mlb_samples_fresh(max_age_minutes = 10)) {
+  cat("Samples stale or missing. Run the MLB pipeline first (run.py mlb).\n")
+  quit(status = 0)
 }
 
 # =============================================================================
@@ -270,7 +276,8 @@ cat(sprintf("Wagerzon FG games with spread + total: %d\n", nrow(wz_combined)))
 
 wz_matched <- wz_combined %>%
   inner_join(
-    consensus %>% select(id, home_team, away_team, consensus_prob_home),
+    consensus %>% select(id, home_team, away_team, consensus_prob_home,
+                          any_of("commence_time")),
     by = c("home_team", "away_team")
   )
 
@@ -372,8 +379,11 @@ for (i in seq_len(nrow(wz_matched))) {
 
     # Store WITHOUT sizing — conditional Kelly sizes in pass 2
     results[[length(results) + 1]] <- tibble(
-      game        = sprintf("%s @ %s", row$away_team, row$home_team),
       game_id     = game_id,
+      game        = sprintf("%s @ %s", row$away_team, row$home_team),
+      home_team   = row$home_team,
+      away_team   = row$away_team,
+      game_time   = if ("commence_time" %in% names(row)) as.character(row$commence_time) else NA_character_,
       combo       = combo_name,
       spread_line = combo_spread,
       total_line  = row$total_line,
@@ -505,3 +515,24 @@ if (nrow(edges) > 0) {
   cat("No edges found above threshold.\n")
   cat("(Correlation exists but may not overcome Wagerzon's vig on these lines.)\n")
 }
+
+# =============================================================================
+# WRITE TO DUCKDB (for dashboard consumption)
+# =============================================================================
+
+# Add parlay hash for dedup in dashboard
+all_results <- all_results %>%
+  mutate(parlay_hash = pmap_chr(list(game_id, combo), function(gid, cmb) {
+    digest(paste(gid, cmb, sep = "|"), algo = "sha256", serialize = FALSE)
+  }))
+
+write_con <- NULL
+tryCatch({
+  write_con <- dbConnect(duckdb(), dbdir = MLB_DB)
+  dbExecute(write_con, "DROP TABLE IF EXISTS mlb_parlay_opportunities")
+  dbWriteTable(write_con, "mlb_parlay_opportunities", all_results)
+  cat(sprintf("Wrote %d parlay opportunities to %s.\n", nrow(all_results), MLB_DB))
+}, error = function(e) {
+  cat(sprintf("Warning: Failed to write parlays to DB: %s\n", e$message))
+})
+if (!is.null(write_con)) dbDisconnect(write_con)
