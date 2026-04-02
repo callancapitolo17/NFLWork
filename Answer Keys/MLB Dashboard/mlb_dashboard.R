@@ -693,7 +693,8 @@ create_bets_table <- function(all_bets, placed_bets) {
 # =============================================================================
 
 create_report <- function(bets_table, placed_table, stats, timestamp, filter_options_json,
-                          parlays_table = NULL, placed_parlays_table = NULL, parlay_opps = tibble()) {
+                          parlays_table = NULL, placed_parlays_table = NULL, parlay_opps = tibble(),
+                          parlay_filter_options_json = "{}") {
   page <- tagList(
     tags$head(
       tags$meta(charset = "UTF-8"),
@@ -705,6 +706,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       ),
       # Inject filter options for bets table
       tags$script(HTML(sprintf("window.FILTER_OPTIONS = %s;", filter_options_json))),
+      # Inject filter options for parlay table
+      tags$script(HTML(sprintf("window.PARLAY_FILTER_OPTIONS = %s;", parlay_filter_options_json))),
       tags$style(HTML('
         * { box-sizing: border-box; }
 
@@ -1438,12 +1441,46 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             tags$button(class = "apply-sizing-btn", onclick = "applyParlaySizing()", "Apply")
           ),
 
+          # Parlay Filter Bar
+          tags$div(class = "filter-bar",
+            tags$div(class = "filter-group",
+              tags$span(class = "filter-label", "Game"),
+              tags$div(class = "filter-dropdown", id = "parlay-filter-game-btn",
+                onclick = "toggleParlayFilter('game')",
+                tags$span(id = "parlay-filter-game-text", "All Games")
+              ),
+              tags$div(class = "filter-menu", id = "parlay-filter-game-menu")
+            ),
+            tags$div(class = "filter-group",
+              tags$span(class = "filter-label", "Status"),
+              tags$div(class = "filter-dropdown", id = "parlay-filter-status-btn",
+                onclick = "toggleParlayFilter('status')",
+                tags$span(id = "parlay-filter-status-text", "All Statuses")
+              ),
+              tags$div(class = "filter-menu", id = "parlay-filter-status-menu")
+            ),
+            tags$div(class = "filter-group",
+              tags$span(class = "filter-label", "Min Size"),
+              tags$div(
+                style = "display: flex; align-items: center; background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 8px 12px; gap: 4px;",
+                tags$span(style = "color: #8b949e; font-size: 0.85rem;", "$"),
+                tags$input(
+                  id = "parlay-filter-size-input", type = "number", min = "0", value = "0",
+                  style = "width: 50px; padding: 0; background: transparent; border: none; color: #c9d1d9; font-size: 0.85rem; outline: none;",
+                  onchange = "applyParlayFilters()", oninput = "applyParlayFilters()"
+                )
+              )
+            ),
+            tags$button(class = "clear-filters-btn", onclick = "clearParlayFilters()", "Clear Filters")
+          ),
+
           # Parlay Opportunities
           if (!is.null(parlays_table)) {
             tagList(
               tags$div(class = "section-header",
                 tags$span("Parlay Opportunities"),
-                tags$span(style = "margin-left: 8px; color: #8b949e; font-size: 0.8rem;",
+                tags$span(id = "parlay-filtered-count",
+                  style = "margin-left: 8px; color: #8b949e; font-size: 0.8rem;",
                   sprintf("(%d)", nrow(parlay_opps)))
               ),
               tags$div(class = "table-container", id = "parlays-table-container", parlays_table)
@@ -1662,6 +1699,12 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           status: new Set()
         };
 
+        // ============ PARLAY FILTERING ============
+        const activeParlayFilters = {
+          game: new Set(),
+          status: new Set()
+        };
+
         document.addEventListener("DOMContentLoaded", function() {
           // Fetch persistent book settings before initializing filters
           // Load sizing settings (bankroll/kelly)
@@ -1686,6 +1729,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
           Promise.all([bookReady, filterReady]).then(function() {
             initBetsFilters();
+            initParlayFilters();
           });
         });
 
@@ -2504,30 +2548,135 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             });
         }
 
-        // ============ PARLAY EDGE FILTER ============
-        function filterParlaysByEdge() {
-          var minEdge = parseFloat(document.getElementById("parlay-min-edge-input").value) || 0;
+        // ============ PARLAY FILTERING ============
+        function populateParlayFilterMenu(type, options) {
+          const menu = document.getElementById("parlay-filter-" + type + "-menu");
+          if (!menu || !options || !Array.isArray(options)) return;
+
+          let html = "<label class=\\"filter-option select-all\\">" +
+            "<input type=\\"checkbox\\" checked onchange=\\"toggleParlaySelectAll(\'" + type + "\', this.checked)\\" /> " +
+            "Select All</label>";
+
+          for (var i = 0; i < options.length; i++) {
+            var opt = options[i];
+            var safeVal = String(opt).replace(/"/g, "&quot;");
+            html += "<label class=\\"filter-option\\">" +
+              "<input type=\\"checkbox\\" checked data-val=\\"" + safeVal + "\\" onchange=\\"updateParlayFilter(\'" + type + "\')\\"/> " +
+              escapeHtml(String(opt)) + "</label>";
+          }
+          menu.innerHTML = html;
+        }
+
+        function toggleParlayFilter(type) {
+          const menu = document.getElementById("parlay-filter-" + type + "-menu");
+          const wasOpen = menu.classList.contains("open");
+          document.querySelectorAll(".filter-menu").forEach(m => m.classList.remove("open"));
+          if (!wasOpen) menu.classList.add("open");
+        }
+
+        function toggleParlaySelectAll(type, isChecked) {
+          const menu = document.getElementById("parlay-filter-" + type + "-menu");
+          menu.querySelectorAll("input[type=checkbox]").forEach(function(cb) {
+            cb.checked = isChecked;
+          });
+          updateParlayFilter(type);
+        }
+
+        function updateParlayFilter(type) {
+          const menu = document.getElementById("parlay-filter-" + type + "-menu");
+          const checkboxes = menu.querySelectorAll("input[data-val]");
+          const checkedVals = [];
+          for (var i = 0; i < checkboxes.length; i++) {
+            if (checkboxes[i].checked) checkedVals.push(checkboxes[i].getAttribute("data-val"));
+          }
+          activeParlayFilters[type] = new Set(checkedVals);
+
+          const textEl = document.getElementById("parlay-filter-" + type + "-text");
+          const allLabel = type === "game" ? "All Games" : "All Statuses";
+          if (checkedVals.length === checkboxes.length) {
+            textEl.textContent = allLabel;
+          } else if (checkedVals.length === 0) {
+            textEl.textContent = "None selected";
+          } else if (checkedVals.length <= 2) {
+            textEl.textContent = checkedVals.join(", ");
+          } else {
+            textEl.textContent = checkedVals.length + " selected";
+          }
+
+          const selectAllCb = menu.querySelector(".select-all input");
+          if (selectAllCb) {
+            selectAllCb.checked = checkedVals.length === checkboxes.length;
+            selectAllCb.indeterminate = checkedVals.length > 0 && checkedVals.length < checkboxes.length;
+          }
+          applyParlayFilters();
+        }
+
+        function initParlayFilters() {
+          const opts = window.PARLAY_FILTER_OPTIONS;
+          if (!opts) return;
+          populateParlayFilterMenu("game", opts.games);
+          populateParlayFilterMenu("status", opts.statuses || ["Not Placed", "Placed"]);
+        }
+
+        function applyParlayFilters() {
           var container = document.getElementById("parlays-table-container");
           if (!container) return;
           var rows = container.querySelectorAll(".rt-tr-group");
+          var minEdge = parseFloat(document.getElementById("parlay-min-edge-input").value) || 0;
+          var minSize = parseFloat(document.getElementById("parlay-filter-size-input").value) || 0;
           var visible = 0;
+
           rows.forEach(function(row) {
-            // Find edge from the button data-edge attribute
             var btn = row.querySelector("button[data-edge]");
             var edge = btn ? parseFloat(btn.dataset.edge) : 0;
-            if (edge >= minEdge) {
-              row.style.display = "";
-              visible++;
-            } else {
-              row.style.display = "none";
-            }
+            var size = btn ? parseFloat(btn.dataset.size) : 0;
+            var gameText = btn ? (btn.dataset.away + " @ " + btn.dataset.home) : "";
+            var statusLabel = btn && btn.classList.contains("btn-placed") ? "Placed" : "Not Placed";
+
+            var gameMatch  = activeParlayFilters.game.size === 0   || activeParlayFilters.game.has(gameText);
+            var statusMatch = activeParlayFilters.status.size === 0 || activeParlayFilters.status.has(statusLabel);
+            var edgeMatch  = edge >= minEdge;
+            var sizeMatch  = size >= minSize;
+
+            var show = gameMatch && statusMatch && edgeMatch && sizeMatch;
+            row.style.display = show ? "" : "none";
+            if (show) visible++;
           });
-          // Update count in section header
-          var header = container.previousElementSibling;
-          if (header) {
-            var countSpan = header.querySelector("span:last-child");
-            if (countSpan) countSpan.textContent = "(" + visible + ")";
+
+          var countEl = document.getElementById("parlay-filtered-count");
+          if (countEl) {
+            if (visible === rows.length) {
+              countEl.textContent = "(" + rows.length + ")";
+            } else {
+              countEl.textContent = "(" + visible + " of " + rows.length + ")";
+            }
           }
+        }
+
+        function clearParlayFilters() {
+          ["game", "status"].forEach(function(type) {
+            var menu = document.getElementById("parlay-filter-" + type + "-menu");
+            if (!menu) return;
+            var checkboxes = menu.querySelectorAll("input[type=checkbox]");
+            var vals = [];
+            for (var i = 0; i < checkboxes.length; i++) {
+              checkboxes[i].checked = true;
+              var val = checkboxes[i].getAttribute("data-val");
+              if (val) vals.push(val);
+            }
+            activeParlayFilters[type] = new Set(vals);
+            var textEl = document.getElementById("parlay-filter-" + type + "-text");
+            textEl.textContent = type === "game" ? "All Games" : "All Statuses";
+          });
+          document.getElementById("parlay-filter-size-input").value = "0";
+          document.getElementById("parlay-min-edge-input").value = "0";
+          applyParlayFilters();
+        }
+
+        // ============ PARLAY EDGE FILTER ============
+        function filterParlaysByEdge() {
+          // Delegate to unified parlay filter so all filters stay in sync
+          applyParlayFilters();
         }
 
         // ============ PARLAY SIZING ============
@@ -2817,10 +2966,25 @@ filter_options_json <- toJSON(list(
   statuses = I(c("Not Placed", "Placed", "Partial Fill"))
 ), auto_unbox = FALSE)
 
+# Parlay filter options
+parlay_games <- if (nrow(parlay_opps) > 0) {
+  parlay_opps %>%
+    mutate(game_label = paste(away_team, "@", home_team)) %>%
+    distinct(game_label) %>%
+    arrange(game_label) %>%
+    pull(game_label)
+} else character()
+
+parlay_filter_options_json <- toJSON(list(
+  games    = I(parlay_games),
+  statuses = I(c("Not Placed", "Placed"))
+), auto_unbox = FALSE)
+
 # Create report
 timestamp <- format(Sys.time(), "%b %d, %Y %I:%M %p")
 page <- create_report(bets_table, placed_table, stats, timestamp, filter_options_json,
-                       parlays_table, placed_parlays_table, parlay_opps)
+                       parlays_table, placed_parlays_table, parlay_opps,
+                       parlay_filter_options_json)
 
 # Save
 save_html(page, OUTPUT_PATH, libdir = "lib")
