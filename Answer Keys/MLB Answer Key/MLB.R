@@ -423,9 +423,9 @@ timer$mark("build_spreads")
 
 # Log which Odds API books returned F5 data
 api_f5_books <- unique(c(
-  if (nrow(ml_bets) > 0) ml_bets$book else character(0),
-  if (nrow(total_bets) > 0) total_bets$book else character(0),
-  if (nrow(spread_bets) > 0) spread_bets$book else character(0)
+  if (nrow(ml_bets) > 0) ml_bets$bookmaker_key else character(0),
+  if (nrow(total_bets) > 0) total_bets$bookmaker_key else character(0),
+  if (nrow(spread_bets) > 0) spread_bets$bookmaker_key else character(0)
 ))
 if (length(api_f5_books) > 0) {
   cat(sprintf("Odds API F5 books: %s\n", paste(api_f5_books, collapse = ", ")))
