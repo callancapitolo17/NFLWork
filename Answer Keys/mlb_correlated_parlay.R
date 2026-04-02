@@ -416,10 +416,14 @@ for (i in seq_len(nrow(wz_matched))) {
       game        = sprintf("%s @ %s", row$away_team, row$home_team),
       home_team   = row$home_team,
       away_team   = row$away_team,
-      game_time   = if ("commence_time" %in% names(row)) as.character(row$commence_time) else NA_character_,
-      combo       = combo_name,
-      spread_line = combo_spread,
-      total_line  = row$total_line,
+      game_time   = if ("commence_time" %in% names(row) && !is.na(row$commence_time)) {
+        format(as.POSIXct(row$commence_time, tz = "UTC"), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+      } else NA_character_,
+      combo        = combo_name,
+      spread_line  = combo_spread,
+      total_line   = row$total_line,
+      spread_price = combo$wz_spread_price,
+      total_price  = combo$wz_total_price,
       fair_odds   = fair$fair_american_odds,
       wz_odds     = wz_american,
       fair_dec    = round(fair_dec, 3),

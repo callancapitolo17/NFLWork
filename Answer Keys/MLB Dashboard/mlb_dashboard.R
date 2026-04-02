@@ -207,14 +207,16 @@ create_placed_parlays_table <- function(placed_parlays) {
   table_data <- placed_parlays %>%
     mutate(
       game = paste(away_team, "@", home_team),
-      spread_display = ifelse(spread_line > 0, paste0("+", spread_line), as.character(spread_line)),
+      spread_team = ifelse(grepl("^Home", combo), home_team, away_team),
+      spread_fmt  = ifelse(spread_line > 0, paste0("+", spread_line), as.character(spread_line)),
+      ou_prefix   = ifelse(grepl("Over", combo), "O", "U"),
+      legs_display = paste0(spread_team, " ", spread_fmt, " \u00b7 ", ou_prefix, total_line),
       odds_display = ifelse(wz_odds > 0, paste0("+", wz_odds), as.character(wz_odds)),
       edge_display = sprintf("+%.1f%%", edge_pct),
       actual_display = sprintf("$%.0f", coalesce(actual_size, kelly_bet)),
       rec_display = sprintf("$%.0f", kelly_bet)
     ) %>%
-    select(parlay_hash, game, combo, spread_display, total_line,
-           odds_display, edge_display, actual_display, rec_display)
+    select(parlay_hash, game, legs_display, odds_display, edge_display, actual_display, rec_display)
 
   reactable(
     table_data,
@@ -222,9 +224,7 @@ create_placed_parlays_table <- function(placed_parlays) {
     columns = list(
       parlay_hash = colDef(show = FALSE),
       game = colDef(name = "Game", minWidth = 180),
-      combo = colDef(name = "Combo", minWidth = 160),
-      spread_display = colDef(name = "Spread", minWidth = 65, align = "right"),
-      total_line = colDef(name = "Total", minWidth = 65, align = "right"),
+      legs_display = colDef(name = "Legs", minWidth = 220),
       odds_display = colDef(name = "WZ Odds", minWidth = 70, align = "right",
         style = list(fontFamily = "monospace")),
       edge_display = colDef(name = "Edge", minWidth = 65, align = "right",
@@ -249,13 +249,27 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
   table_data <- parlay_opps %>%
     mutate(
       is_placed = parlay_hash %in% placed_hashes,
-      spread_display = ifelse(spread_line > 0, paste0("+", spread_line), as.character(spread_line)),
-      fair_display = ifelse(fair_odds > 0, paste0("+", fair_odds), as.character(fair_odds)),
-      wz_display = ifelse(wz_odds > 0, paste0("+", wz_odds), as.character(wz_odds)),
-      edge_display = sprintf("+%.1f%%", edge_pct),
-      size_display = sprintf("$%.0f", kelly_bet),
+      spread_team    = ifelse(grepl("^Home", combo), home_team, away_team),
+      spread_fmt     = ifelse(spread_line > 0, paste0("+", spread_line), as.character(spread_line)),
+      sp_price_fmt   = case_when(
+        is.na(spread_price) ~ "?",
+        spread_price > 0    ~ paste0("+", spread_price),
+        TRUE                ~ as.character(spread_price)
+      ),
+      ou_prefix      = ifelse(grepl("Over", combo), "O", "U"),
+      tot_price_fmt  = case_when(
+        is.na(total_price) ~ "?",
+        total_price > 0    ~ paste0("+", total_price),
+        TRUE               ~ as.character(total_price)
+      ),
+      legs_display   = paste0(spread_team, " ", spread_fmt, " (", sp_price_fmt, ")",
+                              " \u00b7 ", ou_prefix, total_line, " (", tot_price_fmt, ")"),
+      fair_display   = ifelse(fair_odds > 0, paste0("+", fair_odds), as.character(fair_odds)),
+      wz_display     = ifelse(wz_odds > 0, paste0("+", wz_odds), as.character(wz_odds)),
+      edge_display   = sprintf("+%.1f%%", edge_pct),
+      size_display   = sprintf("$%.0f", kelly_bet),
       to_win_display = sprintf("$%.0f", round(kelly_bet * (wz_dec - 1))),
-      corr_display = sprintf("%.3f", corr_factor)
+      corr_display   = sprintf("%.3f", corr_factor)
     ) %>%
     arrange(desc(edge_pct))
 
@@ -271,9 +285,10 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
       game_id = colDef(show = FALSE),
       home_team = colDef(show = FALSE),
       away_team = colDef(show = FALSE),
-      game_time = colDef(show = FALSE),
       spread_line = colDef(show = FALSE),
       total_line = colDef(show = FALSE),
+      spread_price = colDef(show = FALSE),
+      total_price = colDef(show = FALSE),
       fair_odds = colDef(show = FALSE),
       wz_odds = colDef(show = FALSE),
       fair_dec = colDef(show = FALSE),
@@ -284,11 +299,28 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
       joint_prob_raw = colDef(show = FALSE),
       joint_prob = colDef(show = FALSE),
       n_samples = colDef(show = FALSE),
+      combo = colDef(show = FALSE),
+      spread_team = colDef(show = FALSE),
+      spread_fmt = colDef(show = FALSE),
+      sp_price_fmt = colDef(show = FALSE),
+      ou_prefix = colDef(show = FALSE),
+      tot_price_fmt = colDef(show = FALSE),
 
       # Visible columns
       game = colDef(name = "Game", minWidth = 180),
-      combo = colDef(name = "Combo", minWidth = 160),
-      spread_display = colDef(name = "Spread", minWidth = 65, align = "right"),
+      game_time = colDef(
+        name = "Time",
+        minWidth = 130,
+        cell = JS("function(cellInfo) {
+          var val = cellInfo.value;
+          if (!val || val === '') return '';
+          var d = new Date(val);
+          if (isNaN(d)) return val;
+          var opts = {weekday:'short', month:'2-digit', day:'2-digit', hour:'numeric', minute:'2-digit'};
+          return d.toLocaleString(undefined, opts);
+        }")
+      ),
+      legs_display = colDef(name = "Legs", minWidth = 260),
       fair_display = colDef(name = "Fair", minWidth = 70, align = "right",
         style = list(fontFamily = "monospace", color = "#8b949e")),
       wz_display = colDef(name = "WZ", minWidth = 70, align = "right",
@@ -2716,6 +2748,13 @@ parlay_opps <- tryCatch({
   dbDisconnect(pcon, shutdown = TRUE)
   result
 }, error = function(e) { cat(sprintf("  Warning: %s\n", e$message)); tibble() })
+
+# Compatibility guard: spread_price / total_price added in feature/mlb-parlay-leg-display.
+# If mlb_correlated_parlay.R hasn't been re-run yet, fill NA so dashboard doesn't crash.
+if (nrow(parlay_opps) > 0) {
+  if (!"spread_price" %in% names(parlay_opps)) parlay_opps$spread_price <- NA_integer_
+  if (!"total_price"  %in% names(parlay_opps)) parlay_opps$total_price  <- NA_integer_
+}
 
 placed_parlays <- tryCatch({
   ppcon <- dbConnect(duckdb(), dbdir = DB_PATH, read_only = TRUE)
