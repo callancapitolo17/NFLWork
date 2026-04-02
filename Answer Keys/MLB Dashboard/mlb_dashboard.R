@@ -706,6 +706,35 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           margin: 0;
         }
 
+        .tab-bar {
+          display: flex;
+          gap: 4px;
+          margin-bottom: 24px;
+          border-bottom: 1px solid #21262d;
+          padding-bottom: 0;
+        }
+
+        .tab-btn {
+          background: transparent;
+          border: none;
+          border-bottom: 2px solid transparent;
+          color: #8b949e;
+          padding: 10px 20px;
+          font-size: 0.9rem;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.15s;
+        }
+
+        .tab-btn:hover {
+          color: #c9d1d9;
+        }
+
+        .tab-btn.active {
+          color: #f0f6fc;
+          border-bottom-color: #238636;
+        }
+
         .header .subtitle {
           font-size: 0.8rem;
           color: #8b949e;
@@ -1236,51 +1265,60 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           tags$button(class = "refresh-btn", onclick = "refreshData()", "Refresh")
         ),
 
-        # Stats
-        tags$div(class = "stats-row",
-          tags$div(class = "stat-card",
-            tags$div(class = "stat-value", stats$total_bets),
-            tags$div(class = "stat-label", "Total Bets")
-          ),
-          tags$div(class = "stat-card",
-            tags$div(class = "stat-value", stats$placed_count),
-            tags$div(class = "stat-label", "Placed")
-          ),
-          tags$div(class = "stat-card",
-            tags$div(class = "stat-value", sprintf("+%.1f%%", stats$avg_ev)),
-            tags$div(class = "stat-label", "Avg EV")
-          ),
-          tags$div(class = "stat-card",
-            tags$div(class = "stat-value", sprintf("+%.1f%%", stats$max_ev)),
-            tags$div(class = "stat-label", "Best EV")
-          )
+        # Tab Navigation
+        tags$div(class = "tab-bar",
+          tags$button(class = "tab-btn active", id = "tab-btn-bets", onclick = "switchTab(\'bets\')", "Bets"),
+          tags$button(class = "tab-btn", id = "tab-btn-parlays", onclick = "switchTab(\'parlays\')", "Parlays")
         ),
 
-        # Placed Bets Section (if any)
-        if (!is.null(placed_table)) {
-          tagList(
-            tags$div(class = "section-header", "Placed Bets"),
-            tags$div(class = "table-container placed-section", placed_table)
-          )
-        },
+        # ============ BETS TAB ============
+        tags$div(id = "tab-bets", class = "tab-content",
 
-        # Bankroll/Kelly Controls
-        tags$div(class = "sizing-controls",
-          tags$div(class = "sizing-group",
-            tags$span(class = "sizing-label", "Bankroll ($)"),
-            tags$input(id = "bankroll-input", class = "sizing-input", type = "number",
-              value = "100", min = "1", step = "10")
+          # Stats
+          tags$div(class = "stats-row",
+            tags$div(class = "stat-card",
+              tags$div(class = "stat-value", stats$total_bets),
+              tags$div(class = "stat-label", "Total Bets")
+            ),
+            tags$div(class = "stat-card",
+              tags$div(class = "stat-value", stats$placed_count),
+              tags$div(class = "stat-label", "Placed")
+            ),
+            tags$div(class = "stat-card",
+              tags$div(class = "stat-value", sprintf("+%.1f%%", stats$avg_ev)),
+              tags$div(class = "stat-label", "Avg EV")
+            ),
+            tags$div(class = "stat-card",
+              tags$div(class = "stat-value", sprintf("+%.1f%%", stats$max_ev)),
+              tags$div(class = "stat-label", "Best EV")
+            )
           ),
-          tags$div(class = "sizing-group",
-            tags$span(class = "sizing-label", "Kelly Fraction"),
-            tags$input(id = "kelly-input", class = "sizing-input", type = "number",
-              value = "0.25", min = "0.01", max = "1", step = "0.05")
-          ),
-          tags$button(class = "apply-sizing-btn", onclick = "recalculateBetSizes()", "Apply")
-        ),
 
-        # Filter Bar
-        tags$div(class = "filter-bar",
+          # Placed Bets Section (if any)
+          if (!is.null(placed_table)) {
+            tagList(
+              tags$div(class = "section-header", "Placed Bets"),
+              tags$div(class = "table-container placed-section", placed_table)
+            )
+          },
+
+          # Bankroll/Kelly Controls
+          tags$div(class = "sizing-controls",
+            tags$div(class = "sizing-group",
+              tags$span(class = "sizing-label", "Bankroll ($)"),
+              tags$input(id = "bankroll-input", class = "sizing-input", type = "number",
+                value = "100", min = "1", step = "10")
+            ),
+            tags$div(class = "sizing-group",
+              tags$span(class = "sizing-label", "Kelly Fraction"),
+              tags$input(id = "kelly-input", class = "sizing-input", type = "number",
+                value = "0.25", min = "0.01", max = "1", step = "0.05")
+            ),
+            tags$button(class = "apply-sizing-btn", onclick = "recalculateBetSizes()", "Apply")
+          ),
+
+          # Filter Bar
+          tags$div(class = "filter-bar",
           tags$div(class = "filter-group",
             tags$span(class = "filter-label", "Game"),
             tags$div(class = "filter-dropdown", id = "filter-game-btn", onclick = "toggleFilter('game')",
@@ -1333,59 +1371,75 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           tags$span("Available Bets"),
           tags$span(id = "filtered-count", style = "margin-left: 8px; color: #8b949e; font-size: 0.8rem;")
         ),
-        tags$div(class = "table-container", id = "bets-table-container", bets_table),
+        tags$div(class = "table-container", id = "bets-table-container", bets_table)
+        ), # end tab-bets
 
-        # Parlays Section
-        if (!is.null(parlays_table) || !is.null(placed_parlays_table)) {
-          tagList(
-            tags$hr(style = "border: none; border-top: 1px solid #30363d; margin: 24px 0;"),
+        # ============ PARLAYS TAB ============
+        tags$div(id = "tab-parlays", class = "tab-content", style = "display: none;",
 
-            # Placed Parlays (if any)
-            if (!is.null(placed_parlays_table)) {
-              tagList(
-                tags$div(class = "section-header", "Placed Parlays"),
-                tags$div(class = "table-container placed-section", placed_parlays_table)
-              )
-            },
+          # Placed Parlays (if any)
+          if (!is.null(placed_parlays_table)) {
+            tagList(
+              tags$div(class = "section-header", "Placed Parlays"),
+              tags$div(class = "table-container placed-section", placed_parlays_table)
+            )
+          },
 
-            # Parlay Sizing Controls
-            tags$div(class = "sizing-controls",
-              tags$div(class = "sizing-group",
-                tags$span(class = "sizing-label", "Parlay Bankroll ($)"),
-                tags$input(id = "parlay-bankroll-input", class = "sizing-input", type = "number",
-                  value = "100", min = "1", step = "10")
-              ),
-              tags$div(class = "sizing-group",
-                tags$span(class = "sizing-label", "Parlay Kelly"),
-                tags$input(id = "parlay-kelly-input", class = "sizing-input", type = "number",
-                  value = "0.25", min = "0.01", max = "1", step = "0.05")
-              ),
-              tags$div(class = "sizing-group",
-                tags$span(class = "sizing-label", "Min Edge (%)"),
-                tags$input(id = "parlay-min-edge-input", class = "sizing-input", type = "number",
-                  value = "0", min = "0", step = "1",
-                  onchange = "filterParlaysByEdge()", oninput = "filterParlaysByEdge()")
-              ),
-              tags$button(class = "apply-sizing-btn", onclick = "applyParlaySizing()", "Apply")
+          # Parlay Sizing Controls
+          tags$div(class = "sizing-controls",
+            tags$div(class = "sizing-group",
+              tags$span(class = "sizing-label", "Parlay Bankroll ($)"),
+              tags$input(id = "parlay-bankroll-input", class = "sizing-input", type = "number",
+                value = "100", min = "1", step = "10")
             ),
+            tags$div(class = "sizing-group",
+              tags$span(class = "sizing-label", "Parlay Kelly"),
+              tags$input(id = "parlay-kelly-input", class = "sizing-input", type = "number",
+                value = "0.25", min = "0.01", max = "1", step = "0.05")
+            ),
+            tags$div(class = "sizing-group",
+              tags$span(class = "sizing-label", "Min Edge (%)"),
+              tags$input(id = "parlay-min-edge-input", class = "sizing-input", type = "number",
+                value = "0", min = "0", step = "1",
+                onchange = "filterParlaysByEdge()", oninput = "filterParlaysByEdge()")
+            ),
+            tags$button(class = "apply-sizing-btn", onclick = "applyParlaySizing()", "Apply")
+          ),
 
-            # Parlay Opportunities
-            if (!is.null(parlays_table)) {
-              tagList(
-                tags$div(class = "section-header",
-                  tags$span("Parlay Opportunities"),
-                  tags$span(style = "margin-left: 8px; color: #8b949e; font-size: 0.8rem;",
-                    sprintf("(%d)", nrow(parlay_opps)))
-                ),
-                tags$div(class = "table-container", id = "parlays-table-container", parlays_table)
-              )
-            }
-          )
-        }
+          # Parlay Opportunities
+          if (!is.null(parlays_table)) {
+            tagList(
+              tags$div(class = "section-header",
+                tags$span("Parlay Opportunities"),
+                tags$span(style = "margin-left: 8px; color: #8b949e; font-size: 0.8rem;",
+                  sprintf("(%d)", nrow(parlay_opps)))
+              ),
+              tags$div(class = "table-container", id = "parlays-table-container", parlays_table)
+            )
+          },
+
+          # Empty state when no parlays
+          if (is.null(parlays_table)) {
+            tags$div(style = "text-align: center; padding: 48px; color: #8b949e;",
+              tags$p(style = "font-size: 1.1rem;", "No parlay opportunities found."),
+              tags$p(style = "font-size: 0.85rem;", "Try clicking Refresh when games are available.")
+            )
+          }
+        ) # end tab-parlays
       ),
 
       # JavaScript
       tags$script(HTML('
+        // ============ TAB SWITCHING ============
+        function switchTab(tab) {
+          document.getElementById("tab-bets").style.display = tab === "bets" ? "" : "none";
+          document.getElementById("tab-parlays").style.display = tab === "parlays" ? "" : "none";
+          document.getElementById("tab-btn-bets").className = "tab-btn" + (tab === "bets" ? " active" : "");
+          document.getElementById("tab-btn-parlays").className = "tab-btn" + (tab === "parlays" ? " active" : "");
+          // Apply parlay edge filter when switching to parlays tab
+          if (tab === "parlays") filterParlaysByEdge();
+        }
+
         // ============ CORRELATION TOOLTIPS ============
         (function() {
           var tip = document.createElement("div");
