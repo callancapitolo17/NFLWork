@@ -88,9 +88,9 @@ SPORT_CONFIGS = {
     },
     "mlb": {
         "sport_key": "baseball_mlb",
-        "sport_id": "3",
+        "sport_id": "1",
         "table_name": "mlb_odds",
-        "leagues": {"5": "MLB"},
+        "leagues": {"8": "MLB"},
     },
 }
 
@@ -140,6 +140,7 @@ class Bet105Scraper:
         self.coeff_received = set()
         self._unknown_types = set()
         self._coeff_debug_logged = False
+        self._period_keys_logged = False
 
     def _send_sio_event(self, event: str, data):
         """Send a Socket.IO event (type 42 = EIO message + SIO event)."""
@@ -307,8 +308,13 @@ class Bet105Scraper:
                 self._coeff_debug_logged = True
             return
 
+        # Log available period keys on first event with data (helps discover F5 key)
+        if not hasattr(self, '_period_keys_logged') and isinstance(coeffs, dict) and coeffs:
+            self._period_keys_logged = True
+            print(f"  Coefficient period keys: {sorted(coeffs.keys())}")
+
         parsed = {}
-        for period_key, period_label in [("m", "fg"), ("h1", "Half1")]:
+        for period_key, period_label in [("m", "fg"), ("h1", "Half1"), ("f5", "F5")]:
             period_data = coeffs.get(period_key, {})
             if not period_data:
                 continue
@@ -541,8 +547,9 @@ class Bet105Scraper:
                 game_date = game_time = ""
 
             for period_label, odds in coeffs.items():
-                market = "spreads" if period_label == "fg" else "spreads_h1"
-                suffix = "" if period_label == "fg" else "_h1"
+                suffix_map = {"fg": "", "Half1": "_h1", "F5": "_f5"}
+                suffix = suffix_map.get(period_label, f"_{period_label.lower()}")
+                market = f"spreads{suffix}"
 
                 # Main line record
                 base = {
