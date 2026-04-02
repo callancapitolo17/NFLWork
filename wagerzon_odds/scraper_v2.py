@@ -300,6 +300,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
             "game_time": game_time,
             "away_team": away_team,
             "home_team": home_team,
+            "idgm": game.get("idgm"),
         }
 
         # --- Full game line (parent) ---
@@ -561,6 +562,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 "under_price": None,
                 "away_ml": away_odds,
                 "home_ml": home_odds,
+                "idgm": game.get("idgm"),
             })
             print(f"  {market_name}: {away_team} @ {home_team} | {away_odds}/{home_odds}")
 
@@ -597,9 +599,15 @@ def init_database(sport: str):
             over_price INTEGER,
             under_price INTEGER,
             away_ml INTEGER,
-            home_ml INTEGER
+            home_ml INTEGER,
+            idgm INTEGER
         )
     """)
+    # Add idgm column to existing tables that predate this change
+    try:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN idgm INTEGER")
+    except Exception:
+        pass  # column already exists
     conn.close()
 
 
@@ -618,7 +626,7 @@ def save_odds(odds_data: list[dict], sport: str):
         "fetch_time", "sport_key", "game_id", "game_date", "game_time",
         "away_team", "home_team", "market", "period",
         "away_spread", "away_spread_price", "home_spread", "home_spread_price",
-        "total", "over_price", "under_price", "away_ml", "home_ml"
+        "total", "over_price", "under_price", "away_ml", "home_ml", "idgm"
     ]
 
     placeholders = ", ".join(["?" for _ in columns])
