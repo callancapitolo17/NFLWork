@@ -297,12 +297,19 @@ if (use_exact) {
 # MATCH WAGERZON GAMES TO SAMPLES
 # =============================================================================
 
+# Keep only the nearest upcoming game per team pair — Wagerzon prices one game
+# at a time and a series causes the join to fan out across multiple game IDs.
+consensus_next <- consensus %>%
+  select(id, home_team, away_team, consensus_prob_home, any_of("commence_time")) %>%
+  { if ("commence_time" %in% names(.))
+      group_by(., home_team, away_team) %>%
+      arrange(commence_time, .by_group = TRUE) %>%
+      slice(1) %>%
+      ungroup()
+    else . }
+
 wz_matched <- wz_combined %>%
-  inner_join(
-    consensus %>% select(id, home_team, away_team, consensus_prob_home,
-                          any_of("commence_time")),
-    by = c("home_team", "away_team")
-  )
+  inner_join(consensus_next, by = c("home_team", "away_team"))
 
 if (nrow(wz_matched) == 0) {
   cat("No Wagerzon games matched to consensus. Check team name resolution.\n")
