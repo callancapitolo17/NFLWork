@@ -251,9 +251,17 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
       is_placed = parlay_hash %in% placed_hashes,
       spread_team    = ifelse(grepl("^Home", combo), home_team, away_team),
       spread_fmt     = ifelse(spread_line > 0, paste0("+", spread_line), as.character(spread_line)),
-      sp_price_fmt   = ifelse(spread_price > 0, paste0("+", spread_price), as.character(spread_price)),
+      sp_price_fmt   = case_when(
+        is.na(spread_price) ~ "?",
+        spread_price > 0    ~ paste0("+", spread_price),
+        TRUE                ~ as.character(spread_price)
+      ),
       ou_prefix      = ifelse(grepl("Over", combo), "O", "U"),
-      tot_price_fmt  = ifelse(total_price > 0, paste0("+", total_price), as.character(total_price)),
+      tot_price_fmt  = case_when(
+        is.na(total_price) ~ "?",
+        total_price > 0    ~ paste0("+", total_price),
+        TRUE               ~ as.character(total_price)
+      ),
       legs_display   = paste0(spread_team, " ", spread_fmt, " (", sp_price_fmt, ")",
                               " \u00b7 ", ou_prefix, total_line, " (", tot_price_fmt, ")"),
       fair_display   = ifelse(fair_odds > 0, paste0("+", fair_odds), as.character(fair_odds)),
@@ -2740,6 +2748,13 @@ parlay_opps <- tryCatch({
   dbDisconnect(pcon, shutdown = TRUE)
   result
 }, error = function(e) { cat(sprintf("  Warning: %s\n", e$message)); tibble() })
+
+# Compatibility guard: spread_price / total_price added in feature/mlb-parlay-leg-display.
+# If mlb_correlated_parlay.R hasn't been re-run yet, fill NA so dashboard doesn't crash.
+if (nrow(parlay_opps) > 0) {
+  if (!"spread_price" %in% names(parlay_opps)) parlay_opps$spread_price <- NA_integer_
+  if (!"total_price"  %in% names(parlay_opps)) parlay_opps$total_price  <- NA_integer_
+}
 
 placed_parlays <- tryCatch({
   ppcon <- dbConnect(duckdb(), dbdir = DB_PATH, read_only = TRUE)

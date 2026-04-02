@@ -416,7 +416,9 @@ for (i in seq_len(nrow(wz_matched))) {
       game        = sprintf("%s @ %s", row$away_team, row$home_team),
       home_team   = row$home_team,
       away_team   = row$away_team,
-      game_time   = if ("commence_time" %in% names(row)) as.character(row$commence_time) else NA_character_,
+      game_time   = if ("commence_time" %in% names(row) && !is.na(row$commence_time)) {
+        format(as.POSIXct(row$commence_time, tz = "UTC"), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+      } else NA_character_,
       combo        = combo_name,
       spread_line  = combo_spread,
       total_line   = row$total_line,
