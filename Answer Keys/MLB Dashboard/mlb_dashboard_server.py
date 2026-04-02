@@ -1069,6 +1069,20 @@ def run_pipeline():
             print(f"Pipeline failed: {error_output}")
             return False, f"Pipeline failed: {error_output}"
 
+        # Step 1.5: Price parlays via Wagerzon ConfirmWagerHelper (non-fatal)
+        # Must run AFTER scrapers (reads mlb_odds) and BEFORE correlated parlay
+        # finder (reads mlb_parlay_prices). Without this, stale exact prices from
+        # a previous manual run get used, causing WZ odds / payout mismatches.
+        print("Pricing parlays on Wagerzon...")
+        pricing_result = subprocess.run(
+            [sys.executable, str(nfl_work_dir / "wagerzon_odds" / "parlay_pricer.py"), "mlb"],
+            capture_output=True,
+            text=True,
+            cwd=str(nfl_work_dir)
+        )
+        if pricing_result.returncode != 0:
+            print(f"Parlay pricing warning: {(pricing_result.stderr or pricing_result.stdout or '')[-300:]}")
+
         # Step 2: Find correlated parlay opportunities (non-fatal)
         print("Finding parlay opportunities...")
         parlay_result = subprocess.run(

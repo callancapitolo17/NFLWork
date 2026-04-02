@@ -293,7 +293,17 @@ exact_prices <- tryCatch({
 
 use_exact <- nrow(exact_prices) > 0
 if (use_exact) {
-  cat(sprintf("Loaded %d exact parlay prices from ConfirmWagerHelper API.\n", nrow(exact_prices)))
+  # Safety net: reject stale prices so old parlay_pricer runs can't poison results
+  fetch_age <- as.numeric(difftime(Sys.time(),
+    as.POSIXct(exact_prices$fetch_time[1], tz = "UTC"), units = "mins"))
+  if (fetch_age > 15) {
+    cat(sprintf("Exact parlay prices are %.0f min old — falling back to shave+round.\n", fetch_age))
+    use_exact <- FALSE
+    exact_prices <- data.frame()
+  } else {
+    cat(sprintf("Loaded %d exact parlay prices from ConfirmWagerHelper API (%.0f min old).\n",
+                nrow(exact_prices), fetch_age))
+  }
 } else {
   cat("No exact parlay prices found. Using shave+round approximation.\n")
 }
