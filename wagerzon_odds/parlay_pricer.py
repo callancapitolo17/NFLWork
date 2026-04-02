@@ -149,29 +149,29 @@ def price_mlb_parlays(session: requests.Session):
             {
                 "combo": "Home Spread + Over",
                 "legs": [
-                    {"play": PLAY_HOME_SPREAD, "points": g["home_spread"], "odds": abs(g["home_spread_price"])},
-                    {"play": PLAY_OVER, "points": -abs(g["total"]), "odds": abs(g["over_price"])},
+                    {"play": PLAY_HOME_SPREAD, "points": g["home_spread"], "odds": g["home_spread_price"]},
+                    {"play": PLAY_OVER, "points": -abs(g["total"]), "odds": g["over_price"]},
                 ],
             },
             {
                 "combo": "Home Spread + Under",
                 "legs": [
-                    {"play": PLAY_HOME_SPREAD, "points": g["home_spread"], "odds": abs(g["home_spread_price"])},
-                    {"play": PLAY_UNDER, "points": g["total"], "odds": abs(g["under_price"])},
+                    {"play": PLAY_HOME_SPREAD, "points": g["home_spread"], "odds": g["home_spread_price"]},
+                    {"play": PLAY_UNDER, "points": g["total"], "odds": g["under_price"]},
                 ],
             },
             {
                 "combo": "Away Spread + Over",
                 "legs": [
-                    {"play": PLAY_AWAY_SPREAD, "points": g["away_spread"], "odds": abs(g["away_spread_price"])},
-                    {"play": PLAY_OVER, "points": -abs(g["total"]), "odds": abs(g["over_price"])},
+                    {"play": PLAY_AWAY_SPREAD, "points": g["away_spread"], "odds": g["away_spread_price"]},
+                    {"play": PLAY_OVER, "points": -abs(g["total"]), "odds": g["over_price"]},
                 ],
             },
             {
                 "combo": "Away Spread + Under",
                 "legs": [
-                    {"play": PLAY_AWAY_SPREAD, "points": g["away_spread"], "odds": abs(g["away_spread_price"])},
-                    {"play": PLAY_UNDER, "points": g["total"], "odds": abs(g["under_price"])},
+                    {"play": PLAY_AWAY_SPREAD, "points": g["away_spread"], "odds": g["away_spread_price"]},
+                    {"play": PLAY_UNDER, "points": g["total"], "odds": g["under_price"]},
                 ],
             },
         ]
