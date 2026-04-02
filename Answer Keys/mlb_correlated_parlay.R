@@ -273,8 +273,10 @@ wz_combined <- wz_spreads %>%
                           total_line = line,
                           over_price = odds_over,
                           under_price = odds_under),
-    by = c("home_team", "away_team", "game_date", "game_time")
-  )
+    by = c("home_team", "away_team", "game_date", "game_time"),
+    relationship = "many-to-many"
+  ) %>%
+  distinct(home_team, away_team, game_date, game_time, .keep_all = TRUE)
 
 cat(sprintf("Wagerzon FG games with spread + total: %d\n", nrow(wz_combined)))
 
@@ -304,19 +306,26 @@ if (use_exact) {
 # commence_time (UTC) to match Wagerzon's field format. Joining on all four keys
 # correctly handles both series (same date needed) and doubleheaders (same date
 # but different game_time needed).
+# Derive game_date ("MM/DD") and game_hour ("HH") in Eastern from consensus
+# commence_time (UTC). We match on hour rather than exact HH:MM because the
+# Odds API and Wagerzon can report the same game a few minutes apart.
+# Hour-level matching still distinguishes doubleheaders (typically noon + 7 PM).
 consensus_dated <- consensus %>%
   select(id, home_team, away_team, consensus_prob_home, any_of("commence_time")) %>%
   mutate(
     game_date = if ("commence_time" %in% names(.)) {
       format(with_tz(as.POSIXct(commence_time, tz = "UTC"), "America/New_York"), "%m/%d")
     } else NA_character_,
-    game_time = if ("commence_time" %in% names(.)) {
-      format(with_tz(as.POSIXct(commence_time, tz = "UTC"), "America/New_York"), "%H:%M")
+    game_hour = if ("commence_time" %in% names(.)) {
+      format(with_tz(as.POSIXct(commence_time, tz = "UTC"), "America/New_York"), "%H")
     } else NA_character_
   )
 
+wz_combined <- wz_combined %>%
+  mutate(game_hour = substr(game_time, 1, 2))
+
 wz_matched <- wz_combined %>%
-  inner_join(consensus_dated, by = c("home_team", "away_team", "game_date", "game_time"))
+  inner_join(consensus_dated, by = c("home_team", "away_team", "game_date", "game_hour"))
 
 if (nrow(wz_matched) == 0) {
   cat("No Wagerzon games matched to consensus. Check team name resolution.\n")
