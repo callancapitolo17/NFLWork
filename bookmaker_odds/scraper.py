@@ -61,7 +61,7 @@ SPORT_CONFIGS = {
         "table_name": "mlb_odds",
         "leagues": [
             {"id": "5", "name": "Game Lines", "market": "spreads", "period": "fg"},
-            {"id": "206", "name": "1st 5 Innings", "market": "spreads_f5", "period": "F5"},
+            {"id": "6", "name": "1st 5 Innings", "market": "spreads_f5", "period": "F5"},
         ],
     },
 }
