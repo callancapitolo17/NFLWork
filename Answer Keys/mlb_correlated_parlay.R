@@ -408,7 +408,9 @@ for (i in seq_len(nrow(wz_matched))) {
     fair_dec <- fair$fair_decimal_odds
     edge_pct <- (wz_dec - fair_dec) / fair_dec * 100
 
-    combo_spread <- if (grepl("Home", combo_name)) row$home_spread else row$away_spread
+    combo_spread       <- if (grepl("Home", combo_name)) row$home_spread else row$away_spread
+    combo_spread_price <- combo$wz_spread_price
+    combo_total_price  <- combo$wz_total_price
 
     # Store WITHOUT sizing — conditional Kelly sizes in pass 2
     results[[length(results) + 1]] <- tibble(
@@ -422,8 +424,8 @@ for (i in seq_len(nrow(wz_matched))) {
       combo        = combo_name,
       spread_line  = combo_spread,
       total_line   = row$total_line,
-      spread_price = combo$wz_spread_price,
-      total_price  = combo$wz_total_price,
+      spread_price = combo_spread_price,
+      total_price  = combo_total_price,
       fair_odds   = fair$fair_american_odds,
       wz_odds     = wz_american,
       fair_dec    = round(fair_dec, 3),
