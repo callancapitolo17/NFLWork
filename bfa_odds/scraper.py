@@ -55,7 +55,7 @@ SPORT_CONFIGS = {
         "table_name": "mlb_odds",
         "api_slug": "mlb",
         "league_id": 246,
-        "periods": ["F5"],
+        "periods": ["1H"],  # BFA API calls first 5 innings "1st Half"
     },
 }
 

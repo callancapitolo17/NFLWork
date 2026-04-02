@@ -3224,6 +3224,7 @@ get_hoop88_odds <- function(
     "cbb" = "basketball_ncaab",
     "nba" = "basketball_nba",
     "college_baseball" = "baseball_ncaa",
+    "mlb" = "baseball_mlb",
     sport)
   if ("sport_key" %in% names(result)) {
     result <- result %>% filter(sport_key == expected_key)

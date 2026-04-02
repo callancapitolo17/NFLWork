@@ -139,6 +139,7 @@ class Bet105Scraper:
         self.coeff_subscribed = set()
         self.coeff_received = set()
         self._unknown_types = set()
+        self._coeff_debug_logged = False
 
     def _send_sio_event(self, event: str, data):
         """Send a Socket.IO event (type 42 = EIO message + SIO event)."""
@@ -299,6 +300,11 @@ class Bet105Scraper:
 
         coeffs = payload.get("c", {})
         if not coeffs or isinstance(coeffs, list):
+            if not self._coeff_debug_logged:
+                print(f"  DEBUG: Empty coefficients for event {event_id}. "
+                      f"Keys in payload: {list(payload.keys())}, "
+                      f"c type: {type(coeffs).__name__}")
+                self._coeff_debug_logged = True
             return
 
         parsed = {}
