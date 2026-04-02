@@ -853,7 +853,7 @@ def update_filter_settings():
     filter_type = data.get("filter_type")
     selected_values = data.get("selected_values")
 
-    if not filter_type or filter_type not in ("market", "correlation", "size", "status"):
+    if not filter_type or filter_type not in ("market", "correlation", "size", "status", "parlay_status", "parlay_size"):
         return jsonify({"success": False, "error": "Invalid filter_type"}), 400
 
     try:

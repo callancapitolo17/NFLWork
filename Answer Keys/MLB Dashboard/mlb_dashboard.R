@@ -1467,7 +1467,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 tags$input(
                   id = "parlay-filter-size-input", type = "number", min = "0", value = "0",
                   style = "width: 50px; padding: 0; background: transparent; border: none; color: #c9d1d9; font-size: 0.85rem; outline: none;",
-                  onchange = "applyParlayFilters()", oninput = "applyParlayFilters()"
+                  onchange = "updateParlayMinSize()", oninput = "updateParlayMinSize()"
                 )
               )
             ),
@@ -2608,6 +2608,26 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             selectAllCb.checked = checkedVals.length === checkboxes.length;
             selectAllCb.indeterminate = checkedVals.length > 0 && checkedVals.length < checkboxes.length;
           }
+
+          // Persist status filter (game not persisted — changes daily)
+          if (type === "status") {
+            fetch(\'/api/filter-settings\', {
+              method: \'POST\',
+              headers: {\'Content-Type\': \'application/json\'},
+              body: JSON.stringify({ filter_type: "parlay_status", selected_values: checkedVals })
+            });
+          }
+
+          applyParlayFilters();
+        }
+
+        function updateParlayMinSize() {
+          var val = parseFloat(document.getElementById("parlay-filter-size-input").value) || 0;
+          fetch(\'/api/filter-settings\', {
+            method: \'POST\',
+            headers: {\'Content-Type\': \'application/json\'},
+            body: JSON.stringify({ filter_type: "parlay_size", selected_values: [val] })
+          });
           applyParlayFilters();
         }
 
@@ -2616,6 +2636,28 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           if (!opts) return;
           populateParlayFilterMenu("game", opts.games);
           populateParlayFilterMenu("status", opts.statuses || ["Not Placed", "Placed"]);
+
+          // Restore persisted state
+          var settings = window.FILTER_SETTINGS || {};
+          if (settings.parlay_status) {
+            var saved = new Set(settings.parlay_status);
+            var menu = document.getElementById("parlay-filter-status-menu");
+            if (menu) {
+              menu.querySelectorAll("input[data-val]").forEach(function(cb) {
+                cb.checked = saved.has(cb.getAttribute("data-val"));
+              });
+              var selectAllCb = menu.querySelector(".select-all input");
+              if (selectAllCb) {
+                selectAllCb.checked = saved.size === menu.querySelectorAll("input[data-val]").length;
+                selectAllCb.indeterminate = saved.size > 0 && saved.size < menu.querySelectorAll("input[data-val]").length;
+              }
+              updateParlayFilter("status");
+            }
+          }
+          if (settings.parlay_size && Array.isArray(settings.parlay_size) && settings.parlay_size.length > 0) {
+            document.getElementById("parlay-filter-size-input").value = parseFloat(settings.parlay_size[0]) || 0;
+          }
+          applyParlayFilters();
         }
 
         function applyParlayFilters() {
@@ -2670,6 +2712,17 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           });
           document.getElementById("parlay-filter-size-input").value = "0";
           document.getElementById("parlay-min-edge-input").value = "0";
+          // Persist resets
+          fetch(\'/api/filter-settings\', {
+            method: \'POST\',
+            headers: {\'Content-Type\': \'application/json\'},
+            body: JSON.stringify({ filter_type: "parlay_status", selected_values: ["Not Placed", "Placed"] })
+          });
+          fetch(\'/api/filter-settings\', {
+            method: \'POST\',
+            headers: {\'Content-Type\': \'application/json\'},
+            body: JSON.stringify({ filter_type: "parlay_size", selected_values: [0] })
+          });
           applyParlayFilters();
         }
 
