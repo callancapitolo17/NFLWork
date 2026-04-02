@@ -261,19 +261,19 @@ if (nrow(wz_spreads) == 0 || nrow(wz_totals) == 0) {
   quit(status = 0)
 }
 
-# Join spreads + totals by (home_team, away_team, game_date) into one row per game.
-# game_date is "MM/DD" from Wagerzon's own API field — used later to match the
-# correct consensus game when teams play on consecutive days (series).
+# Join spreads + totals by (home_team, away_team, game_date, game_time).
+# game_date ("MM/DD") and game_time ("HH:MM") are Eastern time from Wagerzon's
+# API — used to match the correct consensus game in a series or doubleheader.
 wz_combined <- wz_spreads %>%
-  select(home_team, away_team, game_date,
+  select(home_team, away_team, game_date, game_time,
          home_spread, home_spread_price = odds_home,
          away_spread, away_spread_price = odds_away) %>%
   inner_join(
-    wz_totals %>% select(home_team, away_team, game_date,
+    wz_totals %>% select(home_team, away_team, game_date, game_time,
                           total_line = line,
                           over_price = odds_over,
                           under_price = odds_under),
-    by = c("home_team", "away_team", "game_date")
+    by = c("home_team", "away_team", "game_date", "game_time")
   )
 
 cat(sprintf("Wagerzon FG games with spread + total: %d\n", nrow(wz_combined)))
@@ -300,16 +300,23 @@ if (use_exact) {
 # MATCH WAGERZON GAMES TO SAMPLES
 # =============================================================================
 
-# Add a game_date column to consensus ("MM/DD" in Eastern time) so we can
-# join on date and avoid fan-out when teams play on consecutive days in a series.
+# Derive game_date ("MM/DD") and game_time ("HH:MM") in Eastern from consensus
+# commence_time (UTC) to match Wagerzon's field format. Joining on all four keys
+# correctly handles both series (same date needed) and doubleheaders (same date
+# but different game_time needed).
 consensus_dated <- consensus %>%
   select(id, home_team, away_team, consensus_prob_home, any_of("commence_time")) %>%
-  mutate(game_date = if ("commence_time" %in% names(.)) {
-    format(with_tz(as.POSIXct(commence_time, tz = "UTC"), "America/New_York"), "%m/%d")
-  } else NA_character_)
+  mutate(
+    game_date = if ("commence_time" %in% names(.)) {
+      format(with_tz(as.POSIXct(commence_time, tz = "UTC"), "America/New_York"), "%m/%d")
+    } else NA_character_,
+    game_time = if ("commence_time" %in% names(.)) {
+      format(with_tz(as.POSIXct(commence_time, tz = "UTC"), "America/New_York"), "%H:%M")
+    } else NA_character_
+  )
 
 wz_matched <- wz_combined %>%
-  inner_join(consensus_dated, by = c("home_team", "away_team", "game_date"))
+  inner_join(consensus_dated, by = c("home_team", "away_team", "game_date", "game_time"))
 
 if (nrow(wz_matched) == 0) {
   cat("No Wagerzon games matched to consensus. Check team name resolution.\n")
