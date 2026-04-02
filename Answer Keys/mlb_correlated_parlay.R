@@ -275,6 +275,24 @@ wz_combined <- wz_spreads %>%
 
 cat(sprintf("Wagerzon FG games with spread + total: %d\n", nrow(wz_combined)))
 
+# Try to load exact parlay prices from ConfirmWagerHelper API
+wz_db <- normalizePath(path.expand("~/NFLWork/wagerzon_odds/wagerzon.duckdb"), mustWork = FALSE)
+exact_prices <- tryCatch({
+  con_wz <- dbConnect(duckdb(), dbdir = wz_db, read_only = TRUE)
+  on.exit(dbDisconnect(con_wz, shutdown = TRUE))
+  pp <- dbGetQuery(con_wz, "SELECT * FROM mlb_parlay_prices")
+  dbDisconnect(con_wz, shutdown = TRUE)
+  on.exit(NULL)
+  pp
+}, error = function(e) data.frame())
+
+use_exact <- nrow(exact_prices) > 0
+if (use_exact) {
+  cat(sprintf("Loaded %d exact parlay prices from ConfirmWagerHelper API.\n", nrow(exact_prices)))
+} else {
+  cat("No exact parlay prices found. Using shave+round approximation.\n")
+}
+
 # =============================================================================
 # MATCH WAGERZON GAMES TO SAMPLES
 # =============================================================================
@@ -366,20 +384,30 @@ for (i in seq_len(nrow(wz_matched))) {
     # Our fair price (correlation-adjusted via historical samples)
     fair <- compute_parlay_fair_odds(samp, combo$legs)
 
-    # Wagerzon's price: multiply the two leg decimals independently,
-    # apply ~1.1% shave, then round to nearest whole American odds.
-    # Verified via ConfirmWagerHelper API recon: independent +344.85 → actual +340.
-    wz_dec_raw <- american_to_decimal(combo$wz_spread_price) *
-                  american_to_decimal(combo$wz_total_price)
-    wz_dec_shaved <- wz_dec_raw * WZ_PARLAY_SHAVE
-    wz_american <- round(prob_to_american(1 / wz_dec_shaved))
-    wz_dec <- american_to_decimal(wz_american)
+    # Wagerzon's parlay price — use exact API price if available, else shave+round
+    combo_name <- combo$name
+    exact_row <- if (use_exact) {
+      exact_prices %>% filter(home_team == row$home_team, combo == combo_name)
+    } else {
+      data.frame()
+    }
+
+    if (nrow(exact_row) > 0) {
+      wz_dec <- exact_row$wz_decimal[1]
+      wz_american <- exact_row$wz_american[1]
+    } else {
+      # Fallback: multiply legs independently, apply 1.1% shave, round to whole American
+      wz_dec_raw <- american_to_decimal(combo$wz_spread_price) *
+                    american_to_decimal(combo$wz_total_price)
+      wz_dec_shaved <- wz_dec_raw * WZ_PARLAY_SHAVE
+      wz_american <- round(prob_to_american(1 / wz_dec_shaved))
+      wz_dec <- american_to_decimal(wz_american)
+    }
 
     # Edge: positive means Wagerzon overpays relative to fair
     fair_dec <- fair$fair_decimal_odds
     edge_pct <- (wz_dec - fair_dec) / fair_dec * 100
 
-    combo_name <- combo$name
     combo_spread <- if (grepl("Home", combo_name)) row$home_spread else row$away_spread
 
     # Store WITHOUT sizing — conditional Kelly sizes in pass 2
