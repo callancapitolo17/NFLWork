@@ -421,6 +421,18 @@ spread_results <- build_spreads_from_samples(
 spread_bets <- spread_results$bets
 timer$mark("build_spreads")
 
+# Log which Odds API books returned F5 data
+api_f5_books <- unique(c(
+  if (nrow(ml_bets) > 0) ml_bets$book else character(0),
+  if (nrow(total_bets) > 0) total_bets$book else character(0),
+  if (nrow(spread_bets) > 0) spread_bets$book else character(0)
+))
+if (length(api_f5_books) > 0) {
+  cat(sprintf("Odds API F5 books: %s\n", paste(api_f5_books, collapse = ", ")))
+} else {
+  cat("Warning: No Odds API books returned F5 data.\n")
+}
+
 # Combine API bets
 EV_THRESHOLD <- 0.02  # 2% — maximizes total profit per parameter sweep
 
@@ -465,12 +477,18 @@ if (file.exists(sentinel)) {
 map_scraper_markets_f5 <- function(odds) {
   if (nrow(odds) == 0) return(odds)
   odds %>% mutate(market = case_when(
+    # Explicit F5 period + base market name
     period == "F5" & market == "spreads"  ~ "spreads_1st_5_innings",
     period == "F5" & market == "totals"   ~ "totals_1st_5_innings",
     period == "F5" & market == "h2h"      ~ "h2h_1st_5_innings",
+    # _f5 suffix (Kalshi, Bookmaker, Hoop88)
     market == "spreads_f5"                ~ "spreads_1st_5_innings",
     market == "totals_f5"                 ~ "totals_1st_5_innings",
     market == "h2h_f5"                    ~ "h2h_1st_5_innings",
+    # _h1 suffix — in baseball "1st half" = first 5 innings (Wagerzon, BFA)
+    market == "spreads_h1"                ~ "spreads_1st_5_innings",
+    market == "totals_h1"                 ~ "totals_1st_5_innings",
+    market == "h2h_h1"                    ~ "h2h_1st_5_innings",
     TRUE ~ market
   ))
 }

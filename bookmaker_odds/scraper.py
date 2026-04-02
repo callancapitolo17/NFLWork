@@ -247,6 +247,17 @@ def _parse_game(game: dict, market: str, period: str, sport_key: str,
     else:
         away_team, home_team = away_raw, home_raw
 
+    # Validate resolved teams against canonical games to filter out
+    # cross-sport contamination (e.g., UFC fighters in MLB league 206)
+    if canonical_games:
+        matched = any(
+            (away_team == cg["away_team"] and home_team == cg["home_team"]) or
+            (away_team == cg["home_team"] and home_team == cg["away_team"])
+            for cg in canonical_games
+        )
+        if not matched:
+            return None
+
     # Game date (YYYYMMDD → MM/DD) and time (HH:MM:SS → HH:MM)
     gmdt = game.get("gmdt", "")
     gmtm = game.get("gmtm", "")
