@@ -113,6 +113,14 @@ def get_parlay_price(session: requests.Session, idgm: int, legs: list[dict],
 def price_mlb_parlays(session: requests.Session):
     """Price all MLB FG spread+total parlay combos."""
     conn = duckdb.connect(str(DB_PATH))
+    try:
+        _price_mlb_parlays_inner(session, conn)
+    finally:
+        conn.close()
+
+
+def _price_mlb_parlays_inner(session: requests.Session, conn):
+    """Inner implementation — conn is managed by caller."""
 
     # Read FG spreads with idgm
     games = conn.execute("""
@@ -131,7 +139,6 @@ def price_mlb_parlays(session: requests.Session):
 
     if not games:
         print("No MLB FG games with idgm found. Run scraper first.")
-        conn.close()
         return
 
     print(f"Pricing parlays for {len(games)} MLB games...")
@@ -209,8 +216,6 @@ def price_mlb_parlays(session: requests.Session):
         print(f"\nSaved {len(results)} parlay prices to mlb_parlay_prices")
     else:
         print("No prices fetched")
-
-    conn.close()
 
 
 if __name__ == "__main__":
