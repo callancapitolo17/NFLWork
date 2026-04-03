@@ -4509,13 +4509,15 @@ compare_alts_to_samples <- function(
 
   if (nrow(alt_odds) == 0) return(tibble())
 
-  # Match offshore games to API game_ids via team names
+  # Match offshore games to API game_ids via team names.
+  # Keep all games (not distinct) to avoid wrong-game matching in series,
+  # then dedup so each scraper row maps to the nearest upcoming game.
   game_lookup <- consensus_odds %>%
-    select(id, home_team, away_team, commence_time) %>%
-    distinct(home_team, away_team, .keep_all = TRUE)
+    select(id, home_team, away_team, commence_time)
 
   alt_odds <- alt_odds %>%
-    inner_join(game_lookup, by = c("home_team", "away_team"))
+    inner_join(game_lookup, by = c("home_team", "away_team"), relationship = "many-to-many") %>%
+    dedup_series_fanout()
 
   if (nrow(alt_odds) == 0) {
     cat("No alt line games matched to API games.\n")
