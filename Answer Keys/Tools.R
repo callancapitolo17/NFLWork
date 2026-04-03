@@ -4031,7 +4031,7 @@ nearest_game_match <- function(scraper_odds, predictions, join_cols) {
   joined <- scraper_odds %>%
     inner_join(predictions, by = join_cols, relationship = "many-to-many")
 
-  if (nrow(joined) <= 1) return(joined)
+  if (nrow(joined) <= 1) return(joined %>% select(-any_of(".scraper_date")))
 
   # For each scraper row that matched multiple predictions,
   # keep the prediction closest to the scraper's date
