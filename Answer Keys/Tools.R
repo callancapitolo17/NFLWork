@@ -4015,6 +4015,20 @@ get_wagerzon_betting_odds <- function(
 }
 
 
+#' Deduplicate series fan-out after a many-to-many join.
+#' When the same team matchup spans consecutive days (series), a join on
+#' (home_team, away_team, market) causes one scraper row to match multiple
+#' predictions. Each scraper odds row represents one game, so we keep only the
+#' prediction with the nearest upcoming commence_time per scraper row.
+dedup_series_fanout <- function(joined) {
+  if (nrow(joined) <= 1 || !"game_date" %in% names(joined)) return(joined)
+  joined %>%
+    group_by(bookmaker_key, game_date, game_time, home_team, away_team, market) %>%
+    slice_min(commence_time, n = 1, with_ties = FALSE) %>%
+    ungroup()
+}
+
+
 #' Compare model predictions to Wagerzon odds for spreads
 #'
 #' @param spread_results Output from build_spreads_from_samples()
@@ -4046,7 +4060,7 @@ compare_spreads_to_wagerzon <- function(
     return(list(bets = data.frame()))
   }
 
-  # Join predictions with Wagerzon odds
+  # Join predictions with offshore odds
   # Match on: home_team, away_team, market, spread line
   joined <- wz_spreads %>%
     inner_join(
@@ -4055,7 +4069,8 @@ compare_spreads_to_wagerzon <- function(
       by = c("home_team", "away_team", "market"),
       relationship = "many-to-many"
     ) %>%
-    filter(abs(home_spread - book_home_spread) < 0.1)
+    filter(abs(home_spread - book_home_spread) < 0.1) %>%
+    dedup_series_fanout()
 
   if (nrow(joined) == 0) {
     cat("No matches found between predictions and Wagerzon odds.\n")
@@ -4141,7 +4156,8 @@ compare_totals_to_wagerzon <- function(
       by = c("home_team", "away_team", "market"),
       relationship = "many-to-many"
     ) %>%
-    filter(abs(line - book_total_line) < 0.1)
+    filter(abs(line - book_total_line) < 0.1) %>%
+    dedup_series_fanout()
 
   if (nrow(joined) == 0) {
     cat("No matches found between predictions and Wagerzon totals.\n")
@@ -4221,7 +4237,8 @@ compare_moneylines_to_wagerzon <- function(
       predictions %>%
         select(id, home_team, away_team, market, home_win_prob, away_win_prob, commence_time),
       by = c("home_team", "away_team", "market")
-    )
+    ) %>%
+    dedup_series_fanout()
 
   if (nrow(joined) == 0) {
     cat("No matches found between predictions and Wagerzon moneylines.\n")
