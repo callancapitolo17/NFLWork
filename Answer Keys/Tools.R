@@ -4495,11 +4495,17 @@ compare_alts_to_samples <- function(
     total_col = "game_total_period"
 ) {
   # Market suffix → sample period column suffix
-  period_map <- c(h1 = "Half1", h2 = "Half2", q1 = "1", q2 = "2", q3 = "3", q4 = "4", f5 = "F5", fg = "FG")
+  period_map <- c(h1 = "Half1", h2 = "Half2", q1 = "1", q2 = "2", q3 = "3", q4 = "4",
+                  f3 = "F3", f5 = "F5", f7 = "F7", fg = "FG")
 
-  # Filter to alt markets and team totals
+  # Filter to alt markets, team totals, and derivative period markets (F3/F7)
   alt_odds <- offshore_odds %>%
-    filter(grepl("^alternate_", market) | grepl("^team_totals_", market))
+    filter(
+      grepl("^alternate_", market) |
+      grepl("^team_totals_", market) |
+      grepl("1st_3_innings", market) |
+      grepl("1st_7_innings", market)
+    )
 
   if (nrow(alt_odds) == 0) return(tibble())
 

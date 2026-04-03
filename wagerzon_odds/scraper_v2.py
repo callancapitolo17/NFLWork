@@ -366,11 +366,12 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 #   2) Alt lines: "TEAM ALT" — spread and/or total
                 period_match = re.match(r"(\d+)\s+INN\s+", child_vtm_upper)
                 if period_match:
-                    # Period total (e.g. first 3 innings, first 7 innings)
+                    # Period line (e.g. first 3 innings, first 7 innings)
+                    # Use parse_game_line to capture spread + total + ML (not just totals)
                     innings = period_match.group(1)
-                    rec = parse_team_total(
+                    rec = parse_game_line(
                         child_line, f"{game_id}-{innings}inn", f"f{innings}",
-                        f"totals_f{innings}", base
+                        f"spreads_f{innings}", base
                     )
                     if rec:
                         records.append(rec)

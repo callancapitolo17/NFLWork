@@ -62,6 +62,7 @@ SPORT_CONFIGS = {
         "leagues": [
             {"id": "5", "name": "Game Lines", "market": "spreads", "period": "fg"},
             {"id": "6", "name": "1st 5 Innings", "market": "spreads_f5", "period": "F5"},
+            {"id": "503", "name": "1st 3 Innings", "market": "spreads_f3", "period": "F3"},
         ],
     },
 }

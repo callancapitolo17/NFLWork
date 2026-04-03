@@ -38,8 +38,12 @@ DT <- dbGetQuery(con, "
 ") %>%
   rename(
     # Map inning cumulative columns to Tools.R period convention
+    game_home_margin_period_F3 = game_home_margin_inning_inning_3,
+    game_total_period_F3       = game_total_inning_inning_3,
     game_home_margin_period_F5 = game_home_margin_inning_inning_5,
     game_total_period_F5       = game_total_inning_inning_5,
+    game_home_margin_period_F7 = game_home_margin_inning_inning_7,
+    game_total_period_F7       = game_total_inning_inning_7,
     # Full game columns
     game_home_margin_period_FG = home_margin,
     game_total_period_FG       = total_final_score,
@@ -308,7 +312,13 @@ sample_rows <- imap_dfr(samples, function(s, game_id) {
     game_id           = game_id,
     sim_idx           = seq_len(nrow(samp)),
     home_margin       = samp$game_home_margin_period_FG,
-    total_final_score = samp$game_total_period_FG
+    total_final_score = samp$game_total_period_FG,
+    home_margin_f3    = samp$game_home_margin_period_F3,
+    total_f3          = samp$game_total_period_F3,
+    home_margin_f5    = samp$game_home_margin_period_F5,
+    total_f5          = samp$game_total_period_F5,
+    home_margin_f7    = samp$game_home_margin_period_F7,
+    total_f7          = samp$game_total_period_F7
   )
 })
 
@@ -471,17 +481,24 @@ if (file.exists(sentinel)) {
   cat("Warning: Scraper sentinel not found after 120s, proceeding anyway.\n")
 }
 
-# Map scraper market names to Odds API F5 convention so compare_*() can join.
+# Map scraper market names to standardized period convention.
 # Scrapers use short names (spreads, h2h) + period column;
 # predictions use Odds API names (spreads_1st_5_innings, h2h_1st_5_innings).
-map_scraper_markets_f5 <- function(odds) {
+# compare_alts_to_samples uses suffixes like _f3, _f5, _f7 for period lookup.
+map_scraper_markets_mlb <- function(odds) {
   if (nrow(odds) == 0) return(odds)
   odds %>% mutate(market = case_when(
-    # Explicit F5 period + base market name
+    # --- F3 (first 3 innings) ---
+    period == "F3" & market == "spreads"  ~ "spreads_1st_3_innings",
+    period == "F3" & market == "totals"   ~ "totals_1st_3_innings",
+    period == "F3" & market == "h2h"      ~ "h2h_1st_3_innings",
+    market == "spreads_f3"                ~ "spreads_1st_3_innings",
+    market == "totals_f3"                 ~ "totals_1st_3_innings",
+    market == "h2h_f3"                    ~ "h2h_1st_3_innings",
+    # --- F5 (first 5 innings) ---
     period == "F5" & market == "spreads"  ~ "spreads_1st_5_innings",
     period == "F5" & market == "totals"   ~ "totals_1st_5_innings",
     period == "F5" & market == "h2h"      ~ "h2h_1st_5_innings",
-    # _f5 suffix (Kalshi, Bookmaker, Hoop88)
     market == "spreads_f5"                ~ "spreads_1st_5_innings",
     market == "totals_f5"                 ~ "totals_1st_5_innings",
     market == "h2h_f5"                    ~ "h2h_1st_5_innings",
@@ -489,6 +506,14 @@ map_scraper_markets_f5 <- function(odds) {
     market == "spreads_h1"                ~ "spreads_1st_5_innings",
     market == "totals_h1"                 ~ "totals_1st_5_innings",
     market == "h2h_h1"                    ~ "h2h_1st_5_innings",
+    # --- F7 (first 7 innings) ---
+    market == "spreads_f7"                ~ "spreads_1st_7_innings",
+    market == "totals_f7"                 ~ "totals_1st_7_innings",
+    market == "h2h_f7"                    ~ "h2h_1st_7_innings",
+    # --- Alt lines: remap _h1 → _f5 so compare_alts_to_samples period lookup works ---
+    # (BFA/Bet105 use "alternate_totals_h1" but MLB samples use "F5" not "Half1")
+    market == "alternate_totals_h1"       ~ "alternate_totals_f5",
+    market == "alternate_spreads_h1"      ~ "alternate_spreads_f5",
     TRUE ~ market
   ))
 }
@@ -513,12 +538,12 @@ kalshi_odds <- tryCatch(get_kalshi_odds("mlb"), error = function(e) { cat(sprint
 cat(sprintf("Loaded %d Kalshi records.\n", nrow(kalshi_odds)))
 
 # Map all scraper markets to Odds API F5 convention
-wagerzon_odds  <- map_scraper_markets_f5(wagerzon_odds)
-hoop88_odds    <- map_scraper_markets_f5(hoop88_odds)
-bfa_odds       <- map_scraper_markets_f5(bfa_odds)
-bookmaker_odds <- map_scraper_markets_f5(bookmaker_odds)
-bet105_odds    <- map_scraper_markets_f5(bet105_odds)
-kalshi_odds    <- map_scraper_markets_f5(kalshi_odds)
+wagerzon_odds  <- map_scraper_markets_mlb(wagerzon_odds)
+hoop88_odds    <- map_scraper_markets_mlb(hoop88_odds)
+bfa_odds       <- map_scraper_markets_mlb(bfa_odds)
+bookmaker_odds <- map_scraper_markets_mlb(bookmaker_odds)
+bet105_odds    <- map_scraper_markets_mlb(bet105_odds)
+kalshi_odds    <- map_scraper_markets_mlb(kalshi_odds)
 timer$mark("load_scrapers")
 
 # --- WAGERZON ---
@@ -543,8 +568,20 @@ if (nrow(wagerzon_odds) > 0) {
     wz_ml_bets$bets %>% mutate(market_type = "moneyline")
   )
   cat(sprintf("Added %d Wagerzon bets.\n", nrow(wagerzon_bets)))
+
+  wz_alt_bets <- compare_alts_to_samples(
+    samples = samples, offshore_odds = wagerzon_odds,
+    consensus_odds = mlb_odds,
+    bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
+  )
+  if (nrow(wz_alt_bets) > 0) {
+    wz_alt_bets <- wz_alt_bets %>%
+      mutate(market_type = ifelse(grepl("spread", market), "spreads", "totals"))
+  }
+  cat(sprintf("Added %d Wagerzon derivative/alt bets.\n", nrow(wz_alt_bets)))
 } else {
   wagerzon_bets <- tibble()
+  wz_alt_bets <- tibble()
 }
 
 # --- HOOP88 ---
@@ -633,8 +670,20 @@ if (nrow(bookmaker_odds) > 0) {
     bkm_ml_bets$bets %>% mutate(market_type = "moneyline")
   )
   cat(sprintf("Added %d Bookmaker bets.\n", nrow(bookmaker_bets)))
+
+  bkm_alt_bets <- compare_alts_to_samples(
+    samples = samples, offshore_odds = bookmaker_odds,
+    consensus_odds = mlb_odds,
+    bankroll = bankroll, kelly_mult = kelly_mult, ev_threshold = EV_THRESHOLD
+  )
+  if (nrow(bkm_alt_bets) > 0) {
+    bkm_alt_bets <- bkm_alt_bets %>%
+      mutate(market_type = ifelse(grepl("spread", market), "spreads", "totals"))
+  }
+  cat(sprintf("Added %d Bookmaker derivative/alt bets.\n", nrow(bkm_alt_bets)))
 } else {
   bookmaker_bets <- tibble()
+  bkm_alt_bets <- tibble()
 }
 
 # --- BET105 ---
@@ -709,10 +758,12 @@ timer$mark("compare_offshore")
 all_bets_combined <- bind_rows(
   all_bets,
   wagerzon_bets,
+  wz_alt_bets,
   hoop88_bets,
   bfa_bets,
   bfa_alt_bets,
   bookmaker_bets,
+  bkm_alt_bets,
   bet105_bets,
   bet105_alt_bets,
   kalshi_bets
