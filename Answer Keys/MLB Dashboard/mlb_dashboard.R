@@ -1702,7 +1702,9 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         // ============ PARLAY FILTERING ============
         const activeParlayFilters = {
           game: new Set(),
-          status: new Set()
+          status: new Set(),
+          minEdge: 0,
+          minSize: 0
         };
 
         document.addEventListener("DOMContentLoaded", function() {
@@ -2623,6 +2625,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
         function updateParlayMinSize() {
           var val = parseFloat(document.getElementById("parlay-filter-size-input").value) || 0;
+          activeParlayFilters.minSize = val;
           fetch(\'/api/filter-settings\', {
             method: \'POST\',
             headers: {\'Content-Type\': \'application/json\'},
@@ -2655,7 +2658,9 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             }
           }
           if (settings.parlay_size && Array.isArray(settings.parlay_size) && settings.parlay_size.length > 0) {
-            document.getElementById("parlay-filter-size-input").value = parseFloat(settings.parlay_size[0]) || 0;
+            var savedSize = parseFloat(settings.parlay_size[0]) || 0;
+            document.getElementById("parlay-filter-size-input").value = savedSize;
+            activeParlayFilters.minSize = savedSize;
           }
           applyParlayFilters();
         }
@@ -2664,8 +2669,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           var container = document.getElementById("parlays-table-container");
           if (!container) return;
           var rows = container.querySelectorAll(".rt-tr-group");
-          var minEdge = parseFloat(document.getElementById("parlay-min-edge-input").value) || 0;
-          var minSize = parseFloat(document.getElementById("parlay-filter-size-input").value) || 0;
+          var minEdge = activeParlayFilters.minEdge;
+          var minSize = activeParlayFilters.minSize;
           var visible = 0;
 
           rows.forEach(function(row) {
@@ -2712,6 +2717,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           });
           document.getElementById("parlay-filter-size-input").value = "0";
           document.getElementById("parlay-min-edge-input").value = "0";
+          activeParlayFilters.minSize = 0;
+          activeParlayFilters.minEdge = 0;
           // Persist resets
           fetch(\'/api/filter-settings\', {
             method: \'POST\',
@@ -2728,7 +2735,9 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
         // ============ PARLAY EDGE FILTER ============
         function filterParlaysByEdge() {
-          // Delegate to unified parlay filter so all filters stay in sync
+          // Sync edge state from DOM before filtering
+          var el = document.getElementById("parlay-min-edge-input");
+          if (el) activeParlayFilters.minEdge = parseFloat(el.value) || 0;
           applyParlayFilters();
         }
 
