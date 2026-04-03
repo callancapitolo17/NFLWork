@@ -4015,6 +4015,35 @@ get_wagerzon_betting_odds <- function(
 }
 
 
+#' Match each scraper odds row to the correct prediction when a series creates
+#' multiple games with the same team matchup. Joins on team names, then for each
+#' scraper row that matched multiple predictions, keeps the one with the nearest
+#' commence_time. Scraper game_date is normalized to a Date and compared to the
+#' prediction's commence_time date to pick the right game in the series.
+nearest_game_match <- function(scraper_odds, predictions, join_cols) {
+  # Normalize scraper game_date to Date for comparison
+  scraper_odds <- scraper_odds %>%
+    mutate(.scraper_date = as.Date(ifelse(
+      grepl("^\\d{4}-", game_date), game_date,
+      paste0(format(Sys.Date(), "%Y-"), game_date)
+    ), format = ifelse(grepl("^\\d{4}-", game_date), "%Y-%m-%d", "%Y-%m/%d")))
+
+  joined <- scraper_odds %>%
+    inner_join(predictions, by = join_cols, relationship = "many-to-many")
+
+  if (nrow(joined) <= 1) return(joined)
+
+  # For each scraper row that matched multiple predictions,
+  # keep the prediction closest to the scraper's date
+  joined %>%
+    mutate(.pred_date = as.Date(commence_time)) %>%
+    group_by(bookmaker_key, game_date, game_time, home_team, away_team, market) %>%
+    slice_min(abs(as.numeric(.pred_date - .scraper_date)), n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    select(-.scraper_date, -.pred_date)
+}
+
+
 #' Compare model predictions to Wagerzon odds for spreads
 #'
 #' @param spread_results Output from build_spreads_from_samples()
@@ -4046,23 +4075,13 @@ compare_spreads_to_wagerzon <- function(
     return(list(bets = data.frame()))
   }
 
-  # Join predictions with offshore odds on team + market + date/hour to prevent series fan-out
-  wz_spreads <- wz_spreads %>%
-    mutate(
-      game_date = ifelse(grepl("^\\d{4}-", game_date), sub("^\\d{4}-(\\d{2})-(\\d{2})$", "\\1/\\2", game_date), game_date),
-      game_hour = substr(game_time, 1, 2)
-    )
-  joined <- wz_spreads %>%
-    inner_join(
-      predictions %>%
-        select(id, home_team, away_team, market, book_home_spread, home_cover_prob, away_cover_prob, commence_time) %>%
-        mutate(
-          game_date = format(with_tz(commence_time, "America/New_York"), "%m/%d"),
-          game_hour = format(with_tz(commence_time, "America/New_York"), "%H")
-        ),
-      by = c("home_team", "away_team", "market", "game_date", "game_hour"),
-      relationship = "many-to-many"
-    ) %>%
+  # Join predictions with offshore odds, matching to nearest game in series
+  joined <- nearest_game_match(
+    wz_spreads,
+    predictions %>%
+      select(id, home_team, away_team, market, book_home_spread, home_cover_prob, away_cover_prob, commence_time),
+    join_cols = c("home_team", "away_team", "market")
+  ) %>%
     filter(abs(home_spread - book_home_spread) < 0.1)
 
   if (nrow(joined) == 0) {
@@ -4142,22 +4161,12 @@ compare_totals_to_wagerzon <- function(
     return(list(bets = data.frame()))
   }
 
-  wz_totals <- wz_totals %>%
-    mutate(
-      game_date = ifelse(grepl("^\\d{4}-", game_date), sub("^\\d{4}-(\\d{2})-(\\d{2})$", "\\1/\\2", game_date), game_date),
-      game_hour = substr(game_time, 1, 2)
-    )
-  joined <- wz_totals %>%
-    inner_join(
-      predictions %>%
-        select(id, home_team, away_team, market, book_total_line, over_prob, under_prob, commence_time) %>%
-        mutate(
-          game_date = format(with_tz(commence_time, "America/New_York"), "%m/%d"),
-          game_hour = format(with_tz(commence_time, "America/New_York"), "%H")
-        ),
-      by = c("home_team", "away_team", "market", "game_date", "game_hour"),
-      relationship = "many-to-many"
-    ) %>%
+  joined <- nearest_game_match(
+    wz_totals,
+    predictions %>%
+      select(id, home_team, away_team, market, book_total_line, over_prob, under_prob, commence_time),
+    join_cols = c("home_team", "away_team", "market")
+  ) %>%
     filter(abs(line - book_total_line) < 0.1)
 
   if (nrow(joined) == 0) {
@@ -4233,21 +4242,12 @@ compare_moneylines_to_wagerzon <- function(
     return(list(bets = data.frame()))
   }
 
-  wz_ml <- wz_ml %>%
-    mutate(
-      game_date = ifelse(grepl("^\\d{4}-", game_date), sub("^\\d{4}-(\\d{2})-(\\d{2})$", "\\1/\\2", game_date), game_date),
-      game_hour = substr(game_time, 1, 2)
-    )
-  joined <- wz_ml %>%
-    inner_join(
-      predictions %>%
-        select(id, home_team, away_team, market, home_win_prob, away_win_prob, commence_time) %>%
-        mutate(
-          game_date = format(with_tz(commence_time, "America/New_York"), "%m/%d"),
-          game_hour = format(with_tz(commence_time, "America/New_York"), "%H")
-        ),
-      by = c("home_team", "away_team", "market", "game_date", "game_hour")
-    )
+  joined <- nearest_game_match(
+    wz_ml,
+    predictions %>%
+      select(id, home_team, away_team, market, home_win_prob, away_win_prob, commence_time),
+    join_cols = c("home_team", "away_team", "market")
+  )
 
   if (nrow(joined) == 0) {
     cat("No matches found between predictions and Wagerzon moneylines.\n")
@@ -4518,22 +4518,14 @@ compare_alts_to_samples <- function(
 
   if (nrow(alt_odds) == 0) return(tibble())
 
-  # Match offshore games to API game_ids via team names + date/hour.
-  # Joining on game_date + game_hour prevents series fan-out (same teams,
-  # different days) without needing many-to-many + dedup.
+  # Match offshore games to API game_ids, picking nearest game in series
   game_lookup <- consensus_odds %>%
-    select(id, home_team, away_team, commence_time) %>%
-    mutate(
-      game_date = format(with_tz(commence_time, "America/New_York"), "%m/%d"),
-      game_hour = format(with_tz(commence_time, "America/New_York"), "%H")
-    )
+    select(id, home_team, away_team, commence_time)
 
-  alt_odds <- alt_odds %>%
-    mutate(
-      game_date = ifelse(grepl("^\\d{4}-", game_date), sub("^\\d{4}-(\\d{2})-(\\d{2})$", "\\1/\\2", game_date), game_date),
-      game_hour = substr(game_time, 1, 2)
-    ) %>%
-    inner_join(game_lookup, by = c("home_team", "away_team", "game_date", "game_hour"))
+  alt_odds <- nearest_game_match(
+    alt_odds, game_lookup,
+    join_cols = c("home_team", "away_team")
+  )
 
   if (nrow(alt_odds) == 0) {
     cat("No alt line games matched to API games.\n")
