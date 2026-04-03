@@ -4018,29 +4018,29 @@ get_wagerzon_betting_odds <- function(
 #' Match each scraper odds row to the correct prediction when a series creates
 #' multiple games with the same team matchup. Joins on team names, then for each
 #' scraper row that matched multiple predictions, keeps the one with the nearest
-#' commence_time. Scraper game_date is normalized to a Date and compared to the
-#' prediction's commence_time date to pick the right game in the series.
+#' commence_time. Scraper game_date + game_time are parsed to a full timestamp
+#' and compared to commence_time to pick the right game — date-only comparison
+#' fails when two series games fall on the same UTC calendar date.
 nearest_game_match <- function(scraper_odds, predictions, join_cols) {
-  # Normalize scraper game_date to Date for comparison
+  # Parse scraper game_date + game_time into POSIXct for precise matching
   scraper_odds <- scraper_odds %>%
-    mutate(.scraper_date = as.Date(ifelse(
-      grepl("^\\d{4}-", game_date), game_date,
-      paste0(format(Sys.Date(), "%Y-"), game_date)
-    ), format = ifelse(grepl("^\\d{4}-", game_date), "%Y-%m-%d", "%Y-%m/%d")))
+    mutate(.scraper_ts = as.POSIXct(paste(
+      ifelse(grepl("^\\d{4}-", game_date), game_date, paste0(format(Sys.Date(), "%Y-"), game_date)),
+      substr(game_time, 1, 5)
+    ), format = ifelse(grepl("^\\d{4}-", game_date), "%Y-%m-%d %H:%M", "%Y-%m/%d %H:%M"), tz = "UTC"))
 
   joined <- scraper_odds %>%
     inner_join(predictions, by = join_cols, relationship = "many-to-many")
 
-  if (nrow(joined) <= 1) return(joined %>% select(-any_of(".scraper_date")))
+  if (nrow(joined) <= 1) return(joined %>% select(-any_of(".scraper_ts")))
 
   # For each scraper row that matched multiple predictions,
-  # keep the prediction closest to the scraper's date
+  # keep the prediction closest in time
   joined %>%
-    mutate(.pred_date = as.Date(commence_time)) %>%
     group_by(bookmaker_key, game_date, game_time, home_team, away_team, market) %>%
-    slice_min(abs(as.numeric(.pred_date - .scraper_date)), n = 1, with_ties = FALSE) %>%
+    slice_min(abs(as.numeric(difftime(commence_time, .scraper_ts, units = "hours"))), n = 1, with_ties = FALSE) %>%
     ungroup() %>%
-    select(-.scraper_date, -.pred_date)
+    select(-.scraper_ts)
 }
 
 
