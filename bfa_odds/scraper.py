@@ -157,7 +157,8 @@ def fetch_games(session: requests.Session, sport: str) -> list:
     resp = session.get(url, params={**API_PARAMS, "set": "Auto"}, timeout=15)
     resp.raise_for_status()
     data = resp.json()
-    games = [g for g in data.get("games", []) if g.get("type") == 1]
+    games = [g for g in data.get("games", [])
+             if g.get("type") == 1 and not g.get("isLive", False)]
 
     # Fall back to league endpoint if popular returns empty
     if not games and config.get("league_id"):
@@ -169,7 +170,8 @@ def fetch_games(session: requests.Session, sport: str) -> list:
         )
         resp.raise_for_status()
         data = resp.json()
-        games = [g for g in data.get("games", []) if g.get("type") == 1]
+        games = [g for g in data.get("games", [])
+                 if g.get("type") == 1 and not g.get("isLive", False)]
 
     return games
 
