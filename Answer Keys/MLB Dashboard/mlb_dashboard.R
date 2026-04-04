@@ -770,6 +770,13 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           border-bottom-color: #238636;
         }
 
+        .placed-parlays-live td {
+          padding: 8px 12px;
+          color: #c9d1d9;
+          border-bottom: 1px solid #30363d;
+          font-size: 0.85rem;
+        }
+
         .header .subtitle {
           font-size: 0.8rem;
           color: #8b949e;
@@ -1412,13 +1419,18 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         # ============ PARLAYS TAB ============
         tags$div(id = "tab-parlays", class = "tab-content", style = "display: none;",
 
-          # Placed Parlays (if any)
-          if (!is.null(placed_parlays_table)) {
-            tagList(
-              tags$div(class = "section-header", "Placed Parlays"),
-              tags$div(class = "table-container placed-section", placed_parlays_table)
+          # Placed Parlays (always present, JS can append rows)
+          tags$div(class = "section-header", id = "placed-parlays-header",
+            style = if (is.null(placed_parlays_table)) "display:none;" else "",
+            "Placed Parlays"),
+          tags$div(class = "table-container placed-section", id = "placed-parlays-section",
+            style = if (is.null(placed_parlays_table)) "display:none;" else "",
+            if (!is.null(placed_parlays_table)) placed_parlays_table,
+            # Plain HTML table for live-injected rows
+            tags$table(id = "placed-parlays-live", class = "placed-parlays-live",
+              style = "width: 100%; border-collapse: collapse;"
             )
-          },
+          ),
 
           # Parlay Sizing Controls
           tags$div(class = "sizing-controls",
@@ -2794,6 +2806,43 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         })();
 
         // ============ PARLAY PLACEMENT ============
+        function addPlacedParlayRow(btn, amount) {
+          // Show the placed parlays section if hidden
+          var header = document.getElementById("placed-parlays-header");
+          var section = document.getElementById("placed-parlays-section");
+          if (header) header.style.display = "";
+          if (section) section.style.display = "";
+
+          // Build leg description: "TeamName -1.5 · O7.0"
+          var combo = btn.dataset.combo || "";
+          var home = btn.dataset.home || "";
+          var away = btn.dataset.away || "";
+          var spreadTeam = combo.indexOf("Home") === 0 ? home : away;
+          var spread = btn.dataset.spread || "0";
+          var spreadFmt = parseFloat(spread) > 0 ? "+" + spread : spread;
+          var ouPrefix = combo.indexOf("Over") >= 0 ? "O" : "U";
+          var legs = spreadTeam + " " + spreadFmt + " \\u00b7 " + ouPrefix + btn.dataset.total;
+
+          var odds = btn.dataset.wzOdds || "";
+          var oddsFmt = parseInt(odds) > 0 ? "+" + odds : odds;
+          var edge = "+" + btn.dataset.edge + "%";
+          var game = away + " @ " + home;
+          var rec = "$" + Math.round(parseFloat(btn.dataset.size));
+          var actual = "$" + Math.round(amount);
+
+          var tr = document.createElement("tr");
+          tr.innerHTML =
+            \'<td>\' + escapeHtml(game) + \'</td>\' +
+            \'<td>\' + escapeHtml(legs) + \'</td>\' +
+            \'<td style="text-align:right; font-family:monospace;">\' + escapeHtml(oddsFmt) + \'</td>\' +
+            \'<td style="text-align:right; color:#3fb950; font-weight:600;">\' + escapeHtml(edge) + \'</td>\' +
+            \'<td style="text-align:right; font-weight:600;">\' + escapeHtml(actual) + \'</td>\' +
+            \'<td style="text-align:right; color:#8b949e; font-size:0.8rem;">\' + escapeHtml(rec) + \'</td>\';
+
+          var liveTable = document.getElementById("placed-parlays-live");
+          if (liveTable) liveTable.appendChild(tr);
+        }
+
         function placeParlay(btn) {
           var combo = btn.dataset.combo;
           var size = parseFloat(btn.dataset.size);
@@ -2850,6 +2899,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                   btn.className = "btn-placed";
                   btn.textContent = "Placed";
                   btn.onclick = function() { removeParlay(this); };
+                  addPlacedParlayRow(btn, amount);
                   showToast("Parlay placed", "success");
                 } else {
                   showToast(result.error || "Failed", "error");
