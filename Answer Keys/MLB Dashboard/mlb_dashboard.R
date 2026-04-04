@@ -207,7 +207,7 @@ create_placed_parlays_table <- function(placed_parlays) {
   table_data <- placed_parlays %>%
     mutate(
       game = paste(away_team, "@", home_team),
-      spread_team = ifelse(grepl("^Home", combo), home_team, away_team),
+      spread_team = ifelse(grepl("Home", combo), home_team, away_team),
       spread_fmt  = ifelse(spread_line > 0, paste0("+", spread_line), as.character(spread_line)),
       ou_prefix   = ifelse(grepl("Over", combo), "O", "U"),
       legs_display = paste0(spread_team, " ", spread_fmt, " \u00b7 ", ou_prefix, total_line),
@@ -249,7 +249,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
   table_data <- parlay_opps %>%
     mutate(
       is_placed = parlay_hash %in% placed_hashes,
-      spread_team    = ifelse(grepl("^Home", combo), home_team, away_team),
+      spread_team    = ifelse(grepl("Home", combo), home_team, away_team),
       spread_fmt     = ifelse(spread_line > 0, paste0("+", spread_line), as.character(spread_line)),
       sp_price_fmt   = case_when(
         is.na(spread_price) ~ "?",
@@ -2814,7 +2814,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           var combo = btn.dataset.combo || "";
           var home = btn.dataset.home || "";
           var away = btn.dataset.away || "";
-          var spreadTeam = combo.indexOf("Home") === 0 ? home : away;
+          var spreadTeam = combo.indexOf("Home") >= 0 ? home : away;
           var spread = btn.dataset.spread || "0";
           var spreadFmt = parseFloat(spread) > 0 ? "+" + spread : spread;
           var ouPrefix = combo.indexOf("Over") >= 0 ? "O" : "U";
