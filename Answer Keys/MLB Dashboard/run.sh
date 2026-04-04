@@ -37,6 +37,9 @@ if [ $? -ne 0 ]; then
     echo "Warning: Pipeline had errors, but continuing..."
 fi
 
+echo "Fetching exact parlay prices..."
+python3 "$SCRIPT_DIR/../../wagerzon_odds/parlay_pricer.py" 2>/dev/null || true
+
 echo "Finding parlay opportunities..."
 Rscript "$SCRIPT_DIR/../mlb_correlated_parlay.R"
 # Non-fatal if it fails — dashboard still works without parlays
