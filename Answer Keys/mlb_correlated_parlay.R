@@ -372,6 +372,17 @@ wz_f5_matched <- match_to_consensus(wz_f5, consensus_dated, "F5")
 
 if (nrow(wz_fg_matched) == 0 && nrow(wz_f5_matched) == 0) {
   cat("No Wagerzon games matched to consensus. Check team name resolution.\n")
+  all_wz <- bind_rows(wz_fg, wz_f5)
+  if (nrow(all_wz) > 0) {
+    cat("Wagerzon teams:\n")
+    for (i in seq_len(nrow(all_wz))) {
+      cat(sprintf("  %s @ %s\n", all_wz$away_team[i], all_wz$home_team[i]))
+    }
+  }
+  cat("Consensus teams:\n")
+  for (i in seq_len(nrow(consensus))) {
+    cat(sprintf("  %s @ %s\n", consensus$away_team[i], consensus$home_team[i]))
+  }
   quit(status = 0)
 }
 
@@ -379,16 +390,15 @@ if (nrow(wz_fg_matched) == 0 && nrow(wz_f5_matched) == 0) {
 # COMPUTE PARLAY FAIR ODDS FOR EACH GAME (FG + F5)
 # =============================================================================
 
-results <- list()
-legs_store <- list()  # stash legs for conditional Kelly pass, keyed by game_id|combo
-
-# Process one period's matched games. Returns nothing — appends to results/legs_store
-# in the parent environment via <<-.
+# Process one period's matched games. Returns list of (results, legs) pairs.
 #   period_label: "Full" (for evaluate_leg) or "F5"
 #   combo_prefix: "" for FG, "F5 " for F5
 #   shave: WZ_PARLAY_SHAVE_FG or WZ_PARLAY_SHAVE_F5
 process_period <- function(wz_matched, period_label, combo_prefix, shave) {
-  if (nrow(wz_matched) == 0) return(invisible(NULL))
+  period_results <- list()
+  period_legs    <- list()
+
+  if (nrow(wz_matched) == 0) return(list(results = period_results, legs = period_legs))
 
   for (i in seq_len(nrow(wz_matched))) {
     row <- wz_matched[i, ]
@@ -472,7 +482,7 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
       combo_spread_price <- combo$wz_spread_price
       combo_total_price  <- combo$wz_total_price
 
-      results[[length(results) + 1]] <<- tibble(
+      period_results[[length(period_results) + 1]] <- tibble(
         game_id     = game_id,
         game        = sprintf("%s @ %s", row$away_team, row$home_team),
         home_team   = row$home_team,
@@ -496,14 +506,19 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         n_samples   = fair$n_samples_resolved
       )
 
-      legs_store[[paste0(game_id, "|", combo_name)]] <<- combo$legs
+      period_legs[[paste0(game_id, "|", combo_name)]] <- combo$legs
     }
   }
+
+  list(results = period_results, legs = period_legs)
 }
 
-# Process both periods
-process_period(wz_fg_matched, period_label = "Full", combo_prefix = "",    shave = WZ_PARLAY_SHAVE_FG)
-process_period(wz_f5_matched, period_label = "F5",   combo_prefix = "F5 ", shave = WZ_PARLAY_SHAVE_F5)
+# Process both periods and merge
+fg_out <- process_period(wz_fg_matched, period_label = "Full", combo_prefix = "",    shave = WZ_PARLAY_SHAVE_FG)
+f5_out <- process_period(wz_f5_matched, period_label = "F5",   combo_prefix = "F5 ", shave = WZ_PARLAY_SHAVE_F5)
+
+results    <- c(fg_out$results, f5_out$results)
+legs_store <- c(fg_out$legs,    f5_out$legs)
 
 # =============================================================================
 # PASS 2: CONDITIONAL KELLY SIZING
