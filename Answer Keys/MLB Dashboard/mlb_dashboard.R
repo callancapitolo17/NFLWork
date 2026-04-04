@@ -2266,6 +2266,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                   }
                   showToast("Bet placed: $" + actualSize.toFixed(0), "success");
                   recalcSameGame(btn.dataset.gameId);
+                  applyFilters();
                 } else {
                   showToast(result.error, "error");
                   confirmBtn.disabled = false;
@@ -2391,6 +2392,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
                 showToast("Bet placed, browser launching for " + book, "success");
                 recalcSameGame(btn.dataset.gameId);
+                applyFilters();
 
                 // Step 3: Poll navigator status
                 pollNavStatus(btn.dataset.hash, autoBtn);
@@ -2897,6 +2899,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                   btn.textContent = "Placed";
                   btn.onclick = function() { removeParlay(this); };
                   addPlacedParlayRow(btn, amount);
+                  applyParlayFilters();
                   showToast("Parlay placed", "success");
                   applyParlayFilters();
                 } else {
