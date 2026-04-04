@@ -3024,8 +3024,21 @@ placed_parlays <- tryCatch({
   result
 }, error = function(e) tibble(parlay_hash = character()))
 
-cat(sprintf("Found %d parlay opportunities, %d placed parlays\n",
-            nrow(parlay_opps), nrow(placed_parlays)))
+# Load min edge setting and filter parlay opportunities server-side
+parlay_min_edge <- 0
+tryCatch({
+  mecon <- dbConnect(duckdb(), dbdir = DB_PATH, read_only = TRUE)
+  me_val <- dbGetQuery(mecon, "SELECT value FROM sizing_settings WHERE param = 'parlay_min_edge'")
+  dbDisconnect(mecon, shutdown = TRUE)
+  if (nrow(me_val) > 0) parlay_min_edge <- me_val$value[1]
+}, error = function(e) NULL)
+
+if (nrow(parlay_opps) > 0 && parlay_min_edge > 0) {
+  parlay_opps <- parlay_opps %>% filter(edge_pct >= parlay_min_edge)
+}
+
+cat(sprintf("Found %d parlay opportunities (min edge %.0f%%), %d placed parlays\n",
+            nrow(parlay_opps), parlay_min_edge, nrow(placed_parlays)))
 
 # Create parlay tables
 if (nrow(parlay_opps) > 0) {
