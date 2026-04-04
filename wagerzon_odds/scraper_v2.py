@@ -335,8 +335,10 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
 
             if child_type == 15:
                 # First half line (F5 in baseball) — spread + total + ML
+                # Use child's own idgm (needed for ConfirmWagerHelper parlay pricing)
                 cid = f"{child['vnum']}-{child['hnum']}"
-                rec = parse_game_line(child_line, cid, "h1", "spreads_h1", base)
+                child_base = {**base, "idgm": child.get("idgm", base.get("idgm"))}
+                rec = parse_game_line(child_line, cid, "h1", "spreads_h1", child_base)
                 if rec:
                     records.append(rec)
 
