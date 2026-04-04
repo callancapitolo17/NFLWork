@@ -78,3 +78,4 @@ CBB.R
 - **Adding a new sport**: Update `run.py` targets, create sport-specific R script, add to canonical_match.py
 - **Adding a new market type**: Update R pricing logic in the sport's answer key, add to dashboard filters
 - **Modifying Tools.R**: Changes affect ALL sports. Test CBB, NFL, and MLB at minimum.
+- **Adding tables/sections to dashboards**: NEVER use generic selectors like `querySelectorAll(".table-container")[last]` to find a specific table. Always use `getElementById("specific-id")`. Adding a new table shifts positional indices and breaks every function that relied on "grab the last one." This bug has caused silent failures three separate times. Every table container must have a unique ID and all JS must reference it by ID.
