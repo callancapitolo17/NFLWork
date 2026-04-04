@@ -1595,8 +1595,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
         function recalcSameGame(gameId) {
           _corrRecalcRunning = true;
-          var tables = document.querySelectorAll(".table-container:not(.placed-section)");
-          var table = tables.length > 0 ? tables[tables.length - 1] : null;
+          var table = document.getElementById("bets-table-container");
           if (!table) { _corrRecalcRunning = false; return; }
 
           var allRows = table.querySelectorAll(".rt-tr-group");
@@ -1684,8 +1683,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             if (corrTimer) clearTimeout(corrTimer);
             corrTimer = setTimeout(function() {
               reapplyPlacedStates();
-              var tables = document.querySelectorAll(".table-container:not(.placed-section)");
-              var table = tables.length > 0 ? tables[tables.length - 1] : null;
+              var table = document.getElementById("bets-table-container");
               if (table) {
                 var ids = new Set();
                 table.querySelectorAll("button[data-game-id]").forEach(function(btn) { ids.add(btn.dataset.gameId); });
@@ -1694,8 +1692,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             }, 100);
           }
           document.addEventListener("DOMContentLoaded", function() {
-            var tables = document.querySelectorAll(".table-container:not(.placed-section)");
-            var table = tables.length > 0 ? tables[tables.length - 1] : null;
+            var table = document.getElementById("bets-table-container");
             if (!table) return;
             var observer = new MutationObserver(scheduleRecalc);
             observer.observe(table, { childList: true, subtree: true });
