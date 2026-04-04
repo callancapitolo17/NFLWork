@@ -7,6 +7,9 @@
 #   - Favorite + Over: positively correlated
 #   - Underdog + Under: positively correlated
 #
+# Checks both FG (full game) and F5 (first 5 innings) parlays. F5 parlays
+# exploit the same correlation but in a lower-variance environment.
+#
 # Uses the same sampling engine and compute_parlay_fair_odds() from Tools.R
 # that powers the NFL parlay calculator.
 #
@@ -29,7 +32,8 @@ source("Tools.R")
 
 EV_THRESHOLD <- 0.02   # 2% minimum edge to flag (default, overridden by dashboard)
 KELLY_EDGE_MIN <- 0.03 # 3% minimum edge to enter conditional Kelly sizing
-WZ_PARLAY_SHAVE <- 0.989  # Wagerzon takes ~1.1% off independent multiply
+WZ_PARLAY_SHAVE_FG <- 0.989  # Wagerzon takes ~1.1% off FG independent multiply
+WZ_PARLAY_SHAVE_F5 <- 0.995  # Wagerzon takes ~0.5% off F5 independent multiply
 MLB_DB <- "mlb.duckdb"
 
 # Load sizing from dashboard if available (parlay-specific settings, falls back to main)
@@ -235,13 +239,22 @@ if (nrow(samples_df) == 0) {
   quit(status = 0)
 }
 
+# Rename F5 columns so evaluate_leg(period = "F5") can find them.
+# evaluate_leg() builds column names as paste0("game_home_margin_period_", period)
+# but the samples table stores them as home_margin_f5 / total_f5.
+if ("home_margin_f5" %in% names(samples_df)) {
+  samples_df <- samples_df %>%
+    rename(game_home_margin_period_F5 = home_margin_f5,
+           game_total_period_F5       = total_f5)
+}
+
 # Split into per-game list of data frames
 samples_list <- split(samples_df, samples_df$game_id)
 cat(sprintf("Loaded %d samples across %d games.\n",
             nrow(samples_df), length(samples_list)))
 
 # =============================================================================
-# LOAD WAGERZON FG ODDS
+# LOAD WAGERZON ODDS (FG + F5)
 # =============================================================================
 
 wz <- get_wagerzon_odds("mlb")
@@ -251,34 +264,51 @@ if (nrow(wz) == 0) {
   quit(status = 0)
 }
 
-# Filter to full game MAIN line only (exclude alternates and H1)
-wz_spreads <- wz %>% filter(period == "fg", market == "spreads")
-wz_totals  <- wz %>% filter(period == "fg", market == "totals")
-
-if (nrow(wz_spreads) == 0 || nrow(wz_totals) == 0) {
-  cat(sprintf("Wagerzon FG data: %d spreads, %d totals. Need both.\n",
-              nrow(wz_spreads), nrow(wz_totals)))
-  quit(status = 0)
+# Helper: join spread + total rows into one row per game for a given period
+join_spread_total <- function(wz_data, spread_filter, total_filter, label) {
+  spreads <- wz_data %>% filter(!!!spread_filter)
+  totals  <- wz_data %>% filter(!!!total_filter)
+  if (nrow(spreads) == 0 || nrow(totals) == 0) {
+    cat(sprintf("Wagerzon %s data: %d spreads, %d totals.\n", label, nrow(spreads), nrow(totals)))
+    return(tibble())
+  }
+  combined <- spreads %>%
+    select(home_team, away_team, game_date, game_time,
+           home_spread, home_spread_price = odds_home,
+           away_spread, away_spread_price = odds_away) %>%
+    inner_join(
+      totals %>% select(home_team, away_team, game_date, game_time,
+                         total_line = line,
+                         over_price = odds_over,
+                         under_price = odds_under),
+      by = c("home_team", "away_team", "game_date", "game_time"),
+      relationship = "many-to-many"
+    ) %>%
+    distinct(home_team, away_team, game_date, game_time, .keep_all = TRUE)
+  cat(sprintf("Wagerzon %s games with spread + total: %d\n", label, nrow(combined)))
+  combined
 }
 
-# Join spreads + totals by (home_team, away_team, game_date, game_time).
-# game_date ("MM/DD") and game_time ("HH:MM") are Eastern time from Wagerzon's
-# API — used to match the correct consensus game in a series or doubleheader.
-wz_combined <- wz_spreads %>%
-  select(home_team, away_team, game_date, game_time,
-         home_spread, home_spread_price = odds_home,
-         away_spread, away_spread_price = odds_away) %>%
-  inner_join(
-    wz_totals %>% select(home_team, away_team, game_date, game_time,
-                          total_line = line,
-                          over_price = odds_over,
-                          under_price = odds_under),
-    by = c("home_team", "away_team", "game_date", "game_time"),
-    relationship = "many-to-many"
-  ) %>%
-  distinct(home_team, away_team, game_date, game_time, .keep_all = TRUE)
+# FG: full game spreads + totals
+wz_fg <- join_spread_total(
+  wz,
+  list(quo(period == "fg"), quo(market == "spreads")),
+  list(quo(period == "fg"), quo(market == "totals")),
+  "FG"
+)
 
-cat(sprintf("Wagerzon FG games with spread + total: %d\n", nrow(wz_combined)))
+# F5: first 5 innings spreads + totals (stored as period="h1", market="spreads_h1")
+wz_f5 <- join_spread_total(
+  wz,
+  list(quo(period == "h1"), quo(market == "spreads_h1")),
+  list(quo(period == "h1"), quo(market == "totals_h1")),
+  "F5"
+)
+
+if (nrow(wz_fg) == 0 && nrow(wz_f5) == 0) {
+  cat("No Wagerzon FG or F5 data available.\n")
+  quit(status = 0)
+}
 
 # Try to load exact parlay prices from ConfirmWagerHelper API
 wz_db <- normalizePath(path.expand("~/NFLWork/wagerzon_odds/wagerzon.duckdb"), mustWork = FALSE)
@@ -312,10 +342,6 @@ if (use_exact) {
 # MATCH WAGERZON GAMES TO SAMPLES
 # =============================================================================
 
-# Derive game_date ("MM/DD") and game_time ("HH:MM") in Eastern from consensus
-# commence_time (UTC) to match Wagerzon's field format. Joining on all four keys
-# correctly handles both series (same date needed) and doubleheaders (same date
-# but different game_time needed).
 # Derive game_date ("MM/DD") and game_hour ("HH") in Eastern from consensus
 # commence_time (UTC). We match on hour rather than exact HH:MM because the
 # Odds API and Wagerzon can report the same game a few minutes apart.
@@ -331,17 +357,27 @@ consensus_dated <- consensus %>%
     } else NA_character_
   )
 
-wz_combined <- wz_combined %>%
-  mutate(game_hour = substr(game_time, 1, 2))
+# Match both FG and F5 to consensus (same join logic)
+match_to_consensus <- function(wz_data, consensus_dated, label) {
+  if (nrow(wz_data) == 0) return(tibble())
+  matched <- wz_data %>%
+    mutate(game_hour = substr(game_time, 1, 2)) %>%
+    inner_join(consensus_dated, by = c("home_team", "away_team", "game_date", "game_hour"))
+  cat(sprintf("Matched %d %s games between Wagerzon and samples.\n", nrow(matched), label))
+  matched
+}
 
-wz_matched <- wz_combined %>%
-  inner_join(consensus_dated, by = c("home_team", "away_team", "game_date", "game_hour"))
+wz_fg_matched <- match_to_consensus(wz_fg, consensus_dated, "FG")
+wz_f5_matched <- match_to_consensus(wz_f5, consensus_dated, "F5")
 
-if (nrow(wz_matched) == 0) {
+if (nrow(wz_fg_matched) == 0 && nrow(wz_f5_matched) == 0) {
   cat("No Wagerzon games matched to consensus. Check team name resolution.\n")
-  cat("Wagerzon teams:\n")
-  for (i in seq_len(nrow(wz_combined))) {
-    cat(sprintf("  %s @ %s\n", wz_combined$away_team[i], wz_combined$home_team[i]))
+  all_wz <- bind_rows(wz_fg, wz_f5)
+  if (nrow(all_wz) > 0) {
+    cat("Wagerzon teams:\n")
+    for (i in seq_len(nrow(all_wz))) {
+      cat(sprintf("  %s @ %s\n", all_wz$away_team[i], all_wz$home_team[i]))
+    }
   }
   cat("Consensus teams:\n")
   for (i in seq_len(nrow(consensus))) {
@@ -350,130 +386,139 @@ if (nrow(wz_matched) == 0) {
   quit(status = 0)
 }
 
-cat(sprintf("Matched %d games between Wagerzon and samples.\n", nrow(wz_matched)))
-
 # =============================================================================
-# COMPUTE PARLAY FAIR ODDS FOR EACH GAME
+# COMPUTE PARLAY FAIR ODDS FOR EACH GAME (FG + F5)
 # =============================================================================
 
-results <- list()
-legs_store <- list()  # stash legs for conditional Kelly pass, keyed by game_id|combo
+# Process one period's matched games. Returns list of (results, legs) pairs.
+#   period_label: "Full" (for evaluate_leg) or "F5"
+#   combo_prefix: "" for FG, "F5 " for F5
+#   shave: WZ_PARLAY_SHAVE_FG or WZ_PARLAY_SHAVE_F5
+process_period <- function(wz_matched, period_label, combo_prefix, shave) {
+  period_results <- list()
+  period_legs    <- list()
 
-for (i in seq_len(nrow(wz_matched))) {
-  row <- wz_matched[i, ]
-  game_id <- row$id
+  if (nrow(wz_matched) == 0) return(list(results = period_results, legs = period_legs))
 
-  samp <- samples_list[[game_id]]
-  if (is.null(samp)) {
-    cat(sprintf("  Skipping %s @ %s: no samples for game_id %s\n",
-                row$away_team, row$home_team, game_id))
-    next
-  }
+  for (i in seq_len(nrow(wz_matched))) {
+    row <- wz_matched[i, ]
+    game_id <- row$id
 
-  # Build 4 parlay combos: each spread side × each total side
-  combos <- list(
-    list(
-      name = "Home Spread + Over",
-      legs = list(
-        list(market = "spread", period = "Full", side = "home", line = row$home_spread),
-        list(market = "total",  period = "Full", side = "over", line = row$total_line)
-      ),
-      wz_spread_price = row$home_spread_price,
-      wz_total_price  = row$over_price
-    ),
-    list(
-      name = "Home Spread + Under",
-      legs = list(
-        list(market = "spread", period = "Full", side = "home", line = row$home_spread),
-        list(market = "total",  period = "Full", side = "under", line = row$total_line)
-      ),
-      wz_spread_price = row$home_spread_price,
-      wz_total_price  = row$under_price
-    ),
-    list(
-      name = "Away Spread + Over",
-      legs = list(
-        list(market = "spread", period = "Full", side = "away", line = row$away_spread),
-        list(market = "total",  period = "Full", side = "over", line = row$total_line)
-      ),
-      wz_spread_price = row$away_spread_price,
-      wz_total_price  = row$over_price
-    ),
-    list(
-      name = "Away Spread + Under",
-      legs = list(
-        list(market = "spread", period = "Full", side = "away", line = row$away_spread),
-        list(market = "total",  period = "Full", side = "under", line = row$total_line)
-      ),
-      wz_spread_price = row$away_spread_price,
-      wz_total_price  = row$under_price
-    )
-  )
-
-  for (combo in combos) {
-    # Skip if either price is missing
-    if (is.na(combo$wz_spread_price) || is.na(combo$wz_total_price)) next
-
-    # Our fair price (correlation-adjusted via historical samples)
-    fair <- compute_parlay_fair_odds(samp, combo$legs)
-
-    # Wagerzon's parlay price — use exact API price if available, else shave+round
-    combo_name <- combo$name
-    exact_row <- if (use_exact) {
-      exact_prices %>% filter(home_team == row$home_team, combo == combo_name)
-    } else {
-      data.frame()
+    samp <- samples_list[[game_id]]
+    if (is.null(samp)) {
+      cat(sprintf("  Skipping %s @ %s: no samples for game_id %s\n",
+                  row$away_team, row$home_team, game_id))
+      next
     }
 
-    if (nrow(exact_row) > 0) {
-      wz_dec <- exact_row$wz_decimal[1]
-      wz_american <- exact_row$wz_american[1]
-    } else {
-      # Fallback: multiply legs independently, apply 1.1% shave, round to whole American
-      wz_dec_raw <- american_to_decimal(combo$wz_spread_price) *
-                    american_to_decimal(combo$wz_total_price)
-      wz_dec_shaved <- wz_dec_raw * WZ_PARLAY_SHAVE
-      wz_american <- round(prob_to_american(1 / wz_dec_shaved))
-      wz_dec <- american_to_decimal(wz_american)
-    }
-
-    # Edge: positive means Wagerzon overpays relative to fair
-    fair_dec <- fair$fair_decimal_odds
-    edge_pct <- (wz_dec - fair_dec) / fair_dec * 100
-
-    combo_spread       <- if (grepl("Home", combo_name)) row$home_spread else row$away_spread
-    combo_spread_price <- combo$wz_spread_price
-    combo_total_price  <- combo$wz_total_price
-
-    # Store WITHOUT sizing — conditional Kelly sizes in pass 2
-    results[[length(results) + 1]] <- tibble(
-      game_id     = game_id,
-      game        = sprintf("%s @ %s", row$away_team, row$home_team),
-      home_team   = row$home_team,
-      away_team   = row$away_team,
-      game_time   = if ("commence_time" %in% names(row) && !is.na(row$commence_time)) {
-        format(as.POSIXct(row$commence_time, tz = "UTC"), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
-      } else NA_character_,
-      combo        = combo_name,
-      spread_line  = combo_spread,
-      total_line   = row$total_line,
-      spread_price = combo_spread_price,
-      total_price  = combo_total_price,
-      fair_odds   = fair$fair_american_odds,
-      wz_odds     = wz_american,
-      fair_dec    = round(fair_dec, 3),
-      wz_dec      = round(wz_dec, 3),
-      corr_factor = fair$correlation_factor,
-      edge_pct    = round(edge_pct, 1),
-      joint_prob_raw = fair$joint_prob,  # unrounded, needed for Kelly
-      joint_prob  = round(fair$joint_prob * 100, 1),
-      n_samples   = fair$n_samples_resolved
+    # Build 4 parlay combos: each spread side x each total side
+    combos <- list(
+      list(
+        name = paste0(combo_prefix, "Home Spread + Over"),
+        legs = list(
+          list(market = "spread", period = period_label, side = "home", line = row$home_spread),
+          list(market = "total",  period = period_label, side = "over", line = row$total_line)
+        ),
+        wz_spread_price = row$home_spread_price,
+        wz_total_price  = row$over_price
+      ),
+      list(
+        name = paste0(combo_prefix, "Home Spread + Under"),
+        legs = list(
+          list(market = "spread", period = period_label, side = "home", line = row$home_spread),
+          list(market = "total",  period = period_label, side = "under", line = row$total_line)
+        ),
+        wz_spread_price = row$home_spread_price,
+        wz_total_price  = row$under_price
+      ),
+      list(
+        name = paste0(combo_prefix, "Away Spread + Over"),
+        legs = list(
+          list(market = "spread", period = period_label, side = "away", line = row$away_spread),
+          list(market = "total",  period = period_label, side = "over", line = row$total_line)
+        ),
+        wz_spread_price = row$away_spread_price,
+        wz_total_price  = row$over_price
+      ),
+      list(
+        name = paste0(combo_prefix, "Away Spread + Under"),
+        legs = list(
+          list(market = "spread", period = period_label, side = "away", line = row$away_spread),
+          list(market = "total",  period = period_label, side = "under", line = row$total_line)
+        ),
+        wz_spread_price = row$away_spread_price,
+        wz_total_price  = row$under_price
+      )
     )
 
-    # Stash legs for conditional Kelly pass
-    legs_store[[paste0(game_id, "|", combo_name)]] <- combo$legs
+    for (combo in combos) {
+      if (is.na(combo$wz_spread_price) || is.na(combo$wz_total_price)) next
+
+      fair <- compute_parlay_fair_odds(samp, combo$legs)
+
+      # Wagerzon's parlay price — exact API price if available, else shave+round
+      combo_name <- combo$name
+      exact_row <- if (use_exact) {
+        exact_prices %>% filter(home_team == row$home_team, combo == combo_name)
+      } else {
+        data.frame()
+      }
+
+      if (nrow(exact_row) > 0) {
+        wz_dec <- exact_row$wz_decimal[1]
+        wz_american <- exact_row$wz_american[1]
+      } else {
+        wz_dec_raw <- american_to_decimal(combo$wz_spread_price) *
+                      american_to_decimal(combo$wz_total_price)
+        wz_dec_shaved <- wz_dec_raw * shave
+        wz_american <- round(prob_to_american(1 / wz_dec_shaved))
+        wz_dec <- american_to_decimal(wz_american)
+      }
+
+      fair_dec <- fair$fair_decimal_odds
+      edge_pct <- (wz_dec - fair_dec) / fair_dec * 100
+
+      combo_spread       <- if (grepl("Home", combo_name)) row$home_spread else row$away_spread
+      combo_spread_price <- combo$wz_spread_price
+      combo_total_price  <- combo$wz_total_price
+
+      period_results[[length(period_results) + 1]] <- tibble(
+        game_id     = game_id,
+        game        = sprintf("%s @ %s", row$away_team, row$home_team),
+        home_team   = row$home_team,
+        away_team   = row$away_team,
+        game_time   = if ("commence_time" %in% names(row) && !is.na(row$commence_time)) {
+          format(as.POSIXct(row$commence_time, tz = "UTC"), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+        } else NA_character_,
+        combo        = combo_name,
+        spread_line  = combo_spread,
+        total_line   = row$total_line,
+        spread_price = combo_spread_price,
+        total_price  = combo_total_price,
+        fair_odds   = fair$fair_american_odds,
+        wz_odds     = wz_american,
+        fair_dec    = round(fair_dec, 3),
+        wz_dec      = round(wz_dec, 3),
+        corr_factor = fair$correlation_factor,
+        edge_pct    = round(edge_pct, 1),
+        joint_prob_raw = fair$joint_prob,
+        joint_prob  = round(fair$joint_prob * 100, 1),
+        n_samples   = fair$n_samples_resolved
+      )
+
+      period_legs[[paste0(game_id, "|", combo_name)]] <- combo$legs
+    }
   }
+
+  list(results = period_results, legs = period_legs)
 }
+
+# Process both periods and merge
+fg_out <- process_period(wz_fg_matched, period_label = "Full", combo_prefix = "",    shave = WZ_PARLAY_SHAVE_FG)
+f5_out <- process_period(wz_f5_matched, period_label = "F5",   combo_prefix = "F5 ", shave = WZ_PARLAY_SHAVE_F5)
+
+results    <- c(fg_out$results, f5_out$results)
+legs_store <- c(fg_out$legs,    f5_out$legs)
 
 # =============================================================================
 # PASS 2: CONDITIONAL KELLY SIZING
@@ -551,14 +596,14 @@ cat("=================================================================\n\n")
 for (game_name in unique(all_results$game)) {
   game_rows <- all_results %>% filter(game == game_name)
   cat(sprintf("--- %s ---\n", game_name))
-  cat(sprintf("  %-22s  %6s  %6s  %5s  %6s  %6s  %6s\n",
+  cat(sprintf("  %-25s  %6s  %6s  %5s  %6s  %6s  %6s\n",
               "Combo", "Fair", "WZ", "Corr", "Edge%", "Wager", "ToWin"))
 
   for (j in seq_len(nrow(game_rows))) {
     r <- game_rows[j, ]
     to_win <- round(r$kelly_bet * (r$wz_dec - 1))
     edge_flag <- if (r$edge_pct >= KELLY_EDGE_MIN * 100) " ***" else ""
-    cat(sprintf("  %-22s  %+6d  %+6d  %5.3f  %+5.1f%%  $%4d  $%4d%s\n",
+    cat(sprintf("  %-25s  %+6d  %+6d  %5.3f  %+5.1f%%  $%4d  $%4d%s\n",
                 r$combo, r$fair_odds, r$wz_odds, r$corr_factor,
                 r$edge_pct, round(r$kelly_bet), to_win, edge_flag))
   }

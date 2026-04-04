@@ -3,7 +3,7 @@
 Wagerzon Parlay Pricer
 Fetches exact parlay payouts from Wagerzon's ConfirmWagerHelper API.
 
-For each MLB game with FG spread + total odds, builds 4 parlay combos
+For each MLB game with spread + total odds (FG and F5), builds 4 parlay combos
 (home spread+over, home spread+under, away spread+over, away spread+under)
 and queries the real payout. Stores results in DuckDB.
 
@@ -111,24 +111,44 @@ def get_parlay_price(session: requests.Session, idgm: int, legs: list[dict],
 
 
 def price_mlb_parlays(session: requests.Session):
-    """Price all MLB FG spread+total parlay combos."""
+    """Price all MLB FG + F5 spread+total parlay combos."""
     conn = duckdb.connect(str(DB_PATH))
     try:
-        _price_mlb_parlays_inner(session, conn)
+        fg_results = _price_mlb_parlays_inner(session, conn, period="fg")
+        f5_results = _price_mlb_parlays_inner(session, conn, period="f5")
+        all_results = fg_results + f5_results
+        _save_parlay_prices(conn, all_results)
     finally:
         conn.close()
 
 
-def _price_mlb_parlays_inner(session: requests.Session, conn):
-    """Inner implementation — conn is managed by caller."""
+def _price_mlb_parlays_inner(session: requests.Session, conn, period: str = "fg"):
+    """Price parlay combos for a given period. Returns list of result tuples.
 
-    # Read FG spreads with idgm
-    games = conn.execute("""
+    Args:
+        session: Authenticated requests session
+        conn: DuckDB connection
+        period: "fg" for full game, "f5" for first 5 innings
+
+    Returns:
+        List of tuples: (fetch_time, home, away, idgm, combo, period, decimal, american, win)
+    """
+    # Period-specific query filters and combo name prefix
+    if period == "f5":
+        where_clause = "period = 'h1' AND market = 'spreads_h1'"
+        combo_prefix = "F5 "
+        label = "F5"
+    else:
+        where_clause = "period = 'fg' AND market = 'spreads'"
+        combo_prefix = ""
+        label = "FG"
+
+    games = conn.execute(f"""
         SELECT DISTINCT home_team, away_team, idgm,
                away_spread, away_spread_price, home_spread, home_spread_price,
                total, over_price, under_price
         FROM mlb_odds
-        WHERE period = 'fg' AND market = 'spreads'
+        WHERE {where_clause}
           AND idgm IS NOT NULL
           AND away_spread IS NOT NULL AND total IS NOT NULL
     """).fetchall()
@@ -138,12 +158,11 @@ def _price_mlb_parlays_inner(session: requests.Session, conn):
             "total", "over_price", "under_price"]
 
     if not games:
-        print("No MLB FG games with idgm found. Run scraper first.")
-        return
+        print(f"No MLB {label} games with idgm found. Run scraper first.")
+        return []
 
-    print(f"Pricing parlays for {len(games)} MLB games...")
+    print(f"\nPricing {label} parlays for {len(games)} MLB games...")
 
-    # Build 4 combos per game
     results = []
     fetch_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -154,28 +173,28 @@ def _price_mlb_parlays_inner(session: requests.Session, conn):
 
         combos = [
             {
-                "combo": "Home Spread + Over",
+                "combo": f"{combo_prefix}Home Spread + Over",
                 "legs": [
                     {"play": PLAY_HOME_SPREAD, "points": g["home_spread"], "odds": g["home_spread_price"]},
                     {"play": PLAY_OVER, "points": -abs(g["total"]), "odds": g["over_price"]},
                 ],
             },
             {
-                "combo": "Home Spread + Under",
+                "combo": f"{combo_prefix}Home Spread + Under",
                 "legs": [
                     {"play": PLAY_HOME_SPREAD, "points": g["home_spread"], "odds": g["home_spread_price"]},
                     {"play": PLAY_UNDER, "points": g["total"], "odds": g["under_price"]},
                 ],
             },
             {
-                "combo": "Away Spread + Over",
+                "combo": f"{combo_prefix}Away Spread + Over",
                 "legs": [
                     {"play": PLAY_AWAY_SPREAD, "points": g["away_spread"], "odds": g["away_spread_price"]},
                     {"play": PLAY_OVER, "points": -abs(g["total"]), "odds": g["over_price"]},
                 ],
             },
             {
-                "combo": "Away Spread + Under",
+                "combo": f"{combo_prefix}Away Spread + Under",
                 "legs": [
                     {"play": PLAY_AWAY_SPREAD, "points": g["away_spread"], "odds": g["away_spread_price"]},
                     {"play": PLAY_UNDER, "points": g["total"], "odds": g["under_price"]},
@@ -188,34 +207,41 @@ def _price_mlb_parlays_inner(session: requests.Session, conn):
             if price:
                 results.append((
                     fetch_time, g["home_team"], g["away_team"], idgm,
-                    c["combo"], price["decimal"], price["american"], price["win"]
+                    c["combo"], period, price["decimal"], price["american"], price["win"]
                 ))
                 print(f"  {game_label} | {c['combo']}: +{price['american']} (${price['win']} on $100)")
             else:
                 print(f"  {game_label} | {c['combo']}: FAILED")
 
-    # Save to DuckDB
-    if results:
-        conn.execute("DROP TABLE IF EXISTS mlb_parlay_prices")
-        conn.execute("""
-            CREATE TABLE mlb_parlay_prices (
-                fetch_time TIMESTAMP,
-                home_team VARCHAR,
-                away_team VARCHAR,
-                idgm INTEGER,
-                combo VARCHAR,
-                wz_decimal DOUBLE,
-                wz_american INTEGER,
-                wz_win DOUBLE
-            )
-        """)
-        conn.executemany(
-            "INSERT INTO mlb_parlay_prices VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            results,
-        )
-        print(f"\nSaved {len(results)} parlay prices to mlb_parlay_prices")
-    else:
+    print(f"{label}: {len(results)} prices fetched")
+    return results
+
+
+def _save_parlay_prices(conn, results: list):
+    """Save combined FG + F5 parlay prices to DuckDB."""
+    if not results:
         print("No prices fetched")
+        return
+
+    conn.execute("DROP TABLE IF EXISTS mlb_parlay_prices")
+    conn.execute("""
+        CREATE TABLE mlb_parlay_prices (
+            fetch_time TIMESTAMP,
+            home_team VARCHAR,
+            away_team VARCHAR,
+            idgm INTEGER,
+            combo VARCHAR,
+            period VARCHAR,
+            wz_decimal DOUBLE,
+            wz_american INTEGER,
+            wz_win DOUBLE
+        )
+    """)
+    conn.executemany(
+        "INSERT INTO mlb_parlay_prices VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        results,
+    )
+    print(f"\nSaved {len(results)} parlay prices to mlb_parlay_prices")
 
 
 if __name__ == "__main__":
