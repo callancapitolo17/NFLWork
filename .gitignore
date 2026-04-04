@@ -64,6 +64,7 @@ report.html
 .bookmaker_profile/
 .bookmaker_cookies.json
 .bet105_profile/
+.dk_profile/
 
 # HAR files
 *.har
