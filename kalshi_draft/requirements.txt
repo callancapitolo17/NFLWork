@@ -1,0 +1,7 @@
+dash>=2.14,<3.0
+plotly>=5.18
+duckdb>=0.9
+cryptography>=41.0
+beautifulsoup4>=4.12
+requests>=2.31
+pandas>=2.0
