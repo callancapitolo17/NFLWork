@@ -1,5 +1,6 @@
 # Claude Code worktrees
 .claude/worktrees/
+.worktrees/
 
 # Pipeline sentinel files
 .scrapers_done_*
@@ -54,9 +55,10 @@ report.html
 .pikkit_session.json
 .bet105_session.json
 
-# Browser profiles (Playwright)
+# Browser profiles (Playwright/Chrome)
 .betonline_profile/
 .bfa_profile/
+.bfa_bet_profile*/
 .wagerzon_profile/
 .hoop88_profile/
 .bookmaker_profile/
@@ -73,6 +75,7 @@ bookmaker_odds/venv
 
 # Logs
 logs/
+*.log
 
 # Rcpp compilation artifacts
 *.o
