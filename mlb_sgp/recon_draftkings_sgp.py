@@ -74,49 +74,57 @@ def run_recon():
         }
         current_phase["requests"].append(entry)
 
+    # We can't call response.text() inside the event handler — it deadlocks
+    # because Playwright's sync API can't nest sync calls inside callbacks.
+    # Instead, store (response, entry) pairs and process bodies after each phase.
+    pending_responses = []
+
     def handle_response(response):
-        """Called for every incoming response. We match it back to the
-        request entry we already stored and enrich it with status / body."""
+        """Called for every incoming response. Store status and queue body reads."""
         if "draftkings.com" not in response.url:
             return
 
-        # Find the matching request entry (first one without a status yet)
         for entry in current_phase["requests"]:
             if entry["url"] == response.url and "status" not in entry:
                 entry["status"] = response.status
-                try:
-                    content_type = response.headers.get("content-type", "")
-
-                    if "json" in content_type:
-                        # JSON responses get a full preview (up to limit)
-                        body = response.text()
-                        entry["response_preview"] = body[:JSON_PREVIEW_LIMIT]
-                        entry["response_size"] = len(body)
-
-                        # Flag any SGP-related keywords in the JSON body
-                        body_lower = body.lower()
-                        found = [kw for kw in SGP_KEYWORDS if kw.lower() in body_lower]
-                        if found:
-                            entry["keywords_found"] = found
-
-                    elif "html" in content_type:
-                        body = response.text()
-                        entry["response_size"] = len(body)
-                        body_lower = body.lower()
-                        # Search for SGP-related keywords and pull snippets
-                        for keyword in SGP_KEYWORDS:
-                            idx = body_lower.find(keyword.lower())
-                            if idx >= 0:
-                                snippet = body[max(0, idx - 100):idx + 200]
-                                if "snippets" not in entry:
-                                    entry["snippets"] = []
-                                entry["snippets"].append({
-                                    "keyword": keyword,
-                                    "context": snippet,
-                                })
-                except Exception:
-                    pass
+                content_type = response.headers.get("content-type", "")
+                entry["content_type"] = content_type
+                # Queue for body reading after the phase completes
+                if "json" in content_type or "html" in content_type:
+                    pending_responses.append((response, entry))
                 break
+
+    def flush_pending_responses():
+        """Read response bodies outside the event handler (safe to call sync)."""
+        for response, entry in pending_responses:
+            try:
+                content_type = entry.get("content_type", "")
+                body = response.text()
+
+                if "json" in content_type:
+                    entry["response_preview"] = body[:JSON_PREVIEW_LIMIT]
+                    entry["response_size"] = len(body)
+                    body_lower = body.lower()
+                    found = [kw for kw in SGP_KEYWORDS if kw.lower() in body_lower]
+                    if found:
+                        entry["keywords_found"] = found
+
+                elif "html" in content_type:
+                    entry["response_size"] = len(body)
+                    body_lower = body.lower()
+                    for keyword in SGP_KEYWORDS:
+                        idx = body_lower.find(keyword.lower())
+                        if idx >= 0:
+                            snippet = body[max(0, idx - 100):idx + 200]
+                            if "snippets" not in entry:
+                                entry["snippets"] = []
+                            entry["snippets"].append({
+                                "keyword": keyword,
+                                "context": snippet,
+                            })
+            except Exception:
+                pass
+        pending_responses.clear()
 
     # --- Phase helpers ---
 
@@ -207,14 +215,19 @@ def run_recon():
         # ---- Phase 1: page_load ----
         start_phase("page_load")
         print(f"Navigating to {DK_MLB_URL}...")
-        page.goto(DK_MLB_URL, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(3000)
+        # DK's SPA is heavy — don't crash on slow load, just wait
+        try:
+            page.goto(DK_MLB_URL, wait_until="commit", timeout=120000)
+        except Exception as e:
+            print(f"  Navigation slow ({e}), continuing anyway...")
+        page.wait_for_timeout(5000)
 
         print("\n" + "=" * 60)
-        print("MLB schedule should be visible.")
-        print("Pick a game you want to recon, then press ENTER.")
+        print("MLB schedule should be visible (or loading).")
+        print("Wait until it loads, pick a game, then press ENTER.")
         print("=" * 60)
         input()
+        flush_pending_responses()
         show_phase_results()
 
         # ---- Phase 2: open_game ----
@@ -226,6 +239,7 @@ def run_recon():
         print("=" * 60)
         input()
         page.wait_for_timeout(2000)
+        flush_pending_responses()
         show_phase_results()
 
         # ---- Phase 3: open_sgp ----
@@ -237,6 +251,7 @@ def run_recon():
         print("=" * 60)
         input()
         page.wait_for_timeout(2000)
+        flush_pending_responses()
         show_phase_results()
 
         # ---- Phase 4: add_spread ----
@@ -248,6 +263,7 @@ def run_recon():
         print("=" * 60)
         input()
         page.wait_for_timeout(2000)
+        flush_pending_responses()
         show_phase_results()
 
         # ---- Phase 5: add_total ----
@@ -260,6 +276,7 @@ def run_recon():
         print("=" * 60)
         input()
         page.wait_for_timeout(2000)
+        flush_pending_responses()
         show_phase_results()
 
         # ---- Phase 6: inspect_slip ----
@@ -385,6 +402,7 @@ def run_recon():
         except Exception as e:
             print(f"  Error scanning scripts: {e}")
 
+        flush_pending_responses()
         show_phase_results()
 
         # ------------------------------------------------------------------

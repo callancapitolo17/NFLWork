@@ -11,8 +11,10 @@ import duckdb
 from pathlib import Path
 from datetime import datetime
 
-# Default path to the shared MLB database
-MLB_DB = Path(__file__).parent.parent / "Answer Keys" / "mlb.duckdb"
+# Default path to the shared MLB database.
+# Use absolute path so this works from worktrees too.
+_REPO_ROOT = Path("/Users/callancapitolo/NFLWork")
+MLB_DB = _REPO_ROOT / "Answer Keys" / "mlb.duckdb"
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS mlb_sgp_odds (
