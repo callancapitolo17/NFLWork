@@ -2898,6 +2898,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                   btn.onclick = function() { removeParlay(this); };
                   addPlacedParlayRow(btn, amount);
                   showToast("Parlay placed", "success");
+                  applyParlayFilters();
                 } else {
                   showToast(result.error || "Failed", "error");
                 }
