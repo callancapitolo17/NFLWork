@@ -72,6 +72,7 @@ report.html
 bfa_odds/venv
 hoop88_odds/venv
 bookmaker_odds/venv
+bet105_odds/venv
 
 # Logs
 logs/
