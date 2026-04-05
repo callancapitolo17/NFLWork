@@ -431,6 +431,84 @@ source gracefully.
 
 ---
 
+## Opponent Behavior Analysis
+
+### L. Understanding Other Players' Behaviors
+
+**Why this matters**: In any market, your edge isn't just about having the right price — it's
+about understanding who you're trading against and how they behave. If you can predict where
+other participants will place their money, you can:
+- **Anticipate line moves**: Know which contracts will get bought up before it happens
+- **Find contrarian value**: When the crowd piles into one side, the other side gets cheap
+- **Avoid traps**: Don't compete for the same edge 50 other people found
+- **Time entries better**: Trade before the crowd moves the line against you
+
+This is the sports betting equivalent of order flow analysis in financial markets — knowing
+what the other side is doing gives you a structural advantage.
+
+**Data Sources**:
+
+1. **Tevie's Sheet** — Public bettor tracking spreadsheet that shows what picks popular
+   handicappers and model-builders are making. Useful for gauging "sharp consensus" vs
+   "public consensus." If Tevie's sheet shows 80% of tracked bettors on Duke, that contract
+   is likely overpriced (too much demand on one side).
+
+2. **Splash Sports** — Scrape or pull data from Splash Sports to see where money is flowing,
+   what picks are trending, and how the betting public is distributed across markets. This
+   gives a real-time view of market sentiment.
+
+**What to track and build**:
+
+```r
+# Track opponent behavior over time
+opponent_behavior <- tibble(
+  market = character(),        # e.g., "Duke Championship"
+  source = character(),        # "tevie_sheet" or "splash_sports"
+  public_pct = numeric(),      # % of bettors on YES side
+  sharp_pct = numeric(),       # % of sharp/tracked bettors on YES side
+  timestamp = POSIXct()        # when this was observed
+)
+
+# Key derived signals:
+# 1. Sharp vs Public divergence — sharps on one side, public on the other
+#    This is one of the strongest signals in sports betting
+sharp_public_gap <- sharp_pct - public_pct
+# Large positive gap = sharps like YES, public doesn't → potential value on YES
+
+# 2. Consensus concentration — when everyone agrees, the price is efficient
+#    When opinions are split, there's more room for mispricing
+consensus_strength <- abs(public_pct - 50)
+# Low consensus = more potential for edge
+
+# 3. Fade-the-public signal — historically, fading heavy public action is +EV
+#    especially on futures and tournament props
+fade_signal <- case_when(
+  public_pct > 75 & sharp_pct < 50 ~ "Strong fade (public overloaded, sharps disagree)",
+  public_pct > 65 & sharp_pct < 55 ~ "Mild fade",
+  TRUE ~ "No signal"
+)
+```
+
+**Integration with existing edge finder**:
+
+Add opponent behavior as an additional column in the Kalshi Edges tab:
+- Show public % and sharp % alongside model EV
+- Flag edges where your model AND sharps disagree with the public (highest conviction)
+- Deprioritize edges where you're aligned with the public (less likely to be real edge)
+
+**Implementation approach**:
+1. **Phase 1**: Manual — check Tevie's sheet before tournament, note consensus picks
+2. **Phase 2**: Scrape Splash Sports for real-time public betting percentages
+3. **Phase 3**: Integrate into dashboard as a "Market Sentiment" tab or column overlay
+4. **Phase 4**: Backtest — did fading public consensus on tournament props produce +EV historically?
+
+**The meta-edge**: Most bettors only look at the line. Fewer look at the model. Even fewer
+look at what OTHER bettors are doing. Each layer of analysis you add puts you ahead of a
+larger fraction of the market. Understanding opponent behavior is the layer most recreational
+bettors never reach.
+
+---
+
 ## Key Metrics to Track Year-Over-Year
 
 | Metric | 2026 Value | 2027 Target |
