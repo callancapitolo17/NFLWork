@@ -462,13 +462,14 @@ def save_to_database(sport: str, odds_data: list):
     # Clear old data before inserting fresh scrape
     conn.execute(f"DELETE FROM {table_name}")
 
-    conn.executemany(f"""
-        INSERT INTO {table_name} ({", ".join(columns)})
-        VALUES ({placeholders})
-    """, [
-        tuple(d[col] for col in columns)
-        for d in odds_data
-    ])
+    if odds_data:
+        conn.executemany(f"""
+            INSERT INTO {table_name} ({", ".join(columns)})
+            VALUES ({placeholders})
+        """, [
+            tuple(d[col] for col in columns)
+            for d in odds_data
+        ])
 
     result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
     print(f"Database now has {result[0]} total records in {table_name}")
@@ -503,7 +504,8 @@ def scrape_bfa(sport: str, headless: bool = True):
     print(f"Found {len(games)} games")
 
     if not games:
-        print("No games found.")
+        print("No games found. Clearing stale data.")
+        save_to_database(sport, [])
         return []
 
     # Load team name resolution
@@ -547,9 +549,8 @@ def scrape_bfa(sport: str, headless: bool = True):
         except Exception as e:
             print(f" — Error: {e}")
 
-    # Save to DuckDB
-    if all_odds:
-        save_to_database(sport, all_odds)
+    # Save to DuckDB (always save, even if empty, to clear stale data)
+    save_to_database(sport, all_odds)
 
     print(f"\nScraped {len(all_odds)} total records for {sport.upper()}")
     return all_odds

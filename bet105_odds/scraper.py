@@ -686,13 +686,15 @@ def save_to_database(sport: str, odds_data: list):
     placeholders = ", ".join(["?" for _ in columns])
 
     conn.execute(f"DELETE FROM {table_name}")
-    conn.executemany(f"""
-        INSERT INTO {table_name} ({", ".join(columns)})
-        VALUES ({placeholders})
-    """, [
-        tuple(d[col] for col in columns)
-        for d in odds_data
-    ])
+
+    if odds_data:
+        conn.executemany(f"""
+            INSERT INTO {table_name} ({", ".join(columns)})
+            VALUES ({placeholders})
+        """, [
+            tuple(d[col] for col in columns)
+            for d in odds_data
+        ])
 
     result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
     print(f"Database now has {result[0]} total records in {table_name}")
@@ -745,7 +747,8 @@ def scrape_bet105(sport: str):
     records = scraper.scrape(timeout=30)
 
     if not records:
-        print(f"No records scraped for {sport.upper()}")
+        print(f"No records scraped for {sport.upper()}. Clearing stale data.")
+        save_to_database(sport, [])
         return []
 
     # Summary by market

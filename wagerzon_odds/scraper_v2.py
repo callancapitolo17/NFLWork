@@ -637,13 +637,14 @@ def save_odds(odds_data: list[dict], sport: str):
     # Clear old data before inserting fresh scrape
     conn.execute(f"DELETE FROM {table_name}")
 
-    conn.executemany(f"""
-        INSERT INTO {table_name} ({", ".join(columns)})
-        VALUES ({placeholders})
-    """, [
-        tuple(d[col] for col in columns)
-        for d in odds_data
-    ])
+    if odds_data:
+        conn.executemany(f"""
+            INSERT INTO {table_name} ({", ".join(columns)})
+            VALUES ({placeholders})
+        """, [
+            tuple(d[col] for col in columns)
+            for d in odds_data
+        ])
 
     result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
     print(f"\nDatabase now has {result[0]} total records in {table_name}")
@@ -705,12 +706,9 @@ def scrape_wagerzon(sport: str, headless: bool = True):
     for m, c in sorted(market_counts.items()):
         print(f"  {m}: {c} records")
 
-    # Step 4: Save to DuckDB
-    if odds_data:
-        save_odds(odds_data, sport)
-        print(f"\nSaved {len(odds_data)} total records for {sport.upper()}")
-    else:
-        print("No odds data scraped")
+    # Step 4: Save to DuckDB (always save, even if empty, to clear stale data)
+    save_odds(odds_data, sport)
+    print(f"\nSaved {len(odds_data)} total records for {sport.upper()}")
 
     return odds_data
 

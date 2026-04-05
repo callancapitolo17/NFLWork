@@ -419,13 +419,14 @@ def save_to_database(sport: str, odds_data: list):
     # Clear old data before inserting fresh scrape
     conn.execute(f"DELETE FROM {table_name}")
 
-    conn.executemany(f"""
-        INSERT INTO {table_name} ({", ".join(columns)})
-        VALUES ({placeholders})
-    """, [
-        tuple(d[col] for col in columns)
-        for d in odds_data
-    ])
+    if odds_data:
+        conn.executemany(f"""
+            INSERT INTO {table_name} ({", ".join(columns)})
+            VALUES ({placeholders})
+        """, [
+            tuple(d[col] for col in columns)
+            for d in odds_data
+        ])
 
     result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
     print(f"Database now has {result[0]} total records in {table_name}")
@@ -498,9 +499,8 @@ def scrape_hoop88(sport: str, headless: bool = True):
     for m, c in sorted(market_counts.items()):
         print(f"  {m}: {c} records")
 
-    # Step 4: Save to DuckDB
-    if all_odds:
-        save_to_database(sport, all_odds)
+    # Step 4: Save to DuckDB (always save, even if empty, to clear stale data)
+    save_to_database(sport, all_odds)
 
     print(f"\nScraped {len(all_odds)} total records for {sport.upper()}")
     return all_odds

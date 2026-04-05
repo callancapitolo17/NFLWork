@@ -389,13 +389,14 @@ def save_to_database(sport: str, odds_data: list):
     # Clear old data before inserting fresh scrape
     conn.execute(f"DELETE FROM {table_name}")
 
-    conn.executemany(f"""
-        INSERT INTO {table_name} ({", ".join(columns)})
-        VALUES ({placeholders})
-    """, [
-        tuple(d[col] for col in columns)
-        for d in odds_data
-    ])
+    if odds_data:
+        conn.executemany(f"""
+            INSERT INTO {table_name} ({", ".join(columns)})
+            VALUES ({placeholders})
+        """, [
+            tuple(d[col] for col in columns)
+            for d in odds_data
+        ])
 
     result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
     print(f"Database now has {result[0]} total records in {table_name}")
@@ -456,13 +457,15 @@ def scrape_bookmaker(sport: str):
             session = _create_session()
             resp = session.get(SITE_URL, timeout=15)
             if resp.status_code == 403:
-                print("ERROR: Still blocked after recon. Check Cloudflare manually.")
+                print("ERROR: Still blocked after recon. Check Cloudflare manually. Clearing stale data.")
+                save_to_database(sport, [])
                 return []
             if BOOKMAKER_USERNAME and BOOKMAKER_PASSWORD:
                 login(session, BOOKMAKER_USERNAME, BOOKMAKER_PASSWORD)
             test_data = fetch_schedule(session, first_league["id"])
             if not _has_games(test_data):
-                print("ERROR: No games returned after recon + login.")
+                print("ERROR: No games returned after recon + login. Clearing stale data.")
+                save_to_database(sport, [])
                 return []
 
     # Fetch all leagues
@@ -492,9 +495,8 @@ def scrape_bookmaker(sport: str):
     for m, c in sorted(market_counts.items()):
         print(f"  {m}: {c} records")
 
-    # Save to DuckDB
-    if all_odds:
-        save_to_database(sport, all_odds)
+    # Save to DuckDB (always save, even if empty, to clear stale data)
+    save_to_database(sport, all_odds)
 
     print(f"\nScraped {len(all_odds)} total records for {sport.upper()}")
     return all_odds

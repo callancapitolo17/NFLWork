@@ -757,13 +757,14 @@ def save_to_database(odds_data, table_name="cbb_odds"):
 
         conn.execute(f"DELETE FROM {table_name}")
 
-        conn.executemany(f"""
-            INSERT INTO {table_name} ({", ".join(columns)})
-            VALUES ({placeholders})
-        """, [
-            tuple(d[col] for col in columns)
-            for d in odds_data
-        ])
+        if odds_data:
+            conn.executemany(f"""
+                INSERT INTO {table_name} ({", ".join(columns)})
+                VALUES ({placeholders})
+            """, [
+                tuple(d[col] for col in columns)
+                for d in odds_data
+            ])
 
         result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
         print(f"Database now has {result[0]} total records in {table_name}")
@@ -818,9 +819,8 @@ def scrape_kalshi(sport="cbb"):
         all_records.extend(records)
         print(f"  Parsed {len(records)} records")
 
-    # Save to DuckDB
-    if all_records:
-        save_to_database(all_records, table_name)
+    # Save to DuckDB (always save, even if empty, to clear stale data)
+    save_to_database(all_records, table_name)
 
     print(f"\nScraped {len(all_records)} total Kalshi {sport.upper()} records")
     return all_records
