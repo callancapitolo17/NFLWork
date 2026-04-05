@@ -475,61 +475,144 @@ def conditional_kelly_sizes(new_positions, placed_positions, samples,
     """
     n_new = len(new_positions)
     n_placed = len(placed_positions)
-    all_positions = placed_positions + new_positions
 
-    # Build outcome matrix for all positions
-    outcome_matrix = build_outcome_matrix(samples, all_positions)
+    # --- Same-outcome detection ---
+    # If a new position's outcome (market_type, side, line) already exists
+    # in placed positions, adding it as a new column creates an identical
+    # column in the outcome matrix (ρ=1.0), making the covariance matrix
+    # singular. Instead, solve for the total optimal allocation to that
+    # outcome using the placed position's column, then return
+    # max(0, optimal_total - held).
+    #
+    # Build a lookup: outcome_key → index in placed_positions
+    placed_by_outcome = {}
+    for j, pp in enumerate(placed_positions):
+        key = (pp["market_type"], pp["side"], pp.get("line"))
+        placed_by_outcome[key] = j
 
-    if outcome_matrix is not None:
-        fair_probs = np.array([p["fair_prob"] for p in all_positions])
-        kalshi_prices = np.array([p["kalshi_price"] for p in all_positions])
-        Sigma = _compute_covariance(outcome_matrix, fair_probs, kalshi_prices)
+    # Identify which new positions match a placed outcome
+    matched = {}  # new_index → placed_index
+    for i, np_ in enumerate(new_positions):
+        key = (np_["market_type"], np_["side"], np_.get("line"))
+        if key in placed_by_outcome:
+            matched[i] = placed_by_outcome[key]
 
-        if Sigma is not None:
-            # EV vector: expected return per dollar wagered
-            mu = np.array([
-                (p["fair_prob"] * 100 - p["kalshi_price"]) / p["kalshi_price"]
-                for p in all_positions
-            ])
+    # Split: unmatched new positions go through normal conditional Kelly,
+    # matched ones are sized via total-optimal-minus-held.
+    unmatched_indices = [i for i in range(n_new) if i not in matched]
+    unmatched_new = [new_positions[i] for i in unmatched_indices]
 
-            if n_placed > 0:
-                # Conditional Kelly: f_new* = Σ_nn⁻¹ × (μ_new − Σ_np × f_placed)
-                p_idx = slice(0, n_placed)
-                n_idx = slice(n_placed, n_placed + n_new)
+    # --- Solve for unmatched new positions (existing conditional Kelly) ---
+    unmatched_sizes = {}
+    if unmatched_new:
+        all_positions = placed_positions + unmatched_new
+        outcome_matrix = build_outcome_matrix(samples, all_positions)
 
-                Sigma_nn = Sigma[n_idx, n_idx]
-                Sigma_np = Sigma[n_idx, p_idx]
+        if outcome_matrix is not None:
+            fair_probs = np.array([p["fair_prob"] for p in all_positions])
+            kalshi_prices = np.array([p["kalshi_price"] for p in all_positions])
+            Sigma = _compute_covariance(outcome_matrix, fair_probs, kalshi_prices)
 
-                # f_placed = contracts * cost / (kelly_mult * bankroll)
-                f_placed = np.array([
-                    p["size"] * (p["kalshi_price"] / 100.0) / (kelly_mult * bankroll)
-                    for p in placed_positions
+            if Sigma is not None:
+                mu = np.array([
+                    (p["fair_prob"] * 100 - p["kalshi_price"]) / p["kalshi_price"]
+                    for p in all_positions
                 ])
+                n_unmatched = len(unmatched_new)
 
-                mu_new = mu[n_idx]
-                adjusted_mu = mu_new - Sigma_np @ f_placed
+                if n_placed > 0:
+                    p_idx = slice(0, n_placed)
+                    n_idx = slice(n_placed, n_placed + n_unmatched)
+                    Sigma_nn = Sigma[n_idx, n_idx]
+                    Sigma_np = Sigma[n_idx, p_idx]
+                    f_placed = np.array([
+                        p["size"] * (p["kalshi_price"] / 100.0)
+                        / (kelly_mult * bankroll)
+                        for p in placed_positions
+                    ])
+                    mu_new = mu[n_idx]
+                    adjusted_mu = mu_new - Sigma_np @ f_placed
+                    try:
+                        f_new = np.linalg.solve(Sigma_nn, adjusted_mu)
+                    except np.linalg.LinAlgError:
+                        f_new = None
+                else:
+                    try:
+                        f_star = np.linalg.solve(Sigma, mu)
+                        f_new = f_star[n_placed:]
+                    except np.linalg.LinAlgError:
+                        f_new = None
 
-                try:
-                    f_new = np.linalg.solve(Sigma_nn, adjusted_mu)
-                except np.linalg.LinAlgError:
-                    f_new = None
-            else:
-                # Standard multivariate Kelly: f* = Σ⁻¹ × μ
+                if f_new is not None:
+                    f_new = np.maximum(f_new, 0)
+                    for idx_in_unmatched, orig_i in enumerate(unmatched_indices):
+                        pos = new_positions[orig_i]
+                        cost = pos["kalshi_price"] / 100.0
+                        contracts = f_new[idx_in_unmatched] * kelly_mult * bankroll / cost
+                        unmatched_sizes[orig_i] = int(max(0, round(contracts)))
+
+    # --- Solve for matched new positions (total optimal minus held) ---
+    # Use standard multivariate Kelly on placed positions to find the
+    # total optimal allocation for each outcome, then subtract held.
+    # Override matched positions' prices with the new take's price so the
+    # solve optimizes at the marginal cost (what we'd actually pay), not
+    # the historical avg entry.
+    matched_sizes = {}
+    if matched:
+        # Build a copy of placed_positions with take prices for matched outcomes
+        solve_positions = list(placed_positions)
+        for new_i, placed_j in matched.items():
+            override = dict(solve_positions[placed_j])
+            override["kalshi_price"] = new_positions[new_i]["kalshi_price"]
+            solve_positions[placed_j] = override
+
+        outcome_matrix = build_outcome_matrix(samples, solve_positions)
+
+        if outcome_matrix is not None and n_placed > 0:
+            fair_probs = np.array([p["fair_prob"] for p in solve_positions])
+            kalshi_prices = np.array([p["kalshi_price"] for p in solve_positions])
+            Sigma = _compute_covariance(outcome_matrix, fair_probs, kalshi_prices)
+
+            if Sigma is not None:
+                mu = np.array([
+                    (p["fair_prob"] * 100 - p["kalshi_price"]) / p["kalshi_price"]
+                    for p in solve_positions
+                ])
                 try:
                     f_star = np.linalg.solve(Sigma, mu)
-                    f_new = f_star[n_placed:]  # just the new positions
+                    f_star = np.maximum(f_star, 0)
                 except np.linalg.LinAlgError:
-                    f_new = None
+                    f_star = None
 
-            if f_new is not None:
-                f_new = np.maximum(f_new, 0)
-                sizes = []
-                for i, pos in enumerate(new_positions):
-                    cost = pos["kalshi_price"] / 100.0
-                    contracts = f_new[i] * kelly_mult * bankroll / cost
-                    contracts = max(0, round(contracts))
-                    sizes.append(int(contracts))
-                return sizes
+                if f_star is not None:
+                    for new_i, placed_j in matched.items():
+                        pp = placed_positions[placed_j]  # original (for held)
+                        new_cost = new_positions[new_i]["kalshi_price"] / 100.0
+                        # f* is at take price, so convert to dollars and
+                        # subtract held dollars, then to contracts at take price
+                        optimal_dollars = f_star[placed_j] * kelly_mult * bankroll
+                        held_dollars = pp["size"] * pp["kalshi_price"] / 100.0
+                        remaining_dollars = max(0, optimal_dollars - held_dollars)
+                        if new_cost > 0:
+                            matched_sizes[new_i] = int(remaining_dollars / new_cost)
+                        else:
+                            matched_sizes[new_i] = 0
+
+    # --- Assemble results ---
+    # If any new position wasn't sized by the matrix paths, fall back
+    sizes = []
+    all_resolved = True
+    for i in range(n_new):
+        if i in unmatched_sizes:
+            sizes.append(unmatched_sizes[i])
+        elif i in matched_sizes:
+            sizes.append(matched_sizes[i])
+        else:
+            all_resolved = False
+            break
+
+    if all_resolved:
+        return sizes
 
     # --- Fallback: per-bet average ρ scaling ---
     return _fallback_rho_scaling(new_positions, placed_positions, samples,
@@ -545,50 +628,93 @@ def _fallback_rho_scaling(new_positions, placed_positions, samples,
     """
     n_new = len(new_positions)
     n_placed = len(placed_positions)
-    all_positions = placed_positions + new_positions
 
-    outcome_matrix = build_outcome_matrix(samples, all_positions)
+    # --- Same-outcome detection (mirrors conditional_kelly_sizes) ---
+    # If a new position matches a placed position's outcome, don't include
+    # it in the matrix. Size via kelly_size_single minus held.
+    placed_by_outcome = {}
+    for j, pp in enumerate(placed_positions):
+        key = (pp["market_type"], pp["side"], pp.get("line"))
+        placed_by_outcome[key] = j
 
-    if outcome_matrix is not None and outcome_matrix.shape[1] >= 2:
-        R = np.corrcoef(outcome_matrix, rowvar=False)
-        if not np.any(np.isnan(R)):
-            sizes = []
-            n_all = len(all_positions)
-            for j in range(n_new):
-                i = n_placed + j  # index in full group
-                pos = new_positions[j]
+    matched = {}  # new_index → placed_index
+    for i, np_ in enumerate(new_positions):
+        key = (np_["market_type"], np_["side"], np_.get("line"))
+        if key in placed_by_outcome:
+            matched[i] = placed_by_outcome[key]
 
-                # Check if any placed bet is highly correlated
-                if n_placed > 0:
-                    max_placed_rho = np.max(R[i, :n_placed])
-                    if max_placed_rho > 0.90:
-                        sizes.append(0)
-                        continue
+    unmatched_indices = [i for i in range(n_new) if i not in matched]
+    unmatched_new = [new_positions[i] for i in unmatched_indices]
 
-                # Average correlation with all other positions
-                other_indices = [k for k in range(n_all) if k != i]
-                avg_rho = np.mean(R[i, other_indices])
+    # --- Rho scaling for unmatched new positions ---
+    unmatched_sizes = {}
+    if unmatched_new:
+        all_positions = placed_positions + unmatched_new
+        outcome_matrix = build_outcome_matrix(samples, all_positions)
 
-                denom = 1 + (n_all - 1) * avg_rho
-                if denom <= 0:
-                    scale = 1.5
-                else:
-                    scale = min(1.5, 1.0 / math.sqrt(denom))
-                scale = max(scale, 0)
+        if outcome_matrix is not None and outcome_matrix.shape[1] >= 2:
+            R = np.corrcoef(outcome_matrix, rowvar=False)
+            if not np.any(np.isnan(R)):
+                n_all = len(all_positions)
+                for idx_in_unmatched, orig_i in enumerate(unmatched_indices):
+                    i = n_placed + idx_in_unmatched  # index in full group
+                    pos = new_positions[orig_i]
 
-                base = kelly_size_single(
-                    pos["fair_prob"], pos["kalshi_price"],
-                    bankroll, kelly_mult
-                )
-                adjusted = max(0, round(base * scale))
-                sizes.append(int(adjusted))
-            return sizes
+                    if n_placed > 0:
+                        max_placed_rho = np.max(R[i, :n_placed])
+                        if max_placed_rho > 0.90:
+                            unmatched_sizes[orig_i] = 0
+                            continue
 
-    # Final fallback: independent single-bet Kelly
-    return [
-        kelly_size_single(p["fair_prob"], p["kalshi_price"], bankroll, kelly_mult)
-        for p in new_positions
-    ]
+                    other_indices = [k for k in range(n_all) if k != i]
+                    avg_rho = np.mean(R[i, other_indices])
+
+                    denom = 1 + (n_all - 1) * avg_rho
+                    if denom <= 0:
+                        scale = 1.5
+                    else:
+                        scale = min(1.5, 1.0 / math.sqrt(denom))
+                    scale = max(scale, 0)
+
+                    base = kelly_size_single(
+                        pos["fair_prob"], pos["kalshi_price"],
+                        bankroll, kelly_mult
+                    )
+                    unmatched_sizes[orig_i] = int(max(0, round(base * scale)))
+
+    # --- Matched positions: kelly_size_single minus held (in dollars) ---
+    matched_sizes = {}
+    for new_i, placed_j in matched.items():
+        pos = new_positions[new_i]
+        pp = placed_positions[placed_j]
+        new_cost = pos["kalshi_price"] / 100.0
+        base = kelly_size_single(
+            pos["fair_prob"], pos["kalshi_price"],
+            bankroll, kelly_mult
+        )
+        base_dollars = base * new_cost
+        held_dollars = pp["size"] * pp["kalshi_price"] / 100.0
+        remaining_dollars = max(0, base_dollars - held_dollars)
+        if new_cost > 0:
+            matched_sizes[new_i] = int(remaining_dollars / new_cost)
+        else:
+            matched_sizes[new_i] = 0
+
+    # --- Assemble results ---
+    sizes = []
+    for i in range(n_new):
+        if i in unmatched_sizes:
+            sizes.append(unmatched_sizes[i])
+        elif i in matched_sizes:
+            sizes.append(matched_sizes[i])
+        else:
+            # Neither path resolved — independent Kelly as last resort
+            pos = new_positions[i]
+            sizes.append(kelly_size_single(
+                pos["fair_prob"], pos["kalshi_price"],
+                bankroll, kelly_mult
+            ))
+    return sizes
 
 
 def batch_kelly_sizes_for_game(markets, placed_positions, bankroll, kelly_mult):
@@ -802,7 +928,7 @@ def _market_to_position(market, yes_or_no):
                 side = "not_away"
             else:
                 side = "not_tie"
-        elif mt == "race_to_10":
+        elif mt in ("race_to_10", "race_to_20", "race_to_40"):
             ct = market.get("contract_team", "")
             side = "away" if ct == market.get("home_team") else "home"
         else:
@@ -959,6 +1085,48 @@ def get_placed_positions_for_game(game_key, game_id, current_markets=None):
             "kalshi_price": int(pos.get("avg_entry_price", 50)),
             "size": abs(net),
         })
+
+    # --- Net identical-outcome positions ---
+    # Race-to-X markets have two tickers per event (one per team). ARIZ YES
+    # and MICH NO both map to (race_to_10, "away", None) — the same outcome.
+    # Multiple entries with the same (market_type, side, line) produce
+    # identical columns in the Kelly outcome matrix, causing np.corrcoef to
+    # return NaN (zero stddev on identical columns). Merge them: sum sizes,
+    # weighted-average prices and fair_probs.
+    if len(placed) > 1:
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for p in placed:
+            key = (p["market_type"], p["side"], p["line"])
+            groups[key].append(p)
+
+        if len(groups) < len(placed):
+            merged = []
+            for key, entries in groups.items():
+                if len(entries) == 1:
+                    merged.append(entries[0])
+                else:
+                    total_size = sum(e["size"] for e in entries)
+                    avg_price = round(
+                        sum(e["kalshi_price"] * e["size"] for e in entries)
+                        / total_size
+                    )
+                    avg_fair = (
+                        sum(e["fair_prob"] * e["size"] for e in entries)
+                        / total_size
+                    )
+                    merged.append({
+                        "market_type": entries[0]["market_type"],
+                        "side": entries[0]["side"],
+                        "line": entries[0]["line"],
+                        "fair_prob": avg_fair,
+                        "kalshi_price": int(avg_price),
+                        "size": total_size,
+                    })
+            log.info("Netted placed positions for %s: %d → %d "
+                     "(merged identical outcomes)",
+                     game_key, len(placed), len(merged))
+            placed = merged
 
     # Diagnostic: warn if positions exist but were filtered out
     if skipped_line:

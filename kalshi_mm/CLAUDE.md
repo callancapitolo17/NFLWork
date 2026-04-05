@@ -55,6 +55,17 @@ Maker sizes use a budget approach instead of Kelly matrix optimization. Markets 
 ### Taker Cooldowns
 The taker uses a simple 10s per-ticker tactical cooldown to prevent hammering the same contract. Cross-market correlation (same game, same event) is handled entirely by Kelly conditional sizing — `kelly.clear_positions_cache()` is called after each fill so subsequent takes see updated positions. No event-level or game-level cooldowns.
 
+### Same-Outcome Position Netting & Conditional Kelly
+Race-to-X markets have two tickers per event (one per team). ARIZ YES and MICH NO both represent the same outcome ("away wins race to 10"). Without netting, these create identical columns in the Kelly covariance matrix, causing `np.corrcoef` to return NaN (divides by zero on identical columns). The code falls all the way to `kelly_size_single` which ignores existing positions — the taker would buy 46 contracts every 10 seconds forever.
+
+**Fix (two parts):**
+
+1. **Netting in `get_placed_positions_for_game`**: After building placed positions, entries with the same `(market_type, side, line)` are merged — sizes summed, prices/probs weighted-averaged. This prevents duplicate identical columns within placed positions.
+
+2. **Same-outcome detection in `conditional_kelly_sizes`**: When a new take's outcome key matches a placed position, the new position is NOT added as a column (it would be identical, breaking the matrix). Instead, the function solves standard multivariate Kelly (`f* = Σ⁻¹ × μ`) across placed positions — using the **take price** (not the avg entry price) for the matched position — to find the total optimal dollar allocation. It subtracts held dollars and converts the remainder to contracts at the take price. This preserves cross-market correlation (spreads, totals affecting the optimal) while avoiding the ρ=1.0 singularity. The same logic is applied in `_fallback_rho_scaling`.
+
+**Why this is needed**: The conditional Kelly formula was designed for sizing NEW, DIFFERENT outcomes against existing positions. It was never designed for "should I add more to an identical bet I already hold?" — that creates ρ=1.0 which makes the matrix singular. The fix handles this case by reusing the existing column and comparing total optimal to held.
+
 ### Sample Cache Pre-warm
 At startup and after every prediction refresh, `kelly.prewarm_sample_cache()` bulk-loads all game simulation samples in one DuckDB query (~15K rows, <1MB). This eliminates the ~15 min cold-cache Kelly cycle on first boot. `clear_sample_cache()` is now an alias that clears and reloads.
 
