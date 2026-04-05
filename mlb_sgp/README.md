@@ -2,105 +2,94 @@
 
 Fetch Same Game Parlay (SGP) odds from multiple sources for MLB correlated parlay edge finding.
 
-## The Idea
-
-SGP engines (DraftKings, FanDuel, etc.) price spread+total parlays with built-in correlation adjustments. By comparing their prices to our sample-based fair odds, we get a second independent estimate of true parlay value.
-
 ## Sources
 
-| Source | Method | Books Covered | Login Required |
-|--------|--------|---------------|----------------|
-| **Pikkit Pro** | Browser automation + API intercept | FanDuel, DraftKings, Novig, ProphetX | Yes (SMS) |
-| **DraftKings** | TBD (needs recon first) | DraftKings only | No |
+| Source | Method | Speed | Status |
+|--------|--------|-------|--------|
+| **DraftKings** | CDP click-and-capture | ~15s/game | Working (verified) |
+| **Pikkit Pro** | API intercept | ~10s/game | Ready to test |
 
-## Setup
+## DraftKings SGP Scraper
+
+Uses Chrome DevTools Protocol (CDP) to connect to your running Chrome browser. Clicks the Run Line + Total cells in DK's SGP builder and intercepts the `calculateBets` API response.
+
+### Setup
 
 ```bash
+# 1. Start Chrome with remote debugging
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+
+# 2. Navigate to DK MLB page in that Chrome window
+# https://sportsbook.draftkings.com/leagues/baseball/mlb
+
+# 3. Run the scraper
 cd mlb_sgp
-pip install playwright python-dotenv duckdb
-playwright install chromium
+source venv/bin/activate
+python scraper_draftkings_sgp.py --verbose
 ```
 
-### Pikkit Login (first time)
+### Why CDP?
 
-Pikkit requires phone number + SMS verification:
+DraftKings uses Akamai Bot Manager. The SGP pricing endpoint returns 404 for:
+- Direct HTTP requests (even with curl_cffi Chrome impersonation)
+- `page.evaluate(fetch())` from inside Playwright
+- Cookie transfer from browser to requests session
+
+Only DK's own JavaScript can call the SGP endpoint — it includes Akamai sensor tokens. The click-and-capture approach lets DK's JS make the call, we just intercept the response.
+
+### Verified Result
+
+Cubs -1.5 + Over 7.5 → `trueOdds=3.64` (+264)
+- Individual legs: -1.5 (+129), O 7.5 (-115)
+- Independent multiply would give ~+340
+- DK's correlation adjustment: ~20% tighter
+
+## Pikkit Pro Scraper
+
+Pikkit is an odds aggregator that shows SGP odds from multiple books (FanDuel, DraftKings, Novig, ProphetX) in a single API response.
+
+### Setup
 
 ```bash
+# First time: SMS login required
+cd mlb_sgp
+source venv/bin/activate
 python scraper_pikkit_mlb.py --visible
-```
+# Login manually, session saves automatically
 
-1. Browser opens to Pikkit
-2. Login with your phone number
-3. Complete SMS verification
-4. Session saves automatically after 120 seconds
-
-Re-run if session expires.
-
-## Usage
-
-### Pikkit MLB Scraper
-
-```bash
-# Scrape all today's games (headless)
+# Subsequent runs
 python scraper_pikkit_mlb.py
-
-# Show browser for debugging
-python scraper_pikkit_mlb.py --visible
-
-# Single game only
-python scraper_pikkit_mlb.py --game-id abc123
-
-# Custom trusted books
-python scraper_pikkit_mlb.py --books fanduel draftkings
 ```
 
-### DraftKings Recon (one-time discovery)
+## DK Recon Tool
 
-Before building the DK scraper, we need to find their SGP pricing API endpoint:
+Network traffic capture tool used to discover DK's SGP API endpoints.
 
 ```bash
 python recon_draftkings_sgp.py
 ```
 
-1. Browser opens to DK MLB page
-2. Follow the prompts: navigate to a game, add SGP legs
-3. Tool captures all network traffic at each step
-4. Results saved to `recon_dk_sgp.json`
-5. Look for POST endpoints with SGP/parlay keywords in the JSON responses
-
 ## Output
 
-Both scrapers write to the `mlb_sgp_odds` table in `Answer Keys/mlb.duckdb`:
+Both scrapers write to `mlb_sgp_odds` table in `Answer Keys/mlb.duckdb`:
 
 | Column | Type | Description |
 |--------|------|-------------|
-| game_id | VARCHAR | Odds API event ID (joins to mlb_parlay_opportunities) |
-| combo | VARCHAR | e.g., "Home Spread + Over" (matches R pipeline combo names) |
-| period | VARCHAR | "FG" or "F5" |
-| bookmaker | VARCHAR | e.g., "draftkings", "fanduel" |
+| game_id | VARCHAR | Event ID |
+| combo | VARCHAR | e.g., "Home Spread + Over" |
+| period | VARCHAR | "FG" |
+| bookmaker | VARCHAR | "draftkings", "fanduel", etc. |
 | sgp_decimal | DOUBLE | Decimal odds |
 | sgp_american | INTEGER | American odds |
 | fetch_time | TIMESTAMP | When scraped |
-| source | VARCHAR | "pikkit" or "draftkings_direct" |
+| source | VARCHAR | "draftkings_direct" or "pikkit" |
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `pikkit_common.py` | Reusable Pikkit functions (session, API intercept, odds parsing) |
-| `scraper_pikkit_mlb.py` | MLB Pikkit scraper |
+| `scraper_draftkings_sgp.py` | DK SGP scraper via CDP click-and-capture |
+| `scraper_pikkit_mlb.py` | Pikkit MLB SGP scraper |
+| `pikkit_common.py` | Reusable Pikkit functions (session, API intercept) |
 | `recon_draftkings_sgp.py` | DK network recon tool |
-| `scraper_draftkings_sgp.py` | DK scraper (TBD after recon) |
-| `db.py` | DuckDB read/write helpers for mlb_sgp_odds |
-
-## How Pikkit Works
-
-Pikkit is an odds aggregator. When you build a parlay on their site, their backend calls each sportsbook's SGP engine and returns all the prices in a single API response.
-
-The scraper exploits this by:
-1. Clicking spread + total legs on the Pikkit game page (DOM automation)
-2. Intercepting the `prod-website.pikkit.app/betslip` API response (Playwright response listener)
-3. Parsing the structured JSON for each book's SGP odds
-4. Filtering out books that altered the requested line (adjusted leg detection)
-
-The API intercept is the reliable part. The DOM clicking is the fragile part.
+| `db.py` | DuckDB helpers for mlb_sgp_odds |
