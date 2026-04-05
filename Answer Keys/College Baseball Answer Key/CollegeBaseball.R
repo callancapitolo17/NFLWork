@@ -195,6 +195,7 @@ consensus_ml <- ml_devigged %>%
   summarise(
     consensus_p_home = median(p_home),
     consensus_p_away = median(p_away),
+    consensus_home_ml = median(home),  # American odds for mean_match
     n_books_ml = n(),
     .groups = "drop"
   )
@@ -230,7 +231,11 @@ consensus_total <- total_odds %>%
   filter(!is.na(outcomes_point_Over)) %>%
   group_by(id) %>%
   summarise(
-    total_line = median(outcomes_point_Over, na.rm = TRUE),
+    # Use mode (most common line); break ties with median
+    total_line = {
+      tbl <- table(outcomes_point_Over)
+      as.numeric(names(tbl)[which.max(tbl)])
+    },
     .groups = "drop"
   )
 
@@ -255,10 +260,12 @@ if (nrow(today_odds) == 0) {
 
 cat("Generating samples for all games...\n")
 
+# parent_spread must be on the same scale as DT$home_ml_odds (American odds)
+# because use_spread_line = FALSE makes mean_match match on home_ml_odds column
 targets <- today_odds %>%
   transmute(
     id,
-    parent_spread = implied_spread,
+    parent_spread = consensus_home_ml,  # American odds, matches home_ml_odds in DT
     parent_total = total_line,
     target_cover = consensus_p_home,
     target_over = 0.5
@@ -270,7 +277,8 @@ samples <- generate_all_samples(
   ss              = ss,
   st              = st,
   N               = N,
-  use_spread_line = FALSE
+  use_spread_line = FALSE,
+  min_N           = 25  # small pool (~486 games), default 50 too aggressive
 )
 cat(sprintf("Generated %d samples.\n", length(samples)))
 timer$mark("sample_gen")
@@ -476,13 +484,66 @@ resolve_college_baseball_teams <- function(offshore_df, api_teams) {
     x
   }
 
-  # Known aliases (offshore -> normalized query)
+  # Known aliases (offshore normalized -> api normalized query)
+  # Critical: "State" schools MUST be listed explicitly to avoid substring
+  # matching "georgia state" -> "georgia" or "kansas state" -> "kansas"
   aliases <- c(
-    "miami florida"  = "miami hurricanes",
-    "usc upstate"    = "south carolina upstate",
-    "connecticut"    = "uconn",
-    "cs bakersfield" = "csu bakersfield",
-    "michigan state" = "michigan st"
+    "miami florida"    = "miami hurricanes",
+    "usc upstate"      = "south carolina upstate",
+    "connecticut"      = "uconn",
+    "cs bakersfield"   = "csu bakersfield",
+    "georgia state"    = "georgia st panthers",
+    "kansas state"     = "kansas st wildcats",
+    "arizona state"    = "arizona st sun devils",
+    "central florida"  = "ucf knights",
+    "north carolina st"= "nc state wolfpack",
+    "n carolina st"    = "nc state wolfpack",
+    "nc state"         = "nc state wolfpack",
+    "arkansas state"   = "arkansas st red wolves",
+    "mississippi state"= "mississippi st bulldogs",
+    "ohio state"       = "ohio st buckeyes",
+    "oklahoma state"   = "oklahoma st cowboys",
+    "oregon state"     = "oregon st beavers",
+    "penn state"       = "penn state nittany lions",
+    "florida st"       = "florida st seminoles",
+    "florida state"    = "florida st seminoles",
+    "iowa state"       = "iowa st cyclones",
+    "michigan st"      = "michigan st spartans",
+    "michigan state"   = "michigan st spartans",
+    "texas state"      = "texas st bobcats",
+    "ball state"       = "ball st cardinals",
+    "boise state"      = "boise st broncos",
+    "fresno state"     = "fresno st bulldogs",
+    "sam houston state"= "sam houston bearkats",
+    "sam houston"      = "sam houston bearkats",
+    "wright state"     = "wright st raiders",
+    "wichita state"    = "wichita st shockers",
+    "kent state"       = "kent st golden flashes",
+    "san diego state"  = "san diego st aztecs",
+    "san jose state"   = "san jose st spartans",
+    "washington state" = "washington st cougars",
+    "murray state"     = "murray st racers",
+    "louisiana"        = "louisiana ragin' cajuns",
+    "louisiana monroe" = "louisiana-monroe warhawks",
+    "louisiana lafayette" = "louisiana ragin' cajuns",
+    "south carolina"   = "south carolina gamecocks",
+    "north carolina"   = "north carolina tar heels",
+    "unc wilmington"   = "unc wilmington seahawks",
+    "unc greensboro"   = "unc greensboro spartans",
+    "ole miss"         = "ole miss rebels",
+    "mississippi"      = "ole miss rebels",
+    "pitt"             = "pittsburgh panthers",
+    "umass"            = "massachusetts minutemen",
+    "texas tech"       = "texas tech red raiders",
+    "virginia tech"    = "virginia tech hokies",
+    "duke"             = "duke blue devils",
+    "georgia tech"     = "georgia tech yellow jackets",
+    "texas a&m"        = "texas a&m aggies",
+    "texas am"         = "texas a&m aggies",
+    "texas san antonio"= "utsa roadrunners",
+    "utsa"             = "utsa roadrunners",
+    "florida atlantic" = "florida atlantic owls",
+    "southern miss"    = "southern miss golden eagles"
   )
 
   # Build index: for each API team, store no-mascot and full lowercase
@@ -494,8 +555,22 @@ resolve_college_baseball_teams <- function(offshore_df, api_teams) {
   resolve_one <- function(raw) {
     norm <- normalize(raw)
 
-    # Check aliases first
-    if (norm %in% names(aliases)) norm <- aliases[norm]
+    # Check aliases first — these are authoritative and override all fuzzy matching.
+    # If alias fires but target not in today's API games, return alias target as-is
+    # to prevent false substring matches (e.g., "Georgia State" → "Georgia Bulldogs").
+    if (norm %in% names(aliases)) {
+      alias_target <- unname(aliases[norm])
+      # Find API team matching the alias target (full name)
+      hit <- api_full[alias_target]
+      if (!is.na(hit)) return(unname(hit))
+      # Try no-mascot version of alias target (strip last word = mascot)
+      alias_short <- trimws(tolower(sub(" [^ ]+$", "", alias_target)))
+      hit <- api_no_mascot[alias_short]
+      if (!is.na(hit)) return(unname(hit))
+      # Alias is authoritative — return target even if not in today's API games.
+      # This prevents false matches; the game simply won't have a comparison.
+      return(alias_target)
+    }
 
     # Exact match on no-mascot
     hit <- api_no_mascot[norm]
@@ -505,23 +580,14 @@ resolve_college_baseball_teams <- function(offshore_df, api_teams) {
     hit <- api_full[norm]
     if (!is.na(hit)) return(unname(hit))
 
-    # Prefer longest substring match (avoids "michigan" matching before "michigan st")
-    best <- NULL; best_len <- 0
-    for (api_short in names(api_no_mascot)) {
-      if (grepl(paste0("\\b", norm, "\\b"), api_short) ||
-          grepl(paste0("\\b", api_short, "\\b"), norm)) {
-        match_len <- nchar(api_short)
-        if (match_len > best_len) {
-          best <- unname(api_no_mascot[api_short])
-          best_len <- match_len
-        }
-      }
-    }
-    if (!is.null(best)) return(best)
+    # Try no-mascot version of input against api_no_mascot keys
+    norm_no_mascot <- trimws(sub(" [^ ]+$", "", norm))
+    hit <- api_no_mascot[norm_no_mascot]
+    if (!is.na(hit)) return(unname(hit))
 
-    # agrep fuzzy match (last resort)
-    ag <- agrep(norm, names(api_no_mascot), max.distance = 0.2, value = TRUE)
-    if (length(ag) > 0) return(unname(api_no_mascot[ag[1]]))
+    # agrep fuzzy match on no-mascot (last resort, strict distance)
+    ag <- agrep(norm_no_mascot, names(api_no_mascot), max.distance = 0.15, value = TRUE)
+    if (length(ag) == 1) return(unname(api_no_mascot[ag[1]]))  # only if unique match
     return(raw)  # no match
   }
 
@@ -575,8 +641,30 @@ apply_shave <- function(odds) {
 }
 
 # Sizing
-bankroll <- 100
+bankroll <- 2000
 kelly_mult <- 0.25
+
+# Wagerzon rounds profit to the nearest whole dollar ($63.51 -> $64, $6.49 -> $6).
+# Find the bet size near Kelly where raw_win lands just above X.50 to maximize bonus.
+optimize_wagerzon_stake <- function(kelly_stake, decimal_odds, search_range = 5) {
+  if (kelly_stake <= 0) return(list(stake = 0, win = 0, eff_decimal = decimal_odds, bonus = 0))
+  lo <- max(1, floor(kelly_stake) - search_range)
+  hi <- ceiling(kelly_stake) + search_range
+  candidates <- seq(lo, hi, by = 1)
+
+  best <- list(stake = round(kelly_stake), bonus = -Inf)
+  for (s in candidates) {
+    raw_win <- s * (decimal_odds - 1)
+    rounded_win <- round(raw_win)
+    if (rounded_win <= 0) next
+    bonus <- rounded_win - raw_win
+    eff_dec <- (rounded_win / s) + 1
+    if (bonus > best$bonus) {
+      best <- list(stake = s, win = rounded_win, eff_decimal = eff_dec, bonus = bonus)
+    }
+  }
+  best
+}
 
 compare_parlays <- function(parlays, offshore_odds, book_name) {
   if (nrow(offshore_odds) == 0) return(tibble())
@@ -648,6 +736,20 @@ compare_parlays <- function(parlays, offshore_odds, book_name) {
       kelly_bet <- 0
     }
 
+    # Wagerzon rounding optimization: find stake near Kelly that maximizes
+    # the rounding bonus (profit rounded to nearest $5)
+    opt_stake <- kelly_bet
+    opt_win <- round(kelly_bet * (book_parlay_dec - 1))
+    rounding_bonus <- 0
+    if (book_name == "wagerzon" && kelly_bet > 0) {
+      opt <- optimize_wagerzon_stake(kelly_bet, book_parlay_dec)
+      opt_stake <- opt$stake
+      opt_win <- opt$win
+      rounding_bonus <- round(opt$bonus, 2)
+    } else if (kelly_bet > 0) {
+      opt_win <- round(kelly_bet * (book_parlay_dec - 1))
+    }
+
     edges[[length(edges) + 1]] <- data.frame(
       id = p$id,
       home_team = p$home_team,
@@ -668,6 +770,9 @@ compare_parlays <- function(parlays, offshore_odds, book_name) {
       edge_pct = round(edge_pct, 2),
       ev = round(ev, 4),
       kelly_bet = kelly_bet,
+      opt_stake = opt_stake,
+      opt_win = opt_win,
+      rounding_bonus = rounding_bonus,
       stringsAsFactors = FALSE
     )
   }
@@ -724,36 +829,75 @@ conservative_edges <- all_edges %>%
     kelly_bet = ifelse(edge_pct > 0,
                        round((ev / (book_parlay_dec - 1)) * kelly_mult * bankroll, 2),
                        0)
-  )
+  ) %>%
+  rowwise() %>%
+  mutate(
+    opt = if (book == "wagerzon" & kelly_bet > 0)
+            list(optimize_wagerzon_stake(kelly_bet, book_parlay_dec))
+          else list(list(stake = round(kelly_bet),
+                         win = round(kelly_bet) * (book_parlay_dec - 1),
+                         bonus = 0)),
+    opt_stake = opt$stake,
+    opt_win = opt$win,
+    opt_payout = opt_stake + opt_win,
+    rounding_bonus = round(opt$bonus, 2)
+  ) %>%
+  select(-opt) %>%
+  ungroup()
 
 # Filter to +EV only (both methods must agree)
-ev_bets <- conservative_edges %>%
+ev_bets_all <- conservative_edges %>%
   filter(edge_pct > 0) %>%
+  arrange(desc(edge_pct))
+
+# Dedup: for each (game, combo), keep the book with the higher edge
+ev_bets <- ev_bets_all %>%
+  group_by(id, combo) %>%
+  slice_max(edge_pct, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
   arrange(desc(edge_pct))
 
 cat(sprintf("\n=== PARLAY EDGE SUMMARY ===\n"))
 cat(sprintf("Total comparisons: %d\n", nrow(conservative_edges)))
-cat(sprintf("+EV parlays (conservative): %d\n", nrow(ev_bets)))
+cat(sprintf("+EV parlays (before dedup): %d\n", nrow(ev_bets_all)))
+cat(sprintf("+EV parlays (best book per game): %d\n", nrow(ev_bets)))
 
 if (nrow(ev_bets) > 0) {
   cat(sprintf("Average edge: %.1f%%\n", mean(ev_bets$edge_pct)))
-  cat(sprintf("Total Kelly stake: $%.2f\n", sum(ev_bets$kelly_bet)))
+  cat(sprintf("Total Kelly stake: $%.2f\n", sum(ev_bets$opt_stake)))
 
-  cat("\n=== +EV PARLAYS (conservative: min of AK and CF edges) ===\n")
+  cat("\n=== +EV PARLAYS ===\n")
+  old_width <- getOption("width")
+  options(width = 160)
   ev_bets %>%
     transmute(
       game = paste0(away_team, " @ ", home_team),
       combo,
       TL = total_line,
       book,
+      stake = paste0("$", sprintf("%.0f", opt_stake)),
+      win = paste0("$", opt_win),
+      payout = paste0("$", sprintf("%.0f", opt_payout)),
       book_odds = book_parlay_american,
       fair_odds = fair_american,
-      edge_AK = ifelse(is.na(edge_ak), "N/A", paste0(sprintf("%+.1f", edge_ak), "%")),
-      edge_CF = ifelse(is.na(edge_cf), "N/A", paste0(sprintf("%+.1f", edge_cf), "%")),
-      edge = paste0(sprintf("%+.1f", edge_pct), "%"),
-      kelly = paste0("$", kelly_bet)
+      edge = paste0(sprintf("%+.1f", edge_pct), "%")
     ) %>%
     print(n = 50)
+  options(width = old_width)
+
+  # Bet card grouped by book
+  cat("\n=== BET CARD ===\n")
+  for (b in sort(unique(ev_bets$book))) {
+    book_bets <- ev_bets %>% filter(book == b) %>% arrange(desc(edge_pct))
+    cat(sprintf("\n%s (%d bets, $%.0f total):\n", toupper(b), nrow(book_bets), sum(book_bets$opt_stake)))
+    for (i in seq_len(nrow(book_bets))) {
+      r <- book_bets[i, ]
+      ml_side <- if (grepl("away", r$combo)) r$away_team else r$home_team
+      total_side <- if (grepl("over", r$combo)) "Over" else "Under"
+      cat(sprintf("  %d. %s ML + %s %.1f  ->  $%.0f  (%+.1f%% edge)\n",
+                  i, ml_side, total_side, r$total_line, r$opt_stake, r$edge_pct))
+    }
+  }
 
   # Summary by combo type
   cat("\n=== EDGE BY COMBO TYPE ===\n")
@@ -763,7 +907,7 @@ if (nrow(ev_bets) > 0) {
       n = n(),
       avg_edge = sprintf("%.1f%%", mean(edge_pct)),
       avg_cf_empirical = sprintf("%.3f", mean(cf_empirical, na.rm = TRUE)),
-      total_kelly = paste0("$", sum(kelly_bet)),
+      total_stake = sprintf("$%.0f", sum(opt_stake)),
       .groups = "drop"
     ) %>%
     arrange(desc(n)) %>%
@@ -776,7 +920,7 @@ if (nrow(ev_bets) > 0) {
     summarise(
       n = n(),
       avg_edge = sprintf("%.1f%%", mean(edge_pct)),
-      total_kelly = paste0("$", sum(kelly_bet)),
+      total_stake = sprintf("$%.0f", sum(opt_stake)),
       .groups = "drop"
     ) %>%
     print()
