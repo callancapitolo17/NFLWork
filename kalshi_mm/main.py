@@ -12,6 +12,7 @@ Usage:
 """
 
 import duckdb
+import numpy as np
 import random
 import subprocess
 import sys
@@ -202,6 +203,35 @@ def refresh_book_data(quotable_markets):
             market["book_fetched_at"] = now
 
 
+def fair_from_samples(game_id, market_type, strike, is_home=None):
+    """Compute fair probability directly from simulation samples at any line.
+
+    Returns float in (0, 1) or None if no samples exist for this game.
+    """
+    samples = kelly.load_game_samples(game_id)
+    if samples is None or len(samples) == 0:
+        return None
+
+    if market_type == "spreads":
+        col = kelly.SAMPLE_COLUMNS.index("home_margin_h1")
+        margins = samples[:, col]
+        margins = margins[~np.isnan(margins)]
+        if len(margins) == 0:
+            return None
+        if is_home:
+            return float(np.mean(margins > strike))
+        else:
+            return float(np.mean(margins < -strike))
+    elif market_type == "totals":
+        col = kelly.SAMPLE_COLUMNS.index("total_h1")
+        totals = samples[:, col]
+        totals = totals[~np.isnan(totals)]
+        if len(totals) == 0:
+            return None
+        return float(np.mean(totals > strike))
+    return None
+
+
 def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonical_games):
     """Match Kalshi spread markets to answer key predictions.
 
@@ -298,38 +328,36 @@ def match_kalshi_to_predictions(kalshi_markets, predictions, team_dict, canonica
             # The prediction has book_home_spread, so we look for -strike
             target_spread = -strike if is_home else strike
 
-            pred = None
-            for p in matching_preds:
-                if p["line_value"] is not None and abs(p["line_value"] - target_spread) < 0.1:
-                    pred = p
-                    break
-
-            if pred is None:
-                continue
-
-            # Fair probability for YES on this contract ("team wins by >strike")
-            # pred has prob_side1 = home_cover_prob at line_value = home_spread
-            if is_home:
-                # Home team -strike: home_spread = -strike, prob_side1 = P(home covers)
-                fair_prob = pred["prob_side1"]
-            else:
-                # Away team -strike: home_spread = +strike (away is favored)
-                # P(away wins by >strike) = P(home margin < -strike) = 1 - P(home covers +strike)
-                fair_prob = 1 - pred["prob_side1"]
+            # Use game samples for fair value at any Kalshi line.
+            # Fall back to exact prediction match if no samples exist.
+            ref_pred = matching_preds[0]
+            fair_prob = fair_from_samples(
+                ref_pred.get("id"), "spreads", strike, is_home=is_home
+            )
+            if fair_prob is None:
+                # Fallback: exact line match in predictions
+                pred = None
+                for p in matching_preds:
+                    if p["line_value"] is not None and abs(p["line_value"] - target_spread) < 0.1:
+                        pred = p
+                        break
+                if pred is None:
+                    continue
+                fair_prob = pred["prob_side1"] if is_home else 1 - pred["prob_side1"]
 
             quotable.append({
                 "ticker": m["ticker"],
                 "event_ticker": event_ticker,
-                "home_team": pred["home_team"],
-                "away_team": pred["away_team"],
-                "game_key": (pred["home_team"], pred["away_team"]),
-                "game_id": pred.get("id"),
+                "home_team": ref_pred["home_team"],
+                "away_team": ref_pred["away_team"],
+                "game_key": (ref_pred["home_team"], ref_pred["away_team"]),
+                "game_id": ref_pred.get("id"),
                 "market_type": "spreads",
                 "contract_team": team,
                 "strike": strike,
                 "is_home_contract": is_home,
                 "fair_prob": fair_prob,
-                "commence_time": pred.get("commence_time"),
+                "commence_time": ref_pred.get("commence_time"),
                 "book_bid": int(round(float(m.get("yes_bid_dollars", 0)) * 100)),
                 "book_ask": int(round(float(m.get("yes_ask_dollars", 0)) * 100)),
             })
@@ -405,39 +433,39 @@ def match_total_markets(kalshi_markets, predictions, team_dict, canonical_games)
         if not matching_preds:
             continue
 
+        ref_pred = matching_preds[0]
+
         for m in event_markets:
             strike = m.get("floor_strike")
             if strike is None:
                 continue
 
-            # Find prediction at this total line
-            pred = None
-            for p in matching_preds:
-                if p["line_value"] is not None and abs(p["line_value"] - strike) < 0.1:
-                    pred = p
-                    break
-            if pred is None:
-                continue
+            # Use game samples for fair value at any Kalshi line.
+            # Fall back to exact prediction match if no samples exist.
+            fair_prob = fair_from_samples(ref_pred.get("id"), "totals", strike)
+            if fair_prob is None:
+                pred = None
+                for p in matching_preds:
+                    if p["line_value"] is not None and abs(p["line_value"] - strike) < 0.1:
+                        pred = p
+                        break
+                if pred is None:
+                    continue
+                fair_prob = pred["prob_side1"]
 
-            # Use prediction's team names for game_key — guarantees consistency
-            # across matchers even when raw/resolved names differ
-            pred_home = pred["home_team"]
-            pred_away = pred["away_team"]
-
-            # fair_prob for YES = over probability = prob_side1
             quotable.append({
                 "ticker": m["ticker"],
                 "event_ticker": event_ticker,
-                "home_team": pred_home,
-                "away_team": pred_away,
-                "game_key": (pred_home, pred_away),
-                "game_id": pred.get("id"),
+                "home_team": ref_pred["home_team"],
+                "away_team": ref_pred["away_team"],
+                "game_key": (ref_pred["home_team"], ref_pred["away_team"]),
+                "game_id": ref_pred.get("id"),
                 "market_type": "totals",
                 "contract_team": None,
                 "strike": strike,
                 "is_home_contract": None,
-                "fair_prob": pred["prob_side1"],
-                "commence_time": pred.get("commence_time"),
+                "fair_prob": fair_prob,
+                "commence_time": ref_pred.get("commence_time"),
                 "book_bid": int(round(float(m.get("yes_bid_dollars", 0)) * 100)),
                 "book_ask": int(round(float(m.get("yes_ask_dollars", 0)) * 100)),
                 "book_fetched_at": time.time(),
