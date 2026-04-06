@@ -252,8 +252,7 @@ dk_sgp <- tryCatch({
   dbGetQuery(con, "
     SELECT game_id, combo, sgp_decimal, sgp_american
     FROM mlb_sgp_odds
-    WHERE fetch_time > now() - INTERVAL 30 MINUTE
-      AND source = 'draftkings_direct'
+    WHERE source = 'draftkings_direct'
   ")
 }, error = function(e) data.frame())
 if (nrow(dk_sgp) > 0) {
