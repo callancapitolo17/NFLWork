@@ -228,8 +228,14 @@ if (!check_mlb_samples_fresh(max_age_minutes = 10)) {
 # =============================================================================
 
 cat("Refreshing DK SGP odds...\n")
-system("cd ~/NFLWork/mlb_sgp && source venv/bin/activate && python scraper_draftkings_sgp.py 2>&1",
-       wait = TRUE, ignore.stdout = FALSE)
+dk_scraper_dir <- file.path(path.expand("~"), "NFLWork", "mlb_sgp")
+dk_venv_python <- file.path(dk_scraper_dir, "venv", "bin", "python")
+if (file.exists(dk_venv_python)) {
+  system2(dk_venv_python, args = c(file.path(dk_scraper_dir, "scraper_draftkings_sgp.py")),
+          wait = TRUE, stdout = FALSE, stderr = FALSE)
+} else {
+  cat("  DK scraper venv not found — skipping. Run: cd mlb_sgp && python -m venv venv && pip install curl_cffi duckdb\n")
+}
 
 # =============================================================================
 # LOAD SAMPLES (same pattern as parlay.R:155-162)
@@ -500,7 +506,8 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         wz_dec <- american_to_decimal(wz_american)
       }
 
-      # Blend model fair prob with DK SGP fair prob (devigged)
+      # Blend model fair prob with DK SGP fair prob (devigged).
+      # DK SGP is FG-only — F5 combos (prefixed "F5 ") won't match and use model-only.
       model_fair_prob <- fair$joint_prob
       dk_row <- dk_sgp[dk_sgp$game_id == game_id & dk_sgp$combo == combo_name, ]
 
@@ -514,6 +521,7 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         blended_prob    <- model_fair_prob
         fair_dec        <- fair$fair_decimal_odds
       }
+      fair_american <- round(prob_to_american(blended_prob))
 
       edge_pct <- (wz_dec - fair_dec) / fair_dec * 100
 
@@ -534,7 +542,7 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         total_line   = row$total_line,
         spread_price = combo_spread_price,
         total_price  = combo_total_price,
-        fair_odds   = fair$fair_american_odds,
+        fair_odds   = fair_american,
         wz_odds     = wz_american,
         fair_dec    = round(fair_dec, 3),
         wz_dec      = round(wz_dec, 3),
