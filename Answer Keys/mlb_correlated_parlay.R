@@ -550,9 +550,9 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         joint_prob_raw = fair$joint_prob,
         joint_prob  = round(fair$joint_prob * 100, 1),
         n_samples   = fair$n_samples_resolved,
-        dk_sgp_dec  = if (nrow(dk_row) > 0) dk_row$sgp_decimal[1] else NA_real_,
-        dk_fair_prob = dk_fair_prob,
-        blended_prob = blended_prob
+        dk_sgp_dec  = round(if (nrow(dk_row) > 0) dk_row$sgp_decimal[1] else NA_real_, 3),
+        dk_fair_prob = round(dk_fair_prob, 3),
+        blended_prob = round(blended_prob, 3)
       )
 
       period_legs[[paste0(game_id, "|", combo_name)]] <- combo$legs
