@@ -24,6 +24,7 @@ import sys
 import time
 import duckdb
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from curl_cffi import requests as cffi_requests
 
 # Resolve repo root dynamically (works from worktrees too)
@@ -417,7 +418,13 @@ def scrape_game(session: cffi_requests.Session, game: dict,
 # ---------------------------------------------------------------------------
 
 def scrape_dk_sgp(verbose: bool = False):
-    """Main: fetch DK SGP odds for all MLB games via pure REST API."""
+    """Main: fetch DK SGP odds for all MLB games via pure REST API.
+
+    Uses parallel fetching for speed:
+    - Phase 1: Fetch market nums + selection IDs for all games in parallel
+    - Phase 2: Price all spread+total combos in parallel
+    - Phase 3: Batch write to DuckDB
+    """
 
     print("Loading parlay lines from DuckDB...")
     parlay_lines = load_parlay_lines()
@@ -434,7 +441,6 @@ def scrape_dk_sgp(verbose: bool = False):
     print(f"  {len(dk_events)} DK events")
 
     # Deduplicate: keep only the earliest event per team matchup
-    # DK returns both today's and tomorrow's games
     seen_matchups = set()
     deduped_events = []
     for evt in sorted(dk_events, key=lambda e: e["start_time"]):
@@ -451,61 +457,145 @@ def scrape_dk_sgp(verbose: bool = False):
         print("  No matches found.")
         return
 
+    # ── Phase 1: Parallel fetch of market nums + selection IDs ──
+    print("Fetching selection IDs (parallel)...")
+    t0 = time.time()
+
+    game_data = {}  # game_id -> (main_market_num, sel_ids)
+
+    def fetch_one_game(game):
+        dk_eid = game["dk_event_id"]
+        main_num = fetch_main_market_num(session, dk_eid)
+        sel_ids = fetch_selection_ids(session, dk_eid, main_num, verbose)
+        return game["game_id"], main_num, sel_ids
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {pool.submit(fetch_one_game, g): g for g in matched}
+        for future in as_completed(futures):
+            try:
+                game_id, main_num, sel_ids = future.result()
+                game_data[game_id] = (main_num, sel_ids)
+            except Exception as e:
+                game = futures[future]
+                print(f"  Error fetching {game['dk_name']}: {e}")
+
+    print(f"  Fetched {len(game_data)} games in {time.time() - t0:.1f}s")
+
+    # ── Phase 2: Build combo pairs and price in parallel ──
+    print("Pricing SGP combos (parallel)...")
+    t1 = time.time()
+
+    # Build all (game_id, combo_name, spread_sel, total_sel) tuples
+    combo_items = []
+    for game in matched:
+        gid = game["game_id"]
+        if gid not in game_data:
+            continue
+
+        _, sel_ids = game_data[gid]
+        if not sel_ids["spreads"]:
+            continue
+
+        spread_line = game["spread_line"]
+        total = game["total_line"]
+
+        if spread_line < 0:
+            home_sign, away_sign = "N", "P"
+        else:
+            home_sign, away_sign = "P", "N"
+
+        spread = abs(spread_line)
+
+        home_spread_sel = sel_ids["spreads"].get((home_sign, spread))
+        away_spread_sel = sel_ids["spreads"].get((away_sign, spread))
+        over_sel = sel_ids["totals"].get(("O", total))
+        under_sel = sel_ids["totals"].get(("U", total))
+
+        if not home_spread_sel or not away_spread_sel or not over_sel or not under_sel:
+            continue
+
+        for combo_name, sp_sel, tot_sel in [
+            ("Home Spread + Over",  home_spread_sel, over_sel),
+            ("Home Spread + Under", home_spread_sel, under_sel),
+            ("Away Spread + Over",  away_spread_sel, over_sel),
+            ("Away Spread + Under", away_spread_sel, under_sel),
+        ]:
+            combo_items.append((gid, combo_name, sp_sel, tot_sel))
+
+    # Price all combos in parallel
+    pricing_results = []  # (game_id, combo_name, sgp_result)
+
+    def price_one(item):
+        gid, combo_name, sp_sel, tot_sel = item
+        sgp = calculate_sgp(session, sp_sel, tot_sel, verbose)
+        return gid, combo_name, sgp
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(price_one, item) for item in combo_items]
+        for future in as_completed(futures):
+            try:
+                pricing_results.append(future.result())
+            except Exception:
+                pass
+
+    print(f"  Priced {len(pricing_results)} combos in {time.time() - t1:.1f}s")
+
+    # ── Phase 2b: Retry failed games ──
+    # Find games where all 4 combos failed — retry once
+    priced_by_game = {}
+    for gid, combo_name, sgp in pricing_results:
+        if sgp:
+            priced_by_game.setdefault(gid, []).append((combo_name, sgp))
+
+    failed_games = set()
+    for game in matched:
+        gid = game["game_id"]
+        if gid in game_data and gid not in priced_by_game:
+            failed_games.add(gid)
+
+    if failed_games:
+        retry_items = [item for item in combo_items if item[0] in failed_games]
+        if retry_items:
+            print(f"  Retrying {len(failed_games)} failed games...")
+            time.sleep(1)
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                futures = [pool.submit(price_one, item) for item in retry_items]
+                for future in as_completed(futures):
+                    try:
+                        gid, combo_name, sgp = future.result()
+                        if sgp:
+                            priced_by_game.setdefault(gid, []).append((combo_name, sgp))
+                    except Exception:
+                        pass
+
+    # ── Phase 3: Collect results and write to DuckDB ──
     ensure_table()
     all_rows = []
-    consecutive_failures = 0
 
-    for game in matched:
-        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-            print("  Re-initializing session (possible expiry)...")
-            session = init_session()
-            consecutive_failures = 0
+    # Build game lookup for printing
+    game_lookup = {g["game_id"]: g for g in matched}
 
-        print(f"\n{'='*60}")
-        print(f"  {game['away_team']} @ {game['home_team']}")
-        print(f"  Spread: {game['spread_line']:+.1f} | Total: {game['total_line']}")
-        print(f"{'='*60}")
-
-        # Fetch main market number (for prioritizing full-game IDs)
-        main_market_num = fetch_main_market_num(session, game["dk_event_id"])
-
-        # Fetch all selection IDs for this game
-        sel_ids = fetch_selection_ids(
-            session, game["dk_event_id"], main_market_num, verbose,
-        )
-        if not sel_ids["spreads"]:
-            print("  No selection IDs found — skipping")
-            consecutive_failures += 1
-            continue
-
-        game_results = scrape_game(session, game, sel_ids, verbose)
-
-        # Retry once if all combos failed (DK may temporarily reject)
-        if game_results is not None and len(game_results) == 0:
-            time.sleep(2)
-            game_results = scrape_game(session, game, sel_ids, verbose)
-
-        if game_results is None:
-            consecutive_failures += 1
-            continue
-
-        consecutive_failures = 0
-
-        for gr in game_results:
+    for gid, combos in sorted(priced_by_game.items()):
+        game = game_lookup[gid]
+        print(f"\n  {game['away_team']} @ {game['home_team']}")
+        for combo_name, sgp in combos:
+            odds = sgp["trueOdds"]
+            am = decimal_to_american(odds)
+            print(f"    {combo_name}: {odds:.4f} ({am:+d})")
             all_rows.append({
-                "game_id": game["game_id"],
-                "combo": gr["combo_name"],
+                "game_id": gid,
+                "combo": combo_name,
                 "period": "FG",
                 "bookmaker": "draftkings",
-                "sgp_decimal": round(gr["trueOdds"], 4),
-                "sgp_american": decimal_to_american(gr["trueOdds"]),
+                "sgp_decimal": round(odds, 4),
+                "sgp_american": am,
                 "source": "draftkings_direct",
             })
 
     if all_rows:
         upsert_sgp_odds(all_rows)
         print(f"\n{'='*60}")
-        print(f"  Wrote {len(all_rows)} DK SGP odds to mlb_sgp_odds")
+        print(f"  Wrote {len(all_rows)} DK SGP odds in {time.time() - t0:.1f}s total")
         print(f"{'='*60}")
     else:
         print("\nNo SGP odds collected.")
