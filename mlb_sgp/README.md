@@ -1,95 +1,154 @@
 # MLB SGP Odds Scrapers
 
-Fetch Same Game Parlay (SGP) odds from multiple sources for MLB correlated parlay edge finding.
+Fetch Same Game Parlay (SGP) odds from DraftKings for MLB correlated parlay edge finding.
 
-## Sources
-
-| Source | Method | Speed | Status |
-|--------|--------|-------|--------|
-| **DraftKings** | CDP click-and-capture | ~15s/game | Working (verified) |
-| **Pikkit Pro** | API intercept | ~10s/game | Ready to test |
-
-## DraftKings SGP Scraper
-
-Uses Chrome DevTools Protocol (CDP) to connect to your running Chrome browser. Clicks the Run Line + Total cells in DK's SGP builder and intercepts the `calculateBets` API response.
-
-### Setup
+## Quick Start
 
 ```bash
-# 1. Start Chrome with remote debugging
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
-
-# 2. Navigate to DK MLB page in that Chrome window
-# https://sportsbook.draftkings.com/leagues/baseball/mlb
-
-# 3. Run the scraper
 cd mlb_sgp
 source venv/bin/activate
-python scraper_draftkings_sgp.py --verbose
+python scraper_draftkings_sgp.py           # all games, ~30s
+python scraper_draftkings_sgp.py --verbose  # show selection IDs and errors
 ```
 
-### Why CDP?
+Requirements: `pip install curl_cffi duckdb` and the MLB pipeline must have run (`mlb_parlay_opportunities` table populated).
 
-DraftKings uses Akamai Bot Manager. The SGP pricing endpoint returns 404 for:
-- Direct HTTP requests (even with curl_cffi Chrome impersonation)
-- `page.evaluate(fetch())` from inside Playwright
-- Cookie transfer from browser to requests session
+## How It Works
 
-Only DK's own JavaScript can call the SGP endpoint — it includes Akamai sensor tokens. The click-and-capture approach lets DK's JS make the call, we just intercept the response.
+Pure REST API — no browser, no Chrome, no clicking. Uses `curl_cffi` with Chrome TLS impersonation to bypass DraftKings' Akamai bot protection.
 
-### Verified Result
-
-Cubs -1.5 + Over 7.5 → `trueOdds=3.64` (+264)
-- Individual legs: -1.5 (+129), O 7.5 (-115)
-- Independent multiply would give ~+340
-- DK's correlation adjustment: ~20% tighter
-
-## Pikkit Pro Scraper
-
-Pikkit is an odds aggregator that shows SGP odds from multiple books (FanDuel, DraftKings, Novig, ProphetX) in a single API response.
-
-### Setup
-
-```bash
-# First time: SMS login required
-cd mlb_sgp
-source venv/bin/activate
-python scraper_pikkit_mlb.py --visible
-# Login manually, session saves automatically
-
-# Subsequent runs
-python scraper_pikkit_mlb.py
+```
+DK League API          → event list (team names, event IDs)
+DK Event Markets API   → main market number (Run Line ID)
+DK SGP Parlays API     → ALL selection IDs (2MB response, main + alt lines)
+Match Wagerzon total   → exact Over/Under selection ID
+DK calculateBets       → correlation-adjusted SGP trueOdds
+                       → mlb_sgp_odds table in DuckDB
 ```
 
-## DK Recon Tool
+## DraftKings API Endpoints
 
-Network traffic capture tool used to discover DK's SGP API endpoints.
+| Endpoint | Auth | Purpose |
+|----------|------|---------|
+| `sportsbook-nash.../league/leagueSubcategory/v1/markets` | None | List MLB events |
+| `sportsbook-nash.../event/eventSubcategory/v1/markets` | None | Main market IDs per game |
+| `sportsbook-nash.../parlays/v1/sgp/events/{id}` | curl_cffi | **All selection IDs** (2MB response) |
+| `gaming-us-nj.../api/wager/v1/calculateBets` | curl_cffi | **SGP pricing** (POST, returns trueOdds) |
+| `sportsbook-nash.../sgp/dkusnj/sportsdata/v2/sgp` | Full Akamai | SGP pricing (DK frontend only — **inaccessible** via REST) |
 
-```bash
-python recon_draftkings_sgp.py
+### Why curl_cffi?
+
+DraftKings uses Akamai Bot Manager. Plain `requests` gets blocked by TLS fingerprinting. `curl_cffi` impersonates Chrome's TLS signature, which is enough to bypass Akamai on `calculateBets` and `parlays/v1/sgp/events`. The `sportsdata/v2/sgp` endpoint has stricter protection and is inaccessible — that's why we use `calculateBets` instead.
+
+**Things that DON'T work:** direct HTTP requests, page.evaluate(fetch()), cookie transfer from browser to requests, Playwright stealth plugins. All tested extensively.
+
+## Selection ID Format
+
 ```
+Spread: 0HC{market_num}{N|P}{line*100}_{suffix}
+Total:  0OU{market_num}{O|U}{line*100}_{suffix}
+
+Examples:
+  0HC84191361N150_1   → Home team -1.5, market 84191361, suffix _1
+  0HC84191361P150_3   → Away team +1.5, market 84191361, suffix _3
+  0OU84203528O750_1   → Over 7.5, alt market 84203528, suffix _1
+  0OU84203528U750_3   → Under 7.5, alt market 84203528, suffix _3
+```
+
+- **Suffix** (`_1` vs `_3`) varies per game — can't predict, must read from SGP parlays data
+- **N** = negative spread (favorite), **P** = positive spread (underdog)
+- **Market number** comes from market ID (e.g., `2_84191361` → `84191361`)
+- Main market and alt market have **different** market numbers
+
+## DK Market Structure
+
+- **Main market** (subcategory 4519): Run Line (±1.5) + one Total (DK's main line) + Moneyline
+- **Alt market**: Alt spreads (±1.0, ±2.5, etc.) + alt totals (every 0.5 from 5.0 to 13.0+)
+- Both appear in the SGP parlays response
+- **Game line markets** have BOTH spread AND total selections — inning/prop markets have only one. The scraper uses this to filter out non-game markets.
+
+## Known DK Restrictions
+
+### Cross-Market Blocking Near Main Line
+DK won't combine the main run line with alt totals within ±0.5 of their main total. Example: if DK's main total is O/U 8.5, you can SGP with O7.5 or O9.5, but NOT O8.0 or O9.0. This is confirmed on DK's website too ("Sorry, your picks cannot be parlayed"). The scraper returns no price for these games rather than using a different total.
+
+### Transient Rejections
+Some games temporarily return `SelectionsCannotBeCombined` then work minutes later. The scraper retries once after a 2-second delay.
+
+### SelectionClosed
+Games near first pitch may close SGP pricing entirely.
+
+## calculateBets Request/Response
+
+### Request
+```json
+{
+  "selections": [],
+  "selectionsForYourBet": [
+    {"id": "0HC84191361N150_1", "yourBetGroup": 0},
+    {"id": "0OU84203528O750_1", "yourBetGroup": 0}
+  ],
+  "selectionsForCombinator": [],
+  "selectionsForProgressiveParlay": [],
+  "oddsStyle": "american"
+}
+```
+
+### Response (success)
+```json
+{
+  "selectionsForYourBet": [
+    {"id": "0HC84191361N150_1", "trueOdds": 2.59, "displayOdds": "+159", "points": -1.5},
+    {"id": "0OU84203528O750_1", "trueOdds": 1.87, "displayOdds": "−115", "points": 7.5}
+  ],
+  "bets": [
+    {
+      "type": "YourBet",
+      "selectionsMapped": [{"id": "0HC84191361N150_1"}, {"id": "0OU84203528O750_1"}],
+      "trueOdds": 4.0,
+      "displayOdds": "+300"
+    }
+  ]
+}
+```
+
+### Error responses
+- **422 `SelectionsCannotBeCombined`** — DK won't combine these selections (cross-market restriction)
+- **422 `SelectionClosed`** — Game near first pitch, SGP unavailable
+- **200 with `combinabilityRestrictions`** — Selections recognized but can't be parlayed
 
 ## Output
 
-Both scrapers write to `mlb_sgp_odds` table in `Answer Keys/mlb.duckdb`:
+Writes to `mlb_sgp_odds` table in `Answer Keys/mlb.duckdb`:
 
 | Column | Type | Description |
 |--------|------|-------------|
-| game_id | VARCHAR | Event ID |
+| game_id | VARCHAR | Odds API event ID (joins to mlb_parlay_opportunities) |
 | combo | VARCHAR | e.g., "Home Spread + Over" |
 | period | VARCHAR | "FG" |
-| bookmaker | VARCHAR | "draftkings", "fanduel", etc. |
+| bookmaker | VARCHAR | "draftkings" |
 | sgp_decimal | DOUBLE | Decimal odds |
 | sgp_american | INTEGER | American odds |
 | fetch_time | TIMESTAMP | When scraped |
-| source | VARCHAR | "draftkings_direct" or "pikkit" |
+| source | VARCHAR | "draftkings_direct" |
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `scraper_draftkings_sgp.py` | DK SGP scraper via CDP click-and-capture |
-| `scraper_pikkit_mlb.py` | Pikkit MLB SGP scraper |
-| `pikkit_common.py` | Reusable Pikkit functions (session, API intercept) |
+| `scraper_draftkings_sgp.py` | DK SGP scraper (pure REST, curl_cffi) |
+| `scraper_pikkit_mlb.py` | Pikkit MLB SGP scraper (fallback) |
+| `pikkit_common.py` | Reusable Pikkit functions |
 | `recon_draftkings_sgp.py` | DK network recon tool |
+| `quick_recon.py` | Lightweight CDP recon (attaches to running Chrome) |
 | `db.py` | DuckDB helpers for mlb_sgp_odds |
+
+## Troubleshooting
+
+**"No mlb_parlay_opportunities table"** — Run the MLB pipeline first (`cd "Answer Keys" && python run.py --sport mlb`).
+
+**All games return "no price"** — curl_cffi session may have expired. The scraper auto-reinits after 3 consecutive failures, but if all games fail, try running again.
+
+**"Total X not found in DK selection IDs"** — Wagerzon total doesn't exist on DK for this game. Rare — DK offers totals from 5.0 to 13.0+.
+
+**"Spread ±1.5 not found"** — Game may have been removed from DK or SGP not yet available (too far from game time).
