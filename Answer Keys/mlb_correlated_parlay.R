@@ -34,6 +34,7 @@ EV_THRESHOLD <- 0.02   # 2% minimum edge to flag (default, overridden by dashboa
 KELLY_EDGE_MIN <- 0.03 # 3% minimum edge to enter conditional Kelly sizing
 WZ_PARLAY_SHAVE_FG <- 0.989  # Wagerzon takes ~1.1% off FG independent multiply
 WZ_PARLAY_SHAVE_F5 <- 0.995  # Wagerzon takes ~0.5% off F5 independent multiply
+DK_SGP_VIG         <- 1.10   # DK charges ~10% vig on SGP parlays
 MLB_DB <- "mlb.duckdb"
 
 # Load sizing from dashboard if available (parlay-specific settings, falls back to main)
@@ -223,6 +224,14 @@ if (!check_mlb_samples_fresh(max_age_minutes = 10)) {
 }
 
 # =============================================================================
+# REFRESH DK SGP ODDS
+# =============================================================================
+
+cat("Refreshing DK SGP odds...\n")
+system("cd ~/NFLWork/mlb_sgp && source venv/bin/activate && python scraper_draftkings_sgp.py 2>&1",
+       wait = TRUE, ignore.stdout = FALSE)
+
+# =============================================================================
 # LOAD SAMPLES (same pattern as parlay.R:155-162)
 # =============================================================================
 
@@ -231,6 +240,22 @@ on.exit(dbDisconnect(con))
 
 samples_df <- dbGetQuery(con, "SELECT * FROM mlb_game_samples")
 consensus  <- dbGetQuery(con, "SELECT * FROM mlb_consensus_temp")
+
+# Load DK SGP odds for blending (fresh data only)
+dk_sgp <- tryCatch({
+  dbGetQuery(con, "
+    SELECT game_id, combo, sgp_decimal, sgp_american
+    FROM mlb_sgp_odds
+    WHERE fetch_time > now() - INTERVAL 30 MINUTE
+      AND source = 'draftkings_direct'
+  ")
+}, error = function(e) data.frame())
+if (nrow(dk_sgp) > 0) {
+  cat(sprintf("  Loaded %d DK SGP odds for blending\n", nrow(dk_sgp)))
+} else {
+  cat("  No fresh DK SGP odds — using model-only fair values\n")
+}
+
 dbDisconnect(con)
 on.exit(NULL)
 
@@ -475,7 +500,21 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         wz_dec <- american_to_decimal(wz_american)
       }
 
-      fair_dec <- fair$fair_decimal_odds
+      # Blend model fair prob with DK SGP fair prob (devigged)
+      model_fair_prob <- fair$joint_prob
+      dk_row <- dk_sgp[dk_sgp$game_id == game_id & dk_sgp$combo == combo_name, ]
+
+      if (nrow(dk_row) > 0) {
+        dk_implied_prob <- 1 / dk_row$sgp_decimal[1]
+        dk_fair_prob    <- dk_implied_prob / DK_SGP_VIG
+        blended_prob    <- (model_fair_prob + dk_fair_prob) / 2
+        fair_dec        <- 1 / blended_prob
+      } else {
+        dk_fair_prob    <- NA_real_
+        blended_prob    <- model_fair_prob
+        fair_dec        <- fair$fair_decimal_odds
+      }
+
       edge_pct <- (wz_dec - fair_dec) / fair_dec * 100
 
       combo_spread       <- if (grepl("Home", combo_name)) row$home_spread else row$away_spread
@@ -503,7 +542,10 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         edge_pct    = round(edge_pct, 1),
         joint_prob_raw = fair$joint_prob,
         joint_prob  = round(fair$joint_prob * 100, 1),
-        n_samples   = fair$n_samples_resolved
+        n_samples   = fair$n_samples_resolved,
+        dk_sgp_dec  = if (nrow(dk_row) > 0) dk_row$sgp_decimal[1] else NA_real_,
+        dk_fair_prob = dk_fair_prob,
+        blended_prob = blended_prob
       )
 
       period_legs[[paste0(game_id, "|", combo_name)]] <- combo$legs
