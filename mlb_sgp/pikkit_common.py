@@ -25,8 +25,13 @@ load_dotenv()
 
 PIKKIT_URL = os.getenv("PIKKIT_URL", "https://app.pikkit.com")
 
-# Session storage for persistent login — defaults to mlb_sgp/ directory
-SESSION_FILE = Path(os.getenv("PIKKIT_SESSION_FILE", str(Path(__file__).parent / ".pikkit_session.json")))
+# Session storage for persistent login.
+# Pikkit login is the same across sports, so share the session file.
+# Check mlb_sgp/ first, fall back to the football scraper's session.
+_LOCAL_SESSION = Path(__file__).parent / ".pikkit_session.json"
+_FOOTBALL_SESSION = Path("/Users/callancapitolo/NFLWork/hoop88_correlation/.pikkit_session.json")
+_DEFAULT_SESSION = str(_LOCAL_SESSION if _LOCAL_SESSION.exists() else _FOOTBALL_SESSION)
+SESSION_FILE = Path(os.getenv("PIKKIT_SESSION_FILE", _DEFAULT_SESSION))
 
 # Period configuration per sport.
 # Each sport maps human-readable period names to Pikkit <select> values,

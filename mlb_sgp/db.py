@@ -11,21 +11,24 @@ import duckdb
 from pathlib import Path
 from datetime import datetime
 
-# Default path to the shared MLB database.
-# Use absolute path so this works from worktrees too.
-_REPO_ROOT = Path("/Users/callancapitolo/NFLWork")
+# Resolve repo root dynamically — works from main repo or worktrees.
+_THIS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _THIS_DIR.parent
+if ".worktrees" in str(_REPO_ROOT):
+    _REPO_ROOT = Path(str(_REPO_ROOT).split(".worktrees")[0].rstrip("/"))
+
 MLB_DB = _REPO_ROOT / "Answer Keys" / "mlb.duckdb"
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS mlb_sgp_odds (
-    game_id       VARCHAR,    -- Odds API event ID (matches mlb_parlay_opportunities)
-    combo         VARCHAR,    -- e.g., "Home Spread + Over" (matches mlb_parlay_opportunities)
-    period        VARCHAR,    -- "FG" or "F5"
-    bookmaker     VARCHAR,    -- "draftkings", "fanduel", "prophetx", "novig"
+    game_id       VARCHAR,
+    combo         VARCHAR,
+    period        VARCHAR,
+    bookmaker     VARCHAR,
     sgp_decimal   DOUBLE,
     sgp_american  INTEGER,
     fetch_time    TIMESTAMP,
-    source        VARCHAR     -- "pikkit" or "draftkings_direct"
+    source        VARCHAR
 );
 """
 
@@ -58,30 +61,32 @@ def upsert_sgp_odds(rows: list[dict], db_path: str = None):
     try:
         ensure_table(db_path)
 
-        # Delete stale rows for these combos so we always have fresh prices
-        for row in rows:
-            con.execute("""
-                DELETE FROM mlb_sgp_odds
-                WHERE game_id = ? AND combo = ? AND bookmaker = ? AND source = ?
-            """, [row["game_id"], row["combo"], row["bookmaker"], row["source"]])
+        # Batch delete stale rows
+        keys = [(r["game_id"], r["combo"], r["bookmaker"], r["source"]) for r in rows]
+        con.execute("""
+            DELETE FROM mlb_sgp_odds
+            WHERE (game_id, combo, bookmaker, source) IN (
+                SELECT * FROM (VALUES """ +
+            ",".join(["(?, ?, ?, ?)"] * len(keys)) +
+            """))""",
+            [v for k in keys for v in k],
+        )
 
-        # Insert fresh rows
+        # Batch insert fresh rows
         now = datetime.now()
+        values = []
         for row in rows:
-            con.execute("""
-                INSERT INTO mlb_sgp_odds
-                    (game_id, combo, period, bookmaker, sgp_decimal, sgp_american, fetch_time, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, [
-                row["game_id"],
-                row["combo"],
-                row["period"],
-                row["bookmaker"],
-                row["sgp_decimal"],
-                row["sgp_american"],
-                now,
-                row["source"],
+            values.extend([
+                row["game_id"], row["combo"], row["period"], row["bookmaker"],
+                row["sgp_decimal"], row["sgp_american"], now, row["source"],
             ])
+
+        placeholders = ",".join(["(?, ?, ?, ?, ?, ?, ?, ?)"] * len(rows))
+        con.execute(f"""
+            INSERT INTO mlb_sgp_odds
+                (game_id, combo, period, bookmaker, sgp_decimal, sgp_american, fetch_time, source)
+            VALUES {placeholders}
+        """, values)
     finally:
         con.close()
 
@@ -90,18 +95,11 @@ def get_sgp_odds(game_id: str = None, max_age_minutes: int = 15, db_path: str = 
     """
     Read SGP odds from the table, optionally filtered by game_id.
 
-    Args:
-        game_id: Filter to a specific game (None = all games)
-        max_age_minutes: Only return rows fetched within this window
-        db_path: Override database path
-
-    Returns:
-        List of dicts with all columns
+    Returns list of dicts with all columns.
     """
     db_path = db_path or str(MLB_DB)
     con = duckdb.connect(db_path, read_only=True)
     try:
-        # Table might not exist yet on first run
         tables = con.execute("SHOW TABLES").fetchall()
         if not any(t[0] == "mlb_sgp_odds" for t in tables):
             return []
@@ -119,7 +117,9 @@ def get_sgp_odds(game_id: str = None, max_age_minutes: int = 15, db_path: str = 
             params.append(game_id)
 
         query += " ORDER BY game_id, combo, bookmaker"
-        result = con.execute(query, params).fetchdf()
-        return result.to_dict("records")
+        rows = con.execute(query, params).fetchall()
+        cols = ["game_id", "combo", "period", "bookmaker",
+                "sgp_decimal", "sgp_american", "fetch_time", "source"]
+        return [dict(zip(cols, row)) for row in rows]
     finally:
         con.close()

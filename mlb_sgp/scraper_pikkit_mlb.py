@@ -367,9 +367,52 @@ def scrape_mlb_sgp(headless: bool = True, game_id_filter: str = None,
         print("\nNo SGP odds collected.")
 
 
+def login_only():
+    """Just open Pikkit for login and save session. No DB reads needed."""
+    from playwright.sync_api import sync_playwright as sp
+
+    print("Opening Pikkit for login...")
+    print("Login with your phone number + SMS code.")
+    print("Session will save automatically after 120 seconds.\n")
+
+    with sp() as p:
+        browser = p.chromium.launch(headless=False)
+        saved = load_session()
+        if saved:
+            context = browser.new_context(
+                viewport={"width": 1920, "height": 1080},
+                storage_state=saved,
+            )
+            print("Loaded existing session — checking if still valid...")
+        else:
+            context = browser.new_context(viewport={"width": 1920, "height": 1080})
+            print("No existing session found.")
+
+        page = context.new_page()
+        page.goto(PIKKIT_URL, wait_until="networkidle")
+        page.wait_for_timeout(3000)
+
+        if is_logged_in(page):
+            print("Already logged in! Session is valid.")
+            # Re-save to refresh the session file
+            save_session(context)
+        else:
+            print("\nNot logged in — please login manually in the browser.")
+            print("Waiting 120 seconds for you to complete SMS login...")
+            page.wait_for_timeout(120000)
+            save_session(context)
+            if is_logged_in(page):
+                print("Login successful! Session saved.")
+            else:
+                print("Still not logged in. Try again.")
+
+        browser.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="MLB Pikkit Pro SGP Scraper")
     parser.add_argument("--visible", action="store_true", help="Show browser window")
+    parser.add_argument("--login", action="store_true", help="Just login and save session (no scraping)")
     parser.add_argument("--game-id", type=str, help="Only scrape this game_id")
     parser.add_argument(
         "--books",
@@ -382,6 +425,10 @@ def main():
     print("=" * 60)
     print("  MLB PIKKIT SGP SCRAPER")
     print("=" * 60)
+
+    if args.login:
+        login_only()
+        return
 
     scrape_mlb_sgp(
         headless=not args.visible,
