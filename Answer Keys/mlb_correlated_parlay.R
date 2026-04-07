@@ -585,6 +585,19 @@ if (length(results) == 0) {
 }
 
 all_results <- bind_rows(results)
+
+# Drop negatively-correlated parlays. The scanner's thesis is "exploit books
+# that price correlated legs as independent" — that only produces edge when
+# corr_factor > 1. With corr_factor < 1 the legs are anti-correlated, the
+# parlay is strictly worse than the singles, and any apparent edge is single-
+# leg model disagreement being amplified by parlay variance. Filter them out.
+n_before <- nrow(all_results)
+all_results <- all_results %>% filter(corr_factor >= 1)
+n_dropped <- n_before - nrow(all_results)
+if (n_dropped > 0) {
+  cat(sprintf("Filtered out %d parlays with corr_factor < 1 (anti-correlated).\n", n_dropped))
+}
+
 all_results$kelly_bet <- 0  # initialize, fill below
 
 for (gid in unique(all_results$game_id)) {
