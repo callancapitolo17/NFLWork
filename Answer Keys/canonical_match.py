@@ -59,7 +59,7 @@ def load_team_dict(sport="cbb"):
 # MLB team name dictionary — maps common abbreviations and short names
 # to Odds API canonical names. Covers Wagerzon, Hoop88, BFA, Bookmaker formats.
 _MLB_TEAMS = {
-    "Arizona Diamondbacks": ["ARI", "DBACKS", "DIAMONDBACKS", "ARI DBACKS", "ARIZONA"],
+    "Arizona Diamondbacks": ["ARI", "DBACKS", "DIAMONDBACKS", "ARI DBACKS", "ARI DIAMONDBACKS", "ARIZONA"],
     "Atlanta Braves": ["ATL", "BRAVES", "ATL BRAVES", "ATLANTA"],
     "Baltimore Orioles": ["BAL", "ORIOLES", "BAL ORIOLES", "BALTIMORE"],
     "Boston Red Sox": ["BOS", "RED SOX", "BOS RED SOX", "BOSTON"],
