@@ -127,7 +127,10 @@ def fetch_dk_events(session: cffi_requests.Session) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def load_parlay_lines() -> dict:
-    """Load spread + total lines from mlb_parlay_opportunities."""
+    """Load FG and F5 spread + total lines from mlb_parlay_opportunities.
+
+    Returns dict keyed by game_id with both fg_* and f5_* lines.
+    """
     con = duckdb.connect(str(MLB_DB), read_only=True)
     try:
         tables = [t[0] for t in con.execute("SHOW TABLES").fetchall()]
@@ -135,21 +138,36 @@ def load_parlay_lines() -> dict:
             print("  No mlb_parlay_opportunities table — run the MLB pipeline first.")
             return {}
 
-        rows = con.execute("""
+        # FG combos (no prefix)
+        fg_rows = con.execute("""
             SELECT DISTINCT game_id, spread_line, total_line, home_team, away_team
             FROM mlb_parlay_opportunities
             WHERE combo = 'Home Spread + Over'
         """).fetchall()
 
-        return {
-            row[0]: {
-                "spread_line": row[1],
-                "total_line": row[2],
+        # F5 combos (prefixed with "F5 ")
+        f5_rows = con.execute("""
+            SELECT DISTINCT game_id, spread_line, total_line
+            FROM mlb_parlay_opportunities
+            WHERE combo = 'F5 Home Spread + Over'
+        """).fetchall()
+
+        result = {}
+        for row in fg_rows:
+            result[row[0]] = {
+                "fg_spread_line": row[1],
+                "fg_total_line": row[2],
                 "home_team": row[3],
                 "away_team": row[4],
+                "f5_spread_line": None,
+                "f5_total_line": None,
             }
-            for row in rows
-        }
+        for row in f5_rows:
+            if row[0] in result:
+                result[row[0]]["f5_spread_line"] = row[1]
+                result[row[0]]["f5_total_line"] = row[2]
+
+        return result
     finally:
         con.close()
 
@@ -182,8 +200,10 @@ def match_events(dk_events: list[dict], parlay_lines: dict) -> list[dict]:
                     "home_team": canon_home,
                     "away_team": canon_away,
                     "dk_name": dk_evt["name"],
-                    "spread_line": lines["spread_line"],
-                    "total_line": lines["total_line"],
+                    "fg_spread_line": lines["fg_spread_line"],
+                    "fg_total_line": lines["fg_total_line"],
+                    "f5_spread_line": lines["f5_spread_line"],
+                    "f5_total_line": lines["f5_total_line"],
                 })
                 break
 
@@ -194,103 +214,208 @@ def match_events(dk_events: list[dict], parlay_lines: dict) -> list[dict]:
 # Step 5: Fetch exact selection IDs from SGP parlays endpoint
 # ---------------------------------------------------------------------------
 
-def fetch_main_market_num(session: cffi_requests.Session, dk_event_id: str) -> str | None:
-    """Fetch the main Run Line market number from the public API (subcategory 4519)."""
-    resp = session.get(
-        "https://sportsbook-nash.draftkings.com/sites/US-SB/api/sportscontent/"
-        "controldata/event/eventSubcategory/v1/markets",
-        params={
-            "isBatchable": "false",
-            "templateVars": dk_event_id,
-            "marketsQuery": (
-                f"$filter=eventId eq '{dk_event_id}' "
-                f"AND clientMetadata/subCategoryId eq '4519' "
-                f"AND tags/all(t: t ne 'SportcastBetBuilder')"
-            ),
-            "include": "MarketSplits",
-            "entity": "markets",
-        },
-        timeout=15,
-    )
+DK_EVENT_MARKETS_URL = (
+    "https://sportsbook-nash.draftkings.com/sites/US-SB/api/sportscontent/"
+    "controldata/event/eventSubcategory/v1/markets"
+)
+
+
+def _fetch_subcat_markets(session, dk_event_id, subcat_id):
+    """Fetch all markets in a given subcategory. Returns list of (id, name)."""
+    resp = session.get(DK_EVENT_MARKETS_URL, params={
+        "isBatchable": "false",
+        "templateVars": dk_event_id,
+        "marketsQuery": (
+            f"$filter=eventId eq '{dk_event_id}' "
+            f"AND clientMetadata/subCategoryId eq '{subcat_id}' "
+            f"AND tags/all(t: t ne 'SportcastBetBuilder')"
+        ),
+        "include": "MarketSplits",
+        "entity": "markets",
+    }, timeout=15)
     if resp.status_code != 200:
-        return None
-    for m in resp.json().get("markets", []):
-        if m.get("name") == "Run Line":
-            return m["id"].split("_")[-1] if "_" in m["id"] else m["id"]
-    return None
+        return []
+    return [(m["id"], m.get("name", "")) for m in resp.json().get("markets", [])]
+
+
+def _strip_prefix(mid: str) -> str:
+    return mid.split("_")[-1] if "_" in mid else mid
+
+
+def fetch_main_market_nums(session: cffi_requests.Session, dk_event_id: str) -> dict:
+    """Fetch main Run Line + Total market numbers for both FG and F5.
+
+    Returns {
+        "fg": {"run_line": "...", "total": "..."},
+        "f5": {"run_line": "...", "total": "..."},
+    }
+    Any field may be None if the market is unavailable.
+    """
+    out = {
+        "fg": {"run_line": None, "total": None},
+        "f5": {"run_line": None, "total": None},
+    }
+    for m_id, name in _fetch_subcat_markets(session, dk_event_id, "4519"):
+        if name == "Run Line":
+            out["fg"]["run_line"] = _strip_prefix(m_id)
+        elif name == "Total":
+            out["fg"]["total"] = _strip_prefix(m_id)
+    for m_id, name in _fetch_subcat_markets(session, dk_event_id, "15628"):
+        if name == "Run Line - 1st 5 Innings":
+            out["f5"]["run_line"] = _strip_prefix(m_id)
+        elif name == "Total Runs - 1st 5 Innings":
+            out["f5"]["total"] = _strip_prefix(m_id)
+    return out
 
 
 def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
-                        main_market_num: str | None = None,
+                        main_market_nums: dict | None = None,
                         verbose: bool = False) -> dict:
     """
-    Fetch all SGP selection IDs for a game from the parlays endpoint.
-
-    The 2MB+ response contains selection IDs for every market (main, alt,
-    innings, props). We parse it to find the IDs for spreads and totals.
-
-    For spreads: we prefer IDs from the main market (full game Run Line).
-    For totals: the main market only has one total, so we also collect
-    alt totals from other markets to match any Wagerzon total.
+    Fetch all SGP selection IDs for a game from the parlays endpoint, split
+    by period (FG vs F5).
 
     Returns {
-        'spreads': {('N', 1.5): 'sel_id', ('P', 1.5): 'sel_id', ...},
-        'totals': {('O', 7.5): 'sel_id', ('U', 7.5): 'sel_id', ...},
+        'fg': {'spreads': {...}, 'totals': {...}},
+        'f5': {'spreads': {...}, 'totals': {...}},
     }
+
+    Period assignment for game line markets:
+    - Main market_num for each period is provided as a seed
+    - For other game line markets (alts), we partition by total line range:
+      F5 totals are <= 5.5, FG totals are >= 6.0
     """
+    main_market_nums = main_market_nums or {
+        "fg": {"run_line": None, "total": None},
+        "f5": {"run_line": None, "total": None},
+    }
+    fg_rl = main_market_nums["fg"].get("run_line")
+    fg_tot = main_market_nums["fg"].get("total")
+    f5_rl = main_market_nums["f5"].get("run_line")
+    f5_tot = main_market_nums["f5"].get("total")
+
     resp = session.get(
         f"{DK_SGP_PARLAYS_URL}/{dk_event_id}",
         timeout=60,
     )
 
+    empty = {"fg": {"spreads": {}, "totals": {}},
+             "f5": {"spreads": {}, "totals": {}}}
     if resp.status_code != 200:
-        return {"spreads": {}, "totals": {}}
+        return empty
 
     text = resp.text
 
-    # Parse all selection IDs from the response
     spread_matches = re.findall(r'0HC(\d+)([NP])(\d+)(_\d+)', text)
     total_matches = re.findall(r'0OU(\d+)([OU])(\d+)(_\d+)', text)
 
-    # Find market numbers that have BOTH spreads and totals — these are
-    # game line markets (main + alt). Inning-only markets have one or the other.
-    # Real market numbers are 8+ digits; filter out short spurious matches.
-    spread_mnums = set(mnum for mnum, _, _, _ in spread_matches if len(mnum) >= 8)
-    total_mnums = set(mnum for mnum, _, _, _ in total_matches if len(mnum) >= 8)
-    game_line_mnums = spread_mnums & total_mnums
-    if main_market_num:
-        game_line_mnums.add(main_market_num)
-
-    # Build spread lookup — only from game line markets, prefer main market
-    spreads = {}
-    for mnum, sign, line, suf in spread_matches:
-        if len(mnum) < 8 or mnum not in game_line_mnums:
+    # Compute spread/total range per market_num
+    spread_lines_per_mnum = {}
+    for mnum, _, line, _ in spread_matches:
+        if len(mnum) < 8:
             continue
-        line_val = int(line) / 100
-        key = (sign, line_val)
-        sel_id = f"0HC{mnum}{sign}{line}{suf}"
-        # Main market overwrites alt; alt only fills gaps
-        if key not in spreads or mnum == main_market_num:
-            spreads[key] = sel_id
-
-    # Build total lookup — only from game line markets, prefer main market
-    totals = {}
-    for mnum, ou, line, suf in total_matches:
-        if len(mnum) < 8 or mnum not in game_line_mnums:
+        spread_lines_per_mnum.setdefault(mnum, []).append(int(line) / 100)
+    total_lines_per_mnum = {}
+    for mnum, _, line, _ in total_matches:
+        if len(mnum) < 8:
             continue
-        line_val = int(line) / 100
-        key = (ou, line_val)
-        sel_id = f"0OU{mnum}{ou}{line}{suf}"
-        if key not in totals or mnum == main_market_num:
-            totals[key] = sel_id
+        total_lines_per_mnum.setdefault(mnum, []).append(int(line) / 100)
+
+    # Period classification:
+    # - main markets are explicit seeds
+    # - alt spread markets: classify by max spread line (F5 ≤ 1.5, FG up to 5+)
+    # - alt total markets: classify by max total line (F5 ≤ 5.5, FG ≥ 6.0)
+    # - markets that don't look like game lines (innings/props) are excluded
+    fg_spread_mnums = {fg_rl} if fg_rl else set()
+    f5_spread_mnums = {f5_rl} if f5_rl else set()
+    fg_total_mnums = {fg_tot} if fg_tot else set()
+    f5_total_mnums = {f5_tot} if f5_tot else set()
+
+    for mnum, lines in spread_lines_per_mnum.items():
+        if mnum in fg_spread_mnums or mnum in f5_spread_mnums:
+            continue
+        # Only classify alt markets that ALSO appear as totals (game-line alt
+        # markets pair both, e.g. 84220463). Pure-spread inning props skipped.
+        if mnum not in total_lines_per_mnum:
+            continue
+        max_sp = max(lines)
+        max_tot = max(total_lines_per_mnum[mnum])
+        # F5 alts: small spreads AND small totals
+        if max_sp <= 2.0 and max_tot <= 5.5:
+            f5_spread_mnums.add(mnum)
+            f5_total_mnums.add(mnum)
+        else:
+            fg_spread_mnums.add(mnum)
+            fg_total_mnums.add(mnum)
+
+    # Standalone total markets (no spreads in same mnum) — classify by total range
+    for mnum, lines in total_lines_per_mnum.items():
+        if mnum in fg_total_mnums or mnum in f5_total_mnums:
+            continue
+        if mnum in spread_lines_per_mnum:
+            continue  # already handled above
+        max_tot = max(lines)
+        min_tot = min(lines)
+        # Skip inning prop markets (very small totals like 0.5/1.5 only)
+        if max_tot <= 2.0:
+            continue
+        if max_tot <= 5.5 and min_tot >= 2.5:
+            f5_total_mnums.add(mnum)
+        elif min_tot >= 4.0:
+            fg_total_mnums.add(mnum)
+
+    out = {"fg": {"spreads": {}, "totals": {}},
+           "f5": {"spreads": {}, "totals": {}}}
+
+    # Each (sign, line) key maps to a LIST of candidate sel_ids. DK returns
+    # multiple suffix variants (_1, _3) per selection — one may be "closed"
+    # while another is live. We'll try them in order, preferring the main
+    # market and deduping. Pricing code retries through the list.
+    def assign_spread(per_mnums, per_main, per_key):
+        bucket = out[per_key]["spreads"]
+        for mnum, sign, line, suf in spread_matches:
+            if mnum not in per_mnums:
+                continue
+            line_val = int(line) / 100
+            key = (sign, line_val)
+            sel_id = f"0HC{mnum}{sign}{line}{suf}"
+            lst = bucket.setdefault(key, [])
+            if sel_id in lst:
+                continue
+            # Main market goes to front; alts to back
+            if mnum == per_main:
+                lst.insert(0, sel_id)
+            else:
+                lst.append(sel_id)
+
+    def assign_total(per_mnums, per_main, per_key):
+        bucket = out[per_key]["totals"]
+        for mnum, ou, line, suf in total_matches:
+            if mnum not in per_mnums:
+                continue
+            line_val = int(line) / 100
+            key = (ou, line_val)
+            sel_id = f"0OU{mnum}{ou}{line}{suf}"
+            lst = bucket.setdefault(key, [])
+            if sel_id in lst:
+                continue
+            if mnum == per_main:
+                lst.insert(0, sel_id)
+            else:
+                lst.append(sel_id)
+
+    assign_spread(fg_spread_mnums, fg_rl, "fg")
+    assign_spread(f5_spread_mnums, f5_rl, "f5")
+    assign_total(fg_total_mnums, fg_tot, "fg")
+    assign_total(f5_total_mnums, f5_tot, "f5")
 
     if verbose:
-        spread_lines = sorted(set(k[1] for k in spreads))
-        total_lines = sorted(set(k[1] for k in totals if k[0] == 'O'))
-        print(f"    Spreads available: {spread_lines}")
-        print(f"    Totals available (O): {total_lines}")
+        for per in ("fg", "f5"):
+            sp = sorted(set(k[1] for k in out[per]["spreads"]))
+            to = sorted(set(k[1] for k in out[per]["totals"] if k[0] == 'O'))
+            print(f"    [{per.upper()}] spreads: {sp}  totals(O): {to}")
 
-    return {"spreads": spreads, "totals": totals}
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -348,72 +473,6 @@ def calculate_sgp(session: cffi_requests.Session,
 
 
 # ---------------------------------------------------------------------------
-# Step 7: Scrape all 4 combos for a game
-# ---------------------------------------------------------------------------
-
-def scrape_game(session: cffi_requests.Session, game: dict,
-                sel_ids: dict, verbose: bool = False) -> list[dict] | None:
-    """
-    Scrape all 4 SGP combos using exact selection IDs.
-    Returns list of results, or None if selection IDs not found (signals failure).
-    """
-    results = []
-    spread_line = game["spread_line"]
-    total = game["total_line"]
-
-    # Determine home/away spread signs
-    if spread_line < 0:
-        home_sign, away_sign = "N", "P"
-    else:
-        home_sign, away_sign = "P", "N"
-
-    spread = abs(spread_line)
-
-    # Look up exact selection IDs
-    home_spread_sel = sel_ids["spreads"].get((home_sign, spread))
-    away_spread_sel = sel_ids["spreads"].get((away_sign, spread))
-    over_sel = sel_ids["totals"].get(("O", total))
-    under_sel = sel_ids["totals"].get(("U", total))
-
-    if not home_spread_sel or not away_spread_sel:
-        print(f"    Spread ±{spread} not found in DK selection IDs")
-        return None
-
-    if not over_sel or not under_sel:
-        print(f"    Total {total} not found in DK selection IDs")
-        return None
-
-    combos = [
-        ("Home Spread + Over",  home_spread_sel, over_sel),
-        ("Home Spread + Under", home_spread_sel, under_sel),
-        ("Away Spread + Over",  away_spread_sel, over_sel),
-        ("Away Spread + Under", away_spread_sel, under_sel),
-    ]
-
-    for combo_name, spread_sel, total_sel in combos:
-        if verbose:
-            print(f"    {combo_name}: {spread_sel} + {total_sel}")
-
-        sgp = calculate_sgp(session, spread_sel, total_sel, verbose)
-
-        if sgp:
-            odds = sgp["trueOdds"]
-            am = decimal_to_american(odds)
-            print(f"    {combo_name}: {odds:.4f} ({am:+d})")
-            results.append({
-                "combo_name": combo_name,
-                "trueOdds": odds,
-                "displayOdds": sgp["displayOdds"],
-            })
-        else:
-            print(f"    {combo_name}: no price")
-
-        time.sleep(0.1)
-
-    return results
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -461,20 +520,20 @@ def scrape_dk_sgp(verbose: bool = False):
     print("Fetching selection IDs (parallel)...")
     t0 = time.time()
 
-    game_data = {}  # game_id -> (main_market_num, sel_ids)
+    game_data = {}  # game_id -> sel_ids (per-period dict)
 
     def fetch_one_game(game):
         dk_eid = game["dk_event_id"]
-        main_num = fetch_main_market_num(session, dk_eid)
-        sel_ids = fetch_selection_ids(session, dk_eid, main_num, verbose)
-        return game["game_id"], main_num, sel_ids
+        main_nums = fetch_main_market_nums(session, dk_eid)
+        sel_ids = fetch_selection_ids(session, dk_eid, main_nums, verbose)
+        return game["game_id"], sel_ids
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {pool.submit(fetch_one_game, g): g for g in matched}
         for future in as_completed(futures):
             try:
-                game_id, main_num, sel_ids = future.result()
-                game_data[game_id] = (main_num, sel_ids)
+                game_id, sel_ids = future.result()
+                game_data[game_id] = sel_ids
             except Exception as e:
                 game = futures[future]
                 print(f"  Error fetching {game['dk_name']}: {e}")
@@ -485,50 +544,66 @@ def scrape_dk_sgp(verbose: bool = False):
     print("Pricing SGP combos (parallel)...")
     t1 = time.time()
 
-    # Build all (game_id, combo_name, spread_sel, total_sel) tuples
+    # Build all (game_id, period, combo_name, spread_sel, total_sel) tuples
     combo_items = []
     for game in matched:
         gid = game["game_id"]
         if gid not in game_data:
             continue
 
-        _, sel_ids = game_data[gid]
-        if not sel_ids["spreads"]:
-            continue
+        sel_ids_per_period = game_data[gid]
 
-        spread_line = game["spread_line"]
-        total = game["total_line"]
+        for period in ("fg", "f5"):
+            spread_line = game[f"{period}_spread_line"]
+            total = game[f"{period}_total_line"]
+            if spread_line is None or total is None:
+                continue
 
-        if spread_line < 0:
-            home_sign, away_sign = "N", "P"
-        else:
-            home_sign, away_sign = "P", "N"
+            sel_ids = sel_ids_per_period.get(period, {"spreads": {}, "totals": {}})
+            if not sel_ids["spreads"]:
+                continue
 
-        spread = abs(spread_line)
+            if spread_line < 0:
+                home_sign, away_sign = "N", "P"
+            else:
+                home_sign, away_sign = "P", "N"
 
-        home_spread_sel = sel_ids["spreads"].get((home_sign, spread))
-        away_spread_sel = sel_ids["spreads"].get((away_sign, spread))
-        over_sel = sel_ids["totals"].get(("O", total))
-        under_sel = sel_ids["totals"].get(("U", total))
+            spread = abs(spread_line)
 
-        if not home_spread_sel or not away_spread_sel or not over_sel or not under_sel:
-            continue
+            home_spread_sels = sel_ids["spreads"].get((home_sign, spread)) or []
+            away_spread_sels = sel_ids["spreads"].get((away_sign, spread)) or []
+            over_sels = sel_ids["totals"].get(("O", total)) or []
+            under_sels = sel_ids["totals"].get(("U", total)) or []
 
-        for combo_name, sp_sel, tot_sel in [
-            ("Home Spread + Over",  home_spread_sel, over_sel),
-            ("Home Spread + Under", home_spread_sel, under_sel),
-            ("Away Spread + Over",  away_spread_sel, over_sel),
-            ("Away Spread + Under", away_spread_sel, under_sel),
-        ]:
-            combo_items.append((gid, combo_name, sp_sel, tot_sel))
+            if not home_spread_sels or not away_spread_sels or not over_sels or not under_sels:
+                continue
+
+            prefix = "" if period == "fg" else "F5 "
+            for combo_name, sp_sels, tot_sels in [
+                ("Home Spread + Over",  home_spread_sels, over_sels),
+                ("Home Spread + Under", home_spread_sels, under_sels),
+                ("Away Spread + Over",  away_spread_sels, over_sels),
+                ("Away Spread + Under", away_spread_sels, under_sels),
+            ]:
+                combo_items.append((gid, period, prefix + combo_name, sp_sels, tot_sels))
 
     # Price all combos in parallel
-    pricing_results = []  # (game_id, combo_name, sgp_result)
+    pricing_results = []  # (game_id, period, combo_name, sgp_result)
 
     def price_one(item):
-        gid, combo_name, sp_sel, tot_sel = item
-        sgp = calculate_sgp(session, sp_sel, tot_sel, verbose)
-        return gid, combo_name, sgp
+        gid, period, combo_name, sp_sels, tot_sels = item
+        # Try every (spread_variant, total_variant) combo until one returns a
+        # price. DK has stale "_1"/"_3" suffix variants — one may be closed
+        # while another is live.
+        sgp = None
+        for sp in sp_sels:
+            for to in tot_sels:
+                sgp = calculate_sgp(session, sp, to, verbose=verbose)
+                if sgp:
+                    break
+            if sgp:
+                break
+        return gid, period, combo_name, sgp
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = [pool.submit(price_one, item) for item in combo_items]
@@ -543,9 +618,9 @@ def scrape_dk_sgp(verbose: bool = False):
     # ── Phase 2b: Retry failed games ──
     # Find games where all 4 combos failed — retry once
     priced_by_game = {}
-    for gid, combo_name, sgp in pricing_results:
+    for gid, period, combo_name, sgp in pricing_results:
         if sgp:
-            priced_by_game.setdefault(gid, []).append((combo_name, sgp))
+            priced_by_game.setdefault(gid, []).append((period, combo_name, sgp))
 
     failed_games = set()
     for game in matched:
@@ -562,9 +637,9 @@ def scrape_dk_sgp(verbose: bool = False):
                 futures = [pool.submit(price_one, item) for item in retry_items]
                 for future in as_completed(futures):
                     try:
-                        gid, combo_name, sgp = future.result()
+                        gid, period, combo_name, sgp = future.result()
                         if sgp:
-                            priced_by_game.setdefault(gid, []).append((combo_name, sgp))
+                            priced_by_game.setdefault(gid, []).append((period, combo_name, sgp))
                     except Exception:
                         pass
 
@@ -578,14 +653,14 @@ def scrape_dk_sgp(verbose: bool = False):
     for gid, combos in sorted(priced_by_game.items()):
         game = game_lookup[gid]
         print(f"\n  {game['away_team']} @ {game['home_team']}")
-        for combo_name, sgp in combos:
+        for period, combo_name, sgp in combos:
             odds = sgp["trueOdds"]
             am = decimal_to_american(odds)
             print(f"    {combo_name}: {odds:.4f} ({am:+d})")
             all_rows.append({
                 "game_id": gid,
                 "combo": combo_name,
-                "period": "FG",
+                "period": "FG" if period == "fg" else "F5",
                 "bookmaker": "draftkings",
                 "sgp_decimal": round(odds, 4),
                 "sgp_american": am,
