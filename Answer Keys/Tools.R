@@ -555,7 +555,7 @@ run_answer_key_sample <- function(
     max_iter_mean = 500,
     tol_mean = 0.005,
     tol_mean_gate = 0.1,
-    tol_error = 1,
+    tol_error = NULL,   # NULL = auto-scale to 0.2% of N per Feustel spec
     use_spread_line = FALSE,
     shrink_factor = 0.9,
     min_N = 50
@@ -594,7 +594,11 @@ run_answer_key_sample <- function(
     }
 
     # Step 2: balance_sample to match cover/over rates
-    bal <- balance_sample(mm$dt, current_N, target_cover, target_over, tol_error)
+    # Per Feustel: "+/-1 means you are within 0.2% of your target" — scale
+    # tolerance to 0.2% of current_N (recomputed each shrink iteration so it
+    # tightens back to 1 at N=500). Explicit tol_error (e.g. from tests) wins.
+    effective_tol <- if (is.null(tol_error)) max(1L, as.integer(round(0.002 * current_N))) else tol_error
+    bal <- balance_sample(mm$dt, current_N, target_cover, target_over, effective_tol)
 
     if (bal$converged) {
       # Success - use this sample
@@ -745,7 +749,7 @@ generate_all_samples <- function(
     use_spread_line = TRUE,
     max_iter_mean = 500,
     tol_mean = 0.005,
-    tol_error = 1,
+    tol_error = NULL,   # NULL = auto-scale to 0.2% of N per Feustel spec
     shrink_factor = 0.9,
     min_N = 50
 ) {
