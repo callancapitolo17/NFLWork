@@ -83,7 +83,7 @@ american_to_decimal <- function(odds) {
 # outcomes (both legs ANDed) rather than single-leg outcomes.
 
 parlay_multivariate_kelly <- function(parlay_group, samples, bankroll, kelly_mult) {
-  # parlay_group: list of lists, each with $legs, $joint_prob, $wz_dec
+  # parlay_group: list of lists, each with $legs, $bet_prob, $wz_dec
   # samples: game sample data frame (one game)
   # Returns: numeric vector of dollar wager amounts (one per parlay)
 
@@ -120,7 +120,7 @@ parlay_multivariate_kelly <- function(parlay_group, samples, bankroll, kelly_mul
   # --- Covariance of returns ---
   # sigma_i = sqrt(p_i * (1 - p_i)) * (b_i + 1)
   # where p_i = fair joint prob, b_i = wz decimal odds - 1
-  probs <- sapply(parlay_group, `[[`, "joint_prob")
+  probs <- sapply(parlay_group, `[[`, "bet_prob")
   b <- sapply(parlay_group, `[[`, "wz_dec") - 1
   sigmas <- sqrt(probs * (1 - probs)) * (b + 1)
 
@@ -155,7 +155,7 @@ fallback_rho_scaling <- function(parlay_group, R, bankroll, kelly_mult) {
   n <- length(parlay_group)
   wagers <- numeric(n)
   for (i in seq_len(n)) {
-    p <- parlay_group[[i]]$joint_prob
+    p <- parlay_group[[i]]$bet_prob
     b <- parlay_group[[i]]$wz_dec - 1
     kelly_full <- (b * p - (1 - p)) / b
     if (kelly_full <= 0) next
@@ -175,7 +175,7 @@ fallback_rho_scaling <- function(parlay_group, R, bankroll, kelly_mult) {
 independent_kelly <- function(parlay_group, bankroll, kelly_mult) {
   wagers <- numeric(length(parlay_group))
   for (i in seq_along(parlay_group)) {
-    p <- parlay_group[[i]]$joint_prob
+    p <- parlay_group[[i]]$bet_prob
     b <- parlay_group[[i]]$wz_dec - 1
     kelly_full <- (b * p - (1 - p)) / b
     wagers[i] <- max(0, round(kelly_full * kelly_mult * bankroll))
@@ -547,8 +547,9 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         wz_dec      = round(wz_dec, 3),
         corr_factor = fair$correlation_factor,
         edge_pct    = round(edge_pct, 1),
-        joint_prob_raw = fair$joint_prob,
-        joint_prob  = round(fair$joint_prob * 100, 1),
+        model_prob_raw = fair$joint_prob,
+        blended_prob_raw = blended_prob,
+        model_prob_pct  = round(fair$joint_prob * 100, 1),
         n_samples   = fair$n_samples_resolved,
         dk_sgp_dec  = round(if (nrow(dk_row) > 0) dk_row$sgp_decimal[1] else NA_real_, 3),
         dk_fair_prob = round(dk_fair_prob, 3),
@@ -618,7 +619,11 @@ for (gid in unique(all_results$game_id)) {
     leg_key <- paste0(gid, "|", r$combo)
     parlay_group[[j]] <- list(
       legs = legs_store[[leg_key]],
-      joint_prob = r$joint_prob_raw,
+      # Size off blended prob (model + DK SGP), same number used for the
+      # displayed edge. Sizing off model-only here would refuse any bet where
+      # DK SGP carries the +EV signal — which is exactly the case the blender
+      # was added for.
+      bet_prob = r$blended_prob_raw,
       wz_dec = r$wz_dec
     )
   }
@@ -686,7 +691,7 @@ if (nrow(edges) > 0) {
     cat(sprintf("  %s | %s\n", e$game, e$combo))
     cat(sprintf("    Spread: %+.1f | Total: %.1f\n", e$spread_line, e$total_line))
     cat(sprintf("    Fair: %+d (%.1f%%) | WZ: %+d | Correlation: %.3f\n",
-                e$fair_odds, e$joint_prob, e$wz_odds, e$corr_factor))
+                e$fair_odds, e$blended_prob_raw * 100, e$wz_odds, e$corr_factor))
     cat(sprintf("    Edge: %+.1f%% | Wager: $%d | To Win: $%d\n\n",
                 e$edge_pct, wager, to_win))
   }
