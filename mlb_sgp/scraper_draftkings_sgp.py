@@ -138,18 +138,30 @@ def load_parlay_lines() -> dict:
             print("  No mlb_parlay_opportunities table — run the MLB pipeline first.")
             return {}
 
-        # FG combos (no prefix)
+        # FG combos — the R pipeline writes only the highest-edge combo per
+        # game, so any one of the 4 FG combo names may be present. The
+        # spread/total lines are identical across all 4 combos for a given
+        # game, so we collapse with ANY_VALUE.
         fg_rows = con.execute("""
-            SELECT DISTINCT game_id, spread_line, total_line, home_team, away_team
+            SELECT game_id,
+                   ANY_VALUE(spread_line) AS spread_line,
+                   ANY_VALUE(total_line)  AS total_line,
+                   ANY_VALUE(home_team)   AS home_team,
+                   ANY_VALUE(away_team)   AS away_team
             FROM mlb_parlay_opportunities
-            WHERE combo = 'Home Spread + Over'
+            WHERE combo IN ('Home Spread + Over', 'Home Spread + Under',
+                            'Away Spread + Over', 'Away Spread + Under')
+            GROUP BY game_id
         """).fetchall()
 
-        # F5 combos (prefixed with "F5 ")
         f5_rows = con.execute("""
-            SELECT DISTINCT game_id, spread_line, total_line
+            SELECT game_id,
+                   ANY_VALUE(spread_line) AS spread_line,
+                   ANY_VALUE(total_line)  AS total_line
             FROM mlb_parlay_opportunities
-            WHERE combo = 'F5 Home Spread + Over'
+            WHERE combo IN ('F5 Home Spread + Over', 'F5 Home Spread + Under',
+                            'F5 Away Spread + Over', 'F5 Away Spread + Under')
+            GROUP BY game_id
         """).fetchall()
 
         result = {}
