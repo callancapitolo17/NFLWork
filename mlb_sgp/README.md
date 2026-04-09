@@ -161,16 +161,14 @@ FD's API silently strips the SGP combination from `implyBets` responses (returni
 
 ### Combo logic
 
-Per game, 4 combos on the **main run line + main total only** (matches `wagerzon_odds/parlay_pricer.py`):
+Per game, 4 combos × 2 periods (FG + F5) = up to 8 prices. Matches Wagerzon's exact lines:
 
-- Home Spread + Over
-- Home Spread + Under
-- Away Spread + Over
-- Away Spread + Under
+- Home Spread + Over / Under
+- Away Spread + Over / Under
+- F5 Home Spread + Over / Under
+- F5 Away Spread + Over / Under
 
-### F5 (1st 5 Innings)
-
-**Not yet supported.** FD's `event-page` doesn't return F5 markets in any tab variant we've found, even though the rules dictionary references them. Will be added when FD exposes them or once we identify the right endpoint.
+**Exact line matching only.** The scraper fetches main + alt spreads and totals from FD's SGP tab, then looks up the exact Wagerzon spread and total. If FD doesn't have the precise line, that game is skipped (no approximate matching). Alt spreads (e.g., ±2.5, ±3.5) are resolved by matching runner team names against the event's home/away teams.
 
 ### When the PerimeterX token expires
 
