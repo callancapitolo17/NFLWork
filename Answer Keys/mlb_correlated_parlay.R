@@ -599,13 +599,8 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         blended_prob_raw = blended_prob,
         model_prob_pct  = round(fair$joint_prob * 100, 1),
         n_samples   = fair$n_samples_resolved,
-        dk_sgp_dec  = round(if (nrow(dk_row) > 0) dk_row$sgp_decimal[1] else NA_real_, 3),
         dk_fair_prob = round(dk_fair_prob, 3),
-        dk_vig_used  = round(dk_vig_used, 3),
-        fd_sgp_dec   = round(if (nrow(fd_row) > 0) fd_row$sgp_decimal[1] else NA_real_, 3),
         fd_fair_prob = round(fd_fair_prob, 3),
-        fd_vig_used  = round(fd_vig_used, 3),
-        n_books_blended = n_books_blended,
         blended_prob = round(blended_prob, 3)
       )
 
