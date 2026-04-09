@@ -34,7 +34,8 @@ EV_THRESHOLD <- 0.02   # 2% minimum edge to flag (default, overridden by dashboa
 KELLY_EDGE_MIN <- 0.03 # 3% minimum edge to enter conditional Kelly sizing
 WZ_PARLAY_SHAVE_FG <- 0.989  # Wagerzon takes ~1.1% off FG independent multiply
 WZ_PARLAY_SHAVE_F5 <- 0.995  # Wagerzon takes ~0.5% off F5 independent multiply
-DK_SGP_VIG         <- 1.10   # DK charges ~10% vig on SGP parlays
+DK_SGP_VIG_DEFAULT <- 1.10   # fallback when <4 DK combos for a game
+FD_SGP_VIG_DEFAULT <- 1.15   # fallback when <4 FD combos for a game
 MLB_DB <- "mlb.duckdb"
 
 # Load sizing from dashboard if available (parlay-specific settings, falls back to main)
@@ -247,18 +248,42 @@ on.exit(dbDisconnect(con))
 samples_df <- dbGetQuery(con, "SELECT * FROM mlb_game_samples")
 consensus  <- dbGetQuery(con, "SELECT * FROM mlb_consensus_temp")
 
-# Load DK SGP odds for blending (fresh data only)
-dk_sgp <- tryCatch({
+# Load SGP odds from all books for blending
+sgp_odds <- tryCatch({
   dbGetQuery(con, "
-    SELECT game_id, combo, sgp_decimal, sgp_american
+    SELECT game_id, combo, sgp_decimal, sgp_american, source
     FROM mlb_sgp_odds
-    WHERE source = 'draftkings_direct'
+    WHERE source IN ('draftkings_direct', 'fanduel_direct')
   ")
 }, error = function(e) data.frame())
-if (nrow(dk_sgp) > 0) {
-  cat(sprintf("  Loaded %d DK SGP odds for blending\n", nrow(dk_sgp)))
+
+dk_sgp <- sgp_odds[sgp_odds$source == "draftkings_direct", ]
+fd_sgp <- sgp_odds[sgp_odds$source == "fanduel_direct", ]
+
+if (nrow(dk_sgp) > 0) cat(sprintf("  Loaded %d DK SGP odds for blending\n", nrow(dk_sgp)))
+if (nrow(fd_sgp) > 0) cat(sprintf("  Loaded %d FD SGP odds for blending\n", nrow(fd_sgp)))
+if (nrow(dk_sgp) == 0 && nrow(fd_sgp) == 0) cat("  No fresh SGP odds — using model-only fair values\n")
+
+# Per-game vig lookup: sum of implied probs across all 4 combos for each game.
+# When a game has all 4 combos, we use the measured vig (more accurate than a
+# constant, especially for FD whose vig is bimodal at ~13% and ~21%).
+# Falls back to the default constant when <4 combos are available.
+dk_vig_lookup <- if (nrow(dk_sgp) > 0) {
+  dk_sgp %>%
+    group_by(game_id) %>%
+    summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
+    mutate(vig = ifelse(n >= 4, vig, DK_SGP_VIG_DEFAULT))
 } else {
-  cat("  No fresh DK SGP odds — using model-only fair values\n")
+  tibble(game_id = character(), n = integer(), vig = double())
+}
+
+fd_vig_lookup <- if (nrow(fd_sgp) > 0) {
+  fd_sgp %>%
+    group_by(game_id) %>%
+    summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
+    mutate(vig = ifelse(n >= 4, vig, FD_SGP_VIG_DEFAULT))
+} else {
+  tibble(game_id = character(), n = integer(), vig = double())
 }
 
 dbDisconnect(con)
@@ -505,22 +530,37 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         wz_dec <- american_to_decimal(wz_american)
       }
 
-      # Blend model fair prob with DK SGP fair prob (devigged).
-      # DK SGP is FG-only — F5 combos (prefixed "F5 ") won't match and use model-only.
+      # Blend model fair prob with DK and FD SGP fair probs (each per-game devigged).
+      # Equal-weight average across model + whichever books are present.
       model_fair_prob <- fair$joint_prob
-      dk_row <- dk_sgp[dk_sgp$game_id == game_id & dk_sgp$combo == combo_name, ]
+      probs_to_blend  <- c(model_fair_prob)
 
-      if (nrow(dk_row) > 0) {
-        dk_implied_prob <- 1 / dk_row$sgp_decimal[1]
-        dk_fair_prob    <- dk_implied_prob / DK_SGP_VIG
-        blended_prob    <- (model_fair_prob + dk_fair_prob) / 2
-        fair_dec        <- 1 / blended_prob
+      # DK
+      dk_row <- dk_sgp[dk_sgp$game_id == game_id & dk_sgp$combo == combo_name, ]
+      dk_vig_row <- dk_vig_lookup[dk_vig_lookup$game_id == game_id, ]
+      dk_vig_used <- if (nrow(dk_vig_row) > 0) dk_vig_row$vig[1] else DK_SGP_VIG_DEFAULT
+      if (nrow(dk_row) > 0 && !is.na(dk_row$sgp_decimal[1]) && dk_row$sgp_decimal[1] > 0) {
+        dk_fair_prob <- (1 / dk_row$sgp_decimal[1]) / dk_vig_used
+        probs_to_blend <- c(probs_to_blend, dk_fair_prob)
       } else {
-        dk_fair_prob    <- NA_real_
-        blended_prob    <- model_fair_prob
-        fair_dec        <- fair$fair_decimal_odds
+        dk_fair_prob <- NA_real_
       }
-      fair_american <- round(prob_to_american(blended_prob))
+
+      # FD
+      fd_row <- fd_sgp[fd_sgp$game_id == game_id & fd_sgp$combo == combo_name, ]
+      fd_vig_row <- fd_vig_lookup[fd_vig_lookup$game_id == game_id, ]
+      fd_vig_used <- if (nrow(fd_vig_row) > 0) fd_vig_row$vig[1] else FD_SGP_VIG_DEFAULT
+      if (nrow(fd_row) > 0 && !is.na(fd_row$sgp_decimal[1]) && fd_row$sgp_decimal[1] > 0) {
+        fd_fair_prob <- (1 / fd_row$sgp_decimal[1]) / fd_vig_used
+        probs_to_blend <- c(probs_to_blend, fd_fair_prob)
+      } else {
+        fd_fair_prob <- NA_real_
+      }
+
+      n_books_blended <- length(probs_to_blend) - 1  # subtract model itself
+      blended_prob    <- mean(probs_to_blend)
+      fair_dec        <- 1 / blended_prob
+      fair_american   <- round(prob_to_american(blended_prob))
 
       edge_pct <- (wz_dec - fair_dec) / fair_dec * 100
 
@@ -553,6 +593,11 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         n_samples   = fair$n_samples_resolved,
         dk_sgp_dec  = round(if (nrow(dk_row) > 0) dk_row$sgp_decimal[1] else NA_real_, 3),
         dk_fair_prob = round(dk_fair_prob, 3),
+        dk_vig_used  = round(dk_vig_used, 3),
+        fd_sgp_dec   = round(if (nrow(fd_row) > 0) fd_row$sgp_decimal[1] else NA_real_, 3),
+        fd_fair_prob = round(fd_fair_prob, 3),
+        fd_vig_used  = round(fd_vig_used, 3),
+        n_books_blended = n_books_blended,
         blended_prob = round(blended_prob, 3)
       )
 
@@ -619,10 +664,9 @@ for (gid in unique(all_results$game_id)) {
     leg_key <- paste0(gid, "|", r$combo)
     parlay_group[[j]] <- list(
       legs = legs_store[[leg_key]],
-      # Size off blended prob (model + DK SGP), same number used for the
-      # displayed edge. Sizing off model-only here would refuse any bet where
-      # DK SGP carries the +EV signal — which is exactly the case the blender
-      # was added for.
+      # Size off blended prob (model + DK + FD SGPs), same number used for the
+      # displayed edge. Sizing off model-only would refuse any bet where a
+      # book's SGP carries the +EV signal.
       bet_prob = r$blended_prob_raw,
       wz_dec = r$wz_dec
     )
@@ -690,8 +734,8 @@ if (nrow(edges) > 0) {
     to_win <- round(wager * (e$wz_dec - 1))
     cat(sprintf("  %s | %s\n", e$game, e$combo))
     cat(sprintf("    Spread: %+.1f | Total: %.1f\n", e$spread_line, e$total_line))
-    cat(sprintf("    Fair: %+d (%.1f%%) | WZ: %+d | Correlation: %.3f\n",
-                e$fair_odds, e$blended_prob_raw * 100, e$wz_odds, e$corr_factor))
+    cat(sprintf("    Fair: %+d (%.1f%%, %d-book) | WZ: %+d | Correlation: %.3f\n",
+                e$fair_odds, e$blended_prob_raw * 100, e$n_books_blended, e$wz_odds, e$corr_factor))
     cat(sprintf("    Edge: %+.1f%% | Wager: $%d | To Win: $%d\n\n",
                 e$edge_pct, wager, to_win))
   }

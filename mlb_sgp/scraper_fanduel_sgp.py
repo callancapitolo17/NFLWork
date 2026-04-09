@@ -2,7 +2,8 @@
 """
 FanDuel MLB SGP Scraper (Pure REST API)
 
-Fetches Same Game Parlay (SGP) odds from FanDuel for MLB FG spread+total combos.
+Fetches Same Game Parlay (SGP) odds from FanDuel for MLB spread+total combos.
+Supports FG (full game) and F5 (first 5 innings), main + alt spreads and totals.
 Uses curl_cffi with Chrome TLS impersonation. Three required headers:
   - x-application       (FD's API key, also passed as ?_ak= query param)
   - x-sportsbook-region (geo: NJ — same value works from any state, FD just routes)
@@ -11,19 +12,15 @@ Uses curl_cffi with Chrome TLS impersonation. Three required headers:
 How it works:
 1. List today's MLB events from the scan endpoint (competitionId 11196870)
 2. Match each event to our internal game_ids via canonical_match
-3. For each game, GET event-page to extract Run Line + Total Runs runner IDs
-4. For each game, build 4 combos (Home+Over, Home+Under, Away+Over, Away+Under)
-   matching the same logic as wagerzon_odds/parlay_pricer.py
-5. POST each combo to implyBets, parse the betCombinations entry where isSGM=true,
-   that's the correlated SGP price
+3. For each game, GET event-page with SGP tab to extract ALL runner IDs
+   (main + alt spreads and totals, FG + F5)
+4. Match exact Wagerzon lines — if FD doesn't have the exact line, skip the game
+5. For each matched combo, POST to implyBets and parse the isSGM=true entry
 6. Upsert into mlb_sgp_odds with bookmaker='fanduel'
 
-Notes:
-- F5 (1st 5 Innings) SGPs not yet supported — FD does not appear to expose F5
-  markets via event-page during the early-season window. Add when available.
-- Only main lines (no alts), matching the Wagerzon parlay pricer.
-- The PerimeterX token is hardcoded for v1. If it stops working we'll add a
-  Playwright bootstrap step that fetches a fresh token from a real browser.
+The PerimeterX token is hardcoded for v1. If FD starts returning 400s with empty
+bodies or implyBets stops returning the isSGM entry, refresh from a real browser
+session (see README.md for instructions).
 
 Usage:
     cd mlb_sgp
@@ -87,6 +84,22 @@ FD_IMPLY_BETS_URL = (
 
 FD_MLB_COMPETITION_ID = 11196870  # MLB regular season
 
+# Market names on FD's SGP tab, mapped to (period, type)
+_MARKET_MAP = {
+    # FG main
+    "Run Line":                              ("fg", "spreads", "main"),
+    "Total Runs":                            ("fg", "totals",  "main"),
+    # FG alt
+    "Alternate Run Lines":                   ("fg", "spreads", "alt"),
+    "Alternate Total Runs":                  ("fg", "totals",  "alt"),
+    # F5 main
+    "First 5 Innings Run Line":              ("f5", "spreads", "main"),
+    "First 5 Innings Total Runs":            ("f5", "totals",  "main"),
+    # F5 alt
+    "First 5 Innings Alternate Run Lines":   ("f5", "spreads", "alt"),
+    "First 5 Innings Alternate Total Runs":  ("f5", "totals",  "alt"),
+}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -130,7 +143,6 @@ def fetch_fd_events(session: cffi_requests.Session) -> list[dict]:
     resp.raise_for_status()
     data = resp.json()
 
-    # Events live in attachments.events; the scan endpoint returns them via tree walk
     events = {}
 
     def walk(o):
@@ -165,22 +177,20 @@ def _parse_event_name(name: str) -> tuple[str, str]:
     if " @ " not in name:
         return "", ""
     away_raw, home_raw = name.split(" @ ", 1)
-    # Strip pitcher in parens
     away = re.sub(r"\s*\([^)]*\)\s*$", "", away_raw).strip()
     home = re.sub(r"\s*\([^)]*\)\s*$", "", home_raw).strip()
     return away, home
 
 
 # ---------------------------------------------------------------------------
-# Step 2: Load FG parlay lines from DuckDB
+# Step 2: Load FG + F5 parlay lines from DuckDB
 # ---------------------------------------------------------------------------
 
 def load_parlay_lines() -> dict:
-    """Load FG spread + total lines from mlb_parlay_opportunities. FG only.
+    """Load FG and F5 spread + total lines from mlb_parlay_opportunities.
 
-    Returns dict keyed by game_id with fg_spread_line, fg_total_line, home_team, away_team.
-    Mirrors load_parlay_lines() in scraper_draftkings_sgp.py but skips F5 (FD doesn't
-    expose F5 SGP markets at this time).
+    Returns dict keyed by game_id with fg_*, f5_* lines plus home/away teams.
+    Mirrors load_parlay_lines() in scraper_draftkings_sgp.py.
     """
     con = duckdb.connect(str(MLB_DB), read_only=True)
     try:
@@ -189,7 +199,7 @@ def load_parlay_lines() -> dict:
             print("  No mlb_parlay_opportunities table — run the MLB pipeline first.")
             return {}
 
-        rows = con.execute("""
+        fg_rows = con.execute("""
             SELECT game_id,
                    ANY_VALUE(spread_line) AS spread_line,
                    ANY_VALUE(total_line)  AS total_line,
@@ -201,15 +211,32 @@ def load_parlay_lines() -> dict:
             GROUP BY game_id
         """).fetchall()
 
-        return {
-            r[0]: {
-                "fg_spread_line": r[1],
-                "fg_total_line": r[2],
-                "home_team": r[3],
-                "away_team": r[4],
+        f5_rows = con.execute("""
+            SELECT game_id,
+                   ANY_VALUE(spread_line) AS spread_line,
+                   ANY_VALUE(total_line)  AS total_line
+            FROM mlb_parlay_opportunities
+            WHERE combo IN ('F5 Home Spread + Over', 'F5 Home Spread + Under',
+                            'F5 Away Spread + Over', 'F5 Away Spread + Under')
+            GROUP BY game_id
+        """).fetchall()
+
+        result = {}
+        for row in fg_rows:
+            result[row[0]] = {
+                "fg_spread_line": row[1],
+                "fg_total_line": row[2],
+                "home_team": row[3],
+                "away_team": row[4],
+                "f5_spread_line": None,
+                "f5_total_line": None,
             }
-            for r in rows
-        }
+        for row in f5_rows:
+            if row[0] in result:
+                result[row[0]]["f5_spread_line"] = row[1]
+                result[row[0]]["f5_total_line"] = row[2]
+
+        return result
     finally:
         con.close()
 
@@ -238,29 +265,47 @@ def match_events(fd_events: list[dict], parlay_lines: dict) -> list[dict]:
                     "fd_event_id": ev["fd_event_id"],
                     "home_team": canon_home,
                     "away_team": canon_away,
+                    "fd_home": ev["fd_home"],
+                    "fd_away": ev["fd_away"],
                     "fd_name": ev["name"],
                     "fg_spread_line": lines["fg_spread_line"],
                     "fg_total_line": lines["fg_total_line"],
+                    "f5_spread_line": lines["f5_spread_line"],
+                    "f5_total_line": lines["f5_total_line"],
                 })
                 break
     return matched
 
 
 # ---------------------------------------------------------------------------
-# Step 4: Fetch event-page and extract runner IDs
+# Step 4: Fetch event-page (SGP tab) and extract ALL runner IDs
 # ---------------------------------------------------------------------------
 
-def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str) -> dict:
-    """For one event, return {'spreads': {(sign, line): (marketId, selectionId)},
-                              'totals':  {(O|U, line): (marketId, selectionId)}}.
+def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
+                        fd_home: str, fd_away: str) -> dict:
+    """Fetch all SGP-eligible runners for one event (main + alt, FG + F5).
 
-    sign: 'N' for negative spread, 'P' for positive. line is abs value.
+    Returns:
+        {'fg': {'spreads': {('home'|'away', line): (marketId, selectionId), ...},
+                'totals':  {('O'|'U', line): (marketId, selectionId), ...}},
+         'f5': {'spreads': {...}, 'totals': {...}}}
+
+    For spreads, key is ('home', abs_line) or ('away', abs_line) — determined
+    by matching the runner's team name against fd_home/fd_away. This handles
+    alt markets where both teams appear at each line.
+
+    For totals, key is ('O', line) or ('U', line) — unambiguous from runner name.
     """
+    # Use SGP tab to get all 156+ markets (main + alts + F5)
     url = (f"{FD_EVENT_PAGE_URL}?_ak={FD_AK}&eventId={fd_event_id}"
+           f"&tab=same-game-parlay-"
            f"&useCombinedTouchdownsVirtualMarket=true&useQuickBets=true")
     resp = session.get(url, headers=FD_HEADERS, timeout=20)
+
+    empty = {"fg": {"spreads": {}, "totals": {}},
+             "f5": {"spreads": {}, "totals": {}}}
     if resp.status_code != 200:
-        return {"spreads": {}, "totals": {}}
+        return empty
 
     data = resp.json()
     markets = []
@@ -276,34 +321,96 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str) -> dic
                 walk(it)
 
     walk(data)
-    # Dedupe by marketId
     seen = {m["marketId"]: m for m in markets}
 
-    spreads = {}
-    totals = {}
+    out = {"fg": {"spreads": {}, "totals": {}},
+           "f5": {"spreads": {}, "totals": {}}}
+
     for mid, m in seen.items():
         name = m.get("marketName", "")
-        if name == "Run Line":
-            for run in m.get("runners", []):
-                hc = run.get("handicap")
-                sid = run.get("selectionId")
-                if hc is None or sid is None:
-                    continue
-                sign = "N" if hc < 0 else "P"
-                spreads[(sign, abs(hc))] = (mid, sid)
-        elif name == "Total Runs":
-            for run in m.get("runners", []):
-                hc = run.get("handicap")
-                sid = run.get("selectionId")
-                rn = (run.get("runnerName") or "").lower()
-                if hc is None or sid is None:
-                    continue
-                ou = "O" if rn.startswith("over") else "U" if rn.startswith("under") else None
-                if ou is None:
-                    continue
-                totals[(ou, hc)] = (mid, sid)
+        if name not in _MARKET_MAP:
+            continue
+        period, mtype, main_or_alt = _MARKET_MAP[name]
+        bucket = out[period][mtype]
 
-    return {"spreads": spreads, "totals": totals}
+        for run in m.get("runners", []):
+            sid = run.get("selectionId")
+            rn = run.get("runnerName") or ""
+            hc = run.get("handicap")
+            if sid is None:
+                continue
+
+            if mtype == "spreads":
+                parsed = _parse_spread_runner(rn, hc, main_or_alt, fd_home, fd_away)
+                if parsed is None:
+                    continue
+                side, line = parsed
+                key = (side, line)
+                # Main takes priority over alt
+                if key not in bucket or main_or_alt == "main":
+                    bucket[key] = (mid, sid)
+
+            elif mtype == "totals":
+                parsed = _parse_total_runner(rn, hc, main_or_alt)
+                if parsed is None:
+                    continue
+                ou, line = parsed
+                key = (ou, line)
+                if key not in bucket or main_or_alt == "main":
+                    bucket[key] = (mid, sid)
+
+    return out
+
+
+def _parse_spread_runner(rn: str, hc, main_or_alt: str,
+                         fd_home: str, fd_away: str) -> tuple[str, float] | None:
+    """Parse a spread runner into ('home'|'away', abs_line).
+
+    Main market: runnerName='Cincinnati Reds', handicap=-1.5
+    Alt market:  runnerName='Cincinnati Reds +3.5', handicap=0
+    """
+    if main_or_alt == "main":
+        if hc is None:
+            return None
+        side = "home" if rn == fd_home else "away" if rn == fd_away else None
+        if side is None:
+            return None
+        return (side, abs(hc))
+    else:
+        # Alt: parse 'Cincinnati Reds +3.5' -> team, signed line
+        m = re.match(r'(.+?)\s*([+-]\d+\.?\d*)$', rn)
+        if not m:
+            return None
+        team = m.group(1).strip()
+        line = abs(float(m.group(2)))
+        side = "home" if team == fd_home else "away" if team == fd_away else None
+        if side is None:
+            return None
+        return (side, line)
+
+
+def _parse_total_runner(rn: str, hc, main_or_alt: str) -> tuple[str, float] | None:
+    """Parse a total runner into ('O'|'U', line).
+
+    Main market: runnerName='Over', handicap=8
+    Alt market:  runnerName='Over (8.5)', handicap=0
+    """
+    rn_lower = rn.lower()
+    if main_or_alt == "main":
+        if hc is None:
+            return None
+        ou = "O" if rn_lower.startswith("over") else "U" if rn_lower.startswith("under") else None
+        if ou is None:
+            return None
+        return (ou, float(hc))
+    else:
+        # Alt: parse 'Over (8.5)' or 'Under (7.5)'
+        m = re.match(r'(Over|Under)\s*\((\d+\.?\d*)\)', rn, re.IGNORECASE)
+        if not m:
+            return None
+        ou = "O" if m.group(1).lower() == "over" else "U"
+        line = float(m.group(2))
+        return (ou, line)
 
 
 # ---------------------------------------------------------------------------
@@ -388,11 +495,7 @@ def scrape_fd_sgp(verbose: bool = False):
     print("Matching teams via canonical_match...")
     matched = match_events(deduped, parlay_lines)
 
-    # Dedupe by canonical game_id — multiple FD events can resolve to the same
-    # game (e.g. a pre-game listing and a separate live in-progress listing of
-    # the same matchup). Events are already sorted by open_date, so keeping
-    # the first occurrence keeps the pre-game one (with main ±1.5 lines)
-    # over the live one (with running-score adjusted lines).
+    # Dedupe by canonical game_id
     seen_gids = set()
     deduped_matches = []
     for m in matched:
@@ -412,7 +515,8 @@ def scrape_fd_sgp(verbose: bool = False):
     game_runners = {}
 
     def fetch_one(game):
-        return game["game_id"], fetch_event_runners(session, game["fd_event_id"])
+        return game["game_id"], fetch_event_runners(
+            session, game["fd_event_id"], game["fd_home"], game["fd_away"])
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {pool.submit(fetch_one, g): g for g in matched}
@@ -431,52 +535,52 @@ def scrape_fd_sgp(verbose: bool = False):
         gid = game["game_id"]
         if gid not in game_runners:
             continue
-        runners = game_runners[gid]
-        if not runners["spreads"] or not runners["totals"]:
-            continue
 
-        spread_line = game["fg_spread_line"]
-        total_line = game["fg_total_line"]
-        if spread_line is None or total_line is None:
-            continue
+        sel_ids_per_period = game_runners[gid]
 
-        # Determine signs (mirrors DK scraper logic)
-        if spread_line < 0:
-            home_sign, away_sign = "N", "P"
-        else:
-            home_sign, away_sign = "P", "N"
-        sp = abs(spread_line)
+        for period in ("fg", "f5"):
+            spread_line = game[f"{period}_spread_line"]
+            total_line = game[f"{period}_total_line"]
+            if spread_line is None or total_line is None:
+                continue
 
-        home_spread = runners["spreads"].get((home_sign, sp))
-        away_spread = runners["spreads"].get((away_sign, sp))
-        over = runners["totals"].get(("O", total_line))
-        under = runners["totals"].get(("U", total_line))
+            sel = sel_ids_per_period.get(period, {"spreads": {}, "totals": {}})
+            if not sel["spreads"]:
+                continue
 
-        if not (home_spread and away_spread and over and under):
-            if verbose:
-                missing = []
-                if not home_spread: missing.append(f"home {home_sign}{sp}")
-                if not away_spread: missing.append(f"away {away_sign}{sp}")
-                if not over: missing.append(f"over {total_line}")
-                if not under: missing.append(f"under {total_line}")
-                print(f"  {game['away_team']} @ {game['home_team']}: missing {missing}")
-            continue
+            sp = abs(spread_line)
 
-        for combo_name, sp_pair, tot_pair in [
-            ("Home Spread + Over",  home_spread, over),
-            ("Home Spread + Under", home_spread, under),
-            ("Away Spread + Over",  away_spread, over),
-            ("Away Spread + Under", away_spread, under),
-        ]:
-            combo_items.append((gid, combo_name, sp_pair, tot_pair))
+            home_spread = sel["spreads"].get(("home", sp))
+            away_spread = sel["spreads"].get(("away", sp))
+            over = sel["totals"].get(("O", total_line))
+            under = sel["totals"].get(("U", total_line))
+
+            if not (home_spread and away_spread and over and under):
+                if verbose:
+                    missing = []
+                    if not home_spread: missing.append(f"home {sp}")
+                    if not away_spread: missing.append(f"away {sp}")
+                    if not over: missing.append(f"over {total_line}")
+                    if not under: missing.append(f"under {total_line}")
+                    print(f"  {game['away_team']} @ {game['home_team']} [{period.upper()}]: missing {missing}")
+                continue
+
+            prefix = "" if period == "fg" else "F5 "
+            for combo_name, sp_pair, tot_pair in [
+                ("Home Spread + Over",  home_spread, over),
+                ("Home Spread + Under", home_spread, under),
+                ("Away Spread + Over",  away_spread, over),
+                ("Away Spread + Under", away_spread, under),
+            ]:
+                combo_items.append((gid, period, prefix + combo_name, sp_pair, tot_pair))
 
     print(f"Pricing {len(combo_items)} SGP combos (parallel)...")
     t1 = time.time()
 
     def price_one(item):
-        gid, name, sp, tot = item
+        gid, period, name, sp, tot = item
         result = price_combo(session, sp[0], sp[1], tot[0], tot[1], verbose=verbose)
-        return gid, name, result
+        return gid, period, name, result
 
     pricing_results = []
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -488,7 +592,7 @@ def scrape_fd_sgp(verbose: bool = False):
                 if verbose:
                     print(f"  pricing error: {e}")
 
-    print(f"  Priced {sum(1 for _,_,r in pricing_results if r)}/{len(pricing_results)} "
+    print(f"  Priced {sum(1 for _,_,_,r in pricing_results if r)}/{len(pricing_results)} "
           f"combos in {time.time() - t1:.1f}s")
 
     # ── Phase 3: write to DuckDB ──
@@ -496,20 +600,20 @@ def scrape_fd_sgp(verbose: bool = False):
     rows = []
     game_lookup = {g["game_id"]: g for g in matched}
     by_game = {}
-    for gid, name, result in pricing_results:
+    for gid, period, name, result in pricing_results:
         if not result:
             continue
-        by_game.setdefault(gid, []).append((name, result))
+        by_game.setdefault(gid, []).append((period, name, result))
 
     for gid, items in sorted(by_game.items()):
         g = game_lookup[gid]
         print(f"\n  {g['away_team']} @ {g['home_team']}")
-        for name, r in items:
+        for period, name, r in items:
             print(f"    {name}: {r['decimal']:.4f} ({r['american']:+d})")
             rows.append({
                 "game_id": gid,
                 "combo": name,
-                "period": "FG",
+                "period": "FG" if period == "fg" else "F5",
                 "bookmaker": "fanduel",
                 "sgp_decimal": round(r["decimal"], 4),
                 "sgp_american": r["american"],
