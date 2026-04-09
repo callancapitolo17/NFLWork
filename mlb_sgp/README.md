@@ -134,6 +134,76 @@ Writes to `mlb_sgp_odds` table in `Answer Keys/mlb.duckdb`:
 | fetch_time | TIMESTAMP | When scraped |
 | source | VARCHAR | "draftkings_direct" |
 
+## SGP Scraping Playbook (for adding new books)
+
+Lessons learned from building DK and FD scrapers. Use this when expanding to new sites (BetMGM, Caesars, ESPN BET, etc.).
+
+### The 3 endpoints you need to find
+
+Every book has these, just named differently:
+
+| What | DK | FD | What to look for |
+|---|---|---|---|
+| **Event listing** | `league/.../v1/markets` | `scan/.../facet/.../search` | Returns today's games with event IDs + team names |
+| **Market catalog** | `parlays/v1/sgp/events/{id}` | `sbapi/event-page?eventId=X&tab=same-game-parlay-` | Returns ALL selection IDs (main + alt) for one game |
+| **SGP pricing** | `wager/v1/calculateBets` | `fixedodds/transactional/v1/implyBets` | POST with 2 selection IDs, returns correlated price |
+
+### Recon process
+
+1. Open the book in Chrome with DevTools → Network tab
+2. Build a 2-leg SGP manually (spread + total)
+3. Capture every network request during "add 2nd leg" — the SGP pricing call fires here
+4. **Capture request HEADERS, not just URLs.** Missing headers was a multi-hour debugging session on FD. The API returned 200 with degraded data (singles only) instead of an error.
+5. Try replaying the call with `curl_cffi` → if it works, you're done. If 400/403, check for missing headers or bot protection tokens.
+
+### Common gotchas
+
+**Silent degradation > explicit errors.** FD returns 200 with single-leg prices when headers are wrong, instead of 403. DK returns 422 with a clear error code. Assume the worst: always verify the response contains the SGP combined entry, not just a 200 status.
+
+**Alt markets may hide behind a different tab/category.** FD's default event-page returns 3-5 markets. Adding `&tab=same-game-parlay-` returns 156+. Always check if there's a tab/category parameter that unlocks more markets.
+
+**Selection ID formats vary wildly.** DK encodes market number + sign + line + suffix into strings like `0HC84191361N150_1`. FD uses plain integer `selectionId` tied to a `marketId`. Don't assume one format.
+
+**Team disambiguation in alt spread markets.** Alt run line markets list BOTH teams at each line (e.g., "Reds -1.5" AND "Marlins -1.5"). You need to match runner team names against known home/away to avoid pricing the wrong team's spread. Key by `("home", line)` / `("away", line)`, not by handicap sign.
+
+**Live games return adjusted handicaps.** A game in progress shows Run Line at +2.5/-2.5 instead of ±1.5. Filter events with `openDate < now` before scraping. Two events can exist for the same matchup (live + tomorrow's pre-game).
+
+**PerimeterX / bot protection tokens.** Some books require a `x-px-context` or similar token that's set by JavaScript on page load. `curl_cffi` impersonation alone isn't enough — you need the token too. These tokens are semi-persistent (days/weeks) but eventually rotate. Hardcode for v1, add auto-refresh later if needed.
+
+### Vig measurement
+
+For any book, compute vig from the 4 mutually-exclusive combos per game:
+
+```
+vig = sum(1/D for all 4 combos: HomeSpread+Over, HomeSpread+Under, AwaySpread+Over, AwaySpread+Under)
+```
+
+This sum exceeds 1.0 by the book's vig charge. Measured values:
+- **DK:** stable ~1.125 (12.5% vig), consistent across time-to-game
+- **FD:** bimodal — ~1.13 for games >21h out, ~1.22 for games <16h out
+
+**Don't hardcode a single vig constant** when the book's vig varies. Use per-game devigging: divide each combo's implied prob by the per-game sum. Falls back to a constant when <4 combos are available.
+
+**FG and F5 are separate partitions.** Never sum across both periods — that doubles the measured vig. Group by `(game_id, period)`.
+
+### Exact line matching
+
+The scraper must match Wagerzon's exact spread and total lines. If the book doesn't have the precise line (e.g., Wagerzon has total 8.5 but the book only offers 8.0), skip the game entirely. No rounding, no closest-line fallback. The parlay fair odds are calibrated to Wagerzon's specific lines — a different line is a different bet.
+
+### Integration into the R scanner
+
+New books write to `mlb_sgp_odds` with their own `bookmaker` and `source` values. The R scanner (`mlb_correlated_parlay.R`) reads all books, computes per-game vig for each, and blends their devigged fair probs equally with the model. Adding a third book requires:
+
+1. Add `'newbook_direct'` to the `WHERE source IN (...)` query
+2. Add a `NEWBOOK_SGP_VIG_DEFAULT` fallback constant
+3. Add a `nb_vig_lookup` table (same pattern as DK/FD)
+4. Add the `nb_row` / `nb_fair_prob` block in the per-combo loop (copy DK or FD block)
+5. Optionally add `nb_fair_prob` to the output tibble
+
+The blend automatically scales: `mean(model, dk, fd, nb)` when all present, falls back gracefully when books are missing.
+
+---
+
 ## FanDuel Scraper
 
 `scraper_fanduel_sgp.py` mirrors the DK scraper but is much simpler since FD's selection IDs are plain integers tied to marketIds (no DK-style `0HC...` decoding) and FD doesn't lock its pricing endpoint behind Akamai.
@@ -143,9 +213,10 @@ Writes to `mlb_sgp_odds` table in `Answer Keys/mlb.duckdb`:
 ```
 FD scan API           → MLB events list (competitionId 11196870)
 canonical_match       → resolve FD team names to internal game_ids
-FD event-page API     → Run Line + Total Runs runners (marketId, selectionId)
-FD implyBets API      → POST 4 combos per game, parse the betCombinations
-                        entry where isSGM=true → that's the correlated SGP price
+FD event-page API     → all SGP-eligible runners (main + alt, FG + F5)
+                        via &tab=same-game-parlay- (156+ markets)
+Match Wagerzon lines  → exact spread + total lookup
+FD implyBets API      → POST each combo, parse isSGM=true entry
                       → mlb_sgp_odds (bookmaker='fanduel')
 ```
 
@@ -180,6 +251,16 @@ If FD starts returning 400s with empty bodies, or `implyBets` stops returning th
 4. Paste into `FD_PX_CONTEXT` constant in `scraper_fanduel_sgp.py`
 
 A future v2 may bootstrap this automatically via headless Chrome.
+
+### FD-specific lessons learned
+
+- **Event name format:** `"Away Team (P Pitcher) @ Home Team (P Pitcher)"` — strip the pitcher parens before team matching.
+- **`nj.` hostnames are NOT geo-restricted.** `sib.nj.sportsbook.fanduel.com` works from California with no VPN. The `nj` prefix is FD's backend routing, not a geo gate.
+- **`implyBets` returns 3 entries for a 2-leg combo:** 2 `SINGLE` (one per leg, `isSGM=false`) and 1 `DOUBLE` (`isSGM=true` — this is the SGP price). Parse `winAvgOdds.trueOdds.decimalOdds.decimalOdds` for the decimal value.
+- **FD's SGP vig is bimodal by time-to-game:** ~13% for games >21h out, ~21% for games <16h out. The step change happens around 16-21h before first pitch — possibly tied to lineup posting windows.
+- **Alt total runner names use parens:** `"Over (8.5)"`, `"Under (7.5)"`. Main total runners are just `"Over"` / `"Under"` with the line in the `handicap` field.
+- **Alt spread runner names embed the team:** `"Cincinnati Reds +3.5"`. The `handicap` field is 0 for alts. Parse team name + signed line from the string, match team to home/away.
+- **F5 totals at integer values (e.g., 5.0) may not exist.** FD's F5 alt totals jump in 1.0 increments (2.5, 3.5, 4.5, 5.5...). If Wagerzon has F5 total 5.0, FD won't have it and the game is correctly skipped.
 
 ## Files
 
