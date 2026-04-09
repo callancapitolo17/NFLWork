@@ -268,22 +268,27 @@ if (nrow(dk_sgp) == 0 && nrow(fd_sgp) == 0) cat("  No fresh SGP odds — using m
 # When a game has all 4 combos, we use the measured vig (more accurate than a
 # constant, especially for FD whose vig is bimodal at ~13% and ~21%).
 # Falls back to the default constant when <4 combos are available.
+# Group by (game_id, period) not just game_id — FG and F5 are separate
+# partitions with independent vig. Summing across both would ~double the vig.
+# Period is inferred from combo name: "F5 " prefix = F5, else FG.
 dk_vig_lookup <- if (nrow(dk_sgp) > 0) {
   dk_sgp %>%
-    group_by(game_id) %>%
+    mutate(period = ifelse(grepl("^F5 ", combo), "F5", "FG")) %>%
+    group_by(game_id, period) %>%
     summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
     mutate(vig = ifelse(n >= 4, vig, DK_SGP_VIG_DEFAULT))
 } else {
-  tibble(game_id = character(), n = integer(), vig = double())
+  tibble(game_id = character(), period = character(), n = integer(), vig = double())
 }
 
 fd_vig_lookup <- if (nrow(fd_sgp) > 0) {
   fd_sgp %>%
-    group_by(game_id) %>%
+    mutate(period = ifelse(grepl("^F5 ", combo), "F5", "FG")) %>%
+    group_by(game_id, period) %>%
     summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
     mutate(vig = ifelse(n >= 4, vig, FD_SGP_VIG_DEFAULT))
 } else {
-  tibble(game_id = character(), n = integer(), vig = double())
+  tibble(game_id = character(), period = character(), n = integer(), vig = double())
 }
 
 dbDisconnect(con)
@@ -535,9 +540,12 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
       model_fair_prob <- fair$joint_prob
       probs_to_blend  <- c(model_fair_prob)
 
+      # Determine period for vig lookup: "F5" if combo starts with "F5 ", else "FG"
+      combo_period <- if (grepl("^F5 ", combo_name)) "F5" else "FG"
+
       # DK
       dk_row <- dk_sgp[dk_sgp$game_id == game_id & dk_sgp$combo == combo_name, ]
-      dk_vig_row <- dk_vig_lookup[dk_vig_lookup$game_id == game_id, ]
+      dk_vig_row <- dk_vig_lookup[dk_vig_lookup$game_id == game_id & dk_vig_lookup$period == combo_period, ]
       dk_vig_used <- if (nrow(dk_vig_row) > 0) dk_vig_row$vig[1] else DK_SGP_VIG_DEFAULT
       if (nrow(dk_row) > 0 && !is.na(dk_row$sgp_decimal[1]) && dk_row$sgp_decimal[1] > 0) {
         dk_fair_prob <- (1 / dk_row$sgp_decimal[1]) / dk_vig_used
@@ -548,7 +556,7 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
 
       # FD
       fd_row <- fd_sgp[fd_sgp$game_id == game_id & fd_sgp$combo == combo_name, ]
-      fd_vig_row <- fd_vig_lookup[fd_vig_lookup$game_id == game_id, ]
+      fd_vig_row <- fd_vig_lookup[fd_vig_lookup$game_id == game_id & fd_vig_lookup$period == combo_period, ]
       fd_vig_used <- if (nrow(fd_vig_row) > 0) fd_vig_row$vig[1] else FD_SGP_VIG_DEFAULT
       if (nrow(fd_row) > 0 && !is.na(fd_row$sgp_decimal[1]) && fd_row$sgp_decimal[1] > 0) {
         fd_fair_prob <- (1 / fd_row$sgp_decimal[1]) / fd_vig_used
