@@ -1,6 +1,6 @@
 # MLB SGP Odds Scrapers
 
-Fetch Same Game Parlay (SGP) odds from DraftKings for MLB correlated parlay edge finding.
+Fetch Same Game Parlay (SGP) odds from DraftKings and FanDuel for MLB correlated parlay edge finding. Both write to the same `mlb_sgp_odds` table so the scanner can shop combos across books.
 
 ## Quick Start
 
@@ -8,7 +8,9 @@ Fetch Same Game Parlay (SGP) odds from DraftKings for MLB correlated parlay edge
 cd mlb_sgp
 source venv/bin/activate
 python scraper_draftkings_sgp.py           # all games, ~30s
-python scraper_draftkings_sgp.py --verbose  # show selection IDs and errors
+python scraper_fanduel_sgp.py              # all games, ~1s
+python scraper_draftkings_sgp.py --verbose
+python scraper_fanduel_sgp.py --verbose
 ```
 
 Requirements: `pip install curl_cffi duckdb` and the MLB pipeline must have run (`mlb_parlay_opportunities` table populated).
@@ -132,11 +134,61 @@ Writes to `mlb_sgp_odds` table in `Answer Keys/mlb.duckdb`:
 | fetch_time | TIMESTAMP | When scraped |
 | source | VARCHAR | "draftkings_direct" |
 
+## FanDuel Scraper
+
+`scraper_fanduel_sgp.py` mirrors the DK scraper but is much simpler since FD's selection IDs are plain integers tied to marketIds (no DK-style `0HC...` decoding) and FD doesn't lock its pricing endpoint behind Akamai.
+
+### How it works
+
+```
+FD scan API           → MLB events list (competitionId 11196870)
+canonical_match       → resolve FD team names to internal game_ids
+FD event-page API     → Run Line + Total Runs runners (marketId, selectionId)
+FD implyBets API      → POST 4 combos per game, parse the betCombinations
+                        entry where isSGM=true → that's the correlated SGP price
+                      → mlb_sgp_odds (bookmaker='fanduel')
+```
+
+### Required headers
+
+FD's API silently strips the SGP combination from `implyBets` responses (returning only single-leg prices) if any of these are missing:
+
+| Header | Value | Notes |
+|---|---|---|
+| `x-application` | `FhMFpcPWXMeyZxOx` | FD's API key, also passed as `?_ak=` query param |
+| `x-sportsbook-region` | `NJ` | Geo header. The `nj.` hostnames are FD's backend routing — works from any state, no VPN required. |
+| `x-px-context` | `_pxvid=...;pxcts=...;` | PerimeterX visitor token. Hardcoded in the scraper; long-lived but rotates eventually. |
+
+### Combo logic
+
+Per game, 4 combos on the **main run line + main total only** (matches `wagerzon_odds/parlay_pricer.py`):
+
+- Home Spread + Over
+- Home Spread + Under
+- Away Spread + Over
+- Away Spread + Under
+
+### F5 (1st 5 Innings)
+
+**Not yet supported.** FD's `event-page` doesn't return F5 markets in any tab variant we've found, even though the rules dictionary references them. Will be added when FD exposes them or once we identify the right endpoint.
+
+### When the PerimeterX token expires
+
+If FD starts returning 400s with empty bodies, or `implyBets` stops returning the `isSGM=true` entry, the `x-px-context` token has rotated. To refresh:
+
+1. Open `sportsbook.fanduel.com/navigation/mlb` in Chrome with DevTools open
+2. Find any `event-page` request in the Network tab
+3. Copy the `x-px-context` request header
+4. Paste into `FD_PX_CONTEXT` constant in `scraper_fanduel_sgp.py`
+
+A future v2 may bootstrap this automatically via headless Chrome.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `scraper_draftkings_sgp.py` | DK SGP scraper (pure REST, curl_cffi) |
+| `scraper_fanduel_sgp.py` | FD SGP scraper (pure REST, curl_cffi) |
 | `scraper_pikkit_mlb.py` | Pikkit MLB SGP scraper (fallback) |
 | `pikkit_common.py` | Reusable Pikkit functions |
 | `recon_draftkings_sgp.py` | DK network recon tool |
