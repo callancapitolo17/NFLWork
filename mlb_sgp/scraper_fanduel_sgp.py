@@ -231,28 +231,35 @@ def load_parlay_lines() -> dict:
 # Step 3: Match FD events to our game_ids
 # ---------------------------------------------------------------------------
 
-def _utc_hour(ts) -> str:
-    """Extract the UTC hour ("HH") from a timestamp.
+def _utc_bucket(ts) -> str:
+    """Extract a UTC "YYYY-MM-DDTHH" bucket string from a timestamp.
 
-    Accepts either an ISO string (from FD API responses) or a
-    datetime object (from DuckDB TIMESTAMP columns). Returns "" if the
-    input is empty/None so callers can fall back to team-only matching.
+    Used as a match key between WZ parlay_lines commence_time and FD event
+    open_date. Date + hour granularity is required because hour alone would
+    collide two games on different days that happen to start at the same
+    UTC hour (e.g. a 2-game series between the same teams on consecutive
+    days, both scheduled at 01:40 UTC).
+
+    Accepts either an ISO string (from FD API responses) or a datetime
+    object (from DuckDB TIMESTAMP columns). Returns "" if the input is
+    empty/None so callers can fall back to team-only matching.
     """
     if not ts:
         return ""
     # DuckDB returns datetime objects for TIMESTAMP columns
-    if hasattr(ts, "hour"):
-        return f"{ts.hour:02d}"
+    if hasattr(ts, "year"):
+        return f"{ts.year:04d}-{ts.month:02d}-{ts.day:02d}T{ts.hour:02d}"
     # API responses are ISO strings like "2026-06-15T17:05:00Z"
-    return ts[11:13] if len(ts) >= 13 else ""
+    return ts[:13] if len(ts) >= 13 else ""
 
 
 def match_events(fd_events: list[dict], parlay_lines: dict) -> list[dict]:
     """Match FD events to our game_ids using canonical_match.py.
 
-    Matching uses team names AND start-time hour (UTC) so that doubleheaders
-    (two games between the same teams on the same day) map to the correct
-    game_id instead of both collapsing onto game 1.
+    Matching uses team names AND a UTC date+hour bucket so that (a)
+    doubleheaders (two games same teams, same day, different hours) map to
+    the correct game_id, and (b) consecutive-day series games between the
+    same teams at the same hour don't collapse onto each other.
     """
     team_dict = load_team_dict("mlb")
     canonical_games = load_canonical_games("mlb")
@@ -265,15 +272,16 @@ def match_events(fd_events: list[dict], parlay_lines: dict) -> list[dict]:
         if not resolved or not resolved[0] or not resolved[1]:
             continue
         canon_away, canon_home = resolved
-        fd_hour = _utc_hour(ev.get("open_date", ""))
+        fd_bucket = _utc_bucket(ev.get("open_date", ""))
 
         for game_id, lines in parlay_lines.items():
             if lines["home_team"] == canon_home and lines["away_team"] == canon_away:
-                pl_hour = _utc_hour(lines.get("commence_time", ""))
-                # If commence_time is available, require hour match to
-                # distinguish doubleheaders. If missing (backward compat),
-                # fall back to team-only matching.
-                if pl_hour and fd_hour and pl_hour != fd_hour:
+                pl_bucket = _utc_bucket(lines.get("commence_time", ""))
+                # If commence_time is available, require date+hour match so
+                # same-teams games on different days (or in different hours
+                # of the same day) don't collide. If missing (backward
+                # compat), fall back to team-only matching.
+                if pl_bucket and fd_bucket and pl_bucket != fd_bucket:
                     continue
                 matched.append({
                     "game_id": game_id,
