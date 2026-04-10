@@ -228,14 +228,16 @@ if (!check_mlb_samples_fresh(max_age_minutes = 10)) {
 # REFRESH DK SGP ODDS
 # =============================================================================
 
-cat("Refreshing DK SGP odds...\n")
-dk_scraper_dir <- file.path(path.expand("~"), "NFLWork", "mlb_sgp")
-dk_venv_python <- file.path(dk_scraper_dir, "venv", "bin", "python")
-if (file.exists(dk_venv_python)) {
-  system2(dk_venv_python, args = c(file.path(dk_scraper_dir, "scraper_draftkings_sgp.py")),
+cat("Refreshing SGP odds (DK + FD)...\n")
+sgp_scraper_dir <- file.path(path.expand("~"), "NFLWork", "mlb_sgp")
+sgp_venv_python <- file.path(sgp_scraper_dir, "venv", "bin", "python")
+if (file.exists(sgp_venv_python)) {
+  system2(sgp_venv_python, args = c(file.path(sgp_scraper_dir, "scraper_draftkings_sgp.py")),
+          wait = TRUE, stdout = FALSE, stderr = FALSE)
+  system2(sgp_venv_python, args = c(file.path(sgp_scraper_dir, "scraper_fanduel_sgp.py")),
           wait = TRUE, stdout = FALSE, stderr = FALSE)
 } else {
-  cat("  DK scraper venv not found — skipping. Run: cd mlb_sgp && python -m venv venv && pip install curl_cffi duckdb\n")
+  cat("  SGP scraper venv not found — skipping. Run: cd mlb_sgp && python -m venv venv && pip install curl_cffi duckdb\n")
 }
 
 # =============================================================================
