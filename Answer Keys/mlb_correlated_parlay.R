@@ -417,14 +417,15 @@ staging_f5 <- if (nrow(wz_f5_matched) > 0) {
 staging <- staging_fg %>%
   left_join(staging_f5, by = "game_id")
 
+staging_con <- dbConnect(duckdb(), dbdir = MLB_DB)
 tryCatch({
-  staging_con <- dbConnect(duckdb(), dbdir = MLB_DB)
   dbExecute(staging_con, "DROP TABLE IF EXISTS mlb_parlay_lines")
   dbWriteTable(staging_con, "mlb_parlay_lines", staging)
-  dbDisconnect(staging_con)
   cat(sprintf("Wrote %d games to mlb_parlay_lines staging table.\n", nrow(staging)))
 }, error = function(e) {
   cat(sprintf("Warning: Failed to write staging table: %s\n", e$message))
+}, finally = {
+  dbDisconnect(staging_con)
 })
 
 # =============================================================================
