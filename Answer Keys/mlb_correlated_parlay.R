@@ -399,11 +399,11 @@ if (nrow(wz_fg_matched) == 0 && nrow(wz_f5_matched) == 0) {
 
 staging_fg <- if (nrow(wz_fg_matched) > 0) {
   wz_fg_matched %>%
-    transmute(game_id = id, home_team, away_team,
+    transmute(game_id = id, home_team, away_team, commence_time,
               fg_spread = home_spread, fg_total = total_line)
 } else {
   tibble(game_id = character(), home_team = character(), away_team = character(),
-         fg_spread = double(), fg_total = double())
+         commence_time = character(), fg_spread = double(), fg_total = double())
 }
 
 staging_f5 <- if (nrow(wz_f5_matched) > 0) {
@@ -412,6 +412,9 @@ staging_f5 <- if (nrow(wz_f5_matched) > 0) {
 } else {
   tibble(game_id = character(), f5_spread = double(), f5_total = double())
 }
+
+# NOTE: commence_time lives in staging_fg only. The left_join below merges
+# F5 lines into FG rows by game_id, so commence_time flows through from FG.
 
 # Merge FG and F5 lines into one row per game
 staging <- staging_fg %>%
