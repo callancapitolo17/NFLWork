@@ -168,6 +168,8 @@ Every book has these, just named differently:
 
 **Live games return adjusted handicaps.** A game in progress shows Run Line at +2.5/-2.5 instead of ±1.5. Filter events with `openDate < now` before scraping. Two events can exist for the same matchup (live + tomorrow's pre-game).
 
+**Doubleheaders drop game 2.** Both scrapers dedupe by `(home, away)` and keep only the first upcoming event. If two pre-game events exist for the same matchup (doubleheader), game 2 is silently dropped. Fixing this requires start-time-aware matching end-to-end (scrapers, canonical_match, parlay_lines table, SGP odds table). MLB doubleheaders are rare (~15-20/season) so this is an accepted gap for now. Matters more for NBA/other sports with back-to-backs.
+
 **PerimeterX / bot protection tokens.** Some books require a `x-px-context` or similar token that's set by JavaScript on page load. `curl_cffi` impersonation alone isn't enough — you need the token too. These tokens are semi-persistent (days/weeks) but eventually rotate. Hardcode for v1, add auto-refresh later if needed.
 
 ### Vig measurement
