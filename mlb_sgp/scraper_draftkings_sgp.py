@@ -144,7 +144,8 @@ def load_parlay_lines() -> dict:
 
         rows = con.execute("""
             SELECT game_id, home_team, away_team,
-                   fg_spread, fg_total, f5_spread, f5_total
+                   fg_spread, fg_total, f5_spread, f5_total,
+                   commence_time
             FROM mlb_parlay_lines
         """).fetchall()
 
@@ -157,6 +158,7 @@ def load_parlay_lines() -> dict:
                 "away_team": row[2],
                 "f5_spread_line": row[5],
                 "f5_total_line": row[6],
+                "commence_time": row[7],  # UTC ISO string for doubleheader matching
             }
 
         return result
@@ -168,8 +170,24 @@ def load_parlay_lines() -> dict:
 # Step 4: Match DK events to our game_ids
 # ---------------------------------------------------------------------------
 
+def _utc_hour(iso_str: str) -> str:
+    """Extract the UTC hour ("HH") from an ISO timestamp string.
+
+    Used for doubleheader matching: two games between the same teams on the
+    same day will have different start hours (e.g. "17" vs "23" UTC).
+    """
+    # ISO format: "2026-06-15T17:05:00Z" or "2026-06-15T17:05:00+00:00"
+    # The hour is always at index 11:13.
+    return iso_str[11:13] if iso_str and len(iso_str) >= 13 else ""
+
+
 def match_events(dk_events: list[dict], parlay_lines: dict) -> list[dict]:
-    """Match DK events to our game_ids using canonical_match.py."""
+    """Match DK events to our game_ids using canonical_match.py.
+
+    Matching uses team names AND start-time hour (UTC) so that doubleheaders
+    (two games between the same teams on the same day) map to the correct
+    game_id instead of both collapsing onto game 1.
+    """
     team_dict = load_team_dict("mlb")
     canonical_games = load_canonical_games("mlb")
 
@@ -183,9 +201,16 @@ def match_events(dk_events: list[dict], parlay_lines: dict) -> list[dict]:
             continue
 
         canon_away, canon_home = resolved
+        dk_hour = _utc_hour(dk_evt["start_time"])
 
         for game_id, lines in parlay_lines.items():
             if lines["home_team"] == canon_home and lines["away_team"] == canon_away:
+                pl_hour = _utc_hour(lines.get("commence_time", ""))
+                # If commence_time is available, require hour match to
+                # distinguish doubleheaders. If missing (backward compat),
+                # fall back to team-only matching.
+                if pl_hour and dk_hour and pl_hour != dk_hour:
+                    continue
                 matched.append({
                     "game_id": game_id,
                     "dk_event_id": dk_evt["dk_event_id"],
@@ -502,11 +527,13 @@ def scrape_dk_sgp(verbose: bool = False):
     now_utc = datetime.now(timezone.utc).isoformat()
     dk_events = [e for e in dk_events if e["start_time"] > now_utc]
 
-    # Deduplicate: keep only the earliest upcoming event per team matchup
+    # Deduplicate: keep one event per team matchup per start hour.
+    # This filters out live-game duplicates (same matchup, same hour) while
+    # preserving both games of a doubleheader (same teams, different hours).
     seen_matchups = set()
     deduped_events = []
     for evt in sorted(dk_events, key=lambda e: e["start_time"]):
-        matchup = (evt["dk_home"], evt["dk_away"])
+        matchup = (evt["dk_home"], evt["dk_away"], evt["start_time"][:13])
         if matchup not in seen_matchups:
             seen_matchups.add(matchup)
             deduped_events.append(evt)
