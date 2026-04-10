@@ -170,15 +170,20 @@ def load_parlay_lines() -> dict:
 # Step 4: Match DK events to our game_ids
 # ---------------------------------------------------------------------------
 
-def _utc_hour(iso_str: str) -> str:
-    """Extract the UTC hour ("HH") from an ISO timestamp string.
+def _utc_hour(ts) -> str:
+    """Extract the UTC hour ("HH") from a timestamp.
 
-    Used for doubleheader matching: two games between the same teams on the
-    same day will have different start hours (e.g. "17" vs "23" UTC).
+    Accepts either an ISO string (from DK/FD API responses) or a
+    datetime object (from DuckDB TIMESTAMP columns). Returns "" if the
+    input is empty/None so callers can fall back to team-only matching.
     """
-    # ISO format: "2026-06-15T17:05:00Z" or "2026-06-15T17:05:00+00:00"
-    # The hour is always at index 11:13.
-    return iso_str[11:13] if iso_str and len(iso_str) >= 13 else ""
+    if not ts:
+        return ""
+    # DuckDB returns datetime objects for TIMESTAMP columns
+    if hasattr(ts, "hour"):
+        return f"{ts.hour:02d}"
+    # API responses are ISO strings like "2026-06-15T17:05:00Z"
+    return ts[11:13] if len(ts) >= 13 else ""
 
 
 def match_events(dk_events: list[dict], parlay_lines: dict) -> list[dict]:
