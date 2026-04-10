@@ -43,6 +43,22 @@ def ensure_table(db_path: str = None):
         con.close()
 
 
+def clear_source(source: str, db_path: str = None):
+    """Delete all rows for a given source (e.g. 'draftkings_direct').
+
+    Called at the start of each scraper run so only fresh prices exist.
+    If the scraper fails to price a combo, there's simply no row for it
+    rather than a stale price from a previous run.
+    """
+    db_path = db_path or str(MLB_DB)
+    con = duckdb.connect(db_path)
+    try:
+        ensure_table(db_path)
+        con.execute("DELETE FROM mlb_sgp_odds WHERE source = ?", [source])
+    finally:
+        con.close()
+
+
 def upsert_sgp_odds(rows: list[dict], db_path: str = None):
     """
     Insert SGP odds rows, replacing any existing rows for the same

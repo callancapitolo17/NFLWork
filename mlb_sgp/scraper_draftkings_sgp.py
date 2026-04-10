@@ -37,7 +37,7 @@ _ANSWER_KEYS = _REPO_ROOT / "Answer Keys"
 sys.path.insert(0, str(_ANSWER_KEYS))
 from canonical_match import load_team_dict, load_canonical_games, resolve_team_names
 
-from db import ensure_table, upsert_sgp_odds, MLB_DB
+from db import ensure_table, upsert_sgp_odds, clear_source, MLB_DB
 
 # ---------------------------------------------------------------------------
 # DK API config
@@ -476,6 +476,11 @@ def scrape_dk_sgp(verbose: bool = False):
     - Phase 2: Price all spread+total combos in parallel
     - Phase 3: Batch write to DuckDB
     """
+
+    # Wipe all previous DK SGP prices so only this run's results exist.
+    # If DK blocks a parlay that was priced last run, it simply won't have
+    # a row — the R blending code will see NA instead of a stale price.
+    clear_source("draftkings_direct")
 
     print("Loading parlay lines from DuckDB...")
     parlay_lines = load_parlay_lines()

@@ -50,7 +50,7 @@ _ANSWER_KEYS = _REPO_ROOT / "Answer Keys"
 sys.path.insert(0, str(_ANSWER_KEYS))
 from canonical_match import load_team_dict, load_canonical_games, resolve_team_names
 
-from db import ensure_table, upsert_sgp_odds, MLB_DB
+from db import ensure_table, upsert_sgp_odds, clear_source, MLB_DB
 
 # ---------------------------------------------------------------------------
 # FD API config
@@ -447,6 +447,9 @@ def price_combo(session: cffi_requests.Session,
 # ---------------------------------------------------------------------------
 
 def scrape_fd_sgp(verbose: bool = False):
+    # Wipe all previous FD SGP prices so only this run's results exist.
+    clear_source("fanduel_direct")
+
     print("Loading parlay lines from DuckDB...")
     parlay_lines = load_parlay_lines()
     if not parlay_lines:
