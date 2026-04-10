@@ -264,6 +264,19 @@ def _strip_prefix(mid: str) -> str:
     return mid.split("_")[-1] if "_" in mid else mid
 
 
+# Selection IDs look like 0HC84252605P150_3 (spread) or 0OU84265271U750_3 (total).
+# The 8+ digits immediately after the 0HC/0OU prefix are the DK market_num. A
+# "same-market" selection pair means both legs were priced from the same DK
+# market; cross-market pairs can look acceptable to calculateBets but return
+# nonsense prices that don't match what DK actually offers in the UI.
+_MARKET_NUM_RE = re.compile(r"^0(?:HC|OU)(\d+)")
+
+
+def _market_num(sel_id: str) -> str:
+    m = _MARKET_NUM_RE.match(sel_id)
+    return m.group(1) if m else ""
+
+
 def fetch_main_market_nums(session: cffi_requests.Session, dk_event_id: str) -> dict:
     """Fetch main Run Line + Total market numbers for both FG and F5.
 
@@ -431,11 +444,26 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
     assign_total(fg_total_mnums, fg_tot, "fg")
     assign_total(f5_total_mnums, f5_tot, "f5")
 
+    # Canonical markets per period = main RL + main total + any market that has
+    # BOTH spreads AND totals (primary alt markets). Cross-pairs between two
+    # canonical markets are allowed during pricing — e.g. main spread from M1
+    # plus alt total from primary alt M2 is a legitimate SGP combo that DK's
+    # UI supports. Secondary markets (totals-only standalones like DK's
+    # 84267310 with non-canonical prices) are excluded, so we never pair a
+    # main leg against those weird prices.
+    out["fg"]["canonical"] = {m for m in (fg_rl, fg_tot) if m} | (
+        fg_spread_mnums & fg_total_mnums
+    )
+    out["f5"]["canonical"] = {m for m in (f5_rl, f5_tot) if m} | (
+        f5_spread_mnums & f5_total_mnums
+    )
+
     if verbose:
         for per in ("fg", "f5"):
             sp = sorted(set(k[1] for k in out[per]["spreads"]))
             to = sorted(set(k[1] for k in out[per]["totals"] if k[0] == 'O'))
-            print(f"    [{per.upper()}] spreads: {sp}  totals(O): {to}")
+            print(f"    [{per.upper()}] spreads: {sp}  totals(O): {to}  "
+                  f"canonical: {sorted(out[per]['canonical'])}")
 
     return out
 
@@ -555,7 +583,7 @@ def scrape_dk_sgp(verbose: bool = False):
     print("Fetching selection IDs (parallel)...")
     t0 = time.time()
 
-    game_data = {}  # game_id -> sel_ids (per-period dict)
+    game_data = {}  # game_id -> sel_ids (per-period dict, includes canonical)
 
     def fetch_one_game(game):
         dk_eid = game["dk_event_id"]
@@ -613,6 +641,12 @@ def scrape_dk_sgp(verbose: bool = False):
             if not home_spread_sels or not away_spread_sels or not over_sels or not under_sels:
                 continue
 
+            # Canonical market set for this period = main RL + main total +
+            # any alt market that contains BOTH spreads and totals. Pairs
+            # between two canonical markets are allowed; anything involving
+            # a non-canonical secondary market is skipped.
+            canonical = sel_ids.get("canonical", set())
+
             prefix = "" if period == "fg" else "F5 "
             for combo_name, sp_sels, tot_sels in [
                 ("Home Spread + Over",  home_spread_sels, over_sels),
@@ -620,19 +654,36 @@ def scrape_dk_sgp(verbose: bool = False):
                 ("Away Spread + Over",  away_spread_sels, over_sels),
                 ("Away Spread + Under", away_spread_sels, under_sels),
             ]:
-                combo_items.append((gid, period, prefix + combo_name, sp_sels, tot_sels))
+                combo_items.append((gid, period, prefix + combo_name,
+                                    sp_sels, tot_sels, canonical))
 
     # Price all combos in parallel
     pricing_results = []  # (game_id, period, combo_name, sgp_result)
 
     def price_one(item):
-        gid, period, combo_name, sp_sels, tot_sels = item
-        # Try every (spread_variant, total_variant) combo until one returns a
-        # price. DK has stale "_1"/"_3" suffix variants — one may be closed
-        # while another is live.
+        gid, period, combo_name, sp_sels, tot_sels, canonical = item
+        # A pair is allowed when BOTH legs come from canonical markets —
+        # i.e. main RL, main total, or any "primary alt" market that contains
+        # both spreads and totals for this period. This covers:
+        #   - main + main (same or different markets; typical FG and F5)
+        #   - main + primary alt (WZ wanted an alt line that lives in DK's
+        #     primary alt market alongside its own spread variants)
+        #   - primary alt + primary alt (both legs alt, same or different
+        #     primary alt markets if a game has more than one)
+        # Pairs that involve a non-canonical secondary market (e.g. DK's
+        # 84267310 in the Athletics case, a totals-only standalone whose
+        # "Under 7.5" sits at a non-canonical price) are blocked. Those are
+        # exactly the combos where calculateBets returns 200 with a nonsense
+        # price that doesn't match DK's UI.
         sgp = None
         for sp in sp_sels:
+            sp_mnum = _market_num(sp)
+            if sp_mnum not in canonical:
+                continue
             for to in tot_sels:
+                to_mnum = _market_num(to)
+                if to_mnum not in canonical:
+                    continue
                 sgp = calculate_sgp(session, sp, to, verbose=verbose)
                 if sgp:
                     break
