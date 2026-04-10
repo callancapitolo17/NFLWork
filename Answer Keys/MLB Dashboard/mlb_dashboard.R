@@ -3006,7 +3006,7 @@ cat("Loading parlay opportunities...\n")
 parlay_opps <- tryCatch({
   pcon <- dbConnect(duckdb(), dbdir = "Answer Keys/mlb.duckdb", read_only = TRUE)
   result <- if ("mlb_parlay_opportunities" %in% dbListTables(pcon)) {
-    dbGetQuery(pcon, "SELECT * FROM mlb_parlay_opportunities")
+    dbGetQuery(pcon, "SELECT * FROM mlb_parlay_opportunities WHERE game_time IS NULL OR CAST(game_time AS TIMESTAMP) > NOW()")
   } else tibble()
   dbDisconnect(pcon, shutdown = TRUE)
   result

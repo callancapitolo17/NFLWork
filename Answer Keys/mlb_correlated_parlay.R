@@ -601,7 +601,8 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         n_samples   = fair$n_samples_resolved,
         dk_fair_prob = round(dk_fair_prob, 3),
         fd_fair_prob = round(fd_fair_prob, 3),
-        blended_prob = round(blended_prob, 3)
+        blended_prob = round(blended_prob, 3),
+        n_books_blended = n_books_blended
       )
 
       period_legs[[paste0(game_id, "|", combo_name)]] <- combo$legs
