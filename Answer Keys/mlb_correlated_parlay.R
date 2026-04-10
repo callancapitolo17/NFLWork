@@ -225,22 +225,6 @@ if (!check_mlb_samples_fresh(max_age_minutes = 10)) {
 }
 
 # =============================================================================
-# REFRESH DK SGP ODDS
-# =============================================================================
-
-cat("Refreshing SGP odds (DK + FD)...\n")
-sgp_scraper_dir <- file.path(path.expand("~"), "NFLWork", "mlb_sgp")
-sgp_venv_python <- file.path(sgp_scraper_dir, "venv", "bin", "python")
-if (file.exists(sgp_venv_python)) {
-  system2(sgp_venv_python, args = c(file.path(sgp_scraper_dir, "scraper_draftkings_sgp.py")),
-          wait = TRUE, stdout = FALSE, stderr = FALSE)
-  system2(sgp_venv_python, args = c(file.path(sgp_scraper_dir, "scraper_fanduel_sgp.py")),
-          wait = TRUE, stdout = FALSE, stderr = FALSE)
-} else {
-  cat("  SGP scraper venv not found — skipping. Run: cd mlb_sgp && python -m venv venv && pip install curl_cffi duckdb\n")
-}
-
-# =============================================================================
 # LOAD SAMPLES (same pattern as parlay.R:155-162)
 # =============================================================================
 
@@ -249,49 +233,6 @@ on.exit(dbDisconnect(con))
 
 samples_df <- dbGetQuery(con, "SELECT * FROM mlb_game_samples")
 consensus  <- dbGetQuery(con, "SELECT * FROM mlb_consensus_temp")
-
-# Load SGP odds from all books for blending
-sgp_odds <- tryCatch({
-  dbGetQuery(con, "
-    SELECT game_id, combo, sgp_decimal, sgp_american, source
-    FROM mlb_sgp_odds
-    WHERE source IN ('draftkings_direct', 'fanduel_direct')
-  ")
-}, error = function(e) data.frame())
-
-dk_sgp <- sgp_odds[sgp_odds$source == "draftkings_direct", ]
-fd_sgp <- sgp_odds[sgp_odds$source == "fanduel_direct", ]
-
-if (nrow(dk_sgp) > 0) cat(sprintf("  Loaded %d DK SGP odds for blending\n", nrow(dk_sgp)))
-if (nrow(fd_sgp) > 0) cat(sprintf("  Loaded %d FD SGP odds for blending\n", nrow(fd_sgp)))
-if (nrow(dk_sgp) == 0 && nrow(fd_sgp) == 0) cat("  No fresh SGP odds — using model-only fair values\n")
-
-# Per-game vig lookup: sum of implied probs across all 4 combos for each game.
-# When a game has all 4 combos, we use the measured vig (more accurate than a
-# constant, especially for FD whose vig is bimodal at ~13% and ~21%).
-# Falls back to the default constant when <4 combos are available.
-# Group by (game_id, period) not just game_id — FG and F5 are separate
-# partitions with independent vig. Summing across both would ~double the vig.
-# Period is inferred from combo name: "F5 " prefix = F5, else FG.
-dk_vig_lookup <- if (nrow(dk_sgp) > 0) {
-  dk_sgp %>%
-    mutate(period = ifelse(grepl("^F5 ", combo), "F5", "FG")) %>%
-    group_by(game_id, period) %>%
-    summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
-    mutate(vig = ifelse(n >= 4, vig, DK_SGP_VIG_DEFAULT))
-} else {
-  tibble(game_id = character(), period = character(), n = integer(), vig = double())
-}
-
-fd_vig_lookup <- if (nrow(fd_sgp) > 0) {
-  fd_sgp %>%
-    mutate(period = ifelse(grepl("^F5 ", combo), "F5", "FG")) %>%
-    group_by(game_id, period) %>%
-    summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
-    mutate(vig = ifelse(n >= 4, vig, FD_SGP_VIG_DEFAULT))
-} else {
-  tibble(game_id = character(), period = character(), n = integer(), vig = double())
-}
 
 dbDisconnect(con)
 on.exit(NULL)
@@ -446,6 +387,112 @@ if (nrow(wz_fg_matched) == 0 && nrow(wz_f5_matched) == 0) {
     cat(sprintf("  %s @ %s\n", consensus$away_team[i], consensus$home_team[i]))
   }
   quit(status = 0)
+}
+
+# =============================================================================
+# WRITE STAGING TABLE FOR SGP SCRAPERS
+# =============================================================================
+# The DK/FD SGP scrapers need game_id + spread/total lines to know which
+# selections to price. We write a lightweight staging table here so the
+# scrapers can read it — breaking the old circular dependency where scrapers
+# read from mlb_parlay_opportunities (the output of THIS script).
+
+staging_fg <- if (nrow(wz_fg_matched) > 0) {
+  wz_fg_matched %>%
+    transmute(game_id = id, home_team, away_team,
+              fg_spread = home_spread, fg_total = total_line)
+} else {
+  tibble(game_id = character(), home_team = character(), away_team = character(),
+         fg_spread = double(), fg_total = double())
+}
+
+staging_f5 <- if (nrow(wz_f5_matched) > 0) {
+  wz_f5_matched %>%
+    transmute(game_id = id, f5_spread = home_spread, f5_total = total_line)
+} else {
+  tibble(game_id = character(), f5_spread = double(), f5_total = double())
+}
+
+# Merge FG and F5 lines into one row per game
+staging <- staging_fg %>%
+  left_join(staging_f5, by = "game_id")
+
+tryCatch({
+  staging_con <- dbConnect(duckdb(), dbdir = MLB_DB)
+  dbExecute(staging_con, "DROP TABLE IF EXISTS mlb_parlay_lines")
+  dbWriteTable(staging_con, "mlb_parlay_lines", staging)
+  dbDisconnect(staging_con)
+  cat(sprintf("Wrote %d games to mlb_parlay_lines staging table.\n", nrow(staging)))
+}, error = function(e) {
+  cat(sprintf("Warning: Failed to write staging table: %s\n", e$message))
+})
+
+# =============================================================================
+# REFRESH DK + FD SGP ODDS
+# =============================================================================
+# Now that mlb_parlay_lines exists, the scrapers can look up which games/lines
+# to price on DraftKings and FanDuel.
+
+cat("Refreshing SGP odds (DK + FD)...\n")
+sgp_scraper_dir <- file.path(path.expand("~"), "NFLWork", "mlb_sgp")
+sgp_venv_python <- file.path(sgp_scraper_dir, "venv", "bin", "python")
+if (file.exists(sgp_venv_python)) {
+  system2(sgp_venv_python, args = c(file.path(sgp_scraper_dir, "scraper_draftkings_sgp.py")),
+          wait = TRUE, stdout = FALSE, stderr = FALSE)
+  system2(sgp_venv_python, args = c(file.path(sgp_scraper_dir, "scraper_fanduel_sgp.py")),
+          wait = TRUE, stdout = FALSE, stderr = FALSE)
+} else {
+  cat("  SGP scraper venv not found — skipping. Run: cd mlb_sgp && python -m venv venv && pip install curl_cffi duckdb\n")
+}
+
+# =============================================================================
+# LOAD SGP ODDS FOR BLENDING
+# =============================================================================
+
+sgp_con <- dbConnect(duckdb(), dbdir = MLB_DB, read_only = TRUE)
+
+sgp_odds <- tryCatch({
+  dbGetQuery(sgp_con, "
+    SELECT game_id, combo, sgp_decimal, sgp_american, source
+    FROM mlb_sgp_odds
+    WHERE source IN ('draftkings_direct', 'fanduel_direct')
+  ")
+}, error = function(e) data.frame())
+
+dbDisconnect(sgp_con)
+
+dk_sgp <- sgp_odds[sgp_odds$source == "draftkings_direct", ]
+fd_sgp <- sgp_odds[sgp_odds$source == "fanduel_direct", ]
+
+if (nrow(dk_sgp) > 0) cat(sprintf("  Loaded %d DK SGP odds for blending\n", nrow(dk_sgp)))
+if (nrow(fd_sgp) > 0) cat(sprintf("  Loaded %d FD SGP odds for blending\n", nrow(fd_sgp)))
+if (nrow(dk_sgp) == 0 && nrow(fd_sgp) == 0) cat("  No fresh SGP odds — using model-only fair values\n")
+
+# Per-game vig lookup: sum of implied probs across all 4 combos for each game.
+# When a game has all 4 combos, we use the measured vig (more accurate than a
+# constant, especially for FD whose vig is bimodal at ~13% and ~21%).
+# Falls back to the default constant when <4 combos are available.
+# Group by (game_id, period) not just game_id — FG and F5 are separate
+# partitions with independent vig. Summing across both would ~double the vig.
+# Period is inferred from combo name: "F5 " prefix = F5, else FG.
+dk_vig_lookup <- if (nrow(dk_sgp) > 0) {
+  dk_sgp %>%
+    mutate(period = ifelse(grepl("^F5 ", combo), "F5", "FG")) %>%
+    group_by(game_id, period) %>%
+    summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
+    mutate(vig = ifelse(n >= 4, vig, DK_SGP_VIG_DEFAULT))
+} else {
+  tibble(game_id = character(), period = character(), n = integer(), vig = double())
+}
+
+fd_vig_lookup <- if (nrow(fd_sgp) > 0) {
+  fd_sgp %>%
+    mutate(period = ifelse(grepl("^F5 ", combo), "F5", "FG")) %>%
+    group_by(game_id, period) %>%
+    summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
+    mutate(vig = ifelse(n >= 4, vig, FD_SGP_VIG_DEFAULT))
+} else {
+  tibble(game_id = character(), period = character(), n = integer(), vig = double())
 }
 
 # =============================================================================

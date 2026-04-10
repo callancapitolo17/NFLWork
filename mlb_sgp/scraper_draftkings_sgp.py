@@ -127,57 +127,37 @@ def fetch_dk_events(session: cffi_requests.Session) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def load_parlay_lines() -> dict:
-    """Load FG and F5 spread + total lines from mlb_parlay_opportunities.
+    """Load FG and F5 spread + total lines from mlb_parlay_lines staging table.
+
+    The staging table is written by mlb_correlated_parlay.R before calling
+    this scraper, breaking the old circular dependency where scrapers read
+    from mlb_parlay_opportunities (the output of the script that calls us).
 
     Returns dict keyed by game_id with both fg_* and f5_* lines.
     """
     con = duckdb.connect(str(MLB_DB), read_only=True)
     try:
         tables = [t[0] for t in con.execute("SHOW TABLES").fetchall()]
-        if "mlb_parlay_opportunities" not in tables:
-            print("  No mlb_parlay_opportunities table — run the MLB pipeline first.")
+        if "mlb_parlay_lines" not in tables:
+            print("  No mlb_parlay_lines table — run the MLB pipeline first.")
             return {}
 
-        # FG combos — the R pipeline writes only the highest-edge combo per
-        # game, so any one of the 4 FG combo names may be present. The
-        # spread/total lines are identical across all 4 combos for a given
-        # game, so we collapse with ANY_VALUE.
-        fg_rows = con.execute("""
-            SELECT game_id,
-                   ANY_VALUE(spread_line) AS spread_line,
-                   ANY_VALUE(total_line)  AS total_line,
-                   ANY_VALUE(home_team)   AS home_team,
-                   ANY_VALUE(away_team)   AS away_team
-            FROM mlb_parlay_opportunities
-            WHERE combo IN ('Home Spread + Over', 'Home Spread + Under',
-                            'Away Spread + Over', 'Away Spread + Under')
-            GROUP BY game_id
-        """).fetchall()
-
-        f5_rows = con.execute("""
-            SELECT game_id,
-                   ANY_VALUE(spread_line) AS spread_line,
-                   ANY_VALUE(total_line)  AS total_line
-            FROM mlb_parlay_opportunities
-            WHERE combo IN ('F5 Home Spread + Over', 'F5 Home Spread + Under',
-                            'F5 Away Spread + Over', 'F5 Away Spread + Under')
-            GROUP BY game_id
+        rows = con.execute("""
+            SELECT game_id, home_team, away_team,
+                   fg_spread, fg_total, f5_spread, f5_total
+            FROM mlb_parlay_lines
         """).fetchall()
 
         result = {}
-        for row in fg_rows:
+        for row in rows:
             result[row[0]] = {
-                "fg_spread_line": row[1],
-                "fg_total_line": row[2],
-                "home_team": row[3],
-                "away_team": row[4],
-                "f5_spread_line": None,
-                "f5_total_line": None,
+                "fg_spread_line": row[3],
+                "fg_total_line": row[4],
+                "home_team": row[1],
+                "away_team": row[2],
+                "f5_spread_line": row[5],
+                "f5_total_line": row[6],
             }
-        for row in f5_rows:
-            if row[0] in result:
-                result[row[0]]["f5_spread_line"] = row[1]
-                result[row[0]]["f5_total_line"] = row[2]
 
         return result
     finally:
