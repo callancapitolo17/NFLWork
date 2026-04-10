@@ -511,7 +511,13 @@ def scrape_dk_sgp(verbose: bool = False):
     dk_events = fetch_dk_events(session)
     print(f"  {len(dk_events)} DK events")
 
-    # Deduplicate: keep only the earliest event per team matchup
+    # Filter out events that have already started — live games return empty or
+    # running-score-adjusted selections that don't match pre-game lines.
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc).isoformat()
+    dk_events = [e for e in dk_events if e["start_time"] > now_utc]
+
+    # Deduplicate: keep only the earliest upcoming event per team matchup
     seen_matchups = set()
     deduped_events = []
     for evt in sorted(dk_events, key=lambda e: e["start_time"]):
