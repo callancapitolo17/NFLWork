@@ -387,7 +387,11 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
 
 def _parse_spread_runner(rn: str, hc, main_or_alt: str,
                          fd_home: str, fd_away: str) -> tuple[str, float] | None:
-    """Parse a spread runner into ('home'|'away', abs_line).
+    """Parse a spread runner into ('home'|'away', signed_line).
+
+    The signed line preserves the handicap direction so that home +1.5
+    and home -1.5 are stored as distinct keys. This prevents silent
+    mis-pricing when WZ and FD disagree on which team is favored.
 
     Main market: runnerName='Cincinnati Reds', handicap=-1.5
     Alt market:  runnerName='Cincinnati Reds +3.5', handicap=0
@@ -398,14 +402,14 @@ def _parse_spread_runner(rn: str, hc, main_or_alt: str,
         side = "home" if rn == fd_home else "away" if rn == fd_away else None
         if side is None:
             return None
-        return (side, abs(hc))
+        return (side, float(hc))
     else:
         # Alt: parse 'Cincinnati Reds +3.5' -> team, signed line
         m = re.match(r'(.+?)\s*([+-]\d+\.?\d*)$', rn)
         if not m:
             return None
         team = m.group(1).strip()
-        line = abs(float(m.group(2)))
+        line = float(m.group(2))
         side = "home" if team == fd_home else "away" if team == fd_away else None
         if side is None:
             return None
@@ -576,18 +580,23 @@ def scrape_fd_sgp(verbose: bool = False):
             if not sel["spreads"]:
                 continue
 
-            sp = abs(spread_line)
+            # Use signed spread lines so that home +1.5 and home -1.5
+            # are distinct keys. When WZ and FD disagree on the favorite,
+            # the lookup returns None and the game is correctly skipped
+            # instead of silently pricing the wrong side of the market.
+            home_line = spread_line       # WZ home_spread, already signed
+            away_line = -spread_line      # away is the opposite sign
 
-            home_spread = sel["spreads"].get(("home", sp))
-            away_spread = sel["spreads"].get(("away", sp))
+            home_spread = sel["spreads"].get(("home", home_line))
+            away_spread = sel["spreads"].get(("away", away_line))
             over = sel["totals"].get(("O", total_line))
             under = sel["totals"].get(("U", total_line))
 
             if not (home_spread and away_spread and over and under):
                 if verbose:
                     missing = []
-                    if not home_spread: missing.append(f"home {sp}")
-                    if not away_spread: missing.append(f"away {sp}")
+                    if not home_spread: missing.append(f"home {home_line:+g}")
+                    if not away_spread: missing.append(f"away {away_line:+g}")
                     if not over: missing.append(f"over {total_line}")
                     if not under: missing.append(f"under {total_line}")
                     print(f"  {game['away_team']} @ {game['home_team']} [{period.upper()}]: missing {missing}")
