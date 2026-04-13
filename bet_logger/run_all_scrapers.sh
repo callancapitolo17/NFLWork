@@ -65,15 +65,27 @@ else
 fi
 echo ""
 
-# Run BetOnline scraper
+# Run BetOnline scraper — if token refresh fails, auto-recon and retry
 echo "[$(date '+%H:%M:%S')] Running BetOnline scraper..."
 echo "----------------------------------------"
 if ./venv/bin/python3 scraper_betonline.py --since-last; then
     echo "[$(date '+%H:%M:%S')] BetOnline: done"
 else
-    echo "[$(date '+%H:%M:%S')] BetOnline: FAILED (exit $?)"
-    FAILED=$((FAILED + 1))
-    FAILED_NAMES="${FAILED_NAMES}BetOnline, "
+    echo "[$(date '+%H:%M:%S')] BetOnline: token may be expired, running auto-recon..."
+    if ./venv/bin/python3 recon_betonline.py; then
+        echo "[$(date '+%H:%M:%S')] Recon succeeded, retrying scraper..."
+        if ./venv/bin/python3 scraper_betonline.py --since-last; then
+            echo "[$(date '+%H:%M:%S')] BetOnline: done (after recon)"
+        else
+            echo "[$(date '+%H:%M:%S')] BetOnline: FAILED after recon (exit $?)"
+            FAILED=$((FAILED + 1))
+            FAILED_NAMES="${FAILED_NAMES}BetOnline, "
+        fi
+    else
+        echo "[$(date '+%H:%M:%S')] BetOnline: FAILED — recon also failed (exit $?)"
+        FAILED=$((FAILED + 1))
+        FAILED_NAMES="${FAILED_NAMES}BetOnline, "
+    fi
 fi
 echo ""
 

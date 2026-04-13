@@ -1,26 +1,151 @@
 """
-BetOnline Recon Script
-- Uses real Chrome (not Playwright Chromium) to bypass Cloudflare
-- Persistent profile so cookies survive between runs
-- Captures all network API requests on the bet history page
-- Saves requests to recon_betonline_api.json for building a browser-free scraper
+BetOnline Recon Script — Automated Token Capture
+
+Uses real Chrome with persistent profile to:
+1. Pass Cloudflare challenge (automatic with saved cookies)
+2. Log in via Keycloak (automatic with saved credentials)
+3. Navigate to bet history to trigger API token generation
+4. Capture krefresh token and cookies for the headless scraper
+
+By default, runs fully automated — same Cloudflare/login patterns as
+bet_placer/navigator_betonline.py. Use --interactive for manual control.
 """
 
-from playwright.sync_api import sync_playwright
 import os
+import sys
 import json
+import time
+import argparse
+
+from playwright.sync_api import sync_playwright
+from dotenv import load_dotenv
+
+load_dotenv()
 
 BET_HISTORY_URL = "https://www.betonline.ag/my-account/bet-history"
 LOGIN_URL = "https://www.betonline.ag"
 PROFILE_DIR = os.path.join(os.path.dirname(__file__), ".betonline_profile")
 OUT_DIR = os.path.dirname(__file__)
+COOKIES_FILE = os.path.join(OUT_DIR, "recon_betonline_cookies.json")
+
+BETONLINE_USERNAME = os.getenv("BETONLINE_USERNAME")
+BETONLINE_PASSWORD = os.getenv("BETONLINE_PASSWORD")
 
 
-def run_recon():
+# ── Cloudflare + Auth (same patterns as navigator_betonline.py) ──
+
+
+def wait_for_cloudflare(page, max_wait: int = 60) -> bool:
+    """Wait for Cloudflare challenge to pass.
+
+    With a persistent Chrome profile, Cloudflare usually passes instantly
+    because the cf_clearance cookie is already saved.
+    """
+    for i in range(max_wait):
+        title = page.title().lower()
+        url = page.url.lower()
+
+        if "just a moment" in title or "challenge" in title:
+            if i == 0:
+                print("  Waiting for Cloudflare...")
+            time.sleep(1)
+            continue
+
+        if "betonline" in title or "betonline" in url:
+            if i > 0:
+                print(f"  Cloudflare passed ({i}s)")
+            return True
+
+        time.sleep(1)
+
+    print("  Cloudflare may not have passed — continuing anyway")
+    return False
+
+
+def is_logged_in(page) -> bool:
+    """Check if the user session is authenticated."""
+    try:
+        balance = page.locator('[data-testid="balance"], .balance, [class*="balance"]')
+        if balance.count() > 0 and balance.first.is_visible(timeout=5000):
+            return True
+    except Exception:
+        pass
+
+    try:
+        login_btn = page.locator('button:has-text("Log In"), a:has-text("Log In"), [data-testid="login"]')
+        if login_btn.count() > 0 and login_btn.first.is_visible(timeout=3000):
+            return False
+    except Exception:
+        pass
+
+    try:
+        deposit = page.locator('button:has-text("Deposit"), a:has-text("Deposit")')
+        if deposit.count() > 0 and deposit.first.is_visible(timeout=3000):
+            return True
+    except Exception:
+        pass
+
+    # Default to logged in (persistent profile usually works)
+    return True
+
+
+def do_login(page):
+    """Log in via Keycloak. Same approach as navigator_betonline._login."""
+    if not BETONLINE_USERNAME or not BETONLINE_PASSWORD:
+        raise RuntimeError(
+            "BETONLINE_USERNAME/PASSWORD not set in .env. "
+            "Cannot auto-login. Run with --interactive for manual login."
+        )
+
+    print("  Logging in...")
+    try:
+        login_btn = page.locator('button:has-text("Log In"), a:has-text("Log In"), [data-testid="login"]')
+        if login_btn.count() > 0:
+            login_btn.first.click()
+            time.sleep(3)
+
+        url = page.url
+        if "auth" in url.lower() or "login" in url.lower():
+            # Keycloak form — type credentials with human-like delays
+            user_field = page.locator('input[name="username"], input[type="text"]').first
+            pass_field = page.locator('input[name="password"], input[type="password"]').first
+
+            user_field.click()
+            page.keyboard.type(BETONLINE_USERNAME, delay=50)
+            pass_field.click()
+            page.keyboard.type(BETONLINE_PASSWORD, delay=50)
+
+            submit = page.locator('input[type="submit"], button[type="submit"], #kc-login')
+            if submit.count() > 0:
+                submit.first.click()
+            else:
+                page.keyboard.press("Enter")
+
+            time.sleep(5)
+            print(f"  Login submitted. URL: {page.url}")
+            return
+
+        raise RuntimeError("Could not find login form after clicking Log In button")
+
+    except Exception as e:
+        raise RuntimeError(f"Auto-login failed: {e}")
+
+
+# ── Main recon flow ──────────────────────────────────────────────
+
+
+def run_recon(interactive: bool = False):
+    """Run recon to capture BetOnline auth tokens.
+
+    Automated mode (default): Cloudflare + Keycloak login handled
+    automatically using persistent Chrome profile + .env credentials.
+
+    Interactive mode (--interactive): pauses for manual steps at each stage.
+    """
     captured_requests = []
 
     def handle_request(request):
-        """Capture all API/XHR requests."""
+        """Capture API/XHR requests."""
         if request.resource_type in ("xhr", "fetch"):
             entry = {
                 "url": request.url,
@@ -35,22 +160,23 @@ def run_recon():
     def handle_response(response):
         """Capture response details for API calls."""
         if response.request.resource_type in ("xhr", "fetch"):
-            # Find matching request and add response info
             for entry in captured_requests:
                 if entry["url"] == response.url and "status" not in entry:
                     entry["status"] = response.status
                     entry["response_headers"] = dict(response.headers)
-                    # Try to capture response body for small JSON responses
                     try:
                         content_type = response.headers.get("content-type", "")
                         if "json" in content_type:
                             body = response.text()
-                            # Only save first 5000 chars to keep file manageable
                             entry["response_body_preview"] = body[:5000]
                             entry["response_body_size"] = len(body)
                     except Exception:
                         pass
                     break
+
+    print("=" * 60)
+    print("BETONLINE RECON — Token Capture")
+    print("=" * 60)
 
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
@@ -62,76 +188,91 @@ def run_recon():
         )
         page = context.pages[0] if context.pages else context.new_page()
 
-        # Step 1: Go to BetOnline
-        print("Navigating to BetOnline...")
+        # Step 1: Navigate to BetOnline
+        print("\nNavigating to BetOnline...")
         page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
 
-        # Step 2: Wait for Cloudflare + manual login
-        print("\n" + "=" * 60)
-        print("1. Wait for Cloudflare check to pass (should be automatic)")
-        print("2. Log in manually if needed")
-        print("3. Once you see the main site, press ENTER here")
-        print("=" * 60)
-        input()
+        # Step 2: Handle Cloudflare
+        wait_for_cloudflare(page)
 
-        # Step 3: Attach network listeners BEFORE navigating to bet history
+        if interactive:
+            print("\nCloudflare/login: handle manually if needed, then press ENTER.")
+            input()
+
+        # Step 3: Login if needed
+        if not is_logged_in(page):
+            if interactive:
+                print("Not logged in. Please log in manually, then press ENTER.")
+                input()
+            else:
+                do_login(page)
+                wait_for_cloudflare(page)
+        else:
+            print("  Already authenticated")
+
+        # Step 4: Attach network listeners, then navigate to bet history
         print("\nAttaching network listeners...")
         page.on("request", handle_request)
         page.on("response", handle_response)
 
-        # Step 4: Navigate to bet history
-        print("Navigating to bet history...\n")
+        print("Navigating to bet history...")
         page.goto(BET_HISTORY_URL, wait_until="domcontentloaded", timeout=60000)
 
-        # Wait for page to fully render and API calls to complete
-        print("\nWaiting for API calls to complete...")
+        # Wait for API calls to complete (token exchange + data load)
+        print("Waiting for API calls to complete...")
         page.wait_for_timeout(10000)
 
-        print(f"\n{'=' * 60}")
-        print(f"Captured {len(captured_requests)} API requests")
-        print(f"{'=' * 60}")
+        print(f"\nCaptured {len(captured_requests)} API requests")
 
-        # Step 5: Try changing date filter to capture that API call too
-        print("\nNow try changing the date filter (e.g., click '30 days').")
-        print("This will capture the filter API call.")
-        print("Press ENTER when done.")
-        input()
+        if interactive:
+            print("\nOptional: change date filters to capture more API calls.")
+            print("Press ENTER when done.")
+            input()
+            page.wait_for_timeout(3000)
 
-        # Wait for any new API calls
-        page.wait_for_timeout(3000)
-
-        # Step 6: Save captured requests
+        # Step 5: Save captured requests
         out_path = os.path.join(OUT_DIR, "recon_betonline_api.json")
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(captured_requests, f, indent=2, default=str)
-        print(f"\nSaved {len(captured_requests)} API requests to {out_path}")
+        print(f"Saved {len(captured_requests)} API requests to {out_path}")
 
-        # Print summary
-        print(f"\n{'=' * 60}")
-        print("API REQUEST SUMMARY")
-        print(f"{'=' * 60}")
-        for i, req in enumerate(captured_requests, 1):
-            status = req.get("status", "?")
-            size = req.get("response_body_size", "?")
-            print(f"  {i}. [{status}] {req['method']} {req['url'][:100]}")
-            if req.get("post_data"):
-                print(f"     POST: {req['post_data'][:100]}")
-            if size != "?":
-                print(f"     Response: {size} chars")
-
-        # Also save cookies for potential use with requests library
+        # Step 6: Save cookies (includes krefresh token)
         cookies = context.cookies()
-        cookie_path = os.path.join(OUT_DIR, "recon_betonline_cookies.json")
-        with open(cookie_path, "w", encoding="utf-8") as f:
+        with open(COOKIES_FILE, "w", encoding="utf-8") as f:
             json.dump(cookies, f, indent=2)
-        print(f"\nSaved {len(cookies)} cookies to {cookie_path}")
 
-        print("\nPress ENTER to close browser.")
-        input()
+        # Verify we got the krefresh token
+        krefresh = None
+        for c in cookies:
+            if c['name'] == 'krefresh':
+                krefresh = c['value']
+                break
+
+        print(f"\n{'=' * 60}")
+        if krefresh:
+            print(f"Saved {len(cookies)} cookies to {COOKIES_FILE}")
+            print(f"krefresh token captured ({len(krefresh)} chars)")
+            print("The headless scraper should now work.")
+        else:
+            print(f"WARNING: Saved {len(cookies)} cookies but krefresh NOT found.")
+            print("Try running with --interactive to debug.")
+        print(f"{'=' * 60}")
+
+        if interactive:
+            print("\nPress ENTER to close browser.")
+            input()
 
         context.close()
         print("Done.")
 
+    return bool(krefresh)
+
 
 if __name__ == "__main__":
-    run_recon()
+    parser = argparse.ArgumentParser(description='Capture BetOnline auth tokens')
+    parser.add_argument('--interactive', action='store_true',
+                        help='Pause for manual steps (for debugging)')
+    args = parser.parse_args()
+
+    success = run_recon(interactive=args.interactive)
+    sys.exit(0 if success else 1)
