@@ -489,10 +489,17 @@ def scrape_hoop88(weeks_back: int = 1, headless: bool = True) -> list:
         except Exception as e:
             print(f"Warning: Could not confirm table loaded: {e}")
 
-        # Click on Week value (data-index="10") to expand bet details
+        # Click on Week value to expand bet details.
+        # The "Week" total is typically at data-index="10", but we guard
+        # against it being null (e.g. when there are no bets that week)
+        # by falling back to any clickable trigger span.
         print("Expanding bet details...")
         try:
-            page.evaluate('document.querySelector(\'span[data-trigger="true"][data-index="10"]\').click()')
+            page.evaluate('''(() => {
+                const el = document.querySelector('span[data-trigger="true"][data-index="10"]')
+                         || document.querySelector('span[data-trigger="true"]');
+                if (el) el.click();
+            })()''')
             page.wait_for_load_state('networkidle')
             page.wait_for_timeout(2000)
             print("✅ Expanded bet details")
