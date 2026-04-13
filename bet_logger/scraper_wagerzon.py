@@ -263,9 +263,9 @@ def parse_api_bets(history: dict) -> list:
                 # legs pay reduced odds, and WinLoss captures that.
                 if result == 'win' and risk > 0 and win_loss > 0:
                     american_odds = calculate_american_odds(risk, win_loss)
-                elif result == 'loss' and risk > 0 and win_potential > 0:
-                    # For losses, WinLoss is negative (= -risk). Use potential
-                    # win to show what the odds were when the bet was placed.
+                elif risk > 0 and win_potential > 0:
+                    # For losses and pushes, use potential win to show the
+                    # odds when the bet was placed.
                     american_odds = calculate_american_odds(risk, win_potential)
                 else:
                     american_odds = 0
