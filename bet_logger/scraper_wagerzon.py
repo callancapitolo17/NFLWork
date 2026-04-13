@@ -115,17 +115,23 @@ def clean_desc(raw: str) -> str:
     The API returns descriptions like:
       "[967] TOTAL o7½-120 (CHI CUBS vrs TB RAYS)<BR>( JAMESON TAILLON - R / SHANE MCCLANAHAN - L )"
 
-    We strip the rotation number, convert unicode fractions, and clean HTML.
+    We strip the rotation number and clean HTML, but keep unicode fractions
+    (½ ¼ ¾) to match the existing sheet format.
     """
-    desc = raw.replace('\u00bd', '.5').replace('\u00bc', '.25').replace('\u00be', '.75')
-    desc = re.sub(r'<[^>]+>', ' ', desc)  # Strip all HTML tags (<BR>, <em>, etc.)
+    desc = re.sub(r'<[^>]+>', ' ', raw)  # Strip all HTML tags (<BR>, <em>, etc.)
     desc = re.sub(r'^\[\d+\]\s*', '', desc)
     desc = re.sub(r'\s+', ' ', desc).strip()
     return desc
 
 
+def _to_decimal(text: str) -> str:
+    """Convert unicode fractions to decimal for numeric parsing only."""
+    return text.replace('\u00bd', '.5').replace('\u00bc', '.25').replace('\u00be', '.75')
+
+
 def parse_line_from_desc(desc: str) -> str:
     """Extract line/spread from a cleaned description."""
+    desc = _to_decimal(desc)  # Convert ½ → .5 for numeric matching
     # Over/Under: "TOTAL o7.5-120 ..."
     ou = re.search(r'TOTAL\s+([ou])([\d.]+)', desc, re.IGNORECASE)
     if ou:
@@ -145,6 +151,7 @@ def parse_odds_from_desc(desc: str) -> int:
 
     Patterns: "-110", "+150", "EV" (even = +100)
     """
+    desc = _to_decimal(desc)  # Convert ½ → .5 for numeric matching
     # TOTAL o7.5-120 or TEAM -3.5+150
     match = re.search(r'[\d.]+([+-]\d+)\s*(?:\(|$)', desc)
     if match:
@@ -193,7 +200,7 @@ def map_result(result_str: str) -> str:
         return 'win'
     elif r == 'LOSE':
         return 'loss'
-    elif r in ('PUSH', 'CANCELLED', 'VOID', 'NO ACTION'):
+    elif r in ('PUSH', 'CANCELLED', 'VOID', 'NO ACTION', 'NO BET'):
         return 'push'
     return ''
 
@@ -243,15 +250,25 @@ def parse_api_bets(history: dict) -> list:
                     continue
 
                 risk = float(wager.get('RiskAmount', 0))
-                win = float(wager.get('WinAmount', 0))
+                win_potential = float(wager.get('WinAmount', 0))
+                win_loss = float(wager.get('WinLoss', 0))
                 result = map_result(wager.get('Result', ''))
 
                 # Skip pending/open bets
                 if not result:
                     continue
 
-                # Calculate odds from risk/win
-                american_odds = calculate_american_odds(risk, win) if risk > 0 and win > 0 else 0
+                # Use the actual settlement (WinLoss) to calculate odds.
+                # WinLoss reflects the real payout — e.g. parlays with pushed
+                # legs pay reduced odds, and WinLoss captures that.
+                if result == 'win' and risk > 0 and win_loss > 0:
+                    american_odds = calculate_american_odds(risk, win_loss)
+                elif result == 'loss' and risk > 0 and win_potential > 0:
+                    # For losses, WinLoss is negative (= -risk). Use potential
+                    # win to show what the odds were when the bet was placed.
+                    american_odds = calculate_american_odds(risk, win_potential)
+                else:
+                    american_odds = 0
                 decimal_odds = calculate_decimal_odds_from_american(american_odds) if american_odds else 0
 
                 # Build description from legs
@@ -277,15 +294,12 @@ def parse_api_bets(history: dict) -> list:
                 if not sport:
                     sport = parse_sport(' '.join(leg_descs))
 
-                description = ' | '.join(leg_descs)
-                bet_type = parse_bet_type(wager.get('HeaderDesc', ''))
-
-                # For straight bets, try to get more precise odds from the description
-                if bet_type == 'Straight' and len(legs) == 1:
-                    desc_odds = parse_odds_from_desc(clean_desc(legs[0].get('DetailDesc', '')))
-                    if desc_odds:
-                        american_odds = desc_odds
-                        decimal_odds = calculate_decimal_odds_from_american(american_odds)
+                # Prepend HeaderDesc to match old format:
+                # "PARLAY (2 TEAMS) | leg1 | leg2" or "STRAIGHT BET | desc"
+                header = wager.get('HeaderDesc', '').strip()
+                leg_text = ' | '.join(leg_descs)
+                description = f"{header} | {leg_text}" if header else leg_text
+                bet_type = parse_bet_type(header)
 
                 bet = {
                     'date': parse_date(wager.get('PlacedDate', '')),
