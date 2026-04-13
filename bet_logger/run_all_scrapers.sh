@@ -7,6 +7,7 @@
 cd "/Users/callancapitolo/NFLWork/bet_logger"
 
 FAILED=0
+FAILED_NAMES=""
 
 echo "========================================"
 echo "MULTI-PLATFORM BET SCRAPER"
@@ -22,6 +23,7 @@ if ./venv/bin/python3 scraper_wagerzon.py; then
 else
     echo "[$(date '+%H:%M:%S')] Wagerzon: FAILED (exit $?)"
     FAILED=$((FAILED + 1))
+    FAILED_NAMES="${FAILED_NAMES}Wagerzon, "
 fi
 echo ""
 
@@ -33,6 +35,7 @@ if ./venv/bin/python3 scraper_hoop88.py; then
 else
     echo "[$(date '+%H:%M:%S')] Hoop88: FAILED (exit $?)"
     FAILED=$((FAILED + 1))
+    FAILED_NAMES="${FAILED_NAMES}Hoop88, "
 fi
 echo ""
 
@@ -45,6 +48,7 @@ if ./venv/bin/python3 scraper_bfa.py; then
 else
     echo "[$(date '+%H:%M:%S')] BFA primary: FAILED (exit $?)"
     FAILED=$((FAILED + 1))
+    FAILED_NAMES="${FAILED_NAMES}BFA, "
 fi
 echo ""
 
@@ -57,6 +61,7 @@ if ./venv/bin/python3 scraper_bfa.py --account j; then
 else
     echo "[$(date '+%H:%M:%S')] BFAJ: FAILED (exit $?)"
     FAILED=$((FAILED + 1))
+    FAILED_NAMES="${FAILED_NAMES}BFAJ, "
 fi
 echo ""
 
@@ -68,6 +73,7 @@ if ./venv/bin/python3 scraper_betonline.py --since-last; then
 else
     echo "[$(date '+%H:%M:%S')] BetOnline: FAILED (exit $?)"
     FAILED=$((FAILED + 1))
+    FAILED_NAMES="${FAILED_NAMES}BetOnline, "
 fi
 echo ""
 
@@ -75,11 +81,13 @@ echo "========================================"
 if [ $FAILED -eq 0 ]; then
     MSG="All 5 scrapers completed successfully."
     echo "$MSG"
-    osascript -e "display notification \"$MSG\" with title \"Bet Logger\" sound name \"Glass\""
+    /usr/local/bin/terminal-notifier -title "Bet Logger ✓" -message "$MSG" -sound Glass -group betlogger
 else
-    MSG="Completed with $FAILED scraper(s) failed. Check logs."
+    # Trim trailing ", " from the list of failed scraper names
+    FAILED_NAMES="${FAILED_NAMES%, }"
+    MSG="Failed: ${FAILED_NAMES}"
     echo "$MSG"
-    osascript -e "display notification \"$MSG\" with title \"Bet Logger\" sound name \"Basso\""
+    /usr/local/bin/terminal-notifier -title "Bet Logger — ${FAILED} failed" -message "$MSG" -sound Basso -group betlogger
 fi
 echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================"

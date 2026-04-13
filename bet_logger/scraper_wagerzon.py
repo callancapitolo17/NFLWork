@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
 Wagerzon Bet History Scraper
-Scrapes bet history from Wagerzon and uploads to Google Sheets
+Scrapes bet history from Wagerzon and uploads to Google Sheets.
+
+Auth: ASP.NET form POST (same approach as wagerzon_odds/scraper_v2.py).
+No browser/Playwright required — pure HTTP via requests.Session.
 """
 
 import re
@@ -10,23 +13,18 @@ import sys
 from datetime import datetime
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+import requests
 from utils import (
     calculate_american_odds,
     calculate_decimal_odds_from_american,
     parse_sport,
 )
 
-# Only import playwright when needed (not for --test mode)
-if "--test" not in sys.argv:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        sync_playwright = None
-
 load_dotenv()
 
 # Configuration
-WAGERZON_URL = os.getenv("WAGERZON_URL", "https://www.wagerzon.com")
+WAGERZON_BASE_URL = "https://backend.wagerzon.com"
+WAGERZON_HISTORY_URL = f"{WAGERZON_BASE_URL}/wager/History.aspx"
 WAGERZON_USERNAME = os.getenv("WAGERZON_USERNAME")
 WAGERZON_PASSWORD = os.getenv("WAGERZON_PASSWORD")
 
@@ -209,12 +207,52 @@ def parse_bets_from_html(html_content: str) -> list:
     return bets
 
 
+def login(session: requests.Session):
+    """Login to Wagerzon via ASP.NET form POST.
+
+    Same auth approach as wagerzon_odds/scraper_v2.py:
+    1. GET the login page to capture __VIEWSTATE and other hidden fields
+    2. POST credentials with those hidden fields
+    3. Session cookie (ASP.NET_SessionId) maintains auth for subsequent requests
+    """
+    resp = session.get(WAGERZON_BASE_URL, timeout=15)
+    resp.raise_for_status()
+
+    # If already redirected to a logged-in page, session is still valid
+    if "History" in resp.url or "NewSchedule" in resp.url:
+        print("Already authenticated")
+        return
+
+    html = resp.text
+
+    # Extract ASP.NET hidden fields from the login form.
+    # ASP.NET uses these to validate form submissions — they're generated
+    # server-side and must be posted back exactly as received.
+    fields = {}
+    for name in ["__VIEWSTATE", "__VIEWSTATEGENERATOR", "__EVENTVALIDATION",
+                 "__EVENTTARGET", "__EVENTARGUMENT"]:
+        match = re.search(rf'(?:name|id)="{name}"[^>]*value="([^"]*)"', html)
+        if match:
+            fields[name] = match.group(1)
+
+    if "__VIEWSTATE" not in fields:
+        raise RuntimeError("Could not find __VIEWSTATE on login page — page structure may have changed")
+
+    fields["Account"] = WAGERZON_USERNAME
+    fields["Password"] = WAGERZON_PASSWORD
+    fields["BtnSubmit"] = ""
+
+    resp = session.post(WAGERZON_BASE_URL, data=fields, timeout=15)
+    resp.raise_for_status()
+    print("Logged in successfully")
+
+
 def scrape_wagerzon(days_back: int = 7) -> list:
     """
-    Log into Wagerzon and scrape bet history.
+    Log into Wagerzon via HTTP and scrape bet history.
 
-    Args:
-        days_back: Number of days of history to fetch (not implemented yet)
+    Uses requests.Session instead of a browser — faster, more reliable,
+    and doesn't break on headless click timeouts.
 
     Returns:
         List of parsed bet dictionaries
@@ -222,130 +260,30 @@ def scrape_wagerzon(days_back: int = 7) -> list:
     if not WAGERZON_USERNAME or not WAGERZON_PASSWORD:
         raise ValueError("WAGERZON_USERNAME and WAGERZON_PASSWORD must be set in .env file")
 
-    with sync_playwright() as p:
-        # Launch browser in headless mode by default
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    })
 
-        print(f"Navigating to {WAGERZON_URL}...")
-        page.goto(WAGERZON_URL)
+    # Step 1: Authenticate
+    print("Logging in to Wagerzon...")
+    login(session)
 
-        # Wait for page to load
-        page.wait_for_load_state('networkidle')
+    # Step 2: Fetch the bet history page HTML
+    print("Fetching bet history page...")
+    resp = session.get(WAGERZON_HISTORY_URL, timeout=15)
+    resp.raise_for_status()
 
-        # TODO: Update these selectors based on actual Wagerzon login page
-        # These are placeholders - you'll need to inspect the actual login form
-        print("Attempting login...")
+    html = resp.text
 
-        # Check if already on history page (auto-logged in via cookies)
-        current_url = page.url
-        print(f"Initial URL: {current_url}")
+    # Check if we got redirected back to login (auth failed silently)
+    if "BtnSubmit" in html and "Account" in html and "wager-results-table" not in html:
+        raise RuntimeError("Auth session invalid — redirected back to login page")
 
-        if "History" in current_url:
-            print("Already on history page (session restored)!")
-        else:
-            # Try to navigate directly to history page first
-            print("Navigating to history page...")
-            page.goto("https://backend.wagerzon.com/wager/History.aspx")
-            page.wait_for_load_state('networkidle')
+    # Step 3: Parse the HTML using the existing parser
+    bets = parse_bets_from_html(html)
 
-            current_url = page.url
-            print(f"After navigation: {current_url}")
-
-            # If redirected to login page, try to log in
-            if "Login" in current_url or "History" not in current_url:
-                print("Login required. Looking for login form...")
-                try:
-                    # Try common login form selectors
-                    username_field = page.locator('input[type="text"], input[name="username"], input[name="txtUsername"]').first
-                    username_field.fill(WAGERZON_USERNAME, timeout=10000)
-
-                    password_field = page.locator('input[type="password"], input[name="password"], input[name="txtPassword"]').first
-                    password_field.fill(WAGERZON_PASSWORD)
-
-                    login_button = page.locator('input[type="submit"], button[type="submit"], input[value="Login"], button:has-text("Login")').first
-                    login_button.click()
-
-                    page.wait_for_load_state('networkidle')
-                    print("Login submitted!")
-
-                    # Navigate to history after login
-                    import time
-                    time.sleep(2)
-                    if "History" not in page.url:
-                        page.goto("https://backend.wagerzon.com/wager/History.aspx")
-                        page.wait_for_load_state('networkidle')
-
-                except Exception as e:
-                    print(f"Auto-login failed: {e}")
-                    print("Please log in manually in the browser window...")
-                    print("You have 60 seconds to log in and navigate to bet history.")
-                    try:
-                        page.wait_for_url("**/History*", timeout=60000)
-                    except:
-                        print("Trying to continue anyway...")
-
-        # Debug: print current URL
-        print(f"Current URL: {page.url}")
-
-        # Try to change dropdown to show more history (e.g., "Last Week" or "This Month")
-        try:
-            dropdown = page.locator('select').first
-            # Get available options
-            options = dropdown.locator('option').all_text_contents()
-            print(f"Available time periods: {options}")
-
-            # Try to select a broader time range
-            for preferred in ['All', 'This Month', 'Last Month', 'Last Week']:
-                if preferred in options:
-                    dropdown.select_option(label=preferred)
-                    print(f"Selected time period: {preferred}")
-                    break
-
-            # Wait for table to reload
-            page.wait_for_load_state('networkidle')
-            import time
-            time.sleep(2)  # Extra wait for data to load
-        except Exception as e:
-            print(f"Could not change time period: {e}")
-
-        # Wait for actual bet rows to load (not just the table header)
-        print("Waiting for bet data to load...")
-        try:
-            # Wait for either bet rows or "no wagers" message
-            page.wait_for_selector('.history-GameRow, :text("No wagers")', timeout=30000)
-        except:
-            pass  # Continue anyway and see what we get
-
-
-        # Wait for the table to load
-        try:
-            page.wait_for_selector('#wager-results-table', timeout=30000)
-        except Exception as e:
-            print(f"Could not find table: {e}")
-            # Save HTML for debugging
-            with open("debug_wagerzon_page.html", "w") as f:
-                f.write(page.content())
-            print("Saved page HTML to debug_page.html")
-            browser.close()
-            return []
-
-        # Get the table HTML
-        table_html = page.locator('#wager-results-table').evaluate('el => el.outerHTML')
-
-        # Also get the full container in case we need it
-        try:
-            container_html = page.locator('.table-responsive').evaluate('el => el.outerHTML')
-        except:
-            container_html = table_html
-
-        browser.close()
-
-        # Parse the bets
-        bets = parse_bets_from_html(container_html)
-
-        return bets
+    return bets
 
 
 def scrape_from_file(filepath: str) -> list:
@@ -387,11 +325,18 @@ if __name__ == "__main__":
     else:
         # Production mode: scrape from website
         print("Starting Wagerzon scraper...")
-        bets = scrape_wagerzon()
+        try:
+            bets = scrape_wagerzon()
+        except Exception as e:
+            print(f"\n❌ Error: {e}")
+            sys.exit(1)
+
         print(f"\nScraped {len(bets)} bets")
+
+        if not bets:
+            print("No bets found — exiting with error")
+            sys.exit(1)
 
         # Import and use sheets module
         from sheets import append_bets_to_sheet
         append_bets_to_sheet(bets)
-
-    sys.exit(0)
