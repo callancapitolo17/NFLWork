@@ -25,8 +25,6 @@ from utils import (
     calculate_american_odds_from_line,
     calculate_decimal_odds_from_american,
     parse_sport,
-    NFL_TEAMS,
-    NBA_TEAMS,
 )
 
 from sheets import append_bets_to_sheet, get_sheets_service, SPREADSHEET_ID, SHEET_NAME
@@ -267,37 +265,6 @@ def clean_description(desc: str, wager_type: str) -> str:
     return desc.strip()
 
 
-def detect_sport(desc: str) -> str:
-    """Detect sport from API description."""
-    desc_upper = desc.upper()
-
-    # Remove Desktop/Mobile prefix for detection
-    desc_upper = re.sub(r'^(DESKTOP|MOBILE)\s*-\s*', '', desc_upper)
-
-    if desc_upper.startswith('FOOTBALL'):
-        if 'NFL' in desc_upper:
-            return 'NFL'
-        for team in NFL_TEAMS:
-            if team in desc_upper:
-                return 'NFL'
-        return 'NCAAF'
-
-    if desc_upper.startswith('BASKETBALL'):
-        if 'NBA' in desc_upper:
-            return 'NBA'
-        for team in NBA_TEAMS:
-            if team in desc_upper:
-                return 'NBA'
-        return 'NCAAM'
-
-    if desc_upper.startswith('HOCKEY'):
-        return 'NHL'
-
-    if desc_upper.startswith('BASEBALL'):
-        return 'MLB'
-
-    return parse_sport(desc)
-
 
 def map_bet_type(wager_type: str) -> str:
     """Map API WagerType to standard format."""
@@ -351,7 +318,7 @@ def parse_api_bets(api_bets: list) -> list:
             bet = {
                 'date': parse_date(b.get('Date', '')),
                 'platform': 'BetOnline',
-                'sport': detect_sport(raw_desc),
+                'sport': parse_sport(raw_desc),
                 'description': clean_description(raw_desc, wager_type),
                 'bet_type': map_bet_type(wager_type),
                 'line': parse_description_line(raw_desc, wager_type),

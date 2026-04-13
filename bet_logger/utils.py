@@ -64,7 +64,67 @@ def parse_risk_win(risk_win_text: str) -> tuple:
     return 0.0, 0.0
 
 
-# Complete team lists for sport detection
+# ── Sport detection ──────────────────────────────────────────────
+#
+# Strategy (in order of priority):
+#   1. Sport prefix — some APIs prepend the sport category to descriptions
+#      (e.g. BetOnline: "Football - 123 Team...", "Soccer - MLS - ...")
+#   2. League/keyword patterns — matches league names, acronyms, and
+#      sport-specific terms (e.g. "Premier League", "UFC", "ATP")
+#   3. Team name fallback — hardcoded team lists for the 4 major US leagues
+#      (NFL, NBA, NHL, MLB). Used when the API doesn't provide a sport field.
+
+# Maps a description prefix to the sport label returned.
+# BetOnline descriptions start with these; other books might too.
+# The prefix is stripped after detection, so "Football" here means the
+# API literally starts the description with "Football - ...".
+SPORT_PREFIXES = {
+    'FOOTBALL': '_football',   # Could be NFL or NCAAF — needs further check
+    'BASKETBALL': '_basketball',  # Could be NBA or NCAAM — needs further check
+    'HOCKEY': 'NHL',
+    'BASEBALL': '_baseball',   # Could be MLB or college — needs further check
+    'SOCCER': 'Soccer',
+    'TENNIS': 'Tennis',
+    'FIGHTING': 'MMA',
+    'MARTIAL ARTS': 'MMA',
+    'GOLF': 'Golf',
+    'MOTOR SPORTS': 'NASCAR',
+    'MOTORSPORTS': 'NASCAR',
+    'BOXING': 'Boxing',
+    'RUGBY': 'Rugby',
+    'CRICKET': 'Cricket',
+    'TABLE TENNIS': 'Table Tennis',
+    'ESPORTS': 'Esports',
+    'ENTERTAINMENT': 'Entertainment',
+    'POLITICS': 'Politics',
+}
+
+# League name patterns → sport label.
+# Checked via substring match against the combined text.
+LEAGUE_KEYWORDS = [
+    # Soccer leagues
+    ('PREMIER LEAGUE', 'Soccer'), ('LA LIGA', 'Soccer'), ('SERIE A', 'Soccer'),
+    ('BUNDESLIGA', 'Soccer'), ('LIGUE 1', 'Soccer'), ('CHAMPIONS LEAGUE', 'Soccer'),
+    ('EUROPA LEAGUE', 'Soccer'), ('MLS', 'Soccer'), ('LIGA MX', 'Soccer'),
+    ('WORLD CUP', 'Soccer'), ('CONCACAF', 'Soccer'), ('EPL', 'Soccer'),
+    # Tennis
+    ('ATP', 'Tennis'), ('WTA', 'Tennis'), ('ROLAND GARROS', 'Tennis'),
+    ('WIMBLEDON', 'Tennis'), ('US OPEN TENNIS', 'Tennis'),
+    # MMA/Boxing
+    ('UFC', 'MMA'), ('BELLATOR', 'MMA'), ('PFL', 'MMA'),
+    ('BOXING', 'Boxing'),
+    # Golf
+    ('PGA', 'Golf'), ('LPGA', 'Golf'), ('LIV GOLF', 'Golf'),
+    ('MASTERS', 'Golf'), ('RYDER CUP', 'Golf'),
+    # Racing
+    ('NASCAR', 'NASCAR'), ('FORMULA 1', 'F1'), ('F1', 'F1'),
+    ('INDYCAR', 'IndyCar'),
+    # Other US leagues
+    ('WNBA', 'WNBA'), ('CFL', 'CFL'), ('XFL', 'XFL'), ('UFL', 'UFL'),
+    ('USFL', 'USFL'), ('NLL', 'NLL'), ('MLL', 'MLL'),
+]
+
+# Team name lists — fallback when no prefix or keyword matches.
 NFL_TEAMS = [
     'BEARS', 'LIONS', 'PACKERS', 'VIKINGS',
     'COWBOYS', 'EAGLES', 'GIANTS', 'COMMANDERS',
@@ -90,46 +150,147 @@ NHL_TEAMS = [
     'SENATORS', 'LIGHTNING', 'MAPLE LEAFS', 'HURRICANES', 'BLUE JACKETS',
     'DEVILS', 'ISLANDERS', 'RANGERS', 'FLYERS', 'PENGUINS',
     'CAPITALS', 'BLACKHAWKS', 'AVALANCHE', 'STARS', 'WILD',
-    'PREDATORS', 'BLUES', 'DUCKS', 'COYOTES',
+    'PREDATORS', 'BLUES', 'DUCKS', 'COYOTES', 'UTAH HOCKEY CLUB',
     'FLAMES', 'OILERS', 'SHARKS', 'KRAKEN', 'GOLDEN KNIGHTS',
 ]
+
+MLB_TEAMS = [
+    'YANKEES', 'RED SOX', 'BLUE JAYS', 'RAYS', 'ORIOLES',
+    'WHITE SOX', 'GUARDIANS', 'TWINS', 'ROYALS', 'TIGERS',
+    'ASTROS', 'MARINERS', 'ANGELS', 'ATHLETICS', 'RANGERS',
+    'METS', 'BRAVES', 'PHILLIES', 'MARLINS', 'NATIONALS',
+    'CUBS', 'BREWERS', 'REDS', 'PIRATES', 'CARDINALS',
+    'DODGERS', 'PADRES', 'DIAMONDBACKS', 'ROCKIES', 'GIANTS',
+]
+
+# Teams that appear in multiple leagues need context to disambiguate.
+# "RANGERS" is in both NHL and MLB; "GIANTS" in NFL and MLB; "CARDINALS" in NFL and MLB.
+# We check in league order: NFL > NBA > NHL > MLB, so NFL wins for shared names.
+# This is imperfect but matches the existing behavior. The prefix-based detection
+# (layer 1) resolves this correctly when available.
+
+
+def _detect_from_prefix(text_upper: str) -> str:
+    """Layer 1: Check if text starts with a known sport prefix (e.g. 'Football - ...')."""
+    for prefix, sport in SPORT_PREFIXES.items():
+        if text_upper.startswith(prefix):
+            return sport
+    return ''
+
+
+def _resolve_ambiguous(sport_hint: str, text_upper: str) -> str:
+    """Resolve ambiguous sport hints like '_football' into NFL vs NCAAF.
+
+    When the API tells us the sport category (e.g. "Football") but not the
+    specific league, we check for pro team names to distinguish NFL vs NCAAF.
+    """
+    if sport_hint == '_football':
+        if 'NFL' in text_upper:
+            return 'NFL'
+        for team in NFL_TEAMS:
+            if team in text_upper:
+                return 'NFL'
+        return 'NCAAF'
+
+    if sport_hint == '_basketball':
+        if 'NBA' in text_upper:
+            return 'NBA'
+        for team in NBA_TEAMS:
+            if team in text_upper:
+                return 'NBA'
+        return 'NCAAM'
+
+    if sport_hint == '_baseball':
+        if 'MLB' in text_upper:
+            return 'MLB'
+        for team in MLB_TEAMS:
+            if team in text_upper:
+                return 'MLB'
+        return 'Baseball'
+
+    return sport_hint
 
 
 def parse_sport(*text_args: str) -> str:
     """
     Determine sport from one or more text fields.
+
+    Uses a 3-layer approach:
+      1. Sport prefix (e.g. BetOnline's "Football - ...")
+      2. League/keyword patterns (e.g. "Premier League", "UFC", "ATP")
+      3. Team name fallback (NFL, NBA, NHL, MLB team lists)
+
     Accepts variable number of strings (description, note, selection, etc.)
     and combines them for matching.
     """
     combined = ' '.join(text_args).upper()
+    if not combined.strip():
+        return ''
 
-    # Check team names first (most reliable)
-    for team in NFL_TEAMS:
-        if team in combined:
-            return 'NFL'
+    # Strip device prefix (BetOnline prepends "Desktop - " or "Mobile - ")
+    combined = re.sub(r'^(DESKTOP|MOBILE)\s*-\s*', '', combined)
 
-    for team in NBA_TEAMS:
-        if team in combined:
-            return 'NBA'
+    # Layer 1: Sport prefix — most reliable when available.
+    # This catches BetOnline-style descriptions that start with the sport.
+    sport = _detect_from_prefix(combined)
+    if sport:
+        return _resolve_ambiguous(sport, combined)
 
-    for team in NHL_TEAMS:
-        if team in combined:
-            return 'NHL'
-
-    # Keyword fallbacks (check college before generic 'FOOTBALL'/'BASKETBALL')
+    # Layer 2: League/keyword patterns — catches named leagues and acronyms.
+    # Check college-specific keywords before generic sport keywords to avoid
+    # mis-labeling "College Basketball" as "NBA" just because "BASKETBALL" appears.
     if 'NCAAF' in combined or 'COLLEGE FOOTBALL' in combined:
         return 'NCAAF'
     if 'NCAAB' in combined or 'NCAAM' in combined or 'COLLEGE BASKETBALL' in combined:
         return 'NCAAM'
-    if 'COLLEGE' in combined or 'BOWL' in combined:
-        return 'NCAAF'
-    if 'NFL' in combined or 'FOOTBALL' in combined:
+
+    for keyword, sport in LEAGUE_KEYWORDS:
+        if keyword in combined:
+            return sport
+
+    # Generic sport keywords (after college check to avoid misclassification)
+    if 'NFL' in combined:
         return 'NFL'
-    if 'NBA' in combined or 'BASKETBALL' in combined:
+    if 'NBA' in combined:
         return 'NBA'
     if 'NHL' in combined or 'HOCKEY' in combined:
         return 'NHL'
     if 'MLB' in combined or 'BASEBALL' in combined:
         return 'MLB'
+    if 'FOOTBALL' in combined:
+        # Bare "FOOTBALL" without NFL/NCAAF — check for pro teams
+        for team in NFL_TEAMS:
+            if team in combined:
+                return 'NFL'
+        return 'NCAAF'
+    if 'BASKETBALL' in combined:
+        for team in NBA_TEAMS:
+            if team in combined:
+                return 'NBA'
+        return 'NCAAM'
+    if 'SOCCER' in combined:
+        return 'Soccer'
+    if 'TENNIS' in combined:
+        return 'Tennis'
+
+    # Baseball indicator: pitcher handedness notation (e.g. "SALE - L / SORIANO -R")
+    # is unique to baseball descriptions from BFA and Wagerzon. Check before
+    # team scans so ambiguous names (CARDINALS, GIANTS, RANGERS) resolve to MLB.
+    if re.search(r'- [RL]\s*[/)]', combined):
+        return 'MLB'
+
+    # Layer 3: Team name fallback — scan for known team names.
+    for team in NFL_TEAMS:
+        if team in combined:
+            return 'NFL'
+    for team in NBA_TEAMS:
+        if team in combined:
+            return 'NBA'
+    for team in NHL_TEAMS:
+        if team in combined:
+            return 'NHL'
+    for team in MLB_TEAMS:
+        if team in combined:
+            return 'MLB'
 
     return ''
