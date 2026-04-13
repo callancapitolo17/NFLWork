@@ -410,17 +410,18 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
     out = {"fg": {"spreads": {}, "totals": {}},
            "f5": {"spreads": {}, "totals": {}}}
 
-    # Each (sign, line) key maps to a LIST of candidate sel_ids. DK returns
-    # multiple suffix variants (_1, _3) per selection — one may be "closed"
-    # while another is live. We'll try them in order, preferring the main
-    # market and deduping. Pricing code retries through the list.
+    # Each (sign, line, participant) key maps to a LIST of candidate sel_ids.
+    # The suffix _1 = home team (participant 1), _3 = away team (participant 3).
+    # These represent DIFFERENT TEAMS, not open/closed variants.  Keying by
+    # participant ensures the pricing code selects the correct team's spread.
     def assign_spread(per_mnums, per_main, per_key):
         bucket = out[per_key]["spreads"]
         for mnum, sign, line, suf in spread_matches:
             if mnum not in per_mnums:
                 continue
             line_val = int(line) / 100
-            key = (sign, line_val)
+            participant = suf[1:]  # "_1" -> "1", "_3" -> "3"
+            key = (sign, line_val, participant)
             sel_id = f"0HC{mnum}{sign}{line}{suf}"
             lst = bucket.setdefault(key, [])
             if sel_id in lst:
@@ -641,8 +642,9 @@ def scrape_dk_sgp(verbose: bool = False):
 
             spread = abs(spread_line)
 
-            home_spread_sels = sel_ids["spreads"].get((home_sign, spread)) or []
-            away_spread_sels = sel_ids["spreads"].get((away_sign, spread)) or []
+            # Suffix _1 = home team, _3 = away team
+            home_spread_sels = sel_ids["spreads"].get((home_sign, spread, "1")) or []
+            away_spread_sels = sel_ids["spreads"].get((away_sign, spread, "3")) or []
             over_sels = sel_ids["totals"].get(("O", total)) or []
             under_sels = sel_ids["totals"].get(("U", total)) or []
 
@@ -761,7 +763,9 @@ def scrape_dk_sgp(verbose: bool = False):
                 "source": "draftkings_direct",
             })
 
+    # Validate directional consistency before writing
     if all_rows:
+        _validate_spread_direction(all_rows, game_lookup, parlay_lines)
         upsert_sgp_odds(all_rows)
         print(f"\n{'='*60}")
         print(f"  Wrote {len(all_rows)} DK SGP odds in {time.time() - t0:.1f}s total")
@@ -770,6 +774,50 @@ def scrape_dk_sgp(verbose: bool = False):
         print("\nNo SGP odds collected.")
 
     return all_rows
+
+
+def _validate_spread_direction(all_rows: list[dict], game_lookup: dict,
+                               parlay_lines: dict):
+    """Warn if DK's devigged home probability contradicts the spread direction.
+
+    Groups the 4 combos per (game, period), devigs, and checks that the home
+    team's implied win probability is consistent with being the favorite or
+    underdog. A large violation (e.g. home underdog at >60%) signals that the
+    participant suffix mapping may be wrong.
+    """
+    from collections import defaultdict
+    by_key = defaultdict(dict)  # (game_id, period) -> {combo: decimal}
+    for row in all_rows:
+        by_key[(row["game_id"], row["period"])][row["combo"]] = row["sgp_decimal"]
+
+    for (gid, period), combos in by_key.items():
+        if len(combos) < 4:
+            continue
+        prefix = "F5 " if period == "F5" else ""
+        home_decs = [d for c, d in combos.items() if c.startswith(f"{prefix}Home")]
+        away_decs = [d for c, d in combos.items() if c.startswith(f"{prefix}Away")]
+        if len(home_decs) != 2 or len(away_decs) != 2:
+            continue
+
+        vig = sum(1 / d for d in combos.values())
+        home_prob = sum(1 / d for d in home_decs) / vig
+
+        lines = parlay_lines.get(gid, {})
+        sp_key = "f5_spread_line" if period == "F5" else "fg_spread_line"
+        spread = lines.get(sp_key, 0) or 0
+        game = game_lookup.get(gid, {})
+        label = f"{game.get('away_team', '?')} @ {game.get('home_team', '?')} [{period}]"
+
+        # Only validate ±0.5 spreads (moneyline-equivalent). For ±1.5
+        # spreads, a favorite covering -1.5 legitimately has < 40% probability.
+        if abs(spread) > 0.5:
+            continue
+        if spread > 0 and home_prob > 0.60:
+            print(f"  WARNING: {label}: home underdog (+{spread}) but DK "
+                  f"home_prob={home_prob:.1%} — possible participant mismatch")
+        elif spread < 0 and home_prob < 0.40:
+            print(f"  WARNING: {label}: home favorite ({spread}) but DK "
+                  f"home_prob={home_prob:.1%} — possible participant mismatch")
 
 
 def main():
