@@ -99,33 +99,46 @@ def do_login(page):
 
     print("  Logging in...")
     try:
-        login_btn = page.locator('button:has-text("Log In"), a:has-text("Log In"), [data-testid="login"]')
-        if login_btn.count() > 0:
-            login_btn.first.click()
-            time.sleep(3)
+        # Check if we're already on the Keycloak login form.
+        # The persistent profile sometimes redirects straight to Keycloak
+        # instead of the main BetOnline site. In that case we skip the
+        # "Log In" button click and fill credentials directly.
+        on_keycloak = (
+            "auth" in page.url.lower() or
+            "login" in page.url.lower() or
+            page.locator('#kc-login, input[name="username"]').count() > 0
+        )
 
-        url = page.url
-        if "auth" in url.lower() or "login" in url.lower():
-            # Keycloak form — type credentials with human-like delays
-            user_field = page.locator('input[name="username"], input[type="text"]').first
-            pass_field = page.locator('input[name="password"], input[type="password"]').first
+        if not on_keycloak:
+            # On the main site — click the Log In button to navigate to Keycloak
+            login_btn = page.locator('[data-testid="login"], a:has-text("Log In")')
+            if login_btn.count() > 0:
+                login_btn.first.click()
+                time.sleep(3)
 
-            user_field.click()
-            page.keyboard.type(BETONLINE_USERNAME, delay=50)
-            pass_field.click()
-            page.keyboard.type(BETONLINE_PASSWORD, delay=50)
+        # Now we should be on the Keycloak form — fill credentials
+        user_field = page.locator('input[name="username"]')
+        if user_field.count() == 0:
+            raise RuntimeError(f"No username field found. URL: {page.url}")
 
-            submit = page.locator('input[type="submit"], button[type="submit"], #kc-login')
-            if submit.count() > 0:
-                submit.first.click()
-            else:
-                page.keyboard.press("Enter")
+        user_field.first.click()
+        page.keyboard.type(BETONLINE_USERNAME, delay=50)
 
-            time.sleep(5)
-            print(f"  Login submitted. URL: {page.url}")
-            return
+        pass_field = page.locator('input[name="password"]').first
+        pass_field.click()
+        page.keyboard.type(BETONLINE_PASSWORD, delay=50)
 
-        raise RuntimeError("Could not find login form after clicking Log In button")
+        # Click submit — the #kc-login button enables after fields are filled
+        time.sleep(0.5)
+        submit = page.locator('#kc-login, input[type="submit"], button[type="submit"]')
+        if submit.count() > 0:
+            submit.first.click()
+        else:
+            page.keyboard.press("Enter")
+
+        time.sleep(5)
+        print(f"  Login submitted. URL: {page.url}")
+        return
 
     except Exception as e:
         raise RuntimeError(f"Auto-login failed: {e}")
