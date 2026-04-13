@@ -118,7 +118,7 @@ def clean_desc(raw: str) -> str:
     We strip the rotation number, convert unicode fractions, and clean HTML.
     """
     desc = raw.replace('\u00bd', '.5').replace('\u00bc', '.25').replace('\u00be', '.75')
-    desc = desc.replace('<BR>', ' ').replace('<br>', ' ')
+    desc = re.sub(r'<[^>]+>', ' ', desc)  # Strip all HTML tags (<BR>, <em>, etc.)
     desc = re.sub(r'^\[\d+\]\s*', '', desc)
     desc = re.sub(r'\s+', ' ', desc).strip()
     return desc
@@ -183,7 +183,7 @@ def map_sport(id_sport: str) -> str:
         'NASCAR': 'NASCAR',
         'WNBA': 'WNBA',
     }
-    return mapping.get(id_sport, id_sport)
+    return mapping.get(id_sport, '')
 
 
 def map_result(result_str: str) -> str:
@@ -313,7 +313,7 @@ def parse_api_bets(history: dict) -> list:
 # ── Main ────────────────────────────────────────────────────────
 
 
-def scrape_wagerzon(weeks_back: int = 1) -> list:
+def scrape_wagerzon(weeks_back: int = 1, all_weeks: bool = False) -> list:
     """
     Log into Wagerzon via HTTP and fetch bet history from the JSON API.
 
@@ -323,6 +323,8 @@ def scrape_wagerzon(weeks_back: int = 1) -> list:
 
     Args:
         weeks_back: Which week to fetch (0 = current, 1 = last week, etc.)
+        all_weeks: If True, fetch weeks 0 through N until an empty week is
+                   found. Useful for catching up after missed weeks.
 
     Returns:
         List of parsed bet dictionaries
@@ -339,18 +341,32 @@ def scrape_wagerzon(weeks_back: int = 1) -> list:
     print("Logging in to Wagerzon...")
     login(session)
 
-    # Step 2: Fetch bet history JSON
-    print(f"Fetching bet history (week {weeks_back})...")
-    history = fetch_history_json(session, week=weeks_back)
+    # Step 2: Determine which weeks to fetch
+    if all_weeks:
+        weeks_to_fetch = range(0, 10)  # cap at 10 weeks back
+    else:
+        weeks_to_fetch = [weeks_back]
 
-    days = history.get('details', [])
-    total_wagers = sum(len(d.get('wager', [])) for d in days)
-    print(f"API returned {total_wagers} wagers across {len(days)} days\n")
+    # Step 3: Fetch and parse each week
+    all_bets = []
+    for week in weeks_to_fetch:
+        week_label = 'This Week' if week == 0 else f'Week {week}'
+        print(f"Fetching bet history ({week_label})...")
+        history = fetch_history_json(session, week=week)
 
-    # Step 3: Parse into standard bet format
-    bets = parse_api_bets(history)
+        days = history.get('details', [])
+        total_wagers = sum(len(d.get('wager', [])) for d in days)
+        print(f"  {total_wagers} wagers across {len(days)} days")
 
-    return bets
+        if total_wagers == 0 and all_weeks and week > 0:
+            print(f"  Empty week — stopping.\n")
+            break
+
+        bets = parse_api_bets(history)
+        all_bets.extend(bets)
+        print()
+
+    return all_bets
 
 
 if __name__ == "__main__":
@@ -359,6 +375,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Scrape bet history from Wagerzon')
     parser.add_argument('--weeks', type=int, default=1,
                         help='Weeks back to fetch (0=This Week, 1=Last Week, default: 1)')
+    parser.add_argument('--all-weeks', action='store_true',
+                        help='Fetch all weeks until an empty one (catches up after missed weeks)')
     parser.add_argument('--dry-run', action='store_true',
                         help='Scrape but do not upload to Google Sheets')
     args = parser.parse_args()
@@ -368,7 +386,7 @@ if __name__ == "__main__":
     print("=" * 60)
 
     try:
-        bets = scrape_wagerzon(weeks_back=args.weeks)
+        bets = scrape_wagerzon(weeks_back=args.weeks, all_weeks=args.all_weeks)
     except Exception as e:
         print(f"\n❌ Error: {e}")
         sys.exit(1)

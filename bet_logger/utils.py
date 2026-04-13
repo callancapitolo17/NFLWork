@@ -273,6 +273,12 @@ def parse_sport(*text_args: str) -> str:
     if 'TENNIS' in combined:
         return 'Tennis'
 
+    # Baseball indicator: pitcher handedness notation (e.g. "SALE - L / SORIANO -R")
+    # is unique to baseball descriptions from BFA and Wagerzon. Check before
+    # team scans so ambiguous names (CARDINALS, GIANTS, RANGERS) resolve to MLB.
+    if re.search(r'- [RL]\s*[/)]', combined):
+        return 'MLB'
+
     # Layer 3: Team name fallback — scan for known team names.
     for team in NFL_TEAMS:
         if team in combined:
