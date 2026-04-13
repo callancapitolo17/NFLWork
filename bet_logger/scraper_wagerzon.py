@@ -4,6 +4,9 @@ Wagerzon Bet History Scraper
 Scrapes bet history from Wagerzon and uploads to Google Sheets.
 
 Auth: ASP.NET form POST (same approach as wagerzon_odds/scraper_v2.py).
+Data: HistoryHelper.aspx JSON API — returns structured bet data with
+sport IDs, risk/win amounts, and individual leg details.
+
 No browser/Playwright required — pure HTTP via requests.Session.
 """
 
@@ -11,7 +14,6 @@ import re
 import os
 import sys
 from datetime import datetime
-from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 import requests
 from utils import (
@@ -24,187 +26,12 @@ load_dotenv()
 
 # Configuration
 WAGERZON_BASE_URL = "https://backend.wagerzon.com"
-WAGERZON_HISTORY_URL = f"{WAGERZON_BASE_URL}/wager/History.aspx"
+WAGERZON_HISTORY_URL = f"{WAGERZON_BASE_URL}/wager/HistoryHelper.aspx"
 WAGERZON_USERNAME = os.getenv("WAGERZON_USERNAME")
 WAGERZON_PASSWORD = os.getenv("WAGERZON_PASSWORD")
 
 
-def parse_bet_type(description_strong: str, description_spans: list) -> str:
-    """Extract bet type from description."""
-    strong_lower = description_strong.lower()
-
-    if "prop builder" in strong_lower:
-        # Check if it's a parlay or straight from the span content
-        if description_spans:
-            first_span = description_spans[0].lower()
-            if "[parlay:" in first_span:
-                return "Parlay"
-            elif "[straight:" in first_span:
-                return "Straight"
-        return "Prop"
-    elif "parlay" in strong_lower:
-        return "Parlay"
-    elif "straight" in strong_lower:
-        return "Straight"
-    elif "prop:" in strong_lower:
-        return "Prop"
-    elif "trifecta" in strong_lower:
-        return "Trifecta"
-    elif "superfecta" in strong_lower:
-        return "Superfecta"
-    else:
-        return ""
-
-
-def parse_line(description_spans: list) -> str:
-    """Extract line/spread from description if present."""
-    for span in description_spans:
-        # Look for patterns like "Over 0.5", "+3.5", "-7.5", "Under 45.5"
-        over_under = re.search(r'(Over|Under)\s+([\d.]+)', span, re.IGNORECASE)
-        if over_under:
-            return f"{over_under.group(1)} {over_under.group(2)}"
-
-        # Look for spread patterns with Points - avoid matching standalone odds like +350
-        spread_with_points = re.search(r'([+-][\d.]+)\s*Points?', span, re.IGNORECASE)
-        if spread_with_points:
-            return spread_with_points.group(1)
-
-    return ""
-
-
-def clean_rtf_encoding(text: str) -> str:
-    """Clean RTF encoding artifacts from text."""
-    # Replace common RTF escape sequences
-    replacements = {
-        r"\'bd": "½",
-        r"\'bc": "¼",
-        r"\'be": "¾",
-        "&amp;": "&",
-    }
-    for pattern, replacement in replacements.items():
-        text = text.replace(pattern, replacement)
-    return text
-
-
-def clean_description(description_strong: str, description_spans: list) -> str:
-    """Create clean bet description."""
-    parts = []
-
-    # Add the main title if it's informative
-    if description_strong and "prop builder" not in description_strong.lower():
-        parts.append(description_strong)
-
-    # Add span content, cleaning up the bracket codes
-    for span in description_spans:
-        # Remove the [Parlay: xxx] or [Straight: xxx] prefixes
-        cleaned = re.sub(r'\[(Parlay|Straight):\s*\d+\]\s*', '', span)
-        # Remove [xxx] number codes
-        cleaned = re.sub(r'\[\d+\]\s*', '', cleaned)
-        cleaned = cleaned.strip()
-        if cleaned:
-            parts.append(cleaned)
-
-    result = " | ".join(parts) if parts else description_strong
-    return clean_rtf_encoding(result)
-
-
-def parse_bets_from_html(html_content: str) -> list:
-    """Parse bet data from HTML table."""
-    soup = BeautifulSoup(html_content, 'html.parser')
-    table = soup.find('table', id='wager-results-table')
-
-    if not table:
-        print("Could not find wager-results-table")
-        return []
-
-    bets = []
-    rows = table.find_all('tr', class_='history-GameRow')
-
-    for row in rows:
-        cells = row.find_all('td')
-        if len(cells) < 6:
-            continue
-
-        # Skip transfer rows
-        description_div = cells[2].find('div')
-        if description_div:
-            strong = description_div.find('strong')
-            if strong and 'transfer' in strong.get_text().lower():
-                continue
-
-        try:
-            # Parse Placed (date)
-            placed_text = cells[0].get_text(separator=' ').strip()
-            date_match = re.search(r'(\d{2}/\d{2}/\d{4})', placed_text)
-            if date_match:
-                date_str = date_match.group(1)
-                date_obj = datetime.strptime(date_str, '%m/%d/%Y')
-                formatted_date = date_obj.strftime('%-m/%-d/%y')  # Format as "1/6/26" to match existing data
-            else:
-                formatted_date = ""
-
-            # Parse Description
-            description_strong = ""
-            description_spans = []
-
-            if description_div:
-                strong = description_div.find('strong')
-                if strong:
-                    description_strong = strong.get_text().strip()
-
-                spans = description_div.find_all('span')
-                for span in spans:
-                    # Skip result/italic spans
-                    if 'italic' in span.get('style', ''):
-                        continue
-                    span_text = span.get_text(separator=' ').strip()
-                    if span_text:
-                        description_spans.append(span_text)
-
-            # Parse Risk/Win
-            risk_win_text = cells[3].get_text().strip()
-            risk_win_match = re.search(r'([\d.]+)\s*/\s*([\d.]+)', risk_win_text)
-            if risk_win_match:
-                risk = float(risk_win_match.group(1))
-                win = float(risk_win_match.group(2))
-                american_odds = calculate_american_odds(risk, win)
-                decimal_odds = calculate_decimal_odds_from_american(american_odds)
-                bet_amount = risk
-            else:
-                american_odds = None
-                decimal_odds = None
-                bet_amount = None
-
-            # Parse Result
-            result_text = cells[4].get_text().strip().upper()
-            if 'WIN' in result_text and 'LOSE' not in result_text:
-                result = "win"
-            elif 'LOSE' in result_text:
-                result = "loss"
-            else:
-                result = ""
-
-            # Build bet record
-            bet = {
-                'date': formatted_date,
-                'platform': 'Wagerzon',
-                'sport': parse_sport(' '.join(description_spans)),
-                'description': clean_description(description_strong, description_spans),
-                'bet_type': parse_bet_type(description_strong, description_spans),
-                'line': parse_line(description_spans),
-                'odds': american_odds,
-                'bet_amount': bet_amount,
-                'dec': decimal_odds,
-                'result': result
-            }
-
-            bets.append(bet)
-
-        except Exception as e:
-            print(f"Error parsing row: {e}")
-            continue
-
-    return bets
+# ── Auth ────────────────────────────────────────────────────────
 
 
 def login(session: requests.Session):
@@ -219,7 +46,7 @@ def login(session: requests.Session):
     resp.raise_for_status()
 
     # If already redirected to a logged-in page, session is still valid
-    if "History" in resp.url or "NewSchedule" in resp.url:
+    if "History" in resp.url or "NewSchedule" in resp.url or "Welcome" in resp.url:
         print("Already authenticated")
         return
 
@@ -247,12 +74,255 @@ def login(session: requests.Session):
     print("Logged in successfully")
 
 
-def scrape_wagerzon(days_back: int = 7) -> list:
-    """
-    Log into Wagerzon via HTTP and scrape bet history.
+# ── JSON API ────────────────────────────────────────────────────
 
-    Uses requests.Session instead of a browser — faster, more reliable,
-    and doesn't break on headless click timeouts.
+
+def fetch_history_json(session: requests.Session, week: int = 0) -> dict:
+    """Fetch bet history JSON from HistoryHelper.aspx.
+
+    The React widget on History.aspx calls this endpoint to load data.
+    Returns structured JSON with daily breakdowns and individual wagers.
+
+    Args:
+        week: Week offset (0 = current week, 1 = last week, etc.)
+    """
+    resp = session.get(
+        WAGERZON_HISTORY_URL,
+        params={"week": week},
+        headers={
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json",
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+
+    data = resp.json()
+    result = data.get("result", {})
+
+    if "ErrorMessage" in result:
+        raise RuntimeError(f"API error: {result['ErrorMessage']}")
+
+    return result
+
+
+# ── Parsing ─────────────────────────────────────────────────────
+
+
+def clean_desc(raw: str) -> str:
+    """Clean a DetailDesc string from the API.
+
+    The API returns descriptions like:
+      "[967] TOTAL o7½-120 (CHI CUBS vrs TB RAYS)<BR>( JAMESON TAILLON - R / SHANE MCCLANAHAN - L )"
+
+    We strip the rotation number, convert unicode fractions, and clean HTML.
+    """
+    desc = raw.replace('\u00bd', '.5').replace('\u00bc', '.25').replace('\u00be', '.75')
+    desc = desc.replace('<BR>', ' ').replace('<br>', ' ')
+    desc = re.sub(r'^\[\d+\]\s*', '', desc)
+    desc = re.sub(r'\s+', ' ', desc).strip()
+    return desc
+
+
+def parse_line_from_desc(desc: str) -> str:
+    """Extract line/spread from a cleaned description."""
+    # Over/Under: "TOTAL o7.5-120 ..."
+    ou = re.search(r'TOTAL\s+([ou])([\d.]+)', desc, re.IGNORECASE)
+    if ou:
+        direction = 'Over' if ou.group(1).lower() == 'o' else 'Under'
+        return f"{direction} {ou.group(2)}"
+
+    # Spread: "TEAM -3.5-110"
+    spread = re.search(r'([+-][\d.]+)(?:[+-]\d+|EV)\s*(?:\(|$)', desc)
+    if spread:
+        return spread.group(1)
+
+    return ''
+
+
+def parse_odds_from_desc(desc: str) -> int:
+    """Extract American odds from a cleaned description.
+
+    Patterns: "-110", "+150", "EV" (even = +100)
+    """
+    # TOTAL o7.5-120 or TEAM -3.5+150
+    match = re.search(r'[\d.]+([+-]\d+)\s*(?:\(|$)', desc)
+    if match:
+        return int(match.group(1))
+
+    # EV (even money)
+    if re.search(r'[\d.]+EV\s*(?:\(|$)', desc, re.IGNORECASE):
+        return 100
+
+    # Moneyline: "TEAM +168"
+    match = re.search(r'\s([+-]\d+)\s*(?:\(|$)', desc)
+    if match:
+        return int(match.group(1))
+
+    return 0
+
+
+def map_sport(id_sport: str) -> str:
+    """Map Wagerzon's IdSport field to our standard sport labels.
+
+    The API returns sport IDs like "MLB", "NFL", "NBA", etc.
+    This is the primary sport detection — no guessing from team names.
+    """
+    mapping = {
+        'MLB': 'MLB',
+        'NFL': 'NFL',
+        'NBA': 'NBA',
+        'NHL': 'NHL',
+        'CFB': 'NCAAF',
+        'CBK': 'NCAAM',
+        'SOC': 'Soccer',
+        'TNS': 'Tennis',
+        'MMA': 'MMA',
+        'BOX': 'Boxing',
+        'GLF': 'Golf',
+        'NASCAR': 'NASCAR',
+        'WNBA': 'WNBA',
+    }
+    return mapping.get(id_sport, id_sport)
+
+
+def map_result(result_str: str) -> str:
+    """Map API result to standard format."""
+    r = result_str.upper()
+    if r == 'WIN':
+        return 'win'
+    elif r == 'LOSE':
+        return 'loss'
+    elif r in ('PUSH', 'CANCELLED', 'VOID', 'NO ACTION'):
+        return 'push'
+    return ''
+
+
+def parse_bet_type(header_desc: str) -> str:
+    """Extract bet type from the wager's HeaderDesc field.
+
+    Examples: "STRAIGHT", "PARLAY (2 TEAMS)", "TEASER (3 TEAMS)"
+    """
+    h = header_desc.upper()
+    if 'PARLAY' in h:
+        return 'Parlay'
+    elif 'TEASER' in h:
+        return 'Teaser'
+    elif 'STRAIGHT' in h:
+        return 'Straight'
+    elif 'PROP' in h:
+        return 'Prop'
+    elif 'IF BET' in h:
+        return 'If Bet'
+    return 'Straight'
+
+
+def parse_date(date_str: str) -> str:
+    """Convert API date (MM/DD/YYYY) to sheet format (M/D/YY)."""
+    try:
+        dt = datetime.strptime(date_str, '%m/%d/%Y')
+        return dt.strftime('%-m/%-d/%y')
+    except (ValueError, TypeError):
+        return date_str
+
+
+def parse_api_bets(history: dict) -> list:
+    """Convert HistoryHelper JSON to the standard bet dict format.
+
+    The JSON has a 'details' list where each item is a day with a
+    list of wagers. Each wager has legs in its own 'details' list.
+    """
+    bets = []
+    days = history.get('details', [])
+
+    for day in days:
+        for wager in day.get('wager', []):
+            try:
+                # Skip non-wager transactions (cash in/out, transfers)
+                if wager.get('WagerOrTrans') != 'WAGER':
+                    continue
+
+                risk = float(wager.get('RiskAmount', 0))
+                win = float(wager.get('WinAmount', 0))
+                result = map_result(wager.get('Result', ''))
+
+                # Skip pending/open bets
+                if not result:
+                    continue
+
+                # Calculate odds from risk/win
+                american_odds = calculate_american_odds(risk, win) if risk > 0 and win > 0 else 0
+                decimal_odds = calculate_decimal_odds_from_american(american_odds) if american_odds else 0
+
+                # Build description from legs
+                legs = wager.get('details', [])
+                leg_descs = []
+                line = ''
+                sport = ''
+
+                for leg in legs:
+                    raw = leg.get('DetailDesc', '')
+                    cleaned = clean_desc(raw)
+                    leg_descs.append(cleaned)
+
+                    # Use first leg for line and sport
+                    if not line:
+                        line = parse_line_from_desc(cleaned)
+                    if not sport:
+                        # IdSport from the API is the primary source
+                        id_sport = leg.get('IdSport', '')
+                        sport = map_sport(id_sport) if id_sport else ''
+
+                # Fallback: parse sport from description text if API didn't provide it
+                if not sport:
+                    sport = parse_sport(' '.join(leg_descs))
+
+                description = ' | '.join(leg_descs)
+                bet_type = parse_bet_type(wager.get('HeaderDesc', ''))
+
+                # For straight bets, try to get more precise odds from the description
+                if bet_type == 'Straight' and len(legs) == 1:
+                    desc_odds = parse_odds_from_desc(clean_desc(legs[0].get('DetailDesc', '')))
+                    if desc_odds:
+                        american_odds = desc_odds
+                        decimal_odds = calculate_decimal_odds_from_american(american_odds)
+
+                bet = {
+                    'date': parse_date(wager.get('PlacedDate', '')),
+                    'platform': 'Wagerzon',
+                    'sport': sport,
+                    'description': description,
+                    'bet_type': bet_type,
+                    'line': line,
+                    'odds': american_odds,
+                    'bet_amount': risk,
+                    'dec': decimal_odds,
+                    'result': result,
+                }
+
+                bets.append(bet)
+                print(f"  {bet['date']} - {bet_type} - {description[:60]} - ${risk:.2f} - {result}")
+
+            except Exception as e:
+                print(f"  Error parsing wager: {e}")
+                continue
+
+    return bets
+
+
+# ── Main ────────────────────────────────────────────────────────
+
+
+def scrape_wagerzon(weeks_back: int = 1) -> list:
+    """
+    Log into Wagerzon via HTTP and fetch bet history from the JSON API.
+
+    Uses HistoryHelper.aspx — the same endpoint the React frontend calls.
+    Returns structured data with sport IDs, so no HTML parsing or team
+    name guessing needed.
+
+    Args:
+        weeks_back: Which week to fetch (0 = current, 1 = last week, etc.)
 
     Returns:
         List of parsed bet dictionaries
@@ -269,74 +339,57 @@ def scrape_wagerzon(days_back: int = 7) -> list:
     print("Logging in to Wagerzon...")
     login(session)
 
-    # Step 2: Fetch the bet history page HTML
-    print("Fetching bet history page...")
-    resp = session.get(WAGERZON_HISTORY_URL, timeout=15)
-    resp.raise_for_status()
+    # Step 2: Fetch bet history JSON
+    print(f"Fetching bet history (week {weeks_back})...")
+    history = fetch_history_json(session, week=weeks_back)
 
-    html = resp.text
+    days = history.get('details', [])
+    total_wagers = sum(len(d.get('wager', [])) for d in days)
+    print(f"API returned {total_wagers} wagers across {len(days)} days\n")
 
-    # Check if we got redirected back to login (auth failed silently)
-    if "BtnSubmit" in html and "Account" in html and "wager-results-table" not in html:
-        raise RuntimeError("Auth session invalid — redirected back to login page")
-
-    # Step 3: Parse the HTML using the existing parser
-    bets = parse_bets_from_html(html)
+    # Step 3: Parse into standard bet format
+    bets = parse_api_bets(history)
 
     return bets
 
 
-def scrape_from_file(filepath: str) -> list:
-    """Parse bets from a saved HTML file (for testing)."""
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
-
-    # Handle RTF wrapper if present
-    if content.startswith('{\\rtf'):
-        # Extract HTML from RTF
-        html_match = re.search(r'<div class="table-responsive">.*</div>', content, re.DOTALL)
-        if html_match:
-            content = html_match.group(0)
-
-    return parse_bets_from_html(content)
-
-
 if __name__ == "__main__":
-    import sys
+    import argparse
 
-    if len(sys.argv) > 1 and sys.argv[1] == "--test":
-        # Test mode: parse from the saved RTF file
-        test_file = "/Users/callancapitolo/Desktop/wagerzon.rtf"
-        print(f"Testing parser with {test_file}...")
-        bets = scrape_from_file(test_file)
+    parser = argparse.ArgumentParser(description='Scrape bet history from Wagerzon')
+    parser.add_argument('--weeks', type=int, default=1,
+                        help='Weeks back to fetch (0=This Week, 1=Last Week, default: 1)')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='Scrape but do not upload to Google Sheets')
+    args = parser.parse_args()
 
-        print(f"\nFound {len(bets)} bets:\n")
-        for bet in bets:
-            print(f"Date: {bet['date']}")
-            print(f"Platform: {bet['platform']}")
-            print(f"Sport: {bet['sport']}")
-            print(f"Description: {bet['description']}")
-            print(f"Bet Type: {bet['bet_type']}")
-            print(f"Line: {bet['line']}")
-            print(f"Odds: {bet['odds']}")
-            print(f"Bet Amount: ${bet['bet_amount']}")
-            print(f"Result: {bet['result']}")
-            print("-" * 50)
-    else:
-        # Production mode: scrape from website
-        print("Starting Wagerzon scraper...")
-        try:
-            bets = scrape_wagerzon()
-        except Exception as e:
-            print(f"\n❌ Error: {e}")
-            sys.exit(1)
+    print("=" * 60)
+    print("WAGERZON BET HISTORY SCRAPER")
+    print("=" * 60)
 
-        print(f"\nScraped {len(bets)} bets")
+    try:
+        bets = scrape_wagerzon(weeks_back=args.weeks)
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        sys.exit(1)
 
-        if not bets:
-            print("No bets found — exiting with error")
-            sys.exit(1)
+    print(f"\n{'=' * 60}")
+    print(f"Successfully scraped {len(bets)} bets from Wagerzon")
+    print(f"{'=' * 60}\n")
 
-        # Import and use sheets module
+    if bets and not args.dry_run:
         from sheets import append_bets_to_sheet
-        append_bets_to_sheet(bets)
+        result = append_bets_to_sheet(bets)
+
+        if result['status'] == 'success':
+            print(f"\n✅ SUCCESS! Added {result['rows_added']} new bets to sheet")
+            print(f"   Rows {result['start_row']} to {result['end_row']}")
+        elif result['status'] == 'skipped':
+            print(f"\n⚠️  {result['message']}")
+        else:
+            print(f"\n❌ Error uploading to sheets: {result.get('message', 'Unknown error')}")
+    elif args.dry_run:
+        print("Dry run — skipping upload to Google Sheets")
+    elif not bets:
+        print("No bets found to upload")
+        sys.exit(1)

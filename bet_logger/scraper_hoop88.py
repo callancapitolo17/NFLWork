@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """
 Hoop88 Bet History Scraper
-Scrapes bet history from Hoop88 and uploads to Google Sheets.
-
-Auth: JWT via /cloud/api/System/authenticateCustomer (same approach as hoop88_odds/scraper.py).
-No browser/Playwright required — pure HTTP via requests.Session.
+Scrapes bet history from Hoop88 and uploads to Google Sheets
 """
 
 import os
@@ -13,7 +10,6 @@ import re
 from datetime import datetime
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-import requests
 from utils import (
     calculate_american_odds,
     calculate_american_odds_from_line,
@@ -23,6 +19,12 @@ from utils import (
     parse_risk_win,
 )
 
+# Playwright import
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:
+    sync_playwright = None
+
 from sheets import append_bets_to_sheet
 
 load_dotenv()
@@ -31,7 +33,7 @@ load_dotenv()
 HOOP88_URL = os.getenv("HOOP88_URL", "https://hoop88.com")
 HOOP88_USERNAME = os.getenv("HOOP88_USERNAME")
 HOOP88_PASSWORD = os.getenv("HOOP88_PASSWORD")
-API_BASE = f"{HOOP88_URL}/cloud/api"
+HOOP88_HISTORY_URL = "https://hoop88.com/sports.html?v=1768432347363"
 
 
 def parse_bet_type(type_label: str) -> str:
@@ -403,85 +405,13 @@ def parse_bets_from_html(html_content: str) -> list:
     return bets
 
 
-def login(session: requests.Session) -> str:
-    """Login to Hoop88 via JWT and return the auth token.
-
-    Same auth approach as hoop88_odds/scraper.py:
-    POST /cloud/api/System/authenticateCustomer with credentials.
-    Returns JWT on success (HTTP 200). HTTP 204 = bad credentials.
+def scrape_hoop88(weeks_back: int = 1, headless: bool = True) -> list:
     """
-    domain = HOOP88_URL.replace("https://", "").replace("http://", "")
-    resp = session.post(f"{API_BASE}/System/authenticateCustomer", data={
-        "customerID": HOOP88_USERNAME,
-        "password": HOOP88_PASSWORD,
-        "state": "true",
-        "multiaccount": "1",
-        "response_type": "code",
-        "client_id": HOOP88_USERNAME,
-        "domain": domain,
-        "redirect_uri": domain,
-        "operation": "authenticateCustomer",
-        "RRO": "1",
-    }, timeout=15)
-
-    if resp.status_code == 204:
-        raise RuntimeError("Login failed — bad credentials (HTTP 204)")
-    resp.raise_for_status()
-
-    data = resp.json()
-    token = data.get("code")
-    if not token:
-        raise RuntimeError(f"Login succeeded but no token in response: {list(data.keys())}")
-
-    print("✅ Login successful")
-    return token
-
-
-def fetch_figures(session: requests.Session, token: str, weeks_back: int = 1) -> str:
-    """Fetch the weekly figures HTML from Hoop88's figures API.
-
-    The figures page contains a table with bet details for each day.
-    The API endpoint mirrors what the JS frontend calls when you click
-    on the Balance box and select a week.
-    """
-    headers = {"Authorization": f"Bearer {token}"}
-
-    # Fetch the weekly figures — this returns HTML that includes bet rows
-    resp = session.post(f"{API_BASE}/Figures/get-figure", data={
-        "week": str(weeks_back),
-    }, headers=headers, timeout=15)
-    resp.raise_for_status()
-
-    return resp.text
-
-
-def fetch_figure_detail(session: requests.Session, token: str, weeks_back: int = 1) -> str:
-    """Fetch the bet detail HTML for a given week.
-
-    This is the equivalent of clicking the 'Week' total in the figures
-    table — it returns the expanded bet-level detail rows.
-    """
-    headers = {"Authorization": f"Bearer {token}"}
-
-    # Try the detail endpoint — this returns the expanded bet rows
-    resp = session.post(f"{API_BASE}/Figures/get-figure-detail", data={
-        "week": str(weeks_back),
-        "index": "10",  # "10" = Week total (same as the old data-index="10")
-    }, headers=headers, timeout=15)
-    resp.raise_for_status()
-
-    return resp.text
-
-
-def scrape_hoop88(weeks_back: int = 1) -> list:
-    """
-    Log into Hoop88 via JWT and scrape bet history.
-
-    Uses requests.Session instead of a browser — faster, more reliable,
-    and doesn't break on Playwright selector changes.
+    Log into Hoop88 and scrape bet history.
 
     Args:
         weeks_back: Number of weeks back to fetch (0=This Week, 1=Last Week, etc.)
+        headless: Run browser in headless mode (no visible window)
 
     Returns:
         List of parsed bet dictionaries
@@ -489,34 +419,120 @@ def scrape_hoop88(weeks_back: int = 1) -> list:
     if not HOOP88_USERNAME or not HOOP88_PASSWORD:
         raise ValueError("HOOP88_USERNAME and HOOP88_PASSWORD must be set in .env file")
 
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-    })
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=headless)
+        context = browser.new_context(viewport={'width': 1920, 'height': 1080})
+        page = context.new_page()
 
-    # Step 1: Authenticate via JWT
-    print("Logging in to Hoop88...")
-    token = login(session)
+        print(f"Navigating to {HOOP88_URL}...")
+        page.goto(HOOP88_URL, wait_until='networkidle')
 
-    # Step 2: Fetch bet detail HTML
-    week_label = 'This Week' if weeks_back == 0 else 'Last Week' if weeks_back == 1 else f'{weeks_back} Weeks ago'
-    print(f"Fetching bet details for {week_label}...")
+        # Check if login form is present
+        print("Checking login status...")
+        username_field = page.locator('input[name="customerID"]')
+        login_needed = username_field.count() > 0 and username_field.is_visible()
 
-    try:
-        html = fetch_figure_detail(session, token, weeks_back)
-    except requests.HTTPError as e:
-        # If the detail endpoint doesn't work, try the full figures page
-        print(f"Detail endpoint failed ({e}), trying figures page...")
-        html = fetch_figures(session, token, weeks_back)
+        if login_needed:
+            print("Logging in...")
+            try:
+                page.fill('input[name="customerID"]', HOOP88_USERNAME)
+                page.fill('input[name="Password"]', HOOP88_PASSWORD)
+                page.click('button[data-action="login"]')
+                page.wait_for_selector('input[name="customerID"]', state='hidden', timeout=15000)
+                page.wait_for_load_state('networkidle')
+                page.wait_for_timeout(1500)  # Brief pause for page to stabilize after login
+                print("✅ Login successful")
+            except Exception as e:
+                print(f"Auto-login failed: {e}")
+                if not headless:
+                    print("Please log in manually (30 seconds)...")
+                    page.wait_for_selector('input[name="customerID"]', state='hidden', timeout=30000)
+                else:
+                    raise RuntimeError("Login failed in headless mode")
+        else:
+            print("Already logged in")
 
-    if not html or len(html.strip()) < 50:
-        print("No bet data returned from API")
-        return []
+        # Click the Balance box to open bet history
+        print("Opening bet history...")
+        try:
+            page.evaluate('document.querySelector(\'div[data-action="get-figure"]\').click()')
+            page.wait_for_load_state('networkidle')
+            page.wait_for_timeout(1000)
+            print("✅ Opened bet history")
+        except Exception as e:
+            if not headless:
+                print(f"Could not click Balance box: {e}")
+                print("Please navigate to bet history manually (15 seconds)...")
+                page.wait_for_timeout(15000)
+            else:
+                raise RuntimeError(f"Could not open bet history in headless mode: {e}")
 
-    # Step 3: Parse with existing parser
-    bets = parse_bets_from_html(html)
+        # Select the desired week
+        print(f"Selecting week {weeks_back}...")
+        try:
+            dropdown = page.locator('select[data-list="week"]')
+            dropdown.wait_for(state='attached', timeout=10000)
+            dropdown.select_option(value=str(weeks_back))
+            page.wait_for_load_state('networkidle')
+            week_label = 'This Week' if weeks_back == 0 else 'Last Week' if weeks_back == 1 else f'{weeks_back} Weeks ago'
+            print(f"✅ Selected: {week_label}")
+        except Exception as e:
+            print(f"Could not change week filter: {e}")
 
-    return bets
+        # Wait for the weekly figures table to load (contains Carry, Mon, Tue, etc.)
+        print("Waiting for weekly figures to load...")
+        try:
+            # Wait for the "Week" row to appear in the table
+            page.wait_for_selector('text=Week', timeout=15000)
+            page.wait_for_timeout(1000)  # Brief pause after table loads
+            print("✅ Weekly figures loaded")
+        except Exception as e:
+            print(f"Warning: Could not confirm table loaded: {e}")
+
+        # Click on Week value to expand bet details.
+        # The "Week" total is typically at data-index="10", but we guard
+        # against it being null (e.g. when there are no bets that week)
+        # by falling back to any clickable trigger span.
+        print("Expanding bet details...")
+        try:
+            page.evaluate('''(() => {
+                const el = document.querySelector('span[data-trigger="true"][data-index="10"]')
+                         || document.querySelector('span[data-trigger="true"]');
+                if (el) el.click();
+            })()''')
+            page.wait_for_load_state('networkidle')
+            page.wait_for_timeout(2000)
+            print("✅ Expanded bet details")
+        except Exception as e:
+            print(f"Could not expand bet details: {e}")
+
+        # Wait for bet rows to load
+        print("Loading bet data...")
+        try:
+            page.wait_for_selector('tr[data-ticket]', timeout=15000)
+            print("✅ Bet data loaded")
+        except:
+            print("Warning: No bet rows found")
+
+        # Get the table HTML
+        table_html = None
+        for selector in ['#DataTables_Table_0', 'table.dataTable', 'table:has(tr[data-ticket])']:
+            try:
+                locator = page.locator(selector)
+                if locator.count() > 0:
+                    table_html = locator.first.evaluate('el => el.outerHTML')
+                    break
+            except:
+                continue
+
+        if not table_html:
+            print("❌ Could not get table HTML")
+            page.screenshot(path="debug_hoop88_error.png")
+            browser.close()
+            return []
+
+        browser.close()
+        return parse_bets_from_html(table_html)
 
 
 def scrape_from_file(filepath: str) -> list:
@@ -533,6 +549,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Scrape bet history from Hoop88')
     parser.add_argument('--test', action='store_true', help='Parse from saved HTML file instead of live scrape')
     parser.add_argument('--weeks', type=int, default=1, help='Weeks back to fetch (0=This Week, 1=Last Week, default: 1)')
+    parser.add_argument('--visible', action='store_true', help='Show browser window (default is headless)')
     parser.add_argument('--dry-run', action='store_true', help='Scrape but do not upload to Google Sheets')
     args = parser.parse_args()
 
@@ -560,7 +577,7 @@ if __name__ == "__main__":
         print("=" * 60)
 
         try:
-            bets = scrape_hoop88(weeks_back=args.weeks)
+            bets = scrape_hoop88(weeks_back=args.weeks, headless=not args.visible)
 
             print(f"\n{'=' * 60}")
             print(f"Successfully scraped {len(bets)} bets from Hoop88")
@@ -587,3 +604,5 @@ if __name__ == "__main__":
             import traceback
             traceback.print_exc()
             sys.exit(1)
+
+    sys.exit(0)
