@@ -584,8 +584,8 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         wz_dec_raw <- american_to_decimal(combo$wz_spread_price) *
                       american_to_decimal(combo$wz_total_price)
         wz_dec_shaved <- wz_dec_raw * shave
-        wz_american <- round(prob_to_american(1 / wz_dec_shaved))
-        wz_dec <- american_to_decimal(wz_american)
+        wz_dec <- wz_dec_shaved
+        wz_american <- round(prob_to_american(1 / wz_dec))
       }
 
       # Blend model fair prob with DK and FD SGP fair probs (each per-game devigged).
@@ -645,7 +645,7 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         fair_odds   = fair_american,
         wz_odds     = wz_american,
         fair_dec    = round(fair_dec, 3),
-        wz_dec      = round(wz_dec, 3),
+        wz_dec      = wz_dec,
         corr_factor = fair$correlation_factor,
         edge_pct    = round(edge_pct, 1),
         model_prob_raw = fair$joint_prob,
