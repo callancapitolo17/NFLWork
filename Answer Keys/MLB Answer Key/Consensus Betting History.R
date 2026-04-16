@@ -17,15 +17,19 @@ source("Tools.R")
 
 # 1) Load Data ----
 con <- dbConnect(duckdb(), dbdir = "pbp.duckdb", read_only = TRUE)
+on.exit(tryCatch(dbDisconnect(con), error = function(e) NULL), add = TRUE)
 pbp_all <- dbGetQuery(con, "
-  SELECT game_pk, year(CAST(game_date AS DATE)) AS season, \"about.inning\", 
-         game_date, home_team, away_team, \"about.startTime\", 
+  SELECT game_pk, year(CAST(game_date AS DATE)) AS season, \"about.inning\",
+         game_date, home_team, away_team, \"about.startTime\",
          \"result.homeScore\", \"result.awayScore\"
   FROM mlb_pbp_all
   WHERE year(CAST(game_date AS DATE)) >= 2020
 ")
-flat_odds <- dbGetQuery(con, "SELECT * FROM mlb_betting_history_4_hours_before")
+# mlb_betting_history contains closing odds (T-15min snapshot, captured by
+# get_event_odds_by_id in Acquire New MLB Data.R)
+flat_odds <- dbGetQuery(con, "SELECT * FROM mlb_betting_history WHERE commence_time > '2020-01-01'")
 dbDisconnect(con)
+on.exit(NULL)
 
 # 2) Prep Box Scores ----
 game_box_score <- pbp_all %>%
@@ -146,6 +150,9 @@ joined_dt <- join_pbp_odds(game_by_inning, mlb_betting_history,
 mlb_weights <- ml_results$weights %>% inner_join(total_results$weights, by = "bookmaker_key")
 
 con <- dbConnect(duckdb(), dbdir = "pbp.duckdb")
+on.exit(tryCatch(dbDisconnect(con), error = function(e) NULL), add = TRUE)
 dbWriteTable(con, "mlb_betting_pbp", joined_dt, overwrite = TRUE)
 dbWriteTable(con, "mlb_weights", mlb_weights, overwrite = TRUE)
+message(sprintf("Wrote %d rows to mlb_betting_pbp.", nrow(joined_dt)))
 dbDisconnect(con)
+on.exit(NULL)

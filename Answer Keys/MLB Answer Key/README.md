@@ -25,9 +25,10 @@ run.py mlb (orchestrator)
 | File | Purpose |
 |------|---------|
 | `MLB.R` | Main merged pipeline (8 phases) |
-| `Acquire New MLB Data.R` | Historical odds + PBP fetching |
+| `Acquire New MLB Data.R` | Historical odds + PBP fetching (supports `--daily` / `--daily-pbp` flags) |
+| `Consensus Betting History.R` | Rebuilds `mlb_betting_pbp` from odds + PBP |
 | `clv_compute.py` | Post-game CLV computation |
-| `run_mlb_daily.sh` | Daily acquisition scheduler |
+| `run_fetch.sh` | Daily acquisition scheduler (wired to launchd) |
 
 ## Setup
 
@@ -55,12 +56,29 @@ Rscript "MLB Answer Key/MLB.R"
 
 ### Daily Data Acquisition
 
+Runs three steps: (1) closing odds via Odds API, (2) play-by-play via `baseballr`,
+(3) rebuild `mlb_betting_pbp` (the table MLB.R consumes). A T-2 cutoff filter
+ensures only games that finished at least 2 days ago get fetched — no live games.
+
 ```bash
 # Manual run
 cd "Answer Keys/MLB Answer Key"
-bash run_mlb_daily.sh
+bash run_fetch.sh
 
-# Logs to ~/Library/Logs/mlb-daily-acquire/ with 30-day rotation
+# Run individual steps
+Rscript "Acquire New MLB Data.R" --daily       # odds only
+Rscript "Acquire New MLB Data.R" --daily-pbp   # pbp only
+Rscript "Consensus Betting History.R"          # consensus rebuild only
+
+# Logs to ~/Library/Logs/fetch-mlb-odds/ with 30-day rotation
+```
+
+**Automation:** Scheduled via launchd at `~/Library/LaunchAgents/com.callan.fetch-mlb-odds.plist`,
+runs daily at 4 AM local time. After modifying the plist:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.callan.fetch-mlb-odds.plist
+launchctl load   ~/Library/LaunchAgents/com.callan.fetch-mlb-odds.plist
 ```
 
 ### CLV Computation
