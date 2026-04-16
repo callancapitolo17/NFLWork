@@ -702,42 +702,46 @@ def scrape_dk_sgp(verbose: bool = False):
         return gid, period, combo_name, sgp
 
     with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = [pool.submit(price_one, item) for item in combo_items]
+        futures = {pool.submit(price_one, item): item for item in combo_items}
         for future in as_completed(futures):
             try:
                 pricing_results.append(future.result())
-            except Exception:
-                pass
+            except Exception as e:
+                item = futures[future]
+                print(f"  Error pricing {item[2]} ({item[0][:8]}): {e}")
+                pricing_results.append((item[0], item[1], item[2], None))
 
     print(f"  Priced {len(pricing_results)} combos in {time.time() - t1:.1f}s")
 
-    # ── Phase 2b: Retry failed games ──
-    # Find games where all 4 combos failed — retry once
+    # ── Phase 2b: Retry failed combos ──
+    # Retry ANY combo that returned None (not just fully-failed games).
+    # Transient network errors, rate limits, or session hiccups can cause
+    # individual combos to fail while others in the same game succeed.
+    failed_combos = [r for r in pricing_results if r[3] is None]
+
     priced_by_game = {}
     for gid, period, combo_name, sgp in pricing_results:
         if sgp:
             priced_by_game.setdefault(gid, []).append((period, combo_name, sgp))
 
-    failed_games = set()
-    for game in matched:
-        gid = game["game_id"]
-        if gid in game_data and gid not in priced_by_game:
-            failed_games.add(gid)
-
-    if failed_games:
-        retry_items = [item for item in combo_items if item[0] in failed_games]
+    if failed_combos:
+        # Build a lookup from (game_id, combo_name) back to the original item
+        item_lookup = {(item[0], item[2]): item for item in combo_items}
+        retry_items = [item_lookup[(r[0], r[2])] for r in failed_combos
+                       if (r[0], r[2]) in item_lookup]
         if retry_items:
-            print(f"  Retrying {len(failed_games)} failed games...")
+            print(f"  Retrying {len(retry_items)} failed combos...")
             time.sleep(1)
-            with ThreadPoolExecutor(max_workers=6) as pool:
-                futures = [pool.submit(price_one, item) for item in retry_items]
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                futures = {pool.submit(price_one, item): item for item in retry_items}
                 for future in as_completed(futures):
                     try:
                         gid, period, combo_name, sgp = future.result()
                         if sgp:
                             priced_by_game.setdefault(gid, []).append((period, combo_name, sgp))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        item = futures[future]
+                        print(f"  Retry error {item[2]} ({item[0][:8]}): {e}")
 
     # ── Phase 3: Collect results and write to DuckDB ──
     ensure_table()
