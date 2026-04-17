@@ -91,3 +91,10 @@ bet_placer/.bfa_nav_profile/
 bet_placer/.hoop88_nav_profile/
 bet_placer/.wagerzon_nav_profile/
 bet_placer/.betonline_nav_profile/
+
+# nfl_draft portal
+nfl_draft/nfl_draft.duckdb
+nfl_draft/nfl_draft.duckdb.wal
+nfl_draft/.cookies/
+nfl_draft/logs/
+nfl_draft/.kalshi_throttle.lock
