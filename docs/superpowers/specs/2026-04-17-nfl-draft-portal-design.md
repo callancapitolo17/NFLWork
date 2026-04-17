@@ -220,7 +220,7 @@ python run.py --mode trades                     # Kalshi trade tape only → kal
 ```
 
 - Every invocation runs `lib/seed.py` first (idempotent, ~50ms) so dict edits take effect immediately.
-- `--mode scrape`: each scraper module exposes `fetch_draft_odds() -> List[OddsRow]`. `run.py` calls them sequentially (parallelism deferred — scrape errors easier to debug serially), normalizes each result through `lib/normalize.py` and `lib/market_map.py`, devigs via `lib/devig.py`, writes to `draft_odds`.
+- `--mode scrape`: each scraper module exposes `fetch_draft_odds() -> List[OddsRow]`. `run.py` calls them sequentially (parallelism deferred — scrape errors easier to debug serially), normalizes each result through `lib/normalize.py` and `lib/market_map.py`, devigs via `lib/devig.py`, writes to `draft_odds`. After all scrapers complete, `run.py` also invokes the legacy Kalshi-derived workers — `kalshi_draft/edge_detector.py` (writes to `detected_edges`) and `kalshi_draft/consensus.py` (scrapes Tankathon, writes to `consensus_board`) — so the legacy Edge Detection and Consensus tabs receive fresh data on the same cron tick. These were previously triggered only by manual `kalshi_draft/run.sh`; folding them into `--mode scrape` ensures the legacy tabs don't go stale during draft week.
 - `--mode trades`: polls `/markets/trades` for each Kalshi series, requesting trades after `kalshi_poll_state.last_traded_at` for that series, paginating by cursor, and appending to `kalshi_trades` with `INSERT OR IGNORE` on `trade_id`. Updates `kalshi_poll_state.last_traded_at` to the max `traded_at` ingested per series.
 
 Cadence is controlled by **cron**, not by mode flags.
@@ -546,7 +546,8 @@ Out of scope for v1, planned for after:
   - `kalshi_draft/app.py` — new tabs + queries rewritten `draft_odds` → `kalshi_odds` + connection target → `nfl_draft/nfl_draft.duckdb`
   - `kalshi_draft/fetcher.py` — connection target → `nfl_draft/nfl_draft.duckdb`, `INSERT INTO draft_odds` → `INSERT INTO kalshi_odds`, `datetime.now(timezone.utc)` → `datetime.now()` (local-time normalization)
   - `kalshi_draft/db.py` — `DB_PATH` constant updated to point at `nfl_draft/nfl_draft.duckdb`; SQL referencing old `draft_odds` updated to `kalshi_odds`
-  - `kalshi_draft/edge_detector.py`, `kalshi_draft/consensus.py` — same connection-target + table-name rewrites if they touch the DB directly
+  - `kalshi_draft/edge_detector.py` — connection target → `nfl_draft/nfl_draft.duckdb`; `datetime.now(timezone.utc)` → `datetime.now()`; SQL referencing `draft_odds` updated to `kalshi_odds`. Continues writing to `detected_edges`. Now invoked by `run.py --mode scrape` after the cross-venue write completes.
+  - `kalshi_draft/consensus.py` — connection target → `nfl_draft/nfl_draft.duckdb`; `datetime.now(timezone.utc)` → `datetime.now()`. Continues writing to `consensus_board`. Now invoked by `run.py --mode scrape` after the cross-venue write completes.
   - `.gitignore` — add `nfl_draft/nfl_draft.duckdb`, `nfl_draft/.cookies/`, `nfl_draft/logs/`
   - `README.md` (top-level) — link to `nfl_draft/README.md`
   - `requirements.txt` if present — add any new pinned versions of `dash`, `plotly`, `duckdb`, `pytest`, `curl_cffi`, `playwright` not already declared
