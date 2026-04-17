@@ -1,0 +1,933 @@
+{
+  "series": [
+    {
+      "additional_prohibitions": [
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Entertainment",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/AMAS.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/AMAS.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "annual",
+      "last_updated_ts": "2026-02-26T08:50:31.901806Z",
+      "settlement_sources": [
+        {
+          "name": "AMAs",
+          "url": "https://www.theamas.com/"
+        }
+      ],
+      "tags": null,
+      "ticker": "KXAMAFRALB",
+      "title": "Favorite Rock Album"
+    },
+    {
+      "additional_prohibitions": [
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Entertainment",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/ATTEND.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/ATTEND.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "one_off",
+      "last_updated_ts": "2026-04-10T16:08:22.462503Z",
+      "settlement_sources": [
+        {
+          "name": "USA Today",
+          "url": "https://www.usatoday.com/"
+        },
+        {
+          "name": "ABC",
+          "url": "https://abcnews.go.com/"
+        },
+        {
+          "name": "Fox News",
+          "url": "https://www.foxnews.com/"
+        },
+        {
+          "name": "MSNBC",
+          "url": "https://www.msnbc.com/"
+        },
+        {
+          "name": "The Wall Street Journal",
+          "url": "https://www.wsj.com/"
+        },
+        {
+          "name": "Semafor",
+          "url": "https://www.semafor.com/"
+        },
+        {
+          "name": "The Information",
+          "url": "https://www.theinformation.com/"
+        },
+        {
+          "name": "CBS",
+          "url": "https://www.cbsnews.com/"
+        },
+        {
+          "name": "Vogue",
+          "url": "https://www.vogue.com/"
+        },
+        {
+          "name": "Axios",
+          "url": "https://www.axios.com/"
+        },
+        {
+          "name": "CNN",
+          "url": "https://www.cnn.com/"
+        },
+        {
+          "name": "Reuters",
+          "url": "https://www.reuters.com/"
+        },
+        {
+          "name": "Billboard",
+          "url": "https://www.billboard.com/charts/hot-100/"
+        },
+        {
+          "name": "The New York Times",
+          "url": "https://www.nytimes.com/"
+        },
+        {
+          "name": "The Washington Post",
+          "url": "https://www.washingtonpost.com/"
+        },
+        {
+          "name": "the Associated Press",
+          "url": "https://apnews.com/"
+        },
+        {
+          "name": "Politico",
+          "url": "https://www.politico.com/"
+        }
+      ],
+      "tags": null,
+      "ticker": "KXSWIFTATTENDEVENT",
+      "title": "WILL TAYLOR SWIFT ATTEND"
+    },
+    {
+      "additional_prohibitions": [
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Science and Technology",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/OMIVAX.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/OMIVAX.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "custom",
+      "last_updated_ts": "2026-02-26T08:50:31.901806Z",
+      "settlement_sources": [
+        {
+          "name": "Food and Drug Administration",
+          "url": "https://www.fda.gov/news-events/fda-newsroom/press-announcements"
+        }
+      ],
+      "tags": null,
+      "ticker": "KXVAXXOMNI",
+      "title": "Omicron vaccine approved"
+    },
+    {
+      "additional_prohibitions": [
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Politics",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/CANADARIDING.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/CANADARIDING.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "one_off",
+      "last_updated_ts": "2026-02-26T08:50:31.901806Z",
+      "settlement_sources": [
+        {
+          "name": "CBC",
+          "url": "https://www.cbc.ca/"
+        }
+      ],
+      "tags": [
+        "Foreign Elections"
+      ],
+      "ticker": "KXCHICOUTIMI",
+      "title": "Chicoutimi-Le Fjord"
+    },
+    {
+      "additional_prohibitions": [
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Politics",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/RECOG.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/RECOG.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "custom",
+      "last_updated_ts": "2026-02-26T08:50:31.901806Z",
+      "settlement_sources": [
+        {
+          "name": "White House",
+          "url": "https://whitehouse.gov/"
+        }
+      ],
+      "tags": [
+        "International",
+        "Trump"
+      ],
+      "ticker": "KXRECOG",
+      "title": "Country recognition"
+    },
+    {
+      "additional_prohibitions": [
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Sports",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/NFLPREPACK.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/NFLPREPACK.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "custom",
+      "last_updated_ts": "2026-04-05T22:05:01.218254Z",
+      "settlement_sources": [
+        {
+          "name": "the league governing the game",
+          "url": "https://www.nfl.com/"
+        }
+      ],
+      "tags": null,
+      "ticker": "KXNFLPREPACKSGPSPREAD",
+      "title": "MVE NFL Pre Pack"
+    },
+    {
+      "additional_prohibitions": [
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Economics",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/YOYCPICORE.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/YOYCPICORE.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "monthly",
+      "last_updated_ts": "2026-02-26T08:50:31.901806Z",
+      "settlement_sources": [
+        {
+          "name": "Bureau of Labor Statistics",
+          "url": "https://www.bls.gov/cpi/"
+        }
+      ],
+      "tags": [
+        "Inflation"
+      ],
+      "ticker": "CPICOREYOY",
+      "title": "Core inflation"
+    },
+    {
+      "additional_prohibitions": [
+        "Current and former players, coaches, and staff of the league, association, or organization(s) governing the event. For college leagues/associations specifically, or where otherwise appropriate (as identified by the Exchange), this applies to current and former players/coaches/staff of the specific teams in <event> rather than the league/association as a whole (e.g., if the Division I Gonzaga Men\u2019s Basketball Team is playing in <event>, this prohibition will restrict trades by  current/former players of that team, rather than all current/former players/coaches/staff in any NCAA sport).",
+        "Paid employees of the league and league participants",
+        "Owners of teams and the league",
+        "and household members and immediate family of all above",
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Sports",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/NFLCONTRACT.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/NFLCONTRACT.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "custom",
+      "last_updated_ts": "2026-02-26T08:50:31.901806Z",
+      "settlement_sources": [
+        {
+          "name": " or their authorized representatives",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "Bloomberg News",
+          "url": "https://www.bloomberg.com"
+        },
+        {
+          "name": "CBS Sports",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "ESPN",
+          "url": "https://www.espn.com"
+        },
+        {
+          "name": "Fox Sports",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "in hierarchical order",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "NBC Sports",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "Reuters",
+          "url": "https://www.reuters.com"
+        },
+        {
+          "name": "Sky Sports",
+          "url": "https://www.google.com/search?q=Sky+Sports"
+        },
+        {
+          "name": "The Associated Press",
+          "url": "https://apnews.com/"
+        },
+        {
+          "name": "The Athletic",
+          "url": "https://theathletic.com"
+        },
+        {
+          "name": "The Guardian",
+          "url": "https://www.theguardian.com/"
+        },
+        {
+          "name": "the league or association governing the relevant sport currently played by ",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "The New York Times",
+          "url": "https://www.nytimes.com/"
+        },
+        {
+          "name": "The Source Agencies are",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "the team or club signing ",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "The Wall Street Journal",
+          "url": "https://www.wsj.com/"
+        }
+      ],
+      "tags": [
+        "Football"
+      ],
+      "ticker": "KXNFLGPICKENSCONTRACT",
+      "title": "Pro Football George Picken's Next Contract Size"
+    },
+    {
+      "additional_prohibitions": [
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Economics",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/ARINFLATION.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/ARINFLATION.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "monthly",
+      "last_updated_ts": "2026-02-26T08:50:31.901806Z",
+      "settlement_sources": [
+        {
+          "name": "OECD",
+          "url": "https://data-explorer.oecd.org/vis?fs[0]=Topic%2C1%7CEconomy%23ECO%23%7CPrices%23ECO_PRI%23&pg=0&fc=Topic&bp=true&snb=16&df[ds]=dsDisseminateFinalDMZ&df[id]=DSD_PRICES%40DF_PRICES_ALL&df[ag]=OECD.SDD.TPS&df[vs]=1.0&pd=%2C&dq=.M.N.CPI.PA._T.N.GY&ly[rw]=REF_AREA&ly[cl]=TIME_PERIOD&to[TIME_PERIOD]=false&lo=13&lom=LASTNPERIODS&vw=tb"
+        }
+      ],
+      "tags": [
+        "Inflation"
+      ],
+      "ticker": "KXARINFLATIONM",
+      "title": "Argentina inflation"
+    },
+    {
+      "additional_prohibitions": [
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Sports",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/ADS.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/ADS.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "one_off",
+      "last_updated_ts": "2026-02-26T08:50:31.901806Z",
+      "settlement_sources": [
+        {
+          "name": "ABC",
+          "url": "https://www.abc.net.au/"
+        },
+        {
+          "name": "Bloomberg News",
+          "url": "https://www.bloomberg.com"
+        },
+        {
+          "name": "CBS",
+          "url": "https://www.cbs.com"
+        },
+        {
+          "name": "CNBC",
+          "url": "https://www.cnbc.com/"
+        },
+        {
+          "name": "CNN",
+          "url": "https://www.cnn.com"
+        },
+        {
+          "name": "ESPN",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "Fox Business",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "Fox News",
+          "url": "https://www.foxnews.com"
+        },
+        {
+          "name": "NBC",
+          "url": "https://www.nbc.com"
+        },
+        {
+          "name": "Reuters",
+          "url": "https://www.reuters.com/"
+        },
+        {
+          "name": "the Associated Press",
+          "url": "https://www.ap.org"
+        },
+        {
+          "name": "The Hollywood Reporter",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "The New York Times",
+          "url": "https://www.nytimes.com/"
+        },
+        {
+          "name": "the official broadcaster or organizer of ",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "the official website or social media accounts of ",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "The Wall Street Journal",
+          "url": "https://www.wsj.com/"
+        },
+        {
+          "name": "USA Today",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "Variety",
+          "url": "https://kalshi.com/"
+        }
+      ],
+      "tags": null,
+      "ticker": "KXNFLREDZONEBRANDADS",
+      "title": "Redzone week 1 brand ads"
+    },
+    {
+      "additional_prohibitions": [
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Economics",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/ECONSTATTE.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/ECONSTATTE.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "monthly",
+      "last_updated_ts": "2026-04-07T01:39:03.892428Z",
+      "settlement_sources": [
+        {
+          "name": "Trading Economics",
+          "url": "https://tradingeconomics.com/italy/inflation-cpi"
+        }
+      ],
+      "tags": [
+        "Inflation"
+      ],
+      "ticker": "KXITCPIPREL",
+      "title": "Italy Inflation Rate YoY Prel"
+    },
+    {
+      "additional_prohibitions": [
+        "Current and former players, coaches, and staff of the league, association, or organization(s) governing the event. For college leagues/associations specifically, or where otherwise appropriate (as identified by the Exchange), this applies to current and former players/coaches/staff of the specific teams in <event> rather than the league/association as a whole (e.g., if the Division I Gonzaga Men\u2019s Basketball Team is playing in <event>, this prohibition will restrict trades by  current/former players of that team, rather than all current/former players/coaches/staff in any NCAA sport).",
+        "Paid employees of the league and league participants",
+        "Owners of teams and the league",
+        "and household members and immediate family of all above",
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Sports",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/NFLGAME.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/NFLGAME.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic_with_maker_fees",
+      "frequency": "custom",
+      "last_updated_ts": "2026-03-17T20:23:54.032115Z",
+      "settlement_sources": [
+        {
+          "name": "the Governing League",
+          "url": "https://www.nfl.com/"
+        }
+      ],
+      "tags": [
+        "Football"
+      ],
+      "ticker": "KXNFLGAME",
+      "title": "Professional Football Game"
+    },
+    {
+      "additional_prohibitions": [
+        "Current and former players, coaches, and staff of the league, association, or organization(s) governing the event. For college leagues/associations specifically, or where otherwise appropriate (as identified by the Exchange), this applies to current and former players/coaches/staff of the specific teams in <event> rather than the league/association as a whole (e.g., if the Division I Gonzaga Men\u2019s Basketball Team is playing in <event>, this prohibition will restrict trades by  current/former players of that team, rather than all current/former players/coaches/staff in any NCAA sport).",
+        "Paid employees of the league and league participants",
+        "Owners of teams and the league",
+        "and household members and immediate family of all above",
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Sports",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/NFLCONTRACT.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/NFLCONTRACT.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "custom",
+      "last_updated_ts": "2026-02-26T08:50:31.901806Z",
+      "settlement_sources": [
+        {
+          "name": " or their authorized representatives",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "Bloomberg News",
+          "url": "https://www.bloomberg.com"
+        },
+        {
+          "name": "CBS Sports",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "ESPN",
+          "url": "https://www.espn.com"
+        },
+        {
+          "name": "Fox Sports",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "in hierarchical order",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "NBC Sports",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "Reuters",
+          "url": "https://www.reuters.com"
+        },
+        {
+          "name": "Sky Sports",
+          "url": "https://www.google.com/search?q=Sky+Sports"
+        },
+        {
+          "name": "The Associated Press",
+          "url": "https://apnews.com/"
+        },
+        {
+          "name": "The Athletic",
+          "url": "https://theathletic.com"
+        },
+        {
+          "name": "The Guardian",
+          "url": "https://www.theguardian.com/"
+        },
+        {
+          "name": "the league or association governing the relevant sport currently played by ",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "The New York Times",
+          "url": "https://www.nytimes.com/"
+        },
+        {
+          "name": "The Source Agencies are",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "the team or club signing ",
+          "url": "https://kalshi.com/"
+        },
+        {
+          "name": "The Wall Street Journal",
+          "url": "https://www.wsj.com/"
+        }
+      ],
+      "tags": [
+        "Football"
+      ],
+      "ticker": "KXNFLCONTRACTSIZE",
+      "title": "Pro Football Next Contract Size"
+    },
+    {
+      "additional_prohibitions": [
+        "Current and former players, coaches, and staff of the league, association, or organization(s) governing the event. For college leagues/associations specifically, or where otherwise appropriate (as identified by the Exchange), this applies to current and former players/coaches/staff of the specific teams in <event> rather than the league/association as a whole (e.g., if the Division I Gonzaga Men\u2019s Basketball Team is playing in <event>, this prohibition will restrict trades by  current/former players of that team, rather than all current/former players/coaches/staff in any NCAA sport).",
+        "Paid employees of the league and league participants",
+        "Owners of teams and the league",
+        "and household members and immediate family of all above",
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Sports",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/NFLREC.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/NFLREC.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "custom",
+      "last_updated_ts": "2026-02-26T08:50:31.901806Z",
+      "settlement_sources": [
+        {
+          "name": "the Governing League",
+          "url": "https://www.nfl.com/"
+        }
+      ],
+      "tags": [
+        "Football"
+      ],
+      "ticker": "KXNFLREC",
+      "title": "Pro Football Player Receptions"
+    },
+    {
+      "additional_prohibitions": [
+        "Current and former players, coaches, and staff of the league, association, or organization(s) governing the event. For college leagues/associations specifically, or where otherwise appropriate (as identified by the Exchange), this applies to current and former players/coaches/staff of the specific teams in <event> rather than the league/association as a whole (e.g., if the Division I Gonzaga Men\u2019s Basketball Team is playing in <event>, this prohibition will restrict trades by  current/former players of that team, rather than all current/former players/coaches/staff in any NCAA sport).",
+        "Paid employees of the league and league participants",
+        "Owners of teams and the league",
+        "and household members and immediate family of all above",
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Sports",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/ACHIEVEMENTS.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/ACHIEVEMENTS.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "custom",
+      "last_updated_ts": "2026-04-10T15:12:50.432252Z",
+      "settlement_sources": [
+        {
+          "name": "ESPN",
+          "url": "https://espn.com"
+        },
+        {
+          "name": "the league governing the game",
+          "url": "https://www.nfl.com/"
+        }
+      ],
+      "tags": null,
+      "ticker": "KXNFLPROBOWLWIN",
+      "title": "Pro Football Pro Bowl Game"
+    },
+    {
+      "additional_prohibitions": [
+        "Current and former players, coaches, and staff of the league, association, or organization(s) governing the event. For college leagues/associations specifically, or where otherwise appropriate (as identified by the Exchange), this applies to current and former players/coaches/staff of the specific teams in <event> rather than the league/association as a whole (e.g., if the Division I Gonzaga Men\u2019s Basketball Team is playing in <event>, this prohibition will restrict trades by  current/former players of that team, rather than all current/former players/coaches/staff in any NCAA sport).",
+        "Paid employees of the league and league participants",
+        "Owners of teams and the league",
+        "and household members and immediate family of all above",
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Sports",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/NFLEXACTWINS.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/NFLEXACTWINS.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "annual",
+      "last_updated_ts": "2026-02-26T08:50:31.901806Z",
+      "settlement_sources": [
+        {
+          "name": "ESPN",
+          "url": "https://www.espn.com/"
+        }
+      ],
+      "tags": [
+        "Football"
+      ],
+      "ticker": "KXNFLEXACTWINSWAS",
+      "title": "Pro football exact wins Washington"
+    },
+    {
+      "additional_prohibitions": [
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Economics",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/ECONSTATTRU.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/ECONSTATTRU.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "daily",
+      "last_updated_ts": "2026-04-17T18:28:25.94518Z",
+      "settlement_sources": [
+        {
+          "name": "Truflation",
+          "url": "https://truflation.com/marketplace/us-inflation-rate"
+        }
+      ],
+      "tags": [
+        "Econ Daily"
+      ],
+      "ticker": "KXTRUFCPI",
+      "title": "Truflation US CPI Inflation Index"
+    },
+    {
+      "additional_prohibitions": [
+        "Current and former players, coaches, and staff of the league, association, or organization(s) governing the event. For college leagues/associations specifically, or where otherwise appropriate (as identified by the Exchange), this applies to current and former players/coaches/staff of the specific teams in <event> rather than the league/association as a whole (e.g., if the Division I Gonzaga Men\u2019s Basketball Team is playing in <event>, this prohibition will restrict trades by  current/former players of that team, rather than all current/former players/coaches/staff in any NCAA sport).",
+        "Paid employees of the league and league participants",
+        "Owners of teams and the league",
+        "and household members and immediate family of all above",
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Sports",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/FOOTBALLENTITYSTAT.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/FOOTBALLENTITYSTAT.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "one_off",
+      "last_updated_ts": "2026-02-26T08:50:31.901806Z",
+      "settlement_sources": [
+        {
+          "name": "ESPN",
+          "url": "https://www.espn.com"
+        },
+        {
+          "name": "Fox Sports",
+          "url": "https://www.foxsports.com"
+        },
+        {
+          "name": "the Governing League",
+          "url": "https://www.nfl.com/"
+        }
+      ],
+      "tags": [
+        "Football"
+      ],
+      "ticker": "KXNFLTEAMFIRSTTD",
+      "title": "Pro Football First Touchdown"
+    },
+    {
+      "additional_prohibitions": [
+        "Current and former players, coaches, and staff of the league, association, or organization(s) governing the event. For college leagues/associations specifically, or where otherwise appropriate (as identified by the Exchange), this applies to current and former players/coaches/staff of the specific teams in <event> rather than the league/association as a whole (e.g., if the Division I Gonzaga Men\u2019s Basketball Team is playing in <event>, this prohibition will restrict trades by  current/former players of that team, rather than all current/former players/coaches/staff in any NCAA sport).",
+        "Paid employees of the league and league participants",
+        "Owners of teams and the league",
+        "and household members and immediate family of all above",
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Sports",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/FOOTBALLENTITYSTAT.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/FOOTBALLENTITYSTAT.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "one_off",
+      "last_updated_ts": "2026-02-26T08:50:31.901806Z",
+      "settlement_sources": [
+        {
+          "name": "ESPN",
+          "url": "https://www.espn.com"
+        },
+        {
+          "name": "Fox Sports",
+          "url": "https://www.foxsports.com"
+        },
+        {
+          "name": "the Governing League",
+          "url": "https://www.nfl.com/"
+        }
+      ],
+      "tags": [
+        "Football"
+      ],
+      "ticker": "KXNFLGAMETD",
+      "title": "Pro Football Touchdowns"
+    },
+    {
+      "additional_prohibitions": [
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Sports",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/LEAGUELEADER.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/LEAGUELEADER.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "annual",
+      "last_updated_ts": "2026-04-15T04:06:30.228238Z",
+      "settlement_sources": [
+        {
+          "name": "the Governing League",
+          "url": "https://www.nfl.com/"
+        },
+        {
+          "name": "ESPN",
+          "url": "https://www.espn.com"
+        }
+      ],
+      "tags": [
+        "Football"
+      ],
+      "ticker": "KXLEADERNFLINT",
+      "title": "NFL leader interceptions"
+    },
+    {
+      "additional_prohibitions": [
+        "Current and former players, coaches, and staff of the league, association, or organization(s) governing the event. For college leagues/associations specifically, or where otherwise appropriate (as identified by the Exchange), this applies to current and former players/coaches/staff of the specific teams in <event> rather than the league/association as a whole (e.g., if the Division I Gonzaga Men\u2019s Basketball Team is playing in <event>, this prohibition will restrict trades by  current/former players of that team, rather than all current/former players/coaches/staff in any NCAA sport).",
+        "Paid employees of the league and league participants",
+        "Owners of teams and the league",
+        "and household members and immediate family of all above",
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Sports",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/NCAAF.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/NCAAF.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "annual",
+      "last_updated_ts": "2026-03-27T19:05:47.519969Z",
+      "settlement_sources": [
+        {
+          "name": "ESPN",
+          "url": "https://www.espn.com/"
+        },
+        {
+          "name": "Fox Sports",
+          "url": "https://www.foxsports.com/"
+        },
+        {
+          "name": "The Wall Street Journal",
+          "url": "https://www.wsj.com/"
+        }
+      ],
+      "tags": [
+        "Football"
+      ],
+      "ticker": "KXNCAAFD3",
+      "title": "D3 College Football Champion"
+    },
+    {
+      "additional_prohibitions": [
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Mentions",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/SPORTSMENTION.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/SPORTSMENTION.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "one_off",
+      "last_updated_ts": "2026-04-16T17:23:19.982065Z",
+      "settlement_sources": [
+        {
+          "name": "the Governing League",
+          "url": "https://www.nfl.com/"
+        }
+      ],
+      "tags": [
+        "Sports"
+      ],
+      "ticker": "KXNFLMENTION",
+      "title": "NFL Mention"
+    },
+    {
+      "additional_prohibitions": [
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Economics",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/LCPI.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/LCPI.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "annual",
+      "last_updated_ts": "2026-02-26T08:50:31.901806Z",
+      "settlement_sources": [
+        {
+          "name": "Bureau of Labor Statistics",
+          "url": "https://www.bls.gov/cpi/"
+        }
+      ],
+      "tags": [
+        "Inflation"
+      ],
+      "ticker": "LCPIMAX",
+      "title": "Inflation surge"
+    },
+    {
+      "additional_prohibitions": [
+        "Current and former players, coaches, and staff of the league, association, or organization(s) governing the event. For college leagues/associations specifically, or where otherwise appropriate (as identified by the Exchange), this applies to current and former players/coaches/staff of the specific teams in <event> rather than the league/association as a whole (e.g., if the Division I Gonzaga Men\u2019s Basketball Team is playing in <event>, this prohibition will restrict trades by  current/former players of that team, rather than all current/former players/coaches/staff in any NCAA sport).",
+        "Paid employees of the league and league participants",
+        "Owners of teams and the league",
+        "and household members and immediate family of all above",
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Sports",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/FOOTBALLEVENT.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/FOOTBALLEVENT.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "one_off",
+      "last_updated_ts": "2026-02-26T08:50:31.901806Z",
+      "settlement_sources": [
+        {
+          "name": "ESPN",
+          "url": "https://www.espn.com"
+        },
+        {
+          "name": "the Governing League",
+          "url": "https://www.nfl.com/"
+        }
+      ],
+      "tags": [
+        "Football"
+      ],
+      "ticker": "KXNFLLARGESTLEAD",
+      "title": "Pro Football Largest Lead"
+    },
+    {
+      "additional_prohibitions": [
+        "Current and former players, coaches, and staff of the league, association, or organization(s) governing the event. For college leagues/associations specifically, or where otherwise appropriate (as identified by the Exchange), this applies to current and former players/coaches/staff of the specific teams in <event> rather than the league/association as a whole (e.g., if the Division I Gonzaga Men\u2019s Basketball Team is playing in <event>, this prohibition will restrict trades by  current/former players of that team, rather than all current/former players/coaches/staff in any NCAA sport).",
+        "Paid employees of the league and league participants",
+        "Owners of teams and the league",
+        "and household members and immediate family of all above",
+        "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+        "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+      ],
+      "category": "Sports",
+      "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/NFLEXACTWINS.pdf",
+      "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/NFLEXACTWINS.pdf",
+      "fee_multiplier": 1,
+      "fee_type": "quadratic",
+      "frequency": "annual",
+      "last_updated_ts": "2026-02-26T08:50:31.901806Z",
+      "settlement_sources": [
+        {
+          "name": "ESPN",
+          "url": "https://www.espn.com/"
+        }
+      ],
+      "tags": [
+        "Football"
+      ],
+      "ticker": "KXNFLEXACTWINSBAL",
+      "title": "Pro football exact wins Baltimore"
+    }
+  ]
+}

@@ -8,10 +8,18 @@ import urllib.request
 import json
 import base64
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+
+# Process-local throttle state for public_request.
+# Kalshi's public rate limit is ~10 rps per IP; 600ms keeps us well under
+# it while also protecting against bursts from the new portal pipeline.
+_LAST_REQUEST_TS = 0.0
+_MIN_INTERVAL = 0.6
+_BACKOFFS = [1, 2, 4, 8, 16]
 
 
 def load_credentials(env_dir=None):
@@ -88,16 +96,30 @@ def authenticated_request(method: str, path: str, api_key_id: str, private_key_p
 
 
 def public_request(path: str):
-    """Make a public (unauthenticated) request to Kalshi API."""
+    """Make a public (unauthenticated) request to Kalshi API. Throttled.
+
+    Enforces a minimum 600ms gap between successive calls (process-local)
+    and retries on HTTP 429 with exponential backoff (1s, 2s, 4s, 8s, 16s).
+    """
+    global _LAST_REQUEST_TS
+    elapsed = time.time() - _LAST_REQUEST_TS
+    if elapsed < _MIN_INTERVAL:
+        time.sleep(_MIN_INTERVAL - elapsed)
     url = f"{BASE_URL}{path}"
-    try:
-        req = urllib.request.Request(url)
-        req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req) as response:
-            return json.loads(response.read().decode())
-    except urllib.error.HTTPError as e:
-        print(f"  Request failed: {e.code} - {e.read().decode()}")
-        return None
-    except Exception as e:
-        print(f"  Request error: {e}")
-        return None
+    for attempt, backoff in enumerate([0] + _BACKOFFS):
+        if backoff:
+            time.sleep(backoff)
+        try:
+            req = urllib.request.Request(url)
+            req.add_header("Content-Type", "application/json")
+            with urllib.request.urlopen(req) as response:
+                _LAST_REQUEST_TS = time.time()
+                return json.loads(response.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < len(_BACKOFFS):
+                continue
+            print(f"  Request failed: {e.code} - {e.read().decode()}")
+            return None
+        except Exception as e:
+            print(f"  Request error: {e}")
+            return None
