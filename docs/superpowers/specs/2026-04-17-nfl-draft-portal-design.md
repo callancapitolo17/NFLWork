@@ -9,7 +9,7 @@
 
 ## Goal
 
-A trader's-cockpit web portal for surfacing +EV bets on 2026 NFL Draft markets across Kalshi and four sportsbooks (DraftKings, FanDuel, Bookmaker, Wagerzon). The user grinds mock-draft sites and other research themselves; the portal's job is to (a) put every venue's prices side-by-side so disagreement is obvious, (b) stream Kalshi trade flow so large bets are visible as they print, and (c) capture the bets the user takes for later analysis.
+A trader's-cockpit web portal for surfacing +EV bets on 2026 NFL Draft markets across Kalshi and four sportsbooks (DraftKings, FanDuel, Bookmaker, Wagerzon). The user grinds mock-draft sites and other research themselves; the portal's job is to (a) put every venue's prices side-by-side so disagreement is obvious, (b) show recent Kalshi trade flow (polled, not streamed) so large bets are visible shortly after they print, and (c) capture the bets the user takes for later analysis.
 
 This is **Phase 1** of a multi-phase build. Phase 2 work (formal fair-value methodology, P&L view, market maker) is explicitly out of scope.
 
@@ -38,23 +38,24 @@ A single DuckDB database at `nfl_draft/nfl_draft.duckdb` — the **only** draft 
 - `draft_series`, `market_info` → kept as-is
 - `positions`, `resting_orders` → kept as-is
 
-The script is **idempotent**: it checks whether each destination table already exists with row count matching the source; if yes, it skips that table; if no, it copies. Re-running is safe and cheap (the existence check is O(1)). Tested via `test_migration.py` which runs the script twice in succession and asserts identical destination state.
+The script is **idempotent**: for each destination table, it computes an `MD5(GROUP_CONCAT(...))` hash of the source and the destination contents (cheap DuckDB aggregation) and skips the copy if hashes match. Re-running is safe; mismatch between source and a partially-copied destination triggers a re-copy. Tested via `test_migration.py` which runs the script twice in succession and asserts identical destination state.
 
 After migration is verified, `kalshi_draft/kalshi_draft.duckdb` is removed and three things are updated together in the same commit as the migration script:
 
 1. **Existing dashboard tabs** in `kalshi_draft/app.py` — point `duckdb.connect(...)` at `nfl_draft/nfl_draft.duckdb` AND rewrite every SQL query referencing `draft_odds` to reference `kalshi_odds_history` instead.
-2. **Existing fetcher / portfolio writers** in `kalshi_draft/fetcher.py` (and any related modules) — repoint every `duckdb.connect(...)` write target from `kalshi_draft.duckdb` to `nfl_draft/nfl_draft.duckdb`. The fetcher's writes to `draft_series`, `market_info`, `positions`, `resting_orders` continue functioning, just to the new DB. This is a connection-target change, not a logic change.
+2. **Existing fetcher / portfolio writers** in `kalshi_draft/fetcher.py` (and any related modules):
+   - Repoint every `duckdb.connect(...)` write target from `kalshi_draft.duckdb` to `nfl_draft/nfl_draft.duckdb`.
+   - **Disable** the legacy fetcher's writes to its old `draft_odds` table (now `kalshi_odds_history`). Otherwise Kalshi odds get written twice — once by the legacy fetcher into `kalshi_odds_history`, once by the new adapter into `draft_odds`. After v1 ships, `kalshi_odds_history` is **frozen** (read-only historical record from before the migration); all new Kalshi odds flow exclusively into `draft_odds`. The legacy fetcher continues writing `draft_series`, `market_info`, `positions`, `resting_orders` — those tables remain its sole responsibility.
 3. **`kalshi_mm/`** — review for any direct DuckDB references to `kalshi_draft.duckdb` (the running CBB MM bot uses `kalshi_draft/auth.py` but shouldn't touch the draft DB; verify with grep). If found, repoint similarly.
 
 Regression covered by:
 - `test_dashboard_queries.py` — every existing tab returns expected row count from `kalshi_odds_history`.
 - `test_kalshi_writer_target.py` — invokes the existing fetcher in a sandbox, confirms it writes to `nfl_draft.duckdb`, NOT `kalshi_draft.duckdb`.
 
-**Migration verification**: idempotency check uses `MD5(GROUP_CONCAT(...))` hash of each table's content (not just row count), since two different datasets can have the same row count. The hash is computed inside DuckDB via aggregation; cheap and reliable.
 
 **No local CSV / JSON config files** (per project rule "no temp files"). All static configuration — player aliases, team aliases, per-book market label mappings — lives as Python dict literals in `nfl_draft/config/*.py` modules (mirrors the existing `wagerzon_odds/config.py` and `bookmaker_odds/scraper.py` pattern). At runtime these dicts are loaded into in-memory lookups; for cross-process consistency they are also seeded into five DuckDB lookup tables (`players`, `player_aliases`, `teams`, `team_aliases`, `market_map`) by `python -m nfl_draft.lib.seed`. **Seed runs at the start of every `run.py` invocation** (idempotent, ~50ms) so any mid-week edit to a `config/*.py` file takes effect on the next cron tick automatically — no separate manual step.
 
-**Modeling convention**: each `market_id` represents a single **binary outcome** (matches Kalshi's YES/NO contract model natively). Sportsbook outright menus (e.g., DK's "First QB Drafted" with multiple player options) are split into one binary contract per option at ingestion. So "Will Cam Ward be the first QB drafted" is `first_qb_ward`, "Will Shedeur Sanders" is `first_qb_sanders`, etc. This keeps the schema flat and the join-across-venues logic simple — every book's offering of a given outcome lands on the same `market_id`.
+**Modeling convention**: each `market_id` represents a single **binary outcome** (matches Kalshi's YES/NO contract model natively). Sportsbook outright menus (e.g., DK's "First QB Drafted" with multiple player options) are split into one binary contract per option at ingestion. So "Will Cam Ward be the first QB drafted" is `first_qb_cam-ward` (built by the construction rule below — see `draft_markets`), `first_qb_shedeur-sanders` for Sanders, etc. This keeps the schema flat and the join-across-venues logic simple — every venue's offering of a given outcome lands on the same `market_id`.
 
 **Scraper module shape**: each `nfl_draft/scrapers/<book>.py` exposes `fetch_draft_odds() -> List[OddsRow]`. The Kalshi module additionally exposes `fetch_trades() -> List[TradeRow]` for the trade-tape feed.
 
@@ -253,7 +254,10 @@ These are baked into a `kalshi_request()` wrapper in `nfl_draft/scrapers/kalshi.
 
 ### Per-book scraper notes
 
-- **Kalshi**: existing `kalshi_draft/fetcher.py` is the base; `nfl_draft/scrapers/kalshi.py` is a thin adapter that calls it and remaps to the new schema.
+- **Kalshi**: existing `kalshi_draft/fetcher.py` is the base. `nfl_draft/scrapers/kalshi.py` is an adapter that:
+  - Calls the legacy fetcher's discovery + market-fetch functions to get raw market data (the legacy fetcher continues to handle its own writes for series/markets/portfolio metadata).
+  - Returns `List[OddsRow]` shaped to the new schema — devigged probabilities, normalized player names, canonical `market_id`s constructed via `build_market_id()`.
+  - Does NOT write to the DB itself — `run.py` collects the returned rows from all scrapers and does a single bulk write (per the standard scraper module shape).
 - **DraftKings**: reuse the CDP click-and-capture + Akamai handling pattern from `mlb_sgp/scraper_draftkings_sgp.py`. Reconnaissance step required: locate the NFL Draft event page, capture the API call(s) that fetch the draft markets menu.
 - **FanDuel**: reuse the curl_cffi + 3-header recipe (per memory `fanduel_sgp_scraping.md`). Reconnaissance: same as DK.
 - **Bookmaker**: reuse the curl_cffi + ASP.NET cookie pattern from `bookmaker_odds/scraper.py`. Reconnaissance: discover the league ID for NFL Draft markets (currently only cbb/nba/mlb configured).
@@ -284,10 +288,10 @@ Default landing tab: Cross-Book Grid (the workhorse of the trading session). Sub
 
 ### Dashboard auto-refresh
 
-All four new tabs (Cross-Book Grid, +EV Candidates, Trade Tape, Bet Log) use a `dcc.Interval` component to auto-refresh without user F5. Cadence is mode-driven (matches the cron schedule):
+All four new tabs (Cross-Book Grid, +EV Candidates, Trade Tape, Bet Log) use a `dcc.Interval` component to auto-refresh without user F5. The auto-refresh fires faster than the cron writes — the cheap-poll guard below ensures most ticks short-circuit and only fire the full re-render when new data has actually landed:
 
-- **Pre-draft mode**: 60 seconds (slightly faster than the 15-min scrape so the user sees fresh writes within a minute of arrival).
-- **Draft-day mode**: 15 seconds (matches the 1-2 min scrape; user sees new prices nearly immediately).
+- **Pre-draft mode**: 60s tick. Cron writes every 15 min. Most ticks are no-ops; the worst case is a 60s lag between cron write and dashboard reflection.
+- **Draft-day mode**: 15s tick. Cron writes every 1-2 min. Most ticks no-op; user sees new data within 15s of write.
 
 A mode toggle in the dashboard header (`Pre-draft / Draft-day`) controls the interval. Default: pre-draft. The user manually flips to draft-day the morning of April 23 (same time they swap the cron file).
 
