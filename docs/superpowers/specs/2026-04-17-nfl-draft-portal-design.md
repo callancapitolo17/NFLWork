@@ -33,29 +33,24 @@ This is **Phase 1** of a multi-phase build. Phase 2 work (formal fair-value meth
 
 A single DuckDB database at `nfl_draft/nfl_draft.duckdb` — the **only** draft database for the project. The existing `kalshi_draft/kalshi_draft.duckdb` is retired in v1: its data (a few months of Kalshi draft odds + portfolio history) is migrated into the new DB at the start of implementation, then the old file is deleted. Two DBs for the same logical concern (NFL draft data) is confusing; one is correct.
 
-**Migration of existing data**: a Python script (`nfl_draft/lib/migrate_from_kalshi_draft.py`) copies tables from `kalshi_draft/kalshi_draft.duckdb` into `nfl_draft/nfl_draft.duckdb` with renames where needed:
-- `draft_odds` (Kalshi-only) → `kalshi_odds_history` (preserved for back-reference; new portal writes go to the new `draft_odds` table described below)
+**Migration of existing data**: a Python script (`nfl_draft/lib/migrate_from_kalshi_draft.py`) copies tables from `kalshi_draft/kalshi_draft.duckdb` into `nfl_draft/nfl_draft.duckdb`. The legacy table `draft_odds` is renamed to `kalshi_odds` (to free up the name for the new cross-venue `draft_odds` table). Other tables keep their names:
+- `draft_odds` (Kalshi-only, rich schema with `ticker`/`yes_bid`/`yes_ask`/`last_price`/`volume`/etc.) → `kalshi_odds`
 - `draft_series`, `market_info` → kept as-is
 - `positions`, `resting_orders` → kept as-is
+- `consensus_board`, `detected_edges` → kept as-is
+
+The renamed `kalshi_odds` is **not frozen** — the legacy fetcher continues to write to it on every cycle, preserving the existing Price History / Edge Detection / Consensus tabs without modification beyond the table-name change. The legacy fetcher and the new cross-venue portal store overlapping Kalshi data in two different shapes (rich Kalshi-native columns in `kalshi_odds` vs. normalized cross-venue columns in `draft_odds`) — this is intentional dual-view storage, not unintentional duplication. Storage cost through draft week is ≤100MB; DuckDB handles it trivially.
 
 The script is **idempotent**: for each destination table, it computes an `MD5(GROUP_CONCAT(...))` hash of the source and the destination contents (cheap DuckDB aggregation) and skips the copy if hashes match. Re-running is safe; mismatch between source and a partially-copied destination triggers a re-copy. Tested via `test_migration.py` which runs the script twice in succession and asserts identical destination state.
 
 After migration is verified, `kalshi_draft/kalshi_draft.duckdb` is removed and three things are updated together in the same commit as the migration script:
 
-1. **Existing dashboard tabs** in `kalshi_draft/app.py` — point `duckdb.connect(...)` at `nfl_draft/nfl_draft.duckdb` AND rewrite every SQL query referencing `draft_odds`. The replacement isn't a simple rename: since `kalshi_odds_history` is frozen at v1 ship (no new rows after migration), tabs that need *current* Kalshi prices (Price History, Edge Detection, Consensus) must `UNION ALL` the historical archive with live data:
-   ```sql
-   SELECT ticker, price, fetched_at FROM kalshi_odds_history
-   UNION ALL
-   SELECT market_id AS ticker, devig_prob AS price, fetched_at FROM draft_odds WHERE book = 'kalshi'
-   ```
-   Tabs that read static Kalshi metadata (Market Overview reads `market_info`; Portfolio reads `positions`/`resting_orders`) are unaffected — those tables continue to receive writes from the legacy fetcher.
-2. **Existing fetcher / portfolio writers** in `kalshi_draft/fetcher.py` (and any related modules):
-   - Repoint every `duckdb.connect(...)` write target from `kalshi_draft.duckdb` to `nfl_draft/nfl_draft.duckdb`.
-   - **Disable** the legacy fetcher's writes to its old `draft_odds` table (now `kalshi_odds_history`). Otherwise Kalshi odds get written twice — once by the legacy fetcher into `kalshi_odds_history`, once by the new adapter into `draft_odds`. After v1 ships, `kalshi_odds_history` is **frozen** (read-only historical record from before the migration); all new Kalshi odds flow exclusively into `draft_odds`. The legacy fetcher continues writing `draft_series`, `market_info`, `positions`, `resting_orders` — those tables remain its sole responsibility.
+1. **Existing dashboard tabs** in `kalshi_draft/app.py` — point `duckdb.connect(...)` at `nfl_draft/nfl_draft.duckdb` AND rewrite every SQL query referencing the old `draft_odds` to reference `kalshi_odds` instead. This is a name-only change; the schema is identical because the migration just renamed the table. All queries (`get_latest_odds`, `get_price_history`, etc.) work as before, just against the renamed source.
+2. **Existing fetcher / portfolio writers** in `kalshi_draft/fetcher.py` (and any related modules): repoint every `duckdb.connect(...)` from `kalshi_draft.duckdb` to `nfl_draft/nfl_draft.duckdb` AND update any `INSERT INTO draft_odds` to `INSERT INTO kalshi_odds`. The fetcher's behavior is otherwise unchanged — it continues to write `kalshi_odds`, `draft_series`, `market_info`, `positions`, `resting_orders` on its existing cadence. New writes accumulate in `kalshi_odds` continuously; nothing is frozen.
 3. **`kalshi_mm/`** — review for any direct DuckDB references to `kalshi_draft.duckdb` (the running CBB MM bot uses `kalshi_draft/auth.py` but shouldn't touch the draft DB; verify with grep). If found, repoint similarly.
 
 Regression covered by:
-- `test_dashboard_queries.py` — every existing tab returns expected row count from `kalshi_odds_history`.
+- `test_dashboard_queries.py` — every existing tab returns expected row count from `kalshi_odds`.
 - `test_kalshi_writer_target.py` — invokes the existing fetcher in a sandbox, confirms it writes to `nfl_draft.duckdb`, NOT `kalshi_draft.duckdb`.
 
 
@@ -487,7 +482,7 @@ This requires that **every change be testable**. If a change can't be expressed 
 
 In scope:
 - DuckDB schema, all tables (`draft_markets`, `draft_odds`, `kalshi_trades`, `kalshi_poll_state`, `draft_bets`, `players`, `player_aliases`, `teams`, `team_aliases`, `market_map`, `draft_odds_unmapped`, `draft_odds_unmapped_players`)
-- Migration of existing `kalshi_draft.duckdb` data into `nfl_draft.duckdb`; deletion of the old DB; existing dashboard tabs repointed AND queries rewritten to reference `kalshi_odds_history` (with regression query tests landing first)
+- Migration of existing `kalshi_draft.duckdb` data into `nfl_draft.duckdb`; deletion of the old DB; existing dashboard tabs repointed AND queries rewritten to reference `kalshi_odds` (with regression query tests landing first)
 - Player/team/market canonical config in `nfl_draft/config/*.py` (Python dict literals, populated for the top ~80 prospects), seeded into DuckDB lookup tables (idempotent seed)
 - All 5 venue scrapers (Kalshi expansion + 4 books) writing to `draft_odds`, with rate limiting on Kalshi and credentials loaded from `.env`
 - Kalshi trade tape polling → `kalshi_trades` with `kalshi_poll_state` cursor + `INSERT OR IGNORE` dedup
@@ -523,9 +518,9 @@ Out of scope for v1, planned for after:
 
 - **Branch**: `feature/nfl-draft-portal` (already created at brainstorm time)
 - **Files created**: `nfl_draft/` directory tree (see Code layout); `docs/superpowers/specs/2026-04-17-nfl-draft-portal-design.md`
-- **Files modified**: `kalshi_draft/app.py` (new tabs + queries rewritten from `draft_odds` → `kalshi_odds_history` + repointed at `nfl_draft/nfl_draft.duckdb`), `.gitignore` (add `nfl_draft/nfl_draft.duckdb`, `nfl_draft/.cookies/`), `README.md` (link to nfl_draft/README.md), `requirements.txt` if present (add any new pinned versions of `dash`, `plotly`, `duckdb`, `pytest`, `curl_cffi`, `playwright` not already declared)
+- **Files modified**: `kalshi_draft/app.py` (new tabs + queries rewritten from `draft_odds` → `kalshi_odds` + repointed at `nfl_draft/nfl_draft.duckdb`), `.gitignore` (add `nfl_draft/nfl_draft.duckdb`, `nfl_draft/.cookies/`), `README.md` (link to nfl_draft/README.md), `requirements.txt` if present (add any new pinned versions of `dash`, `plotly`, `duckdb`, `pytest`, `curl_cffi`, `playwright` not already declared)
 - **Files deleted**: `kalshi_draft/kalshi_draft.duckdb` (after migration verified). Note: this file is already gitignored, so the deletion is filesystem-only — no commit needed for the removal itself.
-- **Commit structure**: per-phase commits, each ships with its own tests in the same commit — (1) schema + migration script + repoint of `kalshi_draft/fetcher.py` writes (to nfl_draft.duckdb, with legacy odds-write disabled) + migration tests + `test_kalshi_writer_target.py`, (2) seed + lookup tables + seed/normalize tests, (3) devig math + devig tests + `test_market_id_construction.py` + `test_tz_roundtrip.py`, (4) each scraper + that scraper's parsing tests + a fixture, (5) dashboard query functions + query tests + repoint existing tabs' SQL (with their pre-existing-tab query tests landing first as a regression baseline), (6) trade-tape poller + tests, (7) cron config + README. Review checkpoint at each scraper commit. No commit lands without tests for the code in it.
+- **Commit structure**: per-phase commits, each ships with its own tests in the same commit — (1) schema + migration script (renames legacy `draft_odds` → `kalshi_odds`) + repoint of `kalshi_draft/fetcher.py` writes (to nfl_draft.duckdb, INSERT target updated to `kalshi_odds`) + migration tests + `test_kalshi_writer_target.py`, (2) seed + lookup tables + seed/normalize tests, (3) devig math + devig tests + `test_market_id_construction.py` + `test_tz_roundtrip.py`, (4) each scraper + that scraper's parsing tests + a fixture, (5) dashboard query functions + query tests + repoint existing tabs' SQL (rename `draft_odds` → `kalshi_odds` in queries; pre-existing-tab query tests land first as a regression baseline), (6) trade-tape poller + tests, (7) cron config + README. Review checkpoint at each scraper commit. No commit lands without tests for the code in it.
 - **Worktree**: optional but recommended given other active work on `feature/cbb-consensus-calibration` and `feature/mlb-sgp-scrapers`. Use `/worktree` for isolation if any of those are likely to need attention during the 7 days.
 - **Pre-merge review**: full executive review of `git diff main..HEAD` before merging — focus on (a) no DK/FD credentials in code, (b) DuckDB connections all closed, (c) no logging of personal bets to stdout, (d) cookie files gitignored.
 - **Approval to merge**: explicit ask before `git merge` or any push.
