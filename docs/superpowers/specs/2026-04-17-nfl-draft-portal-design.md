@@ -30,7 +30,16 @@ This is **Phase 1** of a multi-phase build. Phase 2 work (formal fair-value meth
 
 ### Storage
 
-A new DuckDB database at `nfl_draft/nfl_draft.duckdb`. Kept separate from `kalshi_draft/kalshi_draft.duckdb` so this build can iterate (schema changes, wipes) without disturbing the existing Kalshi-only history or the Kalshi portfolio data.
+A single DuckDB database at `nfl_draft/nfl_draft.duckdb` — the **only** draft database for the project. The existing `kalshi_draft/kalshi_draft.duckdb` is retired in v1: its data (a few months of Kalshi draft odds + portfolio history) is migrated into the new DB at the start of implementation, then the old file is deleted. Two DBs for the same logical concern (NFL draft data) is confusing; one is correct.
+
+**Migration of existing data**: a one-time Python script (`nfl_draft/lib/migrate_from_kalshi_draft.py`) copies tables from `kalshi_draft/kalshi_draft.duckdb` into `nfl_draft/nfl_draft.duckdb` with renames where needed:
+- `draft_odds` (Kalshi-only) → `kalshi_odds_history` (preserved for back-reference; new portal writes go to the new `draft_odds` table described below)
+- `draft_series`, `market_info` → kept as-is
+- `positions`, `resting_orders` → kept as-is
+
+After migration is verified, `kalshi_draft/kalshi_draft.duckdb` is removed and the existing dashboard tabs in `kalshi_draft/app.py` are updated to point at `nfl_draft/nfl_draft.duckdb`.
+
+**No local CSV / JSON config files** (per project rule "no temp files"). All static configuration — player aliases, team aliases, per-book market label mappings — lives as Python dict literals in `nfl_draft/config/*.py` modules (mirrors the existing `wagerzon_odds/config.py` and `bookmaker_odds/scraper.py` pattern). At runtime these dicts are loaded into in-memory lookups; for cross-process consistency they are also seeded into DuckDB lookup tables (`players`, `teams`, `market_map`) by a one-time `python -m nfl_draft.lib.seed` command and re-run whenever the source dict changes.
 
 **Modeling convention**: each `market_id` represents a single **binary outcome** (matches Kalshi's YES/NO contract model natively). Sportsbook outright menus (e.g., DK's "First QB Drafted" with multiple player options) are split into one binary contract per option at ingestion. So "Will Cam Ward be the first QB drafted" is `first_qb_ward`, "Will Shedeur Sanders" is `first_qb_sanders`, etc. This keeps the schema flat and the join-across-venues logic simple — every book's offering of a given outcome lands on the same `market_id`.
 
@@ -77,21 +86,33 @@ A new DuckDB database at `nfl_draft/nfl_draft.duckdb`. Kept separate from `kalsh
   - `taken_at` TIMESTAMP
   - `note` TEXT (optional free-form, e.g., "after Schefter Ward news")
 
-- `players_2026` — canonical name registry
+- `players` — canonical name registry, seeded from `nfl_draft/config/players.py` (Python dict literal)
   - `canonical_name` TEXT PRIMARY KEY
   - `position` TEXT
   - `college` TEXT (for disambiguation)
-  - `aliases` JSON (list of strings, e.g., `["Cam Ward", "Cameron Ward", "C. Ward"]`)
+  - `aliases` TEXT[] (DuckDB list type, e.g., `['Cam Ward', 'Cameron Ward', 'C. Ward']`)
 
-  Loaded once from a hand-maintained `players_2026.csv` in `nfl_draft/config/`. Owned manually because rookie-name canonicalization is unavoidable cross-book and any auto-fuzzy-match will produce silent join errors. Same pattern for `teams_nfl` (already exists in canonical form via `Answer Keys/canonical_match.py`; reuse).
+- `teams` — canonical NFL team registry, seeded from `nfl_draft/config/teams.py` (Python dict literal). Built off the existing canonical mapping in `Answer Keys/canonical_match.py` — do not duplicate.
+
+- `market_map` — per-book label → canonical `market_id` mapping, seeded from `nfl_draft/config/markets.py` (Python dict literal)
+  - `book` TEXT (`kalshi` | `draftkings` | `fanduel` | `bookmaker` | `wagerzon`)
+  - `book_label` TEXT (the raw market title or ticker prefix from the book)
+  - `book_subject` TEXT (raw player/team string from the book, before normalization)
+  - `market_id` TEXT FK → `draft_markets.market_id`
+  - PRIMARY KEY (book, book_label, book_subject)
+
+The three lookup tables are populated by a one-time seed command (`python -m nfl_draft.lib.seed`) that reads the dict literals from `nfl_draft/config/*.py` and writes to DuckDB. Editing the source `.py` file + re-running `seed` is how aliases and mappings are maintained. The dict literals are version-controlled (source code), so changes show up in `git diff` cleanly. No CSV or JSON config files anywhere.
+
+Manual maintenance is unavoidable for rookie-name canonicalization — any auto-fuzzy-match will produce silent join errors that silently corrupt EV calculations. Better to fail loudly: scraper rows with unmapped players land in a quarantine table (see Error handling) and the dashboard footer surfaces the unmapped count, which is the user's daily prompt to extend the dict.
 
 ### Code layout
 
 ```
 nfl_draft/
   config/
-    players_2026.csv           # canonical name + aliases
-    market_map.json            # per-book → canonical market_id mapping
+    players.py                 # PLAYERS dict literal (canonical → metadata + aliases)
+    teams.py                   # TEAMS dict literal (canonical → aliases)
+    markets.py                 # MARKET_MAP dict literal (per-book label → canonical market_id)
   scrapers/
     kalshi.py                  # extends existing kalshi_draft/fetcher.py for ALL series
     draftkings.py              # adapted from mlb_sgp/scraper_draftkings_sgp.py
@@ -101,15 +122,18 @@ nfl_draft/
   lib/
     db.py                      # DuckDB connection + schema migrations
     devig.py                   # ported from Answer Keys/Tools.R (~30 LOC)
-    normalize.py               # player/team alias resolution
-    market_map.py              # per-book market label → canonical market_id
-  run.py                       # orchestrator: --mode {pre-draft, draft-day} --book all
-  app.py                       # extends kalshi_draft/app.py with new tabs (do NOT fork)
+    normalize.py               # reads players/teams tables → alias resolution
+    market_map.py              # reads market_map table → per-book label → canonical market_id
+    seed.py                    # one-time: reads config/*.py dicts, writes to DuckDB lookup tables
+    migrate_from_kalshi_draft.py  # one-time: migrates kalshi_draft.duckdb → nfl_draft.duckdb
+  run.py                       # orchestrator: --mode {pre-draft, draft-day, trades} --book all
   README.md
-  nfl_draft.duckdb             # gitignored
+  nfl_draft.duckdb             # gitignored — the SOLE draft database
 ```
 
-The dashboard **extends** `kalshi_draft/app.py` rather than living separately. New tabs read from the new `nfl_draft.duckdb`; existing tabs continue to read from `kalshi_draft.duckdb`. Two DBs is fine — Dash callbacks open whichever connection a tab needs. No schema sharing required.
+The dashboard **extends** `kalshi_draft/app.py` rather than living separately, and is updated to point all tabs (existing + new) at `nfl_draft/nfl_draft.duckdb`. The old `kalshi_draft/kalshi_draft.duckdb` is deleted after migration.
+
+**Directory naming wart, accepted in Phase 1**: the `kalshi_draft/` directory now houses a *multi-venue* draft dashboard, not just Kalshi. Renaming would break `kalshi_mm/` which imports `kalshi_draft/auth.py` (4 hard references in `kalshi_mm/{orders,analyze_performance,config,dashboard}.py`) — the running CBB MM bot would go down. Phase 2 cleanup: rename `kalshi_draft/` → `kalshi_lib/` (it's really the Kalshi auth+fetcher library that `kalshi_mm` depends on), update kalshi_mm imports, and move `app.py` into `nfl_draft/`.
 
 ### Devig math
 
@@ -215,8 +239,8 @@ Existing tabs (Market Overview, Price History, Edge Detection, Consensus, Portfo
 
 - **Per-scraper isolation**: a failure in one book's scraper must not prevent the others from running. `run.py` wraps each book in try/except, logs the error, continues.
 - **Auth failure**: log and surface in dashboard footer (e.g., "DK auth expired — re-login needed"). Don't silently lose data.
-- **New / unknown market**: when a scraper emits a market label that doesn't map to a canonical `market_id`, log a warning and write the row to a `draft_odds_unmapped` quarantine table. Daily review during draft week to extend `market_map.json`. Better than silently dropping.
-- **Player alias miss**: same pattern — quarantine to `draft_odds_unmapped_players`, daily review to extend `players_2026.csv`. Surface unmapped count on the dashboard footer.
+- **New / unknown market**: when a scraper emits a market label that doesn't map to a canonical `market_id`, log a warning and write the row to a `draft_odds_unmapped` quarantine table. Daily review during draft week to extend `nfl_draft/config/markets.py` (then re-run `python -m nfl_draft.lib.seed`). Better than silently dropping.
+- **Player alias miss**: same pattern — quarantine to `draft_odds_unmapped_players`, daily review to extend `nfl_draft/config/players.py` (then re-run `seed`). Surface unmapped count on the dashboard footer.
 - **Stale data warning**: dashboard shows `fetched_at` per book. If any book is > 30 min stale during pre-draft mode (or > 5 min during draft mode), highlight in red.
 - **DuckDB lock conflicts**: `run.py` and `app.py` both touch the DB. Use DuckDB's `read_only=true` for the dashboard (Dash callbacks open short-lived read-only connections) and `read_only=false` for `run.py`. If contention emerges, switch to a write-only worker that batches inserts.
 
@@ -239,7 +263,8 @@ Phase 1 is time-boxed; testing is pragmatic, not exhaustive.
 
 In scope:
 - DuckDB schema, all tables
-- Player/team canonical config (manual, but populated for the top ~80 prospects)
+- Migration of existing `kalshi_draft.duckdb` data into `nfl_draft.duckdb`; deletion of the old DB; existing dashboard tabs repointed
+- Player/team/market canonical config in `nfl_draft/config/*.py` (Python dict literals, populated for the top ~80 prospects), seeded into DuckDB lookup tables
 - All 5 venue scrapers (Kalshi expansion + 4 books) writing to `draft_odds`
 - Kalshi trade tape polling → `kalshi_trades`
 - Devig math ported to Python
@@ -258,6 +283,7 @@ Out of scope for v1, planned for after:
 - P&L view + CLV analysis on `draft_bets`
 - Kalshi MM adapted from `kalshi_mm/`
 - Generalize the framework for NFL Draft 2027, NBA Draft, NHL Draft (rename `nfl_draft/` → `draft/`, parameterize sport)
+- **Rename `kalshi_draft/` → `kalshi_lib/`** and move `app.py` into `nfl_draft/`. Update `kalshi_mm/` imports. Eliminates the directory-naming wart from Phase 1.
 
 ### Phase 3 — Out
 
@@ -269,8 +295,9 @@ Out of scope for v1, planned for after:
 
 - **Branch**: `feature/nfl-draft-portal` (already created at brainstorm time)
 - **Files created**: `nfl_draft/` directory tree (see Code layout); `docs/superpowers/specs/2026-04-17-nfl-draft-portal-design.md`
-- **Files modified**: `kalshi_draft/app.py` (new tabs), `.gitignore` (add `nfl_draft/nfl_draft.duckdb`, `nfl_draft/.cookies/`), `README.md` (link to nfl_draft/README.md)
-- **Commit structure**: per-phase commits where possible — schema commit, then each scraper as its own commit, then dashboard, then cron config. Review checkpoint at each scraper before merging.
+- **Files modified**: `kalshi_draft/app.py` (new tabs + repointed at `nfl_draft/nfl_draft.duckdb`), `.gitignore` (add `nfl_draft/nfl_draft.duckdb`, `nfl_draft/.cookies/`), `README.md` (link to nfl_draft/README.md)
+- **Files deleted**: `kalshi_draft/kalshi_draft.duckdb` (after migration verified). Note: this file is already gitignored, so the deletion is filesystem-only — no commit needed for the removal itself.
+- **Commit structure**: per-phase commits — (1) schema + migration script, (2) seed + lookup tables, (3) each scraper as its own commit, (4) dashboard tabs + repoint existing tabs, (5) cron config + README. Review checkpoint at each scraper before merging.
 - **Worktree**: optional but recommended given other active work on `feature/cbb-consensus-calibration` and `feature/mlb-sgp-scrapers`. Use `/worktree` for isolation if any of those are likely to need attention during the 7 days.
 - **Pre-merge review**: full executive review of `git diff main..HEAD` before merging — focus on (a) no DK/FD credentials in code, (b) DuckDB connections all closed, (c) no logging of personal bets to stdout, (d) cookie files gitignored.
 - **Approval to merge**: explicit ask before `git merge` or any push.
@@ -281,7 +308,7 @@ Required updates in the same final merge:
 - `nfl_draft/README.md` — setup (env vars, auth steps per book, cron install), usage (`run.py` flags), troubleshooting (auth failures, schema migrations).
 - Top-level `README.md` — one-line link to `nfl_draft/README.md`.
 - `CLAUDE.md` (project root) — add `nfl_draft/` to the project structure section so future Claude sessions discover it.
-- `kalshi_draft/README.md` — note that the dashboard has been extended with draft-portal tabs reading from `nfl_draft.duckdb`.
+- `kalshi_draft/README.md` — note that the dashboard has been extended with draft-portal tabs and **repointed at `nfl_draft/nfl_draft.duckdb`**; the old `kalshi_draft.duckdb` has been retired (data migrated, file deleted).
 
 ---
 
