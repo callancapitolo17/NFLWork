@@ -233,7 +233,7 @@ Cadence is controlled by **cron**, not by mode flags.
 
 Two crontab files (`nfl_draft/crontab.pre`, `nfl_draft/crontab.draft`) shipped in the repo. Swap with `crontab nfl_draft/crontab.draft`. Stale-data thresholds in the dashboard footer (30 min pre-draft = 2 missed cycles; 5 min draft-day = 2.5 cycles) match these cadences.
 
-`nfl_draft/logs/` is gitignored; rotation handled by `logrotate` config in README.
+`nfl_draft/logs/` is gitignored. Log rotation: macOS doesn't ship `logrotate` by default; the README documents either (a) installing `logrotate` via Homebrew with a config snippet, or (b) using the built-in `newsyslog`. v1 default: a one-line `find nfl_draft/logs/ -mtime +7 -delete` cron entry — crude but adequate for the 7-day draft window.
 
 ### Kalshi expansion
 
@@ -270,13 +270,13 @@ For each book, reconnaissance and parsing is the unknown — auth and request me
 New tabs added to the existing Dash app:
 
 1. **Cross-Book Grid** — Markets on rows, **all 5 venues** (4 sportsbooks + Kalshi) on columns, devigged prob in cells. For each market with ≥ 2 venues posting, compute the **median devigged probability across all posting venues, including Kalshi**. For each (market, venue) cell, compute `delta = venue_prob - median_prob`. **Flag the cell** (colored highlight + inline `±Npp` indicator) when `abs(delta) ≥ threshold`. Threshold default: 10 percentage points; user-configurable via a slider in the tab header. The flagged cell is the "this venue is way off the consensus" signal — that's where +EV likely lives. Symmetric treatment: any venue (sportsbook OR Kalshi) can be flagged as the outlier.
-   Final column shows the count of flagged books for that market (so a market with 3 outliers stands out from one with 1).
-   Click a row to drill into a per-market detail view (line history if data exists, all bid/ask, take/log button).
+   Final column shows the count of flagged venues for that market (so a market with 3 outliers stands out from one with 1).
+   Click a row to drill into a per-market detail view (line history if data exists; for Kalshi rows show bid/ask spread, for sportsbook rows show the single posted price; "Log this bet" button).
 
-2. **+EV Candidates** — Flat-listed view of every flagged (market, book) pair from the grid above, ranked by `abs(delta)` descending. One row per outlier — so a single market with 3 flagged books contributes 3 rows. Columns: market, position, book, book_prob, market_median, delta (signed: + means book is too high vs market, − means too low), implied edge direction. Filter by market type, position, book, threshold. This is the user's "scan the field for action" view.
+2. **+EV Candidates** — Flat-listed view of every flagged (market, venue) pair from the grid above, ranked by `abs(delta)` descending. One row per outlier — so a single market with 3 flagged venues contributes 3 rows. Columns: market, position, venue, venue_prob, all-venue_median, delta (signed: + means venue is too high vs median, − means too low), implied edge direction. Filter by market type, position, venue, threshold. This is the user's "scan the field for action" view.
 
-   Why outlier-flag and not raw variance: when 4 books say 50% and one says 30%, variance and outlier-flag give the same signal (one book is off). But when 5 books each disagree by ~5pp, variance is high but no single book is the obvious target — outlier-flag (correctly) flags nothing. The flag is more directly actionable than the variance number.
-3. **Trade Tape** — Streaming-style table of recent Kalshi trades (last 200 rows), large fills highlighted (`notional_usd ≥ threshold` evaluated at query time; threshold defaults to $500, configurable via tab slider). Filter by ticker / series.
+   Why outlier-flag and not raw variance: when 4 venues say 50% and one says 30%, variance and outlier-flag give the same signal (one venue is off). But when 5 venues each disagree by ~5pp, variance is high but no single venue is the obvious target — outlier-flag (correctly) flags nothing. The flag is more directly actionable than the variance number.
+3. **Trade Tape** — Polled table of recent Kalshi trades (last 200 rows by `traded_at` DESC), large fills highlighted (`notional_usd ≥ threshold` evaluated at query time; threshold defaults to $500, configurable via tab slider). Filter by ticker / series.
 4. **Bet Log** — Form to log a bet (market_id searchable-dropdown via `dcc.Dropdown(searchable=True)`, book dropdown, american_odds, stake, note). Below the form, table of past bets. The market_id dropdown is search-as-you-type because hard-scrolling 300+ markets is unusable.
    **Pre-fill from context**: rows in the +EV Candidates tab include a "Log this bet" button that navigates to the Bet Log tab with `market_id`, `book`, and `american_odds` pre-filled (passed via `dcc.Store(storage_type='session')`). This keeps the act-on-an-edge flow to two clicks.
 
@@ -344,7 +344,7 @@ All store ids prefixed `nfl_draft.` to avoid collision with the existing `kalshi
 
 [ Dash app — kalshi_draft/app.py extended ]
         │
-        ├── Cross-Book Grid ←  reads draft_markets + latest draft_odds per (market, book); computes median + outlier flags
+        ├── Cross-Book Grid ←  reads draft_markets + latest draft_odds per (market, venue); computes all-venue median + outlier flags
         ├── +EV Candidates  ←  same query, flat + filtered to flagged outliers, sorted by |delta|
         ├── Trade Tape      ←  reads kalshi_trades ORDER BY traded_at DESC LIMIT 200
         ├── Bet Log         ←  writes draft_bets; reads it for table view
@@ -398,11 +398,14 @@ nfl_draft/tests/
     test_devig.py                    # american→implied→devig math, all edge cases
     test_normalize.py                # player/team alias resolution
     test_market_map.py               # per-book label → canonical market_id
+    test_market_id_construction.py   # build_market_id() rules per market_type
     test_db.py                       # schema migration idempotency, seed correctness
+    test_tz_roundtrip.py             # local_to_utc_iso / utc_iso_to_local stability incl. DST
     test_scraper_parsing.py          # raw response → OddsRow conversion (pure logic)
   integration/                       # uses fixtures + temp DuckDB, no network (<30s total)
     test_pipeline.py                 # scraper rows → normalize → market_map → devig → DB
     test_migration.py                # kalshi_draft.duckdb → nfl_draft.duckdb roundtrip + idempotency
+    test_kalshi_writer_target.py     # legacy fetcher writes to nfl_draft.duckdb, NOT kalshi_draft.duckdb
     test_dashboard_queries.py        # query functions return correct shape + values
     test_quarantine.py               # unmapped player/market lands in quarantine table
     test_concurrent_access.py        # writer + reader threads, asserts no lock errors (per Error handling)
@@ -516,7 +519,7 @@ Out of scope for v1, planned for after:
 - **Files created**: `nfl_draft/` directory tree (see Code layout); `docs/superpowers/specs/2026-04-17-nfl-draft-portal-design.md`
 - **Files modified**: `kalshi_draft/app.py` (new tabs + queries rewritten from `draft_odds` → `kalshi_odds_history` + repointed at `nfl_draft/nfl_draft.duckdb`), `.gitignore` (add `nfl_draft/nfl_draft.duckdb`, `nfl_draft/.cookies/`), `README.md` (link to nfl_draft/README.md), `requirements.txt` if present (add any new pinned versions of `dash`, `plotly`, `duckdb`, `pytest`, `curl_cffi`, `playwright` not already declared)
 - **Files deleted**: `kalshi_draft/kalshi_draft.duckdb` (after migration verified). Note: this file is already gitignored, so the deletion is filesystem-only — no commit needed for the removal itself.
-- **Commit structure**: per-phase commits, each ships with its own tests in the same commit — (1) schema + migration script + migration tests, (2) seed + lookup tables + seed/normalize tests, (3) devig math + devig tests, (4) each scraper + that scraper's parsing tests + a fixture, (5) dashboard query functions + query tests + repoint existing tabs (with their pre-existing-tab query tests landing first as a regression baseline), (6) trade-tape poller + tests, (7) cron config + README. Review checkpoint at each scraper commit. No commit lands without tests for the code in it.
+- **Commit structure**: per-phase commits, each ships with its own tests in the same commit — (1) schema + migration script + repoint of `kalshi_draft/fetcher.py` writes (to nfl_draft.duckdb, with legacy odds-write disabled) + migration tests + `test_kalshi_writer_target.py`, (2) seed + lookup tables + seed/normalize tests, (3) devig math + devig tests + `test_market_id_construction.py` + `test_tz_roundtrip.py`, (4) each scraper + that scraper's parsing tests + a fixture, (5) dashboard query functions + query tests + repoint existing tabs' SQL (with their pre-existing-tab query tests landing first as a regression baseline), (6) trade-tape poller + tests, (7) cron config + README. Review checkpoint at each scraper commit. No commit lands without tests for the code in it.
 - **Worktree**: optional but recommended given other active work on `feature/cbb-consensus-calibration` and `feature/mlb-sgp-scrapers`. Use `/worktree` for isolation if any of those are likely to need attention during the 7 days.
 - **Pre-merge review**: full executive review of `git diff main..HEAD` before merging — focus on (a) no DK/FD credentials in code, (b) DuckDB connections all closed, (c) no logging of personal bets to stdout, (d) cookie files gitignored.
 - **Approval to merge**: explicit ask before `git merge` or any push.
@@ -533,9 +536,10 @@ Required updates in the same final merge:
 
 ## Open questions deferred to Phase 2
 
-- How should fair-value be computed? (Sharp-weighted consensus? Mock-draft Bayesian prior? Hybrid with user override?)
-- Is Kalshi a market or an oracle? (Affects EV direction — bet against Kalshi when books move, or bet against books when Kalshi prints heavy?)
+- How should fair-value be computed in Phase 2? v1 uses the cross-venue median (all 5 venues, equal weight). Phase 2 candidates: sharp-weighted (e.g., Bookmaker × 1.1, recreational books × 1.0), mock-draft Bayesian prior, hybrid with manual user override per market.
+- Should Kalshi be weighted differently from sportsbooks in the median? v1 treats it equally (it's the user's choice — see the "Include Kalshi" decision in brainstorming). Phase 2 should re-evaluate based on observed liquidity-adjusted accuracy during the 2026 draft.
 - Threshold for "large bet" on Kalshi tape — default $500 notional in v1; tune from real data after the draft.
+- Threshold for the outlier flag — default 10pp in v1; tune from observed distribution of cross-venue deltas.
 
 ---
 
