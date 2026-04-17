@@ -17,7 +17,7 @@ This is **Phase 1** of a multi-phase build. Phase 2 work (formal fair-value meth
 
 ## Non-Goals (Phase 1)
 
-- Formal fair-value / "true probability" oracle. v1 surfaces every venue's devigged probability and a variance metric; the user eyeballs edges. A methodology will be designed in Phase 2 after watching live behavior during the 2026 draft.
+- Formal fair-value / "true probability" oracle. v1 surfaces every venue's devigged probability and **flags outlier books that are ≥10pp from the cross-book median**; the user eyeballs edges. A methodology will be designed in Phase 2 after watching live behavior during the 2026 draft.
 - Auto-betting or Kelly sizing recommendations.
 - WebSocket / push streaming. Everything is poll-based in v1.
 - Full P&L tab, CLV analysis, or backtesting view. v1 only *captures* bets; analysis is Phase 2.
@@ -32,12 +32,14 @@ This is **Phase 1** of a multi-phase build. Phase 2 work (formal fair-value meth
 
 A single DuckDB database at `nfl_draft/nfl_draft.duckdb` — the **only** draft database for the project. The existing `kalshi_draft/kalshi_draft.duckdb` is retired in v1: its data (a few months of Kalshi draft odds + portfolio history) is migrated into the new DB at the start of implementation, then the old file is deleted. Two DBs for the same logical concern (NFL draft data) is confusing; one is correct.
 
-**Migration of existing data**: a one-time Python script (`nfl_draft/lib/migrate_from_kalshi_draft.py`) copies tables from `kalshi_draft/kalshi_draft.duckdb` into `nfl_draft/nfl_draft.duckdb` with renames where needed:
+**Migration of existing data**: a Python script (`nfl_draft/lib/migrate_from_kalshi_draft.py`) copies tables from `kalshi_draft/kalshi_draft.duckdb` into `nfl_draft/nfl_draft.duckdb` with renames where needed:
 - `draft_odds` (Kalshi-only) → `kalshi_odds_history` (preserved for back-reference; new portal writes go to the new `draft_odds` table described below)
 - `draft_series`, `market_info` → kept as-is
 - `positions`, `resting_orders` → kept as-is
 
-After migration is verified, `kalshi_draft/kalshi_draft.duckdb` is removed and the existing dashboard tabs in `kalshi_draft/app.py` are updated to point at `nfl_draft/nfl_draft.duckdb`.
+The script is **idempotent**: it checks whether each destination table already exists with row count matching the source; if yes, it skips that table; if no, it copies. Re-running is safe and cheap (the existence check is O(1)). Tested via `test_migration.py` which runs the script twice in succession and asserts identical destination state.
+
+After migration is verified, `kalshi_draft/kalshi_draft.duckdb` is removed and the existing dashboard tabs in `kalshi_draft/app.py` are updated to (a) point their `duckdb.connect(...)` calls at `nfl_draft/nfl_draft.duckdb` AND (b) rewrite every SQL query that references the old `draft_odds` table to reference `kalshi_odds_history` instead. **Both changes ship in the same commit as the migration script** so the dashboard never reads from a stale table. Regression covered by `test_dashboard_queries.py` which asserts each existing tab returns the expected row count from `kalshi_odds_history`.
 
 **No local CSV / JSON config files** (per project rule "no temp files"). All static configuration — player aliases, team aliases, per-book market label mappings — lives as Python dict literals in `nfl_draft/config/*.py` modules (mirrors the existing `wagerzon_odds/config.py` and `bookmaker_odds/scraper.py` pattern). At runtime these dicts are loaded into in-memory lookups; for cross-process consistency they are also seeded into DuckDB lookup tables (`players`, `teams`, `market_map`) by a one-time `python -m nfl_draft.lib.seed` command and re-run whenever the source dict changes.
 
@@ -45,10 +47,14 @@ After migration is verified, `kalshi_draft/kalshi_draft.duckdb` is removed and t
 
 **Scraper module shape**: each `nfl_draft/scrapers/<book>.py` exposes `fetch_draft_odds() -> List[OddsRow]`. The Kalshi module additionally exposes `fetch_trades() -> List[TradeRow]` for the trade-tape feed.
 
+**Time zones**: all timestamps are stored as **local time** (the user's machine timezone, presumably ET). DuckDB `TIMESTAMP` (not `TIMESTAMPTZ`). Rationale: the user reads the dashboard in local time, the cron fires in local time, and the draft itself is a single time-zoned event. Mixing UTC and local in storage creates silent drift bugs that are painful during draft week. The Kalshi API returns ISO-8601 with offset; the Kalshi scraper converts to local before insert. All other books are scraped from local-time-context endpoints already.
+
+**Credentials & secrets**: each sportsbook scraper reads its login credentials from `.env` at the repo root (already in `.gitignore`). Required vars per book: `DK_USERNAME` / `DK_PASSWORD`, `FD_USERNAME` / `FD_PASSWORD`, `BOOKMAKER_USERNAME` / `BOOKMAKER_PASSWORD`, `WAGERZON_USERNAME` / `WAGERZON_PASSWORD`. Kalshi reuses the existing API-key pair from `kalshi_draft/.env` (no new secrets). Per-book session cookies persist to `nfl_draft/.cookies/<book>.json` (in `.gitignore`). On session expiry, the scraper attempts re-login once; if that fails, the run is logged as auth-failed and surfaces in the dashboard footer (per Error handling).
+
 **Tables:**
 
-- `draft_markets` — the canonical market catalog
-  - `market_id` TEXT PRIMARY KEY (e.g., `first_qb`, `pick_1_overall`, `team_chi_first_pick`, `top_5_jeanty`)
+- `draft_markets` — the canonical market catalog. **Each row is a single binary outcome** (matches Kalshi's YES/NO contract model — see Modeling convention above).
+  - `market_id` TEXT PRIMARY KEY (e.g., `first_qb_ward`, `pick_1_overall_ward`, `team_chi_first_pick_jeanty`, `top_5_jeanty`). Every row names a specific outcome (player or team), never a market group.
   - `market_type` TEXT (`first_at_position` | `pick_outright` | `top_n_range` | `team_first_pick` | `prop`)
   - `subject` TEXT (player canonical name, team canonical abbr, or null for type-level markets)
   - `position` TEXT (`QB` | `RB` | `WR` | `TE` | `OL` | `DL` | `LB` | `DB` | `K` | null)
@@ -98,10 +104,17 @@ After migration is verified, `kalshi_draft/kalshi_draft.duckdb` is removed and t
 - `players` — canonical name registry, seeded from `nfl_draft/config/players.py` (Python dict literal)
   - `canonical_name` TEXT PRIMARY KEY
   - `position` TEXT
-  - `college` TEXT (for disambiguation)
-  - `aliases` TEXT[] (DuckDB list type, e.g., `['Cam Ward', 'Cameron Ward', 'C. Ward']`)
+  - `college` TEXT (for disambiguation when two prospects share a name)
+
+- `player_aliases` — alias → canonical lookup, seeded from the same `players.py` (one row per alias)
+  - `alias` TEXT PRIMARY KEY (case-folded at seed time, e.g., `'cam ward'`)
+  - `canonical_name` TEXT FK → `players.canonical_name`
+
+  Why a separate table: alias resolution is on the hot path (every scraped row). DuckDB doesn't index inside `TEXT[]` list columns, so `WHERE 'Cam Ward' = ANY(aliases)` is O(N) per lookup. A flat `player_aliases` table with a PK on `alias` is O(1). Same conceptual model, just normalized for performance.
 
 - `teams` — canonical NFL team registry, seeded from `nfl_draft/config/teams.py` (Python dict literal). Built off the existing canonical mapping in `Answer Keys/canonical_match.py` — do not duplicate.
+
+- `team_aliases` — alias → canonical lookup, same pattern as `player_aliases`.
 
 - `market_map` — per-book label → canonical `market_id` mapping, seeded from `nfl_draft/config/markets.py` (Python dict literal)
   - `book` TEXT (`kalshi` | `draftkings` | `fanduel` | `bookmaker` | `wagerzon`)
@@ -118,25 +131,33 @@ Manual maintenance is unavoidable for rookie-name canonicalization — any auto-
 
 ```
 nfl_draft/
+  __init__.py                  # makes nfl_draft an importable package
   config/
+    __init__.py
     players.py                 # PLAYERS dict literal (canonical → metadata + aliases)
     teams.py                   # TEAMS dict literal (canonical → aliases)
     markets.py                 # MARKET_MAP dict literal (per-book label → canonical market_id)
   scrapers/
+    __init__.py
     kalshi.py                  # extends existing kalshi_draft/fetcher.py for ALL series
     draftkings.py              # adapted from mlb_sgp/scraper_draftkings_sgp.py
     fanduel.py                 # adapted from mlb_sgp/scraper_fanduel_sgp.py
     bookmaker.py               # adapted from bookmaker_odds/scraper.py
     wagerzon.py                # adapted from wagerzon_odds/scraper_v2.py
   lib/
+    __init__.py
     db.py                      # DuckDB connection + schema migrations
     devig.py                   # ported from Answer Keys/Tools.R (~30 LOC)
-    normalize.py               # reads players/teams tables → alias resolution
+    normalize.py               # reads player_aliases/team_aliases → alias resolution
     market_map.py              # reads market_map table → per-book label → canonical market_id
-    seed.py                    # one-time: reads config/*.py dicts, writes to DuckDB lookup tables
-    migrate_from_kalshi_draft.py  # one-time: migrates kalshi_draft.duckdb → nfl_draft.duckdb
+    seed.py                    # reads config/*.py dicts, writes to DuckDB lookup tables (idempotent)
+    migrate_from_kalshi_draft.py  # migrates kalshi_draft.duckdb → nfl_draft.duckdb (idempotent)
+  tests/                       # see Testing section
+    __init__.py
+    ...
   run.py                       # orchestrator: --mode {pre-draft, draft-day, trades} --book all
   README.md
+  .cookies/                    # gitignored — per-book session cookies
   nfl_draft.duckdb             # gitignored — the SOLE draft database
 ```
 
@@ -152,7 +173,9 @@ Port three functions from `Answer Keys/Tools.R` to `nfl_draft/lib/devig.py`:
 - `devig_two_way(odds_a, odds_b) -> (prob_a, prob_b)`
 - `devig_n_way(odds_list) -> List[float]` (for first-QB / first-RB style multi-outcome markets where the complementary set is the full position pool)
 
-For markets where the complementary set isn't fully posted (e.g., book only offers Yes on 5 of the 30+ first-QB candidates), use **proportional devig**: divide each implied prob by the sum of all posted implieds for that market group on that book. Imperfect but standard practice.
+For markets where the complementary set isn't fully posted (e.g., book only offers Yes on 5 of the 30+ first-QB candidates), use **proportional devig**: divide each implied prob by the sum of all posted implieds for that market group on that book.
+
+**Known limitation**: proportional devig assumes the posted candidates contain ~100% of the probability mass. When a book only posts the top 5 of a 30-candidate field, the unposted 25 still carry positive probability — so the 5 posted, when normalized to sum to 1.0, are systematically inflated. Comparing these inflated devigged probs against Kalshi (which prices the full field) gives a directional bias: book candidates look "too high" relative to Kalshi by a roughly constant offset. **The Cross-Book Grid annotates each book's devigged prob with the count of posted candidates** (e.g., "DK: 38% (5/30)") so the user can mentally discount accordingly. A more accurate approach (Bayesian field-completion using the full Kalshi field as a prior) is queued for Phase 2.
 
 ### Scraper orchestration
 
@@ -166,7 +189,7 @@ python run.py --mode draft-day --book kalshi   # one book at a time, for debuggi
 
 - Each scraper module exposes `fetch_draft_odds() -> List[OddsRow]`.
 - `run.py` calls them sequentially (parallelism deferred — scrape errors easier to debug serially), normalizes each result through `lib/normalize.py` and `lib/market_map.py`, devigs via `lib/devig.py`, writes to `draft_odds`.
-- Kalshi trade tape is its own subcommand: `python run.py --mode trades` polls `/markets/trades` since the last `fetched_at` and appends to `kalshi_trades`.
+- Kalshi trade tape is its own subcommand: `python run.py --mode trades` polls `/markets/trades` for each Kalshi series, requesting trades after `kalshi_poll_state.last_traded_at` for that series, paginating by cursor, and appending to `kalshi_trades` with `INSERT OR IGNORE` on `trade_id`. Updates `kalshi_poll_state.last_traded_at` to the max `traded_at` ingested per series.
 
 **Cron** (macOS launchd or simple `cron`):
 
@@ -180,7 +203,14 @@ Today `kalshi_draft/fetcher.py` discovers via `/series` keyword filter ("nfl"+"d
 
 - Add all observed `KXNFLDRAFT*` prefixes to the fallback list (incl. `KXNFLDRAFTQB`, `KXNFLDRAFTWR`, `KXNFLDRAFTRB`, `KXNFLDRAFTPOS`, `KXNFLDRAFTTOP5`, `KXNFLDRAFTTOP10`, `KXNFLDRAFTPICK`, `KXNFLDRAFTTOP`).
 - After discovery, log every series found that has open markets but no downstream consumer in the dashboard — these are markets we're storing but not yet rendering. Used to catch new Kalshi series (e.g., a `KXNFLDRAFTTRADE` for "first trade" if Kalshi adds one) without code changes.
-- Map each Kalshi market to a canonical `market_id` via `nfl_draft/config/market_map.json` (Kalshi-side keyed by ticker prefix + market subject extracted from the market title).
+- Map each Kalshi market to a canonical `market_id` via the `MARKET_MAP` dict in `nfl_draft/config/markets.py` (Kalshi-side keyed by ticker prefix + market subject extracted from the market title), seeded into the `market_map` table.
+
+**Rate limiting**: Kalshi public endpoints allow ~100 req/min, authenticated ~10 req/min. First-run discovery (8+ series × paginated markets ≈ 100+ requests) sits near the public limit. The Kalshi scraper module enforces:
+- 600ms minimum sleep between requests (caps at ~100 req/min)
+- Exponential backoff on HTTP 429 (1s, 2s, 4s, 8s, 16s, then fail-loud)
+- Single shared rate-limit token bucket across odds + trades subcommands so they don't compound when run in parallel
+
+These are baked into a `kalshi_request()` wrapper in `nfl_draft/scrapers/kalshi.py`; no caller bypasses it. Same pattern as `kalshi_draft/auth.py`'s `public_request` if it already throttles — reuse it if so.
 
 ### Per-book scraper notes
 
@@ -204,18 +234,25 @@ New tabs added to the existing Dash app:
 
    Why outlier-flag and not raw variance: when 4 books say 50% and one says 30%, variance and outlier-flag give the same signal (one book is off). But when 5 books each disagree by ~5pp, variance is high but no single book is the obvious target — outlier-flag (correctly) flags nothing. The flag is more directly actionable than the variance number.
 3. **Trade Tape** — Streaming-style table of recent Kalshi trades (last 200 rows), large fills highlighted (`notional_usd ≥ threshold` evaluated at query time; threshold defaults to $500, configurable via tab slider). Filter by ticker / series.
-4. **Bet Log** — Form to log a bet (market_id dropdown, book dropdown, american_odds, stake, note). Below the form, table of past bets.
+4. **Bet Log** — Form to log a bet (market_id searchable-dropdown via `dcc.Dropdown(searchable=True)`, book dropdown, american_odds, stake, note). Below the form, table of past bets. The market_id dropdown is search-as-you-type because hard-scrolling 300+ markets is unusable.
+   **Pre-fill from context**: rows in the +EV Candidates tab include a "Log this bet" button that navigates to the Bet Log tab with `market_id`, `book`, and `american_odds` pre-filled (passed via `dcc.Store(storage_type='session')`). This keeps the act-on-an-edge flow to two clicks.
 
-Existing tabs (Market Overview, Price History, Edge Detection, Consensus, Portfolio) stay unchanged in v1.
+**Tab organization** — adding 4 new tabs to the existing 5 makes 9 total. Tabs are grouped into two top-level sections via `dcc.Tabs` with sub-tabs (or two horizontal nav rows):
+- **Portal** (new — the cockpit): Cross-Book Grid, +EV Candidates, Trade Tape, Bet Log
+- **Kalshi-only legacy** (existing): Market Overview, Price History, Edge Detection, Consensus, Portfolio
+
+Default landing tab: Cross-Book Grid (the workhorse of the trading session). Sub-tab selection persisted in `dcc.Store(storage_type='local')`.
 
 ### Dashboard auto-refresh
 
-All five new/relevant tabs use a `dcc.Interval` component to auto-refresh without user F5. Cadence is mode-driven (matches the cron schedule):
+All four new tabs (Cross-Book Grid, +EV Candidates, Trade Tape, Bet Log) use a `dcc.Interval` component to auto-refresh without user F5. Cadence is mode-driven (matches the cron schedule):
 
 - **Pre-draft mode**: 60 seconds (slightly faster than the 15-min scrape so the user sees fresh writes within a minute of arrival).
 - **Draft-day mode**: 15 seconds (matches the 1-2 min scrape; user sees new prices nearly immediately).
 
-A mode toggle in the dashboard header (`Pre-draft / Draft-day`) controls the interval. Toggle is persisted in `localStorage` so it survives page reloads. Default: pre-draft. The user manually flips to draft-day the morning of April 23 (same time they swap the cron file).
+A mode toggle in the dashboard header (`Pre-draft / Draft-day`) controls the interval. Toggle is persisted in `dcc.Store(storage_type='local')` so it survives page reloads. Default: pre-draft. The user manually flips to draft-day the morning of April 23 (same time they swap the cron file).
+
+**Cheap-poll guard** (avoids redundant work when nothing has changed): the auto-refresh callback first queries `SELECT MAX(fetched_at) FROM draft_odds`, compares against the value cached in a `dcc.Store(storage_type='session')`, and skips the heavy grid re-render if unchanged. This means polling every 15s against a 90s scrape costs one cheap MAX query per tick (≈ 5ms), with the expensive grid-render firing only when there's new data. Same pattern for Trade Tape against `MAX(fetched_at) FROM kalshi_trades`. Eliminates the "14 of 15 polls return identical data" waste.
 
 Each callback re-queries DuckDB using a short-lived read-only connection (per the concurrency pattern in Error Handling), so the refresh cost is bounded and lock-free.
 
@@ -247,7 +284,8 @@ Each callback re-queries DuckDB using a short-lived read-only connection (per th
    scrapers/kalshi.py (trades subcmd)
         │
         ▼
-   kalshi_trades         (append-only, is_large flag set on insert)
+   kalshi_trades         (INSERT OR IGNORE on trade_id PK; is_large computed at read time)
+   kalshi_poll_state     (per-series last_traded_at cursor for incremental polls)
 
 [ Dash app — kalshi_draft/app.py extended ]
         │
@@ -282,7 +320,7 @@ Each callback re-queries DuckDB using a short-lived read-only connection (per th
   @contextmanager
   def read_connection() -> Iterator[duckdb.DuckDBPyConnection]: ...
   ```
-  Every caller uses these. No raw `duckdb.connect()` outside `db.py`. This is enforced via a unit test that greps the codebase for `duckdb.connect` outside of `lib/db.py` and fails if any are found.
+  Every caller uses these. No raw `duckdb.connect()` outside `db.py`. This is enforced via a unit test that greps the codebase for `duckdb.connect` outside of `lib/db.py` and fails if any unauthorized matches are found. **Allowlist**: `nfl_draft/lib/migrate_from_kalshi_draft.py` is permitted to call `duckdb.connect()` directly because it must open both the legacy and new DBs simultaneously (which the context-manager pattern doesn't support cleanly). The lint test reads its allowlist from a constant at the top of the test file; any future additions require an explicit code change.
 
   **Stress test**: an integration test (`test_concurrent_access.py`) spawns a writer thread doing INSERTs in a loop for 10 seconds while a reader thread does SELECTs in a loop. Asserts zero unhandled lock errors and that all writes are visible to the reader within 1 second. Catches regressions to the connection-management discipline.
 
@@ -309,9 +347,11 @@ nfl_draft/tests/
     test_scraper_parsing.py          # raw response → OddsRow conversion (pure logic)
   integration/                       # uses fixtures + temp DuckDB, no network (<30s total)
     test_pipeline.py                 # scraper rows → normalize → market_map → devig → DB
-    test_migration.py                # kalshi_draft.duckdb → nfl_draft.duckdb roundtrip
+    test_migration.py                # kalshi_draft.duckdb → nfl_draft.duckdb roundtrip + idempotency
     test_dashboard_queries.py        # query functions return correct shape + values
     test_quarantine.py               # unmapped player/market lands in quarantine table
+    test_concurrent_access.py        # writer + reader threads, asserts no lock errors (per Error handling)
+    test_lint_db_connect.py          # greps for duckdb.connect() outside lib/db.py (allowlist enforced)
   live/                              # hits real APIs, run manually only (~2-5 min)
     test_scrapers_live.py            # each scraper produces ≥1 row from live endpoint
     test_dashboard_renders.py        # Dash app subprocess + GET each tab URL
@@ -379,15 +419,18 @@ This requires that **every change be testable**. If a change can't be expressed 
 ### Phase 1 — Ship by Apr 23 (this week)
 
 In scope:
-- DuckDB schema, all tables
-- Migration of existing `kalshi_draft.duckdb` data into `nfl_draft.duckdb`; deletion of the old DB; existing dashboard tabs repointed (with query tests covering each tab before the repoint)
-- Player/team/market canonical config in `nfl_draft/config/*.py` (Python dict literals, populated for the top ~80 prospects), seeded into DuckDB lookup tables
-- All 5 venue scrapers (Kalshi expansion + 4 books) writing to `draft_odds`
-- Kalshi trade tape polling → `kalshi_trades`
-- Devig math ported to Python
-- Dashboard tabs: Cross-Book Grid, +EV Candidates, Trade Tape, Bet Log
+- DuckDB schema, all tables (`draft_markets`, `draft_odds`, `kalshi_trades`, `kalshi_poll_state`, `draft_bets`, `players`, `player_aliases`, `teams`, `team_aliases`, `market_map`, `draft_odds_unmapped`, `draft_odds_unmapped_players`)
+- Migration of existing `kalshi_draft.duckdb` data into `nfl_draft.duckdb`; deletion of the old DB; existing dashboard tabs repointed AND queries rewritten to reference `kalshi_odds_history` (with regression query tests landing first)
+- Player/team/market canonical config in `nfl_draft/config/*.py` (Python dict literals, populated for the top ~80 prospects), seeded into DuckDB lookup tables (idempotent seed)
+- All 5 venue scrapers (Kalshi expansion + 4 books) writing to `draft_odds`, with rate limiting on Kalshi and credentials loaded from `.env`
+- Kalshi trade tape polling → `kalshi_trades` with `kalshi_poll_state` cursor + `INSERT OR IGNORE` dedup
+- Devig math ported to Python (with proportional-devig limitation annotated in the dashboard)
+- Dashboard tabs grouped Portal vs Kalshi-only legacy: Cross-Book Grid (with outlier flags), +EV Candidates (with "Log this bet" button), Trade Tape, Bet Log (searchable dropdown)
+- Auto-refresh with cheap-poll guard (MAX(fetched_at) check before re-render)
 - Cron setup: pre-draft + draft-day swap
+- All timestamps in local time (TIMESTAMP, not TIMESTAMPTZ)
 - **Comprehensive test suite** (unit + integration + live; see Testing section). Tests are not optional — every `lib/`, `scrapers/`, and dashboard query function ships with tests. Pre-commit hook runs unit + integration on every commit.
+- `requirements.txt` updates as needed
 - README in `nfl_draft/`
 
 Quality-over-speed posture: the deadline (Apr 23) is firm but speed is not the constraint. If a tradeoff appears between "ship faster with shortcuts" vs "ship a day later with full tests + correct error handling," the latter wins. Auto-mode iteration depends on tests; rolling out untested code on draft day is the failure mode to avoid.
@@ -413,7 +456,7 @@ Out of scope for v1, planned for after:
 
 - **Branch**: `feature/nfl-draft-portal` (already created at brainstorm time)
 - **Files created**: `nfl_draft/` directory tree (see Code layout); `docs/superpowers/specs/2026-04-17-nfl-draft-portal-design.md`
-- **Files modified**: `kalshi_draft/app.py` (new tabs + repointed at `nfl_draft/nfl_draft.duckdb`), `.gitignore` (add `nfl_draft/nfl_draft.duckdb`, `nfl_draft/.cookies/`), `README.md` (link to nfl_draft/README.md)
+- **Files modified**: `kalshi_draft/app.py` (new tabs + queries rewritten from `draft_odds` → `kalshi_odds_history` + repointed at `nfl_draft/nfl_draft.duckdb`), `.gitignore` (add `nfl_draft/nfl_draft.duckdb`, `nfl_draft/.cookies/`), `README.md` (link to nfl_draft/README.md), `requirements.txt` if present (add any new pinned versions of `dash`, `plotly`, `duckdb`, `pytest`, `curl_cffi`, `playwright` not already declared)
 - **Files deleted**: `kalshi_draft/kalshi_draft.duckdb` (after migration verified). Note: this file is already gitignored, so the deletion is filesystem-only — no commit needed for the removal itself.
 - **Commit structure**: per-phase commits, each ships with its own tests in the same commit — (1) schema + migration script + migration tests, (2) seed + lookup tables + seed/normalize tests, (3) devig math + devig tests, (4) each scraper + that scraper's parsing tests + a fixture, (5) dashboard query functions + query tests + repoint existing tabs (with their pre-existing-tab query tests landing first as a regression baseline), (6) trade-tape poller + tests, (7) cron config + README. Review checkpoint at each scraper commit. No commit lands without tests for the code in it.
 - **Worktree**: optional but recommended given other active work on `feature/cbb-consensus-calibration` and `feature/mlb-sgp-scrapers`. Use `/worktree` for isolation if any of those are likely to need attention during the 7 days.
@@ -443,7 +486,7 @@ Required updates in the same final merge:
 By end of day April 22 (the day before draft Day 1):
 
 1. All 5 venues populating `draft_odds` for at least the #1-overall and first-QB markets, refreshed in the last 15 minutes
-2. Cross-Book Grid renders all populated markets with devigged probs and variance
+2. Cross-Book Grid renders all populated markets with devigged probs per book, median across books, and outlier flags on cells ≥10pp from median
 3. Kalshi Trade Tape shows the last hour of trades, large fills highlighted
 4. Bet Log accepts and persists a test bet
 5. Cron jobs running on the user's machine; draft-day swap rehearsed
