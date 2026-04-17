@@ -23,7 +23,7 @@ This is **Phase 1** of a multi-phase build. Phase 2 work (formal fair-value meth
 - Full P&L tab, CLV analysis, or backtesting view. v1 only *captures* bets; analysis is Phase 2.
 - Kalshi market making for draft markets.
 - Refactoring or extending non-draft scrapers (DK/FD/BM/WZ general-odds scrapers stay as-is).
-- Refactoring `kalshi_draft/fetcher.py`'s discovery / API / portfolio code beyond the minimum needed to repoint its writes from `kalshi_draft.duckdb` to `nfl_draft/nfl_draft.duckdb`.
+- Refactoring `kalshi_draft/fetcher.py` beyond the changes explicitly required by this spec: (a) repoint writes to `nfl_draft.duckdb`, (b) update INSERT target from `draft_odds` to `kalshi_odds`, (c) normalize `datetime.now(timezone.utc)` → `datetime.now()`, (d) extend the `KXNFLDRAFT*` prefix fallback list per the Kalshi expansion section. No other behavioral changes.
 
 ---
 
@@ -71,7 +71,7 @@ Regression covered by:
 - `local_to_utc_iso(local_ts) -> str` — converts a stored local TIMESTAMP to UTC ISO-8601 with offset, used when calling Kalshi's API (which expects ISO-8601). Example: `min_ts` parameter in trades poll.
 - `utc_iso_to_local(iso_str) -> datetime` — converts Kalshi's ISO-8601 response timestamps to naïve local TIMESTAMP for insertion.
 - All Kalshi I/O routes through these two functions; no raw datetime arithmetic at the API boundary. Tested via `test_tz_roundtrip.py` (round-trip stability for known values, DST transitions).
-- Other books (DK/FD/BM/WZ) return local-time-context endpoints already; no conversion needed beyond storing what they return.
+- Other books (DK/FD/BM/WZ) — TZ behavior of each book's API is unknown until reconnaissance. Default assumption: parse whatever they return into a Python datetime, then store via `datetime.now()` (i.e., use the scraper's invocation time as `fetched_at`, not the API's reported timestamp). This sidesteps per-book TZ ambiguity and keeps `fetched_at` consistent with the local-time convention. If a book exposes an event-specific timestamp we want to preserve (e.g., line-posted-at), convert to local with the same boundary helpers used for Kalshi.
 
 **Credentials & secrets**: each sportsbook scraper reads its login credentials from `.env` at the repo root (already in `.gitignore`). Required vars per book: `DK_USERNAME` / `DK_PASSWORD`, `FD_USERNAME` / `FD_PASSWORD`, `BOOKMAKER_USERNAME` / `BOOKMAKER_PASSWORD`, `WAGERZON_USERNAME` / `WAGERZON_PASSWORD`. Kalshi reuses the existing API-key pair from `kalshi_draft/.env` (no new secrets). Per-book session cookies persist to `nfl_draft/.cookies/<book>.json` (in `.gitignore`). On session expiry, the scraper attempts re-login once; if that fails, the run is logged as auth-failed and surfaces in the dashboard footer (per Error handling).
 
