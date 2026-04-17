@@ -66,15 +66,24 @@ After migration is verified, `kalshi_draft/kalshi_draft.duckdb` is removed and t
   - INDEX on (market_id, book, fetched_at DESC)
 
 - `kalshi_trades` — Kalshi public trade tape
+  - `trade_id` TEXT PRIMARY KEY (Kalshi's unique trade event ID; enables `INSERT OR IGNORE` for dedup)
   - `ticker` TEXT
   - `side` TEXT (`yes` | `no`)
   - `price_cents` INT (1-99)
   - `count` INT (number of contracts traded)
-  - `notional_usd` DOUBLE (computed: count × price_cents × 0.01 × $1)
-  - `is_large` BOOLEAN (true if notional ≥ threshold; threshold configurable, default $500)
+  - `notional_usd` DOUBLE (computed at insert: count × price_cents × 0.01)
   - `traded_at` TIMESTAMP
   - `fetched_at` TIMESTAMP
   - INDEX on (ticker, traded_at DESC)
+
+  Note: `is_large` is **not stored** — it's computed at read time in the dashboard query (`notional_usd ≥ threshold`) so the threshold can be tuned without backfill. Threshold configurable via dashboard slider, default $500.
+
+- `kalshi_poll_state` — incremental polling cursor for the trade tape
+  - `series_ticker` TEXT PRIMARY KEY (e.g., `KXNFLDRAFT1`)
+  - `last_traded_at` TIMESTAMP (the `traded_at` of the most recent trade we've ingested for this series)
+  - `last_polled_at` TIMESTAMP
+
+  Each `--mode trades` cycle reads `last_traded_at` per series, requests trades from Kalshi with `min_ts = last_traded_at`, paginates by cursor, INSERTs (with `INSERT OR IGNORE` for safety), updates `last_traded_at`. Avoids re-fetching the entire trade history every cycle.
 
 - `draft_bets` — light bet logging
   - `bet_id` UUID PRIMARY KEY
@@ -194,10 +203,21 @@ New tabs added to the existing Dash app:
 2. **+EV Candidates** — Flat-listed view of every flagged (market, book) pair from the grid above, ranked by `abs(delta)` descending. One row per outlier — so a single market with 3 flagged books contributes 3 rows. Columns: market, position, book, book_prob, market_median, delta (signed: + means book is too high vs market, − means too low), implied edge direction. Filter by market type, position, book, threshold. This is the user's "scan the field for action" view.
 
    Why outlier-flag and not raw variance: when 4 books say 50% and one says 30%, variance and outlier-flag give the same signal (one book is off). But when 5 books each disagree by ~5pp, variance is high but no single book is the obvious target — outlier-flag (correctly) flags nothing. The flag is more directly actionable than the variance number.
-3. **Trade Tape** — Streaming-style table of recent Kalshi trades (last 200 rows), large fills (≥ $500 notional, configurable) highlighted. Filter by ticker / series.
+3. **Trade Tape** — Streaming-style table of recent Kalshi trades (last 200 rows), large fills highlighted (`notional_usd ≥ threshold` evaluated at query time; threshold defaults to $500, configurable via tab slider). Filter by ticker / series.
 4. **Bet Log** — Form to log a bet (market_id dropdown, book dropdown, american_odds, stake, note). Below the form, table of past bets.
 
 Existing tabs (Market Overview, Price History, Edge Detection, Consensus, Portfolio) stay unchanged in v1.
+
+### Dashboard auto-refresh
+
+All five new/relevant tabs use a `dcc.Interval` component to auto-refresh without user F5. Cadence is mode-driven (matches the cron schedule):
+
+- **Pre-draft mode**: 60 seconds (slightly faster than the 15-min scrape so the user sees fresh writes within a minute of arrival).
+- **Draft-day mode**: 15 seconds (matches the 1-2 min scrape; user sees new prices nearly immediately).
+
+A mode toggle in the dashboard header (`Pre-draft / Draft-day`) controls the interval. Toggle is persisted in `localStorage` so it survives page reloads. Default: pre-draft. The user manually flips to draft-day the morning of April 23 (same time they swap the cron file).
+
+Each callback re-queries DuckDB using a short-lived read-only connection (per the concurrency pattern in Error Handling), so the refresh cost is bounded and lock-free.
 
 ---
 
