@@ -33,3 +33,26 @@ def test_init_schema_is_idempotent(monkeypatch, tmp_path):
     monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.duckdb")
     db_module.init_schema()
     db_module.init_schema()  # second call must not error
+
+
+def test_seed_populates_player_aliases(monkeypatch, tmp_path):
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.duckdb")
+    db_module.init_schema()
+    from nfl_draft.lib import seed
+    seed.run()
+    with db_module.read_connection() as con:
+        count = con.execute("SELECT COUNT(*) FROM player_aliases").fetchone()[0]
+    assert count > 0
+
+
+def test_seed_is_idempotent(monkeypatch, tmp_path):
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.duckdb")
+    db_module.init_schema()
+    from nfl_draft.lib import seed
+    seed.run()
+    with db_module.read_connection() as con:
+        first = con.execute("SELECT COUNT(*) FROM player_aliases").fetchone()[0]
+    seed.run()
+    with db_module.read_connection() as con:
+        second = con.execute("SELECT COUNT(*) FROM player_aliases").fetchone()[0]
+    assert first == second
