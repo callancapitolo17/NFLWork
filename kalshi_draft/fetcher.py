@@ -3,15 +3,19 @@ Kalshi NFL Draft Market Fetcher
 Auto-discovers all draft-related series and fetches odds + portfolio data.
 """
 
+import sys
 import time
 import duckdb
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from nfl_draft.lib import db as nfl_db
 
 from auth import (
     load_credentials, authenticated_request, public_request, BASE_URL
 )
-from db import DB_PATH, get_connection, init_schema
+from db import DB_PATH, get_connection
 
 
 def discover_draft_series():
@@ -150,7 +154,7 @@ def fetch_all_draft_odds():
     series_list = discover_draft_series()
     print(f"  Found {len(series_list)} draft series")
 
-    fetch_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     all_odds = []
 
     # Save discovered series to DB
@@ -198,14 +202,14 @@ def fetch_all_draft_odds():
 
 
 def save_odds_snapshot(odds_data):
-    """Append odds snapshot to draft_odds table."""
+    """Append odds snapshot to kalshi_odds table."""
     if not odds_data:
         print("No odds data to save")
         return
 
     con = get_connection()
     con.executemany("""
-        INSERT INTO draft_odds VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO kalshi_odds VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [
         (
             d["fetch_time"], d["series_ticker"], d["event_ticker"],
@@ -219,7 +223,7 @@ def save_odds_snapshot(odds_data):
 
     result = con.execute("""
         SELECT COUNT(*) as total, COUNT(DISTINCT fetch_time) as snapshots
-        FROM draft_odds
+        FROM kalshi_odds
     """).fetchone()
     print(f"\nDatabase: {result[0]:,} total records across {result[1]} snapshots")
     con.close()
@@ -228,7 +232,7 @@ def save_odds_snapshot(odds_data):
 def cache_market_info(odds_data):
     """Cache market metadata for portfolio display."""
     con = get_connection()
-    updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     for d in odds_data:
         con.execute("""
@@ -287,7 +291,7 @@ def fetch_portfolio():
 def save_portfolio(positions, orders):
     """Save portfolio data to DuckDB."""
     con = get_connection()
-    fetch_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     def to_dollars(p, dollar_key, cents_key):
         val = p.get(dollar_key)
@@ -337,7 +341,7 @@ def save_portfolio(positions, orders):
 
 def run():
     """Main fetch pipeline: discover series, fetch odds, fetch portfolio."""
-    init_schema()
+    nfl_db.init_schema()
 
     # Fetch odds
     odds = fetch_all_draft_odds()

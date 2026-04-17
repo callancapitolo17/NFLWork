@@ -6,7 +6,7 @@ import duckdb
 from pathlib import Path
 from datetime import datetime, timezone
 
-DB_PATH = Path(__file__).parent / "kalshi_draft.duckdb"
+DB_PATH = Path(__file__).resolve().parent.parent / "nfl_draft" / "nfl_draft.duckdb"
 
 
 def get_connection(read_only=False):
@@ -15,104 +15,8 @@ def get_connection(read_only=False):
 
 
 def init_schema():
-    """Create all tables if they don't exist."""
-    con = get_connection()
-
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS draft_odds (
-            fetch_time    TIMESTAMP,
-            series_ticker VARCHAR,
-            event_ticker  VARCHAR,
-            ticker        VARCHAR,
-            market_title  VARCHAR,
-            candidate     VARCHAR,
-            yes_bid       INTEGER,
-            yes_ask       INTEGER,
-            no_bid        INTEGER,
-            no_ask        INTEGER,
-            last_price    INTEGER,
-            volume        BIGINT,
-            volume_24h    BIGINT,
-            liquidity     BIGINT,
-            open_interest INTEGER
-        )
-    """)
-
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS draft_series (
-            series_ticker VARCHAR PRIMARY KEY,
-            title         VARCHAR,
-            category      VARCHAR,
-            discovered_at TIMESTAMP
-        )
-    """)
-
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS market_info (
-            ticker          VARCHAR PRIMARY KEY,
-            title           VARCHAR,
-            subtitle        VARCHAR,
-            series_ticker   VARCHAR,
-            expiration_time TIMESTAMP,
-            close_time      TIMESTAMP,
-            updated_at      TIMESTAMP
-        )
-    """)
-
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS positions (
-            fetch_time           TIMESTAMP,
-            ticker               VARCHAR,
-            position             INTEGER,
-            market_exposure      DOUBLE,
-            realized_pnl         DOUBLE,
-            resting_orders_count INTEGER,
-            total_traded         DOUBLE,
-            fees_paid            DOUBLE
-        )
-    """)
-
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS resting_orders (
-            fetch_time      TIMESTAMP,
-            order_id        VARCHAR,
-            ticker          VARCHAR,
-            side            VARCHAR,
-            type            VARCHAR,
-            yes_price       INTEGER,
-            no_price        INTEGER,
-            remaining_count INTEGER,
-            created_time    TIMESTAMP,
-            expiration_time TIMESTAMP
-        )
-    """)
-
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS consensus_board (
-            fetch_time  TIMESTAMP,
-            rank        INTEGER,
-            player_name VARCHAR,
-            position    VARCHAR,
-            school      VARCHAR,
-            source      VARCHAR
-        )
-    """)
-
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS detected_edges (
-            fetch_time   TIMESTAMP,
-            edge_type    VARCHAR,
-            description  VARCHAR,
-            market_a     VARCHAR,
-            market_b     VARCHAR,
-            price_a      DOUBLE,
-            price_b      DOUBLE,
-            implied_edge DOUBLE,
-            confidence   VARCHAR
-        )
-    """)
-
-    con.close()
+    """DEPRECATED: schema now managed by nfl_draft/lib/db.py.init_schema()."""
+    raise RuntimeError("Use nfl_draft.lib.db.init_schema() instead")
 
 
 def get_latest_odds():
@@ -120,8 +24,8 @@ def get_latest_odds():
     con = get_connection(read_only=True)
     try:
         df = con.execute("""
-            SELECT * FROM draft_odds
-            WHERE fetch_time = (SELECT MAX(fetch_time) FROM draft_odds)
+            SELECT * FROM kalshi_odds
+            WHERE fetch_time = (SELECT MAX(fetch_time) FROM kalshi_odds)
             ORDER BY series_ticker, last_price DESC
         """).fetchdf()
         return df
@@ -140,7 +44,7 @@ def get_price_history(tickers=None, days=30):
             df = con.execute(f"""
                 SELECT fetch_time, ticker, candidate, series_ticker,
                        last_price, yes_bid, yes_ask, volume
-                FROM draft_odds
+                FROM kalshi_odds
                 WHERE ticker IN ({placeholders})
                   AND fetch_time >= CURRENT_TIMESTAMP - INTERVAL '{days} days'
                 ORDER BY fetch_time
@@ -149,7 +53,7 @@ def get_price_history(tickers=None, days=30):
             df = con.execute(f"""
                 SELECT fetch_time, ticker, candidate, series_ticker,
                        last_price, yes_bid, yes_ask, volume
-                FROM draft_odds
+                FROM kalshi_odds
                 WHERE fetch_time >= CURRENT_TIMESTAMP - INTERVAL '{days} days'
                 ORDER BY fetch_time
             """).fetchdf()
@@ -290,7 +194,7 @@ def get_snapshot_count():
             SELECT COUNT(DISTINCT fetch_time) as snapshots,
                    MIN(fetch_time) as first_fetch,
                    MAX(fetch_time) as last_fetch
-            FROM draft_odds
+            FROM kalshi_odds
         """).fetchone()
         return result
     except Exception:

@@ -8,6 +8,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from nfl_draft.lib import db as nfl_db
+
 import dash
 from dash import dcc, html, dash_table, callback, Input, Output, State
 from dash.dash_table.Format import Format
@@ -767,5 +770,5 @@ def refresh_data(n_clicks):
 # Run
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    db.init_schema()
+    nfl_db.init_schema()
     app.run(debug=False, host="127.0.0.1", port=8083)

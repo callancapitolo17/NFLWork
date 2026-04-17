@@ -78,8 +78,8 @@ Auto-discovered series (as of Feb 2026):
 
 ## Data Storage
 
-All data stored in `kalshi_draft.duckdb`:
-- `draft_odds`: Historical odds snapshots (append-only)
+All data stored in `nfl_draft/nfl_draft.duckdb` (migrated from `kalshi_draft.duckdb`):
+- `kalshi_odds`: Historical odds snapshots (append-only; formerly `draft_odds`)
 - `draft_series`: Discovered series metadata
 - `market_info`: Cached market details
 - `positions` / `resting_orders`: Portfolio snapshots
