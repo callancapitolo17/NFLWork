@@ -458,10 +458,11 @@ nfl_draft/tests/
 **Integration (`tests/integration/`)** — uses a temp DuckDB and fixture data, no network. Run before every commit.
 - `test_pipeline.py`: feed each book's fixture through the full pipeline; verify (a) correct row count in `draft_odds`, (b) devig sums to ~1.0 per market group, (c) quarantine count matches expected unmapped rows.
 - `test_migration.py`: build a fake `kalshi_draft.duckdb` with known seed data, run migration script, verify all rows present in destination + correct table renames + idempotent on re-run.
-- `test_dashboard_queries.py`: seed temp DB with known data, call each tab's query function (broken out from Dash callbacks), verify result shape matches dashboard expectations. **This is the test that catches "existing tabs break after DB repoint" — every existing tab gets a query test before its query is touched.** Specific cases include:
-  - **Outlier-flag math**: feed 5 books' devigged probs, assert median is correct, assert exactly the books with `|delta| ≥ threshold` are flagged, assert delta sign is correct.
+- `test_dashboard_queries.py`: seed temp DB with known data, call each tab's query function (broken out from Dash callbacks), verify result shape matches dashboard expectations. Specific cases:
+  - **Existing-tab regression** (one test per tab — Market Overview, Price History, Edge Detection, Consensus, Portfolio): seed `kalshi_odds` + `market_info` + `positions` etc. with known rows; call the tab's query function; assert result matches a hand-computed expected output. **Lands in the same commit as the SQL rewrite (`draft_odds` → `kalshi_odds`) so the rename can't silently break a tab.**
+  - **Outlier-flag math** (Cross-Book Grid + +EV Candidates): feed 5 venues' devigged probs, assert median is correct, assert exactly the venues with `|delta| ≥ threshold` are flagged, assert delta sign is correct.
   - **Cheap-poll guard**: simulate two consecutive callback fires with no new data; assert the heavy render runs once, the second call short-circuits.
-  - **Variance NULL handling**: market with only 1 book → variance is `None`/N/A, doesn't break sort.
+  - **Single-venue NULL handling**: market with only 1 venue posting → median is well-defined (the single value), no outlier flag set, no crash.
 - `test_quarantine.py`: feed scraper rows with deliberately unmapped player and unmapped market; verify they land in `draft_odds_unmapped` and `draft_odds_unmapped_players` and do NOT land in `draft_odds`.
 
 **Live (`tests/live/`)** — hits real endpoints. Run manually before merge to main, and as the morning-of-April-22 go/no-go gate.
@@ -472,7 +473,7 @@ nfl_draft/tests/
 
 For each book scraper, capture one full real response during reconnaissance (curl the endpoint, save to `tests/fixtures/<book>/<scenario>.json`). These fixtures are committed to git (no PII; just market data). Re-capture if the book changes its response shape.
 
-Fixture rule: scrapers should be split into `fetch_raw()` (network, hard to test) + `parse(raw_response)` (pure, easy to test). Tests target `parse()`. Smoke tests target `fetch_raw()`.
+Fixture rule: scrapers should be split into `fetch_raw()` (network, hard to test) + `parse(raw_response)` (pure, easy to test). Unit/integration tests target `parse()` (with fixtures). Live tests in `tests/live/` target `fetch_raw()`.
 
 ### Test cadence
 
@@ -541,7 +542,14 @@ Out of scope for v1, planned for after:
 
 - **Branch**: `feature/nfl-draft-portal` (already created at brainstorm time)
 - **Files created**: `nfl_draft/` directory tree (see Code layout); `docs/superpowers/specs/2026-04-17-nfl-draft-portal-design.md`
-- **Files modified**: `kalshi_draft/app.py` (new tabs + queries rewritten from `draft_odds` → `kalshi_odds` + repointed at `nfl_draft/nfl_draft.duckdb`), `.gitignore` (add `nfl_draft/nfl_draft.duckdb`, `nfl_draft/.cookies/`), `README.md` (link to nfl_draft/README.md), `requirements.txt` if present (add any new pinned versions of `dash`, `plotly`, `duckdb`, `pytest`, `curl_cffi`, `playwright` not already declared)
+- **Files modified**:
+  - `kalshi_draft/app.py` — new tabs + queries rewritten `draft_odds` → `kalshi_odds` + connection target → `nfl_draft/nfl_draft.duckdb`
+  - `kalshi_draft/fetcher.py` — connection target → `nfl_draft/nfl_draft.duckdb`, `INSERT INTO draft_odds` → `INSERT INTO kalshi_odds`, `datetime.now(timezone.utc)` → `datetime.now()` (local-time normalization)
+  - `kalshi_draft/db.py` — `DB_PATH` constant updated to point at `nfl_draft/nfl_draft.duckdb`; SQL referencing old `draft_odds` updated to `kalshi_odds`
+  - `kalshi_draft/edge_detector.py`, `kalshi_draft/consensus.py` — same connection-target + table-name rewrites if they touch the DB directly
+  - `.gitignore` — add `nfl_draft/nfl_draft.duckdb`, `nfl_draft/.cookies/`, `nfl_draft/logs/`
+  - `README.md` (top-level) — link to `nfl_draft/README.md`
+  - `requirements.txt` if present — add any new pinned versions of `dash`, `plotly`, `duckdb`, `pytest`, `curl_cffi`, `playwright` not already declared
 - **Files deleted**: `kalshi_draft/kalshi_draft.duckdb` (after migration verified). Note: this file is already gitignored, so the deletion is filesystem-only — no commit needed for the removal itself.
 - **Commit structure**: per-phase commits, each ships with its own tests in the same commit — (1) schema + migration script (renames legacy `draft_odds` → `kalshi_odds`) + repoint of `kalshi_draft/fetcher.py` writes (to nfl_draft.duckdb, INSERT target updated to `kalshi_odds`) + migration tests + `test_kalshi_writer_target.py`, (2) seed + lookup tables + seed/normalize tests, (3) devig math + devig tests + `test_market_id_construction.py` + `test_tz_roundtrip.py`, (4) each scraper + that scraper's parsing tests + a fixture, (5) dashboard query functions + query tests + repoint existing tabs' SQL (rename `draft_odds` → `kalshi_odds` in queries; pre-existing-tab query tests land first as a regression baseline), (6) trade-tape poller + tests, (7) cron config + README. Review checkpoint at each scraper commit. No commit lands without tests for the code in it.
 - **Worktree**: optional but recommended given other active work on `feature/cbb-consensus-calibration` and `feature/mlb-sgp-scrapers`. Use `/worktree` for isolation if any of those are likely to need attention during the 7 days.
