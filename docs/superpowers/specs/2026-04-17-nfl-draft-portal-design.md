@@ -242,7 +242,26 @@ Existing tabs (Market Overview, Price History, Edge Detection, Consensus, Portfo
 - **New / unknown market**: when a scraper emits a market label that doesn't map to a canonical `market_id`, log a warning and write the row to a `draft_odds_unmapped` quarantine table. Daily review during draft week to extend `nfl_draft/config/markets.py` (then re-run `python -m nfl_draft.lib.seed`). Better than silently dropping.
 - **Player alias miss**: same pattern — quarantine to `draft_odds_unmapped_players`, daily review to extend `nfl_draft/config/players.py` (then re-run `seed`). Surface unmapped count on the dashboard footer.
 - **Stale data warning**: dashboard shows `fetched_at` per book. If any book is > 30 min stale during pre-draft mode (or > 5 min during draft mode), highlight in red.
-- **DuckDB lock conflicts**: `run.py` and `app.py` both touch the DB. Use DuckDB's `read_only=true` for the dashboard (Dash callbacks open short-lived read-only connections) and `read_only=false` for `run.py`. If contention emerges, switch to a write-only worker that batches inserts.
+- **DuckDB lock conflicts**: DuckDB (0.10+) allows multiple readers + one writer cross-process when WAL is enabled (default). Two design rules ensure clean concurrency without locks becoming user-visible:
+
+  1. **Short-lived write connections**. `run.py` opens the DB, performs the bulk INSERT using DuckDB's `appender` API (fastest bulk-insert path), and closes the connection immediately. Total lock duration: milliseconds per cycle, even with several hundred rows.
+  2. **Short-lived read connections**. Each Dash callback opens a fresh `read_only=True` connection, executes its query, returns the result, closes. No long-lived connection reuse across callbacks. Reads typically complete in <100ms.
+
+  Both sides use `with duckdb.connect(...) as con:` to guarantee close-on-exit. If a read happens to land mid-write, it briefly blocks (typically <50ms) — invisible to the user.
+
+  All connection management is encapsulated in `nfl_draft/lib/db.py` via two helpers:
+  ```python
+  @contextmanager
+  def write_connection() -> Iterator[duckdb.DuckDBPyConnection]: ...
+
+  @contextmanager
+  def read_connection() -> Iterator[duckdb.DuckDBPyConnection]: ...
+  ```
+  Every caller uses these. No raw `duckdb.connect()` outside `db.py`. This is enforced via a unit test that greps the codebase for `duckdb.connect` outside of `lib/db.py` and fails if any are found.
+
+  **Stress test**: an integration test (`test_concurrent_access.py`) spawns a writer thread doing INSERTs in a loop for 10 seconds while a reader thread does SELECTs in a loop. Asserts zero unhandled lock errors and that all writes are visible to the reader within 1 second. Catches regressions to the connection-management discipline.
+
+  **Fallback** if contention nonetheless emerges under load (>1 lock error per minute observed): writes go to append-to-JSONL by `run.py`, with a separate batch worker draining JSONL → DuckDB every 30s. Adds 30s of staleness but eliminates contention entirely. Not implemented in v1; reserved for Phase 2.
 
 ---
 
