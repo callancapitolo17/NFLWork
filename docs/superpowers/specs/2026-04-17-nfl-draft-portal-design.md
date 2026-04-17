@@ -248,12 +248,85 @@ Existing tabs (Market Overview, Price History, Edge Detection, Consensus, Portfo
 
 ## Testing
 
-Phase 1 is time-boxed; testing is pragmatic, not exhaustive.
+Tests are a first-class deliverable, not an afterthought. Two reasons:
 
-- **Unit tests**: only for `lib/devig.py` and `lib/normalize.py` — these are deterministic math/lookup, easy to test, and incorrect output silently corrupts every downstream calculation. ~10 tests total. Pytest.
-- **Scraper smoke test**: each scraper module has a `__main__` block that runs once and prints rows. Used during reconnaissance and as the smoke check after auth changes.
-- **End-to-end manual check**: the morning of April 22, run `--mode pre-draft --book all` end-to-end, verify all 5 venues populated `draft_odds` rows for at least the #1 overall market, verify the dashboard renders. This is the go/no-go gate.
-- **No CI**: this is a personal project on a 7-day clock. Tests run locally on demand.
+1. **Rollout confidence**: when the dashboard is doing real-money calculations on draft day, "the math worked yesterday" isn't enough. Every commit must demonstrably preserve correctness.
+2. **Auto-mode feedback loop**: when implementation runs autonomously (Claude iterating without per-step user review), tests are the *only* signal that a change worked. Without them, regressions land silently and compound. With them, each run produces a binary pass/fail with a precise failure location.
+
+### Test organization
+
+```
+nfl_draft/tests/
+  unit/                              # deterministic, fast (<1s total)
+    test_devig.py                    # american→implied→devig math, all edge cases
+    test_normalize.py                # player/team alias resolution
+    test_market_map.py               # per-book label → canonical market_id
+    test_db.py                       # schema migration idempotency, seed correctness
+    test_scraper_parsing.py          # raw response → OddsRow conversion (pure logic)
+  integration/                       # uses fixtures + temp DuckDB, no network (<30s total)
+    test_pipeline.py                 # scraper rows → normalize → market_map → devig → DB
+    test_migration.py                # kalshi_draft.duckdb → nfl_draft.duckdb roundtrip
+    test_dashboard_queries.py        # query functions return correct shape + values
+    test_quarantine.py               # unmapped player/market lands in quarantine table
+  live/                              # hits real APIs, run manually only (~2-5 min)
+    test_scrapers_live.py            # each scraper produces ≥1 row from live endpoint
+    test_dashboard_renders.py        # Dash app subprocess + GET each tab URL
+  fixtures/
+    kalshi/                          # captured API responses (snapshot once, replay forever)
+    draftkings/
+    fanduel/
+    bookmaker/
+    wagerzon/
+  conftest.py                        # shared pytest fixtures: temp DB, seeded lookup tables
+```
+
+### What each tier covers
+
+**Unit (`tests/unit/`)** — pure functions, no I/O, no network, no DB. Run after every code change.
+- `test_devig.py`: every odds-conversion edge case — favorite/dog american odds, overround = 0% / 5% / 30%, two-way and n-way devig, proportional devig with sparse outcomes, integer/float input handling.
+- `test_normalize.py`: alias resolution case-insensitive, whitespace-tolerant; known player + every alias → canonical; unknown player → `None`; conflicting aliases (same alias for two players) → raises.
+- `test_market_map.py`: every per-book label → market_id; unknown label → `None`; collision detection (two book_labels mapping to same market_id is allowed; one book_label mapping to two market_ids raises).
+- `test_db.py`: schema migration runs twice without error (idempotent); seed runs from PYTHON dict literal and produces expected rows; seed re-run is idempotent; lookup tables truncated-and-rewritten cleanly.
+- `test_scraper_parsing.py`: each scraper's response-parsing function (separated from network calls) takes a fixture JSON/HTML and produces expected `OddsRow`s. This isolates parsing bugs from auth bugs.
+
+**Integration (`tests/integration/`)** — uses a temp DuckDB and fixture data, no network. Run before every commit.
+- `test_pipeline.py`: feed each book's fixture through the full pipeline; verify (a) correct row count in `draft_odds`, (b) devig sums to ~1.0 per market group, (c) quarantine count matches expected unmapped rows.
+- `test_migration.py`: build a fake `kalshi_draft.duckdb` with known seed data, run migration script, verify all rows present in destination + correct table renames + idempotent on re-run.
+- `test_dashboard_queries.py`: seed temp DB with known data, call each tab's query function (broken out from Dash callbacks), verify result shape matches dashboard expectations. **This is the test that catches "existing tabs break after DB repoint" — every existing tab gets a query test before its query is touched.**
+- `test_quarantine.py`: feed scraper rows with deliberately unmapped player and unmapped market; verify they land in `draft_odds_unmapped` and `draft_odds_unmapped_players` and do NOT land in `draft_odds`.
+
+**Live (`tests/live/`)** — hits real endpoints. Run manually before merge to main, and as the morning-of-April-22 go/no-go gate.
+- `test_scrapers_live.py`: each scraper produces ≥ 1 row from the actual book; auth works; rate limits not exceeded.
+- `test_dashboard_renders.py`: spin up the Dash app in a subprocess, GET each tab URL, assert 200 + key DOM elements present.
+
+### Fixtures
+
+For each book scraper, capture one full real response during reconnaissance (curl the endpoint, save to `tests/fixtures/<book>/<scenario>.json`). These fixtures are committed to git (no PII; just market data). Re-capture if the book changes its response shape.
+
+Fixture rule: scrapers should be split into `fetch_raw()` (network, hard to test) + `parse(raw_response)` (pure, easy to test). Tests target `parse()`. Smoke tests target `fetch_raw()`.
+
+### Test cadence
+
+- **Per code change**: `pytest tests/unit` (~1s). No excuse to skip.
+- **Per commit**: `pytest tests/unit tests/integration` (~30s). Pre-commit hook recommended (just runs pytest).
+- **Per merge to main**: full `pytest` including live, plus the morning-of dashboard render check. Failure here = block merge.
+- **Quarantine watch**: each scraper run logs unmapped counts; if counts grow during the day, that's a signal that the dict needs extending. Tests pin known-good aliases so dict edits don't accidentally break previously-working ones.
+
+### What's NOT tested
+
+- Visual rendering / CSS / Plotly chart appearance — manual eyeball.
+- Actual cron scheduling — manual verification that the cron entries fire.
+- Bet placement (out of scope entirely in Phase 1).
+
+### Auto-mode contract
+
+When implementation runs in auto mode, the loop is:
+
+1. Make the change.
+2. Run `pytest tests/unit tests/integration`.
+3. If green: commit + move on. If red: fix, GOTO 2.
+
+This requires that **every change be testable**. If a change can't be expressed as a test, it requires manual review before commit. Acceptable cases for manual review: dashboard CSS tweaks, README edits. Non-acceptable: anything that touches `lib/`, `scrapers/`, or query functions.
 
 ---
 
@@ -263,16 +336,17 @@ Phase 1 is time-boxed; testing is pragmatic, not exhaustive.
 
 In scope:
 - DuckDB schema, all tables
-- Migration of existing `kalshi_draft.duckdb` data into `nfl_draft.duckdb`; deletion of the old DB; existing dashboard tabs repointed
+- Migration of existing `kalshi_draft.duckdb` data into `nfl_draft.duckdb`; deletion of the old DB; existing dashboard tabs repointed (with query tests covering each tab before the repoint)
 - Player/team/market canonical config in `nfl_draft/config/*.py` (Python dict literals, populated for the top ~80 prospects), seeded into DuckDB lookup tables
 - All 5 venue scrapers (Kalshi expansion + 4 books) writing to `draft_odds`
 - Kalshi trade tape polling → `kalshi_trades`
 - Devig math ported to Python
 - Dashboard tabs: Cross-Book Grid, +EV Candidates, Trade Tape, Bet Log
 - Cron setup: pre-draft + draft-day swap
+- **Comprehensive test suite** (unit + integration + live; see Testing section). Tests are not optional — every `lib/`, `scrapers/`, and dashboard query function ships with tests. Pre-commit hook runs unit + integration on every commit.
 - README in `nfl_draft/`
 
-Explicit risk: if reconnaissance on any book exceeds its 1-day budget, skip and ship without it. Better to ship 3 books on time than 4 books a day late.
+Quality-over-speed posture: the deadline (Apr 23) is firm but speed is not the constraint. If a tradeoff appears between "ship faster with shortcuts" vs "ship a day later with full tests + correct error handling," the latter wins. Auto-mode iteration depends on tests; rolling out untested code on draft day is the failure mode to avoid.
 
 ### Phase 2 — Post-draft, weeks following
 
@@ -297,7 +371,7 @@ Out of scope for v1, planned for after:
 - **Files created**: `nfl_draft/` directory tree (see Code layout); `docs/superpowers/specs/2026-04-17-nfl-draft-portal-design.md`
 - **Files modified**: `kalshi_draft/app.py` (new tabs + repointed at `nfl_draft/nfl_draft.duckdb`), `.gitignore` (add `nfl_draft/nfl_draft.duckdb`, `nfl_draft/.cookies/`), `README.md` (link to nfl_draft/README.md)
 - **Files deleted**: `kalshi_draft/kalshi_draft.duckdb` (after migration verified). Note: this file is already gitignored, so the deletion is filesystem-only — no commit needed for the removal itself.
-- **Commit structure**: per-phase commits — (1) schema + migration script, (2) seed + lookup tables, (3) each scraper as its own commit, (4) dashboard tabs + repoint existing tabs, (5) cron config + README. Review checkpoint at each scraper before merging.
+- **Commit structure**: per-phase commits, each ships with its own tests in the same commit — (1) schema + migration script + migration tests, (2) seed + lookup tables + seed/normalize tests, (3) devig math + devig tests, (4) each scraper + that scraper's parsing tests + a fixture, (5) dashboard query functions + query tests + repoint existing tabs (with their pre-existing-tab query tests landing first as a regression baseline), (6) trade-tape poller + tests, (7) cron config + README. Review checkpoint at each scraper commit. No commit lands without tests for the code in it.
 - **Worktree**: optional but recommended given other active work on `feature/cbb-consensus-calibration` and `feature/mlb-sgp-scrapers`. Use `/worktree` for isolation if any of those are likely to need attention during the 7 days.
 - **Pre-merge review**: full executive review of `git diff main..HEAD` before merging — focus on (a) no DK/FD credentials in code, (b) DuckDB connections all closed, (c) no logging of personal bets to stdout, (d) cookie files gitignored.
 - **Approval to merge**: explicit ask before `git merge` or any push.
@@ -329,3 +403,4 @@ By end of day April 22 (the day before draft Day 1):
 3. Kalshi Trade Tape shows the last hour of trades, large fills highlighted
 4. Bet Log accepts and persists a test bet
 5. Cron jobs running on the user's machine; draft-day swap rehearsed
+6. **All tests green**: `pytest tests/unit tests/integration` returns 0 failures; `pytest tests/live` returns 0 failures on the morning-of run; existing dashboard tabs (Market Overview, Price History, Edge Detection, Consensus, Portfolio) verified to render correct data after the DB repoint via `test_dashboard_queries.py`.
