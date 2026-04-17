@@ -42,7 +42,13 @@ The script is **idempotent**: for each destination table, it computes an `MD5(GR
 
 After migration is verified, `kalshi_draft/kalshi_draft.duckdb` is removed and three things are updated together in the same commit as the migration script:
 
-1. **Existing dashboard tabs** in `kalshi_draft/app.py` — point `duckdb.connect(...)` at `nfl_draft/nfl_draft.duckdb` AND rewrite every SQL query referencing `draft_odds` to reference `kalshi_odds_history` instead.
+1. **Existing dashboard tabs** in `kalshi_draft/app.py` — point `duckdb.connect(...)` at `nfl_draft/nfl_draft.duckdb` AND rewrite every SQL query referencing `draft_odds`. The replacement isn't a simple rename: since `kalshi_odds_history` is frozen at v1 ship (no new rows after migration), tabs that need *current* Kalshi prices (Price History, Edge Detection, Consensus) must `UNION ALL` the historical archive with live data:
+   ```sql
+   SELECT ticker, price, fetched_at FROM kalshi_odds_history
+   UNION ALL
+   SELECT market_id AS ticker, devig_prob AS price, fetched_at FROM draft_odds WHERE book = 'kalshi'
+   ```
+   Tabs that read static Kalshi metadata (Market Overview reads `market_info`; Portfolio reads `positions`/`resting_orders`) are unaffected — those tables continue to receive writes from the legacy fetcher.
 2. **Existing fetcher / portfolio writers** in `kalshi_draft/fetcher.py` (and any related modules):
    - Repoint every `duckdb.connect(...)` write target from `kalshi_draft.duckdb` to `nfl_draft/nfl_draft.duckdb`.
    - **Disable** the legacy fetcher's writes to its old `draft_odds` table (now `kalshi_odds_history`). Otherwise Kalshi odds get written twice — once by the legacy fetcher into `kalshi_odds_history`, once by the new adapter into `draft_odds`. After v1 ships, `kalshi_odds_history` is **frozen** (read-only historical record from before the migration); all new Kalshi odds flow exclusively into `draft_odds`. The legacy fetcher continues writing `draft_series`, `market_info`, `positions`, `resting_orders` — those tables remain its sole responsibility.
@@ -295,7 +301,7 @@ All four new tabs (Cross-Book Grid, +EV Candidates, Trade Tape, Bet Log) use a `
 
 A mode toggle in the dashboard header (`Pre-draft / Draft-day`) controls the interval. Default: pre-draft. The user manually flips to draft-day the morning of April 23 (same time they swap the cron file).
 
-**Cheap-poll guard** (avoids redundant work when nothing has changed): the auto-refresh callback first queries `SELECT MAX(fetched_at) FROM draft_odds`, compares against the value cached in a `dcc.Store`, and skips the heavy grid re-render if unchanged. This means polling every 15s against a 90s scrape costs one cheap MAX query per tick (≈ 5ms), with the expensive grid-render firing only when there's new data. Same pattern for Trade Tape against `MAX(fetched_at) FROM kalshi_trades`. Eliminates the "14 of 15 polls return identical data" waste. Tested by `test_dashboard_queries.py::test_cheap_poll_guard_skips_render_when_unchanged`.
+**Cheap-poll guard** (avoids redundant work when nothing has changed): the auto-refresh callback first queries `SELECT MAX(fetched_at) FROM draft_odds`, compares against the value cached in a `dcc.Store`, and skips the heavy grid re-render if unchanged. This means polling every 15s against a 120s draft-day scrape costs one cheap MAX query per tick (≈ 5ms), with the expensive grid-render firing only when there's new data. Same pattern for Trade Tape against `MAX(fetched_at) FROM kalshi_trades`. Eliminates the "7 of 8 polls return identical data" waste. Tested by `test_dashboard_queries.py::test_cheap_poll_guard_skips_render_when_unchanged`.
 
 Each callback re-queries DuckDB using a short-lived read-only connection (per the concurrency pattern in Error Handling), so the refresh cost is bounded and lock-free.
 
