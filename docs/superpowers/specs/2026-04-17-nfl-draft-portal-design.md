@@ -51,7 +51,7 @@ After migration is verified, `kalshi_draft/kalshi_draft.duckdb` is removed and t
    - Update any `INSERT INTO draft_odds` to `INSERT INTO kalshi_odds`.
    - **Normalize timestamps to local time**: the legacy fetcher currently stores `datetime.now(timezone.utc)` as fetch_time. Replace with `datetime.now()` (naive local) so timestamps in `kalshi_odds` are consistent with the new spec's local-time convention used by `draft_odds`, `kalshi_trades`, etc. Without this, the same DB has two timestamp conventions and cross-table time comparisons silently drift by the local-UTC offset (4-5 hours in ET).
 
-   The fetcher's behavior is otherwise unchanged — it continues to write `kalshi_odds`, `draft_series`, `market_info`, `positions`, `resting_orders` on its existing cadence. New writes accumulate in `kalshi_odds` continuously; nothing is frozen.
+   The fetcher's behavior is otherwise unchanged — it continues to write `kalshi_odds`, `draft_series`, `market_info`, `positions`, `resting_orders`. **Trigger**: the legacy fetcher was previously invoked manually via `kalshi_draft/run.sh`. After v1, those writes happen transitively on the new cron — the new `nfl_draft/scrapers/kalshi.py` adapter calls into the legacy fetcher's discovery and market-fetch functions, which performs its writes as side effects. So every `--mode scrape` cron tick refreshes both the legacy `kalshi_odds` (for the legacy tabs) and the new `draft_odds` (for the portal tabs) in one pass. The old `kalshi_draft/run.sh` is retained for ad-hoc manual fetches but is no longer required for the dashboard to receive updates.
 3. **`kalshi_mm/`** — review for any direct DuckDB references to `kalshi_draft.duckdb` (the running CBB MM bot uses `kalshi_draft/auth.py` but shouldn't touch the draft DB; verify with grep). If found, repoint similarly.
 
 Regression covered by:
@@ -322,8 +322,8 @@ All store ids prefixed `nfl_draft.` to avoid collision with the existing `kalshi
 ## Data flow
 
 ```
-[ DK | FD | BM | WZ | Kalshi ]                      Cron @ 15min (pre) / 2min (draft)
-        │
+[ DK | FD | BM | WZ ]                                Cron @ 15min (pre) / 2min (draft)
+        │                                            via run.py --mode scrape
         ▼
    scrapers/<book>.py  →  raw odds rows
         │
@@ -339,10 +339,21 @@ All store ids prefixed `nfl_draft.` to avoid collision with the existing `kalshi
         ▼
    nfl_draft.duckdb       draft_markets, draft_odds
 
-[ Kalshi /markets/trades ]                          Cron @ 2min (pre) / 1min (draft)
+[ Kalshi API ]                                       Same cron via run.py --mode scrape
         │
         ▼
-   scrapers/kalshi.py (trades subcmd)
+   scrapers/kalshi.py (adapter)  ──calls──▶  kalshi_draft/fetcher.py (legacy)
+        │                                         │  writes (side effects):
+        │ returns OddsRow list                    ▼
+        │                                    nfl_draft.duckdb
+        ▼                                    kalshi_odds, draft_series,
+   draft_odds (Kalshi rows)                  market_info, positions,
+                                             resting_orders
+
+[ Kalshi /markets/trades ]                           Cron @ 2min (pre) / 1min (draft)
+        │                                            via run.py --mode trades
+        ▼
+   scrapers/kalshi.py (fetch_trades)
         │
         ▼
    kalshi_trades         (INSERT OR IGNORE on trade_id PK; is_large computed at read time)
@@ -350,11 +361,18 @@ All store ids prefixed `nfl_draft.` to avoid collision with the existing `kalshi
 
 [ Dash app — kalshi_draft/app.py extended ]
         │
-        ├── Cross-Book Grid ←  reads draft_markets + latest draft_odds per (market, venue); computes all-venue median + outlier flags
+        │ Portal section (new):
+        ├── Cross-Book Grid ←  draft_markets + latest draft_odds per (market, venue); computes all-venue median + outlier flags
         ├── +EV Candidates  ←  same query, flat + filtered to flagged outliers, sorted by |delta|
-        ├── Trade Tape      ←  reads kalshi_trades ORDER BY traded_at DESC LIMIT 200
-        ├── Bet Log         ←  writes draft_bets; reads it for table view
-        └── (existing tabs unchanged)
+        ├── Trade Tape      ←  kalshi_trades ORDER BY traded_at DESC LIMIT 200
+        ├── Bet Log         ←  writes/reads draft_bets
+        │
+        │ Kalshi-only legacy section (existing, queries renamed draft_odds → kalshi_odds):
+        ├── Market Overview ←  market_info
+        ├── Price History   ←  kalshi_odds (rich Kalshi columns: yes_bid/ask/volume)
+        ├── Edge Detection  ←  kalshi_odds + detected_edges
+        ├── Consensus       ←  kalshi_odds + consensus_board
+        └── Portfolio       ←  positions + resting_orders + market_info
 ```
 
 ---
