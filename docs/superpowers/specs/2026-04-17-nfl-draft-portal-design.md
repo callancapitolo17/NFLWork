@@ -189,7 +189,7 @@ nfl_draft/
   tests/                       # see Testing section
     __init__.py
     ...
-  run.py                       # orchestrator: --mode {pre-draft, draft-day, trades} --book all
+  run.py                       # orchestrator: --mode {scrape, trades} [--book all|<book>]
   README.md
   .cookies/                    # gitignored — per-book session cookies
   nfl_draft.duckdb             # gitignored — the SOLE draft database
