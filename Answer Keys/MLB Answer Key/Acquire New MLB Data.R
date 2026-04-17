@@ -90,10 +90,22 @@ options(warn = 1)
     ))
     source("Tools.R")
 
-tryCatch(
-      {
-    #Acquire New Data----
-    con <- dbConnect(duckdb(), dbdir = "pbp.duckdb") #ensure in NFL work directory
+# ============================================================================
+# CLI: --daily runs odds only, --daily-pbp runs PBP only, no flags runs both
+# ============================================================================
+cli_args <- commandArgs(trailingOnly = TRUE)
+run_odds <- length(cli_args) == 0 || "--daily" %in% cli_args
+run_pbp  <- length(cli_args) == 0 || "--daily-pbp" %in% cli_args
+
+# ============================================================================
+# Section 1: Acquire Closing Odds from Odds API
+# ============================================================================
+if (run_odds) {
+  message("=== Acquiring closing odds ===")
+  tryCatch(
+    {
+    con <- dbConnect(duckdb(), dbdir = "pbp.duckdb")
+    on.exit(tryCatch(dbDisconnect(con, shutdown = TRUE), error = function(e) NULL), add = TRUE)
 
     mlb_db_dates <- dbGetQuery(
       con,
@@ -106,7 +118,6 @@ tryCatch(
       unique() %>%
       pull()
 
-    #this needs to go after odds are pulled
     betting_db_ids <- dbGetQuery(
       con,
       "
@@ -118,7 +129,14 @@ tryCatch(
       pull(unique_db_book_id)
 
     dbDisconnect(con, shutdown = TRUE)
-    sched <- map_dfr(2020:year(Sys.Date()), mlb_schedule) #grab MLB schedule
+    on.exit(NULL)
+
+    # T-2 safety buffer: only fetch odds for games that finished at least
+    # 2 days ago. Guarantees no live/in-progress games get captured even if
+    # the schedule API has stale Final flags.
+    cutoff_date <- Sys.Date() - 2
+
+    sched <- map_dfr(2020:year(Sys.Date()), mlb_schedule)
     mlb_dates <- sched %>%
       filter(status_abstract_game_state == "Final") %>%
       mutate(
@@ -130,145 +148,133 @@ tryCatch(
           status_coded_game_state == "F"
       ) %>%
       filter(date >= as.Date("2020-06-06")) %>%
-      mutate(new_date = ifelse(date %in% mlb_db_dates, FALSE, TRUE)) %>% #new addition to focus just on new dates
-      filter(new_date == TRUE) %>% #new addition to focus just on new dates
+      filter(date <= cutoff_date) %>%
+      filter(!date %in% mlb_db_dates) %>%
       pull(date) %>%
       unique() %>%
       sort()
 
     if (length(mlb_dates) == 0L) {
-      message("No new completed MLB dates to process. Exiting.")
-      quit(save = "no", status = 0)
-    }
-
-    event_list <- map_dfr(mlb_dates, function(day) {
-      snapshot <- paste0(format(day, "%Y-%m-%d"), "T14:59:59Z")
-      res <- GET(
-        url = "https://api.the-odds-api.com/v4/historical/sports/baseball_mlb/events",
-        query = list(
-          apiKey = Sys.getenv("ODDS_API_KEY"),
-          date = snapshot,
-          dateFormat = "iso"
+      message("No new completed MLB dates to process.")
+    } else {
+      event_list <- map_dfr(mlb_dates, function(day) {
+        snapshot <- paste0(format(day, "%Y-%m-%d"), "T14:59:59Z")
+        res <- GET(
+          url = "https://api.the-odds-api.com/v4/historical/sports/baseball_mlb/events",
+          query = list(
+            apiKey = Sys.getenv("ODDS_API_KEY"),
+            date = snapshot,
+            dateFormat = "iso"
+          )
         )
-      )
-      stop_for_status(res)
-      parsed <- fromJSON(content(res, "text"), flatten = TRUE)
+        stop_for_status(res)
+        parsed <- fromJSON(content(res, "text"), flatten = TRUE)
 
-      if (length(parsed) == 0) {
-        return(tibble())
-      }
+        if (length(parsed) == 0) {
+          return(tibble())
+        }
 
-      as_tibble(parsed) %>%
-        mutate(snapshot_date = day)
-    })
-    event_list_clean <- event_list$data %>%
-      select(id, home_team, away_team, commence_time) %>%
-      distinct(id, .keep_all = TRUE) %>%
-      mutate(commence_time = ymd_hms(commence_time, tz = "UTC"))
+        as_tibble(parsed) %>%
+          mutate(snapshot_date = day)
+      })
+      event_list_clean <- event_list$data %>%
+        select(id, home_team, away_team, commence_time) %>%
+        distinct(id, .keep_all = TRUE) %>%
+        mutate(commence_time = ymd_hms(commence_time, tz = "UTC"))
 
-
-    # Apply this function across all events
-    history_df <- map2_dfr(
-      event_list_clean$id,
-      event_list_clean$commence_time,
-      get_event_odds_by_id
-    )
-
-    library(tidyr)
-
-    clean_history_df <- history_df %>%
-      as_tibble() %>%
-      filter(map_lgl(bookmakers, ~ length(.x) > 0))
-
-    flat_odds <- clean_history_df %>%
-      # 1. one row per bookie
-      unnest_longer(bookmakers) %>%
-      unnest_wider(bookmakers, names_sep = "_") %>%
-      # 2. one row per market (h2h, totals, …)
-      unnest_longer(bookmakers_markets) %>%
-      unnest_wider(bookmakers_markets, names_sep = "_") %>%
-      # 3. one row per single outcome (e.g. “Detroit Tigers” @ –113)
-      unnest_longer(bookmakers_markets_outcomes) %>%
-      unnest_wider(bookmakers_markets_outcomes, names_sep = "_") %>%
-      # 4. parse your datetimes
-      mutate(
-        commence_time = ymd_hms(commence_time, tz = "UTC"),
-        bookmaker_update = ymd_hms(bookmakers_last_update, tz = "UTC"),
-        market_update = ymd_hms(bookmakers_markets_last_update, tz = "UTC")
-      ) %>%
-      rename(
-        bookmaker_key = bookmakers_key,
-        bookmaker_title = bookmakers_title,
-        market_key = bookmakers_markets_key,
-        outcome_name = bookmakers_markets_outcomes_name,
-        closing_odds = bookmakers_markets_outcomes_price
-      ) %>%
-      unnest_wider(outcome_name, names_sep = c("_")) %>%
-      unnest_wider(closing_odds, names_sep = c("_")) %>%
-      unnest_wider(bookmakers_markets_outcomes_point, names_sep = c("_")) %>%
-      mutate(
-        market_type = if_else(outcome_name_1 == "Over", "totals", "moneyline"),
-        home_odds = ifelse(
-          market_type == "totals",
-          NA,
-          ifelse(
-            market_type == "moneyline" & home_team == outcome_name_1,
-            closing_odds_1,
-            closing_odds_2
-          )
-        ),
-        away_odds = ifelse(
-          market_type == "totals",
-          NA,
-          ifelse(
-            market_type == "moneyline" & away_team == outcome_name_1,
-            closing_odds_1,
-            closing_odds_2
-          )
-        ),
-      ) %>%
-      group_by(
-        id,
-        commence_time,
-        home_team,
-        away_team,
-        bookmaker_key,
-        bookmaker_title,
-        bookmaker_update
-      ) %>%
-      summarise(
-        ml_home_odds = first(home_odds[market_type == "moneyline"]),
-        ml_away_odds = first(away_odds[market_type == "moneyline"]),
-        total_line = if_else(
-          bookmakers_markets_outcomes_point_1[market_type == "totals"] > 0,
-          first(bookmakers_markets_outcomes_point_1[market_type == "totals"]),
-          NA
-        ),
-        tot_over_odds = first(closing_odds_1[market_type == "totals"]),
-        tot_under_odds = first(closing_odds_2[market_type == "totals"]),
-        .groups = "drop"
+      history_df <- map2_dfr(
+        event_list_clean$id,
+        event_list_clean$commence_time,
+        get_event_odds_by_id
       )
 
-    # Define the weights for each bookmaker to create consensus total line
-    odds_to_prob <- function(odds) {
-      ifelse(odds > 0, 100 / (odds + 100), -odds / (-odds + 100))
-    }
+      library(tidyr)
 
-    #need to figure out how to insert into DB Might Need to Join?
-    new_betting_history <- flat_odds %>%
-      filter(commence_time < with_tz(Sys.time(), "UTC")) %>%
-      mutate(unique_book_id = paste0(id, bookmaker_key)) %>%
-      mutate(
-        new_id = ifelse(unique_book_id %in% betting_db_ids, FALSE, TRUE)
-      ) %>%
-      filter(new_id == TRUE)
-    con <- dbConnect(duckdb(), dbdir = "pbp.duckdb")
+      clean_history_df <- history_df %>%
+        as_tibble() %>%
+        filter(map_lgl(bookmakers, ~ length(.x) > 0))
 
-    duckdb_register(con, "new_rows", new_betting_history)
+      flat_odds <- clean_history_df %>%
+        unnest_longer(bookmakers) %>%
+        unnest_wider(bookmakers, names_sep = "_") %>%
+        unnest_longer(bookmakers_markets) %>%
+        unnest_wider(bookmakers_markets, names_sep = "_") %>%
+        unnest_longer(bookmakers_markets_outcomes) %>%
+        unnest_wider(bookmakers_markets_outcomes, names_sep = "_") %>%
+        mutate(
+          commence_time = ymd_hms(commence_time, tz = "UTC"),
+          bookmaker_update = ymd_hms(bookmakers_last_update, tz = "UTC"),
+          market_update = ymd_hms(bookmakers_markets_last_update, tz = "UTC")
+        ) %>%
+        rename(
+          bookmaker_key = bookmakers_key,
+          bookmaker_title = bookmakers_title,
+          market_key = bookmakers_markets_key,
+          outcome_name = bookmakers_markets_outcomes_name,
+          closing_odds = bookmakers_markets_outcomes_price
+        ) %>%
+        unnest_wider(outcome_name, names_sep = c("_")) %>%
+        unnest_wider(closing_odds, names_sep = c("_")) %>%
+        unnest_wider(bookmakers_markets_outcomes_point, names_sep = c("_")) %>%
+        mutate(
+          market_type = if_else(outcome_name_1 == "Over", "totals", "moneyline"),
+          home_odds = ifelse(
+            market_type == "totals",
+            NA,
+            ifelse(
+              market_type == "moneyline" & home_team == outcome_name_1,
+              closing_odds_1,
+              closing_odds_2
+            )
+          ),
+          away_odds = ifelse(
+            market_type == "totals",
+            NA,
+            ifelse(
+              market_type == "moneyline" & away_team == outcome_name_1,
+              closing_odds_1,
+              closing_odds_2
+            )
+          ),
+        ) %>%
+        group_by(
+          id,
+          commence_time,
+          home_team,
+          away_team,
+          bookmaker_key,
+          bookmaker_title,
+          bookmaker_update
+        ) %>%
+        summarise(
+          ml_home_odds = first(home_odds[market_type == "moneyline"]),
+          ml_away_odds = first(away_odds[market_type == "moneyline"]),
+          total_line = if_else(
+            bookmakers_markets_outcomes_point_1[market_type == "totals"] > 0,
+            first(bookmakers_markets_outcomes_point_1[market_type == "totals"]),
+            NA
+          ),
+          tot_over_odds = first(closing_odds_1[market_type == "totals"]),
+          tot_under_odds = first(closing_odds_2[market_type == "totals"]),
+          .groups = "drop"
+        )
 
-    dbExecute(
-      con,
-      "
+      new_betting_history <- flat_odds %>%
+        filter(commence_time < with_tz(Sys.time(), "UTC")) %>%
+        mutate(unique_book_id = paste0(id, bookmaker_key)) %>%
+        mutate(
+          new_id = ifelse(unique_book_id %in% betting_db_ids, FALSE, TRUE)
+        ) %>%
+        filter(new_id == TRUE)
+
+      con <- dbConnect(duckdb(), dbdir = "pbp.duckdb")
+      on.exit(tryCatch(dbDisconnect(con, shutdown = TRUE), error = function(e) NULL), add = TRUE)
+
+      duckdb_register(con, "new_rows", new_betting_history)
+
+      dbExecute(
+        con,
+        "
 INSERT INTO mlb_betting_history AS t (
   id, commence_time, home_team, away_team,
   bookmaker_key, bookmaker_title, bookmaker_update,
@@ -286,58 +292,93 @@ WHERE NOT EXISTS (
   WHERE t2.id = n.id AND t2.bookmaker_key = n.bookmaker_key
 );
 "
-    )
+      )
 
-    dbDisconnect(con, shutdown = TRUE)
+      message(sprintf("Inserted %d new odds rows.", nrow(new_betting_history)))
+      dbDisconnect(con, shutdown = TRUE)
+      on.exit(NULL)
+    }
   },
   error = function(e) {
-    message("ERROR: ", conditionMessage(e))
+    message("ERROR in odds acquisition: ", conditionMessage(e))
+    if (!run_pbp) quit(save = "no", status = 1)
+  }
+  )
+}
+
+# ============================================================================
+# Section 2: Acquire PBP Data
+# ============================================================================
+if (run_pbp) {
+  message("=== Acquiring PBP data ===")
+  tryCatch(
+    {
+    con <- dbConnect(duckdb(), dbdir = "pbp.duckdb")
+    on.exit(tryCatch(dbDisconnect(con, shutdown = TRUE), error = function(e) NULL), add = TRUE)
+
+    # Cast game_date to Date server-side so comparisons are type-safe regardless
+    # of the column's underlying storage format (currently VARCHAR 'YYYY-MM-DD').
+    db_game_dates <- dbGetQuery(
+      con,
+      "
+  SELECT DISTINCT CAST(game_date AS DATE) AS game_date
+  FROM mlb_pbp_all
+  WHERE year(CAST(game_date AS DATE)) >= 2020
+"
+    ) %>%
+      pull(game_date) %>%
+      as.Date() %>%
+      unique()
+
+    # Get column schema while connection is still open
+    cols_name <- colnames(dbGetQuery(con, "SELECT * FROM mlb_pbp_all LIMIT 1"))
+    dbDisconnect(con, shutdown = TRUE)
+    on.exit(NULL)
+
+    # T-2 safety buffer: only fetch PBP for games that finished at least
+    # 2 days ago (mirrors the odds section).
+    cutoff_date <- Sys.Date() - 2
+
+    game_dates <- map_dfr(year(Sys.Date()), mlb_schedule) %>%
+      filter(
+        (!series_description %in% c("Exhibition", "Spring Training")),
+        status_coded_game_state == "F"
+      ) %>%
+      mutate(date = as.Date(ymd_hms(game_date, tz = "UTC"))) %>%
+      filter(date <= cutoff_date) %>%
+      select(date, game_pk)
+
+    # Both `date` and `db_game_dates` are Date objects — type-safe comparison.
+    new_game_ids <- game_dates %>%
+      filter(!date %in% db_game_dates) %>%
+      pull(game_pk)
+
+    if (length(new_game_ids) == 0L) {
+      message("No new MLB games to fetch PBP for.")
+    } else {
+      message(sprintf("Fetching PBP for %d new games...", length(new_game_ids)))
+      season_pbp <- map_dfr(new_game_ids, get_pbp_mlb)
+
+      new_pbp <- season_pbp %>%
+        select(all_of(cols_name))
+
+      con <- dbConnect(duckdb(), dbdir = "pbp.duckdb")
+      on.exit(tryCatch(dbDisconnect(con, shutdown = TRUE), error = function(e) NULL), add = TRUE)
+
+      dbWithTransaction(con, {
+        dbAppendTable(con, "mlb_pbp_all", new_pbp)
+      })
+
+      message(sprintf("Inserted %d PBP rows for %d games.", nrow(new_pbp), length(new_game_ids)))
+      dbDisconnect(con, shutdown = TRUE)
+      on.exit(NULL)
+    }
+  },
+  error = function(e) {
+    message("ERROR in PBP acquisition: ", conditionMessage(e))
     quit(save = "no", status = 1)
   }
-)
+  )
+}
 
-#Acquire PBP Data----
-con <- dbConnect(duckdb(), dbdir = "pbp.duckdb") #ensure in correct working directory
-db_game_dates <- dbGetQuery(
-  con,
-  "
-  SELECT DISTINCT game_pk,game_date
-  FROM mlb_pbp
-  WHERE SEASON >= 2020
-"
-) %>%
-  mutate(db_unique_id = paste0(game_pk, year(as.Date(game_date)))) %>%
-  pull(game_date) %>%
-  unique()
-dbDisconnect(con, shutdown = TRUE)
-
-game_dates <- map_dfr(year(Sys.Date()), mlb_schedule) %>%
-  filter(
-    (!series_description %in% c("Exhibition", "Spring Training")),
-    status_coded_game_state == "F"
-  ) %>%
-  mutate(date = as.Date(ymd_hms(game_date, tz = "UTC"))) %>%
-  select(date, game_pk) #grab MLB schedule
-
-new_game_ids <- game_dates %>%
-  mutate(
-    new_id = ifelse(as.character(date) %in% db_game_dates, FALSE, TRUE)
-  ) %>%
-  filter(new_id == TRUE) %>%
-  pull(game_pk)
-
-season_pbp <- map_dfr(new_game_ids, get_pbp_mlb)
-
-cols_name <- colnames(dbGetQuery(con, "SELECT * FROM mlb_pbp LIMIT 1"))
-
-new_pbp <- season_pbp %>%
-  select(cols_name)
-
-con <- dbConnect(duckdb(), dbdir = "pbp.duckdb")
-
-dbWithTransaction(con, {
-  dbAppendTable(con, "mlb_pbp", new_pbp) # adds rows
-})
-dbDisconnect(con, shutdown = TRUE)
-
-
+message("=== MLB data acquisition complete ===")
