@@ -187,8 +187,13 @@ For each book, reconnaissance and parsing is the unknown — auth and request me
 
 New tabs added to the existing Dash app:
 
-1. **Cross-Book Grid** — Markets on rows, books on columns, devigged prob in cells. Final column shows variance (max − min across books that posted the market). Click a row to drill into a per-market detail view (line history if data exists, all bid/ask, take/log button).
-2. **+EV Candidates** — Same data, but flat-listed and ranked by variance descending. Filter by market type, position, book. This is the user's "scan the field" view.
+1. **Cross-Book Grid** — Markets on rows, books on columns, devigged prob in cells. For each market with ≥ 2 books posting, compute the **median devigged probability** across all posting venues. For each (market, book) cell, compute `delta = book_prob - median_prob`. **Flag the cell** (colored highlight + inline `±Npp` indicator) when `abs(delta) ≥ threshold`. Threshold default: 10 percentage points; user-configurable via a slider in the tab header. The flagged cell is the "this book is way off the market" signal — that's where +EV likely lives.
+   Final column shows the count of flagged books for that market (so a market with 3 outliers stands out from one with 1).
+   Click a row to drill into a per-market detail view (line history if data exists, all bid/ask, take/log button).
+
+2. **+EV Candidates** — Flat-listed view of every flagged (market, book) pair from the grid above, ranked by `abs(delta)` descending. One row per outlier — so a single market with 3 flagged books contributes 3 rows. Columns: market, position, book, book_prob, market_median, delta (signed: + means book is too high vs market, − means too low), implied edge direction. Filter by market type, position, book, threshold. This is the user's "scan the field for action" view.
+
+   Why outlier-flag and not raw variance: when 4 books say 50% and one says 30%, variance and outlier-flag give the same signal (one book is off). But when 5 books each disagree by ~5pp, variance is high but no single book is the obvious target — outlier-flag (correctly) flags nothing. The flag is more directly actionable than the variance number.
 3. **Trade Tape** — Streaming-style table of recent Kalshi trades (last 200 rows), large fills (≥ $500 notional, configurable) highlighted. Filter by ticker / series.
 4. **Bet Log** — Form to log a bet (market_id dropdown, book dropdown, american_odds, stake, note). Below the form, table of past bets.
 
@@ -226,8 +231,8 @@ Existing tabs (Market Overview, Price History, Edge Detection, Consensus, Portfo
 
 [ Dash app — kalshi_draft/app.py extended ]
         │
-        ├── Cross-Book Grid ←  reads draft_markets + latest draft_odds per (market, book)
-        ├── +EV Candidates  ←  same query, flat + sorted by variance
+        ├── Cross-Book Grid ←  reads draft_markets + latest draft_odds per (market, book); computes median + outlier flags
+        ├── +EV Candidates  ←  same query, flat + filtered to flagged outliers, sorted by |delta|
         ├── Trade Tape      ←  reads kalshi_trades ORDER BY traded_at DESC LIMIT 200
         ├── Bet Log         ←  writes draft_bets; reads it for table view
         └── (existing tabs unchanged)
