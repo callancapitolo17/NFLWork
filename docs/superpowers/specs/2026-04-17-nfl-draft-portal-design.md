@@ -17,7 +17,7 @@ This is **Phase 1** of a multi-phase build. Phase 2 work (formal fair-value meth
 
 ## Non-Goals (Phase 1)
 
-- Formal fair-value / "true probability" oracle. v1 surfaces every venue's devigged probability and **flags outlier books that are ≥10pp from the cross-book median**; the user eyeballs edges. A methodology will be designed in Phase 2 after watching live behavior during the 2026 draft.
+- Formal fair-value / "true probability" oracle. v1 surfaces every venue's devigged probability and **flags outlier venues (any of the 5, including Kalshi) that are ≥10pp from the all-venue median**; the user eyeballs edges. A methodology will be designed in Phase 2 after watching live behavior during the 2026 draft.
 - Auto-betting or Kelly sizing recommendations.
 - WebSocket / push streaming. Everything is poll-based in v1.
 - Full P&L tab, CLV analysis, or backtesting view. v1 only *captures* bets; analysis is Phase 2.
@@ -269,7 +269,7 @@ For each book, reconnaissance and parsing is the unknown — auth and request me
 
 New tabs added to the existing Dash app:
 
-1. **Cross-Book Grid** — Markets on rows, books on columns, devigged prob in cells. For each market with ≥ 2 books posting, compute the **median devigged probability** across all posting venues. For each (market, book) cell, compute `delta = book_prob - median_prob`. **Flag the cell** (colored highlight + inline `±Npp` indicator) when `abs(delta) ≥ threshold`. Threshold default: 10 percentage points; user-configurable via a slider in the tab header. The flagged cell is the "this book is way off the market" signal — that's where +EV likely lives.
+1. **Cross-Book Grid** — Markets on rows, **all 5 venues** (4 sportsbooks + Kalshi) on columns, devigged prob in cells. For each market with ≥ 2 venues posting, compute the **median devigged probability across all posting venues, including Kalshi**. For each (market, venue) cell, compute `delta = venue_prob - median_prob`. **Flag the cell** (colored highlight + inline `±Npp` indicator) when `abs(delta) ≥ threshold`. Threshold default: 10 percentage points; user-configurable via a slider in the tab header. The flagged cell is the "this venue is way off the consensus" signal — that's where +EV likely lives. Symmetric treatment: any venue (sportsbook OR Kalshi) can be flagged as the outlier.
    Final column shows the count of flagged books for that market (so a market with 3 outliers stands out from one with 1).
    Click a row to drill into a per-market detail view (line history if data exists, all bid/ask, take/log button).
 
