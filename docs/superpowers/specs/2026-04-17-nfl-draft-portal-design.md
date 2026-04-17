@@ -506,7 +506,7 @@ This requires that **every change be testable**. If a change can't be expressed 
 
 In scope:
 - DuckDB schema, all tables (`draft_markets`, `draft_odds`, `kalshi_trades`, `kalshi_poll_state`, `draft_bets`, `players`, `player_aliases`, `teams`, `team_aliases`, `market_map`, `draft_odds_unmapped`, `draft_odds_unmapped_players`)
-- Migration of existing `kalshi_draft.duckdb` data into `nfl_draft.duckdb`; deletion of the old DB; existing dashboard tabs repointed AND queries rewritten to reference `kalshi_odds` (with regression query tests landing first)
+- Migration of existing `kalshi_draft.duckdb` data into `nfl_draft.duckdb`; deletion of the old DB; existing dashboard tabs + writer modules repointed AND queries rewritten to reference `kalshi_odds`. All of this ships atomically in commit (1) along with regression tests for every existing tab — see Version control "Commit structure"
 - Player/team/market canonical config in `nfl_draft/config/*.py` (Python dict literals, populated for the top ~80 prospects), seeded into DuckDB lookup tables (idempotent seed)
 - All 5 venue scrapers (Kalshi expansion + 4 books) writing to `draft_odds`, with rate limiting on Kalshi and credentials loaded from `.env`
 - Kalshi trade tape polling → `kalshi_trades` with `kalshi_poll_state` cursor + `INSERT OR IGNORE` dedup
@@ -556,10 +556,10 @@ Out of scope for v1, planned for after:
   - **(1) The legacy migration commit** — atomic. Includes: schema + migration script (renames legacy `draft_odds` → `kalshi_odds`); repoint of `kalshi_draft/fetcher.py`, `db.py`, `edge_detector.py`, `consensus.py`, `app.py` (connection target → `nfl_draft/nfl_draft.duckdb`; SQL `draft_odds` → `kalshi_odds`; TZ normalization in writer files); regression tests for every existing dashboard tab (Market Overview, Price History, Edge Detection, Consensus, Portfolio); `test_kalshi_writer_target.py`; `test_migration.py`. Acceptance: legacy dashboard runs against `nfl_draft.duckdb` end-to-end, all 5 existing tabs render correctly.
   - **(2)** Seed + 5 lookup tables + `test_db.py` + `test_normalize.py` + `test_market_map.py`.
   - **(3)** Devig math + `test_devig.py` + `test_market_id_construction.py` + `test_tz_roundtrip.py`.
-  - **(4)** Each scraper as its own commit (4a Kalshi adapter, 4b DK, 4c FD, 4d BM, 4e WZ) + that scraper's parsing tests + a fixture. Review checkpoint at each scraper commit.
-  - **(5) New portal dashboard commit** — adds the 4 new tabs (Cross-Book Grid, +EV Candidates, Trade Tape, Bet Log) + their query functions + `test_dashboard_queries.py` cases for the new tabs (outlier-flag math, cheap-poll guard, single-venue NULL handling).
-  - **(6)** Trade-tape poller + `test_quarantine.py` + concurrent-access stress test.
-  - **(7)** Cron config + README + final live smoke test.
+  - **(4)** Each scraper as its own commit (4a Kalshi adapter, 4b DK, 4c FD, 4d BM, 4e WZ) + that scraper's parsing tests + a fixture. The first scraper commit (4a Kalshi) also ships `test_quarantine.py` — the end-to-end quarantine pipeline test that exercises the unmapped-player and unmapped-market paths created in commit (1). Review checkpoint at each scraper commit.
+  - **(5) New portal dashboard commit** — adds the 4 new tabs (Cross-Book Grid, +EV Candidates, Trade Tape, Bet Log) + their query functions + `test_dashboard_queries.py` cases for the new tabs (outlier-flag math, cheap-poll guard, single-venue NULL handling) + `test_concurrent_access.py` (writer/reader stress, lands here because both sides are now wired).
+  - **(6)** Trade-tape poller (`--mode trades`) + `kalshi_poll_state` cursor logic + dedup tests.
+  - **(7)** Cron config + README + manual live go/no-go gate (the morning-of-Apr-22 end-to-end check).
   No commit lands without tests for the code in it.
 - **Worktree**: optional but recommended given other active work on `feature/cbb-consensus-calibration` and `feature/mlb-sgp-scrapers`. Use `/worktree` for isolation if any of those are likely to need attention during the 7 days.
 - **Pre-merge review**: full executive review of `git diff main..HEAD` before merging — focus on (a) no DK/FD credentials in code, (b) DuckDB connections all closed, (c) no logging of personal bets to stdout, (d) cookie files gitignored.
