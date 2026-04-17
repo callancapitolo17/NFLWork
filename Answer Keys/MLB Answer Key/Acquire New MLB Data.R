@@ -249,11 +249,13 @@ if (run_odds) {
         summarise(
           ml_home_odds = first(home_odds[market_type == "moneyline"]),
           ml_away_odds = first(away_odds[market_type == "moneyline"]),
-          total_line = if_else(
-            bookmakers_markets_outcomes_point_1[market_type == "totals"] > 0,
-            first(bookmakers_markets_outcomes_point_1[market_type == "totals"]),
-            NA
-          ),
+          # Books may post ML without totals (e.g. BetAnything on some games).
+          # Empty subscript needs explicit handling — if_else(empty > 0, ...)
+          # returns size 0 and crashes summarise's size-1 requirement.
+          total_line = {
+            pts <- bookmakers_markets_outcomes_point_1[market_type == "totals"]
+            if (length(pts) > 0 && !is.na(pts[1]) && pts[1] > 0) pts[1] else NA_real_
+          },
           tot_over_odds = first(closing_odds_1[market_type == "totals"]),
           tot_under_odds = first(closing_odds_2[market_type == "totals"]),
           .groups = "drop"
