@@ -46,7 +46,12 @@ The script is **idempotent**: for each destination table, it computes an `MD5(GR
 After migration is verified, `kalshi_draft/kalshi_draft.duckdb` is removed and three things are updated together in the same commit as the migration script:
 
 1. **Existing dashboard tabs** in `kalshi_draft/app.py` — point `duckdb.connect(...)` at `nfl_draft/nfl_draft.duckdb` AND rewrite every SQL query referencing the old `draft_odds` to reference `kalshi_odds` instead. This is a name-only change; the schema is identical because the migration just renamed the table. All queries (`get_latest_odds`, `get_price_history`, etc.) work as before, just against the renamed source.
-2. **Existing fetcher / portfolio writers** in `kalshi_draft/fetcher.py` (and any related modules): repoint every `duckdb.connect(...)` from `kalshi_draft.duckdb` to `nfl_draft/nfl_draft.duckdb` AND update any `INSERT INTO draft_odds` to `INSERT INTO kalshi_odds`. The fetcher's behavior is otherwise unchanged — it continues to write `kalshi_odds`, `draft_series`, `market_info`, `positions`, `resting_orders` on its existing cadence. New writes accumulate in `kalshi_odds` continuously; nothing is frozen.
+2. **Existing fetcher / portfolio writers** in `kalshi_draft/fetcher.py` (and any related modules):
+   - Repoint every `duckdb.connect(...)` from `kalshi_draft.duckdb` to `nfl_draft/nfl_draft.duckdb`.
+   - Update any `INSERT INTO draft_odds` to `INSERT INTO kalshi_odds`.
+   - **Normalize timestamps to local time**: the legacy fetcher currently stores `datetime.now(timezone.utc)` as fetch_time. Replace with `datetime.now()` (naive local) so timestamps in `kalshi_odds` are consistent with the new spec's local-time convention used by `draft_odds`, `kalshi_trades`, etc. Without this, the same DB has two timestamp conventions and cross-table time comparisons silently drift by the local-UTC offset (4-5 hours in ET).
+
+   The fetcher's behavior is otherwise unchanged — it continues to write `kalshi_odds`, `draft_series`, `market_info`, `positions`, `resting_orders` on its existing cadence. New writes accumulate in `kalshi_odds` continuously; nothing is frozen.
 3. **`kalshi_mm/`** — review for any direct DuckDB references to `kalshi_draft.duckdb` (the running CBB MM bot uses `kalshi_draft/auth.py` but shouldn't touch the draft DB; verify with grep). If found, repoint similarly.
 
 Regression covered by:
