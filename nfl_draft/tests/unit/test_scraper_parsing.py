@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from nfl_draft.scrapers.kalshi import parse_markets_response
+from nfl_draft.scrapers.draftkings import parse_response as dk_parse
 
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -17,3 +18,33 @@ def test_kalshi_parse_markets_returns_oddsrow_list():
         row = rows[0]
         assert row.book == "kalshi"
         assert row.book_label.startswith("KXNFLDRAFT1")
+
+
+def test_dk_parse_returns_oddsrow_list():
+    """DK fixture has 14 subcategories and ~795 selections; smoke-check
+    that the parser hits every structured market_type and returns >= 500 rows."""
+    raw = json.loads((FIXTURES / "draftkings" / "draft_markets.json").read_text())
+    rows = dk_parse(raw)
+    assert isinstance(rows, list)
+    assert len(rows) >= 500, f"expected >= 500 DK rows, got {len(rows)}"
+    assert all(r.book == "draftkings" for r in rows)
+    assert all(r.american_odds != 0 for r in rows)  # 0 is never a valid US odd
+    assert all(isinstance(r.american_odds, int) for r in rows)
+    # Sanity: every OddsRow has a non-empty label + subject.
+    for r in rows:
+        assert r.book_label, f"empty book_label on {r!r}"
+        assert r.book_subject, f"empty book_subject on {r!r}"
+    # Coverage: we saw all 3 structured market groups.
+    groups = {r.market_group for r in rows}
+    assert "pick_outright" in groups
+    assert "first_at_position" in groups
+    assert any(g.startswith("top_") for g in groups)
+
+
+def test_dk_parse_handles_unicode_minus():
+    """DK ships American odds with a Unicode minus ('\u2212') rather than ASCII '-'.
+    The parser must convert those to negative ints."""
+    raw = json.loads((FIXTURES / "draftkings" / "draft_markets.json").read_text())
+    rows = dk_parse(raw)
+    negatives = [r for r in rows if r.american_odds < 0]
+    assert negatives, "fixture has no negative odds after parsing - minus sign not handled"
