@@ -21,8 +21,15 @@ def write_connection() -> Iterator[duckdb.DuckDBPyConnection]:
 
 @contextmanager
 def read_connection() -> Iterator[duckdb.DuckDBPyConnection]:
-    """Short-lived read-only connection per Dash callback."""
-    con = duckdb.connect(str(DB_PATH), read_only=True)
+    """Short-lived read connection per Dash callback.
+
+    Opened as read/write (no read_only=True) so it can coexist with other
+    read/write connections in the same process. DuckDB disallows mixing
+    read-only and read/write handles on the same file, and Dash callbacks
+    are strictly SELECT-only, so a R/W handle is safe here. Cross-process
+    contention with cron writers is bounded by the short cron window.
+    """
+    con = duckdb.connect(str(DB_PATH))
     try:
         yield con
     finally:
