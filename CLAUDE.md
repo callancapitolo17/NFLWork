@@ -119,6 +119,7 @@ This repo contains tools for:
 - **Edge calculation** - Quantifying +EV opportunities
 - **Bet logging** - Tracking bets to Google Sheets for P&L analysis
 - **Answer keys** - NFL/CBB models and consensus line building
+- **NFL Draft portal** (`nfl_draft/`) - Cross-venue EV portal unifying Kalshi + DK/FD/Bookmaker/Wagerzon; single DuckDB at `nfl_draft/nfl_draft.duckdb`, cron-driven orchestrator, extended Dash dashboard. See `nfl_draft/README.md`.
 
 ## Technical Stack
 - **Python** - Playwright for scraping, BeautifulSoup for parsing

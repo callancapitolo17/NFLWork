@@ -39,6 +39,7 @@ NFLWork/
 │
 ├── kalshi_mm/                # Kalshi market maker bot
 ├── kalshi_draft/             # Kalshi NFL draft prediction markets
+├── nfl_draft/                # Cross-venue NFL Draft EV portal (Kalshi + 4 books)
 ├── kalshi coaching/          # Kalshi coaching hire markets
 │
 ├── March Madness/            # Tournament simulator (Monte Carlo)
@@ -101,3 +102,9 @@ cd bet105_odds && python scraper.py cbb
 # Log bet history to Google Sheets
 cd bet_logger && bash run_all_scrapers.sh
 ```
+
+## NFL Draft Portal
+
+See [`nfl_draft/README.md`](nfl_draft/README.md) for the cross-venue EV portal
+(Kalshi + DK/FD/Bookmaker/Wagerzon).
+

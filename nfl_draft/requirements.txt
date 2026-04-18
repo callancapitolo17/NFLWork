@@ -1,0 +1,11 @@
+cryptography==46.0.5
+curl_cffi==0.15.0
+dash==2.18.2
+dash-core-components==2.0.0
+dash-html-components==2.0.0
+dash-table==5.0.0
+duckdb==1.4.4
+playwright==1.58.0
+plotly==6.5.2
+pytest==9.0.3
+requests==2.32.5

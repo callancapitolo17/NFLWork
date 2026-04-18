@@ -1,0 +1,100 @@
+# NFL Draft EV Portal
+
+Trader's-cockpit web portal for surfacing +EV NFL Draft bets across
+Kalshi and 4 sportsbooks (DraftKings, FanDuel, Bookmaker, Wagerzon).
+
+## Architecture
+
+Single DuckDB at `nfl_draft/nfl_draft.duckdb` (legacy `kalshi_draft.duckdb` migrated in and retired).
+Python orchestrator `nfl_draft/run.py` invoked by cron.
+
+- `--mode scrape --book all` — pulls odds from all 5 venues, devigs, writes to `draft_odds`, triggers legacy `kalshi_draft/edge_detector.py` + `consensus.py`
+- `--mode trades` — polls Kalshi trade tape with cursor + dedup
+
+Dashboard extends `kalshi_draft/app.py` with 4 new tabs under "Portal" section:
+Cross-Book Grid, +EV Candidates, Trade Tape, Bet Log. Outlier flag fires when any
+venue is at least 10pp from the all-venue median.
+
+See `docs/superpowers/specs/2026-04-17-nfl-draft-portal-design.md` for the full design.
+
+## Setup
+
+1. Dependencies (should already be installed from the existing kalshi_draft venv):
+   ```bash
+   /Users/callancapitolo/NFLWork/kalshi_draft/venv/bin/pip install -r nfl_draft/requirements.txt
+   /Users/callancapitolo/NFLWork/kalshi_draft/venv/bin/playwright install chromium
+   ```
+
+2. Credentials. Populate `.env` at the repo root with:
+   ```
+   DK_USERNAME=...
+   DK_PASSWORD=...
+   FD_USERNAME=...
+   FD_PASSWORD=...
+   BOOKMAKER_USERNAME=...
+   BOOKMAKER_PASSWORD=...
+   WAGERZON_USERNAME=...
+   WAGERZON_PASSWORD=...
+   ```
+   (Kalshi auth uses `kalshi_draft/.env` — no new entries needed.)
+
+3. Run the one-time migration (preserves historical Kalshi draft odds):
+   ```bash
+   /Users/callancapitolo/NFLWork/kalshi_draft/venv/bin/python -m nfl_draft.lib.migrate_from_kalshi_draft
+   ```
+
+4. Install pre-draft cron:
+   ```bash
+   crontab nfl_draft/crontab.pre
+   ```
+
+5. Keep the laptop awake for the draft window:
+   ```bash
+   caffeinate -i &
+   ```
+
+## Usage
+
+- **Manual scrape**: `python -m nfl_draft.run --mode scrape --book all`
+- **Single book (debug)**: `python -m nfl_draft.run --mode scrape --book draftkings`
+- **Trade tape**: `python -m nfl_draft.run --mode trades`
+- **Dashboard**: `python kalshi_draft/app.py` -> http://127.0.0.1:8083/
+
+## Draft-day mode
+
+Morning of April 23, swap to faster cadence:
+```bash
+crontab nfl_draft/crontab.draft
+```
+And toggle the dashboard mode header from "Pre-draft" to "Draft-day" (changes auto-refresh cadence).
+
+## Maintenance
+
+When a scraper produces unmapped players or markets (visible in the dashboard footer):
+1. Edit `nfl_draft/config/players.py` or `nfl_draft/config/markets.py`
+2. Save - the next cron tick reseeds automatically (or run `python -m nfl_draft.lib.seed` to apply immediately)
+
+## Reconnaissance
+
+If a sportsbook changes its API shape, re-capture the fixture:
+```bash
+python nfl_draft/scrapers/recon_dk.py
+python nfl_draft/scrapers/recon_fd.py
+python nfl_draft/scrapers/recon_bm.py --browser   # requires manual login
+python nfl_draft/scrapers/recon_wz.py
+```
+See `nfl_draft/scrapers/RECON_README.md` for troubleshooting.
+
+## Troubleshooting
+
+- **Auth failures** surface in the dashboard footer per book.
+- **DuckDB lock errors** should be zero; if observed, the spec describes a JSONL-tail fallback (Phase 2).
+- **Unmapped market count growing** - add market_map entries in `config/markets.py`, re-run seed.
+
+## Testing
+
+```bash
+/Users/callancapitolo/NFLWork/kalshi_draft/venv/bin/python -m pytest nfl_draft/tests/ -v
+```
+
+Three tiers: `unit/` (fast, no I/O), `integration/` (temp DuckDB, fixtures, no network), `live/` (hits real APIs, run manually before merge).

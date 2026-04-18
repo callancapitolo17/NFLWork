@@ -2,6 +2,13 @@
 
 Interactive Dash dashboard for tracking NFL Draft prediction markets on Kalshi. Auto-discovers all draft series, tracks price history, detects cross-market edges, and compares to mock draft consensus.
 
+> **Status (April 2026):** The dashboard has been extended with the NFL Draft EV
+> portal (see [`../nfl_draft/README.md`](../nfl_draft/README.md)). New tabs —
+> Cross-Book Grid, +EV Candidates, Trade Tape, Bet Log — render data for Kalshi
+> plus four sportsbooks (DK, FD, Bookmaker, Wagerzon). The database pointer has
+> been repointed at `nfl_draft/nfl_draft.duckdb`; the legacy
+> `kalshi_draft.duckdb` has been migrated in and retired.
+
 ## Features
 
 - **Auto-Discovery**: Finds all NFL Draft series on Kalshi dynamically (no hardcoded tickers)
