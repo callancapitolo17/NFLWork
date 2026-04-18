@@ -6,6 +6,7 @@ from pathlib import Path
 from nfl_draft.scrapers.kalshi import parse_markets_response
 from nfl_draft.scrapers.draftkings import parse_response as dk_parse
 from nfl_draft.scrapers.fanduel import parse_response as fd_parse
+from nfl_draft.scrapers.bookmaker import parse_response as bm_parse
 
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -66,3 +67,20 @@ def test_fd_parse_returns_oddsrow_list():
     assert "pick_outright" in groups
     assert "first_at_position" in groups
     assert any(g.startswith("top_") for g in groups)
+
+
+def test_bm_parse_returns_oddsrow_list():
+    """BM fixture has 18 draft games (10 overall picks + 8 position markets)
+    and should yield >= 200 line-level rows."""
+    raw = json.loads((FIXTURES / "bookmaker" / "draft_markets.json").read_text())
+    rows = bm_parse(raw)
+    assert isinstance(rows, list)
+    assert len(rows) >= 200, f"expected >= 200 BM rows, got {len(rows)}"
+    assert all(r.book == "bookmaker" for r in rows)
+    groups = {r.market_group for r in rows}
+    assert "pick_outright" in groups
+    assert "first_at_position" in groups
+    # Sanity: BM ships signed int strings; parser must yield real ints.
+    for r in rows:
+        assert isinstance(r.american_odds, int)
+        assert r.american_odds != 0

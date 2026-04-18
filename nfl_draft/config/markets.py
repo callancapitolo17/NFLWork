@@ -170,6 +170,56 @@ def _fd_entries() -> list[tuple[str, str, str, str]]:
     return entries
 
 
+def _bm_entries() -> list[tuple[str, str, str, str]]:
+    """Build Bookmaker MARKET_MAP rows from the committed fixture."""
+    raw = _load_fixture("bookmaker")
+    if raw is None:
+        return []
+    from nfl_draft.scrapers.bookmaker import (
+        parse_response, PICK_HTM_RE, NTH_POS_HTM_RE, POSITION_MAP,
+    )
+    rows = parse_response(raw)
+
+    entries: list[tuple[str, str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for r in rows:
+        key = (r.book, r.book_label, r.book_subject)
+        if key in seen:
+            continue
+        mid = _bm_market_id_for(
+            r.market_group, r.book_label, r.book_subject,
+            pick_re=PICK_HTM_RE, nth_pos_re=NTH_POS_HTM_RE,
+            position_map=POSITION_MAP,
+        )
+        if mid is None:
+            continue
+        entries.append((*key, mid))
+        seen.add(key)
+    return entries
+
+
+def _bm_market_id_for(group, label, subject, *, pick_re, nth_pos_re, position_map):
+    """BM-specific market_id builder - mirrors DK/FD but keyed off BM's
+    'htm' field (e.g. '1st Overall Pick 2026 NFL Draft')."""
+    if group == "pick_outright":
+        m = pick_re.search(label)
+        if not m:
+            return None
+        return build_market_id(
+            "pick_outright", pick_number=int(m.group(1)), player=subject,
+        )
+    if group == "first_at_position":
+        m = nth_pos_re.match(label)
+        if not m:
+            return None
+        pos = position_map.get(m.group(2).strip().lower())
+        if not pos:
+            return None
+        return build_market_id("first_at_position", position=pos, player=subject)
+    # nth_at_position_N (N>=2) -> prop (no structured 2nd-at-position type)
+    return None
+
+
 def _fd_market_id_for(group, label, subject, *, pick_re, topn_re, first_pos_re, position_map):
     """Return a canonical market_id for an FD row, or None for props."""
     if group == "pick_outright":
@@ -207,6 +257,7 @@ MARKET_MAP: list[tuple[str, str, str, str]] = list(
     dict.fromkeys(
         _dk_entries()
         + _fd_entries()
-        # BM / WZ entries appended as each book's parser lands.
+        + _bm_entries()
+        # WZ entries appended as its parser lands.
     ).keys()
 )
