@@ -23,6 +23,26 @@ def test_kalshi_parse_markets_returns_oddsrow_list():
         assert row.book_label.startswith("KXNFLDRAFT1")
 
 
+def test_kalshi_parse_trades():
+    """Parser should turn Kalshi /markets/trades response into TradeRows.
+
+    Live Kalshi v2 ships `yes_price_dollars` (string) + `count_fp` (string)
+    + `taker_side` + `created_time`; we normalize to int cents + int count.
+    """
+    from nfl_draft.scrapers.kalshi import parse_trades_response
+    raw = json.loads((FIXTURES / "kalshi" / "trades_response.json").read_text())
+    rows = parse_trades_response(raw)
+    assert isinstance(rows, list)
+    if rows:
+        t = rows[0]
+        assert t.trade_id and t.ticker
+        assert t.price_cents is not None
+        assert t.count is not None
+        assert 0 <= t.price_cents <= 100
+        assert t.count >= 1
+        assert t.side in ("yes", "no")
+
+
 def test_dk_parse_returns_oddsrow_list():
     """DK fixture has 14 subcategories and ~795 selections; smoke-check
     that the parser hits every structured market_type and returns >= 500 rows."""
