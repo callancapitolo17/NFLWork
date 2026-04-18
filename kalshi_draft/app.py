@@ -10,13 +10,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from nfl_draft.lib import db as nfl_db
+from nfl_draft.lib import queries as nfl_queries
 
 import dash
 from dash import dcc, html, dash_table, callback, Input, Output, State
 from dash.dash_table.Format import Format
+from dash.exceptions import PreventUpdate
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
+import uuid
+from datetime import datetime
 
 import db
 
@@ -164,6 +168,101 @@ def make_stats_cards(df):
     )
 
 
+# Common styling helpers for tabs to stay DRY
+_TAB_STYLE = {"color": COLORS["text_muted"], "backgroundColor": COLORS["card"], "border": "none", "padding": "12px 20px"}
+_TAB_SELECTED = {"color": COLORS["accent"], "backgroundColor": COLORS["bg"], "borderTop": f"2px solid {COLORS['accent']}", "padding": "12px 20px"}
+
+
+def _make_header_with_mode_toggle():
+    """Header with mode toggle (pre-draft = 60s poll, draft-day = 15s poll)."""
+    snapshot = db.get_snapshot_count()
+    last_fetch = snapshot[2] if snapshot and snapshot[2] else "Never"
+    return html.Div(
+        style={
+            "background": COLORS["header_bg"],
+            "padding": "24px 32px",
+            "borderRadius": "12px",
+            "marginBottom": "20px",
+            "display": "flex",
+            "justifyContent": "space-between",
+            "alignItems": "center",
+        },
+        children=[
+            html.Div([
+                html.H1("NFL Draft Dashboard", style={
+                    "margin": "0", "color": "white", "fontSize": "1.8em",
+                }),
+                html.P(f"Updated: {last_fetch}", id="last-updated", style={
+                    "margin": "4px 0 0 0", "color": "rgba(255,255,255,0.85)",
+                }),
+            ]),
+            html.Div([
+                dcc.RadioItems(
+                    id="nfl_draft__mode_toggle_radio",
+                    options=[
+                        {"label": " Pre-draft (60s) ", "value": "pre"},
+                        {"label": " Draft-day (15s) ", "value": "draft"},
+                    ],
+                    value="pre",
+                    inline=True,
+                    style={"color": "white", "marginRight": "16px"},
+                ),
+                html.Button("Refresh Data", id="refresh-btn", n_clicks=0, style={
+                    "background": "rgba(255,255,255,0.2)",
+                    "border": "1px solid rgba(255,255,255,0.3)",
+                    "color": "white",
+                    "padding": "10px 20px",
+                    "borderRadius": "8px",
+                    "fontSize": "0.95em",
+                    "fontWeight": "600",
+                    "cursor": "pointer",
+                }),
+            ], style={"display": "flex", "alignItems": "center"}),
+        ],
+    )
+
+
+def _portal_tabs():
+    """Inner tabs under the 'Portal' section — 4 new cross-venue tabs."""
+    return dcc.Tabs(
+        id="portal-tabs",
+        value="crossbook",
+        colors={
+            "border": COLORS["card_border"],
+            "primary": COLORS["accent"],
+            "background": COLORS["card"],
+        },
+        style={"marginBottom": "16px"},
+        children=[
+            dcc.Tab(label="Cross-Book Grid", value="crossbook", style=_TAB_STYLE, selected_style=_TAB_SELECTED),
+            dcc.Tab(label="+EV Candidates", value="ev", style=_TAB_STYLE, selected_style=_TAB_SELECTED),
+            dcc.Tab(label="Trade Tape", value="tape", style=_TAB_STYLE, selected_style=_TAB_SELECTED),
+            dcc.Tab(label="Bet Log", value="betlog", style=_TAB_STYLE, selected_style=_TAB_SELECTED),
+        ],
+    )
+
+
+def _legacy_tabs():
+    """Inner tabs under the 'Kalshi-only legacy' section — the original 5 tabs."""
+    return dcc.Tabs(
+        id="main-tabs",
+        value="overview",
+        colors={
+            "border": COLORS["card_border"],
+            "primary": COLORS["accent"],
+            "background": COLORS["card"],
+        },
+        style={"marginBottom": "16px"},
+        children=[
+            dcc.Tab(label="Market Overview", value="overview", style=_TAB_STYLE, selected_style=_TAB_SELECTED),
+            dcc.Tab(label="Price History", value="history", style=_TAB_STYLE, selected_style=_TAB_SELECTED),
+            dcc.Tab(label="Edge Detection", value="edges", style=_TAB_STYLE, selected_style=_TAB_SELECTED),
+            dcc.Tab(label="Consensus", value="consensus", style=_TAB_STYLE, selected_style=_TAB_SELECTED),
+            dcc.Tab(label="Portfolio", value="portfolio", style=_TAB_STYLE, selected_style=_TAB_SELECTED),
+        ],
+    )
+
+
 app.layout = html.Div(
     style={
         "backgroundColor": COLORS["bg"],
@@ -173,34 +272,35 @@ app.layout = html.Div(
         "color": COLORS["text"],
     },
     children=[
-        make_header(),
+        # dcc.Store registry — prefixed with 'nfl_draft.' per spec
+        dcc.Store(id="nfl_draft__mode_toggle", storage_type="local", data="pre"),
+        dcc.Store(id="nfl_draft__subnav", storage_type="local"),
+        dcc.Store(id="nfl_draft__last_fetched_odds", storage_type="local"),
+        dcc.Store(id="nfl_draft__last_fetched_trades", storage_type="local"),
+        dcc.Store(id="nfl_draft__bet_log_prefill", storage_type="session"),
+        # Auto-refresh interval. 60s default (pre-draft), switched to 15s by mode toggle.
+        dcc.Interval(id="nfl_draft__interval", interval=60_000, n_intervals=0),
+
+        _make_header_with_mode_toggle(),
+
+        # Outer Portal / Legacy section selector
         dcc.Tabs(
-            id="main-tabs",
-            value="overview",
+            id="section-tabs",
+            value="portal",
             colors={
                 "border": COLORS["card_border"],
-                "primary": COLORS["accent"],
+                "primary": COLORS["accent2"],
                 "background": COLORS["card"],
             },
-            style={"marginBottom": "16px"},
+            style={"marginBottom": "12px"},
             children=[
-                dcc.Tab(label="Market Overview", value="overview",
-                        style={"color": COLORS["text_muted"], "backgroundColor": COLORS["card"], "border": "none", "padding": "12px 20px"},
-                        selected_style={"color": COLORS["accent"], "backgroundColor": COLORS["bg"], "borderTop": f"2px solid {COLORS['accent']}", "padding": "12px 20px"}),
-                dcc.Tab(label="Price History", value="history",
-                        style={"color": COLORS["text_muted"], "backgroundColor": COLORS["card"], "border": "none", "padding": "12px 20px"},
-                        selected_style={"color": COLORS["accent"], "backgroundColor": COLORS["bg"], "borderTop": f"2px solid {COLORS['accent']}", "padding": "12px 20px"}),
-                dcc.Tab(label="Edge Detection", value="edges",
-                        style={"color": COLORS["text_muted"], "backgroundColor": COLORS["card"], "border": "none", "padding": "12px 20px"},
-                        selected_style={"color": COLORS["accent"], "backgroundColor": COLORS["bg"], "borderTop": f"2px solid {COLORS['accent']}", "padding": "12px 20px"}),
-                dcc.Tab(label="Consensus", value="consensus",
-                        style={"color": COLORS["text_muted"], "backgroundColor": COLORS["card"], "border": "none", "padding": "12px 20px"},
-                        selected_style={"color": COLORS["accent"], "backgroundColor": COLORS["bg"], "borderTop": f"2px solid {COLORS['accent']}", "padding": "12px 20px"}),
-                dcc.Tab(label="Portfolio", value="portfolio",
-                        style={"color": COLORS["text_muted"], "backgroundColor": COLORS["card"], "border": "none", "padding": "12px 20px"},
-                        selected_style={"color": COLORS["accent"], "backgroundColor": COLORS["bg"], "borderTop": f"2px solid {COLORS['accent']}", "padding": "12px 20px"}),
+                dcc.Tab(label="Portal (Cross-Venue)", value="portal",
+                        style=_TAB_STYLE, selected_style=_TAB_SELECTED),
+                dcc.Tab(label="Kalshi-only (Legacy)", value="legacy",
+                        style=_TAB_STYLE, selected_style=_TAB_SELECTED),
             ],
         ),
+        html.Div(id="section-content"),
         html.Div(id="tab-content"),
         # Hidden div for refresh callback
         html.Div(id="refresh-output", style={"display": "none"}),
@@ -306,7 +406,7 @@ def render_overview():
                 template="plotly_dark",
                 paper_bgcolor=COLORS["card"],
                 plot_bgcolor=COLORS["card"],
-                height=max(500, len(pivot) * 40 + 120),
+                height=max(500, len(pivot_mid) * 40 + 120),
                 margin=dict(l=220, r=40, t=40, b=60),
                 xaxis=dict(side="top", title="Draft Position"),
                 yaxis=dict(title=None),
@@ -644,22 +744,474 @@ def render_portfolio():
 
 
 # ---------------------------------------------------------------------------
+# Portal tab renderers (Tasks 22-23)
+# ---------------------------------------------------------------------------
+
+# All 5 venues — order of columns in the cross-book grid
+VENUES = ["kalshi", "draftkings", "fanduel", "bookmaker", "wagerzon"]
+
+
+def render_crossbook_grid():
+    """Markets on rows, venues on columns. Threshold slider controls outlier flags.
+
+    Cheap-poll guard: the callback that updates this tab only re-renders when
+    MAX(fetched_at) in draft_odds changes OR the user moved the threshold slider.
+    """
+    return html.Div([
+        html.Div(style=CARD_STYLE, children=[
+            html.H3("Cross-Book Grid", style={"color": COLORS["accent"], "marginTop": 0}),
+            html.P(
+                "Devigged probability per venue. Flagged cells (⚑) differ from the "
+                "cross-venue median by at least the threshold.",
+                style={"color": COLORS["text_muted"], "fontSize": "0.85em"},
+            ),
+            html.Div([
+                html.Label("Outlier threshold (percentage points):",
+                           style={"color": COLORS["text_muted"], "marginRight": "12px"}),
+                dcc.Slider(
+                    id="crossbook-threshold",
+                    min=0, max=25, step=1, value=10,
+                    marks={i: str(i) for i in range(0, 26, 5)},
+                ),
+            ], style={"marginBottom": "16px"}),
+            html.Div(id="crossbook-table-wrap"),
+        ]),
+    ])
+
+
+def render_ev_candidates():
+    """Flat list of flagged (market, venue) outliers, sorted by |delta| desc."""
+    return html.Div([
+        html.Div(style=CARD_STYLE, children=[
+            html.H3("+EV Candidates", style={"color": COLORS["accent"], "marginTop": 0}),
+            html.P(
+                "One row per outlier. Negative delta = venue is lower than consensus "
+                "(bet YES); positive delta = venue is higher (bet NO).",
+                style={"color": COLORS["text_muted"], "fontSize": "0.85em"},
+            ),
+            html.Div([
+                html.Label("Threshold (pp):",
+                           style={"color": COLORS["text_muted"], "marginRight": "12px"}),
+                dcc.Slider(
+                    id="ev-threshold",
+                    min=0, max=25, step=1, value=10,
+                    marks={i: str(i) for i in range(0, 26, 5)},
+                ),
+            ], style={"marginBottom": "16px"}),
+            html.Div(id="ev-table-wrap"),
+        ]),
+    ])
+
+
+def render_trade_tape():
+    """Recent Kalshi trades with large-fill highlighting."""
+    return html.Div([
+        html.Div(style=CARD_STYLE, children=[
+            html.H3("Trade Tape", style={"color": COLORS["accent"], "marginTop": 0}),
+            html.P(
+                "Most-recent 200 Kalshi trades. Large fills highlighted.",
+                style={"color": COLORS["text_muted"], "fontSize": "0.85em"},
+            ),
+            html.Div([
+                html.Label("Large fill threshold (USD):",
+                           style={"color": COLORS["text_muted"], "marginRight": "12px"}),
+                dcc.Slider(
+                    id="tape-threshold",
+                    min=0, max=5000, step=100, value=500,
+                    marks={i: f"${i}" for i in range(0, 5001, 1000)},
+                ),
+            ], style={"marginBottom": "16px"}),
+            dcc.Input(
+                id="tape-ticker-filter",
+                placeholder="Filter by ticker substring (optional)...",
+                style={
+                    "width": "100%", "padding": "8px", "marginBottom": "12px",
+                    "backgroundColor": "#0d1b2a", "color": COLORS["text"],
+                    "border": f"1px solid {COLORS['card_border']}", "borderRadius": "6px",
+                },
+            ),
+            html.Div(id="tape-table-wrap"),
+        ]),
+    ])
+
+
+def render_bet_log():
+    """Bet entry form + table of past bets.
+
+    Market dropdown is searchable so the user can type any market_id and
+    narrow it down. The form reads nfl_draft.bet_log_prefill store on render
+    to pre-fill fields when the user clicked 'Log this bet' on +EV.
+    """
+    market_ids = nfl_queries.all_market_ids()
+    return html.Div([
+        html.Div(style=CARD_STYLE, children=[
+            html.H3("Log a Bet", style={"color": COLORS["accent"], "marginTop": 0}),
+            html.Div([
+                html.Label("Market", style={"color": COLORS["text_muted"]}),
+                dcc.Dropdown(
+                    id="betlog-market",
+                    searchable=True,
+                    options=[{"label": m, "value": m} for m in market_ids],
+                    placeholder="Start typing a market_id...",
+                    style={"backgroundColor": "#0d1b2a", "color": COLORS["text"],
+                           "marginBottom": "10px"},
+                ),
+                html.Label("Book", style={"color": COLORS["text_muted"]}),
+                dcc.Dropdown(
+                    id="betlog-book",
+                    options=[{"label": v, "value": v} for v in VENUES],
+                    style={"backgroundColor": "#0d1b2a", "color": COLORS["text"],
+                           "marginBottom": "10px"},
+                ),
+                html.Label("Side (yes/no)", style={"color": COLORS["text_muted"]}),
+                dcc.Dropdown(
+                    id="betlog-side",
+                    options=[{"label": "YES", "value": "yes"}, {"label": "NO", "value": "no"}],
+                    value="yes",
+                    style={"backgroundColor": "#0d1b2a", "color": COLORS["text"],
+                           "marginBottom": "10px"},
+                ),
+                html.Label("American Odds", style={"color": COLORS["text_muted"]}),
+                dcc.Input(
+                    id="betlog-odds",
+                    type="number",
+                    placeholder="e.g. -110 or +150",
+                    style={"width": "100%", "padding": "8px", "marginBottom": "10px",
+                           "backgroundColor": "#0d1b2a", "color": COLORS["text"],
+                           "border": f"1px solid {COLORS['card_border']}", "borderRadius": "6px"},
+                ),
+                html.Label("Stake (USD)", style={"color": COLORS["text_muted"]}),
+                dcc.Input(
+                    id="betlog-stake",
+                    type="number",
+                    placeholder="50",
+                    style={"width": "100%", "padding": "8px", "marginBottom": "10px",
+                           "backgroundColor": "#0d1b2a", "color": COLORS["text"],
+                           "border": f"1px solid {COLORS['card_border']}", "borderRadius": "6px"},
+                ),
+                html.Label("Note", style={"color": COLORS["text_muted"]}),
+                dcc.Textarea(
+                    id="betlog-note",
+                    placeholder="Rationale, stale line on book X, etc.",
+                    style={"width": "100%", "padding": "8px", "marginBottom": "10px",
+                           "backgroundColor": "#0d1b2a", "color": COLORS["text"],
+                           "border": f"1px solid {COLORS['card_border']}", "borderRadius": "6px",
+                           "minHeight": "60px"},
+                ),
+                html.Button("Log Bet", id="betlog-submit", n_clicks=0, style={
+                    "background": COLORS["accent"], "color": "white",
+                    "padding": "10px 20px", "borderRadius": "8px", "border": "none",
+                    "fontWeight": "600", "cursor": "pointer",
+                }),
+                html.Div(id="betlog-submit-msg", style={"marginTop": "10px", "color": COLORS["green"]}),
+            ]),
+        ]),
+        html.Div(style=CARD_STYLE, children=[
+            html.H3("Past Bets", style={"color": COLORS["accent"], "marginTop": 0}),
+            html.Div(id="betlog-table-wrap"),
+        ]),
+    ])
+
+
+# ---------------------------------------------------------------------------
 # Callbacks
 # ---------------------------------------------------------------------------
 
-@callback(Output("tab-content", "children"), Input("main-tabs", "value"))
-def render_tab(tab):
-    if tab == "overview":
-        return render_overview()
-    elif tab == "history":
-        return render_history()
-    elif tab == "edges":
-        return render_edges()
-    elif tab == "consensus":
-        return render_consensus()
-    elif tab == "portfolio":
-        return render_portfolio()
-    return html.Div("Unknown tab")
+
+@callback(Output("section-content", "children"), Input("section-tabs", "value"))
+def render_section(section):
+    """Outer section picker: which group of tabs to show."""
+    if section == "portal":
+        return _portal_tabs()
+    elif section == "legacy":
+        return _legacy_tabs()
+    return html.Div("Unknown section")
+
+
+@callback(Output("tab-content", "children"),
+          Input("section-tabs", "value"),
+          Input("portal-tabs", "value"),
+          Input("main-tabs", "value"))
+def render_tab(section, portal_tab, legacy_tab):
+    """Render the active inner tab's content, switching on the active section."""
+    if section == "portal":
+        if portal_tab == "crossbook":
+            return render_crossbook_grid()
+        elif portal_tab == "ev":
+            return render_ev_candidates()
+        elif portal_tab == "tape":
+            return render_trade_tape()
+        elif portal_tab == "betlog":
+            return render_bet_log()
+        return html.Div("Unknown Portal tab")
+    else:
+        if legacy_tab == "overview":
+            return render_overview()
+        elif legacy_tab == "history":
+            return render_history()
+        elif legacy_tab == "edges":
+            return render_edges()
+        elif legacy_tab == "consensus":
+            return render_consensus()
+        elif legacy_tab == "portfolio":
+            return render_portfolio()
+        return html.Div("Unknown tab")
+
+
+# --- Mode toggle: sets interval ms and persists to Store ---
+@callback(
+    Output("nfl_draft__interval", "interval"),
+    Output("nfl_draft__mode_toggle", "data"),
+    Input("nfl_draft__mode_toggle_radio", "value"),
+)
+def _apply_mode(mode):
+    # Pre-draft (60s) vs Draft-day (15s) — just controls auto-poll cadence
+    return (15_000 if mode == "draft" else 60_000), mode
+
+
+# --- Cross-Book Grid callback with cheap-poll guard ---
+@callback(
+    Output("crossbook-table-wrap", "children"),
+    Output("nfl_draft__last_fetched_odds", "data"),
+    Input("crossbook-threshold", "value"),
+    Input("nfl_draft__interval", "n_intervals"),
+    State("nfl_draft__last_fetched_odds", "data"),
+)
+def _update_crossbook(threshold_pp, _n_intervals, last_seen):
+    """Cheap-poll guard: on interval tick, skip render if MAX(fetched_at)
+    hasn't changed. User-triggered threshold changes always re-render."""
+    ctx = dash.callback_context
+    triggered_by_interval = (
+        ctx.triggered and ctx.triggered[0]["prop_id"].startswith("nfl_draft__interval")
+    )
+    latest = nfl_queries.latest_max_fetched_at("draft_odds")
+    latest_iso = latest.isoformat() if latest else None
+    if triggered_by_interval and latest_iso == last_seen:
+        # Nothing new on the wire since last poll — don't waste cycles
+        raise PreventUpdate
+
+    grid = nfl_queries.cross_book_grid(threshold_pp=threshold_pp or 0)
+    rows = []
+    for m in grid:
+        row = {"market_id": m["market_id"]}
+        for venue in VENUES:
+            prob = m["books"].get(venue)
+            flagged = m["flags"].get(venue, False)
+            if prob is None:
+                row[venue] = ""
+            else:
+                row[venue] = f"{prob*100:.1f}%" + (" \u2691" if flagged else "")
+        row["median"] = f"{m['median']*100:.1f}%" if m["median"] is not None else ""
+        row["outliers"] = m["outlier_count"]
+        rows.append(row)
+
+    table = dash_table.DataTable(
+        data=rows,
+        columns=[{"name": "Market", "id": "market_id"}]
+        + [{"name": v.capitalize(), "id": v} for v in VENUES]
+        + [{"name": "Median", "id": "median"}, {"name": "Outliers", "id": "outliers", "type": "numeric"}],
+        filter_action="native",
+        sort_action="native",
+        page_size=50,
+        style_header=TABLE_STYLE_HEADER,
+        style_data=TABLE_STYLE_DATA,
+        style_data_conditional=TABLE_STYLE_DATA_CONDITIONAL + [
+            # Highlight any cell containing the flag glyph
+            {"if": {"filter_query": f"{{{v}}} contains '\u2691'", "column_id": v},
+             "backgroundColor": "#4d2d15", "color": COLORS["red"], "fontWeight": "bold"}
+            for v in VENUES
+        ],
+        style_table={"overflowX": "auto"},
+        style_filter={"backgroundColor": "#0d1b2a", "color": COLORS["text"]},
+    )
+    return table, latest_iso
+
+
+# --- +EV Candidates callback ---
+@callback(
+    Output("ev-table-wrap", "children"),
+    Input("ev-threshold", "value"),
+    Input("nfl_draft__interval", "n_intervals"),
+)
+def _update_ev(threshold_pp, _n_intervals):
+    rows_raw = nfl_queries.ev_candidates(threshold_pp=threshold_pp or 0)
+    rows = []
+    for r in rows_raw:
+        rows.append({
+            "market_id": r["market_id"],
+            "book": r["book"],
+            "book_prob": f"{r['book_prob']*100:.1f}%",
+            "median": f"{r['median']*100:.1f}%",
+            "delta": f"{r['delta']*100:+.1f}pp",
+            "direction": "Bet YES (book low)" if r["delta"] < 0 else "Bet NO (book high)",
+            # Hidden raw fields used by the log-this-bet action
+            "_delta_raw": r["delta"],
+        })
+
+    table = dash_table.DataTable(
+        id="ev-table",
+        data=rows,
+        columns=[
+            {"name": "Market", "id": "market_id"},
+            {"name": "Book", "id": "book"},
+            {"name": "Book Prob", "id": "book_prob"},
+            {"name": "Median", "id": "median"},
+            {"name": "Delta", "id": "delta"},
+            {"name": "Direction", "id": "direction"},
+        ],
+        row_selectable="single",
+        selected_rows=[],
+        filter_action="native",
+        sort_action="native",
+        page_size=50,
+        style_header=TABLE_STYLE_HEADER,
+        style_data=TABLE_STYLE_DATA,
+        style_data_conditional=TABLE_STYLE_DATA_CONDITIONAL,
+        style_table={"overflowX": "auto"},
+        style_filter={"backgroundColor": "#0d1b2a", "color": COLORS["text"]},
+    )
+    hint = html.P(
+        "Select a row to pre-fill the Bet Log with this (market, book). Switch to the Bet Log tab to confirm.",
+        style={"color": COLORS["text_muted"], "fontSize": "0.85em", "marginTop": "8px"},
+    )
+    return html.Div([table, hint])
+
+
+# --- "Log this bet" hand-off: EV-candidate row selection -> prefill store ---
+@callback(
+    Output("nfl_draft__bet_log_prefill", "data"),
+    Input("ev-table", "selected_rows"),
+    State("ev-table", "data"),
+    prevent_initial_call=True,
+)
+def _ev_to_prefill(selected_rows, data):
+    if not selected_rows or not data:
+        raise PreventUpdate
+    row = data[selected_rows[0]]
+    return {"market_id": row["market_id"], "book": row["book"]}
+
+
+# --- Trade Tape callback ---
+@callback(
+    Output("tape-table-wrap", "children"),
+    Output("nfl_draft__last_fetched_trades", "data"),
+    Input("tape-threshold", "value"),
+    Input("tape-ticker-filter", "value"),
+    Input("nfl_draft__interval", "n_intervals"),
+    State("nfl_draft__last_fetched_trades", "data"),
+)
+def _update_tape(threshold_usd, ticker_filter, _n_intervals, last_seen):
+    ctx = dash.callback_context
+    triggered_by_interval = (
+        ctx.triggered and ctx.triggered[0]["prop_id"].startswith("nfl_draft__interval")
+    )
+    latest = nfl_queries.latest_max_fetched_at("kalshi_trades")
+    latest_iso = latest.isoformat() if latest else None
+    if triggered_by_interval and latest_iso == last_seen:
+        raise PreventUpdate
+
+    trades = nfl_queries.trade_tape(limit=200, large_threshold_usd=threshold_usd or 0)
+    if ticker_filter:
+        needle = ticker_filter.strip().upper()
+        trades = [t for t in trades if needle in (t.get("ticker") or "").upper()]
+
+    # Convert to display-friendly rows
+    for t in trades:
+        t["notional_usd"] = round(t["notional_usd"], 2) if t["notional_usd"] else 0
+        t["traded_at"] = str(t["traded_at"])
+
+    table = dash_table.DataTable(
+        data=trades,
+        columns=[
+            {"name": "Traded At", "id": "traded_at"},
+            {"name": "Ticker", "id": "ticker"},
+            {"name": "Side", "id": "side"},
+            {"name": "Price (¢)", "id": "price_cents", "type": "numeric"},
+            {"name": "Count", "id": "count", "type": "numeric"},
+            {"name": "Notional", "id": "notional_usd", "type": "numeric",
+             "format": dash_table.FormatTemplate.money(2)},
+        ],
+        filter_action="native",
+        sort_action="native",
+        page_size=50,
+        style_header=TABLE_STYLE_HEADER,
+        style_data=TABLE_STYLE_DATA,
+        style_data_conditional=TABLE_STYLE_DATA_CONDITIONAL + [
+            {"if": {"filter_query": "{is_large} = True"},
+             "backgroundColor": "#1a3b2a", "fontWeight": "600"},
+        ],
+        style_table={"overflowX": "auto"},
+        style_filter={"backgroundColor": "#0d1b2a", "color": COLORS["text"]},
+    )
+    return table, latest_iso
+
+
+# --- Bet Log: apply prefill and render past bets ---
+@callback(
+    Output("betlog-market", "value"),
+    Output("betlog-book", "value"),
+    Input("nfl_draft__bet_log_prefill", "data"),
+)
+def _apply_prefill(prefill):
+    if not prefill:
+        raise PreventUpdate
+    return prefill.get("market_id"), prefill.get("book")
+
+
+@callback(
+    Output("betlog-submit-msg", "children"),
+    Output("betlog-table-wrap", "children"),
+    Input("betlog-submit", "n_clicks"),
+    Input("nfl_draft__interval", "n_intervals"),
+    State("betlog-market", "value"),
+    State("betlog-book", "value"),
+    State("betlog-side", "value"),
+    State("betlog-odds", "value"),
+    State("betlog-stake", "value"),
+    State("betlog-note", "value"),
+)
+def _log_bet_and_render(n_clicks, _n_intervals, market_id, book, side, odds, stake, note):
+    """Insert a new row on submit; always re-render the history table."""
+    ctx = dash.callback_context
+    msg = ""
+    if ctx.triggered and ctx.triggered[0]["prop_id"].startswith("betlog-submit"):
+        if market_id and book and odds is not None and stake is not None:
+            try:
+                with nfl_db.write_connection() as con:
+                    con.execute(
+                        "INSERT INTO draft_bets VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        [str(uuid.uuid4()), market_id, book, side or "yes",
+                         int(odds), float(stake), datetime.now(), note or ""],
+                    )
+                msg = f"Logged bet on {market_id} at {book} ({odds})."
+            except Exception as e:  # noqa: BLE001 — surface any DB error to the UI
+                msg = f"Error: {e}"
+        else:
+            msg = "Missing required fields (market, book, odds, stake)."
+
+    rows = nfl_queries.bet_log_rows()
+    for r in rows:
+        r["taken_at"] = str(r["taken_at"])
+    table = dash_table.DataTable(
+        data=rows,
+        columns=[
+            {"name": "Taken At", "id": "taken_at"},
+            {"name": "Market", "id": "market_id"},
+            {"name": "Book", "id": "book"},
+            {"name": "Side", "id": "side"},
+            {"name": "Odds", "id": "american_odds", "type": "numeric"},
+            {"name": "Stake", "id": "stake_usd", "type": "numeric",
+             "format": dash_table.FormatTemplate.money(2)},
+            {"name": "Note", "id": "note"},
+        ],
+        sort_action="native",
+        page_size=25,
+        style_header=TABLE_STYLE_HEADER,
+        style_data=TABLE_STYLE_DATA,
+        style_data_conditional=TABLE_STYLE_DATA_CONDITIONAL,
+        style_table={"overflowX": "auto"},
+    )
+    return msg, table
 
 
 @callback(
