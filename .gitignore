@@ -101,5 +101,6 @@ bet_placer/.betonline_nav_profile/
 nfl_draft/nfl_draft.duckdb
 nfl_draft/nfl_draft.duckdb.wal
 nfl_draft/.cookies/
-nfl_draft/logs/
+nfl_draft/logs/*
+!nfl_draft/logs/.gitkeep
 nfl_draft/.kalshi_throttle.lock

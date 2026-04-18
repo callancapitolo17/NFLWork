@@ -1,0 +1,5 @@
+# NFL Draft Portal — draft-day cadence (2min scrape, 1min trades)
+# Install: crontab nfl_draft/crontab.draft
+*/2 * * * * cd /Users/callancapitolo/NFLWork && /Users/callancapitolo/NFLWork/kalshi_draft/venv/bin/python -m nfl_draft.run --mode scrape --book all >> /Users/callancapitolo/NFLWork/nfl_draft/logs/scrape.log 2>&1
+* * * * *   cd /Users/callancapitolo/NFLWork && /Users/callancapitolo/NFLWork/kalshi_draft/venv/bin/python -m nfl_draft.run --mode trades            >> /Users/callancapitolo/NFLWork/nfl_draft/logs/trades.log 2>&1
+0 4 * * * find /Users/callancapitolo/NFLWork/nfl_draft/logs/ -mtime +7 -delete
