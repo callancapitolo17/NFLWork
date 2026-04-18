@@ -7,6 +7,7 @@ from nfl_draft.scrapers.kalshi import parse_markets_response
 from nfl_draft.scrapers.draftkings import parse_response as dk_parse
 from nfl_draft.scrapers.fanduel import parse_response as fd_parse
 from nfl_draft.scrapers.bookmaker import parse_response as bm_parse
+from nfl_draft.scrapers.wagerzon import parse_response as wz_parse
 
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -84,3 +85,21 @@ def test_bm_parse_returns_oddsrow_list():
     for r in rows:
         assert isinstance(r.american_odds, int)
         assert r.american_odds != 0
+
+
+def test_wz_parse_returns_oddsrow_list():
+    """WZ fixture has 32 active draft leagues. Parser must handle all three
+    shapes (single-game multi-runner, multi-game per-runner, embedded-in-htm)
+    and yield >= 400 rows covering picks, top-N, first-at-position, and props."""
+    raw = json.loads((FIXTURES / "wagerzon" / "draft_markets.json").read_text())
+    rows = wz_parse(raw)
+    assert isinstance(rows, list)
+    assert len(rows) >= 400, f"expected >= 400 WZ rows, got {len(rows)}"
+    assert all(r.book == "wagerzon" for r in rows)
+    groups = {r.market_group for r in rows}
+    assert "pick_outright" in groups
+    assert "first_at_position" in groups
+    assert any(g.startswith("top_") for g in groups)
+    # WZ seeds every market with '*ALL BETS ACTION*' placeholder lines that
+    # have empty odds -- parser must drop them.
+    assert not any(r.book_subject.startswith("*ALL BETS ACTION*") for r in rows)
