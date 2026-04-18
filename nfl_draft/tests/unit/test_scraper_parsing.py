@@ -5,6 +5,7 @@ from pathlib import Path
 
 from nfl_draft.scrapers.kalshi import parse_markets_response
 from nfl_draft.scrapers.draftkings import parse_response as dk_parse
+from nfl_draft.scrapers.fanduel import parse_response as fd_parse
 
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -48,3 +49,20 @@ def test_dk_parse_handles_unicode_minus():
     rows = dk_parse(raw)
     negatives = [r for r in rows if r.american_odds < 0]
     assert negatives, "fixture has no negative odds after parsing - minus sign not handled"
+
+
+def test_fd_parse_returns_oddsrow_list():
+    """FD fixture has 16 draft markets under tab 391 - should yield >= 200
+    runner-level rows covering picks 1-10, top-N, and first-at-position."""
+    raw = json.loads((FIXTURES / "fanduel" / "draft_markets.json").read_text())
+    rows = fd_parse(raw)
+    assert isinstance(rows, list)
+    assert len(rows) >= 200, f"expected >= 200 FD rows, got {len(rows)}"
+    assert all(r.book == "fanduel" for r in rows)
+    # FD already ships signed ints; negative odds should round-trip as-is.
+    assert any(r.american_odds < 0 for r in rows)
+    assert any(r.american_odds > 0 for r in rows)
+    groups = {r.market_group for r in rows}
+    assert "pick_outright" in groups
+    assert "first_at_position" in groups
+    assert any(g.startswith("top_") for g in groups)

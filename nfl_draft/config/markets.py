@@ -141,12 +141,72 @@ def _dk_market_id_for(group: str, label: str, subject: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# FanDuel
+# ---------------------------------------------------------------------------
+
+def _fd_entries() -> list[tuple[str, str, str, str]]:
+    """Build FD MARKET_MAP rows from the committed fixture."""
+    raw = _load_fixture("fanduel")
+    if raw is None:
+        return []
+    from nfl_draft.scrapers.fanduel import parse_response, PICK_LABEL_RE, TOP_N_LABEL_RE, FIRST_POS_LABEL_RE, POSITION_MAP
+    rows = parse_response(raw)
+
+    entries: list[tuple[str, str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for r in rows:
+        key = (r.book, r.book_label, r.book_subject)
+        if key in seen:
+            continue
+        mid = _fd_market_id_for(
+            r.market_group, r.book_label, r.book_subject,
+            pick_re=PICK_LABEL_RE, topn_re=TOP_N_LABEL_RE,
+            first_pos_re=FIRST_POS_LABEL_RE, position_map=POSITION_MAP,
+        )
+        if mid is None:
+            continue  # leave props unmapped
+        entries.append((*key, mid))
+        seen.add(key)
+    return entries
+
+
+def _fd_market_id_for(group, label, subject, *, pick_re, topn_re, first_pos_re, position_map):
+    """Return a canonical market_id for an FD row, or None for props."""
+    if group == "pick_outright":
+        m = pick_re.search(label)
+        if not m:
+            return None
+        return build_market_id(
+            "pick_outright", pick_number=int(m.group(1)), player=subject,
+        )
+    if group.startswith("top_") and group.endswith("_range"):
+        try:
+            high = int(group.split("_")[1])
+        except (IndexError, ValueError):
+            return None
+        return build_market_id(
+            "top_n_range", range_low=1, range_high=high, player=subject,
+        )
+    if group == "first_at_position":
+        m = first_pos_re.search(label)
+        if not m:
+            return None
+        pos_raw = m.group(1).strip().lower()
+        pos = position_map.get(pos_raw)
+        if not pos:
+            return None
+        return build_market_id("first_at_position", position=pos, player=subject)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Aggregate MARKET_MAP (de-duped across all books)
 # ---------------------------------------------------------------------------
 
 MARKET_MAP: list[tuple[str, str, str, str]] = list(
     dict.fromkeys(
         _dk_entries()
-        # FD / BM / WZ entries appended as each book's parser lands.
+        + _fd_entries()
+        # BM / WZ entries appended as each book's parser lands.
     ).keys()
 )
