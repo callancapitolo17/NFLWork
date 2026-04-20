@@ -43,3 +43,22 @@ def test_mapped_row_lands_in_draft_odds(seeded):
         quarantine_count = con.execute("SELECT COUNT(*) FROM draft_odds_unmapped").fetchone()[0]
     assert odds_count == 1
     assert quarantine_count == 0
+
+
+def test_write_or_quarantine_perf_1000_rows(seeded):
+    """1000 rows should complete in < 2s (pre-fetch lookup avoids per-row read)."""
+    import time
+    rows = [
+        OddsRow(
+            book="draftkings",
+            book_label=f"label_{i}",
+            book_subject=f"player_{i}",
+            american_odds=100,
+            fetched_at=datetime.now(),
+        )
+        for i in range(1000)
+    ]
+    t0 = time.time()
+    write_or_quarantine(rows)
+    elapsed = time.time() - t0
+    assert elapsed < 2.0, f"write_or_quarantine took {elapsed:.2f}s for 1000 rows (expected < 2s)"
