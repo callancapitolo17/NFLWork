@@ -80,6 +80,21 @@ def _load_cookies(session: cffi_requests.Session) -> bool:
         return False
 
 
+def _save_cookies(session: cffi_requests.Session) -> bool:
+    """Persist session cookies to disk for future runs.
+
+    Mirrors bookmaker_odds/scraper.py._save_cookies so both paths share the
+    same cookie jar file. Returns True on success, False on any IO error.
+    """
+    try:
+        cookies = dict(session.cookies)
+        BM_COOKIE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        BM_COOKIE_PATH.write_text(json.dumps(cookies))
+        return True
+    except Exception:
+        return False
+
+
 def _login(session: cffi_requests.Session, username: str, password: str) -> bool:
     """Same login flow as bookmaker_odds/scraper.py."""
     body = {
@@ -99,6 +114,90 @@ def _login(session: cffi_requests.Session, username: str, password: str) -> bool
         return resp.status_code == 200
     except Exception:
         return False
+
+
+def _auto_relogin(session: cffi_requests.Session) -> bool:
+    """Attempt a pure-HTTP re-login using saved credentials.
+
+    Returns True iff creds were present AND _login returned 200. The caller
+    decides whether to retry the probe. Never prints credential VALUES — only
+    the outcome. Mirrors the refresh-on-auth-fail pattern from
+    bet_logger/scraper_betonline.py.refresh_access_token: one retry, no loop.
+    """
+    load_env()
+    username = os.getenv("BOOKMAKER_USERNAME")
+    password = os.getenv("BOOKMAKER_PASSWORD")
+    if not username or not password:
+        print("  auto-re-login: BOOKMAKER_USERNAME / BOOKMAKER_PASSWORD missing from bet_logger/.env")
+        return False
+    ok = _login(session, username, password)
+    if ok:
+        print("  auto-re-login: login succeeded")
+    else:
+        print("  auto-re-login: login failed (non-200 response)")
+    return ok
+
+
+def _looks_like_expired_cookies(probe_results: list[dict | None]) -> bool:
+    """Heuristic: does this set of probe responses indicate expired cookies?
+
+    BM returns a few telltale shapes when the ASP.NET session cookie is stale:
+      - HTTP 401/403 at the transport layer -> _fetch_schedule returns None
+      - A guest / 'IsDummyPlayer: true' marker embedded anywhere in the response
+      - Every GetSchedule returns an empty Schedule.Data.Leagues.League[]
+
+    We accept a list of probe responses (one per league ID we tried). If EVERY
+    probe came back None or empty, we flag it as expired. A single non-empty
+    response means the session is fine and we shouldn't risk a login attempt.
+    """
+    if not probe_results:
+        return False
+
+    saw_any_leagues = False
+    for data in probe_results:
+        if data is None:
+            # Transport-level failure (403/non-200/exception). Could be expiry;
+            # keep looking for evidence of a real response.
+            continue
+        if not isinstance(data, dict):
+            continue
+        # Explicit guest/dummy marker: if BM hints we're not logged in, that's
+        # the strongest signal. Walk the common locations.
+        if _has_dummy_player_marker(data):
+            return True
+        leagues = _count_games_and_extract_leagues(data)
+        if leagues:
+            saw_any_leagues = True
+            break
+
+    # If NOTHING came back with leagues, treat as expired so caller can try a
+    # fresh login. Harmless if the account really does have no draft markets:
+    # we attempt ONE login, retry ONCE, and bail.
+    return not saw_any_leagues
+
+
+def _has_dummy_player_marker(data: dict) -> bool:
+    """Scan a BM response for the `IsDummyPlayer: true` guest marker.
+
+    BM's GetConfig / GetSchedule sometimes nest player status at variable depths.
+    A shallow recursive scan is cheap and keeps this tolerant to shape drift.
+    """
+    stack: list = [data]
+    depth = 0
+    while stack and depth < 6:  # cap recursion depth
+        current = stack.pop()
+        if isinstance(current, dict):
+            # Key can appear as 'IsDummyPlayer' or 'isDummyPlayer' depending on endpoint.
+            for k, v in current.items():
+                if isinstance(k, str) and k.lower() == "isdummyplayer":
+                    if v is True or (isinstance(v, str) and v.lower() == "true"):
+                        return True
+                if isinstance(v, (dict, list)):
+                    stack.append(v)
+        elif isinstance(current, list):
+            stack.extend(current)
+        depth += 1
+    return False
 
 
 def _fetch_schedule(session: cffi_requests.Session, league_id: str | int) -> dict | None:
@@ -181,25 +280,78 @@ def _candidate_league_ids() -> list[int]:
     ]
 
 
+def _probe_candidates(session: cffi_requests.Session,
+                      candidates: list[int]) -> tuple[list[tuple[int, dict, dict]],
+                                                      list[dict | None]]:
+    """Probe a list of league IDs; return (draft_hits, raw_responses).
+
+    `draft_hits` is the subset that matched the NFL-Draft league heuristic.
+    `raw_responses` is every probe's raw JSON (or None if the call failed) so
+    a caller can feed it into _looks_like_expired_cookies without re-probing.
+    """
+    draft_hits: list[tuple[int, dict, dict]] = []
+    raw_responses: list[dict | None] = []
+    for lid in candidates:
+        data = _fetch_schedule(session, lid)
+        raw_responses.append(data)
+        leagues = _count_games_and_extract_leagues(data)
+        if not leagues:
+            continue
+        for le in leagues:
+            if _looks_like_draft_league(le):
+                name = le.get("desc") or le.get("Description") or le.get("name")
+                print(f"  HIT lg={lid}: {name!r}")
+                draft_hits.append((lid, data, le))
+                break
+        else:
+            # When probing a single ID, echo the non-match so the user can see
+            # what BM returned. Skip this noise for the bulk scan.
+            if len(candidates) == 1 and leagues:
+                name = leagues[0].get("desc") or leagues[0].get("Description")
+                print(f"  lg={lid} returned league: {name!r} (not draft)")
+    return draft_hits, raw_responses
+
+
+def _pick_winner(draft_hits: list[tuple[int, dict, dict]]
+                 ) -> tuple[dict, str, dict] | tuple[None, None, dict]:
+    """Choose the biggest hit and build the return tuple for run_rest_phase."""
+    if not draft_hits:
+        return None, None, {}
+    # Biggest raw JSON wins — more markets = more likely the main draft board
+    # rather than an incidental one-off special.
+    draft_hits.sort(key=lambda t: len(json.dumps(t[1])), reverse=True)
+    winner_id, winner_data, winner_entry = draft_hits[0]
+    all_ids = [h[0] for h in draft_hits]
+    url = f"{BM_API_BASE}/GetSchedule  (lg={winner_id})"
+    return winner_data, url, {
+        "league_id": winner_id,
+        "league_name": winner_entry.get("desc") or winner_entry.get("Description"),
+        "all_draft_league_ids": all_ids,
+        "method": "rest_probe",
+    }
+
+
 def run_rest_phase(probe_only: int | None = None) -> tuple[dict | None, str | None, dict]:
     """Probe BM league IDs via the authenticated GetSchedule endpoint.
 
-    If probe_only is set, hit just that one ID and return whatever it returns
-    (useful for debugging when the user already knows the ID).
+    Uses the BetOnline-style refresh pattern: if the first round of probes
+    looks like expired cookies (empty everywhere / guest response), try ONE
+    auto-re-login via saved credentials, save fresh cookies, and retry the
+    probes exactly once. Never loops.
+
+    If probe_only is set, hit just that one ID (useful for debugging).
     """
     print("Phase 1: REST probe of BM NFL Draft league IDs...")
-    load_env()
-    username = os.getenv("BOOKMAKER_USERNAME")
-    password = os.getenv("BOOKMAKER_PASSWORD")
 
     session = cffi_requests.Session(impersonate="chrome")
     loaded = _load_cookies(session)
     if loaded:
         print(f"  loaded cookies from {BM_COOKIE_PATH.name}")
     else:
-        print("  no saved BM cookies; will need to refresh via recon_bookmaker.py")
+        print("  no saved BM cookies; will attempt auto-re-login")
 
-    # Hit the site to refresh Cloudflare tokens. A 403 means cookies are stale.
+    # Hit the site to refresh Cloudflare tokens. A 403 means cf_clearance is
+    # gone — pure HTTP can't mint it, so we bail to the Playwright fallback.
     try:
         site_resp = session.get(BM_SITE_URL, timeout=15)
         if site_resp.status_code == 403:
@@ -210,50 +362,46 @@ def run_rest_phase(probe_only: int | None = None) -> tuple[dict | None, str | No
         print(f"  cloudflare warmup failed: {exc!r}")
         return None, None, {}
 
-    # Re-authenticate if we have creds (cheap; avoids stale-session surprises).
-    if username and password:
-        _login(session, username, password)
-
-    # Probe candidates.
     candidates = [probe_only] if probe_only else _candidate_league_ids()
 
-    draft_hits: list[tuple[int, dict, dict]] = []  # (league_id, response, league_entry)
+    # First probe pass — uses whatever cookies we have on disk.
+    draft_hits, raw_responses = _probe_candidates(session, candidates)
 
-    for lid in candidates:
-        data = _fetch_schedule(session, lid)
-        leagues = _count_games_and_extract_leagues(data)
-        if not leagues:
-            continue
-        # Any league entry in this response that looks like NFL Draft = hit.
-        for le in leagues:
-            if _looks_like_draft_league(le):
-                name = le.get("desc") or le.get("Description") or le.get("name")
-                print(f"  HIT lg={lid}: {name!r}")
-                draft_hits.append((lid, data, le))
-                break
-        else:
-            # Not a draft match, but worth logging the first few we find so the
-            # user can eyeball misses. Only log when probing a specific ID.
-            if probe_only and leagues:
-                name = leagues[0].get("desc") or leagues[0].get("Description")
-                print(f"  lg={lid} returned league: {name!r} (not draft)")
+    # If we got real hits, ship them. Don't touch login; don't rotate cookies.
+    if draft_hits:
+        return _pick_winner(draft_hits)
 
-    if not draft_hits:
+    # No hits. Heuristic: does it look like the session is expired, or did BM
+    # simply not post draft markets today? If expired-looking, try ONE login
+    # and retry ONCE. This mirrors bet_logger/scraper_betonline.py's
+    # refresh_access_token -> authenticated_call retry shape.
+    if not _looks_like_expired_cookies(raw_responses):
+        print("  probes returned no draft hits, but responses don't look expired.")
+        print("  BM may not be posting NFL Draft markets for this account right now.")
         return None, None, {}
 
-    # Pick the hit with the biggest raw JSON — more games = more likely to be
-    # the main Draft markets vs a one-off special.
-    draft_hits.sort(key=lambda t: len(json.dumps(t[1])), reverse=True)
-    winner_id, winner_data, winner_entry = draft_hits[0]
-    # Build meta with ALL discovered IDs so the real scraper can use them all.
-    all_ids = [h[0] for h in draft_hits]
-    url = f"{BM_API_BASE}/GetSchedule  (lg={winner_id})"
-    return winner_data, url, {
-        "league_id": winner_id,
-        "league_name": winner_entry.get("desc") or winner_entry.get("Description"),
-        "all_draft_league_ids": all_ids,
-        "method": "rest_probe",
-    }
+    print("  cookies appear stale; attempting auto-re-login...")
+    if not _auto_relogin(session):
+        print("  falling back: run `python bookmaker_odds/recon_bookmaker.py` "
+              "to refresh cookies manually.")
+        return None, None, {}
+
+    # Persist fresh cookies so the next recon / scraper run picks them up.
+    if _save_cookies(session):
+        print(f"  saved refreshed cookies to {BM_COOKIE_PATH.name}")
+
+    # Retry probes exactly once. If still empty, it's genuinely no-draft.
+    draft_hits, raw_responses = _probe_candidates(session, candidates)
+    if draft_hits:
+        return _pick_winner(draft_hits)
+
+    if _looks_like_expired_cookies(raw_responses):
+        print("  still no data after re-login — Cloudflare may also need refreshing.")
+        print("  Run: python bookmaker_odds/recon_bookmaker.py to refresh manually.")
+    else:
+        print("  auto-re-login succeeded but BM isn't posting NFL Draft markets "
+              "for this account right now. Will auto-refresh when they appear.")
+    return None, None, {}
 
 
 # ---------------------------------------------------------------------------
