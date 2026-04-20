@@ -184,6 +184,46 @@ def test_queries_return_locked_sentinel_on_lock_error(monkeypatch):
     assert isinstance(queries.latest_max_fetched_at("draft_odds"), queries.QueryLocked)
 
 
+def test_cross_book_grid_excludes_stale_rows(monkeypatch, tmp_path):
+    """Rows older than MAX_AGE_HOURS must be filtered out of cross_book_grid.
+
+    Regression guard for the pre-draft audit finding: FanDuel hadn't scraped
+    in 22h but its rows still polluted the grid. After the fix, a row with
+    fetched_at 3 days old should be excluded entirely, leaving only the
+    fresh row in the per-market book map.
+    """
+    from nfl_draft.lib import db as db_module
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "t.duckdb")
+    db_module.init_schema()
+
+    from datetime import datetime, timedelta
+    from nfl_draft.lib.db import write_connection
+
+    now = datetime.now()
+    stale = now - timedelta(days=3)
+    with write_connection() as con:
+        con.execute(
+            "INSERT INTO draft_markets (market_id, market_type) VALUES ('m1', 'prop')"
+        )
+        # Fresh row: kalshi @ 0.50
+        con.execute(
+            "INSERT INTO draft_odds VALUES ('m1', 'kalshi', 100, 0.5, 0.5, ?)",
+            [now],
+        )
+        # Stale row: draftkings @ 0.30 (would flag as outlier if included)
+        con.execute(
+            "INSERT INTO draft_odds VALUES ('m1', 'draftkings', 100, 0.3, 0.3, ?)",
+            [stale],
+        )
+
+    from nfl_draft.lib.queries import cross_book_grid
+    rows = cross_book_grid(threshold_pp=10)
+
+    assert len(rows) == 1
+    # Only kalshi should be present; draftkings row is stale and excluded.
+    assert list(rows[0]["books"].keys()) == ["kalshi"]
+
+
 def test_queries_propagate_non_lock_errors(monkeypatch):
     """A non-lock DuckDB error (e.g. missing table) must still raise so
     genuine bugs surface loudly — only lock-family errors get swallowed."""

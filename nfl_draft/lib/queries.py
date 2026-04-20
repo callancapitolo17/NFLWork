@@ -33,6 +33,15 @@ import duckdb
 from nfl_draft.lib.db import read_connection
 
 
+# Any row older than MAX_AGE_HOURS is excluded from Cross-Book Grid /
+# ev_candidates. This prevents venues that have silently stopped scraping
+# (e.g. FD regression 2026-04-19) from polluting the grid with 24h-old
+# prices that get flagged as "edges" when in reality the feed just died.
+# Tune via this constant — 2h is a conservative default for pre-draft
+# cadence (scrapers run every few minutes).
+MAX_AGE_HOURS = 2
+
+
 class QueryLocked:
     """Sentinel returned by query functions when DuckDB lock contention
     prevents a read. Callers should treat this as 'no new data available —
@@ -93,11 +102,12 @@ def cross_book_grid(threshold_pp: float = 10.0):
     def _query() -> List[Dict[str, Any]]:
         with read_connection() as con:
             rows = con.execute(
-                """
+                f"""
                 WITH latest AS (
                   SELECT market_id, book, devig_prob,
                          ROW_NUMBER() OVER (PARTITION BY market_id, book ORDER BY fetched_at DESC) AS rn
                   FROM draft_odds
+                  WHERE fetched_at > NOW() - INTERVAL '{MAX_AGE_HOURS} hours'
                 )
                 SELECT market_id, book, devig_prob FROM latest WHERE rn = 1
                 """
