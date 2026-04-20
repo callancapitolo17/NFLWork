@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from nfl_draft.lib import db as nfl_db
 from nfl_draft.lib import queries as nfl_queries
+from nfl_draft.lib.queries import QueryLocked
 
 import dash
 from dash import dcc, html, dash_table, callback, Input, Output, State
@@ -843,6 +844,10 @@ def render_bet_log():
     to pre-fill fields when the user clicked 'Log this bet' on +EV.
     """
     market_ids = nfl_queries.all_market_ids()
+    if isinstance(market_ids, QueryLocked):
+        # Lock contention during a tab-switch render: show an empty dropdown;
+        # the interval tick on the new tab will repopulate on next render.
+        market_ids = []
     return html.Div([
         html.Div(style=CARD_STYLE, children=[
             html.H3("Log a Bet", style={"color": COLORS["accent"], "marginTop": 0}),
@@ -979,18 +984,26 @@ def _apply_mode(mode):
 )
 def _update_crossbook(threshold_pp, _n_intervals, last_seen):
     """Cheap-poll guard: on interval tick, skip render if MAX(fetched_at)
-    hasn't changed. User-triggered threshold changes always re-render."""
+    hasn't changed. User-triggered threshold changes always re-render.
+
+    If DuckDB is locked by the cron writer, skip this render entirely —
+    the next interval tick (seconds away) will retry cleanly.
+    """
     ctx = dash.callback_context
     triggered_by_interval = (
         ctx.triggered and ctx.triggered[0]["prop_id"].startswith("nfl_draft__interval")
     )
     latest = nfl_queries.latest_max_fetched_at("draft_odds")
+    if isinstance(latest, QueryLocked):
+        raise PreventUpdate
     latest_iso = latest.isoformat() if latest else None
     if triggered_by_interval and latest_iso == last_seen:
         # Nothing new on the wire since last poll — don't waste cycles
         raise PreventUpdate
 
     grid = nfl_queries.cross_book_grid(threshold_pp=threshold_pp or 0)
+    if isinstance(grid, QueryLocked):
+        raise PreventUpdate
     rows = []
     for m in grid:
         row = {"market_id": m["market_id"]}
@@ -1035,6 +1048,8 @@ def _update_crossbook(threshold_pp, _n_intervals, last_seen):
 )
 def _update_ev(threshold_pp, _n_intervals):
     rows_raw = nfl_queries.ev_candidates(threshold_pp=threshold_pp or 0)
+    if isinstance(rows_raw, QueryLocked):
+        raise PreventUpdate
     rows = []
     for r in rows_raw:
         rows.append({
@@ -1106,11 +1121,15 @@ def _update_tape(threshold_usd, ticker_filter, _n_intervals, last_seen):
         ctx.triggered and ctx.triggered[0]["prop_id"].startswith("nfl_draft__interval")
     )
     latest = nfl_queries.latest_max_fetched_at("kalshi_trades")
+    if isinstance(latest, QueryLocked):
+        raise PreventUpdate
     latest_iso = latest.isoformat() if latest else None
     if triggered_by_interval and latest_iso == last_seen:
         raise PreventUpdate
 
     trades = nfl_queries.trade_tape(limit=200, large_threshold_usd=threshold_usd or 0)
+    if isinstance(trades, QueryLocked):
+        raise PreventUpdate
     if ticker_filter:
         needle = ticker_filter.strip().upper()
         trades = [t for t in trades if needle in (t.get("ticker") or "").upper()]
@@ -1190,6 +1209,10 @@ def _log_bet_and_render(n_clicks, _n_intervals, market_id, book, side, odds, sta
             msg = "Missing required fields (market, book, odds, stake)."
 
     rows = nfl_queries.bet_log_rows()
+    if isinstance(rows, QueryLocked):
+        # Cron writer holds the lock — let the last rendered table stand; the
+        # next interval tick (seconds away) will refresh cleanly.
+        raise PreventUpdate
     for r in rows:
         r["taken_at"] = str(r["taken_at"])
     table = dash_table.DataTable(

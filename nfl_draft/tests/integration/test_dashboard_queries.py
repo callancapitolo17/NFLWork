@@ -147,3 +147,56 @@ def test_single_venue_market_no_crash(monkeypatch, tmp_path):
     assert len(rows) == 1
     assert rows[0]["outlier_count"] == 0
     assert rows[0]["flags"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Lock-contention graceful-degradation tests (C-3)
+# ---------------------------------------------------------------------------
+
+
+def test_queries_return_locked_sentinel_on_lock_error(monkeypatch):
+    """When a DuckDB lock error fires, query functions return QueryLocked
+    rather than crashing. Dash callbacks interpret this as PreventUpdate.
+
+    We simulate the lock error by patching the duckdb.connect used inside
+    read_connection() to raise an IOException with the classic lock-error
+    signature.
+    """
+    import duckdb
+    from nfl_draft.lib import db as db_module
+    from nfl_draft.lib import queries
+
+    def fake_connect(*args, **kwargs):
+        raise duckdb.IOException(
+            "IO Error: Could not set lock on file "
+            "\"/tmp/x.duckdb\": Conflicting lock is held in /tmp/x.duckdb"
+        )
+
+    # read_connection lives in db_module; it calls duckdb.connect via the
+    # duckdb module imported at the top of that file.
+    monkeypatch.setattr(db_module.duckdb, "connect", fake_connect)
+
+    assert isinstance(queries.cross_book_grid(threshold_pp=10), queries.QueryLocked)
+    assert isinstance(queries.ev_candidates(threshold_pp=10), queries.QueryLocked)
+    assert isinstance(queries.trade_tape(), queries.QueryLocked)
+    assert isinstance(queries.bet_log_rows(), queries.QueryLocked)
+    assert isinstance(queries.all_market_ids(), queries.QueryLocked)
+    assert isinstance(queries.latest_max_fetched_at("draft_odds"), queries.QueryLocked)
+
+
+def test_queries_propagate_non_lock_errors(monkeypatch):
+    """A non-lock DuckDB error (e.g. missing table) must still raise so
+    genuine bugs surface loudly — only lock-family errors get swallowed."""
+    import duckdb
+    from nfl_draft.lib import db as db_module
+    from nfl_draft.lib import queries
+
+    def fake_connect(*args, **kwargs):
+        # A schema error, not a lock error
+        raise duckdb.Error("Catalog Error: Table does not exist")
+
+    monkeypatch.setattr(db_module.duckdb, "connect", fake_connect)
+
+    import pytest as _pytest
+    with _pytest.raises(duckdb.Error):
+        queries.cross_book_grid(threshold_pp=10)
