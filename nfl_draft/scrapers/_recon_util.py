@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,34 @@ from typing import Any
 _THIS_DIR = Path(__file__).resolve().parent
 NFL_DRAFT_ROOT = _THIS_DIR.parent            # .../NFLWork/nfl_draft
 FIXTURES_ROOT = NFL_DRAFT_ROOT / "tests" / "fixtures"
+
+
+def _main_repo_root() -> Path:
+    """Return the working tree root of the MAIN git repo, even from a worktree.
+
+    In a worktree, NFL_DRAFT_ROOT.parent resolves to the worktree's checkout
+    directory, not the main repo. Shared artifacts (.env files, session cookies)
+    live in the main repo's working tree. This helper resolves to the main
+    repo so callers can look up those shared paths regardless of where the
+    script is invoked from.
+    """
+    try:
+        # git-common-dir points at the shared .git directory (main repo's .git).
+        # Its parent is the main repo's working tree root.
+        common = subprocess.check_output(
+            ["git", "-C", str(NFL_DRAFT_ROOT), "rev-parse", "--git-common-dir"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        if common:
+            git_dir = Path(common)
+            if not git_dir.is_absolute():
+                git_dir = (NFL_DRAFT_ROOT / git_dir).resolve()
+            return git_dir.parent
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        pass
+    # Fallback: if git isn't available, assume NFL_DRAFT_ROOT is inside the
+    # main repo (the common non-worktree case).
+    return NFL_DRAFT_ROOT.parent
 
 
 def fixture_dir(book: str) -> Path:
@@ -105,9 +134,13 @@ def load_env(env_path: Path | None = None) -> None:
     The scripts fall back to os.getenv() regardless, so missing dotenv is not
     fatal — but if the lib is there (it is in the scraper venvs) we load the
     file so a user doesn't have to `export` credentials manually.
+
+    Works in both main repo and worktree: resolves bet_logger/.env relative
+    to the main repo's working tree, not NFL_DRAFT_ROOT.parent (which
+    differs in a worktree).
     """
     if env_path is None:
-        env_path = NFL_DRAFT_ROOT.parent / "bet_logger" / ".env"
+        env_path = _main_repo_root() / "bet_logger" / ".env"
     if not env_path.exists():
         return
     try:

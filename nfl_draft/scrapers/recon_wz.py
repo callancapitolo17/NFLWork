@@ -43,6 +43,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from nfl_draft.scrapers._recon_util import (
+    _main_repo_root,
     ensure_fixture_dirs,
     load_env,
     print_diagnostics,
@@ -293,8 +294,8 @@ def run_browser_phase() -> tuple[dict | None, str | None, dict]:
         return None, None, {}
 
     print("Phase 2: opening headed Chrome to capture WZ draft markets...")
-    profile = (Path(__file__).resolve().parent.parent.parent
-               / "wagerzon_odds" / ".wagerzon_profile")
+    # Resolve against main repo root so the profile survives worktree swaps.
+    profile = _main_repo_root() / "wagerzon_odds" / ".wagerzon_profile"
     profile.mkdir(parents=True, exist_ok=True)
 
     captured: list[tuple[str, bytes]] = []

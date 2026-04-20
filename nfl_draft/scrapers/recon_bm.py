@@ -45,6 +45,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from nfl_draft.scrapers._recon_util import (
+    _main_repo_root,
     ensure_fixture_dirs,
     fixture_dir,
     load_env,
@@ -61,8 +62,9 @@ from curl_cffi import requests as cffi_requests
 BM_SITE_URL = "https://be.bookmaker.eu/en/sports/"
 BM_API_BASE = "https://be.bookmaker.eu/gateway/BetslipProxy.aspx"
 # Reuse the cookie file the production scraper already maintains so we don't
-# have to log in twice.
-BM_COOKIE_PATH = Path(__file__).resolve().parent.parent.parent / "bookmaker_odds" / ".bookmaker_cookies.json"
+# have to log in twice. Resolve against the main repo root so it works from a
+# worktree too (bookmaker_odds/ lives in the main working tree).
+BM_COOKIE_PATH = _main_repo_root() / "bookmaker_odds" / ".bookmaker_cookies.json"
 
 
 def _load_cookies(session: cffi_requests.Session) -> bool:
@@ -276,8 +278,8 @@ def run_browser_phase() -> tuple[dict | None, str | None, dict]:
 
     print("Phase 2: opening headed Chrome to capture BM draft markets...")
     # Reuse the profile from the main BM recon so cookies/Cloudflare session carry over.
-    profile = (Path(__file__).resolve().parent.parent.parent
-               / "bookmaker_odds" / ".bookmaker_profile")
+    # Resolve against main repo root (not a worktree-relative path).
+    profile = _main_repo_root() / "bookmaker_odds" / ".bookmaker_profile"
     profile.mkdir(parents=True, exist_ok=True)
 
     captured: list[tuple[str, bytes, str | None]] = []  # (url, body, post_data)
