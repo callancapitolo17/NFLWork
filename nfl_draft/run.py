@@ -29,6 +29,7 @@ SCRAPERS = {
     "fanduel": "nfl_draft.scrapers.fanduel",
     "bookmaker": "nfl_draft.scrapers.bookmaker",
     "wagerzon": "nfl_draft.scrapers.wagerzon",
+    "hoop88": "nfl_draft.scrapers.hoop88",
 }
 
 

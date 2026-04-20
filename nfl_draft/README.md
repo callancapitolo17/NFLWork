@@ -8,7 +8,7 @@ Kalshi and 4 sportsbooks (DraftKings, FanDuel, Bookmaker, Wagerzon).
 Single DuckDB at `nfl_draft/nfl_draft.duckdb` (legacy `kalshi_draft.duckdb` migrated in and retired).
 Python orchestrator `nfl_draft/run.py` invoked by cron.
 
-- `--mode scrape --book all` — pulls odds from all 5 venues, devigs, writes to `draft_odds`, triggers legacy `kalshi_draft/edge_detector.py` + `consensus.py`
+- `--mode scrape --book all` — pulls odds from all 6 venues (kalshi, draftkings, fanduel, bookmaker, wagerzon, hoop88), devigs, writes to `draft_odds`, triggers legacy `kalshi_draft/edge_detector.py` + `consensus.py`
 - `--mode trades` — polls Kalshi trade tape with cursor + dedup
 
 Dashboard extends `kalshi_draft/app.py` with 4 new tabs under "Portal" section:
@@ -53,6 +53,19 @@ See `docs/superpowers/specs/2026-04-17-nfl-draft-portal-design.md` for the full 
      ```
      KALSHI_API_KEY_ID=...
      KALSHI_PRIVATE_KEY_PATH=/path/to/kalshi-private-key.pem
+     ```
+   - **Hoop88** (`scrapers/hoop88.py`): JWT login via
+     `/cloud/api/System/authenticateCustomer`, then
+     `/cloud/api/Lines/Get_LeagueLines2` with `sportType=FOOTBALL`,
+     `sportSubType='NFL Draft 2026'`, `period='Prop'`, and one call per
+     `propDescription` (e.g. `'2nd Overall Pick'`, `'1st Wide Receiver'`).
+     The scraper enumerates propDescriptions live via
+     `/cloud/api/League/Get_SportsLeagues`, so new markets appear
+     automatically. Credentials live in `bet_logger/.env`:
+     ```
+     HOOP88_URL=https://hoop88.com
+     HOOP88_USERNAME=...
+     HOOP88_PASSWORD=...
      ```
 
 3. Run the one-time migration (preserves historical Kalshi draft odds):

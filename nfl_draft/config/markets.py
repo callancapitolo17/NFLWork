@@ -248,6 +248,66 @@ def _wz_entries() -> list[tuple[str, str, str, str]]:
     return entries
 
 
+def _h88_entries() -> list[tuple[str, str, str, str]]:
+    """Build Hoop88 MARKET_MAP rows from the committed fixture.
+
+    H88 ships one propDescription per market (book_label), and each
+    contestant becomes a separate OddsRow. We map the structured groups
+    (pick_outright / first_at_position) to canonical market_ids; the
+    'Mr Irrelevant Position' prop stays unmapped (no canonical type).
+    """
+    raw = _load_fixture("hoop88")
+    if raw is None:
+        return []
+    from nfl_draft.scrapers.hoop88 import (
+        parse_response, PICK_LABEL_RE, FIRST_POS_LABEL_RE, POSITION_MAP,
+    )
+    rows = parse_response(raw)
+
+    entries: list[tuple[str, str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for r in rows:
+        key = (r.book, r.book_label, r.book_subject)
+        if key in seen:
+            continue
+        mid = _h88_market_id_for(
+            r.market_group, r.book_label, r.book_subject,
+            pick_re=PICK_LABEL_RE, first_pos_re=FIRST_POS_LABEL_RE,
+            position_map=POSITION_MAP,
+        )
+        if mid is None:
+            continue  # props stay quarantined.
+        entries.append((*key, mid))
+        seen.add(key)
+    return entries
+
+
+def _h88_market_id_for(group, label, subject, *, pick_re, first_pos_re, position_map):
+    """H88-specific market_id builder.
+
+    book_label is the propDescription we queried with (e.g. '2nd Overall
+    Pick', '1st Wide Receiver'). That string carries the pick_number /
+    position, so we re-parse it here rather than threading extra state
+    through the parser.
+    """
+    if group == "pick_outright":
+        m = pick_re.match(label)
+        if not m:
+            return None
+        return build_market_id(
+            "pick_outright", pick_number=int(m.group(1)), player=subject,
+        )
+    if group == "first_at_position":
+        m = first_pos_re.match(label)
+        if not m:
+            return None
+        pos = position_map.get(m.group(1).strip().lower())
+        if not pos:
+            return None
+        return build_market_id("first_at_position", position=pos, player=subject)
+    return None
+
+
 def _wz_market_id_for(group, label, subject, *, pick_desc_re, nth_pos_re, position_map):
     """WZ-specific market_id builder. book_label is typically the league
     Description (for pick_outright + top_n) or the game.htm (for
@@ -470,6 +530,7 @@ MARKET_MAP: list[tuple[str, str, str, str]] = list(
         + _fd_entries()
         + _bm_entries()
         + _wz_entries()
+        + _h88_entries()
         + _kalshi_entries()
     ).keys()
 )

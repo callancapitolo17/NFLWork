@@ -8,6 +8,7 @@ from nfl_draft.scrapers.draftkings import parse_response as dk_parse
 from nfl_draft.scrapers.fanduel import parse_response as fd_parse
 from nfl_draft.scrapers.bookmaker import parse_response as bm_parse
 from nfl_draft.scrapers.wagerzon import parse_response as wz_parse
+from nfl_draft.scrapers.hoop88 import parse_response as h88_parse
 
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -132,3 +133,26 @@ def test_wz_parse_returns_oddsrow_list():
     # WZ seeds every market with '*ALL BETS ACTION*' placeholder lines that
     # have empty odds -- parser must drop them.
     assert not any(r.book_subject.startswith("*ALL BETS ACTION*") for r in rows)
+
+
+def test_h88_parse_returns_oddsrow_list():
+    """H88 fixture has 13 markets (9 pick_outright + 3 first_at_position +
+    1 prop 'Mr Irrelevant Position') and ~155 total runners. Parser must
+    emit real signed ints for every contestant and classify markets by
+    propDescription label."""
+    raw = json.loads((FIXTURES / "hoop88" / "draft_markets.json").read_text())
+    rows = h88_parse(raw)
+    assert isinstance(rows, list)
+    assert len(rows) >= 100, f"expected >= 100 H88 rows, got {len(rows)}"
+    assert all(r.book == "hoop88" for r in rows)
+    groups = {r.market_group for r in rows}
+    assert "pick_outright" in groups
+    assert "first_at_position" in groups
+    # Sanity: H88 ships signed ints; parser must yield real non-zero ints.
+    for r in rows:
+        assert isinstance(r.american_odds, int)
+        assert r.american_odds != 0
+        assert r.book_label, f"empty book_label on {r!r}"
+        assert r.book_subject, f"empty book_subject on {r!r}"
+        # H88 pads ContestantName with trailing spaces -- parser must strip.
+        assert r.book_subject == r.book_subject.strip()
