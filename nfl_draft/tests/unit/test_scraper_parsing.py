@@ -149,12 +149,13 @@ def test_kalshi_fetch_draft_odds_walks_cursor(monkeypatch):
         "discover_draft_series",
         lambda: [{"series_ticker": "KXFAKE", "title": "Fake"}],
     )
-    # Mock the legacy side-effect call (keeps this a pure unit test, no
-    # network and no DB).
+    # Mock the legacy kalshi_odds writer so this stays a pure unit test
+    # (no DB side effects). The adapter calls _write_legacy_kalshi_odds
+    # once per series; we short-circuit it here.
     monkeypatch.setattr(
-        kalshi_mod.legacy_fetcher,
-        "fetch_markets_for_series",
-        lambda ticker: [],
+        kalshi_mod,
+        "_write_legacy_kalshi_odds",
+        lambda *args, **kwargs: None,
     )
 
     # Build two mock pages. Page 1 has a cursor, page 2 does not.

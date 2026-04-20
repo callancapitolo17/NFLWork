@@ -184,6 +184,92 @@ def test_queries_return_locked_sentinel_on_lock_error(monkeypatch):
     assert isinstance(queries.latest_max_fetched_at("draft_odds"), queries.QueryLocked)
 
 
+def test_kalshi_scrape_writes_to_legacy_kalshi_odds(monkeypatch, tmp_path):
+    """fetch_draft_odds must write a fresh snapshot to kalshi_odds on every
+    scrape — the legacy Price History / Edge Detection / Consensus tabs
+    depend on that write path. Regression guard for the Feb 19 staleness
+    bug: the adapter used to rely on a side effect of fetch_markets_for_series,
+    but that helper only fetches. Writes now happen explicitly in the adapter
+    via _write_legacy_kalshi_odds.
+    """
+    # Redirect DB to a temp file so we don't touch the real portal DB.
+    from nfl_draft.lib import db as db_module
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "t.duckdb")
+    db_module.init_schema()
+
+    # Legacy kalshi_odds + market_info + draft_series tables aren't created
+    # by init_schema — they're legacy shapes. Seed them with the same
+    # shapes the production DB uses (no PKs, per DESCRIBE).
+    with db_module.write_connection() as con:
+        con.execute("""
+            CREATE TABLE kalshi_odds (
+                fetch_time TIMESTAMP, series_ticker VARCHAR, event_ticker VARCHAR,
+                ticker VARCHAR, market_title VARCHAR, candidate VARCHAR,
+                yes_bid INTEGER, yes_ask INTEGER, no_bid INTEGER, no_ask INTEGER,
+                last_price INTEGER, volume BIGINT, volume_24h BIGINT,
+                liquidity BIGINT, open_interest INTEGER
+            )
+        """)
+        con.execute("""
+            CREATE TABLE market_info (
+                ticker VARCHAR, title VARCHAR, subtitle VARCHAR,
+                series_ticker VARCHAR, expiration_time TIMESTAMP,
+                close_time TIMESTAMP, updated_at TIMESTAMP
+            )
+        """)
+        con.execute("""
+            CREATE TABLE draft_series (
+                series_ticker VARCHAR, title VARCHAR, category VARCHAR,
+                discovered_at TIMESTAMP
+            )
+        """)
+
+    # Mock the network layer + series discovery.
+    from nfl_draft.scrapers import kalshi as kalshi_mod
+    monkeypatch.setattr(
+        kalshi_mod.legacy_fetcher,
+        "discover_draft_series",
+        lambda: [{"series_ticker": "KXFAKE", "title": "Fake Series"}],
+    )
+    fake_response = {
+        "markets": [
+            {
+                "ticker": "KXFAKE-TKR1",
+                "event_ticker": "KXFAKE-EVT1",
+                "title": "Mock Market",
+                "yes_sub_title": "Mock Candidate",
+                "yes_bid": 50, "yes_ask": 51,
+                "no_bid": 49, "no_ask": 50,
+                "last_price": 50, "volume": 100,
+                "volume_24h": 500, "liquidity_dollars": "250.0",
+                "open_interest": 75,
+            },
+        ],
+        "cursor": None,
+    }
+    monkeypatch.setattr(
+        kalshi_mod, "public_request", lambda path: fake_response
+    )
+
+    # Run the scrape.
+    rows = kalshi_mod.fetch_draft_odds()
+
+    # OddsRow output sanity.
+    assert len(rows) == 1
+    assert rows[0].book == "kalshi"
+
+    # Legacy kalshi_odds write happened.
+    from datetime import datetime, timedelta
+    with db_module.write_connection() as con:
+        count = con.execute("SELECT COUNT(*) FROM kalshi_odds").fetchone()[0]
+        last_fetch = con.execute("SELECT MAX(fetch_time) FROM kalshi_odds").fetchone()[0]
+    assert count == 1, f"expected 1 row in kalshi_odds, got {count}"
+    assert last_fetch is not None
+    # fetch_time should be ~now (within the last minute).
+    assert datetime.now() - last_fetch < timedelta(minutes=1), \
+        f"kalshi_odds fetch_time {last_fetch} is not recent"
+
+
 def test_cross_book_grid_excludes_stale_rows(monkeypatch, tmp_path):
     """Rows older than MAX_AGE_HOURS must be filtered out of cross_book_grid.
 

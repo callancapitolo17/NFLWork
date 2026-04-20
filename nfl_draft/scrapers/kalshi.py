@@ -149,25 +149,28 @@ def fetch_draft_odds() -> List[OddsRow]:
     multiple pick tiers), so we MUST walk the cursor — otherwise ~85% of
     markets silently drop and downstream portal rows go stale.
 
-    Side effect: calling the legacy fetcher writes kalshi_odds + draft_series
-    + market_info into nfl_draft.duckdb (the legacy fetcher has been
-    repointed to the new DB in Task 3-9).
+    Legacy kalshi_odds write
+    ------------------------
+    This function also writes a fresh snapshot to the legacy `kalshi_odds`
+    table (feeds the Price History / Edge Detection / Consensus dashboard
+    tabs). Historically the adapter relied on a side effect of
+    `legacy_fetcher.fetch_markets_for_series`, but that helper only FETCHES
+    — the writes lived in `fetcher.run()`'s `save_odds_snapshot` +
+    `cache_market_info`, which are only invoked under `__main__`. As a
+    result `kalshi_odds` hadn't been updated since 2026-02-19 (the last
+    time the legacy CLI was run). We now port the write logic directly
+    into the adapter so it runs on every scrape tick.
     """
     rows: List[OddsRow] = []
     series_list = legacy_fetcher.discover_draft_series()
     for series in series_list:
         ticker = series["series_ticker"]
-        # Legacy side-effect write (fills kalshi_odds via the run pipeline).
-        # discover + fetch_markets_for_series together are what the legacy
-        # dashboard depends on - we mirror that call pattern so nothing
-        # downstream regresses.
-        legacy_fetcher.fetch_markets_for_series(ticker)
-        # Walk all pages for this series. Previously we hit only the first
-        # 100 markets per series; KXNFLDRAFTPICK alone has ~649 so ~85% were
-        # dropped, causing draft_odds for "missing" players to go stale from
-        # an earlier scrape that happened to include them. Cursor pattern
-        # mirrors _enumerate_fallback lower in this file.
+        # Collect every page of open markets for this series. Merge all
+        # raw market dicts so the legacy kalshi_odds write below sees
+        # everything, and pass each page through the OddsRow parser for
+        # the portal.
         cursor = None
+        all_raw_markets: List[dict] = []
         while True:
             path = f"/markets?series_ticker={ticker}&status=open&limit=100"
             if cursor:
@@ -176,10 +179,96 @@ def fetch_draft_odds() -> List[OddsRow]:
             if not raw:
                 break
             rows.extend(parse_markets_response(raw, ticker))
+            page_markets = raw.get("markets") or []
+            all_raw_markets.extend(page_markets)
             cursor = raw.get("cursor")
-            if not cursor or not raw.get("markets"):
+            if not cursor or not page_markets:
                 break
+
+        # Legacy kalshi_odds write. See function docstring for why this
+        # lives in the adapter rather than in legacy_fetcher.
+        if all_raw_markets:
+            _write_legacy_kalshi_odds(ticker, series.get("title", ""), all_raw_markets)
     return rows
+
+
+def _write_legacy_kalshi_odds(series_ticker: str, series_title: str, markets: list) -> None:
+    """Persist a fresh kalshi_odds + market_info + draft_series snapshot.
+
+    Restores the write path that `kalshi_draft/fetcher.py::run` used to do
+    at the end of every fetch (`save_odds_snapshot` + `cache_market_info`).
+    Columns stay identical to the legacy schema (see DESCRIBE kalshi_odds
+    in the production DB) so existing dashboard queries
+    (get_latest_odds / get_price_history / get_snapshot_count) keep working
+    unchanged.
+
+    market_info + draft_series have no PK in the production DB, so plain
+    INSERT is used instead of INSERT OR REPLACE — DuckDB's binder rejects
+    ON CONFLICT without a constraint target. The tables grow ~1 row per
+    fetch-tick per ticker, which is cheap (few hundred rows/day).
+    """
+    fetch_time = datetime.now()
+    rows_to_write = []
+    market_info_rows = []
+    for m in markets:
+        candidate = (
+            m.get("yes_sub_title")
+            or (m.get("custom_strike") or {}).get("Person")
+            or (m.get("custom_strike") or {}).get("Team")
+            or m.get("no_sub_title")
+            or "Unknown"
+        )
+        if candidate in ("Unknown", "", None):
+            continue
+        rows_to_write.append((
+            fetch_time,
+            series_ticker,
+            m.get("event_ticker", ""),
+            m.get("ticker", ""),
+            m.get("title", ""),
+            candidate,
+            m.get("yes_bid", 0) or 0,
+            m.get("yes_ask", 0) or 0,
+            m.get("no_bid", 0) or 0,
+            m.get("no_ask", 0) or 0,
+            m.get("last_price", 0) or 0,
+            m.get("volume", 0) or 0,
+            m.get("volume_24h", 0) or 0,
+            int(float(m.get("liquidity_dollars") or 0)),
+            m.get("open_interest", 0) or 0,
+        ))
+        market_info_rows.append((
+            m.get("ticker", ""),
+            m.get("title", ""),
+            candidate,
+            series_ticker,
+            fetch_time,
+        ))
+
+    if not rows_to_write:
+        return
+
+    with write_connection() as con:
+        con.executemany(
+            "INSERT INTO kalshi_odds VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows_to_write,
+        )
+        con.executemany(
+            "INSERT INTO market_info (ticker, title, subtitle, series_ticker, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            market_info_rows,
+        )
+        # Also touch draft_series so the legacy dashboard sees a fresh title.
+        # Classification reuses the legacy categorizer for parity.
+        try:
+            category = legacy_fetcher.classify_series(series_ticker, series_title)
+            con.execute(
+                "INSERT INTO draft_series VALUES (?, ?, ?, ?)",
+                [series_ticker, series_title, category, fetch_time],
+            )
+        except Exception:
+            # draft_series is non-critical for the portal; swallow quietly.
+            pass
 
 
 def _local_to_epoch_seconds(local_ts: datetime) -> int:
