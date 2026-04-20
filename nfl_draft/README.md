@@ -25,18 +25,35 @@ See `docs/superpowers/specs/2026-04-17-nfl-draft-portal-design.md` for the full 
    /Users/callancapitolo/NFLWork/kalshi_draft/venv/bin/playwright install chromium
    ```
 
-2. Credentials. Populate `.env` at the repo root with:
-   ```
-   DK_USERNAME=...
-   DK_PASSWORD=...
-   FD_USERNAME=...
-   FD_PASSWORD=...
-   BOOKMAKER_USERNAME=...
-   BOOKMAKER_PASSWORD=...
-   WAGERZON_USERNAME=...
-   WAGERZON_PASSWORD=...
-   ```
-   (Kalshi auth uses `kalshi_draft/.env` — no new entries needed.)
+2. Credentials. Each scraper has a different auth model — there is NO single
+   repo-root `.env`. If you already have the production `bookmaker_odds` /
+   `wagerzon_odds` scrapers working, you are already configured.
+
+   - **DraftKings** (`scrapers/draftkings.py`): public JSON API, no credentials
+     required.
+   - **FanDuel** (`scrapers/fanduel.py`): public JSON API, no credentials
+     required.
+   - **Bookmaker** (`scrapers/bookmaker.py` -> `scrapers/recon_bm.py`):
+     credentials live in `bet_logger/.env` (shared with the production
+     `bookmaker_odds` scraper). Path is resolved by
+     `_recon_util.load_env()`. Env vars (see `scrapers/recon_bm.py`):
+     ```
+     BOOKMAKER_USERNAME=...
+     BOOKMAKER_PASSWORD=...
+     ```
+   - **Wagerzon** (`scrapers/wagerzon.py` -> `scrapers/recon_wz.py`):
+     credentials live in `bet_logger/.env` (same shared file). Env vars
+     (see `scrapers/recon_wz.py`):
+     ```
+     WAGERZON_USERNAME=...
+     WAGERZON_PASSWORD=...
+     ```
+   - **Kalshi** (`scrapers/kalshi.py`): API key stays in `kalshi_draft/.env`
+     (unchanged from the existing `kalshi_draft` setup). Env vars:
+     ```
+     KALSHI_API_KEY_ID=...
+     KALSHI_PRIVATE_KEY_PATH=/path/to/kalshi-private-key.pem
+     ```
 
 3. Run the one-time migration (preserves historical Kalshi draft odds):
    ```bash
