@@ -280,45 +280,47 @@ def run_browser_phase() -> tuple[dict | None, str | None, dict]:
 # Main
 # ---------------------------------------------------------------------------
 
-parser = argparse.ArgumentParser(description="FD NFL Draft markets recon")
-parser.add_argument(
-    "--browser",
-    action="store_true",
-    help="Skip the REST probe and go straight to the headed browser capture.",
-)
-args = parser.parse_args()
 
-print("=" * 60)
-print("  FANDUEL NFL DRAFT RECON")
-print("=" * 60)
-ensure_fixture_dirs()
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="FD NFL Draft markets recon")
+    parser.add_argument(
+        "--browser",
+        action="store_true",
+        help="Skip the REST probe and go straight to the headed browser capture.",
+    )
+    args = parser.parse_args()
 
-data = None
-url = None
-meta: dict = {}
+    print("=" * 60)
+    print("  FANDUEL NFL DRAFT RECON")
+    print("=" * 60)
+    ensure_fixture_dirs()
 
-if not args.browser:
-    data, url, meta = run_rest_phase()
+    data = None
+    url = None
+    meta: dict = {}
 
-if data is None:
-    data, url, meta = run_browser_phase()
+    if not args.browser:
+        data, url, meta = run_rest_phase()
 
-if data is None:
-    print("\nERROR: Could not capture FD NFL Draft markets.")
-    print("  Next steps:")
-    print("  - Re-run with --browser and navigate to the draft page manually")
-    print("  - If REST returns 400: the x-px-context token in FD_PX_CONTEXT is stale.")
-    print("    Open sportsbook.fanduel.com in Chrome DevTools, copy a fresh")
-    print("    x-px-context value from any event-page request, paste it here.")
-    sys.exit(1)
+    if data is None:
+        data, url, meta = run_browser_phase()
 
-path = save_fixture("fanduel", data, meta=meta)
-print_diagnostics("fanduel", path, url, data)
-print(f"  method used: {meta.get('method', 'unknown')}")
-if "page_slug" in meta:
-    print(f"  page slug: {meta['page_slug']}")
-if "draft_tab_id" in meta:
-    print(f"  draft tab_id: {meta['draft_tab_id']}  <- filter markets to this tab")
-if "draft_market_count" in meta:
-    print(f"  {meta['draft_market_count']} draft markets / "
-          f"{meta.get('total_market_count', '?')} total on NFL page")
+    if data is None:
+        print("\nERROR: Could not capture FD NFL Draft markets.")
+        print("  Next steps:")
+        print("  - Re-run with --browser and navigate to the draft page manually")
+        print("  - If REST returns 400: the x-px-context token in FD_PX_CONTEXT is stale.")
+        print("    Open sportsbook.fanduel.com in Chrome DevTools, copy a fresh")
+        print("    x-px-context value from any event-page request, paste it here.")
+        sys.exit(1)
+
+    path = save_fixture("fanduel", data, meta=meta)
+    print_diagnostics("fanduel", path, url, data)
+    print(f"  method used: {meta.get('method', 'unknown')}")
+    if "page_slug" in meta:
+        print(f"  page slug: {meta['page_slug']}")
+    if "draft_tab_id" in meta:
+        print(f"  draft tab_id: {meta['draft_tab_id']}  <- filter markets to this tab")
+    if "draft_market_count" in meta:
+        print(f"  {meta['draft_market_count']} draft markets / "
+              f"{meta.get('total_market_count', '?')} total on NFL page")

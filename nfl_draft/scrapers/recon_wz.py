@@ -373,45 +373,47 @@ def run_browser_phase() -> tuple[dict | None, str | None, dict]:
 # Main
 # ---------------------------------------------------------------------------
 
-parser = argparse.ArgumentParser(description="WZ NFL Draft markets recon")
-parser.add_argument("--browser", action="store_true",
-                    help="Skip probe; go straight to browser capture.")
-parser.add_argument("--probe", type=int, default=None,
-                    help="Probe a single specific lg ID (for debugging).")
-args = parser.parse_args()
 
-print("=" * 60)
-print("  WAGERZON NFL DRAFT RECON")
-print("=" * 60)
-ensure_fixture_dirs()
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="WZ NFL Draft markets recon")
+    parser.add_argument("--browser", action="store_true",
+                        help="Skip probe; go straight to browser capture.")
+    parser.add_argument("--probe", type=int, default=None,
+                        help="Probe a single specific lg ID (for debugging).")
+    args = parser.parse_args()
 
-data = None
-url = None
-meta: dict = {}
+    print("=" * 60)
+    print("  WAGERZON NFL DRAFT RECON")
+    print("=" * 60)
+    ensure_fixture_dirs()
 
-if not args.browser:
-    data, url, meta = run_rest_phase(probe_only=args.probe)
+    data = None
+    url = None
+    meta: dict = {}
 
-if data is None and not args.probe:
-    data, url, meta = run_browser_phase()
+    if not args.browser:
+        data, url, meta = run_rest_phase(probe_only=args.probe)
 
-if data is None:
-    print("\nERROR: Could not capture WZ NFL Draft markets.")
-    print("  Next steps:")
-    print("  - Confirm WAGERZON_USERNAME / WAGERZON_PASSWORD are in bet_logger/.env")
-    print("  - Re-run with --browser to navigate manually and capture the lg value")
-    sys.exit(1)
+    if data is None and not args.probe:
+        data, url, meta = run_browser_phase()
 
-path = save_fixture("wagerzon", data, meta=meta)
-print_diagnostics("wagerzon", path, url, data)
-print(f"  method used: {meta.get('method', 'unknown')}")
-if "lg" in meta:
-    print(f"  lg: {meta['lg']}  <- single-ID probe result")
-if "lg_param" in meta:
-    print(f"  multi-ID request used: lg={meta['lg_param']}")
-if "draft_league_ids" in meta:
-    print(f"  ACTIVE draft IdLeagues: {meta['draft_league_ids']}")
-    print(f"  -> use these in wagerzon_odds/config.py for the draft sport")
-if "matched_league_count" in meta:
-    print(f"  {meta['matched_league_count']} / {meta.get('total_league_count', '?')} "
-          "buckets matched the active-draft heuristic")
+    if data is None:
+        print("\nERROR: Could not capture WZ NFL Draft markets.")
+        print("  Next steps:")
+        print("  - Confirm WAGERZON_USERNAME / WAGERZON_PASSWORD are in bet_logger/.env")
+        print("  - Re-run with --browser to navigate manually and capture the lg value")
+        sys.exit(1)
+
+    path = save_fixture("wagerzon", data, meta=meta)
+    print_diagnostics("wagerzon", path, url, data)
+    print(f"  method used: {meta.get('method', 'unknown')}")
+    if "lg" in meta:
+        print(f"  lg: {meta['lg']}  <- single-ID probe result")
+    if "lg_param" in meta:
+        print(f"  multi-ID request used: lg={meta['lg_param']}")
+    if "draft_league_ids" in meta:
+        print(f"  ACTIVE draft IdLeagues: {meta['draft_league_ids']}")
+        print(f"  -> use these in wagerzon_odds/config.py for the draft sport")
+    if "matched_league_count" in meta:
+        print(f"  {meta['matched_league_count']} / {meta.get('total_league_count', '?')} "
+              "buckets matched the active-draft heuristic")

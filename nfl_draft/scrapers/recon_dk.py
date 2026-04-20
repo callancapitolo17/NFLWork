@@ -321,45 +321,47 @@ def run_browser_phase() -> tuple[dict | None, str | None, dict]:
 # Main (no __main__ guard per spec — direct script invocation)
 # ---------------------------------------------------------------------------
 
-parser = argparse.ArgumentParser(description="DK NFL Draft markets recon")
-parser.add_argument(
-    "--browser",
-    action="store_true",
-    help="Skip the REST probe and go straight to the headed browser capture.",
-)
-args = parser.parse_args()
 
-print("=" * 60)
-print("  DRAFTKINGS NFL DRAFT RECON")
-print("=" * 60)
-ensure_fixture_dirs()
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="DK NFL Draft markets recon")
+    parser.add_argument(
+        "--browser",
+        action="store_true",
+        help="Skip the REST probe and go straight to the headed browser capture.",
+    )
+    args = parser.parse_args()
 
-data = None
-url = None
-meta: dict = {}
+    print("=" * 60)
+    print("  DRAFTKINGS NFL DRAFT RECON")
+    print("=" * 60)
+    ensure_fixture_dirs()
 
-if not args.browser:
-    data, url, meta = run_rest_phase()
+    data = None
+    url = None
+    meta: dict = {}
 
-if data is None:
-    data, url, meta = run_browser_phase()
+    if not args.browser:
+        data, url, meta = run_rest_phase()
 
-if data is None:
-    print("\nERROR: Could not capture DK NFL Draft markets.")
-    print("  Next steps:")
-    print("  - Re-run with --browser and navigate to the NFL Draft page manually")
-    print("  - If the REST probe failed, Akamai may have rate-limited; wait 5 min")
-    print("  - If browser capture is empty, DK may have removed the NFL Draft page")
-    sys.exit(1)
+    if data is None:
+        data, url, meta = run_browser_phase()
 
-path = save_fixture("draftkings", data, meta=meta)
-print_diagnostics("draftkings", path, url, data)
-print(f"  method used: {meta.get('method', 'unknown')}")
-if "league_id" in meta:
-    print(f"  NFL league_id: {meta['league_id']}")
-if "draft_category_id" in meta:
-    print(f"  draft category_id: {meta['draft_category_id']} "
-          f"({meta.get('draft_category_name')!r})")
-if "subcategory_count" in meta:
-    print(f"  captured {meta['subcategory_count']} subcategories, "
-          f"{meta.get('total_markets', '?')} markets total")
+    if data is None:
+        print("\nERROR: Could not capture DK NFL Draft markets.")
+        print("  Next steps:")
+        print("  - Re-run with --browser and navigate to the NFL Draft page manually")
+        print("  - If the REST probe failed, Akamai may have rate-limited; wait 5 min")
+        print("  - If browser capture is empty, DK may have removed the NFL Draft page")
+        sys.exit(1)
+
+    path = save_fixture("draftkings", data, meta=meta)
+    print_diagnostics("draftkings", path, url, data)
+    print(f"  method used: {meta.get('method', 'unknown')}")
+    if "league_id" in meta:
+        print(f"  NFL league_id: {meta['league_id']}")
+    if "draft_category_id" in meta:
+        print(f"  draft category_id: {meta['draft_category_id']} "
+              f"({meta.get('draft_category_name')!r})")
+    if "subcategory_count" in meta:
+        print(f"  captured {meta['subcategory_count']} subcategories, "
+              f"{meta.get('total_markets', '?')} markets total")
