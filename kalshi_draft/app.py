@@ -934,33 +934,39 @@ def render_section(section):
 
 
 @callback(Output("tab-content", "children"),
-          Input("section-tabs", "value"),
           Input("portal-tabs", "value"),
-          Input("main-tabs", "value"))
-def render_tab(section, portal_tab, legacy_tab):
-    """Render the active inner tab's content, switching on the active section."""
-    if section == "portal":
-        if portal_tab == "crossbook":
-            return render_crossbook_grid()
-        elif portal_tab == "ev":
-            return render_ev_candidates()
-        elif portal_tab == "tape":
-            return render_trade_tape()
-        elif portal_tab == "betlog":
-            return render_bet_log()
-        return html.Div("Unknown Portal tab")
-    else:
-        if legacy_tab == "overview":
-            return render_overview()
-        elif legacy_tab == "history":
-            return render_history()
-        elif legacy_tab == "edges":
-            return render_edges()
-        elif legacy_tab == "consensus":
-            return render_consensus()
-        elif legacy_tab == "portfolio":
-            return render_portfolio()
-        return html.Div("Unknown tab")
+          prevent_initial_call=False)
+def render_portal_tab(portal_tab):
+    """Render the active Portal-section inner tab. Fires only when portal-tabs
+    mounts (after section-content is populated with _portal_tabs())."""
+    if portal_tab == "crossbook":
+        return render_crossbook_grid()
+    elif portal_tab == "ev":
+        return render_ev_candidates()
+    elif portal_tab == "tape":
+        return render_trade_tape()
+    elif portal_tab == "betlog":
+        return render_bet_log()
+    return html.Div("Unknown Portal tab")
+
+
+@callback(Output("tab-content", "children", allow_duplicate=True),
+          Input("main-tabs", "value"),
+          prevent_initial_call=True)
+def render_legacy_tab(legacy_tab):
+    """Render the active Kalshi-legacy inner tab. Fires only when main-tabs
+    mounts (after section-content is populated with _legacy_tabs())."""
+    if legacy_tab == "overview":
+        return render_overview()
+    elif legacy_tab == "history":
+        return render_history()
+    elif legacy_tab == "edges":
+        return render_edges()
+    elif legacy_tab == "consensus":
+        return render_consensus()
+    elif legacy_tab == "portfolio":
+        return render_portfolio()
+    return html.Div("Unknown tab")
 
 
 # --- Mode toggle: sets interval ms and persists to Store ---
@@ -981,6 +987,7 @@ def _apply_mode(mode):
     Input("crossbook-threshold", "value"),
     Input("nfl_draft__interval", "n_intervals"),
     State("nfl_draft__last_fetched_odds", "data"),
+    prevent_initial_call=True,
 )
 def _update_crossbook(threshold_pp, _n_intervals, last_seen):
     """Cheap-poll guard: on interval tick, skip render if MAX(fetched_at)
@@ -1114,6 +1121,7 @@ def _ev_to_prefill(selected_rows, data):
     Input("tape-ticker-filter", "value"),
     Input("nfl_draft__interval", "n_intervals"),
     State("nfl_draft__last_fetched_trades", "data"),
+    prevent_initial_call=True,
 )
 def _update_tape(threshold_usd, ticker_filter, _n_intervals, last_seen):
     ctx = dash.callback_context
