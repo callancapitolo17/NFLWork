@@ -309,6 +309,158 @@ def _fd_market_id_for(group, label, subject, *, pick_re, topn_re, first_pos_re, 
 
 
 # ---------------------------------------------------------------------------
+# Kalshi
+# ---------------------------------------------------------------------------
+#
+# Unlike the sportsbooks, Kalshi doesn't expose a single "market group" field --
+# we have to infer the canonical market_type from the series_ticker prefix and,
+# for the PICK / TOP series, from the ticker's middle segment. Ticker anatomy:
+#
+#   KXNFLDRAFT1-26-TCHA                -> "who is 1st overall pick?" (subject=player)
+#   KXNFLDRAFTPICK-26-10-TSIM          -> "who is 10th overall?" (pick_number in segment[2])
+#   KXNFLDRAFTTOP-26-R1-GJAC           -> "1st round" (maps to top_32)
+#   KXNFLDRAFTTOP-26-5-XXX             -> top_5 (range_high in segment[2])
+#   KXNFLDRAFTQB-26P1-TSIM             -> "1st QB drafted" (only P1 maps; P2+ have no
+#                                         canonical 'nth_at_position' type)
+#
+# Kalshi-only series (no structured canonical type yet) are intentionally left
+# unmapped so they fall into draft_odds_unmapped:
+#   - KXNFLDRAFT1ST     (team makes 1st overall)
+#   - KXNFLDRAFTTEAM    (team drafts specific player)
+#   - KXNFLDRAFTMATCHUP (player X drafted before player Y)
+#   - KXNFLFIRSTPICK    (duplicate of KXNFLDRAFT1)
+#   - KXNFLDRAFTOU      (over/under-pick lines)
+#
+# Position code for each series_ticker prefix. Used by _kalshi_entries for the
+# first_at_position mapping.
+_KALSHI_POSITION_SERIES = {
+    "KXNFLDRAFTQB":   "QB",
+    "KXNFLDRAFTRB":   "RB",
+    "KXNFLDRAFTWR":   "WR",
+    "KXNFLDRAFTTE":   "TE",
+    "KXNFLDRAFTLB":   "LB",
+    "KXNFLDRAFTDT":   "DT",
+    "KXNFLDRAFTEDGE": "EDGE",
+    "KXNFLDRAFTOL":   "OL",
+    "KXNFLDRAFTDB":   "DB",
+}
+
+
+def _kalshi_entries() -> list[tuple[str, str, str, str]]:
+    """Build Kalshi MARKET_MAP rows from the committed /markets fixture.
+
+    The fixture is a per-series dict (captured at the recon step), because
+    Kalshi's /markets endpoint requires a series_ticker query param -- unlike
+    the sportsbook fixtures which are a single monolithic board response.
+
+    book_label comes from scrapers.kalshi._kalshi_book_label: for PICK/TOP
+    series it's a pick_number-scoped prefix so a single player appearing at
+    multiple pick numbers doesn't collapse onto one MARKET_MAP key.
+
+    Returns an empty list (not an error) if the fixture is missing.
+    """
+    path = _FIXTURES_ROOT / "kalshi" / "markets_response.json"
+    if not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_text())
+    except Exception:
+        return []
+
+    # Fixture shape: {"series_responses": {series_ticker: {"markets": [...]}}}.
+    # Older single-response shape ({"markets": [...]}) is ignored -- we log
+    # empty and let the caller refresh the fixture.
+    series_responses = raw.get("series_responses")
+    if not isinstance(series_responses, dict):
+        return []
+
+    # Local import (mirrors DK/FD pattern; avoids circular import at module load).
+    from nfl_draft.scrapers.kalshi import _kalshi_book_label
+
+    entries: list[tuple[str, str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for series_ticker, resp in series_responses.items():
+        for market in resp.get("markets", []) or []:
+            ticker = market.get("ticker") or ""
+            # Prefer yes_sub_title (what the parser emits as book_subject),
+            # fall back to subtitle / custom_strike fields.
+            subject = (
+                market.get("yes_sub_title")
+                or market.get("subtitle")
+                or (market.get("custom_strike") or {}).get("Person")
+                or (market.get("custom_strike") or {}).get("Team")
+                or ""
+            ).strip()
+            if not subject:
+                continue
+
+            mid = _kalshi_market_id_for(series_ticker, ticker, subject)
+            if mid is None:
+                continue  # Kalshi-only / unmappable market -> quarantine at runtime.
+
+            # Must match what the scraper emits at runtime.
+            book_label = _kalshi_book_label(series_ticker, ticker)
+            key = ("kalshi", book_label, subject)
+            if key in seen:
+                continue
+            entries.append((*key, mid))
+            seen.add(key)
+    return entries
+
+
+def _kalshi_market_id_for(series_ticker: str, ticker: str, subject: str) -> str | None:
+    """Return a canonical market_id for a Kalshi market, or None if unmappable.
+
+    Dispatches on series_ticker prefix, falling back to parsing the ticker's
+    middle segment for series where pick_number / range_high varies per market.
+    """
+    # pick_outright, pick 1 only (series is dedicated to 1st overall).
+    if series_ticker == "KXNFLDRAFT1":
+        return build_market_id("pick_outright", pick_number=1, player=subject)
+
+    # pick_outright, pick N extracted from ticker (e.g. KXNFLDRAFTPICK-26-10-TSIM).
+    if series_ticker == "KXNFLDRAFTPICK":
+        parts = ticker.split("-")
+        if len(parts) >= 3 and parts[2].isdigit():
+            return build_market_id(
+                "pick_outright", pick_number=int(parts[2]), player=subject,
+            )
+        return None
+
+    # top_n_range: segment[2] is either R1 (= top 32, 1st round) or a number.
+    if series_ticker == "KXNFLDRAFTTOP":
+        parts = ticker.split("-")
+        if len(parts) < 3:
+            return None
+        tag = parts[2]
+        if tag == "R1":
+            high = 32
+        elif tag.isdigit():
+            high = int(tag)
+        else:
+            return None
+        return build_market_id(
+            "top_n_range", range_low=1, range_high=high, player=subject,
+        )
+
+    # first_at_position: only the P1 (1st-at-position) markets have a canonical
+    # type. Nth-at-position (N>=2) is Kalshi-only.
+    pos = _KALSHI_POSITION_SERIES.get(series_ticker)
+    if pos is not None:
+        parts = ticker.split("-")
+        if len(parts) >= 2 and parts[1] == "26P1":
+            return build_market_id(
+                "first_at_position", position=pos, player=subject,
+            )
+        return None
+
+    # Kalshi-only series (team_first_pick, matchup, team-drafts-player, etc.)
+    # fall through unmapped on purpose.
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Aggregate MARKET_MAP (de-duped across all books)
 # ---------------------------------------------------------------------------
 
@@ -318,5 +470,6 @@ MARKET_MAP: list[tuple[str, str, str, str]] = list(
         + _fd_entries()
         + _bm_entries()
         + _wz_entries()
+        + _kalshi_entries()
     ).keys()
 )

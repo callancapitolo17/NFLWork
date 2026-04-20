@@ -72,6 +72,28 @@ def _extract_yes_bid_cents(market: dict):
     return raw_cents  # may be 0 or None
 
 
+def _kalshi_book_label(series_ticker: str, ticker: str) -> str:
+    """Return the MARKET_MAP key 'book_label' for a Kalshi market.
+
+    For series where pick_number / range_high varies per market
+    (KXNFLDRAFTPICK, KXNFLDRAFTTOP), the same player can appear at multiple
+    pick numbers -- if we used bare series_ticker as book_label, all of those
+    rows would collapse onto a single MARKET_MAP key and the resolver would
+    incorrectly map, e.g., "Ty Simpson @ pick 3" to pick_10_ty-simpson. So we
+    scope the label to the ticker's middle-segment prefix (e.g.
+    'KXNFLDRAFTPICK-26-10'), which uniquely identifies the market group.
+
+    For series where the market-type is fixed per series (e.g. KXNFLDRAFT1,
+    KXNFLDRAFTQB) we keep series_ticker as-is -- collisions can't happen.
+    """
+    if series_ticker in ("KXNFLDRAFTPICK", "KXNFLDRAFTTOP"):
+        # Ticker shape: KXNFLDRAFTPICK-26-10-TSIM -> label 'KXNFLDRAFTPICK-26-10'
+        parts = (ticker or "").split("-")
+        if len(parts) >= 3:
+            return "-".join(parts[:3])
+    return series_ticker
+
+
 def parse_markets_response(raw_response: dict, series_ticker: str) -> List[OddsRow]:
     """Convert a raw Kalshi /markets response into a list of OddsRow.
 
@@ -109,7 +131,7 @@ def parse_markets_response(raw_response: dict, series_ticker: str) -> List[OddsR
 
         rows.append(OddsRow(
             book="kalshi",
-            book_label=series_ticker,
+            book_label=_kalshi_book_label(series_ticker, market.get("ticker") or ""),
             book_subject=candidate,
             american_odds=american,
             fetched_at=now,

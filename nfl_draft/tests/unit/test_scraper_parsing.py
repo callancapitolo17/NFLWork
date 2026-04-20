@@ -14,13 +14,22 @@ FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 
 def test_kalshi_parse_markets_returns_oddsrow_list():
+    """Fresh fixture is a per-series dict; iterate each series through the
+    parser and assert we get a non-trivial row count with non-zero bids."""
     raw = json.loads((FIXTURES / "kalshi" / "markets_response.json").read_text())
-    rows = parse_markets_response(raw, series_ticker="KXNFLDRAFT1")
-    assert isinstance(rows, list)
-    if rows:
-        row = rows[0]
-        assert row.book == "kalshi"
-        assert row.book_label.startswith("KXNFLDRAFT1")
+    series_responses = raw.get("series_responses") or {}
+    assert series_responses, "kalshi fixture missing series_responses -- recapture needed"
+
+    all_rows = []
+    for ticker, resp in series_responses.items():
+        all_rows.extend(parse_markets_response(resp, series_ticker=ticker))
+
+    # Parser skips zero-bid markets; fresh fixture should still yield >= 50 rows
+    # across all series. If this drops to 0, the fixture needs re-capture.
+    assert len(all_rows) >= 50, f"expected >= 50 Kalshi rows, got {len(all_rows)}"
+    assert all(r.book == "kalshi" for r in all_rows)
+    assert all(r.book_label.startswith("KXNFL") for r in all_rows)
+    assert all(r.book_subject for r in all_rows)
 
 
 def test_kalshi_parse_trades():
