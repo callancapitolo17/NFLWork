@@ -27,25 +27,24 @@ def seeded_db(monkeypatch, tmp_path):
     return tmp_path / "test.duckdb"
 
 
-def test_get_latest_odds_returns_one_row(seeded_db, monkeypatch):
-    # Import after monkeypatching DB_PATH
+def test_get_latest_odds_returns_one_row(seeded_db):
+    # The seeded_db fixture monkeypatches nfl_draft.lib.db.DB_PATH; legacy
+    # kalshi_draft.db helpers now route through read_connection() so they
+    # automatically pick up that patched location — no extra patch needed.
     from kalshi_draft import db as legacy_db
-    monkeypatch.setattr(legacy_db, "DB_PATH", seeded_db)
     df = legacy_db.get_latest_odds()
     assert df is not None and len(df) == 1
     assert df.iloc[0]["candidate"] == "Cam Ward"
 
 
-def test_get_price_history_returns_one_row(seeded_db, monkeypatch):
+def test_get_price_history_returns_one_row(seeded_db):
     from kalshi_draft import db as legacy_db
-    monkeypatch.setattr(legacy_db, "DB_PATH", seeded_db)
     df = legacy_db.get_price_history()
     assert df is not None and len(df) == 1
 
 
-def test_get_snapshot_count_returns_one(seeded_db, monkeypatch):
+def test_get_snapshot_count_returns_one(seeded_db):
     from kalshi_draft import db as legacy_db
-    monkeypatch.setattr(legacy_db, "DB_PATH", seeded_db)
     snapshots, first, last = legacy_db.get_snapshot_count()
     assert snapshots == 1
 
