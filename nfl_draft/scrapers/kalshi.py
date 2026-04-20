@@ -142,6 +142,13 @@ def parse_markets_response(raw_response: dict, series_ticker: str) -> List[OddsR
 def fetch_draft_odds() -> List[OddsRow]:
     """Discover all NFL Draft series, fetch their open markets, return rows.
 
+    Pagination
+    ----------
+    Kalshi's /markets endpoint caps each page at 100 markets. KXNFLDRAFTPICK
+    alone carries ~649 open markets (32 teams * ~20 candidates each across
+    multiple pick tiers), so we MUST walk the cursor — otherwise ~85% of
+    markets silently drop and downstream portal rows go stale.
+
     Side effect: calling the legacy fetcher writes kalshi_odds + draft_series
     + market_info into nfl_draft.duckdb (the legacy fetcher has been
     repointed to the new DB in Task 3-9).
@@ -155,13 +162,23 @@ def fetch_draft_odds() -> List[OddsRow]:
         # dashboard depends on - we mirror that call pattern so nothing
         # downstream regresses.
         legacy_fetcher.fetch_markets_for_series(ticker)
-        # Re-parse once more to produce normalized OddsRow output for the
-        # new portal. Re-fetching is cheap (and now throttled via auth.py).
-        raw = public_request(
-            f"/markets?series_ticker={ticker}&status=open&limit=100"
-        )
-        if raw:
+        # Walk all pages for this series. Previously we hit only the first
+        # 100 markets per series; KXNFLDRAFTPICK alone has ~649 so ~85% were
+        # dropped, causing draft_odds for "missing" players to go stale from
+        # an earlier scrape that happened to include them. Cursor pattern
+        # mirrors _enumerate_fallback lower in this file.
+        cursor = None
+        while True:
+            path = f"/markets?series_ticker={ticker}&status=open&limit=100"
+            if cursor:
+                path += f"&cursor={cursor}"
+            raw = public_request(path)
+            if not raw:
+                break
             rows.extend(parse_markets_response(raw, ticker))
+            cursor = raw.get("cursor")
+            if not cursor or not raw.get("markets"):
+                break
     return rows
 
 

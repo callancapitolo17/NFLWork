@@ -135,6 +135,66 @@ def test_wz_parse_returns_oddsrow_list():
     assert not any(r.book_subject.startswith("*ALL BETS ACTION*") for r in rows)
 
 
+def test_kalshi_fetch_draft_odds_walks_cursor(monkeypatch):
+    """fetch_draft_odds must paginate: if page 1 returns a cursor, page 2
+    must be requested and its rows merged into the output. Regression guard
+    for the bug where only the first 100 markets were captured (KXNFLDRAFTPICK
+    has ~649 open markets — the other ~549 were silently dropped).
+    """
+    from nfl_draft.scrapers import kalshi as kalshi_mod
+
+    # Mock discover_draft_series to return one fake series.
+    monkeypatch.setattr(
+        kalshi_mod.legacy_fetcher,
+        "discover_draft_series",
+        lambda: [{"series_ticker": "KXFAKE", "title": "Fake"}],
+    )
+    # Mock the legacy side-effect call (keeps this a pure unit test, no
+    # network and no DB).
+    monkeypatch.setattr(
+        kalshi_mod.legacy_fetcher,
+        "fetch_markets_for_series",
+        lambda ticker: [],
+    )
+
+    # Build two mock pages. Page 1 has a cursor, page 2 does not.
+    # Each page has markets with valid yes_bid so parse_markets_response
+    # yields rows.
+    def mk_market(ticker, bid):
+        return {
+            "ticker": ticker,
+            "yes_bid": bid,
+            "yes_sub_title": f"Candidate {ticker}",
+        }
+
+    page1 = {
+        "markets": [mk_market(f"KXFAKE-P1-{i}", 50) for i in range(3)],
+        "cursor": "CURSOR_P2",
+    }
+    page2 = {
+        "markets": [mk_market(f"KXFAKE-P2-{i}", 50) for i in range(2)],
+        "cursor": None,
+    }
+
+    call_log = []
+
+    def fake_public_request(path):
+        call_log.append(path)
+        if "cursor=CURSOR_P2" in path:
+            return page2
+        return page1
+
+    monkeypatch.setattr(kalshi_mod, "public_request", fake_public_request)
+
+    rows = kalshi_mod.fetch_draft_odds()
+
+    # 3 rows from page 1 + 2 rows from page 2
+    assert len(rows) == 5, f"expected 5 rows across 2 pages, got {len(rows)}"
+    assert len(call_log) == 2, f"expected 2 API calls (2 pages), got {len(call_log)}"
+    assert "cursor=" not in call_log[0], "page 1 should have no cursor"
+    assert "cursor=CURSOR_P2" in call_log[1], "page 2 should carry cursor"
+
+
 def test_h88_parse_returns_oddsrow_list():
     """H88 fixture has 13 markets (9 pick_outright + 3 first_at_position +
     1 prop 'Mr Irrelevant Position') and ~155 total runners. Parser must
