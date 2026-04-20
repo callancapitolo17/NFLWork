@@ -260,24 +260,35 @@ def _count_games_and_extract_leagues(data: dict) -> list[dict]:
     )
 
 
-# League ID candidates for BM. Live probing (2026-04-17) showed BM uses small
-# dense IDs: 1-18 are main sports (NFL=1, CBB=4, MLB=5, NHL=7, etc). The 100-
-# 1500 range was fully parallel-scanned for this account and found only:
-#   104/105 = NFL 1ST/2ND HALVES, 117/208/211 = TNT "ODDS TO WIN" (all empty)
-# ZERO leagues matched "NFL Draft" — BM likely gates draft futures behind a
-# funded account or has them offline until closer to draft day.
+# Known NFL Draft league IDs, discovered 2026-04-20 via Playwright XHR
+# capture on https://be.bookmaker.eu/en/sports/football/nfl-draft/propositions/.
+# BM's sport tree (GetLeagues response) shows both of these under the
+# "NFL DRAFT" region of "FOOTBALL":
+#   12273 — PROPOSITIONS  (idsport=NFL) — per-pick outright markets
+#   13425 — ODDS TO WIN   (idsport=TNT) — 1st at position / award specials
+# The names don't contain both "NFL" and "DRAFT", so they'd be rejected
+# by _looks_like_draft_league; we treat any payload returned for a known ID
+# as a hit and skip the heuristic. Keep these FIRST so probes short-circuit
+# once they land.
+KNOWN_DRAFT_LEAGUE_IDS: list[int] = [12273, 13425]
+
+
+# League ID candidates for BM. Known draft IDs go first; the remaining
+# curated list is a fallback shape-probe in case BM rotates IDs.
 #
-# The REST probe here exists mostly for quick sanity. The authoritative path
-# is the browser fallback, which captures the GetSchedule POST body's
-# LeaguesIdList value from the live page.
+# Historical context: live probing (2026-04-17) showed BM uses small dense
+# IDs: 1-18 are main sports (NFL=1, CBB=4, MLB=5, NHL=7, etc). The 100-1500
+# range was fully parallel-scanned on this account and found only:
+#   104/105 = NFL 1ST/2ND HALVES, 117/208/211 = TNT "ODDS TO WIN" (all empty)
+# Draft-specific IDs turned out to live much higher (12273, 13425).
 def _candidate_league_ids() -> list[int]:
-    return [
+    fallback = [
         # Main + known extras (shape probes)
         1, 11, 18, 104, 105, 202, 205, 503, 13554,
-        # Observed TNT 'ODDS TO WIN' futures buckets — NFL Draft might land here
-        # when it goes live.
+        # Observed TNT 'ODDS TO WIN' futures buckets
         117, 208, 211,
     ]
+    return KNOWN_DRAFT_LEAGUE_IDS + [i for i in fallback if i not in KNOWN_DRAFT_LEAGUE_IDS]
 
 
 def _probe_candidates(session: cffi_requests.Session,
@@ -291,11 +302,21 @@ def _probe_candidates(session: cffi_requests.Session,
     """
     draft_hits: list[tuple[int, dict, dict]] = []
     raw_responses: list[dict | None] = []
+    known = set(KNOWN_DRAFT_LEAGUE_IDS)
     for lid in candidates:
         data = _fetch_schedule(session, lid)
         raw_responses.append(data)
         leagues = _count_games_and_extract_leagues(data)
         if not leagues:
+            continue
+        # Known draft IDs bypass the name heuristic: their descriptions
+        # ("PROPOSITIONS" / "ODDS TO WIN") don't mention NFL or DRAFT,
+        # so _looks_like_draft_league would reject them.
+        if lid in known:
+            le = leagues[0]
+            name = le.get("desc") or le.get("Description") or le.get("name")
+            print(f"  HIT lg={lid}: {name!r} (known draft ID)")
+            draft_hits.append((lid, data, le))
             continue
         for le in leagues:
             if _looks_like_draft_league(le):
@@ -314,15 +335,34 @@ def _probe_candidates(session: cffi_requests.Session,
 
 def _pick_winner(draft_hits: list[tuple[int, dict, dict]]
                  ) -> tuple[dict, str, dict] | tuple[None, None, dict]:
-    """Choose the biggest hit and build the return tuple for run_rest_phase."""
+    """Combine all draft hits into a single Schedule envelope.
+
+    BM splits NFL Draft markets across multiple league IDs (e.g. 12273 =
+    PROPOSITIONS, 13425 = ODDS TO WIN). Returning just one means we'd miss
+    half the markets. We flatten every hit's League[] entries into the
+    first hit's Schedule so downstream parse_response() sees them all.
+    """
     if not draft_hits:
         return None, None, {}
-    # Biggest raw JSON wins — more markets = more likely the main draft board
-    # rather than an incidental one-off special.
+    # Sort biggest first so the envelope we keep structurally is the one with
+    # the most data (minimizes risk if BM ships schema variants).
     draft_hits.sort(key=lambda t: len(json.dumps(t[1])), reverse=True)
     winner_id, winner_data, winner_entry = draft_hits[0]
     all_ids = [h[0] for h in draft_hits]
-    url = f"{BM_API_BASE}/GetSchedule  (lg={winner_id})"
+
+    # Flatten every hit's League[] into the winner's Schedule.Data.Leagues.League
+    if len(draft_hits) > 1:
+        merged_leagues: list[dict] = []
+        for _lid, data, _le in draft_hits:
+            leagues = _count_games_and_extract_leagues(data)
+            merged_leagues.extend(leagues)
+        try:
+            winner_data["Schedule"]["Data"]["Leagues"]["League"] = merged_leagues
+        except (KeyError, TypeError):
+            # Defensive: if shape drifted, fall back to returning winner only.
+            pass
+
+    url = f"{BM_API_BASE}/GetSchedule  (lg={','.join(str(i) for i in all_ids)})"
     return winner_data, url, {
         "league_id": winner_id,
         "league_name": winner_entry.get("desc") or winner_entry.get("Description"),
