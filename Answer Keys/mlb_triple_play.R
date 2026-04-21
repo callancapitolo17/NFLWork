@@ -131,6 +131,4 @@ if (!interactive() && sys.nframe() == 0L) {
       edge_pct  = sprintf("%+.1f%%", edge_pct)
     )
   print(as.data.frame(display), row.names = FALSE)
-
-  dbDisconnect(con)
 }
