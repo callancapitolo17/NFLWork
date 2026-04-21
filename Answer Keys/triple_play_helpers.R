@@ -21,6 +21,10 @@ determine_home_scored_first <- function(m1, t1, m2, t2, m3, t3, m4, t4, m5, t5) 
     if (t[i] > prev_t) {
       dt <- t[i] - prev_t
       dm <- m[i] - prev_m
+      # Defensive: impossible-input guard. Total runs in an inning must be >=
+      # absolute margin change. Corrupt inputs return NA rather than a
+      # plausible-looking wrong answer.
+      if (abs(dm) > dt) return(NA_integer_)
       away_runs <- (dt - dm) / 2
       home_runs <- (dt + dm) / 2
       if (away_runs > 0) return(0L)

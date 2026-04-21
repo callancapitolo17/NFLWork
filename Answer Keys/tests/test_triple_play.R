@@ -55,3 +55,24 @@ test_that("vectorized version matches scalar over multiple rows", {
   )
   expect_equal(result, c(1L, 0L, 1L))
 })
+
+test_that("away scored first when both teams score 1 run in inning 1 (tied)", {
+  # t1=2, m1=0 → home 1 + away 1 in inning 1. Away bats first → away scored first.
+  # This is the canonical "both scored in the first" case.
+  expect_equal(
+    determine_home_scored_first(m1=0, t1=2,
+                                m2=NA, t2=NA, m3=NA, t3=NA,
+                                m4=NA, t4=NA, m5=NA, t5=NA),
+    0L
+  )
+})
+
+test_that("returns NA on impossible inputs (|margin_change| > total_change)", {
+  # t1=1, m1=3 is mathematically impossible — you cannot swing the margin by
+  # 3 runs from a 1-run total increase. Must return NA, not silently compute.
+  expect_true(is.na(
+    determine_home_scored_first(m1=3, t1=1,
+                                m2=NA, t2=NA, m3=NA, t3=NA,
+                                m4=NA, t4=NA, m5=NA, t5=NA)
+  ))
+})
