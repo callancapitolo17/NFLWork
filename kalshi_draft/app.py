@@ -26,6 +26,41 @@ from datetime import datetime
 import db
 
 # ---------------------------------------------------------------------------
+# Background scrape helpers — keep dashboard data fresh without manual runs
+# ---------------------------------------------------------------------------
+import threading
+import time
+
+_SCRAPE_INTERVAL_SECONDS = 15 * 60  # 15 min — matches pre-draft cadence
+
+
+def _run_scrape_once() -> None:
+    """Fire a detached scrape subprocess. Never raises."""
+    try:
+        repo_root = Path(__file__).resolve().parent.parent
+        subprocess.Popen(
+            [sys.executable, "-m", "nfl_draft.run", "--mode", "scrape", "--book", "all"],
+            cwd=str(repo_root),
+            stdout=open("/tmp/nfl_draft_periodic_scrape.log", "a"),
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except Exception as e:
+        print(f"[periodic] scrape launch failed: {e}")
+
+
+def _periodic_scrape_loop() -> None:
+    """Background loop: sleep then scrape, forever. Daemon thread dies with the process."""
+    while True:
+        time.sleep(_SCRAPE_INTERVAL_SECONDS)
+        _run_scrape_once()
+
+
+# Start the daemon thread ONCE when the module loads. Dash auto-reload is
+# disabled in production (debug=False), so we don't need reload-safety guards.
+threading.Thread(target=_periodic_scrape_loop, daemon=True, name="nfl_draft-periodic-scrape").start()
+
+# ---------------------------------------------------------------------------
 # Series display names
 # ---------------------------------------------------------------------------
 SERIES_DISPLAY = {
@@ -1364,49 +1399,33 @@ def update_history_chart(selected_tickers):
     prevent_initial_call=True,
 )
 def refresh_data(n_clicks):
-    """Run the full fetch + edge detection + consensus pipeline."""
+    """Kick off a background cross-venue scrape. Non-blocking.
+
+    Returns immediately; the dashboard's auto-refresh interval picks up
+    new data as each book's scrape completes (typically 30-120s later).
+    """
     try:
-        venv_python = str(Path(__file__).parent / "venv" / "bin" / "python")
-        script_dir = str(Path(__file__).parent)
-
-        # Run fetcher
-        subprocess.run(
-            [venv_python, "fetcher.py"],
-            cwd=script_dir, capture_output=True, text=True, timeout=120,
-        )
-
-        # Run edge detector
-        subprocess.run(
-            [venv_python, "edge_detector.py"],
-            cwd=script_dir, capture_output=True, text=True, timeout=60,
-        )
-
-        # Run consensus scraper
-        subprocess.run(
-            [venv_python, "consensus.py"],
-            cwd=script_dir, capture_output=True, text=True, timeout=60,
-        )
-
+        _run_scrape_once()
         toast = html.Div(
-            "Data refreshed successfully!",
+            "Scrape started — data will appear over the next 1-2 minutes.",
             style={
                 "background": "linear-gradient(135deg, #00b894, #00cec9)",
                 "color": "white", "padding": "16px 24px", "borderRadius": "10px",
                 "fontWeight": "500", "boxShadow": "0 8px 30px rgba(0,0,0,0.3)",
             },
         )
-        return "", toast
+        return "Scrape started", toast
 
     except Exception as e:
         toast = html.Div(
-            f"Refresh failed: {str(e)}",
+            f"Failed to start scrape: {str(e)}",
             style={
                 "background": "linear-gradient(135deg, #e74c3c, #c0392b)",
                 "color": "white", "padding": "16px 24px", "borderRadius": "10px",
                 "fontWeight": "500",
             },
         )
-        return "", toast
+        return "Failed", toast
 
 
 # ---------------------------------------------------------------------------
@@ -1414,6 +1433,21 @@ def refresh_data(n_clicks):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import os
+    # Kick off a background scrape so the dashboard has fresh data
+    # within ~2 min of launch. Detached so it doesn't block startup.
+    repo_root = Path(__file__).resolve().parent.parent
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "nfl_draft.run", "--mode", "scrape", "--book", "all"],
+            cwd=str(repo_root),
+            stdout=open("/tmp/nfl_draft_startup_scrape.log", "a"),
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        print("[startup] background scrape kicked off — see /tmp/nfl_draft_startup_scrape.log")
+    except Exception as e:
+        print(f"[startup] could not launch scrape: {e}")
+
     nfl_db.init_schema()
     port = int(os.environ.get("NFL_DRAFT_DASHBOARD_PORT", "8090"))
     app.run(debug=False, host="127.0.0.1", port=port)
