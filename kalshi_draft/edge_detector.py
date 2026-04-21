@@ -3,7 +3,13 @@ Cross-Market Edge Detection for NFL Draft Prediction Markets.
 Identifies mispricing, arbitrage, and inconsistencies across series.
 """
 
-from datetime import datetime, timezone
+import sys
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from nfl_draft.lib import db as nfl_db
+
 import db
 
 
@@ -190,7 +196,7 @@ def detect_all_edges():
     all_edges.extend(check_spread_opportunities(latest))
 
     # Save to DB
-    fetch_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     con = db.get_connection()
 
     # Clear old edges for this run
@@ -220,5 +226,5 @@ def detect_all_edges():
 
 
 if __name__ == "__main__":
-    db.init_schema()
+    nfl_db.init_schema()
     detect_all_edges()

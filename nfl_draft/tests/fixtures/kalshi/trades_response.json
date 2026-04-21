@@ -1,0 +1,185 @@
+{
+  "cursor": "EhIKEPylhuEHl1XSyUwEq_l5LOcaCwipuovPBhCgrdZD",
+  "trades": [
+    {
+      "count_fp": "269.11",
+      "created_time": "2026-04-18T01:23:53.414558Z",
+      "no_price_dollars": "0.5400",
+      "taker_side": "no",
+      "ticker": "KXMLBF5TOTAL-26APR172140TEXSEA-4",
+      "trade_id": "7f45a0a2-e935-742e-2f72-555bef24ecd1",
+      "yes_price_dollars": "0.4600"
+    },
+    {
+      "count_fp": "1.00",
+      "created_time": "2026-04-18T01:23:53.40627Z",
+      "no_price_dollars": "0.2400",
+      "taker_side": "yes",
+      "ticker": "KXSOL15M-26APR172130-30",
+      "trade_id": "528ec4eb-0bb7-5047-741e-a265fa4dc2e4",
+      "yes_price_dollars": "0.7600"
+    },
+    {
+      "count_fp": "50.00",
+      "created_time": "2026-04-18T01:23:53.402654Z",
+      "no_price_dollars": "0.1300",
+      "taker_side": "yes",
+      "ticker": "KXMLBGAME-26APR172040LADCOL-LAD",
+      "trade_id": "e0459b2a-0366-7392-5db4-ca57ac1808ef",
+      "yes_price_dollars": "0.8700"
+    },
+    {
+      "count_fp": "230.29",
+      "created_time": "2026-04-18T01:23:53.402654Z",
+      "no_price_dollars": "0.1300",
+      "taker_side": "yes",
+      "ticker": "KXMLBGAME-26APR172040LADCOL-LAD",
+      "trade_id": "aee2020e-1d3b-7756-6170-a3955d9a4da0",
+      "yes_price_dollars": "0.8700"
+    },
+    {
+      "count_fp": "1.00",
+      "created_time": "2026-04-18T01:23:53.400333Z",
+      "no_price_dollars": "0.2400",
+      "taker_side": "yes",
+      "ticker": "KXSOL15M-26APR172130-30",
+      "trade_id": "9261fb98-0c4f-7be3-7380-c7690cc9f430",
+      "yes_price_dollars": "0.7600"
+    },
+    {
+      "count_fp": "6.98",
+      "created_time": "2026-04-18T01:23:53.391512Z",
+      "no_price_dollars": "0.5600",
+      "taker_side": "yes",
+      "ticker": "KXBTC15M-26APR172130-30",
+      "trade_id": "ace7af10-0342-64d3-a8de-f3cb64145d56",
+      "yes_price_dollars": "0.4400"
+    },
+    {
+      "count_fp": "43.73",
+      "created_time": "2026-04-18T01:23:53.377486Z",
+      "no_price_dollars": "0.5600",
+      "taker_side": "yes",
+      "ticker": "KXBTC15M-26APR172130-30",
+      "trade_id": "ad926b56-798a-753f-27c3-1492a9646faa",
+      "yes_price_dollars": "0.4400"
+    },
+    {
+      "count_fp": "1.00",
+      "created_time": "2026-04-18T01:23:53.356883Z",
+      "no_price_dollars": "0.9900",
+      "taker_side": "yes",
+      "ticker": "KXHIGHLAX-26APR17-B78.5",
+      "trade_id": "aa34aaaa-fd83-700e-78c7-62d044af4115",
+      "yes_price_dollars": "0.0100"
+    },
+    {
+      "count_fp": "64.75",
+      "created_time": "2026-04-18T01:23:53.336241Z",
+      "no_price_dollars": "0.6400",
+      "taker_side": "yes",
+      "ticker": "KXBTCD-26APR1722-T77399.99",
+      "trade_id": "7a37f713-e2e5-694e-bfa6-9d63af191a53",
+      "yes_price_dollars": "0.3600"
+    },
+    {
+      "count_fp": "1.00",
+      "created_time": "2026-04-18T01:23:53.331381Z",
+      "no_price_dollars": "0.2400",
+      "taker_side": "yes",
+      "ticker": "KXSOL15M-26APR172130-30",
+      "trade_id": "3680ce6c-ca5f-5b8b-3b84-91b050792db8",
+      "yes_price_dollars": "0.7600"
+    },
+    {
+      "count_fp": "41.00",
+      "created_time": "2026-04-18T01:23:53.330597Z",
+      "no_price_dollars": "0.5400",
+      "taker_side": "yes",
+      "ticker": "KXMLBGAME-26APR172138SDLAA-SD",
+      "trade_id": "498202e6-7896-77cc-ffc6-568add5225e3",
+      "yes_price_dollars": "0.4600"
+    },
+    {
+      "count_fp": "274.00",
+      "created_time": "2026-04-18T01:23:53.325026Z",
+      "no_price_dollars": "0.4700",
+      "taker_side": "yes",
+      "ticker": "KXNBASPREAD-26APR17GSWPHX-PHX2",
+      "trade_id": "a79cacc0-d63c-6d76-e5cd-18e3eb521883",
+      "yes_price_dollars": "0.5300"
+    },
+    {
+      "count_fp": "7.11",
+      "created_time": "2026-04-18T01:23:53.309658Z",
+      "no_price_dollars": "0.2300",
+      "taker_side": "yes",
+      "ticker": "KXVALORANTMAP-26APR172000EGFUR-2-FUR",
+      "trade_id": "ccfade6d-8cf2-5c73-faa9-9a1cd895fdfc",
+      "yes_price_dollars": "0.7700"
+    },
+    {
+      "count_fp": "1508.00",
+      "created_time": "2026-04-18T01:23:53.287626Z",
+      "no_price_dollars": "0.5600",
+      "taker_side": "no",
+      "ticker": "KXNBATOTAL-26APR17CHAORL-221",
+      "trade_id": "9e0dadee-602b-4471-88e6-c6154e13ce3f",
+      "yes_price_dollars": "0.4400"
+    },
+    {
+      "count_fp": "126.00",
+      "created_time": "2026-04-18T01:23:53.274399Z",
+      "no_price_dollars": "0.2300",
+      "taker_side": "yes",
+      "ticker": "KXNBAGAME-26APR18TORCLE-CLE",
+      "trade_id": "6f9fa46a-9def-6e81-8f14-ad74783b887d",
+      "yes_price_dollars": "0.7700"
+    },
+    {
+      "count_fp": "17.00",
+      "created_time": "2026-04-18T01:23:53.217364Z",
+      "no_price_dollars": "0.5600",
+      "taker_side": "no",
+      "ticker": "KXMLBTOTAL-26APR172040LADCOL-11",
+      "trade_id": "85a7ab0f-0f4a-5557-3a9c-ac56b3772daa",
+      "yes_price_dollars": "0.4400"
+    },
+    {
+      "count_fp": "2.00",
+      "created_time": "2026-04-18T01:23:53.184977Z",
+      "no_price_dollars": "0.5600",
+      "taker_side": "yes",
+      "ticker": "KXBTC15M-26APR172130-30",
+      "trade_id": "dd335eae-1ade-55ab-326c-f3e835113e7c",
+      "yes_price_dollars": "0.4400"
+    },
+    {
+      "count_fp": "19.86",
+      "created_time": "2026-04-18T01:23:53.184977Z",
+      "no_price_dollars": "0.5600",
+      "taker_side": "yes",
+      "ticker": "KXBTC15M-26APR172130-30",
+      "trade_id": "3dee47f4-ea1e-5b53-22dc-192700d182ea",
+      "yes_price_dollars": "0.4400"
+    },
+    {
+      "count_fp": "13.31",
+      "created_time": "2026-04-18T01:23:53.142186Z",
+      "no_price_dollars": "0.5700",
+      "taker_side": "yes",
+      "ticker": "KXNBAGAME-26APR17GSWPHX-GSW",
+      "trade_id": "ee55b405-9c75-4556-d58d-1b93b61528a7",
+      "yes_price_dollars": "0.4300"
+    },
+    {
+      "count_fp": "3133.00",
+      "created_time": "2026-04-18T01:23:53.141924Z",
+      "no_price_dollars": "0.5500",
+      "taker_side": "yes",
+      "ticker": "KXMLBGAME-26APR171915DETBOS-BOS",
+      "trade_id": "fca586e1-0797-55d2-c94c-04abf9792ce7",
+      "yes_price_dollars": "0.4500"
+    }
+  ]
+}

@@ -49,6 +49,11 @@ model_params.json
 
 # Dashboard generated artifacts (R htmlwidgets)
 **/lib/
+# ...but keep the Python nfl_draft package lib module
+!nfl_draft/lib/
+!nfl_draft/lib/**
+# Still exclude bytecode inside that lib
+nfl_draft/lib/**/__pycache__/
 report.html
 
 # Session files
@@ -91,3 +96,11 @@ bet_placer/.bfa_nav_profile/
 bet_placer/.hoop88_nav_profile/
 bet_placer/.wagerzon_nav_profile/
 bet_placer/.betonline_nav_profile/
+
+# nfl_draft portal
+nfl_draft/nfl_draft.duckdb
+nfl_draft/nfl_draft.duckdb.wal
+nfl_draft/.cookies/
+nfl_draft/logs/*
+!nfl_draft/logs/.gitkeep
+nfl_draft/.kalshi_throttle.lock

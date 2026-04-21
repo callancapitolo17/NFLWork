@@ -4,10 +4,15 @@ Scrapes Tankathon NFL Draft big board (static HTML, reliable).
 """
 
 import re
-from datetime import datetime, timezone
+import sys
+from datetime import datetime
+from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from nfl_draft.lib import db as nfl_db
 
 import db
 
@@ -148,7 +153,7 @@ def save_consensus(players):
         return
 
     con = db.get_connection()
-    fetch_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     con.executemany("""
         INSERT INTO consensus_board VALUES (?, ?, ?, ?, ?, ?)
@@ -198,7 +203,7 @@ def compare_to_market():
 
 def run():
     """Full consensus pipeline."""
-    db.init_schema()
+    nfl_db.init_schema()
     players = scrape_consensus_board()
     if players:
         save_consensus(players)
