@@ -46,9 +46,10 @@ prob_to_american <- function(p) {
   as.integer(round(100 * (1 - p) / p))
 }
 
-#' American odds → implied probability (includes vig).
+#' American odds → implied probability (includes vig). Returns NA_real_ for
+#' NA input or 0 (0 is not a valid American odds value).
 american_to_prob <- function(o) {
-  if (is.na(o)) return(NA_real_)
+  if (is.na(o) || o == 0) return(NA_real_)
   if (o > 0) return(100 / (o + 100))
   (-o) / ((-o) + 100)
 }

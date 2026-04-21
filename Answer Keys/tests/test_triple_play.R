@@ -144,3 +144,34 @@ test_that("american_to_prob is the inverse of prob_to_american", {
   expect_equal(american_to_prob(+300), 0.25)
   expect_equal(american_to_prob(+100), 0.5)
 })
+
+test_that("compute_triple_play_fair returns NA_real_ on empty samples", {
+  empty <- data.frame(home_margin = integer(0),
+                      home_margin_f5 = integer(0),
+                      home_scored_first = integer(0))
+  expect_true(is.na(compute_triple_play_fair(empty, side = "home")))
+  expect_true(is.na(compute_triple_play_fair(empty, side = "away")))
+})
+
+test_that("compute_triple_play_fair returns 1.0 when all rows pass all 3 legs", {
+  samples <- data.frame(
+    home_margin       = c(2, 3, 4),
+    home_margin_f5    = c(1, 2, 3),
+    home_scored_first = c(1L, 1L, 1L)
+  )
+  expect_equal(compute_triple_play_fair(samples, side = "home"), 1.0)
+})
+
+test_that("compute_triple_play_fair returns 0.0 when no rows pass", {
+  # Home scored first but lost F5 and game → 0 home_triples
+  samples <- data.frame(
+    home_margin       = c(-2, -3, -4),
+    home_margin_f5    = c(-1, -2, -3),
+    home_scored_first = c(1L, 1L, 1L)
+  )
+  expect_equal(compute_triple_play_fair(samples, side = "home"), 0.0)
+})
+
+test_that("american_to_prob(0) returns NA_real_", {
+  expect_true(is.na(american_to_prob(0)))
+})
