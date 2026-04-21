@@ -64,6 +64,26 @@ CBB.R
 - Fair value = `mean(first_to_X_fg)` across resampled historical games
 - Backward compat: `first_to_10_h1` still extracted alongside FG columns during transition
 
+### Triple-Play Data Flow
+Triple-play props = team scores first in the game AND wins F5 (3-way, strict lead) AND wins the game.
+```
+MLB.R Phase 1 (DT load)
+  └── determine_home_scored_first_vec() → home_scored_first column on DT
+      (baseball half-inning order: away bats first → away scored first if
+       away_runs_in_first_scoring_inning > 0)
+MLB.R Phase 4 (samples export)
+  └── home_scored_first carried into mlb_game_samples as 0/1/NA column
+      (preserved automatically because run_answer_key_sample returns a row
+       subset of DT with all columns intact)
+mlb_triple_play.R (standalone pricer)
+  ├── Reads mlb_game_samples + hardcoded today's lines
+  ├── compute_triple_play_fair(samples, side) → joint P across the 3 legs
+  └── Prints fair odds vs book + edge per posted line
+```
+- `home_scored_first` is NA for games with no scoring in innings 1–5 (~5% of historical games); excluded from the mean before the ratio is computed.
+- F5 3-way: leg passes only with strict lead (`margin_f5 > 0` for home, `< 0` for away). F5 ties kill the parlay.
+- Helper lives in `triple_play_helpers.R` so both MLB.R and the pricer can source it without duplication.
+
 ## Common Pitfalls
 
 1. **Odds API commence_time is a string, not POSIXct** — Must parse with `ymd_hms(commence_time, tz = "UTC")` before any time comparison
