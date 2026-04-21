@@ -170,18 +170,31 @@ if (run_odds) {
         stop_for_status(res)
         parsed <- fromJSON(content(res, "text"), flatten = TRUE)
 
-        if (length(parsed) == 0) {
+        if (length(parsed) == 0 || is.null(parsed$data) || nrow(parsed$data) == 0) {
           return(tibble())
         }
 
-        as_tibble(parsed) %>%
+        # Flatten at the source: take just the events table and tag each row
+        # with the snapshot date it came from. Avoids the nested $data column
+        # and makes snapshot_date accessible alongside commence_time below.
+        as_tibble(parsed$data) %>%
           mutate(snapshot_date = day)
       })
-      event_list_clean <- event_list$data %>%
-        select(id, home_team, away_team, commence_time) %>%
-        distinct(id, .keep_all = TRUE) %>%
-        mutate(commence_time = ymd_hms(commence_time, tz = "UTC"))
+      # Each snapshot on date X returns events on X *and later dates* (future
+      # games already in the books at snapshot time). Those later dates get
+      # PARTIAL coverage — books that post closer to game day are missed.
+      # Discard bleed-through: each date is authoritative only for its own
+      # games. Later dates get full coverage from their own snapshot at T-2,
+      # after the MLB schedule is finalized.
+      event_list_clean <- event_list %>%
+        select(id, home_team, away_team, commence_time, snapshot_date) %>%
+        mutate(commence_time = ymd_hms(commence_time, tz = "UTC")) %>%
+        filter(as.Date(commence_time) == snapshot_date) %>%
+        distinct(id, .keep_all = TRUE)
 
+      if (nrow(event_list_clean) == 0) {
+        message("No events to insert (snapshots returned only bleed-through or no games).")
+      } else {
       history_df <- map2_dfr(
         event_list_clean$id,
         event_list_clean$commence_time,
@@ -299,6 +312,7 @@ WHERE NOT EXISTS (
       message(sprintf("Inserted %d new odds rows.", nrow(new_betting_history)))
       dbDisconnect(con, shutdown = TRUE)
       on.exit(NULL)
+      }
     }
   },
   error = function(e) {
