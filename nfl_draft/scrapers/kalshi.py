@@ -72,6 +72,19 @@ def _extract_yes_bid_cents(market: dict):
     return raw_cents  # may be 0 or None
 
 
+# Position series carry a tier suffix (P1 / P2 / P3 / ...) in the ticker's
+# 2nd segment - one Kalshi market per (player, tier). Without scoping the
+# book_label by that tier, all three "Mauigoa is the Nth OL" markets would
+# collapse onto the same MARKET_MAP key (first_ol_francis-mauigoa) and the
+# Cross-Book Grid's latest-per-(market,book) query would non-deterministically
+# pick any of them. See _kalshi_book_label for the scoping rule.
+_POSITION_SERIES = {
+    "KXNFLDRAFTQB", "KXNFLDRAFTRB", "KXNFLDRAFTWR", "KXNFLDRAFTTE",
+    "KXNFLDRAFTOL", "KXNFLDRAFTDB", "KXNFLDRAFTLB", "KXNFLDRAFTDT",
+    "KXNFLDRAFTEDGE",
+}
+
+
 def _kalshi_book_label(series_ticker: str, ticker: str) -> str:
     """Return the MARKET_MAP key 'book_label' for a Kalshi market.
 
@@ -83,14 +96,27 @@ def _kalshi_book_label(series_ticker: str, ticker: str) -> str:
     scope the label to the ticker's middle-segment prefix (e.g.
     'KXNFLDRAFTPICK-26-10'), which uniquely identifies the market group.
 
-    For series where the market-type is fixed per series (e.g. KXNFLDRAFT1,
-    KXNFLDRAFTQB) we keep series_ticker as-is -- collisions can't happen.
+    Position series (KXNFLDRAFTQB / RB / WR / TE / OL / DB / LB / DT / EDGE)
+    have the same problem at a different segment: Kalshi posts multiple tier
+    markets per player (P1 = "1st at position", P2 = "2nd at position", ...).
+    We scope the label to 'SERIES-P<N>' (e.g. 'KXNFLDRAFTOL-26P1') so the
+    three tiers get distinct book_labels. Downstream, the MARKET_MAP builder
+    only maps P1 to first_<pos>_<player>; P2+ fall through to quarantine
+    (correct -- there's no canonical market_type for 2nd/3rd-at-position yet).
+
+    For series where the market-type is fixed per series (e.g. KXNFLDRAFT1)
+    we keep series_ticker as-is -- collisions can't happen.
     """
     if series_ticker in ("KXNFLDRAFTPICK", "KXNFLDRAFTTOP"):
         # Ticker shape: KXNFLDRAFTPICK-26-10-TSIM -> label 'KXNFLDRAFTPICK-26-10'
         parts = (ticker or "").split("-")
         if len(parts) >= 3:
             return "-".join(parts[:3])
+    if series_ticker in _POSITION_SERIES:
+        # Ticker shape: KXNFLDRAFTOL-26P1-FMAU -> label 'KXNFLDRAFTOL-26P1'
+        parts = (ticker or "").split("-")
+        if len(parts) >= 2:
+            return f"{series_ticker}-{parts[1]}"
     return series_ticker
 
 

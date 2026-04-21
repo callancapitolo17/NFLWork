@@ -217,3 +217,57 @@ def test_h88_parse_returns_oddsrow_list():
         assert r.book_subject, f"empty book_subject on {r!r}"
         # H88 pads ContestantName with trailing spaces -- parser must strip.
         assert r.book_subject == r.book_subject.strip()
+
+
+def test_kalshi_book_label_scopes_position_series_by_tier():
+    """KXNFLDRAFTOL-26P1 and KXNFLDRAFTOL-26P2 must produce different book_labels
+    so MARKET_MAP doesn't collide three markets onto the same market_id.
+
+    Kalshi posts one market per (player, tier) in each position series:
+      P1 = "1st at position" (~60% for the favorite)
+      P2 = "2nd at position" (~15%)
+      P3 = "3rd at position" (~13%)
+    Before this scoping, all three rows mapped onto the same canonical
+    market_id and the Cross-Book Grid's latest-per-(market,book) query
+    would non-deterministically pick any of them.
+    """
+    from nfl_draft.scrapers.kalshi import _kalshi_book_label
+    assert _kalshi_book_label("KXNFLDRAFTOL", "KXNFLDRAFTOL-26P1-FMAU") == "KXNFLDRAFTOL-26P1"
+    assert _kalshi_book_label("KXNFLDRAFTOL", "KXNFLDRAFTOL-26P2-FMAU") == "KXNFLDRAFTOL-26P2"
+    assert _kalshi_book_label("KXNFLDRAFTOL", "KXNFLDRAFTOL-26P3-FMAU") == "KXNFLDRAFTOL-26P3"
+    # Same pattern across all position series.
+    for series in ("KXNFLDRAFTQB", "KXNFLDRAFTRB", "KXNFLDRAFTWR", "KXNFLDRAFTTE",
+                   "KXNFLDRAFTDB", "KXNFLDRAFTLB", "KXNFLDRAFTDT", "KXNFLDRAFTEDGE"):
+        label = _kalshi_book_label(series, f"{series}-26P1-XYZ")
+        assert label == f"{series}-26P1"
+    # PICK/TOP scoping still works (existing behavior).
+    assert _kalshi_book_label("KXNFLDRAFTPICK", "KXNFLDRAFTPICK-26-10-TSIM") == "KXNFLDRAFTPICK-26-10"
+    assert _kalshi_book_label("KXNFLDRAFTTOP", "KXNFLDRAFTTOP-26-R1-GJAC") == "KXNFLDRAFTTOP-26-R1"
+    # Non-scoped series (single market-type, no collision risk) stay bare.
+    assert _kalshi_book_label("KXNFLDRAFT1", "KXNFLDRAFT1-26-TCHA") == "KXNFLDRAFT1"
+
+
+def test_kalshi_market_map_only_maps_first_at_position_p1():
+    """Position-series markets P2, P3, ... must NOT map to first_<pos>_<player>.
+    Only P1 (the '1st at position' market) should get a canonical market_id;
+    P2+ fall through to draft_odds_unmapped (correct -- there's no canonical
+    'nth_at_position' market_type yet)."""
+    from nfl_draft.config.markets import MARKET_MAP
+    # Check every position series.
+    for series in ("KXNFLDRAFTQB", "KXNFLDRAFTRB", "KXNFLDRAFTWR", "KXNFLDRAFTTE",
+                   "KXNFLDRAFTOL", "KXNFLDRAFTDB", "KXNFLDRAFTLB", "KXNFLDRAFTDT",
+                   "KXNFLDRAFTEDGE"):
+        entries = [m for m in MARKET_MAP if m[0] == "kalshi" and m[1].startswith(series + "-")]
+        for book, label, subject, mid in entries:
+            assert label.endswith("-26P1"), (
+                f"Unexpected non-P1 entry for {series}: label={label} mid={mid}"
+            )
+            # market_id prefix must match the position (first_ol_, first_qb_, ...).
+            pos = {
+                "KXNFLDRAFTQB": "qb", "KXNFLDRAFTRB": "rb", "KXNFLDRAFTWR": "wr",
+                "KXNFLDRAFTTE": "te", "KXNFLDRAFTOL": "ol", "KXNFLDRAFTDB": "db",
+                "KXNFLDRAFTLB": "lb", "KXNFLDRAFTDT": "dt", "KXNFLDRAFTEDGE": "edge",
+            }[series]
+            assert mid.startswith(f"first_{pos}_"), (
+                f"Non-first_{pos} market_id for {series}: {mid}"
+            )
