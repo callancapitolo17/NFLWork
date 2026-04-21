@@ -176,8 +176,21 @@ def ev_candidates(threshold_pp: float = 10.0):
     return out
 
 
-def trade_tape(limit: int = 200, large_threshold_usd: float = 500.0):
-    """Recent Kalshi trades. Computes is_large at read time.
+def trade_tape(limit: int = 200, large_threshold_usd: float = 500.0, min_size_usd: float = 0.0):
+    """Recent Kalshi trades with human-readable market context.
+
+    LEFT JOIN against ``market_info`` (populated by the legacy Kalshi
+    fetcher) to surface the market's title + subtitle. When the JOIN
+    misses (ticker predates the market_info backfill), title/subtitle
+    come back ``None`` and the dashboard falls back to the raw ticker.
+
+    Args:
+        limit: max rows to return.
+        large_threshold_usd: fills >= this flagged ``is_large`` for
+            highlighting. Not a filter — all rows still returned.
+        min_size_usd: HARD filter floor — only trades with
+            ``notional_usd >= min_size_usd`` are returned. Default 0
+            (no filter) preserves existing behavior.
 
     Returns ``QueryLocked`` sentinel on lock contention.
     """
@@ -185,15 +198,22 @@ def trade_tape(limit: int = 200, large_threshold_usd: float = 500.0):
         with read_connection() as con:
             rows = con.execute(
                 """
-                SELECT trade_id, ticker, side, price_cents, count, notional_usd, traded_at,
-                       notional_usd >= ? AS is_large
-                FROM kalshi_trades
-                ORDER BY traded_at DESC
+                SELECT t.trade_id, t.ticker, t.side, t.price_cents, t.count,
+                       t.notional_usd, t.traded_at,
+                       t.notional_usd >= ? AS is_large,
+                       mi.title AS market_title,
+                       mi.subtitle AS market_subtitle
+                FROM kalshi_trades t
+                LEFT JOIN market_info mi ON mi.ticker = t.ticker
+                WHERE t.notional_usd >= ?
+                ORDER BY t.traded_at DESC
                 LIMIT ?
                 """,
-                [large_threshold_usd, limit],
+                [large_threshold_usd, min_size_usd, limit],
             ).fetchall()
-        cols = ["trade_id", "ticker", "side", "price_cents", "count", "notional_usd", "traded_at", "is_large"]
+        cols = ["trade_id", "ticker", "side", "price_cents", "count",
+                "notional_usd", "traded_at", "is_large",
+                "market_title", "market_subtitle"]
         return [dict(zip(cols, r)) for r in rows]
 
     return _safe_read(_query)

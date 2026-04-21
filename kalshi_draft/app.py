@@ -822,6 +822,19 @@ def render_trade_tape():
                     marks={i: f"${i}" for i in range(0, 5001, 1000)},
                 ),
             ], style={"marginBottom": "16px"}),
+            html.Div([
+                dcc.Slider(
+                    id="tape-min-size",
+                    min=0, max=5000, step=50, value=0,
+                    marks={0: "$0", 500: "$500", 1000: "$1k", 2000: "$2k", 5000: "$5k"},
+                    tooltip={"placement": "bottom"},
+                ),
+                html.Label(
+                    "Minimum trade size ($) \u2014 hides retail noise. "
+                    "Drag right to see only bigger bets.",
+                    style={"color": COLORS["text_muted"], "fontSize": "0.8em"},
+                ),
+            ], style={"marginBottom": "16px"}),
             dcc.Input(
                 id="tape-ticker-filter",
                 placeholder="Filter by ticker substring (optional)...",
@@ -1118,12 +1131,13 @@ def _ev_to_prefill(selected_rows, data):
     Output("tape-table-wrap", "children"),
     Output("nfl_draft__last_fetched_trades", "data"),
     Input("tape-threshold", "value"),
+    Input("tape-min-size", "value"),
     Input("tape-ticker-filter", "value"),
     Input("nfl_draft__interval", "n_intervals"),
     State("nfl_draft__last_fetched_trades", "data"),
     prevent_initial_call=True,
 )
-def _update_tape(threshold_usd, ticker_filter, _n_intervals, last_seen):
+def _update_tape(threshold_usd, min_size_usd, ticker_filter, _n_intervals, last_seen):
     ctx = dash.callback_context
     triggered_by_interval = (
         ctx.triggered and ctx.triggered[0]["prop_id"].startswith("nfl_draft__interval")
@@ -1135,28 +1149,66 @@ def _update_tape(threshold_usd, ticker_filter, _n_intervals, last_seen):
     if triggered_by_interval and latest_iso == last_seen:
         raise PreventUpdate
 
-    trades = nfl_queries.trade_tape(limit=200, large_threshold_usd=threshold_usd or 0)
+    trades = nfl_queries.trade_tape(
+        limit=200,
+        large_threshold_usd=threshold_usd or 0,
+        min_size_usd=min_size_usd or 0,
+    )
     if isinstance(trades, QueryLocked):
         raise PreventUpdate
     if ticker_filter:
         needle = ticker_filter.strip().upper()
         trades = [t for t in trades if needle in (t.get("ticker") or "").upper()]
 
-    # Convert to display-friendly rows
+    # Build display-ready rows. We compute formatted strings up front so the
+    # DataTable can show them as plain text columns — that avoids having to
+    # juggle numeric formatters (which would strip the "¢" / "$" prefixes).
+    display_rows = []
     for t in trades:
-        t["notional_usd"] = round(t["notional_usd"], 2) if t["notional_usd"] else 0
-        t["traded_at"] = str(t["traded_at"])
+        traded_at = t.get("traded_at")
+        if traded_at is None:
+            time_str = ""
+        else:
+            # DuckDB returns a datetime — render HH:MM:SS for scannability.
+            # Fall back to str() if something else sneaks through.
+            try:
+                time_str = traded_at.strftime("%H:%M:%S")
+            except AttributeError:
+                time_str = str(traded_at)
+
+        price = t.get("price_cents")
+        price_str = f"{price}\u00a2" if price is not None else ""
+
+        notional = t.get("notional_usd") or 0
+        size_str = f"${notional:.2f}"
+
+        # Market / Contestant fall back to raw ticker / blank when the
+        # market_info JOIN misses (tickers predating the market_info
+        # backfill).
+        market_title = t.get("market_title") or t.get("ticker") or ""
+        contestant = t.get("market_subtitle") or ""
+
+        display_rows.append({
+            "time": time_str,
+            "market": market_title,
+            "contestant": contestant,
+            "side": t.get("side"),
+            "price": price_str,
+            "size": size_str,
+            "is_large": t.get("is_large"),
+            # Preserve raw ticker for the ticker-substring filter / tooltip
+            "ticker": t.get("ticker"),
+        })
 
     table = dash_table.DataTable(
-        data=trades,
+        data=display_rows,
         columns=[
-            {"name": "Traded At", "id": "traded_at"},
-            {"name": "Ticker", "id": "ticker"},
+            {"name": "Time", "id": "time"},
+            {"name": "Market", "id": "market"},
+            {"name": "Contestant", "id": "contestant"},
             {"name": "Side", "id": "side"},
-            {"name": "Price (¢)", "id": "price_cents", "type": "numeric"},
-            {"name": "Count", "id": "count", "type": "numeric"},
-            {"name": "Notional", "id": "notional_usd", "type": "numeric",
-             "format": dash_table.FormatTemplate.money(2)},
+            {"name": "Price", "id": "price"},
+            {"name": "Trade size ($)", "id": "size"},
         ],
         filter_action="native",
         sort_action="native",
@@ -1164,7 +1216,8 @@ def _update_tape(threshold_usd, ticker_filter, _n_intervals, last_seen):
         style_header=TABLE_STYLE_HEADER,
         style_data=TABLE_STYLE_DATA,
         style_data_conditional=TABLE_STYLE_DATA_CONDITIONAL + [
-            {"if": {"filter_query": "{is_large} = True"},
+            {"if": {"filter_query": "{is_large} = True",
+                    "column_id": "size"},
              "backgroundColor": "#1a3b2a", "fontWeight": "600"},
         ],
         style_table={"overflowX": "auto"},

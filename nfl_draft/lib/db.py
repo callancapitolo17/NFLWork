@@ -88,6 +88,18 @@ SCHEMA = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_kalshi_trades_ticker_time ON kalshi_trades (ticker, traded_at DESC)",
+    # market_info is owned by the legacy Kalshi fetcher, but the Trade Tape
+    # query LEFT JOINs against it. Ensure it exists on fresh DBs so the
+    # dashboard doesn't crash before the Kalshi cron has run for the first
+    # time. IF NOT EXISTS is a no-op when the legacy fetcher has already
+    # created it.
+    """
+    CREATE TABLE IF NOT EXISTS market_info (
+        ticker VARCHAR, title VARCHAR, subtitle VARCHAR,
+        series_ticker VARCHAR, expiration_time TIMESTAMP,
+        close_time TIMESTAMP, updated_at TIMESTAMP
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS kalshi_poll_state (
         series_ticker TEXT PRIMARY KEY,

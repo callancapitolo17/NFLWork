@@ -132,6 +132,59 @@ def test_trade_tape_marks_large_fills(monkeypatch, tmp_path):
     assert by_id["t2"]["is_large"] is False
 
 
+def test_trade_tape_joins_market_info_and_filters_by_size(monkeypatch, tmp_path):
+    """Trade Tape should (a) LEFT JOIN to market_info so rows carry
+    human-readable title/subtitle, and (b) hard-filter by ``min_size_usd``
+    so small retail fills can be hidden. Tickers with no market_info row
+    must still appear (LEFT JOIN) with title/subtitle = None.
+    """
+    from nfl_draft.lib import db as db_module
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "t.duckdb")
+    db_module.init_schema()
+
+    from datetime import datetime
+    from nfl_draft.lib.db import write_connection
+    with write_connection() as con:
+        # init_schema creates market_info; just seed a row for TKR-1.
+        con.execute(
+            "INSERT INTO market_info (ticker, title, subtitle) "
+            "VALUES ('TKR-1', 'Who will be #1?', 'Fernando Mendoza')"
+        )
+        # Three trades: two big on the known ticker, one small on an
+        # unknown ticker (to verify LEFT JOIN returns nulls).
+        now = datetime.now()
+        con.execute(
+            "INSERT INTO kalshi_trades VALUES ('t1', 'TKR-1', 'yes', 99, 100, 99.0, ?, ?)",
+            [now, now],
+        )
+        con.execute(
+            "INSERT INTO kalshi_trades VALUES ('t2', 'TKR-1', 'yes', 99, 500, 495.0, ?, ?)",
+            [now, now],
+        )
+        con.execute(
+            "INSERT INTO kalshi_trades VALUES ('t3', 'TKR-2-UNKNOWN', 'no', 1, 1000, 10.0, ?, ?)",
+            [now, now],
+        )
+    from nfl_draft.lib.queries import trade_tape
+
+    # No filter: all 3 trades returned, names populated where the JOIN hits.
+    all_rows = trade_tape(limit=10, min_size_usd=0)
+    assert len(all_rows) == 3
+    for r in all_rows:
+        if r["ticker"] == "TKR-1":
+            assert r["market_title"] == "Who will be #1?"
+            assert r["market_subtitle"] == "Fernando Mendoza"
+        else:
+            # LEFT JOIN miss — title/subtitle come back null.
+            assert r["market_title"] is None
+            assert r["market_subtitle"] is None
+
+    # Filter at $100: only t2 ($495 notional) survives.
+    big = trade_tape(limit=10, min_size_usd=100)
+    assert len(big) == 1
+    assert big[0]["trade_id"] == "t2"
+
+
 def test_single_venue_market_no_crash(monkeypatch, tmp_path):
     from nfl_draft.lib import db as db_module
     monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.duckdb")
@@ -210,13 +263,8 @@ def test_kalshi_scrape_writes_to_legacy_kalshi_odds(monkeypatch, tmp_path):
                 liquidity BIGINT, open_interest INTEGER
             )
         """)
-        con.execute("""
-            CREATE TABLE market_info (
-                ticker VARCHAR, title VARCHAR, subtitle VARCHAR,
-                series_ticker VARCHAR, expiration_time TIMESTAMP,
-                close_time TIMESTAMP, updated_at TIMESTAMP
-            )
-        """)
+        # market_info is now created by init_schema (IF NOT EXISTS), so
+        # this CREATE would collide. Skip — init_schema already made it.
         con.execute("""
             CREATE TABLE draft_series (
                 series_ticker VARCHAR, title VARCHAR, category VARCHAR,
