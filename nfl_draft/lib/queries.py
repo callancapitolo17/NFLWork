@@ -195,18 +195,77 @@ def trade_tape(limit: int = 200, large_threshold_usd: float = 500.0, min_size_us
     Returns ``QueryLocked`` sentinel on lock contention.
     """
     def _query() -> List[Dict[str, Any]]:
+        # Aggregation rationale
+        # ---------------------
+        # Kalshi reports each order-match as its own ``trade_id``. A single
+        # logical trade (e.g. a 500-contract taker order that matched against
+        # 11 resting makers) shows up as 11 rows with the same
+        # ``(ticker, traded_at, price_cents, side)``. Without aggregation, the
+        # Trade Tape renders those 11 fills as 11 separate rows — visually
+        # implying 11 trades when there was really just one.
+        #
+        # Taker-side pricing
+        # ------------------
+        # We store ``price_cents`` as the YES-side price regardless of the
+        # taker's ``side`` (see ``parse_trades_response``). For a NO taker
+        # that means the cost per contract is ``100 - price_cents`` — if we
+        # display the raw value, a 1-cent NO fill reads as "99¢" which is
+        # wrong. Flip it at read time so the dashboard always shows what the
+        # taker actually paid. The raw yes_price stays in the DB (no schema
+        # migration).
         with read_connection() as con:
             rows = con.execute(
                 """
-                SELECT t.trade_id, t.ticker, t.side, t.price_cents, t.count,
-                       t.notional_usd, t.traded_at,
-                       t.notional_usd >= ? AS is_large,
-                       mi.title AS market_title,
-                       mi.subtitle AS market_subtitle
-                FROM kalshi_trades t
-                LEFT JOIN market_info mi ON mi.ticker = t.ticker
-                WHERE t.notional_usd >= ?
-                ORDER BY t.traded_at DESC
+                WITH aggregated AS (
+                    SELECT
+                        t.ticker,
+                        t.traded_at,
+                        t.side,
+                        t.price_cents AS yes_price_cents,
+                        CASE WHEN t.side = 'yes' THEN t.price_cents
+                             ELSE 100 - t.price_cents
+                        END AS taker_price_cents,
+                        SUM(t.count) AS total_count,
+                        -- Cast to DOUBLE so downstream Python gets floats
+                        -- (integer * 0.01 yields DECIMAL in DuckDB, which
+                        -- crosses the FFI as decimal.Decimal and breaks
+                        -- arithmetic in tests / callbacks).
+                        CAST(SUM(
+                            t.count
+                            * (CASE WHEN t.side = 'yes' THEN t.price_cents
+                                    ELSE 100 - t.price_cents END)
+                            * 0.01
+                        ) AS DOUBLE) AS taker_notional_usd,
+                        MIN(t.trade_id) AS trade_id,
+                        MIN(t.fetched_at) AS fetched_at
+                    FROM kalshi_trades t
+                    GROUP BY t.ticker, t.traded_at, t.side, t.price_cents
+                )
+                -- market_info can contain duplicate rows per ticker
+                -- (legacy data issue in the production DB). A naive LEFT JOIN
+                -- against it multiplies each aggregated trade by the dup
+                -- factor. De-duplicate to one row per ticker before joining.
+                , market_info_dedup AS (
+                    SELECT ticker, ANY_VALUE(title) AS title,
+                           ANY_VALUE(subtitle) AS subtitle
+                    FROM market_info
+                    GROUP BY ticker
+                )
+                SELECT
+                    a.trade_id,
+                    a.ticker,
+                    a.side,
+                    a.taker_price_cents AS price_cents,
+                    a.total_count AS count,
+                    a.taker_notional_usd AS notional_usd,
+                    a.traded_at,
+                    a.taker_notional_usd >= ? AS is_large,
+                    mi.title AS market_title,
+                    mi.subtitle AS market_subtitle
+                FROM aggregated a
+                LEFT JOIN market_info_dedup mi ON mi.ticker = a.ticker
+                WHERE a.taker_notional_usd >= ?
+                ORDER BY a.traded_at DESC
                 LIMIT ?
                 """,
                 [large_threshold_usd, min_size_usd, limit],

@@ -15,7 +15,7 @@ from nfl_draft.lib.queries import QueryLocked
 
 import dash
 from dash import dcc, html, dash_table, callback, Input, Output, State
-from dash.dash_table.Format import Format
+from dash.dash_table.Format import Format, Scheme, Symbol
 from dash.exceptions import PreventUpdate
 import plotly.express as px
 import plotly.graph_objects as go
@@ -1160,27 +1160,31 @@ def _update_tape(threshold_usd, min_size_usd, ticker_filter, _n_intervals, last_
         needle = ticker_filter.strip().upper()
         trades = [t for t in trades if needle in (t.get("ticker") or "").upper()]
 
-    # Build display-ready rows. We compute formatted strings up front so the
-    # DataTable can show them as plain text columns — that avoids having to
-    # juggle numeric formatters (which would strip the "¢" / "$" prefixes).
+    # Build display-ready rows.
+    #
+    # Previously we formatted Price / Trade size as strings with cent and
+    # dollar glyphs. That broke Dash's ``filter_action="native"`` on those
+    # columns — typing ``> 500`` did a string comparison, so "$495.00" < "$50"
+    # (lexicographic). Now we emit the raw numbers (``price_num`` int,
+    # ``size_num`` float) and let the DataTable apply display formatters
+    # via ``type="numeric"`` + ``format=Format(...)``. Units moved into the
+    # column headers ("Price (¢)" / "Trade size ($)").
     display_rows = []
     for t in trades:
         traded_at = t.get("traded_at")
         if traded_at is None:
             time_str = ""
         else:
-            # DuckDB returns a datetime — render HH:MM:SS for scannability.
-            # Fall back to str() if something else sneaks through.
+            # MM/DD HH:MM:SS keeps the column scannable while still surfacing
+            # the date — scanning only HH:MM:SS made trades from earlier
+            # calendar days ambiguous.
             try:
-                time_str = traded_at.strftime("%H:%M:%S")
+                time_str = traded_at.strftime("%m/%d %H:%M:%S")
             except AttributeError:
                 time_str = str(traded_at)
 
         price = t.get("price_cents")
-        price_str = f"{price}\u00a2" if price is not None else ""
-
         notional = t.get("notional_usd") or 0
-        size_str = f"${notional:.2f}"
 
         # Market / Contestant fall back to raw ticker / blank when the
         # market_info JOIN misses (tickers predating the market_info
@@ -1193,8 +1197,8 @@ def _update_tape(threshold_usd, min_size_usd, ticker_filter, _n_intervals, last_
             "market": market_title,
             "contestant": contestant,
             "side": t.get("side"),
-            "price": price_str,
-            "size": size_str,
+            "price_num": price,
+            "size_num": notional,
             "is_large": t.get("is_large"),
             # Preserve raw ticker for the ticker-substring filter / tooltip
             "ticker": t.get("ticker"),
@@ -1207,8 +1211,11 @@ def _update_tape(threshold_usd, min_size_usd, ticker_filter, _n_intervals, last_
             {"name": "Market", "id": "market"},
             {"name": "Contestant", "id": "contestant"},
             {"name": "Side", "id": "side"},
-            {"name": "Price", "id": "price"},
-            {"name": "Trade size ($)", "id": "size"},
+            {"name": "Price (\u00a2)", "id": "price_num", "type": "numeric",
+             "format": Format(precision=0, scheme=Scheme.fixed)},
+            {"name": "Trade size ($)", "id": "size_num", "type": "numeric",
+             "format": Format(precision=2, scheme=Scheme.fixed,
+                              symbol=Symbol.yes, symbol_prefix="$")},
         ],
         filter_action="native",
         sort_action="native",
@@ -1217,7 +1224,7 @@ def _update_tape(threshold_usd, min_size_usd, ticker_filter, _n_intervals, last_
         style_data=TABLE_STYLE_DATA,
         style_data_conditional=TABLE_STYLE_DATA_CONDITIONAL + [
             {"if": {"filter_query": "{is_large} = True",
-                    "column_id": "size"},
+                    "column_id": "size_num"},
              "backgroundColor": "#1a3b2a", "fontWeight": "600"},
         ],
         style_table={"overflowX": "auto"},

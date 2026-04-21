@@ -112,17 +112,23 @@ def test_trade_tape_marks_large_fills(monkeypatch, tmp_path):
     from nfl_draft.lib import db as db_module
     monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.duckdb")
     db_module.init_schema()
-    from datetime import datetime
+    from datetime import datetime, timedelta
     from nfl_draft.lib.db import write_connection
-    now = datetime.now()
+    # Two *different* logical trades — use distinct traded_at so the fill-dedup
+    # GROUP BY in trade_tape() keeps them separate. Notional is recomputed at
+    # read time (count * taker-side price * 0.01) so pick sizes that cross the
+    # $500 large-fill threshold both ways: t1 = 2000*50¢ = $1000 (large),
+    # t2 = 40*50¢ = $20 (not large).
+    t1 = datetime.now()
+    t2 = t1 - timedelta(seconds=30)
     with write_connection() as con:
         con.execute(
-            "INSERT INTO kalshi_trades VALUES ('t1', 'TKR', 'yes', 50, 200, 1000.0, ?, ?)",
-            [now, now],
+            "INSERT INTO kalshi_trades VALUES ('t1', 'TKR', 'yes', 50, 2000, 1000.0, ?, ?)",
+            [t1, t1],
         )
         con.execute(
-            "INSERT INTO kalshi_trades VALUES ('t2', 'TKR', 'yes', 50, 20, 100.0, ?, ?)",
-            [now, now],
+            "INSERT INTO kalshi_trades VALUES ('t2', 'TKR', 'yes', 50, 40, 20.0, ?, ?)",
+            [t2, t2],
         )
     from nfl_draft.lib.queries import trade_tape
     rows = trade_tape(limit=10, large_threshold_usd=500.0)
@@ -142,7 +148,7 @@ def test_trade_tape_joins_market_info_and_filters_by_size(monkeypatch, tmp_path)
     monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "t.duckdb")
     db_module.init_schema()
 
-    from datetime import datetime
+    from datetime import datetime, timedelta
     from nfl_draft.lib.db import write_connection
     with write_connection() as con:
         # init_schema creates market_info; just seed a row for TKR-1.
@@ -150,20 +156,27 @@ def test_trade_tape_joins_market_info_and_filters_by_size(monkeypatch, tmp_path)
             "INSERT INTO market_info (ticker, title, subtitle) "
             "VALUES ('TKR-1', 'Who will be #1?', 'Fernando Mendoza')"
         )
-        # Three trades: two big on the known ticker, one small on an
-        # unknown ticker (to verify LEFT JOIN returns nulls).
+        # Three *distinct* trades: two big on the known ticker, one small on
+        # an unknown ticker (to verify LEFT JOIN returns nulls). Use distinct
+        # traded_at timestamps so the fill-dedup GROUP BY keeps them separate.
         now = datetime.now()
+        t1 = now
+        t2 = now - timedelta(seconds=30)
+        t3 = now - timedelta(seconds=60)
+        # NB: t3 is side='no' with yes_price=1; at read time the query flips
+        # it to taker-side (100-1 = 99). Taker notional = 1000 * 99¢ = $990.
+        # That's intentional — we're verifying taker-side math + LEFT JOIN.
         con.execute(
             "INSERT INTO kalshi_trades VALUES ('t1', 'TKR-1', 'yes', 99, 100, 99.0, ?, ?)",
-            [now, now],
+            [t1, t1],
         )
         con.execute(
             "INSERT INTO kalshi_trades VALUES ('t2', 'TKR-1', 'yes', 99, 500, 495.0, ?, ?)",
-            [now, now],
+            [t2, t2],
         )
         con.execute(
             "INSERT INTO kalshi_trades VALUES ('t3', 'TKR-2-UNKNOWN', 'no', 1, 1000, 10.0, ?, ?)",
-            [now, now],
+            [t3, t3],
         )
     from nfl_draft.lib.queries import trade_tape
 
@@ -179,10 +192,64 @@ def test_trade_tape_joins_market_info_and_filters_by_size(monkeypatch, tmp_path)
             assert r["market_title"] is None
             assert r["market_subtitle"] is None
 
-    # Filter at $100: only t2 ($495 notional) survives.
+    # Filter at $100: t2 ($495 taker notional) and t3 (1000 * 99¢ taker
+    # notional = $990 after the side-flip) both survive; t1 ($99) is below.
     big = trade_tape(limit=10, min_size_usd=100)
-    assert len(big) == 1
-    assert big[0]["trade_id"] == "t2"
+    assert {r["trade_id"] for r in big} == {"t2", "t3"}
+
+
+def test_trade_tape_aggregates_multi_fill_trades(monkeypatch, tmp_path):
+    """Multiple Kalshi trade_ids with same (ticker, traded_at, price, side) should collapse to 1 row.
+
+    Regression guard for the Trade Tape fill-dedup fix: Kalshi emits each
+    order-match as its own trade_id, so a 1000-contract taker order that
+    matched 3 resting makers shows up in the raw table as 3 rows. The query
+    must GROUP BY the natural trade key and SUM count / notional so the
+    dashboard shows 1 row per logical trade.
+    """
+    from nfl_draft.lib import db as db_module
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "t.duckdb")
+    db_module.init_schema()
+    from datetime import datetime
+    from nfl_draft.lib.db import write_connection
+    t = datetime(2026, 4, 20, 14, 0, 0)
+    with write_connection() as con:
+        # 3 fills of a single 1000-contract trade
+        con.execute("INSERT INTO kalshi_trades VALUES ('t1', 'TKR', 'yes', 50, 400, 200.0, ?, ?)", [t, t])
+        con.execute("INSERT INTO kalshi_trades VALUES ('t2', 'TKR', 'yes', 50, 300, 150.0, ?, ?)", [t, t])
+        con.execute("INSERT INTO kalshi_trades VALUES ('t3', 'TKR', 'yes', 50, 300, 150.0, ?, ?)", [t, t])
+    from nfl_draft.lib.queries import trade_tape
+    rows = trade_tape(limit=10, min_size_usd=0)
+    assert len(rows) == 1  # collapsed
+    r = rows[0]
+    assert r["count"] == 1000
+    assert r["price_cents"] == 50  # yes side, same as yes_price
+    assert r["notional_usd"] == 500.0  # 1000 * 50¢
+
+
+def test_trade_tape_taker_side_pricing_for_no(monkeypatch, tmp_path):
+    """When side=no, price should be 100 - yes_price and notional should match taker cost.
+
+    Regression guard for the taker-side pricing fix: the DB stores YES-side
+    price regardless of taker side, so a NO buyer paying 1¢ shows up in the
+    raw row as ``price_cents=99``. The query must flip it at read time.
+    """
+    from nfl_draft.lib import db as db_module
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "t.duckdb")
+    db_module.init_schema()
+    from datetime import datetime
+    from nfl_draft.lib.db import write_connection
+    t = datetime(2026, 4, 20, 14, 0, 0)
+    with write_connection() as con:
+        # NO buyer: yes_price=99 (NO cost=1), count=1000, notional=$10
+        con.execute("INSERT INTO kalshi_trades VALUES ('tX', 'TKR', 'no', 99, 1000, 10.0, ?, ?)", [t, t])
+    from nfl_draft.lib.queries import trade_tape
+    rows = trade_tape(limit=10, min_size_usd=0)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["side"] == "no"
+    assert r["price_cents"] == 1  # taker-side (100 - 99)
+    assert abs(r["notional_usd"] - 10.0) < 0.01  # 1000 × 1¢
 
 
 def test_single_venue_market_no_crash(monkeypatch, tmp_path):
