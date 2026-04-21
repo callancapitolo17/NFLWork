@@ -67,8 +67,8 @@ if (!interactive() && sys.nframe() == 0L) {
   # home_team / away_team must match Odds API canonical names in mlb_consensus_temp.
   todays_lines <- tribble(
     ~home_team,              ~away_team,             ~target_team, ~side,   ~book_odds,
-    "San Diego Padres",      "Colorado Rockies",     "Padres",     "home",  +190,
-    "San Diego Padres",      "Colorado Rockies",     "Rockies",    "away",  +530,
+    "Colorado Rockies",      "San Diego Padres",     "Rockies",    "home",  +530,
+    "Colorado Rockies",      "San Diego Padres",     "Padres",     "away",  +190,
     "San Francisco Giants",  "Los Angeles Dodgers",  "Giants",     "home",  +750,
     "San Francisco Giants",  "Los Angeles Dodgers",  "Dodgers",    "away",  +155,
     "Seattle Mariners",      "Athletics",            "Mariners",   "home",  +215,
@@ -84,11 +84,19 @@ if (!interactive() && sys.nframe() == 0L) {
     "SELECT game_id, home_margin, home_margin_f5, home_scored_first
      FROM mlb_game_samples")
   consensus  <- dbGetQuery(con,
-    "SELECT id, home_team, away_team FROM mlb_consensus_temp")
+    "SELECT id, home_team, away_team, commence_time FROM mlb_consensus_temp")
 
   if (!"home_scored_first" %in% names(samples_df)) {
     stop("mlb_game_samples is missing home_scored_first. Re-run MLB.R to regenerate.")
   }
+
+  # Restrict consensus to games starting within 12 hours. mlb_consensus_temp
+  # now carries multiple days of slate; without this filter, doubleheaders +
+  # next-day games cause each tribble row to match >1 game_id.
+  consensus <- consensus %>%
+    filter(commence_time > Sys.time() &
+           commence_time < Sys.time() + 12 * 3600) %>%
+    select(-commence_time)
 
   # Join today's lines to their game_id via team names
   matched <- todays_lines %>%
