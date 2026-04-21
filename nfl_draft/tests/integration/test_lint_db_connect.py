@@ -41,6 +41,9 @@ def test_no_raw_duckdb_connect_outside_allowlist():
                 continue
             if "/tests/" in rel or rel.endswith("/conftest.py"):
                 continue
+            # Skip third-party code inside bundled virtualenvs.
+            if "/venv/" in rel or "/site-packages/" in rel:
+                continue
             text = py_file.read_text()
             if PATTERN.search(text):
                 violations.append(rel)
