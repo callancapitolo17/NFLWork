@@ -76,3 +76,21 @@ test_that("returns NA on impossible inputs (|margin_change| > total_change)", {
                                 m4=NA, t4=NA, m5=NA, t5=NA)
   ))
 })
+
+test_that("mlb_game_samples has home_scored_first column populated", {
+  skip_if_not(file.exists("../mlb.duckdb"),
+              "mlb.duckdb not present — run MLB.R first")
+  con <- DBI::dbConnect(duckdb::duckdb(), dbdir = "../mlb.duckdb", read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con))
+  cols <- DBI::dbGetQuery(con, "PRAGMA table_info('mlb_game_samples')")$name
+  expect_true("home_scored_first" %in% cols)
+  # Values should be 0, 1, or NA only
+  vals <- DBI::dbGetQuery(con,
+    "SELECT DISTINCT home_scored_first FROM mlb_game_samples")$home_scored_first
+  expect_true(all(vals %in% c(0L, 1L, NA_integer_)))
+  # Coverage should be >= 90% non-NA per historical data
+  non_na_pct <- DBI::dbGetQuery(con,
+    "SELECT AVG(CASE WHEN home_scored_first IS NOT NULL THEN 1.0 ELSE 0.0 END) AS p
+     FROM mlb_game_samples")$p
+  expect_gt(non_na_pct, 0.90)
+})

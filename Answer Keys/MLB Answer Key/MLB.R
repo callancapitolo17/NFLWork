@@ -59,6 +59,19 @@ DT <- dbGetQuery(con, "
   ) %>%
   as.data.table()
 
+# Compute home_scored_first indicator for triple-play prop pricing.
+# Carried through sampling by preserving as an extra column on DT.
+source("triple_play_helpers.R")
+DT[, home_scored_first := determine_home_scored_first_vec(
+  game_home_margin_inning_inning_1, game_total_inning_inning_1,
+  game_home_margin_inning_inning_2, game_total_inning_inning_2,
+  game_home_margin_inning_inning_3, game_total_inning_inning_3,
+  game_home_margin_inning_inning_4, game_total_inning_inning_4,
+  game_home_margin_inning_inning_5, game_total_inning_inning_5
+)]
+cat(sprintf("home_scored_first coverage: %.1f%% of games determinable in innings 1-5.\n",
+            100 * mean(!is.na(DT$home_scored_first))))
+
 dbDisconnect(con)
 on.exit(NULL)  # clear the on.exit since we disconnected
 
@@ -309,16 +322,17 @@ cat("Storing samples to DuckDB for parlay analysis...\n")
 sample_rows <- imap_dfr(samples, function(s, game_id) {
   samp <- s$sample
   tibble(
-    game_id           = game_id,
-    sim_idx           = seq_len(nrow(samp)),
-    home_margin       = samp$game_home_margin_period_FG,
-    total_final_score = samp$game_total_period_FG,
-    home_margin_f3    = samp$game_home_margin_period_F3,
-    total_f3          = samp$game_total_period_F3,
-    home_margin_f5    = samp$game_home_margin_period_F5,
-    total_f5          = samp$game_total_period_F5,
-    home_margin_f7    = samp$game_home_margin_period_F7,
-    total_f7          = samp$game_total_period_F7
+    game_id            = game_id,
+    sim_idx            = seq_len(nrow(samp)),
+    home_margin        = samp$game_home_margin_period_FG,
+    total_final_score  = samp$game_total_period_FG,
+    home_margin_f3     = samp$game_home_margin_period_F3,
+    total_f3           = samp$game_total_period_F3,
+    home_margin_f5     = samp$game_home_margin_period_F5,
+    total_f5           = samp$game_total_period_F5,
+    home_margin_f7     = samp$game_home_margin_period_F7,
+    total_f7           = samp$game_total_period_F7,
+    home_scored_first  = samp$home_scored_first
   )
 })
 
