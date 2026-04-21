@@ -18,6 +18,7 @@ suppressPackageStartupMessages({
   library(jsonlite)
 })
 source("Tools.R")
+source("triple_play_helpers.R")
 timer <- pipeline_timer()
 startup_secs <- as.numeric(difftime(Sys.time(), .t_script_start, units = "secs"))
 timer$mark(sprintf("r_startup (%.1fs total)", startup_secs))
@@ -61,7 +62,6 @@ DT <- dbGetQuery(con, "
 
 # Compute home_scored_first indicator for triple-play prop pricing.
 # Carried through sampling by preserving as an extra column on DT.
-source("triple_play_helpers.R")
 DT[, home_scored_first := determine_home_scored_first_vec(
   game_home_margin_inning_inning_1, game_total_inning_inning_1,
   game_home_margin_inning_inning_2, game_total_inning_inning_2,

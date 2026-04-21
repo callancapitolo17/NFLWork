@@ -88,9 +88,9 @@ test_that("mlb_game_samples has home_scored_first column populated", {
   vals <- DBI::dbGetQuery(con,
     "SELECT DISTINCT home_scored_first FROM mlb_game_samples")$home_scored_first
   expect_true(all(vals %in% c(0L, 1L, NA_integer_)))
-  # Coverage should be >= 90% non-NA per historical data
+  # Coverage should be >= 94% non-NA per historical data (observed ~95.4%)
   non_na_pct <- DBI::dbGetQuery(con,
     "SELECT AVG(CASE WHEN home_scored_first IS NOT NULL THEN 1.0 ELSE 0.0 END) AS p
      FROM mlb_game_samples")$p
-  expect_gt(non_na_pct, 0.90)
+  expect_gt(non_na_pct, 0.94)
 })
