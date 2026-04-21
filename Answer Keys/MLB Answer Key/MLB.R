@@ -65,9 +65,9 @@ DT <- dbGetQuery(con, "
 DT[, home_scored_first := determine_home_scored_first_vec(
   game_home_margin_inning_inning_1, game_total_inning_inning_1,
   game_home_margin_inning_inning_2, game_total_inning_inning_2,
-  game_home_margin_inning_inning_3, game_total_inning_inning_3,
+  game_home_margin_period_F3,       game_total_period_F3,
   game_home_margin_inning_inning_4, game_total_inning_inning_4,
-  game_home_margin_inning_inning_5, game_total_inning_inning_5
+  game_home_margin_period_F5,       game_total_period_F5
 )]
 cat(sprintf("home_scored_first coverage: %.1f%% of games determinable in innings 1-5.\n",
             100 * mean(!is.na(DT$home_scored_first))))
