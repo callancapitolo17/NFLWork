@@ -1,7 +1,11 @@
 # NFL Draft EV Portal
 
 Trader's-cockpit web portal for surfacing +EV NFL Draft bets across
-Kalshi and 4 sportsbooks (DraftKings, FanDuel, Bookmaker, Wagerzon).
+Kalshi and 5 sportsbooks (DraftKings, FanDuel, Bookmaker, Wagerzon, Hoop88).
+
+**Current venue status** (2026-04-21):
+- Kalshi, DraftKings, Wagerzon, Hoop88, Bookmaker — posting draft markets, all scraping live.
+- FanDuel — draft page temporarily offline as of 2026-04-20 (they pulled the "NFL Draft" tab from `customPageId=nfl`'s layout). Scraper is intact and will pick up automatically when FD reposts; the dashboard's staleness filter hides FD rows while they're gone.
 
 ## Architecture
 
@@ -41,6 +45,11 @@ See `docs/superpowers/specs/2026-04-17-nfl-draft-portal-design.md` for the full 
      BOOKMAKER_USERNAME=...
      BOOKMAKER_PASSWORD=...
      ```
+     On expired cookies, the scraper auto-re-logs-in via the same HTTP
+     flow the production scraper uses; only falls back to the headful
+     Playwright path (`recon_bm.py --browser`) if HTTP login also fails
+     (e.g., Cloudflare JS challenge). League IDs `12273` (PROPOSITIONS)
+     and `13425` (ODDS TO WIN) were discovered via XHR interception.
    - **Wagerzon** (`scrapers/wagerzon.py` -> `scrapers/recon_wz.py`):
      credentials live in `bet_logger/.env` (same shared file). Env vars
      (see `scrapers/recon_wz.py`):
@@ -88,7 +97,11 @@ See `docs/superpowers/specs/2026-04-17-nfl-draft-portal-design.md` for the full 
 - **Manual scrape**: `python -m nfl_draft.run --mode scrape --book all`
 - **Single book (debug)**: `python -m nfl_draft.run --mode scrape --book draftkings`
 - **Trade tape**: `python -m nfl_draft.run --mode trades`
-- **Dashboard**: `python kalshi_draft/app.py` -> http://127.0.0.1:8083/
+- **Dashboard**: `python kalshi_draft/app.py` -> http://127.0.0.1:8090/
+  - Override the port with `NFL_DRAFT_DASHBOARD_PORT=9001 python kalshi_draft/app.py`.
+  - On launch, the dashboard spawns a detached background scrape so data is populated within ~2 minutes without any manual action. A daemon thread then re-scrapes every 15 minutes while the dashboard is running. Logs to `/tmp/nfl_draft_startup_scrape.log` and `/tmp/nfl_draft_periodic_scrape.log`.
+  - The "Refresh Data" button in the header kicks an on-demand scrape (non-blocking; returns instantly with a toast).
+  - The Cross-Book Grid hides rows older than 2 hours, so venues that go silent (cookies expired, site changes) drop out automatically instead of showing stale data.
 
 ## Draft-day mode
 

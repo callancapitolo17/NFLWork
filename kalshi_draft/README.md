@@ -5,9 +5,10 @@ Interactive Dash dashboard for tracking NFL Draft prediction markets on Kalshi. 
 > **Status (April 2026):** The dashboard has been extended with the NFL Draft EV
 > portal (see [`../nfl_draft/README.md`](../nfl_draft/README.md)). New tabs —
 > Cross-Book Grid, +EV Candidates, Trade Tape, Bet Log — render data for Kalshi
-> plus four sportsbooks (DK, FD, Bookmaker, Wagerzon). The database pointer has
-> been repointed at `nfl_draft/nfl_draft.duckdb`; the legacy
-> `kalshi_draft.duckdb` has been migrated in and retired.
+> plus five sportsbooks (DK, FD, Bookmaker, Wagerzon, Hoop88). The database pointer
+> has been repointed at `nfl_draft/nfl_draft.duckdb`; the legacy
+> `kalshi_draft.duckdb` has been migrated in and retired. Dashboard port moved
+> from 8083 to 8090 (override via `NFL_DRAFT_DASHBOARD_PORT`).
 
 ## Features
 
@@ -48,7 +49,7 @@ cp .env.example .env
 ./venv/bin/python app.py            # Start dashboard server
 ```
 
-Dashboard runs at `http://127.0.0.1:8083`
+Dashboard runs at `http://127.0.0.1:8090` (override via `NFL_DRAFT_DASHBOARD_PORT`).
 
 ## Architecture
 

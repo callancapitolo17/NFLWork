@@ -39,7 +39,7 @@ NFLWork/
 │
 ├── kalshi_mm/                # Kalshi market maker bot
 ├── kalshi_draft/             # Kalshi NFL draft prediction markets
-├── nfl_draft/                # Cross-venue NFL Draft EV portal (Kalshi + 4 books)
+├── nfl_draft/                # Cross-venue NFL Draft EV portal (Kalshi + 5 books)
 ├── kalshi coaching/          # Kalshi coaching hire markets
 │
 ├── March Madness/            # Tournament simulator (Monte Carlo)
@@ -106,5 +106,5 @@ cd bet_logger && bash run_all_scrapers.sh
 ## NFL Draft Portal
 
 See [`nfl_draft/README.md`](nfl_draft/README.md) for the cross-venue EV portal
-(Kalshi + DK/FD/Bookmaker/Wagerzon).
+(Kalshi + DK/FD/Bookmaker/Wagerzon/Hoop88). Dashboard runs at http://127.0.0.1:8090/.
 
