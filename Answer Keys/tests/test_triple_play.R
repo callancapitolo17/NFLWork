@@ -1,0 +1,57 @@
+# Answer Keys/tests/test_triple_play.R
+library(testthat)
+source("../triple_play_helpers.R")
+
+test_that("home scored first when away has 0 runs in inning 1", {
+  expect_equal(
+    determine_home_scored_first(m1=2, t1=2,
+                                m2=NA, t2=NA, m3=NA, t3=NA,
+                                m4=NA, t4=NA, m5=NA, t5=NA),
+    1L
+  )
+})
+
+test_that("away scored first when away scored any runs in first scoring inning", {
+  expect_equal(
+    determine_home_scored_first(m1=-1, t1=3,
+                                m2=NA, t2=NA, m3=NA, t3=NA,
+                                m4=NA, t4=NA, m5=NA, t5=NA),
+    0L
+  )
+})
+
+test_that("falls through to inning 2 when inning 1 is scoreless", {
+  expect_equal(
+    determine_home_scored_first(m1=0, t1=0,
+                                m2=1, t2=1, m3=NA, t3=NA,
+                                m4=NA, t4=NA, m5=NA, t5=NA),
+    1L
+  )
+})
+
+test_that("returns NA when no scoring in innings 1 through 5", {
+  expect_true(is.na(
+    determine_home_scored_first(m1=0, t1=0, m2=0, t2=0,
+                                m3=0, t3=0, m4=0, t4=0,
+                                m5=0, t5=0)
+  ))
+})
+
+test_that("returns NA when data is NA before any scoring", {
+  expect_true(is.na(
+    determine_home_scored_first(m1=NA, t1=NA,
+                                m2=NA, t2=NA, m3=NA, t3=NA,
+                                m4=NA, t4=NA, m5=NA, t5=NA)
+  ))
+})
+
+test_that("vectorized version matches scalar over multiple rows", {
+  result <- determine_home_scored_first_vec(
+    m1 = c(2, -1, 0), t1 = c(2, 3, 0),
+    m2 = c(NA, NA, 1), t2 = c(NA, NA, 1),
+    m3 = c(NA, NA, NA), t3 = c(NA, NA, NA),
+    m4 = c(NA, NA, NA), t4 = c(NA, NA, NA),
+    m5 = c(NA, NA, NA), t5 = c(NA, NA, NA)
+  )
+  expect_equal(result, c(1L, 0L, 1L))
+})
