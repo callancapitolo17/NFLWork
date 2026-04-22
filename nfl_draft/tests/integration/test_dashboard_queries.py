@@ -441,3 +441,80 @@ def test_queries_propagate_non_lock_errors(monkeypatch):
     import pytest as _pytest
     with _pytest.raises(duckdb.Error):
         queries.cross_book_grid(threshold_pp=10)
+
+
+def test_quarantine_honors_oddsrow_price_overrides(monkeypatch, tmp_path):
+    """When OddsRow sets implied_prob / devig_prob, write_or_quarantine must
+    store those exact values in draft_odds rather than deriving both from
+    american_to_implied(american_odds)."""
+    from nfl_draft.lib import db as db_module
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.duckdb")
+    db_module.init_schema()
+
+    from datetime import datetime
+    from nfl_draft.lib.db import write_connection, read_connection
+    from nfl_draft.lib.quarantine import write_or_quarantine
+    from nfl_draft.scrapers._base import OddsRow
+
+    # Seed market_map so the row is mapped (not quarantined)
+    with write_connection() as con:
+        con.execute(
+            "INSERT INTO market_map (book, book_label, book_subject, market_id) "
+            "VALUES ('kalshi', 'KXNFLDRAFTPICK-26-5', 'Carnell Tate', 'pick_5_overall_carnell-tate')"
+        )
+
+    row = OddsRow(
+        book="kalshi",
+        book_label="KXNFLDRAFTPICK-26-5",
+        book_subject="Carnell Tate",
+        american_odds=1900,       # corresponds to yes_ask=5c
+        fetched_at=datetime.now(),
+        implied_prob=0.05,        # exact buy price (take)
+        devig_prob=0.035,         # exact mid (fair)
+    )
+    mapped, unmapped = write_or_quarantine([row])
+    assert (mapped, unmapped) == (1, 0)
+
+    with read_connection() as con:
+        got = con.execute(
+            "SELECT implied_prob, devig_prob FROM draft_odds WHERE market_id = ?",
+            ["pick_5_overall_carnell-tate"],
+        ).fetchone()
+    assert got == (0.05, 0.035)
+
+
+def test_quarantine_falls_back_to_american_when_overrides_absent(monkeypatch, tmp_path):
+    """Sportsbook rows leave overrides as None → both columns populated via
+    american_to_implied(american_odds), same as before this change."""
+    from nfl_draft.lib import db as db_module
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.duckdb")
+    db_module.init_schema()
+
+    from datetime import datetime
+    from nfl_draft.lib.db import write_connection, read_connection
+    from nfl_draft.lib.quarantine import write_or_quarantine
+    from nfl_draft.scrapers._base import OddsRow
+
+    with write_connection() as con:
+        con.execute(
+            "INSERT INTO market_map (book, book_label, book_subject, market_id) "
+            "VALUES ('draftkings', 'nfl_draft_pick_5', 'Carnell Tate', 'pick_5_overall_carnell-tate')"
+        )
+
+    row = OddsRow(
+        book="draftkings",
+        book_label="nfl_draft_pick_5",
+        book_subject="Carnell Tate",
+        american_odds=1200,  # implied = 100/1300 ≈ 0.07692
+        fetched_at=datetime.now(),
+    )
+    write_or_quarantine([row])
+
+    with read_connection() as con:
+        got = con.execute(
+            "SELECT implied_prob, devig_prob FROM draft_odds WHERE market_id = ?",
+            ["pick_5_overall_carnell-tate"],
+        ).fetchone()
+    expected = 100.0 / (1200 + 100)
+    assert abs(got[0] - expected) < 1e-9
+    assert got[0] == got[1]  # both columns identical, as today

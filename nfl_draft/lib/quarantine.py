@@ -39,10 +39,19 @@ def write_or_quarantine(rows: List[OddsRow]) -> Tuple[int, int]:
                 )
                 unmapped += 1
                 continue
-            implied = american_to_implied(row.american_odds)
+            implied = (
+                row.implied_prob
+                if row.implied_prob is not None
+                else american_to_implied(row.american_odds)
+            )
+            devig = (
+                row.devig_prob
+                if row.devig_prob is not None
+                else implied
+            )
             con.execute(
                 "INSERT INTO draft_odds VALUES (?, ?, ?, ?, ?, ?)",
-                [mid, row.book, row.american_odds, implied, implied, row.fetched_at],
+                [mid, row.book, row.american_odds, implied, devig, row.fetched_at],
             )
             mapped += 1
     return (mapped, unmapped)
