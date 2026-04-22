@@ -25,3 +25,73 @@ parse_fraction <- function(s) {
   }
   NA_real_
 }
+
+#' Token registry: regex → function(match) returning a leg spec.
+#'
+#' Each entry has:
+#'   pattern: POSIX-extended regex (anchored with ^ and $) matched against the
+#'            stripped, uppercased token string.
+#'   spec:    function(character vector of capture groups) returning a named list.
+#'
+#' Add new tokens here to teach the parser new prop types.
+TOKEN_REGISTRY <- list(
+  list(pattern = "^F3$",
+       spec    = function(m) list(type = "wins_period", period = "F3")),
+  list(pattern = "^1H$",
+       spec    = function(m) list(type = "wins_period", period = "F5")),
+  list(pattern = "^F7$",
+       spec    = function(m) list(type = "wins_period", period = "F7")),
+  list(pattern = "^GM$",
+       spec    = function(m) list(type = "wins_period", period = "FG")),
+  list(pattern = "^SCR 1ST$",
+       spec    = function(m) list(type = "scores_first")),
+  # For patterns with a capture group, m[[1]] is the full match and
+  # m[[2]] is the first capture. parse_fraction needs the capture only.
+  list(pattern = "^SCR U(.+)$",
+       spec    = function(m) list(type = "team_total_under",
+                                  line = parse_fraction(m[[2]]))),
+  list(pattern = "^SCR O(.+)$",
+       spec    = function(m) list(type = "team_total_over",
+                                  line = parse_fraction(m[[2]])))
+)
+
+#' Match a single token against TOKEN_REGISTRY. Returns leg spec or NULL.
+.match_token <- function(token) {
+  for (entry in TOKEN_REGISTRY) {
+    m <- regmatches(token, regexec(entry$pattern, token, perl = TRUE))[[1]]
+    if (length(m) > 0) return(entry$spec(m))
+  }
+  NULL
+}
+
+#' Parse a Wagerzon description string into a list of leg specs.
+#'
+#' "GIANTS TRIPLE-PLAY (SCR 1ST, 1H & GM)" → 3 leg specs.
+#' Unknown tokens trigger a warning and return NULL (pricer treats NULL as
+#' "cannot price" → fair_prob = NA).
+#' Descriptions with no parenthetical also return NULL.
+parse_legs <- function(description) {
+  if (is.null(description) || is.na(description) || !nzchar(description)) {
+    return(NULL)
+  }
+  # Extract the parenthetical content (e.g. "SCR 1ST, 1H & GM")
+  inside <- regmatches(description,
+                       regexec("\\((.+)\\)", description, perl = TRUE))[[1]]
+  if (length(inside) < 2) return(NULL)
+  raw <- inside[[2]]
+  # Tokenize: split on "," and "&", trim whitespace
+  tokens <- trimws(unlist(strsplit(raw, "[,&]")))
+  tokens <- tokens[nzchar(tokens)]
+  # Map each token via registry
+  legs <- vector("list", length(tokens))
+  for (i in seq_along(tokens)) {
+    spec <- .match_token(tokens[[i]])
+    if (is.null(spec)) {
+      warning(sprintf("Unknown leg token: '%s' in description '%s'",
+                      tokens[[i]], description))
+      return(NULL)
+    }
+    legs[[i]] <- spec
+  }
+  legs
+}
