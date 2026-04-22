@@ -317,6 +317,25 @@ def test_kalshi_team_series_now_maps():
     )
 
 
+def test_kalshi_and_betonline_team_first_pick_ids_collide():
+    """Cross-book test for the team-name normalisation added post-review.
+    Both books should now emit identical 'team_first_pick' market_ids for
+    the same (team, player) pair. Before normalisation these didn't match
+    (Kalshi 'Washington' vs BetOnline 'Washington Commanders'), so zero
+    cross-book joins fired on ~768 rows."""
+    from nfl_draft.config.markets import _betonline_entries, _kalshi_entries
+    be_ids = {e[3] for e in _betonline_entries()
+              if "_first_pick_" in e[3] and "_first_pick_pos_" not in e[3]}
+    ks_ids = {e[3] for e in _kalshi_entries()
+              if "_first_pick_" in e[3] and "_first_pick_pos_" not in e[3]
+              and e[3].startswith("team_")}
+    overlap = be_ids & ks_ids
+    assert len(overlap) >= 50, (
+        f"expected >= 50 cross-book team_first_pick joins, got {len(overlap)}. "
+        f"BetOnline: {len(be_ids)}, Kalshi: {len(ks_ids)}"
+    )
+
+
 def test_betonline_entries_cover_structured_groups():
     """After Task 13, _betonline_entries() should feed ~500+ canonical rows
     into MARKET_MAP spanning every v1 canonical type."""

@@ -563,7 +563,11 @@ def _kalshi_market_id_for(
         if not m:
             return None
         player = m.group(1).strip()
-        team = subject  # 'Washington' / 'Tampa Bay' / etc.
+        # Normalise subject ('Washington' / 'Los Angeles C') to the
+        # cross-book canonical — identical to what BetOnline's
+        # _betonline_market_id_for does, so the IDs collide on match.
+        from nfl_draft.lib.market_map import normalize_team
+        team = normalize_team(subject)
         return build_market_id("team_first_pick", team=team, player=player)
 
     # Kalshi-only series (matchup, OU, etc.) fall through unmapped:
@@ -687,8 +691,12 @@ def _betonline_market_id_for(
         if not m:
             return None
         player = m.group(1).strip()
-        # subject = team name; canonical 'team_first_pick' keys by team + player.
-        return build_market_id("team_first_pick", team=subject, player=player)
+        # subject = BetOnline team string (e.g. 'Arizona Cardinals'); normalise
+        # to the Kalshi short form ('Arizona') so the 'team_first_pick'
+        # market_id collides with Kalshi's KXNFLDRAFTTEAM mapping.
+        from nfl_draft.lib.market_map import normalize_team
+        team = normalize_team(subject)
+        return build_market_id("team_first_pick", team=team, player=player)
     if group == "team_first_pick_position":
         m = teams_1st_pos_re.match(label)
         if not m:

@@ -420,6 +420,17 @@ def _classify_draft_position(desc: dict, ce: dict, cgl: dict, now: datetime) -> 
         return
     line = cgl.get("GroupLine")
     if line is None:
+        # Line suspended/pulled — emit a prop so the market surfaces in
+        # quarantine instead of silently vanishing.
+        for c in (cgl.get("Contestants") or []):
+            name = (c.get("Name") or "").strip()
+            american = _odds(c)
+            if name and american is not None:
+                yield OddsRow(
+                    book="betonline", book_label=label, book_subject=name,
+                    american_odds=american, fetched_at=now,
+                    market_group="prop_draft_position_no_line",
+                )
         return
     try:
         line_val = float(line)
@@ -465,6 +476,17 @@ def _classify_1st_round_props(desc: dict, ce: dict, cgl: dict, now: datetime) ->
         return
     line = cgl.get("GroupLine")
     if line is None:
+        # Line suspended/pulled — emit a prop so the market surfaces in
+        # quarantine instead of silently vanishing.
+        for c in (cgl.get("Contestants") or []):
+            name = (c.get("Name") or "").strip()
+            american = _odds(c)
+            if name and american is not None:
+                yield OddsRow(
+                    book="betonline", book_label=label, book_subject=name,
+                    american_odds=american, fetched_at=now,
+                    market_group="prop_first_round_total_no_line",
+                )
         return
     try:
         line_val = float(line)

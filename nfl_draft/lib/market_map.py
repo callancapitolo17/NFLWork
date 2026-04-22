@@ -24,6 +24,58 @@ def _slug_underscored(name: str) -> str:
     return out
 
 
+# Team-name normaliser: collapses BetOnline's franchise names ('Arizona Cardinals')
+# and Kalshi's short names ('Arizona') onto a single canonical form so cross-book
+# joins on 'team_first_pick' actually fire. The canonical form chosen is the
+# Kalshi short name because those strings are already live in the draft_odds
+# table; remapping them would break historical rows. For ambiguous cities with
+# two franchises (LA, NY), Kalshi disambiguates via single-letter suffix and
+# we map the BetOnline full name to the matching Kalshi form.
+_NFL_TEAM_NORMALISE: dict[str, str] = {
+    # Single-franchise cities: both forms collapse to the Kalshi short name.
+    "arizona": "Arizona", "arizona cardinals": "Arizona",
+    "atlanta": "Atlanta", "atlanta falcons": "Atlanta",
+    "baltimore": "Baltimore", "baltimore ravens": "Baltimore",
+    "buffalo": "Buffalo", "buffalo bills": "Buffalo",
+    "carolina": "Carolina", "carolina panthers": "Carolina",
+    "chicago": "Chicago", "chicago bears": "Chicago",
+    "cincinnati": "Cincinnati", "cincinnati bengals": "Cincinnati",
+    "cleveland": "Cleveland", "cleveland browns": "Cleveland",
+    "dallas": "Dallas", "dallas cowboys": "Dallas",
+    "denver": "Denver", "denver broncos": "Denver",
+    "detroit": "Detroit", "detroit lions": "Detroit",
+    "green bay": "Green Bay", "green bay packers": "Green Bay",
+    "houston": "Houston", "houston texans": "Houston",
+    "indianapolis": "Indianapolis", "indianapolis colts": "Indianapolis",
+    "jacksonville": "Jacksonville", "jacksonville jaguars": "Jacksonville",
+    "kansas city": "Kansas City", "kansas city chiefs": "Kansas City",
+    "las vegas": "Las Vegas", "las vegas raiders": "Las Vegas",
+    "miami": "Miami", "miami dolphins": "Miami",
+    "minnesota": "Minnesota", "minnesota vikings": "Minnesota",
+    "new england": "New England", "new england patriots": "New England",
+    "new orleans": "New Orleans", "new orleans saints": "New Orleans",
+    "philadelphia": "Philadelphia", "philadelphia eagles": "Philadelphia",
+    "pittsburgh": "Pittsburgh", "pittsburgh steelers": "Pittsburgh",
+    "san francisco": "San Francisco", "san francisco 49ers": "San Francisco",
+    "seattle": "Seattle", "seattle seahawks": "Seattle",
+    "tampa bay": "Tampa Bay", "tampa bay buccaneers": "Tampa Bay",
+    "tennessee": "Tennessee", "tennessee titans": "Tennessee",
+    "washington": "Washington", "washington commanders": "Washington",
+    # Two-franchise cities: Kalshi disambiguates via single-letter suffix.
+    "los angeles c": "Los Angeles C", "los angeles chargers": "Los Angeles C",
+    "los angeles r": "Los Angeles R", "los angeles rams": "Los Angeles R",
+    "new york g": "New York G", "new york giants": "New York G",
+    "new york j": "New York J", "new york jets": "New York J",
+}
+
+
+def normalize_team(name: str) -> str:
+    """Return the canonical NFL team name for cross-book joins, falling back
+    to the input unchanged if unknown (so novel names surface in quarantine
+    rather than silently mis-joining onto a wrong team)."""
+    return _NFL_TEAM_NORMALISE.get(name.strip().lower(), name.strip())
+
+
 def _format_line(line: float) -> str:
     """Encode a pick line into the market_id safely.
 
