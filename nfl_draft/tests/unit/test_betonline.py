@@ -71,6 +71,15 @@ def test_emits_top_n_range_from_to_be_selected(rows):
     )
 
 
+def test_emits_mr_irrelevant_position(rows):
+    """mr-irrelevant contestants are position words, not players."""
+    mi = [r for r in rows if r.market_group == "mr_irrelevant_position"]
+    assert len(mi) >= 5, f"expected >= 5 mr_irrelevant rows, got {len(mi)}"
+    subjects = {r.book_subject.lower() for r in mi}
+    assert any("receiver" in s or "lineman" in s or "back" in s or "linebacker" in s
+               for s in subjects), subjects
+
+
 def test_1st_round_props_emits_totals_props_with_lines(rows):
     """1st-round-props are totals-style ('Total X Drafted in 1st Round' with
     O/U + GroupLine) — no canonical join today, so we emit as props with

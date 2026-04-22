@@ -273,6 +273,24 @@ def _classify_to_be_selected(desc: dict, ce: dict, cgl: dict, now: datetime) -> 
         )
 
 
+def _classify_mr_irrelevant(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterator[OddsRow]:
+    """For `mr-irrelevant`: 'Draft Position of Mr. Irrelevant' where each
+    contestant is a position word (e.g. 'Wide Receiver'). Maps to canonical
+    mr_irrelevant_position (position-keyed, not player-keyed).
+    """
+    label = (ce.get("Description") or "").strip()
+    for c in (cgl.get("Contestants") or []):
+        name = (c.get("Name") or "").strip()  # position word
+        american = _odds(c)
+        if not name or american is None:
+            continue
+        yield OddsRow(
+            book="betonline", book_label=label, book_subject=name,
+            american_odds=american, fetched_at=now,
+            market_group="mr_irrelevant_position",
+        )
+
+
 def _classify_1st_round_props(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterator[OddsRow]:
     """For `1st-round-props`: 'Total X Drafted in 1st Round' with O/U + GroupLine.
 
@@ -312,6 +330,7 @@ CLASSIFIERS = {
     "to-be-drafted-1st": _classify_first_at_position,
     "to-be-drafted-2nd": _classify_nth_at_position,
     "to-be-selected": _classify_to_be_selected,
+    "mr-irrelevant": _classify_mr_irrelevant,
 }
 
 
