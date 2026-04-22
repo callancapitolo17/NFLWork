@@ -85,6 +85,8 @@ def _load_cookies(session: cffi_requests.Session) -> int:
     api.betonline.ag / api-offering.betonline.ag / etc.
     """
     if not COOKIE_PATH.exists():
+        print(f"  WARNING: cookie jar not found at {COOKIE_PATH}")
+        print(f"  Run: python bet_logger/recon_betonline.py  (then retry this script)")
         return 0
     try:
         raw = json.loads(COOKIE_PATH.read_text())

@@ -120,8 +120,8 @@ def print_diagnostics(book: str, path: Path, url: str | None, data: Any) -> None
 
 
 def ensure_fixture_dirs() -> None:
-    """Create all four book fixture dirs + .gitkeep so the tree exists in git."""
-    for book in ("draftkings", "fanduel", "bookmaker", "wagerzon"):
+    """Create per-book fixture dirs + .gitkeep so the tree exists in git."""
+    for book in ("betonline", "bookmaker", "draftkings", "fanduel", "hoop88", "kalshi", "wagerzon"):
         d = fixture_dir(book)
         gk = d / ".gitkeep"
         if not gk.exists():

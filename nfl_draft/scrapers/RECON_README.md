@@ -133,6 +133,7 @@ DK and FD require no credentials (public APIs + TLS fingerprint bypass).
 
 | Symptom | Book | Fix |
 |---|---|---|
+| HTTP 403 / no slugs from BetOnline | BOL | Cloudflare cookie expired — run `python bet_logger/recon_betonline.py` then retry |
 | HTTP 403 from DK REST | DK | Akamai rate-limit; wait 5 minutes, or run `--browser` |
 | HTTP 400 empty body from FD | FD | `x-px-context` token expired — refresh from Chrome DevTools into `FD_PX_CONTEXT` |
 | "WZ login failed" | WZ | Check `WAGERZON_USERNAME`/`WAGERZON_PASSWORD` in `bet_logger/.env` |
