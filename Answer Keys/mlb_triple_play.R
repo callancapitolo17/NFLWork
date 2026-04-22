@@ -81,7 +81,9 @@ if (!interactive() && sys.nframe() == 0L) {
   on.exit(tryCatch(dbDisconnect(con), error = function(e) NULL), add = TRUE)
 
   samples_df <- dbGetQuery(con,
-    "SELECT game_id, home_margin, home_margin_f5, home_scored_first
+    "SELECT game_id, home_margin, total_final_score,
+            home_margin_f3, home_margin_f5, home_margin_f7,
+            home_scored_first
      FROM mlb_game_samples")
   consensus  <- dbGetQuery(con,
     "SELECT id, home_team, away_team, commence_time FROM mlb_consensus_temp")
