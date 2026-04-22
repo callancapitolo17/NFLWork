@@ -15,6 +15,10 @@ def write_or_quarantine(rows: List[OddsRow]) -> Tuple[int, int]:
     book_subject) key -- with hundreds of unique keys per scrape, connection
     setup was the dominant cost.
 
+    If ``row.implied_prob`` / ``row.devig_prob`` are set, they are written
+    verbatim to draft_odds; otherwise both columns are derived from
+    ``american_to_implied(row.american_odds)`` (legacy sportsbook behavior).
+
     Returns: (mapped_count, unmapped_count).
     """
     if not rows:
