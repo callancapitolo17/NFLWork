@@ -104,10 +104,20 @@ if (!interactive() && sys.nframe() == 0L) {
       fair_prob    = compute_prop_fair(game_samples, side, legs),
       fair_odds    = prob_to_american(fair_prob),
       book_prob    = american_to_prob(book_odds),
-      edge_pct     = (fair_prob / book_prob - 1) * 100
+      edge_pct     = (fair_prob / book_prob - 1) * 100,
+      prop_type    = {
+        # Anchor on known prop-type tokens so multi-word team names work
+        # ("WHITE SOX TRIPLE-PLAY ..." and "GIANTS GRAND-SLAM ..." both parse).
+        # Extend this pattern as new prop types are added to TOKEN_REGISTRY.
+        known_props <- "(TRIPLE-PLAY|GRAND-SLAM)"
+        m <- regmatches(description,
+                        regexec(paste0("\\b", known_props, "\\b"), description))[[1]]
+        if (length(m) >= 2) m[[2]] else NA_character_
+      }
     ) %>%
     ungroup() %>%
-    select(target_team, side, n_samples, fair_prob, fair_odds, book_odds, edge_pct) %>%
+    select(target_team, prop_type, side, n_samples,
+           fair_prob, fair_odds, book_odds, edge_pct) %>%
     arrange(desc(edge_pct))
 
   cat("\n=== MLB Triple-Play Fair Prices (SCR 1ST + F5 + GM) ===\n")
@@ -123,4 +133,5 @@ if (!interactive() && sys.nframe() == 0L) {
       edge_pct  = sprintf("%+.1f%%", edge_pct)
     )
   print(as.data.frame(display), row.names = FALSE)
+
 }
