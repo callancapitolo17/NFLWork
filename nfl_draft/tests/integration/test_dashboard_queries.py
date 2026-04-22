@@ -518,3 +518,54 @@ def test_quarantine_falls_back_to_american_when_overrides_absent(monkeypatch, tm
     expected = 100.0 / (1200 + 100)
     assert abs(got[0] - expected) < 1e-9
     assert got[0] == got[1]  # both columns identical, as today
+
+
+def test_legacy_kalshi_odds_write_handles_dollar_format(monkeypatch, tmp_path):
+    """Regression: _write_legacy_kalshi_odds must persist real bid/ask/last
+    when Kalshi returns the newer `*_dollars` response shape. Prior bug was
+    m.get('yes_bid', 0) silently storing zeros for dollar-format accounts."""
+    from nfl_draft.lib import db as db_module
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.duckdb")
+    db_module.init_schema()
+
+    from nfl_draft.lib.db import write_connection, read_connection
+    with write_connection() as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS kalshi_odds (
+                fetch_time TIMESTAMP, series_ticker VARCHAR, event_ticker VARCHAR,
+                ticker VARCHAR, market_title VARCHAR, candidate VARCHAR,
+                yes_bid INTEGER, yes_ask INTEGER, no_bid INTEGER, no_ask INTEGER,
+                last_price INTEGER, volume BIGINT, volume_24h BIGINT,
+                liquidity BIGINT, open_interest INTEGER
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS market_info (
+                ticker VARCHAR, title VARCHAR, subtitle VARCHAR,
+                series_ticker VARCHAR, updated_at TIMESTAMP
+            )
+        """)
+
+    from nfl_draft.scrapers.kalshi import _write_legacy_kalshi_odds
+    markets = [{
+        "ticker": "KXNFLDRAFTPICK-26-5-CTAT",
+        "event_ticker": "EVT1",
+        "title": "Pick 5",
+        "yes_sub_title": "Carnell Tate",
+        "yes_bid_dollars": "0.02",
+        "yes_ask_dollars": "0.05",
+        "no_bid_dollars":  "0.95",
+        "no_ask_dollars":  "0.98",
+        "last_price_dollars": "0.04",
+        "volume": 1000, "volume_24h": 5000,
+        "liquidity_dollars": "100.00",
+        "open_interest": 200,
+    }]
+    _write_legacy_kalshi_odds("KXNFLDRAFTPICK", "NFL Draft Picks", markets)
+
+    with read_connection() as con:
+        row = con.execute(
+            "SELECT yes_bid, yes_ask, no_bid, no_ask, last_price FROM kalshi_odds WHERE ticker = ?",
+            ["KXNFLDRAFTPICK-26-5-CTAT"],
+        ).fetchone()
+    assert row == (2, 5, 95, 98, 4)
