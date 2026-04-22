@@ -1,5 +1,6 @@
 """Per-book market label -> canonical market_id mapping + market_id construction."""
 
+import re
 from typing import Optional
 from nfl_draft.lib.db import read_connection
 
@@ -17,7 +18,6 @@ def _slug_underscored(name: str) -> str:
     slug() does so 'Wide Receiver' -> 'wide_receiver' and 'Defensive Line/Edge'
     -> 'defensive_line_edge'.
     """
-    import re
     out = name.lower().replace(".", "").replace("'", "")
     # Collapse any run of whitespace + slashes into a single underscore.
     out = re.sub(r"[\s/]+", "_", out).strip("_")

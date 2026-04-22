@@ -71,3 +71,11 @@ def test_build_market_id_draft_position_over_under_whole_point():
     assert build_market_id(
         "draft_position_over_under", player="Abdul Carter", line=3.0, direction="over"
     ) == "draft_position_ou_abdul-carter_3_over"
+
+
+def test_build_market_id_draft_position_over_under_sub_one_line():
+    # 0.5 lines are rare but valid — ensure the 0 integer part is preserved
+    # (f"{0.5:g}" yields '0.5', not '.5').
+    assert build_market_id(
+        "draft_position_over_under", player="Mr Irrelevant", line=0.5, direction="under"
+    ) == "draft_position_ou_mr-irrelevant_0p5_under"
