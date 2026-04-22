@@ -116,10 +116,9 @@ if (run_odds) {
     con <- dbConnect(duckdb(), dbdir = "pbp.duckdb")
     on.exit(tryCatch(dbDisconnect(con, shutdown = TRUE), error = function(e) NULL), add = TRUE)
 
-    # Source of truth: PBP-derived MLB regular-season/postseason games.
-    # Excludes World Baseball Classic, minor-league exhibitions, college
-    # exhibitions, and All-Star games — none of which are in Odds API under
-    # the same team names.
+    # Source of truth: PBP-derived games. mlb_pbp_all is filtered at write
+    # time (see PBP section below) to only contain regular-season and
+    # postseason MLB games — no WBC/All-Star/minor-league exhibitions.
     pbp_games <- dbGetQuery(
       con,
       "
@@ -128,10 +127,6 @@ if (run_odds) {
          CAST(game_date AS DATE) AS game_date
   FROM mlb_pbp_all
   WHERE year(CAST(game_date AS DATE)) >= 2020
-    AND home_league_name IN ('American League', 'National League')
-    AND away_league_name IN ('American League', 'National League')
-    AND home_team NOT LIKE '%All-Stars'
-    AND away_team NOT LIKE '%All-Stars'
   GROUP BY home_team, away_team, game_date
 "
     ) %>%
@@ -439,6 +434,20 @@ if (run_pbp) {
     } else {
       message(sprintf("Fetching PBP for %d new games...", length(new_game_ids)))
       season_pbp <- map_dfr(new_game_ids, get_pbp_mlb)
+
+      # Filter non-MLB games before insert: WBC, minor-league exhibitions,
+      # and All-Star Games slip past the schedule-level Exhibition/Spring
+      # filter. Downstream joins can't match them to Odds API anyway.
+      pre_filter_rows <- nrow(season_pbp)
+      season_pbp <- season_pbp %>%
+        filter(home_league_name %in% c("American League", "National League"),
+               away_league_name %in% c("American League", "National League"),
+               !grepl("All-Stars$", home_team),
+               !grepl("All-Stars$", away_team))
+      if (nrow(season_pbp) < pre_filter_rows) {
+        message(sprintf("Filtered out %d non-MLB PBP rows (WBC/All-Star/minor-league).",
+                        pre_filter_rows - nrow(season_pbp)))
+      }
 
       new_pbp <- season_pbp %>%
         select(all_of(cols_name))
