@@ -271,3 +271,28 @@ def test_kalshi_market_map_only_maps_first_at_position_p1():
             assert mid.startswith(f"first_{pos}_"), (
                 f"Non-first_{pos} market_id for {series}: {mid}"
             )
+
+
+def test_bookmaker_fixture_includes_nth_at_position_markets():
+    """After v1 canonical-type expansion, BM's 2nd/3rd-WR-selected rows
+    should round-trip through config._bm_entries() into MARKET_MAP instead
+    of being silently dropped."""
+    from nfl_draft.config.markets import _bm_entries
+    entries = _bm_entries()
+    # Any entry whose market_id starts with `2_` or `3_` followed by a
+    # position slug is an nth_at_position canonical.
+    nth = [e for e in entries if e[3].startswith(("2_", "3_", "4_", "5_"))]
+    assert nth, "BM fixture should produce >=1 nth_at_position mapping"
+
+
+def test_wagerzon_fixture_includes_nth_at_position_markets():
+    """WZ may or may not post nth-at-position markets consistently; only
+    assert a mapping exists if the fixture itself carries nth rows."""
+    from nfl_draft.config.markets import _wz_entries
+    entries = _wz_entries()
+    nth = [e for e in entries if e[3].startswith(("2_", "3_", "4_", "5_"))]
+    has_nth = any(r.market_group.startswith("nth_at_position_")
+                  for r in wz_parse(json.loads(
+                      (FIXTURES / "wagerzon" / "draft_markets.json").read_text())))
+    if has_nth:
+        assert nth, "WZ fixture has nth rows but _wz_entries produced no mapping"

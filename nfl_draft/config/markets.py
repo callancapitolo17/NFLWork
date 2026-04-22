@@ -216,7 +216,23 @@ def _bm_market_id_for(group, label, subject, *, pick_re, nth_pos_re, position_ma
         if not pos:
             return None
         return build_market_id("first_at_position", position=pos, player=subject)
-    # nth_at_position_N (N>=2) -> prop (no structured 2nd-at-position type)
+    if group.startswith("nth_at_position_"):
+        # e.g. group='nth_at_position_2'; the BM book_label carries the
+        # position word ('2nd Wide Receiver Selected'). Re-parse to get
+        # BOTH the nth and the position word.
+        m = nth_pos_re.match(label)
+        if not m:
+            return None
+        try:
+            nth_val = int(m.group(1))
+        except (ValueError, IndexError):
+            return None
+        pos = position_map.get(m.group(2).strip().lower())
+        if not pos:
+            return None
+        return build_market_id(
+            "nth_at_position", nth=nth_val, position=pos, player=subject,
+        )
     return None
 
 
@@ -336,6 +352,21 @@ def _wz_market_id_for(group, label, subject, *, pick_desc_re, nth_pos_re, positi
         if not pos:
             return None
         return build_market_id("first_at_position", position=pos, player=subject)
+    if group.startswith("nth_at_position_"):
+        # Same logic as BM: re-parse the game.htm label to get nth + position.
+        m = nth_pos_re.match(label)
+        if not m:
+            return None
+        try:
+            nth_val = int(m.group(1))
+        except (ValueError, IndexError):
+            return None
+        pos = position_map.get(m.group(2).strip().lower())
+        if not pos:
+            return None
+        return build_market_id(
+            "nth_at_position", nth=nth_val, position=pos, player=subject,
+        )
     return None
 
 
