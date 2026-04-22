@@ -89,6 +89,11 @@ FIRST_ROUND_TOTAL_DESC_RE = re.compile(
     r"^Total\s+(.+?)\s+Drafted\s+in\s+1st\s+Round\s*$", re.IGNORECASE,
 )
 
+# "2nd Cornerback Selected" / "3rd Wide Receiver Selected"
+NTH_POS_DESC_RE = re.compile(
+    r"^(\d+)(?:st|nd|rd|th)\s+(.+?)\s+Selected\s*$", re.IGNORECASE,
+)
+
 # BetOnline position words -> canonical abbreviations used by
 # build_market_id('first_at_position', position=...).
 POSITION_MAP = {
@@ -177,6 +182,55 @@ def _classify_first_at_position(desc: dict, ce: dict, cgl: dict, now: datetime) 
         )
 
 
+def _classify_nth_at_position(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterator[OddsRow]:
+    """For `to-be-drafted-2nd`: '2nd Cornerback Selected' with player runners.
+
+    Emits market_group `nth_at_position_N` (e.g. nth_at_position_2) so the
+    MARKET_MAP builder can dispatch to build_market_id('nth_at_position',
+    nth=N, position=..., player=...).
+    """
+    label = (ce.get("Description") or "").strip()
+    m = NTH_POS_DESC_RE.match(label)
+    if not m:
+        for c in (cgl.get("Contestants") or []):
+            name = (c.get("Name") or "").strip()
+            american = _odds(c)
+            if name and american is not None:
+                yield OddsRow(
+                    book="betonline", book_label=label, book_subject=name,
+                    american_odds=american, fetched_at=now,
+                    market_group="prop_nth_at_position",
+                )
+        return
+    try:
+        nth_val = int(m.group(1))
+    except (ValueError, IndexError):
+        return
+    pos_raw = m.group(2).strip().lower()
+    pos = POSITION_MAP.get(pos_raw)
+    if not pos:
+        for c in (cgl.get("Contestants") or []):
+            name = (c.get("Name") or "").strip()
+            american = _odds(c)
+            if name and american is not None:
+                yield OddsRow(
+                    book="betonline", book_label=label, book_subject=name,
+                    american_odds=american, fetched_at=now,
+                    market_group="prop_nth_at_unknown_position",
+                )
+        return
+    for c in (cgl.get("Contestants") or []):
+        name = (c.get("Name") or "").strip()
+        american = _odds(c)
+        if not name or american is None:
+            continue
+        yield OddsRow(
+            book="betonline", book_label=label, book_subject=name,
+            american_odds=american, fetched_at=now,
+            market_group=f"nth_at_position_{nth_val}",
+        )
+
+
 def _classify_1st_round_props(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterator[OddsRow]:
     """For `1st-round-props`: 'Total X Drafted in 1st Round' with O/U + GroupLine.
 
@@ -214,6 +268,7 @@ CLASSIFIERS = {
     "1st-round": _classify_1st_round,
     "1st-round-props": _classify_1st_round_props,
     "to-be-drafted-1st": _classify_first_at_position,
+    "to-be-drafted-2nd": _classify_nth_at_position,
 }
 
 

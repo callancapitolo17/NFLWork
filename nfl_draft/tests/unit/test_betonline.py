@@ -51,6 +51,14 @@ def test_emits_first_at_position_from_to_be_drafted_1st(rows):
     assert any("wide receiver" in lbl.lower() for lbl in labels), labels
 
 
+def test_emits_nth_at_position_2(rows):
+    """to-be-drafted-2nd has '2nd X Selected' with player runners."""
+    nth = [r for r in rows if r.market_group == "nth_at_position_2"]
+    assert len(nth) >= 20, f"expected >= 20 nth_at_position_2 rows, got {len(nth)}"
+    for r in nth:
+        assert "2nd" in r.book_label.lower(), r.book_label
+
+
 def test_1st_round_props_emits_totals_props_with_lines(rows):
     """1st-round-props are totals-style ('Total X Drafted in 1st Round' with
     O/U + GroupLine) — no canonical join today, so we emit as props with
