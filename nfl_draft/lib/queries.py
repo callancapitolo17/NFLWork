@@ -353,6 +353,52 @@ def all_market_ids():
     return _safe_read(_query)
 
 
+def kalshi_tooltip_data() -> Dict[str, Dict[str, Any]]:
+    """Return per-Kalshi-market hover content keyed by market_id.
+
+    For every ``market_map`` row where ``book='kalshi'``, join to the latest
+    ``kalshi_odds`` snapshot (by fetch_time) for the corresponding ticker. The
+    join key is ``(book_label, book_subject)`` because market_map stores the
+    ticker *prefix* (e.g. ``KXNFLDRAFTPICK-26-5``) while the full ticker has a
+    candidate shortcode appended (``KXNFLDRAFTPICK-26-5-CTAT``).
+
+    Returns:
+        ``{market_id: {"ticker": str, "yes_bid": int, "yes_ask": int,
+                       "last_price": int}}``
+        Rows where no matching kalshi_odds snapshot exists are omitted.
+        Returns ``QueryLocked`` on DuckDB lock contention.
+    """
+    def _query() -> Dict[str, Dict[str, Any]]:
+        with read_connection() as con:
+            rows = con.execute(
+                """
+                WITH latest_ko AS (
+                  SELECT ticker, candidate, yes_bid, yes_ask, last_price,
+                         ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY fetch_time DESC) AS rn
+                  FROM kalshi_odds
+                )
+                SELECT mm.market_id, ko.ticker, ko.yes_bid, ko.yes_ask, ko.last_price
+                FROM market_map mm
+                JOIN latest_ko ko
+                  ON ko.ticker LIKE mm.book_label || '-%'
+                 AND ko.candidate = mm.book_subject
+                 AND ko.rn = 1
+                WHERE mm.book = 'kalshi'
+                """
+            ).fetchall()
+        return {
+            market_id: {
+                "ticker": ticker,
+                "yes_bid": yes_bid,
+                "yes_ask": yes_ask,
+                "last_price": last_price,
+            }
+            for market_id, ticker, yes_bid, yes_ask, last_price in rows
+        }
+
+    return _safe_read(_query)
+
+
 def latest_max_fetched_at(table: str):
     """Return MAX(fetched_at) for a table. Used by the cheap-poll guard to
     decide whether the tab needs to re-render on the interval tick.

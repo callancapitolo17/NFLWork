@@ -670,3 +670,85 @@ def test_cross_book_grid_kalshi_flag_suppressed_when_no_take_price(monkeypatch, 
     from nfl_draft.lib.queries import cross_book_grid
     rows = cross_book_grid(threshold_pp=3.0)
     assert rows[0]["flags"]["kalshi"] is False
+
+
+def test_kalshi_tooltip_data_joins_market_map_to_kalshi_odds(monkeypatch, tmp_path):
+    """kalshi_tooltip_data returns {market_id: {ticker, yes_bid, yes_ask, last_price}}
+    for every Kalshi market that has a market_map entry with a live kalshi_odds row."""
+    from nfl_draft.lib import db as db_module
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.duckdb")
+    db_module.init_schema()
+
+    from datetime import datetime
+    from nfl_draft.lib.db import write_connection
+    now = datetime.now()
+    with write_connection() as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS kalshi_odds (
+                fetch_time TIMESTAMP, series_ticker VARCHAR, event_ticker VARCHAR,
+                ticker VARCHAR, market_title VARCHAR, candidate VARCHAR,
+                yes_bid INTEGER, yes_ask INTEGER, no_bid INTEGER, no_ask INTEGER,
+                last_price INTEGER, volume BIGINT, volume_24h BIGINT,
+                liquidity BIGINT, open_interest INTEGER
+            )
+        """)
+        con.execute(
+            "INSERT INTO market_map VALUES ('kalshi', 'KXNFLDRAFTPICK-26-5', 'Carnell Tate', 'pick_5_overall_carnell-tate')"
+        )
+        con.execute(
+            "INSERT INTO kalshi_odds VALUES (?, 'KXNFLDRAFTPICK', 'EVT1', "
+            "'KXNFLDRAFTPICK-26-5-CTAT', 'Pick 5', 'Carnell Tate', "
+            "2, 5, 95, 98, 4, 100, 500, 50, 20)",
+            [now],
+        )
+
+    from nfl_draft.lib.queries import kalshi_tooltip_data
+    data = kalshi_tooltip_data()
+    assert "pick_5_overall_carnell-tate" in data
+    entry = data["pick_5_overall_carnell-tate"]
+    assert entry["ticker"] == "KXNFLDRAFTPICK-26-5-CTAT"
+    assert entry["yes_bid"] == 2
+    assert entry["yes_ask"] == 5
+    assert entry["last_price"] == 4
+
+
+def test_kalshi_tooltip_data_picks_latest_when_multiple_snapshots(monkeypatch, tmp_path):
+    """Two snapshots of the same ticker: tooltip uses the most recent."""
+    from nfl_draft.lib import db as db_module
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.duckdb")
+    db_module.init_schema()
+
+    from datetime import datetime, timedelta
+    from nfl_draft.lib.db import write_connection
+    now = datetime.now()
+    older = now - timedelta(minutes=10)
+    with write_connection() as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS kalshi_odds (
+                fetch_time TIMESTAMP, series_ticker VARCHAR, event_ticker VARCHAR,
+                ticker VARCHAR, market_title VARCHAR, candidate VARCHAR,
+                yes_bid INTEGER, yes_ask INTEGER, no_bid INTEGER, no_ask INTEGER,
+                last_price INTEGER, volume BIGINT, volume_24h BIGINT,
+                liquidity BIGINT, open_interest INTEGER
+            )
+        """)
+        con.execute(
+            "INSERT INTO market_map VALUES ('kalshi', 'KXNFLDRAFTPICK-26-5', 'Carnell Tate', 'pick_5_overall_carnell-tate')"
+        )
+        con.execute(
+            "INSERT INTO kalshi_odds VALUES (?, 'KXNFLDRAFTPICK', 'EVT1', "
+            "'KXNFLDRAFTPICK-26-5-CTAT', 'Pick 5', 'Carnell Tate', "
+            "1, 4, 96, 99, 3, 100, 500, 50, 20)",
+            [older],
+        )
+        con.execute(
+            "INSERT INTO kalshi_odds VALUES (?, 'KXNFLDRAFTPICK', 'EVT1', "
+            "'KXNFLDRAFTPICK-26-5-CTAT', 'Pick 5', 'Carnell Tate', "
+            "2, 5, 95, 98, 4, 100, 500, 50, 20)",
+            [now],
+        )
+
+    from nfl_draft.lib.queries import kalshi_tooltip_data
+    data = kalshi_tooltip_data()
+    entry = data["pick_5_overall_carnell-tate"]
+    assert (entry["yes_bid"], entry["yes_ask"], entry["last_price"]) == (2, 5, 4)
