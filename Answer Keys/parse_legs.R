@@ -95,3 +95,40 @@ parse_legs <- function(description) {
   }
   legs
 }
+
+#' Evaluate a single leg spec against a samples frame. Returns a logical vector
+#' of length nrow(samples).
+#'
+#' @param leg Named list returned by parse_legs() (e.g. list(type="scores_first")).
+#' @param samples data.frame with columns matching what the leg type needs.
+#'   scores_first → home_scored_first
+#'   wins_period  → home_margin, home_margin_f3, home_margin_f5, or home_margin_f7
+#'   team_total_* → nothing from samples directly (uses team_runs arg)
+#'   opp_total_*  → uses opp_runs arg
+#' @param side "home" or "away" — direction of inequalities and indicator value.
+#' @param team_runs numeric vector of length nrow(samples), runs scored by the
+#'   prop's subject team. Computed once per game by caller from home_margin +
+#'   total_final_score.
+#' @param opp_runs  numeric vector, runs scored by the opposing team.
+eval_leg <- function(leg, samples, side, team_runs, opp_runs) {
+  switch(leg$type,
+    scores_first = {
+      target <- if (side == "home") 1L else 0L
+      samples$home_scored_first == target
+    },
+    wins_period = {
+      col <- switch(leg$period,
+                    F3 = samples$home_margin_f3,
+                    F5 = samples$home_margin_f5,
+                    F7 = samples$home_margin_f7,
+                    FG = samples$home_margin,
+                    stop("Unknown period: ", leg$period))
+      if (side == "home") col > 0 else col < 0
+    },
+    team_total_under = team_runs <  leg$line,
+    team_total_over  = team_runs >  leg$line,
+    opp_total_under  = opp_runs  <  leg$line,
+    opp_total_over   = opp_runs  >  leg$line,
+    stop("Unknown leg type: ", leg$type)
+  )
+}
