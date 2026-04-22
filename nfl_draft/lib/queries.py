@@ -371,11 +371,12 @@ def kalshi_tooltip_data() -> Dict[str, Dict[str, Any]]:
     def _query() -> Dict[str, Dict[str, Any]]:
         with read_connection() as con:
             rows = con.execute(
-                """
+                f"""
                 WITH latest_ko AS (
                   SELECT ticker, candidate, yes_bid, yes_ask, last_price,
                          ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY fetch_time DESC) AS rn
                   FROM kalshi_odds
+                  WHERE fetch_time > NOW() - INTERVAL '{MAX_AGE_HOURS} hours'
                 )
                 SELECT mm.market_id, ko.ticker, ko.yes_bid, ko.yes_ask, ko.last_price
                 FROM market_map mm

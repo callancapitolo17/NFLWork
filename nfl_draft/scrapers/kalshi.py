@@ -106,6 +106,35 @@ def _extract_last_price_cents(market: dict):
     return _extract_cents(market, "last_price", "last_price_dollars")
 
 
+def _extract_candidate(market: dict) -> str:
+    """Return the human-readable candidate name (stripped), or ``""``.
+
+    Both the portal write path (``parse_markets_response`` -> OddsRow ->
+    market_map) and the legacy write path (``_write_legacy_kalshi_odds`` ->
+    kalshi_odds) must derive identical candidate strings so that the
+    Cross-Book Grid tooltip join ``kalshi_odds.candidate = market_map.book_subject``
+    succeeds. Prior to 2026-04-22 these two paths had slightly different
+    fallback orders and whitespace handling; harmonizing here eliminates a
+    latent join-miss risk even though no in-prod mismatches exist today.
+
+    Fallback order, most specific first:
+      1. ``yes_sub_title`` -- primary source (player name on the YES contract).
+      2. ``subtitle`` -- older Kalshi response shape.
+      3. ``custom_strike.Person`` -- structured candidate tags.
+      4. ``custom_strike.Team`` -- team-based markets.
+      5. ``no_sub_title`` -- last resort (NO-contract label).
+    """
+    candidate = (
+        market.get("yes_sub_title")
+        or market.get("subtitle")
+        or (market.get("custom_strike") or {}).get("Person")
+        or (market.get("custom_strike") or {}).get("Team")
+        or market.get("no_sub_title")
+        or ""
+    )
+    return (candidate or "").strip()
+
+
 # Position series carry a tier suffix (P1 / P2 / P3 / ...) in the ticker's
 # 2nd segment - one Kalshi market per (player, tier). Without scoping the
 # book_label by that tier, all three "Mauigoa is the Nth OL" markets would
@@ -210,14 +239,7 @@ def parse_markets_response(raw_response: dict, series_ticker: str) -> List[OddsR
         else:
             take_cents = None
 
-        candidate = (
-            market.get("yes_sub_title")
-            or market.get("subtitle")
-            or (market.get("custom_strike") or {}).get("Person")
-            or (market.get("custom_strike") or {}).get("Team")
-            or ""
-        )
-        candidate = (candidate or "").strip()
+        candidate = _extract_candidate(market)
         if not candidate:
             continue
 
@@ -314,14 +336,8 @@ def _write_legacy_kalshi_odds(series_ticker: str, series_title: str, markets: li
     rows_to_write = []
     market_info_rows = []
     for m in markets:
-        candidate = (
-            m.get("yes_sub_title")
-            or (m.get("custom_strike") or {}).get("Person")
-            or (m.get("custom_strike") or {}).get("Team")
-            or m.get("no_sub_title")
-            or "Unknown"
-        )
-        if candidate in ("Unknown", "", None):
+        candidate = _extract_candidate(m)
+        if not candidate:
             continue
         rows_to_write.append((
             fetch_time,

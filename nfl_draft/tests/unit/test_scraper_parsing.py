@@ -416,3 +416,34 @@ def test_kalshi_parse_empty_market_skipped():
     }]}
     rows = parse_markets_response(raw, series_ticker="KXNFLDRAFTPICK")
     assert rows == []
+
+
+def test_extract_candidate_harmonized_across_paths():
+    """Both parse_markets_response (OddsRow / market_map path) and
+    _write_legacy_kalshi_odds (kalshi_odds path) must derive the same
+    candidate for the same market, so the Cross-Book Grid tooltip join on
+    (book_subject = candidate) always succeeds."""
+    from nfl_draft.scrapers.kalshi import _extract_candidate
+
+    # Whitespace stripping.
+    assert _extract_candidate({"yes_sub_title": "  Carnell Tate  "}) == "Carnell Tate"
+
+    # Fallback chain: yes_sub_title beats subtitle beats custom_strike beats no_sub_title.
+    assert _extract_candidate({
+        "yes_sub_title": "A", "subtitle": "B",
+        "custom_strike": {"Person": "C"}, "no_sub_title": "D",
+    }) == "A"
+    assert _extract_candidate({
+        "subtitle": "B",
+        "custom_strike": {"Person": "C"}, "no_sub_title": "D",
+    }) == "B"
+    assert _extract_candidate({
+        "custom_strike": {"Person": "C"}, "no_sub_title": "D",
+    }) == "C"
+    assert _extract_candidate({
+        "custom_strike": {"Team": "CHI"}, "no_sub_title": "D",
+    }) == "CHI"
+    assert _extract_candidate({"no_sub_title": "D"}) == "D"
+
+    # Fully empty payload -> empty string.
+    assert _extract_candidate({}) == ""

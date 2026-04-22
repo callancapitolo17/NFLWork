@@ -752,3 +752,40 @@ def test_kalshi_tooltip_data_picks_latest_when_multiple_snapshots(monkeypatch, t
     data = kalshi_tooltip_data()
     entry = data["pick_5_overall_carnell-tate"]
     assert (entry["yes_bid"], entry["yes_ask"], entry["last_price"]) == (2, 5, 4)
+
+
+def test_kalshi_tooltip_data_excludes_stale_snapshots(monkeypatch, tmp_path):
+    """Snapshots older than MAX_AGE_HOURS must be filtered out so the tooltip
+    never shows a price next to a cell whose underlying scrape is stale."""
+    from nfl_draft.lib import db as db_module
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.duckdb")
+    db_module.init_schema()
+
+    from datetime import datetime, timedelta
+    from nfl_draft.lib.db import write_connection
+    from nfl_draft.lib.queries import MAX_AGE_HOURS
+    stale = datetime.now() - timedelta(hours=MAX_AGE_HOURS + 1)
+    with write_connection() as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS kalshi_odds (
+                fetch_time TIMESTAMP, series_ticker VARCHAR, event_ticker VARCHAR,
+                ticker VARCHAR, market_title VARCHAR, candidate VARCHAR,
+                yes_bid INTEGER, yes_ask INTEGER, no_bid INTEGER, no_ask INTEGER,
+                last_price INTEGER, volume BIGINT, volume_24h BIGINT,
+                liquidity BIGINT, open_interest INTEGER
+            )
+        """)
+        con.execute(
+            "INSERT INTO market_map VALUES ('kalshi', 'KXNFLDRAFTPICK-26-5', 'Carnell Tate', 'pick_5_overall_carnell-tate')"
+        )
+        con.execute(
+            "INSERT INTO kalshi_odds VALUES (?, 'KXNFLDRAFTPICK', 'EVT1', "
+            "'KXNFLDRAFTPICK-26-5-CTAT', 'Pick 5', 'Carnell Tate', "
+            "2, 5, 95, 98, 4, 100, 500, 50, 20)",
+            [stale],
+        )
+
+    from nfl_draft.lib.queries import kalshi_tooltip_data
+    data = kalshi_tooltip_data()
+    # Ticker exists in kalshi_odds but is >2h old -> tooltip omits it.
+    assert data == {}
