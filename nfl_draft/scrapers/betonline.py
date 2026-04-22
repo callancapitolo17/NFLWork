@@ -358,6 +358,43 @@ def _classify_teams_1st_drafted_position(desc: dict, ce: dict, cgl: dict, now: d
         )
 
 
+def _classify_matchups(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterator[OddsRow]:
+    """For `matchups`: 'To Be Drafted First' H2H pairs. Every description
+    carries the same literal string, so we synthesize the label from the
+    two contestants (sorted alphabetically) to disambiguate pairs. Sorting
+    makes the label order-independent so cross-book joins hit regardless
+    of which side each book listed first.
+    """
+    contestants = list(cgl.get("Contestants") or [])
+    if len(contestants) != 2:
+        # Odd shape — emit as prop so data isn't lost.
+        label = (ce.get("Description") or "").strip() or "matchup"
+        for c in contestants:
+            name = (c.get("Name") or "").strip()
+            american = _odds(c)
+            if name and american is not None:
+                yield OddsRow(
+                    book="betonline", book_label=label, book_subject=name,
+                    american_odds=american, fetched_at=now,
+                    market_group="prop_matchup",
+                )
+        return
+    names = sorted([(c.get("Name") or "").strip() for c in contestants])
+    if not all(names):
+        return
+    label = f"{names[0]} vs {names[1]}"
+    for c in contestants:
+        name = (c.get("Name") or "").strip()
+        american = _odds(c)
+        if not name or american is None:
+            continue
+        yield OddsRow(
+            book="betonline", book_label=label, book_subject=name,
+            american_odds=american, fetched_at=now,
+            market_group="matchup_before",
+        )
+
+
 def _classify_1st_round_props(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterator[OddsRow]:
     """For `1st-round-props`: 'Total X Drafted in 1st Round' with O/U + GroupLine.
 
@@ -400,6 +437,7 @@ CLASSIFIERS = {
     "mr-irrelevant": _classify_mr_irrelevant,
     "team-to-draft": _classify_team_to_draft,
     "teams-1st-drafted-position": _classify_teams_1st_drafted_position,
+    "matchups": _classify_matchups,
 }
 
 

@@ -97,6 +97,19 @@ def test_emits_team_first_pick_position(rows):
         assert "1st drafted" in r.book_label.lower(), r.book_label
 
 
+def test_emits_matchup_before_pairs(rows):
+    """matchups has 'To Be Drafted First' pairs. Synthesized label must
+    contain both player names so MARKET_MAP can re-pair them."""
+    mb = [r for r in rows if r.market_group == "matchup_before"]
+    assert len(mb) >= 8, f"expected >= 8 matchup_before rows, got {len(mb)}"
+    for r in mb[:4]:
+        assert " vs " in r.book_label, r.book_label
+    # Sanity: every matchup pair has exactly 2 rows sharing the same label.
+    from collections import Counter
+    label_counts = Counter(r.book_label for r in mb)
+    assert all(count == 2 for count in label_counts.values()), label_counts
+
+
 def test_1st_round_props_emits_totals_props_with_lines(rows):
     """1st-round-props are totals-style ('Total X Drafted in 1st Round' with
     O/U + GroupLine) — no canonical join today, so we emit as props with
