@@ -18,27 +18,6 @@ suppressPackageStartupMessages({
 # CORE PRICER FUNCTIONS (pure — unit-tested)
 # =============================================================================
 
-#' Fair probability for a team's triple-play, computed empirically on sample rows.
-#'
-#' @param samples data.frame with columns home_margin, home_margin_f5,
-#'   home_scored_first (0/1/NA)
-#' @param side "home" or "away"
-#' @return scalar probability in [0, 1], or NA if no valid rows
-compute_triple_play_fair <- function(samples, side = c("home", "away")) {
-  side <- match.arg(side)
-  samples <- samples[!is.na(samples$home_scored_first), ]
-  if (nrow(samples) == 0) return(NA_real_)
-  if (side == "home") {
-    mean(samples$home_scored_first == 1L &
-         samples$home_margin_f5   > 0 &
-         samples$home_margin      > 0)
-  } else {
-    mean(samples$home_scored_first == 0L &
-         samples$home_margin_f5   < 0 &
-         samples$home_margin      < 0)
-  }
-}
-
 #' Probability → American odds (integer). Returns NA for p <= 0 or p >= 1.
 prob_to_american <- function(p) {
   if (is.na(p) || p <= 0 || p >= 1) return(NA_integer_)
