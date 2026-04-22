@@ -157,8 +157,25 @@ def _kalshi_book_label(series_ticker: str, ticker: str) -> str:
 def parse_markets_response(raw_response: dict, series_ticker: str) -> List[OddsRow]:
     """Convert a raw Kalshi /markets response into a list of OddsRow.
 
-    One row per market with a usable yes_bid. Skips markets with zero/empty
-    bids (no live market price) and markets missing a candidate name.
+    Emits one row per Kalshi market with enough signal to price. For each
+    market we compute two prices:
+
+      * take price (implied_prob override): yes_ask first, then last_price.
+        Represents the cost to buy a Yes contract. Used by the Cross-Book
+        Grid's outlier flag.
+      * fair value (devig_prob override): mid = (yes_bid + yes_ask)/200 when
+        both sides posted, else last_price/100, else the one posted side/100.
+        Used for cell display and the cross-venue median.
+
+    Markets with no bid, no ask, and no last trade are skipped entirely --
+    they carry no signal worth rendering. Rows with a fair value but no take
+    price are still emitted; their ``implied_prob`` is None so downstream flag
+    logic suppresses the outlier check for that cell.
+
+    ``american_odds`` is set from the take price when available, otherwise from
+    the fair value -- keeps legacy downstream readers (bet log, quarantine
+    fallback for unmapped rows) aligned with what the scraper considers the
+    most tradeable number for that row.
     """
     rows: List[OddsRow] = []
     if not isinstance(raw_response, dict):
@@ -166,17 +183,32 @@ def parse_markets_response(raw_response: dict, series_ticker: str) -> List[OddsR
     now = datetime.now()
 
     for market in raw_response.get("markets", []) or []:
-        yes_bid_cents = _extract_yes_bid_cents(market)
-        if yes_bid_cents is None or yes_bid_cents <= 0:
-            continue
-        p = yes_bid_cents / 100.0
-        if p <= 0 or p >= 1:
-            continue
-        # Convert implied probability to American odds
-        if p > 0.5:
-            american = int(round(-100 * p / (1 - p)))
+        yes_bid = _extract_yes_bid_cents(market) or 0
+        yes_ask = _extract_yes_ask_cents(market) or 0
+        last_price = _extract_last_price_cents(market) or 0
+
+        # Fair-value cascade: mid, then last trade, then any single side.
+        if yes_bid > 0 and yes_ask > 0:
+            fair_cents = (yes_bid + yes_ask) / 2.0
+        elif last_price > 0:
+            fair_cents = float(last_price)
+        elif yes_ask > 0:
+            fair_cents = float(yes_ask)
+        elif yes_bid > 0:
+            fair_cents = float(yes_bid)
         else:
-            american = int(round(100 * (1 - p) / p))
+            continue  # no signal -> skip row
+
+        if not (0 < fair_cents < 100):
+            continue
+
+        # Take-price cascade: ask, then last trade; else None (flag suppressed).
+        if yes_ask > 0:
+            take_cents = float(yes_ask)
+        elif last_price > 0:
+            take_cents = float(last_price)
+        else:
+            take_cents = None
 
         candidate = (
             market.get("yes_sub_title")
@@ -189,12 +221,23 @@ def parse_markets_response(raw_response: dict, series_ticker: str) -> List[OddsR
         if not candidate:
             continue
 
+        # American odds: use take price if available, else fair. Used by
+        # downstream readers that still want an integer American-odds view.
+        reference_cents = take_cents if take_cents is not None else fair_cents
+        p_ref = reference_cents / 100.0
+        if p_ref > 0.5:
+            american = int(round(-100 * p_ref / (1 - p_ref)))
+        else:
+            american = int(round(100 * (1 - p_ref) / p_ref))
+
         rows.append(OddsRow(
             book="kalshi",
             book_label=_kalshi_book_label(series_ticker, market.get("ticker") or ""),
             book_subject=candidate,
             american_odds=american,
             fetched_at=now,
+            implied_prob=(take_cents / 100.0) if take_cents is not None else None,
+            devig_prob=fair_cents / 100.0,
         ))
     return rows
 

@@ -349,3 +349,70 @@ def test_kalshi_extractors_return_none_when_absent():
     )
     assert _extract_yes_ask_cents({}) is None
     assert _extract_last_price_cents({}) is None
+
+
+def test_kalshi_parse_uses_ask_for_take_and_mid_for_fair():
+    """Two-sided market: implied_prob (take) = yes_ask/100, devig_prob (fair) = mid."""
+    from nfl_draft.scrapers.kalshi import parse_markets_response
+    raw = {"markets": [{
+        "ticker": "KXNFLDRAFTPICK-26-5-CTAT",
+        "yes_sub_title": "Carnell Tate",
+        "yes_bid_dollars": "0.02",
+        "yes_ask_dollars": "0.05",
+        "last_price_dollars": "0.04",
+    }]}
+    rows = parse_markets_response(raw, series_ticker="KXNFLDRAFTPICK")
+    assert len(rows) == 1
+    r = rows[0]
+    assert r.book == "kalshi"
+    assert r.book_subject == "Carnell Tate"
+    assert r.implied_prob == 0.05
+    assert r.devig_prob == (2 + 5) / 200.0
+
+
+def test_kalshi_parse_one_sided_market_falls_back_to_last_trade():
+    """Only bid posted, last trade present: fair = last/100, take = last/100."""
+    from nfl_draft.scrapers.kalshi import parse_markets_response
+    raw = {"markets": [{
+        "ticker": "KXNFLDRAFTPICK-26-5-CTAT",
+        "yes_sub_title": "Carnell Tate",
+        "yes_bid_dollars": "0.02",
+        "yes_ask_dollars": "0.00",
+        "last_price_dollars": "0.04",
+    }]}
+    rows = parse_markets_response(raw, series_ticker="KXNFLDRAFTPICK")
+    assert len(rows) == 1
+    r = rows[0]
+    assert r.implied_prob == 0.04
+    assert r.devig_prob == 0.04
+
+
+def test_kalshi_parse_one_sided_no_last_trade_uses_single_side_for_fair():
+    """Only bid, no last trade: fair = single posted side, take = None (no flag)."""
+    from nfl_draft.scrapers.kalshi import parse_markets_response
+    raw = {"markets": [{
+        "ticker": "KXNFLDRAFTPICK-26-5-CTAT",
+        "yes_sub_title": "Carnell Tate",
+        "yes_bid_dollars": "0.02",
+        "yes_ask_dollars": "0.00",
+        "last_price_dollars": "0.00",
+    }]}
+    rows = parse_markets_response(raw, series_ticker="KXNFLDRAFTPICK")
+    assert len(rows) == 1
+    r = rows[0]
+    assert r.devig_prob == 0.02
+    assert r.implied_prob is None
+
+
+def test_kalshi_parse_empty_market_skipped():
+    """No bid, no ask, no last trade: no row emitted."""
+    from nfl_draft.scrapers.kalshi import parse_markets_response
+    raw = {"markets": [{
+        "ticker": "KXNFLDRAFTPICK-26-5-CTAT",
+        "yes_sub_title": "Carnell Tate",
+        "yes_bid_dollars": "0.00",
+        "yes_ask_dollars": "0.00",
+        "last_price_dollars": "0.00",
+    }]}
+    rows = parse_markets_response(raw, series_ticker="KXNFLDRAFTPICK")
+    assert rows == []
