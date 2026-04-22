@@ -448,6 +448,21 @@ def _classify_1st_round_props(desc: dict, ce: dict, cgl: dict, now: datetime) ->
     future canonical can be added without data shape changes.
     """
     label = (ce.get("Description") or "").strip()
+    # Label-shape guard: anything that doesn't match 'Total X Drafted in
+    # 1st Round' falls through to a less-structured prop so unexpected
+    # labels surface in quarantine instead of getting a canonical-looking
+    # market_group they don't match.
+    if not FIRST_ROUND_TOTAL_DESC_RE.match(label):
+        for c in (cgl.get("Contestants") or []):
+            name = (c.get("Name") or "").strip()
+            american = _odds(c)
+            if name and american is not None:
+                yield OddsRow(
+                    book="betonline", book_label=label, book_subject=name,
+                    american_odds=american, fetched_at=now,
+                    market_group="prop_1st_round_props_unknown",
+                )
+        return
     line = cgl.get("GroupLine")
     if line is None:
         return
