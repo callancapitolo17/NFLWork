@@ -298,6 +298,25 @@ def test_wagerzon_fixture_includes_nth_at_position_markets():
         assert nth, "WZ fixture has nth rows but _wz_entries produced no mapping"
 
 
+def test_kalshi_team_series_now_maps():
+    """After Task 14, Kalshi's KXNFLDRAFTTEAM series (512 markets in the
+    fixture) rescues from quarantine via 'team_first_pick'. BetOnline will
+    cross-book against these once _betonline_entries() also maps to the
+    same canonical (and once team-name normalisation is added — see
+    TODO in markets.py)."""
+    from nfl_draft.config.markets import _kalshi_entries
+    entries = _kalshi_entries()
+    ids = [e[3] for e in entries]
+    # team_first_pick IDs: 'team_<team>_first_pick_<player>'.
+    team_first_pick = [m for m in ids
+                       if "_first_pick_" in m and "_first_pick_pos_" not in m
+                       and m.startswith("team_")]
+    assert len(team_first_pick) >= 100, (
+        f"Expected >= 100 Kalshi team_first_pick entries after mapping "
+        f"KXNFLDRAFTTEAM (fixture has 512 markets); got {len(team_first_pick)}"
+    )
+
+
 def test_betonline_entries_cover_structured_groups():
     """After Task 13, _betonline_entries() should feed ~500+ canonical rows
     into MARKET_MAP spanning every v1 canonical type."""

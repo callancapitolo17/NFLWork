@@ -486,7 +486,10 @@ def _kalshi_entries() -> list[tuple[str, str, str, str]]:
             if not subject:
                 continue
 
-            mid = _kalshi_market_id_for(series_ticker, ticker, subject)
+            mid = _kalshi_market_id_for(
+                series_ticker, ticker, subject,
+                title=(market.get("title") or ""),
+            )
             if mid is None:
                 continue  # Kalshi-only / unmappable market -> quarantine at runtime.
 
@@ -500,11 +503,15 @@ def _kalshi_entries() -> list[tuple[str, str, str, str]]:
     return entries
 
 
-def _kalshi_market_id_for(series_ticker: str, ticker: str, subject: str) -> str | None:
+def _kalshi_market_id_for(
+    series_ticker: str, ticker: str, subject: str, *, title: str = "",
+) -> str | None:
     """Return a canonical market_id for a Kalshi market, or None if unmappable.
 
     Dispatches on series_ticker prefix, falling back to parsing the ticker's
     middle segment for series where pick_number / range_high varies per market.
+    `title` is optional and used only for series whose player name is not
+    embedded in ticker/subject (e.g. KXNFLDRAFTTEAM).
     """
     # pick_outright, pick 1 only (series is dedicated to 1st overall).
     if series_ticker == "KXNFLDRAFT1":
@@ -546,9 +553,32 @@ def _kalshi_market_id_for(series_ticker: str, ticker: str, subject: str) -> str 
             )
         return None
 
-    # Kalshi-only series (team_first_pick, matchup, team-drafts-player, etc.)
-    # fall through unmapped on purpose.
+    # KXNFLDRAFTTEAM: "Will <Player> be drafted by <Team>?" The subject
+    # carries the team (yes_sub_title = 'Washington'); we parse the player
+    # name from the market title. Maps to canonical team_first_pick(team, player)
+    # so BetOnline's team_drafts_player rows cross-book against Kalshi's
+    # 512 team/player pairs once both sides are seeded.
+    if series_ticker == "KXNFLDRAFTTEAM":
+        m = _KXNFL_DRAFTTEAM_TITLE_RE.match(title)
+        if not m:
+            return None
+        player = m.group(1).strip()
+        team = subject  # 'Washington' / 'Tampa Bay' / etc.
+        return build_market_id("team_first_pick", team=team, player=player)
+
+    # Kalshi-only series (matchup, OU, etc.) fall through unmapped:
+    #   KXNFLDRAFTMATCHUP: needs tag->display-name resolver to pair with
+    #     BetOnline's matchup_before (which keys off display names).
+    #   KXNFLDRAFTOU: 0 live markets in the current fixture; wire when the
+    #     ticker format is observed in data.
     return None
+
+
+# Title regex for KXNFLDRAFTTEAM markets:
+# "Will Omar Cooper Jr. be drafted by Washington?" -> player="Omar Cooper Jr.", team="Washington".
+_KXNFL_DRAFTTEAM_TITLE_RE = re.compile(
+    r"^Will\s+(.+?)\s+be\s+drafted\s+by\s+(.+?)\?\s*$", re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
