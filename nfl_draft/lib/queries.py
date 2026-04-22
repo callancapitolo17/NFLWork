@@ -89,12 +89,21 @@ def _safe_read(fn):
 def cross_book_grid(threshold_pp: float = 10.0):
     """Return one row per market with all-venue prices, median, and outlier flags.
 
-    For each market, take the most-recent devig_prob per book, compute the
-    median across all posting books, and flag any book whose probability
-    differs from that median by >= threshold_pp percentage points.
+    Cell display + median are computed from ``devig_prob`` (each book's
+    fair-value estimate) across all posting books. The outlier flag uses
+    ``implied_prob`` for Kalshi (the buy price / take price — what you'd
+    actually pay to enter a Yes position) and ``devig_prob`` for every other
+    book. The asymmetry reflects a structural difference: sportsbook raw
+    implied probabilities are inflated by vig, so flagging them against the
+    median-of-fairs would fire on vig alone; Kalshi has ~no vig, so its buy
+    price is a clean signal to compare against fair.
 
     A market with only one posting venue has no median to compare against,
     so it gets no flags (outlier_count = 0) — still listed for completeness.
+
+    Kalshi rows with ``devig_prob`` set but ``implied_prob`` NULL (one-sided
+    market with no last trade) participate in the median but have their flag
+    suppressed — no actionable take price means no actionable edge to flag.
 
     Returns ``QueryLocked`` sentinel instead of raising on DuckDB lock
     contention; see module docstring.
@@ -104,36 +113,63 @@ def cross_book_grid(threshold_pp: float = 10.0):
             rows = con.execute(
                 f"""
                 WITH latest AS (
-                  SELECT market_id, book, devig_prob,
+                  SELECT market_id, book, implied_prob, devig_prob,
                          ROW_NUMBER() OVER (PARTITION BY market_id, book ORDER BY fetched_at DESC) AS rn
                   FROM draft_odds
                   WHERE fetched_at > NOW() - INTERVAL '{MAX_AGE_HOURS} hours'
                 )
-                SELECT market_id, book, devig_prob FROM latest WHERE rn = 1
+                SELECT market_id, book, implied_prob, devig_prob
+                FROM latest WHERE rn = 1
                 """
             ).fetchall()
 
-        by_market: Dict[str, Dict[str, float]] = {}
-        for market_id, book, prob in rows:
-            by_market.setdefault(market_id, {})[book] = prob
+        by_market: Dict[str, Dict[str, Dict[str, Optional[float]]]] = {}
+        for market_id, book, implied_prob, devig_prob in rows:
+            by_market.setdefault(market_id, {})[book] = {
+                "implied_prob": implied_prob,
+                "devig_prob": devig_prob,
+            }
 
         threshold = threshold_pp / 100.0
         output: List[Dict[str, Any]] = []
         for market_id, books in by_market.items():
-            if len(books) < 2:
+            # `books` maps book -> {implied_prob, devig_prob}. Cell display +
+            # median use devig_prob (fair value); flag comparison uses
+            # implied_prob for Kalshi and devig_prob for every other book.
+            display_by_book = {
+                b: (r["devig_prob"] if r["devig_prob"] is not None else r["implied_prob"])
+                for b, r in books.items()
+            }
+            valid_display = [p for p in display_by_book.values() if p is not None]
+
+            if len(books) < 2 or not valid_display:
                 output.append({
                     "market_id": market_id,
-                    "books": books,
-                    "median": list(books.values())[0] if books else None,
+                    "books": display_by_book,
+                    "median": valid_display[0] if valid_display else None,
                     "flags": {},
                     "outlier_count": 0,
                 })
                 continue
-            median = statistics.median(books.values())
-            flags = {b: abs(p - median) >= threshold for b, p in books.items()}
+
+            median = statistics.median(valid_display)
+            flags: Dict[str, bool] = {}
+            for book, r in books.items():
+                if book == "kalshi":
+                    take = r["implied_prob"]
+                    flags[book] = (
+                        take is not None
+                        and abs(take - median) >= threshold
+                    )
+                else:
+                    dev = r["devig_prob"]
+                    flags[book] = (
+                        dev is not None
+                        and abs(dev - median) >= threshold
+                    )
             output.append({
                 "market_id": market_id,
-                "books": books,
+                "books": display_by_book,
                 "median": median,
                 "flags": flags,
                 "outlier_count": sum(flags.values()),

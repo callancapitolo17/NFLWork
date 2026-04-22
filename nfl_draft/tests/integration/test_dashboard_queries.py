@@ -569,3 +569,104 @@ def test_legacy_kalshi_odds_write_handles_dollar_format(monkeypatch, tmp_path):
             ["KXNFLDRAFTPICK-26-5-CTAT"],
         ).fetchone()
     assert row == (2, 5, 95, 98, 4)
+
+
+def test_cross_book_grid_kalshi_flag_uses_implied_prob_not_devig_prob(monkeypatch, tmp_path):
+    """Kalshi: flag compares implied_prob (take = buy) against median of devig_prob (fair)."""
+    from nfl_draft.lib import db as db_module
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.duckdb")
+    db_module.init_schema()
+
+    from datetime import datetime
+    from nfl_draft.lib.db import write_connection
+    now = datetime.now()
+    with write_connection() as con:
+        con.execute(
+            "INSERT INTO draft_markets (market_id, market_type) "
+            "VALUES ('pick_5_overall_carnell-tate', 'pick_outright')"
+        )
+        # Kalshi: fair=3.5% (mid) but take=5% (buy). Sportsbooks: simple devig ~ 6-8%.
+        con.execute(
+            "INSERT INTO draft_odds VALUES ('pick_5_overall_carnell-tate', 'kalshi', 1900, ?, ?, ?)",
+            [0.05, 0.035, now],
+        )
+        for book, prob in [("draftkings", 0.077), ("bookmaker", 0.062), ("wagerzon", 0.067)]:
+            con.execute(
+                "INSERT INTO draft_odds VALUES ('pick_5_overall_carnell-tate', ?, 100, ?, ?, ?)",
+                [book, prob, prob, now],
+            )
+
+    from nfl_draft.lib.queries import cross_book_grid
+    rows = cross_book_grid(threshold_pp=5.0)
+    assert len(rows) == 1
+    row = rows[0]
+
+    # Display value for Kalshi is the MID (devig_prob), not the buy price.
+    assert abs(row["books"]["kalshi"] - 0.035) < 1e-9
+    # Median participates: [0.035, 0.062, 0.067, 0.077] -> mid two average = 0.0645
+    assert abs(row["median"] - 0.0645) < 1e-9
+    # Kalshi flag check uses the BUY price (0.05) vs median (0.0645) = 1.45pp
+    # -> below 5pp threshold -> not flagged.
+    assert row["flags"]["kalshi"] is False
+
+
+def test_cross_book_grid_kalshi_flag_fires_on_big_take_edge(monkeypatch, tmp_path):
+    """When Kalshi's buy price sits well below consensus fair, flag fires."""
+    from nfl_draft.lib import db as db_module
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.duckdb")
+    db_module.init_schema()
+
+    from datetime import datetime
+    from nfl_draft.lib.db import write_connection
+    now = datetime.now()
+    with write_connection() as con:
+        con.execute(
+            "INSERT INTO draft_markets (market_id, market_type) VALUES ('m1', 'prop')"
+        )
+        # Kalshi take=2%, fair=3%; sportsbooks all 8%.
+        con.execute(
+            "INSERT INTO draft_odds VALUES ('m1', 'kalshi', 4900, ?, ?, ?)",
+            [0.02, 0.03, now],
+        )
+        for book in ("draftkings", "bookmaker", "wagerzon"):
+            con.execute(
+                "INSERT INTO draft_odds VALUES ('m1', ?, 100, 0.08, 0.08, ?)",
+                [book, now],
+            )
+
+    from nfl_draft.lib.queries import cross_book_grid
+    rows = cross_book_grid(threshold_pp=3.0)
+    assert len(rows) == 1
+    row = rows[0]
+    # Median([0.03, 0.08, 0.08, 0.08]) = 0.08
+    assert abs(row["median"] - 0.08) < 1e-9
+    # |take 0.02 - median 0.08| = 6pp >= 3pp -> flagged
+    assert row["flags"]["kalshi"] is True
+
+
+def test_cross_book_grid_kalshi_flag_suppressed_when_no_take_price(monkeypatch, tmp_path):
+    """When Kalshi has fair but no take (one-sided, no last trade), flag is False."""
+    from nfl_draft.lib import db as db_module
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.duckdb")
+    db_module.init_schema()
+
+    from datetime import datetime
+    from nfl_draft.lib.db import write_connection
+    now = datetime.now()
+    with write_connection() as con:
+        con.execute(
+            "INSERT INTO draft_markets (market_id, market_type) VALUES ('m1', 'prop')"
+        )
+        con.execute(
+            "INSERT INTO draft_odds VALUES ('m1', 'kalshi', 4900, NULL, ?, ?)",
+            [0.02, now],
+        )
+        for book in ("draftkings", "bookmaker", "wagerzon"):
+            con.execute(
+                "INSERT INTO draft_odds VALUES ('m1', ?, 100, 0.08, 0.08, ?)",
+                [book, now],
+            )
+
+    from nfl_draft.lib.queries import cross_book_grid
+    rows = cross_book_grid(threshold_pp=3.0)
+    assert rows[0]["flags"]["kalshi"] is False
