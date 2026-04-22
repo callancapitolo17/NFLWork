@@ -59,6 +59,18 @@ def test_emits_nth_at_position_2(rows):
         assert "2nd" in r.book_label.lower(), r.book_label
 
 
+def test_emits_top_n_range_from_to_be_selected(rows):
+    """to-be-selected has 'Drafted Top 5/10' and 'Drafted in Round 1' with
+    player runners. Maps to top_N_range for N in {5, 10, 32}."""
+    top_rows = [r for r in rows
+                if r.market_group.startswith("top_") and r.market_group.endswith("_range")]
+    assert len(top_rows) >= 30, f"expected >= 30 top_N_range rows, got {len(top_rows)}"
+    groups = {r.market_group for r in top_rows}
+    assert groups == {"top_5_range", "top_10_range", "top_32_range"}, (
+        f"expected exactly top_{{5,10,32}}_range, got {groups}"
+    )
+
+
 def test_1st_round_props_emits_totals_props_with_lines(rows):
     """1st-round-props are totals-style ('Total X Drafted in 1st Round' with
     O/U + GroupLine) — no canonical join today, so we emit as props with

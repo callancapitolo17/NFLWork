@@ -94,6 +94,11 @@ NTH_POS_DESC_RE = re.compile(
     r"^(\d+)(?:st|nd|rd|th)\s+(.+?)\s+Selected\s*$", re.IGNORECASE,
 )
 
+# "Drafted Top 5" / "Drafted Top 10"
+TOP_N_DESC_RE = re.compile(r"^Drafted\s+Top\s+(\d+)\s*$", re.IGNORECASE)
+# "Drafted in Round 1" -> treat as top_32 (round 1 = first 32 picks)
+ROUND_1_DESC_RE = re.compile(r"^Drafted\s+in\s+Round\s+1\s*$", re.IGNORECASE)
+
 # BetOnline position words -> canonical abbreviations used by
 # build_market_id('first_at_position', position=...).
 POSITION_MAP = {
@@ -231,6 +236,43 @@ def _classify_nth_at_position(desc: dict, ce: dict, cgl: dict, now: datetime) ->
         )
 
 
+def _classify_to_be_selected(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterator[OddsRow]:
+    """For `to-be-selected`: 'Drafted Top 5/10' or 'Drafted in Round 1'
+    with player runners. Maps to canonical top_N_range (N in {5, 10, 32}).
+    Round 1 = top 32 (all first-round picks).
+    """
+    label = (ce.get("Description") or "").strip()
+    if ROUND_1_DESC_RE.match(label):
+        n = 32
+    else:
+        m = TOP_N_DESC_RE.match(label)
+        if not m:
+            for c in (cgl.get("Contestants") or []):
+                name = (c.get("Name") or "").strip()
+                american = _odds(c)
+                if name and american is not None:
+                    yield OddsRow(
+                        book="betonline", book_label=label, book_subject=name,
+                        american_odds=american, fetched_at=now,
+                        market_group="prop_to_be_selected",
+                    )
+            return
+        try:
+            n = int(m.group(1))
+        except (ValueError, IndexError):
+            return
+    for c in (cgl.get("Contestants") or []):
+        name = (c.get("Name") or "").strip()
+        american = _odds(c)
+        if not name or american is None:
+            continue
+        yield OddsRow(
+            book="betonline", book_label=label, book_subject=name,
+            american_odds=american, fetched_at=now,
+            market_group=f"top_{n}_range",
+        )
+
+
 def _classify_1st_round_props(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterator[OddsRow]:
     """For `1st-round-props`: 'Total X Drafted in 1st Round' with O/U + GroupLine.
 
@@ -269,6 +311,7 @@ CLASSIFIERS = {
     "1st-round-props": _classify_1st_round_props,
     "to-be-drafted-1st": _classify_first_at_position,
     "to-be-drafted-2nd": _classify_nth_at_position,
+    "to-be-selected": _classify_to_be_selected,
 }
 
 
