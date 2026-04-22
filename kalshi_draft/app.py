@@ -783,8 +783,8 @@ def render_portfolio():
 # Portal tab renderers (Tasks 22-23)
 # ---------------------------------------------------------------------------
 
-# All 6 venues — order of columns in the cross-book grid
-VENUES = ["kalshi", "draftkings", "fanduel", "bookmaker", "wagerzon", "hoop88"]
+# All 7 venues — order of columns in the cross-book grid
+VENUES = ["kalshi", "draftkings", "fanduel", "bookmaker", "wagerzon", "hoop88", "betonline"]
 
 
 def render_crossbook_grid():
