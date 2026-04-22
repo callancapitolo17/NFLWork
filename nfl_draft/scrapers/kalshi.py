@@ -239,9 +239,12 @@ def parse_markets_response(raw_response: dict, series_ticker: str) -> List[OddsR
             continue
 
         # Take-price cascade: ask, then last trade; else None (flag suppressed).
-        if yes_ask > 0:
+        # Guard against the pathological edge where the ask is 100 (= $1.00,
+        # "certain Yes"): no profit to be had, and american_odds math blows
+        # up with division-by-zero. Treat it as "no actionable take."
+        if 0 < yes_ask < 100:
             take_cents = float(yes_ask)
-        elif last_price > 0:
+        elif 0 < last_price < 100:
             take_cents = float(last_price)
         else:
             take_cents = None
@@ -252,6 +255,8 @@ def parse_markets_response(raw_response: dict, series_ticker: str) -> List[OddsR
 
         # American odds: use take price if available, else fair. Used by
         # downstream readers that still want an integer American-odds view.
+        # Both values are already guarded to be strictly 0 < x < 100 above,
+        # so p_ref is always strictly in (0, 1) and the math is safe.
         reference_cents = take_cents if take_cents is not None else fair_cents
         p_ref = reference_cents / 100.0
         if p_ref > 0.5:

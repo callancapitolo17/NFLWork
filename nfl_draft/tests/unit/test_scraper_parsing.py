@@ -418,6 +418,27 @@ def test_kalshi_parse_empty_market_skipped():
     assert rows == []
 
 
+def test_kalshi_parse_handles_100c_ask_without_division_error():
+    """Pathological edge: yes_ask == 100 (= $1.00, "certain Yes"). The
+    american_odds math divides by (1 - p), which blows up at p=1. Parser must
+    treat yes_ask=100 as "no actionable take" and either fall back cleanly or
+    skip the row. Regression for a prod crash surfaced 2026-04-22."""
+    from nfl_draft.scrapers.kalshi import parse_markets_response
+    raw = {"markets": [{
+        "ticker": "KXNFLDRAFTPICK-26-1-CWARD",
+        "yes_sub_title": "Cam Ward",
+        "yes_bid_dollars": "0.99",
+        "yes_ask_dollars": "1.00",
+        "last_price_dollars": "0.99",
+    }]}
+    rows = parse_markets_response(raw, series_ticker="KXNFLDRAFTPICK")
+    # Fair cascade falls to mid of (99, 100)=99.5, implied_prob falls to last_price=0.99.
+    assert len(rows) == 1
+    r = rows[0]
+    assert r.devig_prob == 0.995
+    assert r.implied_prob == 0.99  # take = last trade, not the $1.00 ask
+
+
 def test_extract_candidate_harmonized_across_paths():
     """Both parse_markets_response (OddsRow / market_map path) and
     _write_legacy_kalshi_odds (kalshi_odds path) must derive the same
