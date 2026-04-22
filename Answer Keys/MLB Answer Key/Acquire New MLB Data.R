@@ -116,9 +116,10 @@ if (run_odds) {
     con <- dbConnect(duckdb(), dbdir = "pbp.duckdb")
     on.exit(tryCatch(dbDisconnect(con, shutdown = TRUE), error = function(e) NULL), add = TRUE)
 
-    # Source of truth: PBP-derived games. If a game has PBP, it happened; if
-    # we don't have its odds, that's the backfill target. Game_start_time from
-    # PBP also matches what Consensus Betting History.R uses.
+    # Source of truth: PBP-derived MLB regular-season/postseason games.
+    # Excludes World Baseball Classic, minor-league exhibitions, college
+    # exhibitions, and All-Star games — none of which are in Odds API under
+    # the same team names.
     pbp_games <- dbGetQuery(
       con,
       "
@@ -127,6 +128,10 @@ if (run_odds) {
          CAST(game_date AS DATE) AS game_date
   FROM mlb_pbp_all
   WHERE year(CAST(game_date AS DATE)) >= 2020
+    AND home_league_name IN ('American League', 'National League')
+    AND away_league_name IN ('American League', 'National League')
+    AND home_team NOT LIKE '%All-Stars'
+    AND away_team NOT LIKE '%All-Stars'
   GROUP BY home_team, away_team, game_date
 "
     ) %>%
