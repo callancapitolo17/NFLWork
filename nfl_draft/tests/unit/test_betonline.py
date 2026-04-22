@@ -133,3 +133,41 @@ def test_1st_round_props_emits_totals_props_with_lines(rows):
         assert r.book_subject.startswith(("Over ", "Under ")), (
             f"subject {r.book_subject!r} must start with 'Over '/'Under ' + line"
         )
+
+
+def test_specials_bucket_emits_prop_rows(rows):
+    """specials are heterogeneous one-offs; the generic prop fallback
+    (slug-keyed) emits prop_specials rows with the raw Description as
+    book_label — operator can audit and canonicalize later."""
+    specials = [r for r in rows if r.market_group == "prop_specials"]
+    assert len(specials) >= 10, f"expected >= 10 prop_specials rows, got {len(specials)}"
+    # Some specials include 'How Many Trades Will Occur in Round 1 of Draft'.
+    assert any("trades" in r.book_label.lower() for r in specials), (
+        "expected at least one trade-count special in the fixture"
+    )
+
+
+def test_total_row_count_close_to_snapshot(rows):
+    """Regression guard: fixture snapshot had 902 runners (captured 2026-04-21).
+    Allow +/-15% drift for minor parser logic adjustments."""
+    assert 750 <= len(rows) <= 1050, f"unexpected total row count: {len(rows)}"
+
+
+def test_v1_market_groups_are_allowlisted(rows):
+    """Every emitted market_group should be either a recognized v1 canonical
+    OR a prop_* fallback. Anything else is a bug."""
+    allowed_canonical = {
+        "pick_outright", "first_at_position",
+        "top_5_range", "top_10_range", "top_32_range",
+        "nth_at_position_2", "nth_at_position_3",
+        "mr_irrelevant_position",
+        "team_drafts_player", "team_first_pick_position",
+        "matchup_before",
+        "draft_position_over_under",
+    }
+    actual = {r.market_group for r in rows}
+    props = {g for g in actual if g.startswith("prop_")}
+    unexpected = actual - allowed_canonical - props
+    assert not unexpected, (
+        f"unexpected market_groups not in v1 allowlist: {unexpected}"
+    )
