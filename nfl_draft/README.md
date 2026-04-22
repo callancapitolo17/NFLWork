@@ -1,10 +1,10 @@
 # NFL Draft EV Portal
 
 Trader's-cockpit web portal for surfacing +EV NFL Draft bets across
-Kalshi and 5 sportsbooks (DraftKings, FanDuel, Bookmaker, Wagerzon, Hoop88).
+Kalshi and 6 sportsbooks (DraftKings, FanDuel, Bookmaker, Wagerzon, Hoop88, BetOnline).
 
-**Current venue status** (2026-04-21):
-- Kalshi, DraftKings, Wagerzon, Hoop88, Bookmaker — posting draft markets, all scraping live.
+**Current venue status** (2026-04-22):
+- Kalshi, DraftKings, Wagerzon, Hoop88, Bookmaker, BetOnline — posting draft markets, all scraping live.
 - FanDuel — draft page temporarily offline as of 2026-04-20 (they pulled the "NFL Draft" tab from `customPageId=nfl`'s layout). Scraper is intact and will pick up automatically when FD reposts; the dashboard's staleness filter hides FD rows while they're gone.
 
 ## Architecture
@@ -12,7 +12,7 @@ Kalshi and 5 sportsbooks (DraftKings, FanDuel, Bookmaker, Wagerzon, Hoop88).
 Single DuckDB at `nfl_draft/nfl_draft.duckdb` (legacy `kalshi_draft.duckdb` migrated in and retired).
 Python orchestrator `nfl_draft/run.py` invoked by cron.
 
-- `--mode scrape --book all` — pulls odds from all 6 venues (kalshi, draftkings, fanduel, bookmaker, wagerzon, hoop88), devigs, writes to `draft_odds`, triggers legacy `kalshi_draft/edge_detector.py` + `consensus.py`
+- `--mode scrape --book all` — pulls odds from all 7 venues (kalshi, draftkings, fanduel, bookmaker, wagerzon, hoop88, betonline), devigs, writes to `draft_odds`, triggers legacy `kalshi_draft/edge_detector.py` + `consensus.py`
 - `--mode trades` — polls Kalshi trade tape with cursor + dedup
 
 Dashboard extends `kalshi_draft/app.py` with 4 new tabs under "Portal" section:
@@ -76,6 +76,24 @@ See `docs/superpowers/specs/2026-04-17-nfl-draft-portal-design.md` for the full 
      HOOP88_USERNAME=...
      HOOP88_PASSWORD=...
      ```
+   - **BetOnline** (`scrapers/betonline.py` -> `scrapers/recon_betonline.py`):
+     NFL Draft markets are anonymous-readable, so no sportsbook login is
+     required at runtime. The scraper does need a valid Cloudflare
+     `cf_clearance` cookie — we reuse the cookie jar at
+     `bet_logger/recon_betonline_cookies.json` maintained by the
+     `bet_logger/recon_betonline.py` pipeline. Two-step auth at runtime:
+     `GET https://www.betonline.ag/get-token` mints an anonymous JWT; we
+     use it as `Authorization: Bearer` + seven BetOnline-specific headers
+     (`gsetting`, `contests`, `gmt-offset`, `utc-offset`, `actual-time`,
+     `iso-time`, `utc-time`) when POSTing per NFL Draft bucket slug to
+     `api-offering.betonline.ag/api/offering/Sports/get-contests-by-contest-type2`.
+     On HTTP 403 (Cloudflare) or 401 (BetOnline app rejects), refresh:
+     ```
+     python bet_logger/recon_betonline.py
+     ```
+     then re-run the scraper. Refresh tokens rotate automatically on each
+     authenticated call, so cookies stay warm as long as the bet_logger
+     pipeline runs at least daily.
 
 3. Run the one-time migration (preserves historical Kalshi draft odds):
    ```bash
