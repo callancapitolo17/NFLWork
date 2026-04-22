@@ -247,6 +247,34 @@ def test_kalshi_book_label_scopes_position_series_by_tier():
     assert _kalshi_book_label("KXNFLDRAFT1", "KXNFLDRAFT1-26-TCHA") == "KXNFLDRAFT1"
 
 
+def test_oddsrow_accepts_implied_and_devig_overrides():
+    """Optional overrides allow a scraper to bypass american_to_implied when
+    it has exact prices already (e.g. Kalshi yes_ask fractions)."""
+    from nfl_draft.scrapers._base import OddsRow
+    from datetime import datetime
+
+    row = OddsRow(
+        book="kalshi", book_label="L", book_subject="S",
+        american_odds=1900, fetched_at=datetime.now(),
+        implied_prob=0.05, devig_prob=0.035,
+    )
+    assert row.implied_prob == 0.05
+    assert row.devig_prob == 0.035
+
+
+def test_oddsrow_overrides_default_to_none():
+    """Back-compat: existing call sites that don't set overrides must keep working."""
+    from nfl_draft.scrapers._base import OddsRow
+    from datetime import datetime
+
+    row = OddsRow(
+        book="dk", book_label="L", book_subject="S",
+        american_odds=-110, fetched_at=datetime.now(),
+    )
+    assert row.implied_prob is None
+    assert row.devig_prob is None
+
+
 def test_kalshi_market_map_only_maps_first_at_position_p1():
     """Position-series markets P2, P3, ... must NOT map to first_<pos>_<player>.
     Only P1 (the '1st at position' market) should get a canonical market_id;
