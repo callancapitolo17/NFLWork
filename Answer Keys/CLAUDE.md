@@ -75,14 +75,25 @@ MLB.R Phase 4 (samples export)
   └── home_scored_first carried into mlb_game_samples as 0/1/NA column
       (preserved automatically because run_answer_key_sample returns a row
        subset of DT with all columns intact)
+parse_legs.R (generic prop parser)
+  ├── TOKEN_REGISTRY maps Wagerzon description tokens to structured leg specs:
+  │     SCR 1ST → scores_first;  1H → wins_period(F5);  GM → wins_period(FG);
+  │     F3/F7 → wins_period(F3/F7);  SCR U<N>/O<N> → team_total_under/over
+  ├── parse_legs(description) → list of leg specs (or NULL + warning on unknown)
+  ├── eval_leg(leg, samples, side, team_runs, opp_runs) → logical vector
+  └── compute_prop_fair(samples, side, legs) → AND-reduce across legs,
+        NA rows on home_scored_first excluded before the mean
+
 mlb_triple_play.R (standalone pricer)
-  ├── Reads mlb_game_samples + hardcoded today's lines
-  ├── compute_triple_play_fair(samples, side) → joint P across the 3 legs
-  └── Prints fair odds vs book + edge per posted line
+  ├── Reads mlb_game_samples (total_final_score + margin at F3/F5/F7/FG + scored_first)
+  ├── For each tribble row: parse_legs(description) → compute_prop_fair(...)
+  └── Prints fair odds vs book + edge per posted line, grouped by prop_type
 ```
 - `home_scored_first` is NA for games with no scoring in innings 1–5 (~5% of historical games); excluded from the mean before the ratio is computed.
-- F5 3-way: leg passes only with strict lead (`margin_f5 > 0` for home, `< 0` for away). F5 ties kill the parlay.
-- Helper lives in `triple_play_helpers.R` so both MLB.R and the pricer can source it without duplication.
+- F5 3-way: `wins_period` with period=F5 passes only with strict lead (`margin_f5 > 0` for home, `< 0` for away). F5 ties kill the parlay.
+- `SCR U<N>` means the listed team's team-total under N (team_total_under leg). Numeric parser handles `"2"`, `"2.5"`, and unicode `"2½"`.
+- Helpers: `triple_play_helpers.R` (determine_home_scored_first*) is sourced by MLB.R Phase 1; `parse_legs.R` is sourced by mlb_triple_play.R's main block. Both files are pure — no DB or network side effects.
+- Adding a new prop type = add a token to `TOKEN_REGISTRY`. No new function needed.
 
 ## Common Pitfalls
 

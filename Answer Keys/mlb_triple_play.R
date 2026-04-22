@@ -18,27 +18,6 @@ suppressPackageStartupMessages({
 # CORE PRICER FUNCTIONS (pure — unit-tested)
 # =============================================================================
 
-#' Fair probability for a team's triple-play, computed empirically on sample rows.
-#'
-#' @param samples data.frame with columns home_margin, home_margin_f5,
-#'   home_scored_first (0/1/NA)
-#' @param side "home" or "away"
-#' @return scalar probability in [0, 1], or NA if no valid rows
-compute_triple_play_fair <- function(samples, side = c("home", "away")) {
-  side <- match.arg(side)
-  samples <- samples[!is.na(samples$home_scored_first), ]
-  if (nrow(samples) == 0) return(NA_real_)
-  if (side == "home") {
-    mean(samples$home_scored_first == 1L &
-         samples$home_margin_f5   > 0 &
-         samples$home_margin      > 0)
-  } else {
-    mean(samples$home_scored_first == 0L &
-         samples$home_margin_f5   < 0 &
-         samples$home_margin      < 0)
-  }
-}
-
 #' Probability → American odds (integer). Returns NA for p <= 0 or p >= 1.
 prob_to_american <- function(p) {
   if (is.na(p) || p <= 0 || p >= 1) return(NA_integer_)
@@ -61,27 +40,31 @@ american_to_prob <- function(o) {
 if (!interactive() && sys.nframe() == 0L) {
 
   setwd("~/NFLWork/Answer Keys")
+  source("parse_legs.R")
   MLB_DB <- "mlb.duckdb"
 
-  # Today's book lines — edit this tribble whenever new triple-plays post.
+  # Today's book lines — edit this tribble whenever new props post.
   # home_team / away_team must match Odds API canonical names in mlb_consensus_temp.
+  # description is the Wagerzon label verbatim; parse_legs() derives leg logic from it.
   todays_lines <- tribble(
-    ~home_team,              ~away_team,             ~target_team, ~side,   ~book_odds,
-    "Colorado Rockies",      "San Diego Padres",     "Rockies",    "home",  +530,
-    "Colorado Rockies",      "San Diego Padres",     "Padres",     "away",  +190,
-    "San Francisco Giants",  "Los Angeles Dodgers",  "Giants",     "home",  +750,
-    "San Francisco Giants",  "Los Angeles Dodgers",  "Dodgers",    "away",  +155,
-    "Seattle Mariners",      "Athletics",            "Mariners",   "home",  +215,
-    "Seattle Mariners",      "Athletics",            "Athletics",  "away",  +455,
-    "Arizona Diamondbacks",  "Chicago White Sox",    "DBacks",     "home",  +240,
-    "Arizona Diamondbacks",  "Chicago White Sox",    "White Sox",  "away",  +415
+    ~home_team,              ~away_team,             ~target_team, ~side,   ~book_odds, ~description,
+    "Colorado Rockies",      "San Diego Padres",     "Rockies",    "home",  +530,       "ROCKIES TRIPLE-PLAY (SCR 1ST, 1H & GM)",
+    "Colorado Rockies",      "San Diego Padres",     "Padres",     "away",  +190,       "PADRES TRIPLE-PLAY (SCR 1ST, 1H & GM)",
+    "San Francisco Giants",  "Los Angeles Dodgers",  "Giants",     "home",  +750,       "GIANTS TRIPLE-PLAY (SCR 1ST, 1H & GM)",
+    "San Francisco Giants",  "Los Angeles Dodgers",  "Dodgers",    "away",  +155,       "DODGERS TRIPLE-PLAY (SCR 1ST, 1H & GM)",
+    "Seattle Mariners",      "Athletics",            "Mariners",   "home",  +215,       "MARINERS TRIPLE-PLAY (SCR 1ST, 1H & GM)",
+    "Seattle Mariners",      "Athletics",            "Athletics",  "away",  +455,       "ATHLETICS TRIPLE-PLAY (SCR 1ST, 1H & GM)",
+    "Arizona Diamondbacks",  "Chicago White Sox",    "DBacks",     "home",  +240,       "DBACKS TRIPLE-PLAY (SCR 1ST, 1H & GM)",
+    "Arizona Diamondbacks",  "Chicago White Sox",    "White Sox",  "away",  +415,       "WHITE SOX TRIPLE-PLAY (SCR 1ST, 1H & GM)"
   )
 
   con <- dbConnect(duckdb(), dbdir = MLB_DB, read_only = TRUE)
   on.exit(tryCatch(dbDisconnect(con), error = function(e) NULL), add = TRUE)
 
   samples_df <- dbGetQuery(con,
-    "SELECT game_id, home_margin, home_margin_f5, home_scored_first
+    "SELECT game_id, home_margin, total_final_score,
+            home_margin_f3, home_margin_f5, home_margin_f7,
+            home_scored_first
      FROM mlb_game_samples")
   consensus  <- dbGetQuery(con,
     "SELECT id, home_team, away_team, commence_time FROM mlb_consensus_temp")
@@ -117,13 +100,24 @@ if (!interactive() && sys.nframe() == 0L) {
     mutate(
       game_samples = list(samples_df[samples_df$game_id == id, ]),
       n_samples    = nrow(game_samples),
-      fair_prob    = compute_triple_play_fair(game_samples, side),
+      legs         = list(parse_legs(description)),
+      fair_prob    = compute_prop_fair(game_samples, side, legs),
       fair_odds    = prob_to_american(fair_prob),
       book_prob    = american_to_prob(book_odds),
-      edge_pct     = (fair_prob / book_prob - 1) * 100
+      edge_pct     = (fair_prob / book_prob - 1) * 100,
+      prop_type    = {
+        # Anchor on known prop-type tokens so multi-word team names work
+        # ("WHITE SOX TRIPLE-PLAY ..." and "GIANTS GRAND-SLAM ..." both parse).
+        # Extend this pattern as new prop types are added to TOKEN_REGISTRY.
+        known_props <- "(TRIPLE-PLAY|GRAND-SLAM)"
+        m <- regmatches(description,
+                        regexec(paste0("\\b", known_props, "\\b"), description))[[1]]
+        if (length(m) >= 2) m[[2]] else NA_character_
+      }
     ) %>%
     ungroup() %>%
-    select(target_team, side, n_samples, fair_prob, fair_odds, book_odds, edge_pct) %>%
+    select(target_team, prop_type, side, n_samples,
+           fair_prob, fair_odds, book_odds, edge_pct) %>%
     arrange(desc(edge_pct))
 
   cat("\n=== MLB Triple-Play Fair Prices (SCR 1ST + F5 + GM) ===\n")
@@ -139,4 +133,5 @@ if (!interactive() && sys.nframe() == 0L) {
       edge_pct  = sprintf("%+.1f%%", edge_pct)
     )
   print(as.data.frame(display), row.names = FALSE)
+
 }

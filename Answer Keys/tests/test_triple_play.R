@@ -98,38 +98,6 @@ test_that("mlb_game_samples has home_scored_first column populated", {
 # ----- Pricer tests (mlb_triple_play.R) -----
 source("../mlb_triple_play.R", local = TRUE)
 
-test_that("compute_triple_play_fair (home) returns joint P of 3 legs", {
-  # 10 synthetic rows. home_triple = scored_first==1 AND margin_f5>0 AND home_margin>0.
-  # Hits: rows 1 (1,1,2), 2 (1,2,3), 4 (1,3,4), 6 (1,2,5), 9 (1,4,6) → 5/10 = 0.5
-  samples <- data.frame(
-    home_margin       = c( 2,  3, -1,  4,  1,  5, -2,  2,  6, -3),
-    home_margin_f5    = c( 1,  2,  0,  3,  0,  2, -1,  1,  4, -2),
-    home_scored_first = c( 1L, 1L, 0L, 1L, 1L, 1L, 0L, 0L, 1L, 0L)
-  )
-  expect_equal(compute_triple_play_fair(samples, side = "home"), 0.5)
-})
-
-test_that("compute_triple_play_fair (away) returns joint P for away side", {
-  # away_triple = scored_first==0 AND margin_f5<0 AND home_margin<0
-  # Hits: rows 1, 2, 4, 6, 9 → 5/10 = 0.5
-  samples <- data.frame(
-    home_margin       = c(-2, -3,  1, -4,  1, -5,  2, -2, -6,  3),
-    home_margin_f5    = c(-1, -2,  0, -3,  0, -2,  1, -1, -4,  2),
-    home_scored_first = c( 0L, 0L, 1L, 0L, 0L, 0L, 1L, 1L, 0L, 1L)
-  )
-  expect_equal(compute_triple_play_fair(samples, side = "away"), 0.5)
-})
-
-test_that("compute_triple_play_fair excludes NA home_scored_first rows", {
-  # 6 rows — 3 valid with 1 hit, 3 NA. Fair should be 1/3, not 1/6.
-  samples <- data.frame(
-    home_margin       = c( 2,  3,  1,  4,  5,  6),
-    home_margin_f5    = c( 1,  2,  0,  3,  4,  5),
-    home_scored_first = c( 1L, 0L, 1L, NA, NA, NA)
-  )
-  expect_equal(compute_triple_play_fair(samples, side = "home"), 1/3)
-})
-
 test_that("prob_to_american handles favorites and dogs", {
   expect_equal(prob_to_american(0.5), -100L)
   expect_equal(prob_to_american(0.6), -150L)   # -100 * 0.6/0.4
@@ -143,33 +111,6 @@ test_that("american_to_prob is the inverse of prob_to_american", {
   expect_equal(american_to_prob(-150), 0.6)
   expect_equal(american_to_prob(+300), 0.25)
   expect_equal(american_to_prob(+100), 0.5)
-})
-
-test_that("compute_triple_play_fair returns NA_real_ on empty samples", {
-  empty <- data.frame(home_margin = integer(0),
-                      home_margin_f5 = integer(0),
-                      home_scored_first = integer(0))
-  expect_true(is.na(compute_triple_play_fair(empty, side = "home")))
-  expect_true(is.na(compute_triple_play_fair(empty, side = "away")))
-})
-
-test_that("compute_triple_play_fair returns 1.0 when all rows pass all 3 legs", {
-  samples <- data.frame(
-    home_margin       = c(2, 3, 4),
-    home_margin_f5    = c(1, 2, 3),
-    home_scored_first = c(1L, 1L, 1L)
-  )
-  expect_equal(compute_triple_play_fair(samples, side = "home"), 1.0)
-})
-
-test_that("compute_triple_play_fair returns 0.0 when no rows pass", {
-  # Home scored first but lost F5 and game → 0 home_triples
-  samples <- data.frame(
-    home_margin       = c(-2, -3, -4),
-    home_margin_f5    = c(-1, -2, -3),
-    home_scored_first = c(1L, 1L, 1L)
-  )
-  expect_equal(compute_triple_play_fair(samples, side = "home"), 0.0)
 })
 
 test_that("american_to_prob(0) returns NA_real_", {
