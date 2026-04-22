@@ -552,6 +552,145 @@ def _kalshi_market_id_for(series_ticker: str, ticker: str, subject: str) -> str 
 
 
 # ---------------------------------------------------------------------------
+# BetOnline
+# ---------------------------------------------------------------------------
+
+# Matches the subject format emitted by BetOnline's draft_position classifier:
+# 'Over 9.5' / 'Under 12'.
+_BE_DRAFT_POSITION_OU_SUBJECT_RE = re.compile(
+    r"^(Over|Under)\s+([\d.]+)\s*$", re.IGNORECASE,
+)
+
+
+def _betonline_entries() -> list[tuple[str, str, str, str]]:
+    """Build BetOnline MARKET_MAP rows from the committed fixture.
+
+    Each bucket's classifier emits a distinct market_group; the dispatch
+    here maps (group, label, subject) tuples to canonical market_ids via
+    build_market_id. Props fall through with a None id and quarantine
+    at runtime.
+    """
+    raw = _load_fixture("betonline")
+    if raw is None:
+        return []
+    from nfl_draft.scrapers.betonline import (
+        parse_response,
+        PICK_DESC_RE, FIRST_POS_DESC_RE, NTH_POS_DESC_RE,
+        TEAM_TO_DRAFT_DESC_RE, TEAMS_1ST_POS_DESC_RE, DRAFT_POSITION_DESC_RE,
+        POSITION_MAP,
+    )
+    rows = parse_response(raw)
+
+    entries: list[tuple[str, str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for r in rows:
+        key = (r.book, r.book_label, r.book_subject)
+        if key in seen:
+            continue
+        mid = _betonline_market_id_for(
+            r.market_group, r.book_label, r.book_subject,
+            pick_re=PICK_DESC_RE, first_pos_re=FIRST_POS_DESC_RE,
+            nth_pos_re=NTH_POS_DESC_RE,
+            team_to_draft_re=TEAM_TO_DRAFT_DESC_RE,
+            teams_1st_pos_re=TEAMS_1ST_POS_DESC_RE,
+            draft_position_re=DRAFT_POSITION_DESC_RE,
+            position_map=POSITION_MAP,
+        )
+        if mid is None:
+            continue  # prop / unmappable row -> quarantine at runtime.
+        entries.append((*key, mid))
+        seen.add(key)
+    return entries
+
+
+def _betonline_market_id_for(
+    group, label, subject, *,
+    pick_re, first_pos_re, nth_pos_re,
+    team_to_draft_re, teams_1st_pos_re, draft_position_re,
+    position_map,
+):
+    """BetOnline-specific market_id builder. Dispatches on market_group.
+
+    Returns a canonical market_id string, or None for props / unmappable.
+    """
+    if group == "pick_outright":
+        m = pick_re.match(label)
+        if not m:
+            return None
+        return build_market_id(
+            "pick_outright", pick_number=int(m.group(1)), player=subject,
+        )
+    if group == "first_at_position":
+        m = first_pos_re.match(label)
+        if not m:
+            return None
+        pos = position_map.get(m.group(1).strip().lower())
+        if not pos:
+            return None
+        return build_market_id("first_at_position", position=pos, player=subject)
+    if group.startswith("nth_at_position_"):
+        m = nth_pos_re.match(label)
+        if not m:
+            return None
+        try:
+            nth_val = int(m.group(1))
+        except (ValueError, IndexError):
+            return None
+        pos = position_map.get(m.group(2).strip().lower())
+        if not pos:
+            return None
+        return build_market_id(
+            "nth_at_position", nth=nth_val, position=pos, player=subject,
+        )
+    if group.startswith("top_") and group.endswith("_range"):
+        try:
+            n = int(group.split("_")[1])
+        except (IndexError, ValueError):
+            return None
+        return build_market_id(
+            "top_n_range", range_low=1, range_high=n, player=subject,
+        )
+    if group == "mr_irrelevant_position":
+        return build_market_id("mr_irrelevant_position", position=subject)
+    if group == "team_drafts_player":
+        m = team_to_draft_re.match(label)
+        if not m:
+            return None
+        player = m.group(1).strip()
+        # subject = team name; canonical 'team_first_pick' keys by team + player.
+        return build_market_id("team_first_pick", team=subject, player=player)
+    if group == "team_first_pick_position":
+        m = teams_1st_pos_re.match(label)
+        if not m:
+            return None
+        team = m.group(1).strip()
+        return build_market_id("team_first_pick_position", team=team, position=subject)
+    if group == "matchup_before":
+        # book_label format 'A vs B' (built by _classify_matchups).
+        if " vs " not in label:
+            return None
+        a, b = [p.strip() for p in label.split(" vs ", 1)]
+        return build_market_id("matchup_before", player_a=a, player_b=b)
+    if group == "draft_position_over_under":
+        m_lbl = draft_position_re.match(label)
+        m_sub = _BE_DRAFT_POSITION_OU_SUBJECT_RE.match(subject)
+        if not m_lbl or not m_sub:
+            return None
+        player = m_lbl.group(1).strip()
+        direction = m_sub.group(1).lower()
+        try:
+            line_val = float(m_sub.group(2))
+        except (TypeError, ValueError):
+            return None
+        return build_market_id(
+            "draft_position_over_under",
+            player=player, line=line_val, direction=direction,
+        )
+    # prop_* and unknown groups quarantine at runtime.
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Aggregate MARKET_MAP (de-duped across all books)
 # ---------------------------------------------------------------------------
 
@@ -563,5 +702,6 @@ MARKET_MAP: list[tuple[str, str, str, str]] = list(
         + _wz_entries()
         + _h88_entries()
         + _kalshi_entries()
+        + _betonline_entries()
     ).keys()
 )

@@ -296,3 +296,27 @@ def test_wagerzon_fixture_includes_nth_at_position_markets():
                       (FIXTURES / "wagerzon" / "draft_markets.json").read_text())))
     if has_nth:
         assert nth, "WZ fixture has nth rows but _wz_entries produced no mapping"
+
+
+def test_betonline_entries_cover_structured_groups():
+    """After Task 13, _betonline_entries() should feed ~500+ canonical rows
+    into MARKET_MAP spanning every v1 canonical type."""
+    from nfl_draft.config.markets import _betonline_entries
+    entries = _betonline_entries()
+    assert len(entries) >= 500, f"expected >= 500 betonline entries, got {len(entries)}"
+    for e in entries[:20]:
+        assert len(e) == 4 and e[0] == "betonline"
+    ids = [e[3] for e in entries]
+    # Each canonical we emit should contribute at least one ID.
+    assert any(m.startswith("pick_") for m in ids), "pick_outright missing"
+    assert any(m.startswith("first_") for m in ids), "first_at_position missing"
+    assert any(m.startswith("top_5_") or m.startswith("top_10_") or m.startswith("top_32_")
+               for m in ids), "top_N_range missing"
+    assert any(m.startswith("team_") and "_first_pick_" in m and "_first_pick_pos_" not in m
+               for m in ids), "team_first_pick (team_drafts_player) missing"
+    assert any("_first_pick_pos_" in m for m in ids), "team_first_pick_position missing"
+    assert any(m.startswith("matchup_") for m in ids), "matchup_before missing"
+    assert any(m.startswith("draft_position_ou_") for m in ids), "draft_position_ou missing"
+    assert any(m.startswith("mr_irrelevant_") for m in ids), "mr_irrelevant_position missing"
+    # And at least one nth_at_position rescued (starts with a digit).
+    assert any(m[0].isdigit() for m in ids), "nth_at_position missing"
