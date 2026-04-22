@@ -61,20 +61,22 @@ american_to_prob <- function(o) {
 if (!interactive() && sys.nframe() == 0L) {
 
   setwd("~/NFLWork/Answer Keys")
+  source("parse_legs.R")
   MLB_DB <- "mlb.duckdb"
 
-  # Today's book lines — edit this tribble whenever new triple-plays post.
+  # Today's book lines — edit this tribble whenever new props post.
   # home_team / away_team must match Odds API canonical names in mlb_consensus_temp.
+  # description is the Wagerzon label verbatim; parse_legs() derives leg logic from it.
   todays_lines <- tribble(
-    ~home_team,              ~away_team,             ~target_team, ~side,   ~book_odds,
-    "Colorado Rockies",      "San Diego Padres",     "Rockies",    "home",  +530,
-    "Colorado Rockies",      "San Diego Padres",     "Padres",     "away",  +190,
-    "San Francisco Giants",  "Los Angeles Dodgers",  "Giants",     "home",  +750,
-    "San Francisco Giants",  "Los Angeles Dodgers",  "Dodgers",    "away",  +155,
-    "Seattle Mariners",      "Athletics",            "Mariners",   "home",  +215,
-    "Seattle Mariners",      "Athletics",            "Athletics",  "away",  +455,
-    "Arizona Diamondbacks",  "Chicago White Sox",    "DBacks",     "home",  +240,
-    "Arizona Diamondbacks",  "Chicago White Sox",    "White Sox",  "away",  +415
+    ~home_team,              ~away_team,             ~target_team, ~side,   ~book_odds, ~description,
+    "Colorado Rockies",      "San Diego Padres",     "Rockies",    "home",  +530,       "ROCKIES TRIPLE-PLAY (SCR 1ST, 1H & GM)",
+    "Colorado Rockies",      "San Diego Padres",     "Padres",     "away",  +190,       "PADRES TRIPLE-PLAY (SCR 1ST, 1H & GM)",
+    "San Francisco Giants",  "Los Angeles Dodgers",  "Giants",     "home",  +750,       "GIANTS TRIPLE-PLAY (SCR 1ST, 1H & GM)",
+    "San Francisco Giants",  "Los Angeles Dodgers",  "Dodgers",    "away",  +155,       "DODGERS TRIPLE-PLAY (SCR 1ST, 1H & GM)",
+    "Seattle Mariners",      "Athletics",            "Mariners",   "home",  +215,       "MARINERS TRIPLE-PLAY (SCR 1ST, 1H & GM)",
+    "Seattle Mariners",      "Athletics",            "Athletics",  "away",  +455,       "ATHLETICS TRIPLE-PLAY (SCR 1ST, 1H & GM)",
+    "Arizona Diamondbacks",  "Chicago White Sox",    "DBacks",     "home",  +240,       "DBACKS TRIPLE-PLAY (SCR 1ST, 1H & GM)",
+    "Arizona Diamondbacks",  "Chicago White Sox",    "White Sox",  "away",  +415,       "WHITE SOX TRIPLE-PLAY (SCR 1ST, 1H & GM)"
   )
 
   con <- dbConnect(duckdb(), dbdir = MLB_DB, read_only = TRUE)
@@ -119,7 +121,8 @@ if (!interactive() && sys.nframe() == 0L) {
     mutate(
       game_samples = list(samples_df[samples_df$game_id == id, ]),
       n_samples    = nrow(game_samples),
-      fair_prob    = compute_triple_play_fair(game_samples, side),
+      legs         = list(parse_legs(description)),
+      fair_prob    = compute_prop_fair(game_samples, side, legs),
       fair_odds    = prob_to_american(fair_prob),
       book_prob    = american_to_prob(book_odds),
       edge_pct     = (fair_prob / book_prob - 1) * 100

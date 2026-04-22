@@ -71,7 +71,8 @@ TOKEN_REGISTRY <- list(
 #' "cannot price" → fair_prob = NA).
 #' Descriptions with no parenthetical also return NULL.
 parse_legs <- function(description) {
-  if (is.null(description) || is.na(description) || !nzchar(description)) {
+  if (is.null(description) || length(description) == 0 ||
+      is.na(description) || !nzchar(description)) {
     return(NULL)
   }
   # Extract the parenthetical content (e.g. "SCR 1ST, 1H & GM")

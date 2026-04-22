@@ -175,3 +175,24 @@ test_that("compute_triple_play_fair returns 0.0 when no rows pass", {
 test_that("american_to_prob(0) returns NA_real_", {
   expect_true(is.na(american_to_prob(0)))
 })
+
+test_that("compute_prop_fair on triple-play legs matches prior compute_triple_play_fair output", {
+  # Source both the old function (still present until Task 7) and the new generic pricer
+  source("../parse_legs.R")
+
+  # Same 10-row fixture used in the original compute_triple_play_fair test
+  samples <- data.frame(
+    home_margin       = c( 2,  3, -1,  4,  1,  5, -2,  2,  6, -3),
+    home_margin_f5    = c( 1,  2,  0,  3,  0,  2, -1,  1,  4, -2),
+    home_scored_first = c( 1L, 1L, 0L, 1L, 1L, 1L, 0L, 0L, 1L, 0L),
+    total_final_score = rep(10, 10)
+  )
+  triple_legs <- list(
+    list(type = "scores_first"),
+    list(type = "wins_period", period = "F5"),
+    list(type = "wins_period", period = "FG")
+  )
+  new_result <- compute_prop_fair(samples, "home", triple_legs)
+  old_result <- compute_triple_play_fair(samples, "home")
+  expect_equal(new_result, old_result)
+})
