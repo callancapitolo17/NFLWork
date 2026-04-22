@@ -80,6 +80,23 @@ def test_emits_mr_irrelevant_position(rows):
                for s in subjects), subjects
 
 
+def test_emits_team_drafts_player(rows):
+    """team-to-draft has 'Team to Draft <Player>' with team-name runners."""
+    tdp = [r for r in rows if r.market_group == "team_drafts_player"]
+    assert len(tdp) >= 200, f"expected >= 200 team_drafts_player rows, got {len(tdp)}"
+    for r in tdp[:5]:
+        assert "team to draft" in r.book_label.lower()
+
+
+def test_emits_team_first_pick_position(rows):
+    """teams-1st-drafted-position has '<Team> 1st Drafted Player Position'
+    with position-word runners."""
+    tfp = [r for r in rows if r.market_group == "team_first_pick_position"]
+    assert len(tfp) >= 250, f"expected >= 250 team_first_pick_position rows, got {len(tfp)}"
+    for r in tfp[:5]:
+        assert "1st drafted" in r.book_label.lower(), r.book_label
+
+
 def test_1st_round_props_emits_totals_props_with_lines(rows):
     """1st-round-props are totals-style ('Total X Drafted in 1st Round' with
     O/U + GroupLine) — no canonical join today, so we emit as props with

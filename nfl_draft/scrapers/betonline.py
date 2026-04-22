@@ -99,6 +99,14 @@ TOP_N_DESC_RE = re.compile(r"^Drafted\s+Top\s+(\d+)\s*$", re.IGNORECASE)
 # "Drafted in Round 1" -> treat as top_32 (round 1 = first 32 picks)
 ROUND_1_DESC_RE = re.compile(r"^Drafted\s+in\s+Round\s+1\s*$", re.IGNORECASE)
 
+# "Team to Draft Kenyon Sadiq"
+TEAM_TO_DRAFT_DESC_RE = re.compile(r"^Team\s+to\s+Draft\s+(.+?)\s*$", re.IGNORECASE)
+
+# "Arizona Cardinals 1st Drafted Player Position"
+TEAMS_1ST_POS_DESC_RE = re.compile(
+    r"^(.+?)\s+1st\s+Drafted\s+Player\s+Position\s*$", re.IGNORECASE,
+)
+
 # BetOnline position words -> canonical abbreviations used by
 # build_market_id('first_at_position', position=...).
 POSITION_MAP = {
@@ -291,6 +299,65 @@ def _classify_mr_irrelevant(desc: dict, ce: dict, cgl: dict, now: datetime) -> I
         )
 
 
+def _classify_team_to_draft(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterator[OddsRow]:
+    """For `team-to-draft`: 'Team to Draft <Player>' where contestants are
+    NFL team names. Maps to canonical team_first_pick(team, player) — the
+    book_label carries the player; each contestant (team name) is the
+    subject.
+    """
+    label = (ce.get("Description") or "").strip()
+    if not TEAM_TO_DRAFT_DESC_RE.match(label):
+        for c in (cgl.get("Contestants") or []):
+            name = (c.get("Name") or "").strip()
+            american = _odds(c)
+            if name and american is not None:
+                yield OddsRow(
+                    book="betonline", book_label=label, book_subject=name,
+                    american_odds=american, fetched_at=now,
+                    market_group="prop_team_to_draft",
+                )
+        return
+    for c in (cgl.get("Contestants") or []):
+        name = (c.get("Name") or "").strip()  # team name
+        american = _odds(c)
+        if not name or american is None:
+            continue
+        yield OddsRow(
+            book="betonline", book_label=label, book_subject=name,
+            american_odds=american, fetched_at=now,
+            market_group="team_drafts_player",
+        )
+
+
+def _classify_teams_1st_drafted_position(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterator[OddsRow]:
+    """For `teams-1st-drafted-position`: '<Team> 1st Drafted Player Position'
+    where contestants are position words. Team is in the book_label.
+    Maps to team_first_pick_position(team, position).
+    """
+    label = (ce.get("Description") or "").strip()
+    if not TEAMS_1ST_POS_DESC_RE.match(label):
+        for c in (cgl.get("Contestants") or []):
+            name = (c.get("Name") or "").strip()
+            american = _odds(c)
+            if name and american is not None:
+                yield OddsRow(
+                    book="betonline", book_label=label, book_subject=name,
+                    american_odds=american, fetched_at=now,
+                    market_group="prop_teams_1st_drafted_position",
+                )
+        return
+    for c in (cgl.get("Contestants") or []):
+        name = (c.get("Name") or "").strip()  # position word
+        american = _odds(c)
+        if not name or american is None:
+            continue
+        yield OddsRow(
+            book="betonline", book_label=label, book_subject=name,
+            american_odds=american, fetched_at=now,
+            market_group="team_first_pick_position",
+        )
+
+
 def _classify_1st_round_props(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterator[OddsRow]:
     """For `1st-round-props`: 'Total X Drafted in 1st Round' with O/U + GroupLine.
 
@@ -331,6 +398,8 @@ CLASSIFIERS = {
     "to-be-drafted-2nd": _classify_nth_at_position,
     "to-be-selected": _classify_to_be_selected,
     "mr-irrelevant": _classify_mr_irrelevant,
+    "team-to-draft": _classify_team_to_draft,
+    "teams-1st-drafted-position": _classify_teams_1st_drafted_position,
 }
 
 
