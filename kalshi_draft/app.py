@@ -797,8 +797,11 @@ def render_crossbook_grid():
         html.Div(style=CARD_STYLE, children=[
             html.H3("Cross-Book Grid", style={"color": COLORS["accent"], "marginTop": 0}),
             html.P(
-                "Devigged probability per venue. Flagged cells (⚑) differ from the "
-                "cross-venue median by at least the threshold.",
+                "Each cell is a venue's fair-value estimate (devigged probability "
+                "for sportsbooks; mid of buy/sell for Kalshi). Flagged cells (⚑) "
+                "differ from the cross-venue median by at least the threshold — "
+                "sportsbooks compare the fair estimate, Kalshi compares the actual "
+                "buy price. Hover a Kalshi cell for buy/sell/last.",
                 style={"color": COLORS["text_muted"], "fontSize": "0.85em"},
             ),
             html.Div([
@@ -1059,7 +1062,15 @@ def _update_crossbook(threshold_pp, _n_intervals, last_seen):
     grid = nfl_queries.cross_book_grid(threshold_pp=threshold_pp or 0)
     if isinstance(grid, QueryLocked):
         raise PreventUpdate
+
+    # Prefetch Kalshi tooltip data once per render; per-row lookup is dict
+    # access. Lock contention is non-fatal -- render the grid without tooltips.
+    tooltip_lookup = nfl_queries.kalshi_tooltip_data()
+    if isinstance(tooltip_lookup, QueryLocked):
+        tooltip_lookup = {}
+
     rows = []
+    tooltip_data = []
     for m in grid:
         row = {"market_id": m["market_id"]}
         for venue in VENUES:
@@ -1073,11 +1084,27 @@ def _update_crossbook(threshold_pp, _n_intervals, last_seen):
         row["outliers"] = m["outlier_count"]
         rows.append(row)
 
+        tip = tooltip_lookup.get(m["market_id"])
+        if tip is not None:
+            kalshi_hover = (
+                f"Last trade: {tip['last_price']}\u00A2  \n"
+                f"Buy: {tip['yes_ask']}\u00A2  Sell: {tip['yes_bid']}\u00A2  \n"
+                f"Ticker: {tip['ticker']}"
+            )
+            tooltip_data.append({
+                "kalshi": {"value": kalshi_hover, "type": "markdown"},
+            })
+        else:
+            tooltip_data.append({})
+
     table = dash_table.DataTable(
         data=rows,
         columns=[{"name": "Market", "id": "market_id"}]
         + [{"name": v.capitalize(), "id": v} for v in VENUES]
         + [{"name": "Median", "id": "median"}, {"name": "Outliers", "id": "outliers", "type": "numeric"}],
+        tooltip_data=tooltip_data,
+        tooltip_delay=200,
+        tooltip_duration=None,
         filter_action="native",
         sort_action="native",
         page_size=50,
