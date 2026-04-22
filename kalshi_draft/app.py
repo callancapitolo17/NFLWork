@@ -32,6 +32,7 @@ import threading
 import time
 
 _SCRAPE_INTERVAL_SECONDS = 15 * 60  # 15 min — matches pre-draft cadence
+_TRADES_INTERVAL_SECONDS = 15       # 15 s — trade tape freshness for draft night
 
 
 def _run_scrape_once() -> None:
@@ -56,9 +57,43 @@ def _periodic_scrape_loop() -> None:
         _run_scrape_once()
 
 
-# Start the daemon thread ONCE when the module loads. Dash auto-reload is
+# In-process lock so two 15s ticks can't both call fetch_trades() at once
+# (would otherwise collide on the DuckDB write lock).
+_trades_lock = threading.Lock()
+
+
+def _run_trades_once() -> None:
+    """Call Kalshi fetch_trades() in-process. Never raises.
+
+    Uses a non-blocking lock: if the previous tick is still running (e.g.,
+    a slow Kalshi response or a catch-up burst), skip this tick rather than
+    queuing — the next tick 15 s later will try again. Prevents pile-up
+    under write contention.
+    """
+    if not _trades_lock.acquire(blocking=False):
+        return
+    try:
+        from nfl_draft.scrapers import kalshi
+        n = len(kalshi.fetch_trades())
+        if n:
+            print(f"[trades-poll] ingested {n} trades")
+    except Exception as e:
+        print(f"[trades-poll] error: {e}")
+    finally:
+        _trades_lock.release()
+
+
+def _periodic_trades_loop() -> None:
+    """Background loop: poll Kalshi trade tape every 15 s. Daemon thread."""
+    while True:
+        time.sleep(_TRADES_INTERVAL_SECONDS)
+        _run_trades_once()
+
+
+# Start the daemon threads ONCE when the module loads. Dash auto-reload is
 # disabled in production (debug=False), so we don't need reload-safety guards.
 threading.Thread(target=_periodic_scrape_loop, daemon=True, name="nfl_draft-periodic-scrape").start()
+threading.Thread(target=_periodic_trades_loop, daemon=True, name="nfl_draft-periodic-trades").start()
 
 # ---------------------------------------------------------------------------
 # Series display names

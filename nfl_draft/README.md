@@ -135,6 +135,7 @@ See `docs/superpowers/specs/2026-04-17-nfl-draft-portal-design.md` for the full 
 - **Dashboard**: `python kalshi_draft/app.py` -> http://127.0.0.1:8090/
   - Override the port with `NFL_DRAFT_DASHBOARD_PORT=9001 python kalshi_draft/app.py`.
   - On launch, the dashboard spawns a detached background scrape so data is populated within ~2 minutes without any manual action. A daemon thread then re-scrapes every 15 minutes while the dashboard is running. Logs to `/tmp/nfl_draft_startup_scrape.log` and `/tmp/nfl_draft_periodic_scrape.log`.
+  - A second daemon thread polls the Kalshi trade tape **in-process every 15 seconds** while the dashboard is running, so the Trade Tape tab stays live without any external scheduler. This makes `crontab.pre` / `crontab.draft`'s `--mode trades` line **redundant whenever the dashboard is up** — if you install cron _and_ run the dashboard, both writers will contend for the DuckDB file lock (per-ticker failures are caught, but Kalshi API calls are wasted). Pick one.
   - The "Refresh Data" button in the header kicks an on-demand scrape (non-blocking; returns instantly with a toast).
   - The Cross-Book Grid hides rows older than 2 hours, so venues that go silent (cookies expired, site changes) drop out automatically instead of showing stale data.
 
