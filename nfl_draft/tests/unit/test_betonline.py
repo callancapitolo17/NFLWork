@@ -110,6 +110,19 @@ def test_emits_matchup_before_pairs(rows):
     assert all(count == 2 for count in label_counts.values()), label_counts
 
 
+def test_emits_draft_position_ou(rows):
+    """draft-position encodes the line into subject as 'Over 9.5' / 'Under 9.5'
+    so the MARKET_MAP builder can reconstruct (player, line, direction) from
+    (label, subject) alone."""
+    dpo = [r for r in rows if r.market_group == "draft_position_over_under"]
+    assert len(dpo) >= 30, f"expected >= 30 draft_position_ou rows, got {len(dpo)}"
+    for r in dpo[:5]:
+        assert r.book_subject.startswith(("Over ", "Under ")), (
+            f"subject {r.book_subject!r} must start with 'Over '/'Under ' + line"
+        )
+        assert "draft position" in r.book_label.lower()
+
+
 def test_1st_round_props_emits_totals_props_with_lines(rows):
     """1st-round-props are totals-style ('Total X Drafted in 1st Round' with
     O/U + GroupLine) — no canonical join today, so we emit as props with

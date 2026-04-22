@@ -107,6 +107,11 @@ TEAMS_1ST_POS_DESC_RE = re.compile(
     r"^(.+?)\s+1st\s+Drafted\s+Player\s+Position\s*$", re.IGNORECASE,
 )
 
+# "Draft Position - Caleb Downs" (note the hyphen with optional spaces)
+DRAFT_POSITION_DESC_RE = re.compile(
+    r"^Draft\s+Position\s*[-:]\s*(.+?)\s*$", re.IGNORECASE,
+)
+
 # BetOnline position words -> canonical abbreviations used by
 # build_market_id('first_at_position', position=...).
 POSITION_MAP = {
@@ -395,6 +400,44 @@ def _classify_matchups(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterat
         )
 
 
+def _classify_draft_position(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterator[OddsRow]:
+    """For `draft-position`: 'Draft Position - <Player>' with GroupLine=N.5
+    and Over/Under contestants. Maps to canonical draft_position_over_under
+    (player, line, direction). Encodes line+direction in book_subject as
+    'Over 9.5' so _betonline_market_id_for can re-parse them.
+    """
+    label = (ce.get("Description") or "").strip()
+    if not DRAFT_POSITION_DESC_RE.match(label):
+        for c in (cgl.get("Contestants") or []):
+            name = (c.get("Name") or "").strip()
+            american = _odds(c)
+            if name and american is not None:
+                yield OddsRow(
+                    book="betonline", book_label=label, book_subject=name,
+                    american_odds=american, fetched_at=now,
+                    market_group="prop_draft_position",
+                )
+        return
+    line = cgl.get("GroupLine")
+    if line is None:
+        return
+    try:
+        line_val = float(line)
+    except (TypeError, ValueError):
+        return
+    for c in (cgl.get("Contestants") or []):
+        name = (c.get("Name") or "").strip()  # 'Over' or 'Under'
+        american = _odds(c)
+        if not name or american is None:
+            continue
+        subject = f"{name} {line_val:g}"  # e.g. 'Over 9.5'
+        yield OddsRow(
+            book="betonline", book_label=label, book_subject=subject,
+            american_odds=american, fetched_at=now,
+            market_group="draft_position_over_under",
+        )
+
+
 def _classify_1st_round_props(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterator[OddsRow]:
     """For `1st-round-props`: 'Total X Drafted in 1st Round' with O/U + GroupLine.
 
@@ -438,6 +481,7 @@ CLASSIFIERS = {
     "team-to-draft": _classify_team_to_draft,
     "teams-1st-drafted-position": _classify_teams_1st_drafted_position,
     "matchups": _classify_matchups,
+    "draft-position": _classify_draft_position,
 }
 
 
