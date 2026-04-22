@@ -132,3 +132,32 @@ eval_leg <- function(leg, samples, side, team_runs, opp_runs) {
     stop("Unknown leg type: ", leg$type)
   )
 }
+
+#' Generic joint-probability pricer for any multi-leg prop.
+#'
+#' Drops rows with NA home_scored_first, derives team/opp runs from margin +
+#' total, then AND-reduces the leg evaluators across samples and returns the
+#' mean of that logical vector. Returns NA_real_ if no valid rows or no legs.
+#'
+#' @param samples data.frame with at minimum: home_margin, home_margin_f5,
+#'   home_scored_first, total_final_score. wins_period legs for F3/F7 also
+#'   need home_margin_f3 / home_margin_f7 respectively.
+#' @param side "home" or "away" — which team is the prop's subject.
+#' @param legs list of leg specs as returned by parse_legs().
+compute_prop_fair <- function(samples, side, legs) {
+  if (is.null(legs) || length(legs) == 0) return(NA_real_)
+  samples <- samples[!is.na(samples$home_scored_first), ]
+  if (nrow(samples) == 0) return(NA_real_)
+
+  # Derive team-specific run totals once from margin + total.
+  home_runs <- (samples$total_final_score + samples$home_margin) / 2
+  away_runs <- (samples$total_final_score - samples$home_margin) / 2
+  team_runs <- if (side == "home") home_runs else away_runs
+  opp_runs  <- if (side == "home") away_runs else home_runs
+
+  hits <- rep(TRUE, nrow(samples))
+  for (leg in legs) {
+    hits <- hits & eval_leg(leg, samples, side, team_runs, opp_runs)
+  }
+  mean(hits)
+}

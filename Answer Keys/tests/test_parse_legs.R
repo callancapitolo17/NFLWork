@@ -180,3 +180,102 @@ test_that("eval_leg unknown type raises error", {
     "Unknown leg type"
   )
 })
+
+test_that("compute_prop_fair triple-play home returns joint P(all 3 legs)", {
+  # 10 synthetic rows. home_triple = scored_first==1 AND margin_f5>0 AND home_margin>0
+  # Expected hits (same fixture as test_triple_play's home-side test): 5/10 = 0.5
+  samples <- data.frame(
+    home_margin       = c( 2,  3, -1,  4,  1,  5, -2,  2,  6, -3),
+    home_margin_f5    = c( 1,  2,  0,  3,  0,  2, -1,  1,  4, -2),
+    home_scored_first = c( 1L, 1L, 0L, 1L, 1L, 1L, 0L, 0L, 1L, 0L),
+    total_final_score = rep(10, 10)  # irrelevant for triple-play
+  )
+  legs <- list(
+    list(type = "scores_first"),
+    list(type = "wins_period", period = "F5"),
+    list(type = "wins_period", period = "FG")
+  )
+  expect_equal(compute_prop_fair(samples, "home", legs), 0.5)
+})
+
+test_that("compute_prop_fair grand slam (team_total_under) home", {
+  # 4-leg: scores_first AND wins_f5 AND wins_game AND team_under_2.5
+  # home_runs = (total + margin) / 2
+  samples <- data.frame(
+    home_margin       = c( 2,  3,  1,  2,  2),
+    home_margin_f5    = c( 1,  2,  1,  1,  1),
+    home_scored_first = c( 1L, 1L, 1L, 1L, 1L),
+    total_final_score = c( 4,  6,  2,  4,  4)
+  )
+  # home_runs: (4+2)/2=3, (6+3)/2=4.5, (2+1)/2=1.5, (4+2)/2=3, (4+2)/2=3
+  # team_under_2.5: FALSE, FALSE, TRUE, FALSE, FALSE → 1/5 hits
+  # All other legs pass on all rows
+  legs <- list(
+    list(type = "scores_first"),
+    list(type = "wins_period", period = "F5"),
+    list(type = "wins_period", period = "FG"),
+    list(type = "team_total_under", line = 2.5)
+  )
+  expect_equal(compute_prop_fair(samples, "home", legs), 0.2)
+})
+
+test_that("compute_prop_fair returns NA_real_ on NULL legs", {
+  samples <- data.frame(
+    home_margin = 1, home_margin_f5 = 1,
+    home_scored_first = 1L, total_final_score = 2
+  )
+  expect_true(is.na(compute_prop_fair(samples, "home", NULL)))
+})
+
+test_that("compute_prop_fair returns NA_real_ on empty legs list", {
+  samples <- data.frame(
+    home_margin = 1, home_margin_f5 = 1,
+    home_scored_first = 1L, total_final_score = 2
+  )
+  expect_true(is.na(compute_prop_fair(samples, "home", list())))
+})
+
+test_that("compute_prop_fair returns NA_real_ on empty samples", {
+  samples <- data.frame(
+    home_margin = integer(0), home_margin_f5 = integer(0),
+    home_scored_first = integer(0), total_final_score = integer(0)
+  )
+  legs <- list(list(type = "scores_first"))
+  expect_true(is.na(compute_prop_fair(samples, "home", legs)))
+})
+
+test_that("compute_prop_fair excludes NA home_scored_first rows", {
+  # 4 rows: 3 valid with 1 hit, 1 NA. Expected: 1/3, not 1/4.
+  samples <- data.frame(
+    home_margin       = c(1, 1, 1, 1),
+    home_margin_f5    = c(1, 1, 1, 1),
+    home_scored_first = c(1L, 0L, 0L, NA),
+    total_final_score = c(2, 2, 2, 2)
+  )
+  legs <- list(
+    list(type = "scores_first"),
+    list(type = "wins_period", period = "F5"),
+    list(type = "wins_period", period = "FG")
+  )
+  expect_equal(compute_prop_fair(samples, "home", legs), 1/3)
+})
+
+test_that("compute_prop_fair away side with team_total_under uses away_runs", {
+  # away_runs = (total - margin) / 2
+  # For side=away to win: home_margin_f5 < 0, home_margin < 0, home_scored_first == 0
+  samples <- data.frame(
+    home_margin       = c(-2, -3, -1),
+    home_margin_f5    = c(-1, -2, -1),
+    home_scored_first = c( 0L, 0L, 0L),
+    total_final_score = c( 4,  6,  2)
+  )
+  # away_runs: (4-(-2))/2=3, (6-(-3))/2=4.5, (2-(-1))/2=1.5
+  # under 2.5: FALSE, FALSE, TRUE → 1/3
+  legs <- list(
+    list(type = "scores_first"),
+    list(type = "wins_period", period = "F5"),
+    list(type = "wins_period", period = "FG"),
+    list(type = "team_total_under", line = 2.5)
+  )
+  expect_equal(compute_prop_fair(samples, "away", legs), 1/3)
+})
