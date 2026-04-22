@@ -66,34 +66,26 @@ but unmapped, since BetOnline mirrors those markets with sportsbook odds.
 
 ## 4. Scope
 
-### 4.1 BetOnline adapter — 10 of 11 buckets
+### 4.1 BetOnline adapter — all 11 buckets
 
-| # | Bucket (slug)                | Runners | Market_group emitted            | Canonical market_type used      | Cross-book overlap |
-|---|------------------------------|--------:|---------------------------------|---------------------------------|--------------------|
-| 1 | `1st-round`                  |     116 | `pick_outright`                 | `pick_outright`                 | Kalshi, BM, DK, FD, Hoop88 |
-| 2 | `1st-round-props`            |      24 | `first_at_position`             | `first_at_position`             | Kalshi, BM, Hoop88 |
-| 3 | `to-be-drafted-1st`          |      18 | `first_at_position`             | `first_at_position`             | Kalshi, BM, Hoop88 |
-| 4 | `to-be-drafted-2nd`          |      26 | `nth_at_position_2`             | **`nth_at_position` (new)**     | BM                 |
-| 5 | `to-be-selected`             |      60 | `top_N_range` (N∈{5,10,32})     | `top_n_range`                   | Kalshi, DK, FD     |
-| 6 | `mr-irrelevant`              |      10 | `mr_irrelevant_position`        | **`mr_irrelevant_position` (new)** | BM (currently prop) |
-| 7 | `team-to-draft`              |     256 | `team_drafts_player`            | `team_first_pick`               | Kalshi (currently unmapped) |
-| 8 | `teams-1st-drafted-position` |     310 | `team_first_pick_position`      | **`team_first_pick_position` (new)** | — (BetOnline-unique) |
-| 9 | `matchups`                   |      10 | `matchup_before`                | **`matchup_before` (new)**      | Kalshi (currently unmapped) |
-| 10 | `specials`                  |    0-26 | varies (parse what we can)      | `prop` (fallback)               | mostly BetOnline-only |
+| #  | Bucket (slug)                | Runners | Market_group emitted            | Canonical market_type used              | Cross-book overlap |
+|----|------------------------------|--------:|---------------------------------|-----------------------------------------|--------------------|
+| 1  | `1st-round`                  |     116 | `pick_outright`                 | `pick_outright`                         | Kalshi, BM, DK, FD, Hoop88 |
+| 2  | `1st-round-props`            |      24 | `first_at_position`             | `first_at_position`                     | Kalshi, BM, Hoop88 |
+| 3  | `to-be-drafted-1st`          |      18 | `first_at_position`             | `first_at_position`                     | Kalshi, BM, Hoop88 |
+| 4  | `to-be-drafted-2nd`          |      26 | `nth_at_position_2`             | **`nth_at_position` (new)**             | BM (retroactive) |
+| 5  | `to-be-selected`             |      60 | `top_N_range` (N∈{5,10,32})     | `top_n_range`                           | Kalshi, DK, FD     |
+| 6  | `mr-irrelevant`              |      10 | `mr_irrelevant_position`        | **`mr_irrelevant_position` (new)**      | BM (currently prop) |
+| 7  | `team-to-draft`              |     256 | `team_drafts_player`            | `team_first_pick`                       | Kalshi (currently unmapped) |
+| 8  | `teams-1st-drafted-position` |     310 | `team_first_pick_position`      | **`team_first_pick_position` (new)**    | — (BetOnline-unique so far) |
+| 9  | `matchups`                   |      10 | `matchup_before`                | **`matchup_before` (new)**              | Kalshi (currently unmapped) |
+| 10 | `draft-position`             |      46 | `draft_position_over_under`     | **`draft_position_over_under` (new)**   | Kalshi `KXNFLDRAFTOU` (0 markets live right now; auto-joins when reposted) |
+| 11 | `specials`                   |    0-26 | varies (parse what we can)      | `prop` (fallback)                       | mostly BetOnline-only |
 
-Total mapped runners targeted: **~830** (most of 902; the rest stay as `prop_*`
-in quarantine by design — same pattern as Wagerzon/Bookmaker props).
+Total mapped runners targeted: **~870** (most of 902; remainder stays as
+`prop_*` in quarantine by design — same pattern as Wagerzon/Bookmaker props).
 
-### 4.2 Deliberately out of scope (v1)
-
-**`draft-position` (46 runners)** — Over/Under lines with a numeric pick
-threshold (e.g. "Caleb Downs O/U 9.5"). The existing `draft_odds` schema
-stores binary outcomes indexed by `market_id`; encoding the line in the ID
-(e.g. `draft_position_ou:caleb-downs:9.5`) is trivial but the cross-book
-join against Kalshi's discrete `top_N_*` requires a pick-distribution
-interpolation (post-draft work). The recon script still captures this
-bucket into the fixture so nothing is lost — we just don't parse it to
-`OddsRow` in v1.
+### 4.2 Narrow out-of-scope note
 
 **`specials`** — Heterogeneous one-offs (e.g. "How many trades in Round 1
 O/U 4.5"). Parse any that match an existing canonical market_type; emit
@@ -103,7 +95,7 @@ kickoff.
 
 ### 4.3 Cross-book gap-fill — Kalshi
 
-BetOnline's arrival makes three currently-unmapped Kalshi series suddenly
+BetOnline's arrival makes four currently-unmapped Kalshi series suddenly
 cross-bookable:
 
 - `KXNFLDRAFTTEAM-*` (team drafts player) → map to `team_first_pick` ← joins
@@ -115,6 +107,12 @@ cross-bookable:
   label comes through as "Drafted in Round 1" while Kalshi emits
   `top_32_...`, we align by using `build_market_id("top_n_range",
   range_high=32, range_low=1, player=...)` from both sides.
+- `KXNFLDRAFTOU-*` (over/under pick lines) → map to new
+  `draft_position_over_under` ← joins BetOnline `draft-position` when
+  lines match exactly. Currently 0 markets in the Kalshi fixture (they
+  haven't posted any O/U lines yet for the 2026 draft); the mapping is
+  wired so if they do post before kickoff the cross-book join fires
+  automatically without code changes.
 
 Update `nfl_draft/config/markets.py::_kalshi_market_id_for` to add cases
 for these series. No Kalshi scraper changes required — we already ingest
@@ -184,6 +182,13 @@ the commit and document that in the merge PR.
       `matchup_{min(slug_a, slug_b)}_before_{max(slug_a, slug_b)}` — player
       order canonicalised so the two books emit the same ID regardless of
       which side was listed first.
+    - `draft_position_over_under(player, line, direction)` →
+      `draft_position_ou_{slug(player)}_{line_formatted}_{direction}` where
+      `line_formatted` preserves the half-point (e.g. `9p5` for 9.5 — `.`
+      escaped to `p` to keep the ID lexically safe) and `direction` is
+      `over` or `under` (lowercased). Example: `draft_position_ou_caleb-downs_9p5_under`.
+      Two books cross-book only when both price the identical player+line+direction
+      triple.
 - `nfl_draft/config/markets.py`
   - Add `_betonline_entries()` mirroring the `_bm_entries()` / `_h88_entries()`
     pattern: load fixture, re-parse via `scrapers.betonline.parse_response`,
@@ -277,10 +282,12 @@ market_map.py additions ~30 LOC.
 - **Commit sequence** (each is independently runnable):
   1. `feat(nfl_draft): add BetOnline recon script + fixture` — recon script
      (already written) + captured 3.4 MB fixture. `RECON_README.md` entry.
-  2. `feat(nfl_draft): extend build_market_id with 4 new types` — adds
+  2. `feat(nfl_draft): extend build_market_id with 5 new types` — adds
      `nth_at_position`, `mr_irrelevant_position`, `team_first_pick_position`,
-     `matchup_before`. Includes `test_market_map.py` additions covering
-     each new type's determinism.
+     `matchup_before`, `draft_position_over_under`. Includes
+     `test_market_map.py` additions covering each new type's determinism
+     (same inputs → same ID) plus half-point line encoding for
+     `draft_position_over_under`.
   3. `feat(nfl_draft): add BetOnline adapter (10 of 11 buckets)` — scraper,
      per-slug classifiers, `_betonline_entries()`, unit tests.
   4. `feat(nfl_draft): map Kalshi team/matchup series to new canonicals` —
@@ -324,7 +331,7 @@ market_map.py additions ~30 LOC.
 ## 12. Success criteria
 
 - `python -m nfl_draft.run --mode scrape --book betonline` prints
-  `mapped=~800+ unmapped<=150` on first run.
+  `mapped=~850+ unmapped<=80` on first run.
 - After one cron tick on `main`, the Cross-Book Grid shows BetOnline values
   for at least:
   - 1st-10th Overall Pick outrights
@@ -338,8 +345,9 @@ market_map.py additions ~30 LOC.
 ## 13. Questions for the user
 
 None remaining. All design-space decisions resolved in-conversation 2026-04-21:
-- v1 scope = 10 of 11 buckets (skip `draft-position`).
-- 4 new canonical types approved conceptually; naming per §5.2.
-- Cross-book Kalshi gap-fill included in this branch, not a separate ticket.
+- v1 scope = all 11 buckets (per user request 2026-04-21).
+- 5 new canonical types approved conceptually; naming per §5.2.
+- Cross-book Kalshi gap-fill included in this branch (4 series), not a
+  separate ticket.
 - Generic unmapped-markets audit time-boxed to 90 min (one commit if
   anything found, skipped otherwise).
