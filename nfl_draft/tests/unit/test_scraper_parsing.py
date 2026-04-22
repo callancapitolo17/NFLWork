@@ -299,3 +299,53 @@ def test_kalshi_market_map_only_maps_first_at_position_p1():
             assert mid.startswith(f"first_{pos}_"), (
                 f"Non-first_{pos} market_id for {series}: {mid}"
             )
+
+
+def test_kalshi_extractors_handle_dollar_string_format():
+    """Kalshi v2 returns prices as `yes_bid_dollars: '0.05'` for accounts set to
+    dollar response units. All extractors must decode to integer cents."""
+    from nfl_draft.scrapers.kalshi import (
+        _extract_yes_bid_cents, _extract_yes_ask_cents,
+        _extract_no_bid_cents, _extract_no_ask_cents,
+        _extract_last_price_cents,
+    )
+    market = {
+        "yes_bid": None,  "yes_bid_dollars":  "0.02",
+        "yes_ask": None,  "yes_ask_dollars":  "0.05",
+        "no_bid":  None,  "no_bid_dollars":   "0.95",
+        "no_ask":  None,  "no_ask_dollars":   "0.98",
+        "last_price": None, "last_price_dollars": "0.04",
+    }
+    assert _extract_yes_bid_cents(market) == 2
+    assert _extract_yes_ask_cents(market) == 5
+    assert _extract_no_bid_cents(market)  == 95
+    assert _extract_no_ask_cents(market)  == 98
+    assert _extract_last_price_cents(market) == 4
+
+
+def test_kalshi_extractors_handle_legacy_int_format():
+    """Backward-compat path: cents-unit accounts return bare integers."""
+    from nfl_draft.scrapers.kalshi import (
+        _extract_yes_bid_cents, _extract_yes_ask_cents,
+        _extract_no_bid_cents, _extract_no_ask_cents,
+        _extract_last_price_cents,
+    )
+    market = {
+        "yes_bid": 2, "yes_ask": 5,
+        "no_bid": 95, "no_ask": 98,
+        "last_price": 4,
+    }
+    assert _extract_yes_bid_cents(market) == 2
+    assert _extract_yes_ask_cents(market) == 5
+    assert _extract_no_bid_cents(market) == 95
+    assert _extract_no_ask_cents(market) == 98
+    assert _extract_last_price_cents(market) == 4
+
+
+def test_kalshi_extractors_return_none_when_absent():
+    """Sparse payloads (one-sided markets, never-traded markets) must not crash."""
+    from nfl_draft.scrapers.kalshi import (
+        _extract_yes_ask_cents, _extract_last_price_cents,
+    )
+    assert _extract_yes_ask_cents({}) in (None, 0)
+    assert _extract_last_price_cents({}) in (None, 0)

@@ -50,26 +50,56 @@ from nfl_draft.lib.db import (  # noqa: E402
 from nfl_draft.scrapers._base import OddsRow, TradeRow
 
 
-def _extract_yes_bid_cents(market: dict):
-    """Return Kalshi yes_bid as an integer number of cents, or None.
+def _extract_cents(market: dict, int_key: str, dollars_key: str):
+    """Generic extractor: prefer legacy int cents, fall back to `_dollars` string.
 
-    Kalshi's v2 response includes both legacy (int cents) and new
-    (`_dollars` string) keys depending on the account's `response_price_units`.
-    We accept either and normalize to cents.
+    Kalshi's v2 response surfaces prices either as an integer cents field
+    (`yes_bid`, `last_price`, ...) for accounts with `response_price_units=cents`,
+    or as a dollar string (`yes_bid_dollars`, `last_price_dollars`, ...) for
+    accounts on the newer dollar units. We accept both and normalize to int cents.
+
+    Returns None when neither field carries a usable value (None, missing, or
+    unparseable). Returns 0 when the field is explicitly 0 — callers decide
+    whether 0 means "no market" or "zero price" per cascade rules.
     """
-    raw_cents = market.get("yes_bid")
+    raw_cents = market.get(int_key)
     if raw_cents not in (None, 0):
         try:
             return int(raw_cents)
         except (TypeError, ValueError):
             pass
-    raw_dollars = market.get("yes_bid_dollars")
+    raw_dollars = market.get(dollars_key)
     if raw_dollars is not None:
         try:
             return int(round(float(raw_dollars) * 100))
         except (TypeError, ValueError):
             return None
     return raw_cents  # may be 0 or None
+
+
+def _extract_yes_bid_cents(market: dict):
+    """Return Kalshi yes_bid as an integer number of cents, or None.
+
+    Accepts either legacy `yes_bid` (int cents) or new `yes_bid_dollars` (str)
+    formats — see `_extract_cents` docstring.
+    """
+    return _extract_cents(market, "yes_bid", "yes_bid_dollars")
+
+
+def _extract_yes_ask_cents(market: dict):
+    return _extract_cents(market, "yes_ask", "yes_ask_dollars")
+
+
+def _extract_no_bid_cents(market: dict):
+    return _extract_cents(market, "no_bid", "no_bid_dollars")
+
+
+def _extract_no_ask_cents(market: dict):
+    return _extract_cents(market, "no_ask", "no_ask_dollars")
+
+
+def _extract_last_price_cents(market: dict):
+    return _extract_cents(market, "last_price", "last_price_dollars")
 
 
 # Position series carry a tier suffix (P1 / P2 / P3 / ...) in the ticker's
