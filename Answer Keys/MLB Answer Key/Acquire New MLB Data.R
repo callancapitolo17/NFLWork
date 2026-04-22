@@ -97,6 +97,15 @@ cli_args <- commandArgs(trailingOnly = TRUE)
 run_odds <- length(cli_args) == 0 || "--daily" %in% cli_args
 run_pbp  <- length(cli_args) == 0 || "--daily-pbp" %in% cli_args
 
+# Cap per-run work to keep a single run bounded; backlog spans multiple runs.
+# Steady-state daily runs have ~15 games so this is only active during backfill.
+max_games_arg <- cli_args[grepl("^--max-games=", cli_args)]
+MAX_GAMES <- if (length(max_games_arg) == 1) {
+  as.integer(sub("^--max-games=", "", max_games_arg))
+} else {
+  500L
+}
+
 # ============================================================================
 # Section 1: Acquire Closing Odds from Odds API
 # ============================================================================
@@ -107,23 +116,39 @@ if (run_odds) {
     con <- dbConnect(duckdb(), dbdir = "pbp.duckdb")
     on.exit(tryCatch(dbDisconnect(con, shutdown = TRUE), error = function(e) NULL), add = TRUE)
 
-    mlb_db_dates <- dbGetQuery(
+    # Source of truth: PBP-derived games. If a game has PBP, it happened; if
+    # we don't have its odds, that's the backfill target. Game_start_time from
+    # PBP also matches what Consensus Betting History.R uses.
+    pbp_games <- dbGetQuery(
       con,
       "
-  SELECT commence_time as date
-  FROM mlb_betting_history
+  SELECT home_team, away_team,
+         MIN(\"about.startTime\") AS start_time_str,
+         CAST(game_date AS DATE) AS game_date
+  FROM mlb_pbp_all
+  WHERE year(CAST(game_date AS DATE)) >= 2020
+  GROUP BY home_team, away_team, game_date
 "
     ) %>%
-      mutate(date = as.Date(date)) %>%
-      unique() %>%
-      pull()
+      mutate(pbp_time = ymd_hms(start_time_str, tz = "UTC"),
+             game_date = as.Date(game_date)) %>%
+      filter(!is.na(pbp_time)) %>%
+      select(home_team, away_team, game_date, pbp_time)
 
+    # Existing odds rows. Tagged with game_date (UTC) for exact-match on the
+    # rolling-nearest join below.
+    existing_odds <- dbGetQuery(
+      con,
+      "SELECT DISTINCT home_team, away_team, commence_time FROM mlb_betting_history"
+    ) %>%
+      mutate(odds_time = ymd_hms(commence_time, tz = "UTC"),
+             game_date = as.Date(odds_time)) %>%
+      select(home_team, away_team, game_date, odds_time)
+
+    # Row-level dedup key: (id, bookmaker_key) — safety net at INSERT time.
     betting_db_ids <- dbGetQuery(
       con,
-      "
-  SELECT id,commence_time, bookmaker_key
-  FROM mlb_betting_history
-"
+      "SELECT id, bookmaker_key FROM mlb_betting_history"
     ) %>%
       mutate(unique_db_book_id = paste0(id, bookmaker_key)) %>%
       pull(unique_db_book_id)
@@ -131,41 +156,66 @@ if (run_odds) {
     dbDisconnect(con, shutdown = TRUE)
     on.exit(NULL)
 
-    # T-2 safety buffer: only fetch odds for games that finished at least
-    # 2 days ago. Guarantees no live/in-progress games get captured even if
-    # the schedule API has stale Final flags.
-    cutoff_date <- Sys.Date() - 2
+    # T-2 safety buffer: only fetch games that commenced ≥ 2 days ago.
+    cutoff_time <- with_tz(Sys.time(), "UTC") - days(2)
 
-    sched <- map_dfr(2020:year(Sys.Date()), mlb_schedule)
-    mlb_dates <- sched %>%
-      filter(status_abstract_game_state == "Final") %>%
-      mutate(
-        game_datetime_utc = ymd_hms(game_date, tz = "UTC"),
-        date = as.Date(game_datetime_utc)
-      ) %>%
-      filter(
-        !series_description %in% c("Exhibition", "Spring Training") &
-          status_coded_game_state == "F"
-      ) %>%
-      filter(date >= as.Date("2020-06-06")) %>%
-      filter(date <= cutoff_date) %>%
-      filter(!date %in% mlb_db_dates) %>%
-      pull(date) %>%
-      unique() %>%
-      sort()
+    # Rolling-nearest match: for each PBP game, find closest existing odds row
+    # with same (home, away, date). MLB.com and Odds API disagree on
+    # commence_time by ~1 min consistently; 60-min tolerance absorbs that and
+    # rain delays, while doubleheaders (3+ hr apart) stay distinct. Same
+    # matching primitive as Consensus Betting History.R's join_pbp_odds.
+    match_candidates <- pbp_games %>%
+      inner_join(existing_odds, by = c("home_team", "away_team", "game_date"),
+                 relationship = "many-to-many") %>%
+      mutate(delta_min = abs(as.numeric(difftime(pbp_time, odds_time, units = "mins"))))
 
-    if (length(mlb_dates) == 0L) {
-      message("No new completed MLB dates to process.")
+    already_have <- match_candidates %>%
+      group_by(home_team, away_team, pbp_time) %>%
+      slice_min(delta_min, n = 1, with_ties = FALSE) %>%
+      ungroup() %>%
+      filter(delta_min <= 60) %>%
+      select(home_team, away_team, pbp_time)
+
+    needed_games <- pbp_games %>%
+      anti_join(already_have, by = c("home_team", "away_team", "pbp_time")) %>%
+      filter(pbp_time <= cutoff_time) %>%
+      transmute(home_team, away_team, commence_time = pbp_time)
+
+    if (nrow(needed_games) == 0L) {
+      message("No new completed MLB games to process.")
     } else {
-      event_list <- map_dfr(mlb_dates, function(day) {
-        snapshot <- paste0(format(day, "%Y-%m-%d"), "T14:59:59Z")
+      total_needed <- nrow(needed_games)
+      if (total_needed > MAX_GAMES) {
+        message(sprintf("Backlog of %d games; capping this run to %d (oldest first). Re-run to continue.",
+                        total_needed, MAX_GAMES))
+        needed_games <- needed_games %>%
+          arrange(commence_time) %>%
+          head(MAX_GAMES)
+      }
+      message(sprintf("Fetching odds for %d new games...", nrow(needed_games)))
+
+      # Dynamic per-game event discovery: query /events at each distinct
+      # commence_time - 15min. Mirrors get_event_odds_by_id's T-15min pattern.
+      # Each events call returns all games active at that moment; we dedupe
+      # across calls and match by (home_team, away_team, commence_time).
+      snap_times <- needed_games %>%
+        mutate(snap_time = floor_date(commence_time - minutes(15), "minute")) %>%
+        pull(snap_time) %>%
+        unique()
+
+      # Wrap each events call in possibly() — a single transient API failure
+      # should skip that snap_time, not abort the whole run. Any missed games
+      # will be re-attempted next run (still in needed_games).
+      fetch_events_at <- possibly(function(snap) {
+        snap_str <- format(snap, "%Y-%m-%dT%H:%M:%SZ")
         res <- GET(
           url = "https://api.the-odds-api.com/v4/historical/sports/baseball_mlb/events",
           query = list(
             apiKey = Sys.getenv("ODDS_API_KEY"),
-            date = snapshot,
+            date = snap_str,
             dateFormat = "iso"
-          )
+          ),
+          timeout(30)
         )
         stop_for_status(res)
         parsed <- fromJSON(content(res, "text"), flatten = TRUE)
@@ -173,33 +223,43 @@ if (run_odds) {
         if (length(parsed) == 0 || is.null(parsed$data) || nrow(parsed$data) == 0) {
           return(tibble())
         }
+        as_tibble(parsed$data)
+      }, otherwise = tibble())
 
-        # Flatten at the source: take just the events table and tag each row
-        # with the snapshot date it came from. Avoids the nested $data column
-        # and makes snapshot_date accessible alongside commence_time below.
-        as_tibble(parsed$data) %>%
-          mutate(snapshot_date = day)
-      })
-      # Each snapshot on date X returns events on X *and later dates* (future
-      # games already in the books at snapshot time). Those later dates get
-      # PARTIAL coverage — books that post closer to game day are missed.
-      # Discard bleed-through: each date is authoritative only for its own
-      # games. Later dates get full coverage from their own snapshot at T-2,
-      # after the MLB schedule is finalized.
-      event_list_clean <- event_list %>%
-        select(id, home_team, away_team, commence_time, snapshot_date) %>%
-        mutate(commence_time = ymd_hms(commence_time, tz = "UTC")) %>%
-        filter(as.Date(commence_time) == snapshot_date) %>%
+      event_list <- map_dfr(snap_times, fetch_events_at)
+
+      events_clean <- event_list %>%
+        mutate(commence_time = ymd_hms(commence_time, tz = "UTC"),
+               game_date = as.Date(commence_time)) %>%
         distinct(id, .keep_all = TRUE)
 
-      if (nrow(event_list_clean) == 0) {
-        message("No events to insert (snapshots returned only bleed-through or no games).")
+      # Same tolerance: match Odds API events to needed games by
+      # (home, away, date) + nearest commence_time within 60 min.
+      needed_with_date <- needed_games %>% mutate(game_date = as.Date(commence_time))
+
+      match_candidates <- events_clean %>%
+        inner_join(needed_with_date, by = c("home_team", "away_team", "game_date"),
+                   suffix = c(".event", ".need"), relationship = "many-to-many") %>%
+        mutate(delta_min = abs(as.numeric(difftime(commence_time.event, commence_time.need, units = "mins"))))
+
+      matched <- match_candidates %>%
+        group_by(home_team, away_team, commence_time.need) %>%
+        slice_min(delta_min, n = 1, with_ties = FALSE) %>%
+        ungroup() %>%
+        filter(delta_min <= 60) %>%
+        transmute(id, home_team, away_team, commence_time = commence_time.event)
+
+      missing_count <- nrow(needed_games) - nrow(matched)
+      if (missing_count > 0) {
+        message(sprintf("Warning: %d games not found in Odds API event lists.", missing_count))
+      }
+
+      if (nrow(matched) == 0) {
+        message("No matched events to insert.")
       } else {
-      history_df <- map2_dfr(
-        event_list_clean$id,
-        event_list_clean$commence_time,
-        get_event_odds_by_id
-      )
+      # Same tolerance for transient failures as the events call above.
+      safe_odds <- possibly(get_event_odds_by_id, otherwise = tibble())
+      history_df <- map2_dfr(matched$id, matched$commence_time, safe_odds)
 
       library(tidyr)
 

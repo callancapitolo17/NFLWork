@@ -70,8 +70,22 @@ Rscript "Acquire New MLB Data.R" --daily       # odds only
 Rscript "Acquire New MLB Data.R" --daily-pbp   # pbp only
 Rscript "Consensus Betting History.R"          # consensus rebuild only
 
+# Per-run cap (default 500, bounds a single run during backfill)
+Rscript "Acquire New MLB Data.R" --daily --max-games=1000
+
 # Logs to ~/Library/Logs/fetch-mlb-odds/ with 30-day rotation
 ```
+
+**Odds acquisition mechanics:**
+- **Source of truth:** `mlb_pbp_all` (games that actually happened). For each
+  PBP game, we check whether `mlb_betting_history` has a matching odds row.
+- **Matching:** rolling-nearest by `(home, away, game_date)` + `commence_time`
+  with 60-min tolerance — absorbs the consistent 1-min delta between MLB.com
+  and Odds API, rain-delay reshuffles, and keeps doubleheaders distinct.
+  Same primitive as `Consensus Betting History.R`'s `join_pbp_odds`.
+- **Dynamic per-game discovery:** for each missing game, query
+  `/events?date=<commence - 15min>` and match events to needs via the same
+  tolerance. Mirrors `get_event_odds_by_id`'s T-15min pattern.
 
 **Automation:** Scheduled via launchd at `~/Library/LaunchAgents/com.callan.fetch-mlb-odds.plist`,
 runs daily at 4 AM local time. After modifying the plist:
