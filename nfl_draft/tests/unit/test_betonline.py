@@ -38,3 +38,26 @@ def test_all_rows_have_betonline_book_and_valid_odds(rows):
         assert r.american_odds != 0
         assert r.book_subject
         assert r.book_label
+
+
+def test_emits_first_at_position_from_to_be_drafted_1st(rows):
+    """to-be-drafted-1st has descriptions like 'First Wide Receiver Drafted'
+    with player contestants. Maps to canonical first_at_position."""
+    fap = [r for r in rows if r.market_group == "first_at_position"]
+    assert len(fap) >= 10, f"expected >= 10 first_at_position rows, got {len(fap)}"
+    labels = {r.book_label for r in fap}
+    # The fixture has CB, OL, WR first-drafted markets at minimum.
+    assert any("cornerback" in lbl.lower() for lbl in labels), labels
+    assert any("wide receiver" in lbl.lower() for lbl in labels), labels
+
+
+def test_1st_round_props_emits_totals_props_with_lines(rows):
+    """1st-round-props are totals-style ('Total X Drafted in 1st Round' with
+    O/U + GroupLine) — no canonical join today, so we emit as props with
+    line encoded in subject for future canonicalization."""
+    totals = [r for r in rows if r.market_group == "prop_first_round_total_ou"]
+    assert len(totals) >= 20, f"expected >= 20 1st-round-props rows, got {len(totals)}"
+    for r in totals[:5]:
+        assert r.book_subject.startswith(("Over ", "Under ")), (
+            f"subject {r.book_subject!r} must start with 'Over '/'Under ' + line"
+        )

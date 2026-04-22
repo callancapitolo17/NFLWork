@@ -79,6 +79,35 @@ PICK_DESC_RE = re.compile(
     r"^(\d+)(?:st|nd|rd|th)\s+Overall\s+Pick\s*$", re.IGNORECASE,
 )
 
+# "First Wide Receiver Drafted" / "First Cornerback Drafted"
+FIRST_POS_DESC_RE = re.compile(
+    r"^First\s+(.+?)\s+Drafted\s*$", re.IGNORECASE,
+)
+
+# "Total Wide Receivers Drafted in 1st Round" / "Total ACC Players Drafted in 1st Round"
+FIRST_ROUND_TOTAL_DESC_RE = re.compile(
+    r"^Total\s+(.+?)\s+Drafted\s+in\s+1st\s+Round\s*$", re.IGNORECASE,
+)
+
+# BetOnline position words -> canonical abbreviations used by
+# build_market_id('first_at_position', position=...).
+POSITION_MAP = {
+    "quarterback": "QB", "qb": "QB",
+    "running back": "RB", "rb": "RB",
+    "wide receiver": "WR", "wr": "WR",
+    "tight end": "TE", "te": "TE",
+    "cornerback": "CB", "cb": "CB",
+    "safety": "S", "s": "S",
+    "linebacker": "LB", "lb": "LB",
+    "offensive lineman": "OL", "offensive line": "OL", "ol": "OL",
+    "defensive back": "DB", "db": "DB",
+    "defensive tackle": "DT", "dt": "DT",
+    "defensive end": "DE", "de": "DE",
+    "edge": "EDGE",
+    "defensive line/edge": "EDGE",
+    "defensive line / edge": "EDGE",
+}
+
 
 def _classify_1st_round(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterator[OddsRow]:
     label = (ce.get("Description") or "").strip()
@@ -106,11 +135,85 @@ def _classify_1st_round(desc: dict, ce: dict, cgl: dict, now: datetime) -> Itera
         )
 
 
+def _classify_first_at_position(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterator[OddsRow]:
+    """For `to-be-drafted-1st`: 'First Wide Receiver Drafted' with player runners."""
+    label = (ce.get("Description") or "").strip()
+    m = FIRST_POS_DESC_RE.match(label)
+    if not m:
+        for c in (cgl.get("Contestants") or []):
+            name = (c.get("Name") or "").strip()
+            american = _odds(c)
+            if name and american is not None:
+                yield OddsRow(
+                    book="betonline", book_label=label, book_subject=name,
+                    american_odds=american, fetched_at=now,
+                    market_group="prop_first_at_position",
+                )
+        return
+    pos_raw = m.group(1).strip().lower()
+    pos = POSITION_MAP.get(pos_raw)
+    if not pos:
+        # Known shape but unknown position word — drop to prop so MARKET_MAP
+        # surfaces the miss in quarantine rather than silently dropping.
+        for c in (cgl.get("Contestants") or []):
+            name = (c.get("Name") or "").strip()
+            american = _odds(c)
+            if name and american is not None:
+                yield OddsRow(
+                    book="betonline", book_label=label, book_subject=name,
+                    american_odds=american, fetched_at=now,
+                    market_group="prop_first_at_unknown_position",
+                )
+        return
+    for c in (cgl.get("Contestants") or []):
+        name = (c.get("Name") or "").strip()
+        american = _odds(c)
+        if not name or american is None:
+            continue
+        yield OddsRow(
+            book="betonline", book_label=label, book_subject=name,
+            american_odds=american, fetched_at=now,
+            market_group="first_at_position",
+        )
+
+
+def _classify_1st_round_props(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterator[OddsRow]:
+    """For `1st-round-props`: 'Total X Drafted in 1st Round' with O/U + GroupLine.
+
+    Group X is either a conference (ACC, Big Ten) or a position group
+    (Quarterbacks, Wide Receivers). No canonical cross-book market today,
+    so emit as a well-labeled prop with line encoded in subject
+    ('Over 6.5' / 'Under 6.5') — matches the draft_position encoding so a
+    future canonical can be added without data shape changes.
+    """
+    label = (ce.get("Description") or "").strip()
+    line = cgl.get("GroupLine")
+    if line is None:
+        return
+    try:
+        line_val = float(line)
+    except (TypeError, ValueError):
+        return
+    for c in (cgl.get("Contestants") or []):
+        name = (c.get("Name") or "").strip()  # 'Over' or 'Under'
+        american = _odds(c)
+        if not name or american is None:
+            continue
+        subject = f"{name} {line_val:g}"
+        yield OddsRow(
+            book="betonline", book_label=label, book_subject=subject,
+            american_odds=american, fetched_at=now,
+            market_group="prop_first_round_total_ou",
+        )
+
+
 # Dispatch table: bucket slug -> classifier. Buckets not yet implemented
 # fall through to a generic prop classifier so data is at least captured
 # into draft_odds_unmapped.
 CLASSIFIERS = {
     "1st-round": _classify_1st_round,
+    "1st-round-props": _classify_1st_round_props,
+    "to-be-drafted-1st": _classify_first_at_position,
 }
 
 
