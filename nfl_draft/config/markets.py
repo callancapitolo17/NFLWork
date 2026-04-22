@@ -216,7 +216,23 @@ def _bm_market_id_for(group, label, subject, *, pick_re, nth_pos_re, position_ma
         if not pos:
             return None
         return build_market_id("first_at_position", position=pos, player=subject)
-    # nth_at_position_N (N>=2) -> prop (no structured 2nd-at-position type)
+    if group.startswith("nth_at_position_"):
+        # e.g. group='nth_at_position_2'; the BM book_label carries the
+        # position word ('2nd Wide Receiver Selected'). Re-parse to get
+        # BOTH the nth and the position word.
+        m = nth_pos_re.match(label)
+        if not m:
+            return None
+        try:
+            nth_val = int(m.group(1))
+        except (ValueError, IndexError):
+            return None
+        pos = position_map.get(m.group(2).strip().lower())
+        if not pos:
+            return None
+        return build_market_id(
+            "nth_at_position", nth=nth_val, position=pos, player=subject,
+        )
     return None
 
 
@@ -336,6 +352,21 @@ def _wz_market_id_for(group, label, subject, *, pick_desc_re, nth_pos_re, positi
         if not pos:
             return None
         return build_market_id("first_at_position", position=pos, player=subject)
+    if group.startswith("nth_at_position_"):
+        # Same logic as BM: re-parse the game.htm label to get nth + position.
+        m = nth_pos_re.match(label)
+        if not m:
+            return None
+        try:
+            nth_val = int(m.group(1))
+        except (ValueError, IndexError):
+            return None
+        pos = position_map.get(m.group(2).strip().lower())
+        if not pos:
+            return None
+        return build_market_id(
+            "nth_at_position", nth=nth_val, position=pos, player=subject,
+        )
     return None
 
 
@@ -455,7 +486,10 @@ def _kalshi_entries() -> list[tuple[str, str, str, str]]:
             if not subject:
                 continue
 
-            mid = _kalshi_market_id_for(series_ticker, ticker, subject)
+            mid = _kalshi_market_id_for(
+                series_ticker, ticker, subject,
+                title=(market.get("title") or ""),
+            )
             if mid is None:
                 continue  # Kalshi-only / unmappable market -> quarantine at runtime.
 
@@ -469,11 +503,15 @@ def _kalshi_entries() -> list[tuple[str, str, str, str]]:
     return entries
 
 
-def _kalshi_market_id_for(series_ticker: str, ticker: str, subject: str) -> str | None:
+def _kalshi_market_id_for(
+    series_ticker: str, ticker: str, subject: str, *, title: str = "",
+) -> str | None:
     """Return a canonical market_id for a Kalshi market, or None if unmappable.
 
     Dispatches on series_ticker prefix, falling back to parsing the ticker's
     middle segment for series where pick_number / range_high varies per market.
+    `title` is optional and used only for series whose player name is not
+    embedded in ticker/subject (e.g. KXNFLDRAFTTEAM).
     """
     # pick_outright, pick 1 only (series is dedicated to 1st overall).
     if series_ticker == "KXNFLDRAFT1":
@@ -515,8 +553,178 @@ def _kalshi_market_id_for(series_ticker: str, ticker: str, subject: str) -> str 
             )
         return None
 
-    # Kalshi-only series (team_first_pick, matchup, team-drafts-player, etc.)
-    # fall through unmapped on purpose.
+    # KXNFLDRAFTTEAM: "Will <Player> be drafted by <Team>?" The subject
+    # carries the team (yes_sub_title = 'Washington'); we parse the player
+    # name from the market title. Maps to canonical team_first_pick(team, player)
+    # so BetOnline's team_drafts_player rows cross-book against Kalshi's
+    # 512 team/player pairs once both sides are seeded.
+    if series_ticker == "KXNFLDRAFTTEAM":
+        m = _KXNFL_DRAFTTEAM_TITLE_RE.match(title)
+        if not m:
+            return None
+        player = m.group(1).strip()
+        # Normalise subject ('Washington' / 'Los Angeles C') to the
+        # cross-book canonical — identical to what BetOnline's
+        # _betonline_market_id_for does, so the IDs collide on match.
+        from nfl_draft.lib.market_map import normalize_team
+        team = normalize_team(subject)
+        return build_market_id("team_first_pick", team=team, player=player)
+
+    # Kalshi-only series (matchup, OU, etc.) fall through unmapped:
+    #   KXNFLDRAFTMATCHUP: needs tag->display-name resolver to pair with
+    #     BetOnline's matchup_before (which keys off display names).
+    #   KXNFLDRAFTOU: 0 live markets in the current fixture; wire when the
+    #     ticker format is observed in data.
+    return None
+
+
+# Title regex for KXNFLDRAFTTEAM markets:
+# "Will Omar Cooper Jr. be drafted by Washington?" -> player="Omar Cooper Jr.", team="Washington".
+_KXNFL_DRAFTTEAM_TITLE_RE = re.compile(
+    r"^Will\s+(.+?)\s+be\s+drafted\s+by\s+(.+?)\?\s*$", re.IGNORECASE,
+)
+
+
+# ---------------------------------------------------------------------------
+# BetOnline
+# ---------------------------------------------------------------------------
+
+# Matches the subject format emitted by BetOnline's draft_position classifier:
+# 'Over 9.5' / 'Under 12'.
+_BE_DRAFT_POSITION_OU_SUBJECT_RE = re.compile(
+    r"^(Over|Under)\s+([\d.]+)\s*$", re.IGNORECASE,
+)
+
+
+def _betonline_entries() -> list[tuple[str, str, str, str]]:
+    """Build BetOnline MARKET_MAP rows from the committed fixture.
+
+    Each bucket's classifier emits a distinct market_group; the dispatch
+    here maps (group, label, subject) tuples to canonical market_ids via
+    build_market_id. Props fall through with a None id and quarantine
+    at runtime.
+    """
+    raw = _load_fixture("betonline")
+    if raw is None:
+        return []
+    from nfl_draft.scrapers.betonline import (
+        parse_response,
+        PICK_DESC_RE, FIRST_POS_DESC_RE, NTH_POS_DESC_RE,
+        TEAM_TO_DRAFT_DESC_RE, TEAMS_1ST_POS_DESC_RE, DRAFT_POSITION_DESC_RE,
+        POSITION_MAP,
+    )
+    rows = parse_response(raw)
+
+    entries: list[tuple[str, str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for r in rows:
+        key = (r.book, r.book_label, r.book_subject)
+        if key in seen:
+            continue
+        mid = _betonline_market_id_for(
+            r.market_group, r.book_label, r.book_subject,
+            pick_re=PICK_DESC_RE, first_pos_re=FIRST_POS_DESC_RE,
+            nth_pos_re=NTH_POS_DESC_RE,
+            team_to_draft_re=TEAM_TO_DRAFT_DESC_RE,
+            teams_1st_pos_re=TEAMS_1ST_POS_DESC_RE,
+            draft_position_re=DRAFT_POSITION_DESC_RE,
+            position_map=POSITION_MAP,
+        )
+        if mid is None:
+            continue  # prop / unmappable row -> quarantine at runtime.
+        entries.append((*key, mid))
+        seen.add(key)
+    return entries
+
+
+def _betonline_market_id_for(
+    group, label, subject, *,
+    pick_re, first_pos_re, nth_pos_re,
+    team_to_draft_re, teams_1st_pos_re, draft_position_re,
+    position_map,
+):
+    """BetOnline-specific market_id builder. Dispatches on market_group.
+
+    Returns a canonical market_id string, or None for props / unmappable.
+    """
+    if group == "pick_outright":
+        m = pick_re.match(label)
+        if not m:
+            return None
+        return build_market_id(
+            "pick_outright", pick_number=int(m.group(1)), player=subject,
+        )
+    if group == "first_at_position":
+        m = first_pos_re.match(label)
+        if not m:
+            return None
+        pos = position_map.get(m.group(1).strip().lower())
+        if not pos:
+            return None
+        return build_market_id("first_at_position", position=pos, player=subject)
+    if group.startswith("nth_at_position_"):
+        m = nth_pos_re.match(label)
+        if not m:
+            return None
+        try:
+            nth_val = int(m.group(1))
+        except (ValueError, IndexError):
+            return None
+        pos = position_map.get(m.group(2).strip().lower())
+        if not pos:
+            return None
+        return build_market_id(
+            "nth_at_position", nth=nth_val, position=pos, player=subject,
+        )
+    if group.startswith("top_") and group.endswith("_range"):
+        try:
+            n = int(group.split("_")[1])
+        except (IndexError, ValueError):
+            return None
+        return build_market_id(
+            "top_n_range", range_low=1, range_high=n, player=subject,
+        )
+    if group == "mr_irrelevant_position":
+        return build_market_id("mr_irrelevant_position", position=subject)
+    if group == "team_drafts_player":
+        m = team_to_draft_re.match(label)
+        if not m:
+            return None
+        player = m.group(1).strip()
+        # subject = BetOnline team string (e.g. 'Arizona Cardinals'); normalise
+        # to the Kalshi short form ('Arizona') so the 'team_first_pick'
+        # market_id collides with Kalshi's KXNFLDRAFTTEAM mapping.
+        from nfl_draft.lib.market_map import normalize_team
+        team = normalize_team(subject)
+        return build_market_id("team_first_pick", team=team, player=player)
+    if group == "team_first_pick_position":
+        m = teams_1st_pos_re.match(label)
+        if not m:
+            return None
+        team = m.group(1).strip()
+        return build_market_id("team_first_pick_position", team=team, position=subject)
+    if group == "matchup_before":
+        # book_label format 'A vs B' (built by _classify_matchups).
+        if " vs " not in label:
+            return None
+        a, b = [p.strip() for p in label.split(" vs ", 1)]
+        return build_market_id("matchup_before", player_a=a, player_b=b)
+    if group == "draft_position_over_under":
+        m_lbl = draft_position_re.match(label)
+        m_sub = _BE_DRAFT_POSITION_OU_SUBJECT_RE.match(subject)
+        if not m_lbl or not m_sub:
+            return None
+        player = m_lbl.group(1).strip()
+        direction = m_sub.group(1).lower()
+        try:
+            line_val = float(m_sub.group(2))
+        except (TypeError, ValueError):
+            return None
+        return build_market_id(
+            "draft_position_over_under",
+            player=player, line=line_val, direction=direction,
+        )
+    # prop_* and unknown groups quarantine at runtime.
     return None
 
 
@@ -532,5 +740,6 @@ MARKET_MAP: list[tuple[str, str, str, str]] = list(
         + _wz_entries()
         + _h88_entries()
         + _kalshi_entries()
+        + _betonline_entries()
     ).keys()
 )

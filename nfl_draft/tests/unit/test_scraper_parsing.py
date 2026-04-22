@@ -447,3 +447,90 @@ def test_extract_candidate_harmonized_across_paths():
 
     # Fully empty payload -> empty string.
     assert _extract_candidate({}) == ""
+
+
+def test_bookmaker_fixture_includes_nth_at_position_markets():
+    """After v1 canonical-type expansion, BM's 2nd/3rd-WR-selected rows
+    should round-trip through config._bm_entries() into MARKET_MAP instead
+    of being silently dropped."""
+    from nfl_draft.config.markets import _bm_entries
+    entries = _bm_entries()
+    # Any entry whose market_id starts with `2_` or `3_` followed by a
+    # position slug is an nth_at_position canonical.
+    nth = [e for e in entries if e[3].startswith(("2_", "3_", "4_", "5_"))]
+    assert nth, "BM fixture should produce >=1 nth_at_position mapping"
+
+
+def test_wagerzon_fixture_includes_nth_at_position_markets():
+    """WZ may or may not post nth-at-position markets consistently; only
+    assert a mapping exists if the fixture itself carries nth rows."""
+    from nfl_draft.config.markets import _wz_entries
+    entries = _wz_entries()
+    nth = [e for e in entries if e[3].startswith(("2_", "3_", "4_", "5_"))]
+    has_nth = any(r.market_group.startswith("nth_at_position_")
+                  for r in wz_parse(json.loads(
+                      (FIXTURES / "wagerzon" / "draft_markets.json").read_text())))
+    if has_nth:
+        assert nth, "WZ fixture has nth rows but _wz_entries produced no mapping"
+
+
+def test_kalshi_team_series_now_maps():
+    """After Task 14, Kalshi's KXNFLDRAFTTEAM series (512 markets in the
+    fixture) rescues from quarantine via 'team_first_pick'. BetOnline will
+    cross-book against these once _betonline_entries() also maps to the
+    same canonical (and once team-name normalisation is added — see
+    TODO in markets.py)."""
+    from nfl_draft.config.markets import _kalshi_entries
+    entries = _kalshi_entries()
+    ids = [e[3] for e in entries]
+    # team_first_pick IDs: 'team_<team>_first_pick_<player>'.
+    team_first_pick = [m for m in ids
+                       if "_first_pick_" in m and "_first_pick_pos_" not in m
+                       and m.startswith("team_")]
+    assert len(team_first_pick) >= 100, (
+        f"Expected >= 100 Kalshi team_first_pick entries after mapping "
+        f"KXNFLDRAFTTEAM (fixture has 512 markets); got {len(team_first_pick)}"
+    )
+
+
+def test_kalshi_and_betonline_team_first_pick_ids_collide():
+    """Cross-book test for the team-name normalisation added post-review.
+    Both books should now emit identical 'team_first_pick' market_ids for
+    the same (team, player) pair. Before normalisation these didn't match
+    (Kalshi 'Washington' vs BetOnline 'Washington Commanders'), so zero
+    cross-book joins fired on ~768 rows."""
+    from nfl_draft.config.markets import _betonline_entries, _kalshi_entries
+    be_ids = {e[3] for e in _betonline_entries()
+              if "_first_pick_" in e[3] and "_first_pick_pos_" not in e[3]}
+    ks_ids = {e[3] for e in _kalshi_entries()
+              if "_first_pick_" in e[3] and "_first_pick_pos_" not in e[3]
+              and e[3].startswith("team_")}
+    overlap = be_ids & ks_ids
+    assert len(overlap) >= 50, (
+        f"expected >= 50 cross-book team_first_pick joins, got {len(overlap)}. "
+        f"BetOnline: {len(be_ids)}, Kalshi: {len(ks_ids)}"
+    )
+
+
+def test_betonline_entries_cover_structured_groups():
+    """After Task 13, _betonline_entries() should feed ~500+ canonical rows
+    into MARKET_MAP spanning every v1 canonical type."""
+    from nfl_draft.config.markets import _betonline_entries
+    entries = _betonline_entries()
+    assert len(entries) >= 500, f"expected >= 500 betonline entries, got {len(entries)}"
+    for e in entries[:20]:
+        assert len(e) == 4 and e[0] == "betonline"
+    ids = [e[3] for e in entries]
+    # Each canonical we emit should contribute at least one ID.
+    assert any(m.startswith("pick_") for m in ids), "pick_outright missing"
+    assert any(m.startswith("first_") for m in ids), "first_at_position missing"
+    assert any(m.startswith("top_5_") or m.startswith("top_10_") or m.startswith("top_32_")
+               for m in ids), "top_N_range missing"
+    assert any(m.startswith("team_") and "_first_pick_" in m and "_first_pick_pos_" not in m
+               for m in ids), "team_first_pick (team_drafts_player) missing"
+    assert any("_first_pick_pos_" in m for m in ids), "team_first_pick_position missing"
+    assert any(m.startswith("matchup_") for m in ids), "matchup_before missing"
+    assert any(m.startswith("draft_position_ou_") for m in ids), "draft_position_ou missing"
+    assert any(m.startswith("mr_irrelevant_") for m in ids), "mr_irrelevant_position missing"
+    # And at least one nth_at_position rescued (starts with a digit).
+    assert any(m[0].isdigit() for m in ids), "nth_at_position missing"

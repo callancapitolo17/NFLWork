@@ -33,3 +33,49 @@ def test_build_market_id_strips_punctuation():
 
 def test_resolve_market_id_unknown_returns_none(seeded):
     assert resolve_market_id("kalshi", "UNKNOWN_LABEL", "Some Subject") is None
+
+
+def test_build_market_id_nth_at_position():
+    assert build_market_id(
+        "nth_at_position", nth=2, position="WR", player="Jordyn Tyson"
+    ) == "2_wr_jordyn-tyson"
+
+
+def test_build_market_id_mr_irrelevant_position():
+    assert build_market_id(
+        "mr_irrelevant_position", position="Wide Receiver"
+    ) == "mr_irrelevant_wide_receiver"
+
+
+def test_build_market_id_team_first_pick_position():
+    assert build_market_id(
+        "team_first_pick_position", team="Arizona Cardinals", position="Wide Receiver"
+    ) == "arizona_cardinals_first_pick_pos_wide_receiver"
+
+
+def test_build_market_id_matchup_before_canonical_order():
+    # Order-independent: whichever player is listed first, we get the same ID.
+    a = build_market_id("matchup_before", player_a="Makai Lemon", player_b="Kenyon Sadiq")
+    b = build_market_id("matchup_before", player_a="Kenyon Sadiq", player_b="Makai Lemon")
+    assert a == b == "matchup_kenyon-sadiq_before_makai-lemon"
+
+
+def test_build_market_id_draft_position_over_under_half_point():
+    assert build_market_id(
+        "draft_position_over_under", player="Caleb Downs", line=9.5, direction="under"
+    ) == "draft_position_ou_caleb-downs_9p5_under"
+
+
+def test_build_market_id_draft_position_over_under_whole_point():
+    # Whole-point lines drop trailing .0.
+    assert build_market_id(
+        "draft_position_over_under", player="Abdul Carter", line=3.0, direction="over"
+    ) == "draft_position_ou_abdul-carter_3_over"
+
+
+def test_build_market_id_draft_position_over_under_sub_one_line():
+    # 0.5 lines are rare but valid — ensure the 0 integer part is preserved
+    # (f"{0.5:g}" yields '0.5', not '.5').
+    assert build_market_id(
+        "draft_position_over_under", player="Mr Irrelevant", line=0.5, direction="under"
+    ) == "draft_position_ou_mr-irrelevant_0p5_under"

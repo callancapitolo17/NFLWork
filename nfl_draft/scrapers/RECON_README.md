@@ -103,10 +103,37 @@ DK and FD require no credentials (public APIs + TLS fingerprint bypass).
   - `--browser` — skip REST, go straight to the browser.
 - **Fixture at** `nfl_draft/tests/fixtures/bookmaker/draft_markets.json`.
 
+### BetOnline — `recon_betonline.py`
+
+- **Auth:** two-step — anonymous JWT from `GET /get-token`, then authenticated
+  POST to `api-offering.betonline.ag/api/offering/Sports/get-contests-by-contest-type2`.
+  Cloudflare cookie jar is maintained by `bet_logger/recon_betonline.py`.
+- **Endpoint:** `api-offering.betonline.ag/api/offering/Sports/get-contests-by-contest-type2`
+  (one POST per NFL Draft sub-market slug, discovered live via `get-menu`).
+- **Run:**
+  ```
+  python nfl_draft/scrapers/recon_betonline.py
+  ```
+- **Expected output:** ~3.4 MB JSON, 11 market buckets, 902 total runners.
+  Fixture at `nfl_draft/tests/fixtures/betonline/draft_markets.json`.
+- **When to re-run:**
+  - Player board rotates (new prospects listed).
+  - `draft_odds_unmapped` shows a spike in BetOnline rows (new market titles
+    or subject spellings).
+  - First run after re-capturing cookies via `bet_logger/recon_betonline.py`.
+- **Cookie expiry:** On HTTP 403 (Cloudflare) or 401 (BetOnline app), refresh:
+  ```
+  python bet_logger/recon_betonline.py
+  ```
+  Then re-run `recon_betonline.py`. Refresh tokens rotate automatically on
+  each authenticated call, so cookies stay warm as long as the
+  `bet_logger/scraper_betonline.py` pipeline runs daily.
+
 ## Troubleshooting
 
 | Symptom | Book | Fix |
 |---|---|---|
+| HTTP 403 / no slugs from BetOnline | BOL | Cloudflare cookie expired — run `python bet_logger/recon_betonline.py` then retry |
 | HTTP 403 from DK REST | DK | Akamai rate-limit; wait 5 minutes, or run `--browser` |
 | HTTP 400 empty body from FD | FD | `x-px-context` token expired — refresh from Chrome DevTools into `FD_PX_CONTEXT` |
 | "WZ login failed" | WZ | Check `WAGERZON_USERNAME`/`WAGERZON_PASSWORD` in `bet_logger/.env` |

@@ -180,6 +180,13 @@ def _kalshi_book_label(series_ticker: str, ticker: str) -> str:
         parts = (ticker or "").split("-")
         if len(parts) >= 2:
             return f"{series_ticker}-{parts[1]}"
+    if series_ticker == "KXNFLDRAFTTEAM":
+        # Ticker shape: KXNFLDRAFTTEAM-26OCOO-WAS (series-playerTag-teamCode).
+        # Scope label by player tag so 32 teams * ~16 players = ~512 distinct
+        # (label, subject) pairs survive MARKET_MAP dedup.
+        parts = (ticker or "").split("-")
+        if len(parts) >= 2:
+            return f"{series_ticker}-{parts[1]}"
     return series_ticker
 
 
