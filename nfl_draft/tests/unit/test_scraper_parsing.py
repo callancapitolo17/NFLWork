@@ -347,5 +347,5 @@ def test_kalshi_extractors_return_none_when_absent():
     from nfl_draft.scrapers.kalshi import (
         _extract_yes_ask_cents, _extract_last_price_cents,
     )
-    assert _extract_yes_ask_cents({}) in (None, 0)
-    assert _extract_last_price_cents({}) in (None, 0)
+    assert _extract_yes_ask_cents({}) is None
+    assert _extract_last_price_cents({}) is None

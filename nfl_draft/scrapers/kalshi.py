@@ -87,18 +87,22 @@ def _extract_yes_bid_cents(market: dict):
 
 
 def _extract_yes_ask_cents(market: dict):
+    """Return Kalshi yes_ask as an integer number of cents, or None."""
     return _extract_cents(market, "yes_ask", "yes_ask_dollars")
 
 
 def _extract_no_bid_cents(market: dict):
+    """Return Kalshi no_bid as an integer number of cents, or None."""
     return _extract_cents(market, "no_bid", "no_bid_dollars")
 
 
 def _extract_no_ask_cents(market: dict):
+    """Return Kalshi no_ask as an integer number of cents, or None."""
     return _extract_cents(market, "no_ask", "no_ask_dollars")
 
 
 def _extract_last_price_cents(market: dict):
+    """Return Kalshi last_price as an integer number of cents, or None."""
     return _extract_cents(market, "last_price", "last_price_dollars")
 
 
