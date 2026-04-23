@@ -4,7 +4,6 @@ Dash application with tabs for market overview, price history,
 edge detection, consensus comparison, and portfolio.
 """
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -1520,18 +1519,24 @@ def refresh_data(n_clicks):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import os
-    # Kick off a background scrape so the dashboard has fresh data
-    # within ~2 min of launch. Detached so it doesn't block startup.
-    repo_root = Path(__file__).resolve().parent.parent
+    # Kick off a background scrape so the dashboard has fresh data within
+    # ~2 min of launch. Runs in-process in a daemon thread so DuckDB's
+    # internal mutex serializes it with the trades-poll and any future
+    # periodic-scrape tick. No subprocess = no cross-process lock race.
+    def _startup_scrape_runner():
+        try:
+            from nfl_draft.run import run_scrape
+            run_scrape("all")
+        except Exception as e:
+            import traceback
+            print(f"[startup] scrape failed: {e}")
+            traceback.print_exc()
     try:
-        subprocess.Popen(
-            [sys.executable, "-m", "nfl_draft.run", "--mode", "scrape", "--book", "all"],
-            cwd=str(repo_root),
-            stdout=open("/tmp/nfl_draft_startup_scrape.log", "a"),
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        print("[startup] background scrape kicked off — see /tmp/nfl_draft_startup_scrape.log")
+        threading.Thread(
+            target=_startup_scrape_runner, daemon=True,
+            name="nfl_draft-startup-scrape",
+        ).start()
+        print("[startup] background scrape kicked off (in-process)")
     except Exception as e:
         print(f"[startup] could not launch scrape: {e}")
 
