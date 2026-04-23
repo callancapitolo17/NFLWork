@@ -50,10 +50,13 @@ def get_parlay_price(session: requests.Session, idgm: int, legs: list[dict],
     sel = ",".join(
         f"{l['play']}_{idgm}_{l['points']}_{l['odds']}" for l in legs
     )
+    # RiskWin="2" marks this as a preview quote. With RiskWin=0 (real-bet mode),
+    # WZ balance-checks and returns BALANCEEXCEED whenever account balance < amount.
+    # With RiskWin="2" the balance check is skipped and we get a price at any amount.
     detail_data = [
         {
             "Amount": str(amount),
-            "RiskWin": 0,
+            "RiskWin": "2",
             "TeaserPointsPurchased": 0,
             "IdGame": idgm,
             "Play": l["play"],
@@ -87,17 +90,23 @@ def get_parlay_price(session: requests.Session, idgm: int, legs: list[dict],
         resp.raise_for_status()
         result = resp.json().get("result", {})
 
-        # Check for errors
-        if result.get("ErrorMsgKey"):
-            print(f"  API error: {result.get('ErrorMsg', result['ErrorMsgKey'])}")
-            return None
-
         details = result.get("details", [])
         if not details:
+            err = result.get("ErrorMsgKey") or result.get("ErrorMsg")
+            if err:
+                print(f"  API error: {err}")
             return None
 
+        # In preview mode (RiskWin="2"), ErrorMsgKey can fire with useful data still
+        # populated — e.g. MINWAGERONLINE returns the correct Risk/Win for the queried
+        # amount but flags that it wouldn't be placeable as a real bet. Only treat the
+        # response as failed when Risk and Win are both zero (e.g. MAXPARLAYRISKEXCEED).
         win = details[0].get("Win", 0)
-        if win <= 0:
+        risk = details[0].get("Risk", 0)
+        if win <= 0 or risk <= 0:
+            err = result.get("ErrorMsgKey") or result.get("ErrorMsg")
+            if err:
+                print(f"  API error: {err}")
             return None
 
         decimal_odds = 1 + win / amount

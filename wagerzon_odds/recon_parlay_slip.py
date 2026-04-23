@@ -22,7 +22,7 @@ import os
 import json
 
 WAGERZON_URL = "https://backend.wagerzon.com"
-MLB_SCHEDULE_URL = f"{WAGERZON_URL}/wager/NewSchedule.aspx?WT=0&lg=417,1280"
+MLB_SCHEDULE_URL = f"{WAGERZON_URL}/wager/Root.aspx/welcome"
 PROFILE_DIR = os.path.join(os.path.dirname(__file__), ".wagerzon_profile")
 
 
@@ -146,7 +146,8 @@ def run_recon():
 
         print("\n" + "=" * 60)
         print("If you need to log in, do so now.")
-        print("Once you see the MLB schedule, press ENTER.")
+        print("Navigate from the welcome page to wherever you build the parlay.")
+        print("Press ENTER once you're ready to start adding legs.")
         print("=" * 60)
         input()
         show_phase_results()
