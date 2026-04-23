@@ -95,16 +95,23 @@ def test_ev_candidates_ranks_by_abs_delta(monkeypatch, tmp_path):
     with write_connection() as con:
         con.execute("INSERT INTO draft_markets (market_id, market_type) VALUES ('m1', 'prop')")
         con.execute("INSERT INTO draft_markets (market_id, market_type) VALUES ('m2', 'prop')")
+        # m1: sportsbook (bm) 25pp below median -> bettable YES -> flags.
         for book, prob in [("kalshi", 0.50), ("dk", 0.50), ("fd", 0.50), ("bm", 0.25)]:
             con.execute("INSERT INTO draft_odds VALUES ('m1', ?, 100, ?, ?, ?)", [book, prob, prob, now])
-        for book, prob in [("kalshi", 0.50), ("dk", 0.50), ("fd", 0.50), ("bm", 0.65)]:
+        # m2: kalshi 15pp above median -> bettable NO on the binary -> flags
+        # (Kalshi remains symmetric). Non-Kalshi books here are at median, so
+        # no sportsbook-side contribution.
+        for book, prob in [("kalshi", 0.65), ("dk", 0.50), ("fd", 0.50), ("bm", 0.50)]:
             con.execute("INSERT INTO draft_odds VALUES ('m2', ?, 100, ?, ?, ?)", [book, prob, prob, now])
     from nfl_draft.lib.queries import ev_candidates
     rows = ev_candidates(threshold_pp=10)
     assert len(rows) == 2
+    # Ranked by |delta| desc: m1 (|-0.25|) then m2 (|+0.15|).
     assert rows[0]["market_id"] == "m1"
+    assert rows[0]["book"] == "bm"
     assert rows[0]["delta"] == pytest.approx(-0.25)
     assert rows[1]["market_id"] == "m2"
+    assert rows[1]["book"] == "kalshi"
     assert rows[1]["delta"] == pytest.approx(0.15)
 
 
