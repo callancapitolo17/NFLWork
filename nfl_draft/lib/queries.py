@@ -89,21 +89,23 @@ def _safe_read(fn):
 def cross_book_grid(threshold_pp: float = 10.0):
     """Return one row per market with all-venue prices, median, and outlier flags.
 
-    Cell display + median are computed from ``devig_prob`` (each book's
-    fair-value estimate) across all posting books. The outlier flag uses
-    ``implied_prob`` for Kalshi (the buy price / take price — what you'd
-    actually pay to enter a Yes position) and ``devig_prob`` for every other
-    book. The asymmetry reflects a structural difference: sportsbook raw
-    implied probabilities are inflated by vig, so flagging them against the
-    median-of-fairs would fire on vig alone; Kalshi has ~no vig, so its buy
-    price is a clean signal to compare against fair.
+    Median is ``statistics.median(devig_prob across posting venues)`` — the
+    true cross-book fair. Flags compare each venue's **raw take price**
+    (``implied_prob``) to that median. A flagged cell is a direct +EV signal:
+    the venue is offering a price that differs from the cross-venue fair by
+    more than ``threshold_pp`` percentage points.
+
+    Signed delta (``implied_prob - median_fair``) preserves direction:
+      * delta > 0: price above fair -> YES is overpriced -> bet NO
+      * delta < 0: price below fair -> YES is underpriced -> bet YES
+
+    Kalshi is treated uniformly: its ``implied_prob`` is ``yes_ask / 100``
+    (the take price), so the same formula applies. Rows with
+    ``implied_prob`` NULL (one-sided Kalshi with no ask) participate in
+    the median via ``devig_prob`` but can't be flagged.
 
     A market with only one posting venue has no median to compare against,
-    so it gets no flags (outlier_count = 0) — still listed for completeness.
-
-    Kalshi rows with ``devig_prob`` set but ``implied_prob`` NULL (one-sided
-    market with no last trade) participate in the median but have their flag
-    suppressed — no actionable take price means no actionable edge to flag.
+    so it gets no flags — still listed for completeness.
 
     Returns ``QueryLocked`` sentinel instead of raising on DuckDB lock
     contention; see module docstring.
@@ -113,19 +115,20 @@ def cross_book_grid(threshold_pp: float = 10.0):
             rows = con.execute(
                 f"""
                 WITH latest AS (
-                  SELECT market_id, book, implied_prob, devig_prob,
+                  SELECT market_id, book, american_odds, implied_prob, devig_prob,
                          ROW_NUMBER() OVER (PARTITION BY market_id, book ORDER BY fetched_at DESC) AS rn
                   FROM draft_odds
                   WHERE fetched_at > NOW() - INTERVAL '{MAX_AGE_HOURS} hours'
                 )
-                SELECT market_id, book, implied_prob, devig_prob
+                SELECT market_id, book, american_odds, implied_prob, devig_prob
                 FROM latest WHERE rn = 1
                 """
             ).fetchall()
 
-        by_market: Dict[str, Dict[str, Dict[str, Optional[float]]]] = {}
-        for market_id, book, implied_prob, devig_prob in rows:
+        by_market: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for market_id, book, american_odds, implied_prob, devig_prob in rows:
             by_market.setdefault(market_id, {})[book] = {
+                "american_odds": american_odds,
                 "implied_prob": implied_prob,
                 "devig_prob": devig_prob,
             }
@@ -133,43 +136,29 @@ def cross_book_grid(threshold_pp: float = 10.0):
         threshold = threshold_pp / 100.0
         output: List[Dict[str, Any]] = []
         for market_id, books in by_market.items():
-            # `books` maps book -> {implied_prob, devig_prob}. Cell display +
-            # median use devig_prob (fair value); flag comparison uses
-            # implied_prob for Kalshi and devig_prob for every other book.
-            display_by_book = {
-                b: (r["devig_prob"] if r["devig_prob"] is not None else r["implied_prob"])
-                for b, r in books.items()
-            }
-            valid_display = [p for p in display_by_book.values() if p is not None]
+            # Median uses devig_prob (fair). Pull every non-null devig for the median.
+            fair_probs = [r["devig_prob"] for r in books.values() if r["devig_prob"] is not None]
 
-            if len(books) < 2 or not valid_display:
+            if len(books) < 2 or not fair_probs:
+                # Only one posting venue -> no median -> no flags.
                 output.append({
                     "market_id": market_id,
-                    "books": display_by_book,
-                    "median": valid_display[0] if valid_display else None,
+                    "books": books,
+                    "median": fair_probs[0] if fair_probs else None,
                     "flags": {},
                     "outlier_count": 0,
                 })
                 continue
 
-            median = statistics.median(valid_display)
+            median = statistics.median(fair_probs)
             flags: Dict[str, bool] = {}
             for book, r in books.items():
-                if book == "kalshi":
-                    take = r["implied_prob"]
-                    flags[book] = (
-                        take is not None
-                        and abs(take - median) >= threshold
-                    )
-                else:
-                    dev = r["devig_prob"]
-                    flags[book] = (
-                        dev is not None
-                        and abs(dev - median) >= threshold
-                    )
+                # Uniform rule: flag if |raw take price - median fair| >= threshold.
+                take = r["implied_prob"]
+                flags[book] = (take is not None and abs(take - median) >= threshold)
             output.append({
                 "market_id": market_id,
-                "books": display_by_book,
+                "books": books,
                 "median": median,
                 "flags": flags,
                 "outlier_count": sum(flags.values()),
@@ -182,10 +171,12 @@ def cross_book_grid(threshold_pp: float = 10.0):
 def ev_candidates(threshold_pp: float = 10.0):
     """Flat list of flagged (market, venue) outliers, sorted by |delta| desc.
 
-    Each row represents a single book/market combo that sits more than
-    threshold_pp points away from the cross-book median. Signed delta
-    preserves direction: positive = book is higher than consensus (bet NO),
-    negative = book is lower than consensus (bet YES).
+    Each row represents a book/market combo where the book's **raw take
+    price** sits more than threshold_pp from the cross-book median fair.
+    Signed delta (``implied_prob - median_fair``) preserves direction and
+    equals the EV in percentage points:
+      * positive -> price above fair -> bet NO
+      * negative -> price below fair -> bet YES
 
     Delegates to ``cross_book_grid``; propagates its ``QueryLocked``
     sentinel when the read fails.
@@ -200,11 +191,12 @@ def ev_candidates(threshold_pp: float = 10.0):
         for book, flagged in m["flags"].items():
             if not flagged:
                 continue
-            delta = m["books"][book] - m["median"]
+            book_prob = m["books"][book]["implied_prob"]
+            delta = book_prob - m["median"]
             out.append({
                 "market_id": m["market_id"],
                 "book": book,
-                "book_prob": m["books"][book],
+                "book_prob": book_prob,
                 "median": m["median"],
                 "delta": delta,
             })

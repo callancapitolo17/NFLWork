@@ -18,25 +18,36 @@ Python orchestrator `nfl_draft/run.py` invoked by cron.
 Dashboard extends `kalshi_draft/app.py` with 4 new tabs under "Portal" section:
 Cross-Book Grid, +EV Candidates, Trade Tape, Bet Log.
 
-### Cross-Book Grid — Kalshi vs sportsbook semantics
+### Cross-Book Grid — actual-price display
 
-Each cell is a venue's fair-value estimate:
+Each cell shows what you would actually bet at that venue:
 
-- Sportsbooks (DK, FD, Bookmaker, Wagerzon, Hoop88): devigged implied probability.
-- Kalshi: mid of buy/sell (falls back to last trade when one-sided).
+- **Sportsbooks** (DK, FD, Bookmaker, Wagerzon, Hoop88, BetOnline):
+  posted American odds (e.g. `+110`, `-150`).
+- **Kalshi**: yes_ask in cents (e.g. `42¢`).
 
-The outlier flag (⚑) fires when a venue's **take price** sits at least
-`threshold_pp` away from the cross-venue median:
+The **Median** column is the cross-venue **devigged fair** in percent —
+the true probability estimate once each sportsbook's vig has been
+stripped via proportional devig at ingest time.
 
-- Sportsbooks use their devigged probability for the comparison.
-- Kalshi uses the actual **buy price** (what you'd pay to take Yes). Because
-  Kalshi has no vig, the buy price is close to fair, so offsets from median are
-  real +EV signal rather than vig noise.
+The outlier flag (⚑) fires when a venue's **raw take price** (what
+you'd actually pay) differs from the median fair by at least
+`threshold_pp`. A flagged cell is a direct +EV signal:
 
-Hover a Kalshi cell to see the raw buy, sell, and last-trade prices plus the
-source Kalshi ticker.
+- Delta > 0 (price above fair) → YES is overpriced → bet NO.
+- Delta < 0 (price below fair) → YES is underpriced → bet YES.
 
-See `docs/superpowers/specs/2026-04-17-nfl-draft-portal-design.md` for the full design.
+Hover a Kalshi cell to see raw buy / sell / last-trade prices plus the
+source ticker.
+
+**Note on sportsbook vig.** Every sportsbook cell sits ~1–3pp above
+the median fair by construction (that's the vig tax). The default
+threshold of 10pp filters that out; avoid dropping below ~5pp or you'll
+flag normal vig as "edges."
+
+See `docs/superpowers/specs/2026-04-22-grid-devig-display-design.md`
+for the full design and `docs/superpowers/plans/2026-04-23-grid-devig-display.md`
+for the implementation plan.
 
 ## Setup
 

@@ -122,6 +122,51 @@ def build_market_id(market_type: str, **kwargs) -> str:
     raise ValueError(f"Unknown market_type: {market_type}")
 
 
+def outright_group_key(market_group: str, market_id: str) -> Optional[str]:
+    """Derive the devig-grouping key from (market_group, market_id), or None.
+
+    Scrapers emit ``market_group`` on every ``OddsRow`` (see
+    ``scrapers/_base.py``). This helper dispatches on ``market_group`` to
+    extract the group instance (pick number, position, team+position, etc.)
+    from ``market_id``. Rows that share the same ``(book, outright_group_key)``
+    are competing outcomes in the same logical outright and are devigged
+    together in ``quarantine.write_or_quarantine``.
+
+    Returns ``None`` for:
+      * prop markets (``market_group`` starting with ``prop_``)
+      * ``mr_irrelevant_position`` (single row per book — nothing to devig)
+      * ``matchup_before`` (self-contained 2-way, not grouped across markets)
+      * unrecognized / malformed inputs
+
+    The regex patterns here are tightly coupled to ``build_market_id``'s
+    output format. If ``build_market_id`` changes, these must change too.
+    Tested in ``tests/unit/test_market_map.py``.
+    """
+    if market_group == "pick_outright":
+        m = re.match(r"^(pick_\d+_overall)_", market_id)
+        return m.group(1) if m else None
+    if market_group == "first_at_position":
+        m = re.match(r"^(first_[a-z]+)_", market_id)
+        return m.group(1) if m else None
+    if market_group.startswith("top_") and market_group.endswith("_range"):
+        m = re.match(r"^(top_\d+)_", market_id)
+        return m.group(1) if m else None
+    if market_group == "team_first_pick":
+        m = re.match(r"^(team_.+?_first_pick)_", market_id)
+        return m.group(1) if m else None
+    if market_group == "team_first_pick_position":
+        m = re.match(r"^(.+?_first_pick_pos)_", market_id)
+        return m.group(1) if m else None
+    if market_group.startswith("nth_at_position_"):
+        nth = market_group[len("nth_at_position_"):]
+        m = re.match(rf"^({re.escape(nth)}_[a-z]+)_", market_id)
+        return m.group(1) if m else None
+    if market_group == "draft_position_over_under":
+        m = re.match(r"^(draft_position_ou_.+)_(?:over|under)$", market_id)
+        return m.group(1) if m else None
+    return None
+
+
 def resolve_market_id(book: str, book_label: str, book_subject: str) -> Optional[str]:
     """Look up canonical market_id for a per-book (label, subject) pair."""
     with read_connection() as con:

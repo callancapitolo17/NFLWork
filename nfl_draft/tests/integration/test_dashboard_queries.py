@@ -601,12 +601,15 @@ def test_cross_book_grid_kalshi_flag_uses_implied_prob_not_devig_prob(monkeypatc
     assert len(rows) == 1
     row = rows[0]
 
-    # Display value for Kalshi is the MID (devig_prob), not the buy price.
-    assert abs(row["books"]["kalshi"] - 0.035) < 1e-9
-    # Median participates: [0.035, 0.062, 0.067, 0.077] -> mid two average = 0.0645
+    # books[book] is now a dict with american_odds, implied_prob, devig_prob.
+    # Kalshi's devig_prob (the mid/fair) is 0.035.
+    assert abs(row["books"]["kalshi"]["devig_prob"] - 0.035) < 1e-9
+    # Kalshi's implied_prob (the buy/take price) is 0.05.
+    assert abs(row["books"]["kalshi"]["implied_prob"] - 0.05) < 1e-9
+    # Median uses devig_probs: [0.035, 0.062, 0.067, 0.077] -> mid two average = 0.0645
     assert abs(row["median"] - 0.0645) < 1e-9
-    # Kalshi flag check uses the BUY price (0.05) vs median (0.0645) = 1.45pp
-    # -> below 5pp threshold -> not flagged.
+    # Kalshi flag: |implied(0.05) - median(0.0645)| = 1.45pp < 5pp -> not flagged.
+    # Same uniform rule applies to all books (including Kalshi).
     assert row["flags"]["kalshi"] is False
 
 
