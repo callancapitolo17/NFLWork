@@ -93,18 +93,29 @@ def cross_book_grid(threshold_pp: float = 10.0):
 
     Median is ``statistics.median(devig_prob across posting venues)`` — the
     true cross-book fair. Flags compare each venue's **raw take price**
-    (``implied_prob``) to that median. A flagged cell is a direct +EV signal:
-    the venue is offering a price that differs from the cross-venue fair by
-    more than ``threshold_pp`` percentage points.
+    (``implied_prob``) to that median. A flagged cell is a direct bettable
+    +EV signal.
 
-    Signed delta (``implied_prob - median_fair``) preserves direction:
-      * delta > 0: price above fair -> YES is overpriced -> bet NO
-      * delta < 0: price below fair -> YES is underpriced -> bet YES
+    Flag rules (asymmetric by venue)
+    --------------------------------
+      * **Kalshi**: ``abs(implied_prob - median) >= threshold``. Both sides
+        of a Kalshi binary are purchasable (buy YES at ``yes_ask``, buy NO
+        at ``100 - yes_bid``), so an edge in either direction is bettable.
+      * **All other books** (DK, FD, Bookmaker, Wagerzon, Hoop88, BetOnline):
+        ``(median - implied_prob) >= threshold``. NFL-draft markets on these
+        sportsbooks are YES-only futures — if a book prices YES above the
+        consensus fair, the bettor cannot take the other side, so flagging
+        an overpriced YES is noise. Only "YES is cheap on this book" fires.
 
-    Kalshi is treated uniformly: its ``implied_prob`` is ``yes_ask / 100``
-    (the take price), so the same formula applies. Rows with
-    ``implied_prob`` NULL (one-sided Kalshi with no ask) participate in
-    the median via ``devig_prob`` but can't be flagged.
+    The signed delta exposed by ``ev_candidates``
+    (``implied_prob - median``) still preserves direction:
+      * delta > 0: price above fair -> YES is overpriced -> bet NO (Kalshi
+        only; non-Kalshi books never reach this case because the flag
+        suppresses it).
+      * delta < 0: price below fair -> YES is underpriced -> bet YES.
+
+    Rows with ``implied_prob`` NULL (one-sided Kalshi with no ask)
+    participate in the median via ``devig_prob`` but can't be flagged.
 
     A market with only one posting venue has no median to compare against,
     so it gets no flags — still listed for completeness.
@@ -155,9 +166,23 @@ def cross_book_grid(threshold_pp: float = 10.0):
             median = statistics.median(fair_probs)
             flags: Dict[str, bool] = {}
             for book, r in books.items():
-                # Uniform rule: flag if |raw take price - median fair| >= threshold.
                 take = r["implied_prob"]
-                flags[book] = (take is not None and abs(take - median) >= threshold)
+                if take is None:
+                    flags[book] = False
+                    continue
+                # Asymmetric rule:
+                #   * Kalshi is a two-sided binary (buy YES at yes_ask, buy NO at
+                #     100 - yes_bid), so an edge in either direction is bettable.
+                #     Keep the absolute-delta rule.
+                #   * Every other book in this portal is a YES-only sportsbook
+                #     futures market. If the book is pricing YES *above* the
+                #     consensus fair, there's no way to take the other side;
+                #     surfacing that flag is noise. Only flag when YES is cheap
+                #     on this book (median - take >= threshold) -> bettable YES.
+                if book == "kalshi":
+                    flags[book] = abs(take - median) >= threshold
+                else:
+                    flags[book] = (median - take) >= threshold
             output.append({
                 "market_id": market_id,
                 "books": books,
