@@ -28,7 +28,14 @@ Requires in `.env`:
 - `BOOKMAKER_USERNAME`
 - `BOOKMAKER_PASSWORD`
 
-Cookies cached in `.bookmaker_cookies.json`. If blocked/expired, runs `recon_bookmaker.py` to refresh.
+Cookies cached in `.bookmaker_cookies.json`. If Cloudflare blocks the request AND stdin is a TTY AND the last recon attempt was > 1h ago, the scraper launches `recon_bookmaker.py` in a real Chrome window to refresh `cf_clearance`.
+
+Otherwise (piped subprocess from `run.py`, recent recon attempt, or healthy session with no games posted) the scraper clears stale data, logs the reason, and exits 0 without opening a browser. To refresh cookies manually when the pipeline has skipped it:
+
+```bash
+cd bookmaker_odds
+./venv/bin/python recon_bookmaker.py
+```
 
 ## Storage
 
