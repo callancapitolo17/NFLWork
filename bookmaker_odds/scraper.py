@@ -14,6 +14,7 @@ If cookies expire, run recon_bookmaker.py to refresh them.
 import json
 import os
 import sys
+import time
 import duckdb
 from datetime import datetime, timezone
 from pathlib import Path
@@ -167,6 +168,41 @@ def _has_games(data: dict | None) -> bool:
         .get("Leagues", {})
         .get("League", [])
     )
+
+
+def _session_looks_healthy(*, blocked: bool, login_ok: bool) -> bool:
+    """Did we pass Cloudflare AND authenticate successfully?
+
+    If both are true, an empty schedule means no games posted right now —
+    not a broken session. Caller should save empty and exit cleanly rather
+    than escalating to the interactive recon browser.
+    """
+    return (not blocked) and login_ok
+
+
+def _can_launch_interactive_recon() -> bool:
+    """Only allow the Playwright browser popup when a human is at the keyboard.
+
+    recon_bookmaker.py has three blocking input() calls. When the scraper is
+    running as a piped subprocess of run.py, stdin is not a TTY and those
+    prompts would hang the whole MLB/CBB pipeline indefinitely.
+    """
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _recon_rate_limited(sentinel: Path, *, min_gap_sec: int = 3600) -> bool:
+    """Return True if recon was attempted less than `min_gap_sec` ago.
+
+    Prevents a misbehaving caller (e.g. a user hammering ./run.sh after a
+    real CF 403) from spawning back-to-back Chrome windows.
+    """
+    if not sentinel.exists():
+        return False
+    age = time.time() - sentinel.stat().st_mtime
+    return age < min_gap_sec
 
 
 def refresh_cookies():
