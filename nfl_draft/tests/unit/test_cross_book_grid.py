@@ -86,3 +86,51 @@ def test_ev_candidates_delta_uses_implied_prob(fresh_db):
     # delta = implied (0.535) - median_fair (~0.420) = ~0.115
     assert r["delta"] == pytest.approx(0.535 - 0.420, abs=0.01)
     assert r["book_prob"] == pytest.approx(0.535)
+
+
+def test_non_kalshi_below_median_is_flagged(fresh_db):
+    """Non-Kalshi venue whose YES implied_prob is well below the consensus
+    median (bettable YES edge) must flag under the asymmetric rule.
+
+    Median fair ~0.50; draftkings implied 0.30 -> median - take = 20pp > 10pp.
+    """
+    _insert_odds("m1", "kalshi",     100, 0.500, 0.500, datetime.now())
+    _insert_odds("m1", "fanduel",    100, 0.500, 0.500, datetime.now())
+    _insert_odds("m1", "draftkings", +233, 0.300, 0.305, datetime.now())
+    rows = q.cross_book_grid(threshold_pp=10)
+    m = rows[0]
+    assert m["flags"]["draftkings"] is True
+
+
+def test_non_kalshi_above_median_is_not_flagged(fresh_db):
+    """Non-Kalshi venue whose YES implied_prob is well above the consensus
+    median (book is overpricing YES — unactionable on YES-only sportsbook
+    futures) must NOT flag under the asymmetric rule, even when the absolute
+    delta exceeds the threshold.
+
+    Median fair ~0.42; bookmaker implied 0.60 -> take - median = 18pp; because
+    the book is above median and non-Kalshi, the flag stays False.
+    """
+    _insert_odds("m1", "kalshi",     100, 0.500, 0.420, datetime.now())
+    _insert_odds("m1", "fanduel",    100, 0.500, 0.420, datetime.now())
+    _insert_odds("m1", "draftkings", 100, 0.500, 0.420, datetime.now())
+    _insert_odds("m1", "bookmaker",  -150, 0.600, 0.605, datetime.now())
+    rows = q.cross_book_grid(threshold_pp=10)
+    m = rows[0]
+    assert m["flags"]["bookmaker"] is False
+
+
+def test_kalshi_above_median_still_flags(fresh_db):
+    """Regression guard: Kalshi must keep the symmetric rule. A Kalshi
+    implied_prob well above the median (NO is underpriced -> bettable NO
+    wager) must still flag.
+
+    Median fair ~0.30; kalshi implied 0.55 -> take - median = 25pp; since
+    Kalshi is symmetric, this flags.
+    """
+    _insert_odds("m1", "draftkings", +233, 0.300, 0.300, datetime.now())
+    _insert_odds("m1", "fanduel",    +233, 0.300, 0.300, datetime.now())
+    _insert_odds("m1", "kalshi",     -122, 0.550, 0.555, datetime.now())
+    rows = q.cross_book_grid(threshold_pp=10)
+    m = rows[0]
+    assert m["flags"]["kalshi"] is True
