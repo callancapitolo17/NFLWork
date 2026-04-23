@@ -5,6 +5,7 @@
 # Pipeline sentinel files
 .scrapers_done_*
 .canonical_games_*
+.last_recon_attempt
 
 # R
 .Rproj.user
