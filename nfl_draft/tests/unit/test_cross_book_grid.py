@@ -1,0 +1,88 @@
+"""Unit tests for cross_book_grid and ev_candidates flag semantics.
+
+Uses tmp DuckDB per test. Populates draft_odds directly (bypasses scrapers).
+"""
+import pytest
+from datetime import datetime
+from nfl_draft.lib import db as db_module
+from nfl_draft.lib import queries as q
+
+
+@pytest.fixture
+def fresh_db(monkeypatch, tmp_path):
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.duckdb")
+    db_module.init_schema()
+    yield
+
+
+def _insert_odds(market_id, book, odds, implied, devig, fetched_at=None):
+    from nfl_draft.lib.db import write_connection
+    if fetched_at is None:
+        fetched_at = datetime.now()
+    with write_connection() as con:
+        con.execute(
+            "INSERT INTO draft_odds VALUES (?, ?, ?, ?, ?, ?)",
+            [market_id, book, odds, implied, devig, fetched_at],
+        )
+
+
+def test_cross_book_grid_returns_american_odds_and_implied(fresh_db):
+    """Callback needs american_odds + implied_prob to format cells."""
+    _insert_odds("m1", "draftkings", 110, 0.476, 0.425, datetime.now())
+    _insert_odds("m1", "bookmaker", -115, 0.535, 0.435, datetime.now())
+    rows = q.cross_book_grid(threshold_pp=10)
+    assert len(rows) == 1
+    m = rows[0]
+    dk = m["books"]["draftkings"]
+    assert dk["american_odds"] == 110
+    assert dk["implied_prob"] == pytest.approx(0.476)
+    assert dk["devig_prob"] == pytest.approx(0.425)
+
+
+def test_cross_book_grid_flag_uses_implied_vs_median_fair_all_books(fresh_db):
+    """Flag fires when book's implied_prob is >= threshold_pp away from
+    median(devig_prob). Applies uniformly to every book, not just Kalshi."""
+    # Median fair should be ~0.42; bookmaker implied 0.535 -> 11.5pp above.
+    _insert_odds("m1", "draftkings", 100, 0.500, 0.420, datetime.now())
+    _insert_odds("m1", "fanduel",    100, 0.500, 0.417, datetime.now())
+    _insert_odds("m1", "bookmaker", -115, 0.535, 0.425, datetime.now())
+    _insert_odds("m1", "kalshi",    +108, 0.480, 0.420, datetime.now())
+    rows = q.cross_book_grid(threshold_pp=10)
+    m = rows[0]
+    # Median fair is ~0.420
+    assert abs(m["median"] - 0.420) < 0.01
+    # Bookmaker: |0.535 - 0.420| = 11.5pp -> flag
+    assert m["flags"]["bookmaker"] is True
+    # DK/FD: |0.500 - 0.420| = 8pp -> no flag at threshold 10
+    assert m["flags"]["draftkings"] is False
+    assert m["flags"]["fanduel"] is False
+    # Kalshi: |0.480 - 0.420| = 6pp -> no flag
+    assert m["flags"]["kalshi"] is False
+
+
+def test_cross_book_grid_kalshi_flag_no_special_case(fresh_db):
+    """Kalshi with implied_prob == 0.30 against median fair 0.42 -> flags
+    (same formula as every other book). Pre-change code had a Kalshi-specific
+    branch; the new code treats Kalshi uniformly."""
+    _insert_odds("m1", "draftkings", 100, 0.500, 0.420, datetime.now())
+    _insert_odds("m1", "fanduel",    100, 0.500, 0.420, datetime.now())
+    _insert_odds("m1", "kalshi",    +233, 0.300, 0.305, datetime.now())
+    rows = q.cross_book_grid(threshold_pp=10)
+    m = rows[0]
+    # Kalshi: |0.300 - 0.420| = 12pp -> flag
+    assert m["flags"]["kalshi"] is True
+
+
+def test_ev_candidates_delta_uses_implied_prob(fresh_db):
+    """ev_candidates.delta must be implied_prob - median_fair (= the EV in pp),
+    not devig_prob - median_fair."""
+    _insert_odds("m1", "draftkings", 100, 0.500, 0.420, datetime.now())
+    _insert_odds("m1", "fanduel",    100, 0.500, 0.420, datetime.now())
+    _insert_odds("m1", "bookmaker", -115, 0.535, 0.425, datetime.now())
+    rows = q.ev_candidates(threshold_pp=10)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["book"] == "bookmaker"
+    # delta = implied (0.535) - median_fair (~0.420) = ~0.115
+    assert r["delta"] == pytest.approx(0.535 - 0.420, abs=0.01)
+    assert r["book_prob"] == pytest.approx(0.535)
