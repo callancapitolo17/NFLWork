@@ -1,276 +1,204 @@
-# DuckDB Write-Race Fix (Dashboard Self-Scheduling)
+# DuckDB Write-Race Fix — In-Process Writer Consolidation
 
 **Date:** 2026-04-23
-**Status:** Approved for implementation
-**Scope:** `nfl_draft/lib/db.py`, `nfl_draft/lib/queries.py` (helper relocation),
-`nfl_draft/scrapers/kalshi.py`, `kalshi_draft/app.py`, associated tests,
-`nfl_draft/README.md`.
+**Status:** Approved for implementation (revised from earlier retry-and-batch draft)
+**Scope:** `kalshi_draft/app.py`, `nfl_draft/scrapers/kalshi.py`, `nfl_draft/README.md`,
+associated tests.
 
 ## Motivation
 
 DuckDB allows only one writer across processes at a time. The NFL-draft
-dashboard (`kalshi_draft/app.py`) runs **two independent writers** on
-tight cadences, plus spawns scrape subprocesses that never get reaped:
+dashboard (`kalshi_draft/app.py`) currently spawns **scrape subprocesses**
+from both its periodic 15-min loop and its one-shot startup block. Those
+subprocesses run `python -m nfl_draft.run --mode scrape --book all`, each
+opening its own DuckDB write connection. Meanwhile an **in-process
+trades-poll daemon thread** opens dozens of short-lived write connections
+per 15-second cycle (once per ticker-batch, plus one per series for the
+poll-state upsert). External writers (manual CLI, cron) compete with both.
 
-1. `_periodic_trades_loop` calls `kalshi.fetch_trades()` in-process
-   every 15 seconds. `fetch_trades()` opens a fresh `write_connection()`
-   per ticker-batch and again per series poll-state update — dozens to
-   hundreds of short-lived writer-lock acquisitions per cycle.
-2. `_periodic_scrape_loop` fires `subprocess.Popen(...)` every 15 min
-   (plus a one-shot startup scrape at boot). These subprocesses are
-   never `wait()`-ed, so they linger as zombies after exit. DuckDB
-   still reports those PIDs as lock-holders.
-3. External writers (manual CLI `nfl_draft.run --mode scrape`, future
-   cron-fired scrapes) race against #1 constantly. Any micro-window
-   overlap produces a hard `Conflicting lock is held by PID <dashboard>`
-   error — the writer just dies and that cycle's data is lost.
-
-Observed impact today: `draft_odds` rows for `book='kalshi'` were 86
-minutes stale; the recent `MAX_AGE_MINUTES=20` staleness filter hid
-them from the Cross-Book Grid. The race is not a new bug — the new
-filter just made an old race visible.
-
-User preference (option A in brainstorming): keep the dashboard
-self-scheduling. Fix the race without restructuring to a cron-only
-writer.
+Observed impact today: `draft_odds` rows for `book='kalshi'` stalled for
+86 minutes because the Kalshi scraper kept losing the race to the
+trades-poll's lock acquisitions. Once the new `MAX_AGE_MINUTES=20`
+staleness filter landed, Kalshi vanished from the Cross-Book Grid.
 
 ## Design
 
-### Change 1 — `write_connection()` retry-with-backoff
+### Core idea
 
-In `nfl_draft/lib/db.py`, replace the current bare-`duckdb.connect` call
-with an exponential-backoff retry when the error matches the lock
-signature.
+Eliminate **all subprocess-spawned writers** so every write comes from the
+same Python process (the dashboard). DuckDB allows multiple connections
+from within a single process and serializes them on its internal mutex —
+no cross-process race, no retry layer needed.
+
+Three concrete changes:
+
+### Change 1 — Replace scrape subprocesses with in-process calls
+
+In `kalshi_draft/app.py`, `_run_scrape_once` currently does:
 
 ```python
-_INITIAL_BACKOFF_SEC = 0.1
-_MAX_BACKOFF_SEC = 5.0
-_DEFAULT_TIMEOUT_SEC = 30.0
-
-
-def _is_lock_error(err: BaseException) -> bool:
-    """True if this exception matches the DuckDB lock-contention signature.
-
-    DuckDB surfaces lock errors as IOException with messages like
-    'Could not set lock on file' / 'Conflicting lock is held'. Shared
-    with queries.py read-path (single definition).
-    """
-    msg = str(err).lower()
-    return any(marker in msg for marker in (
-        "lock on file",
-        "conflicting lock",
-        "could not set lock",
-        "i/o error",
-        "io error",
-        "file handle conflict",
-    ))
-
-
-@contextmanager
-def write_connection(timeout_sec: float = _DEFAULT_TIMEOUT_SEC) -> Iterator[duckdb.DuckDBPyConnection]:
-    """Short-lived write connection with retry-on-lock-contention.
-
-    DuckDB allows only one writer across processes. When the dashboard is
-    holding the write lock (trades-poll or subprocess scrape), a concurrent
-    writer from another process (manual CLI, cron) races. Instead of dying
-    on the first collision, we retry with exponential backoff for up to
-    ``timeout_sec`` seconds. Non-lock errors propagate immediately.
-    """
-    import time
-    deadline = time.monotonic() + timeout_sec
-    backoff = _INITIAL_BACKOFF_SEC
-    while True:
-        try:
-            con = duckdb.connect(str(DB_PATH))
-            break
-        except (duckdb.IOException, duckdb.Error) as e:
-            if not _is_lock_error(e) or time.monotonic() >= deadline:
-                raise
-            time.sleep(backoff)
-            backoff = min(backoff * 2, _MAX_BACKOFF_SEC)
-    try:
-        yield con
-    finally:
-        con.close()
+subprocess.Popen(
+    [sys.executable, "-m", "nfl_draft.run", "--mode", "scrape", "--book", "all"],
+    ...
+)
 ```
 
-`queries.py` keeps its `_safe_read` fast-fail sentinel — Dash callbacks
-should not block on the interval tick; the next tick will re-render.
-Only write paths retry. The `_is_lock_error` helper moves from
-`queries.py` into `db.py` (single source of truth); `queries.py` imports
-it from there.
+Replace with a direct function call in a daemon thread:
 
-### Change 2 — batch `fetch_trades()` writes into a single connection
-
-In `nfl_draft/scrapers/kalshi.py::fetch_trades`, open one
-`write_connection()` at the top of the function body and thread that
-`wcon` through all inner loops. All `INSERT OR IGNORE INTO kalshi_trades`
-statements and the `kalshi_poll_state` upsert execute on that single
-connection. Close it once at function exit.
-
-Current (simplified):
-```python
-for series_ticker in series_list:
-    for ticker in tickers_by_series.get(series_ticker, []):
-        while True:
-            batch = parse_trades_response(raw)
-            if batch:
-                with write_connection() as wcon:
-                    for t in batch:
-                        wcon.execute("INSERT OR IGNORE INTO kalshi_trades ...")
-            ...
-    with write_connection() as wcon:
-        wcon.execute("INSERT INTO kalshi_poll_state ... ON CONFLICT DO UPDATE ...")
-```
-
-New (simplified):
-```python
-with write_connection() as wcon:
-    for series_ticker in series_list:
-        for ticker in tickers_by_series.get(series_ticker, []):
-            while True:
-                batch = parse_trades_response(raw)
-                if batch:
-                    for t in batch:
-                        wcon.execute("INSERT OR IGNORE INTO kalshi_trades ...")
-                ...
-        wcon.execute("INSERT INTO kalshi_poll_state ... ON CONFLICT DO UPDATE ...")
-```
-
-The `try/except Exception as e` around each ticker stays so one bad
-ticker cannot take down the whole poll.
-
-Lock acquisitions drop from O(tickers × batches) per cycle to exactly
-one. Retry-on-lock (Change 1) absorbs contention when another writer
-happens to be first.
-
-### Change 3 — reap scrape subprocesses
-
-In `kalshi_draft/app.py`:
-
-- `_run_scrape_once` (currently fires `subprocess.Popen(...)` and
-  returns immediately) becomes a daemon-thread wrapper around
-  `subprocess.run(...)`. `run()` auto-waits and reaps on exit.
-- The one-shot startup-scrape block (~line 1519) gets the same
-  treatment.
-
-New skeleton:
 ```python
 def _run_scrape_once() -> None:
-    """Fire a detached scrape subprocess. Auto-reaps. Never raises."""
+    """Fire the scrape in-process in a background thread. Never raises."""
     def _runner():
         try:
-            subprocess.run(
-                [sys.executable, "-m", "nfl_draft.run", "--mode", "scrape", "--book", "all"],
-                cwd=str(Path(__file__).resolve().parent.parent),
-                stdout=open("/tmp/nfl_draft_periodic_scrape.log", "a"),
-                stderr=subprocess.STDOUT,
-                check=False,
-            )
+            from nfl_draft.run import run_scrape
+            run_scrape("all")
         except Exception as e:
-            print(f"[periodic] scrape run failed: {e}")
-    threading.Thread(target=_runner, daemon=True, name="nfl_draft-scrape-runner").start()
+            print(f"[periodic] scrape failed: {e}")
+            traceback.print_exc()
+    threading.Thread(
+        target=_runner, daemon=True,
+        name="nfl_draft-scrape-runner",
+    ).start()
 ```
 
-Startup block mirrors this pattern. The `start_new_session=True` flag
-from the old Popen is no longer needed — a daemon thread running
-`subprocess.run` exits cleanly when the dashboard exits, and the
-subprocess it spawns is a normal child that the runner thread waits on.
+Apply the same pattern to the one-shot startup-scrape block in `__main__`
+(~line 1519). The existing `_periodic_scrape_loop` that calls
+`_run_scrape_once()` every 15 min stays unchanged — it keeps calling
+the new helper, which now spawns an in-process thread instead of a
+subprocess. Zero subprocesses survive.
 
-### Interaction of changes
+**Crash isolation.** `run_scrape` already wraps each per-book scrape in
+`try/except`, so one bad scraper doesn't abort the rest. The outer
+`_runner` adds a final try/except so an uncaught error in `run_scrape`
+itself (e.g. `seed.run()` fails) logs and returns rather than killing
+the thread pool.
 
-After these three changes, the lock-contention picture becomes:
+**Log destination.** Old code redirected subprocess stdout/stderr to
+`/tmp/nfl_draft_periodic_scrape.log` and `/tmp/nfl_draft_startup_scrape.log`.
+In-process output goes to whatever the dashboard's own stdout is —
+typically `/tmp/nfl_draft_dashboard.log` per current `nohup` invocation.
+Acceptable collapse: scrape output interleaves with dashboard output in
+one log. If users want separate log files later, that's a follow-up.
 
-- The **trades poll** opens one writer connection per 15-second cycle
-  (from Change 2). Total time holding the lock per cycle: milliseconds.
-- The **subprocess scrape** still spawns an external Python process,
-  but only every 15 minutes. When that external process writes, it
-  races the trades poll exactly once per cycle (if at all). Change 1
-  makes the external writer retry until the trades poll releases;
-  DuckDB's per-process internal mutex handles the case where both are
-  the dashboard.
-- Zombies cleared by Change 3 — `ps` and DuckDB's live-PID check agree
-  again.
+### Change 2 — Batch `fetch_trades()` writes into one connection
+
+Same as the earlier draft. `fetch_trades` in `nfl_draft/scrapers/kalshi.py`
+currently opens `write_connection()` per ticker-batch inside nested loops
+(~line 587) and again per series for poll-state (~line 616). Refactor to
+open one `write_connection()` at the top of the function; thread the
+`wcon` through the inner loops; close once at exit.
+
+Rationale still holds even after Change 1: within a single process,
+DuckDB serializes connections via its internal mutex. Fewer connection
+opens = less contention with the periodic scrape's own writes (which
+also run in this process now). Also less CPU spent on DuckDB
+connect/close churn on the 15-second cadence.
+
+### Change 3 — No retry layer needed
+
+The earlier draft added exponential-backoff retry to `write_connection()`.
+Under the in-process architecture, cross-process contention is gone, so
+retry is unnecessary for the dashboard's normal operation.
+
+**CLI trade-off.** External writers (`python -m nfl_draft.run --mode scrape`
+from a shell) will fail with a DuckDB lock error if the dashboard is
+running. This is intentional: running the CLI writer concurrently with
+the dashboard was always the ambiguous case. Document the constraint in
+the README: "Stop the dashboard before running the CLI scraper, or wait
+for the dashboard's next in-process cycle to fetch the data."
+
+No retry layer is added in this change. If a future need arises (e.g.
+CLI-with-dashboard becomes common), revisit as a separate spec.
+
+### What's NOT removed
+
+- `_periodic_scrape_loop` — still fires every 15 min, still in-process.
+- `_periodic_trades_loop` — still fires every 15 s, still in-process.
+- `_trades_lock` — still guards the trades poll against overlapping
+  ticks. Kept.
+- Dashboard's own `write_connection()` calls for bet logging
+  (`kalshi_draft/app.py:1381`) — unchanged.
 
 ## Tests
 
-### Unit — `tests/unit/test_db.py` (new file OR extend existing)
+### Unit — `tests/unit/test_kalshi_trades_batching.py` (new)
 
-- `test_write_connection_retries_on_lock_error`: monkeypatch
-  `duckdb.connect` to raise a lock-signature `IOException` twice then
-  succeed; assert `write_connection()` yields a connection and the mock
-  was called three times.
-- `test_write_connection_gives_up_at_timeout`: monkeypatch
-  `duckdb.connect` to always raise a lock-signature `IOException`;
-  call `write_connection(timeout_sec=0.5)`; assert the exception
-  propagates after approximately the timeout.
-- `test_write_connection_propagates_non_lock_errors_immediately`:
-  monkeypatch `duckdb.connect` to raise a non-lock error; assert it
-  propagates without any sleep/retry.
+Same two tests as the earlier draft:
+- `test_fetch_trades_opens_single_write_connection`: counter-based
+  invariant; exactly 1 open regardless of ticker count.
+- `test_fetch_trades_inserts_all_batches_into_shared_connection`:
+  verifies the shared connection receives the expected SQL statements.
 
-### Unit — `tests/unit/test_kalshi_trades_batching.py` (new file)
+### Unit — `tests/unit/test_app_scrape_helpers.py` (new)
 
-- `test_fetch_trades_opens_single_write_connection`: mock
-  `fetch_trades` dependencies (discover_draft_series, public_request,
-  parse_trades_response, etc.) so the function executes with a few
-  fake tickers and batches. Monkeypatch `write_connection` with a
-  call-counter. Assert the counter reached exactly 1 regardless of
-  ticker count.
-- `test_fetch_trades_writes_same_rows_as_before`: after the
-  single-connection refactor, the number and content of inserted rows
-  must match the pre-refactor behavior for the same fake input.
+- `test_run_scrape_once_does_not_spawn_subprocess`: monkeypatch
+  `subprocess.Popen` and `subprocess.run` to raise; confirm
+  `_run_scrape_once` executes without hitting either.
+- `test_run_scrape_once_invokes_run_scrape_in_thread`: monkeypatch
+  `nfl_draft.run.run_scrape` with a counter; call
+  `_run_scrape_once`; assert the counter increments to 1 (possibly
+  after a short `thread.join`-style wait).
 
-### Integration — manual smoke (documented in spec, not automated)
+### Integration — manual smoke (documented, not automated)
 
-- Restart dashboard with new code. From a second shell run
-  `python -m nfl_draft.run --mode scrape --book kalshi` while the
-  trades-poll is live. Expect success (no lock error).
-- `ps --ppid <dashboard-pid>` after a periodic-scrape tick shows no
-  zombie child.
+- Restart dashboard with the new code.
+- From a second shell: try `python -m nfl_draft.run --mode scrape --book kalshi`.
+  Expected: lock error (documented as the tradeoff). This is NOT a failure
+  — it's the intentional constraint.
+- Stop the dashboard. Re-run the CLI. Expected: success (single writer).
+- Restart the dashboard. Watch `draft_odds` freshness for Kalshi after
+  the first periodic tick (15 min) or wait for the startup-scrape tick.
+  Expected: all venues within staleness filter; no zombies in `ps`.
 
 ### Existing-test sanity
 
-- Run full `nfl_draft/tests/` suite; all currently-green tests must
-  stay green. The pre-existing flaky
-  `test_writer_and_reader_coexist` stays out of scope (known
-  concurrent-DuckDB intermittent; not caused or fixed by this work).
+- Full `nfl_draft/tests/` suite stays green.
 
 ## Documentation
 
-- `nfl_draft/README.md`: add a short "Concurrency model" subsection under
-  an existing architecture paragraph. Points:
-  - DuckDB is single-writer across processes.
-  - Dashboard is the primary writer (in-process trades poll + spawned
-    scrape subprocess).
-  - `write_connection()` retries with backoff on lock contention so
-    external/CLI/cron writers self-heal.
-  - `fetch_trades()` batches all inserts into one connection.
-- `nfl_draft/CLAUDE.md`: does not currently exist; no update needed.
-- Do **not** add a design doc pointer into the README body — the
-  `docs/superpowers/specs/` file is the canonical design.
+`nfl_draft/README.md` gets a new "Concurrency model" subsection before
+`## Setup`. Points:
+
+- DuckDB is single-writer across processes.
+- The dashboard is the sole writer: its in-process daemon threads
+  handle trades polling (15 s) and venue scraping (15 min), plus one
+  startup scrape. No subprocesses.
+- External writers (CLI `python -m nfl_draft.run`, cron) **must not run
+  concurrently with the dashboard** — the DuckDB lock prevents it.
+  Stop the dashboard first, or rely on its own in-process schedule.
+- `fetch_trades()` opens a single `write_connection()` per cycle; all
+  inserts and poll-state upserts share it.
 
 ## Version control
 
 - **Branch:** `fix/duckdb-write-race`
-- **Worktree:** `.worktrees/duckdb-write-race` (created off `main`).
-- **Commits (planned, rough order):**
-  1. `refactor(nfl_draft): share _is_lock_error between db.py and queries.py`
-  2. `fix(nfl_draft): retry write_connection() on DuckDB lock contention`
+- **Worktree:** `.worktrees/duckdb-write-race`
+- **Planned commits (rough):**
+  1. `refactor(app): run periodic scrape in-process instead of subprocess`
+  2. `refactor(app): run startup scrape in-process instead of subprocess`
   3. `perf(nfl_draft): batch fetch_trades() writes into one connection`
-  4. `fix(app): reap scrape subprocess with subprocess.run in a daemon thread`
-  5. `docs(nfl_draft): document concurrency model`
-  A plan will settle the exact commit structure; 3–5 commits total.
-- **Merge:** pre-merge executive review per CLAUDE.md, then explicit
-  user approval before merging to `main`. Worktree + branch cleanup
-  after merge.
+  4. `docs(nfl_draft): document single-writer concurrency model`
+- **Merge:** pre-merge executive review + live smoke test + explicit user
+  approval before merging to `main`. Worktree + branch cleanup after
+  merge.
 
 ## Non-goals
 
-- Moving scraping to cron-only (option B — rejected per user choice).
-- Bringing `fetch_draft_odds()` in-process (keeps the subprocess design).
-- Replacing DuckDB with a multi-writer database.
-- Any UI changes.
-- Any change to the read path (`read_connection`, `_safe_read`).
-  Callbacks keep the fail-fast sentinel behavior.
-- Any change to the flag rules from the earlier asymmetric-outlier-flag
-  work.
+- No retry layer in `write_connection()`. (Removed from earlier draft.)
+- No subprocess zombie-reap fix. (Obsolete — no subprocesses exist.)
+- No IPC layer for CLI-write-through-dashboard. (YAGNI; separate spec if
+  it ever becomes needed.)
+- No read-path changes.
+- No changes to flag rules, staleness filter, or any UI.
+
+## Why this supersedes the earlier retry-and-batch draft
+
+The earlier draft added retry-with-backoff on `write_connection()` and
+kept the subprocess scrape design. That absorbed the race but did not
+eliminate it — under heavy load the retry budget could still time out,
+and subprocess zombies still needed reaping. The in-process
+consolidation fixes the root cause (cross-process writers) instead,
+making the retry layer and the zombie-reap fix both obsolete.
+
+The earlier draft's commits (in `git log` history) are not cherry-picked
+forward. This spec replaces it entirely.
