@@ -9,7 +9,7 @@ maps to no group key (props, matchups, mr_irrelevant) get
 cross-venue median still works against raw implieds.
 """
 
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict
 from nfl_draft.lib.db import write_connection, read_connection
 from nfl_draft.lib.devig import american_to_implied, devig_n_way
 from nfl_draft.lib.market_map import outright_group_key
@@ -56,8 +56,11 @@ def write_or_quarantine(rows: List[OddsRow]) -> Tuple[int, int]:
     for key, idx_list in buckets.items():
         bucket_rows = [mapped[i] for i in idx_list]
         # If ANY row in the bucket arrived with devig_prob pre-set (Kalshi),
-        # respect every row's scraper-supplied values verbatim. In practice a
-        # bucket contains rows from one scraper so this is all-or-nothing.
+        # respect every row's scraper-supplied values verbatim. row.book is the
+        # per-scraper isolation: within one (book, group) bucket every row came
+        # from the same scraper, so either all have devig_prob pre-set (Kalshi)
+        # or none do (sportsbooks). The fallback for a "mixed" bucket is
+        # belt-and-suspenders and shouldn't fire in practice.
         if any(row.devig_prob is not None for row, _ in bucket_rows):
             for i, (row, _) in zip(idx_list, bucket_rows):
                 if row.devig_prob is not None:
