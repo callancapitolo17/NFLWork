@@ -57,6 +57,41 @@ See `docs/superpowers/specs/2026-04-22-grid-devig-display-design.md`
 for the full design and `docs/superpowers/plans/2026-04-23-grid-devig-display.md`
 for the implementation plan.
 
+## Concurrency model
+
+DuckDB allows exactly **one writer across processes** at a time. The
+dashboard (`kalshi_draft/app.py`) is the **sole writer**. All writes —
+venue scraping, Kalshi trade polling, bet logging — run inside the
+dashboard process, serialized by DuckDB's internal mutex. No
+subprocesses are spawned for scraping anywhere in normal operation.
+
+Writers in the dashboard process:
+
+- **Trades poll** — in-process daemon thread, every 15 s, calls
+  `nfl_draft.scrapers.kalshi.fetch_trades()`. All `INSERT OR IGNORE INTO
+  kalshi_trades` statements and `kalshi_poll_state` upserts for the
+  cycle share a single `write_connection()`.
+- **Periodic scrape** — in-process daemon thread, every 15 min, calls
+  `nfl_draft.run.run_scrape("all")` directly (not a subprocess).
+- **Startup scrape** — a one-shot daemon-thread scrape fired once on
+  dashboard launch so data is fresh within the first few minutes.
+- **Bet logging** — short, user-triggered write from the dashboard UI.
+
+**Constraint**: running `python -m nfl_draft.run --mode scrape ...` from
+the shell **while the dashboard is up** will fail with a DuckDB lock
+error. That's intentional — DuckDB's single-writer guarantee enforces
+it, and by design the dashboard is the canonical writer. If you need
+to run the CLI scraper ad-hoc, stop the dashboard first:
+
+```bash
+pkill -f "kalshi_draft/app.py"
+python -m nfl_draft.run --mode scrape --book all
+# then restart the dashboard
+```
+
+See `docs/superpowers/specs/2026-04-23-duckdb-write-race-design.md`
+for the full design rationale.
+
 ## Setup
 
 1. Dependencies (should already be installed from the existing kalshi_draft venv):
