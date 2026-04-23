@@ -835,10 +835,15 @@ def render_crossbook_grid():
                 "Each cell shows the bettable price — American odds for "
                 "sportsbooks, cents for Kalshi. The median column is the "
                 "cross-venue devigged fair (the true probability with "
-                "vig stripped). A flagged cell (⚑) means the book's "
-                "raw take price differs from the fair median by at least "
-                "the threshold — i.e. direct +EV. Positive delta → "
-                "price is above fair → bet NO; negative → bet YES.",
+                "vig stripped). A flagged cell (⚑) means there is a "
+                "bettable +EV edge: for sportsbooks (DK, FD, Bookmaker, "
+                "Wagerzon, Hoop88, BetOnline), the book's YES price is "
+                "cheaper than the fair median by at least the threshold "
+                "(bet YES). For Kalshi, the take price differs from fair "
+                "in either direction by at least the threshold (bet YES "
+                "if underpriced, NO if overpriced). Sportsbook futures "
+                "are YES-only, so an overpriced YES there is noise and "
+                "does not flag.",
                 style={"color": COLORS["text_muted"], "fontSize": "0.85em"},
             ),
             html.Div([
