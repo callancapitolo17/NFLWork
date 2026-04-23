@@ -386,7 +386,7 @@ def test_kalshi_scrape_writes_to_legacy_kalshi_odds(monkeypatch, tmp_path):
 
 
 def test_cross_book_grid_excludes_stale_rows(monkeypatch, tmp_path):
-    """Rows older than MAX_AGE_HOURS must be filtered out of cross_book_grid.
+    """Rows older than MAX_AGE_MINUTES must be filtered out of cross_book_grid.
 
     Regression guard for the pre-draft audit finding: FanDuel hadn't scraped
     in 22h but its rows still polluted the grid. After the fix, a row with
@@ -758,7 +758,7 @@ def test_kalshi_tooltip_data_picks_latest_when_multiple_snapshots(monkeypatch, t
 
 
 def test_kalshi_tooltip_data_excludes_stale_snapshots(monkeypatch, tmp_path):
-    """Snapshots older than MAX_AGE_HOURS must be filtered out so the tooltip
+    """Snapshots older than MAX_AGE_MINUTES must be filtered out so the tooltip
     never shows a price next to a cell whose underlying scrape is stale."""
     from nfl_draft.lib import db as db_module
     monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.duckdb")
@@ -766,8 +766,8 @@ def test_kalshi_tooltip_data_excludes_stale_snapshots(monkeypatch, tmp_path):
 
     from datetime import datetime, timedelta
     from nfl_draft.lib.db import write_connection
-    from nfl_draft.lib.queries import MAX_AGE_HOURS
-    stale = datetime.now() - timedelta(hours=MAX_AGE_HOURS + 1)
+    from nfl_draft.lib.queries import MAX_AGE_MINUTES
+    stale = datetime.now() - timedelta(minutes=MAX_AGE_MINUTES + 5)
     with write_connection() as con:
         con.execute("""
             CREATE TABLE IF NOT EXISTS kalshi_odds (
@@ -790,5 +790,5 @@ def test_kalshi_tooltip_data_excludes_stale_snapshots(monkeypatch, tmp_path):
 
     from nfl_draft.lib.queries import kalshi_tooltip_data
     data = kalshi_tooltip_data()
-    # Ticker exists in kalshi_odds but is >2h old -> tooltip omits it.
+    # Ticker exists in kalshi_odds but is older than MAX_AGE_MINUTES -> tooltip omits it.
     assert data == {}

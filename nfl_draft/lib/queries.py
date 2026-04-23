@@ -33,13 +33,15 @@ import duckdb
 from nfl_draft.lib.db import read_connection
 
 
-# Any row older than MAX_AGE_HOURS is excluded from Cross-Book Grid /
-# ev_candidates. This prevents venues that have silently stopped scraping
-# (e.g. FD regression 2026-04-19) from polluting the grid with 24h-old
-# prices that get flagged as "edges" when in reality the feed just died.
-# Tune via this constant — 2h is a conservative default for pre-draft
-# cadence (scrapers run every few minutes).
-MAX_AGE_HOURS = 2
+# Any row older than MAX_AGE_MINUTES is excluded from Cross-Book Grid,
+# +EV Candidates, and the Kalshi tooltip. This prevents venues that have
+# silently stopped scraping (e.g. FD regression 2026-04-19) from polluting
+# the grid with hours-old prices that get flagged as "edges" when the feed
+# has actually died. 20 minutes = pre-draft scrape cadence (15 min from
+# crontab.pre) + 5-minute cushion for a late cron run; it is also ~10x the
+# draft-day cadence (2 min from crontab.draft), so dead venues drop out
+# within ~20 min on draft day instead of the prior ~2h.
+MAX_AGE_MINUTES = 20
 
 
 class QueryLocked:
@@ -118,7 +120,7 @@ def cross_book_grid(threshold_pp: float = 10.0):
                   SELECT market_id, book, american_odds, implied_prob, devig_prob,
                          ROW_NUMBER() OVER (PARTITION BY market_id, book ORDER BY fetched_at DESC) AS rn
                   FROM draft_odds
-                  WHERE fetched_at > NOW() - INTERVAL '{MAX_AGE_HOURS} hours'
+                  WHERE fetched_at > NOW() - INTERVAL '{MAX_AGE_MINUTES} minutes'
                 )
                 SELECT market_id, book, american_odds, implied_prob, devig_prob
                 FROM latest WHERE rn = 1
@@ -368,7 +370,7 @@ def kalshi_tooltip_data() -> Dict[str, Dict[str, Any]]:
                   SELECT ticker, candidate, yes_bid, yes_ask, last_price,
                          ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY fetch_time DESC) AS rn
                   FROM kalshi_odds
-                  WHERE fetch_time > NOW() - INTERVAL '{MAX_AGE_HOURS} hours'
+                  WHERE fetch_time > NOW() - INTERVAL '{MAX_AGE_MINUTES} minutes'
                 )
                 SELECT mm.market_id, ko.ticker, ko.yes_bid, ko.yes_ask, ko.last_price
                 FROM market_map mm
