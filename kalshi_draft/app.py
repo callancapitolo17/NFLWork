@@ -36,18 +36,26 @@ _TRADES_INTERVAL_SECONDS = 15       # 15 s — trade tape freshness for draft ni
 
 
 def _run_scrape_once() -> None:
-    """Fire a detached scrape subprocess. Never raises."""
-    try:
-        repo_root = Path(__file__).resolve().parent.parent
-        subprocess.Popen(
-            [sys.executable, "-m", "nfl_draft.run", "--mode", "scrape", "--book", "all"],
-            cwd=str(repo_root),
-            stdout=open("/tmp/nfl_draft_periodic_scrape.log", "a"),
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-    except Exception as e:
-        print(f"[periodic] scrape launch failed: {e}")
+    """Fire the scrape in-process in a background daemon thread. Never raises.
+
+    Under in-process writer consolidation (see
+    docs/superpowers/specs/2026-04-23-duckdb-write-race-design.md), all
+    DuckDB writes happen in the dashboard process so DuckDB's internal
+    mutex serializes them. A subprocess scrape would re-introduce the
+    cross-process lock race we're fixing.
+    """
+    def _runner():
+        try:
+            from nfl_draft.run import run_scrape
+            run_scrape("all")
+        except Exception as e:
+            import traceback
+            print(f"[periodic] scrape failed: {e}")
+            traceback.print_exc()
+    threading.Thread(
+        target=_runner, daemon=True,
+        name="nfl_draft-scrape-runner",
+    ).start()
 
 
 def _periodic_scrape_loop() -> None:
