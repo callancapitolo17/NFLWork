@@ -1118,10 +1118,14 @@ def _update_crossbook(threshold_pp, _n_intervals, last_seen):
                 continue
             if venue == "kalshi":
                 ip = record["implied_prob"]
-                cell = f"{round(ip * 100)}\u00A2" if ip is not None else ""
+                if ip is not None:
+                    cents = min(99, max(1, round(ip * 100)))
+                    cell = f"{cents}\u00A2"
+                else:
+                    cell = ""
             else:
                 ao = record["american_odds"]
-                cell = f"{int(ao):+d}" if ao is not None else ""
+                cell = f"{round(ao):+d}" if ao is not None else ""
             row[venue] = cell + (" \u2691" if flagged and cell else "")
         row["median"] = f"{m['median']*100:.1f}%" if m["median"] is not None else ""
         row["outliers"] = m["outlier_count"]
