@@ -79,3 +79,74 @@ def test_build_market_id_draft_position_over_under_sub_one_line():
     assert build_market_id(
         "draft_position_over_under", player="Mr Irrelevant", line=0.5, direction="under"
     ) == "draft_position_ou_mr-irrelevant_0p5_under"
+
+
+from nfl_draft.lib.market_map import outright_group_key
+
+
+def test_outright_group_key_pick_outright():
+    assert outright_group_key("pick_outright", "pick_2_overall_david-bailey") == "pick_2_overall"
+
+
+def test_outright_group_key_first_at_position():
+    assert outright_group_key("first_at_position", "first_wr_jordyn-tyson") == "first_wr"
+
+
+def test_outright_group_key_top_n_range():
+    assert outright_group_key("top_10_range", "top_10_sonny-styles") == "top_10"
+    assert outright_group_key("top_5_range", "top_5_caleb-downs") == "top_5"
+
+
+def test_outright_group_key_team_first_pick_handles_spaces_in_team():
+    # build_market_id uses team.lower() -> can contain a space ("new england")
+    assert outright_group_key("team_first_pick", "team_washington_first_pick_lucas") == "team_washington_first_pick"
+    assert outright_group_key("team_first_pick", "team_new england_first_pick_drew-allar") == "team_new england_first_pick"
+
+
+def test_outright_group_key_team_first_pick_position():
+    # build_market_id uses _slug_underscored for both team and position
+    assert outright_group_key(
+        "team_first_pick_position",
+        "arizona_cardinals_first_pick_pos_wide_receiver",
+    ) == "arizona_cardinals_first_pick_pos"
+
+
+def test_outright_group_key_nth_at_position():
+    # market_group = "nth_at_position_2"; market_id = "2_wr_jordyn-tyson"
+    assert outright_group_key("nth_at_position_2", "2_wr_jordyn-tyson") == "2_wr"
+    assert outright_group_key("nth_at_position_3", "3_cb_jermod-mccoy") == "3_cb"
+
+
+def test_outright_group_key_draft_position_over_under():
+    assert outright_group_key(
+        "draft_position_over_under",
+        "draft_position_ou_spencer-fano_10p5_over",
+    ) == "draft_position_ou_spencer-fano_10p5"
+    assert outright_group_key(
+        "draft_position_over_under",
+        "draft_position_ou_spencer-fano_10p5_under",
+    ) == "draft_position_ou_spencer-fano_10p5"
+
+
+def test_outright_group_key_mr_irrelevant_returns_none():
+    assert outright_group_key("mr_irrelevant_position", "mr_irrelevant_wide_receiver") is None
+
+
+def test_outright_group_key_matchup_before_returns_none():
+    # Matchups are self-contained 2-way; we don't bucket them across other markets.
+    assert outright_group_key("matchup_before", "matchup_hunter_before_tyson") is None
+
+
+def test_outright_group_key_prop_returns_none():
+    assert outright_group_key("prop_first_round_total_ou", "prop_first_round_total") is None
+    assert outright_group_key("prop_team_position_of_first_pick", "prop_xxx") is None
+
+
+def test_outright_group_key_unrecognized_returns_none():
+    assert outright_group_key("", "random_market_id") is None
+    assert outright_group_key("totally_unknown", "x_y_z") is None
+
+
+def test_outright_group_key_malformed_market_id_returns_none():
+    # market_group says pick_outright but market_id doesn't match the pattern
+    assert outright_group_key("pick_outright", "not_a_pick_market") is None
