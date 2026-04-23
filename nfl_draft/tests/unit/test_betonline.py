@@ -80,11 +80,15 @@ def test_emits_mr_irrelevant_position(rows):
                for s in subjects), subjects
 
 
-def test_emits_team_drafts_player(rows):
-    """team-to-draft has 'Team to Draft <Player>' with team-name runners."""
-    tdp = [r for r in rows if r.market_group == "team_drafts_player"]
-    assert len(tdp) >= 200, f"expected >= 200 team_drafts_player rows, got {len(tdp)}"
-    for r in tdp[:5]:
+def test_emits_team_first_pick(rows):
+    """team-to-draft has 'Team to Draft <Player>' with team-name runners.
+    Market_group is ``team_first_pick`` (not ``team_drafts_player``) so
+    ``outright_group_key`` routes the rows through the per-team mutex
+    devig bucket.
+    """
+    tfp = [r for r in rows if r.market_group == "team_first_pick"]
+    assert len(tfp) >= 200, f"expected >= 200 team_first_pick rows, got {len(tfp)}"
+    for r in tfp[:5]:
         assert "team to draft" in r.book_label.lower()
 
 
@@ -161,7 +165,7 @@ def test_v1_market_groups_are_allowlisted(rows):
         "top_5_range", "top_10_range", "top_32_range",
         "nth_at_position_2", "nth_at_position_3",
         "mr_irrelevant_position",
-        "team_drafts_player", "team_first_pick_position",
+        "team_first_pick", "team_first_pick_position",
         "matchup_before",
         "draft_position_over_under",
     }

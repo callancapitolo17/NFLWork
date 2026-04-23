@@ -132,8 +132,17 @@ def test_outright_group_key_draft_position_over_under():
     ) == "draft_position_ou_spencer-fano_10p5"
 
 
-def test_outright_group_key_mr_irrelevant_returns_none():
-    assert outright_group_key("mr_irrelevant_position", "mr_irrelevant_wide_receiver") is None
+def test_outright_group_key_mr_irrelevant_position():
+    # Exactly one position is Mr. Irrelevant's -- mutex outright across
+    # all position rows at a book. The bucket key is a shared constant
+    # ("mr_irrelevant") so every position row at one book falls into the
+    # same devig bucket regardless of the specific position.
+    assert outright_group_key(
+        "mr_irrelevant_position", "mr_irrelevant_wide_receiver"
+    ) == "mr_irrelevant"
+    assert outright_group_key(
+        "mr_irrelevant_position", "mr_irrelevant_running_back"
+    ) == "mr_irrelevant"
 
 
 def test_outright_group_key_matchup_before_returns_none():

@@ -686,7 +686,7 @@ def _betonline_market_id_for(
         )
     if group == "mr_irrelevant_position":
         return build_market_id("mr_irrelevant_position", position=subject)
-    if group == "team_drafts_player":
+    if group == "team_first_pick":
         m = team_to_draft_re.match(label)
         if not m:
             return None

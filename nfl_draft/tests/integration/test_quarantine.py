@@ -262,6 +262,101 @@ def test_write_or_quarantine_pool_devig_sparse_coverage_falls_back(seeded):
             f"sparse top_N bucket should pass implied through, got devig={devig}"
 
 
+def test_write_or_quarantine_devigs_team_first_pick(seeded):
+    """BetOnline team_first_pick (formerly team_drafts_player) is a
+    per-team 1-winner mutex: exactly one player is team X's first pick.
+    All Washington candidates at one book must bucket together and
+    devig to sum=1.
+    """
+    from nfl_draft.lib.db import write_connection, read_connection
+    with write_connection() as con:
+        for player_slug, player in [
+            ("drew-allar", "Drew Allar"),
+            ("cam-ward", "Cam Ward"),
+            ("shedeur-sanders", "Shedeur Sanders"),
+        ]:
+            con.execute(
+                "INSERT INTO draft_markets (market_id, market_type, subject_player, subject_team) "
+                "VALUES (?, 'team_first_pick', ?, 'Washington')",
+                [f"team_washington_first_pick_{player_slug}", player],
+            )
+            con.execute(
+                "INSERT INTO market_map VALUES ('betonline', 'Team to Draft Player', ?, ?)",
+                [player, f"team_washington_first_pick_{player_slug}"],
+            )
+    now = datetime.now()
+    rows = [
+        OddsRow(book="betonline", book_label="Team to Draft Player",
+                book_subject="Drew Allar", american_odds=+150, fetched_at=now,
+                market_group="team_first_pick"),
+        OddsRow(book="betonline", book_label="Team to Draft Player",
+                book_subject="Cam Ward", american_odds=+300, fetched_at=now,
+                market_group="team_first_pick"),
+        OddsRow(book="betonline", book_label="Team to Draft Player",
+                book_subject="Shedeur Sanders", american_odds=+400, fetched_at=now,
+                market_group="team_first_pick"),
+    ]
+    write_or_quarantine(rows)
+    with read_connection() as con:
+        result = con.execute(
+            "SELECT market_id, implied_prob, devig_prob FROM draft_odds ORDER BY market_id"
+        ).fetchall()
+    assert len(result) == 3
+    total_devig = sum(r[2] for r in result)
+    assert abs(total_devig - 1.0) < 1e-6, \
+        f"team_first_pick devig should sum to 1.0 within a team, got {total_devig}"
+    for market_id, implied, devig in result:
+        assert abs(implied - devig) > 1e-4, \
+            f"{market_id}: implied={implied} equals devig={devig} -- devig did not run"
+
+
+def test_write_or_quarantine_devigs_mr_irrelevant_position(seeded):
+    """mr_irrelevant_position is a 1-winner mutex: exactly one position is
+    Mr. Irrelevant's. All position rows at one book bucket together and
+    devig to sum=1.
+    """
+    from nfl_draft.lib.db import write_connection, read_connection
+    with write_connection() as con:
+        for pos_slug, pos_label in [
+            ("wide_receiver", "Wide Receiver"),
+            ("running_back", "Running Back"),
+            ("offensive_line", "Offensive Line"),
+        ]:
+            con.execute(
+                "INSERT INTO draft_markets (market_id, market_type, position) "
+                "VALUES (?, 'mr_irrelevant_position', ?)",
+                [f"mr_irrelevant_{pos_slug}", pos_label],
+            )
+            con.execute(
+                "INSERT INTO market_map VALUES ('betonline', 'Mr Irrelevant Position', ?, ?)",
+                [pos_label, f"mr_irrelevant_{pos_slug}"],
+            )
+    now = datetime.now()
+    rows = [
+        OddsRow(book="betonline", book_label="Mr Irrelevant Position",
+                book_subject="Wide Receiver", american_odds=+200, fetched_at=now,
+                market_group="mr_irrelevant_position"),
+        OddsRow(book="betonline", book_label="Mr Irrelevant Position",
+                book_subject="Running Back", american_odds=+300, fetched_at=now,
+                market_group="mr_irrelevant_position"),
+        OddsRow(book="betonline", book_label="Mr Irrelevant Position",
+                book_subject="Offensive Line", american_odds=+250, fetched_at=now,
+                market_group="mr_irrelevant_position"),
+    ]
+    write_or_quarantine(rows)
+    with read_connection() as con:
+        result = con.execute(
+            "SELECT market_id, implied_prob, devig_prob FROM draft_odds ORDER BY market_id"
+        ).fetchall()
+    assert len(result) == 3
+    total_devig = sum(r[2] for r in result)
+    assert abs(total_devig - 1.0) < 1e-6, \
+        f"mr_irrelevant_position devig should sum to 1.0 at a book, got {total_devig}"
+    for market_id, implied, devig in result:
+        assert abs(implied - devig) > 1e-4, \
+            f"{market_id}: implied={implied} equals devig={devig} -- devig did not run"
+
+
 def test_write_or_quarantine_groups_only_within_book(seeded):
     """DK's first_wr devig must not be polluted by another book's first_wr rows."""
     from nfl_draft.lib.db import write_connection, read_connection
