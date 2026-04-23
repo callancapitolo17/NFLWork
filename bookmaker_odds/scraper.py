@@ -476,33 +476,59 @@ def scrape_bookmaker(sport: str):
     first_league = config["leagues"][0]
     test_data = None if blocked else fetch_schedule(session, first_league["id"])
 
-    # If blocked or no data, try refreshing cookies via recon
-    if not _has_games(test_data):
-        if blocked:
-            print("Cloudflare blocked request — cookies expired.")
-        else:
-            # Not blocked but no games — try login first
-            if BOOKMAKER_USERNAME and BOOKMAKER_PASSWORD:
-                print("No games returned, logging in...")
-                if login(session, BOOKMAKER_USERNAME, BOOKMAKER_PASSWORD):
-                    test_data = fetch_schedule(session, first_league["id"])
+    login_ok = True  # Default: assume prior-session cookies are still valid
 
-        # Still no games? Refresh cookies via recon
+    # If we didn't find games on the first probe, try login before anything drastic
+    if not _has_games(test_data):
+        login_ok = False
+        if not blocked and BOOKMAKER_USERNAME and BOOKMAKER_PASSWORD:
+            print("No games returned, logging in...")
+            login_ok = login(session, BOOKMAKER_USERNAME, BOOKMAKER_PASSWORD)
+            if login_ok:
+                test_data = fetch_schedule(session, first_league["id"])
+
+    # If still no games, decide WHY before launching a browser popup.
+    if not _has_games(test_data):
+        # Case A: session is healthy, BM just has nothing posted right now.
+        # Happens at odd hours / off days. No recon needed. Save empty so
+        # any previous scrape's stale data gets cleared.
+        if _session_looks_healthy(blocked=blocked, login_ok=login_ok):
+            print("Session healthy but no games posted — saving empty.")
+            save_to_database(sport, [])
+            return []
+
+        # Case B: session is broken. Only allow the interactive recon popup
+        # when a human is at the keyboard AND we haven't attempted recon in
+        # the last hour. Otherwise log a clear message and exit cleanly —
+        # the pipeline cannot hang on a blocking input().
+        sentinel = Path(__file__).parent / ".last_recon_attempt"
+        if not _can_launch_interactive_recon():
+            print("Cookies appear stale but stdin is not a TTY.")
+            print("Skipping interactive recon. Run manually:")
+            print(f"  cd {Path(__file__).parent} && ./venv/bin/python recon_bookmaker.py")
+            save_to_database(sport, [])
+            return []
+        if _recon_rate_limited(sentinel):
+            print("Recon was attempted recently (< 1h ago). Skipping to avoid popup loop.")
+            save_to_database(sport, [])
+            return []
+
+        # Green light: touch the sentinel, run recon, retry once.
+        sentinel.touch()
+        refresh_cookies()
+        session = _create_session()
+        resp = session.get(SITE_URL, timeout=15)
+        if resp.status_code == 403:
+            print("ERROR: Still blocked after recon. Check Cloudflare manually. Clearing stale data.")
+            save_to_database(sport, [])
+            return []
+        if BOOKMAKER_USERNAME and BOOKMAKER_PASSWORD:
+            login(session, BOOKMAKER_USERNAME, BOOKMAKER_PASSWORD)
+        test_data = fetch_schedule(session, first_league["id"])
         if not _has_games(test_data):
-            refresh_cookies()
-            session = _create_session()
-            resp = session.get(SITE_URL, timeout=15)
-            if resp.status_code == 403:
-                print("ERROR: Still blocked after recon. Check Cloudflare manually. Clearing stale data.")
-                save_to_database(sport, [])
-                return []
-            if BOOKMAKER_USERNAME and BOOKMAKER_PASSWORD:
-                login(session, BOOKMAKER_USERNAME, BOOKMAKER_PASSWORD)
-            test_data = fetch_schedule(session, first_league["id"])
-            if not _has_games(test_data):
-                print("ERROR: No games returned after recon + login. Clearing stale data.")
-                save_to_database(sport, [])
-                return []
+            print("ERROR: No games returned after recon + login. Clearing stale data.")
+            save_to_database(sport, [])
+            return []
 
     # Fetch all leagues
     all_odds = []
