@@ -133,6 +133,35 @@ def test_write_or_quarantine_single_row_bucket_uses_implied(seeded):
     assert abs(devig - implied) < 1e-9, "1-row group should pass implied through as devig"
 
 
+def test_write_or_quarantine_preserves_null_implied_when_scraper_set_devig(seeded):
+    """Kalshi scraper emits implied_prob=None when there's no yes_ask -- a
+    deliberate signal that the row has no actionable take and
+    cross_book_grid should suppress the flag. Quarantine must NOT
+    overwrite that None with a mid-derived value.
+    """
+    from nfl_draft.lib.db import write_connection, read_connection
+    with write_connection() as con:
+        con.execute("INSERT INTO draft_markets (market_id, market_type, subject_player) "
+                    "VALUES ('top_10_sample-player', 'top_n_range', 'Sample Player')")
+        con.execute("INSERT INTO market_map VALUES "
+                    "('kalshi', 'KXDRAFTTOP10', 'Sample Player', 'top_10_sample-player')")
+    rows = [OddsRow(
+        book="kalshi", book_label="KXDRAFTTOP10", book_subject="Sample Player",
+        american_odds=-122, fetched_at=datetime.now(),
+        market_group="",
+        implied_prob=None,   # no yes_ask was posted
+        devig_prob=0.55,     # fair fell back to yes_bid or last trade
+    )]
+    write_or_quarantine(rows)
+    with read_connection() as con:
+        implied, devig = con.execute(
+            "SELECT implied_prob, devig_prob FROM draft_odds"
+        ).fetchone()
+    assert implied is None, \
+        f"scraper-intended NULL implied_prob must survive quarantine; got {implied}"
+    assert abs(devig - 0.55) < 1e-9
+
+
 def test_write_or_quarantine_respects_kalshi_pre_set_devig(seeded):
     """Kalshi rows arrive with devig_prob already set to mid; must not be overwritten."""
     from nfl_draft.lib.db import write_connection, read_connection

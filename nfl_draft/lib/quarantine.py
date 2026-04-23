@@ -136,9 +136,17 @@ def write_or_quarantine(rows: List[OddsRow]) -> Tuple[int, int]:
                  row.american_odds, row.fetched_at, "no market_map entry"],
             )
         for idx, (row, mid) in enumerate(mapped):
-            implied = (row.implied_prob
-                       if row.implied_prob is not None
-                       else american_to_implied(row.american_odds))
+            # Only synthesize implied_prob from american_odds on the
+            # pure-sportsbook path (scraper emitted neither probability).
+            # Kalshi can legitimately set implied_prob=None when there's
+            # no yes_ask -- the signal "no actionable take, don't flag
+            # this row in cross_book_grid". Overwriting that None with a
+            # mid-derived value defeats the suppression, so respect the
+            # scraper's intent whenever devig_prob was explicitly set.
+            if row.implied_prob is None and row.devig_prob is None:
+                implied = american_to_implied(row.american_odds)
+            else:
+                implied = row.implied_prob  # may be None; preserved on purpose
             devig = devig_by_idx[idx]
             con.execute(
                 "INSERT INTO draft_odds VALUES (?, ?, ?, ?, ?, ?)",
