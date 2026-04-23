@@ -148,9 +148,12 @@ def outright_group_key(market_group: str, market_id: str) -> Optional[str]:
     if market_group == "first_at_position":
         m = re.match(r"^(first_[a-z]+)_", market_id)
         return m.group(1) if m else None
-    if market_group.startswith("top_") and market_group.endswith("_range"):
-        m = re.match(r"^(top_\d+)_", market_id)
-        return m.group(1) if m else None
+    # top_N_range markets ("will player X be drafted in top N") are NOT a
+    # mutually-exclusive outright -- up to N players will be drafted in the
+    # top N, so YES implieds sum to ~N, not 1. Return None so each player's
+    # top-N row is treated as a standalone YES/NO binary (devig_prob =
+    # implied_prob) and the cross-book median comparison works on raw take
+    # prices.
     if market_group == "team_first_pick":
         m = re.match(r"^(team_.+?_first_pick)_", market_id)
         return m.group(1) if m else None

@@ -92,9 +92,15 @@ def test_outright_group_key_first_at_position():
     assert outright_group_key("first_at_position", "first_wr_jordyn-tyson") == "first_wr"
 
 
-def test_outright_group_key_top_n_range():
-    assert outright_group_key("top_10_range", "top_10_sonny-styles") == "top_10"
-    assert outright_group_key("top_5_range", "top_5_caleb-downs") == "top_5"
+def test_outright_group_key_top_n_range_returns_none():
+    # top_N_range markets are NOT a mutually-exclusive outright -- up to N
+    # players will be drafted in the top N, so the YES implieds sum to ~N,
+    # not 1. Treating them as a single outright and running n-way devig
+    # divides each prob by ~N, producing nonsensical fairs (e.g. 8.9%
+    # instead of 60%). Must return None so each row is a standalone YES/NO.
+    assert outright_group_key("top_10_range", "top_10_sonny-styles") is None
+    assert outright_group_key("top_5_range", "top_5_caleb-downs") is None
+    assert outright_group_key("top_32_range", "top_32_will-johnson") is None
 
 
 def test_outright_group_key_team_first_pick_handles_spaces_in_team():
