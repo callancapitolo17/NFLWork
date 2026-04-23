@@ -134,7 +134,6 @@ def outright_group_key(market_group: str, market_id: str) -> Optional[str]:
 
     Returns ``None`` for:
       * prop markets (``market_group`` starting with ``prop_``)
-      * ``mr_irrelevant_position`` (single row per book — nothing to devig)
       * ``matchup_before`` (self-contained 2-way, not grouped across markets)
       * unrecognized / malformed inputs
 
@@ -171,6 +170,13 @@ def outright_group_key(market_group: str, market_id: str) -> Optional[str]:
     if market_group == "draft_position_over_under":
         m = re.match(r"^(draft_position_ou_.+)_(?:over|under)$", market_id)
         return m.group(1) if m else None
+    # mr_irrelevant_position: books post one row per position candidate
+    # (WR, RB, OL, ...) and exactly one position will be Mr. Irrelevant's
+    # position -- a 1-winner mutex outright. Bucket all position rows at
+    # a book together under a shared key so devig_n_way normalizes them
+    # to sum=1. Kalshi pre-sets devig and is unaffected.
+    if market_group == "mr_irrelevant_position":
+        return "mr_irrelevant"
     return None
 
 

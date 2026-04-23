@@ -330,7 +330,7 @@ def _classify_team_to_draft(desc: dict, ce: dict, cgl: dict, now: datetime) -> I
         yield OddsRow(
             book="betonline", book_label=label, book_subject=name,
             american_odds=american, fetched_at=now,
-            market_group="team_drafts_player",
+            market_group="team_first_pick",
         )
 
 
