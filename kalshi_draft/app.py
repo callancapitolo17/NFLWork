@@ -832,11 +832,13 @@ def render_crossbook_grid():
         html.Div(style=CARD_STYLE, children=[
             html.H3("Cross-Book Grid", style={"color": COLORS["accent"], "marginTop": 0}),
             html.P(
-                "Each cell is a venue's fair-value estimate (devigged probability "
-                "for sportsbooks; mid of buy/sell for Kalshi). Flagged cells (⚑) "
-                "differ from the cross-venue median by at least the threshold — "
-                "sportsbooks compare the fair estimate, Kalshi compares the actual "
-                "buy price. Hover a Kalshi cell for buy/sell/last.",
+                "Each cell shows the bettable price — American odds for "
+                "sportsbooks, cents for Kalshi. The median column is the "
+                "cross-venue devigged fair (the true probability with "
+                "vig stripped). A flagged cell (⚑) means the book's "
+                "raw take price differs from the fair median by at least "
+                "the threshold — i.e. direct +EV. Positive delta → "
+                "price is above fair → bet NO; negative → bet YES.",
                 style={"color": COLORS["text_muted"], "fontSize": "0.85em"},
             ),
             html.Div([
@@ -1109,12 +1111,18 @@ def _update_crossbook(threshold_pp, _n_intervals, last_seen):
     for m in grid:
         row = {"market_id": m["market_id"]}
         for venue in VENUES:
-            prob = m["books"].get(venue)
+            record = m["books"].get(venue)
             flagged = m["flags"].get(venue, False)
-            if prob is None:
+            if record is None:
                 row[venue] = ""
+                continue
+            if venue == "kalshi":
+                ip = record["implied_prob"]
+                cell = f"{round(ip * 100)}\u00A2" if ip is not None else ""
             else:
-                row[venue] = f"{prob*100:.1f}%" + (" \u2691" if flagged else "")
+                ao = record["american_odds"]
+                cell = f"{int(ao):+d}" if ao is not None else ""
+            row[venue] = cell + (" \u2691" if flagged and cell else "")
         row["median"] = f"{m['median']*100:.1f}%" if m["median"] is not None else ""
         row["outliers"] = m["outlier_count"]
         rows.append(row)
