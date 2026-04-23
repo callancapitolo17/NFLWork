@@ -30,20 +30,28 @@ The **Median** column is the cross-venue **devigged fair** in percent —
 the true probability estimate once each sportsbook's vig has been
 stripped via proportional devig at ingest time.
 
-The outlier flag (⚑) fires when a venue's **raw take price** (what
-you'd actually pay) differs from the median fair by at least
-`threshold_pp`. A flagged cell is a direct +EV signal:
+The outlier flag (⚑) fires on a bettable +EV edge. The rule is
+asymmetric by venue:
 
-- Delta > 0 (price above fair) → YES is overpriced → bet NO.
-- Delta < 0 (price below fair) → YES is underpriced → bet YES.
+- **Kalshi** (two-sided binary, both YES and NO purchasable): flag fires
+  whenever `|take − median_fair| ≥ threshold_pp`. Delta < 0 → buy YES;
+  delta > 0 → buy NO.
+- **Sportsbooks** (DK, FD, Bookmaker, Wagerzon, Hoop88, BetOnline —
+  YES-only futures): flag fires only when `median_fair − take ≥
+  threshold_pp` (YES is cheap on this book → bet YES). An overpriced
+  YES on a sportsbook is unactionable (you can't take the other side
+  on a draft futures market), so those cases are intentionally not
+  flagged even when `|delta|` exceeds the threshold.
 
 Hover a Kalshi cell to see raw buy / sell / last-trade prices plus the
 source ticker.
 
 **Note on sportsbook vig.** Every sportsbook cell sits ~1–3pp above
-the median fair by construction (that's the vig tax). The default
-threshold of 10pp filters that out; avoid dropping below ~5pp or you'll
-flag normal vig as "edges."
+the median fair by construction (that's the vig tax). Under the
+asymmetric rule the sportsbook flag only looks at the "below" side, so
+vig cannot cause a sportsbook cell to flag — but keep the threshold at
+~10pp anyway so a minor edge (or a stale line) from only one book
+doesn't fire on normal noise.
 
 See `docs/superpowers/specs/2026-04-22-grid-devig-display-design.md`
 for the full design and `docs/superpowers/plans/2026-04-23-grid-devig-display.md`
