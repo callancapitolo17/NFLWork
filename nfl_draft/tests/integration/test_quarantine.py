@@ -156,6 +156,83 @@ def test_write_or_quarantine_respects_kalshi_pre_set_devig(seeded):
     assert abs(devig - 0.40) < 1e-9, "Kalshi pre-set devig_prob must be preserved"
 
 
+def _seed_market_map_for_top_10(con, players):
+    """Seed draft_markets + DK market_map for a list of top_10 candidates."""
+    for p in players:
+        slug_ = p.lower().replace(" ", "-")
+        con.execute(
+            "INSERT INTO draft_markets (market_id, market_type, subject_player) "
+            "VALUES (?, 'top_n_range', ?)",
+            [f"top_10_{slug_}", p],
+        )
+        con.execute(
+            "INSERT INTO market_map VALUES ('draftkings', 'Top 10 Pick', ?, ?)",
+            [p, f"top_10_{slug_}"],
+        )
+
+
+def test_write_or_quarantine_pool_devigs_top_n_range(seeded):
+    """top_10_range rows at DK get pool-normalized to sum to 10, not 1.
+
+    15 candidates at -150 (implied 0.60 each) -> sum(implieds)=9.0, which
+    clears the 0.9*10=9.0 coverage floor, so devig_pool(odds, 10) fires
+    and each fair scales by 10/9.
+    """
+    from nfl_draft.lib.db import write_connection, read_connection
+    players = [f"Player {i:02d}" for i in range(15)]
+    with write_connection() as con:
+        _seed_market_map_for_top_10(con, players)
+    now = datetime.now()
+    rows = [
+        OddsRow(book="draftkings", book_label="Top 10 Pick", book_subject=p,
+                american_odds=-150, fetched_at=now, market_group="top_10_range")
+        for p in players
+    ]
+    write_or_quarantine(rows)
+    with read_connection() as con:
+        result = con.execute(
+            "SELECT implied_prob, devig_prob FROM draft_odds"
+        ).fetchall()
+    assert len(result) == 15
+    total_devig = sum(r[1] for r in result)
+    assert abs(total_devig - 10.0) < 1e-6, f"pool devig should sum to 10.0, got {total_devig}"
+    # Each fair = raw_implied * 10/9 = 0.60 * 10/9 ≈ 0.6667
+    for implied, devig in result:
+        assert abs(implied - 0.60) < 1e-6
+        assert abs(devig - 0.60 * 10 / 9) < 1e-6
+
+
+def test_write_or_quarantine_pool_devig_sparse_coverage_falls_back(seeded):
+    """Sparse top_10 board (coverage < 0.9*N) must NOT pool-normalize.
+
+    3 candidates at -150 sum to 1.8 in implied; pool-normalizing to 10
+    would inflate each fair to ~3.33 (nonsense). Guardrail must pass raw
+    implieds through instead.
+    """
+    from nfl_draft.lib.db import write_connection, read_connection
+    players = ["Player A", "Player B", "Player C"]
+    with write_connection() as con:
+        _seed_market_map_for_top_10(con, players)
+    now = datetime.now()
+    rows = [
+        OddsRow(book="draftkings", book_label="Top 10 Pick", book_subject=p,
+                american_odds=-150, fetched_at=now, market_group="top_10_range")
+        for p in players
+    ]
+    write_or_quarantine(rows)
+    with read_connection() as con:
+        result = con.execute(
+            "SELECT implied_prob, devig_prob FROM draft_odds"
+        ).fetchall()
+    assert len(result) == 3
+    # Raw implied is 0.60 for -150; guardrail kicks in (1.8 < 9.0), so devig
+    # = implied. No inflation.
+    for implied, devig in result:
+        assert abs(implied - 0.60) < 1e-6
+        assert abs(devig - implied) < 1e-9, \
+            f"sparse top_N bucket should pass implied through, got devig={devig}"
+
+
 def test_write_or_quarantine_groups_only_within_book(seeded):
     """DK's first_wr devig must not be polluted by another book's first_wr rows."""
     from nfl_draft.lib.db import write_connection, read_connection

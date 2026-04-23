@@ -34,3 +34,35 @@ def proportional_devig(odds_list: List[float]) -> List[float]:
     in the dashboard.
     """
     return devig_n_way(odds_list)
+
+
+def devig_pool(odds_list: List[float], pool_size: float) -> List[float]:
+    """Devig an N-winner futures market where exactly ``pool_size`` outcomes win.
+
+    Applies to markets like "will player X be drafted in top N" where up to N
+    distinct players are YES winners and the YES-only sportsbook doesn't post
+    a tradable NO side. Standard two-way devig is impossible, but the
+    structural constraint is known: the true fair YES probabilities across
+    ALL players sum to exactly ``pool_size``. If the posted candidates
+    capture ~all of that probability mass and the book's vig is
+    approximately proportional across outcomes, normalizing posted vigged
+    implieds to sum to ``pool_size`` recovers the fair:
+
+        fair_i = q_i * pool_size / sum(q_j)
+
+    where ``q_i = american_to_implied(odds_i)``.
+
+    Assumptions (caller must validate):
+      * Posted outcomes contain ~all of the pool_size probability mass.
+        If the book only posts a handful of candidates, sum(q) << pool_size
+        and this formula will inflate each fair. Guard upstream (e.g. only
+        call when ``sum(q) >= 0.9 * pool_size``).
+      * Vig is proportional across outcomes. Real books steepen vig on
+        longshots, so favorites are understated slightly, longshots
+        overstated. Within ~1-2pp for round-1 draft candidates.
+    """
+    implieds = [american_to_implied(o) for o in odds_list]
+    total = sum(implieds)
+    if total == 0:
+        return implieds
+    return [p * pool_size / total for p in implieds]
