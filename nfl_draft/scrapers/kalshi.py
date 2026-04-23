@@ -559,32 +559,37 @@ def fetch_trades() -> List[TradeRow]:
 
     now_local = datetime.now()
 
-    for s in series_list:
-        series_ticker = s["series_ticker"]
-        last_local = cursor_by_series.get(series_ticker)
-        # Kalshi min_ts is EPOCH SECONDS (not ISO) - verified live.
-        min_ts = _local_to_epoch_seconds(last_local) if last_local else None
+    # One write connection for the entire fetch. DuckDB's in-process
+    # mutex serializes this with the dashboard's other writers (trades
+    # poll, periodic scrape, bet log). Dropping from one-open-per-batch
+    # to one-open-per-fetch cuts CPU + mutex churn dramatically on the
+    # 15-second cadence.
+    with write_connection() as wcon:
+        for s in series_list:
+            series_ticker = s["series_ticker"]
+            last_local = cursor_by_series.get(series_ticker)
+            # Kalshi min_ts is EPOCH SECONDS (not ISO) - verified live.
+            min_ts = _local_to_epoch_seconds(last_local) if last_local else None
 
-        max_traded_at = last_local  # track advance
+            max_traded_at = last_local  # track advance
 
-        for ticker in tickers_by_series.get(series_ticker, []):
-            # Per-ticker try/except so one bad ticker can't break the poll.
-            try:
-                cursor = None
-                while True:
-                    path = f"/markets/trades?ticker={ticker}&limit=100"
-                    if min_ts is not None:
-                        path += f"&min_ts={min_ts}"
-                    if cursor:
-                        path += f"&cursor={cursor}"
+            for ticker in tickers_by_series.get(series_ticker, []):
+                # Per-ticker try/except so one bad ticker can't break the poll.
+                try:
+                    cursor = None
+                    while True:
+                        path = f"/markets/trades?ticker={ticker}&limit=100"
+                        if min_ts is not None:
+                            path += f"&min_ts={min_ts}"
+                        if cursor:
+                            path += f"&cursor={cursor}"
 
-                    raw = public_request(path)
-                    if not raw:
-                        break
+                        raw = public_request(path)
+                        if not raw:
+                            break
 
-                    batch = parse_trades_response(raw)
-                    if batch:
-                        with write_connection() as wcon:
+                        batch = parse_trades_response(raw)
+                        if batch:
                             for t in batch:
                                 wcon.execute(
                                     "INSERT OR IGNORE INTO kalshi_trades "
@@ -596,24 +601,24 @@ def fetch_trades() -> List[TradeRow]:
                                         t.traded_at, t.fetched_at,
                                     ],
                                 )
-                        ingested.extend(batch)
-                        # Track max traded_at for cursor advance.
-                        batch_max = max(t.traded_at for t in batch)
-                        if max_traded_at is None or batch_max > max_traded_at:
-                            max_traded_at = batch_max
+                            ingested.extend(batch)
+                            # Track max traded_at for cursor advance.
+                            batch_max = max(t.traded_at for t in batch)
+                            if max_traded_at is None or batch_max > max_traded_at:
+                                max_traded_at = batch_max
 
-                    cursor = raw.get("cursor")
-                    if not cursor or not raw.get("trades"):
-                        break
-            except Exception as e:
-                print(f"  [trades] ticker={ticker} failed: {e}")
-                traceback.print_exc()
-                continue
+                        cursor = raw.get("cursor")
+                        if not cursor or not raw.get("trades"):
+                            break
+                except Exception as e:
+                    print(f"  [trades] ticker={ticker} failed: {e}")
+                    traceback.print_exc()
+                    continue
 
-        # Update poll_state for this series, only if we actually saw trades
-        # (idempotent: don't rewrite the cursor when the window was empty).
-        try:
-            with write_connection() as wcon:
+            # poll_state upsert for this series, on the shared connection.
+            # Only write when we actually saw new trades (idempotent:
+            # don't regress the traded_at cursor on empty windows).
+            try:
                 if max_traded_at is not None and max_traded_at != last_local:
                     wcon.execute(
                         "INSERT INTO kalshi_poll_state "
@@ -625,7 +630,7 @@ def fetch_trades() -> List[TradeRow]:
                         [series_ticker, max_traded_at, now_local],
                     )
                 else:
-                    # Still record that we polled (for observability), but
+                    # Still record that we polled (observability), but
                     # don't regress the traded_at cursor.
                     wcon.execute(
                         "INSERT INTO kalshi_poll_state "
@@ -635,7 +640,7 @@ def fetch_trades() -> List[TradeRow]:
                         "last_polled_at=excluded.last_polled_at",
                         [series_ticker, last_local, now_local],
                     )
-        except Exception as e:
-            print(f"  [trades] poll_state update failed for {series_ticker}: {e}")
+            except Exception as e:
+                print(f"  [trades] poll_state update failed for {series_ticker}: {e}")
 
     return ingested
