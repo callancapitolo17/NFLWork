@@ -1157,6 +1157,7 @@ def _update_crossbook(threshold_pp, _n_intervals, last_seen):
             tooltip_data.append({})
 
     table = dash_table.DataTable(
+        id="crossbook-table",
         data=rows,
         columns=[{"name": "Market", "id": "market_id"}]
         + [{"name": v.capitalize(), "id": v} for v in VENUES]
@@ -1167,6 +1168,9 @@ def _update_crossbook(threshold_pp, _n_intervals, last_seen):
         filter_action="native",
         sort_action="native",
         page_size=50,
+        persistence=True,
+        persisted_props=["filter_query", "sort_by"],
+        persistence_type="session",
         style_header=TABLE_STYLE_HEADER,
         style_data=TABLE_STYLE_DATA,
         style_data_conditional=TABLE_STYLE_DATA_CONDITIONAL + [
@@ -1220,6 +1224,9 @@ def _update_ev(threshold_pp, _n_intervals):
         filter_action="native",
         sort_action="native",
         page_size=50,
+        persistence=True,
+        persisted_props=["filter_query", "sort_by", "selected_rows"],
+        persistence_type="session",
         style_header=TABLE_STYLE_HEADER,
         style_data=TABLE_STYLE_DATA,
         style_data_conditional=TABLE_STYLE_DATA_CONDITIONAL,
@@ -1326,6 +1333,7 @@ def _update_tape(threshold_usd, min_size_usd, ticker_filter, _n_intervals, last_
         })
 
     table = dash_table.DataTable(
+        id="tape-table",
         data=display_rows,
         columns=[
             {"name": "Time", "id": "time"},
@@ -1341,6 +1349,9 @@ def _update_tape(threshold_usd, min_size_usd, ticker_filter, _n_intervals, last_
         filter_action="native",
         sort_action="native",
         page_size=50,
+        persistence=True,
+        persisted_props=["filter_query", "sort_by"],
+        persistence_type="session",
         style_header=TABLE_STYLE_HEADER,
         style_data=TABLE_STYLE_DATA,
         style_data_conditional=TABLE_STYLE_DATA_CONDITIONAL + [
