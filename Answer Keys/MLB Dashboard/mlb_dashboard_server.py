@@ -1094,6 +1094,22 @@ def run_pipeline():
         if parlay_result.returncode != 0:
             print(f"Parlay finder warning: {(parlay_result.stderr or '')[-300:]}")
 
+        # Step 2.5: Empirical nudge + exact payout per sized parlay (non-fatal).
+        # Queries ConfirmWagerHelper at stake ± NUDGE_RANGE around each Kelly-ideal
+        # wager and stores the best (exact_wager, exact_to_win) on the opportunities
+        # row. Dashboard renders those directly so "To Win" matches the WZ slip.
+        print("Computing exact payouts at Kelly stakes...")
+        exact_result = subprocess.run(
+            [sys.executable, str(nfl_work_dir / "wagerzon_odds" / "parlay_pricer.py"),
+             "mlb", "--exact-payouts"],
+            capture_output=True,
+            text=True,
+            cwd=str(nfl_work_dir)
+        )
+        if exact_result.returncode != 0:
+            print(f"Exact payout warning: "
+                  f"{(exact_result.stderr or exact_result.stdout or '')[-300:]}")
+
         # Step 3: Generate dashboard HTML from the saved data
         print("Generating MLB dashboard HTML...")
         result = subprocess.run(

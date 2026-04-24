@@ -185,19 +185,12 @@ independent_kelly <- function(parlay_group, bankroll, kelly_mult) {
 }
 
 
-# Nudge wager so Wagerzon "to win" rounds UP (0.50 rounds DOWN on WZ)
-nudge_wager_rounds_up <- function(wager, b) {
-  if (wager <= 0) return(wager)
-  rounds_up <- function(w) (w * b) %% 1 > 0.50
-  if (!rounds_up(wager)) {
-    if (rounds_up(wager + 1)) {
-      wager <- wager + 1
-    } else if (wager > 1 && rounds_up(wager - 1)) {
-      wager <- wager - 1
-    }
-  }
-  wager
-}
+# Note: the old math-based `nudge_wager_rounds_up` has been removed. Nudging now
+# happens empirically in `parlay_pricer.py --exact-payouts`: it queries WZ at
+# kelly_bet ± NUDGE_RANGE and picks the stake that maximises the actual
+# payout/stake ratio. That uses WZ's real integer-rounding behaviour rather
+# than predicting it from our stored decimal — more accurate at arbitrary
+# stakes and also yields the exact "To Win" we display.
 
 # =============================================================================
 # CHECK SAMPLE FRESHNESS (same pattern as parlay.R)
@@ -276,7 +269,7 @@ join_spread_total <- function(wz_data, spread_filter, total_filter, label) {
     return(tibble())
   }
   combined <- spreads %>%
-    select(home_team, away_team, game_date, game_time,
+    select(home_team, away_team, game_date, game_time, idgm,
            home_spread, home_spread_price = odds_home,
            away_spread, away_spread_price = odds_away) %>%
     inner_join(
@@ -637,6 +630,9 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         game_time   = if ("commence_time" %in% names(row) && !is.na(row$commence_time)) {
           format(as.POSIXct(row$commence_time, tz = "UTC"), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
         } else NA_character_,
+        # idgm = Wagerzon internal game ID, used by parlay_pricer.py --exact-payouts
+        # to re-query ConfirmWagerHelper at the Kelly-sized stake for exact-dollar "To Win".
+        idgm         = if ("idgm" %in% names(row)) as.integer(row$idgm) else NA_integer_,
         combo        = combo_name,
         spread_line  = combo_spread,
         total_line   = row$total_line,
@@ -736,11 +732,9 @@ for (gid in unique(all_results$game_id)) {
     wagers <- independent_kelly(parlay_group, bankroll, kelly_mult)
   }
 
-  # Apply Wagerzon "rounds up" nudge to each wager
-  for (j in seq_len(length(wagers))) {
-    b <- parlay_group[[j]]$wz_dec - 1
-    wagers[j] <- nudge_wager_rounds_up(wagers[j], b)
-  }
+  # Wagerzon round-up nudge happens in parlay_pricer.py --exact-payouts,
+  # which sweeps stakes ± NUDGE_RANGE around the Kelly-ideal wager and picks
+  # the one with the best integer payout ratio from WZ directly.
 
   # Write sized wagers back into the qualifying rows
   qual_indices <- which(game_mask)[qualifies]

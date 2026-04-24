@@ -3045,7 +3045,11 @@ get_wagerzon_odds <- function(
       game_time = row$game_time,
       wagerzon_game_id = row$game_id,
       fetch_time = row$fetch_time,
-      period = row$period
+      period = row$period,
+      # idgm is the Wagerzon internal numeric game ID used by the
+      # ConfirmWagerHelper parlay-pricing endpoint. Populated for MLB scraper
+      # rows; NA for older scrapers that don't store it.
+      idgm = if ("idgm" %in% names(row)) row$idgm else NA_integer_
     )
 
     # Spreads record

@@ -246,6 +246,12 @@ create_placed_parlays_table <- function(placed_parlays) {
 create_parlays_table <- function(parlay_opps, placed_parlays) {
   placed_hashes <- if (nrow(placed_parlays) > 0) placed_parlays$parlay_hash else character()
 
+  # Ensure exact-payout columns exist even on older rows (pre-Stage-2 backfill).
+  # parlay_pricer.py --exact-payouts populates these; fall back to Kelly+wz_dec
+  # arithmetic when they're NA.
+  if (!"exact_wager" %in% names(parlay_opps)) parlay_opps$exact_wager <- NA_integer_
+  if (!"exact_to_win" %in% names(parlay_opps)) parlay_opps$exact_to_win <- NA_integer_
+
   table_data <- parlay_opps %>%
     mutate(
       is_placed = parlay_hash %in% placed_hashes,
@@ -267,8 +273,12 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
       fair_display   = ifelse(fair_odds > 0, paste0("+", fair_odds), as.character(fair_odds)),
       wz_display     = ifelse(wz_odds > 0, paste0("+", wz_odds), as.character(wz_odds)),
       edge_display   = sprintf("+%.1f%%", edge_pct),
-      size_display   = sprintf("$%.0f", kelly_bet),
-      to_win_display = sprintf("$%.0f", round(kelly_bet * (wz_dec - 1))),
+      # Prefer empirical stake/payout from --exact-payouts. Fall back to Kelly-ideal
+      # wager and arithmetic payout for rows the exact-payout step couldn't price
+      # (e.g. idgm missing or WZ rejected all candidate stakes).
+      size_display   = sprintf("$%.0f", coalesce(as.numeric(exact_wager), kelly_bet)),
+      to_win_display = sprintf("$%.0f", coalesce(as.numeric(exact_to_win),
+                                                  round(kelly_bet * (wz_dec - 1)))),
       corr_display   = sprintf("%.3f", corr_factor)
     ) %>%
     arrange(desc(edge_pct))
@@ -346,12 +356,16 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
         html = TRUE,
         cell = function(value, index) {
           row <- table_data[index, ]
+          # data-size drives the "Place" action's bet amount. Prefer the nudged
+          # exact_wager from Stage 2; fall back to Kelly-ideal if Stage 2
+          # couldn't price this row.
+          data_size <- if (!is.na(row$exact_wager)) row$exact_wager else row$kelly_bet
           data_attrs <- sprintf(
             'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-combo="%s" data-spread="%s" data-total="%s" data-fair-odds="%s" data-wz-odds="%s" data-edge="%s" data-size="%s"',
             row$parlay_hash, row$game_id, row$home_team, row$away_team,
             ifelse(is.na(row$game_time), "", as.character(row$game_time)),
             row$combo, row$spread_line, row$total_line,
-            row$fair_odds, row$wz_odds, row$edge_pct, row$kelly_bet
+            row$fair_odds, row$wz_odds, row$edge_pct, data_size
           )
           if (value) {
             sprintf('<button class="btn-placed" onclick="removeParlay(this)" %s>Placed</button>', data_attrs)
