@@ -3,9 +3,15 @@
 Trader's-cockpit web portal for surfacing +EV NFL Draft bets across
 Kalshi and 6 sportsbooks (DraftKings, FanDuel, Bookmaker, Wagerzon, Hoop88, BetOnline).
 
-**Current venue status** (2026-04-22):
-- Kalshi, DraftKings, Wagerzon, Hoop88, Bookmaker, BetOnline — posting draft markets, all scraping live.
-- FanDuel — draft page temporarily offline as of 2026-04-20 (they pulled the "NFL Draft" tab from `customPageId=nfl`'s layout). Scraper is intact and will pick up automatically when FD reposts; the dashboard's 20-minute staleness filter hides FD rows while they're gone (see `MAX_AGE_MINUTES` in `nfl_draft/lib/queries.py`).
+**Current venue status** (2026-04-24, draft eve):
+- Kalshi, DraftKings, Wagerzon, Hoop88, Bookmaker, BetOnline, FanDuel — posting draft markets, all scraping live (FanDuel came back online after the 2026-04-20 outage).
+- As books roll off day-1 outrights (picks 1-32) ahead of the draft, the
+  live surface narrows per book: DK and FD now expose only picks 33-35
+  (DK subcategory `Picks 33-35`, FD `Number 33/34/35 Overall Pick`). WZ
+  added league buckets 2561/2562/2580 for the same three picks. BetOnline
+  posts pick 33 under the `2nd-round-props` slug as *"Who will be first
+  pick of second round?"* (classifier normalises to `33rd Overall Pick`).
+  Kalshi's `KXNFLDRAFTPICK-26-<N>` series now runs through pick 37.
 
 ## Architecture
 

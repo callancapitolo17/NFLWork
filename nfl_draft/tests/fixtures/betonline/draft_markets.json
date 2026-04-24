@@ -68276,6 +68276,1459 @@
       "TokensJwt": [],
       "IsError": false,
       "CustomerAlias": null
+    },
+    "2nd-round-props": {
+      "GameOffering": {
+        "Sport": null,
+        "League": null,
+        "Markets": null,
+        "CustomerMessage": null,
+        "StatisticsURL": null,
+        "Periods": null,
+        "PeriodMin": 0,
+        "DateGrouping": null,
+        "GamesDescription": null,
+        "LeagueGroup": null
+      },
+      "EventOffering": null,
+      "ContestOfferings": {
+        "ContestTypeID": 9868,
+        "ContestType": "NFL Draft",
+        "ContestType2": "2nd Round Props",
+        "ContestType3": null,
+        "DateGroup": [
+          {
+            "Date": "04/24/2026",
+            "Comment": "",
+            "DescriptionGroup": [
+              {
+                "Description": "First pick of Round 2",
+                "Count": 0,
+                "SubGroup": "",
+                "TimeGroup": [
+                  {
+                    "Time": "15:00",
+                    "ContestExtended": {
+                      "ContestGroupLine": [
+                        {
+                          "GroupLine": 0,
+                          "Contestants": [
+                            {
+                              "ID": 663448242,
+                              "Name": "Offense",
+                              "RotationNumber": 78402,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": 145,
+                                  "DecimalLine": 2.45,
+                                  "FractionalNumeratorLine": 29,
+                                  "FractionalDenominatorLine": 20,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            },
+                            {
+                              "ID": 663448243,
+                              "Name": "Defense",
+                              "RotationNumber": 78403,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": -190,
+                                  "DecimalLine": 1.53,
+                                  "FractionalNumeratorLine": 10,
+                                  "FractionalDenominatorLine": 19,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            }
+                          ]
+                        }
+                      ],
+                      "ID": 663448241,
+                      "Group": "2nd Round Props",
+                      "SubGroup": ".",
+                      "Comments": "",
+                      "MarkdownComments": "",
+                      "Description": "First pick of Round 2",
+                      "ContestDateTime": "2026-04-24T19:00:00",
+                      "WagerCutoff": "2026-04-24T15:00:00",
+                      "WagerCutoffESTTime": "2026-04-24T19:00:00",
+                      "HasWagerLimit": true,
+                      "WagerLimit": 0,
+                      "CorrelationID": "",
+                      "FirstRotationNumber": 78402,
+                      "Contestants": null
+                    }
+                  }
+                ]
+              },
+              {
+                "Description": "Next QB Drafted",
+                "Count": 0,
+                "SubGroup": "",
+                "TimeGroup": [
+                  {
+                    "Time": "15:00",
+                    "ContestExtended": {
+                      "ContestGroupLine": [
+                        {
+                          "GroupLine": 0,
+                          "Contestants": [
+                            {
+                              "ID": 663448271,
+                              "Name": "Carson Beck",
+                              "RotationNumber": 78451,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": -300,
+                                  "DecimalLine": 1.33,
+                                  "FractionalNumeratorLine": 1,
+                                  "FractionalDenominatorLine": 3,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            },
+                            {
+                              "ID": 663448270,
+                              "Name": "Garrett Nussmeier",
+                              "RotationNumber": 78450,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": 150,
+                                  "DecimalLine": 2.5,
+                                  "FractionalNumeratorLine": 3,
+                                  "FractionalDenominatorLine": 2,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            },
+                            {
+                              "ID": 663448272,
+                              "Name": "Drew Allar",
+                              "RotationNumber": 78452,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": 1000,
+                                  "DecimalLine": 11,
+                                  "FractionalNumeratorLine": 10,
+                                  "FractionalDenominatorLine": 1,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            },
+                            {
+                              "ID": 663448273,
+                              "Name": "Taylen Green",
+                              "RotationNumber": 78453,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": 1400,
+                                  "DecimalLine": 15,
+                                  "FractionalNumeratorLine": 14,
+                                  "FractionalDenominatorLine": 1,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            }
+                          ]
+                        }
+                      ],
+                      "ID": 663448251,
+                      "Group": "2nd Round Props",
+                      "SubGroup": ".",
+                      "Comments": "Others on Request. Round 2 onward.",
+                      "MarkdownComments": "",
+                      "Description": "Next QB Drafted",
+                      "ContestDateTime": "2026-04-24T19:00:00",
+                      "WagerCutoff": "2026-04-24T15:00:00",
+                      "WagerCutoffESTTime": "2026-04-24T19:00:00",
+                      "HasWagerLimit": true,
+                      "WagerLimit": 0,
+                      "CorrelationID": "Write or find a Correlation ID",
+                      "FirstRotationNumber": 78450,
+                      "Contestants": null
+                    }
+                  }
+                ]
+              },
+              {
+                "Description": "Who will be first pick of second round?",
+                "Count": 0,
+                "SubGroup": "",
+                "TimeGroup": [
+                  {
+                    "Time": "15:00",
+                    "ContestExtended": {
+                      "ContestGroupLine": [
+                        {
+                          "GroupLine": 0,
+                          "Contestants": [
+                            {
+                              "ID": 663448274,
+                              "Name": "Emmanuel McNeil-Warren",
+                              "RotationNumber": 78421,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": 200,
+                                  "DecimalLine": 3,
+                                  "FractionalNumeratorLine": 2,
+                                  "FractionalDenominatorLine": 1,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            },
+                            {
+                              "ID": 663448265,
+                              "Name": "Kayden MacDonald",
+                              "RotationNumber": 78416,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": 275,
+                                  "DecimalLine": 3.75,
+                                  "FractionalNumeratorLine": 11,
+                                  "FractionalDenominatorLine": 4,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            },
+                            {
+                              "ID": 663448260,
+                              "Name": "Denzel Boston",
+                              "RotationNumber": 78411,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": 450,
+                                  "DecimalLine": 5.5,
+                                  "FractionalNumeratorLine": 9,
+                                  "FractionalDenominatorLine": 2,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            },
+                            {
+                              "ID": 663448261,
+                              "Name": "Chase Bisontis",
+                              "RotationNumber": 78412,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": 550,
+                                  "DecimalLine": 6.5,
+                                  "FractionalNumeratorLine": 11,
+                                  "FractionalDenominatorLine": 2,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            },
+                            {
+                              "ID": 663448259,
+                              "Name": "TJ Parker",
+                              "RotationNumber": 78410,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": 625,
+                                  "DecimalLine": 7.25,
+                                  "FractionalNumeratorLine": 25,
+                                  "FractionalDenominatorLine": 4,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            },
+                            {
+                              "ID": 663448263,
+                              "Name": "Colton Hood",
+                              "RotationNumber": 78414,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": 1000,
+                                  "DecimalLine": 11,
+                                  "FractionalNumeratorLine": 10,
+                                  "FractionalDenominatorLine": 1,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            },
+                            {
+                              "ID": 663448264,
+                              "Name": "Zion Young",
+                              "RotationNumber": 78415,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": 1000,
+                                  "DecimalLine": 11,
+                                  "FractionalNumeratorLine": 10,
+                                  "FractionalDenominatorLine": 1,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            },
+                            {
+                              "ID": 663448267,
+                              "Name": "Cashius Howell",
+                              "RotationNumber": 78418,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": 1200,
+                                  "DecimalLine": 13,
+                                  "FractionalNumeratorLine": 12,
+                                  "FractionalDenominatorLine": 1,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            },
+                            {
+                              "ID": 663448266,
+                              "Name": "Eli Stowers",
+                              "RotationNumber": 78417,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": 1600,
+                                  "DecimalLine": 17,
+                                  "FractionalNumeratorLine": 16,
+                                  "FractionalDenominatorLine": 1,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            },
+                            {
+                              "ID": 663448268,
+                              "Name": "Emmanuel Pregnon",
+                              "RotationNumber": 78419,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": 1600,
+                                  "DecimalLine": 17,
+                                  "FractionalNumeratorLine": 16,
+                                  "FractionalDenominatorLine": 1,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            },
+                            {
+                              "ID": 663448269,
+                              "Name": "Jermod McCoy",
+                              "RotationNumber": 78420,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": 1800,
+                                  "DecimalLine": 19,
+                                  "FractionalNumeratorLine": 18,
+                                  "FractionalDenominatorLine": 1,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            }
+                          ]
+                        }
+                      ],
+                      "ID": 663448245,
+                      "Group": "2nd Round Props",
+                      "SubGroup": ".",
+                      "Comments": "Others on Request.",
+                      "MarkdownComments": "",
+                      "Description": "Who will be first pick of second round?",
+                      "ContestDateTime": "2026-04-24T19:00:00",
+                      "WagerCutoff": "2026-04-24T15:00:00",
+                      "WagerCutoffESTTime": "2026-04-24T19:00:00",
+                      "HasWagerLimit": true,
+                      "WagerLimit": 0,
+                      "CorrelationID": "Write or find a Correlation ID",
+                      "FirstRotationNumber": 78410,
+                      "Contestants": null
+                    }
+                  }
+                ]
+              },
+              {
+                "Description": "Will first pick of second round get traded",
+                "Count": 0,
+                "SubGroup": "",
+                "TimeGroup": [
+                  {
+                    "Time": "15:00",
+                    "ContestExtended": {
+                      "ContestGroupLine": [
+                        {
+                          "GroupLine": 0,
+                          "Contestants": [
+                            {
+                              "ID": 663448239,
+                              "Name": "Yes",
+                              "RotationNumber": 78400,
+                              "HasWagerLimit": true,
+                              "WagerLimit": 0,
+                              "Stores": [],
+                              "HasThreshold": true,
+                              "ThresholdType": "",
+                              "ThresholdUnits": "",
+                              "ThresholdLine": 0,
+                              "Line": {
+                                "SpreadLine": {
+                                  "Point": 0,
+                                  "Line": 0,
+                                  "DecimalLine": 0,
+                                  "FractionalNumeratorLine": 0,
+                                  "FractionalDenominatorLine": 0,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "MoneyLine": {
+                                  "Line": 200,
+                                  "DecimalLine": 3,
+                                  "FractionalNumeratorLine": 2,
+                                  "FractionalDenominatorLine": 1,
+                                  "ThresholdLine": 0,
+                                  "ThresholdType": null
+                                },
+                                "TotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "TeamTotalLine": {
+                                  "Point": 0,
+                                  "Over": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  },
+                                  "Under": {
+                                    "Line": 0,
+                                    "DecimalLine": 0,
+                                    "FractionalNumeratorLine": 0,
+                                    "FractionalDenominatorLine": 0,
+                                    "ThresholdLine": 0,
+                                    "ThresholdType": null
+                                  }
+                                },
+                                "BuyPointLineRule": null
+                              },
+                              "IsMoneyLineMaxLoss": false
+                            }
+                          ]
+                        }
+                      ],
+                      "ID": 663448238,
+                      "Group": "2nd Round Props",
+                      "SubGroup": ".",
+                      "Comments": "",
+                      "MarkdownComments": "",
+                      "Description": "Will first pick of second round get traded",
+                      "ContestDateTime": "2026-04-24T19:00:00",
+                      "WagerCutoff": "2026-04-24T15:00:00",
+                      "WagerCutoffESTTime": "2026-04-24T19:00:00",
+                      "HasWagerLimit": true,
+                      "WagerLimit": 0,
+                      "CorrelationID": "",
+                      "FirstRotationNumber": 78400,
+                      "Contestants": null
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "QuickAccess": {
+          "QuickAccessList": []
+        }
+      },
+      "OddsFormat": null,
+      "TimeZone": null,
+      "HasResultFilterAll": true,
+      "ErrorKind": 0,
+      "IsValidModel": true,
+      "ModelErrorMessage": null,
+      "RedirectTo": null,
+      "TokenJwt": null,
+      "TokensJwt": [],
+      "IsError": false,
+      "CustomerAlias": null
     }
   }
 }

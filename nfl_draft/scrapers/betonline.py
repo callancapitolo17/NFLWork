@@ -79,6 +79,14 @@ PICK_DESC_RE = re.compile(
     r"^(\d+)(?:st|nd|rd|th)\s+Overall\s+Pick\s*$", re.IGNORECASE,
 )
 
+# 2nd-round-props DescriptionGroup label for the outright pick 33 market.
+# BetOnline names this "Who will be first pick of second round?" rather
+# than "33rd Overall Pick" — same market, different label.
+R2_FIRST_PICK_PLAYER_DESC_RE = re.compile(
+    r"^Who\s+will\s+be\s+(?:the\s+)?first\s+pick\s+of\s+(?:the\s+)?second\s+round\??\s*$",
+    re.IGNORECASE,
+)
+
 # "First Wide Receiver Drafted" / "First Cornerback Drafted"
 FIRST_POS_DESC_RE = re.compile(
     r"^First\s+(.+?)\s+Drafted\s*$", re.IGNORECASE,
@@ -505,12 +513,47 @@ def _classify_1st_round_props(desc: dict, ce: dict, cgl: dict, now: datetime) ->
         )
 
 
+def _classify_2nd_round_props(desc: dict, ce: dict, cgl: dict, now: datetime) -> Iterator[OddsRow]:
+    """For `2nd-round-props`. Only the 'Who will be first pick of second
+    round?' DescriptionGroup maps to a canonical pick_outright — that's
+    BetOnline's label for overall pick 33. Every other DescriptionGroup in
+    this bucket (the Offense/Defense binary on 'First pick of Round 2', the
+    'Next QB Drafted' props, the 'Will first pick get traded' yes/no) falls
+    through as a well-labeled prop so rows surface in quarantine rather
+    than being silently dropped.
+    """
+    dg_label = (desc.get("Description") or "").strip()
+    if R2_FIRST_PICK_PLAYER_DESC_RE.match(dg_label):
+        for c in (cgl.get("Contestants") or []):
+            name = (c.get("Name") or "").strip()
+            american = _odds(c)
+            if not name or american is None:
+                continue
+            yield OddsRow(
+                book="betonline", book_label="33rd Overall Pick",
+                book_subject=name, american_odds=american, fetched_at=now,
+                market_group="pick_outright",
+            )
+        return
+    ce_label = (ce.get("Description") or "").strip() or dg_label or "2nd-round-props"
+    for c in (cgl.get("Contestants") or []):
+        name = (c.get("Name") or "").strip()
+        american = _odds(c)
+        if name and american is not None:
+            yield OddsRow(
+                book="betonline", book_label=ce_label, book_subject=name,
+                american_odds=american, fetched_at=now,
+                market_group="prop_2nd_round_props",
+            )
+
+
 # Dispatch table: bucket slug -> classifier. Buckets not yet implemented
 # fall through to a generic prop classifier so data is at least captured
 # into draft_odds_unmapped.
 CLASSIFIERS = {
     "1st-round": _classify_1st_round,
     "1st-round-props": _classify_1st_round_props,
+    "2nd-round-props": _classify_2nd_round_props,
     "to-be-drafted-1st": _classify_first_at_position,
     "to-be-drafted-2nd": _classify_nth_at_position,
     "to-be-selected": _classify_to_be_selected,
