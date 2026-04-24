@@ -306,6 +306,12 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
       corr_factor = colDef(show = FALSE),
       edge_pct = colDef(show = FALSE),
       kelly_bet = colDef(show = FALSE),
+      # Backend-only columns from parlay_pricer.py --exact-payouts and the
+      # wagerzon scraper's idgm. They drive size_display / to_win_display
+      # (and the Place button's data-size) but shouldn't render as table columns.
+      idgm = colDef(show = FALSE),
+      exact_wager = colDef(show = FALSE),
+      exact_to_win = colDef(show = FALSE),
       model_prob_raw = colDef(show = FALSE),
       blended_prob_raw = colDef(show = FALSE),
       model_prob_pct = colDef(show = FALSE),
