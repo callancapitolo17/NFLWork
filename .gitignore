@@ -72,6 +72,8 @@ report.html
 .bookmaker_cookies.json
 .bet105_profile/
 .dk_profile/
+.prophetx_profile/
+.novig_profile/
 
 # HAR files
 *.har
