@@ -44,6 +44,9 @@ echo "Finding parlay opportunities..."
 Rscript "$SCRIPT_DIR/../mlb_correlated_parlay.R"
 # Non-fatal if it fails — dashboard still works without parlays
 
+echo "Computing exact payouts at Kelly stakes..."
+python3 "$SCRIPT_DIR/../../wagerzon_odds/parlay_pricer.py" mlb --exact-payouts 2>/dev/null || true
+
 echo "Generating dashboard HTML..."
 Rscript "$SCRIPT_DIR/mlb_dashboard.R"
 if [ $? -ne 0 ]; then

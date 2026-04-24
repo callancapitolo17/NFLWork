@@ -35,17 +35,21 @@ PLAY_UNDER = 3
 
 
 def get_parlay_price(session: requests.Session, idgm: int, legs: list[dict],
-                     amount: int = 100) -> dict | None:
+                     amount: int = 10000) -> dict | None:
     """Call ConfirmWagerHelper to get exact parlay payout.
 
     Args:
         session: Authenticated requests session
         idgm: Wagerzon internal game ID
         legs: List of dicts with {play, points, odds}
-        amount: Bet amount for price query (default $100)
+        amount: Bet amount for price query. Default $10000 maximises decimal
+            precision (±$0.005 band vs ±$0.50 at $100). MAXPARLAYRISKEXCEED at
+            $10000 triggers a fallback to $100. Pass a specific amount when
+            you need the exact integer payout at that stake (e.g. Stage 2
+            empirical nudge).
 
     Returns:
-        Dict with {win, decimal, american} or None on error
+        Dict with {win, decimal, american, amount} or None on error
     """
     sel = ",".join(
         f"{l['play']}_{idgm}_{l['points']}_{l['odds']}" for l in legs
@@ -112,11 +116,34 @@ def get_parlay_price(session: requests.Session, idgm: int, legs: list[dict],
         decimal_odds = 1 + win / amount
         american = round(win / amount * 100) if win > amount else round(-amount / win * 100)
 
-        return {"win": win, "decimal": round(decimal_odds, 4), "american": american}
+        return {
+            "win": win,
+            "decimal": round(decimal_odds, 4),
+            "american": american,
+            "amount": amount,
+        }
 
     except Exception as e:
         print(f"  Request error: {e}")
         return None
+
+
+def get_parlay_price_with_fallback(session: requests.Session, idgm: int,
+                                    legs: list[dict]) -> dict | None:
+    """Stage 1 price lookup with descending amount ladder.
+
+    Tries $10000 first for maximum decimal precision. If WZ returns
+    MAXPARLAYRISKEXCEED (max parlay risk for this combo is below $10000), falls
+    back to $100 which is always inside WZ's per-parlay max.
+
+    Use this for initial pricing (populating mlb_parlay_prices). For exact
+    payout at a specific stake, call get_parlay_price(..., amount=stake).
+    """
+    for amount in (10000, 100):
+        result = get_parlay_price(session, idgm, legs, amount=amount)
+        if result is not None:
+            return result
+    return None
 
 
 def price_mlb_parlays(session: requests.Session):
@@ -212,13 +239,14 @@ def _price_mlb_parlays_inner(session: requests.Session, conn, period: str = "fg"
         ]
 
         for c in combos:
-            price = get_parlay_price(session, idgm, c["legs"])
+            price = get_parlay_price_with_fallback(session, idgm, c["legs"])
             if price:
                 results.append((
                     fetch_time, g["home_team"], g["away_team"], idgm,
                     c["combo"], period, price["decimal"], price["american"], price["win"]
                 ))
-                print(f"  {game_label} | {c['combo']}: +{price['american']} (${price['win']} on $100)")
+                print(f"  {game_label} | {c['combo']}: +{price['american']} "
+                      f"(${price['win']} on ${price['amount']})")
             else:
                 print(f"  {game_label} | {c['combo']}: FAILED")
 
@@ -253,8 +281,139 @@ def _save_parlay_prices(conn, results: list):
     print(f"\nSaved {len(results)} parlay prices to mlb_parlay_prices")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 2: Empirical nudge + exact payout
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+NUDGE_RANGE = 2  # query W-2..W+2 around Kelly-ideal wager
+
+# Path to the answer-keys DuckDB that owns mlb_parlay_opportunities.
+# parlay_pricer.py lives in wagerzon_odds/; the answer-keys DB lives in
+# Answer Keys/mlb.duckdb relative to the repo root.
+_MLB_DB_PATH = Path(__file__).resolve().parent.parent / "Answer Keys" / "mlb.duckdb"
+
+
+def _ensure_exact_columns(conn):
+    """Ensure optional exact-payout columns exist on mlb_parlay_opportunities.
+
+    DuckDB lacks `ADD COLUMN IF NOT EXISTS`, so we probe information_schema.
+    Columns added here are nullable so prior rows (written by an older
+    mlb_correlated_parlay.R) continue to load cleanly.
+    """
+    existing = {
+        r[0] for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'mlb_parlay_opportunities'"
+        ).fetchall()
+    }
+    if "exact_to_win" not in existing:
+        conn.execute("ALTER TABLE mlb_parlay_opportunities ADD COLUMN exact_to_win INTEGER")
+    if "exact_wager" not in existing:
+        conn.execute("ALTER TABLE mlb_parlay_opportunities ADD COLUMN exact_wager INTEGER")
+
+
+def _combo_to_legs(combo: str, idgm: int, spread_line: float, total_line: float,
+                    spread_price: int, total_price: int) -> list[dict]:
+    """Reconstruct ConfirmWagerHelper legs from the combo row."""
+    is_home = "Home" in combo
+    is_over = "Over" in combo
+    # Spread points: away uses raw spread_line (positive dog), home uses signed spread_line.
+    # mlb_correlated_parlay.R stores spread_line as the signed number for the picked side.
+    spread_leg = {
+        "play": PLAY_HOME_SPREAD if is_home else PLAY_AWAY_SPREAD,
+        "points": spread_line,
+        "odds": spread_price,
+    }
+    # Total points: WZ expects -total for over, +total for under (recon-confirmed).
+    total_leg = {
+        "play": PLAY_OVER if is_over else PLAY_UNDER,
+        "points": -abs(total_line) if is_over else total_line,
+        "odds": total_price,
+    }
+    return [spread_leg, total_leg]
+
+
+def compute_exact_payouts(session: requests.Session):
+    """Stage 2: empirical nudge + exact payout per sized parlay.
+
+    For each row in mlb_parlay_opportunities with kelly_bet > 0:
+        1. Query ConfirmWagerHelper at stake ∈ [kelly_bet - 2, kelly_bet + 2]
+        2. Pick the stake that maximises WZ's returned win / stake ratio
+        3. Write (exact_wager, exact_to_win) back to the row
+
+    Replaces the math-based nudge in mlb_correlated_parlay.R. Uses WZ's real
+    rounding behaviour instead of predicting it from our stored decimal.
+    """
+    conn = duckdb.connect(str(_MLB_DB_PATH))
+    try:
+        _ensure_exact_columns(conn)
+
+        sized = conn.execute("""
+            SELECT parlay_hash, game, combo, idgm,
+                   spread_line, total_line, spread_price, total_price,
+                   CAST(kelly_bet AS INTEGER) AS kelly_bet
+            FROM mlb_parlay_opportunities
+            WHERE kelly_bet > 0 AND idgm IS NOT NULL
+        """).fetchall()
+
+        if not sized:
+            print("No sized parlays with idgm — nothing to price.")
+            return
+
+        print(f"Pricing {len(sized)} sized parlays at exact stakes...")
+        updates = []
+        for (parlay_hash, game, combo, idgm,
+             spread_line, total_line, spread_price, total_price,
+             kelly_bet) in sized:
+            legs = _combo_to_legs(combo, idgm, spread_line, total_line,
+                                  spread_price, total_price)
+
+            candidates = []
+            for stake in range(max(1, kelly_bet - NUDGE_RANGE),
+                               kelly_bet + NUDGE_RANGE + 1):
+                price = get_parlay_price(session, idgm, legs, amount=stake)
+                if price is None:
+                    continue  # MAXPARLAYRISKEXCEED etc.
+                candidates.append((stake, int(price["win"])))
+
+            if not candidates:
+                print(f"  {game} | {combo}: no valid candidate stakes — skipping")
+                continue
+
+            # Pick the wager with the highest win/stake ratio; break ties by
+            # taking the stake closest to Kelly-ideal to keep growth on track.
+            best = max(candidates,
+                       key=lambda sw: (sw[1] / sw[0], -abs(sw[0] - kelly_bet)))
+            best_stake, best_win = best
+            updates.append((best_stake, best_win, parlay_hash))
+            print(f"  {game} | {combo}: Kelly={kelly_bet} → "
+                  f"nudged={best_stake} (to_win=${best_win})")
+
+        if not updates:
+            print("No updates to apply.")
+            return
+
+        conn.executemany(
+            "UPDATE mlb_parlay_opportunities "
+            "SET exact_wager = ?, exact_to_win = ? "
+            "WHERE parlay_hash = ?",
+            updates,
+        )
+        print(f"Saved {len(updates)} exact payouts to mlb_parlay_opportunities.")
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
-    sport = sys.argv[1] if len(sys.argv) > 1 else "mlb"
+    args = sys.argv[1:]
+    mode = "price"
+    sport = "mlb"
+    for a in args:
+        if a == "--exact-payouts":
+            mode = "exact"
+        elif not a.startswith("--"):
+            sport = a
 
     if sport != "mlb":
         print(f"Parlay pricer currently only supports MLB (got: {sport})")
@@ -264,4 +423,7 @@ if __name__ == "__main__":
     print("Logging in to Wagerzon...")
     login(session)
 
-    price_mlb_parlays(session)
+    if mode == "exact":
+        compute_exact_payouts(session)
+    else:
+        price_mlb_parlays(session)
