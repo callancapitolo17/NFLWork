@@ -229,6 +229,7 @@ _SUB_HANDLERS: dict[str, tuple[str, callable]] = {
     "Pick Number":           ("pick_outright",     _emit_pick_outright),
     "Pick Number 6-10":      ("pick_outright",     _emit_pick_outright),
     "Pick Number 11-15":     ("pick_outright",     _emit_pick_outright),
+    "Picks 33-35":           ("pick_outright",     _emit_pick_outright),
     "Top 5 Pick":            ("top_n_range",       _emit_top_n),
     "Top 10 Pick":           ("top_n_range",       _emit_top_n),
     "Round 1 Pick":          ("top_n_range",       _emit_top_n),

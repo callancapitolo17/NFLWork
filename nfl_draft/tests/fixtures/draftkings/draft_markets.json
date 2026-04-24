@@ -39402,6 +39402,3451 @@
             "entity": "ContentCardEvent"
           }
         }
+      },
+      "19678": {
+        "sports": [
+          {
+            "id": "3",
+            "seoIdentifier": "Football",
+            "name": "Football",
+            "sortOrder": 63
+          }
+        ],
+        "leagues": [
+          {
+            "id": "88808",
+            "name": "NFL",
+            "sportId": "3",
+            "sortOrder": 4847,
+            "tags": [
+              "OSB",
+              "Featured",
+              "FavoriteableFromPage"
+            ],
+            "isTeamSwap": true,
+            "featured": true
+          }
+        ],
+        "events": [
+          {
+            "id": "525b2669-13b9-4180-919f-08dd8251b2a4",
+            "seoIdentifier": "2026 NFL Draft",
+            "sportId": "3",
+            "leagueId": "88808",
+            "name": "2026 NFL Draft",
+            "startEventDate": "2026-04-24T00:00:00.0000000Z",
+            "participants": [
+              {
+                "name": "Zachariah Branch",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Garrett Nussmeier",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Drew Allar",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Carson Beck",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Cade Klubnik",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Deion Burks",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Eli Stowers",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "T.J. Parker",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Jermod McCoy",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Anthony Hill Jr.",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Denzel Boston",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Germie Bernard",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Diego Pavia",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Mike Washington Jr.",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Cashius Howell",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "R Mason Thomas",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Jacob Rodriguez",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Emmanuel McNeil-Warren",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Avieon Terrell",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "CJ Allen",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Lee Hunter",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Kayden McDonald",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Colton Hood",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Chris Brazzell II",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Brandon Cisse",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "D'Angelo Ponds",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Zion Young",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Christen Miller",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Emmanuel Pregnon",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Chase Bisontis",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Gabe Jacas",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Jake Golday",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "A.J. Haulcy",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Keionte Scott",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Ja'Kobi Lane",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Treydan Stukes",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Gennings Dunker",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18397",
+                "name": "LA Rams",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18397",
+                  "rosettaTeamName": "Rams",
+                  "shortName": "LAR",
+                  "teamColor": "#003594"
+                },
+                "seoIdentifier": "Rams",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18401",
+                "name": "MIA Dolphins",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18401",
+                  "rosettaTeamName": "Dolphins",
+                  "shortName": "MIA",
+                  "teamColor": "#008e97"
+                },
+                "seoIdentifier": "Dolphins",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18415",
+                "name": "NE Patriots",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18415",
+                  "rosettaTeamName": "Patriots",
+                  "shortName": "NE",
+                  "teamColor": "#C60C30"
+                },
+                "seoIdentifier": "Patriots",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18461",
+                "name": "LA Chargers",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18461",
+                  "rosettaTeamName": "Chargers",
+                  "shortName": "LAC",
+                  "teamColor": "#0080c6"
+                },
+                "seoIdentifier": "Chargers",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18423",
+                "name": "NO Saints",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18423",
+                  "rosettaTeamName": "Saints",
+                  "shortName": "NO",
+                  "teamColor": "#d3bc8d"
+                },
+                "seoIdentifier": "Saints",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18409",
+                "name": "MIN Vikings",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18409",
+                  "rosettaTeamName": "Vikings",
+                  "shortName": "MIN",
+                  "teamColor": "#4f2683"
+                },
+                "seoIdentifier": "Vikings",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18357",
+                "name": "GB Packers",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18357",
+                  "rosettaTeamName": "Packers",
+                  "shortName": "GB",
+                  "teamColor": "#203731"
+                },
+                "seoIdentifier": "Packers",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18379",
+                "name": "KC Chiefs",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18379",
+                  "rosettaTeamName": "Chiefs",
+                  "shortName": "KC",
+                  "teamColor": "#e31837"
+                },
+                "seoIdentifier": "Chiefs",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18388",
+                "name": "LV Raiders",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18388",
+                  "rosettaTeamName": "Raiders",
+                  "shortName": "LV",
+                  "teamColor": "#000000"
+                },
+                "seoIdentifier": "Raiders",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18366",
+                "name": "TEN Titans",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18366",
+                  "rosettaTeamName": "Titans",
+                  "shortName": "TEN",
+                  "teamColor": "#0c2340"
+                },
+                "seoIdentifier": "Titans",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18342",
+                "name": "DEN Broncos",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18342",
+                  "rosettaTeamName": "Broncos",
+                  "shortName": "DEN",
+                  "teamColor": "#fb4f14"
+                },
+                "seoIdentifier": "Broncos",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18456",
+                "name": "PIT Steelers",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18456",
+                  "rosettaTeamName": "Steelers",
+                  "shortName": "PIT",
+                  "teamColor": "#ffb612"
+                },
+                "seoIdentifier": "Steelers",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18495",
+                "name": "BAL Ravens",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18495",
+                  "rosettaTeamName": "Ravens",
+                  "shortName": "BAL",
+                  "teamColor": "#241773"
+                },
+                "seoIdentifier": "Ravens",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18348",
+                "name": "DET Lions",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18348",
+                  "rosettaTeamName": "Lions",
+                  "shortName": "DET",
+                  "teamColor": "#0076b6"
+                },
+                "seoIdentifier": "Lions",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18312",
+                "name": "CHI Bears",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18312",
+                  "rosettaTeamName": "Bears",
+                  "shortName": "CHI",
+                  "teamColor": "#0b162a"
+                },
+                "seoIdentifier": "Bears",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18372",
+                "name": "IND Colts",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18372",
+                  "rosettaTeamName": "Colts",
+                  "shortName": "IND",
+                  "teamColor": "#002c5f"
+                },
+                "seoIdentifier": "Colts",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18489",
+                "name": "JAX Jaguars",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18489",
+                  "rosettaTeamName": "Jaguars",
+                  "shortName": "JAX",
+                  "teamColor": "#101820"
+                },
+                "seoIdentifier": "Jaguars",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18500",
+                "name": "HOU Texans",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18500",
+                  "rosettaTeamName": "Texans",
+                  "shortName": "HOU",
+                  "teamColor": "#03202f"
+                },
+                "seoIdentifier": "Texans",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18297",
+                "name": "ATL Falcons",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18297",
+                  "rosettaTeamName": "Falcons",
+                  "shortName": "ATL",
+                  "teamColor": "#a71930"
+                },
+                "seoIdentifier": "Falcons",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18465",
+                "name": "SF 49ers",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18465",
+                  "rosettaTeamName": "49ers",
+                  "shortName": "SF",
+                  "teamColor": "#aa0000"
+                },
+                "seoIdentifier": "49ers",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18302",
+                "name": "BUF Bills",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18302",
+                  "rosettaTeamName": "Bills",
+                  "shortName": "BUF",
+                  "teamColor": "#00338d"
+                },
+                "seoIdentifier": "Bills",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18474",
+                "name": "TB Buccaneers",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18474",
+                  "rosettaTeamName": "Buccaneers",
+                  "shortName": "TB",
+                  "teamColor": "#d50a0a"
+                },
+                "seoIdentifier": "Buccaneers",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18484",
+                "name": "CAR Panthers",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18484",
+                  "rosettaTeamName": "Panthers",
+                  "shortName": "CAR",
+                  "teamColor": "#0085ca"
+                },
+                "seoIdentifier": "Panthers",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18336",
+                "name": "DAL Cowboys",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18336",
+                  "rosettaTeamName": "Cowboys",
+                  "shortName": "DAL",
+                  "teamColor": "#003594"
+                },
+                "seoIdentifier": "Cowboys",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18471",
+                "name": "SEA Seahawks",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18471",
+                  "rosettaTeamName": "Seahawks",
+                  "shortName": "SEA",
+                  "teamColor": "#002244"
+                },
+                "seoIdentifier": "Seahawks",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18454",
+                "name": "ARI Cardinals",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18454",
+                  "rosettaTeamName": "Cardinals",
+                  "shortName": "ARI",
+                  "teamColor": "#97233f"
+                },
+                "seoIdentifier": "Cardinals",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18448",
+                "name": "PHI Eagles",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18448",
+                  "rosettaTeamName": "Eagles",
+                  "shortName": "PHI",
+                  "teamColor": "#004c54"
+                },
+                "seoIdentifier": "Eagles",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18325",
+                "name": "CLE Browns",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18325",
+                  "rosettaTeamName": "Browns",
+                  "shortName": "CLE",
+                  "teamColor": "#311d00"
+                },
+                "seoIdentifier": "Browns",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "name": "Cornerback",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "ZZ"
+              },
+              {
+                "id": "18432",
+                "name": "NY Giants",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18432",
+                  "rosettaTeamName": "Giants",
+                  "shortName": "NYG",
+                  "teamColor": "#0b2265"
+                },
+                "seoIdentifier": "Giants",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18480",
+                "name": "WAS Commanders",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18480",
+                  "rosettaTeamName": "Commanders",
+                  "shortName": "WAS",
+                  "teamColor": "#5a1414"
+                },
+                "seoIdentifier": "Commanders",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18320",
+                "name": "CIN Bengals",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18320",
+                  "rosettaTeamName": "Bengals",
+                  "shortName": "CIN",
+                  "teamColor": "#fb4f14"
+                },
+                "seoIdentifier": "Bengals",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              },
+              {
+                "id": "18441",
+                "name": "NY Jets",
+                "type": "Team",
+                "metadata": {
+                  "rosettaTeamId": "18441",
+                  "rosettaTeamName": "Jets",
+                  "shortName": "NYJ",
+                  "teamColor": "#125740"
+                },
+                "seoIdentifier": "Jets",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "eventParticipantType": "MultiTeam",
+            "status": "NOT_STARTED",
+            "eventScorecard": {
+              "scorecardComponentId": 1
+            },
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {
+              "settlementDate": "2026-04-29T00:00:00Z"
+            },
+            "sortOrder": 526656049,
+            "subscriptionKey": "league-events-88808"
+          }
+        ],
+        "markets": [
+          {
+            "id": "328448114",
+            "eventId": "525b2669-13b9-4180-919f-08dd8251b2a4",
+            "sportId": "3",
+            "leagueId": "88808",
+            "name": "Number 33 Pick",
+            "subcategoryId": 19678,
+            "marketType": {
+              "id": "17266",
+              "betOfferTypeId": 0,
+              "name": "Number 33 Pick"
+            },
+            "subscriptionKey": "league-events-88808",
+            "sortOrder": 328448114,
+            "tags": [
+              "Default",
+              "OSB"
+            ],
+            "dynamicMetadata": {}
+          },
+          {
+            "id": "328448129",
+            "eventId": "525b2669-13b9-4180-919f-08dd8251b2a4",
+            "sportId": "3",
+            "leagueId": "88808",
+            "name": "Number 34 Pick",
+            "subcategoryId": 19678,
+            "marketType": {
+              "id": "17267",
+              "betOfferTypeId": 0,
+              "name": "Number 34 Pick"
+            },
+            "subscriptionKey": "league-events-88808",
+            "sortOrder": 328448129,
+            "tags": [
+              "Default",
+              "OSB"
+            ],
+            "dynamicMetadata": {}
+          },
+          {
+            "id": "328448160",
+            "eventId": "525b2669-13b9-4180-919f-08dd8251b2a4",
+            "sportId": "3",
+            "leagueId": "88808",
+            "name": "Number 35 Pick",
+            "subcategoryId": 19678,
+            "marketType": {
+              "id": "17268",
+              "betOfferTypeId": 0,
+              "name": "Number 35 Pick"
+            },
+            "subscriptionKey": "league-events-88808",
+            "sortOrder": 328448160,
+            "tags": [
+              "Default",
+              "OSB"
+            ],
+            "dynamicMetadata": {}
+          }
+        ],
+        "selections": [
+          {
+            "id": "0QA328448114#577496206_13L88808Q12401153Q2-1",
+            "marketId": "328448114",
+            "label": "Denzel Boston",
+            "displayOdds": {
+              "american": "+450",
+              "decimal": "5.50",
+              "fractional": "9/2"
+            },
+            "trueOdds": 5.5,
+            "participants": [
+              {
+                "name": "Denzel Boston",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 55006,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577496371_13L88808Q12442701Q2-1",
+            "marketId": "328448114",
+            "label": "Emmanuel McNeil-Warren",
+            "displayOdds": {
+              "american": "+450",
+              "decimal": "5.50",
+              "fractional": "9/2"
+            },
+            "trueOdds": 5.5,
+            "participants": [
+              {
+                "name": "Emmanuel McNeil-Warren",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 55071,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577634117_13L88808Q12401153Q2-1",
+            "marketId": "328448160",
+            "label": "Denzel Boston",
+            "displayOdds": {
+              "american": "+500",
+              "decimal": "6.00",
+              "fractional": "5/1"
+            },
+            "trueOdds": 6,
+            "participants": [
+              {
+                "name": "Denzel Boston",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 60017,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495509_13L88808Q12445586Q2-1",
+            "marketId": "328448114",
+            "label": "Chase Bisontis",
+            "displayOdds": {
+              "american": "+600",
+              "decimal": "7.00",
+              "fractional": "6/1"
+            },
+            "trueOdds": 7,
+            "participants": [
+              {
+                "name": "Chase Bisontis",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 70009,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495497_13L88808Q12401132Q2-1",
+            "marketId": "328448114",
+            "label": "T.J. Parker",
+            "displayOdds": {
+              "american": "+600",
+              "decimal": "7.00",
+              "fractional": "6/1"
+            },
+            "trueOdds": 7,
+            "participants": [
+              {
+                "name": "T.J. Parker",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 70097,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577499018_13L88808Q12401132Q2-1",
+            "marketId": "328448129",
+            "label": "T.J. Parker",
+            "displayOdds": {
+              "american": "+750",
+              "decimal": "8.50",
+              "fractional": "15/2"
+            },
+            "trueOdds": 8.5,
+            "participants": [
+              {
+                "name": "T.J. Parker",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 85018,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577499020_13L88808Q12442709Q2-1",
+            "marketId": "328448129",
+            "label": "Kayden McDonald",
+            "displayOdds": {
+              "american": "+750",
+              "decimal": "8.50",
+              "fractional": "15/2"
+            },
+            "trueOdds": 8.5,
+            "participants": [
+              {
+                "name": "Kayden McDonald",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 85020,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577645422_13L88808Q12442709Q2-1",
+            "marketId": "328448160",
+            "label": "Kayden McDonald",
+            "displayOdds": {
+              "american": "+750",
+              "decimal": "8.50",
+              "fractional": "15/2"
+            },
+            "trueOdds": 8.5,
+            "participants": [
+              {
+                "name": "Kayden McDonald",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 85022,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577499024_13L88808Q12401153Q2-1",
+            "marketId": "328448129",
+            "label": "Denzel Boston",
+            "displayOdds": {
+              "american": "+750",
+              "decimal": "8.50",
+              "fractional": "15/2"
+            },
+            "trueOdds": 8.5,
+            "participants": [
+              {
+                "name": "Denzel Boston",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 85024,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#575978947_13L88808Q12442710Q2-1",
+            "marketId": "328448129",
+            "label": "Colton Hood",
+            "displayOdds": {
+              "american": "+750",
+              "decimal": "8.50",
+              "fractional": "15/2"
+            },
+            "trueOdds": 8.5,
+            "participants": [
+              {
+                "name": "Colton Hood",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 85047,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577499026_13L88808Q12445586Q2-1",
+            "marketId": "328448129",
+            "label": "Chase Bisontis",
+            "displayOdds": {
+              "american": "+800",
+              "decimal": "9.00",
+              "fractional": "8/1"
+            },
+            "trueOdds": 9,
+            "participants": [
+              {
+                "name": "Chase Bisontis",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 90026,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#575978949_13L88808Q12197865Q2-1",
+            "marketId": "328448129",
+            "label": "Carson Beck",
+            "displayOdds": {
+              "american": "+800",
+              "decimal": "9.00",
+              "fractional": "8/1"
+            },
+            "trueOdds": 9,
+            "participants": [
+              {
+                "name": "Carson Beck",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 90049,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577499017_13L88808Q12444038Q2-1",
+            "marketId": "328448129",
+            "label": "Zion Young",
+            "displayOdds": {
+              "american": "+850",
+              "decimal": "9.50",
+              "fractional": "17/2"
+            },
+            "trueOdds": 9.5,
+            "participants": [
+              {
+                "name": "Zion Young",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 95017,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577634226_13L88808Q12401146Q2-1",
+            "marketId": "328448160",
+            "label": "Jermod McCoy",
+            "displayOdds": {
+              "american": "+850",
+              "decimal": "9.50",
+              "fractional": "17/2"
+            },
+            "trueOdds": 9.5,
+            "participants": [
+              {
+                "name": "Jermod McCoy",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 95026,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#575979079_13L88808Q12442710Q2-1",
+            "marketId": "328448160",
+            "label": "Colton Hood",
+            "displayOdds": {
+              "american": "+850",
+              "decimal": "9.50",
+              "fractional": "17/2"
+            },
+            "trueOdds": 9.5,
+            "participants": [
+              {
+                "name": "Colton Hood",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 95079,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577499027_13L88808Q12429334Q2-1",
+            "marketId": "328448129",
+            "label": "Cashius Howell",
+            "displayOdds": {
+              "american": "+900",
+              "decimal": "10.00",
+              "fractional": "9/1"
+            },
+            "trueOdds": 10,
+            "participants": [
+              {
+                "name": "Cashius Howell",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 100027,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577645825_13L88808Q12442701Q2-1",
+            "marketId": "328448160",
+            "label": "Emmanuel McNeil-Warren",
+            "displayOdds": {
+              "american": "+1000",
+              "decimal": "11.00",
+              "fractional": "10/1"
+            },
+            "trueOdds": 11,
+            "participants": [
+              {
+                "name": "Emmanuel McNeil-Warren",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 110025,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#575976634_13L88808Q12442710Q2-1",
+            "marketId": "328448114",
+            "label": "Colton Hood",
+            "displayOdds": {
+              "american": "+1000",
+              "decimal": "11.00",
+              "fractional": "10/1"
+            },
+            "trueOdds": 11,
+            "participants": [
+              {
+                "name": "Colton Hood",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 110034,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577640058_13L88808Q12430316Q2-1",
+            "marketId": "328448160",
+            "label": "Jacob Rodriguez",
+            "displayOdds": {
+              "american": "+1000",
+              "decimal": "11.00",
+              "fractional": "10/1"
+            },
+            "trueOdds": 11,
+            "participants": [
+              {
+                "name": "Jacob Rodriguez",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 110058,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495495_13L88808Q12444038Q2-1",
+            "marketId": "328448114",
+            "label": "Zion Young",
+            "displayOdds": {
+              "american": "+1000",
+              "decimal": "11.00",
+              "fractional": "10/1"
+            },
+            "trueOdds": 11,
+            "participants": [
+              {
+                "name": "Zion Young",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 110095,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577499021_13L88808Q12401146Q2-1",
+            "marketId": "328448129",
+            "label": "Jermod McCoy",
+            "displayOdds": {
+              "american": "+1100",
+              "decimal": "12.00",
+              "fractional": "11/1"
+            },
+            "trueOdds": 12,
+            "participants": [
+              {
+                "name": "Jermod McCoy",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 120021,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577645573_13L88808Q12401132Q2-1",
+            "marketId": "328448160",
+            "label": "T.J. Parker",
+            "displayOdds": {
+              "american": "+1100",
+              "decimal": "12.00",
+              "fractional": "11/1"
+            },
+            "trueOdds": 12,
+            "participants": [
+              {
+                "name": "T.J. Parker",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 120073,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577645691_13L88808Q12444038Q2-1",
+            "marketId": "328448160",
+            "label": "Zion Young",
+            "displayOdds": {
+              "american": "+1100",
+              "decimal": "12.00",
+              "fractional": "11/1"
+            },
+            "trueOdds": 12,
+            "participants": [
+              {
+                "name": "Zion Young",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 120091,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577635548_13L88808Q12444039Q2-1",
+            "marketId": "328448160",
+            "label": "Christen Miller",
+            "displayOdds": {
+              "american": "+1200",
+              "decimal": "13.00",
+              "fractional": "12/1"
+            },
+            "trueOdds": 13,
+            "participants": [
+              {
+                "name": "Christen Miller",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 130048,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577635549_13L88808Q12445586Q2-1",
+            "marketId": "328448160",
+            "label": "Chase Bisontis",
+            "displayOdds": {
+              "american": "+1200",
+              "decimal": "13.00",
+              "fractional": "12/1"
+            },
+            "trueOdds": 13,
+            "participants": [
+              {
+                "name": "Chase Bisontis",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 130049,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577499019_13L88808Q12429339Q2-1",
+            "marketId": "328448129",
+            "label": "R Mason Thomas",
+            "displayOdds": {
+              "american": "+1300",
+              "decimal": "14.00",
+              "fractional": "13/1"
+            },
+            "trueOdds": 14,
+            "participants": [
+              {
+                "name": "R Mason Thomas",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 140019,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577635818_13L88808Q12429334Q2-1",
+            "marketId": "328448160",
+            "label": "Cashius Howell",
+            "displayOdds": {
+              "american": "+1400",
+              "decimal": "15.00",
+              "fractional": "14/1"
+            },
+            "trueOdds": 15,
+            "participants": [
+              {
+                "name": "Cashius Howell",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 150018,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#575978945_13L88808Q12197850Q2-1",
+            "marketId": "328448129",
+            "label": "Garrett Nussmeier",
+            "displayOdds": {
+              "american": "+1400",
+              "decimal": "15.00",
+              "fractional": "14/1"
+            },
+            "trueOdds": 15,
+            "participants": [
+              {
+                "name": "Garrett Nussmeier",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 150045,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495499_13L88808Q12442709Q2-1",
+            "marketId": "328448114",
+            "label": "Kayden McDonald",
+            "displayOdds": {
+              "american": "+1400",
+              "decimal": "15.00",
+              "fractional": "14/1"
+            },
+            "trueOdds": 15,
+            "participants": [
+              {
+                "name": "Kayden McDonald",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 150099,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495505_13L88808Q12444040Q2-1",
+            "marketId": "328448114",
+            "label": "Emmanuel Pregnon",
+            "displayOdds": {
+              "american": "+1500",
+              "decimal": "16.00",
+              "fractional": "15/1"
+            },
+            "trueOdds": 16,
+            "participants": [
+              {
+                "name": "Emmanuel Pregnon",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 160005,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495510_13L88808Q12429334Q2-1",
+            "marketId": "328448114",
+            "label": "Cashius Howell",
+            "displayOdds": {
+              "american": "+1500",
+              "decimal": "16.00",
+              "fractional": "15/1"
+            },
+            "trueOdds": 16,
+            "participants": [
+              {
+                "name": "Cashius Howell",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 160010,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#575979080_13L88808Q12442755Q2-1",
+            "marketId": "328448160",
+            "label": "Chris Brazzell II",
+            "displayOdds": {
+              "american": "+1500",
+              "decimal": "16.00",
+              "fractional": "15/1"
+            },
+            "trueOdds": 16,
+            "participants": [
+              {
+                "name": "Chris Brazzell II",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 160080,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577502019_13L88808Q12449318Q2-1",
+            "marketId": "328448129",
+            "label": "Gennings Dunker",
+            "displayOdds": {
+              "american": "+1600",
+              "decimal": "17.00",
+              "fractional": "16/1"
+            },
+            "trueOdds": 17,
+            "participants": [
+              {
+                "name": "Gennings Dunker",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 170019,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577502020_13L88808Q12445588Q2-1",
+            "marketId": "328448129",
+            "label": "Gabe Jacas",
+            "displayOdds": {
+              "american": "+1600",
+              "decimal": "17.00",
+              "fractional": "16/1"
+            },
+            "trueOdds": 17,
+            "participants": [
+              {
+                "name": "Gabe Jacas",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 170020,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577502021_13L88808Q12444040Q2-1",
+            "marketId": "328448129",
+            "label": "Emmanuel Pregnon",
+            "displayOdds": {
+              "american": "+1600",
+              "decimal": "17.00",
+              "fractional": "16/1"
+            },
+            "trueOdds": 17,
+            "participants": [
+              {
+                "name": "Emmanuel Pregnon",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 170021,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577499023_13L88808Q12442701Q2-1",
+            "marketId": "328448129",
+            "label": "Emmanuel McNeil-Warren",
+            "displayOdds": {
+              "american": "+1600",
+              "decimal": "17.00",
+              "fractional": "16/1"
+            },
+            "trueOdds": 17,
+            "participants": [
+              {
+                "name": "Emmanuel McNeil-Warren",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 170023,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577502023_13L88808Q12444039Q2-1",
+            "marketId": "328448129",
+            "label": "Christen Miller",
+            "displayOdds": {
+              "american": "+1600",
+              "decimal": "17.00",
+              "fractional": "16/1"
+            },
+            "trueOdds": 17,
+            "participants": [
+              {
+                "name": "Christen Miller",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 170023,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577499025_13L88808Q12442705Q2-1",
+            "marketId": "328448129",
+            "label": "CJ Allen",
+            "displayOdds": {
+              "american": "+1600",
+              "decimal": "17.00",
+              "fractional": "16/1"
+            },
+            "trueOdds": 17,
+            "participants": [
+              {
+                "name": "CJ Allen",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 170025,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#575978950_13L88808Q12442756Q2-1",
+            "marketId": "328448129",
+            "label": "Brandon Cisse",
+            "displayOdds": {
+              "american": "+1600",
+              "decimal": "17.00",
+              "fractional": "16/1"
+            },
+            "trueOdds": 17,
+            "participants": [
+              {
+                "name": "Brandon Cisse",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 170050,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577494473_13L88808Q12401146Q2-1",
+            "marketId": "328448114",
+            "label": "Jermod McCoy",
+            "displayOdds": {
+              "american": "+1600",
+              "decimal": "17.00",
+              "fractional": "16/1"
+            },
+            "trueOdds": 17,
+            "participants": [
+              {
+                "name": "Jermod McCoy",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 170073,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#575979082_13L88808Q12442756Q2-1",
+            "marketId": "328448160",
+            "label": "Brandon Cisse",
+            "displayOdds": {
+              "american": "+1600",
+              "decimal": "17.00",
+              "fractional": "16/1"
+            },
+            "trueOdds": 17,
+            "participants": [
+              {
+                "name": "Brandon Cisse",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 170082,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495501_13L88808Q12430316Q2-1",
+            "marketId": "328448114",
+            "label": "Jacob Rodriguez",
+            "displayOdds": {
+              "american": "+2000",
+              "decimal": "21.00",
+              "fractional": "20/1"
+            },
+            "trueOdds": 21,
+            "participants": [
+              {
+                "name": "Jacob Rodriguez",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 210001,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495504_13L88808Q12445588Q2-1",
+            "marketId": "328448114",
+            "label": "Gabe Jacas",
+            "displayOdds": {
+              "american": "+2000",
+              "decimal": "21.00",
+              "fractional": "20/1"
+            },
+            "trueOdds": 21,
+            "participants": [
+              {
+                "name": "Gabe Jacas",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 210004,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495508_13L88808Q12444039Q2-1",
+            "marketId": "328448114",
+            "label": "Christen Miller",
+            "displayOdds": {
+              "american": "+2000",
+              "decimal": "21.00",
+              "fractional": "20/1"
+            },
+            "trueOdds": 21,
+            "participants": [
+              {
+                "name": "Christen Miller",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 210008,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577635816_13L88808Q12429339Q2-1",
+            "marketId": "328448160",
+            "label": "R Mason Thomas",
+            "displayOdds": {
+              "american": "+2000",
+              "decimal": "21.00",
+              "fractional": "20/1"
+            },
+            "trueOdds": 21,
+            "participants": [
+              {
+                "name": "R Mason Thomas",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 210016,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577636716_13L88808Q12442707Q2-1",
+            "marketId": "328448160",
+            "label": "Lee Hunter",
+            "displayOdds": {
+              "american": "+2000",
+              "decimal": "21.00",
+              "fractional": "20/1"
+            },
+            "trueOdds": 21,
+            "participants": [
+              {
+                "name": "Lee Hunter",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 210016,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577635817_13L88808Q12444040Q2-1",
+            "marketId": "328448160",
+            "label": "Emmanuel Pregnon",
+            "displayOdds": {
+              "american": "+2000",
+              "decimal": "21.00",
+              "fractional": "20/1"
+            },
+            "trueOdds": 21,
+            "participants": [
+              {
+                "name": "Emmanuel Pregnon",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 210017,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#575978946_13L88808Q12442757Q2-1",
+            "marketId": "328448129",
+            "label": "D'Angelo Ponds",
+            "displayOdds": {
+              "american": "+2000",
+              "decimal": "21.00",
+              "fractional": "20/1"
+            },
+            "trueOdds": 21,
+            "participants": [
+              {
+                "name": "D'Angelo Ponds",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 210046,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#575978948_13L88808Q12442755Q2-1",
+            "marketId": "328448129",
+            "label": "Chris Brazzell II",
+            "displayOdds": {
+              "american": "+2000",
+              "decimal": "21.00",
+              "fractional": "20/1"
+            },
+            "trueOdds": 21,
+            "participants": [
+              {
+                "name": "Chris Brazzell II",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 210048,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577634854_13L88808Q12449176Q2-1",
+            "marketId": "328448160",
+            "label": "Treydan Stukes",
+            "displayOdds": {
+              "american": "+2000",
+              "decimal": "21.00",
+              "fractional": "20/1"
+            },
+            "trueOdds": 21,
+            "participants": [
+              {
+                "name": "Treydan Stukes",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 210054,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577640062_13L88808Q12442705Q2-1",
+            "marketId": "328448160",
+            "label": "CJ Allen",
+            "displayOdds": {
+              "american": "+2000",
+              "decimal": "21.00",
+              "fractional": "20/1"
+            },
+            "trueOdds": 21,
+            "participants": [
+              {
+                "name": "CJ Allen",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 210062,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#575979077_13L88808Q12197850Q2-1",
+            "marketId": "328448160",
+            "label": "Garrett Nussmeier",
+            "displayOdds": {
+              "american": "+2000",
+              "decimal": "21.00",
+              "fractional": "20/1"
+            },
+            "trueOdds": 21,
+            "participants": [
+              {
+                "name": "Garrett Nussmeier",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 210077,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495503_13L88808Q12449318Q2-1",
+            "marketId": "328448114",
+            "label": "Gennings Dunker",
+            "displayOdds": {
+              "american": "+2500",
+              "decimal": "26.00",
+              "fractional": "25/1"
+            },
+            "trueOdds": 26,
+            "participants": [
+              {
+                "name": "Gennings Dunker",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 260003,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577502025_13L88808Q12401147Q2-1",
+            "marketId": "328448129",
+            "label": "Anthony Hill Jr.",
+            "displayOdds": {
+              "american": "+2500",
+              "decimal": "26.00",
+              "fractional": "25/1"
+            },
+            "trueOdds": 26,
+            "participants": [
+              {
+                "name": "Anthony Hill Jr.",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 260025,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#575976633_13L88808Q12442757Q2-1",
+            "marketId": "328448114",
+            "label": "D'Angelo Ponds",
+            "displayOdds": {
+              "american": "+2500",
+              "decimal": "26.00",
+              "fractional": "25/1"
+            },
+            "trueOdds": 26,
+            "participants": [
+              {
+                "name": "D'Angelo Ponds",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 260033,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#575976635_13L88808Q12442755Q2-1",
+            "marketId": "328448114",
+            "label": "Chris Brazzell II",
+            "displayOdds": {
+              "american": "+2500",
+              "decimal": "26.00",
+              "fractional": "25/1"
+            },
+            "trueOdds": 26,
+            "participants": [
+              {
+                "name": "Chris Brazzell II",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 260035,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#575976637_13L88808Q12442756Q2-1",
+            "marketId": "328448114",
+            "label": "Brandon Cisse",
+            "displayOdds": {
+              "american": "+2500",
+              "decimal": "26.00",
+              "fractional": "25/1"
+            },
+            "trueOdds": 26,
+            "participants": [
+              {
+                "name": "Brandon Cisse",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 260037,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577640059_13L88808Q12401156Q2-1",
+            "marketId": "328448160",
+            "label": "Germie Bernard",
+            "displayOdds": {
+              "american": "+2500",
+              "decimal": "26.00",
+              "fractional": "25/1"
+            },
+            "trueOdds": 26,
+            "participants": [
+              {
+                "name": "Germie Bernard",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 260059,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577645859_13L88808Q12448869Q2-1",
+            "marketId": "328448160",
+            "label": "Ja'Kobi Lane",
+            "displayOdds": {
+              "american": "+2500",
+              "decimal": "26.00",
+              "fractional": "25/1"
+            },
+            "trueOdds": 26,
+            "participants": [
+              {
+                "name": "Ja'Kobi Lane",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 260059,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577640060_13L88808Q12445588Q2-1",
+            "marketId": "328448160",
+            "label": "Gabe Jacas",
+            "displayOdds": {
+              "american": "+2500",
+              "decimal": "26.00",
+              "fractional": "25/1"
+            },
+            "trueOdds": 26,
+            "participants": [
+              {
+                "name": "Gabe Jacas",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 260060,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577494474_13L88808Q12442704Q2-1",
+            "marketId": "328448114",
+            "label": "Avieon Terrell",
+            "displayOdds": {
+              "american": "+2500",
+              "decimal": "26.00",
+              "fractional": "25/1"
+            },
+            "trueOdds": 26,
+            "participants": [
+              {
+                "name": "Avieon Terrell",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 260074,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577502022_13L88808Q12377777Q2-1",
+            "marketId": "328448129",
+            "label": "Eli Stowers",
+            "displayOdds": {
+              "american": "+2800",
+              "decimal": "29.00",
+              "fractional": "28/1"
+            },
+            "trueOdds": 29,
+            "participants": [
+              {
+                "name": "Eli Stowers",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 290022,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577502024_13L88808Q12442704Q2-1",
+            "marketId": "328448129",
+            "label": "Avieon Terrell",
+            "displayOdds": {
+              "american": "+2800",
+              "decimal": "29.00",
+              "fractional": "28/1"
+            },
+            "trueOdds": 29,
+            "participants": [
+              {
+                "name": "Avieon Terrell",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 290024,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577498283_13L88808Q12429339Q2-1",
+            "marketId": "328448114",
+            "label": "R Mason Thomas",
+            "displayOdds": {
+              "american": "+2800",
+              "decimal": "29.00",
+              "fractional": "28/1"
+            },
+            "trueOdds": 29,
+            "participants": [
+              {
+                "name": "R Mason Thomas",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 290083,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495502_13L88808Q12401156Q2-1",
+            "marketId": "328448114",
+            "label": "Germie Bernard",
+            "displayOdds": {
+              "american": "+3000",
+              "decimal": "31.00",
+              "fractional": "30/1"
+            },
+            "trueOdds": 31,
+            "participants": [
+              {
+                "name": "Germie Bernard",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 310002,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577502018_13L88808Q12430316Q2-1",
+            "marketId": "328448129",
+            "label": "Jacob Rodriguez",
+            "displayOdds": {
+              "american": "+3000",
+              "decimal": "31.00",
+              "fractional": "30/1"
+            },
+            "trueOdds": 31,
+            "participants": [
+              {
+                "name": "Jacob Rodriguez",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 310018,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577636718_13L88808Q12377777Q2-1",
+            "marketId": "328448160",
+            "label": "Eli Stowers",
+            "displayOdds": {
+              "american": "+3000",
+              "decimal": "31.00",
+              "fractional": "30/1"
+            },
+            "trueOdds": 31,
+            "participants": [
+              {
+                "name": "Eli Stowers",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 310018,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577499022_13L88808Q12401156Q2-1",
+            "marketId": "328448129",
+            "label": "Germie Bernard",
+            "displayOdds": {
+              "american": "+3000",
+              "decimal": "31.00",
+              "fractional": "30/1"
+            },
+            "trueOdds": 31,
+            "participants": [
+              {
+                "name": "Germie Bernard",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 310022,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#575979081_13L88808Q12197865Q2-1",
+            "marketId": "328448160",
+            "label": "Carson Beck",
+            "displayOdds": {
+              "american": "+3000",
+              "decimal": "31.00",
+              "fractional": "30/1"
+            },
+            "trueOdds": 31,
+            "participants": [
+              {
+                "name": "Carson Beck",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 310081,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#575976632_13L88808Q12197850Q2-1",
+            "marketId": "328448114",
+            "label": "Garrett Nussmeier",
+            "displayOdds": {
+              "american": "+3500",
+              "decimal": "36.00",
+              "fractional": "35/1"
+            },
+            "trueOdds": 36,
+            "participants": [
+              {
+                "name": "Garrett Nussmeier",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 360032,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#575976636_13L88808Q12197865Q2-1",
+            "marketId": "328448114",
+            "label": "Carson Beck",
+            "displayOdds": {
+              "american": "+3500",
+              "decimal": "36.00",
+              "fractional": "35/1"
+            },
+            "trueOdds": 36,
+            "participants": [
+              {
+                "name": "Carson Beck",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 360036,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495498_13L88808Q12448867Q2-1",
+            "marketId": "328448114",
+            "label": "Keionte Scott",
+            "displayOdds": {
+              "american": "+3500",
+              "decimal": "36.00",
+              "fractional": "35/1"
+            },
+            "trueOdds": 36,
+            "participants": [
+              {
+                "name": "Keionte Scott",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 360098,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495500_13L88808Q12445807Q2-1",
+            "marketId": "328448114",
+            "label": "Jake Golday",
+            "displayOdds": {
+              "american": "+4000",
+              "decimal": "41.00",
+              "fractional": "40/1"
+            },
+            "trueOdds": 41,
+            "participants": [
+              {
+                "name": "Jake Golday",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 410000,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495506_13L88808Q12377777Q2-1",
+            "marketId": "328448114",
+            "label": "Eli Stowers",
+            "displayOdds": {
+              "american": "+4000",
+              "decimal": "41.00",
+              "fractional": "40/1"
+            },
+            "trueOdds": 41,
+            "participants": [
+              {
+                "name": "Eli Stowers",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 410006,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495507_13L88808Q12442705Q2-1",
+            "marketId": "328448114",
+            "label": "CJ Allen",
+            "displayOdds": {
+              "american": "+4000",
+              "decimal": "41.00",
+              "fractional": "40/1"
+            },
+            "trueOdds": 41,
+            "participants": [
+              {
+                "name": "CJ Allen",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 410007,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577502016_13L88808Q12448867Q2-1",
+            "marketId": "328448129",
+            "label": "Keionte Scott",
+            "displayOdds": {
+              "american": "+4000",
+              "decimal": "41.00",
+              "fractional": "40/1"
+            },
+            "trueOdds": 41,
+            "participants": [
+              {
+                "name": "Keionte Scott",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 410016,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577636717_13L88808Q12449318Q2-1",
+            "marketId": "328448160",
+            "label": "Gennings Dunker",
+            "displayOdds": {
+              "american": "+4000",
+              "decimal": "41.00",
+              "fractional": "40/1"
+            },
+            "trueOdds": 41,
+            "participants": [
+              {
+                "name": "Gennings Dunker",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 410017,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577636719_13L88808Q12401147Q2-1",
+            "marketId": "328448160",
+            "label": "Anthony Hill Jr.",
+            "displayOdds": {
+              "american": "+4000",
+              "decimal": "41.00",
+              "fractional": "40/1"
+            },
+            "trueOdds": 41,
+            "participants": [
+              {
+                "name": "Anthony Hill Jr.",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 410019,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577502026_13L88808Q12448866Q2-1",
+            "marketId": "328448129",
+            "label": "A.J. Haulcy",
+            "displayOdds": {
+              "american": "+4000",
+              "decimal": "41.00",
+              "fractional": "40/1"
+            },
+            "trueOdds": 41,
+            "participants": [
+              {
+                "name": "A.J. Haulcy",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 410026,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577645232_13L88808Q12197803Q2-1",
+            "marketId": "328448160",
+            "label": "Zachariah Branch",
+            "displayOdds": {
+              "american": "+4000",
+              "decimal": "41.00",
+              "fractional": "40/1"
+            },
+            "trueOdds": 41,
+            "participants": [
+              {
+                "name": "Zachariah Branch",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 410032,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577640064_13L88808Q12442704Q2-1",
+            "marketId": "328448160",
+            "label": "Avieon Terrell",
+            "displayOdds": {
+              "american": "+4000",
+              "decimal": "41.00",
+              "fractional": "40/1"
+            },
+            "trueOdds": 41,
+            "participants": [
+              {
+                "name": "Avieon Terrell",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 410064,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#575979075_13L88808Q12412886Q2-1",
+            "marketId": "328448160",
+            "label": "Mike Washington Jr.",
+            "displayOdds": {
+              "american": "+4000",
+              "decimal": "41.00",
+              "fractional": "40/1"
+            },
+            "trueOdds": 41,
+            "participants": [
+              {
+                "name": "Mike Washington Jr.",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 410075,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#575979078_13L88808Q12442757Q2-1",
+            "marketId": "328448160",
+            "label": "D'Angelo Ponds",
+            "displayOdds": {
+              "american": "+4000",
+              "decimal": "41.00",
+              "fractional": "40/1"
+            },
+            "trueOdds": 41,
+            "participants": [
+              {
+                "name": "D'Angelo Ponds",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 410078,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495511_13L88808Q12401147Q2-1",
+            "marketId": "328448114",
+            "label": "Anthony Hill Jr.",
+            "displayOdds": {
+              "american": "+5000",
+              "decimal": "51.00",
+              "fractional": "50/1"
+            },
+            "trueOdds": 51,
+            "participants": [
+              {
+                "name": "Anthony Hill Jr.",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 510011,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577502015_13L88808Q12197803Q2-1",
+            "marketId": "328448129",
+            "label": "Zachariah Branch",
+            "displayOdds": {
+              "american": "+5000",
+              "decimal": "51.00",
+              "fractional": "50/1"
+            },
+            "trueOdds": 51,
+            "participants": [
+              {
+                "name": "Zachariah Branch",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 510015,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#577502017_13L88808Q12445807Q2-1",
+            "marketId": "328448129",
+            "label": "Jake Golday",
+            "displayOdds": {
+              "american": "+5000",
+              "decimal": "51.00",
+              "fractional": "50/1"
+            },
+            "trueOdds": 51,
+            "participants": [
+              {
+                "name": "Jake Golday",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 510017,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495518_13L88808Q12448866Q2-1",
+            "marketId": "328448114",
+            "label": "A.J. Haulcy",
+            "displayOdds": {
+              "american": "+5000",
+              "decimal": "51.00",
+              "fractional": "50/1"
+            },
+            "trueOdds": 51,
+            "participants": [
+              {
+                "name": "A.J. Haulcy",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 510018,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#575976630_13L88808Q12412886Q2-1",
+            "marketId": "328448114",
+            "label": "Mike Washington Jr.",
+            "displayOdds": {
+              "american": "+5000",
+              "decimal": "51.00",
+              "fractional": "50/1"
+            },
+            "trueOdds": 51,
+            "participants": [
+              {
+                "name": "Mike Washington Jr.",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 510030,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577645233_13L88808Q12284602Q2-1",
+            "marketId": "328448160",
+            "label": "Deion Burks",
+            "displayOdds": {
+              "american": "+5000",
+              "decimal": "51.00",
+              "fractional": "50/1"
+            },
+            "trueOdds": 51,
+            "participants": [
+              {
+                "name": "Deion Burks",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 510033,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448129#575978943_13L88808Q12412886Q2-1",
+            "marketId": "328448129",
+            "label": "Mike Washington Jr.",
+            "displayOdds": {
+              "american": "+5000",
+              "decimal": "51.00",
+              "fractional": "50/1"
+            },
+            "trueOdds": 51,
+            "participants": [
+              {
+                "name": "Mike Washington Jr.",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 510043,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577495496_13L88808Q12197803Q2-1",
+            "marketId": "328448114",
+            "label": "Zachariah Branch",
+            "displayOdds": {
+              "american": "+5000",
+              "decimal": "51.00",
+              "fractional": "50/1"
+            },
+            "trueOdds": 51,
+            "participants": [
+              {
+                "name": "Zachariah Branch",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 510096,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577640061_13L88808Q12197854Q2-1",
+            "marketId": "328448160",
+            "label": "Drew Allar",
+            "displayOdds": {
+              "american": "+10000",
+              "decimal": "101.00",
+              "fractional": "100/1"
+            },
+            "trueOdds": 101,
+            "participants": [
+              {
+                "name": "Drew Allar",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 1010061,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448160#577640063_13L88808Q12197869Q2-1",
+            "marketId": "328448160",
+            "label": "Cade Klubnik",
+            "displayOdds": {
+              "american": "+10000",
+              "decimal": "101.00",
+              "fractional": "100/1"
+            },
+            "trueOdds": 101,
+            "participants": [
+              {
+                "name": "Cade Klubnik",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 1010063,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          },
+          {
+            "id": "0QA328448114#577504074_13L88808Q12401662Q2-1",
+            "marketId": "328448114",
+            "label": "Diego Pavia",
+            "displayOdds": {
+              "american": "+20000",
+              "decimal": "201.00",
+              "fractional": "200/1"
+            },
+            "trueOdds": 201,
+            "participants": [
+              {
+                "name": "Diego Pavia",
+                "type": "Team",
+                "isNationalTeam": false,
+                "countryCode": "US"
+              }
+            ],
+            "sortOrder": 2010074,
+            "tags": [
+              "OSB"
+            ],
+            "metadata": {}
+          }
+        ],
+        "categories": [
+          {
+            "id": 529,
+            "name": "Futures",
+            "sortOrder": 985
+          },
+          {
+            "id": 787,
+            "name": "Awards",
+            "sortOrder": 986
+          },
+          {
+            "id": 1076,
+            "name": "Playoffs",
+            "sortOrder": 987
+          },
+          {
+            "id": 1286,
+            "name": "Wins",
+            "sortOrder": 999
+          },
+          {
+            "id": 1254,
+            "name": "Draft Team Specials",
+            "sortOrder": 1065
+          },
+          {
+            "id": 994,
+            "name": "Player Matchups",
+            "sortOrder": 1287
+          },
+          {
+            "id": 1759,
+            "name": "Player Futures",
+            "sortOrder": 1784
+          },
+          {
+            "id": 1801,
+            "name": "Rookie Watch",
+            "sortOrder": 1785
+          },
+          {
+            "id": 1803,
+            "name": "2026 Draft",
+            "sortOrder": 1826
+          }
+        ],
+        "subcategories": [
+          {
+            "id": 17314,
+            "categoryId": 1759,
+            "name": "Receiving Yards",
+            "componentId": 29,
+            "sortOrder": 17180,
+            "tags": []
+          },
+          {
+            "id": 4651,
+            "categoryId": 529,
+            "name": "Conference Winner",
+            "componentId": 12,
+            "sortOrder": 5623,
+            "tags": []
+          },
+          {
+            "id": 17733,
+            "categoryId": 1801,
+            "name": "Receiving TDs",
+            "componentId": 29,
+            "sortOrder": 17690,
+            "tags": []
+          },
+          {
+            "id": 17732,
+            "categoryId": 1801,
+            "name": "Receiving Yards",
+            "componentId": 29,
+            "sortOrder": 17689,
+            "tags": []
+          },
+          {
+            "id": 17736,
+            "categoryId": 1801,
+            "name": "Sacks",
+            "componentId": 29,
+            "sortOrder": 17693,
+            "tags": []
+          },
+          {
+            "id": 15399,
+            "categoryId": 1076,
+            "name": "To Make the Playoffs",
+            "componentId": 12,
+            "sortOrder": 15355,
+            "tags": []
+          },
+          {
+            "id": 15398,
+            "categoryId": 1076,
+            "name": "To Miss the Playoffs",
+            "componentId": 12,
+            "sortOrder": 15356,
+            "tags": []
+          },
+          {
+            "id": 17223,
+            "categoryId": 1759,
+            "name": "Rushing Yards",
+            "componentId": 29,
+            "sortOrder": 17271,
+            "tags": []
+          },
+          {
+            "id": 17734,
+            "categoryId": 1801,
+            "name": "Rushing Yards",
+            "componentId": 29,
+            "sortOrder": 17691,
+            "tags": []
+          },
+          {
+            "id": 17147,
+            "categoryId": 1759,
+            "name": "Passing Yards",
+            "componentId": 29,
+            "sortOrder": 17104,
+            "tags": []
+          },
+          {
+            "id": 9439,
+            "categoryId": 994,
+            "name": "Sacks",
+            "componentId": 29,
+            "sortOrder": 9405,
+            "tags": []
+          },
+          {
+            "id": 10500,
+            "categoryId": 529,
+            "name": "Champion",
+            "componentId": 212,
+            "sortOrder": 4646,
+            "tags": []
+          },
+          {
+            "id": 10249,
+            "categoryId": 529,
+            "name": "Exact Result",
+            "componentId": 29,
+            "sortOrder": 11767,
+            "tags": []
+          },
+          {
+            "id": 7302,
+            "categoryId": 529,
+            "name": "Name the Finalists",
+            "componentId": 29,
+            "sortOrder": 7685,
+            "tags": []
+          },
+          {
+            "id": 7293,
+            "categoryId": 529,
+            "name": "Division Winner",
+            "componentId": 29,
+            "sortOrder": 7272,
+            "tags": []
+          },
+          {
+            "id": 15901,
+            "categoryId": 529,
+            "name": "Winning Conference",
+            "componentId": 29,
+            "sortOrder": 16579,
+            "tags": []
+          },
+          {
+            "id": 6447,
+            "categoryId": 529,
+            "name": "Champion Specials",
+            "componentId": 29,
+            "sortOrder": 15070,
+            "tags": []
+          },
+          {
+            "id": 18294,
+            "categoryId": 1076,
+            "name": "Number 1 Seed",
+            "componentId": 29,
+            "sortOrder": 18251,
+            "tags": []
+          },
+          {
+            "id": 13365,
+            "categoryId": 1286,
+            "name": "Most Wins",
+            "componentId": 29,
+            "sortOrder": 13327,
+            "tags": []
+          },
+          {
+            "id": 13367,
+            "categoryId": 1286,
+            "name": "Fewest Wins",
+            "componentId": 29,
+            "sortOrder": 15779,
+            "tags": []
+          },
+          {
+            "id": 19624,
+            "categoryId": 1803,
+            "name": "Mr. Irrelevant",
+            "componentId": 204,
+            "sortOrder": 19581,
+            "tags": []
+          },
+          {
+            "id": 12907,
+            "categoryId": 1254,
+            "name": "AFC East",
+            "componentId": 29,
+            "sortOrder": 12867,
+            "tags": []
+          },
+          {
+            "id": 12909,
+            "categoryId": 1254,
+            "name": "AFC South",
+            "componentId": 29,
+            "sortOrder": 12869,
+            "tags": []
+          },
+          {
+            "id": 12908,
+            "categoryId": 1254,
+            "name": "AFC North",
+            "componentId": 29,
+            "sortOrder": 12868,
+            "tags": []
+          },
+          {
+            "id": 12910,
+            "categoryId": 1254,
+            "name": "AFC West",
+            "componentId": 29,
+            "sortOrder": 12870,
+            "tags": []
+          },
+          {
+            "id": 12912,
+            "categoryId": 1254,
+            "name": "NFC North",
+            "componentId": 29,
+            "sortOrder": 12872,
+            "tags": []
+          },
+          {
+            "id": 12913,
+            "categoryId": 1254,
+            "name": "NFC South",
+            "componentId": 29,
+            "sortOrder": 12873,
+            "tags": []
+          },
+          {
+            "id": 19621,
+            "categoryId": 1803,
+            "name": "Player Drafted By",
+            "componentId": 29,
+            "sortOrder": 19578,
+            "tags": []
+          },
+          {
+            "id": 19678,
+            "categoryId": 1803,
+            "name": "Picks 33-35",
+            "componentId": 29,
+            "sortOrder": 19635,
+            "tags": []
+          },
+          {
+            "id": 19674,
+            "categoryId": 1803,
+            "name": "Specials",
+            "componentId": 204,
+            "sortOrder": 19631,
+            "tags": []
+          },
+          {
+            "id": 17735,
+            "categoryId": 1801,
+            "name": "Rushing TDs",
+            "componentId": 29,
+            "sortOrder": 17692,
+            "tags": []
+          },
+          {
+            "id": 17729,
+            "categoryId": 1801,
+            "name": "Passing Yards",
+            "componentId": 29,
+            "sortOrder": 17686,
+            "tags": []
+          },
+          {
+            "id": 17730,
+            "categoryId": 1801,
+            "name": "Passing TDs",
+            "componentId": 29,
+            "sortOrder": 17687,
+            "tags": []
+          },
+          {
+            "id": 13339,
+            "categoryId": 787,
+            "name": "MVP",
+            "componentId": 29,
+            "sortOrder": 7205,
+            "tags": []
+          },
+          {
+            "id": 13340,
+            "categoryId": 787,
+            "name": "OPOY",
+            "componentId": 29,
+            "sortOrder": 7211,
+            "tags": []
+          },
+          {
+            "id": 13341,
+            "categoryId": 787,
+            "name": "DPOY",
+            "componentId": 29,
+            "sortOrder": 7212,
+            "tags": []
+          },
+          {
+            "id": 13344,
+            "categoryId": 787,
+            "name": "Coach",
+            "componentId": 29,
+            "sortOrder": 7213,
+            "tags": []
+          },
+          {
+            "id": 13342,
+            "categoryId": 787,
+            "name": "OROY",
+            "componentId": 29,
+            "sortOrder": 7206,
+            "tags": []
+          },
+          {
+            "id": 13343,
+            "categoryId": 787,
+            "name": "DROY",
+            "componentId": 29,
+            "sortOrder": 7210,
+            "tags": []
+          },
+          {
+            "id": 17737,
+            "categoryId": 1801,
+            "name": "Defensive Ints",
+            "componentId": 29,
+            "sortOrder": 17694,
+            "tags": []
+          },
+          {
+            "id": 17455,
+            "categoryId": 1286,
+            "name": "Regular Season Wins",
+            "componentId": 29,
+            "sortOrder": 13314,
+            "tags": []
+          },
+          {
+            "id": 17315,
+            "categoryId": 1759,
+            "name": "Receiving TDs",
+            "componentId": 29,
+            "sortOrder": 17181,
+            "tags": []
+          }
+        ],
+        "subscriptionPartials": {
+          "league-events-88808": {
+            "entity": "events",
+            "query": "$filter=leagueId eq '88808' and clientMetadata/Subcategories/any(s: s/Id eq '19678')&$orderBy=startEventDate asc",
+            "includeMarkets": "$filter=tags/all(t: t ne 'SportcastBetBuilder') and clientMetadata/subCategoryId eq '19678'"
+          },
+          "lcc-event-": {
+            "entity": "LiveContentCardEvent"
+          },
+          "cc-event-": {
+            "contentCardType": "All",
+            "entity": "ContentCardEvent"
+          }
+        }
       }
     },
     "subcategory_catalog": [
@@ -39473,6 +42918,11 @@
       {
         "id": 19626,
         "name": "Pick Number 11-15",
+        "categoryId": 1803
+      },
+      {
+        "id": 19678,
+        "name": "Picks 33-35",
         "categoryId": 1803
       }
     ]

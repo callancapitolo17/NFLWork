@@ -18,10 +18,13 @@ def test_betonline_fixture_present_and_complete():
     buckets = envelope["data"]
     assert isinstance(buckets, dict)
 
-    # All 11 market buckets captured, each a full offering envelope.
+    # Market buckets captured, each a full offering envelope. 2nd-round-props
+    # appeared in draft week 2026 when BetOnline added picks 33+ after the
+    # first-round buckets narrowed; kept here so the regression pins the
+    # full historical set.
     expected_slugs = {
-        "1st-round", "1st-round-props", "draft-position", "matchups",
-        "mr-irrelevant", "specials", "team-to-draft",
+        "1st-round", "1st-round-props", "2nd-round-props", "draft-position",
+        "matchups", "mr-irrelevant", "specials", "team-to-draft",
         "teams-1st-drafted-position", "to-be-drafted-1st",
         "to-be-drafted-2nd", "to-be-selected",
     }
