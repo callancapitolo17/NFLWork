@@ -466,6 +466,120 @@ event with discrete outcomes priced across multiple books.
 
 ---
 
+## 9. Automated Onboarding Pipeline for New Markets
+
+**Status:** Open — captured 2026-04-24
+
+### Goal
+Close the loop between "a book posts a new market bucket" and "it flows
+through to the dashboard grid" automatically, without a human code edit
++ fixture refresh + dashboard restart. Today every new category
+(subcategory on DK, league bucket on WZ/BM, propDescription on H88, new
+pick_number on Kalshi) requires someone to spot an unmapped row,
+hand-edit the scraper's dispatch table (e.g. `_SUB_HANDLERS`), refresh
+the committed fixture, reseed MARKET_MAP, and restart the dashboard.
+That's a manual loop we repeat every draft week, and rows drop on the
+floor silently until someone notices.
+
+### Why it matters
+- **Speed is the bottleneck (design principle #1).** Every hour we
+  spend in the manual "grep unmapped → edit dispatch → commit → restart"
+  loop is an hour we're missing edges on lines that are live but
+  invisible to the grid.
+- **Lived experience from 2026-04-24 (day before draft):** DK posted a
+  brand-new "Picks 33-35" subcategory (3 markets × ~30 players = 94
+  selections) sometime in draft week. Our committed DK fixture
+  pre-dated it AND the subcategory name wasn't in
+  `draftkings._SUB_HANDLERS`, so every selection quarantined as
+  `prop_picks_33_35` and never showed up in the cross-book grid.
+  Kalshi, meanwhile, was posting `KXNFLDRAFTPICK-26-33/34/35/36/37`
+  series markets the whole time — the parser handled any pick_number
+  correctly, but the fixture-driven MARKET_MAP seed had no entries
+  for them, so they quarantined too. We caught it only because
+  Callan thought to ask "can we look to incorporate some new
+  markets?" If that prompt hadn't landed, we'd have walked into
+  draft day with cross-book edges on picks 33-35 completely blind.
+- **The broader 2026 picture.** The periodic-scrape log at time of
+  this writing shows ~3190 unmapped rows vs ~1803 mapped across
+  books (~64% unmapped). A chunk of that is props we intentionally
+  skip, but another chunk is structured markets — new bucket
+  subcategories, extended pick ranges, new top-N variants — that
+  *could* be canonicalized automatically if the infra knew how.
+
+### Foundation needed
+- **Live discovery vs committed-fixture seed.** Today every book's
+  MARKET_MAP rows are built at process start from a committed fixture
+  JSON. That's great for reproducibility and tests, bad for draft-week
+  agility. A hybrid — keep fixtures as the CI/regression baseline,
+  but layer a live-discovery pass on top at scrape time that can
+  augment MARKET_MAP from what the book actually posted that cycle.
+- **Dispatch table as data, not code.** `_SUB_HANDLERS` lives in
+  Python source, so adding a subcategory requires a code change + a
+  dashboard restart. Shift it to a per-book JSON/YAML the scraper
+  hot-reloads, and the path from "saw it live" to "mapped" collapses
+  to a single edit with no restart.
+- **Classifier.** A rule engine that infers canonical market_type +
+  args from (book, subcategory name, market label). E.g. `"Picks
+  33-35"` + `"Number 33 Pick"` ⇒ `pick_outright(pick_number=33)`.
+  Today that inference is hand-coded in per-book regex dicts; it
+  could be driven by a shared regex pack keyed on book, with an
+  LLM fallback for genuinely novel labels that a human confirms once.
+- **Loud detection.** The unmapped-count footer should jump out
+  during draft week — color-coded per book, one click deep to a list
+  of example rows so a new subcategory is diagnosed in seconds, not
+  found by tailing logs.
+- **Auto-fixture refresh.** When a new mappable bucket is detected,
+  the scraper should be able to capture a fresh fixture entry itself
+  (or at least write one to a staging path for commit) so the
+  committed-fixture layer stays in sync without running the full
+  recon script by hand.
+
+### Open questions
+- **Auto-confirm vs human-in-the-loop.** Safest draft-day path is
+  "detect and alert" — new bucket appears, dashboard pops a widget
+  with sample rows and a "approve this as pick_outright" button,
+  the mapping lands and takes effect on the next tick. Pure
+  auto-mapping risks silently misclassifying a novel bucket and
+  poisoning cross-book comparisons.
+- **Per-book classifier vs shared.** Each book's naming conventions
+  differ enough that a single regex pack is brittle. Probably needs
+  a per-book rule file + a shared fallback.
+- **Ladder with item #8 (portability across sports).** A good
+  market-onboarding framework for NFL Draft should be the same one
+  that works for NBA / MLB draft. Design with that in mind — don't
+  hard-code NFL terminology into the classifier.
+- **Scope of auto-mapping.** Some unmapped rows are deliberately
+  quarantined (props we don't want in the grid). The pipeline
+  needs a clear "never canonicalize" list per book so noise stays
+  out.
+
+### Before building
+Audit the last month of `draft_odds_unmapped` rows and split them into
+three buckets:
+  - (a) genuinely new structured markets we should canonicalize,
+  - (b) props we should intentionally skip,
+  - (c) edge cases (single stale label, expired subcategory).
+The size of bucket (a) is the direct answer to whether this is worth
+full automation or just a better alerting layer on top of the
+existing manual flow.
+
+### Known gaps visible today (concrete backlog for when this ships)
+These are already-observed gaps the automation would have caught on
+its own. Listing here so they don't get lost if the general
+automation slips:
+- DK subcategory `"Picks 21-32"` (sub 19661, 12 markets, 587
+  selections) — not in `_SUB_HANDLERS`, all rows quarantine.
+- DK subcategory `"Picks 33-35"` (sub 19678, 3 markets, ~94
+  selections) — same gap, addressed by the 2026-04-24 patch but
+  would have been auto-caught if this pipeline existed.
+- Kalshi `KXNFLDRAFTPICK-26-<N>` for N ≥ 33 — parser handles any N,
+  but fixture-driven MARKET_MAP seed predated these tickers.
+- Kalshi series intentionally left unmapped (matchup, OU) — see
+  `config/markets.py` comments; pipeline should know to skip these,
+  not auto-classify them.
+
+---
+
 ## Backlog (to be expanded)
 
 Add additional improvement items below as numbered sections following the
