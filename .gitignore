@@ -34,6 +34,7 @@ debug_*.png
 recon_*.html
 recon_*.json
 recon_*.png
+.playwright-mcp/
 
 # Data files
 *.duckdb
