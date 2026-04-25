@@ -610,9 +610,63 @@ def build_format_requests(sid, daily_start_row, weekly_start_row):
     return reqs
 
 
+# ── Main ──────────────────────────────────────────────────────────────────
+
 def main():
-    # Filled in by later tasks
-    raise NotImplementedError("main() not implemented yet — see later tasks")
+    print("Setting up MLB Summary tab...")
+    service = get_sheets_service()
+    ensure_sheet_exists(service, TAB)
+
+    # Clear any prior contents
+    try:
+        service.spreadsheets().values().clear(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"'{TAB}'!A:Z",
+        ).execute()
+    except HttpError as e:
+        print(f"  (clear failed — continuing: {e})")
+
+    # Build rows
+    rows = build_rows()
+    daily_start = rows._anchor_daily_start
+    weekly_start = rows._anchor_weekly_start
+
+    # Pad rows to 9 columns so the update range is rectangular
+    max_cols = max((len(r) for r in rows), default=1)
+    padded = [list(r) + [""] * (max_cols - len(r)) for r in rows]
+
+    print(f"Writing {len(padded)} rows ({max_cols} cols)...")
+    service.spreadsheets().values().update(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"'{TAB}'!A1",
+        valueInputOption="USER_ENTERED",
+        body={"values": padded},
+    ).execute()
+
+    # Apply formatting and add charts in one batchUpdate
+    sid = get_sheet_id(service, TAB)
+    if sid is None:
+        print("  (could not resolve sheet id — skipping formatting/charts)")
+        return
+
+    requests = []
+    # Remove any existing charts on this tab first (in case of re-run)
+    meta = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+    for s in meta.get("sheets", []):
+        if s["properties"]["sheetId"] == sid:
+            for ch in s.get("charts", []):
+                requests.append({"deleteEmbeddedObject": {"objectId": ch["chartId"]}})
+            break
+
+    requests.extend(build_format_requests(sid, daily_start, weekly_start))
+    requests.extend(build_chart_requests(sid, daily_start, weekly_start, last_row=5000))
+
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=SPREADSHEET_ID,
+        body={"requests": requests},
+    ).execute()
+
+    print(f"Done. Open the sheet and look at the '{TAB}' tab.")
 
 
 if __name__ == "__main__":
