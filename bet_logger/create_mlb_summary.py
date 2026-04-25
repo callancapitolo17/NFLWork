@@ -68,6 +68,104 @@ def is_f5_parlay(description: str) -> bool:
     return bool(F5_REGEX.search(description))
 
 
+# ── Formula builders ──────────────────────────────────────────────────────
+# Column map in Sheet1:
+#   A=Date  B=Platform  C=Sport  D=Description  E=Bet Type
+#   F=Line  G=Odds      H=Stake  I=Dec Odds     J=Result
+
+S = f"'{SRC}'"
+COL_DATE = f"{S}!A$2:A${N}"
+COL_SPORT = f"{S}!C$2:C${N}"
+COL_DESC = f"{S}!D$2:D${N}"
+COL_TYPE = f"{S}!E$2:E${N}"
+COL_STAKE = f"{S}!H$2:H${N}"
+COL_DEC = f"{S}!I$2:I${N}"
+COL_RESULT = f"{S}!J$2:J${N}"
+
+# Filter mask as a Sheets expression (no leading `=`). Five conditions,
+# multiplied together (boolean AND). Leaves a 1/0 array suitable for
+# SUMPRODUCT. Mirrors is_mlb_correlated_parlay() exactly.
+FILTER_MASK = (
+    f'({COL_SPORT}="MLB")'
+    f'*({COL_TYPE}="Parlay")'
+    f'*(LEFT({COL_DESC},16)="PARLAY (2 TEAMS)")'
+    f'*IFERROR(REGEXMATCH({COL_DESC},'
+    r'"(?<![\d.])[+\-]\d+\.5(?!\d)"'
+    f'),FALSE)'
+    f'*IFERROR(REGEXMATCH({COL_DESC},'
+    r'"\b(?i)(Over|Under)\s+\d+(?:\.\d+)?\b"'
+    f'),FALSE)'
+)
+
+# The FG/F5 modifiers — multiplied INTO the filter mask to split the set.
+F5_COND = (
+    f'IFERROR(REGEXMATCH({COL_DESC},'
+    r'"\b(?i)(?:1st\s*5|F5|First\s*5)\b"'
+    f'),FALSE)'
+)
+FG_ADD = f"*(1-{F5_COND})"   # NOT F5
+F5_ADD = f"*{F5_COND}"       # IS F5
+
+SETTLED = f'({COL_RESULT}<>"")'
+WIN = f'({COL_RESULT}="win")'
+LOSS = f'({COL_RESULT}="loss")'
+PUSH = f'({COL_RESULT}="push")'
+
+
+def placed_f(mask=FILTER_MASK, extra=""):
+    """Count of qualifying bets (settled + pending)."""
+    return f"=SUMPRODUCT({mask}{extra})"
+
+
+def settled_f(mask=FILTER_MASK, extra=""):
+    """Count of qualifying settled bets."""
+    return f"=SUMPRODUCT({mask}{extra}*{SETTLED})"
+
+
+def wagered_f(mask=FILTER_MASK, extra=""):
+    """Sum of stake across settled qualifying bets."""
+    return f"=SUMPRODUCT({mask}{extra}*{SETTLED}*{COL_STAKE})"
+
+
+def _profit_expr(mask=FILTER_MASK, extra=""):
+    """Profit expression WITHOUT leading `=` (for embedding)."""
+    wins_payout = (
+        f"SUMPRODUCT({mask}{extra}*{WIN}*({COL_DEC}<>\"\")"
+        f"*{COL_STAKE}*({COL_DEC}-1))"
+    )
+    losses = f"SUMPRODUCT({mask}{extra}*{LOSS}*{COL_STAKE})"
+    return f"{wins_payout}-{losses}"
+
+
+def profit_f(mask=FILTER_MASK, extra=""):
+    return f"={_profit_expr(mask, extra)}"
+
+
+def wins_f(mask=FILTER_MASK, extra=""):
+    return f"=SUMPRODUCT({mask}{extra}*{WIN})"
+
+
+def losses_f(mask=FILTER_MASK, extra=""):
+    return f"=SUMPRODUCT({mask}{extra}*{LOSS})"
+
+
+def pushes_f(mask=FILTER_MASK, extra=""):
+    return f"=SUMPRODUCT({mask}{extra}*{PUSH})"
+
+
+def record_f(mask=FILTER_MASK, extra=""):
+    w = f"SUMPRODUCT({mask}{extra}*{WIN})"
+    l = f"SUMPRODUCT({mask}{extra}*{LOSS})"
+    p = f"SUMPRODUCT({mask}{extra}*{PUSH})"
+    return f'={w}&"-"&{l}&"-"&{p}'
+
+
+def avg_odds_f(mask=FILTER_MASK, extra=""):
+    num = f"SUMPRODUCT({mask}{extra}*{SETTLED}*{COL_DEC})"
+    den = f"SUMPRODUCT({mask}{extra}*{SETTLED})"
+    return f"=IF({den}=0,0,{num}/{den})"
+
+
 def main():
     # Filled in by later tasks
     raise NotImplementedError("main() not implemented yet — see later tasks")
