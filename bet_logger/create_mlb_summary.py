@@ -195,6 +195,18 @@ def avg_odds_f(mask=FILTER_MASK, extra=""):
 
 # ── Row builder ───────────────────────────────────────────────────────────
 
+# Plain Python lists do not allow attribute assignment (e.g.
+# `lst.foo = 1` raises AttributeError). We need to attach anchor row
+# numbers (`__anchor_daily_start__`, `__anchor_weekly_start__`) to the
+# return value of build_rows() so downstream tasks (charts, wiring) can
+# locate the dynamic blocks without re-deriving their positions. A trivial
+# subclass of `list` accepts attributes on its instances while behaving
+# identically to a list everywhere else.
+class _RowList(list):
+    """list subclass that permits arbitrary attribute assignment."""
+    pass
+
+
 def build_rows():
     """Return the 2D list of cell values for the MLB Summary tab.
 
@@ -216,7 +228,7 @@ def build_rows():
       ...
       (a later section for weekly — filled by Task 5)
     """
-    rows = []
+    rows = _RowList()
 
     # Row 1: title
     rows.append(["MLB CORRELATED PARLAYS — WAGERZON"])
@@ -273,6 +285,80 @@ def build_rows():
 
     # Row 18: blank spacer (Task 5 continues from here)
     rows.append([])
+
+    # ── Block 3a: Daily P&L (dynamic, feeds the equity curve chart) ──
+    rows.append(["DAILY P&L"])
+    rows.append(["Date", "Bets", "Wagered", "P&L", "Cumulative P&L"])
+    daily_header_row = len(rows)          # 1-based row of column labels
+    daily_start_row = daily_header_row + 1
+
+    # Column A: a single dynamic formula. The spilled dates fill downward.
+    # We put the formula in the top cell; rows below it will be filled by
+    # the ARRAYFORMULA spill when the sheet is opened.
+    rows.append([
+        (
+            f"=IFERROR(SORT(UNIQUE(FILTER({COL_DATE},{FILTER_MASK}=1))),\"\")"
+        ),
+        # The other four columns use ARRAYFORMULA over the spilled date column
+        # in A — they must reference A{start}:A (whole column from start down).
+        f"=ARRAYFORMULA(IF(A{daily_start_row}:A=\"\",\"\","
+        f"SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A)*{FILTER_MASK}*{SETTLED})))",
+        f"=ARRAYFORMULA(IF(A{daily_start_row}:A=\"\",\"\","
+        f"SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A)*{FILTER_MASK}*{SETTLED}*{COL_STAKE})))",
+        # P&L per day — wins payout minus losses stake
+        (
+            f"=ARRAYFORMULA(IF(A{daily_start_row}:A=\"\",\"\","
+            f"SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A)*{FILTER_MASK}*{WIN}"
+            f"*({COL_DEC}<>\"\")*{COL_STAKE}*({COL_DEC}-1))"
+            f"-SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A)*{FILTER_MASK}*{LOSS}*{COL_STAKE})))"
+        ),
+        # Cumulative P&L — running sum of column D starting from daily_start_row.
+        # ARRAYFORMULA of MMULT gives a running sum without per-row formulas.
+        (
+            f"=ARRAYFORMULA(IF(A{daily_start_row}:A=\"\",\"\","
+            f"MMULT(--(ROW(D{daily_start_row}:D)>=TRANSPOSE(ROW(D{daily_start_row}:D))),"
+            f"IFERROR(D{daily_start_row}:D*1,0))))"
+        ),
+    ])
+    rows.append([])  # spacer after daily block
+
+    # ── Block 3b: Weekly P&L (dynamic, feeds the bar chart) ──
+    rows.append(["WEEKLY P&L"])
+    rows.append(["Week of (Mon)", "Bets", "Wagered", "P&L", "Cumulative P&L"])
+    weekly_header_row = len(rows)
+    weekly_start_row = weekly_header_row + 1
+
+    # Week-start bucket = A - WEEKDAY(A, 2) + 1  (Monday of that date's week).
+    # Wrap the FILTER in ARRAYFORMULA so the transform is applied element-wise.
+    week_of_date = (
+        f"({COL_DATE}-WEEKDAY({COL_DATE},2)+1)"
+    )
+    rows.append([
+        (
+            f"=IFERROR(SORT(UNIQUE("
+            f"FILTER(ARRAYFORMULA({week_of_date}),{FILTER_MASK}=1))),\"\")"
+        ),
+        f"=ARRAYFORMULA(IF(A{weekly_start_row}:A=\"\",\"\","
+        f"SUMPRODUCT(({week_of_date}=A{weekly_start_row}:A)*{FILTER_MASK}*{SETTLED})))",
+        f"=ARRAYFORMULA(IF(A{weekly_start_row}:A=\"\",\"\","
+        f"SUMPRODUCT(({week_of_date}=A{weekly_start_row}:A)*{FILTER_MASK}*{SETTLED}*{COL_STAKE})))",
+        (
+            f"=ARRAYFORMULA(IF(A{weekly_start_row}:A=\"\",\"\","
+            f"SUMPRODUCT(({week_of_date}=A{weekly_start_row}:A)*{FILTER_MASK}*{WIN}"
+            f"*({COL_DEC}<>\"\")*{COL_STAKE}*({COL_DEC}-1))"
+            f"-SUMPRODUCT(({week_of_date}=A{weekly_start_row}:A)*{FILTER_MASK}*{LOSS}*{COL_STAKE})))"
+        ),
+        (
+            f"=ARRAYFORMULA(IF(A{weekly_start_row}:A=\"\",\"\","
+            f"MMULT(--(ROW(D{weekly_start_row}:D)>=TRANSPOSE(ROW(D{weekly_start_row}:D))),"
+            f"IFERROR(D{weekly_start_row}:D*1,0))))"
+        ),
+    ])
+
+    # Also stash the anchor row numbers so Task 6 (charts) can reference
+    # them without re-computing. Attach as an attribute on the returned list.
+    rows.__anchor_daily_start__ = daily_start_row          # type: ignore[attr-defined]
+    rows.__anchor_weekly_start__ = weekly_start_row        # type: ignore[attr-defined]
 
     return rows
 
