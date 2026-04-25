@@ -39,14 +39,17 @@ import json
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-NOVIG_URL = "https://app.novig.us"
+NOVIG_URL = "https://novig.com/events"
+# Land directly on the markets lobby. .us variants were dead ends (app.novig.us
+# is a 2KB SPA shell; www.novig.us is the marketing site). novig.com is the
+# real sportsbook; /events is the markets list page.
 PROFILE_DIR = os.path.join(os.path.dirname(__file__), ".novig_profile")
 OUT_PATH = os.path.join(os.path.dirname(__file__), "recon_novig_sgp.json")
 
 TRACKED_DOMAINS = (
+    "novig.com",
     "novig.us",
     "novig.io",
-    "novig.com",
 )
 
 SGP_KEYWORDS = [
