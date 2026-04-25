@@ -72,6 +72,8 @@ report.html
 .bookmaker_cookies.json
 .bet105_profile/
 .dk_profile/
+.prophetx_profile/
+.novig_profile/
 
 # HAR files
 *.har
@@ -81,6 +83,10 @@ bfa_odds/venv
 hoop88_odds/venv
 bookmaker_odds/venv
 bet105_odds/venv
+mlb_sgp/venv
+
+# Runtime caches
+mlb_sgp/.novig_event_markets_query.json
 
 # Logs
 logs/
