@@ -43,8 +43,11 @@ WEEKLY_ROWS_MAX = 500
 #   "PARLAY (2 TEAMS) | TOTAL u4+115 (1H TB RAYS vrs 1H MIN TWINS) ... | 1H TB RAYS +½-145"
 # Half-numbers are written with the Unicode ½ glyph, NOT .5.
 # Spreads can be ±1½ (FG), ±2½ (alt run line), or just ±½ (1H — half-game).
+# NOTE: no lookbehind in SPREAD_REGEX — Sheets uses RE2 which doesn't support
+# lookbehind, and the ½ glyph itself is unique enough to anchor the match.
+# (American odds never contain ½, so there's nothing to false-positive on.)
 
-SPREAD_REGEX = re.compile(r"(?<!\d)[+\-]\d*½")
+SPREAD_REGEX = re.compile(r"[+\-]\d*½")
 TOTAL_REGEX = re.compile(r"\bTOTAL\s+[ou]\d", re.IGNORECASE)
 F5_REGEX = re.compile(r"\b(?:1H|1st\s*5|F5|First\s*5)\b", re.IGNORECASE)
 
@@ -91,7 +94,7 @@ FILTER_MASK = (
     f'*({COL_TYPE}="Parlay")'
     f'*(LEFT({COL_DESC},16)="PARLAY (2 TEAMS)")'
     f'*IFERROR(REGEXMATCH({COL_DESC},'
-    r'"(?<!\d)[+\-]\d*½"'
+    r'"[+\-]\d*½"'
     f'),FALSE)'
     f'*IFERROR(REGEXMATCH({COL_DESC},'
     r'"\b(?i)TOTAL\s+[ou]\d"'
