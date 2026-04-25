@@ -158,10 +158,32 @@ def pushes_f(mask=FILTER_MASK, extra=""):
     return f"=SUMPRODUCT({mask}{extra}*{PUSH})"
 
 
+# Internal "expression" variants — return SUMPRODUCT(...) WITHOUT leading `=`
+# so they can be embedded inside compound formulas (win rate, record, etc.).
+
+def _wins_expr(mask=FILTER_MASK, extra=""):
+    return f"SUMPRODUCT({mask}{extra}*{WIN})"
+
+
+def _losses_expr(mask=FILTER_MASK, extra=""):
+    return f"SUMPRODUCT({mask}{extra}*{LOSS})"
+
+
+def _pushes_expr(mask=FILTER_MASK, extra=""):
+    return f"SUMPRODUCT({mask}{extra}*{PUSH})"
+
+
+def winrate_f(mask=FILTER_MASK, extra=""):
+    """Win rate = wins / (wins + losses). Pushes excluded from denominator."""
+    w = _wins_expr(mask, extra)
+    lo = _losses_expr(mask, extra)
+    return f"=IF(({w}+{lo})=0,0,{w}/({w}+{lo}))"
+
+
 def record_f(mask=FILTER_MASK, extra=""):
-    w = f"SUMPRODUCT({mask}{extra}*{WIN})"
-    lo = f"SUMPRODUCT({mask}{extra}*{LOSS})"
-    p = f"SUMPRODUCT({mask}{extra}*{PUSH})"
+    w = _wins_expr(mask, extra)
+    lo = _losses_expr(mask, extra)
+    p = _pushes_expr(mask, extra)
     return f'={w}&"-"&{lo}&"-"&{p}'
 
 
@@ -213,15 +235,13 @@ def build_rows():
     rows.append(["Total wagered", wagered_f()])
     # Row 8: Net P&L
     rows.append(["Net P&L", profit_f()])
-    # Row 9: ROI = P&L / wagered  (references anchors B7, B8)
-    rows.append(["ROI", "=IF(B7=0,0,B8/B7)"])
+    # Row 9: ROI = Net P&L / Total wagered (anchors derived from current
+    # row positions so inserting/removing metrics above won't silently break)
+    r_wagered = len(rows) - 1   # the just-appended "Total wagered" row
+    r_pnl = len(rows)           # the just-appended "Net P&L" row
+    rows.append(["ROI", f"=IF(B{r_wagered}=0,0,B{r_pnl}/B{r_wagered})"])
     # Row 10: Win rate = wins / (wins + losses), NOT wins / settled
-    w_expr = f"SUMPRODUCT({FILTER_MASK}*{WIN})"
-    l_expr = f"SUMPRODUCT({FILTER_MASK}*{LOSS})"
-    rows.append([
-        "Win rate",
-        f"=IF(({w_expr}+{l_expr})=0,0,{w_expr}/({w_expr}+{l_expr}))",
-    ])
+    rows.append(["Win rate", winrate_f()])
     # Row 11: Record
     rows.append(["Record (W-L-P)", record_f()])
     # Row 12: Avg decimal odds
@@ -239,8 +259,6 @@ def build_rows():
     # Rows 16-17: FG and F5 rows
     for label, extra in (("Full Game (FG)", FG_ADD), ("First 5 (F5)", F5_ADD)):
         r = len(rows) + 1
-        w_here = f"SUMPRODUCT({FILTER_MASK}{extra}*{WIN})"
-        l_here = f"SUMPRODUCT({FILTER_MASK}{extra}*{LOSS})"
         rows.append([
             label,
             placed_f(extra=extra),
@@ -248,7 +266,7 @@ def build_rows():
             wagered_f(extra=extra),
             profit_f(extra=extra),
             f"=IF(D{r}=0,0,E{r}/D{r})",     # ROI
-            f"=IF(({w_here}+{l_here})=0,0,{w_here}/({w_here}+{l_here}))",
+            winrate_f(extra=extra),
             record_f(extra=extra),
             avg_odds_f(extra=extra),
         ])
