@@ -103,7 +103,7 @@ F5_COND = (
     r'"\b(?i)(?:1st\s*5|F5|First\s*5)\b"'
     f'),FALSE)'
 )
-FG_ADD = f"*(1-{F5_COND})"   # NOT F5
+FG_ADD = f"*NOT({F5_COND})"  # NOT F5
 F5_ADD = f"*{F5_COND}"       # IS F5
 
 SETTLED = f'({COL_RESULT}<>"")'
@@ -112,6 +112,11 @@ LOSS = f'({COL_RESULT}="loss")'
 PUSH = f'({COL_RESULT}="push")'
 
 
+# All builders below take `(mask=FILTER_MASK, extra="")`. By convention
+# `extra` is a string that begins with `*` (e.g., `FG_ADD`, `F5_ADD`,
+# or per-row date conditions) — it gets concatenated into the SUMPRODUCT
+# expression as an additional multiplicative term. Passing an `extra`
+# without a leading `*` will produce a malformed Sheets expression.
 def placed_f(mask=FILTER_MASK, extra=""):
     """Count of qualifying bets (settled + pending)."""
     return f"=SUMPRODUCT({mask}{extra})"
@@ -155,9 +160,9 @@ def pushes_f(mask=FILTER_MASK, extra=""):
 
 def record_f(mask=FILTER_MASK, extra=""):
     w = f"SUMPRODUCT({mask}{extra}*{WIN})"
-    l = f"SUMPRODUCT({mask}{extra}*{LOSS})"
+    lo = f"SUMPRODUCT({mask}{extra}*{LOSS})"
     p = f"SUMPRODUCT({mask}{extra}*{PUSH})"
-    return f'={w}&"-"&{l}&"-"&{p}'
+    return f'={w}&"-"&{lo}&"-"&{p}'
 
 
 def avg_odds_f(mask=FILTER_MASK, extra=""):
