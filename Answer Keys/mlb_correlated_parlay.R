@@ -36,6 +36,14 @@ WZ_PARLAY_SHAVE_FG <- 0.989  # Wagerzon takes ~1.1% off FG independent multiply
 WZ_PARLAY_SHAVE_F5 <- 0.995  # Wagerzon takes ~0.5% off F5 independent multiply
 DK_SGP_VIG_DEFAULT <- 1.10   # fallback when <4 DK combos for a game
 FD_SGP_VIG_DEFAULT <- 1.15   # fallback when <4 FD combos for a game
+PROPHETX_SGP_VIG_DEFAULT <- 1.10  # P2P exchange with RFQ-priced SGPs. 1.10 matches the
+                                   # DK default — the RFQ ladder's tightest offer likely
+                                   # carries implicit spread similar to a retail book's
+                                   # per-leg vig. Tune from logged per-game vig readings.
+NOVIG_SGP_VIG_DEFAULT <- 1.10      # Novig: leg prices sourced from DK, correlation model
+                                    # applied on top. Start at 1.10 (same as DK) — measured
+                                    # parlay/naive ratio ~1.09-1.12 in probes suggests similar
+                                    # vig magnitude to DK. Re-tune from logged per-game vig.
 MLB_DB <- "mlb.duckdb"
 
 # Load sizing from dashboard if available (parlay-specific settings, falls back to main)
@@ -438,6 +446,10 @@ if (file.exists(sgp_venv_python)) {
           wait = TRUE, stdout = FALSE, stderr = FALSE)
   system2(sgp_venv_python, args = c(file.path(sgp_scraper_dir, "scraper_fanduel_sgp.py")),
           wait = TRUE, stdout = FALSE, stderr = FALSE)
+  system2(sgp_venv_python, args = c(file.path(sgp_scraper_dir, "scraper_prophetx_sgp.py")),
+          wait = TRUE, stdout = FALSE, stderr = FALSE)
+  system2(sgp_venv_python, args = c(file.path(sgp_scraper_dir, "scraper_novig_sgp.py")),
+          wait = TRUE, stdout = FALSE, stderr = FALSE)
 } else {
   cat("  SGP scraper venv not found — skipping. Run: cd mlb_sgp && python -m venv venv && pip install curl_cffi duckdb\n")
 }
@@ -452,7 +464,7 @@ sgp_odds <- tryCatch({
   dbGetQuery(sgp_con, "
     SELECT game_id, combo, sgp_decimal, sgp_american, source
     FROM mlb_sgp_odds
-    WHERE source IN ('draftkings_direct', 'fanduel_direct')
+    WHERE source IN ('draftkings_direct', 'fanduel_direct', 'prophetx_direct', 'novig_direct')
   ")
 }, error = function(e) data.frame())
 
@@ -460,10 +472,14 @@ dbDisconnect(sgp_con)
 
 dk_sgp <- sgp_odds[sgp_odds$source == "draftkings_direct", ]
 fd_sgp <- sgp_odds[sgp_odds$source == "fanduel_direct", ]
+px_sgp <- sgp_odds[sgp_odds$source == "prophetx_direct", ]
+nv_sgp <- sgp_odds[sgp_odds$source == "novig_direct", ]
 
 if (nrow(dk_sgp) > 0) cat(sprintf("  Loaded %d DK SGP odds for blending\n", nrow(dk_sgp)))
 if (nrow(fd_sgp) > 0) cat(sprintf("  Loaded %d FD SGP odds for blending\n", nrow(fd_sgp)))
-if (nrow(dk_sgp) == 0 && nrow(fd_sgp) == 0) cat("  No fresh SGP odds — using model-only fair values\n")
+if (nrow(px_sgp) > 0) cat(sprintf("  Loaded %d PX SGP odds for blending\n", nrow(px_sgp)))
+if (nrow(nv_sgp) > 0) cat(sprintf("  Loaded %d NV SGP odds for blending\n", nrow(nv_sgp)))
+if (nrow(dk_sgp) == 0 && nrow(fd_sgp) == 0 && nrow(px_sgp) == 0 && nrow(nv_sgp) == 0) cat("  No fresh SGP odds — using model-only fair values\n")
 
 # Per-game vig lookup: sum of implied probs across all 4 combos for each game.
 # When a game has all 4 combos, we use the measured vig (more accurate than a
@@ -488,6 +504,26 @@ fd_vig_lookup <- if (nrow(fd_sgp) > 0) {
     group_by(game_id, period) %>%
     summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
     mutate(vig = ifelse(n >= 4, vig, FD_SGP_VIG_DEFAULT))
+} else {
+  tibble(game_id = character(), period = character(), n = integer(), vig = double())
+}
+
+px_vig_lookup <- if (nrow(px_sgp) > 0) {
+  px_sgp %>%
+    mutate(period = ifelse(grepl("^F5 ", combo), "F5", "FG")) %>%
+    group_by(game_id, period) %>%
+    summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
+    mutate(vig = ifelse(n >= 4, vig, PROPHETX_SGP_VIG_DEFAULT))
+} else {
+  tibble(game_id = character(), period = character(), n = integer(), vig = double())
+}
+
+nv_vig_lookup <- if (nrow(nv_sgp) > 0) {
+  nv_sgp %>%
+    mutate(period = ifelse(grepl("^F5 ", combo), "F5", "FG")) %>%
+    group_by(game_id, period) %>%
+    summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
+    mutate(vig = ifelse(n >= 4, vig, NOVIG_SGP_VIG_DEFAULT))
 } else {
   tibble(game_id = character(), period = character(), n = integer(), vig = double())
 }
@@ -611,6 +647,28 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         fd_fair_prob <- NA_real_
       }
 
+      # PX (ProphetX) — P2P exchange, RFQ-priced
+      px_row <- px_sgp[px_sgp$game_id == game_id & px_sgp$combo == combo_name, ]
+      px_vig_row <- px_vig_lookup[px_vig_lookup$game_id == game_id & px_vig_lookup$period == combo_period, ]
+      px_vig_used <- if (nrow(px_vig_row) > 0) px_vig_row$vig[1] else PROPHETX_SGP_VIG_DEFAULT
+      if (nrow(px_row) > 0 && !is.na(px_row$sgp_decimal[1]) && px_row$sgp_decimal[1] > 0) {
+        px_fair_prob <- (1 / px_row$sgp_decimal[1]) / px_vig_used
+        probs_to_blend <- c(probs_to_blend, px_fair_prob)
+      } else {
+        px_fair_prob <- NA_real_
+      }
+
+      # NV (Novig) — DK leg prices + Novig's own correlation model
+      nv_row <- nv_sgp[nv_sgp$game_id == game_id & nv_sgp$combo == combo_name, ]
+      nv_vig_row <- nv_vig_lookup[nv_vig_lookup$game_id == game_id & nv_vig_lookup$period == combo_period, ]
+      nv_vig_used <- if (nrow(nv_vig_row) > 0) nv_vig_row$vig[1] else NOVIG_SGP_VIG_DEFAULT
+      if (nrow(nv_row) > 0 && !is.na(nv_row$sgp_decimal[1]) && nv_row$sgp_decimal[1] > 0) {
+        nv_fair_prob <- (1 / nv_row$sgp_decimal[1]) / nv_vig_used
+        probs_to_blend <- c(probs_to_blend, nv_fair_prob)
+      } else {
+        nv_fair_prob <- NA_real_
+      }
+
       n_books_blended <- length(probs_to_blend) - 1  # subtract model itself
       blended_prob    <- mean(probs_to_blend)
       fair_dec        <- 1 / blended_prob
@@ -650,6 +708,8 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         n_samples   = fair$n_samples_resolved,
         dk_fair_prob = round(dk_fair_prob, 3),
         fd_fair_prob = round(fd_fair_prob, 3),
+        px_fair_prob = round(px_fair_prob, 3),
+        nv_fair_prob = round(nv_fair_prob, 3),
         blended_prob = round(blended_prob, 3),
         n_books_blended = n_books_blended
       )
