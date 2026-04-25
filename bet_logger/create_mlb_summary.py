@@ -32,10 +32,12 @@ N = 10000         # Max row the formulas scan in Sheet1
 
 
 # ── Filter regex ──────────────────────────────────────────────────────────
-# A spread leg contains "<team-name> <signed decimal>". The signed decimal
-# must be the spread, not the American odds, so we require a decimal point
-# OR a bare "+/- 0.5 / 1.5" — the shapes Wagerzon emits for MLB spreads.
-SPREAD_REGEX = re.compile(r"(?<!\d)[+\-](?:0\.5|1\.5|2\.5)(?!\d)")
+# A spread leg contains a signed half-integer like "+1.5" or "-2.5". The
+# `.5` requirement excludes American odds (which are integers like -110,
+# +140 — never half-numbers). Lookarounds prevent matching inside numbers
+# that happen to contain ".5" digits — e.g., we don't want to match the
+# "+1.5" inside hypothetical "+1.50" odds, though Wagerzon doesn't use that.
+SPREAD_REGEX = re.compile(r"(?<![\d.])[+\-]\d+\.5(?!\d)")
 
 # A total leg contains "Over N.N" or "Under N.N". We accept the word forms
 # only (the bare "O 8.5" / "U 8.5" shorthand does not appear in Wagerzon's

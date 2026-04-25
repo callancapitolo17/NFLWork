@@ -40,6 +40,12 @@ STRAIGHT_BET = "STRAIGHT BET | Detroit Tigers -1.5 +140"
         (THREE_LEGS, "MLB", "Parlay", False),
         (STRAIGHT_BET, "MLB", "Straight", False),
         (SPREAD_PLUS_TOTAL_FG, "NFL", "Parlay", False),
+        # Underdog spread (+1.5) — favorite-side spread already covered above
+        ("PARLAY (2 TEAMS) | Boston Red Sox +1.5 -160 | Under 8.5 -110", "MLB", "Parlay", True),
+        # Alt run line (-2.5) — common in lopsided games
+        ("PARLAY (2 TEAMS) | Los Angeles Dodgers -2.5 +250 | Over 9.5 -110", "MLB", "Parlay", True),
+        # Bigger alt run line (+3.5) — would have been silently excluded by the old hardcoded regex
+        ("PARLAY (2 TEAMS) | Oakland Athletics +3.5 -180 | Under 7.5 -110", "MLB", "Parlay", True),
     ],
 )
 def test_is_mlb_correlated_parlay(desc, sport, bet_type, expected):
