@@ -371,6 +371,129 @@ def build_rows():
     return rows
 
 
+# ── Chart builders ────────────────────────────────────────────────────────
+
+def get_sheet_id(service, tab_name):
+    meta = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+    for s in meta.get("sheets", []):
+        if s["properties"]["title"] == tab_name:
+            return s["properties"]["sheetId"]
+    return None
+
+
+def build_chart_requests(sheet_id, daily_start_row, weekly_start_row, last_row):
+    """Return Sheets API batchUpdate requests for the two charts.
+
+    Both charts read a generous range (through `last_row`) so they pick up
+    new dates automatically as the dynamic tables extend downward.
+    """
+    # Convert 1-based row numbers to API's 0-based indices.
+    # The daily data block occupies columns A-E (indices 0-5 exclusive).
+    daily_header_idx = daily_start_row - 2       # 0-based index of the header row
+    daily_data_start = daily_start_row - 1       # 0-based index of first data row
+
+    weekly_header_idx = weekly_start_row - 2
+    weekly_data_start = weekly_start_row - 1
+
+    # EQUITY CURVE (line chart) — X: Date (col A), Y: Cumulative P&L (col E)
+    equity_chart = {
+        "addChart": {
+            "chart": {
+                "spec": {
+                    "title": "Equity Curve — Cumulative P&L",
+                    "basicChart": {
+                        "chartType": "LINE",
+                        "legendPosition": "NO_LEGEND",
+                        "axis": [
+                            {"position": "BOTTOM_AXIS", "title": "Date"},
+                            {"position": "LEFT_AXIS", "title": "Cumulative P&L"},
+                        ],
+                        "domains": [{
+                            "domain": {"sourceRange": {"sources": [{
+                                "sheetId": sheet_id,
+                                "startRowIndex": daily_data_start,
+                                "endRowIndex": last_row,
+                                "startColumnIndex": 0, "endColumnIndex": 1,
+                            }]}}
+                        }],
+                        "series": [{
+                            "series": {"sourceRange": {"sources": [{
+                                "sheetId": sheet_id,
+                                "startRowIndex": daily_data_start,
+                                "endRowIndex": last_row,
+                                "startColumnIndex": 4, "endColumnIndex": 5,
+                            }]}},
+                            "targetAxis": "LEFT_AXIS",
+                        }],
+                        "headerCount": 0,
+                    },
+                },
+                "position": {
+                    "overlayPosition": {
+                        "anchorCell": {
+                            "sheetId": sheet_id,
+                            "rowIndex": daily_header_idx - 12,  # above DAILY P&L block
+                            "columnIndex": 6,                   # column G
+                        },
+                        "widthPixels": 600,
+                        "heightPixels": 300,
+                    }
+                },
+            }
+        }
+    }
+
+    # WEEKLY BARS — X: Week of (col A), Y: P&L (col D)
+    weekly_chart = {
+        "addChart": {
+            "chart": {
+                "spec": {
+                    "title": "Weekly P&L",
+                    "basicChart": {
+                        "chartType": "COLUMN",
+                        "legendPosition": "NO_LEGEND",
+                        "axis": [
+                            {"position": "BOTTOM_AXIS", "title": "Week of"},
+                            {"position": "LEFT_AXIS", "title": "P&L"},
+                        ],
+                        "domains": [{
+                            "domain": {"sourceRange": {"sources": [{
+                                "sheetId": sheet_id,
+                                "startRowIndex": weekly_data_start,
+                                "endRowIndex": last_row,
+                                "startColumnIndex": 0, "endColumnIndex": 1,
+                            }]}}
+                        }],
+                        "series": [{
+                            "series": {"sourceRange": {"sources": [{
+                                "sheetId": sheet_id,
+                                "startRowIndex": weekly_data_start,
+                                "endRowIndex": last_row,
+                                "startColumnIndex": 3, "endColumnIndex": 4,
+                            }]}},
+                            "targetAxis": "LEFT_AXIS",
+                        }],
+                        "headerCount": 0,
+                    },
+                },
+                "position": {
+                    "overlayPosition": {
+                        "anchorCell": {
+                            "sheetId": sheet_id,
+                            "rowIndex": weekly_header_idx - 6,
+                            "columnIndex": 6,                   # column G, below equity curve
+                        },
+                        "widthPixels": 600,
+                        "heightPixels": 300,
+                    }
+                },
+            }
+        }
+    }
+
+    return [equity_chart, weekly_chart]
+
+
 def main():
     # Filled in by later tasks
     raise NotImplementedError("main() not implemented yet — see later tasks")
