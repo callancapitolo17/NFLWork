@@ -318,49 +318,41 @@ def build_rows():
         # ── DAILY (cols A-E) ──
         # A21: dynamic date list (spills)
         f'=IFERROR(SORT(UNIQUE(FILTER({COL_DATE},{FILTER_MASK}=1))),"")',
-        # B21: bets per day
-        f'=ARRAYFORMULA(IF(A{daily_start_row}:A{daily_end}="","",'
-        f'SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A{daily_end})*{FILTER_MASK}*{SETTLED})))',
+        # B21: bets per day — BYROW gives SUMPRODUCT a scalar date, avoiding broadcast error
+        f'=BYROW(A{daily_start_row}:A,LAMBDA(d,IF(d="","",'
+        f'SUMPRODUCT(({COL_DATE}=d)*{FILTER_MASK}*{SETTLED}))))',
         # C21: wagered per day
-        f'=ARRAYFORMULA(IF(A{daily_start_row}:A{daily_end}="","",'
-        f'SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A{daily_end})*{FILTER_MASK}*{SETTLED}*{COL_STAKE})))',
+        f'=BYROW(A{daily_start_row}:A,LAMBDA(d,IF(d="","",'
+        f'SUMPRODUCT(({COL_DATE}=d)*{FILTER_MASK}*{SETTLED}*{COL_STAKE}))))',
         # D21: P&L per day (wins payout − losses stake)
         (
-            f'=ARRAYFORMULA(IF(A{daily_start_row}:A{daily_end}="","",'
-            f'SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A{daily_end})*{FILTER_MASK}*{WIN}'
+            f'=BYROW(A{daily_start_row}:A,LAMBDA(d,IF(d="","",'
+            f'SUMPRODUCT(({COL_DATE}=d)*{FILTER_MASK}*{WIN}'
             f'*({COL_DEC}<>"")*{COL_STAKE}*({COL_DEC}-1))'
-            f'-SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A{daily_end})*{FILTER_MASK}*{LOSS}*{COL_STAKE})))'
+            f'-SUMPRODUCT(({COL_DATE}=d)*{FILTER_MASK}*{LOSS}*{COL_STAKE}))))'
         ),
-        # E21: cumulative P&L
-        (
-            f'=ARRAYFORMULA(IF(A{daily_start_row}:A{daily_end}="","",'
-            f'MMULT(--(ROW(D{daily_start_row}:D{daily_end})>=TRANSPOSE(ROW(D{daily_start_row}:D{daily_end}))),'
-            f'IFERROR(D{daily_start_row}:D{daily_end}*1,0))))'
-        ),
+        # E21: cumulative P&L — SCAN running sum; blank rows show "" not the last total
+        f'=IF(D{daily_start_row}:D="","",IFERROR(SCAN(0,D{daily_start_row}:D,LAMBDA(acc,v,IF(v="",acc,acc+v))),0))',
         # F21: empty separator column
         "",
         # ── WEEKLY (cols G-K) ──
         # G21: dynamic week-of-Monday list
         f'=IFERROR(SORT(UNIQUE(FILTER(ARRAYFORMULA({week_of_date}),{FILTER_MASK}=1))),"")',
-        # H21: bets per week
-        f'=ARRAYFORMULA(IF(G{weekly_start_row}:G{weekly_end}="","",'
-        f'SUMPRODUCT(({week_of_date}=G{weekly_start_row}:G{weekly_end})*{FILTER_MASK}*{SETTLED})))',
+        # H21: bets per week — BYROW gives SUMPRODUCT a scalar week, avoiding broadcast error
+        f'=BYROW(G{weekly_start_row}:G,LAMBDA(w,IF(w="","",'
+        f'SUMPRODUCT(({week_of_date}=w)*{FILTER_MASK}*{SETTLED}))))',
         # I21: wagered per week
-        f'=ARRAYFORMULA(IF(G{weekly_start_row}:G{weekly_end}="","",'
-        f'SUMPRODUCT(({week_of_date}=G{weekly_start_row}:G{weekly_end})*{FILTER_MASK}*{SETTLED}*{COL_STAKE})))',
+        f'=BYROW(G{weekly_start_row}:G,LAMBDA(w,IF(w="","",'
+        f'SUMPRODUCT(({week_of_date}=w)*{FILTER_MASK}*{SETTLED}*{COL_STAKE}))))',
         # J21: P&L per week
         (
-            f'=ARRAYFORMULA(IF(G{weekly_start_row}:G{weekly_end}="","",'
-            f'SUMPRODUCT(({week_of_date}=G{weekly_start_row}:G{weekly_end})*{FILTER_MASK}*{WIN}'
+            f'=BYROW(G{weekly_start_row}:G,LAMBDA(w,IF(w="","",'
+            f'SUMPRODUCT(({week_of_date}=w)*{FILTER_MASK}*{WIN}'
             f'*({COL_DEC}<>"")*{COL_STAKE}*({COL_DEC}-1))'
-            f'-SUMPRODUCT(({week_of_date}=G{weekly_start_row}:G{weekly_end})*{FILTER_MASK}*{LOSS}*{COL_STAKE})))'
+            f'-SUMPRODUCT(({week_of_date}=w)*{FILTER_MASK}*{LOSS}*{COL_STAKE}))))'
         ),
-        # K21: cumulative P&L
-        (
-            f'=ARRAYFORMULA(IF(G{weekly_start_row}:G{weekly_end}="","",'
-            f'MMULT(--(ROW(J{weekly_start_row}:J{weekly_end})>=TRANSPOSE(ROW(J{weekly_start_row}:J{weekly_end}))),'
-            f'IFERROR(J{weekly_start_row}:J{weekly_end}*1,0))))'
-        ),
+        # K21: cumulative P&L — SCAN running sum; blank rows show "" not the last total
+        f'=IF(J{weekly_start_row}:J="","",IFERROR(SCAN(0,J{weekly_start_row}:J,LAMBDA(acc,v,IF(v="",acc,acc+v))),0))',
     ])
 
     # Stash anchors so Task 6 (charts) and Task 7 (formatting) can read them
