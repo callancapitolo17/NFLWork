@@ -494,6 +494,122 @@ def build_chart_requests(sheet_id, daily_start_row, weekly_start_row, last_row):
     return [equity_chart, weekly_chart]
 
 
+# ── Formatting ────────────────────────────────────────────────────────────
+
+def _range(sid, r1, r2, c1, c2):
+    return {"sheetId": sid, "startRowIndex": r1, "endRowIndex": r2,
+            "startColumnIndex": c1, "endColumnIndex": c2}
+
+
+def _text_fmt(sid, r1, r2, c1, c2, bold=False, size=None):
+    tf = {"bold": bold}
+    if size:
+        tf["fontSize"] = size
+    return {"repeatCell": {
+        "range": _range(sid, r1, r2, c1, c2),
+        "cell": {"userEnteredFormat": {"textFormat": tf}},
+        "fields": "userEnteredFormat.textFormat",
+    }}
+
+
+def _bg_fmt(sid, r1, r2, c1, c2, rgb):
+    return {"repeatCell": {
+        "range": _range(sid, r1, r2, c1, c2),
+        "cell": {"userEnteredFormat": {"backgroundColor":
+            {"red": rgb[0], "green": rgb[1], "blue": rgb[2]}}},
+        "fields": "userEnteredFormat.backgroundColor",
+    }}
+
+
+def _num_fmt(sid, r1, r2, c1, c2, ntype, pattern):
+    return {"repeatCell": {
+        "range": _range(sid, r1, r2, c1, c2),
+        "cell": {"userEnteredFormat": {"numberFormat":
+            {"type": ntype, "pattern": pattern}}},
+        "fields": "userEnteredFormat.numberFormat",
+    }}
+
+
+def _cond_fmt(sid, r1, r2, c1, c2, cond_type, value, rgb):
+    return {"addConditionalFormatRule": {"rule": {
+        "ranges": [_range(sid, r1, r2, c1, c2)],
+        "booleanRule": {
+            "condition": {"type": cond_type,
+                          "values": [{"userEnteredValue": value}]},
+            "format": {"textFormat": {"foregroundColorStyle":
+                {"rgbColor": {"red": rgb[0], "green": rgb[1], "blue": rgb[2]}}}},
+        },
+    }, "index": 0}}
+
+
+def build_format_requests(sid, daily_start_row, weekly_start_row):
+    """Return the batchUpdate requests to format the MLB Summary tab."""
+    reqs = []
+    GREEN = (0.13, 0.55, 0.13)
+    RED = (0.80, 0.13, 0.13)
+    HEADER_BG = (0.85, 0.92, 1.00)
+    LABEL_BG = (0.93, 0.93, 0.93)
+
+    # Title (row 1)
+    reqs.append(_text_fmt(sid, 0, 1, 0, 10, bold=True, size=16))
+
+    # Section headers: rows 3 (OVERALL), 14 (BY GAME WINDOW),
+    # (daily_header_row - 1), and (weekly_header_row - 1).
+    for section_row_1based in (3, 14, daily_start_row - 1, weekly_start_row - 1):
+        r = section_row_1based - 1
+        reqs.append(_bg_fmt(sid, r, r + 1, 0, 10, HEADER_BG))
+        reqs.append(_text_fmt(sid, r, r + 1, 0, 10, bold=True, size=12))
+
+    # Column-label rows (the one right below each section header)
+    for label_row_1based in (4, 15, daily_start_row, weekly_start_row):
+        r = label_row_1based - 1
+        reqs.append(_bg_fmt(sid, r, r + 1, 0, 10, LABEL_BG))
+        reqs.append(_text_fmt(sid, r, r + 1, 0, 10, bold=True))
+
+    # OVERALL STATS — rows 5-12 (0-based 4-12), column B (index 1)
+    #   Row indices of: 5=placed 6=settled 7=wagered 8=pnl 9=roi 10=winrate 11=record 12=avgodds
+    reqs.append(_num_fmt(sid, 6, 8, 1, 2, "CURRENCY", "$#,##0.00"))   # wagered, P&L
+    reqs.append(_num_fmt(sid, 7, 8, 1, 2, "CURRENCY", "$#,##0.00"))   # P&L (overlaps intentionally)
+    reqs.append(_num_fmt(sid, 8, 9, 1, 2, "PERCENT", "0.00%"))        # ROI
+    reqs.append(_num_fmt(sid, 9, 10, 1, 2, "PERCENT", "0.0%"))        # Win Rate
+    reqs.append(_num_fmt(sid, 11, 12, 1, 2, "NUMBER", "0.00"))        # Avg odds
+
+    # FG / F5 rows — rows 16-17 (0-based 15-16)
+    reqs.append(_num_fmt(sid, 15, 17, 3, 5, "CURRENCY", "$#,##0.00"))  # wagered, P&L
+    reqs.append(_num_fmt(sid, 15, 17, 5, 6, "PERCENT", "0.00%"))       # ROI
+    reqs.append(_num_fmt(sid, 15, 17, 6, 7, "PERCENT", "0.0%"))        # Win Rate
+    reqs.append(_num_fmt(sid, 15, 17, 8, 9, "NUMBER", "0.00"))         # Avg odds
+    reqs.append(_cond_fmt(sid, 15, 17, 4, 5, "NUMBER_GREATER", "0", GREEN))
+    reqs.append(_cond_fmt(sid, 15, 17, 4, 5, "NUMBER_LESS", "0", RED))
+
+    # Daily and weekly blocks — generous range (1000 rows) for dynamic data
+    for start_1based in (daily_start_row, weekly_start_row):
+        s = start_1based - 1
+        e = s + 1000
+        reqs.append(_num_fmt(sid, s, e, 2, 5, "CURRENCY", "$#,##0.00"))  # wagered, P&L, cum
+        reqs.append(_cond_fmt(sid, s, e, 3, 4, "NUMBER_GREATER", "0", GREEN))
+        reqs.append(_cond_fmt(sid, s, e, 3, 4, "NUMBER_LESS", "0", RED))
+        reqs.append(_cond_fmt(sid, s, e, 4, 5, "NUMBER_GREATER", "0", GREEN))
+        reqs.append(_cond_fmt(sid, s, e, 4, 5, "NUMBER_LESS", "0", RED))
+
+    # Column widths (A-I)
+    for i, w in enumerate([155, 80, 85, 110, 115, 75, 85, 130, 90]):
+        reqs.append({"updateDimensionProperties": {
+            "range": {"sheetId": sid, "dimension": "COLUMNS",
+                      "startIndex": i, "endIndex": i + 1},
+            "properties": {"pixelSize": w}, "fields": "pixelSize",
+        }})
+
+    # Date format for column A in daily and weekly blocks (the SORT(UNIQUE(FILTER))
+    # spill returns date serials; without DATE format they display as numbers).
+    for start_1based in (daily_start_row, weekly_start_row):
+        s = start_1based - 1
+        e = s + 1000
+        reqs.append(_num_fmt(sid, s, e, 0, 1, "DATE", "yyyy-mm-dd"))
+
+    return reqs
+
+
 def main():
     # Filled in by later tasks
     raise NotImplementedError("main() not implemented yet — see later tasks")
