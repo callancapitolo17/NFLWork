@@ -171,6 +171,94 @@ def avg_odds_f(mask=FILTER_MASK, extra=""):
     return f"=IF({den}=0,0,{num}/{den})"
 
 
+# ── Row builder ───────────────────────────────────────────────────────────
+
+def build_rows():
+    """Return the 2D list of cell values for the MLB Summary tab.
+
+    Layout (row indices 1-based):
+      1  Title
+      2  (blank)
+      3  "OVERALL STATS" header
+      4  column labels
+      5-13 overall metrics (anchor row numbers used by ROI/win-rate formulas)
+      14 (blank)
+      15 "BY GAME WINDOW" header
+      16 column labels
+      17 FG row
+      18 F5 row
+      19 (blank)
+      20 "EQUITY CURVE (Daily P&L)" header
+      21 column labels ("Date","Bets","Wagered","P&L","Cumulative P&L")
+      22+ daily data rows (dynamic, auto-extend)
+      ...
+      (a later section for weekly — filled by Task 5)
+    """
+    rows = []
+
+    # Row 1: title
+    rows.append(["MLB CORRELATED PARLAYS — WAGERZON"])
+    # Row 2: blank
+    rows.append([])
+
+    # Row 3: section header
+    rows.append(["OVERALL STATS"])
+    # Row 4: column labels
+    rows.append(["", "Value"])
+    # Row 5: Total bets placed
+    rows.append(["Total bets placed", placed_f()])
+    # Row 6: Settled bets
+    rows.append(["Settled bets (W+L+P)", settled_f()])
+    # Row 7: Total wagered
+    rows.append(["Total wagered", wagered_f()])
+    # Row 8: Net P&L
+    rows.append(["Net P&L", profit_f()])
+    # Row 9: ROI = P&L / wagered  (references anchors B7, B8)
+    rows.append(["ROI", "=IF(B7=0,0,B8/B7)"])
+    # Row 10: Win rate = wins / (wins + losses), NOT wins / settled
+    w_expr = f"SUMPRODUCT({FILTER_MASK}*{WIN})"
+    l_expr = f"SUMPRODUCT({FILTER_MASK}*{LOSS})"
+    rows.append([
+        "Win rate",
+        f"=IF(({w_expr}+{l_expr})=0,0,{w_expr}/({w_expr}+{l_expr}))",
+    ])
+    # Row 11: Record
+    rows.append(["Record (W-L-P)", record_f()])
+    # Row 12: Avg decimal odds
+    rows.append(["Avg decimal odds", avg_odds_f()])
+    # Row 13: blank spacer
+    rows.append([])
+
+    # Row 14: "BY GAME WINDOW" header
+    rows.append(["BY GAME WINDOW"])
+    # Row 15: column labels
+    rows.append([
+        "Window", "Bets", "Settled", "Wagered",
+        "P&L", "ROI", "Win Rate", "Record", "Avg Odds",
+    ])
+    # Rows 16-17: FG and F5 rows
+    for label, extra in (("Full Game (FG)", FG_ADD), ("First 5 (F5)", F5_ADD)):
+        r = len(rows) + 1
+        w_here = f"SUMPRODUCT({FILTER_MASK}{extra}*{WIN})"
+        l_here = f"SUMPRODUCT({FILTER_MASK}{extra}*{LOSS})"
+        rows.append([
+            label,
+            placed_f(extra=extra),
+            settled_f(extra=extra),
+            wagered_f(extra=extra),
+            profit_f(extra=extra),
+            f"=IF(D{r}=0,0,E{r}/D{r})",     # ROI
+            f"=IF(({w_here}+{l_here})=0,0,{w_here}/({w_here}+{l_here}))",
+            record_f(extra=extra),
+            avg_odds_f(extra=extra),
+        ])
+
+    # Row 18: blank spacer (Task 5 continues from here)
+    rows.append([])
+
+    return rows
+
+
 def main():
     # Filled in by later tasks
     raise NotImplementedError("main() not implemented yet — see later tasks")
