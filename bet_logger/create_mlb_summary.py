@@ -30,6 +30,11 @@ TAB = "MLB Summary"
 SRC = SHEET_NAME  # "Sheet1"
 N = 10000         # Max row the formulas scan in Sheet1
 
+# Cap on the dynamic trend tables — bounds the MMULT triangle so cumulative
+# formulas don't materialize a ~1000x1000 matrix on every recalc.
+DAILY_ROWS_MAX = 2000
+WEEKLY_ROWS_MAX = 500
+
 
 # ── Filter regex ──────────────────────────────────────────────────────────
 # A spread leg contains a signed half-integer like "+1.5" or "-2.5". The
@@ -291,6 +296,7 @@ def build_rows():
     rows.append(["Date", "Bets", "Wagered", "P&L", "Cumulative P&L"])
     daily_header_row = len(rows)          # 1-based row of column labels
     daily_start_row = daily_header_row + 1
+    daily_end = daily_start_row + DAILY_ROWS_MAX - 1
 
     # Column A: a single dynamic formula. The spilled dates fill downward.
     # We put the formula in the top cell; rows below it will be filled by
@@ -300,24 +306,25 @@ def build_rows():
             f"=IFERROR(SORT(UNIQUE(FILTER({COL_DATE},{FILTER_MASK}=1))),\"\")"
         ),
         # The other four columns use ARRAYFORMULA over the spilled date column
-        # in A — they must reference A{start}:A (whole column from start down).
-        f"=ARRAYFORMULA(IF(A{daily_start_row}:A=\"\",\"\","
-        f"SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A)*{FILTER_MASK}*{SETTLED})))",
-        f"=ARRAYFORMULA(IF(A{daily_start_row}:A=\"\",\"\","
-        f"SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A)*{FILTER_MASK}*{SETTLED}*{COL_STAKE})))",
+        # in A — bounded to daily_end to avoid materializing a ~1000x1000 MMULT.
+        f"=ARRAYFORMULA(IF(A{daily_start_row}:A{daily_end}=\"\",\"\","
+        f"SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A{daily_end})*{FILTER_MASK}*{SETTLED})))",
+        f"=ARRAYFORMULA(IF(A{daily_start_row}:A{daily_end}=\"\",\"\","
+        f"SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A{daily_end})*{FILTER_MASK}*{SETTLED}*{COL_STAKE})))",
         # P&L per day — wins payout minus losses stake
         (
-            f"=ARRAYFORMULA(IF(A{daily_start_row}:A=\"\",\"\","
-            f"SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A)*{FILTER_MASK}*{WIN}"
+            f"=ARRAYFORMULA(IF(A{daily_start_row}:A{daily_end}=\"\",\"\","
+            f"SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A{daily_end})*{FILTER_MASK}*{WIN}"
             f"*({COL_DEC}<>\"\")*{COL_STAKE}*({COL_DEC}-1))"
-            f"-SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A)*{FILTER_MASK}*{LOSS}*{COL_STAKE})))"
+            f"-SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A{daily_end})*{FILTER_MASK}*{LOSS}*{COL_STAKE})))"
         ),
         # Cumulative P&L — running sum of column D starting from daily_start_row.
         # ARRAYFORMULA of MMULT gives a running sum without per-row formulas.
+        # Bounded to daily_end rows to avoid materializing a huge MMULT triangle.
         (
-            f"=ARRAYFORMULA(IF(A{daily_start_row}:A=\"\",\"\","
-            f"MMULT(--(ROW(D{daily_start_row}:D)>=TRANSPOSE(ROW(D{daily_start_row}:D))),"
-            f"IFERROR(D{daily_start_row}:D*1,0))))"
+            f"=ARRAYFORMULA(IF(A{daily_start_row}:A{daily_end}=\"\",\"\","
+            f"MMULT(--(ROW(D{daily_start_row}:D{daily_end})>=TRANSPOSE(ROW(D{daily_start_row}:D{daily_end}))),"
+            f"IFERROR(D{daily_start_row}:D{daily_end}*1,0))))"
         ),
     ])
     rows.append([])  # spacer after daily block
@@ -327,6 +334,7 @@ def build_rows():
     rows.append(["Week of (Mon)", "Bets", "Wagered", "P&L", "Cumulative P&L"])
     weekly_header_row = len(rows)
     weekly_start_row = weekly_header_row + 1
+    weekly_end = weekly_start_row + WEEKLY_ROWS_MAX - 1
 
     # Week-start bucket = A - WEEKDAY(A, 2) + 1  (Monday of that date's week).
     # Wrap the FILTER in ARRAYFORMULA so the transform is applied element-wise.
@@ -338,27 +346,27 @@ def build_rows():
             f"=IFERROR(SORT(UNIQUE("
             f"FILTER(ARRAYFORMULA({week_of_date}),{FILTER_MASK}=1))),\"\")"
         ),
-        f"=ARRAYFORMULA(IF(A{weekly_start_row}:A=\"\",\"\","
-        f"SUMPRODUCT(({week_of_date}=A{weekly_start_row}:A)*{FILTER_MASK}*{SETTLED})))",
-        f"=ARRAYFORMULA(IF(A{weekly_start_row}:A=\"\",\"\","
-        f"SUMPRODUCT(({week_of_date}=A{weekly_start_row}:A)*{FILTER_MASK}*{SETTLED}*{COL_STAKE})))",
+        f"=ARRAYFORMULA(IF(A{weekly_start_row}:A{weekly_end}=\"\",\"\","
+        f"SUMPRODUCT(({week_of_date}=A{weekly_start_row}:A{weekly_end})*{FILTER_MASK}*{SETTLED})))",
+        f"=ARRAYFORMULA(IF(A{weekly_start_row}:A{weekly_end}=\"\",\"\","
+        f"SUMPRODUCT(({week_of_date}=A{weekly_start_row}:A{weekly_end})*{FILTER_MASK}*{SETTLED}*{COL_STAKE})))",
         (
-            f"=ARRAYFORMULA(IF(A{weekly_start_row}:A=\"\",\"\","
-            f"SUMPRODUCT(({week_of_date}=A{weekly_start_row}:A)*{FILTER_MASK}*{WIN}"
+            f"=ARRAYFORMULA(IF(A{weekly_start_row}:A{weekly_end}=\"\",\"\","
+            f"SUMPRODUCT(({week_of_date}=A{weekly_start_row}:A{weekly_end})*{FILTER_MASK}*{WIN}"
             f"*({COL_DEC}<>\"\")*{COL_STAKE}*({COL_DEC}-1))"
-            f"-SUMPRODUCT(({week_of_date}=A{weekly_start_row}:A)*{FILTER_MASK}*{LOSS}*{COL_STAKE})))"
+            f"-SUMPRODUCT(({week_of_date}=A{weekly_start_row}:A{weekly_end})*{FILTER_MASK}*{LOSS}*{COL_STAKE})))"
         ),
         (
-            f"=ARRAYFORMULA(IF(A{weekly_start_row}:A=\"\",\"\","
-            f"MMULT(--(ROW(D{weekly_start_row}:D)>=TRANSPOSE(ROW(D{weekly_start_row}:D))),"
-            f"IFERROR(D{weekly_start_row}:D*1,0))))"
+            f"=ARRAYFORMULA(IF(A{weekly_start_row}:A{weekly_end}=\"\",\"\","
+            f"MMULT(--(ROW(D{weekly_start_row}:D{weekly_end})>=TRANSPOSE(ROW(D{weekly_start_row}:D{weekly_end}))),"
+            f"IFERROR(D{weekly_start_row}:D{weekly_end}*1,0))))"
         ),
     ])
 
     # Also stash the anchor row numbers so Task 6 (charts) can reference
     # them without re-computing. Attach as an attribute on the returned list.
-    rows.__anchor_daily_start__ = daily_start_row          # type: ignore[attr-defined]
-    rows.__anchor_weekly_start__ = weekly_start_row        # type: ignore[attr-defined]
+    rows._anchor_daily_start = daily_start_row
+    rows._anchor_weekly_start = weekly_start_row
 
     return rows
 
