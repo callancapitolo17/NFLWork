@@ -290,80 +290,80 @@ def build_rows():
     # Row 18: blank spacer (Task 5 continues from here)
     rows.append([])
 
-    # ── Block 3a: Daily P&L (dynamic, feeds the equity curve chart) ──
-    rows.append(["DAILY P&L"])
-    rows.append(["Date", "Bets", "Wagered", "P&L", "Cumulative P&L"])
-    daily_header_row = len(rows)          # 1-based row of column labels
+    # ── Block 3: Daily (A-E) + Weekly (G-K) P&L tables, side-by-side ──
+    # Vertical stacking caused SORT(UNIQUE(FILTER(...))) spill collisions
+    # (the daily date list would hit the weekly header text 2 rows below).
+    # Side-by-side gives each block unbounded vertical room.
+
+    # Section header row (col A: daily, col G: weekly)
+    rows.append(["DAILY P&L", "", "", "", "", "", "WEEKLY P&L"])
+
+    # Column labels row
+    rows.append([
+        "Date", "Bets", "Wagered", "P&L", "Cumulative P&L", "",
+        "Week of (Mon)", "Bets", "Wagered", "P&L", "Cumulative P&L",
+    ])
+    daily_header_row = len(rows)
     daily_start_row = daily_header_row + 1
     daily_end = daily_start_row + DAILY_ROWS_MAX - 1
-
-    # Column A: a single dynamic formula. The spilled dates fill downward.
-    # We put the formula in the top cell; rows below it will be filled by
-    # the ARRAYFORMULA spill when the sheet is opened.
-    rows.append([
-        (
-            f"=IFERROR(SORT(UNIQUE(FILTER({COL_DATE},{FILTER_MASK}=1))),\"\")"
-        ),
-        # The other four columns use ARRAYFORMULA over the spilled date column
-        # in A — bounded to daily_end to avoid materializing a ~1000x1000 MMULT.
-        f"=ARRAYFORMULA(IF(A{daily_start_row}:A{daily_end}=\"\",\"\","
-        f"SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A{daily_end})*{FILTER_MASK}*{SETTLED})))",
-        f"=ARRAYFORMULA(IF(A{daily_start_row}:A{daily_end}=\"\",\"\","
-        f"SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A{daily_end})*{FILTER_MASK}*{SETTLED}*{COL_STAKE})))",
-        # P&L per day — wins payout minus losses stake
-        (
-            f"=ARRAYFORMULA(IF(A{daily_start_row}:A{daily_end}=\"\",\"\","
-            f"SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A{daily_end})*{FILTER_MASK}*{WIN}"
-            f"*({COL_DEC}<>\"\")*{COL_STAKE}*({COL_DEC}-1))"
-            f"-SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A{daily_end})*{FILTER_MASK}*{LOSS}*{COL_STAKE})))"
-        ),
-        # Cumulative P&L — running sum of column D starting from daily_start_row.
-        # ARRAYFORMULA of MMULT gives a running sum without per-row formulas.
-        # Bounded to daily_end rows to avoid materializing a huge MMULT triangle.
-        (
-            f"=ARRAYFORMULA(IF(A{daily_start_row}:A{daily_end}=\"\",\"\","
-            f"MMULT(--(ROW(D{daily_start_row}:D{daily_end})>=TRANSPOSE(ROW(D{daily_start_row}:D{daily_end}))),"
-            f"IFERROR(D{daily_start_row}:D{daily_end}*1,0))))"
-        ),
-    ])
-    rows.append([])  # spacer after daily block
-
-    # ── Block 3b: Weekly P&L (dynamic, feeds the bar chart) ──
-    rows.append(["WEEKLY P&L"])
-    rows.append(["Week of (Mon)", "Bets", "Wagered", "P&L", "Cumulative P&L"])
-    weekly_header_row = len(rows)
-    weekly_start_row = weekly_header_row + 1
+    weekly_header_row = daily_header_row   # same row as daily — they're side-by-side
+    weekly_start_row = daily_start_row     # same row
     weekly_end = weekly_start_row + WEEKLY_ROWS_MAX - 1
 
-    # Week-start bucket = A - WEEKDAY(A, 2) + 1  (Monday of that date's week).
-    # Wrap the FILTER in ARRAYFORMULA so the transform is applied element-wise.
-    week_of_date = (
-        f"({COL_DATE}-WEEKDAY({COL_DATE},2)+1)"
-    )
+    # Week-of-Monday bucket key (per-row date transform)
+    week_of_date = f"({COL_DATE}-WEEKDAY({COL_DATE},2)+1)"
+
+    # Build the formula row — 11 cells, daily formulas in A-E and weekly in G-K
     rows.append([
+        # ── DAILY (cols A-E) ──
+        # A21: dynamic date list (spills)
+        f'=IFERROR(SORT(UNIQUE(FILTER({COL_DATE},{FILTER_MASK}=1))),"")',
+        # B21: bets per day
+        f'=ARRAYFORMULA(IF(A{daily_start_row}:A{daily_end}="","",'
+        f'SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A{daily_end})*{FILTER_MASK}*{SETTLED})))',
+        # C21: wagered per day
+        f'=ARRAYFORMULA(IF(A{daily_start_row}:A{daily_end}="","",'
+        f'SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A{daily_end})*{FILTER_MASK}*{SETTLED}*{COL_STAKE})))',
+        # D21: P&L per day (wins payout − losses stake)
         (
-            f"=IFERROR(SORT(UNIQUE("
-            f"FILTER(ARRAYFORMULA({week_of_date}),{FILTER_MASK}=1))),\"\")"
+            f'=ARRAYFORMULA(IF(A{daily_start_row}:A{daily_end}="","",'
+            f'SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A{daily_end})*{FILTER_MASK}*{WIN}'
+            f'*({COL_DEC}<>"")*{COL_STAKE}*({COL_DEC}-1))'
+            f'-SUMPRODUCT(({COL_DATE}=A{daily_start_row}:A{daily_end})*{FILTER_MASK}*{LOSS}*{COL_STAKE})))'
         ),
-        f"=ARRAYFORMULA(IF(A{weekly_start_row}:A{weekly_end}=\"\",\"\","
-        f"SUMPRODUCT(({week_of_date}=A{weekly_start_row}:A{weekly_end})*{FILTER_MASK}*{SETTLED})))",
-        f"=ARRAYFORMULA(IF(A{weekly_start_row}:A{weekly_end}=\"\",\"\","
-        f"SUMPRODUCT(({week_of_date}=A{weekly_start_row}:A{weekly_end})*{FILTER_MASK}*{SETTLED}*{COL_STAKE})))",
+        # E21: cumulative P&L
         (
-            f"=ARRAYFORMULA(IF(A{weekly_start_row}:A{weekly_end}=\"\",\"\","
-            f"SUMPRODUCT(({week_of_date}=A{weekly_start_row}:A{weekly_end})*{FILTER_MASK}*{WIN}"
-            f"*({COL_DEC}<>\"\")*{COL_STAKE}*({COL_DEC}-1))"
-            f"-SUMPRODUCT(({week_of_date}=A{weekly_start_row}:A{weekly_end})*{FILTER_MASK}*{LOSS}*{COL_STAKE})))"
+            f'=ARRAYFORMULA(IF(A{daily_start_row}:A{daily_end}="","",'
+            f'MMULT(--(ROW(D{daily_start_row}:D{daily_end})>=TRANSPOSE(ROW(D{daily_start_row}:D{daily_end}))),'
+            f'IFERROR(D{daily_start_row}:D{daily_end}*1,0))))'
         ),
+        # F21: empty separator column
+        "",
+        # ── WEEKLY (cols G-K) ──
+        # G21: dynamic week-of-Monday list
+        f'=IFERROR(SORT(UNIQUE(FILTER(ARRAYFORMULA({week_of_date}),{FILTER_MASK}=1))),"")',
+        # H21: bets per week
+        f'=ARRAYFORMULA(IF(G{weekly_start_row}:G{weekly_end}="","",'
+        f'SUMPRODUCT(({week_of_date}=G{weekly_start_row}:G{weekly_end})*{FILTER_MASK}*{SETTLED})))',
+        # I21: wagered per week
+        f'=ARRAYFORMULA(IF(G{weekly_start_row}:G{weekly_end}="","",'
+        f'SUMPRODUCT(({week_of_date}=G{weekly_start_row}:G{weekly_end})*{FILTER_MASK}*{SETTLED}*{COL_STAKE})))',
+        # J21: P&L per week
         (
-            f"=ARRAYFORMULA(IF(A{weekly_start_row}:A{weekly_end}=\"\",\"\","
-            f"MMULT(--(ROW(D{weekly_start_row}:D{weekly_end})>=TRANSPOSE(ROW(D{weekly_start_row}:D{weekly_end}))),"
-            f"IFERROR(D{weekly_start_row}:D{weekly_end}*1,0))))"
+            f'=ARRAYFORMULA(IF(G{weekly_start_row}:G{weekly_end}="","",'
+            f'SUMPRODUCT(({week_of_date}=G{weekly_start_row}:G{weekly_end})*{FILTER_MASK}*{WIN}'
+            f'*({COL_DEC}<>"")*{COL_STAKE}*({COL_DEC}-1))'
+            f'-SUMPRODUCT(({week_of_date}=G{weekly_start_row}:G{weekly_end})*{FILTER_MASK}*{LOSS}*{COL_STAKE})))'
+        ),
+        # K21: cumulative P&L
+        (
+            f'=ARRAYFORMULA(IF(G{weekly_start_row}:G{weekly_end}="","",'
+            f'MMULT(--(ROW(J{weekly_start_row}:J{weekly_end})>=TRANSPOSE(ROW(J{weekly_start_row}:J{weekly_end}))),'
+            f'IFERROR(J{weekly_start_row}:J{weekly_end}*1,0))))'
         ),
     ])
 
-    # Also stash the anchor row numbers so Task 6 (charts) can reference
-    # them without re-computing. Attach as an attribute on the returned list.
+    # Stash anchors so Task 6 (charts) and Task 7 (formatting) can read them
     rows._anchor_daily_start = daily_start_row
     rows._anchor_weekly_start = weekly_start_row
 
@@ -432,7 +432,7 @@ def build_chart_requests(sheet_id, daily_start_row, weekly_start_row, last_row):
                         "anchorCell": {
                             "sheetId": sheet_id,
                             "rowIndex": daily_header_idx - 12,  # above DAILY P&L block
-                            "columnIndex": 6,                   # column G
+                            "columnIndex": 12,                  # column M
                         },
                         "widthPixels": 600,
                         "heightPixels": 300,
@@ -442,7 +442,7 @@ def build_chart_requests(sheet_id, daily_start_row, weekly_start_row, last_row):
         }
     }
 
-    # WEEKLY BARS — X: Week of (col A), Y: P&L (col D)
+    # WEEKLY BARS — X: Week of (col G), Y: P&L (col J)
     weekly_chart = {
         "addChart": {
             "chart": {
@@ -460,7 +460,7 @@ def build_chart_requests(sheet_id, daily_start_row, weekly_start_row, last_row):
                                 "sheetId": sheet_id,
                                 "startRowIndex": weekly_data_start,
                                 "endRowIndex": last_row,
-                                "startColumnIndex": 0, "endColumnIndex": 1,
+                                "startColumnIndex": 6, "endColumnIndex": 7,
                             }]}}
                         }],
                         "series": [{
@@ -468,7 +468,7 @@ def build_chart_requests(sheet_id, daily_start_row, weekly_start_row, last_row):
                                 "sheetId": sheet_id,
                                 "startRowIndex": weekly_data_start,
                                 "endRowIndex": last_row,
-                                "startColumnIndex": 3, "endColumnIndex": 4,
+                                "startColumnIndex": 9, "endColumnIndex": 10,
                             }]}},
                             "targetAxis": "LEFT_AXIS",
                         }],
@@ -480,7 +480,7 @@ def build_chart_requests(sheet_id, daily_start_row, weekly_start_row, last_row):
                         "anchorCell": {
                             "sheetId": sheet_id,
                             "rowIndex": weekly_header_idx - 6,
-                            "columnIndex": 6,                   # column G, below equity curve
+                            "columnIndex": 12,                  # column M, below equity curve
                         },
                         "widthPixels": 600,
                         "heightPixels": 300,
@@ -550,20 +550,21 @@ def build_format_requests(sid, daily_start_row, weekly_start_row):
     LABEL_BG = (0.93, 0.93, 0.93)
 
     # Title (row 1)
-    reqs.append(_text_fmt(sid, 0, 1, 0, 10, bold=True, size=16))
+    reqs.append(_text_fmt(sid, 0, 1, 0, 11, bold=True, size=16))
 
     # Section headers: rows 3 (OVERALL), 14 (BY GAME WINDOW),
-    # (daily_header_row - 1), and (weekly_header_row - 1).
-    for section_row_1based in (3, 14, daily_start_row - 1, weekly_start_row - 1):
+    # and (daily_start_row - 1) which is ALSO the weekly header (side-by-side).
+    for section_row_1based in (3, 14, daily_start_row - 1):
         r = section_row_1based - 1
-        reqs.append(_bg_fmt(sid, r, r + 1, 0, 10, HEADER_BG))
-        reqs.append(_text_fmt(sid, r, r + 1, 0, 10, bold=True, size=12))
+        reqs.append(_bg_fmt(sid, r, r + 1, 0, 11, HEADER_BG))
+        reqs.append(_text_fmt(sid, r, r + 1, 0, 11, bold=True, size=12))
 
-    # Column-label rows (the one right below each section header)
-    for label_row_1based in (4, 15, daily_start_row, weekly_start_row):
+    # Column-label rows (the one right below each section header).
+    # Daily and weekly share the same label row now (daily_start_row).
+    for label_row_1based in (4, 15, daily_start_row):
         r = label_row_1based - 1
-        reqs.append(_bg_fmt(sid, r, r + 1, 0, 10, LABEL_BG))
-        reqs.append(_text_fmt(sid, r, r + 1, 0, 10, bold=True))
+        reqs.append(_bg_fmt(sid, r, r + 1, 0, 11, LABEL_BG))
+        reqs.append(_text_fmt(sid, r, r + 1, 0, 11, bold=True))
 
     # OVERALL STATS — rows 5-12 (0-based 4-12), column B (index 1)
     #   Row indices of: 5=placed 6=settled 7=wagered 8=pnl 9=roi 10=winrate 11=record 12=avgodds
@@ -581,30 +582,39 @@ def build_format_requests(sid, daily_start_row, weekly_start_row):
     reqs.append(_cond_fmt(sid, 15, 17, 4, 5, "NUMBER_GREATER", "0", GREEN))
     reqs.append(_cond_fmt(sid, 15, 17, 4, 5, "NUMBER_LESS", "0", RED))
 
-    # Daily and weekly blocks — generous range (1000 rows) for dynamic data
-    for start_1based in (daily_start_row, weekly_start_row):
-        s = start_1based - 1
-        e = s + 1000
-        reqs.append(_num_fmt(sid, s, e, 2, 5, "CURRENCY", "$#,##0.00"))  # wagered, P&L, cum
-        reqs.append(_cond_fmt(sid, s, e, 3, 4, "NUMBER_GREATER", "0", GREEN))
-        reqs.append(_cond_fmt(sid, s, e, 3, 4, "NUMBER_LESS", "0", RED))
-        reqs.append(_cond_fmt(sid, s, e, 4, 5, "NUMBER_GREATER", "0", GREEN))
-        reqs.append(_cond_fmt(sid, s, e, 4, 5, "NUMBER_LESS", "0", RED))
+    # Daily and weekly blocks — generous range (1000 rows) for dynamic data.
+    # Daily: cols C-E (idx 2-5); Weekly: cols I-K (idx 8-11). Same start row.
+    s = daily_start_row - 1
+    e = s + 1000
+    # Daily block: cols C-E (idx 2-5)
+    reqs.append(_num_fmt(sid, s, e, 2, 5, "CURRENCY", "$#,##0.00"))
+    reqs.append(_cond_fmt(sid, s, e, 3, 4, "NUMBER_GREATER", "0", GREEN))
+    reqs.append(_cond_fmt(sid, s, e, 3, 4, "NUMBER_LESS", "0", RED))
+    reqs.append(_cond_fmt(sid, s, e, 4, 5, "NUMBER_GREATER", "0", GREEN))
+    reqs.append(_cond_fmt(sid, s, e, 4, 5, "NUMBER_LESS", "0", RED))
+    # Weekly block: cols I-K (idx 8-11)
+    reqs.append(_num_fmt(sid, s, e, 8, 11, "CURRENCY", "$#,##0.00"))
+    reqs.append(_cond_fmt(sid, s, e, 9, 10, "NUMBER_GREATER", "0", GREEN))
+    reqs.append(_cond_fmt(sid, s, e, 9, 10, "NUMBER_LESS", "0", RED))
+    reqs.append(_cond_fmt(sid, s, e, 10, 11, "NUMBER_GREATER", "0", GREEN))
+    reqs.append(_cond_fmt(sid, s, e, 10, 11, "NUMBER_LESS", "0", RED))
 
-    # Column widths (A-I)
-    for i, w in enumerate([155, 80, 85, 110, 115, 75, 85, 130, 90]):
+    # Column widths (A-K): col F is the empty separator — narrow at 30px.
+    for i, w in enumerate([155, 80, 85, 110, 115, 30, 155, 80, 85, 110, 115]):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": sid, "dimension": "COLUMNS",
                       "startIndex": i, "endIndex": i + 1},
             "properties": {"pixelSize": w}, "fields": "pixelSize",
         }})
 
-    # Date format for column A in daily and weekly blocks (the SORT(UNIQUE(FILTER))
-    # spill returns date serials; without DATE format they display as numbers).
-    for start_1based in (daily_start_row, weekly_start_row):
-        s = start_1based - 1
-        e = s + 1000
-        reqs.append(_num_fmt(sid, s, e, 0, 1, "DATE", "yyyy-mm-dd"))
+    # Date format for col A (daily) and col G (weekly) — SORT(UNIQUE(FILTER))
+    # spills return date serials; without DATE format they display as numbers.
+    s = daily_start_row - 1
+    e = s + 1000
+    # Daily col A
+    reqs.append(_num_fmt(sid, s, e, 0, 1, "DATE", "yyyy-mm-dd"))
+    # Weekly col G
+    reqs.append(_num_fmt(sid, s, e, 6, 7, "DATE", "yyyy-mm-dd"))
 
     return reqs
 
