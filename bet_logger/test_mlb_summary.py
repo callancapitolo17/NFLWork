@@ -1,4 +1,10 @@
-"""Unit tests for create_mlb_summary.py filter helpers."""
+"""Unit tests for create_mlb_summary.py filter helpers.
+
+Fixtures are real Wagerzon MLB parlay descriptions captured from the live
+bet log on 2026-04-25. Wagerzon uses Unicode ½, "TOTAL o/u" prefix, and
+"1H" team prefix for half-game bets — see comments on regex constants in
+create_mlb_summary.py.
+"""
 import pytest
 from create_mlb_summary import (
     is_mlb_correlated_parlay,
@@ -9,43 +15,60 @@ from create_mlb_summary import (
 )
 
 
-# Real Wagerzon description samples (format: "PARLAY (2 TEAMS) | leg1 | leg2")
-SPREAD_PLUS_TOTAL_FG = (
-    "PARLAY (2 TEAMS) | Detroit Tigers -1.5 +140 | Over 8.5 -110"
+# Real Wagerzon descriptions (as they appear in column D of Sheet1)
+FG_TOTAL_FIRST = (
+    "PARLAY (2 TEAMS) | TOTAL o8½-110 (NY YANKEES vrs SF GIANTS) "
+    "( WILL WARREN - R / TYLER MAHLE - R ) | NY YANKEES -1½+130 "
+    "( WILL WARREN - R / TYLER MAHLE - R )"
 )
-SPREAD_PLUS_TOTAL_F5 = (
-    "PARLAY (2 TEAMS) | Detroit Tigers 1st 5 Innings -0.5 +115 | "
-    "1st 5 Innings Over 4.5 -105"
+FG_INTEGER_TOTAL = (
+    "PARLAY (2 TEAMS) | TOTAL o7-103 (CLE GUARDIANS vrs SEA MARINERS) "
+    "( JOEY CANTILLO - L / BRYAN WOO - R ) | SEA MARINERS -1½+118 "
+    "( JOEY CANTILLO - L / BRYAN WOO - R )"
+)
+FG_SPREAD_FIRST = (
+    "PARLAY (2 TEAMS) | MIA MARLINS -1½+114 ( JOSE QUINTANA - L / MAX MEYER - R ) | "
+    "TOTAL o8-106 (COL ROCKIES vrs MIA MARLINS) ( JOSE QUINTANA - L / MAX MEYER - R )"
+)
+F5_TOTAL_FIRST = (
+    "PARLAY (2 TEAMS) | TOTAL u4+115 (1H TB RAYS vrs 1H MIN TWINS) "
+    "( STEVEN MATZ - L / MICK ABEL - R ) | 1H TB RAYS +½-145 "
+    "( STEVEN MATZ - L / MICK ABEL - R )"
+)
+F5_SPREAD_FIRST = (
+    "PARLAY (2 TEAMS) | 1H TEX RANGERS -½+108 ( RHETT LOWDER - R / KUMAR ROCKER - R ) | "
+    "TOTAL o4½-110 (1H CIN REDS vrs 1H TEX RANGERS) ( RHETT LOWDER - R / KUMAR ROCKER - R )"
 )
 ML_PLUS_ML = (
-    "PARLAY (2 TEAMS) | Detroit Tigers ML +100 | Chicago Cubs ML -120"
+    "PARLAY (2 TEAMS) | NY YANKEES ML +100 ( WARREN - R ) | "
+    "CHI CUBS ML -120 ( SMYLY - L )"
 )
-TOTAL_PLUS_TOTAL = (
-    "PARLAY (2 TEAMS) | Over 8.5 -110 | Over 4.5 -105 1st 5 Innings"
+ML_PLUS_TOTAL_ONLY = (
+    "PARLAY (2 TEAMS) | NY YANKEES ML +100 ( WARREN - R ) | "
+    "TOTAL o8½-110 (NY YANKEES vrs SF GIANTS) ( WARREN - R / MAHLE - R )"
 )
 THREE_LEGS = (
-    "PARLAY (3 TEAMS) | Detroit Tigers -1.5 +140 | Over 8.5 -110 | "
-    "Yankees ML -200"
+    "PARLAY (3 TEAMS) | NY YANKEES -1½+130 (...) | TOTAL o8½-110 (...) | "
+    "CHI CUBS ML -200 (...)"
 )
-STRAIGHT_BET = "STRAIGHT BET | Detroit Tigers -1.5 +140"
+STRAIGHT_BET = "STRAIGHT BET | NY YANKEES -1½+130 ( WARREN - R / MAHLE - R )"
 
 
 @pytest.mark.parametrize(
     "desc, sport, bet_type, expected",
     [
-        (SPREAD_PLUS_TOTAL_FG, "MLB", "Parlay", True),
-        (SPREAD_PLUS_TOTAL_F5, "MLB", "Parlay", True),
-        (ML_PLUS_ML, "MLB", "Parlay", False),
-        (TOTAL_PLUS_TOTAL, "MLB", "Parlay", False),
-        (THREE_LEGS, "MLB", "Parlay", False),
-        (STRAIGHT_BET, "MLB", "Straight", False),
-        (SPREAD_PLUS_TOTAL_FG, "NFL", "Parlay", False),
-        # Underdog spread (+1.5) — favorite-side spread already covered above
-        ("PARLAY (2 TEAMS) | Boston Red Sox +1.5 -160 | Under 8.5 -110", "MLB", "Parlay", True),
-        # Alt run line (-2.5) — common in lopsided games
-        ("PARLAY (2 TEAMS) | Los Angeles Dodgers -2.5 +250 | Over 9.5 -110", "MLB", "Parlay", True),
-        # Bigger alt run line (+3.5) — would have been silently excluded by the old hardcoded regex
-        ("PARLAY (2 TEAMS) | Oakland Athletics +3.5 -180 | Under 7.5 -110", "MLB", "Parlay", True),
+        # Real correlated parlays (FG variants and F5 variants)
+        (FG_TOTAL_FIRST, "MLB", "Parlay", True),
+        (FG_INTEGER_TOTAL, "MLB", "Parlay", True),
+        (FG_SPREAD_FIRST, "MLB", "Parlay", True),
+        (F5_TOTAL_FIRST, "MLB", "Parlay", True),
+        (F5_SPREAD_FIRST, "MLB", "Parlay", True),
+        # Things that should NOT match
+        (ML_PLUS_ML, "MLB", "Parlay", False),       # no spread, no total
+        (ML_PLUS_TOTAL_ONLY, "MLB", "Parlay", False),  # has total, no spread
+        (THREE_LEGS, "MLB", "Parlay", False),       # PARLAY (3 TEAMS) excluded by header check
+        (STRAIGHT_BET, "MLB", "Straight", False),   # not a parlay
+        (FG_TOTAL_FIRST, "NFL", "Parlay", False),   # wrong sport
     ],
 )
 def test_is_mlb_correlated_parlay(desc, sport, bet_type, expected):
@@ -55,11 +78,13 @@ def test_is_mlb_correlated_parlay(desc, sport, bet_type, expected):
 @pytest.mark.parametrize(
     "desc, expected",
     [
-        (SPREAD_PLUS_TOTAL_FG, False),
-        (SPREAD_PLUS_TOTAL_F5, True),
-        ("PARLAY (2 TEAMS) | Yankees F5 -0.5 +110 | Over 4.5 -105", True),
-        ("PARLAY (2 TEAMS) | Yankees First 5 -0.5 +110 | Over 4.5 -105", True),
-        ("PARLAY (2 TEAMS) | Yankees -1.5 +140 | Over 8.5 -110", False),
+        # FG bets — no 1H/F5 marker
+        (FG_TOTAL_FIRST, False),
+        (FG_INTEGER_TOTAL, False),
+        (FG_SPREAD_FIRST, False),
+        # F5 bets — both directions
+        (F5_TOTAL_FIRST, True),
+        (F5_SPREAD_FIRST, True),
     ],
 )
 def test_is_f5_parlay(desc, expected):

@@ -37,20 +37,16 @@ WEEKLY_ROWS_MAX = 500
 
 
 # ── Filter regex ──────────────────────────────────────────────────────────
-# A spread leg contains a signed half-integer like "+1.5" or "-2.5". The
-# `.5` requirement excludes American odds (which are integers like -110,
-# +140 — never half-numbers). Lookarounds prevent matching inside numbers
-# that happen to contain ".5" digits — e.g., we don't want to match the
-# "+1.5" inside hypothetical "+1.50" odds, though Wagerzon doesn't use that.
-SPREAD_REGEX = re.compile(r"(?<![\d.])[+\-]\d+\.5(?!\d)")
+# Wagerzon MLB parlay descriptions look like:
+#   "PARLAY (2 TEAMS) | TOTAL o8½-110 (NY YANKEES vrs SF GIANTS) ... | NY YANKEES -1½+130 ..."
+# Half-game (F5) parlays use "1H" team-name prefix and ½-only spreads:
+#   "PARLAY (2 TEAMS) | TOTAL u4+115 (1H TB RAYS vrs 1H MIN TWINS) ... | 1H TB RAYS +½-145"
+# Half-numbers are written with the Unicode ½ glyph, NOT .5.
+# Spreads can be ±1½ (FG), ±2½ (alt run line), or just ±½ (1H — half-game).
 
-# A total leg contains "Over N.N" or "Under N.N". We accept the word forms
-# only (the bare "O 8.5" / "U 8.5" shorthand does not appear in Wagerzon's
-# MLB output — confirmed against the scraper's clean_desc output).
-TOTAL_REGEX = re.compile(r"\b(Over|Under)\s+\d+(?:\.\d+)?\b", re.IGNORECASE)
-
-# F5 markers in leg descriptions.
-F5_REGEX = re.compile(r"\b(?:1st\s*5|F5|First\s*5)\b", re.IGNORECASE)
+SPREAD_REGEX = re.compile(r"(?<!\d)[+\-]\d*½")
+TOTAL_REGEX = re.compile(r"\bTOTAL\s+[ou]\d", re.IGNORECASE)
+F5_REGEX = re.compile(r"\b(?:1H|1st\s*5|F5|First\s*5)\b", re.IGNORECASE)
 
 
 def is_mlb_correlated_parlay(description: str, sport: str, bet_type: str) -> bool:
@@ -95,17 +91,17 @@ FILTER_MASK = (
     f'*({COL_TYPE}="Parlay")'
     f'*(LEFT({COL_DESC},16)="PARLAY (2 TEAMS)")'
     f'*IFERROR(REGEXMATCH({COL_DESC},'
-    r'"(?<![\d.])[+\-]\d+\.5(?!\d)"'
+    r'"(?<!\d)[+\-]\d*½"'
     f'),FALSE)'
     f'*IFERROR(REGEXMATCH({COL_DESC},'
-    r'"\b(?i)(Over|Under)\s+\d+(?:\.\d+)?\b"'
+    r'"\b(?i)TOTAL\s+[ou]\d"'
     f'),FALSE)'
 )
 
 # The FG/F5 modifiers — multiplied INTO the filter mask to split the set.
 F5_COND = (
     f'IFERROR(REGEXMATCH({COL_DESC},'
-    r'"\b(?i)(?:1st\s*5|F5|First\s*5)\b"'
+    r'"\b(?i)(?:1H|1st\s*5|F5|First\s*5)\b"'
     f'),FALSE)'
 )
 FG_ADD = f"*NOT({F5_COND})"  # NOT F5
