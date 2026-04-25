@@ -76,11 +76,13 @@ query MLBEvents($start_gte: timestamptz!, $start_lte: timestamptz!) {
 }
 """
 
-# Reuse Novig's own EventMarkets_Query — captured from recon. Returns the full
-# market tree (with outcomes + fragments). We only use the markets[] array.
-# Loaded lazily from the local recon file; embedded here to remove that dep.
+# Reuse Novig's own EventMarkets_Query — captured from recon and committed
+# to disk so the scraper bootstraps cleanly on a fresh checkout. Returns the
+# full market tree (with outcomes + fragments). We only use the markets[] array.
 EVENT_MARKETS_QUERY = None  # populated at runtime from EVENT_MARKETS_PATH
-EVENT_MARKETS_PATH = _THIS_DIR / ".novig_event_markets_query.json"
+EVENT_MARKETS_PATH = _THIS_DIR / "novig_event_markets_query.json"
+# Legacy cache path (written by older scraper versions); kept for compat.
+_LEGACY_CACHE_PATH = _THIS_DIR / ".novig_event_markets_query.json"
 
 # Market type names (Novig uses SPREAD_1H / TOTAL_1H for F5)
 SPREAD_TYPE = {"fg": "SPREAD",    "f5": "SPREAD_1H"}
@@ -126,21 +128,29 @@ def _utc_bucket(ts) -> str:
 # GraphQL loading: EventMarkets_Query
 # ---------------------------------------------------------------------------
 def _load_event_markets_query() -> str:
-    """Load the captured EventMarkets_Query text from disk, or fall back to
-    the recon JSON and cache it locally for future runs."""
+    """Load the captured EventMarkets_Query JSON.
+
+    Tries (in order):
+      1. The committed canonical file `novig_event_markets_query.json`
+         — what ships on main and works on a fresh checkout.
+      2. The legacy hidden cache `.novig_event_markets_query.json`
+         — written by older scraper versions; kept for compatibility.
+      3. The recon JSON `recon_novig_sgp.json` (if available locally),
+         extracting the captured GraphQL post_data.
+    """
     global EVENT_MARKETS_QUERY
     if EVENT_MARKETS_QUERY is not None:
         return EVENT_MARKETS_QUERY
 
-    # Try cache first
-    if EVENT_MARKETS_PATH.exists():
-        try:
-            EVENT_MARKETS_QUERY = EVENT_MARKETS_PATH.read_text()
-            return EVENT_MARKETS_QUERY
-        except Exception:
-            pass
+    for path in (EVENT_MARKETS_PATH, _LEGACY_CACHE_PATH):
+        if path.exists():
+            try:
+                EVENT_MARKETS_QUERY = path.read_text()
+                return EVENT_MARKETS_QUERY
+            except Exception:
+                pass
 
-    # Fall back to extracting from recon JSON
+    # Last-resort fallback: extract from recon JSON if it's around
     recon_path = _THIS_DIR / "recon_novig_sgp.json"
     if recon_path.exists():
         try:
@@ -152,19 +162,15 @@ def _load_event_markets_query() -> str:
                     pd = r.get("post_data") or ""
                     if "EventMarkets_Query" in pd[:120]:
                         EVENT_MARKETS_QUERY = pd
-                        # Cache for next run
-                        try:
-                            EVENT_MARKETS_PATH.write_text(pd)
-                        except Exception:
-                            pass
                         return EVENT_MARKETS_QUERY
         except Exception as e:
             print(f"  (could not parse recon JSON: {e})")
 
     raise RuntimeError(
         "EventMarkets_Query text unavailable. Expected at "
-        f"{EVENT_MARKETS_PATH} or in recon_novig_sgp.json. "
-        "Run recon_novig_sgp.py once to capture it."
+        f"{EVENT_MARKETS_PATH}. The committed canonical query file is "
+        "missing — recover from /tmp/novig_EventMarkets_Query.json or "
+        "re-run recon_novig_sgp.py."
     )
 
 
