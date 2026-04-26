@@ -308,7 +308,9 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
   # Filter out the combo rows themselves from the "placed" set — they're not source parlays
   placed_hashes <- if (nrow(placed_parlays) > 0) {
     if ("is_combo" %in% names(placed_parlays)) {
-      placed_parlays$parlay_hash[!isTRUE(placed_parlays$is_combo)]
+      is_combo_vec <- placed_parlays$is_combo
+      is_combo_vec[is.na(is_combo_vec)] <- FALSE  # treat NA as not-combo
+      placed_parlays$parlay_hash[!is_combo_vec]
     } else {
       placed_parlays$parlay_hash
     }
