@@ -272,6 +272,7 @@ apply_combo_residuals <- function(parlay_opps, placed_parlays, parlay_bankroll, 
 
     # combo's wz_odds is American (INTEGER per schema); convert to decimal.
     wz_american <- combos$wz_odds[i]
+    if (!is.finite(wz_american)) next
     combo_dec <- if (wz_american >= 0) {
       wz_american / 100 + 1
     } else {
@@ -279,6 +280,7 @@ apply_combo_residuals <- function(parlay_opps, placed_parlays, parlay_bankroll, 
     }
 
     s_combo <- combos$actual_size[i]
+    if (!is.finite(s_combo) || s_combo <= 0) next
 
     row_a <- parlay_opps %>% filter(parlay_hash == leg_ids[1])
     row_b <- parlay_opps %>% filter(parlay_hash == leg_ids[2])
