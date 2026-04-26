@@ -4986,6 +4986,12 @@ compute_parlay_fair_odds <- function(samples, legs) {
 # Returns: list(joint_fair_dec, joint_fair_prob, joint_edge, kelly_stake)
 compute_combined_parlay_pricing <- function(fair_dec_a, fair_dec_b, wz_dec,
                                              bankroll = NULL, kelly_mult = NULL) {
+  stopifnot(
+    is.numeric(fair_dec_a), fair_dec_a > 1,
+    is.numeric(fair_dec_b), fair_dec_b > 1,
+    is.numeric(wz_dec),     wz_dec     > 1
+  )
+
   joint_fair_dec  <- fair_dec_a * fair_dec_b
   joint_fair_prob <- 1 / joint_fair_dec
   joint_edge      <- joint_fair_prob * wz_dec - 1
@@ -4996,10 +5002,11 @@ compute_combined_parlay_pricing <- function(fair_dec_a, fair_dec_b, wz_dec,
   } else NA_real_
 
   list(
-    joint_fair_dec  = round(joint_fair_dec, 4),
-    joint_fair_prob = round(joint_fair_prob, 6),
-    joint_edge      = round(joint_edge, 4),
-    kelly_stake     = kelly_stake_dollars
+    joint_fair_dec      = round(joint_fair_dec, 4),
+    joint_fair_prob     = round(joint_fair_prob, 6),
+    joint_fair_american = prob_to_american(joint_fair_prob),
+    joint_edge          = round(joint_edge, 4),
+    kelly_stake         = kelly_stake_dollars
   )
 }
 

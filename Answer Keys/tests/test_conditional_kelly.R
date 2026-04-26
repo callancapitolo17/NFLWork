@@ -1,5 +1,6 @@
 library(testthat)
 source("../conditional_kelly.R")
+source("../Tools.R")
 
 test_that("conditional Kelly returns non-negative residuals", {
   res <- conditional_kelly_residuals(
@@ -92,8 +93,6 @@ test_that("zero bankroll returns zero residuals", {
   expect_equal(res$s_b, 0)
 })
 
-source("../Tools.R")
-
 test_that("compute_combined_parlay_pricing multiplies fair decimal odds", {
   res <- compute_combined_parlay_pricing(
     fair_dec_a = 4.32, fair_dec_b = 4.85,
@@ -120,4 +119,15 @@ test_that("compute_combined_parlay_pricing returns kelly stake using parlay_kell
   )
   expect_true(res$kelly_stake >= 0)
   expect_true(res$kelly_stake <= 500)  # never more than half bankroll at Kelly_mult = 0.5
+})
+
+test_that("compute_combined_parlay_pricing floors kelly_stake at 0 on negative edge", {
+  # Two coinflips combined, book pays only 3.0 (true fair = 4.0) -> -EV bet
+  res <- compute_combined_parlay_pricing(
+    fair_dec_a = 2.0, fair_dec_b = 2.0,
+    wz_dec = 3.0,
+    bankroll = 1000, kelly_mult = 0.5
+  )
+  expect_true(res$joint_edge < 0)
+  expect_equal(res$kelly_stake, 0)
 })
