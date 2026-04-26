@@ -1,6 +1,7 @@
 # wagerzon_odds/test_parlay_placer.py
 """Unit tests for parlay_placer. All Wagerzon HTTP calls are mocked."""
 import pytest
+import json
 from unittest.mock import patch, MagicMock
 from parlay_placer import Leg, ParlaySpec, encode_sel, encode_detail_data
 
@@ -124,3 +125,46 @@ def test_get_session_form_post_login_path(monkeypatch):
         assert data["__EVENTVALIDATION"] == "EV789"
         assert data["Account"] == "user42"
         assert data["Password"] == "secret-pw"
+
+
+CONFIRM_OK_RESPONSE = {
+    "result": {
+        "details": [{"Risk": 15.0, "Win": 30.0, "WagerType": 1,
+                     "WagerTypeDesc": "PARLAY (2 TEAMS)"}],
+        "Confirm": True,
+    }
+}
+
+
+def _make_session_with_post(json_response):
+    """Build a mocked requests.Session whose .post returns the given JSON."""
+    sess = MagicMock()
+    r = MagicMock()
+    r.json.return_value = json_response
+    r.headers = {"content-type": "application/json"}
+    r.status_code = 200
+    r.text = json.dumps(json_response)
+    sess.post.return_value = r
+    return sess
+
+
+def test_confirm_preflight_returns_win_risk(monkeypatch):
+    monkeypatch.setattr("parlay_placer._get_session",
+                        lambda: _make_session_with_post(CONFIRM_OK_RESPONSE))
+    import parlay_placer
+    legs = [Leg(idgm=5632938, play=1, points=-1.5, odds=117)]
+    win, risk = parlay_placer._confirm_preflight(legs, amount=15.0)
+    assert win == 30.0
+    assert risk == 15.0
+
+
+def test_drift_check_within_penny_passes():
+    import parlay_placer
+    assert parlay_placer._drift_ok(expected=30.00, actual=30.005) is True
+    assert parlay_placer._drift_ok(expected=30.00, actual=29.995) is True
+
+
+def test_drift_check_beyond_penny_fails():
+    import parlay_placer
+    assert parlay_placer._drift_ok(expected=30.00, actual=29.50) is False
+    assert parlay_placer._drift_ok(expected=30.00, actual=28.50) is False

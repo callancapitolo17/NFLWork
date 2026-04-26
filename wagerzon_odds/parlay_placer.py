@@ -6,6 +6,7 @@ for the full design. This module provides:
     - ParlaySpec / Leg / PlacementResult dataclasses
     - encode_sel / encode_detail_data leg-encoding helpers
     - _get_session / _clear_session session management
+    - _confirm_preflight / _drift_ok price safety checks
     - place_parlays(specs, dry_run=False) — top-level entry point
 """
 from __future__ import annotations
@@ -14,6 +15,7 @@ from typing import Optional
 import os
 import re
 import requests
+import json as _json
 
 WAGERZON_BASE_URL = "https://backend.wagerzon.com"
 
@@ -131,3 +133,49 @@ def _clear_session() -> None:
     """Force the next _get_session() call to re-login."""
     global _CACHED_SESSION
     _CACHED_SESSION = None
+
+
+CONFIRM_URL = f"{WAGERZON_BASE_URL}/wager/ConfirmWagerHelper.aspx"
+DRIFT_TOLERANCE_USD = 0.01
+
+
+def _drift_ok(expected: float, actual: float) -> bool:
+    """True if returned Win matches expected within $0.01."""
+    return abs(actual - expected) <= DRIFT_TOLERANCE_USD
+
+
+class AuthExpired(Exception):
+    """Wagerzon returned an HTML login page instead of JSON."""
+
+
+def _raise_if_html(resp) -> None:
+    ct = resp.headers.get("content-type", "")
+    if "json" not in ct:
+        raise AuthExpired(f"Non-JSON response: content-type={ct!r}")
+
+
+def _confirm_preflight(legs: list[Leg], amount: float) -> tuple[float, float]:
+    """Call ConfirmWagerHelper, return (Win, Risk).
+
+    Raises ValueError on malformed response. Auth/HTML responses raise
+    AuthExpired (handled by caller).
+    """
+    session = _get_session()
+    detail_data = encode_detail_data(legs, amount)
+    params = {
+        "IDWT": "0",
+        "WT": "1",
+        "amountType": "0",
+        "open": "0",
+        "sameAmount": "false",
+        "sameAmountNumber": str(int(amount)),
+        "useFreePlayAmount": "false",
+        "sel": encode_sel(legs),
+        "detailData": _json.dumps(detail_data),
+    }
+    resp = session.post(CONFIRM_URL, data=params, timeout=15,
+                        headers={"Accept": "application/json"})
+    _raise_if_html(resp)
+    data = resp.json()
+    details = data["result"]["details"][0]
+    return float(details["Win"]), float(details["Risk"])
