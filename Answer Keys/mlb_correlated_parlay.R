@@ -438,18 +438,69 @@ tryCatch({
 # Now that mlb_parlay_lines exists, the scrapers can look up which games/lines
 # to price on DraftKings and FanDuel.
 
-cat("Refreshing SGP odds (DK + FD + PX + NV)...\n")
+cat("Refreshing SGP odds (DK + FD + PX + NV) in parallel...\n")
 sgp_scraper_dir <- file.path(path.expand("~"), "NFLWork", "mlb_sgp")
 sgp_venv_python <- file.path(sgp_scraper_dir, "venv", "bin", "python")
+sgp_log_dir     <- file.path(sgp_scraper_dir, "logs")
+dir.create(sgp_log_dir, showWarnings = FALSE, recursive = TRUE)
+
 if (file.exists(sgp_venv_python)) {
-  system2(sgp_venv_python, args = c(file.path(sgp_scraper_dir, "scraper_draftkings_sgp.py")),
-          wait = TRUE, stdout = FALSE, stderr = FALSE)
-  system2(sgp_venv_python, args = c(file.path(sgp_scraper_dir, "scraper_fanduel_sgp.py")),
-          wait = TRUE, stdout = FALSE, stderr = FALSE)
-  system2(sgp_venv_python, args = c(file.path(sgp_scraper_dir, "scraper_prophetx_sgp.py")),
-          wait = TRUE, stdout = FALSE, stderr = FALSE)
-  system2(sgp_venv_python, args = c(file.path(sgp_scraper_dir, "scraper_novig_sgp.py")),
-          wait = TRUE, stdout = FALSE, stderr = FALSE)
+  sgp_scrapers <- c(
+    "scraper_draftkings_sgp.py",
+    "scraper_fanduel_sgp.py",
+    "scraper_prophetx_sgp.py",
+    "scraper_novig_sgp.py"
+  )
+
+  sgp_t0 <- Sys.time()
+  # mclapply forks 4 R workers; each one runs system2(wait=TRUE) on one
+  # scraper, so wall-clock = max(per-scraper time) instead of the sum.
+  # mc.preschedule = FALSE: each scraper is its own job (no batching).
+  sgp_results <- parallel::mclapply(sgp_scrapers, function(scr) {
+    log_file <- file.path(sgp_log_dir,
+                          sub("\\.py$", ".log", scr))
+    t0 <- Sys.time()
+    result <- tryCatch({
+      rc <- system2(
+        sgp_venv_python,
+        args   = file.path(sgp_scraper_dir, scr),
+        wait   = TRUE,
+        stdout = log_file,
+        stderr = log_file
+      )
+      list(scraper = scr, exit_code = rc, fork_error = NA_character_,
+           elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")),
+           log_file = log_file)
+    }, error = function(e) {
+      list(scraper = scr, exit_code = NA_integer_,
+           fork_error = conditionMessage(e),
+           elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")),
+           log_file = log_file)
+    })
+    result
+  }, mc.cores = 4, mc.preschedule = FALSE)
+  sgp_wall <- as.numeric(difftime(Sys.time(), sgp_t0, units = "secs"))
+
+  # Per-scraper summary: elapsed seconds + non-zero exit codes are loud.
+  for (res in sgp_results) {
+    if (inherits(res, "try-error")) {
+      # mclapply itself failed to deliver a result (e.g. fork crash before
+      # tryCatch ran). Rare but possible.
+      cat(sprintf("  [SGP] FORK CRASH (unknown scraper): %s\n",
+                  as.character(res)))
+      next
+    }
+    if (!is.na(res$fork_error)) {
+      cat(sprintf("  [SGP] %-28s %6.1fs  FORK ERROR: %s  (log: %s)\n",
+                  res$scraper, res$elapsed, res$fork_error, res$log_file))
+      next
+    }
+    status <- if (res$exit_code == 0) "ok" else
+              sprintf("EXIT %d", res$exit_code)
+    cat(sprintf("  [SGP] %-28s %6.1fs  %s  (log: %s)\n",
+                res$scraper, res$elapsed, status, res$log_file))
+  }
+  cat(sprintf("  [SGP] Wall clock: %.1fs\n", sgp_wall))
 } else {
   cat("  SGP scraper venv not found — skipping. Run: cd mlb_sgp && python -m venv venv && pip install curl_cffi duckdb\n")
 }

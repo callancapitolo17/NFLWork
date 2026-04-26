@@ -204,6 +204,26 @@ New books write to `mlb_sgp_odds` with their own `bookmaker` and `source` values
 
 The blend automatically scales: `mean(model, dk, fd, nb)` when all present, falls back gracefully when books are missing.
 
+## Concurrency & Logs
+
+The four SGP scrapers (DK, FD, ProphetX, Novig) are launched in parallel by
+`Answer Keys/mlb_correlated_parlay.R` via `parallel::mclapply` (4 forked R
+workers, one per scraper). Wall-clock time of the SGP refresh block is the
+*max* of the four scrape times rather than the sum.
+
+**Per-scraper logs:** stdout + stderr from each scraper are captured to
+`mlb_sgp/logs/<scraper>.log` (overwritten each run, gitignored). The
+orchestrator also prints a one-line summary per scraper (elapsed seconds,
+exit code, log path) plus an overall wall-clock line — check the R console
+output to see which book is the slowest on a given run.
+
+**DuckDB write contention:** All four scrapers write to `Answer Keys/mlb.duckdb`,
+which DuckDB only allows one writer to open at a time. `db.py` wraps every
+write `connect()` call in `_connect_with_retry()` (exponential backoff +
+jitter, up to 10 attempts) so transient lock collisions between scrapers are
+invisible to callers. Read connections are not retried (DuckDB allows
+unlimited concurrent readers).
+
 ---
 
 ## FanDuel Scraper

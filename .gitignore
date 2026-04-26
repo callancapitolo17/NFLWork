@@ -112,3 +112,8 @@ nfl_draft/.cookies/
 nfl_draft/logs/*
 !nfl_draft/logs/.gitkeep
 nfl_draft/.kalshi_throttle.lock
+
+# SGP scraper per-book log files (overwritten each run)
+!mlb_sgp/logs/
+mlb_sgp/logs/*
+!mlb_sgp/logs/.gitkeep
