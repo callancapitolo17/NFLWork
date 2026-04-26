@@ -438,7 +438,7 @@ tryCatch({
 # Now that mlb_parlay_lines exists, the scrapers can look up which games/lines
 # to price on DraftKings and FanDuel.
 
-cat("Refreshing SGP odds (DK + FD)...\n")
+cat("Refreshing SGP odds (DK + FD + PX + NV)...\n")
 sgp_scraper_dir <- file.path(path.expand("~"), "NFLWork", "mlb_sgp")
 sgp_venv_python <- file.path(sgp_scraper_dir, "venv", "bin", "python")
 if (file.exists(sgp_venv_python)) {
