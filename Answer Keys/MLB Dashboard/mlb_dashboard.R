@@ -28,6 +28,9 @@ DASHBOARD_DIR <- if (length(.file_arg) > 0) {
   normalizePath("~/NFLWork/Answer Keys/MLB Dashboard", mustWork = FALSE)
 }
 DB_PATH <- file.path(DASHBOARD_DIR, "mlb_dashboard.duckdb")
+
+# Pure HTML helpers shared with other dashboards
+source(file.path(DASHBOARD_DIR, "..", "books_strip.R"))
 OUTPUT_PATH <- file.path(DASHBOARD_DIR, "report.html")
 
 # =============================================================================
@@ -279,7 +282,8 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
       size_display   = sprintf("$%.0f", coalesce(as.numeric(exact_wager), kelly_bet)),
       to_win_display = sprintf("$%.0f", coalesce(as.numeric(exact_to_win),
                                                   round(kelly_bet * (wz_dec - 1)))),
-      corr_display   = sprintf("%.3f", corr_factor)
+      corr_display   = sprintf("%.3f", corr_factor),
+      books_strip    = NA  # placeholder; rendered by the colDef's cell function
     ) %>%
     arrange(desc(edge_pct))
 
@@ -324,36 +328,51 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
       tot_price_fmt = colDef(show = FALSE),
 
       # Visible columns
-      game = colDef(name = "Game", minWidth = 180),
-      game_time = colDef(
-        name = "Time",
-        minWidth = 130,
+      game = colDef(
+        name = "Game",
+        minWidth = 180,
+        html = TRUE,
         cell = JS("function(cellInfo) {
-          var val = cellInfo.value;
-          if (!val || val === '') return '';
-          var d = new Date(val);
-          if (isNaN(d)) return val;
+          var matchup = cellInfo.value || '';
+          var t = cellInfo.row.game_time;
+          if (!t) return matchup;
+          var d = new Date(t);
+          if (isNaN(d)) return matchup;
           var opts = {weekday:'short', month:'2-digit', day:'2-digit', hour:'numeric', minute:'2-digit'};
-          return d.toLocaleString(undefined, opts);
+          var time = d.toLocaleString(undefined, opts);
+          return matchup + '<div style=\"color:#8b949e;font-size:10px\">' + time + '</div>';
         }")
       ),
+      game_time = colDef(show = FALSE),
       legs_display = colDef(name = "Legs", minWidth = 260),
       fair_display = colDef(name = "Fair", minWidth = 70, align = "right",
         style = list(fontFamily = "monospace", color = "#8b949e")),
-      # Per-book devigged fair probabilities (NA when the book didn't price the combo).
-      # Muted grey — they're diagnostic detail; the primary "Fair" col is the blend.
-      dk_fair_prob = colDef(name = "DK", minWidth = 60, align = "right",
-        format = colFormat(percent = TRUE, digits = 1),
-        style = list(fontFamily = "monospace", color = "#8b949e")),
-      fd_fair_prob = colDef(name = "FD", minWidth = 60, align = "right",
-        format = colFormat(percent = TRUE, digits = 1),
-        style = list(fontFamily = "monospace", color = "#8b949e")),
-      px_fair_prob = colDef(name = "PX", minWidth = 60, align = "right",
-        format = colFormat(percent = TRUE, digits = 1),
-        style = list(fontFamily = "monospace", color = "#8b949e")),
-      nv_fair_prob = colDef(name = "NV", minWidth = 60, align = "right",
-        format = colFormat(percent = TRUE, digits = 1),
-        style = list(fontFamily = "monospace", color = "#8b949e")),
+      # Per-book numeric columns folded into the Books pill row below.
+      # Hidden (data still in the dataframe) so the cell renderer can read them.
+      dk_fair_prob = colDef(show = FALSE),
+      fd_fair_prob = colDef(show = FALSE),
+      px_fair_prob = colDef(show = FALSE),
+      nv_fair_prob = colDef(show = FALSE),
+      # Combined Books cell: M / DK / FD / PX / NV / Cons pill row.
+      # Reads model_prob_raw (always non-NA in real data — pricer skips no-sample
+      # games upstream) + the four per-book devigged probs + blended_prob_raw.
+      books_strip = colDef(
+        name = "Books (devigged fair %)",
+        minWidth = 320,
+        html = TRUE,
+        sortable = FALSE,
+        cell = function(value, index) {
+          row <- table_data[index, ]
+          render_books_strip(
+            model = row$model_prob_raw,
+            dk    = row$dk_fair_prob,
+            fd    = row$fd_fair_prob,
+            px    = row$px_fair_prob,
+            nv    = row$nv_fair_prob,
+            cons  = row$blended_prob_raw
+          )
+        }
+      ),
       wz_display = colDef(name = "WZ", minWidth = 70, align = "right",
         style = list(fontFamily = "monospace")),
       corr_display = colDef(name = "Corr", minWidth = 65, align = "right",
