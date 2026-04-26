@@ -22,7 +22,7 @@ run.py mlb (pipeline)  →  mlb.duckdb/mlb_bets_combined
 ## Features
 
 - Filterable bet table (book, market, EV threshold, correlation status)
-- **Parlay tab** — MLB-specific: correlated 2-leg parlays (spread + total) priced via `mlb_correlated_parlay.R` with conditional Kelly sizing
+- **Parlay tab** — MLB-specific: correlated 2-leg parlays (spread + total) priced via `mlb_correlated_parlay.R` with conditional Kelly sizing. Each row shows a single "Books" pill cell with our model's joint probability (M), the four per-book devigged fair probabilities (DK / FD / PX / NV), and the blended consensus (Cons) — making model-vs-market disagreement visible at a glance and keeping the table readable on phone and laptop widths.
 - Kelly sizing with configurable bankroll + multiplier
 - Same-game correlation detection with visual tooltips
 - Bet placement tracking (placed vs recommended)
