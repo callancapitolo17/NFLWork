@@ -120,6 +120,10 @@ The placer needs Wagerzon's internal game ID (`idgm`) to build `sel`/`detailData
   git commit -m "docs(plans): document idgm sourcing for parlay placer"
   ```
 
+## Finding
+
+**Case (a) — `idgm` is already a column in `mlb_parlay_opportunities`.** The Wagerzon scraper populates `mlb_odds.idgm` (sourced from the `IdGame` field in Wagerzon's schedule/odds response), and `parlay_pricer.py::_price_mlb_parlays_inner` reads it via `SELECT DISTINCT home_team, away_team, idgm, ...` from `mlb_odds`. The R generator (`mlb_correlated_parlay.R`) then carries `idgm` forward from the `wz` (Wagerzon odds) data frame into the per-combo result tibble at line 744: `idgm = if ("idgm" %in% names(row)) as.integer(row$idgm) else NA_integer_`. Since all four combos for a game share the same game, a single `idgm` integer per parlay row is sufficient — no per-leg fan-out is needed. The column is confirmed populated with real integer values in the live DB (e.g., `5628895`, `5631648`). **No R or Python changes are required.** The placer (Task 9 `_build_spec_from_row`) can read `idgm` directly from the DB row as `int(row["idgm"])` — the `TODO_T2` placeholder in the plan's Task 9 pseudocode is already correct as written.
+
 ---
 
 ## Task 3: Database schema migration
