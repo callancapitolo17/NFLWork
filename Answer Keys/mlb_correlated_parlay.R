@@ -460,29 +460,45 @@ if (file.exists(sgp_venv_python)) {
     log_file <- file.path(sgp_log_dir,
                           sub("\\.py$", ".log", scr))
     t0 <- Sys.time()
-    rc <- system2(
-      sgp_venv_python,
-      args   = file.path(sgp_scraper_dir, scr),
-      wait   = TRUE,
-      stdout = log_file,
-      stderr = log_file
-    )
-    list(scraper = scr, exit_code = rc,
-         elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")))
+    result <- tryCatch({
+      rc <- system2(
+        sgp_venv_python,
+        args   = file.path(sgp_scraper_dir, scr),
+        wait   = TRUE,
+        stdout = log_file,
+        stderr = log_file
+      )
+      list(scraper = scr, exit_code = rc, fork_error = NA_character_,
+           elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")),
+           log_file = log_file)
+    }, error = function(e) {
+      list(scraper = scr, exit_code = NA_integer_,
+           fork_error = conditionMessage(e),
+           elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")),
+           log_file = log_file)
+    })
+    result
   }, mc.cores = 4, mc.preschedule = FALSE)
   sgp_wall <- as.numeric(difftime(Sys.time(), sgp_t0, units = "secs"))
 
   # Per-scraper summary: elapsed seconds + non-zero exit codes are loud.
   for (res in sgp_results) {
     if (inherits(res, "try-error")) {
-      cat(sprintf("  [SGP] FORK ERROR: %s\n", as.character(res)))
+      # mclapply itself failed to deliver a result (e.g. fork crash before
+      # tryCatch ran). Rare but possible.
+      cat(sprintf("  [SGP] FORK CRASH (unknown scraper): %s\n",
+                  as.character(res)))
+      next
+    }
+    if (!is.na(res$fork_error)) {
+      cat(sprintf("  [SGP] %-28s %6.1fs  FORK ERROR: %s  (log: %s)\n",
+                  res$scraper, res$elapsed, res$fork_error, res$log_file))
       next
     }
     status <- if (res$exit_code == 0) "ok" else
               sprintf("EXIT %d", res$exit_code)
     cat(sprintf("  [SGP] %-28s %6.1fs  %s  (log: %s)\n",
-                res$scraper, res$elapsed, status,
-                file.path("mlb_sgp/logs", sub("\\.py$", ".log", res$scraper))))
+                res$scraper, res$elapsed, status, res$log_file))
   }
   cat(sprintf("  [SGP] Wall clock: %.1fs\n", sgp_wall))
 } else {
