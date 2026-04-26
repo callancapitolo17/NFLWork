@@ -11,6 +11,10 @@ conditional_kelly_residuals <- function(p_a, d_a,
                                          p_b, d_b,
                                          s_combo, d_combo,
                                          bankroll, kelly_mult = 1.0) {
+  # Input guards — degenerate cases return zero residuals rather than crash
+  if (!is.finite(bankroll) || bankroll <= 0) return(list(s_a = 0, s_b = 0))
+  if (s_combo < 0 || s_combo >= bankroll)    return(list(s_a = 0, s_b = 0))
+
   # Per-bet returns: profit per $1 wagered if win; -$1 if lose
   b_a <- d_a - 1
   b_b <- d_b - 1
@@ -25,6 +29,10 @@ conditional_kelly_residuals <- function(p_a, d_a,
   p_b_only  <- (1 - p_a) * p_b
   p_neither <- (1 - p_a) * (1 - p_b)
 
+  # Clamp returns at -0.999999 so log1p never sees a value <= -1
+  # (the optimizer probes corners where total exposure can exceed 100%)
+  safe_log1p <- function(r) log1p(pmax(r, -0.999999))
+
   # Negative expected log return — minimize this = maximize log growth
   neg_e_log <- function(f) {
     f_a <- f[1]; f_b <- f[2]
@@ -32,10 +40,10 @@ conditional_kelly_residuals <- function(p_a, d_a,
     r_a_only  <- f_a * b_a - f_b           - f_c
     r_b_only  <- -f_a       + f_b * b_b    - f_c
     r_neither <- -f_a       - f_b           - f_c
-    -(p_ab      * log1p(r_both)    +
-      p_a_only  * log1p(r_a_only)  +
-      p_b_only  * log1p(r_b_only)  +
-      p_neither * log1p(r_neither))
+    -(p_ab      * safe_log1p(r_both)    +
+      p_a_only  * safe_log1p(r_a_only)  +
+      p_b_only  * safe_log1p(r_b_only)  +
+      p_neither * safe_log1p(r_neither))
   }
 
   result <- optim(
@@ -45,6 +53,13 @@ conditional_kelly_residuals <- function(p_a, d_a,
     lower  = c(0, 0),
     upper  = c(0.5, 0.5)  # safe upper bound — Kelly never recommends > 50% bankroll
   )
+
+  # IMPORTANT: convergence guard — optim returns 0 on success, non-zero on failure
+  if (result$convergence != 0) {
+    warning("conditional_kelly_residuals: optimizer did not converge (code ",
+            result$convergence, "). Returning zero residuals.")
+    return(list(s_a = 0, s_b = 0))
+  }
 
   s_a <- result$par[1] * kelly_mult * bankroll
   s_b <- result$par[2] * kelly_mult * bankroll
