@@ -8,6 +8,8 @@ against sample-based fair odds for cross-validation.
 """
 
 import duckdb
+import random
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -18,6 +20,27 @@ if ".worktrees" in str(_REPO_ROOT):
     _REPO_ROOT = Path(str(_REPO_ROOT).split(".worktrees")[0].rstrip("/"))
 
 MLB_DB = _REPO_ROOT / "Answer Keys" / "mlb.duckdb"
+
+# DuckDB allows only one writer per file. When the four SGP scrapers run in
+# parallel they will occasionally collide at connect() — this helper retries
+# with exponential backoff + jitter so the contention is invisible to callers.
+def _connect_with_retry(db_path, *, read_only=False,
+                        max_attempts=10, base_delay=0.1, max_delay=1.5):
+    last_err = None
+    for attempt in range(max_attempts):
+        try:
+            return duckdb.connect(db_path, read_only=read_only)
+        except duckdb.IOException as e:
+            msg = str(e).lower()
+            if "lock" not in msg and "in use" not in msg:
+                raise
+            last_err = e
+            if attempt == max_attempts - 1:
+                break
+            delay = min(base_delay * (2 ** attempt), max_delay)
+            time.sleep(delay + random.uniform(0, 0.05))
+    raise last_err
+
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS mlb_sgp_odds (
@@ -36,7 +59,7 @@ CREATE TABLE IF NOT EXISTS mlb_sgp_odds (
 def ensure_table(db_path: str = None):
     """Create the mlb_sgp_odds table if it doesn't exist."""
     db_path = db_path or str(MLB_DB)
-    con = duckdb.connect(db_path)
+    con = _connect_with_retry(db_path)
     try:
         con.execute(CREATE_TABLE_SQL)
     finally:
@@ -51,7 +74,7 @@ def clear_source(source: str, db_path: str = None):
     rather than a stale price from a previous run.
     """
     db_path = db_path or str(MLB_DB)
-    con = duckdb.connect(db_path)
+    con = _connect_with_retry(db_path)
     try:
         ensure_table(db_path)
         con.execute("DELETE FROM mlb_sgp_odds WHERE source = ?", [source])
@@ -73,7 +96,7 @@ def upsert_sgp_odds(rows: list[dict], db_path: str = None):
         return
 
     db_path = db_path or str(MLB_DB)
-    con = duckdb.connect(db_path)
+    con = _connect_with_retry(db_path)
     try:
         ensure_table(db_path)
 
