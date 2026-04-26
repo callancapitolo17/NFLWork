@@ -5,11 +5,19 @@ See docs/superpowers/specs/2026-04-26-mlb-parlay-auto-placement-design.md
 for the full design. This module provides:
     - ParlaySpec / Leg / PlacementResult dataclasses
     - encode_sel / encode_detail_data leg-encoding helpers
+    - _get_session / _clear_session session management
     - place_parlays(specs, dry_run=False) — top-level entry point
 """
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
+import os
+import re
+import requests
+
+WAGERZON_BASE_URL = "https://backend.wagerzon.com"
+
+_CACHED_SESSION: Optional[requests.Session] = None
 
 
 @dataclass
@@ -80,3 +88,46 @@ def encode_detail_data(legs: list[Leg], amount: float) -> list[dict]:
         }
         for leg in legs
     ]
+
+
+def _get_session() -> requests.Session:
+    """Return a logged-in Wagerzon session, reusing a cached one if present.
+
+    Mirrors the login pattern in wagerzon_odds/parlay_pricer.py: GET base URL,
+    if not already authenticated, parse __VIEWSTATE etc. and form-POST
+    Account/Password.
+
+    Resets via _clear_session() (called from auth_error retry path).
+    """
+    global _CACHED_SESSION
+    if _CACHED_SESSION is not None:
+        return _CACHED_SESSION
+
+    session = requests.Session()
+    resp = session.get(WAGERZON_BASE_URL, timeout=15)
+    resp.raise_for_status()
+    if "NewSchedule" in resp.url or "Welcome" in resp.url:
+        _CACHED_SESSION = session
+        return session
+
+    html = resp.text
+    fields = {}
+    for name in ("__VIEWSTATE", "__VIEWSTATEGENERATOR", "__EVENTVALIDATION",
+                 "__EVENTTARGET", "__EVENTARGUMENT"):
+        m = re.search(rf'(?:name|id)="{name}"[^>]*value="([^"]*)"', html)
+        if m:
+            fields[name] = m.group(1)
+    fields["Account"] = os.environ["WAGERZON_USERNAME"]
+    fields["Password"] = os.environ["WAGERZON_PASSWORD"]
+    fields["BtnSubmit"] = ""
+
+    resp = session.post(WAGERZON_BASE_URL, data=fields, timeout=15)
+    resp.raise_for_status()
+    _CACHED_SESSION = session
+    return session
+
+
+def _clear_session() -> None:
+    """Force the next _get_session() call to re-login."""
+    global _CACHED_SESSION
+    _CACHED_SESSION = None
