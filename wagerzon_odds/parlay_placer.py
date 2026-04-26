@@ -179,3 +179,73 @@ def _confirm_preflight(legs: list[Leg], amount: float) -> tuple[float, float]:
     data = resp.json()
     details = data["result"]["details"][0]
     return float(details["Win"]), float(details["Risk"])
+
+
+POST_URL = f"{WAGERZON_BASE_URL}/wager/PostWagerMultipleHelper.aspx"
+
+ERROR_KEY_MAP = {
+    "insufficient_funds": "insufficient balance",
+    "bet_too_large":      "exceeds limit",
+    "line_unavailable":   "line pulled",
+}
+
+
+def _build_post_request(spec: ParlaySpec, password: str) -> dict:
+    """Build a single parlay POST request for PostWagerMultipleHelper."""
+    detail_data = encode_detail_data(spec.legs, spec.amount)
+    return {
+        "WT": "1",
+        "open": 0,
+        "IDWT": "0",
+        "sel": encode_sel(spec.legs),
+        "sameAmount": False,
+        "amountType": "0",
+        "detailData": _json.dumps(detail_data),
+        "confirmPassword": password,
+        "sameAmountNumber": str(int(spec.amount)) if spec.amount == int(spec.amount) else str(spec.amount),
+        "useFreePlayAmount": False,
+        "roundRobinCombinations": "",
+    }
+
+
+def _post_wagers(specs: list[ParlaySpec]) -> list[PlacementResult]:
+    """POST one bulk request to PostWagerMultipleHelper. Returns one
+    PlacementResult per input spec, in order.
+
+    Raises AuthExpired on HTML response.
+    """
+    session = _get_session()
+    password = os.environ["WAGERZON_PASSWORD"]
+    payload = [_build_post_request(s, password) for s in specs]
+    body = {"postWagerRequests": _json.dumps(payload)}
+
+    resp = session.post(POST_URL, data=body, timeout=30,
+                        headers={"Accept": "application/json"})
+    _raise_if_html(resp)
+    data = resp.json()
+    raw = resp.text
+
+    results = []
+    for spec, item in zip(specs, data["result"]):
+        wpr = item["WagerPostResult"]
+        if wpr.get("Confirm") and not wpr.get("ErrorMsgKey"):
+            results.append(PlacementResult(
+                parlay_hash=spec.parlay_hash,
+                status="placed",
+                ticket_number=str(wpr.get("TicketNumber")) if wpr.get("TicketNumber") else None,
+                idwt=int(wpr.get("IDWT")) if wpr.get("IDWT") else None,
+                actual_win=float(wpr.get("Win", 0)),
+                actual_risk=float(wpr.get("Risk", 0)),
+                raw_response=raw,
+            ))
+        else:
+            key = wpr.get("ErrorMsgKey", "") or ""
+            friendly = ERROR_KEY_MAP.get(key, key) or "unknown error"
+            results.append(PlacementResult(
+                parlay_hash=spec.parlay_hash,
+                status="rejected",
+                error_msg=f"rejected: {friendly}" if key else (wpr.get("ErrorMsg") or "rejected"),
+                error_msg_key=key,
+                raw_response=raw,
+            ))
+    return results

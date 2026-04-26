@@ -135,6 +135,34 @@ CONFIRM_OK_RESPONSE = {
     }
 }
 
+POST_OK_RESPONSE = {
+    "result": [{
+        "WagerPostResult": {
+            "details": [],
+            "IDWT": 438173,
+            "TicketNumber": "212147131",
+            "Risk": 15.0,
+            "Win": 30.0,
+            "Confirm": True,
+            "ErrorMsg": "",
+            "ErrorMsgKey": "",
+            "ErrorCode": {},
+        }
+    }]
+}
+
+POST_REJECTED_RESPONSE = {
+    "result": [{
+        "WagerPostResult": {
+            "details": [],
+            "Confirm": False,
+            "ErrorMsg": "Insufficient funds",
+            "ErrorMsgKey": "insufficient_funds",
+            "ErrorCode": {"code": 42},
+        }
+    }]
+}
+
 
 def _make_session_with_post(json_response):
     """Build a mocked requests.Session whose .post returns the given JSON."""
@@ -168,3 +196,37 @@ def test_drift_check_beyond_penny_fails():
     import parlay_placer
     assert parlay_placer._drift_ok(expected=30.00, actual=29.50) is False
     assert parlay_placer._drift_ok(expected=30.00, actual=28.50) is False
+
+
+def test_post_wagers_success(monkeypatch):
+    monkeypatch.setattr("parlay_placer._get_session",
+                        lambda: _make_session_with_post(POST_OK_RESPONSE))
+    monkeypatch.setenv("WAGERZON_PASSWORD", "secret")
+    import parlay_placer
+    specs = [ParlaySpec(
+        parlay_hash="h1",
+        legs=[Leg(idgm=5632938, play=1, points=-1.5, odds=117)],
+        amount=15.0, expected_win=30.0, expected_risk=15.0,
+    )]
+    results = parlay_placer._post_wagers(specs)
+    assert len(results) == 1
+    r = results[0]
+    assert r.status == "placed"
+    assert r.ticket_number == "212147131"
+    assert r.idwt == 438173
+    assert r.actual_win == 30.0
+
+
+def test_post_wagers_rejected(monkeypatch):
+    monkeypatch.setattr("parlay_placer._get_session",
+                        lambda: _make_session_with_post(POST_REJECTED_RESPONSE))
+    monkeypatch.setenv("WAGERZON_PASSWORD", "secret")
+    import parlay_placer
+    specs = [ParlaySpec(
+        parlay_hash="h1",
+        legs=[Leg(idgm=5632938, play=1, points=-1.5, odds=117)],
+        amount=15.0, expected_win=30.0, expected_risk=15.0,
+    )]
+    results = parlay_placer._post_wagers(specs)
+    assert results[0].status == "rejected"
+    assert results[0].error_msg_key == "insufficient_funds"
