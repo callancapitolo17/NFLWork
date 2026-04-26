@@ -249,3 +249,109 @@ def _post_wagers(specs: list[ParlaySpec]) -> list[PlacementResult]:
                 raw_response=raw,
             ))
     return results
+
+
+# ---------------------------------------------------------------------------
+# Top-level place_parlays with retry, drift, dry-run, network handling
+# ---------------------------------------------------------------------------
+
+def _drift_error_msg(expected: float, actual: float) -> str:
+    return f"Expected ${expected:.2f}, Wagerzon offered ${actual:.2f}"
+
+
+def _preflight_with_retry(spec: ParlaySpec) -> tuple[float, float]:
+    """ConfirmWagerHelper with one re-login retry on AuthExpired."""
+    try:
+        return _confirm_preflight(spec.legs, spec.amount)
+    except AuthExpired:
+        _clear_session()
+        return _confirm_preflight(spec.legs, spec.amount)
+
+
+def _post_with_retry(specs: list[ParlaySpec]) -> list[PlacementResult]:
+    """PostWagerMultipleHelper with one re-login + re-preflight retry."""
+    try:
+        return _post_wagers(specs)
+    except AuthExpired:
+        _clear_session()
+        # Defensive: re-run preflight on each spec to reconfirm price
+        for s in specs:
+            win, _ = _confirm_preflight(s.legs, s.amount)
+            if not _drift_ok(s.expected_win, win):
+                # Drift appeared during the retry window — abort all specs
+                return [
+                    PlacementResult(
+                        parlay_hash=s.parlay_hash, status="price_moved",
+                        error_msg=_drift_error_msg(s.expected_win, win),
+                    )
+                    for s in specs
+                ]
+        return _post_wagers(specs)
+
+
+def place_parlays(specs: list[ParlaySpec], dry_run: bool = False) -> list[PlacementResult]:
+    """Place a batch of parlays at Wagerzon.
+
+    For each spec:
+      1) ConfirmWagerHelper preflight (with one auth-retry)
+      2) Drift check vs expected_win — abort that spec on drift > $0.01
+    Then for surviving specs:
+      3) If dry_run: return would_place results
+      4) Else: PostWagerMultipleHelper (with one auth-retry that re-runs
+         preflight defensively before placing).
+    """
+    results_by_hash: dict[str, PlacementResult] = {}
+    survivors: list[ParlaySpec] = []
+
+    # Preflight + drift check per spec
+    for spec in specs:
+        try:
+            win, risk = _preflight_with_retry(spec)
+        except AuthExpired:
+            results_by_hash[spec.parlay_hash] = PlacementResult(
+                parlay_hash=spec.parlay_hash, status="auth_error",
+                error_msg="auth_error: session expired",
+            )
+            continue
+        except requests.exceptions.RequestException as e:
+            results_by_hash[spec.parlay_hash] = PlacementResult(
+                parlay_hash=spec.parlay_hash, status="network_error",
+                error_msg=f"network_error: {type(e).__name__}",
+            )
+            continue
+        if not _drift_ok(spec.expected_win, win):
+            results_by_hash[spec.parlay_hash] = PlacementResult(
+                parlay_hash=spec.parlay_hash, status="price_moved",
+                error_msg=_drift_error_msg(spec.expected_win, win),
+                actual_win=win, actual_risk=risk,
+            )
+            continue
+        if dry_run:
+            results_by_hash[spec.parlay_hash] = PlacementResult(
+                parlay_hash=spec.parlay_hash, status="would_place",
+                actual_win=win, actual_risk=risk,
+            )
+            continue
+        survivors.append(spec)
+
+    # Live placement for specs that passed preflight
+    if survivors:
+        try:
+            live_results = _post_with_retry(survivors)
+        except AuthExpired:
+            live_results = [
+                PlacementResult(parlay_hash=s.parlay_hash, status="auth_error",
+                                error_msg="auth_error: re-login failed")
+                for s in survivors
+            ]
+        except requests.exceptions.RequestException as e:
+            live_results = [
+                PlacementResult(parlay_hash=s.parlay_hash, status="network_error",
+                                error_msg=f"network_error: {type(e).__name__}")
+                for s in survivors
+            ]
+        for r in live_results:
+            results_by_hash[r.parlay_hash] = r
+
+    # Preserve input order
+    return [results_by_hash[s.parlay_hash] for s in specs]
