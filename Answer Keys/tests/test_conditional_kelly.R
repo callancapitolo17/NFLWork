@@ -91,3 +91,33 @@ test_that("zero bankroll returns zero residuals", {
   expect_equal(res$s_a, 0)
   expect_equal(res$s_b, 0)
 })
+
+source("../Tools.R")
+
+test_that("compute_combined_parlay_pricing multiplies fair decimal odds", {
+  res <- compute_combined_parlay_pricing(
+    fair_dec_a = 4.32, fair_dec_b = 4.85,
+    wz_dec = 22.10
+  )
+  expect_equal(res$joint_fair_dec, 4.32 * 4.85, tolerance = 0.001)
+  expect_equal(res$joint_fair_prob, 1 / (4.32 * 4.85), tolerance = 0.0001)
+})
+
+test_that("compute_combined_parlay_pricing computes joint edge correctly", {
+  res <- compute_combined_parlay_pricing(
+    fair_dec_a = 4.32, fair_dec_b = 4.85,
+    wz_dec = 22.10
+  )
+  expected_edge <- (1 / (4.32 * 4.85)) * 22.10 - 1
+  expect_equal(res$joint_edge, expected_edge, tolerance = 0.0001)
+})
+
+test_that("compute_combined_parlay_pricing returns kelly stake using parlay_kelly_mult", {
+  res <- compute_combined_parlay_pricing(
+    fair_dec_a = 4.32, fair_dec_b = 4.85,
+    wz_dec = 22.10,
+    bankroll = 1000, kelly_mult = 0.5
+  )
+  expect_true(res$kelly_stake >= 0)
+  expect_true(res$kelly_stake <= 500)  # never more than half bankroll at Kelly_mult = 0.5
+})
