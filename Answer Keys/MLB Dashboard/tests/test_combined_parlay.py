@@ -61,3 +61,88 @@ def test_get_combined_parlay_price_returns_none_on_error():
 
     result = parlay_pricer.get_combined_parlay_price(fake_session, legs, amount=10000)
     assert result is None
+
+
+import duckdb
+import importlib.util
+
+
+def _load_migration(path):
+    spec = importlib.util.spec_from_file_location("migration", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_migration_adds_combo_columns(tmp_path):
+    db = tmp_path / "test.duckdb"
+    # Seed a minimal placed_parlays table matching the production schema
+    con = duckdb.connect(str(db))
+    con.execute("""
+        CREATE TABLE placed_parlays (
+            parlay_hash VARCHAR PRIMARY KEY,
+            game_id VARCHAR NOT NULL,
+            home_team VARCHAR NOT NULL,
+            away_team VARCHAR NOT NULL,
+            game_time TIMESTAMP,
+            combo VARCHAR NOT NULL,
+            spread_line FLOAT,
+            total_line FLOAT,
+            fair_odds INTEGER,
+            wz_odds INTEGER NOT NULL,
+            edge_pct FLOAT,
+            kelly_bet FLOAT NOT NULL,
+            actual_size FLOAT,
+            placed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status VARCHAR DEFAULT 'pending'
+        )
+    """)
+    con.close()
+
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "migrations" / "001_combined_parlay_columns.py"
+    )
+    mod = _load_migration(migration_path)
+    mod.run(str(db))
+
+    con = duckdb.connect(str(db))
+    cols = {row[0]: row[1] for row in con.execute("DESCRIBE placed_parlays").fetchall()}
+    con.close()
+
+    assert "is_combo" in cols
+    assert "combo_leg_ids" in cols
+    assert "parent_combo_id" in cols
+
+
+def test_migration_is_idempotent(tmp_path):
+    db = tmp_path / "test.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("""
+        CREATE TABLE placed_parlays (
+            parlay_hash VARCHAR PRIMARY KEY,
+            game_id VARCHAR NOT NULL,
+            home_team VARCHAR NOT NULL,
+            away_team VARCHAR NOT NULL,
+            combo VARCHAR NOT NULL,
+            wz_odds INTEGER NOT NULL,
+            kelly_bet FLOAT NOT NULL
+        )
+    """)
+    con.close()
+
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "migrations" / "001_combined_parlay_columns.py"
+    )
+    mod = _load_migration(migration_path)
+    mod.run(str(db))
+    mod.run(str(db))  # second run must not error
+
+    con = duckdb.connect(str(db))
+    cols = {row[0]: row[1] for row in con.execute("DESCRIBE placed_parlays").fetchall()}
+    con.close()
+
+    assert "is_combo" in cols
+    assert "combo_leg_ids" in cols
+    assert "parent_combo_id" in cols
