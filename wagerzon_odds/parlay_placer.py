@@ -269,24 +269,33 @@ def _preflight_with_retry(spec: ParlaySpec) -> tuple[float, float]:
 
 
 def _post_with_retry(specs: list[ParlaySpec]) -> list[PlacementResult]:
-    """PostWagerMultipleHelper with one re-login + re-preflight retry."""
+    """PostWagerMultipleHelper with one re-login + re-preflight retry.
+
+    On AuthExpired: re-login, re-preflight EACH spec independently, mark
+    drifted specs as price_moved (per-spec, not batch-wide), then place
+    only the survivors. Bare _confirm_preflight here is intentional — we
+    have already consumed the one allowed auth retry.
+    """
     try:
         return _post_wagers(specs)
     except AuthExpired:
         _clear_session()
-        # Defensive: re-run preflight on each spec to reconfirm price
-        for s in specs:
-            win, _ = _confirm_preflight(s.legs, s.amount)
-            if not _drift_ok(s.expected_win, win):
-                # Drift appeared during the retry window — abort all specs
-                return [
-                    PlacementResult(
-                        parlay_hash=s.parlay_hash, status="price_moved",
-                        error_msg=_drift_error_msg(s.expected_win, win),
-                    )
-                    for s in specs
-                ]
-        return _post_wagers(specs)
+        retry_results: dict[str, PlacementResult] = {}
+        retry_survivors: list[ParlaySpec] = []
+        for spec in specs:
+            win, risk = _confirm_preflight(spec.legs, spec.amount)
+            if not _drift_ok(spec.expected_win, win):
+                retry_results[spec.parlay_hash] = PlacementResult(
+                    parlay_hash=spec.parlay_hash, status="price_moved",
+                    error_msg=_drift_error_msg(spec.expected_win, win),
+                    actual_win=win, actual_risk=risk,
+                )
+            else:
+                retry_survivors.append(spec)
+        if retry_survivors:
+            for r in _post_wagers(retry_survivors):
+                retry_results[r.parlay_hash] = r
+        return [retry_results[spec.parlay_hash] for spec in specs]
 
 
 def place_parlays(specs: list[ParlaySpec], dry_run: bool = False) -> list[PlacementResult]:
@@ -300,6 +309,12 @@ def place_parlays(specs: list[ParlaySpec], dry_run: bool = False) -> list[Placem
       4) Else: PostWagerMultipleHelper (with one auth-retry that re-runs
          preflight defensively before placing).
     """
+    seen = set()
+    for spec in specs:
+        if spec.parlay_hash in seen:
+            raise ValueError(f"duplicate parlay_hash in batch: {spec.parlay_hash!r}")
+        seen.add(spec.parlay_hash)
+
     results_by_hash: dict[str, PlacementResult] = {}
     survivors: list[ParlaySpec] = []
 

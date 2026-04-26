@@ -277,7 +277,9 @@ def test_place_parlays_price_drift_aborts(monkeypatch):
     import parlay_placer
     results = parlay_placer.place_parlays([_spec(win=30.0)])
     assert results[0].status == "price_moved"
-    assert "28.5" in results[0].error_msg
+    # Drift message uses two-decimal format (per _drift_error_msg)
+    assert "$28.50" in results[0].error_msg
+    assert "$30.00" in results[0].error_msg
     # PostWager should NOT have been called
     assert sess.post.call_count == 1
 
@@ -333,3 +335,115 @@ def test_place_parlays_network_error_no_retry(monkeypatch):
     results = parlay_placer.place_parlays([_spec()])
     assert results[0].status == "network_error"
     assert sess.post.call_count == 1  # no retry
+
+
+def test_place_parlays_post_auth_retry_succeeds(monkeypatch):
+    """Preflight OK -> post raises AuthExpired -> re-login -> re-preflight OK
+    -> post succeeds. No drift, no network error."""
+    import parlay_placer
+    monkeypatch.setenv("WAGERZON_USERNAME", "u")
+    monkeypatch.setenv("WAGERZON_PASSWORD", "p")
+
+    def _json_resp(payload):
+        r = MagicMock()
+        r.headers = {"content-type": "application/json"}
+        r.json.return_value = payload
+        r.text = json.dumps(payload)
+        return r
+
+    html_resp = MagicMock()
+    html_resp.headers = {"content-type": "text/html"}
+    html_resp.text = "<html>login</html>"
+
+    sess = MagicMock()
+    # Calls in order: preflight (OK) -> post (HTML, AuthExpired) ->
+    #                 re-preflight after re-login (OK) -> post retry (OK)
+    sess.post.side_effect = [
+        _json_resp(CONFIRM_OK_RESPONSE),
+        html_resp,
+        _json_resp(CONFIRM_OK_RESPONSE),
+        _json_resp(POST_OK_RESPONSE),
+    ]
+    monkeypatch.setattr("parlay_placer._get_session", lambda: sess)
+    monkeypatch.setattr("parlay_placer._clear_session", lambda: None)
+
+    results = parlay_placer.place_parlays([_spec()])
+    assert results[0].status == "placed"
+    assert sess.post.call_count == 4
+
+
+def test_place_parlays_empty_list(monkeypatch):
+    """Empty input must return empty output without making any API calls."""
+    import parlay_placer
+    sess = MagicMock()
+    monkeypatch.setattr("parlay_placer._get_session", lambda: sess)
+    assert parlay_placer.place_parlays([]) == []
+    assert sess.post.call_count == 0
+
+
+def test_place_parlays_duplicate_hash_raises(monkeypatch):
+    """Duplicate parlay_hash in a batch is a programming error, raise loudly."""
+    import parlay_placer
+    a = _spec(hash="dup")
+    b = _spec(hash="dup")
+    with pytest.raises(ValueError, match="duplicate parlay_hash"):
+        parlay_placer.place_parlays([a, b])
+
+
+def test_place_parlays_post_retry_per_spec_drift(monkeypatch):
+    """Multi-spec batch where post AuthExpires; on retry one spec drifts.
+    Only the drifted spec gets price_moved; others should still be placed."""
+    import parlay_placer
+    monkeypatch.setenv("WAGERZON_USERNAME", "u")
+    monkeypatch.setenv("WAGERZON_PASSWORD", "p")
+
+    def _json_resp(payload):
+        r = MagicMock()
+        r.headers = {"content-type": "application/json"}
+        r.json.return_value = payload
+        r.text = json.dumps(payload)
+        return r
+
+    html_resp = MagicMock()
+    html_resp.headers = {"content-type": "text/html"}
+    html_resp.text = "<html>login</html>"
+
+    drifted_confirm = {
+        "result": {"details": [{"Win": 28.50, "Risk": 15.0}], "Confirm": True}
+    }
+    # Post-OK response for the SINGLE surviving spec (B), so its result list has 1 entry
+    post_ok_one = {
+        "result": [{
+            "WagerPostResult": {
+                "details": [], "IDWT": 999001, "TicketNumber": "TKT-B",
+                "Risk": 15.0, "Win": 30.0, "Confirm": True,
+                "ErrorMsg": "", "ErrorMsgKey": "", "ErrorCode": {},
+            }
+        }]
+    }
+
+    sess = MagicMock()
+    # Sequence:
+    #   preflight A OK, preflight B OK -> post (HTML AuthExpired) ->
+    #   re-preflight A drifted, re-preflight B OK -> post B only OK
+    sess.post.side_effect = [
+        _json_resp(CONFIRM_OK_RESPONSE),  # A preflight
+        _json_resp(CONFIRM_OK_RESPONSE),  # B preflight
+        html_resp,                        # post -> AuthExpired
+        _json_resp(drifted_confirm),      # A re-preflight (drifted)
+        _json_resp(CONFIRM_OK_RESPONSE),  # B re-preflight (OK)
+        _json_resp(post_ok_one),          # post B only
+    ]
+    monkeypatch.setattr("parlay_placer._get_session", lambda: sess)
+    monkeypatch.setattr("parlay_placer._clear_session", lambda: None)
+
+    a = _spec(hash="A", win=30.0)
+    b = _spec(hash="B", win=30.0)
+    results = parlay_placer.place_parlays([a, b])
+
+    # Order preserved: A first, B second
+    assert results[0].parlay_hash == "A"
+    assert results[1].parlay_hash == "B"
+    assert results[0].status == "price_moved"
+    assert results[1].status == "placed"
+    assert results[1].ticket_number == "TKT-B"
