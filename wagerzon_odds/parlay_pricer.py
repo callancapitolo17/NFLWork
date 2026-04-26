@@ -128,6 +128,90 @@ def get_parlay_price(session: requests.Session, idgm: int, legs: list[dict],
         return None
 
 
+def get_combined_parlay_price(session: requests.Session, legs: list[dict],
+                               amount: int = 10000) -> dict | None:
+    """Call ConfirmWagerHelper for a cross-game parlay (legs from multiple games).
+
+    Differs from get_parlay_price() in that each leg carries its own idgm.
+
+    Args:
+        session: Authenticated requests session
+        legs: List of dicts with {idgm, play, points, odds} per leg
+        amount: Bet amount for price query (defaults to 10000 for precision;
+                falls back to 100 if MAXPARLAYRISKEXCEED — caller's responsibility)
+
+    Returns:
+        Dict with {win, decimal, american, amount} or None on error
+    """
+    sel = ",".join(
+        f"{l['play']}_{l['idgm']}_{l['points']}_{l['odds']}" for l in legs
+    )
+    detail_data = [
+        {
+            "Amount": str(amount),
+            "RiskWin": "2",
+            "TeaserPointsPurchased": 0,
+            "IdGame": l["idgm"],
+            "Play": l["play"],
+            "Pitcher": 3,
+            "Points": {
+                "BuyPoints": 0,
+                "BuyPointsDesc": "",
+                "LineDesc": "",
+                "selected": True,
+            },
+        }
+        for l in legs
+    ]
+
+    try:
+        resp = session.post(
+            CONFIRM_URL,
+            data={
+                "IDWT": "0",
+                "WT": "1",
+                "amountType": "0",
+                "open": "0",
+                "sameAmount": "false",
+                "sameAmountNumber": "0",
+                "useFreePlayAmount": "false",
+                "sel": sel,
+                "detailData": json.dumps(detail_data),
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        result = resp.json().get("result", {})
+
+        details = result.get("details", [])
+        if not details:
+            err = result.get("ErrorMsgKey") or result.get("ErrorMsg")
+            if err:
+                print(f"  API error: {err}")
+            return None
+
+        win = details[0].get("Win", 0)
+        risk = details[0].get("Risk", 0)
+        if win <= 0 or risk <= 0:
+            err = result.get("ErrorMsgKey") or result.get("ErrorMsg")
+            if err:
+                print(f"  API error: {err}")
+            return None
+
+        decimal_odds = 1 + win / amount
+        american = round(win / amount * 100) if win > amount else round(-amount / win * 100)
+
+        return {
+            "win": win,
+            "decimal": round(decimal_odds, 4),
+            "american": american,
+            "amount": amount,
+        }
+    except Exception as e:
+        print(f"  Request error: {e}")
+        return None
+
+
 def get_parlay_price_with_fallback(session: requests.Session, idgm: int,
                                     legs: list[dict]) -> dict | None:
     """Stage 1 price lookup with descending amount ladder.
