@@ -10,6 +10,21 @@
 
 ---
 
+## Performance Targets
+
+Two perceptual latencies matter:
+
+1. **Banner pricing on 2nd checkbox click** — currently bounded by the live `ConfirmWagerHelper` call (~1-3s). Mitigation: **server-side TTL cache** of priced combos keyed on `(hash_a, hash_b)`, TTL 60s. Cache hits return instantly (re-checking the same pair, undo/redo, etc.).
+2. **Post-place "see updated Kelly" delay** — currently bounded by full-page reload + R re-render (potentially several seconds on a busy slate). Mitigation: **client-side partial DOM update** for the source rows' Kelly cells, with full reload as a fallback path.
+
+Both are wired into the plan tasks below. WZ session reuse (`requests.Session()`) is already the existing pattern in `parlay_pricer.py` — preserve it.
+
+Out of scope for v1 (defer if v1 still feels slow):
+- Background pre-warming of top-N pairs (would need a background scheduler — overkill until usage justifies it)
+- Client-side conditional Kelly (would need to port the optim() solver to JS — adds complexity for marginal gain since residuals are computed once on place)
+
+---
+
 ## File Structure
 
 ### New files
@@ -909,6 +924,7 @@ def joint_pricing(fair_dec_a: float, fair_dec_b: float, wz_dec: float,
 In `Answer Keys/MLB Dashboard/mlb_dashboard_server.py`, near the top imports add:
 
 ```python
+import time
 from combined_parlay import joint_pricing
 import sys as _sys
 _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wagerzon_odds"))
@@ -919,6 +935,13 @@ Add a constant near `DB_PATH`:
 
 ```python
 MLB_DB_PATH = Path(__file__).resolve().parents[1] / "mlb.duckdb"
+
+# Combined parlay pricing cache: keyed on sorted (hash_a, hash_b) tuple.
+# TTL prevents stale prices when WZ moves their lines. 60s is a safe default
+# for the first version — the live banner on a 2nd-check click after a recent
+# pricing returns instantly instead of waiting on a fresh ConfirmWagerHelper call.
+_COMBO_PRICE_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
+_COMBO_PRICE_TTL_SECONDS = 60
 ```
 
 Add the new endpoint above the existing `/api/place-parlay` definition (around line 614):
@@ -962,6 +985,13 @@ def price_combined_parlay():
     by_hash = {r[0]: r for r in rows}
     a = by_hash[hash_a]; b = by_hash[hash_b]
 
+    # Cache check (keyed on sorted hashes so order-of-selection doesn't matter)
+    cache_key = tuple(sorted([hash_a, hash_b]))
+    now = time.time()
+    cached = _COMBO_PRICE_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < _COMBO_PRICE_TTL_SECONDS:
+        return jsonify(cached[1])
+
     # Pull parlay sizing settings from dashboard DB
     dcon = duckdb.connect(str(DB_PATH))
     try:
@@ -994,7 +1024,7 @@ def price_combined_parlay():
         bankroll=bankroll, kelly_mult=kmult,
     )
 
-    return jsonify({
+    response = {
         "success": True,
         "joint_fair_dec": pricing["joint_fair_dec"],
         "joint_fair_prob": pricing["joint_fair_prob"],
@@ -1005,7 +1035,9 @@ def price_combined_parlay():
         "amount": wz["amount"],
         "leg_a_combo": a[8],
         "leg_b_combo": b[8],
-    })
+    }
+    _COMBO_PRICE_CACHE[cache_key] = (now, response)
+    return jsonify(response)
 
 
 def _spread_play(odds: int, line: float) -> int:
@@ -1063,6 +1095,34 @@ pytest "Answer Keys/MLB Dashboard/tests/test_combined_parlay.py::test_price_comb
 ```
 Expected: PASS.
 
+- [ ] **Step 5a: Add a cache hit test**
+
+Append to `tests/test_combined_parlay.py`:
+
+```python
+def test_price_combined_parlay_caches_within_ttl(monkeypatch, tmp_path):
+    """Re-pricing the same pair within TTL must NOT call WZ a second time."""
+    # Reuse the same setup as test_price_combined_parlay_endpoint
+    # ... (same DB seeding + monkeypatching of svr.DB_PATH, MLB_DB_PATH) ...
+
+    call_count = {"n": 0}
+    def fake_wz(session, legs, amount=10000):
+        call_count["n"] += 1
+        return {"win": 18000, "decimal": 19.0, "american": 1800, "amount": 1000}
+    monkeypatch.setattr(svr, "wz_get_combined_parlay_price", fake_wz)
+    svr._COMBO_PRICE_CACHE.clear()  # ensure clean cache for the test
+
+    client = svr.app.test_client()
+    payload = {"parlay_hash_a": "hash_a", "parlay_hash_b": "hash_b"}
+    r1 = client.post("/api/price-combined-parlay", json=payload)
+    r2 = client.post("/api/price-combined-parlay", json=payload)
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert call_count["n"] == 1, "WZ pricer should be called exactly once across two requests"
+```
+
+Run: `pytest "Answer Keys/MLB Dashboard/tests/test_combined_parlay.py::test_price_combined_parlay_caches_within_ttl" -v`
+Expected: PASS.
+
 - [ ] **Step 6: Commit**
 
 ```bash
@@ -1072,6 +1132,10 @@ git commit -m "feat(mlb-dashboard): /api/price-combined-parlay endpoint
 Returns joint pricing + WZ exact payout + recommended Kelly stake for
 two parlay rows. Rejects same-game combos and same-row pairs. Falls
 back from amount=10000 to amount=100 on MAXPARLAYRISKEXCEED.
+
+In-memory TTL cache (60s) keyed on sorted (hash_a, hash_b) tuple so
+re-pricing the same pair returns instantly — banner pop-up on second
+checkbox click stays under ~1ms after the first call.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
