@@ -86,7 +86,7 @@ Supporting CSS goes into the dashboard's existing inline `<style>` block:
 - `.pill.model` — green tint (`background: #1f3a2c; color: #7ee787`)
 - `.pill.book` — default grey (no override)
 - `.pill.cons` — blue tint with left accent (`background: #1c2738; border-left: 2px solid #58a6ff; color: #79c0ff`)
-- `.pill .dim` — dimmed for NA values (`opacity: 0.4`)
+- `.pill.dim` — dimmed for NA values (`opacity: 0.4`)
 
 The `%` glyph is omitted inside pills to save width; the column header reads `Books (devigged fair %)`.
 
