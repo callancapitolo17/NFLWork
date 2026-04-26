@@ -2,6 +2,9 @@
 .claude/worktrees/
 .worktrees/
 
+# Superpowers brainstorming companion (mockups, session state)
+.superpowers/
+
 # Pipeline sentinel files
 .scrapers_done_*
 .canonical_games_*
