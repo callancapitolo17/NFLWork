@@ -31,6 +31,8 @@ DB_PATH <- file.path(DASHBOARD_DIR, "mlb_dashboard.duckdb")
 
 # Pure HTML helpers shared with other dashboards
 source(file.path(DASHBOARD_DIR, "..", "books_strip.R"))
+# Conditional Kelly residual solver (Task 1) — drives Parlay tab combo residuals
+source(file.path(DASHBOARD_DIR, "..", "conditional_kelly.R"))
 OUTPUT_PATH <- file.path(DASHBOARD_DIR, "report.html")
 
 # =============================================================================
@@ -246,8 +248,71 @@ create_placed_parlays_table <- function(placed_parlays) {
   )
 }
 
-create_parlays_table <- function(parlay_opps, placed_parlays) {
-  placed_hashes <- if (nrow(placed_parlays) > 0) placed_parlays$parlay_hash else character()
+# Returns parlay_opps with kelly_bet overridden to the conditional residual
+# when the row appears in any combo in placed_parlays. Adds a combo_residual_note
+# column that the Size column renderer uses for the annotation.
+#
+# Defensive: if placed_parlays is missing the is_combo column (schema migration
+# not yet applied), this is a no-op.
+apply_combo_residuals <- function(parlay_opps, placed_parlays, parlay_bankroll, parlay_kelly_mult) {
+  parlay_opps$combo_residual_note <- NA_character_
+
+  if (is.null(placed_parlays) || nrow(placed_parlays) == 0) return(parlay_opps)
+  if (!"is_combo" %in% names(placed_parlays))                return(parlay_opps)
+
+  combos <- placed_parlays %>% filter(is_combo == TRUE)
+  if (nrow(combos) == 0) return(parlay_opps)
+
+  for (i in seq_len(nrow(combos))) {
+    leg_ids <- tryCatch(
+      jsonlite::fromJSON(combos$combo_leg_ids[i]),
+      error = function(e) NULL
+    )
+    if (is.null(leg_ids) || length(leg_ids) != 2) next
+
+    # combo's wz_odds is American (INTEGER per schema); convert to decimal.
+    wz_american <- combos$wz_odds[i]
+    combo_dec <- if (wz_american >= 0) {
+      wz_american / 100 + 1
+    } else {
+      100 / abs(wz_american) + 1
+    }
+
+    s_combo <- combos$actual_size[i]
+
+    row_a <- parlay_opps %>% filter(parlay_hash == leg_ids[1])
+    row_b <- parlay_opps %>% filter(parlay_hash == leg_ids[2])
+    if (nrow(row_a) == 0 || nrow(row_b) == 0) next
+
+    res <- conditional_kelly_residuals(
+      p_a     = 1 / row_a$fair_dec,
+      d_a     = row_a$wz_dec,
+      p_b     = 1 / row_b$fair_dec,
+      d_b     = row_b$wz_dec,
+      s_combo = s_combo,
+      d_combo = combo_dec,
+      bankroll   = parlay_bankroll,
+      kelly_mult = parlay_kelly_mult
+    )
+
+    parlay_opps$kelly_bet[parlay_opps$parlay_hash == leg_ids[1]] <- res$s_a
+    parlay_opps$kelly_bet[parlay_opps$parlay_hash == leg_ids[2]] <- res$s_b
+    parlay_opps$combo_residual_note[parlay_opps$parlay_hash %in% leg_ids] <-
+      sprintf("(residual after combo $%.0f)", s_combo)
+  }
+  parlay_opps
+}
+
+create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 100, parlay_kelly_mult = 0.25) {
+  parlay_opps <- apply_combo_residuals(parlay_opps, placed_parlays, parlay_bankroll, parlay_kelly_mult)
+  # Filter out the combo rows themselves from the "placed" set — they're not source parlays
+  placed_hashes <- if (nrow(placed_parlays) > 0) {
+    if ("is_combo" %in% names(placed_parlays)) {
+      placed_parlays$parlay_hash[!isTRUE(placed_parlays$is_combo)]
+    } else {
+      placed_parlays$parlay_hash
+    }
+  } else character()
 
   # Ensure exact-payout columns exist even on older rows (pre-Stage-2 backfill).
   # parlay_pricer.py --exact-payouts populates these; fall back to Kelly+wz_dec
@@ -279,7 +344,13 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
       # Prefer empirical stake/payout from --exact-payouts. Fall back to Kelly-ideal
       # wager and arithmetic payout for rows the exact-payout step couldn't price
       # (e.g. idgm missing or WZ rejected all candidate stakes).
-      size_display   = sprintf("$%.0f", coalesce(as.numeric(exact_wager), kelly_bet)),
+      # When this row participates in a placed combo, show the conditional residual
+      # (kelly_bet was already overridden by apply_combo_residuals) plus an annotation.
+      size_display   = ifelse(
+        !is.na(combo_residual_note),
+        sprintf("$%.0f<br><span class='combo-note'>%s</span>", kelly_bet, combo_residual_note),
+        sprintf("$%.0f", coalesce(as.numeric(exact_wager), kelly_bet))
+      ),
       to_win_display = sprintf("$%.0f", coalesce(as.numeric(exact_to_win),
                                                   round(kelly_bet * (wz_dec - 1)))),
       corr_display   = sprintf("%.3f", corr_factor),
@@ -326,6 +397,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
       sp_price_fmt = colDef(show = FALSE),
       ou_prefix = colDef(show = FALSE),
       tot_price_fmt = colDef(show = FALSE),
+      combo_residual_note = colDef(show = FALSE),
 
       # Visible columns
       game = colDef(
@@ -390,7 +462,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
           span(style = list(color = color, fontWeight = "600"), value)
         }
       ),
-      size_display = colDef(name = "Size", minWidth = 65, align = "right"),
+      size_display = colDef(name = "Size", minWidth = 65, align = "right", html = TRUE),
       to_win_display = colDef(name = "To Win", minWidth = 65, align = "right",
         style = list(color = "#3fb950")),
       is_placed = colDef(
@@ -3128,13 +3200,25 @@ placed_parlays <- tryCatch({
   result
 }, error = function(e) tibble(parlay_hash = character()))
 
-# Load min edge setting and filter parlay opportunities server-side
-parlay_min_edge <- 0
+# Load parlay sizing settings (min edge, bankroll, kelly multiplier).
+# Bankroll/kelly_mult feed apply_combo_residuals() so the conditional Kelly
+# solver knows the operator's current sizing context. Defaults match the JS
+# fallbacks in the dashboard frontend.
+parlay_min_edge   <- 0
+parlay_bankroll   <- 100
+parlay_kelly_mult <- 0.25
 tryCatch({
   mecon <- dbConnect(duckdb(), dbdir = DB_PATH, read_only = TRUE)
-  me_val <- dbGetQuery(mecon, "SELECT value FROM sizing_settings WHERE param = 'parlay_min_edge'")
+  ss <- dbGetQuery(mecon, "SELECT param, value FROM sizing_settings WHERE param IN ('parlay_min_edge','parlay_bankroll','parlay_kelly_mult')")
   dbDisconnect(mecon, shutdown = TRUE)
-  if (nrow(me_val) > 0) parlay_min_edge <- me_val$value[1]
+  if (nrow(ss) > 0) {
+    me_row <- ss[ss$param == "parlay_min_edge", ]
+    if (nrow(me_row) > 0) parlay_min_edge   <- as.numeric(me_row$value[1])
+    bk_row <- ss[ss$param == "parlay_bankroll", ]
+    if (nrow(bk_row) > 0) parlay_bankroll   <- as.numeric(bk_row$value[1])
+    km_row <- ss[ss$param == "parlay_kelly_mult", ]
+    if (nrow(km_row) > 0) parlay_kelly_mult <- as.numeric(km_row$value[1])
+  }
 }, error = function(e) NULL)
 
 if (nrow(parlay_opps) > 0 && parlay_min_edge > 0) {
@@ -3146,7 +3230,9 @@ cat(sprintf("Found %d parlay opportunities (min edge %.0f%%), %d placed parlays\
 
 # Create parlay tables
 if (nrow(parlay_opps) > 0) {
-  parlays_table <- create_parlays_table(parlay_opps, placed_parlays)
+  parlays_table <- create_parlays_table(parlay_opps, placed_parlays,
+                                        parlay_bankroll = parlay_bankroll,
+                                        parlay_kelly_mult = parlay_kelly_mult)
 } else {
   parlays_table <- NULL
 }
