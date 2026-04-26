@@ -375,8 +375,14 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
       ),
       wz_display = colDef(name = "WZ", minWidth = 70, align = "right",
         style = list(fontFamily = "monospace")),
-      corr_display = colDef(name = "Corr", minWidth = 65, align = "right",
-        style = list(color = "#8b949e")),
+      corr_display = colDef(
+        name = "Corr",
+        minWidth = 65,
+        align = "right",
+        class = "corr-col",        # for media-query targeting (cells)
+        headerClass = "corr-col",  # for media-query targeting (header)
+        style = list(color = "#8b949e")
+      ),
       edge_display = colDef(name = "Edge %", minWidth = 70, align = "right",
         cell = function(value, index) {
           ep <- table_data$edge_pct[index]
@@ -1380,10 +1386,12 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           opacity: 0.4;
         }
 
-        /* Hide Corr column on phones (low-information; Edge stays visible) */
+        /* Hide Corr column on phones (low-information; Edge stays visible).
+           reactable applies class+headerClass from colDef to both data cells
+           and the header cell, so .corr-col matches both. !important overrides
+           reactable inline display:table-cell on cells. */
         @media (max-width: 700px) {
-          /* Reactable column data attribute is the dataframe column name */
-          [data-col="corr_display"] { display: none !important; }
+          .corr-col { display: none !important; }
         }
       '))
     ),
