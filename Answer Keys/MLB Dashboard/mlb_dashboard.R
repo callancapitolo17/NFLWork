@@ -1347,6 +1347,44 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .apply-sizing-btn:hover {
           background: #2ea043;
         }
+
+        /* Parlay tab — books strip (M / DK / FD / PX / NV / Cons pill row) */
+        .books-strip {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          align-items: center;
+        }
+        .pill {
+          padding: 2px 6px;
+          border-radius: 3px;
+          font-family: monospace;
+          font-size: 10px;
+          color: #8b949e;
+          background: #21262d;
+          white-space: nowrap;
+        }
+        .pill.model {
+          background: #1f3a2c;
+          color: #7ee787;
+        }
+        .pill.book {
+          /* default styling; explicit class for selector clarity */
+        }
+        .pill.cons {
+          background: #1c2738;
+          border-left: 2px solid #58a6ff;
+          color: #79c0ff;
+        }
+        .pill.dim {
+          opacity: 0.4;
+        }
+
+        /* Hide Corr column on phones (low-information; Edge stays visible) */
+        @media (max-width: 700px) {
+          /* Reactable column data attribute is the dataframe column name */
+          [data-col="corr_display"] { display: none !important; }
+        }
       '))
     ),
 
