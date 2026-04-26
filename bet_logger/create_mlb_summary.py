@@ -1,0 +1,674 @@
+#!/usr/bin/env python3
+"""
+Create the MLB Summary tab in the bet-logging Google Sheet.
+
+One-shot setup script. Writes pure spreadsheet formulas that auto-update
+from Sheet1 as new Wagerzon bets are scraped in. Also creates two embedded
+charts (equity curve + weekly P&L bars). No helper sheet. No cron.
+
+Filter: sport=MLB + bet_type=Parlay + description starts with
+"PARLAY (2 TEAMS)" + description has a spread token + has a total token.
+"""
+
+import os
+import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from sheets import (  # noqa: E402
+    get_sheets_service,
+    SPREADSHEET_ID,
+    SHEET_NAME,
+    ensure_sheet_exists,
+)
+from googleapiclient.errors import HttpError  # noqa: E402
+
+
+# ── Constants ─────────────────────────────────────────────────────────────
+TAB = "MLB Summary"
+SRC = SHEET_NAME  # "Sheet1"
+N = 10000         # Max row the formulas scan in Sheet1
+
+# Cap on the dynamic trend tables — bounds the MMULT triangle so cumulative
+# formulas don't materialize a ~1000x1000 matrix on every recalc.
+DAILY_ROWS_MAX = 2000
+WEEKLY_ROWS_MAX = 500
+
+
+# ── Filter regex ──────────────────────────────────────────────────────────
+# Wagerzon MLB parlay descriptions look like:
+#   "PARLAY (2 TEAMS) | TOTAL o8½-110 (NY YANKEES vrs SF GIANTS) ... | NY YANKEES -1½+130 ..."
+# Half-game (F5) parlays use "1H" team-name prefix and ½-only spreads:
+#   "PARLAY (2 TEAMS) | TOTAL u4+115 (1H TB RAYS vrs 1H MIN TWINS) ... | 1H TB RAYS +½-145"
+# Half-numbers are written with the Unicode ½ glyph, NOT .5.
+# Spreads can be ±1½ (FG), ±2½ (alt run line), or just ±½ (1H — half-game).
+# NOTE: no lookbehind in SPREAD_REGEX — Sheets uses RE2 which doesn't support
+# lookbehind, and the ½ glyph itself is unique enough to anchor the match.
+# (American odds never contain ½, so there's nothing to false-positive on.)
+
+SPREAD_REGEX = re.compile(r"[+\-]\d*½")
+TOTAL_REGEX = re.compile(r"\bTOTAL\s+[ou]\d", re.IGNORECASE)
+F5_REGEX = re.compile(r"\b(?:1H|1st\s*5|F5|First\s*5)\b", re.IGNORECASE)
+
+
+def is_mlb_correlated_parlay(description: str, sport: str, bet_type: str) -> bool:
+    """True iff this Sheet1 row is a tracked MLB correlated parlay."""
+    if sport != "MLB":
+        return False
+    if bet_type != "Parlay":
+        return False
+    if not description.startswith("PARLAY (2 TEAMS)"):
+        return False
+    if not SPREAD_REGEX.search(description):
+        return False
+    if not TOTAL_REGEX.search(description):
+        return False
+    return True
+
+
+def is_f5_parlay(description: str) -> bool:
+    """True iff this parlay is a First-5-Innings parlay."""
+    return bool(F5_REGEX.search(description))
+
+
+# ── Formula builders ──────────────────────────────────────────────────────
+# Column map in Sheet1:
+#   A=Date  B=Platform  C=Sport  D=Description  E=Bet Type
+#   F=Line  G=Odds      H=Stake  I=Dec Odds     J=Result
+
+S = f"'{SRC}'"
+COL_DATE = f"{S}!A$2:A${N}"
+COL_SPORT = f"{S}!C$2:C${N}"
+COL_DESC = f"{S}!D$2:D${N}"
+COL_TYPE = f"{S}!E$2:E${N}"
+COL_STAKE = f"{S}!H$2:H${N}"
+COL_DEC = f"{S}!I$2:I${N}"
+COL_RESULT = f"{S}!J$2:J${N}"
+
+# Filter mask as a Sheets expression (no leading `=`). Five conditions,
+# multiplied together (boolean AND). Leaves a 1/0 array suitable for
+# SUMPRODUCT. Mirrors is_mlb_correlated_parlay() exactly.
+FILTER_MASK = (
+    f'({COL_SPORT}="MLB")'
+    f'*({COL_TYPE}="Parlay")'
+    f'*(LEFT({COL_DESC},16)="PARLAY (2 TEAMS)")'
+    f'*IFERROR(REGEXMATCH({COL_DESC},'
+    r'"[+\-]\d*½"'
+    f'),FALSE)'
+    f'*IFERROR(REGEXMATCH({COL_DESC},'
+    r'"\b(?i)TOTAL\s+[ou]\d"'
+    f'),FALSE)'
+)
+
+# The FG/F5 modifiers — multiplied INTO the filter mask to split the set.
+F5_COND = (
+    f'IFERROR(REGEXMATCH({COL_DESC},'
+    r'"\b(?i)(?:1H|1st\s*5|F5|First\s*5)\b"'
+    f'),FALSE)'
+)
+FG_ADD = f"*NOT({F5_COND})"  # NOT F5
+F5_ADD = f"*{F5_COND}"       # IS F5
+
+SETTLED = f'({COL_RESULT}<>"")'
+WIN = f'({COL_RESULT}="win")'
+LOSS = f'({COL_RESULT}="loss")'
+PUSH = f'({COL_RESULT}="push")'
+
+
+# All builders below take `(mask=FILTER_MASK, extra="")`. By convention
+# `extra` is a string that begins with `*` (e.g., `FG_ADD`, `F5_ADD`,
+# or per-row date conditions) — it gets concatenated into the SUMPRODUCT
+# expression as an additional multiplicative term. Passing an `extra`
+# without a leading `*` will produce a malformed Sheets expression.
+def placed_f(mask=FILTER_MASK, extra=""):
+    """Count of qualifying bets (settled + pending)."""
+    return f"=SUMPRODUCT({mask}{extra})"
+
+
+def settled_f(mask=FILTER_MASK, extra=""):
+    """Count of qualifying settled bets."""
+    return f"=SUMPRODUCT({mask}{extra}*{SETTLED})"
+
+
+def wagered_f(mask=FILTER_MASK, extra=""):
+    """Sum of stake across settled qualifying bets."""
+    return f"=SUMPRODUCT({mask}{extra}*{SETTLED}*{COL_STAKE})"
+
+
+def _profit_expr(mask=FILTER_MASK, extra=""):
+    """Profit expression WITHOUT leading `=` (for embedding)."""
+    wins_payout = (
+        f"SUMPRODUCT({mask}{extra}*{WIN}*({COL_DEC}<>\"\")"
+        f"*{COL_STAKE}*({COL_DEC}-1))"
+    )
+    losses = f"SUMPRODUCT({mask}{extra}*{LOSS}*{COL_STAKE})"
+    return f"{wins_payout}-{losses}"
+
+
+def profit_f(mask=FILTER_MASK, extra=""):
+    return f"={_profit_expr(mask, extra)}"
+
+
+def wins_f(mask=FILTER_MASK, extra=""):
+    return f"=SUMPRODUCT({mask}{extra}*{WIN})"
+
+
+def losses_f(mask=FILTER_MASK, extra=""):
+    return f"=SUMPRODUCT({mask}{extra}*{LOSS})"
+
+
+def pushes_f(mask=FILTER_MASK, extra=""):
+    return f"=SUMPRODUCT({mask}{extra}*{PUSH})"
+
+
+# Internal "expression" variants — return SUMPRODUCT(...) WITHOUT leading `=`
+# so they can be embedded inside compound formulas (win rate, record, etc.).
+
+def _wins_expr(mask=FILTER_MASK, extra=""):
+    return f"SUMPRODUCT({mask}{extra}*{WIN})"
+
+
+def _losses_expr(mask=FILTER_MASK, extra=""):
+    return f"SUMPRODUCT({mask}{extra}*{LOSS})"
+
+
+def _pushes_expr(mask=FILTER_MASK, extra=""):
+    return f"SUMPRODUCT({mask}{extra}*{PUSH})"
+
+
+def winrate_f(mask=FILTER_MASK, extra=""):
+    """Win rate = wins / (wins + losses). Pushes excluded from denominator."""
+    w = _wins_expr(mask, extra)
+    lo = _losses_expr(mask, extra)
+    return f"=IF(({w}+{lo})=0,0,{w}/({w}+{lo}))"
+
+
+def record_f(mask=FILTER_MASK, extra=""):
+    w = _wins_expr(mask, extra)
+    lo = _losses_expr(mask, extra)
+    p = _pushes_expr(mask, extra)
+    return f'={w}&"-"&{lo}&"-"&{p}'
+
+
+def avg_odds_f(mask=FILTER_MASK, extra=""):
+    num = f"SUMPRODUCT({mask}{extra}*{SETTLED}*{COL_DEC})"
+    den = f"SUMPRODUCT({mask}{extra}*{SETTLED})"
+    return f"=IF({den}=0,0,{num}/{den})"
+
+
+# ── Row builder ───────────────────────────────────────────────────────────
+
+# Plain Python lists do not allow attribute assignment (e.g.
+# `lst.foo = 1` raises AttributeError). We need to attach anchor row
+# numbers (`__anchor_daily_start__`, `__anchor_weekly_start__`) to the
+# return value of build_rows() so downstream tasks (charts, wiring) can
+# locate the dynamic blocks without re-deriving their positions. A trivial
+# subclass of `list` accepts attributes on its instances while behaving
+# identically to a list everywhere else.
+class _RowList(list):
+    """list subclass that permits arbitrary attribute assignment."""
+    pass
+
+
+def build_rows():
+    """Return the 2D list of cell values for the MLB Summary tab.
+
+    Layout (row indices 1-based):
+      1  Title
+      2  (blank)
+      3  "OVERALL STATS" header
+      4  column labels
+      5-13 overall metrics (anchor row numbers used by ROI/win-rate formulas)
+      14 (blank)
+      15 "BY GAME WINDOW" header
+      16 column labels
+      17 FG row
+      18 F5 row
+      19 (blank)
+      20 "EQUITY CURVE (Daily P&L)" header
+      21 column labels ("Date","Bets","Wagered","P&L","Cumulative P&L")
+      22+ daily data rows (dynamic, auto-extend)
+      ...
+      (a later section for weekly — filled by Task 5)
+    """
+    rows = _RowList()
+
+    # Row 1: title
+    rows.append(["MLB CORRELATED PARLAYS — WAGERZON"])
+    # Row 2: blank
+    rows.append([])
+
+    # Row 3: section header
+    rows.append(["OVERALL STATS"])
+    # Row 4: column labels
+    rows.append(["", "Value"])
+    # Row 5: Total bets placed
+    rows.append(["Total bets placed", placed_f()])
+    # Row 6: Settled bets
+    rows.append(["Settled bets (W+L+P)", settled_f()])
+    # Row 7: Total wagered
+    rows.append(["Total wagered", wagered_f()])
+    # Row 8: Net P&L
+    rows.append(["Net P&L", profit_f()])
+    # Row 9: ROI = Net P&L / Total wagered (anchors derived from current
+    # row positions so inserting/removing metrics above won't silently break)
+    r_wagered = len(rows) - 1   # the just-appended "Total wagered" row
+    r_pnl = len(rows)           # the just-appended "Net P&L" row
+    rows.append(["ROI", f"=IF(B{r_wagered}=0,0,B{r_pnl}/B{r_wagered})"])
+    # Row 10: Win rate = wins / (wins + losses), NOT wins / settled
+    rows.append(["Win rate", winrate_f()])
+    # Row 11: Record
+    rows.append(["Record (W-L-P)", record_f()])
+    # Row 12: Avg decimal odds
+    rows.append(["Avg decimal odds", avg_odds_f()])
+    # Row 13: blank spacer
+    rows.append([])
+
+    # Row 14: "BY GAME WINDOW" header
+    rows.append(["BY GAME WINDOW"])
+    # Row 15: column labels
+    rows.append([
+        "Window", "Bets", "Settled", "Wagered",
+        "P&L", "ROI", "Win Rate", "Record", "Avg Odds",
+    ])
+    # Rows 16-17: FG and F5 rows
+    for label, extra in (("Full Game (FG)", FG_ADD), ("First 5 (F5)", F5_ADD)):
+        r = len(rows) + 1
+        rows.append([
+            label,
+            placed_f(extra=extra),
+            settled_f(extra=extra),
+            wagered_f(extra=extra),
+            profit_f(extra=extra),
+            f"=IF(D{r}=0,0,E{r}/D{r})",     # ROI
+            winrate_f(extra=extra),
+            record_f(extra=extra),
+            avg_odds_f(extra=extra),
+        ])
+
+    # Row 18: blank spacer (Task 5 continues from here)
+    rows.append([])
+
+    # ── Block 3: Daily (A-E) + Weekly (G-K) P&L tables, side-by-side ──
+    # Vertical stacking caused SORT(UNIQUE(FILTER(...))) spill collisions
+    # (the daily date list would hit the weekly header text 2 rows below).
+    # Side-by-side gives each block unbounded vertical room.
+
+    # Section header row (col A: daily, col G: weekly)
+    rows.append(["DAILY P&L", "", "", "", "", "", "WEEKLY P&L"])
+
+    # Column labels row
+    rows.append([
+        "Date", "Bets", "Wagered", "P&L", "Cumulative P&L", "",
+        "Week of (Mon)", "Bets", "Wagered", "P&L", "Cumulative P&L",
+    ])
+    daily_header_row = len(rows)
+    daily_start_row = daily_header_row + 1
+    daily_end = daily_start_row + DAILY_ROWS_MAX - 1
+    weekly_header_row = daily_header_row   # same row as daily — they're side-by-side
+    weekly_start_row = daily_start_row     # same row
+    weekly_end = weekly_start_row + WEEKLY_ROWS_MAX - 1
+
+    # Week-of-Monday bucket key (per-row date transform)
+    week_of_date = f"({COL_DATE}-WEEKDAY({COL_DATE},2)+1)"
+
+    # Build the formula row — 11 cells, daily formulas in A-E and weekly in G-K
+    rows.append([
+        # ── DAILY (cols A-E) ──
+        # A21: dynamic date list (spills)
+        f'=IFERROR(SORT(UNIQUE(FILTER({COL_DATE},{FILTER_MASK}=1))),"")',
+        # B21: bets per day — BYROW gives SUMPRODUCT a scalar date, avoiding broadcast error
+        f'=BYROW(A{daily_start_row}:A,LAMBDA(d,IF(d="","",'
+        f'SUMPRODUCT(({COL_DATE}=d)*{FILTER_MASK}*{SETTLED}))))',
+        # C21: wagered per day
+        f'=BYROW(A{daily_start_row}:A,LAMBDA(d,IF(d="","",'
+        f'SUMPRODUCT(({COL_DATE}=d)*{FILTER_MASK}*{SETTLED}*{COL_STAKE}))))',
+        # D21: P&L per day (wins payout − losses stake)
+        (
+            f'=BYROW(A{daily_start_row}:A,LAMBDA(d,IF(d="","",'
+            f'SUMPRODUCT(({COL_DATE}=d)*{FILTER_MASK}*{WIN}'
+            f'*({COL_DEC}<>"")*{COL_STAKE}*({COL_DEC}-1))'
+            f'-SUMPRODUCT(({COL_DATE}=d)*{FILTER_MASK}*{LOSS}*{COL_STAKE}))))'
+        ),
+        # E21: cumulative P&L — SCAN running sum; blank rows show "" not the last total
+        f'=IF(D{daily_start_row}:D="","",IFERROR(SCAN(0,D{daily_start_row}:D,LAMBDA(acc,v,IF(v="",acc,acc+v))),0))',
+        # F21: empty separator column
+        "",
+        # ── WEEKLY (cols G-K) ──
+        # G21: dynamic week-of-Monday list
+        f'=IFERROR(SORT(UNIQUE(FILTER(ARRAYFORMULA({week_of_date}),{FILTER_MASK}=1))),"")',
+        # H21: bets per week — BYROW gives SUMPRODUCT a scalar week, avoiding broadcast error
+        f'=BYROW(G{weekly_start_row}:G,LAMBDA(w,IF(w="","",'
+        f'SUMPRODUCT(({week_of_date}=w)*{FILTER_MASK}*{SETTLED}))))',
+        # I21: wagered per week
+        f'=BYROW(G{weekly_start_row}:G,LAMBDA(w,IF(w="","",'
+        f'SUMPRODUCT(({week_of_date}=w)*{FILTER_MASK}*{SETTLED}*{COL_STAKE}))))',
+        # J21: P&L per week
+        (
+            f'=BYROW(G{weekly_start_row}:G,LAMBDA(w,IF(w="","",'
+            f'SUMPRODUCT(({week_of_date}=w)*{FILTER_MASK}*{WIN}'
+            f'*({COL_DEC}<>"")*{COL_STAKE}*({COL_DEC}-1))'
+            f'-SUMPRODUCT(({week_of_date}=w)*{FILTER_MASK}*{LOSS}*{COL_STAKE}))))'
+        ),
+        # K21: cumulative P&L — SCAN running sum; blank rows show "" not the last total
+        f'=IF(J{weekly_start_row}:J="","",IFERROR(SCAN(0,J{weekly_start_row}:J,LAMBDA(acc,v,IF(v="",acc,acc+v))),0))',
+    ])
+
+    # Stash anchors so Task 6 (charts) and Task 7 (formatting) can read them
+    rows._anchor_daily_start = daily_start_row
+    rows._anchor_weekly_start = weekly_start_row
+
+    return rows
+
+
+# ── Chart builders ────────────────────────────────────────────────────────
+
+def get_sheet_id(service, tab_name):
+    meta = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+    for s in meta.get("sheets", []):
+        if s["properties"]["title"] == tab_name:
+            return s["properties"]["sheetId"]
+    return None
+
+
+def build_chart_requests(sheet_id, daily_start_row, weekly_start_row, last_row):
+    """Return Sheets API batchUpdate requests for the two charts.
+
+    Both charts read a generous range (through `last_row`) so they pick up
+    new dates automatically as the dynamic tables extend downward.
+    """
+    # Convert 1-based row numbers to API's 0-based indices.
+    # The daily data block occupies columns A-E (indices 0-5 exclusive).
+    daily_header_idx = daily_start_row - 2       # 0-based index of the header row
+    daily_data_start = daily_start_row - 1       # 0-based index of first data row
+
+    weekly_header_idx = weekly_start_row - 2
+    weekly_data_start = weekly_start_row - 1
+
+    # EQUITY CURVE (line chart) — X: Date (col A), Y: Cumulative P&L (col E)
+    equity_chart = {
+        "addChart": {
+            "chart": {
+                "spec": {
+                    "title": "Equity Curve — Cumulative P&L",
+                    "basicChart": {
+                        "chartType": "LINE",
+                        "legendPosition": "NO_LEGEND",
+                        "axis": [
+                            {"position": "BOTTOM_AXIS", "title": "Date"},
+                            {"position": "LEFT_AXIS", "title": "Cumulative P&L"},
+                        ],
+                        "domains": [{
+                            "domain": {"sourceRange": {"sources": [{
+                                "sheetId": sheet_id,
+                                "startRowIndex": daily_data_start,
+                                "endRowIndex": last_row,
+                                "startColumnIndex": 0, "endColumnIndex": 1,
+                            }]}}
+                        }],
+                        "series": [{
+                            "series": {"sourceRange": {"sources": [{
+                                "sheetId": sheet_id,
+                                "startRowIndex": daily_data_start,
+                                "endRowIndex": last_row,
+                                "startColumnIndex": 4, "endColumnIndex": 5,
+                            }]}},
+                            "targetAxis": "LEFT_AXIS",
+                        }],
+                        "headerCount": 0,
+                    },
+                },
+                "position": {
+                    "overlayPosition": {
+                        "anchorCell": {
+                            "sheetId": sheet_id,
+                            "rowIndex": daily_header_idx - 12,  # above DAILY P&L block
+                            "columnIndex": 12,                  # column M
+                        },
+                        "widthPixels": 600,
+                        "heightPixels": 300,
+                    }
+                },
+            }
+        }
+    }
+
+    # WEEKLY BARS — X: Week of (col G), Y: P&L (col J)
+    weekly_chart = {
+        "addChart": {
+            "chart": {
+                "spec": {
+                    "title": "Weekly P&L",
+                    "basicChart": {
+                        "chartType": "COLUMN",
+                        "legendPosition": "NO_LEGEND",
+                        "axis": [
+                            {"position": "BOTTOM_AXIS", "title": "Week of"},
+                            {"position": "LEFT_AXIS", "title": "P&L"},
+                        ],
+                        "domains": [{
+                            "domain": {"sourceRange": {"sources": [{
+                                "sheetId": sheet_id,
+                                "startRowIndex": weekly_data_start,
+                                "endRowIndex": last_row,
+                                "startColumnIndex": 6, "endColumnIndex": 7,
+                            }]}}
+                        }],
+                        "series": [{
+                            "series": {"sourceRange": {"sources": [{
+                                "sheetId": sheet_id,
+                                "startRowIndex": weekly_data_start,
+                                "endRowIndex": last_row,
+                                "startColumnIndex": 9, "endColumnIndex": 10,
+                            }]}},
+                            "targetAxis": "LEFT_AXIS",
+                        }],
+                        "headerCount": 0,
+                    },
+                },
+                "position": {
+                    "overlayPosition": {
+                        "anchorCell": {
+                            "sheetId": sheet_id,
+                            "rowIndex": weekly_header_idx - 6,
+                            "columnIndex": 12,                  # column M, below equity curve
+                        },
+                        "widthPixels": 600,
+                        "heightPixels": 300,
+                    }
+                },
+            }
+        }
+    }
+
+    return [equity_chart, weekly_chart]
+
+
+# ── Formatting ────────────────────────────────────────────────────────────
+
+def _range(sid, r1, r2, c1, c2):
+    return {"sheetId": sid, "startRowIndex": r1, "endRowIndex": r2,
+            "startColumnIndex": c1, "endColumnIndex": c2}
+
+
+def _text_fmt(sid, r1, r2, c1, c2, bold=False, size=None):
+    tf = {"bold": bold}
+    if size:
+        tf["fontSize"] = size
+    return {"repeatCell": {
+        "range": _range(sid, r1, r2, c1, c2),
+        "cell": {"userEnteredFormat": {"textFormat": tf}},
+        "fields": "userEnteredFormat.textFormat",
+    }}
+
+
+def _bg_fmt(sid, r1, r2, c1, c2, rgb):
+    return {"repeatCell": {
+        "range": _range(sid, r1, r2, c1, c2),
+        "cell": {"userEnteredFormat": {"backgroundColor":
+            {"red": rgb[0], "green": rgb[1], "blue": rgb[2]}}},
+        "fields": "userEnteredFormat.backgroundColor",
+    }}
+
+
+def _num_fmt(sid, r1, r2, c1, c2, ntype, pattern):
+    return {"repeatCell": {
+        "range": _range(sid, r1, r2, c1, c2),
+        "cell": {"userEnteredFormat": {"numberFormat":
+            {"type": ntype, "pattern": pattern}}},
+        "fields": "userEnteredFormat.numberFormat",
+    }}
+
+
+def _cond_fmt(sid, r1, r2, c1, c2, cond_type, value, rgb):
+    return {"addConditionalFormatRule": {"rule": {
+        "ranges": [_range(sid, r1, r2, c1, c2)],
+        "booleanRule": {
+            "condition": {"type": cond_type,
+                          "values": [{"userEnteredValue": value}]},
+            "format": {"textFormat": {"foregroundColorStyle":
+                {"rgbColor": {"red": rgb[0], "green": rgb[1], "blue": rgb[2]}}}},
+        },
+    }, "index": 0}}
+
+
+def build_format_requests(sid, daily_start_row, weekly_start_row):
+    """Return the batchUpdate requests to format the MLB Summary tab."""
+    reqs = []
+    GREEN = (0.13, 0.55, 0.13)
+    RED = (0.80, 0.13, 0.13)
+    HEADER_BG = (0.85, 0.92, 1.00)
+    LABEL_BG = (0.93, 0.93, 0.93)
+
+    # Title (row 1)
+    reqs.append(_text_fmt(sid, 0, 1, 0, 11, bold=True, size=16))
+
+    # Section headers: rows 3 (OVERALL), 14 (BY GAME WINDOW),
+    # and (daily_start_row - 1) which is ALSO the weekly header (side-by-side).
+    for section_row_1based in (3, 14, daily_start_row - 1):
+        r = section_row_1based - 1
+        reqs.append(_bg_fmt(sid, r, r + 1, 0, 11, HEADER_BG))
+        reqs.append(_text_fmt(sid, r, r + 1, 0, 11, bold=True, size=12))
+
+    # Column-label rows (the one right below each section header).
+    # Daily and weekly share the same label row now (daily_start_row).
+    for label_row_1based in (4, 15, daily_start_row):
+        r = label_row_1based - 1
+        reqs.append(_bg_fmt(sid, r, r + 1, 0, 11, LABEL_BG))
+        reqs.append(_text_fmt(sid, r, r + 1, 0, 11, bold=True))
+
+    # OVERALL STATS — rows 5-12 (0-based 4-12), column B (index 1)
+    #   Row indices of: 5=placed 6=settled 7=wagered 8=pnl 9=roi 10=winrate 11=record 12=avgodds
+    reqs.append(_num_fmt(sid, 6, 8, 1, 2, "CURRENCY", "$#,##0.00"))   # wagered, P&L
+    reqs.append(_num_fmt(sid, 7, 8, 1, 2, "CURRENCY", "$#,##0.00"))   # P&L (overlaps intentionally)
+    reqs.append(_num_fmt(sid, 8, 9, 1, 2, "PERCENT", "0.00%"))        # ROI
+    reqs.append(_num_fmt(sid, 9, 10, 1, 2, "PERCENT", "0.0%"))        # Win Rate
+    reqs.append(_num_fmt(sid, 11, 12, 1, 2, "NUMBER", "0.00"))        # Avg odds
+
+    # FG / F5 rows — rows 16-17 (0-based 15-16)
+    reqs.append(_num_fmt(sid, 15, 17, 3, 5, "CURRENCY", "$#,##0.00"))  # wagered, P&L
+    reqs.append(_num_fmt(sid, 15, 17, 5, 6, "PERCENT", "0.00%"))       # ROI
+    reqs.append(_num_fmt(sid, 15, 17, 6, 7, "PERCENT", "0.0%"))        # Win Rate
+    reqs.append(_num_fmt(sid, 15, 17, 8, 9, "NUMBER", "0.00"))         # Avg odds
+    reqs.append(_cond_fmt(sid, 15, 17, 4, 5, "NUMBER_GREATER", "0", GREEN))
+    reqs.append(_cond_fmt(sid, 15, 17, 4, 5, "NUMBER_LESS", "0", RED))
+
+    # Daily and weekly blocks — generous range (1000 rows) for dynamic data.
+    # Daily: cols C-E (idx 2-5); Weekly: cols I-K (idx 8-11). Same start row.
+    s = daily_start_row - 1
+    e = s + 1000
+    # Daily block: cols C-E (idx 2-5)
+    reqs.append(_num_fmt(sid, s, e, 2, 5, "CURRENCY", "$#,##0.00"))
+    reqs.append(_cond_fmt(sid, s, e, 3, 4, "NUMBER_GREATER", "0", GREEN))
+    reqs.append(_cond_fmt(sid, s, e, 3, 4, "NUMBER_LESS", "0", RED))
+    reqs.append(_cond_fmt(sid, s, e, 4, 5, "NUMBER_GREATER", "0", GREEN))
+    reqs.append(_cond_fmt(sid, s, e, 4, 5, "NUMBER_LESS", "0", RED))
+    # Weekly block: cols I-K (idx 8-11)
+    reqs.append(_num_fmt(sid, s, e, 8, 11, "CURRENCY", "$#,##0.00"))
+    reqs.append(_cond_fmt(sid, s, e, 9, 10, "NUMBER_GREATER", "0", GREEN))
+    reqs.append(_cond_fmt(sid, s, e, 9, 10, "NUMBER_LESS", "0", RED))
+    reqs.append(_cond_fmt(sid, s, e, 10, 11, "NUMBER_GREATER", "0", GREEN))
+    reqs.append(_cond_fmt(sid, s, e, 10, 11, "NUMBER_LESS", "0", RED))
+
+    # Column widths (A-K): col F is the empty separator — narrow at 30px.
+    for i, w in enumerate([155, 80, 85, 110, 115, 30, 155, 80, 85, 110, 115]):
+        reqs.append({"updateDimensionProperties": {
+            "range": {"sheetId": sid, "dimension": "COLUMNS",
+                      "startIndex": i, "endIndex": i + 1},
+            "properties": {"pixelSize": w}, "fields": "pixelSize",
+        }})
+
+    # Date format for col A (daily) and col G (weekly) — SORT(UNIQUE(FILTER))
+    # spills return date serials; without DATE format they display as numbers.
+    s = daily_start_row - 1
+    e = s + 1000
+    # Daily col A
+    reqs.append(_num_fmt(sid, s, e, 0, 1, "DATE", "yyyy-mm-dd"))
+    # Weekly col G
+    reqs.append(_num_fmt(sid, s, e, 6, 7, "DATE", "yyyy-mm-dd"))
+
+    return reqs
+
+
+# ── Main ──────────────────────────────────────────────────────────────────
+
+def main():
+    print("Setting up MLB Summary tab...")
+    service = get_sheets_service()
+    ensure_sheet_exists(service, TAB)
+
+    # Clear any prior contents
+    try:
+        service.spreadsheets().values().clear(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"'{TAB}'!A:Z",
+        ).execute()
+    except HttpError as e:
+        print(f"  (clear failed — continuing: {e})")
+
+    # Build rows
+    rows = build_rows()
+    daily_start = rows._anchor_daily_start
+    weekly_start = rows._anchor_weekly_start
+
+    # Pad rows to 9 columns so the update range is rectangular
+    max_cols = max((len(r) for r in rows), default=1)
+    padded = [list(r) + [""] * (max_cols - len(r)) for r in rows]
+
+    print(f"Writing {len(padded)} rows ({max_cols} cols)...")
+    service.spreadsheets().values().update(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"'{TAB}'!A1",
+        valueInputOption="USER_ENTERED",
+        body={"values": padded},
+    ).execute()
+
+    # Apply formatting and add charts in one batchUpdate
+    sid = get_sheet_id(service, TAB)
+    if sid is None:
+        print("  (could not resolve sheet id — skipping formatting/charts)")
+        return
+
+    requests = []
+    # Remove any existing charts on this tab first (in case of re-run)
+    meta = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+    for s in meta.get("sheets", []):
+        if s["properties"]["sheetId"] == sid:
+            for ch in s.get("charts", []):
+                requests.append({"deleteEmbeddedObject": {"objectId": ch["chartId"]}})
+            break
+
+    requests.extend(build_format_requests(sid, daily_start, weekly_start))
+    requests.extend(build_chart_requests(sid, daily_start, weekly_start, last_row=5000))
+
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=SPREADSHEET_ID,
+        body={"requests": requests},
+    ).execute()
+
+    print(f"Done. Open the sheet and look at the '{TAB}' tab.")
+
+
+if __name__ == "__main__":
+    main()
