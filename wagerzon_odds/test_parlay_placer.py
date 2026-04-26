@@ -83,3 +83,44 @@ def test_get_session_caches_within_call(monkeypatch):
         assert s1 is s2
         # Only one Session() instantiation
         assert MockSession.call_count == 1
+
+
+def test_get_session_form_post_login_path(monkeypatch):
+    """When GET lands on the login page, _get_session parses ASP.NET tokens
+    out of the HTML and form-POSTs Account/Password."""
+    import parlay_placer
+    monkeypatch.setenv("WAGERZON_USERNAME", "user42")
+    monkeypatch.setenv("WAGERZON_PASSWORD", "secret-pw")
+
+    login_html = """
+    <html><body><form>
+      <input name="__VIEWSTATE" value="VS123" />
+      <input name="__VIEWSTATEGENERATOR" value="VSG456" />
+      <input name="__EVENTVALIDATION" value="EV789" />
+      <input name="Account" />
+      <input name="Password" />
+    </form></body></html>
+    """
+
+    with patch("parlay_placer.requests.Session") as MockSession:
+        mock_session = MagicMock()
+        get_resp = MagicMock(url="https://backend.wagerzon.com/")
+        get_resp.text = login_html
+        mock_session.get.return_value = get_resp
+        # Login POST returns a generic OK
+        post_resp = MagicMock()
+        mock_session.post.return_value = post_resp
+        MockSession.return_value = mock_session
+
+        sess = parlay_placer._get_session()
+        assert sess is mock_session
+
+        # Verify the POST happened with the parsed tokens + creds
+        mock_session.post.assert_called_once()
+        post_kwargs = mock_session.post.call_args.kwargs
+        data = post_kwargs["data"]
+        assert data["__VIEWSTATE"] == "VS123"
+        assert data["__VIEWSTATEGENERATOR"] == "VSG456"
+        assert data["__EVENTVALIDATION"] == "EV789"
+        assert data["Account"] == "user42"
+        assert data["Password"] == "secret-pw"
