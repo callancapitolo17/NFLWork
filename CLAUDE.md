@@ -182,13 +182,19 @@ This repo contains tools for:
 - For quick, isolated fixes (typo, one-liner) committing directly to `main` is fine
 
 **Branch hygiene (CRITICAL):**
-- **FIRST action after exiting plan mode**: run `git branch` and create/switch to the correct feature branch BEFORE writing any code. No exceptions.
+- **FIRST action when starting feature work** (exiting plan mode, OR moving from brainstorming/spec-writing into producing artifacts): run `git branch`, then create the feature branch (preferably via worktree) BEFORE writing ANY file for the feature — including design specs, implementation plans, README updates, scratch notes, anything. Brainstorming conversation can happen on `main`; file creation cannot. No exceptions.
 - Before making ANY code change, run `git branch` to confirm you're on the correct branch
 - NEVER use `git stash` to move changes between branches — it leads to lost or misplaced work
 - If changes end up on the wrong branch, use `git stash` + `git checkout` + `git stash pop` as a ONE-TIME fix, then verify with `git diff` that all expected changes are present
 - Before committing, always `git diff --stat` to confirm all intended files are included
 - After committing on a feature branch, re-run the full pipeline/tests BEFORE merging to `main`
 - Never merge to `main` based on a test run from a different branch
+
+**Plan & spec presentation (so I can review easily):**
+- After writing a plan, spec, or design doc, **render its full content inline in the conversation as markdown** so I can read it directly in the terminal without switching apps
+- Never use `open`, external viewers, or `cat` to surface the content — paste the markdown into your response so it renders in chat
+- Always note the file path saved to disk so I can find it later
+- For very long docs (>500 lines), offer a sectioned preview and ask which section I want to see in full first
 
 **Documentation discipline:**
 - Before merging any feature branch, always ask: "Does a README or doc need updating?"
