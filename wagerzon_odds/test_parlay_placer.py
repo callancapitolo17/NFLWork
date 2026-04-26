@@ -45,3 +45,10 @@ def test_encode_detail_data_shape():
     assert out[0]["Play"] == 1
     assert out[0]["Amount"] == "15"
     assert out[0]["Points"]["selected"] is True
+
+
+def test_encode_detail_data_non_integer_amount():
+    """Kelly recommendations may be fractional dollars (e.g. $15.75)."""
+    legs = [Leg(idgm=5632938, play=1, points=-1.5, odds=117)]
+    out = encode_detail_data(legs, amount=15.75)
+    assert out[0]["Amount"] == "15.75"
