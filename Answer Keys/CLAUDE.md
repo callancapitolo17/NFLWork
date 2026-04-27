@@ -75,6 +75,12 @@ MLB.R Phase 4 (samples export)
   └── home_scored_first carried into mlb_game_samples as 0/1/NA column
       (preserved automatically because run_answer_key_sample returns a row
        subset of DT with all columns intact)
+wagerzon_odds/scraper_specials.py (NEW)
+  ├── Authenticated GET to NewScheduleHelper.aspx?WT=0&lg=4899
+  ├── Filters to single-team TRIPLE-PLAY + GRAND-SLAM (cross-game props skipped)
+  └── Appends one row per prop to wagerzon_specials in wagerzon.duckdb,
+       keyed by scraped_at for snapshot history
+
 parse_legs.R (generic prop parser)
   ├── TOKEN_REGISTRY maps Wagerzon description tokens to structured leg specs:
   │     SCR 1ST → scores_first;  1H → wins_period(F5);  GM → wins_period(FG);
@@ -85,8 +91,11 @@ parse_legs.R (generic prop parser)
         NA rows on home_scored_first excluded before the mean
 
 mlb_triple_play.R (standalone pricer)
+  ├── Reads wagerzon_specials (latest scraped_at) for posted lines
   ├── Reads mlb_game_samples (total_final_score + margin at F3/F5/F7/FG + scored_first)
-  ├── For each tribble row: parse_legs(description) → compute_prop_fair(...)
+  ├── Maps Wagerzon team names → Odds API canonical via WZ_TO_CANONICAL dict
+  ├── Joins to consensus_temp for game_id + side (home/away)
+  ├── For each row: parse_legs(description) → compute_prop_fair(...)
   └── Prints fair odds vs book + edge per posted line, grouped by prop_type
 ```
 - `home_scored_first` is NA for games with no scoring in innings 1–5 (~5% of historical games); excluded from the mean before the ratio is computed.
@@ -94,6 +103,7 @@ mlb_triple_play.R (standalone pricer)
 - `SCR U<N>` means the listed team's team-total under N (team_total_under leg). Numeric parser handles `"2"`, `"2.5"`, and unicode `"2½"`.
 - Helpers: `triple_play_helpers.R` (determine_home_scored_first*) is sourced by MLB.R Phase 1; `parse_legs.R` is sourced by mlb_triple_play.R's main block. Both files are pure — no DB or network side effects.
 - Adding a new prop type = add a token to `TOKEN_REGISTRY`. No new function needed.
+- Adding new MLB teams (none today, but if expansion happens) requires updating `WZ_TO_CANONICAL` in the pricer.
 
 ## Common Pitfalls
 
