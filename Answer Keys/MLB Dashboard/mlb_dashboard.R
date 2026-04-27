@@ -428,10 +428,13 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
           # Guard: treat NA or "NA" string uniformly
           ps_valid <- !is.na(ps) && nchar(ps) > 0 && ps != "NA"
 
-          # Auto-placed: show muted "placed · #<ticket>" label
+          # Auto-placed: show muted "placed &middot; #<ticket>" label.
+          # Use HTML entity instead of literal U+00B7 to keep the file
+          # ASCII-clean — R writes report.html in the platform default
+          # encoding (Latin-1 on macOS), which Flask's UTF-8 reader chokes on.
           if (ps_valid && ps == "placed") {
             ticket <- if (!is.na(row$ticket_number)) row$ticket_number else "?"
-            return(sprintf('<span class="placed-parlay-label">placed · #%s</span>',
+            return(sprintf('<span class="placed-parlay-label">placed &middot; #%s</span>',
                            htmltools::htmlEscape(ticket)))
           }
 
@@ -3003,7 +3006,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           if (header) header.style.display = "";
           if (section) section.style.display = "";
 
-          // Build leg description: "TeamName -1.5 · O7.0"
+          // Build leg description: "TeamName -1.5 / O7.0"
           var combo = btn.dataset.combo || "";
           var home = btn.dataset.home || "";
           var away = btn.dataset.away || "";

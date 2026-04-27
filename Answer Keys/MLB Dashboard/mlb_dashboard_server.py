@@ -210,6 +210,21 @@ def init_db():
             if col not in existing_cols:
                 con.execute(f"ALTER TABLE placed_parlays ADD COLUMN {col} {dtype}")
 
+        # Orphan forensics: rare case where Wagerzon confirms placement but
+        # the local placed_parlays write fails. Created here AND by
+        # wagerzon_odds/migrate_placed_parlays.py so a fresh server start
+        # without running the migration script still has the safety net.
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS placement_orphans (
+                idwt          BIGINT PRIMARY KEY,
+                ticket_number TEXT,
+                parlay_hash   TEXT,
+                raw_response  TEXT,
+                error         TEXT,
+                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # CLV tracking tables
         con.execute("""
             CREATE TABLE IF NOT EXISTS closing_snapshots (
@@ -473,9 +488,12 @@ def index():
             "<p>Click the refresh button or run: <code>Rscript mlb_dashboard.R</code></p>",
             mimetype="text/html"
         )
-    with open(html_path, "r", encoding="utf-8") as f:
+    # R may write report.html in the platform default encoding (Latin-1 on
+    # macOS) when the source contains characters outside ASCII. Read with
+    # errors="replace" so a stray byte never 500s the dashboard.
+    with open(html_path, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
-    return Response(content, mimetype="text/html")
+    return Response(content, mimetype="text/html; charset=utf-8")
 
 
 @app.route("/lib/<path:filename>")
