@@ -427,6 +427,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
         align = "center",
         filterable = FALSE,
         sortable = FALSE,
+        class = "cell-sel",
         html = TRUE,
         cell = function(value, index) {
           row <- table_data[index, ]
@@ -479,6 +480,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
       game = colDef(
         name = "Game",
         minWidth = 180,
+        class = "cell-game",
         html = TRUE,
         cell = JS("function(cellInfo) {
           var matchup = cellInfo.value || '';
@@ -492,8 +494,9 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
         }")
       ),
       game_time = colDef(show = FALSE),
-      legs_display = colDef(name = "Legs", minWidth = 260),
+      legs_display = colDef(name = "Legs", minWidth = 260, class = "cell-legs"),
       fair_display = colDef(name = "Fair", minWidth = 70, align = "right",
+        class = "cell-fair",
         style = list(fontFamily = "monospace", color = "#8b949e")),
       # Per-book numeric columns folded into the Books pill row below.
       # Hidden (data still in the dataframe) so the cell renderer can read them.
@@ -509,6 +512,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
         minWidth = 320,
         html = TRUE,
         sortable = FALSE,
+        class = "cell-books",
         cell = function(value, index) {
           row <- table_data[index, ]
           render_books_strip(
@@ -522,17 +526,20 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
         }
       ),
       wz_display = colDef(name = "WZ", minWidth = 70, align = "right",
+        class = "cell-wz",
         style = list(fontFamily = "monospace")),
       corr_display = colDef(show = FALSE),
       edge_display = colDef(name = "Edge %", minWidth = 70, align = "right",
+        class = "cell-edge",
         cell = function(value, index) {
           ep <- table_data$edge_pct[index]
           color <- if (ep >= 15) "#3fb950" else if (ep >= 10) "#56d364" else if (ep >= 5) "#7ee787" else "#a5d6a7"
           span(style = list(color = color, fontWeight = "600"), value)
         }
       ),
-      size_display = colDef(name = "Size", minWidth = 65, align = "right", html = TRUE),
+      size_display = colDef(name = "Size", minWidth = 65, align = "right", html = TRUE, class = "cell-size"),
       to_win_display = colDef(name = "To Win", minWidth = 65, align = "right",
+        class = "cell-towin",
         style = list(color = "#3fb950")),
       # Auto-placement state columns — hidden data carriers for the cell renderer below
       placement_status     = colDef(show = FALSE),
@@ -544,6 +551,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
         minWidth = 110,
         align = "center",
         filterable = FALSE,
+        class = "cell-action",
         html = TRUE,
         cell = function(value, index) {
           row <- table_data[index, ]
@@ -1653,7 +1661,6 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           color: #8b949e;
           font-family: monospace;
         }
-
 
       '))
     ),
