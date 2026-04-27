@@ -21,21 +21,28 @@ from pathlib import Path
 from scraper_v2 import login, DB_PATH
 from config import WAGERZON_BASE_URL
 import requests
+from concurrent.futures import ThreadPoolExecutor
+from requests.adapters import HTTPAdapter
 
 CONFIRM_URL = f"{WAGERZON_BASE_URL}/wager/ConfirmWagerHelper.aspx"
+# Workers for parallel ConfirmWagerHelper calls. WZ has not been observed to
+# rate-limit at this concurrency level, but if BALANCEEXCEED / auth_error /
+# Request error spikes appear in stdout, dial this down to 4.
+MAX_WORKERS = 8
 
 
 def get_wz_session() -> requests.Session:
     """Return an authenticated Wagerzon session.
 
-    Builds a `requests.Session`, logs in via `scraper_v2.login()` (ASP.NET form
-    POST that seats the ASP.NET_SessionId cookie), and returns it ready to call
-    ConfirmWagerHelper. Raises RuntimeError if login fails.
-
-    Lifted out of the CLI entrypoint so other callers (Flask endpoints, tests)
-    can reuse the same auth flow without subprocess'ing the script.
+    Builds a `requests.Session`, mounts an HTTPAdapter sized for MAX_WORKERS
+    concurrent connections (so urllib3 doesn't warn about a full pool when
+    parlay pricing fans out), logs in via `scraper_v2.login()`, and returns
+    it ready to call ConfirmWagerHelper. Raises RuntimeError if login fails.
     """
     session = requests.Session()
+    adapter = HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
     try:
         login(session)
     except Exception as e:
@@ -248,6 +255,21 @@ def get_parlay_price_with_fallback(session: requests.Session, idgm: int,
     return None
 
 
+def _run_parallel(fn, work_items, max_workers=MAX_WORKERS):
+    """Run fn(item) for each work item with a thread pool, preserving order.
+
+    Returns a list of fn() results in the same order as work_items. The helper
+    is intentionally dumb — it does not catch exceptions. Each worker fn is
+    responsible for catching its own errors and returning None to match the
+    existing per-call contract (today's loops already use try/except inside
+    get_parlay_price). If a worker raises, ex.map will surface it on iteration
+    and the run aborts loudly, which is the correct behaviour for unexpected
+    bugs.
+    """
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        return list(ex.map(fn, work_items))
+
+
 def price_mlb_parlays(session: requests.Session):
     """Price all MLB FG + F5 spread+total parlay combos."""
     conn = duckdb.connect(str(DB_PATH))
@@ -299,16 +321,19 @@ def _price_mlb_parlays_inner(session: requests.Session, conn, period: str = "fg"
         print(f"No MLB {label} games with idgm found. Run scraper first.")
         return []
 
-    print(f"\nPricing {label} parlays for {len(games)} MLB games...")
+    print(f"\nPricing {label} parlays for {len(games)} MLB games "
+          f"(parallel, max_workers={MAX_WORKERS})...")
 
     results = []
     fetch_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
+    # Build flat work list: one item per (game, combo) pair so the thread
+    # pool can issue every ConfirmWagerHelper POST concurrently. The serial
+    # version did this same work as nested for-loops.
+    work_items = []
     for row in games:
         g = dict(zip(cols, row))
-        idgm = g["idgm"]
         game_label = f"{g['away_team']} @ {g['home_team']}"
-
         combos = [
             {
                 "combo": f"{combo_prefix}Home Spread + Over",
@@ -339,18 +364,26 @@ def _price_mlb_parlays_inner(session: requests.Session, conn, period: str = "fg"
                 ],
             },
         ]
-
         for c in combos:
-            price = get_parlay_price_with_fallback(session, idgm, c["legs"])
-            if price:
-                results.append((
-                    fetch_time, g["home_team"], g["away_team"], idgm,
-                    c["combo"], period, price["decimal"], price["american"], price["win"]
-                ))
-                print(f"  {game_label} | {c['combo']}: +{price['american']} "
-                      f"(${price['win']} on ${price['amount']})")
-            else:
-                print(f"  {game_label} | {c['combo']}: FAILED")
+            work_items.append((g, game_label, c))
+
+    def worker(item):
+        g, game_label, c = item
+        price = get_parlay_price_with_fallback(session, g["idgm"], c["legs"])
+        return (g, game_label, c, price)
+
+    raw = _run_parallel(worker, work_items)
+
+    for (g, game_label, c, price) in raw:
+        if price:
+            results.append((
+                fetch_time, g["home_team"], g["away_team"], g["idgm"],
+                c["combo"], period, price["decimal"], price["american"], price["win"]
+            ))
+            print(f"  {game_label} | {c['combo']}: +{price['american']} "
+                  f"(${price['win']} on ${price['amount']})")
+        else:
+            print(f"  {game_label} | {c['combo']}: FAILED")
 
     print(f"{label}: {len(results)} prices fetched")
     return results
