@@ -314,3 +314,99 @@ def test_price_combined_parlay_sends_correct_play_codes(monkeypatch, tmp_path):
     assert legs[3]["play"] == 3, "Under total should be play=3"
     assert legs[3]["idgm"] == 100002
     assert legs[3]["points"] == "7.5", f"Under points must be positive, got {legs[3]['points']!r}"
+
+
+def test_place_combined_parlay_creates_combo_row(monkeypatch, tmp_path):
+    test_dashboard_db = tmp_path / "mlb_dashboard.duckdb"
+    con = duckdb.connect(str(test_dashboard_db))
+    con.execute("""
+        CREATE TABLE placed_parlays (
+            parlay_hash VARCHAR PRIMARY KEY, game_id VARCHAR, home_team VARCHAR,
+            away_team VARCHAR, combo VARCHAR, wz_odds INTEGER, kelly_bet FLOAT,
+            actual_size FLOAT, status VARCHAR DEFAULT 'pending',
+            placed_at TIMESTAMP, is_combo BOOLEAN DEFAULT FALSE,
+            combo_leg_ids VARCHAR, parent_combo_id INTEGER
+        )
+    """)
+    con.close()
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import mlb_dashboard_server as svr
+    monkeypatch.setattr(svr, "DB_PATH", test_dashboard_db)
+
+    client = svr.app.test_client()
+    resp = client.post("/api/place-combined-parlay", json={
+        "combo_hash": "combo_hash_xyz",
+        "parlay_hash_a": "hash_a",
+        "parlay_hash_b": "hash_b",
+        "wz_odds": 1810,
+        "kelly_bet": 9.40,
+        "actual_size": 9.40,
+        "combo_label": "NYY @ BOS + LAD @ SD (4-leg)",
+    })
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+
+    con = duckdb.connect(str(test_dashboard_db))
+    rows = con.execute("SELECT parlay_hash, is_combo, combo_leg_ids FROM placed_parlays").fetchall()
+    con.close()
+    assert len(rows) == 1
+    assert rows[0][0] == "combo_hash_xyz"
+    assert rows[0][1] is True
+    import json as _json
+    assert sorted(_json.loads(rows[0][2])) == ["hash_a", "hash_b"]
+
+
+def test_place_combined_parlay_rejects_duplicate(monkeypatch, tmp_path):
+    test_dashboard_db = tmp_path / "mlb_dashboard.duckdb"
+    con = duckdb.connect(str(test_dashboard_db))
+    con.execute("""
+        CREATE TABLE placed_parlays (
+            parlay_hash VARCHAR PRIMARY KEY, game_id VARCHAR, home_team VARCHAR,
+            away_team VARCHAR, combo VARCHAR, wz_odds INTEGER, kelly_bet FLOAT,
+            actual_size FLOAT, status VARCHAR DEFAULT 'pending',
+            placed_at TIMESTAMP, is_combo BOOLEAN DEFAULT FALSE,
+            combo_leg_ids VARCHAR, parent_combo_id INTEGER
+        )
+    """)
+    con.close()
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import mlb_dashboard_server as svr
+    monkeypatch.setattr(svr, "DB_PATH", test_dashboard_db)
+
+    client = svr.app.test_client()
+    payload = {
+        "combo_hash": "combo_dup",
+        "parlay_hash_a": "h_a", "parlay_hash_b": "h_b",
+        "wz_odds": 1500, "kelly_bet": 10.0, "actual_size": 10.0,
+        "combo_label": "test",
+    }
+    r1 = client.post("/api/place-combined-parlay", json=payload)
+    r2 = client.post("/api/place-combined-parlay", json=payload)
+    assert r1.status_code == 200
+    assert r2.status_code == 409
+    assert "already placed" in r2.get_json()["error"].lower()
+
+
+def test_place_combined_parlay_missing_fields(monkeypatch, tmp_path):
+    test_dashboard_db = tmp_path / "mlb_dashboard.duckdb"
+    con = duckdb.connect(str(test_dashboard_db))
+    con.execute("""
+        CREATE TABLE placed_parlays (
+            parlay_hash VARCHAR PRIMARY KEY, game_id VARCHAR, home_team VARCHAR,
+            away_team VARCHAR, combo VARCHAR, wz_odds INTEGER, kelly_bet FLOAT,
+            actual_size FLOAT, status VARCHAR DEFAULT 'pending',
+            placed_at TIMESTAMP, is_combo BOOLEAN DEFAULT FALSE,
+            combo_leg_ids VARCHAR, parent_combo_id INTEGER
+        )
+    """)
+    con.close()
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import mlb_dashboard_server as svr
+    monkeypatch.setattr(svr, "DB_PATH", test_dashboard_db)
+
+    client = svr.app.test_client()
+    resp = client.post("/api/place-combined-parlay", json={"combo_hash": "x"})
+    assert resp.status_code == 400
+    assert "Missing fields" in resp.get_json()["error"]

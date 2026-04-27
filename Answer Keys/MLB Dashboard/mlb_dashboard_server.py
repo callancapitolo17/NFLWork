@@ -822,6 +822,56 @@ def place_parlay():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/place-combined-parlay", methods=["POST"])
+def place_combined_parlay():
+    """Record a combined (cross-game) parlay placement.
+
+    Inserts a single row into placed_parlays with is_combo=TRUE and
+    combo_leg_ids = JSON list of the two source parlay_hashes.
+    """
+    data = request.get_json(silent=True) or {}
+    required = ["combo_hash", "parlay_hash_a", "parlay_hash_b",
+                "wz_odds", "kelly_bet", "actual_size", "combo_label"]
+    missing = [k for k in required if k not in data]
+    if missing:
+        return jsonify({"success": False, "error": f"Missing fields: {missing}"}), 400
+
+    leg_ids_json = json.dumps([data["parlay_hash_a"], data["parlay_hash_b"]])
+
+    try:
+        con = duckdb.connect(str(DB_PATH))
+        try:
+            existing = con.execute(
+                "SELECT parlay_hash, status FROM placed_parlays WHERE parlay_hash = ?",
+                [data["combo_hash"]]
+            ).fetchone()
+            if existing and existing[1] == "pending":
+                return jsonify({"success": False, "error": "Combo already placed"}), 409
+
+            con.execute("""
+                INSERT INTO placed_parlays (
+                    parlay_hash, game_id, home_team, away_team, combo,
+                    wz_odds, kelly_bet, actual_size, placed_at, status,
+                    is_combo, combo_leg_ids
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', TRUE, ?)
+            """, [
+                data["combo_hash"],
+                "COMBO",  # synthetic game_id for combo rows
+                "(combined)", "(combined)",
+                data["combo_label"],
+                int(data["wz_odds"]),
+                float(data["kelly_bet"]),
+                float(data["actual_size"]),
+                datetime.now().isoformat(),
+                leg_ids_json,
+            ])
+        finally:
+            con.close()
+        return jsonify({"success": True, "message": "Combined parlay placed"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/remove-parlay", methods=["POST"])
 def remove_parlay():
     """Remove a parlay from placed status."""
