@@ -67,6 +67,21 @@ FIXTURE = {
                     {'label': 'Under', 'point': 4.5, 'id': '0OU-SD-U45'},
                 ],
             },
+            {
+                'marketName': 'Run Line - 1st 5 Innings',
+                'tags': ['SGP'],
+                'selections': [
+                    # -0.5 line (strict win) — what resolver should pick
+                    {'name': 'CHI Cubs',  'id': '0HC-RL-CUBS-N50_1'},
+                    {'name': 'SD Padres', 'id': '0HC-RL-SD-N50_3'},
+                    # +0.5 line (win-or-tie) — resolver should SKIP
+                    {'name': 'CHI Cubs',  'id': '0HC-RL-CUBS-P50_1'},
+                    {'name': 'SD Padres', 'id': '0HC-RL-SD-P50_3'},
+                    # -1.5 line — resolver should also skip
+                    {'name': 'CHI Cubs',  'id': '0HC-RL-CUBS-N150_1'},
+                    {'name': 'SD Padres', 'id': '0HC-RL-SD-N150_3'},
+                ],
+            },
             # Non-SGP-eligible market — should be ignored by find_market_by_name
             {
                 'marketName': 'Inning of First/Last Score',
@@ -115,8 +130,37 @@ def test_wins_period_FG_home():
     assert sid == '0ML-CUBS_3'
 
 def test_wins_period_F5_away():
+    # F5 resolver now uses Run Line -0.5 (strict win) instead of 1st 5 Innings ML
     sid = resolve_wins_period({'type': 'wins_period', 'period': 'F5'}, 'away', FIXTURE, TEAM_NAMES)
-    assert sid == '0QA-SD-F5'
+    assert sid == '0HC-RL-SD-N50_3'
+
+def test_wins_period_F5_home_uses_strict_win_run_line():
+    """F5 resolver picks the -0.5 line (N50 in ID), not the +0.5 (P50) which
+    would include ties. Strict-win semantic matches our model's home_margin_f5>0."""
+    sid = resolve_wins_period({'type': 'wins_period', 'period': 'F5'}, 'home', FIXTURE, TEAM_NAMES)
+    assert sid == '0HC-RL-CUBS-N50_1'
+
+def test_wins_period_F5_skips_P50_winortie_line():
+    """If only +0.5 (P50) lines are present, resolver should return None
+    rather than pick an incorrect-semantic line."""
+    fixture_only_p50 = {
+        'data': {
+            'markets': [
+                {
+                    'marketName': 'Run Line - 1st 5 Innings',
+                    'tags': ['SGP'],
+                    'selections': [
+                        # Only +0.5 (P50) lines — strict-win not available
+                        {'name': 'CHI Cubs',  'id': '0HC-RL-CUBS-P50_1'},
+                        {'name': 'SD Padres', 'id': '0HC-RL-SD-P50_3'},
+                    ],
+                },
+            ],
+        },
+    }
+    sid = resolve_wins_period({'type': 'wins_period', 'period': 'F5'},
+                              'home', fixture_only_p50, TEAM_NAMES)
+    assert sid is None
 
 def test_wins_period_F3_returns_none():
     # F3 not in DK's 2-way ML primitives — resolver returns None
@@ -150,7 +194,7 @@ def test_resolve_legs_full_trifecta_home():
         {'type': 'wins_period', 'period': 'FG'},
     ]
     sids = resolve_legs(legs, 'home', FIXTURE, TEAM_NAMES)
-    assert sids == ['0QA-CUBS-1ST-RUN', '0QA-CUBS-F5', '0ML-CUBS_3']
+    assert sids == ['0QA-CUBS-1ST-RUN', '0HC-RL-CUBS-N50_1', '0ML-CUBS_3']
 
 def test_resolve_legs_full_grand_slam_away():
     legs = [
@@ -160,7 +204,7 @@ def test_resolve_legs_full_grand_slam_away():
         {'type': 'team_total_under', 'line': 4.5},
     ]
     sids = resolve_legs(legs, 'away', FIXTURE, TEAM_NAMES)
-    assert sids == ['0QA-SD-1ST-RUN', '0QA-SD-F5', '0ML-SD_1', '0OU-SD-U45']
+    assert sids == ['0QA-SD-1ST-RUN', '0HC-RL-SD-N50_3', '0ML-SD_1', '0OU-SD-U45']
 
 def test_resolve_legs_missing_leg_returns_none():
     # F3 not supported → whole resolution fails → None

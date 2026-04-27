@@ -105,19 +105,39 @@ def resolve_scores_first(leg, side, event_state, team_names) -> Optional[str]:
 
 
 def resolve_wins_period(leg, side, event_state, team_names) -> Optional[str]:
-    """leg = {'type': 'wins_period', 'period': 'F3'|'F5'|'F7'|'FG'}."""
+    """leg = {'type': 'wins_period', 'period': 'F3'|'F5'|'F7'|'FG'}.
+
+    FG: uses 'Moneyline' market (game ties impossible in MLB regular season,
+        so ML and strict-win are equivalent).
+    F5: uses 'Run Line - 1st 5 Innings' at the -0.5 line (encoded as 'N50'
+        in the selection ID). The 2-way '1st 5 Innings' ML market pushes on
+        tie, which would over-imply DK's view of strict F5 dominance —
+        ~9% of games end F5 tied, so the bias is material.
+    F3 / F7: return None — not reliably posted as primitives at DK.
+    """
     period = leg.get('period')
-    market_name = {
-        'FG': 'Moneyline',
-        'F5': '1st 5 Innings',
-        # F3 / F7 not posted as 2-way ML primitives at DK reliably — return None
-    }.get(period)
-    if market_name is None:
+    if period == 'FG':
+        market = find_market_by_name(event_state, 'Moneyline')
+        if market is None:
+            return None
+        return _pick_team_selection(market, team_names[side])
+    elif period == 'F5':
+        market = find_market_by_name(event_state, 'Run Line - 1st 5 Innings')
+        if market is None:
+            return None
+        target_team = team_names[side]
+        for sel in market.get('selections', []):
+            if (sel.get('name') or '').strip() != target_team:
+                continue
+            sid = sel.get('id') or sel.get('selectionId') or ''
+            # N50 in the selection ID encodes the -0.5 line (strict win,
+            # no push possible). P50 would be +0.5 (win-or-tie) — skip those.
+            if 'N50' in sid:
+                return sid
         return None
-    market = find_market_by_name(event_state, market_name)
-    if market is None:
+    else:
+        # F3 / F7 not in DK's 2-way ML primitives — resolver returns None
         return None
-    return _pick_team_selection(market, team_names[side])
 
 
 def resolve_team_total_under(leg, side, event_state, team_names) -> Optional[str]:
