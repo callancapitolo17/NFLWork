@@ -42,6 +42,9 @@ Requires in `.env`:
 | `team_mapping.py` | Team name mappings (e.g., "SEA SEAHAWKS" → "Seattle Seahawks") |
 | `transform.py` | Transform raw Wagerzon records to standard format |
 | `parlay_pricer.py` | Exact parlay pricing via `ConfirmWagerHelper` (see below) |
+| `parlay_placer.py` | One-click parlay placement via REST API (see below) |
+| `recon_place_parlay.py` | Captures placement HTTP requests from browser (see below) |
+| `migrate_placed_parlays.py` | Schema migration for placement tables (see below) |
 | `recon_parlay_slip.py` | Playwright recon for the bet-slip flow — captures network traffic to reverse-engineer new endpoints |
 
 ## Parlay Pricer
@@ -89,3 +92,76 @@ DuckDB: `wagerzon.duckdb` → tables: `nfl_odds`, `cbb_odds`, `nba_odds`,
 `mlb_odds` (18-column standard schema), `mlb_parlay_prices` (Stage 1 output).
 
 Also: `wagerzon_cbb.duckdb` (CBB-specific historical data).
+
+## Parlay Placer
+
+`parlay_placer.py` is a pure REST client for one-click parlay placement on Wagerzon.
+
+**What it does:**
+- Takes a list of `ParlaySpec` objects (legs, amount, expected payout)
+- Validates pricing against Wagerzon's `ConfirmWagerHelper` endpoint (preflight drift check)
+- Places via `PostWagerMultipleHelper` if prices match
+- Returns placement status + ticket number or failure reason
+
+**Public API:**
+```python
+from parlay_placer import place_parlays, ParlaySpec, PlacementResult
+
+specs = [
+    ParlaySpec(legs=[(game_id, "spread", -1.5), ...], wager_amount=100.00, expected_payout=250.00),
+    ...
+]
+results: list[PlacementResult] = place_parlays(specs, dry_run=False)
+```
+
+**Status values in `PlacementResult`:**
+- `placed` — Bet accepted; ticket number in result
+- `price_moved` — Wagerzon's current price ≥ $0.01 off dashboard; aborted (no money at risk)
+- `rejected` — Wagerzon refused (insufficient balance, bet too large, line pulled, etc.)
+- `auth_error` — Session expired; re-login retry also failed
+- `network_error` — Request failed to complete; **AMBIGUOUS** — check Wagerzon's ticket history to confirm
+- `orphaned` — Wagerzon confirmed but local DB insert failed; full record in `placement_orphans` table
+- `would_place` — Dry run mode; preflight passed (no actual placement)
+
+**Usage:**
+```bash
+# From repo root; requires WAGERZON_USERNAME + WAGERZON_PASSWORD in .env
+python3 wagerzon_odds/parlay_placer.py --help
+```
+
+**Tests:** `pytest wagerzon_odds/test_parlay_placer.py -v` (22 test cases)
+
+**Used by:** MLB dashboard's `/api/place-parlay` endpoint
+
+## Recon: Place Parlay
+
+`recon_place_parlay.py` captures HTTP traffic when you click "Place Bet" on a Wagerzon bet slip in your browser.
+
+**What it's for:**
+- Discovers endpoint shapes and parameters for new market types or new sportsbooks
+- Used during development to reverse-engineer API contracts
+
+**Security note:**
+The captured `recon_place_parlay.json` contains your plaintext password in the `confirmPassword` field. The committed recon file has been **scrubbed to `REDACTED`**. If you re-record, **always scrub the file before sharing**.
+
+**How to run:**
+1. Start the capture proxy: `python3 wagerzon_odds/recon_place_parlay.py` from repo root
+2. Open your browser to `http://localhost:8888`; agree to install the CA certificate
+3. Log in to Wagerzon and place a parlay manually
+4. Proxy saves the request to `recon_place_parlay.json`
+
+**Storage:** `.gitignore` excludes `recon_*.json` files (not committed).
+
+## Schema Migration
+
+`migrate_placed_parlays.py` ensures `placed_parlays` table has all required columns and creates `placement_orphans` table if missing.
+
+**What it does:**
+- Idempotent: safe to re-run without side effects
+- Creates/alters `placed_parlays` in `Answer Keys/MLB Dashboard/mlb_dashboard.duckdb`
+- Creates `placement_orphans` table for forensics on failed DB writes
+
+**Run once per environment:**
+```bash
+python3 wagerzon_odds/migrate_placed_parlays.py
+```
