@@ -773,9 +773,37 @@ def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> N
         con.close()
 
 
-def _record_orphan(*args, **kwargs) -> None:
-    """Stub — Task 10 will implement orphan logging."""
-    pass
+def _record_orphan(result: parlay_placer.PlacementResult,
+                   parlay_hash: str, db_error: Exception) -> None:
+    """Wagerzon confirmed placement but local placed_parlays write failed.
+    Insert a forensics row into placement_orphans + log loudly."""
+    try:
+        con = duckdb.connect(str(DASHBOARD_DB))
+        try:
+            con.execute("""
+                INSERT INTO placement_orphans
+                    (idwt, ticket_number, parlay_hash, raw_response, error)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (idwt) DO NOTHING
+            """, [result.idwt, result.ticket_number, parlay_hash,
+                  result.raw_response, str(db_error)])
+        finally:
+            con.close()
+    except Exception as inner:
+        # Last resort: shout to stderr
+        print(
+            f"!! ORPHAN UNRECORDED: idwt={result.idwt} "
+            f"ticket={result.ticket_number} parlay_hash={parlay_hash} "
+            f"raw_response={result.raw_response!r} "
+            f"original_error={db_error!r} orphan_write_error={inner!r}",
+            file=sys.stderr, flush=True,
+        )
+        raise
+    print(
+        f"!! ORPHAN RECORDED: idwt={result.idwt} ticket={result.ticket_number} "
+        f"parlay_hash={parlay_hash} reason={db_error!r}",
+        file=sys.stderr, flush=True,
+    )
 
 
 @app.route("/api/place-parlay", methods=["POST"])
