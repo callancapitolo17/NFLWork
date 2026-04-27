@@ -212,6 +212,11 @@ if (!interactive() && sys.nframe() == 0L) {
   request_path <- tempfile(fileext = ".json")
   jsonlite::write_json(trifecta_list, request_path, auto_unbox = TRUE)
 
+  # Close mlb.duckdb connection before invoking the Python scraper.
+  # DuckDB doesn't allow concurrent read-only + write access on the same
+  # file; the scraper needs exclusive write access while it runs.
+  dbDisconnect(con)
+
   dk_status <- tryCatch({
     system2(SGP_VENV_PYTHON,
             args = c(file.path(SGP_DIR, "scraper_draftkings_trifecta.py"),
@@ -231,10 +236,10 @@ if (!interactive() && sys.nframe() == 0L) {
   unlink(request_path)
   # ========================================================
 
-  # Read latest DK trifecta SGP odds — done AFTER the scraper runs so the
+  # Reopen mlb.duckdb (read-only) now that the scraper has finished writing.
   # query sees the rows just written by the Python process.
-  dbDisconnect(con)
   con <- dbConnect(duckdb(), dbdir = MLB_DB, read_only = TRUE)
+  on.exit(tryCatch(dbDisconnect(con), error = function(e) NULL), add = TRUE)
   dk_sgp <- tryCatch({
     dbGetQuery(con, "
       SELECT game_id, prop_type, side, sgp_decimal
