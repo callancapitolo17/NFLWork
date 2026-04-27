@@ -1594,30 +1594,6 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           background: #2ea043;
         }
 
-        /* Dry-run toggle */
-        .parlay-controls {
-          display: flex;
-          align-items: center;
-          margin: 10px 0;
-          padding: 8px 12px;
-          background: #fff8e7;
-          border: 1px solid #f0c060;
-          border-radius: 4px;
-        }
-        .dry-run-toggle {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          cursor: pointer;
-          font-size: 14px;
-          color: #8a6500;
-          font-weight: 500;
-        }
-        .dry-run-toggle input[type="checkbox"] {
-          cursor: pointer;
-          width: 16px;
-          height: 16px;
-        }
 
         /* Parlay tab — books strip (M / DK / FD / PX / NV / Cons pill row) */
         .books-strip {
@@ -1902,14 +1878,6 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
         # ============ PARLAYS TAB ============
         tags$div(id = "tab-parlays", class = "tab-content", style = "display: none;",
-
-          # Dry-run safety toggle (default ON — real placement requires deliberate uncheck)
-          tags$div(class = "parlay-controls",
-            tags$label(class = "dry-run-toggle",
-              tags$input(type = "checkbox", id = "parlay-dry-run-toggle", checked = NA),
-              tags$span("Dry run (no real bet)")
-            )
-          ),
 
           # Placed Parlays (always present, JS can append rows)
           tags$div(class = "section-header", id = "placed-parlays-header",
@@ -3370,17 +3338,20 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         function placeParlay(btn) {
           var hash = btn.dataset.hash;
           if (!hash) { showToast("Missing parlay_hash", "error"); return; }
-          var toggleEl = document.getElementById(\'parlay-dry-run-toggle\');
-          var dryRun = !!(toggleEl && toggleEl.checked);
 
           var originalText = btn.textContent;
           btn.disabled = true;
-          btn.textContent = dryRun ? "Dry run..." : "Placing...";
+          btn.textContent = "Placing...";
 
+          // The /api/place-parlay endpoint still supports dry_run=true (useful
+          // for tests / curl), but the UI no longer exposes a toggle —
+          // clicking [Place] is always a real placement. For dry-run testing,
+          // hit the endpoint directly: curl -X POST /api/place-parlay -d
+          // \'{"parlay_hash":"...","dry_run":true}\'
           fetch("/api/place-parlay", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ parlay_hash: hash, dry_run: dryRun })
+            body: JSON.stringify({ parlay_hash: hash, dry_run: false })
           })
             .then(function(r) { return r.json(); })
             .then(function(result) {
