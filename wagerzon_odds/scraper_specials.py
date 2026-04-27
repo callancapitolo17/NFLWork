@@ -192,21 +192,36 @@ def write_rows(con: duckdb.DuckDBPyConnection, rows: list[dict]) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--lg", type=int, default=4899, help="Wagerzon league id (4899=MLB-SPECIALS)")
+    ap.add_argument("--lg", type=int, default=4899,
+                    help="Wagerzon league id (4899=MLB-SPECIALS)")
     ap.add_argument("--sport", default="mlb")
-    ap.add_argument("--dry-run", action="store_true", help="Fetch + parse, don't write to DB")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="Fetch + parse, don't write to DB")
+    ap.add_argument("--cron", action="store_true",
+                    help="Quiet mode: log only WARN+, suitable for scheduled runs")
     args = ap.parse_args()
 
-    log.info("Fetching specials lg=%d", args.lg)
-    payload = fetch_specials_json(args.lg)
-    rows = parse_specials_json(payload, sport=args.sport, league_id=args.lg)
-    log.info("Parsed %d priceable rows (TRIPLE-PLAY + GRAND-SLAM, single-team)", len(rows))
+    if args.cron:
+        logging.getLogger().setLevel(logging.WARNING)
+
+    try:
+        log.info("Fetching specials lg=%d", args.lg)
+        payload = fetch_specials_json(args.lg)
+        rows = parse_specials_json(payload, sport=args.sport, league_id=args.lg)
+        log.info("Parsed %d priceable rows", len(rows))
+    except Exception:
+        log.exception("Scrape failed")
+        return 2
 
     if args.dry_run:
         for r in rows[:5]:
             print(r)
         log.info("Dry-run: not writing.")
         return 0
+
+    if not rows:
+        log.warning("No priceable specials found — not writing snapshot")
+        return 1
 
     con = duckdb.connect(str(DB_PATH))
     try:
