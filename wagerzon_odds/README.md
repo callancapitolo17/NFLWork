@@ -38,6 +38,7 @@ Requires in `.env`:
 | File | Purpose |
 |------|---------|
 | `scraper_v2.py` | Main scraper (current version) |
+| `scraper_specials.py` | Captures all MLB - SPECIALS props (TRIPLE-PLAY, GRAND-SLAM) via the NewScheduleHelper JSON endpoint into `wagerzon_specials` table. Used by `Answer Keys/mlb_triple_play.R` for daily prop pricing. |
 | `config.py` | Sport configurations (league IDs, API params, table names) |
 | `team_mapping.py` | Team name mappings (e.g., "SEA SEAHAWKS" → "Seattle Seahawks") |
 | `transform.py` | Transform raw Wagerzon records to standard format |
