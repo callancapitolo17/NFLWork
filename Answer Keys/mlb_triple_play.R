@@ -61,6 +61,18 @@ if (!interactive() && sys.nframe() == 0L) {
   ")
   dbDisconnect(con_mig)
 
+  # ===== Plan #2 will activate the DK trifecta SGP scraper here =====
+  # When Plan #2 lands, replace the comment block below with a writable
+  # request file + system2() call to mlb_sgp/scraper_draftkings_trifecta.py.
+  # The blend logic below already handles the populated table correctly;
+  # no changes to the rowwise mutate are needed when activating.
+  #
+  # trifecta_input <- todays_lines %>% ... write JSON ...
+  # system2(SGP_VENV_PYTHON,
+  #         args = c(file.path(SGP_DIR, "scraper_draftkings_trifecta.py"),
+  #                  "--input", request_path, "--db", MLB_DB))
+  # ===================================================================
+
   # Read today's posted specials from the wagerzon_specials scraper output.
   # Uses the most recent snapshot. Pricer is robust to empty / off-day cases:
   # if zero rows are posted, prints a clear message and exits.
