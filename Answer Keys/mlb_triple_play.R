@@ -43,6 +43,36 @@ if (!interactive() && sys.nframe() == 0L) {
   source("parse_legs.R")
   MLB_DB <- "mlb.duckdb"
 
+  # Ensure DK trifecta SGP table exists (idempotent; created lazily on first
+  # pricer run). The Plan #2 scraper writes here; Plan #1 reads it (empty).
+  con_mig <- dbConnect(duckdb(), dbdir = MLB_DB)
+  dbExecute(con_mig, "
+    CREATE TABLE IF NOT EXISTS mlb_trifecta_sgp_odds (
+      fetch_time     TIMESTAMP,
+      game_id        VARCHAR,
+      prop_type      VARCHAR,
+      side           VARCHAR,
+      legs_json      VARCHAR,
+      selection_ids  VARCHAR,
+      sgp_decimal    DOUBLE,
+      sgp_american   INTEGER,
+      source         VARCHAR
+    )
+  ")
+  dbDisconnect(con_mig)
+
+  # ===== Plan #2 will activate the DK trifecta SGP scraper here =====
+  # When Plan #2 lands, replace the comment block below with a writable
+  # request file + system2() call to mlb_sgp/scraper_draftkings_trifecta.py.
+  # The blend logic below already handles the populated table correctly;
+  # no changes to the rowwise mutate are needed when activating.
+  #
+  # trifecta_input <- todays_lines %>% ... write JSON ...
+  # system2(SGP_VENV_PYTHON,
+  #         args = c(file.path(SGP_DIR, "scraper_draftkings_trifecta.py"),
+  #                  "--input", request_path, "--db", MLB_DB))
+  # ===================================================================
+
   # Read today's posted specials from the wagerzon_specials scraper output.
   # Uses the most recent snapshot. Pricer is robust to empty / off-day cases:
   # if zero rows are posted, prints a clear message and exits.
@@ -126,6 +156,21 @@ if (!interactive() && sys.nframe() == 0L) {
     stop("mlb_game_samples is missing home_scored_first. Re-run MLB.R to regenerate.")
   }
 
+  # Read latest DK trifecta SGP odds (table empty until Plan #2 populates it)
+  dk_sgp <- tryCatch({
+    dbGetQuery(con, "
+      SELECT game_id, prop_type, side, sgp_decimal
+      FROM mlb_trifecta_sgp_odds
+      WHERE source = 'draftkings_direct'
+        AND fetch_time = (SELECT MAX(fetch_time) FROM mlb_trifecta_sgp_odds)
+    ")
+  }, error = function(e) data.frame(
+    game_id     = character(0),
+    prop_type   = character(0),
+    side        = character(0),
+    sgp_decimal = double(0)
+  ))
+
   # 12-hour filter (same as before): mlb_consensus_temp carries multiple days
   consensus <- consensus %>%
     filter(commence_time > Sys.time() &
@@ -137,14 +182,14 @@ if (!interactive() && sys.nframe() == 0L) {
                relationship = "many-to-many", keep = TRUE) %>%
     mutate(side = "home", target_team = team,
            home_team = canonical_team) %>%
-    select(home_team, away_team, target_team, side, book_odds, description, id) %>%
+    select(home_team, away_team, target_team, side, book_odds, description, prop_type, id) %>%
     bind_rows(
       specials %>%
         inner_join(consensus, by = c("canonical_team" = "away_team"),
                    relationship = "many-to-many", keep = TRUE) %>%
         mutate(side = "away", target_team = team,
                away_team = canonical_team) %>%
-        select(home_team, away_team, target_team, side, book_odds, description, id)
+        select(home_team, away_team, target_team, side, book_odds, description, prop_type, id)
     )
 
   matched <- todays_lines  # consensus join already done; keep var name compatible
@@ -155,18 +200,40 @@ if (!interactive() && sys.nframe() == 0L) {
                     n_matched, n_posted))
   }
 
+  # DK SGP vig fallback for trifectas. Higher than mlb_correlated_parlay.R's
+  # 1.10 because trifectas are 3-4 legs (TRIPLE-PLAY = 3, GRAND-SLAM = 4) and
+  # DK shaves more aggressively as legs grow. With only 2 observations per
+  # game (home + away) we cannot fit per-game vig empirically, so we use a
+  # conservative fixed estimate. Revisit once Plan #2 collects real DK data.
+  DK_SGP_VIG_DEFAULT <- 1.25
+
   # Price each line
   priced <- matched %>%
     rowwise() %>%
     mutate(
-      game_samples = list(samples_df[samples_df$game_id == id, ]),
-      n_samples    = nrow(game_samples),
-      legs         = list(parse_legs(description)),
-      fair_prob    = compute_prop_fair(game_samples, side, legs),
-      fair_odds    = prob_to_american(fair_prob),
-      book_prob    = american_to_prob(book_odds),
-      edge_pct     = (fair_prob / book_prob - 1) * 100,
-      prop_type    = {
+      game_samples    = list(samples_df[samples_df$game_id == id, ]),
+      n_samples       = nrow(game_samples),
+      legs            = list(parse_legs(description)),
+      model_fair_prob = compute_prop_fair(game_samples, side, legs),
+
+      dk_match        = list(dk_sgp[dk_sgp$game_id   == id        &
+                                    dk_sgp$prop_type == prop_type &
+                                    dk_sgp$side      == side, ]),
+      dk_decimal      = if (nrow(dk_match) > 0) dk_match$sgp_decimal[1] else NA_real_,
+      dk_fair_prob    = if (!is.na(dk_decimal) && dk_decimal > 0) {
+                          (1 / dk_decimal) / DK_SGP_VIG_DEFAULT
+                        } else NA_real_,
+
+      fair_prob       = blend_dk_with_model(model_fair_prob, dk_decimal,
+                                            DK_SGP_VIG_DEFAULT),
+
+      model_odds      = prob_to_american(model_fair_prob),
+      dk_odds         = prob_to_american(dk_fair_prob),
+      fair_odds       = prob_to_american(fair_prob),
+      book_prob       = american_to_prob(book_odds),
+      edge_pct        = (fair_prob / book_prob - 1) * 100,
+
+      prop_type       = {
         # Anchor on known prop-type tokens so multi-word team names work
         # ("WHITE SOX TRIPLE-PLAY ..." and "GIANTS GRAND-SLAM ..." both parse).
         # Extend this pattern as new prop types are added to TOKEN_REGISTRY.
@@ -178,7 +245,7 @@ if (!interactive() && sys.nframe() == 0L) {
     ) %>%
     ungroup() %>%
     select(target_team, prop_type, side, n_samples,
-           fair_prob, fair_odds, book_odds, edge_pct) %>%
+           model_odds, dk_odds, fair_odds, book_odds, edge_pct) %>%
     arrange(desc(edge_pct))
 
   cat("\n=== MLB Triple-Play Fair Prices (SCR 1ST + F5 + GM) ===\n")
@@ -186,12 +253,18 @@ if (!interactive() && sys.nframe() == 0L) {
 
   display <- priced %>%
     mutate(
-      fair_prob = sprintf("%.3f", fair_prob),
-      fair_odds = ifelse(fair_odds > 0,
-                         paste0("+", fair_odds), as.character(fair_odds)),
-      book_odds = ifelse(book_odds > 0,
-                         paste0("+", book_odds), as.character(book_odds)),
-      edge_pct  = sprintf("%+.1f%%", edge_pct)
+      model_odds = ifelse(is.na(model_odds), NA_character_,
+                          ifelse(model_odds > 0,
+                                 paste0("+", model_odds), as.character(model_odds))),
+      dk_odds    = ifelse(is.na(dk_odds), NA_character_,
+                          ifelse(dk_odds > 0,
+                                 paste0("+", dk_odds), as.character(dk_odds))),
+      fair_odds  = ifelse(is.na(fair_odds), NA_character_,
+                          ifelse(fair_odds > 0,
+                                 paste0("+", fair_odds), as.character(fair_odds))),
+      book_odds  = ifelse(book_odds > 0,
+                          paste0("+", book_odds), as.character(book_odds)),
+      edge_pct   = sprintf("%+.1f%%", edge_pct)
     )
   print(as.data.frame(display), row.names = FALSE)
 

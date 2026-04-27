@@ -162,3 +162,30 @@ compute_prop_fair <- function(samples, side, legs) {
   }
   mean(hits)
 }
+
+#' Blend a model fair probability with a DK SGP devigged probability.
+#'
+#' If `dk_decimal` is NA / 0 / negative, treats DK as missing and returns
+#' `model_prob` alone.
+#' If `model_prob` is NA but DK is valid, returns DK's devigged probability
+#' alone.
+#' If both are missing, returns NA_real_.
+#' Otherwise returns the mean of the two devigged probabilities — the
+#' blending strategy used by mlb_correlated_parlay.R for DK + FD SGPs.
+#'
+#' @param model_prob numeric, the historical fair probability from
+#'   compute_prop_fair (may be NA for unpriceable props).
+#' @param dk_decimal numeric, DK SGP decimal odds (>1.0 if valid; NA / 0
+#'   / negative when DK couldn't price the prop).
+#' @param vig numeric, the SGP vig fallback (default convention is 1.10,
+#'   matching DK_SGP_VIG_DEFAULT in mlb_correlated_parlay.R).
+#' @return numeric scalar — the blended probability — or NA_real_ if no
+#'   inputs are available.
+blend_dk_with_model <- function(model_prob, dk_decimal, vig) {
+  dk_valid <- !is.na(dk_decimal) && dk_decimal > 0
+  dk_prob  <- if (dk_valid) (1 / dk_decimal) / vig else NA_real_
+  probs    <- c(model_prob, dk_prob)
+  probs    <- probs[!is.na(probs)]
+  if (length(probs) == 0) return(NA_real_)
+  mean(probs)
+}
