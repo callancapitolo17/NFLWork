@@ -33,35 +33,58 @@ except ImportError:
     print("       cd mlb_sgp && python -m venv venv && venv/bin/pip install curl_cffi", file=sys.stderr)
     sys.exit(1)
 
-# ===== CONFIG — UPDATE THESE BEFORE RUNNING =====
-# DK event IDs for ~2 MLB games we want to characterize. Find these by:
-# 1. Open https://sportsbook.draftkings.com/leagues/baseball/mlb in a browser
-# 2. Click into a game, look at the URL: /event/<event_id>
-# 3. Pick games that have triple-play / grand-slam comparable markets
-#    (any MLB game should work — we only need the selection IDs)
-DK_EVENT_IDS: list[int] = [
-    # 32109876,  # example — replace with real IDs before running
-    # 32109877,
+# ===== CONFIG =====
+# DK event IDs to characterize. If empty, the script auto-discovers up to
+# MAX_AUTO_EVENTS upcoming MLB games via the same eventgroup API the
+# production DK SGP scraper uses (mlb_sgp/scraper_draftkings_sgp.py).
+# Override this list to pin specific games, e.g. for re-running on a known fixture.
+DK_EVENT_IDS: list[str] = [
+    # "32109876",  # populate to target specific games; otherwise leave empty
 ]
+MAX_AUTO_EVENTS = 2
 
-# DK API endpoints (public, no auth required)
-SGP_EVENTS_URL_TPL = "https://sportsbook-nash.draftkings.com/parlays/v1/sgp/events/{event_id}"
+# DK API endpoints (public, no auth required). The full SGP path lives under
+# /sites/US-SB/api/sportscontent/ — same prefix the production scraper uses.
+SGP_EVENTS_URL_TPL = (
+    "https://sportsbook-nash.draftkings.com/sites/US-SB/api/sportscontent/"
+    "parlays/v1/sgp/events/{event_id}"
+)
 
 OUT_DIR = Path(__file__).parent
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("recon_dk_trifecta")
 
 
-def fetch_event_selections(event_id: int) -> Optional[dict]:
+def init_session():
+    """Reuse the production DK SGP scraper's session init: curl_cffi + Chrome
+    impersonation + a warmup GET to seed cookies. Importing here so that
+    smoke-tests of this module don't require curl_cffi at import time."""
+    sys.path.insert(0, str(Path(__file__).parent))
+    from scraper_draftkings_sgp import init_session as _init  # type: ignore
+    return _init()
+
+
+def discover_dk_events(session, max_events: int) -> list[dict]:
+    """Discover today's MLB events via the same eventgroup API the production
+    scraper uses. Returns a list of {dk_event_id, name, start_time} dicts.
+    Limited to max_events to keep recon fast."""
+    sys.path.insert(0, str(Path(__file__).parent))
+    from scraper_draftkings_sgp import fetch_dk_events  # type: ignore
+    events = fetch_dk_events(session)
+    log.info("DK eventgroup returned %d MLB events", len(events))
+    return events[:max_events]
+
+
+def fetch_event_selections(session, event_id: str) -> Optional[dict]:
     """Fetch the full SGP event payload (~2MB JSON of all selection IDs)."""
     url = SGP_EVENTS_URL_TPL.format(event_id=event_id)
     log.info("GET %s", url)
     try:
-        r = requests.get(url, impersonate="chrome", timeout=30)
+        r = session.get(url, timeout=30)
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        log.exception("Failed to fetch event %d: %s", event_id, e)
+        log.exception("Failed to fetch event %s: %s", event_id, e)
         return None
 
 
@@ -120,18 +143,30 @@ def summarize_markets(payload: dict) -> dict:
 
 
 def main() -> int:
-    if not DK_EVENT_IDS:
-        log.error("DK_EVENT_IDS is empty. Edit %s and add 1-2 event ids first.", __file__)
-        return 1
-    for event_id in DK_EVENT_IDS:
-        log.info("=== Reconning event %d ===", event_id)
-        payload = fetch_event_selections(event_id)
+    session = init_session()
+
+    # Resolve which event IDs to target. Manual override wins; otherwise auto.
+    if DK_EVENT_IDS:
+        targets = [{"dk_event_id": eid, "name": "(manual override)", "start_time": ""}
+                   for eid in DK_EVENT_IDS]
+    else:
+        targets = discover_dk_events(session, MAX_AUTO_EVENTS)
+        if not targets:
+            log.error("No upcoming MLB events found. Specials may not be posted, "
+                      "or DK eventgroup API changed.")
+            return 1
+
+    for evt in targets:
+        event_id = str(evt["dk_event_id"])
+        log.info("=== Reconning event %s — %s @ %s ===",
+                 event_id, evt.get("name", ""), evt.get("start_time", ""))
+        payload = fetch_event_selections(session, event_id)
         if payload is None:
-            log.warning("Skipping %d (fetch failed)", event_id)
+            log.warning("Skipping %s (fetch failed)", event_id)
             continue
         out_full = OUT_DIR / f"recon_dk_trifecta_{event_id}.json"
         out_full.write_text(json.dumps(payload, indent=2, default=str))
-        log.info("Saved full payload to %s", out_full.name)
+        log.info("Saved full payload to %s (%d bytes)", out_full.name, out_full.stat().st_size)
 
         summary = summarize_markets(payload)
         out_summary = OUT_DIR / f"recon_dk_trifecta_{event_id}_summary.json"
