@@ -573,14 +573,22 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
           )
 
           # Auto-placed: show muted "placed &middot; #<ticket>" label.
+          # If ticket is missing (manual log via /api/log-parlay, or auto-place
+          # response that didn't carry the identifier), drop the "&middot; #"
+          # suffix and just show "placed" — looks intentional rather than
+          # broken.
           # Use HTML entity instead of literal U+00B7 to keep the file
           # ASCII-clean — R writes report.html in the platform default
           # encoding (Latin-1 on macOS), which Flask's UTF-8 reader chokes on.
           if (ps_valid && ps == "placed") {
-            ticket <- if (!is.na(row$ticket_number)) row$ticket_number else "?"
-            return(sprintf('<span class="placed-parlay-label" %s>placed &middot; #%s</span>',
-                           common_data_attrs,
-                           htmltools::htmlEscape(ticket)))
+            has_ticket <- !is.na(row$ticket_number) && nchar(as.character(row$ticket_number)) > 0
+            label_html <- if (has_ticket) {
+              sprintf('placed &middot; #%s', htmltools::htmlEscape(row$ticket_number))
+            } else {
+              'placed'
+            }
+            return(sprintf('<span class="placed-parlay-label" %s>%s</span>',
+                           common_data_attrs, label_html))
           }
 
           # Error states: show red pill with a SHORT label for quick scan,
@@ -613,7 +621,16 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
           if (value) {
             sprintf('<button class="btn-placed" onclick="removeParlay(this)" %s>Placed</button>', data_attrs)
           } else {
-            sprintf('<button class="btn-place" onclick="placeParlay(this)" %s>Place</button>', data_attrs)
+            # Two buttons side-by-side:
+            # [Place] = auto-place via Wagerzon REST (records ticket from API)
+            # [Log]   = manual record only, no Wagerzon API call (used when
+            #           the user placed the bet themselves and just wants
+            #           the dashboard to track it)
+            sprintf(paste0(
+              '<button class="btn-place" onclick="placeParlay(this)" %s>Place</button>',
+              ' ',
+              '<button class="btn-log" onclick="logParlay(this)" %s>Log</button>'
+            ), data_attrs, data_attrs)
           }
         }
       )
@@ -1125,6 +1142,27 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .btn-placed:hover {
           border-color: #f85149;
           color: #f85149;
+        }
+
+        /* Manual-log button: secondary tone (blue/grey) to avoid competing
+           visually with the green Place button. Same size for a clean
+           side-by-side row. */
+        .btn-log {
+          background: transparent;
+          border: 1px solid #30363d;
+          color: #8b949e;
+          padding: 5px 10px;
+          border-radius: 6px;
+          font-size: 0.75rem;
+          font-weight: 500;
+          cursor: pointer;
+          margin-left: 4px;
+          transition: all 0.15s;
+        }
+
+        .btn-log:hover {
+          border-color: #58a6ff;
+          color: #58a6ff;
         }
 
         .combo-note { color: #8b949e; font-size: 0.7rem; font-style: italic; }
@@ -3238,12 +3276,17 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             .then(function(result) {
               btn.disabled = false;
               if (result.status === "placed") {
+                // The Action cell may contain BOTH [Place] and [Log] buttons.
+                // Replace the entire cell content with the placed label so
+                // neither button is left behind.
                 var ticket = result.ticket_number || "";
                 var span = document.createElement(\'span\');
                 span.className = "placed-parlay-label";
-                span.textContent = "placed \xb7 #" + ticket;
-                btn.parentNode.replaceChild(span, btn);
-                showToast("Placed at Wagerzon (#" + ticket + ")", "success");
+                // No ticket → just "placed" (cleaner than "placed · #")
+                span.textContent = ticket ? ("placed \xb7 #" + ticket) : "placed";
+                _replaceActionCell(btn, span);
+                showToast(ticket ? ("Placed at Wagerzon (#" + ticket + ")") :
+                                   "Placed at Wagerzon", "success");
               } else if (result.status === "would_place") {
                 btn.textContent = originalText;
                 var w = (result.actual_win != null) ? result.actual_win.toFixed(2) : "?";
@@ -3258,7 +3301,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 span.className = "pill error";
                 span.textContent = label;
                 span.title = msg;
-                btn.parentNode.replaceChild(span, btn);
+                _replaceActionCell(btn, span);
                 showToast("Place failed: " + msg, "error");
               }
             })
@@ -3267,6 +3310,93 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               btn.textContent = originalText;
               showToast("Network error: " + err, "error");
             });
+        }
+
+        // Replace the parlay row\'s entire Action cell content with `node`.
+        // Walk up from the clicked button to the reactable cell wrapper so
+        // both buttons ([Place] AND [Log]) get cleared together — preserves
+        // the cell\'s data attrs implicitly because the new node carries them.
+        function _replaceActionCell(btn, node) {
+          var cell = btn.closest(\'.rt-td\') || btn.parentNode;
+          while (cell.firstChild) cell.removeChild(cell.firstChild);
+          cell.appendChild(node);
+        }
+
+        // Manual-log path: user has placed the bet themselves (on Wagerzon\'s
+        // UI or anywhere) and just wants the dashboard to track it. Opens a
+        // small modal asking for the actual stake (defaults to the row\'s
+        // recommended size), then POSTs to /api/log-parlay. NO Wagerzon API
+        // call. Result row in placed_parlays carries status=\'placed\' with
+        // ticket_number=NULL — the cell renders as just \'placed\' (no #ticket
+        // suffix).
+        function logParlay(btn) {
+          var hash = btn.dataset.hash;
+          if (!hash) { showToast("Missing parlay_hash", "error"); return; }
+
+          var combo = btn.dataset.combo || "";
+          var spread = btn.dataset.spread || "";
+          var total = btn.dataset.total || "";
+          var wzOdds = btn.dataset.wzOdds || "";
+          var edge = btn.dataset.edge || "";
+          var defaultStake = Math.round(parseFloat(btn.dataset.size) || 0);
+
+          var overlay = document.createElement(\'div\');
+          overlay.className = \'modal-overlay\';
+          overlay.innerHTML =
+            \'<div class="modal-box">\' +
+              \'<div class="modal-title">Log manual placement</div>\' +
+              \'<div class="modal-detail">Combo: <span>\' + escapeHtml(combo) + \'</span></div>\' +
+              \'<div class="modal-detail">Spread: <span>\' + escapeHtml(spread) + \'</span> | Total: <span>\' + escapeHtml(total) + \'</span></div>\' +
+              \'<div class="modal-detail">WZ Odds: <span>\' + escapeHtml(wzOdds) + \'</span> | Edge: <span>+\' + escapeHtml(edge) + \'%</span></div>\' +
+              \'<div class="modal-recommended">Recommended: $\' + defaultStake + \'</div>\' +
+              \'<div class="modal-input-group">\' +
+                \'<label class="modal-input-label">Stake ($)</label>\' +
+                \'<input type="number" class="modal-input" value="\' + defaultStake + \'" step="1" min="1">\' +
+              \'</div>\' +
+              \'<div class="modal-actions">\' +
+                \'<button class="modal-btn-cancel">Cancel</button>\' +
+                \'<button class="modal-btn-confirm">Confirm</button>\' +
+              \'</div>\' +
+            \'</div>\';
+
+          document.body.appendChild(overlay);
+
+          overlay.querySelector(\'.modal-btn-cancel\').onclick = function() { overlay.remove(); };
+          overlay.querySelector(\'.modal-btn-confirm\').onclick = function() {
+            var amount = parseFloat(overlay.querySelector(\'.modal-input\').value);
+            if (!amount || amount <= 0) { showToast("Invalid amount", "error"); return; }
+
+            fetch("/api/log-parlay", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ parlay_hash: hash, actual_size: amount })
+            })
+              .then(function(r) { return r.json(); })
+              .then(function(result) {
+                overlay.remove();
+                if (result.status === "placed") {
+                  var span = document.createElement(\'span\');
+                  span.className = "placed-parlay-label";
+                  // No ticket for manual logs — just "placed".
+                  span.textContent = "placed";
+                  // Carry the same data attrs forward so the row filter still
+                  // classifies it as Placed and reads the right edge/size.
+                  span.dataset.hash = hash;
+                  span.dataset.home = btn.dataset.home || "";
+                  span.dataset.away = btn.dataset.away || "";
+                  span.dataset.edge = btn.dataset.edge || "";
+                  span.dataset.size = String(amount);
+                  _replaceActionCell(btn, span);
+                  showToast("Logged $" + amount, "success");
+                } else {
+                  showToast("Log failed: " + (result.error_msg || "unknown"), "error");
+                }
+              })
+              .catch(function(err) {
+                overlay.remove();
+                showToast("Network error: " + err, "error");
+              });
+          };
         }
 
         function removeParlay(btn) {

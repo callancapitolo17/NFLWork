@@ -1249,6 +1249,104 @@ def _short_label_for(status: str, error_msg_key: str, error_msg: str) -> str:
     return _SHORT_LABEL_BY_STATUS.get(status, status)
 
 
+@app.route("/api/log-parlay", methods=["POST"])
+def api_log_parlay():
+    """Manually record a parlay placement. Used when the user places the
+    bet themselves (on Wagerzon's UI or elsewhere) and just wants the
+    dashboard to track it. NO Wagerzon API call, NO preflight, NO drift
+    check — pure local recording at whatever stake the user enters.
+
+    Body: {parlay_hash: str, actual_size: float}
+    Response: {status: "placed", actual_size: float, actual_win: float}
+
+    Distinct from /api/place-parlay (which is the auto-placement path
+    going through Wagerzon's REST API) but writes to the same
+    placed_parlays table with status='placed'. ticket_number / idwt
+    stay NULL for manually-logged rows.
+    """
+    payload = request.get_json(force=True) or {}
+    parlay_hash = payload.get("parlay_hash")
+    try:
+        actual_size = float(payload.get("actual_size") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"status": "error", "error_msg": "invalid actual_size"}), 400
+
+    if not parlay_hash:
+        return jsonify({"status": "error", "error_msg": "missing parlay_hash"}), 400
+    if actual_size <= 0:
+        return jsonify({"status": "error", "error_msg": "actual_size must be positive"}), 400
+
+    row = _load_parlay_row(parlay_hash)
+    if not row:
+        return jsonify({"status": "error", "error_msg": "parlay not found"}), 404
+
+    # Compute actual_win at the user's chosen stake. Prefer the pricer's
+    # exact_to_win pair (scaled linearly if stake differs from exact_wager);
+    # fall back to American->decimal math from wz_odds when those are missing.
+    if row.get("exact_to_win") and row.get("exact_wager") and float(row["exact_wager"]) > 0:
+        actual_win = round(
+            actual_size * float(row["exact_to_win"]) / float(row["exact_wager"]), 2
+        )
+    else:
+        wz = int(row["wz_odds"])
+        decimal = (wz / 100 + 1) if wz > 0 else (100 / -wz + 1)
+        actual_win = round(actual_size * (decimal - 1), 2)
+
+    now = datetime.now()
+    con = duckdb.connect(str(DASHBOARD_DB))
+    try:
+        con.execute("""
+            INSERT INTO placed_parlays (
+                parlay_hash, status, home_team, away_team,
+                combo, game_id, game_time,
+                wz_odds, kelly_bet,
+                spread_line, total_line, fair_odds, edge_pct,
+                recommended_size, expected_odds, expected_win,
+                actual_size, actual_win,
+                ticket_number, idwt,
+                error_msg, error_msg_key, updated_at
+            ) VALUES (?, 'placed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '', '', ?)
+            ON CONFLICT (parlay_hash) DO UPDATE SET
+                status        = 'placed',
+                actual_size   = EXCLUDED.actual_size,
+                actual_win    = EXCLUDED.actual_win,
+                spread_line   = COALESCE(placed_parlays.spread_line, EXCLUDED.spread_line),
+                total_line    = COALESCE(placed_parlays.total_line,  EXCLUDED.total_line),
+                fair_odds     = COALESCE(placed_parlays.fair_odds,   EXCLUDED.fair_odds),
+                edge_pct      = COALESCE(placed_parlays.edge_pct,    EXCLUDED.edge_pct),
+                error_msg     = '',
+                error_msg_key = '',
+                updated_at    = EXCLUDED.updated_at
+        """, [
+            parlay_hash,
+            row.get("home_team") or "",
+            row.get("away_team") or "",
+            row.get("combo") or "",
+            row.get("game_id") or "",
+            row.get("game_time"),
+            int(row["wz_odds"]),
+            float(row["kelly_bet"]),
+            float(row["spread_line"]) if row.get("spread_line") is not None else None,
+            float(row["total_line"])  if row.get("total_line")  is not None else None,
+            int(row["fair_odds"])     if row.get("fair_odds")   is not None else None,
+            float(row["edge_pct"])    if row.get("edge_pct")    is not None else None,
+            float(row["kelly_bet"]),
+            int(row["wz_odds"]),
+            actual_win,
+            actual_size,
+            actual_win,
+            now,
+        ])
+    finally:
+        con.close()
+
+    return jsonify({
+        "status": "placed",
+        "actual_size": actual_size,
+        "actual_win": actual_win,
+    })
+
+
 @app.route("/api/place-combined-parlay", methods=["POST"])
 def place_combined_parlay():
     """Record a combined (cross-game) parlay placement.
