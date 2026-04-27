@@ -3001,72 +3001,49 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
 
         function placeParlay(btn) {
-          var combo = btn.dataset.combo;
-          var size = parseFloat(btn.dataset.size);
-          var odds = btn.dataset.wzOdds;
+          var hash = btn.dataset.hash;
+          if (!hash) { showToast("Missing parlay_hash", "error"); return; }
+          var toggleEl = document.getElementById(\'parlay-dry-run-toggle\');
+          var dryRun = !!(toggleEl && toggleEl.checked);
 
-          var overlay = document.createElement(\'div\');
-          overlay.className = \'modal-overlay\';
-          overlay.innerHTML =
-            \'<div class="modal-box">\' +
-              \'<div class="modal-title">Place Parlay</div>\' +
-              \'<div class="modal-detail">Combo: <span>\' + escapeHtml(combo) + \'</span></div>\' +
-              \'<div class="modal-detail">Spread: <span>\' + escapeHtml(btn.dataset.spread) + \'</span> | Total: <span>\' + escapeHtml(btn.dataset.total) + \'</span></div>\' +
-              \'<div class="modal-detail">WZ Odds: <span>\' + escapeHtml(odds) + \'</span> | Edge: <span>+\' + escapeHtml(btn.dataset.edge) + \'%</span></div>\' +
-              \'<div class="modal-recommended">Recommended: $\' + Math.round(size) + \'</div>\' +
-              \'<div class="modal-input-group">\' +
-                \'<label class="modal-input-label">Actual Amount ($)</label>\' +
-                \'<input type="number" class="modal-input" value="\' + Math.round(size) + \'" step="1" min="1">\' +
-              \'</div>\' +
-              \'<div class="modal-actions">\' +
-                \'<button class="modal-btn-cancel">Cancel</button>\' +
-                \'<button class="modal-btn-confirm">Confirm</button>\' +
-              \'</div>\' +
-            \'</div>\';
+          var originalText = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = dryRun ? "Dry run..." : "Placing...";
 
-          document.body.appendChild(overlay);
-
-          overlay.querySelector(\'.modal-btn-cancel\').onclick = function() { overlay.remove(); };
-          overlay.querySelector(\'.modal-btn-confirm\').onclick = function() {
-            var amount = parseFloat(overlay.querySelector(\'.modal-input\').value);
-            if (!amount || amount <= 0) { showToast("Invalid amount", "error"); return; }
-
-            fetch("/api/place-parlay", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                parlay_hash: btn.dataset.hash,
-                game_id: btn.dataset.gameId,
-                home_team: btn.dataset.home,
-                away_team: btn.dataset.away,
-                game_time: btn.dataset.time || null,
-                combo: btn.dataset.combo,
-                spread_line: parseFloat(btn.dataset.spread) || null,
-                total_line: parseFloat(btn.dataset.total) || null,
-                fair_odds: parseInt(btn.dataset.fairOdds) || null,
-                wz_odds: parseInt(btn.dataset.wzOdds),
-                edge_pct: parseFloat(btn.dataset.edge) || null,
-                kelly_bet: size,
-                actual_size: amount
-              })
+          fetch("/api/place-parlay", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ parlay_hash: hash, dry_run: dryRun })
+          })
+            .then(function(r) { return r.json(); })
+            .then(function(result) {
+              btn.disabled = false;
+              if (result.status === "placed") {
+                var ticket = result.ticket_number || "";
+                var span = document.createElement(\'span\');
+                span.className = "placed-parlay-label";
+                span.textContent = "placed \xb7 #" + ticket;
+                btn.parentNode.replaceChild(span, btn);
+                showToast("Placed at Wagerzon (#" + ticket + ")", "success");
+              } else if (result.status === "would_place") {
+                btn.textContent = originalText;
+                var w = (result.actual_win != null) ? result.actual_win.toFixed(2) : "?";
+                showToast("Dry run OK — would win $" + w, "success");
+              } else {
+                var msg = result.error_msg || result.status || "Failed";
+                var span = document.createElement(\'span\');
+                span.className = "pill error";
+                span.textContent = msg.length > 28 ? msg.substring(0, 25) + "..." : msg;
+                span.title = msg;
+                btn.parentNode.replaceChild(span, btn);
+                showToast("Place failed: " + msg, "error");
+              }
             })
-              .then(function(r) { return r.json(); })
-              .then(function(result) {
-                if (result.success) {
-                  btn.className = "btn-placed";
-                  btn.textContent = "Placed";
-                  btn.onclick = function() { removeParlay(this); };
-                  addPlacedParlayRow(btn, amount);
-                  applyParlayFilters();
-                  showToast("Parlay placed", "success");
-                  applyParlayFilters();
-                } else {
-                  showToast(result.error || "Failed", "error");
-                }
-                overlay.remove();
-              })
-              .catch(function(err) { showToast("Error: " + err, "error"); overlay.remove(); });
-          };
+            .catch(function(err) {
+              btn.disabled = false;
+              btn.textContent = originalText;
+              showToast("Network error: " + err, "error");
+            });
         }
 
         function removeParlay(btn) {
