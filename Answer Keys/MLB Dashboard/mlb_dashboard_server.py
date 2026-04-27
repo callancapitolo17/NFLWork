@@ -729,10 +729,7 @@ def _build_spec_from_row(row: dict) -> parlay_placer.ParlaySpec:
             odds=int(row["total_price"]),
         ),
     ]
-    amount = float(row["kelly_bet"])
-    wz = int(row["wz_odds"])
-    decimal = (wz / 100 + 1) if wz > 0 else (100 / -wz + 1)
-    expected_win = round(amount * (decimal - 1), 2)
+    amount, expected_win = _resolve_amount_and_win(row)
     return parlay_placer.ParlaySpec(
         parlay_hash=row["parlay_hash"],
         legs=legs,
@@ -740,6 +737,37 @@ def _build_spec_from_row(row: dict) -> parlay_placer.ParlaySpec:
         expected_win=expected_win,
         expected_risk=amount,
     )
+
+
+def _resolve_amount_and_win(row: dict) -> tuple[float, float]:
+    """Pick the placement stake AND the expected win in one place.
+
+    The pricer (wagerzon_odds/parlay_pricer.py --exact-payouts) calls
+    Wagerzon's ConfirmWagerHelper at an integer stake near Kelly and
+    stores both (exact_wager, exact_to_win). The dashboard's SIZE / TO
+    WIN columns show those numbers — so the user's mental "this is what
+    I'm placing" matches the pricer's pre-confirmed pair.
+
+    Source of truth: exact_wager + exact_to_win. They came from the same
+    ConfirmWagerHelper call so they match each other to the cent and will
+    match the placer's preflight again unless the line genuinely moves.
+
+    Fallback (rare — the pricer hasn't run --exact-payouts yet for this
+    row): use kelly_bet rounded to integer, expected_win from wz_odds
+    math. The drift check still catches real moves; the only cost is
+    a few cents of slack from Wagerzon's per-stake rounding.
+    """
+    exact_wager = row.get("exact_wager")
+    exact_to_win = row.get("exact_to_win")
+
+    if exact_wager is not None and exact_to_win is not None:
+        return float(exact_wager), float(exact_to_win)
+
+    # Pricer's exact-payouts step hasn't populated this row yet.
+    amount = float(int(round(float(row["kelly_bet"]))))
+    wz = int(row["wz_odds"])
+    decimal = (wz / 100 + 1) if wz > 0 else (100 / -wz + 1)
+    return amount, round(amount * (decimal - 1), 2)
 
 
 def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> None:
@@ -889,6 +917,7 @@ def api_place_parlay():
     if dry_run:
         return jsonify({
             "status": result.status,
+            "short_label": _short_label_for(result.status, result.error_msg_key, result.error_msg),
             "ticket_number": None,
             "error_msg": result.error_msg,
             "actual_win": result.actual_win,
@@ -902,6 +931,7 @@ def api_place_parlay():
             _record_orphan(result, parlay_hash, e)
             return jsonify({
                 "status": "orphaned",
+                "short_label": _short_label_for("orphaned", "", f"orphan: {e}"),
                 "ticket_number": result.ticket_number,
                 "error_msg": f"orphan: {e}",
             })
@@ -909,9 +939,33 @@ def api_place_parlay():
 
     return jsonify({
         "status": result.status,
+        "short_label": _short_label_for(result.status, result.error_msg_key, result.error_msg),
         "ticket_number": result.ticket_number,
         "error_msg": result.error_msg,
     })
+
+
+# Compact labels for the dashboard's status pill. Full text remains in
+# error_msg (toast + hover tooltip). Keep all under ~15 chars.
+_SHORT_LABEL_BY_STATUS = {
+    "placed":         "placed",
+    "would_place":    "would place",
+    "price_moved":    "price moved",
+    "auth_error":     "auth fail",
+    "network_error":  "network err",
+    "orphaned":       "orphaned",
+}
+_SHORT_LABEL_BY_REJECT_KEY = {
+    "insufficient_funds": "insufficient $",
+    "bet_too_large":      "exceeds limit",
+    "line_unavailable":   "line pulled",
+}
+
+
+def _short_label_for(status: str, error_msg_key: str, error_msg: str) -> str:
+    if status == "rejected":
+        return _SHORT_LABEL_BY_REJECT_KEY.get(error_msg_key or "", "rejected")
+    return _SHORT_LABEL_BY_STATUS.get(status, status)
 
 
 @app.route("/api/remove-parlay", methods=["POST"])

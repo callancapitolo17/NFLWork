@@ -204,6 +204,33 @@ create_placed_bets_table <- function(placed_bets) {
 # PARLAY TABLES
 # =============================================================================
 
+# Compact pill labels for placement statuses. Keep parallel with
+# _SHORT_LABEL_BY_STATUS / _SHORT_LABEL_BY_REJECT_KEY in
+# Answer Keys/MLB Dashboard/mlb_dashboard_server.py — both must agree
+# so a fresh placement (JS render) and an already-stored row (R render)
+# show the same pill text.
+short_label_for_status <- function(status, error_key = "") {
+  if (identical(status, "rejected")) {
+    map <- c(
+      insufficient_funds = "insufficient $",
+      bet_too_large      = "exceeds limit",
+      line_unavailable   = "line pulled"
+    )
+    out <- map[as.character(error_key)]
+    return(if (is.na(out)) "rejected" else unname(out))
+  }
+  map <- c(
+    placed         = "placed",
+    would_place    = "would place",
+    price_moved    = "price moved",
+    auth_error     = "auth fail",
+    network_error  = "network err",
+    orphaned       = "orphaned"
+  )
+  out <- map[as.character(status)]
+  if (is.na(out)) status else unname(out)
+}
+
 create_placed_parlays_table <- function(placed_parlays) {
   if (nrow(placed_parlays) == 0) return(NULL)
 
@@ -253,15 +280,18 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
   placement_cols <- if (nrow(placed_parlays) > 0 && "parlay_hash" %in% names(placed_parlays)) {
     placed_parlays %>%
       select(parlay_hash,
-             placement_status = status,
-             ticket_number    = any_of("ticket_number"),
-             placement_error  = any_of("error_msg")) %>%
-      # Ensure all three columns exist even on legacy rows that pre-date Task 9 migration
-      { if (!"ticket_number"   %in% names(.)) mutate(., ticket_number   = NA_character_) else . } %>%
-      { if (!"placement_error" %in% names(.)) mutate(., placement_error = NA_character_) else . }
+             placement_status     = status,
+             ticket_number        = any_of("ticket_number"),
+             placement_error      = any_of("error_msg"),
+             placement_error_key  = any_of("error_msg_key")) %>%
+      # Ensure all four columns exist even on legacy rows that pre-date Task 9 migration
+      { if (!"ticket_number"        %in% names(.)) mutate(., ticket_number        = NA_character_) else . } %>%
+      { if (!"placement_error"      %in% names(.)) mutate(., placement_error      = NA_character_) else . } %>%
+      { if (!"placement_error_key"  %in% names(.)) mutate(., placement_error_key  = NA_character_) else . }
   } else {
     tibble(parlay_hash = character(), placement_status = character(),
-           ticket_number = character(), placement_error = character())
+           ticket_number = character(), placement_error = character(),
+           placement_error_key = character())
   }
 
   # "Placed" in the legacy sense = any status that was manually recorded as pending
@@ -413,9 +443,10 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
       to_win_display = colDef(name = "To Win", minWidth = 65, align = "right",
         style = list(color = "#3fb950")),
       # Auto-placement state columns — hidden data carriers for the cell renderer below
-      placement_status = colDef(show = FALSE),
-      ticket_number    = colDef(show = FALSE),
-      placement_error  = colDef(show = FALSE),
+      placement_status     = colDef(show = FALSE),
+      ticket_number        = colDef(show = FALSE),
+      placement_error      = colDef(show = FALSE),
+      placement_error_key  = colDef(show = FALSE),
       is_placed = colDef(
         name = "Action",
         minWidth = 110,
@@ -438,17 +469,19 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
                            htmltools::htmlEscape(ticket)))
           }
 
-          # Error states: show red pill with truncated error message
-          error_statuses <- c("price_moved", "rejected", "auth_error",
-                              "network_error", "orphaned")
+          # Error states: show red pill with a SHORT label for quick scan,
+          # full message in the title= tooltip on hover.
+          error_statuses <- c("price_moved", "rejected",
+                              "auth_error", "network_error", "orphaned")
           if (ps_valid && ps %in% error_statuses) {
-            err_text <- if (!is.na(row$placement_error) && nchar(row$placement_error) > 0)
+            full_msg <- if (!is.na(row$placement_error) && nchar(row$placement_error) > 0)
               row$placement_error else ps
-            # Truncate long error messages for display
-            if (nchar(err_text) > 40) err_text <- paste0(substr(err_text, 1, 37), "...")
+            err_key <- if ("placement_error_key" %in% names(row) &&
+                           !is.na(row$placement_error_key)) row$placement_error_key else ""
+            short_label <- short_label_for_status(ps, err_key)
             return(sprintf('<span class="pill error" title="%s">%s</span>',
-                           htmltools::htmlEscape(err_text),
-                           htmltools::htmlEscape(err_text)))
+                           htmltools::htmlEscape(full_msg),
+                           htmltools::htmlEscape(short_label)))
           }
 
           # Default: Place button (manually placed via "pending" status OR no record)
@@ -3066,10 +3099,14 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 var w = (result.actual_win != null) ? result.actual_win.toFixed(2) : "?";
                 showToast("Dry run OK — would win $" + w, "success");
               } else {
+                // Pill shows the server-supplied short_label (under ~15 chars,
+                // matches short_label_for_status() in the R renderer). Full
+                // explanation lives in the title= tooltip and toast.
                 var msg = result.error_msg || result.status || "Failed";
+                var label = result.short_label || result.status || "failed";
                 var span = document.createElement(\'span\');
                 span.className = "pill error";
-                span.textContent = msg.length > 28 ? msg.substring(0, 25) + "..." : msg;
+                span.textContent = label;
                 span.title = msg;
                 btn.parentNode.replaceChild(span, btn);
                 showToast("Place failed: " + msg, "error");
