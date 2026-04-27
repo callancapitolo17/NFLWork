@@ -247,6 +247,24 @@ create_placed_parlays_table <- function(placed_parlays) {
 }
 
 create_parlays_table <- function(parlay_opps, placed_parlays) {
+  # Build a lookup from parlay_hash → placement state columns.
+  # "pending" = manually placed (legacy path); "placed" = auto-placed (show ticket);
+  # error statuses = show red pill. Rows with no entry in placed_parlays stay NA.
+  placement_cols <- if (nrow(placed_parlays) > 0 && "parlay_hash" %in% names(placed_parlays)) {
+    placed_parlays %>%
+      select(parlay_hash,
+             placement_status = status,
+             ticket_number    = any_of("ticket_number"),
+             placement_error  = any_of("error_msg")) %>%
+      # Ensure all three columns exist even on legacy rows that pre-date Task 9 migration
+      { if (!"ticket_number"   %in% names(.)) mutate(., ticket_number   = NA_character_) else . } %>%
+      { if (!"placement_error" %in% names(.)) mutate(., placement_error = NA_character_) else . }
+  } else {
+    tibble(parlay_hash = character(), placement_status = character(),
+           ticket_number = character(), placement_error = character())
+  }
+
+  # "Placed" in the legacy sense = any status that was manually recorded as pending
   placed_hashes <- if (nrow(placed_parlays) > 0) placed_parlays$parlay_hash else character()
 
   # Ensure exact-payout columns exist even on older rows (pre-Stage-2 backfill).
@@ -256,6 +274,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
   if (!"exact_to_win" %in% names(parlay_opps)) parlay_opps$exact_to_win <- NA_integer_
 
   table_data <- parlay_opps %>%
+    left_join(placement_cols, by = "parlay_hash") %>%
     mutate(
       is_placed = parlay_hash %in% placed_hashes,
       spread_team    = ifelse(grepl("Home", combo), home_team, away_team),
@@ -393,17 +412,45 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
       size_display = colDef(name = "Size", minWidth = 65, align = "right"),
       to_win_display = colDef(name = "To Win", minWidth = 65, align = "right",
         style = list(color = "#3fb950")),
+      # Auto-placement state columns — hidden data carriers for the cell renderer below
+      placement_status = colDef(show = FALSE),
+      ticket_number    = colDef(show = FALSE),
+      placement_error  = colDef(show = FALSE),
       is_placed = colDef(
         name = "Action",
-        minWidth = 90,
+        minWidth = 110,
         align = "center",
         filterable = FALSE,
         html = TRUE,
         cell = function(value, index) {
           row <- table_data[index, ]
-          # data-size drives the "Place" action's bet amount. Prefer the nudged
-          # exact_wager from Stage 2; fall back to Kelly-ideal if Stage 2
-          # couldn't price this row.
+          ps  <- row$placement_status
+          # Guard: treat NA or "NA" string uniformly
+          ps_valid <- !is.na(ps) && nchar(ps) > 0 && ps != "NA"
+
+          # Auto-placed: show muted "placed · #<ticket>" label
+          if (ps_valid && ps == "placed") {
+            ticket <- if (!is.na(row$ticket_number)) row$ticket_number else "?"
+            return(sprintf('<span class="placed-parlay-label">placed · #%s</span>',
+                           htmltools::htmlEscape(ticket)))
+          }
+
+          # Error states: show red pill with truncated error message
+          error_statuses <- c("price_moved", "rejected", "auth_error",
+                              "network_error", "orphaned")
+          if (ps_valid && ps %in% error_statuses) {
+            err_text <- if (!is.na(row$placement_error) && nchar(row$placement_error) > 0)
+              row$placement_error else ps
+            # Truncate long error messages for display
+            if (nchar(err_text) > 40) err_text <- paste0(substr(err_text, 1, 37), "...")
+            return(sprintf('<span class="pill error" title="%s">%s</span>',
+                           htmltools::htmlEscape(err_text),
+                           htmltools::htmlEscape(err_text)))
+          }
+
+          # Default: Place button (manually placed via "pending" status OR no record)
+          # data-size drives the bet amount. Prefer exact_wager from Stage 2;
+          # fall back to Kelly-ideal if Stage 2 couldn't price this row.
           data_size <- if (!is.na(row$exact_wager)) row$exact_wager else row$kelly_bet
           data_attrs <- sprintf(
             'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-combo="%s" data-spread="%s" data-total="%s" data-fair-odds="%s" data-wz-odds="%s" data-edge="%s" data-size="%s"',
@@ -1384,6 +1431,17 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
         .pill.dim {
           opacity: 0.4;
+        }
+        .pill.error {
+          background: #3d1c1c;
+          color: #f85149;
+          border: 1px solid #6e2d2d;
+        }
+        /* Muted label shown after auto-placement succeeds */
+        .placed-parlay-label {
+          font-size: 0.72rem;
+          color: #8b949e;
+          font-family: monospace;
         }
 
         /* Hide Corr column on phones (low-information; Edge stays visible).
@@ -3121,7 +3179,10 @@ if (nrow(parlay_opps) > 0) {
 placed_parlays <- tryCatch({
   ppcon <- dbConnect(duckdb(), dbdir = DB_PATH, read_only = TRUE)
   result <- tryCatch(
-    dbGetQuery(ppcon, "SELECT * FROM placed_parlays WHERE status = 'pending' AND (game_time IS NULL OR game_time > NOW())"),
+    # Fetch all statuses so the dashboard can render auto-placement state:
+    # "pending" = manually placed, "placed" = auto-placed (show ticket),
+    # "price_moved"/"rejected"/"auth_error"/"network_error"/"orphaned" = show error.
+    dbGetQuery(ppcon, "SELECT * FROM placed_parlays WHERE game_time IS NULL OR game_time > NOW()"),
     error = function(e) tibble(parlay_hash = character())
   )
   dbDisconnect(ppcon, shutdown = TRUE)
