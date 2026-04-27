@@ -12,6 +12,7 @@ suppressPackageStartupMessages({
   library(dplyr)
   library(tibble)
   library(DBI)
+  library(jsonlite)
 })
 
 # =============================================================================
@@ -60,18 +61,6 @@ if (!interactive() && sys.nframe() == 0L) {
     )
   ")
   dbDisconnect(con_mig)
-
-  # ===== Plan #2 will activate the DK trifecta SGP scraper here =====
-  # When Plan #2 lands, replace the comment block below with a writable
-  # request file + system2() call to mlb_sgp/scraper_draftkings_trifecta.py.
-  # The blend logic below already handles the populated table correctly;
-  # no changes to the rowwise mutate are needed when activating.
-  #
-  # trifecta_input <- todays_lines %>% ... write JSON ...
-  # system2(SGP_VENV_PYTHON,
-  #         args = c(file.path(SGP_DIR, "scraper_draftkings_trifecta.py"),
-  #                  "--input", request_path, "--db", MLB_DB))
-  # ===================================================================
 
   # Read today's posted specials from the wagerzon_specials scraper output.
   # Uses the most recent snapshot. Pricer is robust to empty / off-day cases:
@@ -156,21 +145,6 @@ if (!interactive() && sys.nframe() == 0L) {
     stop("mlb_game_samples is missing home_scored_first. Re-run MLB.R to regenerate.")
   }
 
-  # Read latest DK trifecta SGP odds (table empty until Plan #2 populates it)
-  dk_sgp <- tryCatch({
-    dbGetQuery(con, "
-      SELECT game_id, prop_type, side, sgp_decimal
-      FROM mlb_trifecta_sgp_odds
-      WHERE source = 'draftkings_direct'
-        AND fetch_time = (SELECT MAX(fetch_time) FROM mlb_trifecta_sgp_odds)
-    ")
-  }, error = function(e) data.frame(
-    game_id     = character(0),
-    prop_type   = character(0),
-    side        = character(0),
-    sgp_decimal = double(0)
-  ))
-
   # 12-hour filter (same as before): mlb_consensus_temp carries multiple days
   consensus <- consensus %>%
     filter(commence_time > Sys.time() &
@@ -193,12 +167,87 @@ if (!interactive() && sys.nframe() == 0L) {
     )
 
   matched <- todays_lines  # consensus join already done; keep var name compatible
+
+  # Derive prop_type from the description so the scraper invocation can
+  # send it (the rowwise mutate below previously did this — moved up so
+  # the scraper request includes it).
+  matched <- matched %>%
+    mutate(
+      prop_type = vapply(description, function(d) {
+        m <- regmatches(d, regexec("\\b(TRIPLE-PLAY|GRAND-SLAM)\\b", d))[[1]]
+        if (length(m) >= 2) m[[2]] else NA_character_
+      }, character(1))
+    )
+
   n_matched <- nrow(matched)
   n_posted  <- nrow(specials)
   if (n_matched < n_posted) {
     warning(sprintf("Matched %d/%d posted specials. Some teams may have no game tonight.",
                     n_matched, n_posted))
   }
+
+  # ===== DK trifecta SGP scraper invocation (Plan #2) =====
+  # Build a JSON request file with one entry per matched line, then call the
+  # Python scraper via system2(). Scraper writes rows to mlb_trifecta_sgp_odds;
+  # we read them back below in the dk_sgp <- dbGetQuery(...) block.
+  #
+  # If the scraper exits non-zero, we log a warning and continue — the blend
+  # gracefully degrades to model-only when the table has no fresh rows.
+  SGP_VENV_PYTHON <- "/Users/callancapitolo/NFLWork/mlb_sgp/venv/bin/python"
+  SGP_DIR <- "/Users/callancapitolo/NFLWork/mlb_sgp"
+
+  # Build request list: keep legs as a native R list so write_json serializes
+  # it as a JSON array (not a double-encoded string).
+  trifecta_list <- lapply(seq_len(nrow(matched)), function(i) {
+    row <- matched[i, ]
+    list(
+      game_id    = row$id,
+      home_team  = row$home_team,
+      away_team  = row$away_team,
+      prop_type  = row$prop_type,
+      side       = row$side,
+      legs       = parse_legs(row$description)
+    )
+  })
+  request_path <- tempfile(fileext = ".json")
+  jsonlite::write_json(trifecta_list, request_path, auto_unbox = TRUE)
+
+  dk_status <- tryCatch({
+    system2(SGP_VENV_PYTHON,
+            args = c(file.path(SGP_DIR, "scraper_draftkings_trifecta.py"),
+                     "--input", request_path, "--db", MLB_DB),
+            stdout = TRUE, stderr = TRUE)
+    0
+  }, warning = function(w) {
+    cat(sprintf("DK trifecta scraper warning: %s\n", conditionMessage(w)))
+    1
+  }, error = function(e) {
+    cat(sprintf("DK trifecta scraper failed: %s\n", conditionMessage(e)))
+    1
+  })
+  if (dk_status != 0) {
+    cat("DK trifecta blend disabled for this run; using model-only fair odds.\n")
+  }
+  unlink(request_path)
+  # ========================================================
+
+  # Read latest DK trifecta SGP odds — done AFTER the scraper runs so the
+  # query sees the rows just written by the Python process.
+  dbDisconnect(con)
+  con <- dbConnect(duckdb(), dbdir = MLB_DB, read_only = TRUE)
+  dk_sgp <- tryCatch({
+    dbGetQuery(con, "
+      SELECT game_id, prop_type, side, sgp_decimal
+      FROM mlb_trifecta_sgp_odds
+      WHERE source = 'draftkings_direct'
+        AND fetch_time = (SELECT MAX(fetch_time) FROM mlb_trifecta_sgp_odds)
+    ")
+  }, error = function(e) data.frame(
+    game_id     = character(0),
+    prop_type   = character(0),
+    side        = character(0),
+    sgp_decimal = double(0)
+  ))
 
   # DK SGP vig fallback for trifectas. Higher than mlb_correlated_parlay.R's
   # 1.10 because trifectas are 3-4 legs (TRIPLE-PLAY = 3, GRAND-SLAM = 4) and
@@ -231,17 +280,7 @@ if (!interactive() && sys.nframe() == 0L) {
       dk_odds         = prob_to_american(dk_fair_prob),
       fair_odds       = prob_to_american(fair_prob),
       book_prob       = american_to_prob(book_odds),
-      edge_pct        = (fair_prob / book_prob - 1) * 100,
-
-      prop_type       = {
-        # Anchor on known prop-type tokens so multi-word team names work
-        # ("WHITE SOX TRIPLE-PLAY ..." and "GIANTS GRAND-SLAM ..." both parse).
-        # Extend this pattern as new prop types are added to TOKEN_REGISTRY.
-        known_props <- "(TRIPLE-PLAY|GRAND-SLAM)"
-        m <- regmatches(description,
-                        regexec(paste0("\\b", known_props, "\\b"), description))[[1]]
-        if (length(m) >= 2) m[[2]] else NA_character_
-      }
+      edge_pct        = (fair_prob / book_prob - 1) * 100
     ) %>%
     ungroup() %>%
     select(target_team, prop_type, side, n_samples,
