@@ -17,6 +17,7 @@ import json
 import logging
 import mimetypes
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -26,6 +27,20 @@ from flask import Flask, Response, jsonify, request
 BASE_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = BASE_DIR.parent.parent  # NFLWork/
 DB_PATH = BASE_DIR / "mlb_dashboard.duckdb"
+MLB_DB_PATH = BASE_DIR.parent / "mlb.duckdb"
+
+# Combined parlay pricing imports — pull from wagerzon_odds/ + local helper
+sys.path.insert(0, str(PROJECT_ROOT / "wagerzon_odds"))
+from combined_parlay import joint_pricing
+from parlay_pricer import (
+    get_combined_parlay_price as wz_get_combined_parlay_price,
+    get_wz_session as _get_wz_session,
+)
+
+# Combined parlay pricing cache: keyed on sorted (hash_a, hash_b) tuple.
+# TTL prevents stale prices when WZ moves their lines. 60s is a safe default.
+_COMBO_PRICE_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
+_COMBO_PRICE_TTL_SECONDS = 60
 app = Flask(__name__)
 log = logging.getLogger("clv")
 
@@ -609,6 +624,110 @@ def get_placed_bets():
 # =============================================================================
 # PARLAY BET PLACEMENT
 # =============================================================================
+
+
+def _spread_play(line: float) -> int:
+    """Wagerzon play codes: 1=home spread (negative line side), 0=away spread."""
+    return 1 if line < 0 else 0
+
+
+def _total_play(combo: str) -> int:
+    """Pick over (2) vs under (3) from the combo description string."""
+    return 2 if " + Over " in combo else 3
+
+
+@app.route("/api/price-combined-parlay", methods=["POST"])
+def price_combined_parlay():
+    """Compute joint pricing + recommended Kelly stake for two parlay rows.
+
+    Body: {"parlay_hash_a": "...", "parlay_hash_b": "..."}
+    Returns: joint_fair_dec, joint_fair_prob, joint_edge, wz_dec, wz_win,
+             kelly_stake, and the per-leg combo descriptions.
+    """
+    data = request.json
+    hash_a = data.get("parlay_hash_a")
+    hash_b = data.get("parlay_hash_b")
+    if not hash_a or not hash_b:
+        return jsonify({"success": False, "error": "Missing parlay_hash_a or parlay_hash_b"}), 400
+    if hash_a == hash_b:
+        return jsonify({"success": False, "error": "Cannot combine a row with itself"}), 400
+
+    # Pull the two source rows from mlb.duckdb
+    mcon = duckdb.connect(str(MLB_DB_PATH))
+    try:
+        rows = mcon.execute("""
+            SELECT parlay_hash, fair_dec, wz_dec, idgm,
+                   spread_line, total_line, spread_price, total_price, combo, game_id
+            FROM mlb_parlay_opportunities
+            WHERE parlay_hash IN (?, ?)
+        """, [hash_a, hash_b]).fetchall()
+    finally:
+        mcon.close()
+
+    if len(rows) != 2:
+        return jsonify({"success": False, "error": "One or both parlays not found"}), 404
+
+    # Reject same-game combos
+    if rows[0][9] == rows[1][9]:
+        return jsonify({"success": False, "error": "Same-game combos not supported"}), 400
+
+    by_hash = {r[0]: r for r in rows}
+    a = by_hash[hash_a]; b = by_hash[hash_b]
+
+    # Cache check (keyed on sorted hashes so order doesn't matter)
+    cache_key = tuple(sorted([hash_a, hash_b]))
+    now = time.time()
+    cached = _COMBO_PRICE_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < _COMBO_PRICE_TTL_SECONDS:
+        return jsonify(cached[1])
+
+    # Pull parlay sizing settings from dashboard DB
+    dcon = duckdb.connect(str(DB_PATH))
+    try:
+        bankroll = dcon.execute(
+            "SELECT value FROM sizing_settings WHERE param = 'parlay_bankroll'"
+        ).fetchone()[0]
+        kmult = dcon.execute(
+            "SELECT value FROM sizing_settings WHERE param = 'parlay_kelly_mult'"
+        ).fetchone()[0]
+    finally:
+        dcon.close()
+
+    # Build legs for WZ pricing
+    legs = [
+        {"idgm": a[3], "play": _spread_play(a[4]), "points": str(a[4]), "odds": int(a[6])},
+        {"idgm": a[3], "play": _total_play(a[8]),  "points": str(a[5]), "odds": int(a[7])},
+        {"idgm": b[3], "play": _spread_play(b[4]), "points": str(b[4]), "odds": int(b[6])},
+        {"idgm": b[3], "play": _total_play(b[8]),  "points": str(b[5]), "odds": int(b[7])},
+    ]
+
+    # Live WZ price (10000 first, fallback to 100)
+    wz_session = _get_wz_session()
+    wz = wz_get_combined_parlay_price(wz_session, legs, amount=10000)
+    if wz is None:
+        wz = wz_get_combined_parlay_price(wz_session, legs, amount=100)
+    if wz is None:
+        return jsonify({"success": False, "error": "WZ pricing unavailable"}), 502
+
+    pricing = joint_pricing(
+        fair_dec_a=float(a[1]), fair_dec_b=float(b[1]), wz_dec=float(wz["decimal"]),
+        bankroll=bankroll, kelly_mult=kmult,
+    )
+
+    response = {
+        "success": True,
+        "joint_fair_dec": pricing["joint_fair_dec"],
+        "joint_fair_prob": pricing["joint_fair_prob"],
+        "joint_edge": pricing["joint_edge"],
+        "kelly_stake": pricing["kelly_stake"],
+        "wz_dec": wz["decimal"],
+        "wz_win": wz["win"],
+        "amount": wz["amount"],
+        "leg_a_combo": a[8],
+        "leg_b_combo": b[8],
+    }
+    _COMBO_PRICE_CACHE[cache_key] = (now, response)
+    return jsonify(response)
 
 
 @app.route("/api/place-parlay", methods=["POST"])

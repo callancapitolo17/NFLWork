@@ -146,3 +146,114 @@ def test_migration_is_idempotent(tmp_path):
     assert "is_combo" in cols
     assert "combo_leg_ids" in cols
     assert "parent_combo_id" in cols
+
+
+def _seed_endpoint_dbs(tmp_path):
+    """Set up isolated DBs and return paths."""
+    test_dashboard_db = tmp_path / "mlb_dashboard.duckdb"
+    test_mlb_db = tmp_path / "mlb.duckdb"
+
+    con = duckdb.connect(str(test_dashboard_db))
+    con.execute("""
+        CREATE TABLE placed_parlays (
+            parlay_hash VARCHAR PRIMARY KEY, game_id VARCHAR, home_team VARCHAR,
+            away_team VARCHAR, combo VARCHAR, wz_odds INTEGER, kelly_bet FLOAT,
+            is_combo BOOLEAN DEFAULT FALSE, combo_leg_ids VARCHAR,
+            parent_combo_id INTEGER, status VARCHAR DEFAULT 'pending'
+        )
+    """)
+    con.execute("""
+        CREATE TABLE sizing_settings (param VARCHAR PRIMARY KEY, value FLOAT)
+    """)
+    con.execute("INSERT INTO sizing_settings VALUES ('parlay_bankroll', 1000), ('parlay_kelly_mult', 0.5)")
+    con.close()
+
+    con = duckdb.connect(str(test_mlb_db))
+    con.execute("""
+        CREATE TABLE mlb_parlay_opportunities (
+            parlay_hash VARCHAR, fair_dec FLOAT, wz_dec FLOAT, idgm INTEGER,
+            spread_line FLOAT, total_line FLOAT, spread_price INTEGER,
+            total_price INTEGER, combo VARCHAR, game_id VARCHAR
+        )
+    """)
+    con.execute("""
+        INSERT INTO mlb_parlay_opportunities VALUES
+        ('hash_a', 4.32, 4.55, 100001, -1.5, 9.5, 110, -105, 'Home -1.5 + Over 9.5', 'NYY@BOS_2026'),
+        ('hash_b', 4.85, 5.10, 100002, -1.5, 7.5, 120, -110, 'Home -1.5 + Under 7.5', 'LAD@SD_2026')
+    """)
+    con.close()
+    return test_dashboard_db, test_mlb_db
+
+
+def test_price_combined_parlay_endpoint(monkeypatch, tmp_path):
+    test_dashboard_db, test_mlb_db = _seed_endpoint_dbs(tmp_path)
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import mlb_dashboard_server as svr
+
+    monkeypatch.setattr(svr, "DB_PATH", test_dashboard_db)
+    monkeypatch.setattr(svr, "MLB_DB_PATH", test_mlb_db)
+
+    def fake_get_combined_parlay_price(session, legs, amount=10000):
+        return {"win": 18000, "decimal": 19.0, "american": 1800, "amount": 1000}
+    monkeypatch.setattr(svr, "wz_get_combined_parlay_price", fake_get_combined_parlay_price)
+    monkeypatch.setattr(svr, "_get_wz_session", lambda: object())
+    svr._COMBO_PRICE_CACHE.clear()
+
+    client = svr.app.test_client()
+    resp = client.post("/api/price-combined-parlay", json={
+        "parlay_hash_a": "hash_a", "parlay_hash_b": "hash_b"
+    })
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    body = resp.get_json()
+    assert body["joint_fair_dec"] == pytest.approx(4.32 * 4.85, rel=0.001)
+    assert body["wz_dec"] == 19.0
+    assert "kelly_stake" in body
+    assert "joint_edge" in body
+
+
+def test_price_combined_parlay_caches_within_ttl(monkeypatch, tmp_path):
+    """Re-pricing the same pair within TTL must NOT call WZ a second time."""
+    test_dashboard_db, test_mlb_db = _seed_endpoint_dbs(tmp_path)
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import mlb_dashboard_server as svr
+    monkeypatch.setattr(svr, "DB_PATH", test_dashboard_db)
+    monkeypatch.setattr(svr, "MLB_DB_PATH", test_mlb_db)
+
+    call_count = {"n": 0}
+    def fake_wz(session, legs, amount=10000):
+        call_count["n"] += 1
+        return {"win": 18000, "decimal": 19.0, "american": 1800, "amount": 1000}
+    monkeypatch.setattr(svr, "wz_get_combined_parlay_price", fake_wz)
+    monkeypatch.setattr(svr, "_get_wz_session", lambda: object())
+    svr._COMBO_PRICE_CACHE.clear()
+
+    client = svr.app.test_client()
+    payload = {"parlay_hash_a": "hash_a", "parlay_hash_b": "hash_b"}
+    r1 = client.post("/api/price-combined-parlay", json=payload)
+    r2 = client.post("/api/price-combined-parlay", json=payload)
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert call_count["n"] == 1, "WZ pricer should be called exactly once across two requests"
+
+
+def test_price_combined_parlay_rejects_same_game(monkeypatch, tmp_path):
+    test_dashboard_db, test_mlb_db = _seed_endpoint_dbs(tmp_path)
+
+    # Make both rows have the same game_id
+    con = duckdb.connect(str(test_mlb_db))
+    con.execute("UPDATE mlb_parlay_opportunities SET game_id = 'SAME_GAME' WHERE parlay_hash IN ('hash_a', 'hash_b')")
+    con.close()
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import mlb_dashboard_server as svr
+    monkeypatch.setattr(svr, "DB_PATH", test_dashboard_db)
+    monkeypatch.setattr(svr, "MLB_DB_PATH", test_mlb_db)
+    svr._COMBO_PRICE_CACHE.clear()
+
+    client = svr.app.test_client()
+    resp = client.post("/api/price-combined-parlay", json={
+        "parlay_hash_a": "hash_a", "parlay_hash_b": "hash_b"
+    })
+    assert resp.status_code == 400
+    assert "Same-game" in resp.get_json()["error"]

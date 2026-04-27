@@ -24,6 +24,24 @@ import requests
 
 CONFIRM_URL = f"{WAGERZON_BASE_URL}/wager/ConfirmWagerHelper.aspx"
 
+
+def get_wz_session() -> requests.Session:
+    """Return an authenticated Wagerzon session.
+
+    Builds a `requests.Session`, logs in via `scraper_v2.login()` (ASP.NET form
+    POST that seats the ASP.NET_SessionId cookie), and returns it ready to call
+    ConfirmWagerHelper. Raises RuntimeError if login fails.
+
+    Lifted out of the CLI entrypoint so other callers (Flask endpoints, tests)
+    can reuse the same auth flow without subprocess'ing the script.
+    """
+    session = requests.Session()
+    try:
+        login(session)
+    except Exception as e:
+        raise RuntimeError(f"Failed to authenticate with Wagerzon: {e}") from e
+    return session
+
 # Play codes (from Wagerzon React bundle main.db15c074.js):
 #   0 = away spread, 1 = home spread
 #   2 = over total,  3 = under total
@@ -503,9 +521,8 @@ if __name__ == "__main__":
         print(f"Parlay pricer currently only supports MLB (got: {sport})")
         sys.exit(1)
 
-    session = requests.Session()
     print("Logging in to Wagerzon...")
-    login(session)
+    session = get_wz_session()
 
     if mode == "exact":
         compute_exact_payouts(session)
