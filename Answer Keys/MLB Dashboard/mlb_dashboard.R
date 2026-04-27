@@ -1025,6 +1025,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           color: #f85149;
         }
 
+        .combo-note { color: #8b949e; font-size: 0.7rem; font-style: italic; }
+
         .btn-partial {
           background: transparent;
           border: 1px solid #d29922;

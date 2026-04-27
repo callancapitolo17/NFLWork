@@ -108,7 +108,7 @@ Currently F5 (first 5 innings) only:
 |---------|---------|-------|
 | `bankroll` | $100 | `sizing_settings` table |
 | `kelly_mult` | 0.25 | `sizing_settings` table |
-| `parlay_bankroll` | $4,000 | `sizing_settings` table |
+| `parlay_bankroll` | $100 | `sizing_settings` table |
 | `parlay_kelly_mult` | 0.25 | `sizing_settings` table |
 | `parlay_min_edge` | 3% | `sizing_settings` table |
 | Server port | 8083 | `mlb_dashboard_server.py` |
