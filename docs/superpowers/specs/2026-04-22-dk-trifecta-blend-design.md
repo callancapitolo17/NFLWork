@@ -11,7 +11,9 @@ Add DraftKings SGP fair odds as a blended supporting data point in the MLB tripl
 
 This is a parser-driven design: each leg type from `parse_legs()` (the just-shipped `Answer Keys/parse_legs.R`) maps to a DK selection-ID resolver. Triple-plays (3 legs) and grand slams (4 legs) are both priced by the same generic flow. Adding a new leg type to the parser later requires adding a corresponding resolver — no scraper architecture changes.
 
-Out of scope: FanDuel SGP integration for trifectas (the existing FD SGP scraper handles correlated parlays only); Kelly sizing changes; dashboard integration; CLV tracking on DK SGP prices (the schema supports it, but no consumer is built).
+**Scope:** TRIPLE-PLAY and GRAND-SLAM prop types only, restricted to game-line legs (i.e. legs whose tokens are already in `parse_legs()`'s `TOKEN_REGISTRY`: `SCR 1ST`, `F3`, `1H`, `F7`, `GM`, `SCR U<N>`, `SCR O<N>`). Wagerzon recon (2026-04-27) confirmed these labels are reused for non-game-line variants too — e.g. `CHC-SDG TRIPLE-PLAY (U7½, HITS U15½ & 1ST HR 2RUN)` is a stat-aggregate triple-play that uses HITS and 1ST-HR-type legs. Such props **automatically fall through to NA fair odds** via the existing `parse_legs() → NULL → compute_prop_fair() → NA` chain when any token isn't in the registry; the output table will show blank fair odds for those rows. The parser is the scope gate; no separate filter logic needed.
+
+**Out of scope:** FanDuel SGP integration for trifectas (the existing FD SGP scraper handles correlated parlays only); Kelly sizing changes; dashboard integration; CLV tracking on DK SGP prices (the schema supports it, but no consumer is built); DOUBLE-PLAY props; ALL WIN cross-game multi-team props (their legs span multiple games — different pricer needed).
 
 ## Two-plan staging
 
