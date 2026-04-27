@@ -223,7 +223,6 @@ short_label_for_status <- function(status, error_key = "") {
   }
   map <- c(
     placed         = "placed",
-    would_place    = "would place",
     price_moved    = "price moved",
     auth_error     = "auth fail",
     network_error  = "network err",
@@ -3415,23 +3414,18 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           btn.disabled = true;
           btn.textContent = "Placing...";
 
-          // The /api/place-parlay endpoint still supports dry_run=true (useful
-          // for tests / curl), but the UI no longer exposes a toggle —
-          // clicking [Place] is always a real placement. For dry-run testing,
-          // hit the endpoint directly: curl -X POST /api/place-parlay -d
-          // \'{"parlay_hash":"...","dry_run":true}\'
           fetch("/api/place-parlay", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ parlay_hash: hash, dry_run: false })
+            body: JSON.stringify({ parlay_hash: hash })
           })
             .then(function(r) { return r.json(); })
             .then(function(result) {
               btn.disabled = false;
               if (result.status === "placed") {
-                // The Action cell may contain BOTH [Place] and [Log] buttons.
-                // Replace the entire cell content with the placed label so
-                // neither button is left behind.
+                // Real placement. The Action cell may contain BOTH [Place]
+                // and [Log] buttons; replace the entire cell with the
+                // placed label so neither is left behind.
                 var ticket = result.ticket_number || "";
                 var span = document.createElement(\'span\');
                 span.className = "placed-parlay-label";
@@ -3440,14 +3434,18 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 _replaceActionCell(btn, span);
                 showToast(ticket ? ("Placed at Wagerzon (#" + ticket + ")") :
                                    "Placed at Wagerzon", "success");
-              } else if (result.status === "would_place") {
+              } else if (result.transient) {
+                // Transient: the bet did not go through (network glitch, line
+                // moved, balance / limit refusal, auth blip). The breadcrumb
+                // got deleted server-side; restore the [Place] button text so
+                // the user can immediately retry. Toast carries the reason.
                 btn.textContent = originalText;
-                var w = (result.actual_win != null) ? result.actual_win.toFixed(2) : "?";
-                showToast("Dry run OK — would win $" + w, "success");
+                var msg = result.error_msg || result.status || "Failed";
+                showToast("Place failed: " + msg + " — try again", "error");
               } else {
-                // Pill shows the server-supplied short_label (under ~15 chars,
-                // matches short_label_for_status() in the R renderer). Full
-                // explanation lives in the title= tooltip and toast.
+                // Persistent failure (orphaned — real money is at WZ but
+                // local audit failed). Swap to red pill so the row is
+                // visibly different from a clean retryable miss.
                 var msg = result.error_msg || result.status || "Failed";
                 var label = result.short_label || result.status || "failed";
                 var span = document.createElement(\'span\');

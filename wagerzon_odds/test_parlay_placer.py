@@ -284,17 +284,6 @@ def test_place_parlays_price_drift_aborts(monkeypatch):
     assert sess.post.call_count == 1
 
 
-def test_place_parlays_dry_run_skips_post(monkeypatch):
-    monkeypatch.setenv("WAGERZON_PASSWORD", "secret")
-    sess = _session_for_calls(CONFIRM_OK_RESPONSE)  # only preflight
-    monkeypatch.setattr("parlay_placer._get_session", lambda: sess)
-    import parlay_placer
-    results = parlay_placer.place_parlays([_spec()], dry_run=True)
-    assert results[0].status == "would_place"
-    assert results[0].actual_win == 30.0
-    assert sess.post.call_count == 1
-
-
 def test_place_parlays_auth_retry_succeeds(monkeypatch):
     """First preflight returns HTML (session expired) -> re-login -> retry -> OK."""
     import parlay_placer

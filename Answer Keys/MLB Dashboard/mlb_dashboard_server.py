@@ -1049,6 +1049,35 @@ def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> N
         con.close()
 
 
+def _cleanup_stale_placing_rows(max_age_seconds: int = 60) -> int:
+    """Drop 'placing' rows older than max_age — they're crashed-mid-request
+    breadcrumbs that would otherwise block retries forever (the idempotency
+    check in api_place_parlay refuses any hash with status IN ('placing',
+    'placed')). Called once on server startup.
+
+    If a real WZ placement actually went through but our process died
+    before the upsert, the bet_logger HistoryHelper feed surfaces it on
+    its next run for manual reconciliation.
+    """
+    cutoff = datetime.now() - timedelta(seconds=max_age_seconds)
+    con = duckdb.connect(str(DASHBOARD_DB))
+    try:
+        rows = con.execute("""
+            DELETE FROM placed_parlays
+            WHERE status = 'placing' AND updated_at < ?
+            RETURNING parlay_hash
+        """, [cutoff]).fetchall()
+        if rows:
+            print(
+                f"!! cleaned up {len(rows)} stale 'placing' breadcrumb(s) "
+                f"older than {max_age_seconds}s",
+                file=sys.stderr, flush=True,
+            )
+        return len(rows)
+    finally:
+        con.close()
+
+
 def _record_orphan(result: parlay_placer.PlacementResult,
                    parlay_hash: str, db_error: Exception) -> None:
     """Wagerzon confirmed placement but local placed_parlays write failed.
@@ -1097,44 +1126,49 @@ def _record_orphan(result: parlay_placer.PlacementResult,
 
 @app.route("/api/place-parlay", methods=["POST"])
 def api_place_parlay():
-    """Auto-place a parlay at Wagerzon via the REST API (live or dry-run mode).
+    """Auto-place a parlay at Wagerzon via the REST API.
 
-    Accepts JSON: {parlay_hash: str, dry_run: bool = false}
-    Returns JSON: {status, ticket_number, error_msg, actual_win}
+    Accepts JSON: {parlay_hash: str}
+    Returns JSON: {status, transient, short_label, ticket_number, error_msg}
+
+    Persistence rule (option A): only `placed` and `orphaned` represent real
+    money moving at Wagerzon and persist as audit rows in placed_parlays.
+    Every other status (network_error, auth_error, price_moved, rejected,
+    rejected:balance_exceeds, rejected:line_unavailable, ...) is treated as
+    *transient* — the 'placing' breadcrumb is deleted, the toast tells the
+    user what happened, and the row remains a clickable [Place] button on
+    next reload so retry is one click away. This keeps placed_parlays clean
+    of failed-attempt cruft and matches the user's mental model that "the
+    bet didn't go through" should not leave permanent state.
     """
     payload = request.get_json(force=True) or {}
     parlay_hash = payload.get("parlay_hash")
-    dry_run = bool(payload.get("dry_run", False))
 
     if not parlay_hash:
         return jsonify({"status": "error", "error_msg": "missing parlay_hash"}), 400
 
-    # Idempotency check: skip if already in a terminal placed/placing state (live only)
-    if not dry_run:
-        con = duckdb.connect(str(DASHBOARD_DB), read_only=True)
-        try:
-            existing = con.execute(
-                "SELECT status, ticket_number, error_msg FROM placed_parlays "
-                "WHERE parlay_hash = ? AND status IN ('placing', 'placed')",
-                [parlay_hash],
-            ).fetchone()
-        finally:
-            con.close()
-        if existing:
-            return jsonify({
-                "status": existing[0],
-                "ticket_number": existing[1],
-                "error_msg": existing[2] or "",
-            })
+    # Idempotency check: skip if already in flight or terminally placed
+    con = duckdb.connect(str(DASHBOARD_DB), read_only=True)
+    try:
+        existing = con.execute(
+            "SELECT status, ticket_number, error_msg FROM placed_parlays "
+            "WHERE parlay_hash = ? AND status IN ('placing', 'placed')",
+            [parlay_hash],
+        ).fetchone()
+    finally:
+        con.close()
+    if existing:
+        return jsonify({
+            "status": existing[0],
+            "ticket_number": existing[1],
+            "error_msg": existing[2] or "",
+            "transient": False,
+        })
 
     row = _load_parlay_row(parlay_hash)
     if not row:
         return jsonify({"status": "error", "error_msg": "parlay not found"}), 404
 
-    # Defensive guard: idgm is the Wagerzon-internal game ID and is required to
-    # build the sel/detailData payload. NULL means upstream scraper or pricer
-    # data is incomplete; fail clean with 422 *before* writing the 'placing'
-    # breadcrumb so we don't strand a stuck row.
     if row.get("idgm") is None:
         return jsonify({
             "status": "error",
@@ -1142,84 +1176,85 @@ def api_place_parlay():
         }), 422
 
     # Mark as 'placing' before network call so a crash leaves a breadcrumb
-    if not dry_run:
-        con = duckdb.connect(str(DASHBOARD_DB))
-        try:
-            # game_id / home_team / away_team / combo / wz_odds / kelly_bet are
-            # all NOT NULL on main's placed_parlays schema (legacy CBB-pattern
-            # constraints carried over from the manual-placement era). Provide
-            # them all from the parlay row so the breadcrumb insert satisfies
-            # every constraint.
-            #
-            # NOTE on CURRENT_TIMESTAMP: DuckDB 1.4.x has a binder bug where
-            # CURRENT_TIMESTAMP in an INSERT...ON CONFLICT...DO UPDATE pattern
-            # is misparsed as a column reference. Pass a Python datetime.now()
-            # via parameter binding to sidestep entirely.
-            now = datetime.now()
-            con.execute("""
-                INSERT INTO placed_parlays (
-                    parlay_hash, status, home_team, away_team,
-                    combo, game_id, game_time,
-                    wz_odds, kelly_bet,
-                    spread_line, total_line, fair_odds, edge_pct,
-                    recommended_size, expected_odds,
-                    updated_at
-                ) VALUES (?, 'placing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (parlay_hash) DO NOTHING
-            """, [
-                parlay_hash,
-                row.get("home_team") or "",
-                row.get("away_team") or "",
-                row.get("combo") or "",
-                row.get("game_id") or "",
-                row.get("game_time"),
-                int(row["wz_odds"]),
-                float(row["kelly_bet"]),
-                # Optional descriptive fields used by create_placed_parlays_table()
-                # to format the Legs, Edge and Fair columns. Fall back to NULL
-                # if the row from mlb_parlay_opportunities doesn't have them
-                # (older schemas / pre-pricer rows).
-                float(row["spread_line"]) if row.get("spread_line") is not None else None,
-                float(row["total_line"])  if row.get("total_line")  is not None else None,
-                int(row["fair_odds"])     if row.get("fair_odds")   is not None else None,
-                float(row["edge_pct"])    if row.get("edge_pct")    is not None else None,
-                float(row["kelly_bet"]),
-                int(row["wz_odds"]),
-                now,
-            ])
-        finally:
-            con.close()
+    # for stale-cleanup to find on next server start.
+    now = datetime.now()
+    con = duckdb.connect(str(DASHBOARD_DB))
+    try:
+        con.execute("""
+            INSERT INTO placed_parlays (
+                parlay_hash, status, home_team, away_team,
+                combo, game_id, game_time,
+                wz_odds, kelly_bet,
+                spread_line, total_line, fair_odds, edge_pct,
+                recommended_size, expected_odds,
+                updated_at
+            ) VALUES (?, 'placing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (parlay_hash) DO NOTHING
+        """, [
+            parlay_hash,
+            row.get("home_team") or "",
+            row.get("away_team") or "",
+            row.get("combo") or "",
+            row.get("game_id") or "",
+            row.get("game_time"),
+            int(row["wz_odds"]),
+            float(row["kelly_bet"]),
+            float(row["spread_line"]) if row.get("spread_line") is not None else None,
+            float(row["total_line"])  if row.get("total_line")  is not None else None,
+            int(row["fair_odds"])     if row.get("fair_odds")   is not None else None,
+            float(row["edge_pct"])    if row.get("edge_pct")    is not None else None,
+            float(row["kelly_bet"]),
+            int(row["wz_odds"]),
+            now,
+        ])
+    finally:
+        con.close()
 
     spec = _build_spec_from_row(row)
-    results = parlay_placer.place_parlays([spec], dry_run=dry_run)
+    results = parlay_placer.place_parlays([spec])
     result = results[0]
 
-    # Dry-run: skip DB write entirely, return what would have happened
-    if dry_run:
+    # Transient outcomes (option A): delete the breadcrumb and report to the
+    # client. The toast is the only "memory" of this attempt — the row is
+    # available for retry on next click. Note rejected/rejected:* are also
+    # transient because the bet did NOT go through at Wagerzon (book refused
+    # for funds / limit / line / etc. — all retriable once the user fixes
+    # the underlying condition).
+    if result.status != "placed":
+        con = duckdb.connect(str(DASHBOARD_DB))
+        try:
+            con.execute(
+                "DELETE FROM placed_parlays WHERE parlay_hash = ? AND status = 'placing'",
+                [parlay_hash],
+            )
+        finally:
+            con.close()
         return jsonify({
             "status": result.status,
+            "transient": True,
             "short_label": _short_label_for(result.status, result.error_msg_key, result.error_msg),
             "ticket_number": None,
             "error_msg": result.error_msg,
-            "actual_win": result.actual_win,
         })
 
-    # Persist result; handle orphan case (placed at Wagerzon but local write failed)
+    # status == "placed": real money moved. Persist; on local-write failure
+    # record an orphan (audit) and return status="orphaned" — the only other
+    # persistent status because real money is at risk.
     try:
         _upsert_placed_parlay(result, row)
     except Exception as e:
-        if result.status == "placed":
-            _record_orphan(result, parlay_hash, e)
-            return jsonify({
-                "status": "orphaned",
-                "short_label": _short_label_for("orphaned", "", f"orphan: {e}"),
-                "ticket_number": result.ticket_number,
-                "error_msg": f"orphan: {e}",
-            })
-        raise
+        _record_orphan(result, parlay_hash, e)
+        return jsonify({
+            "status": "orphaned",
+            "transient": False,
+            "short_label": _short_label_for("orphaned", "", f"orphan: {e}"),
+            "ticket_number": result.ticket_number,
+            "error_msg": f"orphan: {e}",
+        })
 
     return jsonify({
         "status": result.status,
+        "transient": False,
         "short_label": _short_label_for(result.status, result.error_msg_key, result.error_msg),
         "ticket_number": result.ticket_number,
         "error_msg": result.error_msg,
@@ -1230,7 +1265,6 @@ def api_place_parlay():
 # error_msg (toast + hover tooltip). Keep all under ~15 chars.
 _SHORT_LABEL_BY_STATUS = {
     "placed":         "placed",
-    "would_place":    "would place",
     "price_moved":    "price moved",
     "auth_error":     "auth fail",
     "network_error":  "network err",
@@ -1917,6 +1951,7 @@ if __name__ == "__main__":
     )
 
     init_db()
+    _cleanup_stale_placing_rows()
     schedule_pending_captures()
 
     print("\n" + "=" * 50)
