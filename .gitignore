@@ -120,3 +120,8 @@ nfl_draft/.kalshi_throttle.lock
 !mlb_sgp/logs/
 mlb_sgp/logs/*
 !mlb_sgp/logs/.gitkeep
+
+# DK trifecta recon outputs — too large to commit (1.6-6MB payloads).
+# These are temporary investigation artifacts; relevant findings are
+# distilled into docs/superpowers/specs/ and plans/.
+mlb_sgp/recon_dk_trifecta_*.json
