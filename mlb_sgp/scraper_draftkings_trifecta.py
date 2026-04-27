@@ -90,29 +90,15 @@ def fetch_event_state(session, event_id: str) -> Optional[dict]:
 
 
 def extract_team_names_from_event(event_state: dict) -> dict:
-    """Walk the event payload to extract the DK team-name strings used in
-    selection labels (e.g. 'CHI Cubs', 'SD Padres'). Picks them from the
-    Moneyline market which always exists and always has both teams.
+    """DEPRECATED — kept for backwards compat but not used in main flow.
 
-    DK Moneyline selection IDs end in _3 (home) or _1 (away), matching the
-    convention used by the production DK SGP scraper.
+    The main() function now passes team_names directly from fetch_dk_events()
+    output, which has authoritative home/away assignments. This function used
+    to derive them from the Moneyline market's _3/_1 suffix, but DK's
+    convention is actually _3=away, _1=home (verified across 8 games), and
+    that was causing every prop to fetch the opposing team's odds.
     """
-    market = find_market_by_name(event_state, 'Moneyline')
-    if market is None:
-        return {'home': '', 'away': ''}
-    sels = market.get('selections', [])
-    if len(sels) < 2:
-        return {'home': '', 'away': ''}
-    home_name = ''
-    away_name = ''
-    for sel in sels:
-        sid = sel.get('id') or sel.get('selectionId') or ''
-        nm = sel.get('name') or ''
-        if sid.endswith('_3'):
-            home_name = nm
-        elif sid.endswith('_1'):
-            away_name = nm
-    return {'home': home_name, 'away': away_name}
+    return {'home': '', 'away': ''}
 
 
 def post_calculate_bets(session, sel_ids: list[str]) -> Optional[float]:
@@ -230,11 +216,21 @@ def main() -> int:
         side      = req['side']
         legs      = req['legs']
 
-        dk_event_id = map_odds_id_to_dk_event(events, home_team, away_team)
-        if dk_event_id is None:
+        # Find matched event AND keep its home/away team strings (authoritative)
+        matched_event = None
+        for evt in events:
+            home_last = home_team.split()[-1].lower()
+            away_last = away_team.split()[-1].lower()
+            dk_h = (evt.get('dk_home') or '').lower()
+            dk_a = (evt.get('dk_away') or '').lower()
+            if home_last in dk_h and away_last in dk_a:
+                matched_event = evt
+                break
+        if matched_event is None:
             log.warning("No DK event for %s vs %s — skipping (game_id=%s prop=%s side=%s)",
                         home_team, away_team, game_id, prop_type, side)
             continue
+        dk_event_id = str(matched_event['dk_event_id'])
 
         if dk_event_id not in event_state_cache:
             state = fetch_event_state(session, dk_event_id)
@@ -243,7 +239,13 @@ def main() -> int:
                 event_state_cache[dk_event_id] = None
                 continue
             event_state_cache[dk_event_id] = state
-            team_names_cache[dk_event_id] = extract_team_names_from_event(state)
+            # Use authoritative home/away from fetch_dk_events output
+            # (NOT extract_team_names_from_event — that derives from Moneyline
+            # _3/_1 suffix which is _3=away, _1=home, opposite of what we need)
+            team_names_cache[dk_event_id] = {
+                'home': matched_event.get('dk_home', ''),
+                'away': matched_event.get('dk_away', ''),
+            }
 
         if event_state_cache[dk_event_id] is None:
             continue
