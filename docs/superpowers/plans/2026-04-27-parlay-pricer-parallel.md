@@ -14,33 +14,35 @@
 
 ---
 
-### Task 1: Set up the worktree's DuckDB working copies
+### Task 1: Set up the worktree's DuckDB working copies + credentials
 
-**Why:** The worktree is a fresh git checkout — `.duckdb` files are gitignored and don't exist here yet. We need populated copies of `mlb.duckdb` (read by Stage 2) and `wagerzon_odds/wagerzon.duckdb` (read by Stage 1) to run the verification. Per CLAUDE.md "NEVER symlink DuckDB databases" — we copy.
+**Why:** The worktree is a fresh git checkout — `.duckdb` files and `.env` are gitignored and don't exist here yet. We need populated copies of `mlb.duckdb`, `wagerzon.duckdb`, `mlb_dashboard.duckdb`, plus `bet_logger/.env` (Wagerzon login credentials), to run the verification. Per CLAUDE.md "NEVER symlink DuckDB databases" — we copy. The .env can also be copied (no symlink hazard).
 
 **Files:**
 - Copy: `~/NFLWork/Answer Keys/mlb.duckdb` → worktree
 - Copy: `~/NFLWork/wagerzon_odds/wagerzon.duckdb` → worktree
 - Copy: `~/NFLWork/Answer Keys/MLB Dashboard/mlb_dashboard.duckdb` → worktree (read by R for sizing settings)
+- Copy: `~/NFLWork/bet_logger/.env` → worktree (Wagerzon credentials, gitignored)
 
-- [ ] **Step 1: Verify worktree has no DuckDB files yet**
+- [ ] **Step 1: Verify worktree has none of these files yet**
 
 ```bash
 cd /Users/callancapitolo/NFLWork/.claude/worktrees/perf-parlay-pricer-parallel
-ls -la "Answer Keys"/*.duckdb wagerzon_odds/*.duckdb 2>&1 | head
+ls -la "Answer Keys"/*.duckdb wagerzon_odds/*.duckdb bet_logger/.env 2>&1 | head
 ```
-Expected: "No such file or directory" for `mlb.duckdb` and `wagerzon.duckdb` (they're gitignored).
+Expected: "No such file or directory" for the three DBs and `.env` (all gitignored).
 
-- [ ] **Step 2: Copy populated DBs from main**
+- [ ] **Step 2: Copy populated DBs and credentials from main**
 
 ```bash
 cd /Users/callancapitolo/NFLWork/.claude/worktrees/perf-parlay-pricer-parallel
 cp ~/NFLWork/Answer\ Keys/mlb.duckdb "Answer Keys/mlb.duckdb"
 cp ~/NFLWork/wagerzon_odds/wagerzon.duckdb wagerzon_odds/wagerzon.duckdb
 cp ~/NFLWork/Answer\ Keys/MLB\ Dashboard/mlb_dashboard.duckdb "Answer Keys/MLB Dashboard/mlb_dashboard.duckdb"
-ls -la "Answer Keys/mlb.duckdb" wagerzon_odds/wagerzon.duckdb "Answer Keys/MLB Dashboard/mlb_dashboard.duckdb"
+cp ~/NFLWork/bet_logger/.env bet_logger/.env
+ls -la "Answer Keys/mlb.duckdb" wagerzon_odds/wagerzon.duckdb "Answer Keys/MLB Dashboard/mlb_dashboard.duckdb" bet_logger/.env
 ```
-Expected: all three files present, multi-MB.
+Expected: all four files present.
 
 - [ ] **Step 3: Sanity check the copies have current data**
 
@@ -49,6 +51,20 @@ duckdb "Answer Keys/mlb.duckdb" -c "SELECT COUNT(*) AS n_parlays, MAX(fetch_time
 duckdb wagerzon_odds/wagerzon.duckdb -c "SELECT COUNT(*) AS n_games, MAX(fetch_time) AS most_recent FROM mlb_odds WHERE period IN ('fg','h1');"
 ```
 Expected: non-zero counts, `most_recent` within the last hour. If older, re-copy after running `bash "Answer Keys/MLB Dashboard/run.sh"` from main first.
+
+- [ ] **Step 4: Sanity check WZ credentials load**
+
+```bash
+cd /Users/callancapitolo/NFLWork/.claude/worktrees/perf-parlay-pricer-parallel
+python3 -c "
+import sys
+sys.path.insert(0, 'wagerzon_odds')
+from scraper_v2 import WAGERZON_USERNAME, WAGERZON_PASSWORD
+assert WAGERZON_USERNAME and WAGERZON_PASSWORD, 'Credentials not loaded'
+print('OK: credentials present')
+"
+```
+Expected: `OK: credentials present`. If "Credentials not loaded", re-check Step 2's `.env` copy.
 
 ---
 
