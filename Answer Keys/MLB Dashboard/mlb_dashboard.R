@@ -2113,6 +2113,14 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           // Apply saved filter settings (market, correlation, status)
           applyFilterSettings();
 
+          // Restore Parlays tab if URL has #parlays (used by the
+          // hot-swap fallback path in placeCombinedParlay so a full reload
+          // doesn\'t dump the user back on the Bets tab).
+          if (window.location.hash === "#parlays" &&
+              typeof switchTab === "function") {
+            switchTab("parlays");
+          }
+
           document.addEventListener("click", function(e) {
             if (!e.target.closest(".filter-group")) {
               document.querySelectorAll(".filter-menu").forEach(m => m.classList.remove("open"));
@@ -3364,8 +3372,39 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               placeBtn.textContent = "Place combined →";
               return;
             }
-            // Reload — R re-renders create_parlays_table() which applies residual Kelly to source rows
-            window.location.reload();
+            // Hot-swap the source-parlays table in place. /api/parlay-table-
+            // fragment runs R with --parlay-fragment, returns the freshly-
+            // rendered reactable widget HTML (with apply_combo_residuals
+            // already applied to the two source rows). HTMLWidgets.staticRender()
+            // re-initializes the React binding after innerHTML replacement.
+            // No full page reload → tab state, scroll, and unrelated widgets
+            // all persist.
+            placeBtn.textContent = "Refreshing…";
+            try {
+              const fragRes = await fetch("/api/parlay-table-fragment");
+              if (!fragRes.ok) throw new Error("fragment HTTP " + fragRes.status);
+              const html = await fragRes.text();
+              const container = document.getElementById("parlays-table-container");
+              if (!container) throw new Error("parlays-table-container not in DOM");
+              container.innerHTML = html;
+              if (window.HTMLWidgets && typeof HTMLWidgets.staticRender === "function") {
+                HTMLWidgets.staticRender();
+              }
+              // Reset combo selection state since the rows were re-rendered
+              if (window.comboSelections) window.comboSelections.length = 0;
+              window.comboPricing = null;
+              const banner = document.getElementById("combo-banner");
+              if (banner) banner.style.display = "none";
+              showToast("Combined parlay placed", "success");
+            } catch (swapErr) {
+              // Fallback: full reload, preserving the parlays tab via URL hash.
+              console.error("Hot-swap failed, falling back to reload:", swapErr);
+              window.location.hash = "#parlays";
+              window.location.reload();
+              return;
+            }
+            placeBtn.disabled = false;
+            placeBtn.textContent = "Place combined →";
           } catch (err) {
             alert("Network error placing combined parlay: " + err.message);
             placeBtn.disabled = false;
@@ -3389,6 +3428,50 @@ if (grepl(".claude/worktrees", NFLWORK_ROOT, fixed = TRUE)) {
   NFLWORK_ROOT <- sub("/.claude/worktrees.*", "", NFLWORK_ROOT)
 }
 setwd(NFLWORK_ROOT)
+
+# Fragment-only mode: render JUST the source-parlays reactable (with combo
+# residuals applied) and emit its HTML to stdout. Used by /api/parlay-table-
+# fragment so the dashboard can hot-swap the parlay table after a combined-
+# parlay placement without rebuilding the whole report.
+if (any(commandArgs(trailingOnly = TRUE) == "--parlay-fragment")) {
+  con_mlb <- dbConnect(duckdb(), dbdir = "Answer Keys/mlb.duckdb", read_only = TRUE)
+  on.exit(try(dbDisconnect(con_mlb), silent = TRUE), add = TRUE)
+  parlay_opps <- tryCatch(
+    dbGetQuery(con_mlb, "SELECT * FROM mlb_parlay_opportunities"),
+    error = function(e) tibble()
+  )
+  dbDisconnect(con_mlb)
+
+  con_dash <- dbConnect(duckdb(), dbdir = DB_PATH, read_only = TRUE)
+  on.exit(try(dbDisconnect(con_dash), silent = TRUE), add = TRUE)
+  placed_parlays <- tryCatch(
+    dbGetQuery(con_dash, "SELECT * FROM placed_parlays"),
+    error = function(e) tibble()
+  )
+  sz <- tryCatch(
+    dbGetQuery(con_dash, "SELECT param, value FROM sizing_settings"),
+    error = function(e) tibble(param = character(), value = numeric())
+  )
+  parlay_bankroll <- {
+    v <- sz$value[sz$param == "parlay_bankroll"]
+    if (length(v) > 0) v[1] else 100
+  }
+  parlay_kelly_mult <- {
+    v <- sz$value[sz$param == "parlay_kelly_mult"]
+    if (length(v) > 0) v[1] else 0.25
+  }
+  dbDisconnect(con_dash)
+
+  parlays_table <- create_parlays_table(parlay_opps, placed_parlays,
+                                        parlay_bankroll, parlay_kelly_mult)
+  if (!is.null(parlays_table)) {
+    # Emit just the widget HTML — no <html>/<head>; dependencies are already
+    # loaded on the page. Caller will run HTMLWidgets.staticRender() to
+    # re-initialize the widget after DOM-swap.
+    cat(as.character(htmltools::as.tags(parlays_table)))
+  }
+  quit(status = 0)
+}
 
 cat("=== MLB Answer Key Dashboard ===\n\n")
 

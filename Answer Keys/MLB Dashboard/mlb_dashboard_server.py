@@ -209,17 +209,38 @@ def init_db():
                 "WHERE table_name = 'placed_parlays'"
             ).fetchall()
         }
+        # Every non-PK column from the CREATE TABLE schema above. Listing
+        # them all here means an existing placed_parlays table from any
+        # historical schema (single-feature, combined-parlay, or auto-place
+        # branch) gets the full union via idempotent ALTER TABLE on startup.
         migration_cols = {
+            # Original parlay tracking columns
+            "home_team":        "TEXT",
+            "away_team":        "TEXT",
+            "spread_line":      "REAL",
+            "total_line":       "REAL",
+            "fair_odds":        "INTEGER",
+            "wz_odds":          "INTEGER",
+            "edge_pct":         "REAL",
+            "kelly_bet":        "REAL",
+            # Auto-placement columns (Task 9)
             "recommended_size": "REAL",
-            "expected_odds": "INTEGER",
-            "expected_win": "REAL",
-            "actual_win": "REAL",
-            "ticket_number": "TEXT",
-            "idwt": "INTEGER",
-            "legs_json": "TEXT",
-            "error_msg": "TEXT",
-            "error_msg_key": "TEXT",
-            "updated_at": "TIMESTAMP",
+            "expected_odds":    "INTEGER",
+            "expected_win":     "REAL",
+            "actual_win":       "REAL",
+            "ticket_number":    "TEXT",
+            "idwt":             "INTEGER",
+            "legs_json":        "TEXT",
+            "error_msg":        "TEXT",
+            "error_msg_key":    "TEXT",
+            "updated_at":       "TIMESTAMP",
+            # Combined-parlay columns (also handled by
+            # migrations/001_combined_parlay_columns.py — duplicated here
+            # so a fresh server start has them without requiring the
+            # one-shot migration script to be run separately).
+            "is_combo":         "BOOLEAN",
+            "combo_leg_ids":    "VARCHAR",
+            "parent_combo_id":  "INTEGER",
         }
         for col, dtype in migration_cols.items():
             if col not in existing_cols:
@@ -1172,6 +1193,43 @@ def place_combined_parlay():
         return jsonify({"success": True, "message": "Combined parlay placed"})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/parlay-table-fragment", methods=["GET"])
+def parlay_table_fragment():
+    """Return just the source-parlays reactable widget HTML.
+
+    Spawns Rscript mlb_dashboard.R --parlay-fragment, which loads fresh
+    parlay_opps + placed_parlays from the DBs (so any newly-inserted combo
+    row triggers apply_combo_residuals on the source rows) and emits the
+    rendered reactable HTML to stdout.
+
+    Used by placeCombinedParlay() in mlb_dashboard.R to hot-swap the parlay
+    table after a combo placement without doing a full page reload —
+    preserves tab state, scroll position, and unrelated widget state.
+    """
+    rscript_path = BASE_DIR / "mlb_dashboard.R"
+    try:
+        result = subprocess.run(
+            ["Rscript", str(rscript_path), "--parlay-fragment"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "Render timed out"}), 504
+    except FileNotFoundError:
+        return jsonify({"success": False, "error": "Rscript not found on PATH"}), 500
+
+    if result.returncode != 0:
+        return jsonify({
+            "success": False,
+            "error": "R fragment render failed",
+            "stderr": result.stderr[-2000:],
+        }), 500
+
+    return Response(result.stdout, mimetype="text/html; charset=utf-8")
 
 
 @app.route("/api/remove-parlay", methods=["POST"])
