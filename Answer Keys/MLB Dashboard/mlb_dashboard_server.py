@@ -14,7 +14,6 @@ Then open: http://localhost:8083
 import subprocess
 import sys
 import json
-import json as _json
 import logging
 import mimetypes
 import threading
@@ -950,7 +949,7 @@ def _resolve_amount_and_win(row: dict) -> tuple[float, float]:
 def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> None:
     """Insert or update placed_parlays in mlb_dashboard.duckdb. Idempotent on parlay_hash."""
     spec = _build_spec_from_row(row)
-    legs_json = _json.dumps([
+    legs_json = json.dumps([
         {"play": l.play, "idgm": l.idgm, "points": l.points, "odds": l.odds}
         for l in spec.legs
     ])
@@ -1064,6 +1063,16 @@ def api_place_parlay():
     row = _load_parlay_row(parlay_hash)
     if not row:
         return jsonify({"status": "error", "error_msg": "parlay not found"}), 404
+
+    # Defensive guard: idgm is the Wagerzon-internal game ID and is required to
+    # build the sel/detailData payload. NULL means upstream scraper or pricer
+    # data is incomplete; fail clean with 422 *before* writing the 'placing'
+    # breadcrumb so we don't strand a stuck row.
+    if row.get("idgm") is None:
+        return jsonify({
+            "status": "error",
+            "error_msg": "parlay row missing idgm — refresh the dashboard or re-run the pricer",
+        }), 422
 
     # Mark as 'placing' before network call so a crash leaves a breadcrumb
     if not dry_run:

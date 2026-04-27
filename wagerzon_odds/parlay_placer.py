@@ -87,7 +87,28 @@ def encode_sel(legs: list[Leg]) -> str:
 
 
 def encode_detail_data(legs: list[Leg], amount: float) -> list[dict]:
-    """Build the `detailData` JSON array for ConfirmWagerHelper / PostWager."""
+    """Build the `detailData` JSON array for ConfirmWagerHelper / PostWager.
+
+    On RiskWin:
+        We send `RiskWin: 0` for both ConfirmWagerHelper (preflight) and
+        PostWagerMultipleHelper (placement). This matches the Wagerzon UI's
+        captured behavior — the browser sends RiskWin=0 to both endpoints
+        when a real user clicks Place.
+
+        wagerzon_odds/parlay_pricer.py uses RiskWin="2" instead, but for a
+        different use case: it queries the parlay-payout curve at many
+        stakes including stakes the user couldn't fund, and "2" suppresses
+        the balance check so it gets a price at any amount. The placer
+        only ever queries at the user's actual chosen wager, so the
+        balance check is appropriate.
+
+        Edge case (TODO): if account balance < wager at preflight time,
+        Wagerzon returns an error response without a `details` array and
+        _confirm_preflight raises an unhandled IndexError/KeyError. This
+        is rare in practice (user has $3k+ balance, bets $15-$100) but
+        worth handling cleanly in a future hardening pass — surface as
+        a `rejected: insufficient_balance` status instead of a 500.
+    """
     return [
         {
             "Amount": str(int(amount)) if amount == int(amount) else str(amount),
