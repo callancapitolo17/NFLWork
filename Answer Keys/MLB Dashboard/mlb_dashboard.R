@@ -3243,15 +3243,15 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             var edge = marker ? parseFloat(marker.dataset.edge) : 0;
             var size = marker ? parseFloat(marker.dataset.size) : 0;
             var gameText = marker ? (marker.dataset.away + " @ " + marker.dataset.home) : "";
+            // Two-bucket classification matching the status dropdown options
+            // ("Not Placed" / "Placed"). A failed placement (red pill) is
+            // conceptually NOT-placed (the bet didn\'t go through; the user
+            // can retry), so it falls into "Not Placed" rather than a third
+            // bucket the dropdown can\'t address.
             var statusLabel;
-            if (!marker) {
-              statusLabel = "Not Placed";
-            } else if (marker.classList.contains("btn-placed") ||
-                       marker.classList.contains("placed-parlay-label")) {
+            if (marker && (marker.classList.contains("btn-placed") ||
+                           marker.classList.contains("placed-parlay-label"))) {
               statusLabel = "Placed";
-            } else if (marker.classList.contains("pill") &&
-                       marker.classList.contains("error")) {
-              statusLabel = "Failed";
             } else {
               statusLabel = "Not Placed";
             }
