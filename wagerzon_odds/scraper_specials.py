@@ -23,6 +23,19 @@ from typing import Optional
 
 import duckdb
 import requests
+from dotenv import load_dotenv
+
+# Load .env from the canonical location (bet_logger/.env in the repo root).
+# scraper_v2.login() reads WAGERZON_USERNAME/PASSWORD from env; we ensure they
+# are loaded before importing scraper_v2 so worktree runs find the creds too.
+_repo_root = Path(__file__).resolve().parent.parent
+# Worktrees live at <repo>/.worktrees/<branch>/; real repo lives at <repo>/
+# Walk up until we find bet_logger/.env or exhaust parents.
+for _candidate in [_repo_root, _repo_root.parent, _repo_root.parent.parent]:
+    _env = _candidate / "bet_logger" / ".env"
+    if _env.exists():
+        load_dotenv(_env)
+        break
 
 # Reuse the existing login + base-URL logic
 sys.path.insert(0, str(Path(__file__).parent))
@@ -135,7 +148,11 @@ def fetch_specials_json(lg: int) -> dict:
     s = requests.Session()
     login(s)
     url = SPECIALS_URL_TPL.format(lg=lg)
-    r = s.get(url, timeout=30)
+    # XHR headers required: without them the endpoint returns the HTML login page
+    r = s.get(url, timeout=30, headers={
+        "Accept": "application/json, text/plain, */*",
+        "X-Requested-With": "XMLHttpRequest",
+    })
     r.raise_for_status()
     return r.json()
 
