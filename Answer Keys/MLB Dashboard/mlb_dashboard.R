@@ -3221,9 +3221,44 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           }
         }
 
-        // Stub for Task 10 — will be replaced with the real handler in the next commit
-        function placeCombinedParlay() {
-          alert("placeCombinedParlay handler not yet wired — see Task 10");
+        async function placeCombinedParlay() {
+          if (!window.comboPricing || window.comboSelections.length !== 2) return;
+          const placeBtn = document.getElementById("combo-place-btn");
+          placeBtn.disabled = true;
+          placeBtn.textContent = "Placing…";
+
+          // Synthetic combo_hash — deterministic from sorted leg hashes
+          const sels = window.comboSelections.map(s => s.hash).sort();
+          const comboHash = "combo_" + sels.join("_");
+
+          try {
+            const res = await fetch("/api/place-combined-parlay", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                combo_hash: comboHash,
+                parlay_hash_a: sels[0],
+                parlay_hash_b: sels[1],
+                wz_odds: Math.round((window.comboPricing.wz_dec - 1) * 100),
+                kelly_bet: window.comboPricing.kelly_stake,
+                actual_size: window.comboPricing.kelly_stake,
+                combo_label: window.comboPricing.leg_a_combo + " + " + window.comboPricing.leg_b_combo,
+              }),
+            });
+            const body = await res.json();
+            if (!body.success) {
+              alert("Failed to place combined parlay: " + (body.error || "unknown"));
+              placeBtn.disabled = false;
+              placeBtn.textContent = "Place combined →";
+              return;
+            }
+            // Reload — R re-renders create_parlays_table() which applies residual Kelly to source rows
+            window.location.reload();
+          } catch (err) {
+            alert("Network error placing combined parlay: " + err.message);
+            placeBtn.disabled = false;
+            placeBtn.textContent = "Place combined →";
+          }
         }
       '))
     )
