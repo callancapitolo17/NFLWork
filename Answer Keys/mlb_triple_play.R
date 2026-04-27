@@ -43,21 +43,74 @@ if (!interactive() && sys.nframe() == 0L) {
   source("parse_legs.R")
   MLB_DB <- "mlb.duckdb"
 
-  # Today's book lines — edit this tribble whenever new props post.
-  # home_team / away_team must match Odds API canonical names in mlb_consensus_temp.
-  # description is the Wagerzon label verbatim; parse_legs() derives leg logic from it.
-  todays_lines <- tribble(
-    ~home_team,              ~away_team,             ~target_team, ~side,   ~book_odds, ~description,
-    "Colorado Rockies",      "San Diego Padres",     "Rockies",    "home",  +530,       "ROCKIES TRIPLE-PLAY (SCR 1ST, 1H & GM)",
-    "Colorado Rockies",      "San Diego Padres",     "Padres",     "away",  +190,       "PADRES TRIPLE-PLAY (SCR 1ST, 1H & GM)",
-    "San Francisco Giants",  "Los Angeles Dodgers",  "Giants",     "home",  +750,       "GIANTS TRIPLE-PLAY (SCR 1ST, 1H & GM)",
-    "San Francisco Giants",  "Los Angeles Dodgers",  "Dodgers",    "away",  +155,       "DODGERS TRIPLE-PLAY (SCR 1ST, 1H & GM)",
-    "Seattle Mariners",      "Athletics",            "Mariners",   "home",  +215,       "MARINERS TRIPLE-PLAY (SCR 1ST, 1H & GM)",
-    "Seattle Mariners",      "Athletics",            "Athletics",  "away",  +455,       "ATHLETICS TRIPLE-PLAY (SCR 1ST, 1H & GM)",
-    "Arizona Diamondbacks",  "Chicago White Sox",    "DBacks",     "home",  +240,       "DBACKS TRIPLE-PLAY (SCR 1ST, 1H & GM)",
-    "Arizona Diamondbacks",  "Chicago White Sox",    "White Sox",  "away",  +415,       "WHITE SOX TRIPLE-PLAY (SCR 1ST, 1H & GM)"
+  # Read today's posted specials from the wagerzon_specials scraper output.
+  # Uses the most recent snapshot. Pricer is robust to empty / off-day cases:
+  # if zero rows are posted, prints a clear message and exits.
+  WZ_DB <- "~/NFLWork/wagerzon_odds/wagerzon.duckdb"
+  wz_con <- dbConnect(duckdb(), dbdir = path.expand(WZ_DB), read_only = TRUE)
+  on.exit(tryCatch(dbDisconnect(wz_con), error = function(e) NULL), add = TRUE)
+  specials <- dbGetQuery(wz_con, "
+    SELECT team, prop_type, description, odds AS book_odds
+    FROM wagerzon_specials
+    WHERE sport = 'mlb'
+      AND prop_type IN ('TRIPLE-PLAY', 'GRAND-SLAM')
+      AND scraped_at = (SELECT MAX(scraped_at) FROM wagerzon_specials WHERE sport = 'mlb')
+  ")
+  dbDisconnect(wz_con)
+
+  if (nrow(specials) == 0) {
+    cat("No priceable specials found in wagerzon_specials. Run scraper_specials.py first.\n")
+    quit(status = 0)
+  }
+
+  # Translate Wagerzon team names (UPPER) to Odds API canonical names so the
+  # consensus join works. Map covers the 30 MLB teams.
+  WZ_TO_CANONICAL <- c(
+    "ANGELS"        = "Los Angeles Angels",
+    "ASTROS"        = "Houston Astros",
+    "ATHLETICS"     = "Athletics",
+    "BLUE JAYS"     = "Toronto Blue Jays",
+    "BRAVES"        = "Atlanta Braves",
+    "BREWERS"       = "Milwaukee Brewers",
+    "CARDINALS"     = "St. Louis Cardinals",
+    "CUBS"          = "Chicago Cubs",
+    "DBACKS"        = "Arizona Diamondbacks",
+    "DIAMONDBACKS"  = "Arizona Diamondbacks",
+    "DODGERS"       = "Los Angeles Dodgers",
+    "GIANTS"        = "San Francisco Giants",
+    "GUARDIANS"     = "Cleveland Guardians",
+    "MARINERS"      = "Seattle Mariners",
+    "MARLINS"       = "Miami Marlins",
+    "METS"          = "New York Mets",
+    "NATIONALS"     = "Washington Nationals",
+    "ORIOLES"       = "Baltimore Orioles",
+    "PADRES"        = "San Diego Padres",
+    "PHILLIES"      = "Philadelphia Phillies",
+    "PIRATES"       = "Pittsburgh Pirates",
+    "RANGERS"       = "Texas Rangers",
+    "RAYS"          = "Tampa Bay Rays",
+    "RED SOX"       = "Boston Red Sox",
+    "REDS"          = "Cincinnati Reds",
+    "ROCKIES"       = "Colorado Rockies",
+    "ROYALS"        = "Kansas City Royals",
+    "TIGERS"        = "Detroit Tigers",
+    "TWINS"         = "Minnesota Twins",
+    "WHITE SOX"     = "Chicago White Sox",
+    "YANKEES"       = "New York Yankees"
   )
 
+  specials$canonical_team <- WZ_TO_CANONICAL[specials$team]
+  unmapped <- specials[is.na(specials$canonical_team), ]
+  if (nrow(unmapped) > 0) {
+    warning(sprintf("Dropped %d specials with unmapped team names: %s",
+                    nrow(unmapped),
+                    paste(unique(unmapped$team), collapse = ", ")))
+    specials <- specials[!is.na(specials$canonical_team), ]
+  }
+
+  # Resolve home/away by joining to mlb_consensus_temp (same approach used
+  # for the prior tribble path). For each canonical_team, find the consensus
+  # row where it's home OR away.
   con <- dbConnect(duckdb(), dbdir = MLB_DB, read_only = TRUE)
   on.exit(tryCatch(dbDisconnect(con), error = function(e) NULL), add = TRUE)
 
@@ -73,25 +126,33 @@ if (!interactive() && sys.nframe() == 0L) {
     stop("mlb_game_samples is missing home_scored_first. Re-run MLB.R to regenerate.")
   }
 
-  # Restrict consensus to games starting within 12 hours. mlb_consensus_temp
-  # now carries multiple days of slate; without this filter, doubleheaders +
-  # next-day games cause each tribble row to match >1 game_id.
+  # 12-hour filter (same as before): mlb_consensus_temp carries multiple days
   consensus <- consensus %>%
     filter(commence_time > Sys.time() &
            commence_time < Sys.time() + 12 * 3600) %>%
     select(-commence_time)
 
-  # Join today's lines to their game_id via team names
-  matched <- todays_lines %>%
-    inner_join(consensus, by = c("home_team", "away_team"))
+  todays_lines <- specials %>%
+    inner_join(consensus, by = c("canonical_team" = "home_team"),
+               relationship = "many-to-many", keep = TRUE) %>%
+    mutate(side = "home", target_team = team,
+           home_team = canonical_team) %>%
+    select(home_team, away_team, target_team, side, book_odds, description, id) %>%
+    bind_rows(
+      specials %>%
+        inner_join(consensus, by = c("canonical_team" = "away_team"),
+                   relationship = "many-to-many", keep = TRUE) %>%
+        mutate(side = "away", target_team = team,
+               away_team = canonical_team) %>%
+        select(home_team, away_team, target_team, side, book_odds, description, id)
+    )
 
+  matched <- todays_lines  # consensus join already done; keep var name compatible
   n_matched <- nrow(matched)
-  n_posted  <- nrow(todays_lines)
+  n_posted  <- nrow(specials)
   if (n_matched < n_posted) {
-    dropped <- anti_join(todays_lines, consensus, by = c("home_team", "away_team"))
-    warning(sprintf("Dropped %d/%d lines with no matching consensus game:\n%s",
-                    n_posted - n_matched, n_posted,
-                    paste(capture.output(print(dropped)), collapse = "\n")))
+    warning(sprintf("Matched %d/%d posted specials. Some teams may have no game tonight.",
+                    n_matched, n_posted))
   }
 
   # Price each line
