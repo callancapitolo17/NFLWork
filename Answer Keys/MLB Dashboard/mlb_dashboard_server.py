@@ -18,6 +18,7 @@ import json as _json
 import logging
 import mimetypes
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -27,6 +28,20 @@ from flask import Flask, Response, jsonify, request
 BASE_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = BASE_DIR.parent.parent  # NFLWork/
 DB_PATH = BASE_DIR / "mlb_dashboard.duckdb"
+MLB_DB_PATH = BASE_DIR.parent / "mlb.duckdb"
+
+# Combined parlay pricing imports — pull from wagerzon_odds/ + local helper
+sys.path.insert(0, str(PROJECT_ROOT / "wagerzon_odds"))
+from combined_parlay import joint_pricing
+from parlay_pricer import (
+    get_combined_parlay_price as wz_get_combined_parlay_price,
+    get_wz_session as _get_wz_session,
+)
+
+# Combined parlay pricing cache: keyed on sorted (hash_a, hash_b) tuple.
+# TTL prevents stale prices when WZ moves their lines. 60s is a safe default.
+_COMBO_PRICE_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
+_COMBO_PRICE_TTL_SECONDS = 60
 app = Flask(__name__)
 
 # Make wagerzon_odds importable for parlay placement
@@ -673,6 +688,147 @@ def get_placed_bets():
 # =============================================================================
 
 
+def _spread_play_from_combo(combo: str) -> int:
+    """1 = home spread, 0 = away spread. Derived from the combo description.
+
+    Combo strings start with the side bet on, e.g. 'Home -1.5 + Over 9.5',
+    'Away +1.5 + Under 7.5', or 'F5 Home Spread + Over'. We can't infer the
+    side from the line sign because home can be the underdog.
+    """
+    # Match 'Home' or 'Away' as a standalone word at the start or after 'F5 '
+    if "Home Spread" in combo or combo.startswith("Home"):
+        return 1
+    if "Away Spread" in combo or combo.startswith("Away"):
+        return 0
+    raise ValueError(f"Cannot determine spread side from combo: {combo!r}")
+
+
+def _total_play_from_combo(combo: str) -> int:
+    """2 = over, 3 = under. Looks for the literal '+ Over' / '+ Under' segment."""
+    if "+ Over" in combo:
+        return 2
+    if "+ Under" in combo:
+        return 3
+    raise ValueError(f"Cannot determine total side from combo: {combo!r}")
+
+
+def _total_points_for_play(total_line: float, play: int) -> str:
+    """Wagerzon expects negative points for over (play=2), positive for under (play=3)."""
+    return str(-abs(total_line)) if play == 2 else str(total_line)
+
+
+@app.route("/api/price-combined-parlay", methods=["POST"])
+def price_combined_parlay():
+    """Compute joint pricing + recommended Kelly stake for two parlay rows.
+
+    Body: {"parlay_hash_a": "...", "parlay_hash_b": "..."}
+    Returns: joint_fair_dec, joint_fair_prob, joint_edge, wz_dec, wz_win,
+             kelly_stake, and the per-leg combo descriptions.
+    """
+    data = request.get_json(silent=True) or {}
+    hash_a = data.get("parlay_hash_a")
+    hash_b = data.get("parlay_hash_b")
+    if not hash_a or not hash_b:
+        return jsonify({"success": False, "error": "Missing parlay_hash_a or parlay_hash_b"}), 400
+    if hash_a == hash_b:
+        return jsonify({"success": False, "error": "Cannot combine a row with itself"}), 400
+
+    # Pull the two source rows from mlb.duckdb
+    mcon = duckdb.connect(str(MLB_DB_PATH))
+    try:
+        rows = mcon.execute("""
+            SELECT parlay_hash, fair_dec, wz_dec, idgm,
+                   spread_line, total_line, spread_price, total_price, combo, game_id
+            FROM mlb_parlay_opportunities
+            WHERE parlay_hash IN (?, ?)
+        """, [hash_a, hash_b]).fetchall()
+    finally:
+        mcon.close()
+
+    if len(rows) != 2:
+        return jsonify({"success": False, "error": "One or both parlays not found"}), 404
+
+    # Reject same-game combos
+    if rows[0][9] == rows[1][9]:
+        return jsonify({"success": False, "error": "Same-game combos not supported"}), 400
+
+    by_hash = {r[0]: r for r in rows}
+    a = by_hash[hash_a]; b = by_hash[hash_b]
+
+    # Cache check (keyed on sorted hashes so order doesn't matter)
+    cache_key = tuple(sorted([hash_a, hash_b]))
+    now = time.time()
+    cached = _COMBO_PRICE_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < _COMBO_PRICE_TTL_SECONDS:
+        return jsonify(cached[1])
+
+    # Pull parlay sizing settings from dashboard DB
+    dcon = duckdb.connect(str(DB_PATH))
+    try:
+        bankroll_row = dcon.execute(
+            "SELECT value FROM sizing_settings WHERE param = 'parlay_bankroll'"
+        ).fetchone()
+        kmult_row = dcon.execute(
+            "SELECT value FROM sizing_settings WHERE param = 'parlay_kelly_mult'"
+        ).fetchone()
+    finally:
+        dcon.close()
+    if not bankroll_row or not kmult_row:
+        return jsonify({"success": False, "error": "Parlay sizing settings missing"}), 500
+    bankroll = bankroll_row[0]
+    kmult = kmult_row[0]
+
+    # Build legs for WZ pricing
+    a_total_play = _total_play_from_combo(a[8])
+    b_total_play = _total_play_from_combo(b[8])
+    legs = [
+        {"idgm": a[3], "play": _spread_play_from_combo(a[8]), "points": str(a[4]),                                 "odds": int(a[6])},
+        {"idgm": a[3], "play": a_total_play,                  "points": _total_points_for_play(a[5], a_total_play), "odds": int(a[7])},
+        {"idgm": b[3], "play": _spread_play_from_combo(b[8]), "points": str(b[4]),                                 "odds": int(b[6])},
+        {"idgm": b[3], "play": b_total_play,                  "points": _total_points_for_play(b[5], b_total_play), "odds": int(b[7])},
+    ]
+
+    # Live WZ price (10000 first, fallback to 100)
+    try:
+        wz_session = _get_wz_session()
+    except RuntimeError as e:
+        return jsonify({"success": False, "error": f"Wagerzon auth failed: {e}"}), 502
+    wz = wz_get_combined_parlay_price(wz_session, legs, amount=10000)
+    if wz is None:
+        wz = wz_get_combined_parlay_price(wz_session, legs, amount=100)
+    if wz is None:
+        return jsonify({"success": False, "error": "WZ pricing unavailable"}), 502
+
+    pricing = joint_pricing(
+        fair_dec_a=float(a[1]), fair_dec_b=float(b[1]), wz_dec=float(wz["decimal"]),
+        bankroll=bankroll, kelly_mult=kmult,
+    )
+
+    response = {
+        "success": True,
+        "joint_fair_dec": pricing["joint_fair_dec"],
+        "joint_fair_prob": pricing["joint_fair_prob"],
+        "joint_edge": pricing["joint_edge"],
+        "kelly_stake": pricing["kelly_stake"],
+        "wz_dec": wz["decimal"],
+        "wz_win": wz["win"],
+        "amount": wz["amount"],
+        "leg_a_combo": a[8],
+        "leg_b_combo": b[8],
+    }
+    _COMBO_PRICE_CACHE[cache_key] = (now, response)
+    return jsonify(response)
+
+
+# NOTE: main previously defined a manual /api/place-parlay endpoint here that
+# took game_id/home_team/away_team/combo/wz_odds/kelly_bet/etc. and just
+# recorded a "pending" row in placed_parlays. That route is now superseded
+# by api_place_parlay() below, which actually places the bet at Wagerzon
+# via the REST API and records the resulting ticket_number. The manual
+# route is intentionally NOT carried forward to avoid a Flask duplicate-
+# endpoint error and to keep the placement contract single.
+
+
 def _load_parlay_row(parlay_hash: str) -> dict | None:
     """Load one parlay opportunity row from mlb.duckdb (read-only)."""
     con = duckdb.connect(str(MLB_DB), read_only=True)
@@ -966,6 +1122,56 @@ def _short_label_for(status: str, error_msg_key: str, error_msg: str) -> str:
     if status == "rejected":
         return _SHORT_LABEL_BY_REJECT_KEY.get(error_msg_key or "", "rejected")
     return _SHORT_LABEL_BY_STATUS.get(status, status)
+
+
+@app.route("/api/place-combined-parlay", methods=["POST"])
+def place_combined_parlay():
+    """Record a combined (cross-game) parlay placement.
+
+    Inserts a single row into placed_parlays with is_combo=TRUE and
+    combo_leg_ids = JSON list of the two source parlay_hashes.
+    """
+    data = request.get_json(silent=True) or {}
+    required = ["combo_hash", "parlay_hash_a", "parlay_hash_b",
+                "wz_odds", "kelly_bet", "actual_size", "combo_label"]
+    missing = [k for k in required if k not in data]
+    if missing:
+        return jsonify({"success": False, "error": f"Missing fields: {missing}"}), 400
+
+    leg_ids_json = json.dumps([data["parlay_hash_a"], data["parlay_hash_b"]])
+
+    try:
+        con = duckdb.connect(str(DB_PATH))
+        try:
+            existing = con.execute(
+                "SELECT parlay_hash, status FROM placed_parlays WHERE parlay_hash = ?",
+                [data["combo_hash"]]
+            ).fetchone()
+            if existing and existing[1] == "pending":
+                return jsonify({"success": False, "error": "Combo already placed"}), 409
+
+            con.execute("""
+                INSERT INTO placed_parlays (
+                    parlay_hash, game_id, home_team, away_team, combo,
+                    wz_odds, kelly_bet, actual_size, placed_at, status,
+                    is_combo, combo_leg_ids
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', TRUE, ?)
+            """, [
+                data["combo_hash"],
+                "COMBO",  # synthetic game_id for combo rows
+                "(combined)", "(combined)",
+                data["combo_label"],
+                int(data["wz_odds"]),
+                float(data["kelly_bet"]),
+                float(data["actual_size"]),
+                datetime.now().isoformat(),
+                leg_ids_json,
+            ])
+        finally:
+            con.close()
+        return jsonify({"success": True, "message": "Combined parlay placed"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/remove-parlay", methods=["POST"])

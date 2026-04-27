@@ -31,6 +31,8 @@ DB_PATH <- file.path(DASHBOARD_DIR, "mlb_dashboard.duckdb")
 
 # Pure HTML helpers shared with other dashboards
 source(file.path(DASHBOARD_DIR, "..", "books_strip.R"))
+# Conditional Kelly residual solver (Task 1) — drives Parlay tab combo residuals
+source(file.path(DASHBOARD_DIR, "..", "conditional_kelly.R"))
 OUTPUT_PATH <- file.path(DASHBOARD_DIR, "report.html")
 
 # =============================================================================
@@ -273,10 +275,70 @@ create_placed_parlays_table <- function(placed_parlays) {
   )
 }
 
-create_parlays_table <- function(parlay_opps, placed_parlays) {
-  # Build a lookup from parlay_hash → placement state columns.
-  # "pending" = manually placed (legacy path); "placed" = auto-placed (show ticket);
-  # error statuses = show red pill. Rows with no entry in placed_parlays stay NA.
+# Returns parlay_opps with kelly_bet overridden to the conditional residual
+# when the row appears in any combo in placed_parlays. Adds a combo_residual_note
+# column that the Size column renderer uses for the annotation.
+#
+# Defensive: if placed_parlays is missing the is_combo column (schema migration
+# not yet applied), this is a no-op.
+apply_combo_residuals <- function(parlay_opps, placed_parlays, parlay_bankroll, parlay_kelly_mult) {
+  parlay_opps$combo_residual_note <- NA_character_
+
+  if (is.null(placed_parlays) || nrow(placed_parlays) == 0) return(parlay_opps)
+  if (!"is_combo" %in% names(placed_parlays))                return(parlay_opps)
+
+  combos <- placed_parlays %>% filter(is_combo == TRUE)
+  if (nrow(combos) == 0) return(parlay_opps)
+
+  for (i in seq_len(nrow(combos))) {
+    leg_ids <- tryCatch(
+      jsonlite::fromJSON(combos$combo_leg_ids[i]),
+      error = function(e) NULL
+    )
+    if (is.null(leg_ids) || length(leg_ids) != 2) next
+
+    # combo's wz_odds is American (INTEGER per schema); convert to decimal.
+    wz_american <- combos$wz_odds[i]
+    if (!is.finite(wz_american)) next
+    combo_dec <- if (wz_american >= 0) {
+      wz_american / 100 + 1
+    } else {
+      100 / abs(wz_american) + 1
+    }
+
+    s_combo <- combos$actual_size[i]
+    if (!is.finite(s_combo) || s_combo <= 0) next
+
+    row_a <- parlay_opps %>% filter(parlay_hash == leg_ids[1])
+    row_b <- parlay_opps %>% filter(parlay_hash == leg_ids[2])
+    if (nrow(row_a) == 0 || nrow(row_b) == 0) next
+
+    res <- conditional_kelly_residuals(
+      p_a     = 1 / row_a$fair_dec,
+      d_a     = row_a$wz_dec,
+      p_b     = 1 / row_b$fair_dec,
+      d_b     = row_b$wz_dec,
+      s_combo = s_combo,
+      d_combo = combo_dec,
+      bankroll   = parlay_bankroll,
+      kelly_mult = parlay_kelly_mult
+    )
+
+    parlay_opps$kelly_bet[parlay_opps$parlay_hash == leg_ids[1]] <- res$s_a
+    parlay_opps$kelly_bet[parlay_opps$parlay_hash == leg_ids[2]] <- res$s_b
+    parlay_opps$combo_residual_note[parlay_opps$parlay_hash %in% leg_ids] <-
+      sprintf("(residual after combo $%.0f)", s_combo)
+  }
+  parlay_opps
+}
+
+create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 100, parlay_kelly_mult = 0.25) {
+  parlay_opps <- apply_combo_residuals(parlay_opps, placed_parlays, parlay_bankroll, parlay_kelly_mult)
+
+  # Build a lookup from parlay_hash → placement state columns for the
+  # auto-placement Place column. "pending" = manually placed (legacy path);
+  # "placed" = auto-placed (show ticket); error statuses = show red pill.
+  # Rows with no entry in placed_parlays stay NA.
   placement_cols <- if (nrow(placed_parlays) > 0 && "parlay_hash" %in% names(placed_parlays)) {
     placed_parlays %>%
       select(parlay_hash,
@@ -294,8 +356,17 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
            placement_error_key = character())
   }
 
-  # "Placed" in the legacy sense = any status that was manually recorded as pending
-  placed_hashes <- if (nrow(placed_parlays) > 0) placed_parlays$parlay_hash else character()
+  # Filter out the combo rows themselves from the "placed" set — they're not
+  # source parlays so they shouldn't be marked as already-placed in the parlay table.
+  placed_hashes <- if (nrow(placed_parlays) > 0) {
+    if ("is_combo" %in% names(placed_parlays)) {
+      is_combo_vec <- placed_parlays$is_combo
+      is_combo_vec[is.na(is_combo_vec)] <- FALSE  # treat NA as not-combo
+      placed_parlays$parlay_hash[!is_combo_vec]
+    } else {
+      placed_parlays$parlay_hash
+    }
+  } else character()
 
   # Ensure exact-payout columns exist even on older rows (pre-Stage-2 backfill).
   # parlay_pricer.py --exact-payouts populates these; fall back to Kelly+wz_dec
@@ -307,6 +378,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
     left_join(placement_cols, by = "parlay_hash") %>%
     mutate(
       is_placed = parlay_hash %in% placed_hashes,
+      sel = "",
       spread_team    = ifelse(grepl("Home", combo), home_team, away_team),
       spread_fmt     = ifelse(spread_line > 0, paste0("+", spread_line), as.character(spread_line)),
       sp_price_fmt   = case_when(
@@ -328,7 +400,13 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
       # Prefer empirical stake/payout from --exact-payouts. Fall back to Kelly-ideal
       # wager and arithmetic payout for rows the exact-payout step couldn't price
       # (e.g. idgm missing or WZ rejected all candidate stakes).
-      size_display   = sprintf("$%.0f", coalesce(as.numeric(exact_wager), kelly_bet)),
+      # When this row participates in a placed combo, show the conditional residual
+      # (kelly_bet was already overridden by apply_combo_residuals) plus an annotation.
+      size_display   = ifelse(
+        !is.na(combo_residual_note),
+        sprintf("$%.0f<br><span class='combo-note'>%s</span>", kelly_bet, combo_residual_note),
+        sprintf("$%.0f", coalesce(as.numeric(exact_wager), kelly_bet))
+      ),
       to_win_display = sprintf("$%.0f", coalesce(as.numeric(exact_to_win),
                                                   round(kelly_bet * (wz_dec - 1)))),
       corr_display   = sprintf("%.3f", corr_factor),
@@ -343,6 +421,25 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
     highlight = TRUE,
     defaultPageSize = 25,
     columns = list(
+      sel = colDef(
+        name = "",
+        minWidth = 30,
+        align = "center",
+        filterable = FALSE,
+        sortable = FALSE,
+        html = TRUE,
+        cell = function(value, index) {
+          row <- table_data[index, ]
+          if (isTRUE(row$is_placed) || isTRUE(row$is_combo)) {
+            ''  # no checkbox if already placed or this is the combo row
+          } else {
+            sprintf(
+              '<input type="checkbox" class="combo-select" data-hash="%s" data-game-id="%s" onchange="onComboSelectChange(this)">',
+              row$parlay_hash, row$game_id
+            )
+          }
+        }
+      ),
       # Hidden columns for JS data attributes
       parlay_hash = colDef(show = FALSE),
       game_id = colDef(show = FALSE),
@@ -375,6 +472,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
       sp_price_fmt = colDef(show = FALSE),
       ou_prefix = colDef(show = FALSE),
       tot_price_fmt = colDef(show = FALSE),
+      combo_residual_note = colDef(show = FALSE),
 
       # Visible columns
       game = colDef(
@@ -439,7 +537,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays) {
           span(style = list(color = color, fontWeight = "600"), value)
         }
       ),
-      size_display = colDef(name = "Size", minWidth = 65, align = "right"),
+      size_display = colDef(name = "Size", minWidth = 65, align = "right", html = TRUE),
       to_win_display = colDef(name = "To Win", minWidth = 65, align = "right",
         style = list(color = "#3fb950")),
       # Auto-placement state columns — hidden data carriers for the cell renderer below
@@ -1011,6 +1109,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           border-color: #f85149;
           color: #f85149;
         }
+
+        .combo-note { color: #8b949e; font-size: 0.7rem; font-style: italic; }
 
         .btn-partial {
           background: transparent;
@@ -1712,6 +1812,14 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             ),
             tags$button(class = "clear-filters-btn", onclick = "clearParlayFilters()", "Clear Filters")
           ),
+
+          # Combined Parlay banner — hidden until 2 rows checked in the table
+          HTML('
+<div id="combined-parlay-banner" style="display:none; padding:10px 14px; background:#1f3a5f; border-left:3px solid #4a9eff; margin-bottom:10px; border-radius:4px; color:#c9d1d9; font-family:sans-serif; font-size:13px;">
+  <span id="combo-banner-status">Pricing combined ticket…</span>
+  <button id="combo-place-btn" onclick="placeCombinedParlay()" style="display:none; float:right; background:#4a9eff; color:#fff; border:none; padding:6px 14px; border-radius:4px; cursor:pointer; font-weight:600;">Place combined →</button>
+</div>
+'),
 
           # Parlay Opportunities
           if (!is.null(parlays_table)) {
@@ -3149,6 +3257,121 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           div.textContent = text;
           return div.innerHTML;
         }
+
+        // === Combined parlay state ===
+        // At most 2 selected at a time, FIFO. Cleared on successful place.
+        window.comboSelections = window.comboSelections || [];
+        window.comboPricing = null;
+
+        function onComboSelectChange(checkbox) {
+          const hash = checkbox.dataset.hash;
+          const gameId = checkbox.dataset.gameId;
+          if (checkbox.checked) {
+            // FIFO: if 2 already selected, uncheck the oldest
+            if (window.comboSelections.length >= 2) {
+              const oldest = window.comboSelections.shift();
+              const oldEl = document.querySelector(`.combo-select[data-hash="${oldest.hash}"]`);
+              if (oldEl) oldEl.checked = false;
+            }
+            window.comboSelections.push({ hash, gameId });
+          } else {
+            window.comboSelections = window.comboSelections.filter(s => s.hash !== hash);
+          }
+          refreshComboBanner();
+        }
+
+        async function refreshComboBanner() {
+          const banner = document.getElementById("combined-parlay-banner");
+          const status = document.getElementById("combo-banner-status");
+          const placeBtn = document.getElementById("combo-place-btn");
+          if (!banner || !status || !placeBtn) return;
+
+          if (window.comboSelections.length !== 2) {
+            banner.style.display = "none";
+            return;
+          }
+          // Same-game guard — block at JS layer too so the user gets immediate feedback
+          if (window.comboSelections[0].gameId === window.comboSelections[1].gameId) {
+            banner.style.display = "block";
+            status.textContent = "Same-game combos are already a single row — pick rows from different games.";
+            placeBtn.style.display = "none";
+            window.comboPricing = null;
+            return;
+          }
+
+          banner.style.display = "block";
+          status.textContent = "Pricing combined ticket…";
+          placeBtn.style.display = "none";
+
+          try {
+            const res = await fetch("/api/price-combined-parlay", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                parlay_hash_a: window.comboSelections[0].hash,
+                parlay_hash_b: window.comboSelections[1].hash,
+              }),
+            });
+            const body = await res.json();
+            if (!body.success) {
+              status.textContent = "WZ rejected: " + (body.error || "unknown");
+              window.comboPricing = null;
+              return;
+            }
+            window.comboPricing = body;
+            const edgePct = (body.joint_edge * 100).toFixed(1);
+            const edgeColor = body.joint_edge >= 0 ? "#5fd97a" : "#e57373";
+            const edgeSign = body.joint_edge >= 0 ? "+" : "";
+            status.innerHTML =
+              `<b>2 legs combined</b> · stake <b>$${body.kelly_stake}</b>` +
+              ` · WZ pays <b>${body.wz_dec.toFixed(2)}</b>` +
+              ` · edge <span style="color:${edgeColor}">${edgeSign}${edgePct}%</span>`;
+            placeBtn.style.display = "inline-block";
+          } catch (err) {
+            status.textContent = "Pricing failed — uncheck and re-check a row to retry.";
+            window.comboPricing = null;
+          }
+        }
+
+        async function placeCombinedParlay() {
+          if (!window.comboPricing || window.comboSelections.length !== 2) return;
+          const placeBtn = document.getElementById("combo-place-btn");
+          placeBtn.disabled = true;
+          placeBtn.textContent = "Placing…";
+
+          // Synthetic combo_hash — deterministic from sorted leg hashes
+          const sels = window.comboSelections.map(s => s.hash).sort();
+          const comboHash = "combo_" + sels.join("_");
+
+          try {
+            const res = await fetch("/api/place-combined-parlay", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                combo_hash: comboHash,
+                parlay_hash_a: sels[0],
+                parlay_hash_b: sels[1],
+                wz_odds: Math.round((window.comboPricing.wz_dec - 1) * 100),
+                kelly_bet: window.comboPricing.kelly_stake,
+                actual_size: window.comboPricing.kelly_stake,
+                combo_label: window.comboPricing.leg_a_combo + " + " + window.comboPricing.leg_b_combo,
+              }),
+            });
+            const body = await res.json();
+            if (!body.success) {
+              alert("Failed to place combined parlay: " + (body.error || "unknown"));
+              placeBtn.disabled = false;
+              placeBtn.textContent = "Place combined →";
+              return;
+            }
+            // Reload — R re-renders create_parlays_table() which applies residual Kelly to source rows
+            window.location.reload();
+          } catch (err) {
+            alert("Network error placing combined parlay: " + err.message);
+            placeBtn.disabled = false;
+            placeBtn.textContent = "Place combined →";
+          }
+        }
       '))
     )
   )
@@ -3239,13 +3462,25 @@ placed_parlays <- tryCatch({
   result
 }, error = function(e) tibble(parlay_hash = character()))
 
-# Load min edge setting and filter parlay opportunities server-side
-parlay_min_edge <- 0
+# Load parlay sizing settings (min edge, bankroll, kelly multiplier).
+# Bankroll/kelly_mult feed apply_combo_residuals() so the conditional Kelly
+# solver knows the operator's current sizing context. Defaults match the JS
+# fallbacks in the dashboard frontend.
+parlay_min_edge   <- 0
+parlay_bankroll   <- 100
+parlay_kelly_mult <- 0.25
 tryCatch({
   mecon <- dbConnect(duckdb(), dbdir = DB_PATH, read_only = TRUE)
-  me_val <- dbGetQuery(mecon, "SELECT value FROM sizing_settings WHERE param = 'parlay_min_edge'")
+  ss <- dbGetQuery(mecon, "SELECT param, value FROM sizing_settings WHERE param IN ('parlay_min_edge','parlay_bankroll','parlay_kelly_mult')")
   dbDisconnect(mecon, shutdown = TRUE)
-  if (nrow(me_val) > 0) parlay_min_edge <- me_val$value[1]
+  if (nrow(ss) > 0) {
+    me_row <- ss[ss$param == "parlay_min_edge", ]
+    if (nrow(me_row) > 0) parlay_min_edge   <- as.numeric(me_row$value[1])
+    bk_row <- ss[ss$param == "parlay_bankroll", ]
+    if (nrow(bk_row) > 0) parlay_bankroll   <- as.numeric(bk_row$value[1])
+    km_row <- ss[ss$param == "parlay_kelly_mult", ]
+    if (nrow(km_row) > 0) parlay_kelly_mult <- as.numeric(km_row$value[1])
+  }
 }, error = function(e) NULL)
 
 if (nrow(parlay_opps) > 0 && parlay_min_edge > 0) {
@@ -3257,7 +3492,9 @@ cat(sprintf("Found %d parlay opportunities (min edge %.0f%%), %d placed parlays\
 
 # Create parlay tables
 if (nrow(parlay_opps) > 0) {
-  parlays_table <- create_parlays_table(parlay_opps, placed_parlays)
+  parlays_table <- create_parlays_table(parlay_opps, placed_parlays,
+                                        parlay_bankroll = parlay_bankroll,
+                                        parlay_kelly_mult = parlay_kelly_mult)
 } else {
   parlays_table <- NULL
 }

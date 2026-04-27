@@ -4973,6 +4973,44 @@ compute_parlay_fair_odds <- function(samples, legs) {
 }
 
 
+# compute_combined_parlay_pricing — joint pricing for a 4-leg combined parlay
+# made from two existing same-game spread+total parlay rows. Cross-game legs
+# are independent, so joint fair odds = product of fair decimal odds.
+#
+# Args:
+#   fair_dec_a, fair_dec_b : fair decimal odds of each source parlay row
+#   wz_dec                 : Wagerzon's exact 4-leg payout (from
+#                            ConfirmWagerHelper) as decimal odds
+#   bankroll, kelly_mult   : optional, for kelly_stake computation
+#
+# Returns: list(joint_fair_dec, joint_fair_prob, joint_edge, kelly_stake)
+compute_combined_parlay_pricing <- function(fair_dec_a, fair_dec_b, wz_dec,
+                                             bankroll = NULL, kelly_mult = NULL) {
+  stopifnot(
+    is.numeric(fair_dec_a), fair_dec_a > 1,
+    is.numeric(fair_dec_b), fair_dec_b > 1,
+    is.numeric(wz_dec),     wz_dec     > 1
+  )
+
+  joint_fair_dec  <- fair_dec_a * fair_dec_b
+  joint_fair_prob <- 1 / joint_fair_dec
+  joint_edge      <- joint_fair_prob * wz_dec - 1
+
+  kelly_stake_dollars <- if (!is.null(bankroll) && !is.null(kelly_mult)) {
+    edge_fraction <- joint_edge / (wz_dec - 1)
+    round(max(edge_fraction * kelly_mult * bankroll, 0), 2)
+  } else NA_real_
+
+  list(
+    joint_fair_dec      = round(joint_fair_dec, 4),
+    joint_fair_prob     = round(joint_fair_prob, 6),
+    joint_fair_american = prob_to_american(joint_fair_prob),
+    joint_edge          = round(joint_edge, 4),
+    kelly_stake         = kelly_stake_dollars
+  )
+}
+
+
 #' Format a leg specification as a readable string
 #'
 #' @param leg List with: market, period, side, line
