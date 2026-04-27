@@ -7,7 +7,7 @@ for the full design. This module provides:
     - encode_sel / encode_detail_data leg-encoding helpers
     - _get_session / _clear_session session management
     - _confirm_preflight / _drift_ok price safety checks
-    - place_parlays(specs, dry_run=False) — top-level entry point
+    - place_parlays(specs) — top-level entry point
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -376,15 +376,14 @@ def _post_with_retry(specs: list[ParlaySpec]) -> list[PlacementResult]:
         return [retry_results[spec.parlay_hash] for spec in specs]
 
 
-def place_parlays(specs: list[ParlaySpec], dry_run: bool = False) -> list[PlacementResult]:
+def place_parlays(specs: list[ParlaySpec]) -> list[PlacementResult]:
     """Place a batch of parlays at Wagerzon.
 
     For each spec:
       1) ConfirmWagerHelper preflight (with one auth-retry)
       2) Drift check vs expected_win — abort that spec on drift > $0.01
     Then for surviving specs:
-      3) If dry_run: return would_place results
-      4) Else: PostWagerMultipleHelper (with one auth-retry that re-runs
+      3) PostWagerMultipleHelper (with one auth-retry that re-runs
          preflight defensively before placing).
     """
     seen = set()
@@ -416,12 +415,6 @@ def place_parlays(specs: list[ParlaySpec], dry_run: bool = False) -> list[Placem
             results_by_hash[spec.parlay_hash] = PlacementResult(
                 parlay_hash=spec.parlay_hash, status="price_moved",
                 error_msg=_drift_error_msg(spec.expected_win, win),
-                actual_win=win, actual_risk=risk,
-            )
-            continue
-        if dry_run:
-            results_by_hash[spec.parlay_hash] = PlacementResult(
-                parlay_hash=spec.parlay_hash, status="would_place",
                 actual_win=win, actual_risk=risk,
             )
             continue
