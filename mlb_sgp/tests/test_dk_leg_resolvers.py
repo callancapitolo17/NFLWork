@@ -55,16 +55,16 @@ FIXTURE = {
                 'marketName': 'CHI Cubs: Team Total Runs',
                 'tags': ['SGP'],
                 'selections': [
-                    {'label': 'Over',  'point': 3.5, 'id': '0OU-CUBS-O35'},
-                    {'label': 'Under', 'point': 3.5, 'id': '0OU-CUBS-U35'},
+                    {'label': 'Over',  'id': '0OU100001O350_1'},
+                    {'label': 'Under', 'id': '0OU100001U350_3'},
                 ],
             },
             {
                 'marketName': 'SD Padres: Team Total Runs',
                 'tags': ['SGP'],
                 'selections': [
-                    {'label': 'Over',  'point': 4.5, 'id': '0OU-SD-O45'},
-                    {'label': 'Under', 'point': 4.5, 'id': '0OU-SD-U45'},
+                    {'label': 'Over',  'id': '0OU100002O450_1'},
+                    {'label': 'Under', 'id': '0OU100002U450_3'},
                 ],
             },
             {
@@ -172,13 +172,13 @@ def test_team_total_under_home_correct_line():
     sid = resolve_team_total_under(
         {'type': 'team_total_under', 'line': 3.5}, 'home', FIXTURE, TEAM_NAMES,
     )
-    assert sid == '0OU-CUBS-U35'
+    assert sid == '0OU100001U350_3'
 
 def test_team_total_over_away_correct_line():
     sid = resolve_team_total_over(
         {'type': 'team_total_over', 'line': 4.5}, 'away', FIXTURE, TEAM_NAMES,
     )
-    assert sid == '0OU-SD-O45'
+    assert sid == '0OU100002O450_1'
 
 def test_team_total_wrong_line_returns_none():
     sid = resolve_team_total_under(
@@ -204,7 +204,7 @@ def test_resolve_legs_full_grand_slam_away():
         {'type': 'team_total_under', 'line': 4.5},
     ]
     sids = resolve_legs(legs, 'away', FIXTURE, TEAM_NAMES)
-    assert sids == ['0QA-SD-1ST-RUN', '0HC-RL-SD-N50_3', '0ML-SD_1', '0OU-SD-U45']
+    assert sids == ['0QA-SD-1ST-RUN', '0HC-RL-SD-N50_3', '0ML-SD_1', '0OU100002U450_3']
 
 def test_resolve_legs_missing_leg_returns_none():
     # F3 not supported → whole resolution fails → None

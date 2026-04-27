@@ -19,6 +19,7 @@ Each resolver returns:
     degrades to model-only for that row)
 """
 from __future__ import annotations
+import re
 from typing import Optional
 
 
@@ -52,32 +53,52 @@ def find_market_by_name(payload: dict, target_name: str) -> Optional[dict]:
     return walk(payload)
 
 
+# Selection ID pattern for over/under markets. Captures:
+#   group 1: market number
+#   group 2: 'O' (over) or 'U' (under)
+#   group 3: line × 100 (integer)
+#   group 4: side suffix
+_OU_ID_RE = re.compile(r'^0OU(\d+)([OU])(\d+)_(\d+)$')
+
+
+def _parse_line_from_id(sel_id: str) -> Optional[tuple]:
+    """Parse over/under line from a DK selection ID like '0OU84531909U550_3'.
+    Returns ('O' or 'U', line as float) or None if the ID doesn't match the
+    pattern."""
+    m = _OU_ID_RE.match(sel_id or '')
+    if m is None:
+        return None
+    return (m.group(2), float(m.group(3)) / 100.0)
+
+
 def find_team_total_market(
     payload: dict, team_label: str, side_target: str, line: float
 ) -> Optional[dict]:
-    """Find a "<TEAM>: Team Total Runs" market with a selection matching the
-    given line + over/under. Returns the selection dict (with 'id'), or None.
+    """Find a '<TEAM>: Team Total Runs' market with a selection matching
+    the given line + over/under. Returns the selection dict (with 'id'),
+    or None.
 
-    Multiple team-total markets exist per game (full-game, alt lines, by-inning).
-    We want the FULL-game one for the given team and line.
+    DK doesn't populate the `point` field on these selections — the line
+    is encoded in the selection ID via the pattern
+    '0OU<num><O|U><line×100>_<suffix>'. We parse from the ID directly.
+
+    Looks at the FULL-game team total market only ('<TEAM>: Team Total
+    Runs' — without the '- 1st N Innings' suffix). The full-game market is
+    the one whose lines correspond to Wagerzon's grand-slam team-total leg.
     """
     target_market_name = f"{team_label}: Team Total Runs"
     market = find_market_by_name(payload, target_market_name)
     if market is None:
         return None
-    # Selections should have labels like "Over" / "Under" plus a 'point' field
+    side_target_upper = side_target.upper()[0]   # 'O' or 'U'
     for sel in market.get('selections', []):
-        sel_label = (sel.get('label') or sel.get('name') or '').lower()
-        sel_point = sel.get('point')
-        if (
-            (side_target == 'over'  and 'over'  in sel_label) or
-            (side_target == 'under' and 'under' in sel_label)
-        ):
-            try:
-                if sel_point is not None and abs(float(sel_point) - line) < 0.01:
-                    return sel
-            except (TypeError, ValueError):
-                continue
+        sid = sel.get('id') or sel.get('selectionId') or ''
+        parsed = _parse_line_from_id(sid)
+        if parsed is None:
+            continue
+        sel_dir, sel_line = parsed
+        if sel_dir == side_target_upper and abs(sel_line - line) < 0.01:
+            return sel
     return None
 
 
