@@ -957,11 +957,12 @@ def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> N
     try:
         con.execute("""
             INSERT INTO placed_parlays (
-                parlay_hash, status, combo, game_id, game_time,
+                parlay_hash, status, home_team, away_team,
+                combo, game_id, game_time,
                 recommended_size, expected_odds, expected_win,
                 actual_size, actual_win, ticket_number, idwt,
                 legs_json, error_msg, error_msg_key, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT (parlay_hash) DO UPDATE SET
                 status        = EXCLUDED.status,
                 actual_size   = EXCLUDED.actual_size,
@@ -974,6 +975,8 @@ def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> N
         """, [
             result.parlay_hash,
             result.status,
+            row.get("home_team") or "",
+            row.get("away_team") or "",
             row.get("combo"),
             row.get("game_id"),
             row.get("game_time"),
@@ -1078,14 +1081,21 @@ def api_place_parlay():
     if not dry_run:
         con = duckdb.connect(str(DASHBOARD_DB))
         try:
+            # home_team / away_team are NOT NULL on main's placed_parlays
+            # schema (legacy CBB-pattern constraint). Pull them from the
+            # parlay row so the breadcrumb insert satisfies the constraint
+            # — they're known at this point.
             con.execute("""
                 INSERT INTO placed_parlays (
-                    parlay_hash, status, recommended_size, expected_odds,
+                    parlay_hash, status, home_team, away_team,
+                    recommended_size, expected_odds,
                     combo, game_id, game_time, updated_at
-                ) VALUES (?, 'placing', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ) VALUES (?, 'placing', ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT (parlay_hash) DO NOTHING
             """, [
                 parlay_hash,
+                row.get("home_team") or "",
+                row.get("away_team") or "",
                 float(row["kelly_bet"]),
                 int(row["wz_odds"]),
                 row.get("combo"),
