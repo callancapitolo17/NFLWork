@@ -1753,6 +1753,78 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           padding: 3px 8px;
         }
 
+        /* === Responsive fix === */
+        /* Reactable injects inline min-width / width / flex-grow on every cell
+           derived from the colDef minWidth values (sum ~1340px for the parlay
+           table). Inline styles beat external CSS, so the cards stayed 1340px
+           wide and overflowed narrow viewports. Override with !important on
+           the parlay table so cards fluidly shrink to whatever container
+           width is available, and add overflow-x:auto to the placed-parlays
+           summary section so it horizontally scrolls inside its own container
+           at narrow widths instead of pushing the whole page wider. */
+        #parlays-table-container .rt-tbody,
+        #parlays-table-container .rt-tr-group,
+        #parlays-table-container .rt-tr {
+          min-width: 0 !important;
+          width: auto !important;
+        }
+        #parlays-table-container .rt-td {
+          min-width: 0 !important;
+          width: auto !important;
+          flex: 0 1 auto !important;
+        }
+        #parlays-table-container .rt-td.cell-game,
+        #parlays-table-container .rt-td.cell-legs,
+        #parlays-table-container .rt-td.cell-books {
+          flex-basis: 100% !important;
+        }
+
+        /* Visual order in the card — independent of dataframe column order
+           reactable preserves. Reads top→bottom: game → legs → books →
+           Fair → WZ → Size → To Win → Edge → Action. */
+        #parlays-table-container .rt-td.cell-game    { order: 1; }
+        #parlays-table-container .rt-td.cell-legs    { order: 2; }
+        #parlays-table-container .rt-td.cell-books   { order: 3; }
+        #parlays-table-container .rt-td.cell-fair    { order: 4; }
+        #parlays-table-container .rt-td.cell-wz      { order: 5; }
+        #parlays-table-container .rt-td.cell-size    { order: 6; }
+        #parlays-table-container .rt-td.cell-towin   { order: 7; }
+        #parlays-table-container .rt-td.cell-edge    { order: 8; }
+        #parlays-table-container .rt-td.cell-action  { order: 9; }
+
+        /* Hide any auto-rendered cell that has no explicit cell-*
+           class (e.g. blended_prob, which is in the dataframe with no colDef
+           entry — would otherwise render as a stray "0.188" cell). */
+        #parlays-table-container .rt-td:not(.cell-sel):not(.cell-game):not(.cell-legs):not(.cell-fair):not(.cell-books):not(.cell-wz):not(.cell-edge):not(.cell-size):not(.cell-towin):not(.cell-action) {
+          display: none !important;
+        }
+
+        /* Placed-parlays summary: keep table layout but contain horizontal
+           overflow inside the section instead of pushing page wider. */
+        #placed-parlays-section { overflow-x: auto; }
+        #placed-parlays-section .rt-thead,
+        #placed-parlays-section .rt-tbody,
+        #placed-parlays-section .rt-tr-group,
+        #placed-parlays-section .rt-tr,
+        #placed-parlays-section .rt-tr-header {
+          min-width: 0 !important;
+        }
+
+        /* Bigger fonts (per design feedback): primary content 15-16px,
+           secondary metadata 13-14px. Pill row scales with content. */
+        #parlays-table-container .rt-td        { font-size: 15px !important; }
+        #parlays-table-container .rt-td.cell-game,
+        #parlays-table-container .rt-td.cell-edge { font-size: 16px !important; }
+        #parlays-table-container .pill         { font-size: 14px !important; padding: 4px 9px !important; }
+        #parlays-table-container .rt-td.cell-fair,
+        #parlays-table-container .rt-td.cell-wz,
+        #parlays-table-container .rt-td.cell-size,
+        #parlays-table-container .rt-td.cell-towin { font-size: 14px !important; }
+        #parlays-table-container .rt-td.cell-fair::before,
+        #parlays-table-container .rt-td.cell-wz::before,
+        #parlays-table-container .rt-td.cell-size::before,
+        #parlays-table-container .rt-td.cell-towin::before { font-size: 13px !important; }
+
       '))
     ),
 
