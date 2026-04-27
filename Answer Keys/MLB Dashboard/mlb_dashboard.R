@@ -327,6 +327,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
   table_data <- parlay_opps %>%
     mutate(
       is_placed = parlay_hash %in% placed_hashes,
+      sel = "",
       spread_team    = ifelse(grepl("Home", combo), home_team, away_team),
       spread_fmt     = ifelse(spread_line > 0, paste0("+", spread_line), as.character(spread_line)),
       sp_price_fmt   = case_when(
@@ -369,6 +370,25 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
     highlight = TRUE,
     defaultPageSize = 25,
     columns = list(
+      sel = colDef(
+        name = "",
+        minWidth = 30,
+        align = "center",
+        filterable = FALSE,
+        sortable = FALSE,
+        html = TRUE,
+        cell = function(value, index) {
+          row <- table_data[index, ]
+          if (isTRUE(row$is_placed) || isTRUE(row$is_combo)) {
+            ''  # no checkbox if already placed or this is the combo row
+          } else {
+            sprintf(
+              '<input type="checkbox" class="combo-select" data-hash="%s" data-game-id="%s" onchange="onComboSelectChange(this)">',
+              row$parlay_hash, row$game_id
+            )
+          }
+        }
+      ),
       # Hidden columns for JS data attributes
       parlay_hash = colDef(show = FALSE),
       game_id = colDef(show = FALSE),
