@@ -98,7 +98,7 @@ mlb_triple_play.R (standalone pricer)
   ├── Joins to consensus_temp for game_id + side (home/away)
   ├── For each row:
   │     parse_legs(description) → compute_prop_fair(...) → model_fair_prob
-  │     dk_sgp lookup → devig with DK_SGP_VIG_DEFAULT=1.10 → dk_fair_prob
+  │     dk_sgp lookup → devig with DK_SGP_VIG_DEFAULT=1.25 → dk_fair_prob
   │     blend_dk_with_model(model, dk, vig) → fair_prob (the published fair)
   └── Prints model_odds, dk_odds, fair_odds (blended), book_odds, edge_pct
 ```
@@ -108,7 +108,7 @@ mlb_triple_play.R (standalone pricer)
 - Helpers: `triple_play_helpers.R` (determine_home_scored_first*) is sourced by MLB.R Phase 1; `parse_legs.R` is sourced by mlb_triple_play.R's main block. Both files are pure — no DB or network side effects.
 - Adding a new prop type = add a token to `TOKEN_REGISTRY`. No new function needed.
 - Adding new MLB teams (none today, but if expansion happens) requires updating `WZ_TO_CANONICAL` in the pricer.
-- DK trifecta SGP blend mirrors mlb_correlated_parlay.R: per-prop devig with `DK_SGP_VIG_DEFAULT = 1.10` (only 2 obs/game so per-game vig fitting isn't possible).
+- DK trifecta SGP blend mirrors mlb_correlated_parlay.R but uses `DK_SGP_VIG_DEFAULT = 1.25` (vs. 1.10 for parlays) because trifectas are 3-4 legs and DK shaves harder on additional legs. Only 2 obs/game (home + away) so per-game vig fitting isn't possible; revisit the constant once Plan #2 collects real DK data.
 - Blend = mean of available probs (model + DK). When DK is unavailable (table empty, missing leg, scraper failure), blend reduces to model-only.
 - Plan #2 (post-recon) populates `mlb_trifecta_sgp_odds` via `mlb_sgp/scraper_draftkings_trifecta.py`. Plan #1 ships the schema + blend scaffolding; the table stays empty until Plan #2 lands.
 

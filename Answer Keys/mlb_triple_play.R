@@ -200,7 +200,12 @@ if (!interactive() && sys.nframe() == 0L) {
                     n_matched, n_posted))
   }
 
-  DK_SGP_VIG_DEFAULT <- 1.10  # matches mlb_correlated_parlay.R convention
+  # DK SGP vig fallback for trifectas. Higher than mlb_correlated_parlay.R's
+  # 1.10 because trifectas are 3-4 legs (TRIPLE-PLAY = 3, GRAND-SLAM = 4) and
+  # DK shaves more aggressively as legs grow. With only 2 observations per
+  # game (home + away) we cannot fit per-game vig empirically, so we use a
+  # conservative fixed estimate. Revisit once Plan #2 collects real DK data.
+  DK_SGP_VIG_DEFAULT <- 1.25
 
   # Price each line
   priced <- matched %>%
