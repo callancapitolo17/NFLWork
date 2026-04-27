@@ -1682,6 +1682,14 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             tags$button(class = "clear-filters-btn", onclick = "clearParlayFilters()", "Clear Filters")
           ),
 
+          # Combined Parlay banner — hidden until 2 rows checked in the table
+          HTML('
+<div id="combined-parlay-banner" style="display:none; padding:10px 14px; background:#1f3a5f; border-left:3px solid #4a9eff; margin-bottom:10px; border-radius:4px; color:#c9d1d9; font-family:sans-serif; font-size:13px;">
+  <span id="combo-banner-status">Pricing combined ticket…</span>
+  <button id="combo-place-btn" onclick="placeCombinedParlay()" style="display:none; float:right; background:#4a9eff; color:#fff; border:none; padding:6px 14px; border-radius:4px; cursor:pointer; font-weight:600;">Place combined →</button>
+</div>
+'),
+
           # Parlay Opportunities
           if (!is.null(parlays_table)) {
             tagList(
@@ -3136,6 +3144,86 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           const div = document.createElement("div");
           div.textContent = text;
           return div.innerHTML;
+        }
+
+        // === Combined parlay state ===
+        // At most 2 selected at a time, FIFO. Cleared on successful place.
+        window.comboSelections = window.comboSelections || [];
+        window.comboPricing = null;
+
+        function onComboSelectChange(checkbox) {
+          const hash = checkbox.dataset.hash;
+          const gameId = checkbox.dataset.gameId;
+          if (checkbox.checked) {
+            // FIFO: if 2 already selected, uncheck the oldest
+            if (window.comboSelections.length >= 2) {
+              const oldest = window.comboSelections.shift();
+              const oldEl = document.querySelector(`.combo-select[data-hash="${oldest.hash}"]`);
+              if (oldEl) oldEl.checked = false;
+            }
+            window.comboSelections.push({ hash, gameId });
+          } else {
+            window.comboSelections = window.comboSelections.filter(s => s.hash !== hash);
+          }
+          refreshComboBanner();
+        }
+
+        async function refreshComboBanner() {
+          const banner = document.getElementById("combined-parlay-banner");
+          const status = document.getElementById("combo-banner-status");
+          const placeBtn = document.getElementById("combo-place-btn");
+          if (!banner || !status || !placeBtn) return;
+
+          if (window.comboSelections.length !== 2) {
+            banner.style.display = "none";
+            return;
+          }
+          // Same-game guard — block at JS layer too so the user gets immediate feedback
+          if (window.comboSelections[0].gameId === window.comboSelections[1].gameId) {
+            banner.style.display = "block";
+            status.textContent = "Same-game combos are already a single row — pick rows from different games.";
+            placeBtn.style.display = "none";
+            window.comboPricing = null;
+            return;
+          }
+
+          banner.style.display = "block";
+          status.textContent = "Pricing combined ticket…";
+          placeBtn.style.display = "none";
+
+          try {
+            const res = await fetch("/api/price-combined-parlay", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                parlay_hash_a: window.comboSelections[0].hash,
+                parlay_hash_b: window.comboSelections[1].hash,
+              }),
+            });
+            const body = await res.json();
+            if (!body.success) {
+              status.textContent = "WZ rejected: " + (body.error || "unknown");
+              window.comboPricing = null;
+              return;
+            }
+            window.comboPricing = body;
+            const edgePct = (body.joint_edge * 100).toFixed(1);
+            const edgeColor = body.joint_edge >= 0 ? "#5fd97a" : "#e57373";
+            const edgeSign = body.joint_edge >= 0 ? "+" : "";
+            status.innerHTML =
+              `<b>2 legs combined</b> · stake <b>$${body.kelly_stake}</b>` +
+              ` · WZ pays <b>${body.wz_dec.toFixed(2)}</b>` +
+              ` · edge <span style="color:${edgeColor}">${edgeSign}${edgePct}%</span>`;
+            placeBtn.style.display = "inline-block";
+          } catch (err) {
+            status.textContent = "Pricing failed — uncheck and re-check a row to retry.";
+            window.comboPricing = null;
+          }
+        }
+
+        // Stub for Task 10 — will be replaced with the real handler in the next commit
+        function placeCombinedParlay() {
+          alert("placeCombinedParlay handler not yet wired — see Task 10");
         }
       '))
     )
