@@ -680,16 +680,22 @@ def _build_spec_from_row(row: dict) -> parlay_placer.ParlaySpec:
       'Home Spread + Under' → spread play=1 (home), total play=3 (under)
       'Away Spread + Under' → spread play=0 (away), total play=3 (under)
 
-    spread_line and total_line are already signed correctly in the DB
-    (e.g. favorite spread is negative, underdog is positive; total is always
-    positive and we pass it as-is since the Wagerzon API accepts positive
-    total lines for both over and under).
+    spread_line is already signed correctly in the DB for the picked side
+    (favorite negative, dog positive) and is passed through as-is.
+
+    total_line is stored positive in the DB, but Wagerzon's sel encoding
+    requires NEGATIVE points for Over and POSITIVE for Under. This matches
+    the existing convention in wagerzon_odds/parlay_pricer.py:331
+    ("WZ expects -total for over, +total for under (recon-confirmed)").
     """
     idgm = int(row["idgm"])
     combo = row.get("combo", "")
 
     spread_play = 0 if "Away Spread" in combo else 1
-    total_play = 2 if "Over" in combo else 3
+    is_over = "Over" in combo
+    total_play = 2 if is_over else 3
+    total_line = float(row["total_line"])
+    total_points = -abs(total_line) if is_over else total_line
 
     legs = [
         parlay_placer.Leg(
@@ -701,7 +707,7 @@ def _build_spec_from_row(row: dict) -> parlay_placer.ParlaySpec:
         parlay_placer.Leg(
             idgm=idgm,
             play=total_play,
-            points=float(row["total_line"]),
+            points=total_points,
             odds=int(row["total_price"]),
         ),
     ]
