@@ -108,7 +108,7 @@ Currently F5 (first 5 innings) only:
 |---------|---------|-------|
 | `bankroll` | $100 | `sizing_settings` table |
 | `kelly_mult` | 0.25 | `sizing_settings` table |
-| `parlay_bankroll` | $4,000 | `sizing_settings` table |
+| `parlay_bankroll` | $100 | `sizing_settings` table |
 | `parlay_kelly_mult` | 0.25 | `sizing_settings` table |
 | `parlay_min_edge` | 3% | `sizing_settings` table |
 | Server port | 8083 | `mlb_dashboard_server.py` |
@@ -120,3 +120,60 @@ Currently F5 (first 5 innings) only:
 - **No bets shown** — check `mlb_bets_combined` has rows; if empty, check MLB.R output in pipeline logs
 - **CLV not computed** — ensure `clv_compute.py` ran post-game; the closing snapshots must exist in `closing_snapshots` table
 - **Auto-place fails** — only `wagerzon`, `hoop88`, `bfa`, `betonlineag` are supported; other books must be placed manually
+
+## Combined Parlay (Wagerzon cash-efficiency)
+
+The Parlay tab supports combining **two recommended parlay rows from different games** into a single 4-leg Wagerzon ticket. Useful when WZ balance is the binding constraint — the combined ticket needs far less cash than placing both source parlays separately.
+
+### How to use
+
+1. On the Parlay tab, check the leftmost checkbox on **two rows from different games**.
+2. The "Combined Parlay" banner appears above the table with:
+   - Joint fair odds (= product of the two `fair_dec`s, since cross-game legs are independent)
+   - Wagerzon's exact 4-leg payout (live `ConfirmWagerHelper` call)
+   - Joint edge and recommended Kelly stake (computed from your `parlay_bankroll` and `parlay_kelly_mult` settings)
+3. Click **Place Combined →** to record the placement. The page reloads.
+4. After reload, the two source rows' Kelly column shows the **conditional residual** — the optimal additional stake on each single given the combo is already placed. Place those residuals as singles too if you want more exposure.
+
+### When to use it
+
+- Wagerzon balance is below the cost of placing both source parlays separately
+- You're OK trading EV per dollar bet for cash efficiency
+
+### When NOT to use it
+
+- Wagerzon balance is plentiful — placing both as singles captures more EV
+- Same-game combos: blocked, since each game's spread+total combo is already a single Parlay row
+
+### Math
+
+- Combined Kelly stake: `kelly_stake(joint_edge, wz_decimal_payout, parlay_bankroll, parlay_kelly_mult)`
+- Conditional residual: numerical max-log-growth optimization (L-BFGS-B) over the 4-outcome joint distribution `(p_A * p_B, p_A * (1-p_B), (1-p_A) * p_B, (1-p_A) * (1-p_B))` with the combo stake fixed
+- Implementation:
+  - R: `Answer Keys/conditional_kelly.R::conditional_kelly_residuals()`
+  - R: `Answer Keys/Tools.R::compute_combined_parlay_pricing()`
+  - Python: `Answer Keys/MLB Dashboard/combined_parlay.py::joint_pricing()`
+  - Python: `wagerzon_odds/parlay_pricer.py::get_combined_parlay_price()`
+
+### Server endpoints
+
+- `POST /api/price-combined-parlay` — body `{parlay_hash_a, parlay_hash_b}` returns joint pricing + WZ exact payout. 60s in-memory TTL cache keyed on sorted hash tuple.
+- `POST /api/place-combined-parlay` — body `{combo_hash, parlay_hash_a, parlay_hash_b, wz_odds, kelly_bet, actual_size, combo_label}` inserts a row in `placed_parlays` with `is_combo = TRUE` and `combo_leg_ids = [hash_a, hash_b]` (JSON).
+
+### One-time setup
+
+After pulling this feature for the first time, run the schema migration once against the live `mlb_dashboard.duckdb`:
+
+```bash
+python "Answer Keys/MLB Dashboard/migrations/001_combined_parlay_columns.py" \
+    "Answer Keys/MLB Dashboard/mlb_dashboard.duckdb"
+```
+
+This adds three columns to `placed_parlays`: `is_combo BOOLEAN`, `combo_leg_ids VARCHAR`, `parent_combo_id INTEGER`. The migration is idempotent — running it twice is safe.
+
+### Out-of-scope (v1)
+
+- N>2 leg combinations
+- Combining a parlay with a single from the Bets tab
+- Cash-budget-aware portfolio Kelly (set "available WZ balance" → dashboard solves for optimal split)
+- Auto-place via WZ API — for now, the dashboard records intent in `placed_parlays`; you place the actual bet at WZ manually

@@ -24,6 +24,24 @@ import requests
 
 CONFIRM_URL = f"{WAGERZON_BASE_URL}/wager/ConfirmWagerHelper.aspx"
 
+
+def get_wz_session() -> requests.Session:
+    """Return an authenticated Wagerzon session.
+
+    Builds a `requests.Session`, logs in via `scraper_v2.login()` (ASP.NET form
+    POST that seats the ASP.NET_SessionId cookie), and returns it ready to call
+    ConfirmWagerHelper. Raises RuntimeError if login fails.
+
+    Lifted out of the CLI entrypoint so other callers (Flask endpoints, tests)
+    can reuse the same auth flow without subprocess'ing the script.
+    """
+    session = requests.Session()
+    try:
+        login(session)
+    except Exception as e:
+        raise RuntimeError(f"Failed to authenticate with Wagerzon: {e}") from e
+    return session
+
 # Play codes (from Wagerzon React bundle main.db15c074.js):
 #   0 = away spread, 1 = home spread
 #   2 = over total,  3 = under total
@@ -123,6 +141,90 @@ def get_parlay_price(session: requests.Session, idgm: int, legs: list[dict],
             "amount": amount,
         }
 
+    except Exception as e:
+        print(f"  Request error: {e}")
+        return None
+
+
+def get_combined_parlay_price(session: requests.Session, legs: list[dict],
+                               amount: int = 10000) -> dict | None:
+    """Call ConfirmWagerHelper for a cross-game parlay (legs from multiple games).
+
+    Differs from get_parlay_price() in that each leg carries its own idgm.
+
+    Args:
+        session: Authenticated requests session
+        legs: List of dicts with {idgm, play, points, odds} per leg
+        amount: Bet amount for price query (defaults to 10000 for precision;
+                falls back to 100 if MAXPARLAYRISKEXCEED — caller's responsibility)
+
+    Returns:
+        Dict with {win, decimal, american, amount} or None on error
+    """
+    sel = ",".join(
+        f"{l['play']}_{l['idgm']}_{l['points']}_{l['odds']}" for l in legs
+    )
+    detail_data = [
+        {
+            "Amount": str(amount),
+            "RiskWin": "2",
+            "TeaserPointsPurchased": 0,
+            "IdGame": l["idgm"],
+            "Play": l["play"],
+            "Pitcher": 3,
+            "Points": {
+                "BuyPoints": 0,
+                "BuyPointsDesc": "",
+                "LineDesc": "",
+                "selected": True,
+            },
+        }
+        for l in legs
+    ]
+
+    try:
+        resp = session.post(
+            CONFIRM_URL,
+            data={
+                "IDWT": "0",
+                "WT": "1",
+                "amountType": "0",
+                "open": "0",
+                "sameAmount": "false",
+                "sameAmountNumber": "0",
+                "useFreePlayAmount": "false",
+                "sel": sel,
+                "detailData": json.dumps(detail_data),
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        result = resp.json().get("result", {})
+
+        details = result.get("details", [])
+        if not details:
+            err = result.get("ErrorMsgKey") or result.get("ErrorMsg")
+            if err:
+                print(f"  API error: {err}")
+            return None
+
+        win = details[0].get("Win", 0)
+        risk = details[0].get("Risk", 0)
+        if win <= 0 or risk <= 0:
+            err = result.get("ErrorMsgKey") or result.get("ErrorMsg")
+            if err:
+                print(f"  API error: {err}")
+            return None
+
+        decimal_odds = 1 + win / amount
+        american = round(win / amount * 100) if win > amount else round(-amount / win * 100)
+
+        return {
+            "win": win,
+            "decimal": round(decimal_odds, 4),
+            "american": american,
+            "amount": amount,
+        }
     except Exception as e:
         print(f"  Request error: {e}")
         return None
@@ -419,9 +521,8 @@ if __name__ == "__main__":
         print(f"Parlay pricer currently only supports MLB (got: {sport})")
         sys.exit(1)
 
-    session = requests.Session()
     print("Logging in to Wagerzon...")
-    login(session)
+    session = get_wz_session()
 
     if mode == "exact":
         compute_exact_payouts(session)
