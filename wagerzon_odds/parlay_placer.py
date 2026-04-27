@@ -11,11 +11,26 @@ for the full design. This module provides:
 """
 from __future__ import annotations
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 import os
 import re
 import requests
 import json as _json
+
+# Load WAGERZON_USERNAME / WAGERZON_PASSWORD from bet_logger/.env at import
+# time, matching the pattern in wagerzon_odds/scraper_v2.py. This way the
+# placer works whether it's imported by the dashboard server, run as a
+# script, or called from a Python REPL — no shell-export dance required.
+# Falls through silently if dotenv isn't installed; in that case the caller
+# is expected to have set the env vars some other way.
+try:
+    from dotenv import load_dotenv
+    _ENV_PATH = Path(__file__).resolve().parent.parent / "bet_logger" / ".env"
+    if _ENV_PATH.exists():
+        load_dotenv(_ENV_PATH)
+except ImportError:
+    pass
 
 WAGERZON_BASE_URL = "https://backend.wagerzon.com"
 
