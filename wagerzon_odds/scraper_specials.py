@@ -225,7 +225,11 @@ def main() -> int:
 
     con = duckdb.connect(str(DB_PATH))
     try:
-        write_rows(con, rows)
+        # `with con:` makes the snapshot atomic — commits on success,
+        # rolls back on exception so a partial-failure never leaves the
+        # table with a half-written snapshot for the latest scraped_at.
+        with con:
+            write_rows(con, rows)
         log.info("Wrote %d rows to %s/wagerzon_specials", len(rows), DB_PATH.name)
     finally:
         con.close()
