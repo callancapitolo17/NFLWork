@@ -38,7 +38,9 @@ This is not a refactor — no R logic, no JS, no data flow changes. The reactabl
 │                                                               │
 │  Fair +265   WZ +330   Size $24   To Win $79                  │  Metadata strip (13px, labels via ::before)
 │  (residual after combo $50)                                   │  combo_residual_note (12px italic) — when present
-│                                          +12.3%  [ Place ]    │  Edge (15px, color-coded) + Place button
+│                                          +12.3%  [ Place ]    │  Edge (15px) + Action cell (one of three:
+│                                                               │   Place button, "placed · #ticket" muted label,
+│                                                               │   or red error pill — driven by placement_status)
 └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -60,6 +62,9 @@ The reactable still has columns; they just lay out as content blocks inside the 
 | `cell-action` | `is_placed`      | Bottom-right of card (right of edge) |
 
 **Removed from view:** `corr_display` (no longer wanted) and `n_books_blended` + `is_combo` (auto-rendering today; getting explicit `colDef(show = FALSE)`).
+
+**Already hidden — left alone (auto-placement state carriers, added in `feat(dashboard): add Place column + status rendering`):**
+`placement_status`, `ticket_number`, `placement_error`, `placement_error_key` — all declared `colDef(show = FALSE)`. Read by the Action cell renderer to switch between the three visual states (Place button / placed-label / error-pill). No CSS changes touch these.
 
 ## Data Flow
 
@@ -207,6 +212,7 @@ All rules go into the dashboard's existing inline `<style>` block (`tags$style(H
 | **Edge color thresholds** | Computed inside `edge_display`'s existing cell function (≥15 / ≥10 / ≥5 / default). CSS doesn't touch color logic. |
 | **To-Win green** | `style = list(color = "#3fb950")` on `to_win_display` colDef preserved. |
 | **Place button data attributes** | Unchanged. Button still emitted with all 12 `data-*` attributes; JS still finds them via `[data-hash]` and `[data-game-id]` regardless of card vs. table layout. |
+| **Auto-placement Action variants** | The Action cell may render as `<button class="btn-place">`, `<button class="btn-placed">`, `<span class="placed-parlay-label">`, or `<span class="pill error">` depending on `placement_status`. All four are inline elements; the card's flex layout treats them identically. Existing `.pill.error` and `.placed-parlay-label` CSS rules in the dashboard's inline `<style>` block are preserved and apply unchanged inside cards. |
 | **Combined-parlay banner above table** | Lives outside `#parlays-table-container`. Untouched. |
 | **Singles tab** | Not under `#parlays-table-container`. Renders as a normal table. |
 | **JS that walks `.rt-tr-group`** (e.g., `applyParlayFilters`) | Selectors still match — `display: block` doesn't change DOM structure, only layout. |
@@ -232,6 +238,7 @@ Don't merge until all five pass.
 3. **Resize sweep.** Drag the browser window to ~1400px / ~860px (split-screen) / ~400px (phone). Cards proportionally scale. Pills wrap to 2 lines below ~700px. No horizontal scroll on phone.
 4. **Combined-parlay flow regression.** Tick two Sel checkboxes on different cards. Combined-parlay banner appears with combined pricing. Click "Place Combined Parlay." Combo lands in placed-parlays section. Click Remove. Combo disappears. Validates the recent-commit machinery still works after layout flip.
 5. **Place + Remove single parlay.** Click Place on any card at $1. Toast appears, button flips to Placed, row appears in placed-parlays. Click Remove. Reverts.
+6. **Auto-placement Action variants render correctly.** If any row in the live data has `placement_status == "placed"`, confirm its card shows the muted "placed · #ticket" label in the Action slot (not a button). If any row has an error status (price_moved / rejected / orphaned / etc.), confirm its card shows the red `.pill.error` with the short label and full message in the title tooltip on hover. If no rows currently have these states, this check is inconclusive but not blocking — the CSS doesn't touch the cell renderer logic.
 
 ## Risks & Mitigations
 
