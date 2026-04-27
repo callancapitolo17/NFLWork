@@ -265,11 +265,34 @@ def _post_wagers(specs: list[ParlaySpec]) -> list[PlacementResult]:
     for spec, item in zip(specs, data["result"]):
         wpr = item["WagerPostResult"]
         if wpr.get("Confirm") and not wpr.get("ErrorMsgKey"):
+            # Defensive parse: IDWT can come back as int, str, or None depending
+            # on Wagerzon-side serialization quirks. Use the truthy-check
+            # pattern but log when something unexpected happens so we can
+            # diagnose post-hoc orphans without losing the audit trail.
+            raw_idwt = wpr.get("IDWT")
+            raw_ticket = wpr.get("TicketNumber")
+            try:
+                idwt_val = int(raw_idwt) if raw_idwt not in (None, "", 0) else None
+            except (TypeError, ValueError):
+                idwt_val = None
+            ticket_val = str(raw_ticket) if raw_ticket not in (None, "") else None
+            if idwt_val is None or ticket_val is None:
+                # Not fatal — the bet is placed, but the local audit will
+                # be incomplete. Caller (api_place_parlay) writes an orphan
+                # row with raw_response so we can reconstruct after the fact.
+                import sys as _sys
+                print(
+                    f"!! parlay_placer: confirmed placement missing "
+                    f"identifiers — parlay_hash={spec.parlay_hash} "
+                    f"raw_idwt={raw_idwt!r} raw_ticket={raw_ticket!r} "
+                    f"wpr_keys={list(wpr.keys())}",
+                    file=_sys.stderr, flush=True,
+                )
             results.append(PlacementResult(
                 parlay_hash=spec.parlay_hash,
                 status="placed",
-                ticket_number=str(wpr.get("TicketNumber")) if wpr.get("TicketNumber") else None,
-                idwt=int(wpr.get("IDWT")) if wpr.get("IDWT") else None,
+                ticket_number=ticket_val,
+                idwt=idwt_val,
                 actual_win=float(wpr.get("Win", 0)),
                 actual_risk=float(wpr.get("Risk", 0)),
                 raw_response=raw,

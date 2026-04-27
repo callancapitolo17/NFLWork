@@ -249,16 +249,49 @@ def init_db():
         # the local placed_parlays write fails. Created here AND by
         # wagerzon_odds/migrate_placed_parlays.py so a fresh server start
         # without running the migration script still has the safety net.
+        # placement_orphans: forensics-only, idwt is *information* not identity.
+        # Some failure modes can produce a 'placed' result without a populated
+        # idwt (response parsing edge cases) — using idwt as PK would lose the
+        # orphan record in those cases, which defeats the safety-net purpose.
+        # Synthetic auto-id PK; idwt is nullable.
+        con.execute("CREATE SEQUENCE IF NOT EXISTS placement_orphans_id_seq")
         con.execute("""
             CREATE TABLE IF NOT EXISTS placement_orphans (
-                idwt          BIGINT PRIMARY KEY,
+                id            BIGINT PRIMARY KEY DEFAULT nextval('placement_orphans_id_seq'),
+                idwt          BIGINT,
                 ticket_number TEXT,
                 parlay_hash   TEXT,
                 raw_response  TEXT,
                 error         TEXT,
-                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at    TIMESTAMP
             )
         """)
+        # Migrate older orphan tables (idwt-as-PK schema) if present and empty.
+        # If non-empty we leave it alone — manual reconciliation needed but
+        # data is still queryable.
+        try:
+            existing_orphans = con.execute(
+                "SELECT COUNT(*) FROM placement_orphans"
+            ).fetchone()[0]
+            orphan_pk_cols = con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'placement_orphans' AND column_name = 'id'"
+            ).fetchone()
+            if existing_orphans == 0 and orphan_pk_cols is None:
+                con.execute("DROP TABLE placement_orphans")
+                con.execute("""
+                    CREATE TABLE placement_orphans (
+                        id            BIGINT PRIMARY KEY DEFAULT nextval('placement_orphans_id_seq'),
+                        idwt          BIGINT,
+                        ticket_number TEXT,
+                        parlay_hash   TEXT,
+                        raw_response  TEXT,
+                        error         TEXT,
+                        created_at    TIMESTAMP
+                    )
+                """)
+        except Exception:
+            pass  # not critical — first-time install, table just got created
 
         # CLV tracking tables
         con.execute("""
@@ -953,6 +986,10 @@ def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> N
         {"play": l.play, "idgm": l.idgm, "points": l.points, "odds": l.odds}
         for l in spec.legs
     ])
+    # See note in api_place_parlay: DuckDB 1.4 binder bug on CURRENT_TIMESTAMP
+    # inside INSERT...ON CONFLICT...DO UPDATE. Pass a parameterized timestamp
+    # in both the VALUES slot and the EXCLUDED-style update target.
+    now = datetime.now()
     con = duckdb.connect(str(DASHBOARD_DB))
     try:
         con.execute("""
@@ -963,7 +1000,7 @@ def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> N
                 recommended_size, expected_odds, expected_win,
                 actual_size, actual_win, ticket_number, idwt,
                 legs_json, error_msg, error_msg_key, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (parlay_hash) DO UPDATE SET
                 status        = EXCLUDED.status,
                 actual_size   = EXCLUDED.actual_size,
@@ -972,7 +1009,7 @@ def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> N
                 idwt          = EXCLUDED.idwt,
                 error_msg     = EXCLUDED.error_msg,
                 error_msg_key = EXCLUDED.error_msg_key,
-                updated_at    = CURRENT_TIMESTAMP
+                updated_at    = EXCLUDED.updated_at
         """, [
             result.parlay_hash,
             result.status,
@@ -996,6 +1033,7 @@ def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> N
             legs_json,
             result.error_msg,
             result.error_msg_key,
+            now,
         ])
     finally:
         con.close()
@@ -1004,17 +1042,30 @@ def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> N
 def _record_orphan(result: parlay_placer.PlacementResult,
                    parlay_hash: str, db_error: Exception) -> None:
     """Wagerzon confirmed placement but local placed_parlays write failed.
-    Insert a forensics row into placement_orphans + log loudly."""
+    Insert a forensics row into placement_orphans + log loudly.
+
+    Notes:
+      - idwt is nullable — use a synthetic id PK so the safety net writes
+        even when response parsing dropped the WZ-side identifiers.
+      - Don't raise on inner failure: this is the last-resort recorder, and
+        re-raising masks the original db_error in the caller's traceback.
+        The stderr fallback print preserves all forensics.
+    """
     try:
         con = duckdb.connect(str(DASHBOARD_DB))
         try:
             con.execute("""
                 INSERT INTO placement_orphans
-                    (idwt, ticket_number, parlay_hash, raw_response, error)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT (idwt) DO NOTHING
-            """, [result.idwt, result.ticket_number, parlay_hash,
-                  result.raw_response, str(db_error)])
+                    (idwt, ticket_number, parlay_hash, raw_response, error, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, [
+                int(result.idwt) if result.idwt else None,
+                result.ticket_number,
+                parlay_hash,
+                result.raw_response,
+                str(db_error),
+                datetime.now(),
+            ])
         finally:
             con.close()
     except Exception as inner:
@@ -1089,6 +1140,12 @@ def api_place_parlay():
             # constraints carried over from the manual-placement era). Provide
             # them all from the parlay row so the breadcrumb insert satisfies
             # every constraint.
+            #
+            # NOTE on CURRENT_TIMESTAMP: DuckDB 1.4.x has a binder bug where
+            # CURRENT_TIMESTAMP in an INSERT...ON CONFLICT...DO UPDATE pattern
+            # is misparsed as a column reference. Pass a Python datetime.now()
+            # via parameter binding to sidestep entirely.
+            now = datetime.now()
             con.execute("""
                 INSERT INTO placed_parlays (
                     parlay_hash, status, home_team, away_team,
@@ -1096,7 +1153,7 @@ def api_place_parlay():
                     wz_odds, kelly_bet,
                     recommended_size, expected_odds,
                     updated_at
-                ) VALUES (?, 'placing', ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ) VALUES (?, 'placing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (parlay_hash) DO NOTHING
             """, [
                 parlay_hash,
@@ -1109,6 +1166,7 @@ def api_place_parlay():
                 float(row["kelly_bet"]),
                 float(row["kelly_bet"]),
                 int(row["wz_odds"]),
+                now,
             ])
         finally:
             con.close()
