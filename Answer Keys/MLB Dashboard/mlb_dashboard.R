@@ -206,6 +206,33 @@ create_placed_bets_table <- function(placed_bets) {
 # PARLAY TABLES
 # =============================================================================
 
+# Compact pill labels for placement statuses. Keep parallel with
+# _SHORT_LABEL_BY_STATUS / _SHORT_LABEL_BY_REJECT_KEY in
+# Answer Keys/MLB Dashboard/mlb_dashboard_server.py — both must agree
+# so a fresh placement (JS render) and an already-stored row (R render)
+# show the same pill text.
+short_label_for_status <- function(status, error_key = "") {
+  if (identical(status, "rejected")) {
+    map <- c(
+      insufficient_funds = "insufficient $",
+      bet_too_large      = "exceeds limit",
+      line_unavailable   = "line pulled"
+    )
+    out <- map[as.character(error_key)]
+    return(if (is.na(out)) "rejected" else unname(out))
+  }
+  map <- c(
+    placed         = "placed",
+    would_place    = "would place",
+    price_moved    = "price moved",
+    auth_error     = "auth fail",
+    network_error  = "network err",
+    orphaned       = "orphaned"
+  )
+  out <- map[as.character(status)]
+  if (is.na(out)) status else unname(out)
+}
+
 create_placed_parlays_table <- function(placed_parlays) {
   if (nrow(placed_parlays) == 0) return(NULL)
 
@@ -307,7 +334,30 @@ apply_combo_residuals <- function(parlay_opps, placed_parlays, parlay_bankroll, 
 
 create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 100, parlay_kelly_mult = 0.25) {
   parlay_opps <- apply_combo_residuals(parlay_opps, placed_parlays, parlay_bankroll, parlay_kelly_mult)
-  # Filter out the combo rows themselves from the "placed" set — they're not source parlays
+
+  # Build a lookup from parlay_hash → placement state columns for the
+  # auto-placement Place column. "pending" = manually placed (legacy path);
+  # "placed" = auto-placed (show ticket); error statuses = show red pill.
+  # Rows with no entry in placed_parlays stay NA.
+  placement_cols <- if (nrow(placed_parlays) > 0 && "parlay_hash" %in% names(placed_parlays)) {
+    placed_parlays %>%
+      select(parlay_hash,
+             placement_status     = status,
+             ticket_number        = any_of("ticket_number"),
+             placement_error      = any_of("error_msg"),
+             placement_error_key  = any_of("error_msg_key")) %>%
+      # Ensure all four columns exist even on legacy rows that pre-date Task 9 migration
+      { if (!"ticket_number"        %in% names(.)) mutate(., ticket_number        = NA_character_) else . } %>%
+      { if (!"placement_error"      %in% names(.)) mutate(., placement_error      = NA_character_) else . } %>%
+      { if (!"placement_error_key"  %in% names(.)) mutate(., placement_error_key  = NA_character_) else . }
+  } else {
+    tibble(parlay_hash = character(), placement_status = character(),
+           ticket_number = character(), placement_error = character(),
+           placement_error_key = character())
+  }
+
+  # Filter out the combo rows themselves from the "placed" set — they're not
+  # source parlays so they shouldn't be marked as already-placed in the parlay table.
   placed_hashes <- if (nrow(placed_parlays) > 0) {
     if ("is_combo" %in% names(placed_parlays)) {
       is_combo_vec <- placed_parlays$is_combo
@@ -325,6 +375,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
   if (!"exact_to_win" %in% names(parlay_opps)) parlay_opps$exact_to_win <- NA_integer_
 
   table_data <- parlay_opps %>%
+    left_join(placement_cols, by = "parlay_hash") %>%
     mutate(
       is_placed = parlay_hash %in% placed_hashes,
       sel = "",
@@ -489,17 +540,51 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
       size_display = colDef(name = "Size", minWidth = 65, align = "right", html = TRUE),
       to_win_display = colDef(name = "To Win", minWidth = 65, align = "right",
         style = list(color = "#3fb950")),
+      # Auto-placement state columns — hidden data carriers for the cell renderer below
+      placement_status     = colDef(show = FALSE),
+      ticket_number        = colDef(show = FALSE),
+      placement_error      = colDef(show = FALSE),
+      placement_error_key  = colDef(show = FALSE),
       is_placed = colDef(
         name = "Action",
-        minWidth = 90,
+        minWidth = 110,
         align = "center",
         filterable = FALSE,
         html = TRUE,
         cell = function(value, index) {
           row <- table_data[index, ]
-          # data-size drives the "Place" action's bet amount. Prefer the nudged
-          # exact_wager from Stage 2; fall back to Kelly-ideal if Stage 2
-          # couldn't price this row.
+          ps  <- row$placement_status
+          # Guard: treat NA or "NA" string uniformly
+          ps_valid <- !is.na(ps) && nchar(ps) > 0 && ps != "NA"
+
+          # Auto-placed: show muted "placed &middot; #<ticket>" label.
+          # Use HTML entity instead of literal U+00B7 to keep the file
+          # ASCII-clean — R writes report.html in the platform default
+          # encoding (Latin-1 on macOS), which Flask's UTF-8 reader chokes on.
+          if (ps_valid && ps == "placed") {
+            ticket <- if (!is.na(row$ticket_number)) row$ticket_number else "?"
+            return(sprintf('<span class="placed-parlay-label">placed &middot; #%s</span>',
+                           htmltools::htmlEscape(ticket)))
+          }
+
+          # Error states: show red pill with a SHORT label for quick scan,
+          # full message in the title= tooltip on hover.
+          error_statuses <- c("price_moved", "rejected",
+                              "auth_error", "network_error", "orphaned")
+          if (ps_valid && ps %in% error_statuses) {
+            full_msg <- if (!is.na(row$placement_error) && nchar(row$placement_error) > 0)
+              row$placement_error else ps
+            err_key <- if ("placement_error_key" %in% names(row) &&
+                           !is.na(row$placement_error_key)) row$placement_error_key else ""
+            short_label <- short_label_for_status(ps, err_key)
+            return(sprintf('<span class="pill error" title="%s">%s</span>',
+                           htmltools::htmlEscape(full_msg),
+                           htmltools::htmlEscape(short_label)))
+          }
+
+          # Default: Place button (manually placed via "pending" status OR no record)
+          # data-size drives the bet amount. Prefer exact_wager from Stage 2;
+          # fall back to Kelly-ideal if Stage 2 couldn't price this row.
           data_size <- if (!is.na(row$exact_wager)) row$exact_wager else row$kelly_bet
           data_attrs <- sprintf(
             'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-combo="%s" data-spread="%s" data-total="%s" data-fair-odds="%s" data-wz-odds="%s" data-edge="%s" data-size="%s"',
@@ -1452,6 +1537,31 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           background: #2ea043;
         }
 
+        /* Dry-run toggle */
+        .parlay-controls {
+          display: flex;
+          align-items: center;
+          margin: 10px 0;
+          padding: 8px 12px;
+          background: #fff8e7;
+          border: 1px solid #f0c060;
+          border-radius: 4px;
+        }
+        .dry-run-toggle {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          cursor: pointer;
+          font-size: 14px;
+          color: #8a6500;
+          font-weight: 500;
+        }
+        .dry-run-toggle input[type="checkbox"] {
+          cursor: pointer;
+          width: 16px;
+          height: 16px;
+        }
+
         /* Parlay tab — books strip (M / DK / FD / PX / NV / Cons pill row) */
         .books-strip {
           display: flex;
@@ -1482,6 +1592,17 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
         .pill.dim {
           opacity: 0.4;
+        }
+        .pill.error {
+          background: #3d1c1c;
+          color: #f85149;
+          border: 1px solid #6e2d2d;
+        }
+        /* Muted label shown after auto-placement succeeds */
+        .placed-parlay-label {
+          font-size: 0.72rem;
+          color: #8b949e;
+          font-family: monospace;
         }
 
         /* Hide Corr column on phones (low-information; Edge stays visible).
@@ -1616,6 +1737,14 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
         # ============ PARLAYS TAB ============
         tags$div(id = "tab-parlays", class = "tab-content", style = "display: none;",
+
+          # Dry-run safety toggle (default ON — real placement requires deliberate uncheck)
+          tags$div(class = "parlay-controls",
+            tags$label(class = "dry-run-toggle",
+              tags$input(type = "checkbox", id = "parlay-dry-run-toggle", checked = NA),
+              tags$span("Dry run (no real bet)")
+            )
+          ),
 
           # Placed Parlays (always present, JS can append rows)
           tags$div(class = "section-header", id = "placed-parlays-header",
@@ -1983,6 +2112,14 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
           // Apply saved filter settings (market, correlation, status)
           applyFilterSettings();
+
+          // Restore Parlays tab if URL has #parlays (used by the
+          // hot-swap fallback path in placeCombinedParlay so a full reload
+          // doesn\'t dump the user back on the Bets tab).
+          if (window.location.hash === "#parlays" &&
+              typeof switchTab === "function") {
+            switchTab("parlays");
+          }
 
           document.addEventListener("click", function(e) {
             if (!e.target.closest(".filter-group")) {
@@ -3018,7 +3155,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           if (header) header.style.display = "";
           if (section) section.style.display = "";
 
-          // Build leg description: "TeamName -1.5 · O7.0"
+          // Build leg description: "TeamName -1.5 / O7.0"
           var combo = btn.dataset.combo || "";
           var home = btn.dataset.home || "";
           var away = btn.dataset.away || "";
@@ -3049,72 +3186,53 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
 
         function placeParlay(btn) {
-          var combo = btn.dataset.combo;
-          var size = parseFloat(btn.dataset.size);
-          var odds = btn.dataset.wzOdds;
+          var hash = btn.dataset.hash;
+          if (!hash) { showToast("Missing parlay_hash", "error"); return; }
+          var toggleEl = document.getElementById(\'parlay-dry-run-toggle\');
+          var dryRun = !!(toggleEl && toggleEl.checked);
 
-          var overlay = document.createElement(\'div\');
-          overlay.className = \'modal-overlay\';
-          overlay.innerHTML =
-            \'<div class="modal-box">\' +
-              \'<div class="modal-title">Place Parlay</div>\' +
-              \'<div class="modal-detail">Combo: <span>\' + escapeHtml(combo) + \'</span></div>\' +
-              \'<div class="modal-detail">Spread: <span>\' + escapeHtml(btn.dataset.spread) + \'</span> | Total: <span>\' + escapeHtml(btn.dataset.total) + \'</span></div>\' +
-              \'<div class="modal-detail">WZ Odds: <span>\' + escapeHtml(odds) + \'</span> | Edge: <span>+\' + escapeHtml(btn.dataset.edge) + \'%</span></div>\' +
-              \'<div class="modal-recommended">Recommended: $\' + Math.round(size) + \'</div>\' +
-              \'<div class="modal-input-group">\' +
-                \'<label class="modal-input-label">Actual Amount ($)</label>\' +
-                \'<input type="number" class="modal-input" value="\' + Math.round(size) + \'" step="1" min="1">\' +
-              \'</div>\' +
-              \'<div class="modal-actions">\' +
-                \'<button class="modal-btn-cancel">Cancel</button>\' +
-                \'<button class="modal-btn-confirm">Confirm</button>\' +
-              \'</div>\' +
-            \'</div>\';
+          var originalText = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = dryRun ? "Dry run..." : "Placing...";
 
-          document.body.appendChild(overlay);
-
-          overlay.querySelector(\'.modal-btn-cancel\').onclick = function() { overlay.remove(); };
-          overlay.querySelector(\'.modal-btn-confirm\').onclick = function() {
-            var amount = parseFloat(overlay.querySelector(\'.modal-input\').value);
-            if (!amount || amount <= 0) { showToast("Invalid amount", "error"); return; }
-
-            fetch("/api/place-parlay", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                parlay_hash: btn.dataset.hash,
-                game_id: btn.dataset.gameId,
-                home_team: btn.dataset.home,
-                away_team: btn.dataset.away,
-                game_time: btn.dataset.time || null,
-                combo: btn.dataset.combo,
-                spread_line: parseFloat(btn.dataset.spread) || null,
-                total_line: parseFloat(btn.dataset.total) || null,
-                fair_odds: parseInt(btn.dataset.fairOdds) || null,
-                wz_odds: parseInt(btn.dataset.wzOdds),
-                edge_pct: parseFloat(btn.dataset.edge) || null,
-                kelly_bet: size,
-                actual_size: amount
-              })
+          fetch("/api/place-parlay", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ parlay_hash: hash, dry_run: dryRun })
+          })
+            .then(function(r) { return r.json(); })
+            .then(function(result) {
+              btn.disabled = false;
+              if (result.status === "placed") {
+                var ticket = result.ticket_number || "";
+                var span = document.createElement(\'span\');
+                span.className = "placed-parlay-label";
+                span.textContent = "placed \xb7 #" + ticket;
+                btn.parentNode.replaceChild(span, btn);
+                showToast("Placed at Wagerzon (#" + ticket + ")", "success");
+              } else if (result.status === "would_place") {
+                btn.textContent = originalText;
+                var w = (result.actual_win != null) ? result.actual_win.toFixed(2) : "?";
+                showToast("Dry run OK — would win $" + w, "success");
+              } else {
+                // Pill shows the server-supplied short_label (under ~15 chars,
+                // matches short_label_for_status() in the R renderer). Full
+                // explanation lives in the title= tooltip and toast.
+                var msg = result.error_msg || result.status || "Failed";
+                var label = result.short_label || result.status || "failed";
+                var span = document.createElement(\'span\');
+                span.className = "pill error";
+                span.textContent = label;
+                span.title = msg;
+                btn.parentNode.replaceChild(span, btn);
+                showToast("Place failed: " + msg, "error");
+              }
             })
-              .then(function(r) { return r.json(); })
-              .then(function(result) {
-                if (result.success) {
-                  btn.className = "btn-placed";
-                  btn.textContent = "Placed";
-                  btn.onclick = function() { removeParlay(this); };
-                  addPlacedParlayRow(btn, amount);
-                  applyParlayFilters();
-                  showToast("Parlay placed", "success");
-                  applyParlayFilters();
-                } else {
-                  showToast(result.error || "Failed", "error");
-                }
-                overlay.remove();
-              })
-              .catch(function(err) { showToast("Error: " + err, "error"); overlay.remove(); });
-          };
+            .catch(function(err) {
+              btn.disabled = false;
+              btn.textContent = originalText;
+              showToast("Network error: " + err, "error");
+            });
         }
 
         function removeParlay(btn) {
@@ -3254,8 +3372,39 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               placeBtn.textContent = "Place combined →";
               return;
             }
-            // Reload — R re-renders create_parlays_table() which applies residual Kelly to source rows
-            window.location.reload();
+            // Hot-swap the source-parlays table in place. /api/parlay-table-
+            // fragment runs R with --parlay-fragment, returns the freshly-
+            // rendered reactable widget HTML (with apply_combo_residuals
+            // already applied to the two source rows). HTMLWidgets.staticRender()
+            // re-initializes the React binding after innerHTML replacement.
+            // No full page reload → tab state, scroll, and unrelated widgets
+            // all persist.
+            placeBtn.textContent = "Refreshing…";
+            try {
+              const fragRes = await fetch("/api/parlay-table-fragment");
+              if (!fragRes.ok) throw new Error("fragment HTTP " + fragRes.status);
+              const html = await fragRes.text();
+              const container = document.getElementById("parlays-table-container");
+              if (!container) throw new Error("parlays-table-container not in DOM");
+              container.innerHTML = html;
+              if (window.HTMLWidgets && typeof HTMLWidgets.staticRender === "function") {
+                HTMLWidgets.staticRender();
+              }
+              // Reset combo selection state since the rows were re-rendered
+              if (window.comboSelections) window.comboSelections.length = 0;
+              window.comboPricing = null;
+              const banner = document.getElementById("combo-banner");
+              if (banner) banner.style.display = "none";
+              showToast("Combined parlay placed", "success");
+            } catch (swapErr) {
+              // Fallback: full reload, preserving the parlays tab via URL hash.
+              console.error("Hot-swap failed, falling back to reload:", swapErr);
+              window.location.hash = "#parlays";
+              window.location.reload();
+              return;
+            }
+            placeBtn.disabled = false;
+            placeBtn.textContent = "Place combined →";
           } catch (err) {
             alert("Network error placing combined parlay: " + err.message);
             placeBtn.disabled = false;
@@ -3279,6 +3428,50 @@ if (grepl(".claude/worktrees", NFLWORK_ROOT, fixed = TRUE)) {
   NFLWORK_ROOT <- sub("/.claude/worktrees.*", "", NFLWORK_ROOT)
 }
 setwd(NFLWORK_ROOT)
+
+# Fragment-only mode: render JUST the source-parlays reactable (with combo
+# residuals applied) and emit its HTML to stdout. Used by /api/parlay-table-
+# fragment so the dashboard can hot-swap the parlay table after a combined-
+# parlay placement without rebuilding the whole report.
+if (any(commandArgs(trailingOnly = TRUE) == "--parlay-fragment")) {
+  con_mlb <- dbConnect(duckdb(), dbdir = "Answer Keys/mlb.duckdb", read_only = TRUE)
+  on.exit(try(dbDisconnect(con_mlb), silent = TRUE), add = TRUE)
+  parlay_opps <- tryCatch(
+    dbGetQuery(con_mlb, "SELECT * FROM mlb_parlay_opportunities"),
+    error = function(e) tibble()
+  )
+  dbDisconnect(con_mlb)
+
+  con_dash <- dbConnect(duckdb(), dbdir = DB_PATH, read_only = TRUE)
+  on.exit(try(dbDisconnect(con_dash), silent = TRUE), add = TRUE)
+  placed_parlays <- tryCatch(
+    dbGetQuery(con_dash, "SELECT * FROM placed_parlays"),
+    error = function(e) tibble()
+  )
+  sz <- tryCatch(
+    dbGetQuery(con_dash, "SELECT param, value FROM sizing_settings"),
+    error = function(e) tibble(param = character(), value = numeric())
+  )
+  parlay_bankroll <- {
+    v <- sz$value[sz$param == "parlay_bankroll"]
+    if (length(v) > 0) v[1] else 100
+  }
+  parlay_kelly_mult <- {
+    v <- sz$value[sz$param == "parlay_kelly_mult"]
+    if (length(v) > 0) v[1] else 0.25
+  }
+  dbDisconnect(con_dash)
+
+  parlays_table <- create_parlays_table(parlay_opps, placed_parlays,
+                                        parlay_bankroll, parlay_kelly_mult)
+  if (!is.null(parlays_table)) {
+    # Emit just the widget HTML — no <html>/<head>; dependencies are already
+    # loaded on the page. Caller will run HTMLWidgets.staticRender() to
+    # re-initialize the widget after DOM-swap.
+    cat(as.character(htmltools::as.tags(parlays_table)))
+  }
+  quit(status = 0)
+}
 
 cat("=== MLB Answer Key Dashboard ===\n\n")
 
@@ -3342,7 +3535,10 @@ if (nrow(parlay_opps) > 0) {
 placed_parlays <- tryCatch({
   ppcon <- dbConnect(duckdb(), dbdir = DB_PATH, read_only = TRUE)
   result <- tryCatch(
-    dbGetQuery(ppcon, "SELECT * FROM placed_parlays WHERE status = 'pending' AND (game_time IS NULL OR game_time > NOW())"),
+    # Fetch all statuses so the dashboard can render auto-placement state:
+    # "pending" = manually placed, "placed" = auto-placed (show ticket),
+    # "price_moved"/"rejected"/"auth_error"/"network_error"/"orphaned" = show error.
+    dbGetQuery(ppcon, "SELECT * FROM placed_parlays WHERE game_time IS NULL OR game_time > NOW()"),
     error = function(e) tibble(parlay_hash = character())
   )
   dbDisconnect(ppcon, shutdown = TRUE)

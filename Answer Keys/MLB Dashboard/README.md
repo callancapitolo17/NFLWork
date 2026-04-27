@@ -113,13 +113,43 @@ Currently F5 (first 5 innings) only:
 | `parlay_min_edge` | 3% | `sizing_settings` table |
 | Server port | 8083 | `mlb_dashboard_server.py` |
 
+## Auto-Placement of Correlated Parlays
+
+One-click parlay placement from the Parlays tab. No manual confirmation, no browser opens.
+
+**Workflow:**
+1. Parlays tab shows recommended parlay rows with a "Place" button
+2. Toggle the amber "Dry run" bar at the top (checked = dry run, unchecked = real placement)
+3. Click "Place" → backend calls Wagerzon's REST API → status appears in the Place column
+
+**Dry Run Mode:**
+- **Checked (default):** Runs the preflight + drift check but does NOT place. Toast shows `"Dry run OK — would win $X.XX"`
+- **Unchecked:** Real placement. Toast shows `"Placed at Wagerzon (#TICKET)"`
+
+**Status Values (visible in Place column):**
+- `placed · #<ticket>` — Bet accepted; ticket number from Wagerzon
+- `price_moved` — Wagerzon's current price differed by >$0.01; aborted (no money at risk)
+- `rejected: <reason>` — Wagerzon refused (balance, size limit, line pulled, etc.)
+- `auth_error` — Session expired; re-login retry also failed
+- `network_error` — Request incomplete; **VERIFY** Wagerzon's ticket history before retrying (may have been placed)
+- `orphaned` — Wagerzon confirmed but local DB write failed; forensics in `placement_orphans` table
+- `would_place` — Dry run passed (no money placed)
+
+**Data Storage:**
+- `placed_parlays` table in `mlb_dashboard.duckdb` — all placements + status
+- `placement_orphans` table — orphaned bets (confirmed at Wagerzon, local write failed)
+
+**Sheets Integration:**
+Auto-placed bets are picked up by the existing `bet_logger/scraper_wagerzon.py` on its next run (HistoryHelper feed). No special handling needed — they log like manually-placed bets.
+
 ## Troubleshooting
 
 - **"Port 8083 already in use"** — `run.sh` kills existing processes, but if you started Flask manually, `lsof -ti:8083 | xargs kill`
 - **Parlays tab empty** — `mlb_parlay_opportunities` hasn't been populated; ensure `mlb_correlated_parlay.R` ran successfully (check `run.sh` output)
 - **No bets shown** — check `mlb_bets_combined` has rows; if empty, check MLB.R output in pipeline logs
 - **CLV not computed** — ensure `clv_compute.py` ran post-game; the closing snapshots must exist in `closing_snapshots` table
-- **Auto-place fails** — only `wagerzon`, `hoop88`, `bfa`, `betonlineag` are supported; other books must be placed manually
+- **Auto-place fails** — single-leg auto-queue supports `wagerzon`, `hoop88`, `bfa`, `betonlineag`; parlay auto-placement supports `wagerzon` only. Other books must be placed manually.
+- **Place button doesn't show** — Browser cache; hard refresh (Cmd+Shift+R)
 
 ## Combined Parlay (Wagerzon cash-efficiency)
 
@@ -176,4 +206,4 @@ This adds three columns to `placed_parlays`: `is_combo BOOLEAN`, `combo_leg_ids 
 - N>2 leg combinations
 - Combining a parlay with a single from the Bets tab
 - Cash-budget-aware portfolio Kelly (set "available WZ balance" → dashboard solves for optimal split)
-- Auto-place via WZ API — for now, the dashboard records intent in `placed_parlays`; you place the actual bet at WZ manually
+- Auto-place via WZ API — for now, the dashboard records intent in `placed_parlays`; you place the actual bet at WZ manually. (Single parlays use the auto-placement flow above; combined parlays remain manual for v1.)

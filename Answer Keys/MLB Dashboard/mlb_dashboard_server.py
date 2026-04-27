@@ -42,6 +42,14 @@ from parlay_pricer import (
 _COMBO_PRICE_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
 _COMBO_PRICE_TTL_SECONDS = 60
 app = Flask(__name__)
+
+# Make wagerzon_odds importable for parlay placement
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "wagerzon_odds"))
+import parlay_placer  # noqa: E402
+
+MLB_DB = REPO_ROOT / "Answer Keys" / "mlb.duckdb"
+DASHBOARD_DB = DB_PATH
 log = logging.getLogger("clv")
 
 # Books with working navigators for auto-queue
@@ -164,20 +172,91 @@ def init_db():
         con.execute("""
             CREATE TABLE IF NOT EXISTS placed_parlays (
                 parlay_hash TEXT PRIMARY KEY,
-                game_id TEXT NOT NULL,
-                home_team TEXT NOT NULL,
-                away_team TEXT NOT NULL,
+                game_id TEXT,
+                home_team TEXT,
+                away_team TEXT,
                 game_time TIMESTAMP,
-                combo TEXT NOT NULL,
+                combo TEXT,
                 spread_line REAL,
                 total_line REAL,
                 fair_odds INTEGER,
-                wz_odds INTEGER NOT NULL,
+                wz_odds INTEGER,
                 edge_pct REAL,
-                kelly_bet REAL NOT NULL,
+                kelly_bet REAL,
                 actual_size REAL,
                 placed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                status TEXT DEFAULT 'pending'
+                status TEXT DEFAULT 'pending',
+                -- columns added for auto-placement (Task 9)
+                recommended_size REAL,
+                expected_odds INTEGER,
+                expected_win REAL,
+                actual_win REAL,
+                ticket_number TEXT,
+                idwt INTEGER,
+                legs_json TEXT,
+                error_msg TEXT,
+                error_msg_key TEXT,
+                updated_at TIMESTAMP
+            )
+        """)
+        # Migration: add auto-placement columns to existing placed_parlays tables
+        # DuckDB ALTER TABLE ADD COLUMN is idempotent-ish but raises if col exists.
+        # We check information_schema first to make it truly safe.
+        existing_cols = {
+            r[0] for r in con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'placed_parlays'"
+            ).fetchall()
+        }
+        # Every non-PK column from the CREATE TABLE schema above. Listing
+        # them all here means an existing placed_parlays table from any
+        # historical schema (single-feature, combined-parlay, or auto-place
+        # branch) gets the full union via idempotent ALTER TABLE on startup.
+        migration_cols = {
+            # Original parlay tracking columns
+            "home_team":        "TEXT",
+            "away_team":        "TEXT",
+            "spread_line":      "REAL",
+            "total_line":       "REAL",
+            "fair_odds":        "INTEGER",
+            "wz_odds":          "INTEGER",
+            "edge_pct":         "REAL",
+            "kelly_bet":        "REAL",
+            # Auto-placement columns (Task 9)
+            "recommended_size": "REAL",
+            "expected_odds":    "INTEGER",
+            "expected_win":     "REAL",
+            "actual_win":       "REAL",
+            "ticket_number":    "TEXT",
+            "idwt":             "INTEGER",
+            "legs_json":        "TEXT",
+            "error_msg":        "TEXT",
+            "error_msg_key":    "TEXT",
+            "updated_at":       "TIMESTAMP",
+            # Combined-parlay columns (also handled by
+            # migrations/001_combined_parlay_columns.py — duplicated here
+            # so a fresh server start has them without requiring the
+            # one-shot migration script to be run separately).
+            "is_combo":         "BOOLEAN",
+            "combo_leg_ids":    "VARCHAR",
+            "parent_combo_id":  "INTEGER",
+        }
+        for col, dtype in migration_cols.items():
+            if col not in existing_cols:
+                con.execute(f"ALTER TABLE placed_parlays ADD COLUMN {col} {dtype}")
+
+        # Orphan forensics: rare case where Wagerzon confirms placement but
+        # the local placed_parlays write fails. Created here AND by
+        # wagerzon_odds/migrate_placed_parlays.py so a fresh server start
+        # without running the migration script still has the safety net.
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS placement_orphans (
+                idwt          BIGINT PRIMARY KEY,
+                ticket_number TEXT,
+                parlay_hash   TEXT,
+                raw_response  TEXT,
+                error         TEXT,
+                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -444,9 +523,12 @@ def index():
             "<p>Click the refresh button or run: <code>Rscript mlb_dashboard.R</code></p>",
             mimetype="text/html"
         )
-    with open(html_path, "r", encoding="utf-8") as f:
+    # R may write report.html in the platform default encoding (Latin-1 on
+    # macOS) when the source contains characters outside ASCII. Read with
+    # errors="replace" so a stray byte never 500s the dashboard.
+    with open(html_path, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
-    return Response(content, mimetype="text/html")
+    return Response(content, mimetype="text/html; charset=utf-8")
 
 
 @app.route("/lib/<path:filename>")
@@ -758,68 +840,318 @@ def price_combined_parlay():
     return jsonify(response)
 
 
-@app.route("/api/place-parlay", methods=["POST"])
-def place_parlay():
-    """Mark a parlay as placed in the database."""
-    data = request.json
+# NOTE: main previously defined a manual /api/place-parlay endpoint here that
+# took game_id/home_team/away_team/combo/wz_odds/kelly_bet/etc. and just
+# recorded a "pending" row in placed_parlays. That route is now superseded
+# by api_place_parlay() below, which actually places the bet at Wagerzon
+# via the REST API and records the resulting ticket_number. The manual
+# route is intentionally NOT carried forward to avoid a Flask duplicate-
+# endpoint error and to keep the placement contract single.
 
-    required = ["parlay_hash", "game_id", "home_team", "away_team", "combo",
-                "wz_odds", "kelly_bet"]
-    missing = [k for k in required if k not in data]
-    if missing:
-        return jsonify({"success": False, "error": f"Missing fields: {missing}"}), 400
 
+def _load_parlay_row(parlay_hash: str) -> dict | None:
+    """Load one parlay opportunity row from mlb.duckdb (read-only)."""
+    con = duckdb.connect(str(MLB_DB), read_only=True)
     try:
-        con = duckdb.connect(str(DB_PATH))
+        row = con.execute(
+            "SELECT * FROM mlb_parlay_opportunities WHERE parlay_hash = ?",
+            [parlay_hash],
+        ).fetchone()
+        if not row:
+            return None
+        cols = [d[0] for d in con.description]
+        return dict(zip(cols, row))
+    finally:
+        con.close()
+
+
+def _build_spec_from_row(row: dict) -> parlay_placer.ParlaySpec:
+    """Translate a mlb_parlay_opportunities row into a ParlaySpec.
+
+    The combo column encodes both leg directions, e.g.:
+      'Away Spread + Over'  → spread play=0 (away), total play=2 (over)
+      'Home Spread + Over'  → spread play=1 (home), total play=2 (over)
+      'Home Spread + Under' → spread play=1 (home), total play=3 (under)
+      'Away Spread + Under' → spread play=0 (away), total play=3 (under)
+
+    spread_line is already signed correctly in the DB for the picked side
+    (favorite negative, dog positive) and is passed through as-is.
+
+    total_line is stored positive in the DB, but Wagerzon's sel encoding
+    requires NEGATIVE points for Over and POSITIVE for Under. This matches
+    the existing convention in wagerzon_odds/parlay_pricer.py:331
+    ("WZ expects -total for over, +total for under (recon-confirmed)").
+    """
+    idgm = int(row["idgm"])
+    combo = row.get("combo", "")
+
+    spread_play = 0 if "Away Spread" in combo else 1
+    is_over = "Over" in combo
+    total_play = 2 if is_over else 3
+    total_line = float(row["total_line"])
+    total_points = -abs(total_line) if is_over else total_line
+
+    legs = [
+        parlay_placer.Leg(
+            idgm=idgm,
+            play=spread_play,
+            points=float(row["spread_line"]),
+            odds=int(row["spread_price"]),
+        ),
+        parlay_placer.Leg(
+            idgm=idgm,
+            play=total_play,
+            points=total_points,
+            odds=int(row["total_price"]),
+        ),
+    ]
+    amount, expected_win = _resolve_amount_and_win(row)
+    return parlay_placer.ParlaySpec(
+        parlay_hash=row["parlay_hash"],
+        legs=legs,
+        amount=amount,
+        expected_win=expected_win,
+        expected_risk=amount,
+    )
+
+
+def _resolve_amount_and_win(row: dict) -> tuple[float, float]:
+    """Pick the placement stake AND the expected win in one place.
+
+    The pricer (wagerzon_odds/parlay_pricer.py --exact-payouts) calls
+    Wagerzon's ConfirmWagerHelper at an integer stake near Kelly and
+    stores both (exact_wager, exact_to_win). The dashboard's SIZE / TO
+    WIN columns show those numbers — so the user's mental "this is what
+    I'm placing" matches the pricer's pre-confirmed pair.
+
+    Source of truth: exact_wager + exact_to_win. They came from the same
+    ConfirmWagerHelper call so they match each other to the cent and will
+    match the placer's preflight again unless the line genuinely moves.
+
+    Fallback (rare — the pricer hasn't run --exact-payouts yet for this
+    row): use kelly_bet rounded to integer, expected_win from wz_odds
+    math. The drift check still catches real moves; the only cost is
+    a few cents of slack from Wagerzon's per-stake rounding.
+    """
+    exact_wager = row.get("exact_wager")
+    exact_to_win = row.get("exact_to_win")
+
+    if exact_wager is not None and exact_to_win is not None:
+        return float(exact_wager), float(exact_to_win)
+
+    # Pricer's exact-payouts step hasn't populated this row yet.
+    amount = float(int(round(float(row["kelly_bet"]))))
+    wz = int(row["wz_odds"])
+    decimal = (wz / 100 + 1) if wz > 0 else (100 / -wz + 1)
+    return amount, round(amount * (decimal - 1), 2)
+
+
+def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> None:
+    """Insert or update placed_parlays in mlb_dashboard.duckdb. Idempotent on parlay_hash."""
+    spec = _build_spec_from_row(row)
+    legs_json = json.dumps([
+        {"play": l.play, "idgm": l.idgm, "points": l.points, "odds": l.odds}
+        for l in spec.legs
+    ])
+    con = duckdb.connect(str(DASHBOARD_DB))
+    try:
+        con.execute("""
+            INSERT INTO placed_parlays (
+                parlay_hash, status, combo, game_id, game_time,
+                recommended_size, expected_odds, expected_win,
+                actual_size, actual_win, ticket_number, idwt,
+                legs_json, error_msg, error_msg_key, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT (parlay_hash) DO UPDATE SET
+                status        = EXCLUDED.status,
+                actual_size   = EXCLUDED.actual_size,
+                actual_win    = EXCLUDED.actual_win,
+                ticket_number = EXCLUDED.ticket_number,
+                idwt          = EXCLUDED.idwt,
+                error_msg     = EXCLUDED.error_msg,
+                error_msg_key = EXCLUDED.error_msg_key,
+                updated_at    = CURRENT_TIMESTAMP
+        """, [
+            result.parlay_hash,
+            result.status,
+            row.get("combo"),
+            row.get("game_id"),
+            row.get("game_time"),
+            float(row["kelly_bet"]),
+            int(row["wz_odds"]),
+            float(row.get("exact_to_win") or 0) or round(float(row["kelly_bet"]) * (
+                (int(row["wz_odds"]) / 100) if int(row["wz_odds"]) > 0
+                else (100 / -int(row["wz_odds"]))
+            ), 2),
+            result.actual_risk,
+            result.actual_win,
+            result.ticket_number,
+            result.idwt,
+            legs_json,
+            result.error_msg,
+            result.error_msg_key,
+        ])
+    finally:
+        con.close()
+
+
+def _record_orphan(result: parlay_placer.PlacementResult,
+                   parlay_hash: str, db_error: Exception) -> None:
+    """Wagerzon confirmed placement but local placed_parlays write failed.
+    Insert a forensics row into placement_orphans + log loudly."""
+    try:
+        con = duckdb.connect(str(DASHBOARD_DB))
+        try:
+            con.execute("""
+                INSERT INTO placement_orphans
+                    (idwt, ticket_number, parlay_hash, raw_response, error)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (idwt) DO NOTHING
+            """, [result.idwt, result.ticket_number, parlay_hash,
+                  result.raw_response, str(db_error)])
+        finally:
+            con.close()
+    except Exception as inner:
+        # Last resort: shout to stderr
+        print(
+            f"!! ORPHAN UNRECORDED: idwt={result.idwt} "
+            f"ticket={result.ticket_number} parlay_hash={parlay_hash} "
+            f"raw_response={result.raw_response!r} "
+            f"original_error={db_error!r} orphan_write_error={inner!r}",
+            file=sys.stderr, flush=True,
+        )
+        raise
+    print(
+        f"!! ORPHAN RECORDED: idwt={result.idwt} ticket={result.ticket_number} "
+        f"parlay_hash={parlay_hash} reason={db_error!r}",
+        file=sys.stderr, flush=True,
+    )
+
+
+@app.route("/api/place-parlay", methods=["POST"])
+def api_place_parlay():
+    """Auto-place a parlay at Wagerzon via the REST API (live or dry-run mode).
+
+    Accepts JSON: {parlay_hash: str, dry_run: bool = false}
+    Returns JSON: {status, ticket_number, error_msg, actual_win}
+    """
+    payload = request.get_json(force=True) or {}
+    parlay_hash = payload.get("parlay_hash")
+    dry_run = bool(payload.get("dry_run", False))
+
+    if not parlay_hash:
+        return jsonify({"status": "error", "error_msg": "missing parlay_hash"}), 400
+
+    # Idempotency check: skip if already in a terminal placed/placing state (live only)
+    if not dry_run:
+        con = duckdb.connect(str(DASHBOARD_DB), read_only=True)
         try:
             existing = con.execute(
-                "SELECT parlay_hash, status FROM placed_parlays WHERE parlay_hash = ?",
-                [data["parlay_hash"]]
+                "SELECT status, ticket_number, error_msg FROM placed_parlays "
+                "WHERE parlay_hash = ? AND status IN ('placing', 'placed')",
+                [parlay_hash],
             ).fetchone()
+        finally:
+            con.close()
+        if existing:
+            return jsonify({
+                "status": existing[0],
+                "ticket_number": existing[1],
+                "error_msg": existing[2] or "",
+            })
 
-            if existing and existing[1] == "pending":
-                return jsonify({"success": False, "error": "Parlay already placed"}), 409
+    row = _load_parlay_row(parlay_hash)
+    if not row:
+        return jsonify({"status": "error", "error_msg": "parlay not found"}), 404
 
-            if existing:
-                con.execute("""
-                    UPDATE placed_parlays SET
-                        actual_size = ?, placed_at = ?, status = 'pending'
-                    WHERE parlay_hash = ?
-                """, [
-                    float(data.get("actual_size", data["kelly_bet"])),
-                    datetime.now().isoformat(),
-                    data["parlay_hash"],
-                ])
-            else:
-                con.execute("""
-                    INSERT INTO placed_parlays (
-                        parlay_hash, game_id, home_team, away_team, game_time, combo,
-                        spread_line, total_line, fair_odds, wz_odds,
-                        edge_pct, kelly_bet, actual_size, placed_at, status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-                """, [
-                    data["parlay_hash"],
-                    data["game_id"],
-                    data["home_team"],
-                    data["away_team"],
-                    None if data.get("game_time") in ("NA", "", None) else data.get("game_time"),
-                    data["combo"],
-                    data.get("spread_line"),
-                    data.get("total_line"),
-                    data.get("fair_odds"),
-                    int(data["wz_odds"]),
-                    data.get("edge_pct"),
-                    float(data["kelly_bet"]),
-                    float(data.get("actual_size", data["kelly_bet"])),
-                    datetime.now().isoformat(),
-                ])
+    # Defensive guard: idgm is the Wagerzon-internal game ID and is required to
+    # build the sel/detailData payload. NULL means upstream scraper or pricer
+    # data is incomplete; fail clean with 422 *before* writing the 'placing'
+    # breadcrumb so we don't strand a stuck row.
+    if row.get("idgm") is None:
+        return jsonify({
+            "status": "error",
+            "error_msg": "parlay row missing idgm — refresh the dashboard or re-run the pricer",
+        }), 422
+
+    # Mark as 'placing' before network call so a crash leaves a breadcrumb
+    if not dry_run:
+        con = duckdb.connect(str(DASHBOARD_DB))
+        try:
+            con.execute("""
+                INSERT INTO placed_parlays (
+                    parlay_hash, status, recommended_size, expected_odds,
+                    combo, game_id, game_time, updated_at
+                ) VALUES (?, 'placing', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (parlay_hash) DO NOTHING
+            """, [
+                parlay_hash,
+                float(row["kelly_bet"]),
+                int(row["wz_odds"]),
+                row.get("combo"),
+                row.get("game_id"),
+                row.get("game_time"),
+            ])
         finally:
             con.close()
 
-        return jsonify({"success": True, "message": "Parlay placed successfully"})
+    spec = _build_spec_from_row(row)
+    results = parlay_placer.place_parlays([spec], dry_run=dry_run)
+    result = results[0]
 
+    # Dry-run: skip DB write entirely, return what would have happened
+    if dry_run:
+        return jsonify({
+            "status": result.status,
+            "short_label": _short_label_for(result.status, result.error_msg_key, result.error_msg),
+            "ticket_number": None,
+            "error_msg": result.error_msg,
+            "actual_win": result.actual_win,
+        })
+
+    # Persist result; handle orphan case (placed at Wagerzon but local write failed)
+    try:
+        _upsert_placed_parlay(result, row)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        if result.status == "placed":
+            _record_orphan(result, parlay_hash, e)
+            return jsonify({
+                "status": "orphaned",
+                "short_label": _short_label_for("orphaned", "", f"orphan: {e}"),
+                "ticket_number": result.ticket_number,
+                "error_msg": f"orphan: {e}",
+            })
+        raise
+
+    return jsonify({
+        "status": result.status,
+        "short_label": _short_label_for(result.status, result.error_msg_key, result.error_msg),
+        "ticket_number": result.ticket_number,
+        "error_msg": result.error_msg,
+    })
+
+
+# Compact labels for the dashboard's status pill. Full text remains in
+# error_msg (toast + hover tooltip). Keep all under ~15 chars.
+_SHORT_LABEL_BY_STATUS = {
+    "placed":         "placed",
+    "would_place":    "would place",
+    "price_moved":    "price moved",
+    "auth_error":     "auth fail",
+    "network_error":  "network err",
+    "orphaned":       "orphaned",
+}
+_SHORT_LABEL_BY_REJECT_KEY = {
+    "insufficient_funds": "insufficient $",
+    "bet_too_large":      "exceeds limit",
+    "line_unavailable":   "line pulled",
+}
+
+
+def _short_label_for(status: str, error_msg_key: str, error_msg: str) -> str:
+    if status == "rejected":
+        return _SHORT_LABEL_BY_REJECT_KEY.get(error_msg_key or "", "rejected")
+    return _SHORT_LABEL_BY_STATUS.get(status, status)
 
 
 @app.route("/api/place-combined-parlay", methods=["POST"])
@@ -870,6 +1202,43 @@ def place_combined_parlay():
         return jsonify({"success": True, "message": "Combined parlay placed"})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/parlay-table-fragment", methods=["GET"])
+def parlay_table_fragment():
+    """Return just the source-parlays reactable widget HTML.
+
+    Spawns Rscript mlb_dashboard.R --parlay-fragment, which loads fresh
+    parlay_opps + placed_parlays from the DBs (so any newly-inserted combo
+    row triggers apply_combo_residuals on the source rows) and emits the
+    rendered reactable HTML to stdout.
+
+    Used by placeCombinedParlay() in mlb_dashboard.R to hot-swap the parlay
+    table after a combo placement without doing a full page reload —
+    preserves tab state, scroll position, and unrelated widget state.
+    """
+    rscript_path = BASE_DIR / "mlb_dashboard.R"
+    try:
+        result = subprocess.run(
+            ["Rscript", str(rscript_path), "--parlay-fragment"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "Render timed out"}), 504
+    except FileNotFoundError:
+        return jsonify({"success": False, "error": "Rscript not found on PATH"}), 500
+
+    if result.returncode != 0:
+        return jsonify({
+            "success": False,
+            "error": "R fragment render failed",
+            "stderr": result.stderr[-2000:],
+        }), 500
+
+    return Response(result.stdout, mimetype="text/html; charset=utf-8")
 
 
 @app.route("/api/remove-parlay", methods=["POST"])
