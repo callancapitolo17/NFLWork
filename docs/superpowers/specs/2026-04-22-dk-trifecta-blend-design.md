@@ -55,7 +55,7 @@ Concretely, when Plan #1 of this design lands:
     │    side, legs)               │    │  via system2() from R              │
     │                              │    │                                    │
     │  Returns model_fair_prob     │    │  Returns dk_fair_prob (devigged)   │
-    │  using the answer-key        │    │  via DK_SGP_VIG_DEFAULT = 1.10     │
+    │  using the answer-key        │    │  via DK_SGP_VIG_DEFAULT = 1.25     │
     │  dispersion-matched samples  │    │  Plan #1: NA stub (DK col always   │
     │                              │    │  NA until Plan #2 lands)           │
     └──────────────┬───────────────┘    └─────────────────┬──────────────────┘
@@ -168,7 +168,7 @@ The recon script does not depend on any other Plan #1 code — fully standalone 
 After Task 6's existing parse_legs + compute_prop_fair pipeline, insert blend logic. Plan #1's blend reads `mlb_trifecta_sgp_odds` (which is empty until Plan #2 ships), so DK columns will be all NA in Plan #1. The blend correctly falls back to model_only.
 
 ```r
-DK_SGP_VIG_DEFAULT <- 1.10  # same fallback as mlb_correlated_parlay.R
+DK_SGP_VIG_DEFAULT <- 1.25  # higher than mlb_correlated_parlay.R's 1.10 (trifectas are 3-4 legs)
 
 # Read latest DK trifecta SGP odds (empty until Plan #2 populates the table)
 dk_sgp <- tryCatch({
@@ -261,7 +261,7 @@ The blend helper `blend_dk_with_model(model_prob, dk_decimal, vig)` is defined a
 #'
 #' @param model_prob Numeric, the historical fair probability from compute_prop_fair.
 #' @param dk_decimal Numeric, DK SGP decimal odds (>1.0 if valid).
-#' @param vig Numeric, the SGP vig fallback (e.g. 1.10).
+#' @param vig Numeric, the SGP vig fallback (e.g. 1.25 for trifectas).
 blend_dk_with_model <- function(model_prob, dk_decimal, vig) {
   dk_valid <- !is.na(dk_decimal) && dk_decimal > 0
   dk_prob  <- if (dk_valid) (1 / dk_decimal) / vig else NA_real_
@@ -359,7 +359,7 @@ The pricer is **always** functional with model-only fair — DK is purely additi
 1. **DK selection ID format for new leg types** — first-to-score, F5 winner, F3/F7 winners (do they exist on DK at all?). Recon answers all of these.
 2. **3-way vs 2-way F5 winner on DK** — affects whether tie probability needs to be modeled. If 2-way (no tie), DK pays differently than our F5-strict-lead semantics; need to either match DK's semantics or add a vig adjustment.
 3. **Cross-market SGP restrictions** — DK is known to block alt-total + main-total combinations; whether these specific 3-leg or 4-leg combos are allowed is unknown until recon.
-4. **Vig fallback accuracy** — `DK_SGP_VIG_DEFAULT = 1.10` is the correlated-parlay fallback; trifecta vig may differ systematically. Worth validating after Plan #2 collects a week of data: compute observed vig on a few known games, see how 1.10 holds up.
+4. **Vig fallback accuracy** — `DK_SGP_VIG_DEFAULT = 1.25` is the correlated-parlay fallback; trifecta vig may differ systematically. Worth validating after Plan #2 collects a week of data: compute observed vig on a few known games, see how 1.10 holds up.
 5. **DK event ID ↔ Wagerzon idgm mapping** — both reference "the same MLB game" but with different keys. Plan #2 needs a mapping (likely via team names + commence_time + canonical_match.py). Plan #1 punts this since no scraper invocation happens.
 
 ## Version control plan
