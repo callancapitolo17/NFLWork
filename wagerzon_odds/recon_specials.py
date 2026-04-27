@@ -90,23 +90,43 @@ def run_recon():
 
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
-            PROFILE_DIR,
+            user_data_dir=PROFILE_DIR,
+            channel="chrome",  # use installed Chrome — bundled Chromium crashes on this machine
             headless=False,
             viewport={"width": 1440, "height": 900},
+            args=["--disable-blink-features=AutomationControlled"],
         )
-        page = context.new_page()
+        # Reuse the first existing tab so login traffic is captured by our handlers
+        page = context.pages[0] if context.pages else context.new_page()
         page.on("request", handle_request)
         page.on("response", handle_response)
 
+        # Step 1: navigate to candidate specials URL. If redirected to login,
+        # the user logs in in the SAME tab; handlers capture the auth flow.
         for url in CANDIDATE_URLS:
             print(f"\n=== Navigating to candidate URL: {url} ===")
             try:
-                page.goto(url, wait_until="networkidle", timeout=60000)
-                print("Page loaded. Verify in browser that specials are visible.")
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
             except Exception as e:
                 print(f"Navigation failed: {e}")
 
-        input("\nPress ENTER when page is fully loaded with all MLB specials visible...")
+        print("\n" + "=" * 60)
+        print("1. If redirected to login, log in manually IN THIS BROWSER TAB")
+        print("2. After login, navigate to the MLB specials page")
+        print("3. Once specials are fully visible, press ENTER here")
+        print("=" * 60)
+        input()
+
+        # Step 2: reload the specials page to get a clean post-auth capture
+        print(f"\nReloading {CANDIDATE_URLS[0]} to capture a clean specials request...")
+        try:
+            page.goto(CANDIDATE_URLS[0], wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(5000)
+        except Exception as e:
+            print(f"Reload failed: {e}")
+        print(f"Total events captured so far: {len(captured)}")
+
+        input("\nPress ENTER once the page is fully loaded a second time (or to skip)...")
 
         out = {
             "candidate_urls": CANDIDATE_URLS,
