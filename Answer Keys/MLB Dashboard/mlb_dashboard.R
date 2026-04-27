@@ -427,6 +427,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
         align = "center",
         filterable = FALSE,
         sortable = FALSE,
+        class = "cell-sel",
         html = TRUE,
         cell = function(value, index) {
           row <- table_data[index, ]
@@ -467,6 +468,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
       model_prob_pct = colDef(show = FALSE),
       n_samples = colDef(show = FALSE),
       combo = colDef(show = FALSE),
+      n_books_blended = colDef(show = FALSE),
       spread_team = colDef(show = FALSE),
       spread_fmt = colDef(show = FALSE),
       sp_price_fmt = colDef(show = FALSE),
@@ -478,6 +480,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
       game = colDef(
         name = "Game",
         minWidth = 180,
+        class = "cell-game",
         html = TRUE,
         cell = JS("function(cellInfo) {
           var matchup = cellInfo.value || '';
@@ -491,8 +494,9 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
         }")
       ),
       game_time = colDef(show = FALSE),
-      legs_display = colDef(name = "Legs", minWidth = 260),
+      legs_display = colDef(name = "Legs", minWidth = 260, class = "cell-legs"),
       fair_display = colDef(name = "Fair", minWidth = 70, align = "right",
+        class = "cell-fair",
         style = list(fontFamily = "monospace", color = "#8b949e")),
       # Per-book numeric columns folded into the Books pill row below.
       # Hidden (data still in the dataframe) so the cell renderer can read them.
@@ -508,6 +512,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
         minWidth = 320,
         html = TRUE,
         sortable = FALSE,
+        class = "cell-books",
         cell = function(value, index) {
           row <- table_data[index, ]
           render_books_strip(
@@ -521,24 +526,20 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
         }
       ),
       wz_display = colDef(name = "WZ", minWidth = 70, align = "right",
+        class = "cell-wz",
         style = list(fontFamily = "monospace")),
-      corr_display = colDef(
-        name = "Corr",
-        minWidth = 65,
-        align = "right",
-        class = "corr-col",        # for media-query targeting (cells)
-        headerClass = "corr-col",  # for media-query targeting (header)
-        style = list(color = "#8b949e")
-      ),
+      corr_display = colDef(show = FALSE),
       edge_display = colDef(name = "Edge %", minWidth = 70, align = "right",
+        class = "cell-edge",
         cell = function(value, index) {
           ep <- table_data$edge_pct[index]
           color <- if (ep >= 15) "#3fb950" else if (ep >= 10) "#56d364" else if (ep >= 5) "#7ee787" else "#a5d6a7"
           span(style = list(color = color, fontWeight = "600"), value)
         }
       ),
-      size_display = colDef(name = "Size", minWidth = 65, align = "right", html = TRUE),
+      size_display = colDef(name = "Size", minWidth = 65, align = "right", html = TRUE, class = "cell-size"),
       to_win_display = colDef(name = "To Win", minWidth = 65, align = "right",
+        class = "cell-towin",
         style = list(color = "#3fb950")),
       # Auto-placement state columns — hidden data carriers for the cell renderer below
       placement_status     = colDef(show = FALSE),
@@ -550,6 +551,7 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
         minWidth = 110,
         align = "center",
         filterable = FALSE,
+        class = "cell-action",
         html = TRUE,
         cell = function(value, index) {
           row <- table_data[index, ]
@@ -1660,13 +1662,121 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           font-family: monospace;
         }
 
-        /* Hide Corr column on phones (low-information; Edge stays visible).
-           reactable applies class+headerClass from colDef to both data cells
-           and the header cell, so .corr-col matches both. !important overrides
-           reactable inline display:table-cell on cells. */
-        @media (max-width: 700px) {
-          .corr-col { display: none !important; }
+        /* === Parlay tab card layout (scoped — singles tab is unaffected) === */
+        /* Flatten the reactable table into a stack of cards. */
+        #parlays-table-container .rt-table   { display: block; }
+        #parlays-table-container .rt-thead   { display: none; }
+        #parlays-table-container .rt-tbody   { display: block; }
+        #parlays-table-container .rt-tr-group { display: block; }
+
+        /* Each row becomes a card; cells flex inside so DOM order = visual order. */
+        #parlays-table-container .rt-tr {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: baseline;
+          gap: 4px;
+          background: #161b22;
+          border: 1px solid #21262d;
+          border-radius: 6px;
+          padding: 14px 14px 12px 14px;
+          margin-bottom: 10px;
+          position: relative;
         }
+
+        #parlays-table-container .rt-td {
+          display: block;
+          border: 0;
+          padding: 0;
+          white-space: normal;
+          font-size: 14px;
+          color: #c9d1d9;
+        }
+
+        /* Full-width rows inside the flex card */
+        #parlays-table-container .rt-td.cell-game,
+        #parlays-table-container .rt-td.cell-legs,
+        #parlays-table-container .rt-td.cell-books {
+          flex-basis: 100%;
+        }
+
+        /* Sel checkbox: top-right corner */
+        #parlays-table-container .rt-td.cell-sel {
+          position: absolute;
+          top: 12px;
+          right: 12px;
+        }
+        #parlays-table-container .combo-select {
+          width: 18px;
+          height: 18px;
+          cursor: pointer;
+        }
+
+        /* Game + folded time line */
+        #parlays-table-container .rt-td.cell-game {
+          font-size: 15px;
+          font-weight: 500;
+          padding-right: 36px;
+        }
+
+        /* Legs */
+        #parlays-table-container .rt-td.cell-legs {
+          font-size: 14px;
+          margin-top: 2px;
+          margin-bottom: 10px;
+        }
+
+        /* Books pill row */
+        #parlays-table-container .rt-td.cell-books {
+          margin-bottom: 12px;
+        }
+
+        /* Metadata strip — Fair / WZ / Size / To Win flow inline as flex items.
+           Parent gap: 4px handles base spacing; margin-right adds breathing room. */
+        #parlays-table-container .rt-td.cell-fair,
+        #parlays-table-container .rt-td.cell-wz,
+        #parlays-table-container .rt-td.cell-size,
+        #parlays-table-container .rt-td.cell-towin {
+          display: inline-flex;
+          align-items: baseline;
+          gap: 4px;
+          margin-right: 10px;
+          font-size: 13px;
+          font-family: monospace;
+        }
+
+        #parlays-table-container .rt-td.cell-fair::before  { content: "Fair";   color: #8b949e; font-size: 12px; font-family: -apple-system, system-ui, sans-serif; }
+        #parlays-table-container .rt-td.cell-wz::before    { content: "WZ";     color: #8b949e; font-size: 12px; font-family: -apple-system, system-ui, sans-serif; }
+        #parlays-table-container .rt-td.cell-size::before  { content: "Size";   color: #8b949e; font-size: 12px; font-family: -apple-system, system-ui, sans-serif; }
+        #parlays-table-container .rt-td.cell-towin::before { content: "To Win"; color: #8b949e; font-size: 12px; font-family: -apple-system, system-ui, sans-serif; }
+
+        /* Edge — pushed to right via margin-left:auto on first of two right items.
+           Action follows in DOM order, so visually:
+           [...metadata strip...]                       +12.3%  [ Place ] */
+        #parlays-table-container .rt-td.cell-edge {
+          margin-left: auto;
+          font-size: 15px;
+          font-weight: 600;
+        }
+        #parlays-table-container .rt-td.cell-action {
+          margin-left: 12px;
+        }
+
+        /* Conditional-Kelly residual note — full-width line below metadata strip */
+        #parlays-table-container .combo-note {
+          display: block;
+          width: 100%;
+          margin-top: 4px;
+          color: #8b949e;
+          font-size: 12px;
+          font-style: italic;
+        }
+
+        /* Pill upsizing (was 10px in the books-strip round) */
+        #parlays-table-container .pill {
+          font-size: 13px;
+          padding: 3px 8px;
+        }
+
       '))
     ),
 
