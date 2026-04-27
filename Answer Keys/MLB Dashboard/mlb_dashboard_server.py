@@ -959,10 +959,11 @@ def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> N
             INSERT INTO placed_parlays (
                 parlay_hash, status, home_team, away_team,
                 combo, game_id, game_time,
+                wz_odds, kelly_bet,
                 recommended_size, expected_odds, expected_win,
                 actual_size, actual_win, ticket_number, idwt,
                 legs_json, error_msg, error_msg_key, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT (parlay_hash) DO UPDATE SET
                 status        = EXCLUDED.status,
                 actual_size   = EXCLUDED.actual_size,
@@ -977,9 +978,11 @@ def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> N
             result.status,
             row.get("home_team") or "",
             row.get("away_team") or "",
-            row.get("combo"),
-            row.get("game_id"),
+            row.get("combo") or "",
+            row.get("game_id") or "",
             row.get("game_time"),
+            int(row["wz_odds"]),
+            float(row["kelly_bet"]),
             float(row["kelly_bet"]),
             int(row["wz_odds"]),
             float(row.get("exact_to_win") or 0) or round(float(row["kelly_bet"]) * (
@@ -1081,26 +1084,31 @@ def api_place_parlay():
     if not dry_run:
         con = duckdb.connect(str(DASHBOARD_DB))
         try:
-            # home_team / away_team are NOT NULL on main's placed_parlays
-            # schema (legacy CBB-pattern constraint). Pull them from the
-            # parlay row so the breadcrumb insert satisfies the constraint
-            # — they're known at this point.
+            # game_id / home_team / away_team / combo / wz_odds / kelly_bet are
+            # all NOT NULL on main's placed_parlays schema (legacy CBB-pattern
+            # constraints carried over from the manual-placement era). Provide
+            # them all from the parlay row so the breadcrumb insert satisfies
+            # every constraint.
             con.execute("""
                 INSERT INTO placed_parlays (
                     parlay_hash, status, home_team, away_team,
+                    combo, game_id, game_time,
+                    wz_odds, kelly_bet,
                     recommended_size, expected_odds,
-                    combo, game_id, game_time, updated_at
-                ) VALUES (?, 'placing', ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    updated_at
+                ) VALUES (?, 'placing', ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT (parlay_hash) DO NOTHING
             """, [
                 parlay_hash,
                 row.get("home_team") or "",
                 row.get("away_team") or "",
+                row.get("combo") or "",
+                row.get("game_id") or "",
+                row.get("game_time"),
+                int(row["wz_odds"]),
+                float(row["kelly_bet"]),
                 float(row["kelly_bet"]),
                 int(row["wz_odds"]),
-                row.get("combo"),
-                row.get("game_id"),
-                row.get("game_time"),
             ])
         finally:
             con.close()
