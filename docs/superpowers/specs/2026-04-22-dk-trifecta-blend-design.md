@@ -24,6 +24,20 @@ Recon must precede production code (we don't know DK's selection ID format for t
 
 Same pattern as the Wagerzon specials work: recon-first, design with that knowledge.
 
+## Sequencing relative to other plans
+
+This design **must merge after** the Wagerzon Specials Scraper plan (`docs/superpowers/plans/2026-04-22-wagerzon-specials-scraper.md`) lands on `main`, because both plans modify `Answer Keys/mlb_triple_play.R` in overlapping regions:
+
+- The Wagerzon plan's Task 4 replaces the tribble + sample query + consensus join (~lines 46–95) with a DuckDB read from `wagerzon_specials` plus a `WZ_TO_CANONICAL` translation step.
+- This plan's Plan #1 inserts blend logic INTO that flow — between the `todays_lines` DuckDB read (post-Wagerzon) and the `compute_prop_fair` rowwise mutate.
+
+The blend logic itself is unchanged regardless of where the upstream `todays_lines` data frame comes from. When the Wagerzon plan ships, this plan's "rewire location" simply moves; the inserted code is identical.
+
+Concretely, when Plan #1 of this design lands:
+- The `tryCatch`-protected read of `mlb_trifecta_sgp_odds` happens after the existing `samples_df` query
+- The blend mutate runs inside the existing `priced <- matched %>% rowwise() %>% mutate(...)` block (now sourced from `wagerzon_specials` rather than the tribble)
+- New columns `model_odds`, `dk_odds`, `fair_odds` (blended) replace the single `fair_odds` (model only)
+
 ## Architecture
 
 ```
@@ -87,7 +101,8 @@ New table `mlb_trifecta_sgp_odds` in `Answer Keys/mlb.duckdb`:
 ```sql
 CREATE TABLE mlb_trifecta_sgp_odds (
   fetch_time     TIMESTAMP,        -- when this snapshot was captured
-  game_id        INTEGER,          -- DK event ID (also the game_id we pass via R)
+  game_id        VARCHAR,          -- Odds API event ID (matches mlb_consensus_temp.id) —
+                                   -- the DK scraper internally maps to DK's event ID at fetch time
   prop_type      VARCHAR,          -- 'TRIPLE-PLAY' or 'GRAND-SLAM' (verbatim from Wagerzon)
   side           VARCHAR,          -- 'home' or 'away'
   legs_json      VARCHAR,          -- parsed leg list serialized:
