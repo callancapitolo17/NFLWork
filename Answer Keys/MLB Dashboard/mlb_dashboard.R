@@ -557,13 +557,29 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
           # Guard: treat NA or "NA" string uniformly
           ps_valid <- !is.na(ps) && nchar(ps) > 0 && ps != "NA"
 
+          # Common data-* attributes mirror what's on the Place button below,
+          # so the JS row filter (filterParlaysByEdge) can read edge / size /
+          # game from any element with data-edge — button OR placed-span OR
+          # error-pill — and classify the row's status uniformly. Without
+          # these, placed/failed rows fall through filters as edge=0 + status
+          # ="Not Placed" and get triple-excluded.
+          common_data_attrs <- sprintf(
+            'data-hash="%s" data-home="%s" data-away="%s" data-edge="%s" data-size="%s"',
+            htmltools::htmlEscape(row$parlay_hash),
+            htmltools::htmlEscape(row$home_team),
+            htmltools::htmlEscape(row$away_team),
+            row$edge_pct,
+            if (!is.na(row$exact_wager)) row$exact_wager else row$kelly_bet
+          )
+
           # Auto-placed: show muted "placed &middot; #<ticket>" label.
           # Use HTML entity instead of literal U+00B7 to keep the file
           # ASCII-clean — R writes report.html in the platform default
           # encoding (Latin-1 on macOS), which Flask's UTF-8 reader chokes on.
           if (ps_valid && ps == "placed") {
             ticket <- if (!is.na(row$ticket_number)) row$ticket_number else "?"
-            return(sprintf('<span class="placed-parlay-label">placed &middot; #%s</span>',
+            return(sprintf('<span class="placed-parlay-label" %s>placed &middot; #%s</span>',
+                           common_data_attrs,
                            htmltools::htmlEscape(ticket)))
           }
 
@@ -577,8 +593,9 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
             err_key <- if ("placement_error_key" %in% names(row) &&
                            !is.na(row$placement_error_key)) row$placement_error_key else ""
             short_label <- short_label_for_status(ps, err_key)
-            return(sprintf('<span class="pill error" title="%s">%s</span>',
+            return(sprintf('<span class="pill error" title="%s" %s>%s</span>',
                            htmltools::htmlEscape(full_msg),
+                           common_data_attrs,
                            htmltools::htmlEscape(short_label)))
           }
 
@@ -3028,11 +3045,28 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           var visible = 0;
 
           rows.forEach(function(row) {
-            var btn = row.querySelector("button[data-edge]");
-            var edge = btn ? parseFloat(btn.dataset.edge) : 0;
-            var size = btn ? parseFloat(btn.dataset.size) : 0;
-            var gameText = btn ? (btn.dataset.away + " @ " + btn.dataset.home) : "";
-            var statusLabel = btn && btn.classList.contains("btn-placed") ? "Placed" : "Not Placed";
+            // Look up the data-bearing element. Three possible shapes per row:
+            //   <button data-edge=... class="btn-place">       — un-placed
+            //   <button data-edge=... class="btn-placed">      — manually placed (legacy)
+            //   <span   data-edge=... class="placed-parlay-label">  — auto-placed
+            //   <span   data-edge=... class="pill error">      — auto-place failed
+            // Any element with data-edge is the marker.
+            var marker = row.querySelector("[data-edge]");
+            var edge = marker ? parseFloat(marker.dataset.edge) : 0;
+            var size = marker ? parseFloat(marker.dataset.size) : 0;
+            var gameText = marker ? (marker.dataset.away + " @ " + marker.dataset.home) : "";
+            var statusLabel;
+            if (!marker) {
+              statusLabel = "Not Placed";
+            } else if (marker.classList.contains("btn-placed") ||
+                       marker.classList.contains("placed-parlay-label")) {
+              statusLabel = "Placed";
+            } else if (marker.classList.contains("pill") &&
+                       marker.classList.contains("error")) {
+              statusLabel = "Failed";
+            } else {
+              statusLabel = "Not Placed";
+            }
 
             var gameMatch  = activeParlayFilters.game.size === 0   || activeParlayFilters.game.has(gameText);
             var statusMatch = activeParlayFilters.status.size === 0 || activeParlayFilters.status.has(statusLabel);

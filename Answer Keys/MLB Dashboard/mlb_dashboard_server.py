@@ -997,16 +997,21 @@ def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> N
                 parlay_hash, status, home_team, away_team,
                 combo, game_id, game_time,
                 wz_odds, kelly_bet,
+                spread_line, total_line, fair_odds, edge_pct,
                 recommended_size, expected_odds, expected_win,
                 actual_size, actual_win, ticket_number, idwt,
                 legs_json, error_msg, error_msg_key, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (parlay_hash) DO UPDATE SET
                 status        = EXCLUDED.status,
                 actual_size   = EXCLUDED.actual_size,
                 actual_win    = EXCLUDED.actual_win,
                 ticket_number = EXCLUDED.ticket_number,
                 idwt          = EXCLUDED.idwt,
+                spread_line   = COALESCE(placed_parlays.spread_line, EXCLUDED.spread_line),
+                total_line    = COALESCE(placed_parlays.total_line,  EXCLUDED.total_line),
+                fair_odds     = COALESCE(placed_parlays.fair_odds,   EXCLUDED.fair_odds),
+                edge_pct      = COALESCE(placed_parlays.edge_pct,    EXCLUDED.edge_pct),
                 error_msg     = EXCLUDED.error_msg,
                 error_msg_key = EXCLUDED.error_msg_key,
                 updated_at    = EXCLUDED.updated_at
@@ -1020,6 +1025,11 @@ def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> N
             row.get("game_time"),
             int(row["wz_odds"]),
             float(row["kelly_bet"]),
+            # Descriptive fields for Placed Parlays table renderer
+            float(row["spread_line"]) if row.get("spread_line") is not None else None,
+            float(row["total_line"])  if row.get("total_line")  is not None else None,
+            int(row["fair_odds"])     if row.get("fair_odds")   is not None else None,
+            float(row["edge_pct"])    if row.get("edge_pct")    is not None else None,
             float(row["kelly_bet"]),
             int(row["wz_odds"]),
             float(row.get("exact_to_win") or 0) or round(float(row["kelly_bet"]) * (
@@ -1151,9 +1161,10 @@ def api_place_parlay():
                     parlay_hash, status, home_team, away_team,
                     combo, game_id, game_time,
                     wz_odds, kelly_bet,
+                    spread_line, total_line, fair_odds, edge_pct,
                     recommended_size, expected_odds,
                     updated_at
-                ) VALUES (?, 'placing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, 'placing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (parlay_hash) DO NOTHING
             """, [
                 parlay_hash,
@@ -1164,6 +1175,14 @@ def api_place_parlay():
                 row.get("game_time"),
                 int(row["wz_odds"]),
                 float(row["kelly_bet"]),
+                # Optional descriptive fields used by create_placed_parlays_table()
+                # to format the Legs, Edge and Fair columns. Fall back to NULL
+                # if the row from mlb_parlay_opportunities doesn't have them
+                # (older schemas / pre-pricer rows).
+                float(row["spread_line"]) if row.get("spread_line") is not None else None,
+                float(row["total_line"])  if row.get("total_line")  is not None else None,
+                int(row["fair_odds"])     if row.get("fair_odds")   is not None else None,
+                float(row["edge_pct"])    if row.get("edge_pct")    is not None else None,
                 float(row["kelly_bet"]),
                 int(row["wz_odds"]),
                 now,
