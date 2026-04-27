@@ -626,14 +626,33 @@ def get_placed_bets():
 # =============================================================================
 
 
-def _spread_play(line: float) -> int:
-    """Wagerzon play codes: 1=home spread (negative line side), 0=away spread."""
-    return 1 if line < 0 else 0
+def _spread_play_from_combo(combo: str) -> int:
+    """1 = home spread, 0 = away spread. Derived from the combo description.
+
+    Combo strings start with the side bet on, e.g. 'Home -1.5 + Over 9.5',
+    'Away +1.5 + Under 7.5', or 'F5 Home Spread + Over'. We can't infer the
+    side from the line sign because home can be the underdog.
+    """
+    # Match 'Home' or 'Away' as a standalone word at the start or after 'F5 '
+    if "Home Spread" in combo or combo.startswith("Home"):
+        return 1
+    if "Away Spread" in combo or combo.startswith("Away"):
+        return 0
+    raise ValueError(f"Cannot determine spread side from combo: {combo!r}")
 
 
-def _total_play(combo: str) -> int:
-    """Pick over (2) vs under (3) from the combo description string."""
-    return 2 if " + Over " in combo else 3
+def _total_play_from_combo(combo: str) -> int:
+    """2 = over, 3 = under. Looks for the literal '+ Over' / '+ Under' segment."""
+    if "+ Over" in combo:
+        return 2
+    if "+ Under" in combo:
+        return 3
+    raise ValueError(f"Cannot determine total side from combo: {combo!r}")
+
+
+def _total_points_for_play(total_line: float, play: int) -> str:
+    """Wagerzon expects negative points for over (play=2), positive for under (play=3)."""
+    return str(-abs(total_line)) if play == 2 else str(total_line)
 
 
 @app.route("/api/price-combined-parlay", methods=["POST"])
@@ -644,7 +663,7 @@ def price_combined_parlay():
     Returns: joint_fair_dec, joint_fair_prob, joint_edge, wz_dec, wz_win,
              kelly_stake, and the per-leg combo descriptions.
     """
-    data = request.json
+    data = request.get_json(silent=True) or {}
     hash_a = data.get("parlay_hash_a")
     hash_b = data.get("parlay_hash_b")
     if not hash_a or not hash_b:
@@ -684,25 +703,34 @@ def price_combined_parlay():
     # Pull parlay sizing settings from dashboard DB
     dcon = duckdb.connect(str(DB_PATH))
     try:
-        bankroll = dcon.execute(
+        bankroll_row = dcon.execute(
             "SELECT value FROM sizing_settings WHERE param = 'parlay_bankroll'"
-        ).fetchone()[0]
-        kmult = dcon.execute(
+        ).fetchone()
+        kmult_row = dcon.execute(
             "SELECT value FROM sizing_settings WHERE param = 'parlay_kelly_mult'"
-        ).fetchone()[0]
+        ).fetchone()
     finally:
         dcon.close()
+    if not bankroll_row or not kmult_row:
+        return jsonify({"success": False, "error": "Parlay sizing settings missing"}), 500
+    bankroll = bankroll_row[0]
+    kmult = kmult_row[0]
 
     # Build legs for WZ pricing
+    a_total_play = _total_play_from_combo(a[8])
+    b_total_play = _total_play_from_combo(b[8])
     legs = [
-        {"idgm": a[3], "play": _spread_play(a[4]), "points": str(a[4]), "odds": int(a[6])},
-        {"idgm": a[3], "play": _total_play(a[8]),  "points": str(a[5]), "odds": int(a[7])},
-        {"idgm": b[3], "play": _spread_play(b[4]), "points": str(b[4]), "odds": int(b[6])},
-        {"idgm": b[3], "play": _total_play(b[8]),  "points": str(b[5]), "odds": int(b[7])},
+        {"idgm": a[3], "play": _spread_play_from_combo(a[8]), "points": str(a[4]),                                 "odds": int(a[6])},
+        {"idgm": a[3], "play": a_total_play,                  "points": _total_points_for_play(a[5], a_total_play), "odds": int(a[7])},
+        {"idgm": b[3], "play": _spread_play_from_combo(b[8]), "points": str(b[4]),                                 "odds": int(b[6])},
+        {"idgm": b[3], "play": b_total_play,                  "points": _total_points_for_play(b[5], b_total_play), "odds": int(b[7])},
     ]
 
     # Live WZ price (10000 first, fallback to 100)
-    wz_session = _get_wz_session()
+    try:
+        wz_session = _get_wz_session()
+    except RuntimeError as e:
+        return jsonify({"success": False, "error": f"Wagerzon auth failed: {e}"}), 502
     wz = wz_get_combined_parlay_price(wz_session, legs, amount=10000)
     if wz is None:
         wz = wz_get_combined_parlay_price(wz_session, legs, amount=100)

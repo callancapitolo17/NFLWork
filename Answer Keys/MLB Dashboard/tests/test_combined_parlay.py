@@ -257,3 +257,60 @@ def test_price_combined_parlay_rejects_same_game(monkeypatch, tmp_path):
     })
     assert resp.status_code == 400
     assert "Same-game" in resp.get_json()["error"]
+
+
+def test_price_combined_parlay_sends_correct_play_codes(monkeypatch, tmp_path):
+    """Captures legs sent to WZ pricer; asserts play codes + points sign per the canonical encoding."""
+    test_dashboard_db, test_mlb_db = _seed_endpoint_dbs(tmp_path)
+
+    # Add an Away/Under combo and a Home/Over combo to ensure both branches are tested
+    con = duckdb.connect(str(test_mlb_db))
+    con.execute("DELETE FROM mlb_parlay_opportunities")
+    con.execute("""
+        INSERT INTO mlb_parlay_opportunities VALUES
+        ('hash_home_over',  4.32, 4.55, 100001, -1.5, 9.5, 110, -105, 'Home -1.5 + Over 9.5',  'NYY@BOS_2026'),
+        ('hash_away_under', 4.85, 5.10, 100002,  1.5, 7.5, 120, -110, 'Away +1.5 + Under 7.5', 'LAD@SD_2026')
+    """)
+    con.close()
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import mlb_dashboard_server as svr
+    monkeypatch.setattr(svr, "DB_PATH", test_dashboard_db)
+    monkeypatch.setattr(svr, "MLB_DB_PATH", test_mlb_db)
+
+    captured_legs = {}
+    def capturing_fake(session, legs, amount=10000):
+        captured_legs["legs"] = legs
+        return {"win": 18000, "decimal": 19.0, "american": 1800, "amount": 1000}
+    monkeypatch.setattr(svr, "wz_get_combined_parlay_price", capturing_fake)
+    monkeypatch.setattr(svr, "_get_wz_session", lambda: object())
+    svr._COMBO_PRICE_CACHE.clear()
+
+    client = svr.app.test_client()
+    resp = client.post("/api/price-combined-parlay", json={
+        "parlay_hash_a": "hash_home_over", "parlay_hash_b": "hash_away_under"
+    })
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+
+    legs = captured_legs["legs"]
+    assert len(legs) == 4
+
+    # Leg 0: Home spread, leg A
+    assert legs[0]["play"] == 1, "Home spread should be play=1"
+    assert legs[0]["idgm"] == 100001
+    assert legs[0]["points"] == "-1.5"
+
+    # Leg 1: Over total, leg A — points must be NEGATIVE
+    assert legs[1]["play"] == 2, "Over total should be play=2"
+    assert legs[1]["idgm"] == 100001
+    assert legs[1]["points"] == "-9.5", f"Over points must be negative, got {legs[1]['points']!r}"
+
+    # Leg 2: Away spread, leg B
+    assert legs[2]["play"] == 0, "Away spread should be play=0"
+    assert legs[2]["idgm"] == 100002
+    assert legs[2]["points"] == "1.5"
+
+    # Leg 3: Under total, leg B — points must be POSITIVE
+    assert legs[3]["play"] == 3, "Under total should be play=3"
+    assert legs[3]["idgm"] == 100002
+    assert legs[3]["points"] == "7.5", f"Under points must be positive, got {legs[3]['points']!r}"
