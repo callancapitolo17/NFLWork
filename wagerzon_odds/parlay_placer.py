@@ -265,27 +265,46 @@ def _post_wagers(specs: list[ParlaySpec]) -> list[PlacementResult]:
     for spec, item in zip(specs, data["result"]):
         wpr = item["WagerPostResult"]
         if wpr.get("Confirm") and not wpr.get("ErrorMsgKey"):
-            # Defensive parse: IDWT can come back as int, str, or None depending
-            # on Wagerzon-side serialization quirks. Use the truthy-check
-            # pattern but log when something unexpected happens so we can
-            # diagnose post-hoc orphans without losing the audit trail.
-            raw_idwt = wpr.get("IDWT")
-            raw_ticket = wpr.get("TicketNumber")
+            # Defensive parse: Wagerzon's PostWagerMultipleHelper response
+            # shape varies. Sometimes IDWT/TicketNumber/Risk/Win sit at the
+            # WagerPostResult top level (the recon-captured "classic" shape);
+            # other responses put them only inside details[0] (the per-wager
+            # entry). Look in both locations and use whichever has a value.
+            inner_details = wpr.get("details") or []
+            inner = inner_details[0] if inner_details else {}
+
+            def _first_present(*candidates):
+                for c in candidates:
+                    if c not in (None, "", 0, 0.0):
+                        return c
+                return None
+
+            raw_idwt   = _first_present(wpr.get("IDWT"),   inner.get("IDWT"))
+            raw_ticket = _first_present(wpr.get("TicketNumber"), inner.get("TicketNumber"))
+            raw_win    = _first_present(wpr.get("Win"),    inner.get("Win"))
+            raw_risk   = _first_present(wpr.get("Risk"),   inner.get("Risk"))
+
             try:
-                idwt_val = int(raw_idwt) if raw_idwt not in (None, "", 0) else None
+                idwt_val = int(raw_idwt) if raw_idwt is not None else None
             except (TypeError, ValueError):
                 idwt_val = None
-            ticket_val = str(raw_ticket) if raw_ticket not in (None, "") else None
+            ticket_val = str(raw_ticket) if raw_ticket is not None else None
+            actual_win  = float(raw_win  if raw_win  is not None else 0)
+            actual_risk = float(raw_risk if raw_risk is not None else 0)
+
             if idwt_val is None or ticket_val is None:
-                # Not fatal — the bet is placed, but the local audit will
-                # be incomplete. Caller (api_place_parlay) writes an orphan
-                # row with raw_response so we can reconstruct after the fact.
+                # Bet is placed at Wagerzon but our identifier extraction
+                # couldn't find them in either location. Not fatal — the
+                # raw_response is preserved on the result, and api_place_parlay
+                # writes an orphan row for forensic recovery via the WZ
+                # HistoryHelper feed.
                 import sys as _sys
                 print(
                     f"!! parlay_placer: confirmed placement missing "
                     f"identifiers — parlay_hash={spec.parlay_hash} "
                     f"raw_idwt={raw_idwt!r} raw_ticket={raw_ticket!r} "
-                    f"wpr_keys={list(wpr.keys())}",
+                    f"wpr_keys={list(wpr.keys())} "
+                    f"inner_keys={list(inner.keys()) if inner else []}",
                     file=_sys.stderr, flush=True,
                 )
             results.append(PlacementResult(
@@ -293,8 +312,8 @@ def _post_wagers(specs: list[ParlaySpec]) -> list[PlacementResult]:
                 status="placed",
                 ticket_number=ticket_val,
                 idwt=idwt_val,
-                actual_win=float(wpr.get("Win", 0)),
-                actual_risk=float(wpr.get("Risk", 0)),
+                actual_win=actual_win,
+                actual_risk=actual_risk,
                 raw_response=raw,
             ))
         else:
