@@ -875,6 +875,11 @@ create_trifectas_table <- function(trifecta_opps, placed_trifectas) {
     ) %>%
     arrange(desc(edge_pct))
 
+  # The Action column needs to be a real column on the dataframe so reactable
+  # has something to render. Add a placeholder; the cell renderer below builds
+  # the actual button HTML from the row's other fields.
+  table_data$action <- ""
+
   reactable(
     table_data,
     searchable = TRUE,
@@ -884,12 +889,12 @@ create_trifectas_table <- function(trifecta_opps, placed_trifectas) {
     compact    = TRUE,
     defaultPageSize = 25,
     columns = list(
-      # Hidden helpers (used by JS via data-* attrs on the Action button)
+      # ---- Hidden helpers (carried for JS data-* attrs and conditional logic)
       trifecta_hash = colDef(show = FALSE),
       game_id       = colDef(show = FALSE),
       game_time     = colDef(show = FALSE),
-      home_team     = colDef(show = FALSE),
-      away_team     = colDef(show = FALSE),
+      target_team   = colDef(show = FALSE),
+      side          = colDef(show = FALSE),
       n_samples     = colDef(show = FALSE),
       model_odds    = colDef(show = FALSE),
       dk_odds       = colDef(show = FALSE),
@@ -897,22 +902,35 @@ create_trifectas_table <- function(trifecta_opps, placed_trifectas) {
       book_odds     = colDef(show = FALSE),
       edge_pct      = colDef(show = FALSE),
       kelly_bet     = colDef(show = FALSE),
-      target_team   = colDef(show = FALSE),
-      side          = colDef(show = FALSE),
       is_placed     = colDef(show = FALSE),
 
+      # ---- Visible columns, in display order
       game = colDef(name = "Game", minWidth = 180, filterable = TRUE),
-      pick_display = colDef(name = "Pick", minWidth = 140),
-      prop_type    = colDef(name = "Prop", minWidth = 110, filterable = TRUE),
-      description  = colDef(name = "Description", minWidth = 220),
+
+      pick_display = colDef(
+        name = "Pick", minWidth = 140,
+        cell = function(value, index) {
+          row <- table_data[index, ]
+          div(
+            span(style = "font-weight: 600;", row$target_team),
+            span(style = "margin-left: 8px; color: #888; font-size: 0.9em;",
+                 paste0("(", row$side, ")"))
+          )
+        }
+      ),
+
+      prop_type    = colDef(name = "Prop",        minWidth = 110, filterable = TRUE),
+      description  = colDef(name = "Description", minWidth = 220, filterable = TRUE),
+
       model_display = colDef(name = "Model", minWidth = 70, align = "right",
                              style = list(fontFamily = "monospace")),
-      dk_display    = colDef(name = "DK", minWidth = 70, align = "right",
+      dk_display    = colDef(name = "DK",    minWidth = 70, align = "right",
                              style = list(fontFamily = "monospace")),
-      fair_display  = colDef(name = "Fair", minWidth = 70, align = "right",
+      fair_display  = colDef(name = "Fair",  minWidth = 70, align = "right",
                              style = list(fontFamily = "monospace", fontWeight = "600")),
-      book_display  = colDef(name = "Book", minWidth = 70, align = "right",
+      book_display  = colDef(name = "Book",  minWidth = 70, align = "right",
                              style = list(fontFamily = "monospace")),
+
       edge_display = colDef(
         name = "Edge", minWidth = 80, align = "right",
         cell = function(value, index) {
@@ -925,24 +943,9 @@ create_trifectas_table <- function(trifecta_opps, placed_trifectas) {
           div(style = list(color = color, fontWeight = "600"), value)
         }
       ),
+
       stake_display = colDef(name = "Stake", minWidth = 70, align = "right"),
 
-      description = colDef(name = "Description", minWidth = 220, filterable = TRUE),
-
-      # The Action column does the conditional render
-      pick_display = colDef(name = "Pick", minWidth = 140,
-        cell = function(value, index) {
-          row <- table_data[index, ]
-          # The actual Action button is rendered as its OWN column below.
-          # Pick is just a styled label here.
-          div(
-            span(style = "font-weight: 600;", row$target_team),
-            span(style = "margin-left: 8px; color: #888; font-size: 0.9em;", paste0("(", row$side, ")"))
-          )
-        }
-      )
-    ),
-    columns = list(
       action = colDef(
         name = "Action", minWidth = 110, align = "center", html = TRUE,
         sortable = FALSE, filterable = FALSE,
@@ -959,7 +962,7 @@ create_trifectas_table <- function(trifecta_opps, placed_trifectas) {
               row$trifecta_hash, row$kelly_bet
             )
           } else {
-            ""  # below threshold or no kelly — no button
+            ""  # below trifecta_min_edge → no button (row stays for context)
           }
         }
       )
@@ -974,7 +977,7 @@ create_trifectas_table <- function(trifecta_opps, placed_trifectas) {
 }
 ```
 
-Note the duplicate `columns = list(...)` blocks above are an artifact of writing this incrementally — **collapse them into a single `columns = list(...)`** with all colDefs in one definition. The pattern here is simply to show every column listed (hidden + visible + Action). When implementing, merge them into one block in the order: hidden helpers, Game, Pick, Prop, Description, Model, DK, Fair, Book, Edge, Stake, Action.
+The single `columns = list(...)` block lists every column on `table_data` exactly once — hidden helpers first, then visible columns in display order (Game, Pick, Prop, Description, Model, DK, Fair, Book, Edge, Stake, Action). reactable will error if a colDef references a column that's not on the dataframe, which is why we add `table_data$action <- ""` before the call.
 
 ### - [ ] Step 4: Add `placeTrifecta` / `removeTrifecta` JS to the rendered HTML
 
