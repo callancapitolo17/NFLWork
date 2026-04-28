@@ -99,6 +99,12 @@ mlb_triple_play.R (standalone pricer)
   ├── For each row:
   │     parse_legs(description) → compute_prop_fair(...) → model_fair_prob
   │     dk_sgp lookup → devig with DK_SGP_VIG_DEFAULT=1.25 → dk_fair_prob
+  │     ↑ populated by mlb_sgp/scraper_draftkings_trifecta.py via system2():
+  │       - Map Odds API id → DK event id (last-word team match)
+  │       - Resolve each leg via dk_leg_resolvers.LEG_RESOLVERS
+  │         (1st Run, 1st 5 Innings, Moneyline, <Team>: Team Total Runs)
+  │       - POST to DK calculateBets with selectionsForYourBet payload
+  │       - Write per-prop rows to mlb_trifecta_sgp_odds (atomic snapshot)
   │     blend_dk_with_model(model, dk, vig) → fair_prob (the published fair)
   └── Prints model_odds, dk_odds, fair_odds (blended), book_odds, edge_pct
 ```
@@ -110,7 +116,9 @@ mlb_triple_play.R (standalone pricer)
 - Adding new MLB teams (none today, but if expansion happens) requires updating `WZ_TO_CANONICAL` in the pricer.
 - DK trifecta SGP blend mirrors mlb_correlated_parlay.R but uses `DK_SGP_VIG_DEFAULT = 1.25` (vs. 1.10 for parlays) because trifectas are 3-4 legs and DK shaves harder on additional legs. Only 2 obs/game (home + away) so per-game vig fitting isn't possible; revisit the constant once Plan #2 collects real DK data.
 - Blend = mean of available probs (model + DK). When DK is unavailable (table empty, missing leg, scraper failure), blend reduces to model-only.
-- Plan #2 (post-recon) populates `mlb_trifecta_sgp_odds` via `mlb_sgp/scraper_draftkings_trifecta.py`. Plan #1 ships the schema + blend scaffolding; the table stays empty until Plan #2 lands.
+- DK trifecta SGP odds populated by `mlb_sgp/scraper_draftkings_trifecta.py`, invoked from the pricer via `system2()`. Resolvers in `mlb_sgp/dk_leg_resolvers.py` map each `parse_legs` leg type to a DK selection ID using primitive markets: `1st Run` (scores_first), `Moneyline` (FG ML), `1st 5 Innings` (F5 ML), `<TEAM>: Team Total Runs` (team totals). All four are SGP-eligible per recon (2026-04-22).
+- F3 / F7 wins_period legs and opp_total_* legs return NULL from the resolver — DK doesn't reliably post these as 2-way primitives. Props containing them get NULL `sgp_decimal` and the R blend correctly degrades to model-only.
+- 4-leg GRAND-SLAM SGPs (scores_first + F5 ML + FG ML + team_total_under) are accepted by DK as resolvers but combinability tests have shown DK rejects the 4-leg combination at calculateBets time. Those rows currently get NULL `sgp_decimal` and degrade to model-only fair. TRIPLE-PLAY 3-leg SGPs are accepted cleanly.
 
 ## Common Pitfalls
 
