@@ -154,6 +154,18 @@ def init_db():
             INSERT INTO sizing_settings (param, value) VALUES ('parlay_min_edge', 0)
             ON CONFLICT (param) DO NOTHING
         """)
+        con.execute("""
+            INSERT INTO sizing_settings (param, value) VALUES ('trifecta_bankroll', 100)
+            ON CONFLICT (param) DO NOTHING
+        """)
+        con.execute("""
+            INSERT INTO sizing_settings (param, value) VALUES ('trifecta_kelly_mult', 0.10)
+            ON CONFLICT (param) DO NOTHING
+        """)
+        con.execute("""
+            INSERT INTO sizing_settings (param, value) VALUES ('trifecta_min_edge', 0.05)
+            ON CONFLICT (param) DO NOTHING
+        """)
 
         con.execute("""
             CREATE TABLE IF NOT EXISTS filter_settings (
@@ -292,6 +304,27 @@ def init_db():
                 """)
         except Exception:
             pass  # not critical — first-time install, table just got created
+
+        # Trifecta bet tracking
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS placed_trifectas (
+                trifecta_hash  TEXT PRIMARY KEY,
+                placed_at      TIMESTAMP,
+                game_id        TEXT,
+                game           TEXT,
+                game_time      TIMESTAMP,
+                target_team    TEXT,
+                prop_type      TEXT,
+                side           TEXT,
+                description    TEXT,
+                book_odds      INTEGER,
+                fair_odds      INTEGER,
+                edge_pct       DOUBLE,
+                kelly_bet      DOUBLE,
+                actual_wager   DOUBLE,
+                status         TEXT
+            )
+        """)
 
         # CLV tracking tables
         con.execute("""
