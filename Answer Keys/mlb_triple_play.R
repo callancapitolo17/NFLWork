@@ -392,12 +392,12 @@ if (!interactive() && sys.nframe() == 0L) {
   write_con <- NULL
   tryCatch({
     write_con <- dbConnect(duckdb(), dbdir = MLB_DB)
+    on.exit(if (!is.null(write_con)) duckdb::dbDisconnect(write_con, shutdown = TRUE), add = TRUE)
     dbExecute(write_con, "DROP TABLE IF EXISTS mlb_trifecta_opportunities")
     dbWriteTable(write_con, "mlb_trifecta_opportunities", priced)
     cat(sprintf("Wrote %d trifecta opportunities to %s.\n", nrow(priced), MLB_DB))
   }, error = function(e) {
     cat(sprintf("Warning: Failed to write trifectas to DB: %s\n", e$message))
   })
-  if (!is.null(write_con)) duckdb::dbDisconnect(write_con, shutdown = TRUE)
 
 }

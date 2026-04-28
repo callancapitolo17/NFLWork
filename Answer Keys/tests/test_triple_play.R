@@ -186,3 +186,32 @@ test_that("kelly_frac formula matches expected for known win_prob and odds", {
   kelly_frac <- max(0, (b * p - q) / b)
   expect_equal(kelly_frac, 0)
 })
+
+test_that("kelly_bet is zero when fair_odds is NA (model couldn't price)", {
+  # Replicate the inline NA-guard logic from mlb_triple_play.R
+  trifecta_bankroll  <- 100
+  trifecta_kelly_mult <- 0.10
+  trifecta_min_edge  <- 0.05
+
+  fair_odds <- NA_integer_
+  book_odds <- 500L
+  edge_pct  <- NA_real_
+
+  win_prob   <- if (!is.na(fair_odds)) {
+    if (fair_odds > 0) 100 / (fair_odds + 100) else (-fair_odds) / ((-fair_odds) + 100)
+  } else NA_real_
+  dec_odds   <- if (!is.na(book_odds)) {
+    if (book_odds > 0) 1 + book_odds / 100 else 1 + 100 / abs(book_odds)
+  } else NA_real_
+  kelly_frac <- if (!is.na(win_prob) && !is.na(dec_odds) && dec_odds > 1) {
+    b <- dec_odds - 1; p <- win_prob; q <- 1 - p
+    max(0, (b * p - q) / b)
+  } else 0
+  kelly_bet  <- if (!is.na(edge_pct) && edge_pct >= trifecta_min_edge * 100) {
+    trifecta_bankroll * trifecta_kelly_mult * kelly_frac
+  } else 0
+
+  expect_equal(win_prob, NA_real_)
+  expect_equal(kelly_frac, 0)
+  expect_equal(kelly_bet, 0)
+})
