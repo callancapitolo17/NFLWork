@@ -207,3 +207,33 @@ This adds three columns to `placed_parlays`: `is_combo BOOLEAN`, `combo_leg_ids 
 - Combining a parlay with a single from the Bets tab
 - Cash-budget-aware portfolio Kelly (set "available WZ balance" → dashboard solves for optimal split)
 - Auto-place via WZ API — for now, the dashboard records intent in `placed_parlays`; you place the actual bet at WZ manually. (Single parlays use the auto-placement flow above; combined parlays remain manual for v1.)
+
+## Trifectas tab
+
+Shows priced TRIPLE-PLAY and GRAND-SLAM specials (from Wagerzon) blended with DraftKings SGP fair odds. Mirrors the bets-tab UI (filterable, color-coded EV, in-place Place button) on the parlay-tab plumbing (pricer-writes-table on each refresh, separate placed_X table for dedup).
+
+### Data flow
+
+1. `wagerzon_odds/scraper_specials.py` populates `wagerzon_specials` (sport='mlb', prop_type IN ('TRIPLE-PLAY','GRAND-SLAM'))
+2. `Answer Keys/mlb_triple_play.R` runs in parallel with `mlb_correlated_parlay.R` during refresh:
+   - reads posted lines from `wagerzon_specials`
+   - invokes `mlb_sgp/scraper_draftkings_trifecta.py` for live DK SGP odds
+   - blends model fair × DK fair (vig 1.25)
+   - writes `mlb_trifecta_opportunities` to `Answer Keys/mlb.duckdb`
+3. Dashboard reads `mlb_trifecta_opportunities` and renders the Trifectas tab.
+
+### Placement (manual log)
+
+- Click **Place** to log a trifecta: `POST /api/place-trifecta` with the row's hash; the server fetches the full opportunity row by hash and inserts into `placed_trifectas` (in `mlb_dashboard.duckdb`). Idempotent: re-clicking is a no-op.
+- Click **Placed** to undo: `POST /api/remove-trifecta` deletes the row.
+- Auto-placement (direct submission to Wagerzon) is **not** wired in this version. Place the bet on Wagerzon yourself, then click Place here to log it.
+
+### Sizing settings
+
+Three rows in `sizing_settings` control trifecta sizing (separate from parlay sizing because trifectas are 3-4 legs at higher payouts with single-book DK blending):
+
+- `trifecta_bankroll` — default 100
+- `trifecta_kelly_mult` — default 0.10 (10% Kelly, half the parlay default; trifecta vig 1.25 is conservative until validated)
+- `trifecta_min_edge` — default 0.05 (5%; below this the row stays visible but no Place button is shown)
+
+Adjust via the existing sliders panel (next to parlay sliders).

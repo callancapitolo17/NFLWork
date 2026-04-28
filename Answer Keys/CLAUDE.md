@@ -106,7 +106,8 @@ mlb_triple_play.R (standalone pricer)
   │       - POST to DK calculateBets with selectionsForYourBet payload
   │       - Write per-prop rows to mlb_trifecta_sgp_odds (atomic snapshot)
   │     blend_dk_with_model(model, dk, vig) → fair_prob (the published fair)
-  └── Prints model_odds, dk_odds, fair_odds (blended), book_odds, edge_pct
+  ├── Prints model_odds, dk_odds, fair_odds (blended), book_odds, edge_pct
+  └── Writes mlb_trifecta_opportunities (game_id, hash, kelly_bet, ...) for the dashboard
 ```
 - `home_scored_first` is NA for games with no scoring in innings 1–5 (~5% of historical games); excluded from the mean before the ratio is computed.
 - F5 3-way: `wins_period` with period=F5 passes only with strict lead (`margin_f5 > 0` for home, `< 0` for away). F5 ties kill the parlay.
@@ -119,6 +120,7 @@ mlb_triple_play.R (standalone pricer)
 - DK trifecta SGP odds populated by `mlb_sgp/scraper_draftkings_trifecta.py`, invoked from the pricer via `system2()`. Resolvers in `mlb_sgp/dk_leg_resolvers.py` map each `parse_legs` leg type to a DK selection ID using primitive markets: `1st Run` (scores_first), `Moneyline` (FG ML), `1st 5 Innings` (F5 ML), `<TEAM>: Team Total Runs` (team totals). All four are SGP-eligible per recon (2026-04-22).
 - F3 / F7 wins_period legs and opp_total_* legs return NULL from the resolver — DK doesn't reliably post these as 2-way primitives. Props containing them get NULL `sgp_decimal` and the R blend correctly degrades to model-only.
 - 4-leg GRAND-SLAM SGPs (scores_first + F5 ML + FG ML + team_total_under) are accepted by DK as resolvers but combinability tests have shown DK rejects the 4-leg combination at calculateBets time. Those rows currently get NULL `sgp_decimal` and degrade to model-only fair. TRIPLE-PLAY 3-leg SGPs are accepted cleanly.
+- Dashboard tab: `mlb_dashboard.R` reads `mlb_trifecta_opportunities` + `placed_trifectas` and renders a Trifectas tab next to Parlays. Manual-log only — `/api/place-trifecta` and `/api/remove-trifecta` toggle a row in `placed_trifectas` (in `mlb_dashboard.duckdb`). Sizing settings: `trifecta_bankroll`, `trifecta_kelly_mult`, `trifecta_min_edge` rows in `sizing_settings`.
 
 ## Common Pitfalls
 
