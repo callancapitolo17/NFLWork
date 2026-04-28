@@ -501,31 +501,51 @@ def compute_exact_payouts(session: requests.Session):
             print("No sized parlays with idgm — nothing to price.")
             return
 
-        print(f"Pricing {len(sized)} sized parlays at exact stakes...")
-        updates = []
+        print(f"Pricing {len(sized)} sized parlays at exact stakes "
+              f"(parallel, max_workers={MAX_WORKERS})...")
+
+        # Build flat work list: one item per (parlay, stake) pair so the thread
+        # pool can issue every ConfirmWagerHelper POST concurrently. The serial
+        # version did this same work as nested for-loops over parlays × stakes.
+        work_items = []
+        meta = {}  # parlay_hash -> (game, combo, kelly_bet) for post-pool grouping
         for (parlay_hash, game, combo, idgm,
              spread_line, total_line, spread_price, total_price,
              kelly_bet) in sized:
             legs = _combo_to_legs(combo, idgm, spread_line, total_line,
                                   spread_price, total_price)
-
-            candidates = []
+            meta[parlay_hash] = (game, combo, kelly_bet)
             for stake in range(max(1, kelly_bet - NUDGE_RANGE),
                                kelly_bet + NUDGE_RANGE + 1):
-                price = get_parlay_price(session, idgm, legs, amount=stake)
-                if price is None:
-                    continue  # MAXPARLAYRISKEXCEED etc.
-                candidates.append((stake, int(price["win"])))
+                work_items.append((parlay_hash, idgm, legs, stake))
 
+        def worker(item):
+            parlay_hash, idgm, legs, stake = item
+            price = get_parlay_price(session, idgm, legs, amount=stake)
+            return (parlay_hash, stake, price)
+
+        raw = _run_parallel(worker, work_items)
+
+        # Group results by parlay_hash. Initialise from sized-row order so the
+        # final iteration prints in the same order the serial version did, even
+        # for parlays where every stake came back None.
+        per_parlay = {row[0]: [] for row in sized}
+        for (parlay_hash, stake, price) in raw:
+            if price is not None:
+                per_parlay[parlay_hash].append((stake, int(price["win"])))
+
+        updates = []
+        for parlay_hash, candidates in per_parlay.items():
+            game, combo, kelly_bet = meta[parlay_hash]
             if not candidates:
                 print(f"  {game} | {combo}: no valid candidate stakes — skipping")
                 continue
-
-            # Pick the wager with the highest win/stake ratio; break ties by
-            # taking the stake closest to Kelly-ideal to keep growth on track.
-            best = max(candidates,
-                       key=lambda sw: (sw[1] / sw[0], -abs(sw[0] - kelly_bet)))
-            best_stake, best_win = best
+            # Same selection rule as the serial version: maximise win/stake
+            # ratio, break ties by stake closest to Kelly-ideal.
+            best_stake, best_win = max(
+                candidates,
+                key=lambda sw: (sw[1] / sw[0], -abs(sw[0] - kelly_bet)),
+            )
             updates.append((best_stake, best_win, parlay_hash))
             print(f"  {game} | {combo}: Kelly={kelly_bet} → "
                   f"nudged={best_stake} (to_win=${best_win})")
