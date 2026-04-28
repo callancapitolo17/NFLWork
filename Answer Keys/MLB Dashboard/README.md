@@ -236,4 +236,4 @@ Three rows in `sizing_settings` control trifecta sizing (separate from parlay si
 - `trifecta_kelly_mult` — default 0.10 (10% Kelly, half the parlay default; trifecta vig 1.25 is conservative until validated)
 - `trifecta_min_edge` — default 0.05 (5%; below this the row stays visible but no Place button is shown)
 
-Adjust via the existing sliders panel (next to parlay sliders).
+To change these defaults, update the `sizing_settings` table in `mlb_dashboard.duckdb` directly (a UI panel for trifecta sizing has not been built yet — the parlay sliders only persist parlay sizing).

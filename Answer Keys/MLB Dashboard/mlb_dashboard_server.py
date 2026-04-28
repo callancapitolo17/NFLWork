@@ -2007,9 +2007,10 @@ def run_pipeline():
         # Both R scripts read independent inputs (parlay reads mlb_sgp_odds + mlb_consensus_temp;
         # trifecta reads wagerzon_specials + mlb_trifecta_sgp_odds) and write independent
         # output tables. Running them concurrently shaves ~5–30s off refresh latency by
-        # overlapping the trifecta DK scraper with the parlay R work. DuckDB serializes
-        # write transactions transparently; both writes are small DROP+dbWriteTable on tables
-        # the other process never reads.
+        # overlapping the trifecta DK scraper with the parlay R work.
+        # Both writes are small DROP+dbWriteTable on tables the other process never reads.
+        # If a rare file-lock conflict occurs at commit time, each script prints a non-fatal
+        # warning via tryCatch and the stale table from the prior run is preserved.
         print("Finding parlay opportunities + pricing trifectas (parallel)...")
         parlay_proc = subprocess.Popen(
             ["Rscript", str(answer_keys_dir / "mlb_correlated_parlay.R")],
