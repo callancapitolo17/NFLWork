@@ -57,6 +57,32 @@ generate_bet_hash <- function(game_id, market, bet_on, line) {
   digest(paste(game_id, market, bet_on, line_str, sep = "|"), algo = "sha256", serialize = FALSE)
 }
 
+load_trifecta_opps <- function(mlb_db) {
+  if (!file.exists(mlb_db)) return(tibble())
+  con <- dbConnect(duckdb(), dbdir = mlb_db, read_only = TRUE)
+  on.exit(dbDisconnect(con, shutdown = TRUE))
+  tryCatch({
+    if (!"mlb_trifecta_opportunities" %in% dbListTables(con)) return(tibble())
+    dbGetQuery(con, "
+      SELECT * FROM mlb_trifecta_opportunities
+      WHERE game_time IS NULL OR CAST(game_time AS TIMESTAMP) > NOW()
+    ")
+  }, error = function(e) tibble())
+}
+
+load_placed_trifectas <- function(db_path) {
+  if (!file.exists(db_path)) return(tibble())
+  con <- dbConnect(duckdb(), dbdir = db_path, read_only = TRUE)
+  on.exit(dbDisconnect(con, shutdown = TRUE))
+  tryCatch({
+    if (!"placed_trifectas" %in% dbListTables(con)) return(tibble())
+    dbGetQuery(con, "
+      SELECT * FROM placed_trifectas
+      WHERE game_time IS NULL OR CAST(game_time AS TIMESTAMP) > NOW()
+    ")
+  }, error = function(e) tibble())
+}
+
 # =============================================================================
 # SAME-GAME DETECTION
 # =============================================================================
@@ -653,6 +679,129 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
   )
 }
 
+create_trifectas_table <- function(trifecta_opps, placed_trifectas) {
+  if (nrow(trifecta_opps) == 0) {
+    return(tags$div(
+      style = "text-align: center; padding: 48px; color: #8b949e;",
+      tags$p(style = "font-size: 1.1rem;", "No trifectas priced yet."),
+      tags$p(style = "font-size: 0.85rem;",
+             "Click Refresh after Wagerzon posts today's TRIPLE-PLAY / GRAND-SLAM lines.")
+    ))
+  }
+
+  # Mark placed rows
+  placed_set <- if (nrow(placed_trifectas) > 0) placed_trifectas$trifecta_hash else character(0)
+
+  table_data <- trifecta_opps %>%
+    mutate(
+      is_placed     = trifecta_hash %in% placed_set,
+      pick_display  = sprintf("%s (%s)", target_team, side),
+      model_display = ifelse(is.na(model_odds), "—",
+                             ifelse(model_odds > 0, paste0("+", model_odds),
+                                    as.character(model_odds))),
+      dk_display    = ifelse(is.na(dk_odds), "—",
+                             ifelse(dk_odds > 0, paste0("+", dk_odds),
+                                    as.character(dk_odds))),
+      fair_display  = ifelse(is.na(fair_odds), "—",
+                             ifelse(fair_odds > 0, paste0("+", fair_odds),
+                                    as.character(fair_odds))),
+      book_display  = ifelse(book_odds > 0, paste0("+", book_odds),
+                             as.character(book_odds)),
+      edge_display  = sprintf("%+.1f%%", edge_pct),
+      stake_display = ifelse(kelly_bet > 0, sprintf("$%.0f", kelly_bet), "—")
+    ) %>%
+    arrange(desc(edge_pct))
+
+  # The Action column needs to be a real column on the dataframe so reactable
+  # has something to render. Add a placeholder; the cell renderer below builds
+  # the actual button HTML from the row's other fields.
+  table_data$action <- ""
+
+  reactable(
+    table_data,
+    searchable = TRUE, filterable = TRUE,
+    striped = TRUE, highlight = TRUE, compact = TRUE,
+    defaultPageSize = 25,
+    columns = list(
+      # Hidden helpers (carried for JS data-* attrs and conditional logic)
+      trifecta_hash = colDef(show = FALSE),
+      game_id       = colDef(show = FALSE),
+      game_time     = colDef(show = FALSE),
+      target_team   = colDef(show = FALSE),
+      side          = colDef(show = FALSE),
+      n_samples     = colDef(show = FALSE),
+      model_odds    = colDef(show = FALSE),
+      dk_odds       = colDef(show = FALSE),
+      fair_odds     = colDef(show = FALSE),
+      book_odds     = colDef(show = FALSE),
+      edge_pct      = colDef(show = FALSE),
+      kelly_bet     = colDef(show = FALSE),
+      is_placed     = colDef(show = FALSE),
+
+      # Visible columns, in display order
+      game = colDef(name = "Game", minWidth = 180, filterable = TRUE),
+      pick_display = colDef(
+        name = "Pick", minWidth = 140,
+        cell = function(value, index) {
+          row <- table_data[index, ]
+          div(
+            span(style = "font-weight: 600;", row$target_team),
+            span(style = "margin-left: 8px; color: #888; font-size: 0.9em;",
+                 paste0("(", row$side, ")"))
+          )
+        }
+      ),
+      prop_type    = colDef(name = "Prop",        minWidth = 110, filterable = TRUE),
+      description  = colDef(name = "Description", minWidth = 220, filterable = TRUE),
+      model_display = colDef(name = "Model", minWidth = 70, align = "right",
+                             style = list(fontFamily = "monospace")),
+      dk_display    = colDef(name = "DK",    minWidth = 70, align = "right",
+                             style = list(fontFamily = "monospace")),
+      fair_display  = colDef(name = "Fair",  minWidth = 70, align = "right",
+                             style = list(fontFamily = "monospace", fontWeight = "600")),
+      book_display  = colDef(name = "Book",  minWidth = 70, align = "right",
+                             style = list(fontFamily = "monospace")),
+      edge_display = colDef(
+        name = "Edge", minWidth = 80, align = "right",
+        cell = function(value, index) {
+          ev <- table_data$edge_pct[index]
+          color <- if (is.na(ev)) "#8b949e"
+                   else if (ev >= 15) "#3fb950"
+                   else if (ev >= 10) "#56d364"
+                   else if (ev >=  5) "#7ee787"
+                   else                "#a5d6a7"
+          div(style = list(color = color, fontWeight = "600"), value)
+        }
+      ),
+      stake_display = colDef(name = "Stake", minWidth = 70, align = "right"),
+      action = colDef(
+        name = "Action", minWidth = 110, align = "center", html = TRUE,
+        sortable = FALSE, filterable = FALSE,
+        cell = function(value, index) {
+          row <- table_data[index, ]
+          if (isTRUE(row$is_placed)) {
+            sprintf(
+              '<button class="btn-placed" data-trifecta-hash="%s" onclick="removeTrifecta(this)">Placed</button>',
+              row$trifecta_hash
+            )
+          } else if (!is.na(row$kelly_bet) && row$kelly_bet > 0) {
+            sprintf(
+              '<button class="btn-place" data-trifecta-hash="%s" data-actual-wager="%.2f" onclick="placeTrifecta(this)">Place</button>',
+              row$trifecta_hash, row$kelly_bet
+            )
+          } else {
+            ""  # below trifecta_min_edge: no button (row stays for context)
+          }
+        }
+      )
+    ),
+    theme = reactableTheme(
+      backgroundColor = "#0d1117", color = "#c9d1d9",
+      borderColor = "#30363d", stripedColor = "#161b22"
+    )
+  )
+}
+
 create_bets_table <- function(all_bets, placed_bets) {
   placed_hashes <- if (nrow(placed_bets) > 0) placed_bets$bet_hash else character()
   # Build lookups for placed bet actual_size and recommended_size by hash
@@ -970,7 +1119,8 @@ create_bets_table <- function(all_bets, placed_bets) {
 
 create_report <- function(bets_table, placed_table, stats, timestamp, filter_options_json,
                           parlays_table = NULL, placed_parlays_table = NULL, parlay_opps = tibble(),
-                          parlay_filter_options_json = "{}") {
+                          parlay_filter_options_json = "{}",
+                          trifectas_table = NULL, trifecta_opps = tibble()) {
   page <- tagList(
     tags$head(
       tags$meta(charset = "UTF-8"),
@@ -1841,7 +1991,9 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         # Tab Navigation
         tags$div(class = "tab-bar",
           tags$button(class = "tab-btn active", id = "tab-btn-bets", onclick = "switchTab(\'bets\')", "Bets"),
-          tags$button(class = "tab-btn", id = "tab-btn-parlays", onclick = "switchTab(\'parlays\')", "Parlays")
+          tags$button(class = "tab-btn", id = "tab-btn-parlays", onclick = "switchTab(\'parlays\')", "Parlays"),
+          tags$button(class = "tab-btn", id = "tab-btn-trifectas", onclick = "switchTab(\'trifectas\')",
+                      sprintf("Trifectas (%d)", nrow(trifecta_opps)))
         ),
 
         # ============ BETS TAB ============
@@ -2046,6 +2198,26 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             )
           }
         ) # end tab-parlays
+
+        ,
+
+        # ============ TRIFECTAS TAB ============
+        tags$div(id = "tab-trifectas", class = "tab-content", style = "display: none;",
+
+          # Trifecta Opportunities
+          if (!is.null(trifectas_table)) {
+            tagList(
+              tags$div(class = "section-header",
+                tags$span("Trifecta Opportunities"),
+                tags$span(id = "trifecta-count",
+                  style = "margin-left: 8px; color: #8b949e; font-size: 0.8rem;",
+                  sprintf("(%d)", nrow(trifecta_opps)))
+              ),
+              tags$div(class = "table-container", id = "trifectas-table-container", trifectas_table)
+            )
+          }
+
+        ) # end tab-trifectas
       ),
 
       # JavaScript
@@ -2054,8 +2226,10 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         function switchTab(tab) {
           document.getElementById("tab-bets").style.display = tab === "bets" ? "" : "none";
           document.getElementById("tab-parlays").style.display = tab === "parlays" ? "" : "none";
+          document.getElementById("tab-trifectas").style.display = tab === "trifectas" ? "" : "none";
           document.getElementById("tab-btn-bets").className = "tab-btn" + (tab === "bets" ? " active" : "");
           document.getElementById("tab-btn-parlays").className = "tab-btn" + (tab === "parlays" ? " active" : "");
+          document.getElementById("tab-btn-trifectas").className = "tab-btn" + (tab === "trifectas" ? " active" : "");
           // Apply parlay edge filter when switching to parlays tab
           if (tab === "parlays") filterParlaysByEdge();
         }
@@ -3567,6 +3741,52 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             });
         }
 
+        async function placeTrifecta(btn) {
+          const hash  = btn.dataset.trifectaHash;
+          const wager = parseFloat(btn.dataset.actualWager);
+          if (!hash) { console.error(\'placeTrifecta: missing data-trifecta-hash\'); return; }
+          try {
+            const r = await fetch(\'/api/place-trifecta\', {
+              method: \'POST\',
+              headers: { \'Content-Type\': \'application/json\' },
+              body: JSON.stringify({ trifecta_hash: hash, actual_wager: isNaN(wager) ? null : wager })
+            });
+            const body = await r.json().catch(() => ({}));
+            if (r.ok && body.success !== false) {
+              btn.textContent = \'Placed\';
+              btn.className = \'btn-placed\';
+              btn.removeAttribute(\'data-actual-wager\');
+              btn.onclick = () => removeTrifecta(btn);
+            } else {
+              alert(\'Place failed: \' + (body.error || r.statusText));
+            }
+          } catch (e) {
+            alert(\'Network error: \' + e.message);
+          }
+        }
+
+        async function removeTrifecta(btn) {
+          const hash = btn.dataset.trifectaHash;
+          if (!hash) { console.error(\'removeTrifecta: missing data-trifecta-hash\'); return; }
+          try {
+            const r = await fetch(\'/api/remove-trifecta\', {
+              method: \'POST\',
+              headers: { \'Content-Type\': \'application/json\' },
+              body: JSON.stringify({ trifecta_hash: hash })
+            });
+            const body = await r.json().catch(() => ({}));
+            if (r.ok && body.success !== false) {
+              btn.textContent = \'Place\';
+              btn.className = \'btn-place\';
+              btn.onclick = () => placeTrifecta(btn);
+            } else {
+              alert(\'Remove failed: \' + (body.error || r.statusText));
+            }
+          } catch (e) {
+            alert(\'Network error: \' + e.message);
+          }
+        }
+
         function showToast(msg, type) {
           const t = document.createElement("div");
           t.className = "toast " + type;
@@ -3898,6 +4118,14 @@ if (nrow(parlay_opps) > 0) {
 }
 placed_parlays_table <- create_placed_parlays_table(placed_parlays)
 
+# Load trifecta opportunities + placed trifectas
+cat("Loading trifecta opportunities...\n")
+trifecta_opps    <- load_trifecta_opps(file.path(NFLWORK_ROOT, "Answer Keys", "mlb.duckdb"))
+placed_trifectas <- load_placed_trifectas(DB_PATH)
+trifectas_table  <- create_trifectas_table(trifecta_opps, placed_trifectas)
+cat(sprintf("Found %d trifecta opportunities, %d placed trifectas\n",
+            nrow(trifecta_opps), nrow(placed_trifectas)))
+
 # Extract filter options for bets table
 filter_games <- if (nrow(all_bets) > 0) {
   all_bets %>%
@@ -3956,7 +4184,8 @@ parlay_filter_options_json <- toJSON(list(
 timestamp <- format(Sys.time(), "%b %d, %Y %I:%M %p")
 page <- create_report(bets_table, placed_table, stats, timestamp, filter_options_json,
                        parlays_table, placed_parlays_table, parlay_opps,
-                       parlay_filter_options_json)
+                       parlay_filter_options_json,
+                       trifectas_table, trifecta_opps)
 
 # Save
 save_html(page, OUTPUT_PATH, libdir = "lib")
