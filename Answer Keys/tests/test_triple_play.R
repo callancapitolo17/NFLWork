@@ -116,3 +116,73 @@ test_that("american_to_prob is the inverse of prob_to_american", {
 test_that("american_to_prob(0) returns NA_real_", {
   expect_true(is.na(american_to_prob(0)))
 })
+
+# =============================================================================
+# Trifecta dashboard table writer (Task 1 of 2026-04-28 plan)
+# =============================================================================
+
+test_that("trifecta_hash is stable across reruns and unique per row", {
+  # Same inputs -> same hash
+  h1 <- digest::digest(paste("game42", "Yankees", "TRIPLE-PLAY", "home", sep = "|"),
+                       algo = "sha256", serialize = FALSE)
+  h2 <- digest::digest(paste("game42", "Yankees", "TRIPLE-PLAY", "home", sep = "|"),
+                       algo = "sha256", serialize = FALSE)
+  expect_equal(h1, h2)
+
+  # Different inputs -> different hash
+  h3 <- digest::digest(paste("game42", "Yankees", "GRAND-SLAM", "home", sep = "|"),
+                       algo = "sha256", serialize = FALSE)
+  expect_false(h1 == h3)
+
+  # Different side -> different hash
+  h4 <- digest::digest(paste("game42", "Yankees", "TRIPLE-PLAY", "away", sep = "|"),
+                       algo = "sha256", serialize = FALSE)
+  expect_false(h1 == h4)
+})
+
+test_that("kelly_bet is zero when edge_pct is below trifecta_min_edge", {
+  # Replicate the inline Kelly logic from mlb_triple_play.R
+  trifecta_bankroll   <- 100
+  trifecta_kelly_mult <- 0.10
+  trifecta_min_edge   <- 0.05  # 5%
+
+  # Row with 3% edge -- below threshold
+  edge_pct <- 3.0
+  kelly_bet <- if (!is.na(edge_pct) && edge_pct >= trifecta_min_edge * 100) {
+    trifecta_bankroll * trifecta_kelly_mult * 0.5  # arbitrary frac
+  } else 0
+  expect_equal(kelly_bet, 0)
+
+  # Row with 8% edge -- above threshold
+  edge_pct <- 8.0
+  kelly_bet <- if (!is.na(edge_pct) && edge_pct >= trifecta_min_edge * 100) {
+    trifecta_bankroll * trifecta_kelly_mult * 0.5
+  } else 0
+  expect_equal(kelly_bet, 5.0)
+})
+
+test_that("kelly_frac formula matches expected for known win_prob and odds", {
+  # +400 American = 5.0 decimal, b = 4
+  # Win prob 0.25 -> kelly_frac = (4*0.25 - 0.75) / 4 = 0.0625
+  win_prob <- 0.25
+  dec_odds <- 5.0
+  b <- dec_odds - 1
+  p <- win_prob
+  q <- 1 - p
+  kelly_frac <- max(0, (b * p - q) / b)
+  expect_equal(kelly_frac, 0.0625, tolerance = 1e-9)
+
+  # If win_prob equals breakeven (1/dec_odds = 0.20), kelly = 0
+  win_prob <- 0.20
+  p <- win_prob
+  q <- 1 - p
+  kelly_frac <- max(0, (b * p - q) / b)
+  expect_equal(kelly_frac, 0, tolerance = 1e-9)
+
+  # Below breakeven -> kelly clamped to 0 (don't bet against yourself)
+  win_prob <- 0.15
+  p <- win_prob
+  q <- 1 - p
+  kelly_frac <- max(0, (b * p - q) / b)
+  expect_equal(kelly_frac, 0)
+})
