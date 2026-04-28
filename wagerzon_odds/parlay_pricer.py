@@ -253,7 +253,7 @@ def get_parlay_price_with_fallback(session: requests.Session, idgm: int,
     Use this for initial pricing (populating mlb_parlay_prices). For exact
     payout at a specific stake, call get_parlay_price(..., amount=stake).
     """
-    for amount in (1000, 100):
+    for amount in (500, 100):
         result = get_parlay_price(session, idgm, legs, amount=amount)
         if result is not None:
             return result
