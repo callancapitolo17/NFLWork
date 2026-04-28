@@ -2003,16 +2003,32 @@ def run_pipeline():
         if pricing_result.returncode != 0:
             print(f"Parlay pricing warning: {(pricing_result.stderr or pricing_result.stdout or '')[-300:]}")
 
-        # Step 2: Find correlated parlay opportunities (non-fatal)
-        print("Finding parlay opportunities...")
-        parlay_result = subprocess.run(
+        # Step 2: Find correlated parlay opportunities + price trifectas (parallel, non-fatal)
+        # Both R scripts read independent inputs (parlay reads mlb_sgp_odds + mlb_consensus_temp;
+        # trifecta reads wagerzon_specials + mlb_trifecta_sgp_odds) and write independent
+        # output tables. Running them concurrently shaves ~5–30s off refresh latency by
+        # overlapping the trifecta DK scraper with the parlay R work. DuckDB serializes
+        # write transactions transparently; both writes are small DROP+dbWriteTable on tables
+        # the other process never reads.
+        print("Finding parlay opportunities + pricing trifectas (parallel)...")
+        parlay_proc = subprocess.Popen(
             ["Rscript", str(answer_keys_dir / "mlb_correlated_parlay.R")],
-            capture_output=True,
-            text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             cwd=str(nfl_work_dir)
         )
-        if parlay_result.returncode != 0:
-            print(f"Parlay finder warning: {(parlay_result.stderr or '')[-300:]}")
+        trifecta_proc = subprocess.Popen(
+            ["Rscript", str(answer_keys_dir / "mlb_triple_play.R")],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=str(nfl_work_dir)
+        )
+        parlay_out, parlay_err = parlay_proc.communicate()
+        trifecta_out, trifecta_err = trifecta_proc.communicate()
+        if parlay_proc.returncode != 0:
+            err_text = parlay_err.decode("utf-8", errors="replace")[-300:]
+            print(f"Parlay finder warning: {err_text}")
+        if trifecta_proc.returncode != 0:
+            err_text = trifecta_err.decode("utf-8", errors="replace")[-300:]
+            print(f"Trifecta pricer warning: {err_text}")
 
         # Step 2.5: Empirical nudge + exact payout per sized parlay (non-fatal).
         # Queries ConfirmWagerHelper at stake ± NUDGE_RANGE around each Kelly-ideal
