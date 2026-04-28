@@ -2021,8 +2021,8 @@ def run_pipeline():
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             cwd=str(nfl_work_dir)
         )
-        parlay_out, parlay_err = parlay_proc.communicate()
-        trifecta_out, trifecta_err = trifecta_proc.communicate()
+        _, parlay_err   = parlay_proc.communicate()
+        _, trifecta_err = trifecta_proc.communicate()
         if parlay_proc.returncode != 0:
             err_text = parlay_err.decode("utf-8", errors="replace")[-300:]
             print(f"Parlay finder warning: {err_text}")
