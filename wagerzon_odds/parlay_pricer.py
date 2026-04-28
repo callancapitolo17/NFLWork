@@ -241,14 +241,19 @@ def get_parlay_price_with_fallback(session: requests.Session, idgm: int,
                                     legs: list[dict]) -> dict | None:
     """Stage 1 price lookup with descending amount ladder.
 
-    Tries $10000 first for maximum decimal precision. If WZ returns
-    MAXPARLAYRISKEXCEED (max parlay risk for this combo is below $10000), falls
-    back to $100 which is always inside WZ's per-parlay max.
+    WZ's "max win per parlay" cap (currently ~$10000 on this account) means
+    $10000 stakes hit MAXPARLAYRISKEXCEED on essentially every correlated
+    +EV parlay we query (payouts of +200 to +400 → potential wins
+    $20k–$40k). $1000 stakes fit under the cap for almost all combos
+    (payouts up to ~+900 → $9k potential win) while still giving 10x
+    better decimal precision than $100. The trailing $100 stays as a
+    safety net for very-high-payout combos that exceed even the $1000
+    cap.
 
     Use this for initial pricing (populating mlb_parlay_prices). For exact
     payout at a specific stake, call get_parlay_price(..., amount=stake).
     """
-    for amount in (10000, 100):
+    for amount in (1000, 100):
         result = get_parlay_price(session, idgm, legs, amount=amount)
         if result is not None:
             return result
