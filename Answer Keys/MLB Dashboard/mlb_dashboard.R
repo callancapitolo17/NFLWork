@@ -1119,7 +1119,8 @@ create_bets_table <- function(all_bets, placed_bets) {
 
 create_report <- function(bets_table, placed_table, stats, timestamp, filter_options_json,
                           parlays_table = NULL, placed_parlays_table = NULL, parlay_opps = tibble(),
-                          parlay_filter_options_json = "{}") {
+                          parlay_filter_options_json = "{}",
+                          trifectas_table = NULL, trifecta_opps = tibble()) {
   page <- tagList(
     tags$head(
       tags$meta(charset = "UTF-8"),
@@ -4119,7 +4120,7 @@ placed_parlays_table <- create_placed_parlays_table(placed_parlays)
 
 # Load trifecta opportunities + placed trifectas
 cat("Loading trifecta opportunities...\n")
-trifecta_opps    <- load_trifecta_opps("Answer Keys/mlb.duckdb")
+trifecta_opps    <- load_trifecta_opps(file.path(NFLWORK_ROOT, "Answer Keys", "mlb.duckdb"))
 placed_trifectas <- load_placed_trifectas(DB_PATH)
 trifectas_table  <- create_trifectas_table(trifecta_opps, placed_trifectas)
 cat(sprintf("Found %d trifecta opportunities, %d placed trifectas\n",
@@ -4183,7 +4184,8 @@ parlay_filter_options_json <- toJSON(list(
 timestamp <- format(Sys.time(), "%b %d, %Y %I:%M %p")
 page <- create_report(bets_table, placed_table, stats, timestamp, filter_options_json,
                        parlays_table, placed_parlays_table, parlay_opps,
-                       parlay_filter_options_json)
+                       parlay_filter_options_json,
+                       trifectas_table, trifecta_opps)
 
 # Save
 save_html(page, OUTPUT_PATH, libdir = "lib")
