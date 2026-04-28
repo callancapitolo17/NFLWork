@@ -1,8 +1,5 @@
 """Tests for /api/place-trifecta and /api/remove-trifecta endpoints."""
-from __future__ import annotations
-
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -71,8 +68,10 @@ def test_place_trifecta_idempotent_on_duplicate(server_with_temp_dbs):
                 json={"trifecta_hash": "hashA", "actual_wager": 7.0})
     r = client.post("/api/place-trifecta",
                     json={"trifecta_hash": "hashA", "actual_wager": 7.0})
-    # Second call must NOT crash; either returns ok:true (no-op) or 409.
-    assert r.status_code in (200, 409)
+    assert r.status_code == 200
+    body = json.loads(r.get_data(as_text=True))
+    assert body.get("success") is True
+    assert "already" in body.get("message", "").lower()
 
 
 def test_place_trifecta_unknown_hash_returns_404(server_with_temp_dbs):
@@ -90,6 +89,20 @@ def test_remove_trifecta_deletes_row(server_with_temp_dbs):
     assert r.status_code == 200
     body = json.loads(r.get_data(as_text=True))
     assert body.get("success") is True or body.get("ok") is True
+
+    # Verify the row was actually deleted, not just a 200 from a no-op DELETE
+    import duckdb as _duckdb
+    # Read DB_PATH via the test client's server module to get the patched temp path
+    import mlb_dashboard_server as _server
+    con = _duckdb.connect(str(_server.DB_PATH), read_only=True)
+    try:
+        n = con.execute(
+            "SELECT COUNT(*) FROM placed_trifectas WHERE trifecta_hash = ?",
+            ["hashA"]
+        ).fetchone()[0]
+    finally:
+        con.close()
+    assert n == 0
 
 
 def test_place_trifecta_missing_hash_returns_400(server_with_temp_dbs):

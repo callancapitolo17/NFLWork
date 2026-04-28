@@ -757,7 +757,9 @@ def place_trifecta():
 
     # Default actual_wager to round(kelly_bet) if client didn't send one
     if actual_wager is None:
-        actual_wager = float(round(kelly_bet)) if kelly_bet else 0.0
+        # NaN is the only float where x != x; this guard handles None, 0, and NaN
+        has_kelly = kelly_bet is not None and kelly_bet == kelly_bet and kelly_bet != 0
+        actual_wager = float(round(kelly_bet)) if has_kelly else 0.0
 
     try:
         con = duckdb.connect(str(DB_PATH))
