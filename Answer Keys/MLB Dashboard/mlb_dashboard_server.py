@@ -718,6 +718,98 @@ def remove_bet():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/place-trifecta", methods=["POST"])
+def place_trifecta():
+    """Manually log a placed trifecta. Server fetches the full opportunity row
+    from mlb_trifecta_opportunities by hash; client only needs to send hash +
+    actual_wager. Idempotent: re-posting the same hash is a no-op via PK.
+    """
+    data = request.json or {}
+    trifecta_hash = data.get("trifecta_hash")
+    if not trifecta_hash:
+        return jsonify({"success": False, "error": "Missing trifecta_hash"}), 400
+
+    actual_wager = data.get("actual_wager")
+
+    # Look up the opportunity row in mlb.duckdb. The pricer recreates this
+    # table on every refresh, so the row may have moved or disappeared if the
+    # operator placed mid-refresh; treat that as a 404 with a clear message.
+    try:
+        opp_con = duckdb.connect(str(MLB_DB), read_only=True)
+        try:
+            row = opp_con.execute(
+                "SELECT trifecta_hash, game_id, game, game_time, target_team, "
+                "       prop_type, side, description, book_odds, fair_odds, "
+                "       edge_pct, kelly_bet "
+                "FROM mlb_trifecta_opportunities WHERE trifecta_hash = ?",
+                [trifecta_hash]
+            ).fetchone()
+        finally:
+            opp_con.close()
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Lookup failed: {e}"}), 500
+
+    if row is None:
+        return jsonify({"success": False, "error": "Trifecta hash not found in opportunities"}), 404
+
+    (h, game_id, game, game_time, target_team, prop_type, side,
+     description, book_odds, fair_odds, edge_pct, kelly_bet) = row
+
+    # Default actual_wager to round(kelly_bet) if client didn't send one
+    if actual_wager is None:
+        actual_wager = float(round(kelly_bet)) if kelly_bet else 0.0
+
+    try:
+        con = duckdb.connect(str(DB_PATH))
+        try:
+            existing = con.execute(
+                "SELECT trifecta_hash FROM placed_trifectas WHERE trifecta_hash = ?",
+                [trifecta_hash]
+            ).fetchone()
+            if existing:
+                # Idempotent: already placed, no-op
+                return jsonify({"success": True, "message": "Already placed"})
+
+            con.execute("""
+                INSERT INTO placed_trifectas (
+                    trifecta_hash, placed_at, game_id, game, game_time,
+                    target_team, prop_type, side, description, book_odds,
+                    fair_odds, edge_pct, kelly_bet, actual_wager, status
+                ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'placed')
+            """, [
+                trifecta_hash, game_id, game, game_time, target_team,
+                prop_type, side, description, book_odds, fair_odds,
+                float(edge_pct), float(kelly_bet), float(actual_wager)
+            ])
+        finally:
+            con.close()
+        return jsonify({"success": True, "message": "Trifecta logged"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/remove-trifecta", methods=["POST"])
+def remove_trifecta():
+    """Remove a manually-logged trifecta from placed_trifectas."""
+    data = request.json or {}
+    trifecta_hash = data.get("trifecta_hash")
+    if not trifecta_hash:
+        return jsonify({"success": False, "error": "Missing trifecta_hash"}), 400
+
+    try:
+        con = duckdb.connect(str(DB_PATH))
+        try:
+            con.execute(
+                "DELETE FROM placed_trifectas WHERE trifecta_hash = ?",
+                [trifecta_hash]
+            )
+        finally:
+            con.close()
+        return jsonify({"success": True, "message": "Trifecta removed"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/update-bet", methods=["POST"])
 def update_bet():
     """Update a placed bet's actual size."""
