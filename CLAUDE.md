@@ -120,6 +120,7 @@ This repo contains tools for:
 - **Bet logging** - Tracking bets to Google Sheets for P&L analysis
 - **Answer keys** - NFL/CBB models and consensus line building
 - **NFL Draft portal** (`nfl_draft/`) - Cross-venue EV portal unifying Kalshi + DK/FD/Bookmaker/Wagerzon/Hoop88; single DuckDB at `nfl_draft/nfl_draft.duckdb`, cron-driven orchestrator, extended Dash dashboard (port 8090). See `nfl_draft/README.md`.
+- **Autonomous Kalshi MLB SGP taker bot** (`kalshi_mlb_rfq/`) — wide-mode RFQs on cross-category MVE combos with model+book blended fair value, conditional Kelly sizing, full per-accept gate scaffold (staleness, tipoff, line-move, exposure caps, fill-ratio halt). Standalone process; reads `mlb.duckdb` read-only and writes `kalshi_mlb_rfq.duckdb`. See `kalshi_mlb_rfq/README.md`.
 
 ## Technical Stack
 - **Python** - Playwright for scraping, BeautifulSoup for parsing
