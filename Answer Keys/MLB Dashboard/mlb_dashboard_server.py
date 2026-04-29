@@ -1728,7 +1728,9 @@ def get_sizing_settings():
 def update_sizing_settings():
     """Update bankroll and/or kelly multiplier settings."""
     data = request.json
-    allowed = ("bankroll", "kelly_mult", "parlay_bankroll", "parlay_kelly_mult", "parlay_min_edge")
+    allowed = ("bankroll", "kelly_mult",
+               "parlay_bankroll", "parlay_kelly_mult", "parlay_min_edge",
+               "trifecta_bankroll", "trifecta_kelly_mult", "trifecta_min_edge")
     try:
         con = duckdb.connect(str(DB_PATH))
         try:
