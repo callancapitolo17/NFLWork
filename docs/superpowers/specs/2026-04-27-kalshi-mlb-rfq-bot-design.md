@@ -405,6 +405,7 @@ CREATE TABLE IF NOT EXISTS quote_log (
                                        -- | 'declined_stale_predictions'
                                        -- | 'declined_inverse_lock' | 'declined_cooldown'
                                        -- | 'declined_positions_unhealthy' | 'declined_killswitch'
+                                       -- | 'halted_low_fill_ratio' | 'failed_quote_walked'
   reason_detail   VARCHAR,
   observed_at     TIMESTAMP NOT NULL
 );
@@ -518,6 +519,16 @@ A `threading.Lock()` wraps the entire quote-acceptance flow (gate evaluation →
 
 After `accept_quote` returns, the bot calls `GET /portfolio/positions` to confirm the actual contract count owned for `combo_market_ticker`. The reconciled count (not the accept response's reported count) is what gets written to `fills` and `positions`. Handles partial fills and edge cases where the accept response is out of sync with Kalshi's books.
 
+### 9.7 Adverse-selection defense — fill-ratio halt
+
+Per adversarial review (Exploit 3): if makers systematically walk our quotes when the trade would be good for us and let stand only the ones where we're getting picked off, the bot's fills are an adversarially selected subset.
+
+Defense:
+- `quote_log` already records every accept attempt (success or failure, with `creator_id` of the quoting maker).
+- Risk loop computes a rolling fill ratio: `count(decision='accepted') / count(decision IN ('accepted', 'failed_quote_walked'))` over the last 50 accept attempts.
+- If fill ratio < `MIN_FILL_RATIO` (default 0.50), emit `notify.halt('fill_ratio_collapse')` and gate all new accepts with `decision='halted_low_fill_ratio'` until the ratio recovers (sliding window) or operator clears manually.
+- Independent of bankroll-based halts; this catches structural adverse selection before the daily cap does.
+
 ### 9.7 Dry-run
 
 `python3 main.py --dry-run` runs the full pipeline including RFQ creation, quote receipt, gate evaluation — but never calls `accept_quote`. Decisions write to `quote_log` with `decision='declined_dry_run'` (always emitted as the last decision). No money commits.
@@ -551,10 +562,12 @@ All in `kalshi_mlb_rfq/.env` (gitignored, with `.env.example` checked in).
 | `MAX_GAME_EXPOSURE_PCT` | `0.10` | Per-game cap as % of bankroll (default 10% = $100 on $1000). |
 | `DAILY_EXPOSURE_CAP_USD` | `200.0` | Hard daily cap. |
 | `LINE_MOVE_THRESHOLD` | `0.5` | Spread-units / runs of book-line movement that pulls RFQs. |
-| `MAX_PREDICTION_STALENESS_SEC` | `3600` | Decline accepts if `mlb_samples_meta.generated_at` older than this (1hr — taker is forgiving). |
+| `MAX_PREDICTION_STALENESS_SEC` | `600` | Decline accepts if `mlb_samples_meta.generated_at` older than this. Tightened from 3600 after adversarial review (Exploit 1): pre-game lineup news leaks fast, even taker accepts on stale data are systematically -EV. Matches CBB MM. |
 | `MAX_BOOK_STALENESS_SEC` | `60` | Ignore `mlb_sgp_odds` rows older than this when blending; if 0 books survive, 2-source gate fails. |
 | `COMBO_COOLDOWN_SEC` | `30` | Suppress new RFQs / accepts on a leg-set after a fill. |
 | `POSITIONS_HEALTH_RETRIES` | `2` | Consecutive `/portfolio/positions` failures before the positions-API health gate trips. |
+| `MIN_FILL_RATIO` | `0.50` | Adverse-selection defense (§9.7): halt accepts if fill ratio drops below this over the rolling 50-attempt window. |
+| `FILL_RATIO_WINDOW` | `50` | Window size for fill-ratio computation. |
 | `RFQ_REFRESH_SEC` | `30` | Priority-queue refresh cadence. |
 | `QUOTE_POLL_SEC` | `2` | Quote poll cadence. |
 | `RISK_SWEEP_SEC` | `10` | Tipoff/kill-switch/exposure check cadence. |
@@ -726,6 +739,24 @@ In `bot.log`, every `[HALT]` line should explain: kill-switch / exposure cap / p
 | **TBD-5** | Kalshi `accept_quote` price atomicity: does it execute at the price we evaluated, or whatever the quote currently is? Determines whether we need pre-accept quote confirmation. | Verify during dry-run validation by accepting a stale quote on a small test combo and inspecting the fill price. If atomic-at-current-price, add pre-accept confirm step. |
 
 ---
+
+## 14b. Adversarial review outcomes (deferred items)
+
+Adversarial review on 2026-04-29 surfaced 9 attack vectors. Items addressed in v1: Exploit 1 (staleness gate tightened to 600s, §10 / §9.1) and Exploit 3 (fill-ratio halt, §9.7).
+
+The following are accepted-risk and deferred to v1.1 with monitoring in production:
+
+| Exploit | Description | Why deferred |
+|---|---|---|
+| 2 — Loose `MAX_QUOTE_DEVIATION` | 15% sanity bound is wide enough for adversarial quotes that look +EV but aren't | Operator judgment: multi-book corroboration via 2-source gate is sufficient defense |
+| 4 — DK/FD correlation in 2-source gate | DK and FD lag from sharper books; counting them as 2 independent sources understates correlation | Operator judgment: not worried |
+| 5 — No CLV tracking | Can't distinguish "we have edge" from "we got lucky" without measuring CLV against closing line | Difficult to define a closing line for combos (combos don't trade at close); deferred until a clean methodology exists |
+| 6 — Alt-line vig fallback under-vigs | Constant fallback vig (DK 12.5% / FD 18%) is calibrated to main lines; alt vig is wider | Risk accepted |
+| 7 — Tail combos with sparse sample support | At fair < 10%, sample noise + model bias make point estimates unreliable | Deferred — `MIN_FAIR_PROB = 0.05` retained |
+| 8 — Cross-game correlation (weather etc.) | Daily exposure cap is the only defense against weather-driven over stacks | Deferred |
+| 9 — Conditional Kelly assumes correct correlation structure | Σ_nn⁻¹ overestimates sizing if sample correlation is biased | Deferred — quarter-Kelly already provides some buffer |
+
+Action item for v1.1 review: revisit each row after 2 weeks of live trading to assess realized exposure to each.
 
 ## 15. Success criteria
 
