@@ -71,6 +71,12 @@ def test_cooldown_gate():
 
 
 def test_inverse_combo_guard():
+    import hashlib
+
+    def canonical(lst):
+        keys = sorted(f"{l['market_ticker']}|{l['side']}" for l in lst)
+        return hashlib.sha256("\n".join(keys).encode()).hexdigest()
+
     legs = [
         {"market_ticker": "X", "side": "yes"},
         {"market_ticker": "Y", "side": "no"},
@@ -79,8 +85,11 @@ def test_inverse_combo_guard():
         {"market_ticker": "X", "side": "no"},
         {"market_ticker": "Y", "side": "yes"},
     ]
-    assert not risk.inverse_combo_ok(
-        legs=legs, open_position_hashes={risk.inverse_leg_set_hash(inverse_legs)})
+    # Hold the inverse position. Candidate `legs` should be blocked.
+    assert not risk.inverse_combo_ok(legs=legs,
+                                       open_position_hashes={canonical(inverse_legs)})
+    # Empty open positions: never blocked.
+    assert risk.inverse_combo_ok(legs=legs, open_position_hashes=set())
 
 
 # ---- Advanced ------------------------------------------------------------
@@ -93,6 +102,9 @@ def test_line_move_detection():
                                   threshold=0.5)
     assert risk.line_move_ok(ref_lines=ref, current_lines={"spread": -1.7, "total": 8.5},
                              threshold=0.5)
+    # Exactly at threshold: trips (conservative).
+    assert not risk.line_move_ok(ref_lines=ref, current_lines={"spread": -2.0, "total": 8.5},
+                                  threshold=0.5)
 
 
 def test_kill_switch_present(tmp_path, monkeypatch):

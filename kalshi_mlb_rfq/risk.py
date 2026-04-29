@@ -80,12 +80,16 @@ def inverse_combo_ok(legs: list[dict], open_position_hashes: set[str]) -> bool:
 # ---- Advanced gates -------------------------------------------------------
 
 def line_move_ok(ref_lines: dict, current_lines: dict, threshold: float) -> bool:
-    """All lines moved by less than threshold? (None entries treated as no-data, blocks accept.)"""
+    """All lines moved by less than threshold? (None entries treated as no-data, blocks accept.)
+
+    Uses >= for the threshold comparison so a move of exactly threshold trips the gate
+    (conservative: matches CBB MM's behavior).
+    """
     for key, ref in ref_lines.items():
         cur = current_lines.get(key)
         if cur is None or ref is None:
             return False
-        if abs(cur - ref) > threshold:
+        if abs(cur - ref) >= threshold:
             return False
     return True
 
