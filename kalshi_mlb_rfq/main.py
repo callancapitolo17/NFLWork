@@ -75,6 +75,11 @@ def _run_pipeline():
 # ------------------------------------------------------------------------ #
 
 def _phantom_rfq_cleanup():
+    """Cancel any RFQs on Kalshi that are OURS (cross-category combo) but missing
+    from live_rfqs. CRITICAL: never touches RFQs that belong to other bots / user
+    actions — those are identified by their market_ticker NOT starting with our
+    combo prefix (e.g., NFL Draft RFQs from kalshi_draft are off-limits).
+    """
     try:
         kalshi_open = rfq_client.list_open_rfqs(config.KALSHI_USER_ID or "")
     except Exception as e:
@@ -90,14 +95,34 @@ def _phantom_rfq_cleanup():
             "SELECT rfq_id FROM live_rfqs WHERE status='open'"
         ).fetchall()}
 
+    # Filter to our combo namespace. Our combos are minted via the cross-category
+    # MVE collection so the resulting market_ticker starts with the collection's
+    # series ticker (KXMVECROSSCATEGORY-S-... per recon). Anything else — NFL Draft
+    # RFQs, Mention RFQs, single-market RFQs from other bots — belongs to someone
+    # else. Skip them entirely.
+    our_combo_prefix = config.MVE_COLLECTION_TICKER.replace("-R", "-S")  # "KXMVECROSSCATEGORY-S"
+
+    skipped_other_bot = 0
+    cancelled = 0
+    failed = 0
     for rfq in kalshi_open:
         rid = rfq.get("id")
-        if rid and rid not in ours:
-            try:
-                rfq_client.delete_rfq(rid)
-                print(f"  startup: cancelled phantom rfq {rid}", flush=True)
-            except Exception as e:
-                print(f"  startup: failed to cancel phantom {rid}: {e}", flush=True)
+        market_ticker = rfq.get("market_ticker", "") or ""
+        if not rid or rid in ours:
+            continue
+        if not market_ticker.startswith(our_combo_prefix):
+            skipped_other_bot += 1
+            continue
+        try:
+            rfq_client.delete_rfq(rid)
+            cancelled += 1
+            print(f"  startup: cancelled phantom rfq {rid}", flush=True)
+        except Exception as e:
+            failed += 1
+            print(f"  startup: failed to cancel phantom {rid}: {e}", flush=True)
+
+    print(f"  startup: phantom cleanup — cancelled={cancelled} failed={failed} "
+          f"skipped_other_bot={skipped_other_bot}", flush=True)
 
 
 # ------------------------------------------------------------------------ #
