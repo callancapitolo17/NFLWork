@@ -105,22 +105,26 @@ def _refresh_caches(retries: int = 5) -> bool:
             samples_by_game = {gid: g.reset_index(drop=True)
                                 for gid, g in samples_df.groupby("game_id")}
 
-            # mlb_sgp_odds (last hour, FG period only)
+            # mlb_sgp_odds (last hour, FG period only). Real schema doesn't
+            # include spread_line/total_line — the lines are implicit per game
+            # via mlb_parlay_lines.fg_spread/fg_total.
             sgp_df = con.execute(
-                "SELECT game_id, combo, period, bookmaker, sgp_decimal, "
-                "spread_line, total_line, fetch_time "
+                "SELECT game_id, combo, period, bookmaker, sgp_decimal, fetch_time "
                 "FROM mlb_sgp_odds WHERE period='FG' "
                 "AND fetch_time > NOW() - INTERVAL (CAST(? AS BIGINT)) SECOND",
                 [config.MAX_BOOK_STALENESS_SEC]
             ).fetchdf()
 
-            # mlb_parlay_lines — game metadata
+            # mlb_parlay_lines — game metadata + the canonical spread/total this
+            # game's mlb_sgp_odds is priced at.
             lines_rows = con.execute(
-                "SELECT game_id, home_team, away_team, commence_time "
-                "FROM mlb_parlay_lines"
+                "SELECT game_id, home_team, away_team, commence_time, "
+                "fg_spread, fg_total FROM mlb_parlay_lines"
             ).fetchall()
             parlay_lines = {
-                r[0]: {"home_team": r[1], "away_team": r[2], "commence_time": r[3]}
+                r[0]: {"home_team": r[1], "away_team": r[2],
+                        "commence_time": r[3],
+                        "fg_spread": r[4], "fg_total": r[5]}
                 for r in lines_rows
             }
 
@@ -280,14 +284,30 @@ def _load_samples_for_game(game_id: str) -> pd.DataFrame | None:
 
 
 def _load_book_fairs(game_id: str, spread_line: float, total_line: float) -> dict[str, float]:
-    """Devig per book from the in-memory mlb_sgp_odds slice for this game."""
+    """Devig per book from the in-memory mlb_sgp_odds slice for this game.
+
+    mlb_sgp_odds doesn't store the spread/total lines — they're implicit per
+    game via mlb_parlay_lines.fg_spread / fg_total. Only return fairs if the
+    candidate's (spread, total) matches the line this game is priced at;
+    candidates at alt lines have no book fair and fail the 2-source gate.
+    """
+    pl = _PARLAY_LINES_CACHE.get(game_id)
+    if not pl:
+        return {}
+    fg_spread = pl.get("fg_spread")
+    fg_total = pl.get("fg_total")
+    if fg_spread is None or fg_total is None:
+        return {}
+    # Candidate-line vs the priced line: must match exactly (same convention
+    # as DK/FD scrapers — exact match or skip).
+    if abs(spread_line - float(fg_spread)) > 1e-6:
+        return {}
+    if abs(total_line - float(fg_total)) > 1e-6:
+        return {}
+
     if _SGP_ODDS_CACHE is None or _SGP_ODDS_CACHE.empty:
         return {}
-    rows = _SGP_ODDS_CACHE[
-        (_SGP_ODDS_CACHE["game_id"] == game_id) &
-        (_SGP_ODDS_CACHE["spread_line"] == spread_line) &
-        (_SGP_ODDS_CACHE["total_line"] == total_line)
-    ]
+    rows = _SGP_ODDS_CACHE[_SGP_ODDS_CACHE["game_id"] == game_id]
     out: dict[str, float] = {}
     if rows.empty:
         return out
@@ -327,14 +347,19 @@ def _home_code_from_event_ticker(event_ticker: str) -> str | None:
 
 
 def _current_book_lines_for_combo(game_id: str) -> dict | None:
-    """Latest spread/total snapshot from in-memory mlb_sgp_odds for line-move detection."""
-    if _SGP_ODDS_CACHE is None or _SGP_ODDS_CACHE.empty:
+    """Spread/total snapshot from cached mlb_parlay_lines for line-move detection.
+
+    mlb_sgp_odds doesn't store the line directly — mlb_parlay_lines is the
+    canonical source. Returns None if the game is not in the cache.
+    """
+    pl = _PARLAY_LINES_CACHE.get(game_id)
+    if not pl:
         return None
-    rows = _SGP_ODDS_CACHE[_SGP_ODDS_CACHE["game_id"] == game_id]
-    if rows.empty:
+    fg_spread = pl.get("fg_spread")
+    fg_total = pl.get("fg_total")
+    if fg_spread is None or fg_total is None:
         return None
-    latest = rows.sort_values("fetch_time", ascending=False).iloc[0]
-    return {"spread": float(latest["spread_line"]), "total": float(latest["total_line"])}
+    return {"spread": float(fg_spread), "total": float(fg_total)}
 
 
 # ------------------------------------------------------------------------ #
