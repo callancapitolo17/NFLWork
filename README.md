@@ -37,7 +37,8 @@ NFLWork/
 ├── hoop88_correlation/       # Correlated parlay edge finder
 ├── sharp_analyst/            # AI-powered sharp line movement detector
 │
-├── kalshi_mm/                # Kalshi market maker bot
+├── kalshi_mm/                # Kalshi market maker bot (CBB 1H)
+├── kalshi_mlb_rfq/           # Kalshi MLB SGP RFQ taker bot (cross-category MVE)
 ├── kalshi_draft/             # Kalshi NFL draft prediction markets
 ├── nfl_draft/                # Cross-venue NFL Draft EV portal (Kalshi + 5 books)
 ├── kalshi coaching/          # Kalshi coaching hire markets
