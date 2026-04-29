@@ -120,12 +120,13 @@ def _samples_generated_at() -> datetime | None:
 
 
 def _commence_time_for_game(game_id: str) -> datetime | None:
+    """Pull commence_time from mlb_parlay_lines (the canonical source for it)."""
     if not ANSWER_KEY_DB.exists():
         return None
     con = duckdb.connect(str(ANSWER_KEY_DB), read_only=True)
     try:
         row = con.execute(
-            "SELECT commence_time FROM mlb_team_dict WHERE game_id=? LIMIT 1",
+            "SELECT commence_time FROM mlb_parlay_lines WHERE game_id=? LIMIT 1",
             [game_id]
         ).fetchone()
     except duckdb.CatalogException:
@@ -133,6 +134,23 @@ def _commence_time_for_game(game_id: str) -> datetime | None:
     finally:
         con.close()
     return row[0] if row else None
+
+
+# 3-letter Kalshi team code → mlb_parlay_lines.home_team / away_team canonical name.
+# Kalshi uses 3-letter codes; mlb_parlay_lines stores Odds-API canonical names.
+_MLB_CODE_TO_TEAM = {
+    "ARI": "Arizona Diamondbacks", "ATL": "Atlanta Braves", "BAL": "Baltimore Orioles",
+    "BOS": "Boston Red Sox", "CHC": "Chicago Cubs", "CWS": "Chicago White Sox",
+    "CIN": "Cincinnati Reds", "CLE": "Cleveland Guardians", "COL": "Colorado Rockies",
+    "DET": "Detroit Tigers", "HOU": "Houston Astros", "KC": "Kansas City Royals",
+    "LAA": "Los Angeles Angels", "LAD": "Los Angeles Dodgers", "MIA": "Miami Marlins",
+    "MIL": "Milwaukee Brewers", "MIN": "Minnesota Twins", "NYM": "New York Mets",
+    "NYY": "New York Yankees", "OAK": "Athletics", "PHI": "Philadelphia Phillies",
+    "PIT": "Pittsburgh Pirates", "SD": "San Diego Padres", "SF": "San Francisco Giants",
+    "SEA": "Seattle Mariners", "STL": "St. Louis Cardinals", "TB": "Tampa Bay Rays",
+    "TEX": "Texas Rangers", "TOR": "Toronto Blue Jays",
+    "WAS": "Washington Nationals", "WSH": "Washington Nationals",
+}
 
 
 def _load_samples_for_game(game_id: str) -> pd.DataFrame | None:
@@ -189,20 +207,19 @@ def _vig_fallback(book: str) -> float:
     }.get(book, 0.10)
 
 
-def _home_team_for_game(game_id: str) -> str | None:
-    if not ANSWER_KEY_DB.exists():
+def _home_code_from_event_ticker(event_ticker: str) -> str | None:
+    """Parse the 3-letter home-team code from a Kalshi event ticker.
+
+    Event suffix format: YYMMMDDHHMM{AwayCode}{HomeCode}, with the AwayCode/HomeCode
+    being 2-3 letters each. Convention: away first, home last. We take the trailing
+    3 letters as the home code (matches every code in _MLB_CODE_TO_TEAM).
+    """
+    if "-" not in event_ticker:
         return None
-    con = duckdb.connect(str(ANSWER_KEY_DB), read_only=True)
-    try:
-        row = con.execute(
-            "SELECT home_team FROM mlb_team_dict WHERE game_id=? LIMIT 1",
-            [game_id]
-        ).fetchone()
-    except duckdb.CatalogException:
+    suffix = event_ticker.rsplit("-", 1)[-1]
+    if len(suffix) < 3:
         return None
-    finally:
-        con.close()
-    return row[0] if row else None
+    return suffix[-3:]
 
 
 def _current_book_lines_for_combo(game_id: str) -> dict | None:
@@ -232,8 +249,13 @@ def _current_book_lines_for_combo(game_id: str) -> dict | None:
 # ------------------------------------------------------------------------ #
 
 def _leg_dict_to_typed(leg: dict, game_id: str):
-    """Convert {market_ticker, side} to fair_value typed leg or None if unhandled."""
+    """Convert {market_ticker, event_ticker, side} to fair_value typed leg.
+
+    Determines team_is_home by parsing the home code from the event_ticker
+    (no DB lookup needed — the ticker self-encodes the home/away convention).
+    """
     mt = leg["market_ticker"]
+    et = leg.get("event_ticker", "")
     side = leg["side"]
     if mt.startswith("KXMLBSPREAD-"):
         suffix = mt.rsplit("-", 1)[-1]
@@ -242,8 +264,8 @@ def _leg_dict_to_typed(leg: dict, game_id: str):
         if not n_chars or not team_chars:
             return None
         n = int(n_chars)
-        home = _home_team_for_game(game_id)
-        team_is_home = (team_chars == home) if home else False
+        home_code = _home_code_from_event_ticker(et)
+        team_is_home = (home_code is not None and team_chars == home_code)
         return fair_value.SpreadLeg(team_is_home=team_is_home, line_n=n, side=side)
     if mt.startswith("KXMLBTOTAL-"):
         try:
@@ -795,17 +817,21 @@ def _kalshi_last_price(market_ticker: str) -> float:
 
 
 def _resolve_game_id(home_code: str, away_code: str) -> str | None:
-    """Map Kalshi (home_code, away_code) to mlb.duckdb game_id via mlb_team_dict."""
+    """Map Kalshi 3-letter codes to mlb.duckdb game_id via mlb_parlay_lines."""
+    home = _MLB_CODE_TO_TEAM.get(home_code)
+    away = _MLB_CODE_TO_TEAM.get(away_code)
+    if not home or not away:
+        return None
     if not ANSWER_KEY_DB.exists():
         return None
     con = duckdb.connect(str(ANSWER_KEY_DB), read_only=True)
     try:
         row = con.execute(
-            "SELECT game_id FROM mlb_team_dict "
-            "WHERE home_team_short=? AND away_team_short=? "
+            "SELECT game_id FROM mlb_parlay_lines "
+            "WHERE home_team=? AND away_team=? "
             "AND commence_time > NOW() AND commence_time < NOW() + INTERVAL '24 HOUR' "
             "ORDER BY commence_time LIMIT 1",
-            [home_code, away_code]
+            [home, away]
         ).fetchone()
     except duckdb.CatalogException:
         return None
