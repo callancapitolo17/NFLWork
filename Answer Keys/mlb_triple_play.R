@@ -13,6 +13,7 @@ suppressPackageStartupMessages({
   library(tibble)
   library(DBI)
   library(jsonlite)
+  library(digest)   # for trifecta_hash
 })
 
 # =============================================================================
@@ -63,8 +64,11 @@ if (!interactive() && sys.nframe() == 0L) {
   dbDisconnect(con_mig)
 
   # Read today's posted specials from the wagerzon_specials scraper output.
-  # Uses the most recent snapshot. Pricer is robust to empty / off-day cases:
-  # if zero rows are posted, prints a clear message and exits.
+  # Uses the most recent snapshot AND filters to upcoming games (game_time > NOW()).
+  # The game_time filter is the real safeguard against stale data: if WZ has no
+  # specials posted today, MAX(scraped_at) returns yesterday's snapshot, but every
+  # row in it has a past game_time and gets filtered out. Off-day → zero rows →
+  # empty Trifectas tab (correct behavior).
   WZ_DB <- "~/NFLWork/wagerzon_odds/wagerzon.duckdb"
   wz_con <- dbConnect(duckdb(), dbdir = path.expand(WZ_DB), read_only = TRUE)
   on.exit(tryCatch(dbDisconnect(wz_con), error = function(e) NULL), add = TRUE)
@@ -74,11 +78,29 @@ if (!interactive() && sys.nframe() == 0L) {
     WHERE sport = 'mlb'
       AND prop_type IN ('TRIPLE-PLAY', 'GRAND-SLAM')
       AND scraped_at = (SELECT MAX(scraped_at) FROM wagerzon_specials WHERE sport = 'mlb')
+      AND game_time > NOW()
   ")
   dbDisconnect(wz_con)
 
   if (nrow(specials) == 0) {
     cat("No priceable specials found in wagerzon_specials. Run scraper_specials.py first.\n")
+    # Clear mlb_trifecta_opportunities so the dashboard reflects "nothing
+    # priceable today" instead of leftover rows from a previous run. Without
+    # this, a prior run's rows linger with future game_time values and the
+    # dashboard's load filter (game_time > NOW()) can't distinguish them
+    # from genuinely fresh pricing.
+    cleanup_con <- tryCatch(
+      dbConnect(duckdb(), dbdir = MLB_DB),
+      error = function(e) NULL
+    )
+    if (!is.null(cleanup_con)) {
+      tryCatch({
+        dbExecute(cleanup_con, "DROP TABLE IF EXISTS mlb_trifecta_opportunities")
+      }, error = function(e) {
+        cat(sprintf("Warning: failed to clear mlb_trifecta_opportunities: %s\n", e$message))
+      })
+      duckdb::dbDisconnect(cleanup_con, shutdown = TRUE)
+    }
     quit(status = 0)
   }
 
@@ -148,22 +170,21 @@ if (!interactive() && sys.nframe() == 0L) {
   # 12-hour filter (same as before): mlb_consensus_temp carries multiple days
   consensus <- consensus %>%
     filter(commence_time > Sys.time() &
-           commence_time < Sys.time() + 12 * 3600) %>%
-    select(-commence_time)
+           commence_time < Sys.time() + 12 * 3600)
 
   todays_lines <- specials %>%
     inner_join(consensus, by = c("canonical_team" = "home_team"),
                relationship = "many-to-many", keep = TRUE) %>%
     mutate(side = "home", target_team = team,
            home_team = canonical_team) %>%
-    select(home_team, away_team, target_team, side, book_odds, description, prop_type, id) %>%
+    select(home_team, away_team, target_team, side, book_odds, description, prop_type, id, commence_time) %>%
     bind_rows(
       specials %>%
         inner_join(consensus, by = c("canonical_team" = "away_team"),
                    relationship = "many-to-many", keep = TRUE) %>%
         mutate(side = "away", target_team = team,
                away_team = canonical_team) %>%
-        select(home_team, away_team, target_team, side, book_odds, description, prop_type, id)
+        select(home_team, away_team, target_team, side, book_odds, description, prop_type, id, commence_time)
     )
 
   matched <- todays_lines  # consensus join already done; keep var name compatible
@@ -288,7 +309,8 @@ if (!interactive() && sys.nframe() == 0L) {
       edge_pct        = (fair_prob / book_prob - 1) * 100
     ) %>%
     ungroup() %>%
-    select(target_team, prop_type, side, n_samples,
+    select(id, target_team, prop_type, side, description,
+           home_team, away_team, commence_time, n_samples,
            model_odds, dk_odds, fair_odds, book_odds, edge_pct) %>%
     arrange(desc(edge_pct))
 
@@ -311,5 +333,92 @@ if (!interactive() && sys.nframe() == 0L) {
       edge_pct   = sprintf("%+.1f%%", edge_pct)
     )
   print(as.data.frame(display), row.names = FALSE)
+
+  # =============================================================================
+  # WRITE TO DUCKDB (for dashboard consumption)
+  # =============================================================================
+
+  # Read trifecta sizing settings from the dashboard DB (same pattern as
+  # mlb_correlated_parlay.R reads parlay sizing). Falls back to safe defaults
+  # if the dashboard DB or rows are missing.
+  trifecta_bankroll   <- 100
+  trifecta_kelly_mult <- 0.10
+  trifecta_min_edge   <- 0.05
+  dash_db_path <- path.expand("~/NFLWork/Answer Keys/MLB Dashboard/mlb_dashboard.duckdb")
+  if (file.exists(dash_db_path)) {
+    dash_con <- tryCatch(
+      dbConnect(duckdb(), dbdir = dash_db_path, read_only = TRUE),
+      error = function(e) NULL
+    )
+    if (!is.null(dash_con)) {
+      saved <- tryCatch(
+        dbGetQuery(dash_con, "SELECT param, value FROM sizing_settings"),
+        error = function(e) data.frame(param = character(0), value = numeric(0))
+      )
+      if ("trifecta_bankroll"   %in% saved$param) trifecta_bankroll   <- saved$value[saved$param == "trifecta_bankroll"]
+      if ("trifecta_kelly_mult" %in% saved$param) trifecta_kelly_mult <- saved$value[saved$param == "trifecta_kelly_mult"]
+      if ("trifecta_min_edge"   %in% saved$param) trifecta_min_edge   <- saved$value[saved$param == "trifecta_min_edge"]
+      dbDisconnect(dash_con)
+    }
+  }
+
+  # Compute Kelly per row. Trifectas are single-ticket bets from the
+  # operator's POV (one ticket per row), so independent Kelly is correct.
+  # Filter via min_edge: rows below the threshold get kelly_bet = 0.
+  priced <- priced %>%
+    rowwise() %>%
+    mutate(
+      win_prob   = if (!is.na(fair_odds)) american_to_prob(fair_odds) else NA_real_,
+      dec_odds   = if (!is.na(book_odds)) {
+                     if (book_odds > 0) 1 + book_odds / 100 else 1 + 100 / abs(book_odds)
+                   } else NA_real_,
+      kelly_frac = if (!is.na(win_prob) && !is.na(dec_odds) && dec_odds > 1) {
+                     b <- dec_odds - 1
+                     p <- win_prob
+                     q <- 1 - p
+                     max(0, (b * p - q) / b)
+                   } else 0,
+      kelly_bet  = if (!is.na(edge_pct) && edge_pct >= trifecta_min_edge * 100) {
+                     trifecta_bankroll * trifecta_kelly_mult * kelly_frac
+                   } else 0
+    ) %>%
+    ungroup() %>%
+    select(-win_prob, -dec_odds, -kelly_frac)
+
+  # Add display columns + dedup hash
+  priced <- priced %>%
+    mutate(
+      game          = sprintf("%s @ %s", away_team, home_team),
+      game_time     = commence_time,
+      game_id       = as.character(id),
+      trifecta_hash = sapply(seq_len(n()), function(i) {
+        digest::digest(
+          paste(game_id[i], target_team[i], prop_type[i], side[i], sep = "|"),
+          algo = "sha256", serialize = FALSE
+        )
+      })
+    ) %>%
+    select(trifecta_hash, game_id, game, game_time, target_team, prop_type, side,
+           description, n_samples, model_odds, dk_odds, fair_odds, book_odds,
+           edge_pct, kelly_bet)
+
+  # Close the read-only mlb.duckdb connection before opening it for writes.
+  # DuckDB does not allow a simultaneous read-only + read-write connection to
+  # the same database file. The on.exit() handlers registered earlier will
+  # attempt dbDisconnect(con) at script exit — tryCatch there silences the
+  # "already closed" error harmlessly.
+  tryCatch(dbDisconnect(con), error = function(e) NULL)
+
+  # Drop + rewrite (same pattern as mlb_correlated_parlay.R)
+  write_con <- NULL
+  tryCatch({
+    write_con <- dbConnect(duckdb(), dbdir = MLB_DB)
+    on.exit(if (!is.null(write_con)) duckdb::dbDisconnect(write_con, shutdown = TRUE), add = TRUE)
+    dbExecute(write_con, "DROP TABLE IF EXISTS mlb_trifecta_opportunities")
+    dbWriteTable(write_con, "mlb_trifecta_opportunities", priced)
+    cat(sprintf("Wrote %d trifecta opportunities to %s.\n", nrow(priced), MLB_DB))
+  }, error = function(e) {
+    cat(sprintf("Warning: Failed to write trifectas to DB: %s\n", e$message))
+  })
 
 }

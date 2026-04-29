@@ -40,9 +40,11 @@ fi
 echo "Fetching exact parlay prices..."
 python3 "$SCRIPT_DIR/../../wagerzon_odds/parlay_pricer.py" 2>/dev/null || true
 
-echo "Finding parlay opportunities..."
-Rscript "$SCRIPT_DIR/../mlb_correlated_parlay.R"
-# Non-fatal if it fails — dashboard still works without parlays
+echo "Finding parlay opportunities + pricing trifectas (parallel)..."
+Rscript "$SCRIPT_DIR/../mlb_correlated_parlay.R" &
+Rscript "$SCRIPT_DIR/../mlb_triple_play.R" &
+wait
+# Non-fatal if either fails — dashboard still works without parlays/trifectas
 
 echo "Computing exact payouts at Kelly stakes..."
 python3 "$SCRIPT_DIR/../../wagerzon_odds/parlay_pricer.py" mlb --exact-payouts 2>/dev/null || true

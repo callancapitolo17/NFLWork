@@ -154,6 +154,18 @@ def init_db():
             INSERT INTO sizing_settings (param, value) VALUES ('parlay_min_edge', 0)
             ON CONFLICT (param) DO NOTHING
         """)
+        con.execute("""
+            INSERT INTO sizing_settings (param, value) VALUES ('trifecta_bankroll', 100)
+            ON CONFLICT (param) DO NOTHING
+        """)
+        con.execute("""
+            INSERT INTO sizing_settings (param, value) VALUES ('trifecta_kelly_mult', 0.10)
+            ON CONFLICT (param) DO NOTHING
+        """)
+        con.execute("""
+            INSERT INTO sizing_settings (param, value) VALUES ('trifecta_min_edge', 0.05)
+            ON CONFLICT (param) DO NOTHING
+        """)
 
         con.execute("""
             CREATE TABLE IF NOT EXISTS filter_settings (
@@ -292,6 +304,27 @@ def init_db():
                 """)
         except Exception:
             pass  # not critical — first-time install, table just got created
+
+        # Trifecta bet tracking
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS placed_trifectas (
+                trifecta_hash  TEXT PRIMARY KEY,
+                placed_at      TIMESTAMP,
+                game_id        TEXT,
+                game           TEXT,
+                game_time      TIMESTAMP,
+                target_team    TEXT,
+                prop_type      TEXT,
+                side           TEXT,
+                description    TEXT,
+                book_odds      INTEGER,
+                fair_odds      INTEGER,
+                edge_pct       DOUBLE,
+                kelly_bet      DOUBLE,
+                actual_wager   DOUBLE,
+                status         TEXT
+            )
+        """)
 
         # CLV tracking tables
         con.execute("""
@@ -681,6 +714,100 @@ def remove_bet():
         else:
             return jsonify({"success": False, "error": "Bet not found"}), 404
 
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/place-trifecta", methods=["POST"])
+def place_trifecta():
+    """Manually log a placed trifecta. Server fetches the full opportunity row
+    from mlb_trifecta_opportunities by hash; client only needs to send hash +
+    actual_wager. Idempotent: re-posting the same hash is a no-op via PK.
+    """
+    data = request.json or {}
+    trifecta_hash = data.get("trifecta_hash")
+    if not trifecta_hash:
+        return jsonify({"success": False, "error": "Missing trifecta_hash"}), 400
+
+    actual_wager = data.get("actual_wager")
+
+    # Look up the opportunity row in mlb.duckdb. The pricer recreates this
+    # table on every refresh, so the row may have moved or disappeared if the
+    # operator placed mid-refresh; treat that as a 404 with a clear message.
+    try:
+        opp_con = duckdb.connect(str(MLB_DB), read_only=True)
+        try:
+            row = opp_con.execute(
+                "SELECT trifecta_hash, game_id, game, game_time, target_team, "
+                "       prop_type, side, description, book_odds, fair_odds, "
+                "       edge_pct, kelly_bet "
+                "FROM mlb_trifecta_opportunities WHERE trifecta_hash = ?",
+                [trifecta_hash]
+            ).fetchone()
+        finally:
+            opp_con.close()
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Lookup failed: {e}"}), 500
+
+    if row is None:
+        return jsonify({"success": False, "error": "Trifecta hash not found in opportunities"}), 404
+
+    (h, game_id, game, game_time, target_team, prop_type, side,
+     description, book_odds, fair_odds, edge_pct, kelly_bet) = row
+
+    # Default actual_wager to round(kelly_bet) if client didn't send one
+    if actual_wager is None:
+        # NaN is the only float where x != x; this guard handles None, 0, and NaN
+        has_kelly = kelly_bet is not None and kelly_bet == kelly_bet and kelly_bet != 0
+        actual_wager = float(round(kelly_bet)) if has_kelly else 0.0
+
+    try:
+        con = duckdb.connect(str(DB_PATH))
+        try:
+            existing = con.execute(
+                "SELECT trifecta_hash FROM placed_trifectas WHERE trifecta_hash = ?",
+                [trifecta_hash]
+            ).fetchone()
+            if existing:
+                # Idempotent: already placed, no-op
+                return jsonify({"success": True, "message": "Already placed"})
+
+            con.execute("""
+                INSERT INTO placed_trifectas (
+                    trifecta_hash, placed_at, game_id, game, game_time,
+                    target_team, prop_type, side, description, book_odds,
+                    fair_odds, edge_pct, kelly_bet, actual_wager, status
+                ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'placed')
+            """, [
+                trifecta_hash, game_id, game, game_time, target_team,
+                prop_type, side, description, book_odds, fair_odds,
+                float(edge_pct), float(kelly_bet), float(actual_wager)
+            ])
+        finally:
+            con.close()
+        return jsonify({"success": True, "message": "Trifecta logged"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/remove-trifecta", methods=["POST"])
+def remove_trifecta():
+    """Remove a manually-logged trifecta from placed_trifectas."""
+    data = request.json or {}
+    trifecta_hash = data.get("trifecta_hash")
+    if not trifecta_hash:
+        return jsonify({"success": False, "error": "Missing trifecta_hash"}), 400
+
+    try:
+        con = duckdb.connect(str(DB_PATH))
+        try:
+            con.execute(
+                "DELETE FROM placed_trifectas WHERE trifecta_hash = ?",
+                [trifecta_hash]
+            )
+        finally:
+            con.close()
+        return jsonify({"success": True, "message": "Trifecta removed"})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -1601,7 +1728,9 @@ def get_sizing_settings():
 def update_sizing_settings():
     """Update bankroll and/or kelly multiplier settings."""
     data = request.json
-    allowed = ("bankroll", "kelly_mult", "parlay_bankroll", "parlay_kelly_mult", "parlay_min_edge")
+    allowed = ("bankroll", "kelly_mult",
+               "parlay_bankroll", "parlay_kelly_mult", "parlay_min_edge",
+               "trifecta_bankroll", "trifecta_kelly_mult", "trifecta_min_edge")
     try:
         con = duckdb.connect(str(DB_PATH))
         try:
@@ -1876,16 +2005,33 @@ def run_pipeline():
         if pricing_result.returncode != 0:
             print(f"Parlay pricing warning: {(pricing_result.stderr or pricing_result.stdout or '')[-300:]}")
 
-        # Step 2: Find correlated parlay opportunities (non-fatal)
-        print("Finding parlay opportunities...")
-        parlay_result = subprocess.run(
+        # Step 2: Find correlated parlay opportunities + price trifectas (parallel, non-fatal)
+        # Both R scripts read independent inputs (parlay reads mlb_sgp_odds + mlb_consensus_temp;
+        # trifecta reads wagerzon_specials + mlb_trifecta_sgp_odds) and write independent
+        # output tables. Running them concurrently shaves ~5–30s off refresh latency by
+        # overlapping the trifecta DK scraper with the parlay R work.
+        # Both writes are small DROP+dbWriteTable on tables the other process never reads.
+        # If a rare file-lock conflict occurs at commit time, each script prints a non-fatal
+        # warning via tryCatch and the stale table from the prior run is preserved.
+        print("Finding parlay opportunities + pricing trifectas (parallel)...")
+        parlay_proc = subprocess.Popen(
             ["Rscript", str(answer_keys_dir / "mlb_correlated_parlay.R")],
-            capture_output=True,
-            text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             cwd=str(nfl_work_dir)
         )
-        if parlay_result.returncode != 0:
-            print(f"Parlay finder warning: {(parlay_result.stderr or '')[-300:]}")
+        trifecta_proc = subprocess.Popen(
+            ["Rscript", str(answer_keys_dir / "mlb_triple_play.R")],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=str(nfl_work_dir)
+        )
+        _, parlay_err   = parlay_proc.communicate()
+        _, trifecta_err = trifecta_proc.communicate()
+        if parlay_proc.returncode != 0:
+            err_text = parlay_err.decode("utf-8", errors="replace")[-300:]
+            print(f"Parlay finder warning: {err_text}")
+        if trifecta_proc.returncode != 0:
+            err_text = trifecta_err.decode("utf-8", errors="replace")[-300:]
+            print(f"Trifecta pricer warning: {err_text}")
 
         # Step 2.5: Empirical nudge + exact payout per sized parlay (non-fatal).
         # Queries ConfirmWagerHelper at stake ± NUDGE_RANGE around each Kelly-ideal

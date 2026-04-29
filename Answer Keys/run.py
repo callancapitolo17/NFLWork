@@ -20,6 +20,10 @@ SCRAPER_CONFIGS = {
         "script": "../wagerzon_odds/scraper_v2.py",
         "sports": ["nfl", "nba", "cbb", "college_baseball", "mlb"]
     },
+    "wagerzon_specials": {
+        "script": "../wagerzon_odds/scraper_specials.py",
+        "sports": ["mlb"]
+    },
     "hoop88": {
         "script": "../hoop88_odds/scraper.py",
         "sports": ["nfl", "ncaaf", "cbb", "college_baseball", "mlb"]
