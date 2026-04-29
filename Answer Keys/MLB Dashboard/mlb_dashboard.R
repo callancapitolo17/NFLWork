@@ -779,18 +779,25 @@ create_trifectas_table <- function(trifecta_opps, placed_trifectas) {
         sortable = FALSE, filterable = FALSE,
         cell = function(value, index) {
           row <- table_data[index, ]
+          # data-edge / data-size on every row so filterTrifectasByEdge() can find them
+          edge_attrs <- sprintf(
+            'data-edge="%.2f" data-size="%.2f"',
+            ifelse(is.na(row$edge_pct), 0, row$edge_pct),
+            ifelse(is.na(row$kelly_bet), 0, row$kelly_bet)
+          )
           if (isTRUE(row$is_placed)) {
             sprintf(
-              '<button class="btn-placed" data-trifecta-hash="%s" onclick="removeTrifecta(this)">Placed</button>',
-              row$trifecta_hash
+              '<button class="btn-placed" %s data-trifecta-hash="%s" onclick="removeTrifecta(this)">Placed</button>',
+              edge_attrs, row$trifecta_hash
             )
           } else if (!is.na(row$kelly_bet) && row$kelly_bet > 0) {
             sprintf(
-              '<button class="btn-place" data-trifecta-hash="%s" data-actual-wager="%.2f" onclick="placeTrifecta(this)">Place</button>',
-              row$trifecta_hash, row$kelly_bet
+              '<button class="btn-place" %s data-trifecta-hash="%s" data-actual-wager="%.2f" onclick="placeTrifecta(this)">Place</button>',
+              edge_attrs, row$trifecta_hash, row$kelly_bet
             )
           } else {
-            ""  # below trifecta_min_edge: no button (row stays for context)
+            # Below threshold: empty marker span so live filter still has data-edge to read
+            sprintf('<span class="trifecta-marker" %s></span>', edge_attrs)
           }
         }
       )
@@ -2204,6 +2211,27 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         # ============ TRIFECTAS TAB ============
         tags$div(id = "tab-trifectas", class = "tab-content", style = "display: none;",
 
+          # Trifecta Sizing Controls (mirrors parlay sizing)
+          tags$div(class = "sizing-controls",
+            tags$div(class = "sizing-group",
+              tags$span(class = "sizing-label", "Trifecta Bankroll ($)"),
+              tags$input(id = "trifecta-bankroll-input", class = "sizing-input", type = "number",
+                value = "100", min = "1", step = "10")
+            ),
+            tags$div(class = "sizing-group",
+              tags$span(class = "sizing-label", "Trifecta Kelly"),
+              tags$input(id = "trifecta-kelly-input", class = "sizing-input", type = "number",
+                value = "0.10", min = "0.01", max = "1", step = "0.05")
+            ),
+            tags$div(class = "sizing-group",
+              tags$span(class = "sizing-label", "Min Edge (%)"),
+              tags$input(id = "trifecta-min-edge-input", class = "sizing-input", type = "number",
+                value = "5", min = "0", step = "1",
+                onchange = "filterTrifectasByEdge()", oninput = "filterTrifectasByEdge()")
+            ),
+            tags$button(class = "apply-sizing-btn", onclick = "applyTrifectaSizing()", "Apply")
+          ),
+
           # Trifecta Opportunities
           if (!is.null(trifectas_table)) {
             tagList(
@@ -2230,8 +2258,9 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           document.getElementById("tab-btn-bets").className = "tab-btn" + (tab === "bets" ? " active" : "");
           document.getElementById("tab-btn-parlays").className = "tab-btn" + (tab === "parlays" ? " active" : "");
           document.getElementById("tab-btn-trifectas").className = "tab-btn" + (tab === "trifectas" ? " active" : "");
-          // Apply parlay edge filter when switching to parlays tab
+          // Apply edge filters when switching to their respective tabs
           if (tab === "parlays") filterParlaysByEdge();
+          if (tab === "trifectas") filterTrifectasByEdge();
         }
 
         // ============ CORRELATION TOOLTIPS ============
@@ -3537,6 +3566,83 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               if (pei && s.parlay_min_edge != null) {
                 pei.value = s.parlay_min_edge;
                 filterParlaysByEdge();
+              }
+            })
+            .catch(function() {});
+        })();
+
+        // ============ TRIFECTA EDGE FILTER ============
+        function filterTrifectasByEdge() {
+          var container = document.getElementById("trifectas-table-container");
+          if (!container) return;
+          var rows = container.querySelectorAll(".rt-tr-group");
+          var minEdgeEl = document.getElementById("trifecta-min-edge-input");
+          var minEdge = minEdgeEl ? (parseFloat(minEdgeEl.value) || 0) : 0;
+          var visible = 0;
+          rows.forEach(function(row) {
+            var marker = row.querySelector("[data-edge]");
+            var edge = marker ? parseFloat(marker.dataset.edge) : 0;
+            var show = edge >= minEdge;
+            row.style.display = show ? "" : "none";
+            if (show) visible++;
+          });
+          var countEl = document.getElementById("trifecta-count");
+          if (countEl) {
+            if (visible === rows.length) {
+              countEl.textContent = "(" + rows.length + ")";
+            } else {
+              countEl.textContent = "(" + visible + " of " + rows.length + ")";
+            }
+          }
+        }
+
+        // ============ TRIFECTA SIZING ============
+        function applyTrifectaSizing() {
+          var bankroll = parseFloat(document.getElementById("trifecta-bankroll-input").value);
+          var kelly = parseFloat(document.getElementById("trifecta-kelly-input").value);
+          var minEdge = parseFloat(document.getElementById("trifecta-min-edge-input").value) || 0;
+          if (!bankroll || bankroll <= 0 || !kelly || kelly <= 0 || kelly > 1) {
+            showToast("Invalid sizing values", "error");
+            return;
+          }
+          // trifecta_min_edge is stored as a fraction (0-1); UI is percent (0-100).
+          Promise.all([
+            fetch("/api/sizing-settings", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ param: "trifecta_bankroll", value: bankroll })
+            }),
+            fetch("/api/sizing-settings", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ param: "trifecta_kelly_mult", value: kelly })
+            }),
+            fetch("/api/sizing-settings", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ param: "trifecta_min_edge", value: minEdge / 100 })
+            })
+          ]).then(function() {
+            showToast("Trifecta settings saved. Refreshing...", "success");
+            refreshData();
+          });
+        }
+
+        // Load trifecta settings from server on page load (guard against missing elements)
+        (function() {
+          var tbi = document.getElementById("trifecta-bankroll-input");
+          var tki = document.getElementById("trifecta-kelly-input");
+          var tei = document.getElementById("trifecta-min-edge-input");
+          if (!tbi || !tki) return;
+          fetch("/api/sizing-settings")
+            .then(function(r) { return r.json(); })
+            .then(function(s) {
+              if (s.trifecta_bankroll) tbi.value = s.trifecta_bankroll;
+              if (s.trifecta_kelly_mult) tki.value = s.trifecta_kelly_mult;
+              if (tei && s.trifecta_min_edge != null) {
+                // Stored as fraction (0-1); display as integer percent.
+                tei.value = (parseFloat(s.trifecta_min_edge) * 100).toFixed(0);
+                filterTrifectasByEdge();
               }
             })
             .catch(function() {});
