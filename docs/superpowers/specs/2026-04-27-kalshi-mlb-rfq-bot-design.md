@@ -36,11 +36,11 @@ The bot is fully autonomous (no human-in-the-loop on accepts), runs as a long-ru
 - Long-running daemon with the lifecycle pattern of `kalshi_mm/main.py` (SIGTERM cancel-on-shutdown, kill-switch file, phantom-RFQ cleanup at startup).
 - Wide-mode combo enumerator: every spread × every total combo for every open MLB game (§4).
 - 2-source fair-value gate: model always counts; require ≥1 sportsbook also pricing the combo before RFQing (§5).
-- Conditional Kelly sizing via `mlb_game_samples` (§6).
+- Conditional Kelly sizing via `mlb_game_samples` (§6) with accept serialization lock and per-combo cooldown.
 - Real quadratic Kalshi taker-fee math (§7).
 - Self-managed RFQ idempotency (recon proved `replace_existing` does not actually replace) — track our open RFQs in DuckDB, explicitly DELETE stale ones each cycle.
-- Top-N prioritization with soft cap below Kalshi's 100 RFQ/account hard limit.
-- Full safety scaffold (§9): tipoff cancel, line-move detection, sanity bounds, daily exposure cap, kill switch, dry-run, placement lock spanning Wagerzon + Kalshi, fill notifications.
+- **Continuous RFQ pipeline:** maintain up to `MAX_LIVE_RFQS = 80` in-flight RFQs, replenished from a priority queue ranked by edge magnitude (§4.3).
+- Full safety scaffold (§9): per-accept gates (staleness, tipoff, line-move, sanity, exposure caps, cooldown, inverse-combo, positions-API health), accept serialization lock, post-accept fill reconciliation, kill switch, dry-run, fill notifications.
 - Operational tooling: `python3 main.py [--dry-run]`, `bot.log` with rotation, `python3 dashboard.py` CLI status tool.
 - Documentation: new `kalshi_mlb_rfq/README.md`; updates to root `README.md` and `CLAUDE.md`.
 
@@ -55,9 +55,9 @@ The bot is fully autonomous (no human-in-the-loop on accepts), runs as a long-ru
 - Combos with more than 2 legs (we ship 2-leg spread × total only; expansion is enumerator-only and doesn't change the spec).
 - Combos with winner or RFI legs (eligible on Kalshi but not produced by existing sportsbook scrapers, so they fail the 2-source gate).
 
-### 2.3 Wagerzon coordination
+### 2.3 Standalone process (no Wagerzon coupling)
 
-The bot is independent of `mlb_parlay_opportunities` and the Wagerzon parlay placer. To prevent double-placement of the same canonical combo across Wagerzon and Kalshi, both placers consult a shared `placement_locks` table in `mlb_dashboard.duckdb` keyed on a `combo_key` (game_id + sorted-leg-descriptors hash). See §9.6.
+The bot is fully independent of `mlb_parlay_opportunities` and the Wagerzon parlay placer. It writes only to its own `kalshi_mlb_rfq/kalshi_mlb_rfq.duckdb` and reads `mlb.duckdb` (samples + sgp_odds) read-only. Zero touchpoints with `mlb_dashboard.duckdb` or any Wagerzon code. No shared placement locks. Operator accepts the negligible risk that, in theory, the same canonical combo could be placed on Wagerzon (manually or via the Wagerzon placer) and Kalshi (auto by this bot) in close succession; in practice the lines and wide-mode coverage rarely collide.
 
 ---
 
@@ -176,18 +176,22 @@ for each open MLB event:
 
 Wide-mode candidate count: ~12 × 20 = **~240 combos / game**. With 15 games, that's **~3,600 candidates per cycle**. The 2-source gate (§5.4) and top-N prioritization (§4.3) bring this down to a tractable RFQ count.
 
-### 4.3 Top-N prioritization
+### 4.3 Continuous RFQ pipeline
 
-Kalshi caps live RFQs at 100 / account. We soft-cap at `MAX_LIVE_RFQS = 60` to leave headroom.
+Kalshi caps live RFQs at 100 / account. We soft-cap at `MAX_LIVE_RFQS = 80` to leave headroom for restart races and edge cases.
 
-After computing `blended_fair` for every surviving candidate (§5):
+Rather than rebuilding a static top-N every refresh cycle, the bot maintains a **continuous pipeline** of up to `MAX_LIVE_RFQS` in-flight RFQs, replenished from a priority queue:
 
-1. Rank candidates by `|blended_fair − kalshi_reference_price|` where `kalshi_reference_price` is `last_price_dollars` from `GET /markets/{combo_ticker}`. If `last_price_dollars` is `0.0000` or absent, fall back to `|blended_fair − 0.5|` (heuristic: contentious combos are interesting).
-2. Take top `MAX_LIVE_RFQS` by rank.
-3. Diff against `db.live_rfqs`:
-   - **add:** combos newly in top-N → mint ticker + create RFQ.
-   - **keep:** combos still in top-N with a live RFQ → leave alone.
-   - **drop:** combos no longer in top-N → `DELETE /communications/rfqs/{id}`.
+1. After §5 gating, every surviving candidate enters a priority queue keyed on `|blended_fair − kalshi_reference_price|` (where `kalshi_reference_price = last_price_dollars` from `GET /markets/{combo_ticker}`; if absent or zero, fall back to `|blended_fair − 0.5|` as a contentious-combo heuristic).
+2. As long as `count(live_rfqs.status='open') < MAX_LIVE_RFQS`, the bot pulls the next-highest-edge candidate from the queue and submits an RFQ.
+3. RFQs naturally close as quotes are accepted, the per-combo cooldown expires unsuccessfully, the line-move check fires, or tipoff cancel sweeps. The next refresh re-enumerates and re-ranks; combos with edge larger than the lowest in-flight RFQ's submit-time edge can displace it.
+4. Net effect: the top ~80 highest-edge candidates are *always* in flight asking for prices. With ~5–15s mean RFQ lifecycle, the pipeline cycles through hundreds of distinct candidates per hour. No edge sits idle waiting for a slot.
+
+Diff logic each cycle:
+
+- **add:** queue candidate not currently RFQ'd, slot available → mint ticker + create RFQ.
+- **keep:** in-flight RFQ still in the top portion of the priority queue → leave alone.
+- **drop:** in-flight RFQ now ranked below `MAX_LIVE_RFQS` worth of fresher higher-edge candidates → `DELETE /communications/rfqs/{id}`.
 
 ### 4.4 Combo ticker caching
 
@@ -302,6 +306,18 @@ contracts      = max(0, floor(KELLY_FRACTION * kelly_fraction * BANKROLL / effec
 
 If `mlb_game_samples` doesn't have rows for `game_id` (pipeline failure, off-season game, etc.), Kelly returns 0 and the bot does not RFQ that combo. There is no fixed-size fallback. Same intentional choice as CBB MM.
 
+### 6.5 Correlation safeguards (concurrency + duplicate-side defenses)
+
+Conditional Kelly handles correlation against positions *already in the database*. Three additional defenses cover scenarios Kelly alone doesn't:
+
+**6.5.1 Accept serialization lock.** A `threading.Lock()` wraps the entire quote-acceptance code path (sanity gates → Kelly sizing → API call → DuckDB write). Each accept observes a fully-updated `positions` table including all prior accepts. Without the lock, two correlated quotes arriving within ~50ms could both Kelly-size against an empty positions snapshot and both fire at full size.
+
+**6.5.2 Inverse-combo guard.** Before accepting a quote, compute the inverse leg-set hash by flipping every leg's side (YES↔NO). If `positions` has an open position keyed on the inverse, refuse the new accept and log `decision='declined_inverse_lock'` in `quote_log`. Pathological case: model error makes both A and ¬A look +EV; without the guard we'd hold a perfectly hedged, fee-bleeding pair.
+
+**6.5.3 Per-game exposure cap.** Hard backstop above Kelly. Sum `fills.contracts × fills.price_dollars` over today's fills with the same `game_id`. If sum ≥ `MAX_GAME_EXPOSURE_PCT × BANKROLL` (default 10% of bankroll), refuse all further accepts on that game (RFQs continue — data only). Decision logged as `'declined_per_game_cap'`.
+
+**6.5.4 Per-combo cooldown.** After accepting on a leg-set, suppress new RFQ submissions on that exact leg-set for `COMBO_COOLDOWN_SEC` (default 30s). Prevents the priority-queue replenishment from immediately re-RFQ'ing the same combo and accepting a second time.
+
 ---
 
 ## 7. EV / fee math
@@ -384,8 +400,11 @@ CREATE TABLE IF NOT EXISTS quote_log (
   post_fee_ev_pct DOUBLE,
   decision        VARCHAR NOT NULL,    -- 'accepted' | 'declined_ev' | 'declined_sanity'
                                        -- | 'declined_tipoff' | 'declined_line_move'
-                                       -- | 'declined_dry_run' | 'declined_exposure_cap'
-                                       -- | 'declined_lock' | 'declined_kelly_zero'
+                                       -- | 'declined_dry_run' | 'declined_daily_cap'
+                                       -- | 'declined_per_game_cap' | 'declined_kelly_zero'
+                                       -- | 'declined_stale_predictions'
+                                       -- | 'declined_inverse_lock' | 'declined_cooldown'
+                                       -- | 'declined_positions_unhealthy' | 'declined_killswitch'
   reason_detail   VARCHAR,
   observed_at     TIMESTAMP NOT NULL
 );
@@ -438,72 +457,77 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 ```
 
-### 8.7 `placement_locks` (in `mlb_dashboard.duckdb`, NOT the bot's DB)
+### 8.7 `combo_cooldown`
 
 ```sql
--- in mlb_dashboard.duckdb (shared with Wagerzon parlay placer)
-CREATE TABLE IF NOT EXISTS placement_locks (
-  combo_key       VARCHAR PRIMARY KEY,   -- canonical hash of (game_id + sorted leg descriptors)
-  venue           VARCHAR NOT NULL,      -- 'wagerzon' | 'kalshi'
-  status          VARCHAR NOT NULL,      -- 'locked' | 'placed' | 'released'
-  placed_by_pid   INTEGER NOT NULL,
-  acquired_at     TIMESTAMP NOT NULL,
-  released_at     TIMESTAMP
+CREATE TABLE IF NOT EXISTS combo_cooldown (
+  leg_set_hash    VARCHAR PRIMARY KEY,
+  game_id         VARCHAR NOT NULL,
+  cooled_until    TIMESTAMP NOT NULL,
+  reason          VARCHAR                -- usually 'post_accept'
 );
 ```
 
-`combo_key` is computed identically by both placers. Acquire = `INSERT ... ON CONFLICT DO NOTHING` then check `last_insert`. Release = `UPDATE status='released'` after fill or rejection. See §9.6.
+Populated on accept with `cooled_until = now() + COMBO_COOLDOWN_SEC`. Read at RFQ submission time and at quote evaluation time; both block on `cooled_until > now()`.
 
 ---
 
 ## 9. Safety scaffold
 
-All non-negotiable for v1.
+The bot is taker-only. Most defenses are **per-accept gates** rather than global halts: an RFQ sitting open with no quote action is harmless (no money committed), so we don't need to aggressively pull on every transient hiccup. Money commits only at `accept_quote`, and that's where the gauntlet runs.
 
-### 9.1 Tipoff cancel
+### 9.1 Per-accept gate set (every accept must pass ALL)
 
-For every game in `live_rfqs`: if `commence_time - now() <= TIPOFF_CANCEL_MIN` (default 5 min), DELETE every live RFQ for that game and refuse to create new RFQs for that game until next pipeline refresh (when the game will have rolled out of the open-events list).
+| Gate | Trigger | Decision logged |
+|---|---|---|
+| Min EV after fee | `post_fee_ev_pct < MIN_EV_PCT` | `declined_ev` |
+| Fair-value bounds | `blended_fair < MIN_FAIR_PROB or > MAX_FAIR_PROB` | `declined_kelly_zero` |
+| Sanity bound | `|quote_implied − blended_fair| > MAX_QUOTE_DEVIATION` | `declined_sanity` |
+| Prediction staleness | `now() − mlb_samples_meta.generated_at > MAX_PREDICTION_STALENESS_SEC` (1hr); also fail-safe on negative age (clock skew) | `declined_stale_predictions` |
+| Tipoff window | `commence_time − now() <= TIPOFF_CANCEL_MIN` (5 min) | `declined_tipoff` |
+| Line-move check | Any leg's underlying book line moved > `LINE_MOVE_THRESHOLD` since RFQ submission | `declined_line_move` |
+| Per-game exposure cap | Today's `sum(contracts × price)` for this `game_id` ≥ `MAX_GAME_EXPOSURE_PCT × BANKROLL` | `declined_per_game_cap` |
+| Daily exposure cap | Today's `sum(contracts × price)` across all games ≥ `DAILY_EXPOSURE_CAP_USD` | `declined_daily_cap` |
+| Kill-switch off | `kalshi_mlb_rfq/.kill` exists | `declined_killswitch` |
+| Inverse-combo not held | Open position on inverse leg-set hash | `declined_inverse_lock` |
+| 2-source gate (re-verify) | Combo no longer has model + ≥1 book fair (e.g., book row aged out) | `declined_ev` (folded in) |
+| Per-combo cooldown | `combo_cooldown.cooled_until > now()` for this leg-set | `declined_cooldown` |
+| Positions API health | Last `GET /portfolio/positions` failed `POSITIONS_HEALTH_RETRIES` consecutive times | `declined_positions_unhealthy` |
 
-Runs every 10s in `risk.py::tipoff_sweep()` independent of the main 30s RFQ refresh.
+### 9.2 Tipoff cancel (RFQ cleanup)
 
-### 9.2 Line-move detection
+For every game with live RFQs, if `commence_time − now() <= TIPOFF_CANCEL_MIN`, the risk loop DELETEs every live RFQ for that game. Cleanup, not strictly safety — the per-accept gate above catches anything that slips through. Runs every `RISK_SWEEP_SEC` (10s).
 
-Mirrors `kalshi_mm/risk.py::line_move_check`. Maintains a `reference_lines` snapshot at RFQ submission time. If any leg's underlying book line (from DK/FD/PX/Novig single-leg odds — separate scrapers, already running) moves by more than `LINE_MOVE_THRESHOLD` (default 0.5 spread units / 0.5 total runs), DELETE the RFQ and refuse to re-submit until next pipeline refresh.
+### 9.3 Line-move pulls (RFQ cleanup)
 
-### 9.3 Sanity bounds (already covered §5.6)
+`risk.py` snapshots reference lines at RFQ submission. The risk sweep DELETEs any RFQ whose underlying book line has moved > `LINE_MOVE_THRESHOLD`. Same accept-gate fires as a backstop if a quote arrives in the window between line move and RFQ delete.
 
-Refuse to accept if `|quote_implied_price − blended_fair| > MAX_QUOTE_DEVIATION`.
+### 9.4 Kill switch
 
-### 9.4 Daily exposure cap
-
-Sum `fills.contracts × fills.price_dollars` for fills with `filled_at >= today_start_et`. If sum >= `DAILY_EXPOSURE_CAP_USD` (default $200), halt — refuse new RFQ creation and refuse all quote acceptances. The bot stays alive in halted mode; halt clears at next ET midnight.
-
-### 9.5 Kill switch
-
-File-based: `kalshi_mlb_rfq/.kill`. The risk loop checks for it every 10s. If present:
+File-based: `kalshi_mlb_rfq/.kill`. The risk loop checks every `RISK_SWEEP_SEC`. If present:
 1. DELETE every live RFQ.
-2. Mark sessions row halted.
-3. Stop accepting quotes.
-4. Stay alive until file is removed.
+2. Block all `accept_quote` calls (kill-switch gate).
+3. Mark `sessions` row halted; emit `notify.halt('kill_switch')`.
+4. Bot stays alive in halted mode until the file is removed.
 
-### 9.6 Placement lock (Wagerzon ↔ Kalshi)
+### 9.5 Accept serialization lock
 
-Both the Wagerzon parlay placer and this bot acquire a row in `mlb_dashboard.duckdb::placement_locks` keyed on `combo_key` BEFORE placing on their respective venue. If acquisition fails (row already exists with another venue), the placer skips that combo.
+A `threading.Lock()` wraps the entire quote-acceptance flow (gate evaluation → Kelly sizing → API call → DuckDB write of fill/position/cooldown). Two simultaneous quotes accept sequentially, second sees first's state. See §6.5.1.
 
-`combo_key = sha256(game_id + ":" + sorted(leg_descriptors))` where `leg_descriptors` are canonical strings like `"spread:home:-1.5"`, `"total:over:8.5"`. Both placers compute it identically.
+### 9.6 Post-accept fill reconciliation
 
-The Wagerzon placer needs a small change: add `combo_key` computation and `placement_locks` interaction. Out of this spec's primary scope but in scope as a coordinated change in the same merge. Tracked in §12.
+After `accept_quote` returns, the bot calls `GET /portfolio/positions` to confirm the actual contract count owned for `combo_market_ticker`. The reconciled count (not the accept response's reported count) is what gets written to `fills` and `positions`. Handles partial fills and edge cases where the accept response is out of sync with Kalshi's books.
 
 ### 9.7 Dry-run
 
-`python3 main.py --dry-run` runs the full pipeline including RFQ creation, quote receipt, EV evaluation — but never calls `accept_quote`. Decisions are written to `quote_log` with `decision='declined_dry_run'`. Use to validate behavior without trading real money.
+`python3 main.py --dry-run` runs the full pipeline including RFQ creation, quote receipt, gate evaluation — but never calls `accept_quote`. Decisions write to `quote_log` with `decision='declined_dry_run'` (always emitted as the last decision). No money commits.
 
 ### 9.8 Fill notifications
 
-Every fill and every halt sends a notification on `notify.fill(...)` / `notify.halt(...)`. v1 supports two channels, configured via env:
+Every fill and every halt emits `notify.fill(...)` / `notify.halt(...)`:
 
-- **Always:** append to `bot.log` with a structured `[FILL]` / `[HALT]` line.
-- **Optional push:** if `NOTIFY_WEBHOOK_URL` is set, POST a JSON payload to that URL. The webhook URL is meant to be a Slack/Discord/Telegram-compatible incoming-webhook endpoint chosen by the operator at deploy time. **(TBD: operator picks the channel; spec doesn't pin it.)**
+- **Always:** structured `[FILL]` / `[HALT]` line appended to `bot.log`.
+- **Optional push:** if `NOTIFY_WEBHOOK_URL` is set, POST a JSON payload (Slack/Discord/Telegram-compatible incoming-webhook). **(TBD-1: operator picks channel at deploy; spec doesn't pin.)**
 
 ---
 
@@ -522,16 +546,21 @@ All in `kalshi_mlb_rfq/.env` (gitignored, with `.env.example` checked in).
 | `KELLY_FRACTION` | `0.25` | Quarter Kelly. |
 | `MIN_EV_PCT` | `0.05` | Min post-fee EV% to auto-accept. |
 | `MAX_QUOTE_DEVIATION` | `0.15` | Sanity bound — reject quote if Kalshi price is more than this off blended fair. |
+| `MIN_FAIR_PROB` | `0.05` | Lower bound on blended fair. |
+| `MAX_FAIR_PROB` | `0.95` | Upper bound on blended fair. |
+| `MAX_GAME_EXPOSURE_PCT` | `0.10` | Per-game cap as % of bankroll (default 10% = $100 on $1000). |
 | `DAILY_EXPOSURE_CAP_USD` | `200.0` | Hard daily cap. |
 | `LINE_MOVE_THRESHOLD` | `0.5` | Spread-units / runs of book-line movement that pulls RFQs. |
-| `RFQ_REFRESH_SEC` | `30` | RFQ refresh cadence. |
+| `MAX_PREDICTION_STALENESS_SEC` | `3600` | Decline accepts if `mlb_samples_meta.generated_at` older than this (1hr — taker is forgiving). |
+| `MAX_BOOK_STALENESS_SEC` | `60` | Ignore `mlb_sgp_odds` rows older than this when blending; if 0 books survive, 2-source gate fails. |
+| `COMBO_COOLDOWN_SEC` | `30` | Suppress new RFQs / accepts on a leg-set after a fill. |
+| `POSITIONS_HEALTH_RETRIES` | `2` | Consecutive `/portfolio/positions` failures before the positions-API health gate trips. |
+| `RFQ_REFRESH_SEC` | `30` | Priority-queue refresh cadence. |
 | `QUOTE_POLL_SEC` | `2` | Quote poll cadence. |
 | `RISK_SWEEP_SEC` | `10` | Tipoff/kill-switch/exposure check cadence. |
 | `PIPELINE_REFRESH_SEC` | `600` | MLB R pipeline rerun cadence. |
-| `TIPOFF_CANCEL_MIN` | `5` | Minutes before first pitch to cancel. |
-| `MAX_LIVE_RFQS` | `60` | Soft cap below Kalshi's 100/account hard cap. |
-| `MIN_FAIR_PROB` | `0.05` | Lower bound on blended fair. |
-| `MAX_FAIR_PROB` | `0.95` | Upper bound on blended fair. |
+| `TIPOFF_CANCEL_MIN` | `5` | Minutes before first pitch to cancel RFQs and decline accepts. |
+| `MAX_LIVE_RFQS` | `80` | Soft cap below Kalshi's 100/account hard cap. |
 | `NOTIFY_WEBHOOK_URL` | — | Optional. POST target for fill/halt notifications. |
 | `DK_VIG_FALLBACK` / `FD_VIG_FALLBACK` / `PX_VIG_FALLBACK` / `NOVIG_VIG_FALLBACK` | `0.125` / `0.18` / `0.05` / `0.05` | Fallback vig when <4 sides. |
 
@@ -554,7 +583,7 @@ All in `kalshi_mlb_rfq/.env` (gitignored, with `.env.example` checked in).
 |---|---|
 | `mlb_game_samples` missing rows for a game_id | Skip that game's combos; log once per cycle. |
 | `mlb_sgp_odds` empty for a combo | Combo fails 2-source gate; skipped silently (expected for many alts). |
-| MLB R pipeline rerun fails | Log loudly, keep running on stale data. Operator notification via `notify.halt('pipeline_refresh_failed')`. |
+| MLB R pipeline rerun fails | Log loudly, keep RFQing on stale data. The accept-staleness gate (§9.1) automatically blocks accepts once data ages past `MAX_PREDICTION_STALENESS_SEC`. Send `notify.halt('pipeline_refresh_failed')` so the operator knows. No active halt or RFQ pull — taker doesn't need them. |
 
 ### 11.3 DuckDB write contention
 
@@ -606,16 +635,15 @@ On startup, before the main loop:
 | `kalshi_mlb_rfq/README.md` | setup, run, monitor |
 | `mlb_sgp/recon_kalshi_mlb_rfq.py` | recon script (already drafted; revised before commit) |
 
-### 12.3 Files modified (out of primary scope but coordinated in same merge)
+### 12.3 Files modified
 
 | File | Change |
 |---|---|
-| `bet_placer/parlay_placer.py` (Wagerzon) | Add `combo_key` computation + `placement_locks` acquire/release. |
-| `Answer Keys/MLB Dashboard/mlb_dashboard_server.py` | Same — coordinated `placement_locks` interaction. |
-| `mlb_dashboard.duckdb::placement_locks` (schema) | New table; bot's `db.py` runs migration on startup if not present. |
 | `README.md` (root) | Mention `kalshi_mlb_rfq/`. |
 | `CLAUDE.md` (root) | Mention the new bot in the "Project Structure" section. |
 | `.gitignore` | Add `kalshi_mlb_rfq/.env`, `kalshi_mlb_rfq/*.duckdb`, `kalshi_mlb_rfq/*.log`, `kalshi_mlb_rfq/.kill`. |
+
+No code outside `kalshi_mlb_rfq/` is modified. The bot is fully standalone (per §2.3).
 
 ### 12.4 Commit structure
 
@@ -624,10 +652,9 @@ Commits, in order:
 2. `feat(kalshi-mlb-rfq): rfq_client + ticker_map + recon harness`
 3. `feat(kalshi-mlb-rfq): combo_enumerator + fair_value (model + books + blend)`
 4. `feat(kalshi-mlb-rfq): ev_calc + kelly (port from kalshi_mm)`
-5. `feat(kalshi-mlb-rfq): risk (tipoff, line-move, exposure, kill switch)`
-6. `feat(kalshi-mlb-rfq): main orchestrator + dashboard CLI`
-7. `feat(placement-locks): shared lock table for wagerzon ↔ kalshi-mlb-rfq`
-8. `docs: kalshi_mlb_rfq README + root README + CLAUDE.md updates`
+5. `feat(kalshi-mlb-rfq): risk (per-accept gates + RFQ-cleanup sweeps)`
+6. `feat(kalshi-mlb-rfq): main orchestrator + accept lock + fill reconciliation + dashboard CLI`
+7. `docs: kalshi_mlb_rfq README + root README + CLAUDE.md updates`
 
 ### 12.5 Pre-merge review checklist (per CLAUDE.md)
 
@@ -696,6 +723,7 @@ In `bot.log`, every `[HALT]` line should explain: kill-switch / exposure cap / p
 | **TBD-2** | RFQ TTL on Kalshi side (how long an idle RFQ stays open before auto-expiry). | Discover empirically during dry-run. Doesn't block v1 — we explicitly DELETE on our cadence. |
 | **TBD-3** | Kalshi API rate limits (no `X-RateLimit-*` headers returned). | Discover empirically; back-off on 429 is in place. |
 | **TBD-4** | Whether to extend `mlb_parlay_lines` / answer-key pipeline to produce winner+total and total+RFI combos so they pass the 2-source gate. | Out of v1 scope; tracked as a follow-up after v1 ships. |
+| **TBD-5** | Kalshi `accept_quote` price atomicity: does it execute at the price we evaluated, or whatever the quote currently is? Determines whether we need pre-accept quote confirmation. | Verify during dry-run validation by accepting a stale quote on a small test combo and inspecting the fill price. If atomic-at-current-price, add pre-accept confirm step. |
 
 ---
 
