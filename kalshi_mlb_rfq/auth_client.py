@@ -16,9 +16,23 @@ from kalshi_mlb_rfq.config import (
     PROJECT_ROOT,
 )
 
-# kalshi_draft is gitignored; load from main repo (works inside a worktree because
-# git rev-parse --git-common-dir resolves to the shared .git dir's parent).
-sys.path.insert(0, str(PROJECT_ROOT.parent.parent / "kalshi_draft"))
+# kalshi_draft is gitignored; we have to find it on disk. It lives at the repo root,
+# but PROJECT_ROOT differs between main checkout (= NFLWork) and a worktree
+# (= NFLWork/.worktrees/<name>). Try both.
+def _find_kalshi_draft() -> "str | None":
+    candidates = [
+        PROJECT_ROOT / "kalshi_draft",                # main repo
+        PROJECT_ROOT.parent.parent / "kalshi_draft",  # inside a worktree
+    ]
+    for c in candidates:
+        if (c / "auth.py").exists():
+            return str(c)
+    return None
+
+
+_kalshi_draft_dir = _find_kalshi_draft()
+if _kalshi_draft_dir and _kalshi_draft_dir not in sys.path:
+    sys.path.insert(0, _kalshi_draft_dir)
 try:
     from auth import sign_request as _sign_request
 except ImportError:
