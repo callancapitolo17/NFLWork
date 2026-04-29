@@ -27,12 +27,25 @@ VERSION = "0.1.0"
 _running = threading.Event()
 _running.set()
 ACCEPT_LOCK = threading.Lock()
+_CACHE_LOCK = threading.Lock()
 
 # Test-only override; otherwise use config.MAX_LIVE_RFQS.
 MAX_LIVE_RFQS_OVERRIDE: int | None = None
 
 # Track positions-API health across calls.
 _POSITIONS_API_FAIL_COUNT = 0
+
+# ------------------------------------------------------------------------ #
+# In-memory caches of answer-key data.                                     #
+# Refreshed on startup and on each PIPELINE_REFRESH_SEC tick. Decouples    #
+# the bot's hot path from DuckDB lock contention with the R pipeline +     #
+# mlb_dashboard_server. ~10 MB resident — negligible.                      #
+# ------------------------------------------------------------------------ #
+_SAMPLES_CACHE: dict[str, pd.DataFrame] = {}              # game_id → samples df
+_SGP_ODDS_CACHE: pd.DataFrame | None = None                # full mlb_sgp_odds (last hour, FG period)
+_PARLAY_LINES_CACHE: dict[str, dict] = {}                  # game_id → {home, away, commence_time}
+_SAMPLES_META_GENERATED_AT: datetime | None = None
+_CACHE_LOADED_AT: datetime | None = None
 
 
 def _signal_handler(_sig, _frame):
@@ -49,6 +62,102 @@ def _record_positions_api_result(success: bool):
         _POSITIONS_API_FAIL_COUNT = 0
     else:
         _POSITIONS_API_FAIL_COUNT += 1
+
+
+# ------------------------------------------------------------------------ #
+# Cache refresh — populate _SAMPLES_CACHE / _SGP_ODDS_CACHE etc. in one    #
+# DuckDB session with retry-with-backoff for the brief lock window when   #
+# the R pipeline is writing.                                              #
+# ------------------------------------------------------------------------ #
+
+def _refresh_caches(retries: int = 5) -> bool:
+    """Reload all answer-key data into memory. Returns True if successful, False otherwise.
+
+    Tries up to `retries` times with exponential backoff to handle the brief lock
+    window when the R pipeline (or dashboard_server) is writing.
+    """
+    global _SAMPLES_CACHE, _SGP_ODDS_CACHE, _PARLAY_LINES_CACHE
+    global _SAMPLES_META_GENERATED_AT, _CACHE_LOADED_AT
+
+    if not ANSWER_KEY_DB.exists():
+        print(f"  cache_refresh: {ANSWER_KEY_DB} does not exist", flush=True)
+        return False
+
+    last_err = None
+    for attempt in range(retries):
+        try:
+            con = duckdb.connect(str(ANSWER_KEY_DB), read_only=True)
+        except duckdb.IOException as e:
+            last_err = e
+            wait = 1.0 * (2 ** attempt)
+            print(f"  cache_refresh: lock conflict (attempt {attempt+1}/{retries}); "
+                  f"retrying in {wait:.1f}s", flush=True)
+            time.sleep(wait)
+            continue
+
+        try:
+            # mlb_game_samples
+            t0 = time.time()
+            samples_df = con.execute(
+                "SELECT game_id, sim_idx, home_margin, total_final_score, "
+                "home_margin_f5, total_f5, home_scored_first FROM mlb_game_samples"
+            ).fetchdf()
+            samples_by_game = {gid: g.reset_index(drop=True)
+                                for gid, g in samples_df.groupby("game_id")}
+
+            # mlb_sgp_odds (last hour, FG period only)
+            sgp_df = con.execute(
+                "SELECT game_id, combo, period, bookmaker, sgp_decimal, "
+                "spread_line, total_line, fetch_time "
+                "FROM mlb_sgp_odds WHERE period='FG' "
+                "AND fetch_time > NOW() - INTERVAL (CAST(? AS BIGINT)) SECOND",
+                [config.MAX_BOOK_STALENESS_SEC]
+            ).fetchdf()
+
+            # mlb_parlay_lines — game metadata
+            lines_rows = con.execute(
+                "SELECT game_id, home_team, away_team, commence_time "
+                "FROM mlb_parlay_lines"
+            ).fetchall()
+            parlay_lines = {
+                r[0]: {"home_team": r[1], "away_team": r[2], "commence_time": r[3]}
+                for r in lines_rows
+            }
+
+            # samples meta — generated_at
+            meta_row = con.execute(
+                "SELECT generated_at FROM mlb_samples_meta "
+                "ORDER BY generated_at DESC LIMIT 1"
+            ).fetchone()
+            generated_at = meta_row[0] if meta_row else None
+        except duckdb.CatalogException as e:
+            con.close()
+            print(f"  cache_refresh: schema mismatch — {e}", flush=True)
+            return False
+        finally:
+            try:
+                con.close()
+            except Exception:
+                pass
+
+        # Atomic swap into the caches under the lock.
+        with _CACHE_LOCK:
+            _SAMPLES_CACHE = samples_by_game
+            _SGP_ODDS_CACHE = sgp_df
+            _PARLAY_LINES_CACHE = parlay_lines
+            _SAMPLES_META_GENERATED_AT = generated_at
+            _CACHE_LOADED_AT = datetime.now(timezone.utc)
+
+        elapsed = time.time() - t0
+        print(f"  cache_refresh: {len(samples_by_game)} games, "
+              f"{len(sgp_df)} sgp_odds rows, "
+              f"{len(parlay_lines)} parlay_lines, "
+              f"samples gen_at={generated_at} ({elapsed:.1f}s)", flush=True)
+        return True
+
+    print(f"  cache_refresh: gave up after {retries} attempts; last error: {last_err}",
+          flush=True)
+    return False
 
 
 # ------------------------------------------------------------------------ #
@@ -137,35 +246,14 @@ def _phantom_rfq_cleanup():
 # ------------------------------------------------------------------------ #
 
 def _samples_generated_at() -> datetime | None:
-    if not ANSWER_KEY_DB.exists():
-        return None
-    con = duckdb.connect(str(ANSWER_KEY_DB), read_only=True)
-    try:
-        row = con.execute(
-            "SELECT generated_at FROM mlb_samples_meta ORDER BY generated_at DESC LIMIT 1"
-        ).fetchone()
-    except duckdb.CatalogException:
-        return None
-    finally:
-        con.close()
-    return row[0] if row else None
+    """Read from in-memory cache, populated by _refresh_caches()."""
+    return _SAMPLES_META_GENERATED_AT
 
 
 def _commence_time_for_game(game_id: str) -> datetime | None:
-    """Pull commence_time from mlb_parlay_lines (the canonical source for it)."""
-    if not ANSWER_KEY_DB.exists():
-        return None
-    con = duckdb.connect(str(ANSWER_KEY_DB), read_only=True)
-    try:
-        row = con.execute(
-            "SELECT commence_time FROM mlb_parlay_lines WHERE game_id=? LIMIT 1",
-            [game_id]
-        ).fetchone()
-    except duckdb.CatalogException:
-        return None
-    finally:
-        con.close()
-    return row[0] if row else None
+    """Read from in-memory cache, populated by _refresh_caches()."""
+    row = _PARLAY_LINES_CACHE.get(game_id)
+    return row["commence_time"] if row else None
 
 
 # 3-letter Kalshi team code → mlb_parlay_lines.home_team / away_team canonical name.
@@ -186,40 +274,24 @@ _MLB_CODE_TO_TEAM = {
 
 
 def _load_samples_for_game(game_id: str) -> pd.DataFrame | None:
-    if not ANSWER_KEY_DB.exists():
-        return None
-    con = duckdb.connect(str(ANSWER_KEY_DB), read_only=True)
-    try:
-        df = con.execute(
-            "SELECT home_margin, total_final_score, home_margin_f5, total_f5, "
-            "home_scored_first FROM mlb_game_samples WHERE game_id=?", [game_id]
-        ).fetchdf()
-    except duckdb.CatalogException:
-        return None
-    finally:
-        con.close()
-    return df if not df.empty else None
+    """Read from in-memory cache, populated by _refresh_caches()."""
+    df = _SAMPLES_CACHE.get(game_id)
+    return df if df is not None and not df.empty else None
 
 
 def _load_book_fairs(game_id: str, spread_line: float, total_line: float) -> dict[str, float]:
-    """Pull mlb_sgp_odds rows and devig per book at the given (spread, total)."""
-    if not ANSWER_KEY_DB.exists():
+    """Devig per book from the in-memory mlb_sgp_odds slice for this game."""
+    if _SGP_ODDS_CACHE is None or _SGP_ODDS_CACHE.empty:
         return {}
-    con = duckdb.connect(str(ANSWER_KEY_DB), read_only=True)
-    try:
-        rows = con.execute(
-            "SELECT bookmaker, combo, sgp_decimal "
-            "FROM mlb_sgp_odds WHERE game_id=? AND period='FG' "
-            "AND fetch_time > NOW() - INTERVAL (CAST(? AS BIGINT)) SECOND",
-            [game_id, MAX_BOOK_STALENESS_SEC]
-        ).fetchdf()
-    except duckdb.CatalogException:
-        return {}
-    finally:
-        con.close()
-
+    rows = _SGP_ODDS_CACHE[
+        (_SGP_ODDS_CACHE["game_id"] == game_id) &
+        (_SGP_ODDS_CACHE["spread_line"] == spread_line) &
+        (_SGP_ODDS_CACHE["total_line"] == total_line)
+    ]
     out: dict[str, float] = {}
-    for book in rows["bookmaker"].unique() if not rows.empty else []:
+    if rows.empty:
+        return out
+    for book in rows["bookmaker"].unique():
         sub = rows[rows["bookmaker"] == book].copy()
         fair_per_book = fair_value.devig_book(
             sub, combo="Home Spread + Over",
@@ -255,25 +327,14 @@ def _home_code_from_event_ticker(event_ticker: str) -> str | None:
 
 
 def _current_book_lines_for_combo(game_id: str) -> dict | None:
-    """Latest spread/total snapshot from mlb_sgp_odds for line-move detection."""
-    if not ANSWER_KEY_DB.exists():
+    """Latest spread/total snapshot from in-memory mlb_sgp_odds for line-move detection."""
+    if _SGP_ODDS_CACHE is None or _SGP_ODDS_CACHE.empty:
         return None
-    con = duckdb.connect(str(ANSWER_KEY_DB), read_only=True)
-    try:
-        row = con.execute(
-            "SELECT spread_line, total_line FROM mlb_sgp_odds "
-            "WHERE game_id=? AND period='FG' "
-            "AND fetch_time > NOW() - INTERVAL (CAST(? AS BIGINT)) SECOND "
-            "ORDER BY fetch_time DESC LIMIT 1",
-            [game_id, MAX_BOOK_STALENESS_SEC]
-        ).fetchone()
-    except duckdb.CatalogException:
+    rows = _SGP_ODDS_CACHE[_SGP_ODDS_CACHE["game_id"] == game_id]
+    if rows.empty:
         return None
-    finally:
-        con.close()
-    if not row:
-        return None
-    return {"spread": float(row[0]), "total": float(row[1])}
+    latest = rows.sort_values("fetch_time", ascending=False).iloc[0]
+    return {"spread": float(latest["spread_line"]), "total": float(latest["total_line"])}
 
 
 # ------------------------------------------------------------------------ #
@@ -849,27 +910,24 @@ def _kalshi_last_price(market_ticker: str) -> float:
 
 
 def _resolve_game_id(home_code: str, away_code: str) -> str | None:
-    """Map Kalshi 3-letter codes to mlb.duckdb game_id via mlb_parlay_lines."""
+    """Map Kalshi 3-letter codes to game_id via in-memory mlb_parlay_lines cache."""
     home = _MLB_CODE_TO_TEAM.get(home_code)
     away = _MLB_CODE_TO_TEAM.get(away_code)
     if not home or not away:
         return None
-    if not ANSWER_KEY_DB.exists():
-        return None
-    con = duckdb.connect(str(ANSWER_KEY_DB), read_only=True)
-    try:
-        row = con.execute(
-            "SELECT game_id FROM mlb_parlay_lines "
-            "WHERE home_team=? AND away_team=? "
-            "AND commence_time > NOW() AND commence_time < NOW() + INTERVAL '24 HOUR' "
-            "ORDER BY commence_time LIMIT 1",
-            [home, away]
-        ).fetchone()
-    except duckdb.CatalogException:
-        return None
-    finally:
-        con.close()
-    return row[0] if row else None
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(hours=24)
+    for game_id, row in _PARLAY_LINES_CACHE.items():
+        if row["home_team"] != home or row["away_team"] != away:
+            continue
+        ct = row["commence_time"]
+        if ct is None:
+            continue
+        if ct.tzinfo is None:
+            ct = ct.replace(tzinfo=timezone.utc)
+        if now < ct < horizon:
+            return game_id
+    return None
 
 
 def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandidate],
@@ -936,6 +994,9 @@ def main_loop(dry_run: bool):
     db.init_database()
     sid = db.start_session(pid=os.getpid(), dry_run=dry_run, version=VERSION)
     print(f"=== Kalshi MLB RFQ Bot — session {sid} (dry_run={dry_run}) ===", flush=True)
+    # Initial cache load — bot is useless until this succeeds.
+    if not _refresh_caches():
+        print("  startup: cache_refresh failed; bot will retry on pipeline-refresh tick", flush=True)
     _phantom_rfq_cleanup()
 
     last_rfq_refresh = 0.0
@@ -954,9 +1015,12 @@ def main_loop(dry_run: bool):
                 continue
 
             if now - last_rfq_refresh >= config.RFQ_REFRESH_SEC:
+                t_ref = time.time()
                 try:
                     candidates, fair_scores = _enumerate_and_score_all_games()
                     _refresh_rfqs(candidates, fair_scores, dry_run=dry_run)
+                    print(f"  rfq_refresh: {len(candidates)} candidates "
+                          f"({time.time()-t_ref:.1f}s)", flush=True)
                 except Exception as e:
                     print(f"  rfq_refresh error: {e}", flush=True)
                 last_rfq_refresh = now
@@ -977,6 +1041,9 @@ def main_loop(dry_run: bool):
 
             if now - last_pipeline >= config.PIPELINE_REFRESH_SEC:
                 _run_pipeline()
+                # Reload caches after the pipeline has had a chance to refresh data.
+                # Retries inside _refresh_caches handle any brief lock window.
+                _refresh_caches()
                 last_pipeline = now
 
             if now - last_heartbeat >= 60:
