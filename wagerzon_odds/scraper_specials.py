@@ -195,11 +195,18 @@ def main() -> int:
     ap.add_argument("--lg", type=int, default=4899,
                     help="Wagerzon league id (4899=MLB-SPECIALS)")
     ap.add_argument("--sport", default="mlb")
+    # Positional `sport` is what `Answer Keys/run.py` passes to every scraper
+    # (e.g. `python scraper_specials.py mlb`). When present, it overrides
+    # `--sport`. Manual callers can still use `--sport <name>` or omit both.
+    ap.add_argument("sport_positional", nargs="?", default=None,
+                    help="Sport name (positional). Overrides --sport when provided.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Fetch + parse, don't write to DB")
     ap.add_argument("--cron", action="store_true",
                     help="Quiet mode: log only WARN+, suitable for scheduled runs")
     args = ap.parse_args()
+
+    sport = args.sport_positional or args.sport
 
     if args.cron:
         logging.getLogger().setLevel(logging.WARNING)
@@ -207,7 +214,7 @@ def main() -> int:
     try:
         log.info("Fetching specials lg=%d", args.lg)
         payload = fetch_specials_json(args.lg)
-        rows = parse_specials_json(payload, sport=args.sport, league_id=args.lg)
+        rows = parse_specials_json(payload, sport=sport, league_id=args.lg)
         log.info("Parsed %d priceable rows", len(rows))
     except Exception:
         log.exception("Scrape failed")
@@ -220,8 +227,11 @@ def main() -> int:
         return 0
 
     if not rows:
+        # Empty result is NOT a failure — it's a successful determination that
+        # Wagerzon has nothing posted. Returning 0 lets the orchestrator (run.py)
+        # treat empty days as a clean run rather than a scraper error.
         log.warning("No priceable specials found — not writing snapshot")
-        return 1
+        return 0
 
     con = duckdb.connect(str(DB_PATH))
     try:

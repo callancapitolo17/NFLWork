@@ -64,8 +64,11 @@ if (!interactive() && sys.nframe() == 0L) {
   dbDisconnect(con_mig)
 
   # Read today's posted specials from the wagerzon_specials scraper output.
-  # Uses the most recent snapshot. Pricer is robust to empty / off-day cases:
-  # if zero rows are posted, prints a clear message and exits.
+  # Uses the most recent snapshot AND filters to upcoming games (game_time > NOW()).
+  # The game_time filter is the real safeguard against stale data: if WZ has no
+  # specials posted today, MAX(scraped_at) returns yesterday's snapshot, but every
+  # row in it has a past game_time and gets filtered out. Off-day → zero rows →
+  # empty Trifectas tab (correct behavior).
   WZ_DB <- "~/NFLWork/wagerzon_odds/wagerzon.duckdb"
   wz_con <- dbConnect(duckdb(), dbdir = path.expand(WZ_DB), read_only = TRUE)
   on.exit(tryCatch(dbDisconnect(wz_con), error = function(e) NULL), add = TRUE)
@@ -75,6 +78,7 @@ if (!interactive() && sys.nframe() == 0L) {
     WHERE sport = 'mlb'
       AND prop_type IN ('TRIPLE-PLAY', 'GRAND-SLAM')
       AND scraped_at = (SELECT MAX(scraped_at) FROM wagerzon_specials WHERE sport = 'mlb')
+      AND game_time > NOW()
   ")
   dbDisconnect(wz_con)
 
