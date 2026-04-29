@@ -79,9 +79,16 @@ def _phantom_rfq_cleanup():
     from live_rfqs. CRITICAL: never touches RFQs that belong to other bots / user
     actions — those are identified by their market_ticker NOT starting with our
     combo prefix (e.g., NFL Draft RFQs from kalshi_draft are off-limits).
+    Also requires KALSHI_USER_ID to be set so we only see our own RFQs (without
+    it, Kalshi returns the global open-RFQ list, which we have no business
+    touching).
     """
+    if not config.KALSHI_USER_ID:
+        print("  startup: KALSHI_USER_ID not set — skipping phantom cleanup "
+              "(safety: would otherwise fetch RFQs from all users)", flush=True)
+        return
     try:
-        kalshi_open = rfq_client.list_open_rfqs(config.KALSHI_USER_ID or "")
+        kalshi_open = rfq_client.list_open_rfqs(config.KALSHI_USER_ID)
     except Exception as e:
         print(f"  startup: list_open_rfqs failed: {e}", flush=True)
         return
