@@ -84,6 +84,23 @@ if (!interactive() && sys.nframe() == 0L) {
 
   if (nrow(specials) == 0) {
     cat("No priceable specials found in wagerzon_specials. Run scraper_specials.py first.\n")
+    # Clear mlb_trifecta_opportunities so the dashboard reflects "nothing
+    # priceable today" instead of leftover rows from a previous run. Without
+    # this, a prior run's rows linger with future game_time values and the
+    # dashboard's load filter (game_time > NOW()) can't distinguish them
+    # from genuinely fresh pricing.
+    cleanup_con <- tryCatch(
+      dbConnect(duckdb(), dbdir = MLB_DB),
+      error = function(e) NULL
+    )
+    if (!is.null(cleanup_con)) {
+      tryCatch({
+        dbExecute(cleanup_con, "DROP TABLE IF EXISTS mlb_trifecta_opportunities")
+      }, error = function(e) {
+        cat(sprintf("Warning: failed to clear mlb_trifecta_opportunities: %s\n", e$message))
+      })
+      duckdb::dbDisconnect(cleanup_con, shutdown = TRUE)
+    }
     quit(status = 0)
   }
 
