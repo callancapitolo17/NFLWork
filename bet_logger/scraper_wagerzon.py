@@ -56,7 +56,7 @@ WAGERZON_PASSWORD = os.getenv("WAGERZON_PASSWORD")
 # ── Auth ────────────────────────────────────────────────────────
 
 
-def login(session: requests.Session):
+def login(session: requests.Session, username: str, password: str):
     """Login to Wagerzon via ASP.NET form POST.
 
     Same auth approach as wagerzon_odds/scraper_v2.py:
@@ -87,8 +87,8 @@ def login(session: requests.Session):
     if "__VIEWSTATE" not in fields:
         raise RuntimeError("Could not find __VIEWSTATE on login page — page structure may have changed")
 
-    fields["Account"] = WAGERZON_USERNAME
-    fields["Password"] = WAGERZON_PASSWORD
+    fields["Account"] = username
+    fields["Password"] = password
     fields["BtnSubmit"] = ""
 
     resp = session.post(WAGERZON_BASE_URL, data=fields, timeout=15)
@@ -366,7 +366,8 @@ def parse_api_bets(history: dict, platform: str = 'Wagerzon',
 # ── Main ────────────────────────────────────────────────────────
 
 
-def scrape_wagerzon(weeks_back: int = 1, all_weeks: bool = False) -> list:
+def scrape_wagerzon(weeks_back: int = 1, all_weeks: bool = False,
+                    account_name: str = 'default') -> list:
     """
     Log into Wagerzon via HTTP and fetch bet history from the JSON API.
 
@@ -378,12 +379,18 @@ def scrape_wagerzon(weeks_back: int = 1, all_weeks: bool = False) -> list:
         weeks_back: Which week to fetch (0 = current, 1 = last week, etc.)
         all_weeks: If True, fetch weeks 0 through N until an empty week is
                    found. Useful for catching up after missed weeks.
+        account_name: Account key from ACCOUNTS ('default' or 'j').
 
     Returns:
-        List of parsed bet dictionaries
+        List of parsed bet dictionaries with platform/multiplier applied.
     """
-    if not WAGERZON_USERNAME or not WAGERZON_PASSWORD:
-        raise ValueError("WAGERZON_USERNAME and WAGERZON_PASSWORD must be set in .env file")
+    acct = ACCOUNTS[account_name]
+    username = os.getenv(acct['username_env'])
+    password = os.getenv(acct['password_env'])
+    if not username or not password:
+        raise ValueError(
+            f"{acct['username_env']} and {acct['password_env']} must be set in .env file"
+        )
 
     session = requests.Session()
     session.headers.update({
@@ -391,8 +398,8 @@ def scrape_wagerzon(weeks_back: int = 1, all_weeks: bool = False) -> list:
     })
 
     # Step 1: Authenticate
-    print("Logging in to Wagerzon...")
-    login(session)
+    print(f"Logging in to Wagerzon ({acct['platform']})...")
+    login(session, username, password)
 
     # Step 2: Determine which weeks to fetch
     if all_weeks:
@@ -415,7 +422,11 @@ def scrape_wagerzon(weeks_back: int = 1, all_weeks: bool = False) -> list:
             print(f"  Empty week — stopping.\n")
             break
 
-        bets = parse_api_bets(history)
+        bets = parse_api_bets(
+            history,
+            platform=acct['platform'],
+            bet_multiplier=acct['bet_multiplier'],
+        )
         all_bets.extend(bets)
         print()
 
