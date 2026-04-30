@@ -924,7 +924,7 @@ all_results <- all_results %>%
 
 write_con <- NULL
 tryCatch({
-  write_con <- dbConnect(duckdb(), dbdir = MLB_DB)
+  write_con <- dbConnect(duckdb(), dbdir = MLB_MM_DB)
   dbExecute(write_con, "DROP TABLE IF EXISTS mlb_parlay_opportunities")
   dbWriteTable(write_con, "mlb_parlay_opportunities", all_results)
   cat(sprintf("Wrote %d parlay opportunities to %s.\n", nrow(all_results), MLB_DB))
