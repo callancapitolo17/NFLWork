@@ -27,6 +27,28 @@ load_dotenv()
 # Configuration
 WAGERZON_BASE_URL = "https://backend.wagerzon.com"
 WAGERZON_HISTORY_URL = f"{WAGERZON_BASE_URL}/wager/HistoryHelper.aspx"
+# Account configurations.
+# Wagerzon supports two accounts using the same credentials flow but
+# different sheet labels and stake adjustments. The primary uses a
+# multiplier of 1.0 (full risk attributed to user). WagerzonJ is a
+# partner account where the user holds 87.5% of the risk; raw bets
+# also land on the Shared tab for week-over-week reconciliation.
+ACCOUNTS = {
+    'default': {
+        'username_env': 'WAGERZON_USERNAME',
+        'password_env': 'WAGERZON_PASSWORD',
+        'platform': 'Wagerzon',
+        'bet_multiplier': 1.0,
+        'shared_sheet': None,
+    },
+    'j': {
+        'username_env': 'WAGERZONJ_USERNAME',
+        'password_env': 'WAGERZONJ_PASSWORD',
+        'platform': 'WagerzonJ',
+        'bet_multiplier': 0.875,
+        'shared_sheet': 'Shared',
+    },
+}
 WAGERZON_USERNAME = os.getenv("WAGERZON_USERNAME")
 WAGERZON_PASSWORD = os.getenv("WAGERZON_PASSWORD")
 
