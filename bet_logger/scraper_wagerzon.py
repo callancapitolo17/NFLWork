@@ -353,7 +353,8 @@ def parse_api_bets(history: dict, platform: str = 'Wagerzon',
                 }
 
                 bets.append(bet)
-                print(f"  {bet['date']} - {bet_type} - {description[:60]} - ${adjusted_risk:.2f} (raw ${risk:.2f}) - {result}")
+                raw_suffix = f" (raw ${risk:.2f})" if bet_multiplier != 1.0 else ""
+                print(f"  {bet['date']} - {bet_type} - {description[:60]} - ${adjusted_risk:.2f}{raw_suffix} - {result}")
 
             except Exception as e:
                 print(f"  Error parsing wager: {e}")
