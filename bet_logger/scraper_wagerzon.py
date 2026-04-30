@@ -433,6 +433,7 @@ def scrape_wagerzon(weeks_back: int = 1, all_weeks: bool = False,
 
 if __name__ == "__main__":
     import argparse
+    import copy
 
     parser = argparse.ArgumentParser(description='Scrape bet history from Wagerzon')
     parser.add_argument('--weeks', type=int, default=1,
@@ -441,24 +442,32 @@ if __name__ == "__main__":
                         help='Fetch all weeks until an empty one (catches up after missed weeks)')
     parser.add_argument('--dry-run', action='store_true',
                         help='Scrape but do not upload to Google Sheets')
+    parser.add_argument('--account', choices=list(ACCOUNTS.keys()), default='default',
+                        help='Which Wagerzon account to scrape (default or j)')
     args = parser.parse_args()
 
+    acct = ACCOUNTS[args.account]
+
     print("=" * 60)
-    print("WAGERZON BET HISTORY SCRAPER")
+    print(f"WAGERZON BET HISTORY SCRAPER — {acct['platform']}")
     print("=" * 60)
 
     try:
-        bets = scrape_wagerzon(weeks_back=args.weeks, all_weeks=args.all_weeks)
+        bets = scrape_wagerzon(weeks_back=args.weeks,
+                               all_weeks=args.all_weeks,
+                               account_name=args.account)
     except Exception as e:
         print(f"\n❌ Error: {e}")
         sys.exit(1)
 
     print(f"\n{'=' * 60}")
-    print(f"Successfully scraped {len(bets)} bets from Wagerzon")
+    print(f"Successfully scraped {len(bets)} bets from {acct['platform']}")
     print(f"{'=' * 60}\n")
 
     if bets and not args.dry_run:
         from sheets import append_bets_to_sheet
+
+        # Adjusted bets (user's share) → main Sheet1.
         result = append_bets_to_sheet(bets)
 
         if result['status'] == 'success':
@@ -468,8 +477,31 @@ if __name__ == "__main__":
             print(f"\n⚠️  {result['message']}")
         else:
             print(f"\n❌ Error uploading to sheets: {result.get('message', 'Unknown error')}")
+
+        # Raw bets (original full risk) → Shared verification tab, if configured.
+        if acct['shared_sheet']:
+            print(f"\nUploading raw bets to '{acct['shared_sheet']}' tab...")
+            raw_bets = []
+            for bet in bets:
+                raw = copy.copy(bet)
+                raw['bet_amount'] = raw.pop('_raw_risk', raw['bet_amount'])
+                raw_bets.append(raw)
+            raw_result = append_bets_to_sheet(raw_bets, sheet_name=acct['shared_sheet'])
+            if raw_result['status'] == 'success':
+                print(f"Added {raw_result['rows_added']} raw bets to {acct['shared_sheet']}")
+            elif raw_result['status'] == 'skipped':
+                print(f"{raw_result['message']}")
+            else:
+                print(f"Error uploading raw bets: {raw_result.get('message', 'Unknown error')}")
+
     elif args.dry_run:
         print("Dry run — skipping upload to Google Sheets")
+        if acct['bet_multiplier'] != 1.0:
+            print(f"\nBet multiplier: ×{acct['bet_multiplier']}")
+            raw_total = sum(b.get('_raw_risk', 0) for b in bets)
+            adj_total = sum(b['bet_amount'] for b in bets)
+            print(f"Raw total wagered:      ${raw_total:,.2f}")
+            print(f"Adjusted total wagered: ${adj_total:,.2f}")
     elif not bets:
         print("No bets found to upload")
         sys.exit(1)
