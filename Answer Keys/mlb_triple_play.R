@@ -44,6 +44,9 @@ if (!interactive() && sys.nframe() == 0L) {
   setwd("~/NFLWork/Answer Keys")
   source("parse_legs.R")
   MLB_DB <- "mlb.duckdb"
+  # Bot- and dashboard-facing tables live in a separate DB to avoid lock contention
+  # with the long write window on mlb.duckdb. Mirrors the CBB pattern.
+  MLB_MM_DB <- "mlb_mm.duckdb"
 
   # Ensure DK trifecta SGP table exists (idempotent; created lazily on first
   # pricer run). The Plan #2 scraper writes here; Plan #1 reads it (empty).
@@ -90,7 +93,7 @@ if (!interactive() && sys.nframe() == 0L) {
     # dashboard's load filter (game_time > NOW()) can't distinguish them
     # from genuinely fresh pricing.
     cleanup_con <- tryCatch(
-      dbConnect(duckdb(), dbdir = MLB_DB),
+      dbConnect(duckdb(), dbdir = MLB_MM_DB),
       error = function(e) NULL
     )
     if (!is.null(cleanup_con)) {
@@ -152,14 +155,19 @@ if (!interactive() && sys.nframe() == 0L) {
   # Resolve home/away by joining to mlb_consensus_temp (same approach used
   # for the prior tribble path). For each canonical_team, find the consensus
   # row where it's home OR away.
-  con <- dbConnect(duckdb(), dbdir = MLB_DB, read_only = TRUE)
-  on.exit(tryCatch(dbDisconnect(con), error = function(e) NULL), add = TRUE)
-
-  samples_df <- dbGetQuery(con,
+  # mlb_game_samples moved to mlb_mm.duckdb (Task 1); mlb_consensus_temp
+  # stays in mlb.duckdb — use separate connections.
+  mm_con <- dbConnect(duckdb(), dbdir = MLB_MM_DB, read_only = TRUE)
+  on.exit(tryCatch(dbDisconnect(mm_con), error = function(e) NULL), add = TRUE)
+  samples_df <- dbGetQuery(mm_con,
     "SELECT game_id, home_margin, total_final_score,
             home_margin_f3, home_margin_f5, home_margin_f7,
             home_scored_first
      FROM mlb_game_samples")
+  dbDisconnect(mm_con)
+
+  con <- dbConnect(duckdb(), dbdir = MLB_DB, read_only = TRUE)
+  on.exit(tryCatch(dbDisconnect(con), error = function(e) NULL), add = TRUE)
   consensus  <- dbGetQuery(con,
     "SELECT id, home_team, away_team, commence_time FROM mlb_consensus_temp")
 
@@ -412,11 +420,11 @@ if (!interactive() && sys.nframe() == 0L) {
   # Drop + rewrite (same pattern as mlb_correlated_parlay.R)
   write_con <- NULL
   tryCatch({
-    write_con <- dbConnect(duckdb(), dbdir = MLB_DB)
+    write_con <- dbConnect(duckdb(), dbdir = MLB_MM_DB)
     on.exit(if (!is.null(write_con)) duckdb::dbDisconnect(write_con, shutdown = TRUE), add = TRUE)
     dbExecute(write_con, "DROP TABLE IF EXISTS mlb_trifecta_opportunities")
     dbWriteTable(write_con, "mlb_trifecta_opportunities", priced)
-    cat(sprintf("Wrote %d trifecta opportunities to %s.\n", nrow(priced), MLB_DB))
+    cat(sprintf("Wrote %d trifecta opportunities to %s.\n", nrow(priced), MLB_MM_DB))
   }, error = function(e) {
     cat(sprintf("Warning: Failed to write trifectas to DB: %s\n", e$message))
   })
