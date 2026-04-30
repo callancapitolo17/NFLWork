@@ -410,11 +410,11 @@ if (!interactive() && sys.nframe() == 0L) {
            description, n_samples, model_odds, dk_odds, fair_odds, book_odds,
            edge_pct, kelly_bet)
 
-  # Close the read-only mlb.duckdb connection before opening it for writes.
-  # DuckDB does not allow a simultaneous read-only + read-write connection to
-  # the same database file. The on.exit() handlers registered earlier will
-  # attempt dbDisconnect(con) at script exit — tryCatch there silences the
-  # "already closed" error harmlessly.
+  # Read and write connections target different DuckDB files now (con on
+  # mlb.duckdb for mlb_consensus_temp / mlb_trifecta_sgp_odds; write_con on
+  # mlb_mm.duckdb for mlb_trifecta_opportunities). The defensive disconnect
+  # below is harmlessly redundant — kept because cleanup is cheap and a future
+  # refactor could reintroduce a same-file scenario.
   tryCatch(dbDisconnect(con), error = function(e) NULL)
 
   # Drop + rewrite (same pattern as mlb_correlated_parlay.R)

@@ -47,7 +47,7 @@ NOVIG_SGP_VIG_DEFAULT <- 1.10      # Novig: leg prices sourced from DK, correlat
 MLB_DB <- "mlb.duckdb"
 # Bot- and dashboard-facing tables live in a separate DB to avoid lock contention
 # with the long write window on mlb.duckdb. Mirrors the CBB pattern.
-MLB_MM_DB <- gsub("mlb\\.duckdb$", "mlb_mm.duckdb", MLB_DB)
+MLB_MM_DB <- "mlb_mm.duckdb"
 
 # Load sizing from dashboard if available (parlay-specific settings, falls back to main)
 bankroll   <- 4000
@@ -235,10 +235,12 @@ if (!check_mlb_samples_fresh(max_age_minutes = 10)) {
 # mlb_game_samples lives in mlb_mm.duckdb (moved in Task 1);
 # mlb_consensus_temp remains in mlb.duckdb — use two connections.
 mm_con <- dbConnect(duckdb(), dbdir = MLB_MM_DB, read_only = TRUE)
+on.exit(tryCatch(dbDisconnect(mm_con), error = function(e) NULL), add = TRUE)
 samples_df <- dbGetQuery(mm_con, "SELECT * FROM mlb_game_samples")
 dbDisconnect(mm_con)
 
 con <- dbConnect(duckdb(), dbdir = MLB_DB, read_only = TRUE)
+on.exit(tryCatch(dbDisconnect(con), error = function(e) NULL), add = TRUE)
 consensus  <- dbGetQuery(con, "SELECT * FROM mlb_consensus_temp")
 dbDisconnect(con)
 
@@ -927,7 +929,7 @@ tryCatch({
   write_con <- dbConnect(duckdb(), dbdir = MLB_MM_DB)
   dbExecute(write_con, "DROP TABLE IF EXISTS mlb_parlay_opportunities")
   dbWriteTable(write_con, "mlb_parlay_opportunities", all_results)
-  cat(sprintf("Wrote %d parlay opportunities to %s.\n", nrow(all_results), MLB_DB))
+  cat(sprintf("Wrote %d parlay opportunities to %s.\n", nrow(all_results), MLB_MM_DB))
 }, error = function(e) {
   cat(sprintf("Warning: Failed to write parlays to DB: %s\n", e$message))
 })
