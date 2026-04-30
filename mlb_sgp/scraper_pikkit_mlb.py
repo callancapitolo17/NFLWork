@@ -10,7 +10,7 @@ The scraper reads today's games from mlb_consensus_temp, finds each game
 on Pikkit, builds spread+total parlays, and intercepts the /betslip API
 response to extract correlation-adjusted odds from each book.
 
-Results are stored in the mlb_sgp_odds table in mlb.duckdb.
+Results are stored in the mlb_sgp_odds table in mlb_mm.duckdb.
 
 Usage:
     cd mlb_sgp

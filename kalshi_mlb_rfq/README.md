@@ -49,7 +49,11 @@ rm .kill
 
 ## Architecture
 
-See spec §3. TL;DR: standalone daemon, reads `Answer Keys/mlb.duckdb` (samples + sgp_odds) read-only, writes `kalshi_mlb_rfq.duckdb`. Continuous priority-queue pipeline of up to 80 in-flight RFQs.
+See spec §3. TL;DR: standalone daemon, reads `Answer Keys/mlb_mm.duckdb` (samples + sgp_odds) read-only, writes `kalshi_mlb_rfq.duckdb`. Continuous priority-queue pipeline of up to 80 in-flight RFQs.
+
+## Data Sources
+
+The bot reads `Answer Keys/mlb_mm.duckdb` (read-only). This file holds the six consumer-facing tables and is written by `MLB.R`, `mlb_correlated_parlay.R`, `mlb_triple_play.R`, and the SGP scrapers — separate from `mlb.duckdb` (the pipeline's main write target) so lock contention can't block the bot's cache refreshes.
 
 Four internal loops:
 - **RFQ refresh @ 30s** — enumerate, score, prioritize, submit/cancel RFQs
