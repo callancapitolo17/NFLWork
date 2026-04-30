@@ -49,6 +49,10 @@ sys.path.insert(0, str(REPO_ROOT / "wagerzon_odds"))
 import parlay_placer  # noqa: E402
 
 MLB_DB = REPO_ROOT / "Answer Keys" / "mlb.duckdb"
+# Bot- and dashboard-bet-log-facing tables live in mlb_mm.duckdb so they're
+# never blocked by the pipeline's long write lock on mlb.duckdb. Mirrors the
+# CBB pattern.
+MLB_MM_DB = REPO_ROOT / "Answer Keys" / "mlb_mm.duckdb"
 DASHBOARD_DB = DB_PATH
 log = logging.getLogger("clv")
 
@@ -731,11 +735,12 @@ def place_trifecta():
 
     actual_wager = data.get("actual_wager")
 
-    # Look up the opportunity row in mlb.duckdb. The pricer recreates this
-    # table on every refresh, so the row may have moved or disappeared if the
-    # operator placed mid-refresh; treat that as a 404 with a clear message.
+    # Look up the opportunity row in mlb_mm.duckdb (moved from mlb.duckdb in
+    # Task 5 so it's never blocked by the pipeline write lock). The pricer
+    # recreates this table on every refresh, so the row may have moved or
+    # disappeared if the operator placed mid-refresh; treat that as a 404.
     try:
-        opp_con = duckdb.connect(str(MLB_DB), read_only=True)
+        opp_con = duckdb.connect(str(MLB_MM_DB), read_only=True)
         try:
             row = opp_con.execute(
                 "SELECT trifecta_hash, game_id, game, game_time, target_team, "
@@ -913,8 +918,9 @@ def price_combined_parlay():
     if hash_a == hash_b:
         return jsonify({"success": False, "error": "Cannot combine a row with itself"}), 400
 
-    # Pull the two source rows from mlb.duckdb
-    mcon = duckdb.connect(str(MLB_DB_PATH))
+    # Pull the two source rows from mlb_mm.duckdb (mlb_parlay_opportunities
+    # was moved there in Task 4 so it's never blocked by pipeline writes).
+    mcon = duckdb.connect(str(MLB_MM_DB), read_only=True)
     try:
         rows = mcon.execute("""
             SELECT parlay_hash, fair_dec, wz_dec, idgm,
@@ -1010,8 +1016,8 @@ def price_combined_parlay():
 
 
 def _load_parlay_row(parlay_hash: str) -> dict | None:
-    """Load one parlay opportunity row from mlb.duckdb (read-only)."""
-    con = duckdb.connect(str(MLB_DB), read_only=True)
+    """Load one parlay opportunity row from mlb_mm.duckdb (read-only)."""
+    con = duckdb.connect(str(MLB_MM_DB), read_only=True)
     try:
         row = con.execute(
             "SELECT * FROM mlb_parlay_opportunities WHERE parlay_hash = ?",
