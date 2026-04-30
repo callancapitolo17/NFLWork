@@ -336,15 +336,17 @@ sample_rows <- imap_dfr(samples, function(s, game_id) {
   )
 })
 
-dbExecute(con_mlb, "DROP TABLE IF EXISTS mlb_game_samples")
-dbWriteTable(con_mlb, "mlb_game_samples", sample_rows)
+con_mm <- duckdb_connect_retry("mlb_mm.duckdb")
+dbExecute(con_mm, "DROP TABLE IF EXISTS mlb_game_samples")
+dbWriteTable(con_mm, "mlb_game_samples", sample_rows)
 
-dbExecute(con_mlb, "DROP TABLE IF EXISTS mlb_samples_meta")
-dbExecute(con_mlb, "CREATE TABLE mlb_samples_meta (generated_at TIMESTAMP)")
-dbExecute(con_mlb, sprintf(
+dbExecute(con_mm, "DROP TABLE IF EXISTS mlb_samples_meta")
+dbExecute(con_mm, "CREATE TABLE mlb_samples_meta (generated_at TIMESTAMP)")
+dbExecute(con_mm, sprintf(
   "INSERT INTO mlb_samples_meta VALUES ('%s')",
   format(Sys.time(), "%Y-%m-%d %H:%M:%S")
 ))
+dbDisconnect(con_mm)
 
 # Store consensus for game matching (id ↔ team names)
 # Also stored as mlb_odds_temp so resolve_offshore_teams() Layer 2 can
