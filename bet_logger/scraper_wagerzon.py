@@ -255,11 +255,21 @@ def parse_date(date_str: str) -> str:
         return date_str
 
 
-def parse_api_bets(history: dict) -> list:
+def parse_api_bets(history: dict, platform: str = 'Wagerzon',
+                   bet_multiplier: float = 1.0) -> list:
     """Convert HistoryHelper JSON to the standard bet dict format.
 
     The JSON has a 'details' list where each item is a day with a
     list of wagers. Each wager has legs in its own 'details' list.
+
+    Args:
+        history: The 'result' dict from HistoryHelper.aspx.
+        platform: Sheet platform label (e.g. 'Wagerzon', 'WagerzonJ').
+        bet_multiplier: Fraction of the wagered amount attributable to
+                        the user. 1.0 for the primary account; 0.875
+                        for the partner-shared WagerzonJ account.
+                        The original risk is preserved in '_raw_risk'
+                        so it can be uploaded to a verification tab.
     """
     bets = []
     days = history.get('details', [])
@@ -323,21 +333,27 @@ def parse_api_bets(history: dict) -> list:
                 description = f"{header} | {leg_text}" if header else leg_text
                 bet_type = parse_bet_type(header)
 
+                # Apply per-account stake adjustment.
+                # bet_amount = user's share for Sheet1; _raw_risk = original
+                # for the Shared verification tab.
+                adjusted_risk = round(risk * bet_multiplier, 2)
+
                 bet = {
                     'date': parse_date(wager.get('PlacedDate', '')),
-                    'platform': 'Wagerzon',
+                    'platform': platform,
                     'sport': sport,
                     'description': description,
                     'bet_type': bet_type,
                     'line': line,
                     'odds': american_odds,
-                    'bet_amount': risk,
+                    'bet_amount': adjusted_risk,
                     'dec': decimal_odds,
                     'result': result,
+                    '_raw_risk': risk,
                 }
 
                 bets.append(bet)
-                print(f"  {bet['date']} - {bet_type} - {description[:60]} - ${risk:.2f} - {result}")
+                print(f"  {bet['date']} - {bet_type} - {description[:60]} - ${adjusted_risk:.2f} (raw ${risk:.2f}) - {result}")
 
             except Exception as e:
                 print(f"  Error parsing wager: {e}")
