@@ -9,8 +9,8 @@ import pytest
 from scraper_wagerzon import ACCOUNTS, parse_api_bets
 
 
-def test_accounts_has_default_and_j():
-    assert set(ACCOUNTS.keys()) == {'default', 'j'}
+def test_accounts_keys():
+    assert set(ACCOUNTS.keys()) == {'default', 'j', 'c'}
 
 
 def test_accounts_default_fields():
@@ -29,6 +29,15 @@ def test_accounts_j_fields():
     assert acct['platform'] == 'WagerzonJ'
     assert acct['bet_multiplier'] == 0.875
     assert acct['shared_sheet'] == 'Shared'
+
+
+def test_accounts_c_fields():
+    acct = ACCOUNTS['c']
+    assert acct['username_env'] == 'WAGERZONC_USERNAME'
+    assert acct['password_env'] == 'WAGERZONC_PASSWORD'
+    assert acct['platform'] == 'WagerzonC'
+    assert acct['bet_multiplier'] == 1.0
+    assert acct['shared_sheet'] is None
 
 
 # Minimal fixture matching the HistoryHelper.aspx JSON shape.

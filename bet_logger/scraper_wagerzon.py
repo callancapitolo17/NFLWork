@@ -48,6 +48,13 @@ ACCOUNTS = {
         'bet_multiplier': 0.875,
         'shared_sheet': 'Shared',
     },
+    'c': {
+        'username_env': 'WAGERZONC_USERNAME',
+        'password_env': 'WAGERZONC_PASSWORD',
+        'platform': 'WagerzonC',
+        'bet_multiplier': 1.0,
+        'shared_sheet': None,
+    },
 }
 
 
