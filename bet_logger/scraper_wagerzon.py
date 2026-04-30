@@ -49,8 +49,6 @@ ACCOUNTS = {
         'shared_sheet': 'Shared',
     },
 }
-WAGERZON_USERNAME = os.getenv("WAGERZON_USERNAME")
-WAGERZON_PASSWORD = os.getenv("WAGERZON_PASSWORD")
 
 
 # ── Auth ────────────────────────────────────────────────────────
