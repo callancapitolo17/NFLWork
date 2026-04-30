@@ -336,7 +336,11 @@ sample_rows <- imap_dfr(samples, function(s, game_id) {
   )
 })
 
+# --- Export MM tables to separate DB (avoids lock contention with RFQ bot) ---
+# The RFQ bot reads mlb_mm.duckdb on a tight cycle; using a separate file
+# means the pipeline's write lock on mlb.duckdb never blocks the bot.
 con_mm <- duckdb_connect_retry("mlb_mm.duckdb")
+on.exit(tryCatch(dbDisconnect(con_mm), error = function(e) NULL), add = TRUE)
 dbExecute(con_mm, "DROP TABLE IF EXISTS mlb_game_samples")
 dbWriteTable(con_mm, "mlb_game_samples", sample_rows)
 
