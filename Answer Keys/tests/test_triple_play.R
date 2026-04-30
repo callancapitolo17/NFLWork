@@ -78,9 +78,9 @@ test_that("returns NA on impossible inputs (|margin_change| > total_change)", {
 })
 
 test_that("mlb_game_samples has home_scored_first column populated", {
-  skip_if_not(file.exists("../mlb.duckdb"),
-              "mlb.duckdb not present — run MLB.R first")
-  con <- DBI::dbConnect(duckdb::duckdb(), dbdir = "../mlb.duckdb", read_only = TRUE)
+  skip_if_not(file.exists("../mlb_mm.duckdb"),
+              "mlb_mm.duckdb not present — run MLB.R first")
+  con <- DBI::dbConnect(duckdb::duckdb(), dbdir = "../mlb_mm.duckdb", read_only = TRUE)
   on.exit(DBI::dbDisconnect(con))
   cols <- DBI::dbGetQuery(con, "PRAGMA table_info('mlb_game_samples')")$name
   expect_true("home_scored_first" %in% cols)

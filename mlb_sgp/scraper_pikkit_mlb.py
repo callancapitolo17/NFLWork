@@ -44,6 +44,10 @@ from pikkit_common import (
 )
 from db import ensure_table, upsert_sgp_odds, MLB_DB
 
+# mlb_consensus_temp stays in mlb.duckdb (did not move to mlb_mm.duckdb).
+# MLB_DB points at mlb_mm.duckdb; derive the main-DB path explicitly.
+MLB_MAIN_DB = MLB_DB.parent / "mlb.duckdb"
+
 # ---------------------------------------------------------------------------
 # Combo definitions — must match mlb_correlated_parlay.R exactly
 # ---------------------------------------------------------------------------
@@ -66,8 +70,10 @@ def load_todays_games(db_path: str = None) -> list[dict]:
     Returns list of dicts with:
         id, home_team, away_team, commence_time,
         home_spread, away_spread, total_line
+
+    NOTE: mlb_consensus_temp lives in mlb.duckdb (MLB_MAIN_DB), not mlb_mm.duckdb.
     """
-    db_path = db_path or str(MLB_DB)
+    db_path = db_path or str(MLB_MAIN_DB)
     con = duckdb.connect(db_path, read_only=True)
     try:
         # Check that the required tables exist
