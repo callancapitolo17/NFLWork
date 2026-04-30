@@ -75,7 +75,10 @@ def accept_quote(quote_id: str, contracts: int) -> dict | None:
     """
     body = {"contracts": contracts}
     status, resp, _ = api("POST", f"/communications/quotes/{quote_id}/accept", body=body)
-    if status == 200:
+    # Kalshi proved on create_rfq they may return 201 even on action endpoints.
+    # Accept both — the alternative is a silent failure with a real position
+    # opened on Kalshi's side and no local tracking.
+    if status in (200, 201):
         return resp if isinstance(resp, dict) else {}
     if status in (400, 409):
         # Common race: quote walked or expired. Not a hard error.

@@ -87,6 +87,16 @@ def test_accept_quote_returns_response():
     assert resp["order"]["id"] == "ord-1"
 
 
+def test_accept_quote_also_accepts_201():
+    """Defensive: Kalshi returned 201 on create_rfq despite REST convention
+    saying 200 for action endpoints — accept here too to avoid stranded
+    positions if they're inconsistent on the accept endpoint."""
+    with patch("kalshi_mlb_rfq.rfq_client.api",
+               return_value=(201, {"order": {"id": "ord-2"}}, {})):
+        resp = rfq_client.accept_quote("q1", contracts=10)
+    assert resp["order"]["id"] == "ord-2"
+
+
 def test_accept_quote_walked_returns_none():
     with patch("kalshi_mlb_rfq.rfq_client.api",
                return_value=(400, {"error": {"code": "quote_walked"}}, {})):
