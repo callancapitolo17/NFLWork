@@ -27,14 +27,34 @@ load_dotenv()
 # Configuration
 WAGERZON_BASE_URL = "https://backend.wagerzon.com"
 WAGERZON_HISTORY_URL = f"{WAGERZON_BASE_URL}/wager/HistoryHelper.aspx"
-WAGERZON_USERNAME = os.getenv("WAGERZON_USERNAME")
-WAGERZON_PASSWORD = os.getenv("WAGERZON_PASSWORD")
+# Account configurations.
+# Wagerzon supports two accounts using the same credentials flow but
+# different sheet labels and stake adjustments. The primary uses a
+# multiplier of 1.0 (full risk attributed to user). WagerzonJ is a
+# partner account where the user holds 87.5% of the risk; raw bets
+# also land on the Shared tab for week-over-week reconciliation.
+ACCOUNTS = {
+    'default': {
+        'username_env': 'WAGERZON_USERNAME',
+        'password_env': 'WAGERZON_PASSWORD',
+        'platform': 'Wagerzon',
+        'bet_multiplier': 1.0,
+        'shared_sheet': None,
+    },
+    'j': {
+        'username_env': 'WAGERZONJ_USERNAME',
+        'password_env': 'WAGERZONJ_PASSWORD',
+        'platform': 'WagerzonJ',
+        'bet_multiplier': 0.875,
+        'shared_sheet': 'Shared',
+    },
+}
 
 
 # ── Auth ────────────────────────────────────────────────────────
 
 
-def login(session: requests.Session):
+def login(session: requests.Session, username: str, password: str):
     """Login to Wagerzon via ASP.NET form POST.
 
     Same auth approach as wagerzon_odds/scraper_v2.py:
@@ -65,8 +85,8 @@ def login(session: requests.Session):
     if "__VIEWSTATE" not in fields:
         raise RuntimeError("Could not find __VIEWSTATE on login page — page structure may have changed")
 
-    fields["Account"] = WAGERZON_USERNAME
-    fields["Password"] = WAGERZON_PASSWORD
+    fields["Account"] = username
+    fields["Password"] = password
     fields["BtnSubmit"] = ""
 
     resp = session.post(WAGERZON_BASE_URL, data=fields, timeout=15)
@@ -233,11 +253,21 @@ def parse_date(date_str: str) -> str:
         return date_str
 
 
-def parse_api_bets(history: dict) -> list:
+def parse_api_bets(history: dict, platform: str = 'Wagerzon',
+                   bet_multiplier: float = 1.0) -> list:
     """Convert HistoryHelper JSON to the standard bet dict format.
 
     The JSON has a 'details' list where each item is a day with a
     list of wagers. Each wager has legs in its own 'details' list.
+
+    Args:
+        history: The 'result' dict from HistoryHelper.aspx.
+        platform: Sheet platform label (e.g. 'Wagerzon', 'WagerzonJ').
+        bet_multiplier: Fraction of the wagered amount attributable to
+                        the user. 1.0 for the primary account; 0.875
+                        for the partner-shared WagerzonJ account.
+                        The original risk is preserved in '_raw_risk'
+                        so it can be uploaded to a verification tab.
     """
     bets = []
     days = history.get('details', [])
@@ -301,21 +331,28 @@ def parse_api_bets(history: dict) -> list:
                 description = f"{header} | {leg_text}" if header else leg_text
                 bet_type = parse_bet_type(header)
 
+                # Apply per-account stake adjustment.
+                # bet_amount = user's share for Sheet1; _raw_risk = original
+                # for the Shared verification tab.
+                adjusted_risk = round(risk * bet_multiplier, 2)
+
                 bet = {
                     'date': parse_date(wager.get('PlacedDate', '')),
-                    'platform': 'Wagerzon',
+                    'platform': platform,
                     'sport': sport,
                     'description': description,
                     'bet_type': bet_type,
                     'line': line,
                     'odds': american_odds,
-                    'bet_amount': risk,
+                    'bet_amount': adjusted_risk,
                     'dec': decimal_odds,
                     'result': result,
+                    '_raw_risk': risk,
                 }
 
                 bets.append(bet)
-                print(f"  {bet['date']} - {bet_type} - {description[:60]} - ${risk:.2f} - {result}")
+                raw_suffix = f" (raw ${risk:.2f})" if bet_multiplier != 1.0 else ""
+                print(f"  {bet['date']} - {bet_type} - {description[:60]} - ${adjusted_risk:.2f}{raw_suffix} - {result}")
 
             except Exception as e:
                 print(f"  Error parsing wager: {e}")
@@ -327,7 +364,8 @@ def parse_api_bets(history: dict) -> list:
 # ── Main ────────────────────────────────────────────────────────
 
 
-def scrape_wagerzon(weeks_back: int = 1, all_weeks: bool = False) -> list:
+def scrape_wagerzon(weeks_back: int = 1, all_weeks: bool = False,
+                    account_name: str = 'default') -> list:
     """
     Log into Wagerzon via HTTP and fetch bet history from the JSON API.
 
@@ -339,12 +377,18 @@ def scrape_wagerzon(weeks_back: int = 1, all_weeks: bool = False) -> list:
         weeks_back: Which week to fetch (0 = current, 1 = last week, etc.)
         all_weeks: If True, fetch weeks 0 through N until an empty week is
                    found. Useful for catching up after missed weeks.
+        account_name: Account key from ACCOUNTS ('default' or 'j').
 
     Returns:
-        List of parsed bet dictionaries
+        List of parsed bet dictionaries with platform/multiplier applied.
     """
-    if not WAGERZON_USERNAME or not WAGERZON_PASSWORD:
-        raise ValueError("WAGERZON_USERNAME and WAGERZON_PASSWORD must be set in .env file")
+    acct = ACCOUNTS[account_name]
+    username = os.getenv(acct['username_env'])
+    password = os.getenv(acct['password_env'])
+    if not username or not password:
+        raise ValueError(
+            f"{acct['username_env']} and {acct['password_env']} must be set in .env file"
+        )
 
     session = requests.Session()
     session.headers.update({
@@ -352,8 +396,8 @@ def scrape_wagerzon(weeks_back: int = 1, all_weeks: bool = False) -> list:
     })
 
     # Step 1: Authenticate
-    print("Logging in to Wagerzon...")
-    login(session)
+    print(f"Logging in to Wagerzon ({acct['platform']})...")
+    login(session, username, password)
 
     # Step 2: Determine which weeks to fetch
     if all_weeks:
@@ -376,7 +420,11 @@ def scrape_wagerzon(weeks_back: int = 1, all_weeks: bool = False) -> list:
             print(f"  Empty week — stopping.\n")
             break
 
-        bets = parse_api_bets(history)
+        bets = parse_api_bets(
+            history,
+            platform=acct['platform'],
+            bet_multiplier=acct['bet_multiplier'],
+        )
         all_bets.extend(bets)
         print()
 
@@ -385,6 +433,7 @@ def scrape_wagerzon(weeks_back: int = 1, all_weeks: bool = False) -> list:
 
 if __name__ == "__main__":
     import argparse
+    import copy
 
     parser = argparse.ArgumentParser(description='Scrape bet history from Wagerzon')
     parser.add_argument('--weeks', type=int, default=1,
@@ -393,24 +442,32 @@ if __name__ == "__main__":
                         help='Fetch all weeks until an empty one (catches up after missed weeks)')
     parser.add_argument('--dry-run', action='store_true',
                         help='Scrape but do not upload to Google Sheets')
+    parser.add_argument('--account', choices=list(ACCOUNTS.keys()), default='default',
+                        help='Which Wagerzon account to scrape (default or j)')
     args = parser.parse_args()
 
+    acct = ACCOUNTS[args.account]
+
     print("=" * 60)
-    print("WAGERZON BET HISTORY SCRAPER")
+    print(f"WAGERZON BET HISTORY SCRAPER — {acct['platform']}")
     print("=" * 60)
 
     try:
-        bets = scrape_wagerzon(weeks_back=args.weeks, all_weeks=args.all_weeks)
+        bets = scrape_wagerzon(weeks_back=args.weeks,
+                               all_weeks=args.all_weeks,
+                               account_name=args.account)
     except Exception as e:
         print(f"\n❌ Error: {e}")
         sys.exit(1)
 
     print(f"\n{'=' * 60}")
-    print(f"Successfully scraped {len(bets)} bets from Wagerzon")
+    print(f"Successfully scraped {len(bets)} bets from {acct['platform']}")
     print(f"{'=' * 60}\n")
 
     if bets and not args.dry_run:
         from sheets import append_bets_to_sheet
+
+        # Adjusted bets (user's share) → main Sheet1.
         result = append_bets_to_sheet(bets)
 
         if result['status'] == 'success':
@@ -420,8 +477,31 @@ if __name__ == "__main__":
             print(f"\n⚠️  {result['message']}")
         else:
             print(f"\n❌ Error uploading to sheets: {result.get('message', 'Unknown error')}")
+
+        # Raw bets (original full risk) → Shared verification tab, if configured.
+        if acct['shared_sheet']:
+            print(f"\nUploading raw bets to '{acct['shared_sheet']}' tab...")
+            raw_bets = []
+            for bet in bets:
+                raw = copy.copy(bet)
+                raw['bet_amount'] = raw.pop('_raw_risk', raw['bet_amount'])
+                raw_bets.append(raw)
+            raw_result = append_bets_to_sheet(raw_bets, sheet_name=acct['shared_sheet'])
+            if raw_result['status'] == 'success':
+                print(f"Added {raw_result['rows_added']} raw bets to {acct['shared_sheet']}")
+            elif raw_result['status'] == 'skipped':
+                print(f"{raw_result['message']}")
+            else:
+                print(f"Error uploading raw bets: {raw_result.get('message', 'Unknown error')}")
+
     elif args.dry_run:
         print("Dry run — skipping upload to Google Sheets")
+        if acct['bet_multiplier'] != 1.0:
+            print(f"\nBet multiplier: ×{acct['bet_multiplier']}")
+            raw_total = sum(b.get('_raw_risk', 0) for b in bets)
+            adj_total = sum(b['bet_amount'] for b in bets)
+            print(f"Raw total wagered:      ${raw_total:,.2f}")
+            print(f"Adjusted total wagered: ${adj_total:,.2f}")
     elif not bets:
         print("No bets found to upload")
         sys.exit(1)

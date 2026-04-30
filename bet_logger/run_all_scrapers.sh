@@ -27,6 +27,18 @@ else
 fi
 echo ""
 
+# Run Wagerzon scraper — WagerzonJ account
+echo "[$(date '+%H:%M:%S')] Running Wagerzon scraper (WagerzonJ)..."
+echo "----------------------------------------"
+if ./venv/bin/python3 scraper_wagerzon.py --account j; then
+    echo "[$(date '+%H:%M:%S')] WagerzonJ: done"
+else
+    echo "[$(date '+%H:%M:%S')] WagerzonJ: FAILED (exit $?)"
+    FAILED=$((FAILED + 1))
+    FAILED_NAMES="${FAILED_NAMES}WagerzonJ, "
+fi
+echo ""
+
 # Run Hoop88 scraper
 echo "[$(date '+%H:%M:%S')] Running Hoop88 scraper..."
 echo "----------------------------------------"
@@ -91,7 +103,7 @@ echo ""
 
 echo "========================================"
 if [ $FAILED -eq 0 ]; then
-    MSG="All 5 scrapers completed successfully."
+    MSG="All 6 scrapers completed successfully."
     echo "$MSG"
     /usr/local/bin/terminal-notifier -title "Bet Logger ✓" -message "$MSG" -sound Glass -group betlogger
 else
