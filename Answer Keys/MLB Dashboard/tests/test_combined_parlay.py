@@ -192,7 +192,7 @@ def test_price_combined_parlay_endpoint(monkeypatch, tmp_path):
     import mlb_dashboard_server as svr
 
     monkeypatch.setattr(svr, "DB_PATH", test_dashboard_db)
-    monkeypatch.setattr(svr, "MLB_DB_PATH", test_mlb_db)
+    monkeypatch.setattr(svr, "MLB_MM_DB", test_mlb_db)
 
     def fake_get_combined_parlay_price(session, legs, amount=10000):
         return {"win": 18000, "decimal": 19.0, "american": 1800, "amount": 1000}
@@ -219,7 +219,7 @@ def test_price_combined_parlay_caches_within_ttl(monkeypatch, tmp_path):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     import mlb_dashboard_server as svr
     monkeypatch.setattr(svr, "DB_PATH", test_dashboard_db)
-    monkeypatch.setattr(svr, "MLB_DB_PATH", test_mlb_db)
+    monkeypatch.setattr(svr, "MLB_MM_DB", test_mlb_db)
 
     call_count = {"n": 0}
     def fake_wz(session, legs, amount=10000):
@@ -248,7 +248,7 @@ def test_price_combined_parlay_rejects_same_game(monkeypatch, tmp_path):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     import mlb_dashboard_server as svr
     monkeypatch.setattr(svr, "DB_PATH", test_dashboard_db)
-    monkeypatch.setattr(svr, "MLB_DB_PATH", test_mlb_db)
+    monkeypatch.setattr(svr, "MLB_MM_DB", test_mlb_db)
     svr._COMBO_PRICE_CACHE.clear()
 
     client = svr.app.test_client()
@@ -276,7 +276,7 @@ def test_price_combined_parlay_sends_correct_play_codes(monkeypatch, tmp_path):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     import mlb_dashboard_server as svr
     monkeypatch.setattr(svr, "DB_PATH", test_dashboard_db)
-    monkeypatch.setattr(svr, "MLB_DB_PATH", test_mlb_db)
+    monkeypatch.setattr(svr, "MLB_MM_DB", test_mlb_db)
 
     captured_legs = {}
     def capturing_fake(session, legs, amount=10000):

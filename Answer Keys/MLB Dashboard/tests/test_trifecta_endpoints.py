@@ -39,14 +39,13 @@ def server_with_temp_dbs(tmp_path, monkeypatch):
 
     # Patch DB paths BEFORE importing the server (which reads them at import time)
     monkeypatch.setenv("MLB_DASHBOARD_DB", str(dash_db))
-    monkeypatch.setenv("MLB_DB_PATH", str(mlb_db))
 
     # Force re-import so the patched env is picked up
     if "mlb_dashboard_server" in sys.modules:
         del sys.modules["mlb_dashboard_server"]
     import mlb_dashboard_server as server
     monkeypatch.setattr(server, "DB_PATH", dash_db)
-    monkeypatch.setattr(server, "MLB_DB", mlb_db)
+    monkeypatch.setattr(server, "MLB_MM_DB", mlb_db)
     server.init_db()
 
     server.app.config["TESTING"] = True

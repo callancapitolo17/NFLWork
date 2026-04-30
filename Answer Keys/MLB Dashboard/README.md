@@ -5,14 +5,15 @@ Interactive web dashboard displaying +EV MLB F5 betting opportunities and correl
 ## Architecture
 
 ```
-run.py mlb (pipeline)  →  mlb.duckdb/mlb_bets_combined
-                      →  mlb.duckdb/mlb_parlay_opportunities
-                               ↓
-                     mlb_dashboard.R (HTML generation)  →  report.html
-                                                                 ↓
-                                                  mlb_dashboard_server.py (Flask, :8083)
-                                                                 ↓
-                                                           Browser (:8083)
+run.py mlb (pipeline)  →  mlb.duckdb/mlb_bets_combined             (dashboard refresh)
+                       →  mlb_mm.duckdb/mlb_parlay_opportunities    (place-bet loader)
+                       →  mlb_mm.duckdb/mlb_trifecta_opportunities
+                                ↓
+                      mlb_dashboard.R (HTML generation)  →  report.html
+                                                                  ↓
+                                                   mlb_dashboard_server.py (Flask, :8083)
+                                                                  ↓
+                                                            Browser (:8083)
 ```
 
 - **mlb_dashboard.R**: Reads pipeline bets + parlays, generates reactable HTML
@@ -63,7 +64,7 @@ run.py mlb (pipeline)  →  mlb.duckdb/mlb_bets_combined
   - `filter_settings` — UI filter state
   - `closing_snapshots` — odds captured 15 min before first pitch (for CLV)
   - `bet_clv` — post-game CLV computations
-- Pipeline bets read from `Answer Keys/mlb.duckdb` (`mlb_bets_combined`, `mlb_parlay_opportunities`)
+- Pipeline bets read from `Answer Keys/mlb.duckdb` (`mlb_bets_combined`) and `Answer Keys/mlb_mm.duckdb` (`mlb_parlay_opportunities`, `mlb_trifecta_opportunities`)
 - Historical PBP + odds in `Answer Keys/pbp.duckdb` (`mlb_betting_pbp`, `mlb_betting_history`, `mlb_pbp_all`)
 
 ## Running
@@ -219,7 +220,7 @@ Shows priced TRIPLE-PLAY and GRAND-SLAM specials (from Wagerzon) blended with Dr
    - reads posted lines from `wagerzon_specials`
    - invokes `mlb_sgp/scraper_draftkings_trifecta.py` for live DK SGP odds
    - blends model fair × DK fair (vig 1.25)
-   - writes `mlb_trifecta_opportunities` to `Answer Keys/mlb.duckdb`
+   - writes `mlb_trifecta_opportunities` to `Answer Keys/mlb_mm.duckdb`
 3. Dashboard reads `mlb_trifecta_opportunities` and renders the Trifectas tab.
 
 ### Placement (manual log)

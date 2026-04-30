@@ -121,7 +121,7 @@ Games near first pitch may close SGP pricing entirely.
 
 ## Output
 
-Writes to `mlb_sgp_odds` table in `Answer Keys/mlb.duckdb`:
+Writes to `mlb_sgp_odds` table in `Answer Keys/mlb_mm.duckdb`:
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -217,12 +217,12 @@ orchestrator also prints a one-line summary per scraper (elapsed seconds,
 exit code, log path) plus an overall wall-clock line — check the R console
 output to see which book is the slowest on a given run.
 
-**DuckDB write contention:** All four scrapers write to `Answer Keys/mlb.duckdb`,
+**DuckDB write contention:** All four scrapers write to `Answer Keys/mlb_mm.duckdb`,
 which DuckDB only allows one writer to open at a time. `db.py` wraps every
 write `connect()` call in `_connect_with_retry()` (exponential backoff +
 jitter, up to 10 attempts) so transient lock collisions between scrapers are
 invisible to callers. Read connections are not retried (DuckDB allows
-unlimited concurrent readers).
+unlimited concurrent readers). Note: the trifecta scraper (`scraper_draftkings_trifecta.py`) is separate — it writes `mlb_trifecta_sgp_odds` to `Answer Keys/mlb.duckdb`.
 
 ---
 

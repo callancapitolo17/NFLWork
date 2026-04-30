@@ -432,9 +432,9 @@ def _save_parlay_prices(conn, results: list):
 NUDGE_RANGE = 2  # query W-2..W+2 around Kelly-ideal wager
 
 # Path to the answer-keys DuckDB that owns mlb_parlay_opportunities.
-# parlay_pricer.py lives in wagerzon_odds/; the answer-keys DB lives in
-# Answer Keys/mlb.duckdb relative to the repo root.
-_MLB_DB_PATH = Path(__file__).resolve().parent.parent / "Answer Keys" / "mlb.duckdb"
+# parlay_pricer.py lives in wagerzon_odds/; after the mlb-mm-separation,
+# mlb_parlay_opportunities lives in mlb_mm.duckdb (not mlb.duckdb).
+_MLB_DB_PATH = Path(__file__).resolve().parent.parent / "Answer Keys" / "mlb_mm.duckdb"
 
 
 def _ensure_exact_columns(conn):

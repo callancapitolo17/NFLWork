@@ -4075,7 +4075,9 @@ setwd(NFLWORK_ROOT)
 # fragment so the dashboard can hot-swap the parlay table after a combined-
 # parlay placement without rebuilding the whole report.
 if (any(commandArgs(trailingOnly = TRUE) == "--parlay-fragment")) {
-  con_mlb <- dbConnect(duckdb(), dbdir = "Answer Keys/mlb.duckdb", read_only = TRUE)
+  # mlb_parlay_opportunities was moved to mlb_mm.duckdb in Task 4 to avoid
+  # contention with the pipeline's long write lock on mlb.duckdb.
+  con_mlb <- dbConnect(duckdb(), dbdir = "Answer Keys/mlb_mm.duckdb", read_only = TRUE)
   on.exit(try(dbDisconnect(con_mlb), silent = TRUE), add = TRUE)
   parlay_opps <- tryCatch(
     dbGetQuery(con_mlb, "SELECT * FROM mlb_parlay_opportunities"),
@@ -4155,10 +4157,11 @@ if (nrow(all_bets) > 0) {
 }
 placed_table <- create_placed_bets_table(placed_bets)
 
-# Load parlay opportunities
+# Load parlay opportunities (from mlb_mm.duckdb — moved in Task 4 to avoid
+# contention with the pipeline's long write lock on mlb.duckdb).
 cat("Loading parlay opportunities...\n")
 parlay_opps <- tryCatch({
-  pcon <- dbConnect(duckdb(), dbdir = "Answer Keys/mlb.duckdb", read_only = TRUE)
+  pcon <- dbConnect(duckdb(), dbdir = "Answer Keys/mlb_mm.duckdb", read_only = TRUE)
   result <- if ("mlb_parlay_opportunities" %in% dbListTables(pcon)) {
     dbGetQuery(pcon, "SELECT * FROM mlb_parlay_opportunities WHERE game_time IS NULL OR CAST(game_time AS TIMESTAMP) > NOW()")
   } else tibble()
@@ -4226,7 +4229,7 @@ placed_parlays_table <- create_placed_parlays_table(placed_parlays)
 
 # Load trifecta opportunities + placed trifectas
 cat("Loading trifecta opportunities...\n")
-trifecta_opps    <- load_trifecta_opps(file.path(NFLWORK_ROOT, "Answer Keys", "mlb.duckdb"))
+trifecta_opps    <- load_trifecta_opps(file.path(NFLWORK_ROOT, "Answer Keys", "mlb_mm.duckdb"))
 placed_trifectas <- load_placed_trifectas(DB_PATH)
 trifectas_table  <- create_trifectas_table(trifecta_opps, placed_trifectas)
 cat(sprintf("Found %d trifecta opportunities, %d placed trifectas\n",
