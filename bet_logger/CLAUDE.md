@@ -10,6 +10,15 @@ Scrapes bet history from 4 sportsbooks and logs them to Google Sheets for P&L tr
 - `create_summary.py` — Generate summary reports
 - `run_all_scrapers.sh` — Run all scrapers sequentially
 
+## Multi-account scrapers
+
+Both `scraper_bfa.py` and `scraper_wagerzon.py` support a second account via `--account j`:
+
+- **BFAJ** (BFA second account) — flat `bet_adjustment: -15` (subtract $15 per bet). Uploads adjusted to Sheet1 and raw to `Shared` tab.
+- **WagerzonJ** (Wagerzon second account) — multiplicative `bet_multiplier: 0.875` (user holds 87.5% of risk). Uploads adjusted to Sheet1 and raw to `Shared` tab.
+
+The two scrapers each define their own `ACCOUNTS` dict; they're not yet sharing a generic helper (intentional — see spec `docs/superpowers/specs/2026-04-29-wagerzon-second-account-design.md`, Approaches 1 vs 2).
+
 ## Critical Details
 
 ### Credentials
