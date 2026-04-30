@@ -45,6 +45,9 @@ NOVIG_SGP_VIG_DEFAULT <- 1.10      # Novig: leg prices sourced from DK, correlat
                                     # parlay/naive ratio ~1.09-1.12 in probes suggests similar
                                     # vig magnitude to DK. Re-tune from logged per-game vig.
 MLB_DB <- "mlb.duckdb"
+# Bot- and dashboard-facing tables live in a separate DB to avoid lock contention
+# with the long write window on mlb.duckdb. Mirrors the CBB pattern.
+MLB_MM_DB <- gsub("mlb\\.duckdb$", "mlb_mm.duckdb", MLB_DB)
 
 # Load sizing from dashboard if available (parlay-specific settings, falls back to main)
 bankroll   <- 4000
@@ -206,7 +209,7 @@ independent_kelly <- function(parlay_group, bankroll, kelly_mult) {
 
 check_mlb_samples_fresh <- function(max_age_minutes = 5) {
   tryCatch({
-    con <- dbConnect(duckdb(), dbdir = MLB_DB, read_only = TRUE)
+    con <- dbConnect(duckdb(), dbdir = MLB_MM_DB, read_only = TRUE)
     on.exit(dbDisconnect(con))
     meta <- dbGetQuery(con, "SELECT generated_at FROM mlb_samples_meta")
     if (nrow(meta) == 0) return(FALSE)
@@ -229,14 +232,15 @@ if (!check_mlb_samples_fresh(max_age_minutes = 10)) {
 # LOAD SAMPLES (same pattern as parlay.R:155-162)
 # =============================================================================
 
+# mlb_game_samples lives in mlb_mm.duckdb (moved in Task 1);
+# mlb_consensus_temp remains in mlb.duckdb — use two connections.
+mm_con <- dbConnect(duckdb(), dbdir = MLB_MM_DB, read_only = TRUE)
+samples_df <- dbGetQuery(mm_con, "SELECT * FROM mlb_game_samples")
+dbDisconnect(mm_con)
+
 con <- dbConnect(duckdb(), dbdir = MLB_DB, read_only = TRUE)
-on.exit(dbDisconnect(con))
-
-samples_df <- dbGetQuery(con, "SELECT * FROM mlb_game_samples")
 consensus  <- dbGetQuery(con, "SELECT * FROM mlb_consensus_temp")
-
 dbDisconnect(con)
-on.exit(NULL)
 
 if (nrow(samples_df) == 0) {
   cat("No samples found in mlb_game_samples. Run MLB.R first.\n")
@@ -421,7 +425,8 @@ staging_f5 <- if (nrow(wz_f5_matched) > 0) {
 staging <- staging_fg %>%
   left_join(staging_f5, by = "game_id")
 
-staging_con <- dbConnect(duckdb(), dbdir = MLB_DB)
+# mlb_parlay_lines is read by the RFQ bot — write to mlb_mm.duckdb
+staging_con <- dbConnect(duckdb(), dbdir = MLB_MM_DB)
 tryCatch({
   dbExecute(staging_con, "DROP TABLE IF EXISTS mlb_parlay_lines")
   dbWriteTable(staging_con, "mlb_parlay_lines", staging)
@@ -509,7 +514,8 @@ if (file.exists(sgp_venv_python)) {
 # LOAD SGP ODDS FOR BLENDING
 # =============================================================================
 
-sgp_con <- dbConnect(duckdb(), dbdir = MLB_DB, read_only = TRUE)
+# mlb_sgp_odds lives in mlb_mm.duckdb (moved in Task 2)
+sgp_con <- dbConnect(duckdb(), dbdir = MLB_MM_DB, read_only = TRUE)
 
 sgp_odds <- tryCatch({
   dbGetQuery(sgp_con, "
