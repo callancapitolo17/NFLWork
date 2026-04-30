@@ -19,7 +19,7 @@ _REPO_ROOT = _THIS_DIR.parent
 if ".worktrees" in str(_REPO_ROOT):
     _REPO_ROOT = Path(str(_REPO_ROOT).split(".worktrees")[0].rstrip("/"))
 
-MLB_DB = _REPO_ROOT / "Answer Keys" / "mlb.duckdb"
+MLB_DB = _REPO_ROOT / "Answer Keys" / "mlb_mm.duckdb"
 
 # DuckDB allows only one writer per file. When the four SGP scrapers run in
 # parallel they will occasionally collide at connect() — this helper retries
