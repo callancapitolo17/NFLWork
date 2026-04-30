@@ -79,4 +79,4 @@ PX_VIG_FALLBACK = float(_get("PX_VIG_FALLBACK", "0.05"))
 NOVIG_VIG_FALLBACK = float(_get("NOVIG_VIG_FALLBACK", "0.05"))
 
 # Source path for the answer-key DB
-ANSWER_KEY_DB = PROJECT_ROOT / "Answer Keys" / "mlb.duckdb"
+ANSWER_KEY_DB = PROJECT_ROOT / "Answer Keys" / "mlb_mm.duckdb"
