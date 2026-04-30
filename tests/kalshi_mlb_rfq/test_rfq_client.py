@@ -32,7 +32,15 @@ def test_mint_combo_raises_on_error():
             rfq_client.mint_combo_ticker("KXMVECROSSCATEGORY-R", [])
 
 
-def test_create_rfq_returns_id():
+def test_create_rfq_returns_id_on_201():
+    """Kalshi returns 201 Created on POST /communications/rfqs (REST convention)."""
+    with patch("kalshi_mlb_rfq.rfq_client.api", return_value=(201, {"id": "abc-123"}, {})):
+        rid = rfq_client.create_rfq("KXMVECROSSCATEGORY-S-FOO", target_cost_dollars=0.50)
+    assert rid == "abc-123"
+
+
+def test_create_rfq_also_accepts_200():
+    """Defensive: still accept 200 in case Kalshi normalizes to it."""
     with patch("kalshi_mlb_rfq.rfq_client.api", return_value=(200, {"id": "abc-123"}, {})):
         rid = rfq_client.create_rfq("KXMVECROSSCATEGORY-S-FOO", target_cost_dollars=0.50)
     assert rid == "abc-123"

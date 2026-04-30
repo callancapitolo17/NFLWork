@@ -17,6 +17,15 @@ def test_staleness_gate_handles_negative_age():
     assert not risk.staleness_ok(future, max_age_sec=600)
 
 
+def test_staleness_gate_naive_timestamp_compared_in_local():
+    """Naive timestamps are R local-time (mlb_samples_meta). Must compare in
+    local, not be force-cast to UTC — that produced TZ-offset-hour staleness."""
+    fresh_naive = datetime.now() - timedelta(seconds=300)
+    old_naive   = datetime.now() - timedelta(seconds=900)
+    assert risk.staleness_ok(fresh_naive, max_age_sec=600)
+    assert not risk.staleness_ok(old_naive, max_age_sec=600)
+
+
 def test_fair_bounds_gate():
     assert risk.fair_in_bounds(0.30, lower=0.05, upper=0.95)
     assert not risk.fair_in_bounds(0.03, lower=0.05, upper=0.95)

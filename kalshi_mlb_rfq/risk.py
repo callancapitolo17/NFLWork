@@ -9,10 +9,17 @@ from kalshi_mlb_rfq.config import KILL_FILE
 # ---- Basic gates ----------------------------------------------------------
 
 def staleness_ok(generated_at: datetime, max_age_sec: int) -> bool:
-    """True if data is younger than max_age_sec. False on negative-age (clock skew)."""
-    if generated_at.tzinfo is None:
-        generated_at = generated_at.replace(tzinfo=timezone.utc)
-    age = (datetime.now(timezone.utc) - generated_at).total_seconds()
+    """True if data is younger than max_age_sec. False on negative-age (clock skew).
+
+    Naive timestamps are assumed local time (the R answer-key pipeline writes
+    naive local time into mlb_samples_meta.generated_at). Timezone-aware
+    timestamps are compared in UTC. Matches kalshi_mm/risk.py.
+    """
+    if generated_at.tzinfo is not None:
+        now = datetime.now(timezone.utc)
+    else:
+        now = datetime.now()
+    age = (now - generated_at).total_seconds()
     if age < 0:
         return False  # clock skew — fail safe
     return age <= max_age_sec

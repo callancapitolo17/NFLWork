@@ -34,7 +34,7 @@ def create_rfq(market_ticker: str, target_cost_dollars: float,
         "replace_existing": replace_existing,
     }
     status, resp, _ = api("POST", "/communications/rfqs", body=body)
-    if status != 200 or not isinstance(resp, dict) or "id" not in resp:
+    if status not in (200, 201) or not isinstance(resp, dict) or "id" not in resp:
         raise KalshiAPIError(f"create_rfq failed: status={status} body={resp}")
     return resp["id"]
 

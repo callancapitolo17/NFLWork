@@ -269,12 +269,35 @@ _MLB_CODE_TO_TEAM = {
     "DET": "Detroit Tigers", "HOU": "Houston Astros", "KC": "Kansas City Royals",
     "LAA": "Los Angeles Angels", "LAD": "Los Angeles Dodgers", "MIA": "Miami Marlins",
     "MIL": "Milwaukee Brewers", "MIN": "Minnesota Twins", "NYM": "New York Mets",
-    "NYY": "New York Yankees", "OAK": "Athletics", "PHI": "Philadelphia Phillies",
+    "NYY": "New York Yankees", "OAK": "Athletics", "ATH": "Athletics",
+    "AZ": "Arizona Diamondbacks", "PHI": "Philadelphia Phillies",
     "PIT": "Pittsburgh Pirates", "SD": "San Diego Padres", "SF": "San Francisco Giants",
     "SEA": "Seattle Mariners", "STL": "St. Louis Cardinals", "TB": "Tampa Bay Rays",
     "TEX": "Texas Rangers", "TOR": "Toronto Blue Jays",
     "WAS": "Washington Nationals", "WSH": "Washington Nationals",
 }
+
+
+def _parse_event_suffix(suffix: str) -> tuple[str | None, str | None]:
+    """Split a KXMLB* event suffix into (away_code, home_code).
+
+    Format: YYMMMDDHHMM{AwayCode}{HomeCode}. Date prefix is fixed at 11 chars.
+    Each team code is 2 or 3 letters (KC/SF/SD/TB/AZ are 2-letter; the rest
+    are 3-letter). Probes 3- then 2-letter home splits and returns the first
+    where both codes are valid in _MLB_CODE_TO_TEAM. Returns (None, None) if
+    no split matches — caller drops the event.
+    """
+    if len(suffix) < 11 + 4:  # date prefix + at least 2+2 team chars
+        return None, None
+    team_block = suffix[11:]
+    for home_len in (3, 2):
+        if len(team_block) <= home_len:
+            continue
+        home = team_block[-home_len:]
+        away = team_block[:-home_len]
+        if home in _MLB_CODE_TO_TEAM and away in _MLB_CODE_TO_TEAM:
+            return away, home
+    return None, None
 
 
 def _load_samples_for_game(game_id: str) -> pd.DataFrame | None:
@@ -332,18 +355,12 @@ def _vig_fallback(book: str) -> float:
 
 
 def _home_code_from_event_ticker(event_ticker: str) -> str | None:
-    """Parse the 3-letter home-team code from a Kalshi event ticker.
-
-    Event suffix format: YYMMMDDHHMM{AwayCode}{HomeCode}, with the AwayCode/HomeCode
-    being 2-3 letters each. Convention: away first, home last. We take the trailing
-    3 letters as the home code (matches every code in _MLB_CODE_TO_TEAM).
-    """
+    """Parse the home-team code from a Kalshi event ticker (2- or 3-letter)."""
     if "-" not in event_ticker:
         return None
     suffix = event_ticker.rsplit("-", 1)[-1]
-    if len(suffix) < 3:
-        return None
-    return suffix[-3:]
+    _, home = _parse_event_suffix(suffix)
+    return home
 
 
 def _current_book_lines_for_combo(game_id: str) -> dict | None:
@@ -969,10 +986,9 @@ def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandida
         if not event_ticker.startswith("KXMLBGAME-"):
             continue
         suffix = event_ticker.replace("KXMLBGAME-", "")
-        if len(suffix) < 6:
+        away_code, home_code = _parse_event_suffix(suffix)
+        if away_code is None or home_code is None:
             continue
-        away_code = suffix[-6:-3]
-        home_code = suffix[-3:]
 
         avail_spreads = _kalshi_available_spreads(suffix, home_code, away_code)
         avail_totals = _kalshi_available_totals(suffix)
@@ -1081,11 +1097,24 @@ def main_loop(dry_run: bool):
             live = [r[0] for r in con.execute(
                 "SELECT rfq_id FROM live_rfqs WHERE status='open'"
             ).fetchall()]
+        cancelled = 0
+        failed = 0
         for rid in live:
             try:
                 rfq_client.delete_rfq(rid)
-            except Exception:
-                pass
+                with db.connect() as con:
+                    con.execute(
+                        "UPDATE live_rfqs SET status='cancelled', closed_at=?, "
+                        "cancellation_reason='shutdown' WHERE rfq_id=?",
+                        [datetime.now(timezone.utc), rid],
+                    )
+                cancelled += 1
+            except Exception as e:
+                failed += 1
+                print(f"  shutdown: cancel {rid} failed: {e}", flush=True)
+        if live:
+            print(f"  shutdown: drained live RFQs — cancelled={cancelled} "
+                  f"failed={failed}", flush=True)
         db.end_session(sid)
         print("=== shutdown complete ===", flush=True)
 
