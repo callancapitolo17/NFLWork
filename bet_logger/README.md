@@ -175,7 +175,7 @@ After recon, the scrapers work without a browser.
 ## Architecture
 
 ```
-run_all_scrapers.sh          # Entry point (runs all 5: Wagerzon, Hoop88, BFA×2, BetOnline)
+run_all_scrapers.sh          # Entry point (runs all 6: Wagerzon×2, Hoop88, BFA×2, BetOnline)
   scraper_wagerzon.py        # Wagerzon scraper (HTTP, supports --account j)
   scraper_hoop88.py          # Hoop88 scraper (headless Chromium)
   scraper_bfa.py             # BFA Gaming scraper (REST API, supports --account j)
