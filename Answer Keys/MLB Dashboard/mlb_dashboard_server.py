@@ -27,7 +27,6 @@ from flask import Flask, Response, jsonify, request
 BASE_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = BASE_DIR.parent.parent  # NFLWork/
 DB_PATH = BASE_DIR / "mlb_dashboard.duckdb"
-MLB_DB_PATH = BASE_DIR.parent / "mlb.duckdb"
 
 # Combined parlay pricing imports — pull from wagerzon_odds/ + local helper
 sys.path.insert(0, str(PROJECT_ROOT / "wagerzon_odds"))
@@ -48,7 +47,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "wagerzon_odds"))
 import parlay_placer  # noqa: E402
 
-MLB_DB = REPO_ROOT / "Answer Keys" / "mlb.duckdb"
 # Bot- and dashboard-bet-log-facing tables live in mlb_mm.duckdb so they're
 # never blocked by the pipeline's long write lock on mlb.duckdb. Mirrors the
 # CBB pattern.
