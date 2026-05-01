@@ -97,3 +97,24 @@ def test_get_account_unknown_raises(env_clean, env_two_accounts):
 
 def test_no_accounts_returns_empty_list(env_clean):
     assert list_accounts() == []
+
+
+def test_password_not_in_repr(env_clean, monkeypatch):
+    monkeypatch.setenv("WAGERZON_USERNAME", "u")
+    monkeypatch.setenv("WAGERZON_PASSWORD", "supersecret123")
+    acct = list_accounts()[0]
+    assert "supersecret123" not in repr(acct)
+    assert "supersecret123" not in str(acct)
+
+
+def test_skip_pair_missing_username(env_clean, monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.WARNING)
+    monkeypatch.setenv("WAGERZON_USERNAME", "u")
+    monkeypatch.setenv("WAGERZON_PASSWORD", "p")
+    monkeypatch.setenv("WAGERZONJ_PASSWORD", "j_pw")
+    # No WAGERZONJ_USERNAME on purpose
+    accounts = list_accounts()
+    assert [a.label for a in accounts] == ["Wagerzon"]
+    assert "WAGERZONJ" in caplog.text
+    assert "WAGERZONJ_USERNAME" in caplog.text

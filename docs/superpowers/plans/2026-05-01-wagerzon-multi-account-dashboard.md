@@ -204,6 +204,27 @@ def test_get_account_unknown_raises(env_clean, env_two_accounts):
 
 def test_no_accounts_returns_empty_list(env_clean):
     assert list_accounts() == []
+
+
+def test_password_not_in_repr(env_clean, monkeypatch):
+    monkeypatch.setenv("WAGERZON_USERNAME", "u")
+    monkeypatch.setenv("WAGERZON_PASSWORD", "supersecret123")
+    acct = list_accounts()[0]
+    assert "supersecret123" not in repr(acct)
+    assert "supersecret123" not in str(acct)
+
+
+def test_skip_pair_missing_username(env_clean, monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.WARNING)
+    monkeypatch.setenv("WAGERZON_USERNAME", "u")
+    monkeypatch.setenv("WAGERZON_PASSWORD", "p")
+    monkeypatch.setenv("WAGERZONJ_PASSWORD", "j_pw")
+    # No WAGERZONJ_USERNAME on purpose
+    accounts = list_accounts()
+    assert [a.label for a in accounts] == ["Wagerzon"]
+    assert "WAGERZONJ" in caplog.text
+    assert "WAGERZONJ_USERNAME" in caplog.text
 ```
 
 - [ ] **Step 2: Run tests — they should FAIL (module doesn't exist yet)**
@@ -242,7 +263,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 try:
@@ -256,6 +277,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 _SUFFIX_RE = re.compile(r"^WAGERZON([A-Z]?)_USERNAME$")
+_PW_RE = re.compile(r"^WAGERZON([A-Z]?)_PASSWORD$")
 
 
 class AccountNotFoundError(KeyError):
@@ -264,10 +286,16 @@ class AccountNotFoundError(KeyError):
 
 @dataclass(frozen=True)
 class WagerzonAccount:
+    """A Wagerzon login config discovered from env vars.
+
+    suffix: "" for the primary account, otherwise a single uppercase letter
+            (e.g. "J", "C").
+    label:  "Wagerzon" + suffix; stable identifier used by /api/place-parlay etc.
+    """
     label: str
     suffix: str
     username: str
-    password: str
+    password: str = field(repr=False)
 
 
 def list_accounts() -> list[WagerzonAccount]:
@@ -285,17 +313,37 @@ def list_accounts() -> list[WagerzonAccount]:
         suffix = m.group(1)
         pw_key = f"WAGERZON{suffix}_PASSWORD"
         password = os.environ.get(pw_key)
-        if not val or not password:
+        if not val:
+            logger.warning(
+                "Wagerzon account WAGERZON%s skipped: %s is empty",
+                suffix or "(primary)", key,
+            )
+            continue
+        if not password:
             logger.warning(
                 "Wagerzon account WAGERZON%s skipped: %s set but %s missing/empty",
-                suffix or "(primary)", key,
-                pw_key if not password else key,
+                suffix or "(primary)", key, pw_key,
             )
             continue
         label = "Wagerzon" + suffix
         found[suffix] = WagerzonAccount(
             label=label, suffix=suffix, username=val, password=password,
         )
+
+    # Second pass: warn on orphan PASSWORD vars (USERNAME missing for that suffix).
+    for key in os.environ:
+        m = _PW_RE.match(key)
+        if not m:
+            continue
+        suffix = m.group(1)
+        if suffix in found:
+            continue
+        un_key = f"WAGERZON{suffix}_USERNAME"
+        if not os.environ.get(un_key):
+            logger.warning(
+                "Wagerzon account WAGERZON%s skipped: %s set but %s missing/empty",
+                suffix or "(primary)", key, un_key,
+            )
 
     ordered: list[WagerzonAccount] = []
     if "" in found:
@@ -320,7 +368,7 @@ cd /Users/callancapitolo/NFLWork/.worktrees/wagerzon-multi-account-dashboard/wag
 python3 -m pytest test_wagerzon_accounts.py -v
 ```
 
-Expected: 9 tests pass, 0 failures.
+Expected: 11 tests pass, 0 failures.
 
 If a test fails, do NOT proceed. Read the failure, fix the implementation, rerun.
 
