@@ -48,6 +48,13 @@ ACCOUNTS = {
         'bet_multiplier': 0.875,
         'shared_sheet': 'Shared',
     },
+    'c': {
+        'username_env': 'WAGERZONC_USERNAME',
+        'password_env': 'WAGERZONC_PASSWORD',
+        'platform': 'WagerzonC',
+        'bet_multiplier': 1.0,
+        'shared_sheet': None,
+    },
 }
 
 
@@ -443,7 +450,7 @@ if __name__ == "__main__":
     parser.add_argument('--dry-run', action='store_true',
                         help='Scrape but do not upload to Google Sheets')
     parser.add_argument('--account', choices=list(ACCOUNTS.keys()), default='default',
-                        help='Which Wagerzon account to scrape (default or j)')
+                        help='Which Wagerzon account to scrape (default, j, or c)')
     args = parser.parse_args()
 
     acct = ACCOUNTS[args.account]

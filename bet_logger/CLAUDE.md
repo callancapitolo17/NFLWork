@@ -16,6 +16,7 @@ Both `scraper_bfa.py` and `scraper_wagerzon.py` support a second account via `--
 
 - **BFAJ** (BFA second account) — flat `bet_adjustment: -15` (subtract $15 per bet). Uploads adjusted to Sheet1 and raw to `Shared` tab.
 - **WagerzonJ** (Wagerzon second account) — multiplicative `bet_multiplier: 0.875` (user holds 87.5% of risk). Uploads adjusted to Sheet1 and raw to `Shared` tab.
+- **WagerzonC** (Wagerzon third account) — `bet_multiplier: 1.0` (full risk to user, no adjustment). Uploads adjusted to Sheet1 only; no Shared tab.
 
 The two scrapers each define their own `ACCOUNTS` dict; they're not yet sharing a generic helper (intentional — see spec `docs/superpowers/specs/2026-04-29-wagerzon-second-account-design.md`, Approaches 1 vs 2).
 

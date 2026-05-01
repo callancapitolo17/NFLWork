@@ -1,6 +1,6 @@
 # Bet Logger
 
-Multi-platform bet history scraper. Scrapes settled bets from Wagerzon (2 accounts), Hoop88, BFA Gaming (2 accounts), and BetOnline, then uploads to Google Sheets with automatic duplicate detection.
+Multi-platform bet history scraper. Scrapes settled bets from Wagerzon (3 accounts), Hoop88, BFA Gaming (2 accounts), and BetOnline, then uploads to Google Sheets with automatic duplicate detection.
 
 ## Setup
 
@@ -27,7 +27,7 @@ playwright install chromium
 cp .env.example .env
 ```
 
-Edit `.env` with credentials for each platform (Wagerzon, WagerzonJ, Hoop88, BFA primary, BFAJ) and your Google Sheet ID.
+Edit `.env` with credentials for each platform (Wagerzon, WagerzonJ, WagerzonC, Hoop88, BFA primary, BFAJ) and your Google Sheet ID.
 
 ## Usage
 
@@ -37,12 +37,12 @@ Edit `.env` with credentials for each platform (Wagerzon, WagerzonJ, Hoop88, BFA
 ./run_all_scrapers.sh
 ```
 
-Runs Wagerzon (primary + WagerzonJ), Hoop88, BFA (primary + BFAJ), and BetOnline sequentially. Continues to the next scraper if one fails.
+Runs Wagerzon (primary + WagerzonJ + WagerzonC), Hoop88, BFA (primary + BFAJ), and BetOnline sequentially. Continues to the next scraper if one fails.
 
 ### Run individual scrapers
 
 ```bash
-./venv/bin/python3 scraper_wagerzon.py     [--weeks 1] [--all-weeks] [--account j] [--dry-run]
+./venv/bin/python3 scraper_wagerzon.py     [--weeks 1] [--all-weeks] [--account j|c] [--dry-run]
 ./venv/bin/python3 scraper_hoop88.py    [--weeks 1] [--visible] [--dry-run]
 ./venv/bin/python3 scraper_bfa.py       [--days 7] [--since-last] [--dry-run] [--account j]
 ./venv/bin/python3 scraper_betonline.py [--days 7] [--since-last] [--dry-run]
@@ -55,7 +55,7 @@ Runs Wagerzon (primary + WagerzonJ), Hoop88, BFA (primary + BFAJ), and BetOnline
 **Wagerzon flags:**
 - `--weeks N` — Which week to fetch (0=This Week, 1=Last Week, default: 1)
 - `--all-weeks` — Fetch every week back-to-back until an empty one (catches up after missed runs)
-- `--account j` — Scrape the WagerzonJ second account instead of primary
+- `--account j|c` — Scrape the WagerzonJ (87.5% of risk) or WagerzonC (full risk) account instead of primary
 
 **Hoop88 flags:**
 - `--weeks N` — How many weeks back to fetch (0=this week, 1=last week, default: 1)
@@ -119,7 +119,7 @@ See `create_summary.py`. Tracks NCAAM half-game answer-key bets across all platf
 | Column | Field | Example |
 |--------|-------|---------|
 | A | Date | 1/6/26 |
-| B | Platform | Wagerzon / WagerzonJ / Hoop88 / Betfastaction / BFAJ / BetOnline |
+| B | Platform | Wagerzon / WagerzonJ / WagerzonC / Hoop88 / Betfastaction / BFAJ / BetOnline |
 | C | Sport | NFL, NBA, NHL, NCAAF, NCAAM |
 | D | Description | Houston Texans -0.5 +130 - 1st Quarter |
 | E | Bet Type | Parlay, Straight, Prop, Teaser, Contest |
@@ -137,6 +137,7 @@ Duplicate detection uses (date + platform + description + bet amount) as the key
 
 - **Primary (`Wagerzon`)** — full risk attributed to user. Bets land in `Sheet1` only.
 - **WagerzonJ (`--account j`)** — partner-shared account. User holds 87.5% of risk. Adjusted bets (`risk × 0.875`, rounded to cents) land in `Sheet1`; raw (full) bets land in the `Shared` tab for week-over-week balance reconciliation. Same pattern as BFAJ but with a multiplicative adjustment instead of BFAJ's flat $-15.
+- **WagerzonC (`--account c`)** — third account, full risk attributed to user (no multiplier). Bets land in `Sheet1` only — no `Shared` tab upload. Behaves identically to the primary except for separate credentials and the `WagerzonC` platform label.
 
 **Hoop88** — Navigates the bet history UI by clicking the Balance box, selecting a week from the dropdown, and expanding bet details. Handles parlays by combining legs with `|`. Converts fractional lines (1/2, 1/4, 3/4).
 
@@ -175,7 +176,7 @@ After recon, the scrapers work without a browser.
 ## Architecture
 
 ```
-run_all_scrapers.sh          # Entry point (runs all 6: Wagerzon×2, Hoop88, BFA×2, BetOnline)
+run_all_scrapers.sh          # Entry point (runs all 7: Wagerzon×3, Hoop88, BFA×2, BetOnline)
   scraper_wagerzon.py        # Wagerzon scraper (HTTP, supports --account j)
   scraper_hoop88.py          # Hoop88 scraper (headless Chromium)
   scraper_bfa.py             # BFA Gaming scraper (REST API, supports --account j)
