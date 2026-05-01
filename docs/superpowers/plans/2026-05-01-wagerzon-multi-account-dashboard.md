@@ -554,7 +554,7 @@ from wagerzon_accounts import WagerzonAccount
 
 logger = logging.getLogger(__name__)
 
-WAGERZON_BASE_URL = "https://wagerzon.ag/Default.aspx"
+WAGERZON_BASE_URL = "https://backend.wagerzon.com"
 DEFAULT_TIMEOUT = 15
 POOL_SIZE = 8
 
@@ -632,7 +632,7 @@ cd /Users/callancapitolo/NFLWork/.worktrees/wagerzon-multi-account-dashboard/wag
 python3 -m pytest test_wagerzon_auth.py -v
 ```
 
-Expected: 5 tests pass.
+Expected: 6 tests pass (5 from the original list + the new password-not-logged test).
 
 - [ ] **Step 3: Commit**
 
@@ -660,53 +660,26 @@ EOF
 
 ## Phase 3 — Balance fetcher
 
-### Task 3.1: Discover the Wagerzon balance endpoint (manual)
+### Task 3.1: Wagerzon balance endpoint (already discovered)
 
-**Files:** none (you'll capture findings into the next task's code)
+**Files:** none (reference for Tasks 3.2 + 3.3)
 
-This is the only exploratory step. The dashboard needs an HTTP endpoint that returns the available balance for a logged-in Wagerzon session. We don't yet know its URL or response shape.
-
-- [ ] **Step 1: Open WZ in a logged-in browser**
-
-In Chrome or Firefox, open `https://wagerzon.ag/`, log in to the **primary** account.
-
-- [ ] **Step 2: Open devtools → Network tab → check "Preserve log"**
-
-- [ ] **Step 3: Navigate to a page that displays the balance**
-
-Examples to try (the user knows which page shows balance — check the betting slip, account header, or "My Account" page):
-- The main betting page header (often shows "Available: $X").
-- The account/cashier page.
-- Click on the bet slip — sometimes a balance lookup fires.
-
-- [ ] **Step 4: In the Network tab, find a request whose response contains the balance number**
-
-Filter by XHR/Fetch. Look for endpoints like `Balance`, `Account`, `Wallet`, `Customer`, `BalanceHelper`. Click suspicious requests; inspect the response body in the Preview tab.
-
-- [ ] **Step 5: Capture all of the following and write them down**
+No browser/devtools work required — the endpoint was found in `wagerzon_odds/recon_place_parlay.json` (an existing recon dump from the parlay-placer build).
 
 | Field | Value |
 |---|---|
-| HTTP method | (GET or POST) |
-| Full URL path (without query) | |
-| Required query string params (if any) | |
-| Required POST body (if POST) | |
-| Required headers beyond cookies | |
-| Response body shape (JSON or HTML?) | |
-| Path to "available balance" inside the response | |
-| Path to "cash balance" if present | |
+| HTTP method | `GET` |
+| URL | `https://backend.wagerzon.com/wager/PlayerInfoHelper.aspx` |
+| Required query params | none |
+| Required POST body | none (it's a GET) |
+| Required headers beyond cookies | none — session cookies from `wagerzon_auth.get_session()` carry identity |
+| Response body | JSON: `{"result": {"AvailBalance": "1,245.32 ", "CurrentBalance": "1,300 ", "AmountAtRisk": "715 ", "RealAvailBalance": "...", "CreditLimit": "...", "BonusPoints": 0.0, "FreePlayAmount": "0 ", "Player": "<acct>", "Password": "<plaintext>", "ErrorCode": {}, "ErrorMsg": "", ...}}` |
+| Path to available balance | `result.AvailBalance` (string with thousand-separator comma + trailing space; parse with `float(s.strip().replace(",", ""))`) |
+| Path to cash balance | `result.CurrentBalance` (same string format) |
 
-- [ ] **Step 6: Reproduce with curl, using cookies copied from the browser**
+**Why `AvailBalance` and not `RealAvailBalance`:** `AvailBalance` = `CurrentBalance - AmountAtRisk` (the wagerable amount from your own cash). `RealAvailBalance` adds `CreditLimit` on top — not what we want for the gating decision.
 
-In devtools → request → "Copy as cURL" → run in terminal. Confirm the response includes the balance.
-
-- [ ] **Step 7: If the endpoint is not findable, document what you tried and pause**
-
-Bad outcomes to flag immediately:
-- Balance is computed in JS from a longer page load (no isolated endpoint). → Implementation will need to scrape the relevant HTML page.
-- Endpoint requires CSRF tokens beyond cookies. → Note them; the auth helper may need extending.
-
-**Stop here and report findings before continuing to Task 3.2.** The next task hardcodes the discovered endpoint shape; getting it wrong will cascade.
+**Security gotcha (CRITICAL):** the response body also includes `result.Player` and `result.Password` (the user's WZ password in plaintext). The balance parser MUST extract only the two numeric fields above and never log the raw response body. Tests in Task 3.2 include an explicit assertion that the password value never appears in `caplog`.
 
 ### Task 3.2: Write the balance module tests
 
@@ -744,6 +717,9 @@ def acct():
     return WagerzonAccount(label="Wagerzon", suffix="", username="u", password="p")
 
 
+_LOGGED_IN_URL = wagerzon_auth.WAGERZON_BASE_URL.rstrip("/") + "/NewSchedule.aspx"
+
+
 def _mock_login(m):
     """Helper: mock the login endpoints so get_session() succeeds."""
     LOGIN_HTML = (
@@ -755,13 +731,29 @@ def _mock_login(m):
     )
     m.get(wagerzon_auth.WAGERZON_BASE_URL, text=LOGIN_HTML)
     m.post(wagerzon_auth.WAGERZON_BASE_URL, text="",
-           headers={"Location": wagerzon_auth.WAGERZON_BASE_URL.replace("Default", "NewSchedule")},
+           headers={"Location": _LOGGED_IN_URL},
            status_code=302)
+    m.get(_LOGGED_IN_URL, text="logged in")
 
 
-# REPLACE these two constants with real values from Task 3.1
-BALANCE_URL = "https://wagerzon.ag/REPLACE_ME_FROM_TASK_3_1"
-MOCK_BALANCE_RESPONSE = {"available": 1245.32, "cash": 1300.00}
+# Real WZ balance endpoint and a sample of its response shape.
+BALANCE_URL = "https://backend.wagerzon.com/wager/PlayerInfoHelper.aspx"
+MOCK_BALANCE_RESPONSE = {
+    "result": {
+        "AmountAtRisk": "715 ",
+        "AvailBalance": "1,245.32 ",       # the gating number we display
+        "BonusPoints": 0.0000,
+        "CreditLimit": "2,000 ",
+        "CurrentBalance": "1,300.00 ",     # the "cash" we expose for tooltip/debug
+        "FreePlayAmount": "0 ",
+        "RealAvailBalance": "3,245.32 ",
+        # NOTE: real responses also include "Player" and "Password" fields
+        # (yes, the password in plaintext). The parser MUST extract only the
+        # numeric balance fields and never log the raw response body.
+        "ErrorCode": {},
+        "ErrorMsg": "",
+    }
+}
 
 
 def test_fetch_returns_snapshot(acct):
@@ -774,6 +766,25 @@ def test_fetch_returns_snapshot(acct):
         assert snap.cash == 1300.00
         assert snap.error is None
         assert snap.fetched_at.tzinfo == timezone.utc
+
+
+def test_fetch_does_not_log_password_from_response(acct, caplog):
+    """The WZ balance response includes the user's password in plaintext.
+    The fetcher must never log the raw response body."""
+    import logging
+    response_with_password = {
+        "result": {
+            "AvailBalance": "100 ", "CurrentBalance": "100 ",
+            "Player": "MYACCT", "Password": "supersecret-do-not-log",
+            "ErrorCode": {}, "ErrorMsg": "",
+        }
+    }
+    caplog.set_level(logging.DEBUG)
+    with requests_mock.Mocker() as m:
+        _mock_login(m)
+        m.get(BALANCE_URL, json=response_with_password)
+        wagerzon_balance.fetch_available_balance(acct)
+    assert "supersecret-do-not-log" not in caplog.text
 
 
 def test_fetch_timeout_returns_error_snapshot(acct):
@@ -833,7 +844,7 @@ Expected: ImportError on `wagerzon_balance`.
 **Files:**
 - Create: `wagerzon_odds/wagerzon_balance.py`
 
-> **IMPORTANT:** Replace `_BALANCE_URL`, the parse function `_parse_balance_response`, and the HTTP method (`session.get` vs `session.post`) with values discovered in Task 3.1. The skeleton below assumes a JSON `GET` returning `{"available": float, "cash": float}`.
+> **Endpoint:** `GET https://backend.wagerzon.com/wager/PlayerInfoHelper.aspx`. Auth = the same session cookies established by `wagerzon_auth.get_session()`. Response is JSON shaped `{"result": {"AvailBalance": "1,245.32 ", "CurrentBalance": "1,300 ", "AmountAtRisk": "715 ", "RealAvailBalance": "...", "CreditLimit": "...", "Player": ..., "Password": ..., ...}}`. Numeric fields arrive as strings with thousand-separator commas and a trailing space — parse with `float(s.strip().replace(",", ""))`. **Security: the response body includes the user's password in plaintext — the parser must extract only `AvailBalance` + `CurrentBalance` and never log the raw response.**
 
 - [ ] **Step 1: Write the implementation**
 
@@ -861,8 +872,7 @@ from wagerzon_accounts import WagerzonAccount
 
 logger = logging.getLogger(__name__)
 
-# REPLACE with the real endpoint discovered in Task 3.1
-_BALANCE_URL = "https://wagerzon.ag/REPLACE_ME_FROM_TASK_3_1"
+_BALANCE_URL = "https://backend.wagerzon.com/wager/PlayerInfoHelper.aspx"
 
 _TIMEOUT_SECONDS = 5
 _MAX_PARALLEL = 8
@@ -951,15 +961,37 @@ def _fetch_once(account: WagerzonAccount) -> BalanceSnapshot:
 
 
 def _parse_balance_response(resp: requests.Response) -> tuple[float, Optional[float]]:
-    """REPLACE with real parsing from Task 3.1.
+    """Parse the WZ PlayerInfoHelper response.
 
-    Default skeleton assumes JSON body shaped:
-        {"available": <float>, "cash": <float?>}
+    Response shape:
+        {"result": {"AvailBalance": "1,245.32 ", "CurrentBalance": "1,300 ", ...,
+                    "Player": "ACCT", "Password": "<plaintext>", ...}}
+
+    Numbers come as strings with comma thousand-separators and a trailing
+    space. We extract ONLY AvailBalance (gating value) and CurrentBalance
+    (cash, optional). The response body also contains the user's password
+    in plaintext — never log the full body and never return any field
+    other than the two below.
     """
     data = resp.json()
-    available = float(data["available"])
-    cash = float(data["cash"]) if data.get("cash") is not None else None
+    result = data.get("result") or {}
+
+    raw_avail = result.get("AvailBalance")
+    if raw_avail is None:
+        raise ValueError("balance response missing 'AvailBalance'")
+    available = _parse_money_string(raw_avail)
+
+    raw_cash = result.get("CurrentBalance")
+    cash = _parse_money_string(raw_cash) if raw_cash is not None else None
+
     return available, cash
+
+
+def _parse_money_string(s) -> float:
+    """Parse a Wagerzon-formatted money string like '1,245.32 ' or 0.0 (number)."""
+    if isinstance(s, (int, float)):
+        return float(s)
+    return float(str(s).strip().replace(",", ""))
 
 
 def _looks_like_login_redirect(resp: requests.Response) -> bool:
@@ -984,7 +1016,7 @@ cd /Users/callancapitolo/NFLWork/.worktrees/wagerzon-multi-account-dashboard/wag
 python3 -m pytest test_wagerzon_balance.py -v
 ```
 
-Expected: 5 tests pass.
+Expected: 6 tests pass (5 from the original list + the new password-not-logged test).
 
 - [ ] **Step 3: Smoke test against the real WZ endpoint**
 
@@ -1000,7 +1032,7 @@ for snap in fetch_all(list_accounts()):
 
 Expected: one `BalanceSnapshot` per configured account, each with a real `available` number and `error=None`.
 
-If any account returns `error="parse_error"`: the response shape didn't match the parser. Re-inspect Task 3.1 capture, fix `_parse_balance_response`, rerun.
+If any account returns `error="parse_error"`: the response shape didn't match the parser. Compare the live response (from a one-off curl with the session cookies) to the shape documented in Task 3.1, fix `_parse_balance_response`, rerun.
 
 If any returns `error="auth_failed"`: the auth flow is broken for that account — likely a credential typo in env, or WZ requires a CAPTCHA. Investigate before proceeding.
 
@@ -2501,6 +2533,6 @@ Append to the Reference section:
 - Documentation: Phase 7 ✓
 - Worktree cleanup: Task 8.4 ✓
 
-**Placeholder scan:** the only intentional unknown is in Task 3.1 (discover the WZ balance endpoint), and Tasks 3.2 + 3.3 explicitly mark the spots that depend on the discovery (`REPLACE_ME_FROM_TASK_3_1`). All other tasks have concrete code, commands, and expected outputs.
+**Placeholder scan:** none. Initial draft had `REPLACE_ME_FROM_TASK_3_1` placeholders pending manual endpoint discovery; that discovery was completed during execution by extracting the endpoint from existing recon files (`recon_place_parlay.json`), and Tasks 3.1/3.2/3.3 now contain concrete URL, response shape, and parser code.
 
 **Type consistency:** `WagerzonAccount` (dataclass), `BalanceSnapshot` (dataclass), `place_parlays(specs, account)`, `get_session(account)`, `fetch_available_balance(account)`, `fetch_all(accounts)` — used consistently across all tasks.
