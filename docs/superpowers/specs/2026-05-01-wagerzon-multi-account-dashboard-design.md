@@ -62,7 +62,7 @@ User clicks Place on parlay
   → JS: POST /api/place-parlay {parlay: ..., account: "WagerzonJ"}
   → server: registry resolves "WagerzonJ" → WagerzonAccount
        → parlay_placer.place_parlays(parlay, account)
-       → on success: INSERT placed_bets (..., account="WagerzonJ")
+       → on success: INSERT placed_parlays (..., account="WagerzonJ")
        → balance.fetch_available_balance(account)
        → response includes balance_after snapshot
   → JS: pill for WagerzonJ flashes + updates
@@ -190,7 +190,7 @@ POST /api/place-parlay
        Body adds field: "account": "WagerzonJ"   // required
        → server resolves account from registry
        → parlay_placer.place_parlays(parlay, account)
-       → on success: INSERT placed_bets with account label
+       → on success: INSERT placed_parlays with account label
        → balance.fetch_available_balance(account)
        Response gains: "balance_after": {label, available, cash, fetched_at, error}
        400 if account label missing or not in registry
@@ -229,7 +229,7 @@ CREATE TABLE IF NOT EXISTS dashboard_settings (
 ### Per-account bet attribution
 
 ```sql
-ALTER TABLE placed_bets ADD COLUMN account TEXT;
+ALTER TABLE placed_parlays ADD COLUMN account TEXT;
 ```
 
 - New rows: written with the resolved account label.
@@ -237,7 +237,7 @@ ALTER TABLE placed_bets ADD COLUMN account TEXT;
 
 ### Migration
 
-Both schema changes (`CREATE TABLE dashboard_settings`, `ALTER TABLE placed_bets ADD COLUMN account`) run idempotently at server startup — `IF NOT EXISTS` for the table, try-except on the `ALTER` (DuckDB raises if column exists).
+Both schema changes (`CREATE TABLE dashboard_settings`, `ALTER TABLE placed_parlays ADD COLUMN account`) run idempotently at server startup — `IF NOT EXISTS` for the table, try-except on the `ALTER` (DuckDB raises if column exists).
 
 ### Not tracked (deferred YAGNI)
 
@@ -285,7 +285,7 @@ Balance-before / balance-after snapshots per bet. bet_logger already reconciles 
 - NFL Draft portal (`nfl_draft/`) account selection — same modules will be reusable when wanted.
 - Background balance polling (rejected in Q4).
 - Per-account auto-suggestion or auto-switching on insufficient balance (rejected in Q5).
-- Backfill of historical `placed_bets.account` values.
+- Backfill of historical `placed_parlays.account` values.
 - Balance-before/after snapshots per bet.
 - Hot-reload of accounts without Flask restart.
 
@@ -305,8 +305,8 @@ Balance-before / balance-after snapshots per bet. bet_logger already reconciles 
 
 - `wagerzon_odds/README.md` — new "Multi-account support" section describing the registry, env-var convention, balance fetcher, parlay_placer's `account` parameter.
 - `wagerzon_odds/CLAUDE.md` — if it exists; else add a note in `bet_logger/CLAUDE.md` cross-referencing.
-- `Answer Keys/MLB Dashboard/CLAUDE.md` (or parent `Answer Keys/CLAUDE.md`) — note new endpoints, `dashboard_settings` table, `placed_bets.account` column, and how to add a new account.
-- `bet_logger/.env.example` — add `WAGERZONC_USERNAME` / `WAGERZONC_PASSWORD` placeholder so the convention is discoverable.
+- `Answer Keys/MLB Dashboard/CLAUDE.md` (or parent `Answer Keys/CLAUDE.md`) — note new endpoints, `dashboard_settings` table, `placed_parlays.account` column, and how to add a new account.
+- `bet_logger/.env.example` — already includes `WAGERZONC_USERNAME` / `WAGERZONC_PASSWORD` (added by the parallel WagerzonC worktree). No change needed.
 - Root `CLAUDE.md` — likely no change.
 
 ## Auto-memory updates after ship
