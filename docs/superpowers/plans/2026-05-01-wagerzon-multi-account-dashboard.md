@@ -632,7 +632,7 @@ cd /Users/callancapitolo/NFLWork/.worktrees/wagerzon-multi-account-dashboard/wag
 python3 -m pytest test_wagerzon_auth.py -v
 ```
 
-Expected: 6 tests pass (5 from the original list + the new password-not-logged test).
+Expected: 5 tests pass.
 
 - [ ] **Step 3: Commit**
 
