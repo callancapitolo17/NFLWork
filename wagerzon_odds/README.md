@@ -163,12 +163,14 @@ Also: `wagerzon_cbb.duckdb` (CBB-specific historical data).
 **Public API:**
 ```python
 from parlay_placer import place_parlays, ParlaySpec, PlacementResult
+from wagerzon_accounts import get_account
 
 specs = [
     ParlaySpec(legs=[(game_id, "spread", -1.5), ...], wager_amount=100.00, expected_payout=250.00),
     ...
 ]
-results: list[PlacementResult] = place_parlays(specs, dry_run=False)
+account = get_account("Wagerzon")  # or "WagerzonJ", "WagerzonC", ...
+results: list[PlacementResult] = place_parlays(specs, account)
 ```
 
 **Status values in `PlacementResult`:**
@@ -186,7 +188,7 @@ results: list[PlacementResult] = place_parlays(specs, dry_run=False)
 python3 wagerzon_odds/parlay_placer.py --help
 ```
 
-**Tests:** `pytest wagerzon_odds/test_parlay_placer.py -v` (22 test cases)
+**Tests:** `pytest wagerzon_odds/test_parlay_placer.py -v` (19 test cases)
 
 **Used by:** MLB dashboard's `/api/place-parlay` endpoint
 
