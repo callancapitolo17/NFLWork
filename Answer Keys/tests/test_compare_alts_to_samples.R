@@ -233,6 +233,7 @@ test_that("compare_alts_to_samples emits odd_even_runs bet when totals are odd 6
     bankroll = 100, kelly_mult = 0.25, ev_threshold = 0.02
   )
 
+  expect_equal(nrow(bets), 1L)             # exactly one bet emitted (Odd only; Even is -EV)
   odd_bet <- bets[bets$bet_on == "Odd" & bets$market == "odd_even_runs", ]
   expect_equal(nrow(odd_bet), 1)
   expect_equal(odd_bet$prob, 0.60, tolerance = 1e-9)

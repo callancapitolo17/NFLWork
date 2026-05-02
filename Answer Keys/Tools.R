@@ -4749,7 +4749,7 @@ compare_alts_to_samples <- function(
       #   away side = ODD total runs, home side = EVEN total runs
       # Pricing: parity of game_total_period_FG. Baseball totals are integers,
       # so no push case to handle.
-      col_name <- paste0(total_col, "_FG")
+      col_name <- paste0(total_col, "_", period)
       if (!col_name %in% names(sample_df)) next
       totals <- sample_df[[col_name]]
       totals <- totals[!is.na(totals)]
