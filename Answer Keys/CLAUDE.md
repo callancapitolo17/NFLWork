@@ -23,7 +23,12 @@ run.py mlb (orchestrator)
   └── MLB.R reads scraper DBs, generates F5 fair prices, writes pipeline output
 ```
 - MLB uses moneyline-based matching (`use_spread_line = FALSE`)
-- F5 (first 5 innings) markets only: h2h, totals, spreads
+- F5 (first 5 innings) markets matched via Odds API: h2h, totals, spreads, alternate_totals
+- Derivative markets matched via `compare_alts_to_samples` against scraped offshore odds:
+  - F3 / F7 spreads + totals + h2h (Wagerzon, Bookmaker for F3 only). Note: Wagerzon currently posts spread+total at F3/F7 but rarely posts moneyline — h2h_1st_*_innings branch is built but typically idle until a book posts F-period MLs.
+  - FG alt spreads + alt totals (Wagerzon, Bet105)
+  - FG odd/even total runs (Wagerzon — single-game prop, away_ml side = ODD, home_ml side = EVEN per scraper convention)
+- Team totals (`team_totals_*_fg`, `team_totals_*_h1`) are scraped but NOT yet matched — MLB samples lack per-team score columns. Tracked as gap #2 in the broader matching plan.
 - Historical data: `pbp.duckdb/mlb_betting_pbp` (12,719 games)
 - Dashboard: port 8083
 

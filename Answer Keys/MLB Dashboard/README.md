@@ -98,10 +98,18 @@ Both use normal CDF re-pricing when the closing line differs from the placement 
 
 ## Markets
 
-Currently F5 (first 5 innings) only:
+F5 mains (priced via `build_*_from_samples` against the Odds API):
 - `h2h_1st_5_innings` — F5 moneyline
 - `totals_1st_5_innings` — F5 total + alternate totals
 - `spreads_1st_5_innings` — F5 run line
+
+Derivatives (priced via `compare_alts_to_samples` against scraped Wagerzon/Bookmaker/BFA/Bet105 data):
+- `h2h_1st_3_innings`, `h2h_1st_7_innings` — F3/F7 moneyline (fires only when a book posts F-period MLs; Wagerzon currently posts spread+total only at F3/F7)
+- `spreads_1st_3_innings`, `spreads_1st_7_innings` — F3/F7 run line (Wagerzon, Bookmaker for F3 only)
+- `totals_1st_3_innings`, `totals_1st_7_innings` — F3/F7 total
+- `alternate_spreads_fg`, `alternate_totals_fg` — full-game alt lines (Wagerzon, Bet105)
+- `alternate_totals_f5`, `alternate_spreads_f5` — F5 alt lines (h1-suffix scrapers like BFA/Bet105 are remapped to f5)
+- `odd_even_runs` — full-game total runs odd vs even (Wagerzon only)
 
 ## Configuration
 
