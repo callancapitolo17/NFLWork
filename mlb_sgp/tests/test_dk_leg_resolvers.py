@@ -28,11 +28,19 @@ FIXTURE = {
     'data': {
         'markets': [
             {
-                'marketName': '1st Run',
+                'marketName': 'CHI Cubs Run Scored - 1st Inning?',
                 'tags': ['SGP', 'YourBetEligible'],
                 'selections': [
-                    {'name': 'CHI Cubs',  'id': '0QA-CUBS-1ST-RUN'},
-                    {'name': 'SD Padres', 'id': '0QA-SD-1ST-RUN'},
+                    {'name': 'Yes', 'id': '0QA-CUBS-RS1ST-YES'},
+                    {'name': 'No',  'id': '0QA-CUBS-RS1ST-NO'},
+                ],
+            },
+            {
+                'marketName': 'SD Padres Run Scored - 1st Inning?',
+                'tags': ['SGP', 'YourBetEligible'],
+                'selections': [
+                    {'name': 'Yes', 'id': '0QA-SD-RS1ST-YES'},
+                    {'name': 'No',  'id': '0QA-SD-RS1ST-NO'},
                 ],
             },
             {
@@ -103,9 +111,9 @@ TEAM_NAMES = {'home': 'CHI Cubs', 'away': 'SD Padres'}
 # ---------------------------------------------------------------------------
 
 def test_find_market_by_name_finds_sgp_eligible_market():
-    m = find_market_by_name(FIXTURE, '1st Run')
+    m = find_market_by_name(FIXTURE, 'CHI Cubs Run Scored - 1st Inning?')
     assert m is not None
-    assert m['marketName'] == '1st Run'
+    assert m['marketName'] == 'CHI Cubs Run Scored - 1st Inning?'
 
 def test_find_market_by_name_skips_non_sgp_market():
     # 'Inning of First/Last Score' is in fixture but lacks 'SGP' tag
@@ -118,11 +126,24 @@ def test_find_market_by_name_returns_none_for_missing_market():
 
 def test_scores_first_home():
     sid = resolve_scores_first({'type': 'scores_first'}, 'home', FIXTURE, TEAM_NAMES)
-    assert sid == '0QA-CUBS-1ST-RUN'
+    assert sid == '0QA-CUBS-RS1ST-YES'
 
 def test_scores_first_away():
     sid = resolve_scores_first({'type': 'scores_first'}, 'away', FIXTURE, TEAM_NAMES)
-    assert sid == '0QA-SD-1ST-RUN'
+    assert sid == '0QA-SD-RS1ST-YES'
+
+def test_scores_first_picks_yes_not_no():
+    """Defensive: confirm the resolver picks the Yes selection, not the No."""
+    sid = resolve_scores_first({'type': 'scores_first'}, 'home', FIXTURE, TEAM_NAMES)
+    assert sid == '0QA-CUBS-RS1ST-YES'
+    assert 'NO' not in sid
+
+def test_scores_first_returns_none_when_market_missing():
+    """If DK doesn't post the inning-1 Y/N market, resolver returns None
+    (graceful degrade — R-side blend falls back to model-only)."""
+    fixture_no_market = {'data': {'markets': []}}
+    sid = resolve_scores_first({'type': 'scores_first'}, 'home', fixture_no_market, TEAM_NAMES)
+    assert sid is None
 
 
 def test_wins_period_FG_home():
@@ -194,7 +215,7 @@ def test_resolve_legs_full_trifecta_home():
         {'type': 'wins_period', 'period': 'FG'},
     ]
     sids = resolve_legs(legs, 'home', FIXTURE, TEAM_NAMES)
-    assert sids == ['0QA-CUBS-1ST-RUN', '0HC-RL-CUBS-N50_1', '0ML-CUBS_3']
+    assert sids == ['0QA-CUBS-RS1ST-YES', '0HC-RL-CUBS-N50_1', '0ML-CUBS_3']
 
 def test_resolve_legs_full_grand_slam_away():
     legs = [
@@ -204,7 +225,7 @@ def test_resolve_legs_full_grand_slam_away():
         {'type': 'team_total_under', 'line': 4.5},
     ]
     sids = resolve_legs(legs, 'away', FIXTURE, TEAM_NAMES)
-    assert sids == ['0QA-SD-1ST-RUN', '0HC-RL-SD-N50_3', '0ML-SD_1', '0OU100002U450_3']
+    assert sids == ['0QA-SD-RS1ST-YES', '0HC-RL-SD-N50_3', '0ML-SD_1', '0OU100002U450_3']
 
 def test_resolve_legs_missing_leg_returns_none():
     # F3 not supported → whole resolution fails → None

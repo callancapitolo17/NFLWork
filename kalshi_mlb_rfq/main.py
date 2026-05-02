@@ -100,7 +100,7 @@ def _refresh_caches(retries: int = 5) -> bool:
             t0 = time.time()
             samples_df = con.execute(
                 "SELECT game_id, sim_idx, home_margin, total_final_score, "
-                "home_margin_f5, total_f5, home_scored_first FROM mlb_game_samples"
+                "home_margin_f5, total_f5 FROM mlb_game_samples"
             ).fetchdf()
             samples_by_game = {gid: g.reset_index(drop=True)
                                 for gid, g in samples_df.groupby("game_id")}

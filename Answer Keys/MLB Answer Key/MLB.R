@@ -60,17 +60,16 @@ DT <- dbGetQuery(con, "
   ) %>%
   as.data.table()
 
-# Compute home_scored_first indicator for triple-play prop pricing.
-# Carried through sampling by preserving as an extra column on DT.
-DT[, home_scored_first := determine_home_scored_first_vec(
-  game_home_margin_inning_inning_1, game_total_inning_inning_1,
-  game_home_margin_inning_inning_2, game_total_inning_inning_2,
-  game_home_margin_period_F3,       game_total_period_F3,
-  game_home_margin_inning_inning_4, game_total_inning_inning_4,
-  game_home_margin_period_F5,       game_total_period_F5
-)]
-cat(sprintf("home_scored_first coverage: %.1f%% of games determinable in innings 1-5.\n",
-            100 * mean(!is.na(DT$home_scored_first))))
+# Compute per-team 1st-inning scoring indicators for SCR 1ST prop pricing.
+# Carried through sampling by preserving as extra columns on DT.
+inning_1 <- determine_inning_1_scoring_vec(
+  m1 = DT$game_home_margin_inning_inning_1,
+  t1 = DT$game_total_inning_inning_1
+)
+DT[, home_scored_in_1st := inning_1$home]
+DT[, away_scored_in_1st := inning_1$away]
+cat(sprintf("inning-1 scoring coverage: %.1f%% of games have determinable inning 1.\n",
+            100 * mean(!is.na(DT$home_scored_in_1st))))
 
 dbDisconnect(con)
 on.exit(NULL)  # clear the on.exit since we disconnected
@@ -332,7 +331,8 @@ sample_rows <- imap_dfr(samples, function(s, game_id) {
     total_f5           = samp$game_total_period_F5,
     home_margin_f7     = samp$game_home_margin_period_F7,
     total_f7           = samp$game_total_period_F7,
-    home_scored_first  = samp$home_scored_first
+    home_scored_in_1st = samp$home_scored_in_1st,
+    away_scored_in_1st = samp$away_scored_in_1st
   )
 })
 
