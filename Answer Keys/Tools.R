@@ -4521,7 +4521,8 @@ compare_alts_to_samples <- function(
       grepl("^alternate_", market) |
       grepl("^team_totals_", market) |
       grepl("1st_3_innings", market) |
-      grepl("1st_7_innings", market)
+      grepl("1st_7_innings", market) |
+      market == "odd_even_runs"
     )
 
   if (nrow(alt_odds) == 0) return(tibble())
@@ -4552,8 +4553,20 @@ compare_alts_to_samples <- function(
     sample_df <- samples[[game_id]]$sample
     if (is.null(sample_df) || nrow(sample_df) == 0) next
 
-    # Extract period from market name (e.g., "alternate_spreads_h1" → "h1" → "Half1")
-    suffix <- sub(".*_", "", row$market)
+    # Extract period from market name. MLB derivative markets use multi-token
+    # suffixes ("1st_3_innings", "1st_7_innings"); everything else uses a single
+    # trailing token ("alternate_spreads_h1" → "h1" → "Half1"). odd_even_runs
+    # is full-game by definition — pin it to "fg" so it survives the period_map
+    # lookup; the handler hardcodes _FG anyway.
+    suffix <- if (grepl("1st_3_innings$", row$market)) {
+      "f3"
+    } else if (grepl("1st_7_innings$", row$market)) {
+      "f7"
+    } else if (row$market == "odd_even_runs") {
+      "fg"
+    } else {
+      sub(".*_", "", row$market)
+    }
     period <- period_map[suffix]
     if (is.na(period)) next
 
@@ -4686,6 +4699,89 @@ compare_alts_to_samples <- function(
           market = row$market, bet_on = paste(team_name, "Under"),
           line = total_line, bet_size = under_size, ev = under_ev,
           odds = row$odds_under, prob = p_under
+        )
+      }
+
+    } else if (grepl("^h2h_", row$market) && !is.na(row$odds_home) && !is.na(row$odds_away)) {
+      # Derivative moneyline (e.g. h2h_1st_3_innings, h2h_1st_7_innings).
+      # 2-way pricing: home wins iff margin > 0, away wins iff margin < 0,
+      # margin == 0 is a push (refund) and excluded from the denominator —
+      # mirrors how Wagerzon settles F-period MLs in practice.
+      col_name <- paste0(margin_col, "_", period)
+      if (!col_name %in% names(sample_df)) next
+      margins <- sample_df[[col_name]]
+      margins <- margins[!is.na(margins)]
+      if (length(margins) == 0) next
+
+      non_push <- margins[margins != 0]
+      if (length(non_push) == 0) next
+      p_home <- sum(non_push > 0) / length(non_push)
+      p_away <- 1 - p_home
+
+      probs <- american_prob(row$odds_away, row$odds_home)
+      if (any(is.na(probs)) || any(probs == 0)) next
+
+      home_ev <- compute_ev(p_home, probs$p2)
+      away_ev <- compute_ev(p_away, probs$p1)
+      home_size <- kelly_stake(home_ev, probs$p2, bankroll, kelly_mult)
+      away_size <- kelly_stake(away_ev, probs$p1, bankroll, kelly_mult)
+
+      if (home_ev >= ev_threshold) {
+        all_bets[[length(all_bets) + 1]] <- tibble(
+          id = game_id, home_team = row$home_team, away_team = row$away_team,
+          pt_start_time = pt_start_time, bookmaker_key = book_key,
+          market = row$market, bet_on = row$home_team,
+          line = NA_real_, bet_size = home_size, ev = home_ev,
+          odds = row$odds_home, prob = p_home
+        )
+      }
+      if (away_ev >= ev_threshold) {
+        all_bets[[length(all_bets) + 1]] <- tibble(
+          id = game_id, home_team = row$home_team, away_team = row$away_team,
+          pt_start_time = pt_start_time, bookmaker_key = book_key,
+          market = row$market, bet_on = row$away_team,
+          line = NA_real_, bet_size = away_size, ev = away_ev,
+          odds = row$odds_away, prob = p_away
+        )
+      }
+    } else if (row$market == "odd_even_runs" && !is.na(row$odds_home) && !is.na(row$odds_away)) {
+      # Wagerzon convention (scraper_v2.py:446-453):
+      #   away side = ODD total runs, home side = EVEN total runs
+      # Pricing: parity of game_total_period_FG. Baseball totals are integers,
+      # so no push case to handle.
+      col_name <- paste0(total_col, "_", period)
+      if (!col_name %in% names(sample_df)) next
+      totals <- sample_df[[col_name]]
+      totals <- totals[!is.na(totals)]
+      if (length(totals) == 0) next
+
+      p_odd <- sum(totals %% 2 == 1) / length(totals)
+      p_even <- 1 - p_odd
+
+      probs <- american_prob(row$odds_away, row$odds_home)
+      if (any(is.na(probs)) || any(probs == 0)) next
+
+      odd_ev  <- compute_ev(p_odd,  probs$p1)
+      even_ev <- compute_ev(p_even, probs$p2)
+      odd_size  <- kelly_stake(odd_ev,  probs$p1, bankroll, kelly_mult)
+      even_size <- kelly_stake(even_ev, probs$p2, bankroll, kelly_mult)
+
+      if (odd_ev >= ev_threshold) {
+        all_bets[[length(all_bets) + 1]] <- tibble(
+          id = game_id, home_team = row$home_team, away_team = row$away_team,
+          pt_start_time = pt_start_time, bookmaker_key = book_key,
+          market = row$market, bet_on = "Odd",
+          line = NA_real_, bet_size = odd_size, ev = odd_ev,
+          odds = row$odds_away, prob = p_odd
+        )
+      }
+      if (even_ev >= ev_threshold) {
+        all_bets[[length(all_bets) + 1]] <- tibble(
+          id = game_id, home_team = row$home_team, away_team = row$away_team,
+          pt_start_time = pt_start_time, bookmaker_key = book_key,
+          market = row$market, bet_on = "Even",
+          line = NA_real_, bet_size = even_size, ev = even_ev,
+          odds = row$odds_home, prob = p_even
         )
       }
     }
