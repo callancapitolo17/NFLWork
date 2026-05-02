@@ -139,3 +139,31 @@ mlb_triple_play.R (standalone pricer)
 - **Adding a new market type**: Update R pricing logic in the sport's answer key, add to dashboard filters
 - **Modifying Tools.R**: Changes affect ALL sports. Test CBB, NFL, and MLB at minimum.
 - **Adding tables/sections to dashboards**: NEVER use generic selectors like `querySelectorAll(".table-container")[last]` to find a specific table. Always use `getElementById("specific-id")`. Adding a new table shifts positional indices and breaks every function that relied on "grab the last one." This bug has caused silent failures three separate times. Every table container must have a unique ID and all JS must reference it by ID.
+
+## MLB Dashboard — Wagerzon multi-account
+
+The MLB correlated parlay dashboard (port 8083) supports multiple
+Wagerzon accounts. Configuration lives in `bet_logger/.env` and is
+discovered by `wagerzon_odds/wagerzon_accounts.py`. See
+`wagerzon_odds/CLAUDE.md` for the discovery pattern and how to add
+an account.
+
+### New endpoints (`mlb_dashboard_server.py`)
+
+- `GET /api/wagerzon/balances` — list all account snapshots.
+- `GET /api/wagerzon/last-used` — persisted selector value, or
+  `{"label": null}` when no accounts configured.
+- `POST /api/wagerzon/last-used` — body `{"label": "<account>"}`,
+  returns `{"ok": true}` or `{"success": false, "error": "..."}`.
+- `POST /api/place-parlay` — now requires `{"account": "<label>"}`
+  in the body in addition to `parlay_hash`. Returns `balance_after`
+  snapshot on success.
+
+### Schema
+
+- `placed_parlays.account` — TEXT, label of the WZ account the parlay
+  was placed on. NULL for pre-feature rows (treat as primary). Set on
+  the breadcrumb INSERT (status='placing') and preserved through the
+  finalising upsert.
+- `dashboard_settings(key, value, updated_at)` — generic key/value
+  preferences. Currently only `wagerzon_last_used`.
