@@ -1,9 +1,10 @@
 #!/usr/bin/env Rscript
 # MLB Triple-Play Pricer
 #
-# Prices "SCR 1ST, 1H & GM" props: team scores first in the game AND wins the
-# 1st half (F5, strict lead) AND wins the game. Uses the dispersion-matched
-# samples from mlb_game_samples — same framework as mlb_correlated_parlay.R.
+# Prices "SCR 1ST, 1H & GM" props: team scores ≥1 run in the 1st inning AND
+# wins the 1st half (F5, strict lead) AND wins the game. Uses the
+# dispersion-matched samples from mlb_game_samples — same framework as
+# mlb_correlated_parlay.R.
 #
 # Usage: Rscript mlb_triple_play.R
 
@@ -162,7 +163,7 @@ if (!interactive() && sys.nframe() == 0L) {
   samples_df <- dbGetQuery(mm_con,
     "SELECT game_id, home_margin, total_final_score,
             home_margin_f3, home_margin_f5, home_margin_f7,
-            home_scored_first
+            home_scored_in_1st, away_scored_in_1st
      FROM mlb_game_samples")
   dbDisconnect(mm_con)
 
@@ -171,8 +172,11 @@ if (!interactive() && sys.nframe() == 0L) {
   consensus  <- dbGetQuery(con,
     "SELECT id, home_team, away_team, commence_time FROM mlb_consensus_temp")
 
-  if (!"home_scored_first" %in% names(samples_df)) {
-    stop("mlb_game_samples is missing home_scored_first. Re-run MLB.R to regenerate.")
+  required_cols <- c("home_scored_in_1st", "away_scored_in_1st")
+  missing <- setdiff(required_cols, names(samples_df))
+  if (length(missing) > 0) {
+    stop(sprintf("mlb_game_samples is missing %s. Re-run MLB.R to regenerate.",
+                 paste(missing, collapse = ", ")))
   }
 
   # 12-hour filter (same as before): mlb_consensus_temp carries multiple days
