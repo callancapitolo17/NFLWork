@@ -1771,6 +1771,11 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           gap: 8px;
           padding: 10px 0 4px 0;
         }
+        .wz-pills {
+          display: flex;
+          gap: 6px;
+          align-items: center;
+        }
         .header-label {
           font-size: 11px;
           color: #8b949e;
@@ -2074,7 +2079,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           ),
           tags$div(class = "header-row-accounts", id = "wz-account-row",
             tags$span(class = "header-label", "Placing on"),
-            tags$div(id = "wz-account-pills", style = "display:flex; gap:6px; align-items:center;"),
+            tags$div(id = "wz-account-pills", class = "wz-pills"),
             tags$button(
               id = "wz-refresh-btn", type = "button", class = "wz-icon-btn",
               title = "Refresh balances",
@@ -4176,6 +4181,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
   //                                  populates the sibling .wz-insufficient-warning)
   var PILLS_ID  = 'wz-account-pills';
   var REFRESH_BTN_ID = 'wz-refresh-btn';
+  var STALE_SECONDS = 60;   // suffix + .stale class only kick in past this
 
   window.WZ_SELECTED_ACCOUNT = null;
   window.WZ_BALANCES = {};   // label -> snapshot
@@ -4203,7 +4209,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       // Only label as "stale" when it has been at least a minute since the
       // last successful fetch. Avoids the contradictory "stale 0s ago" text
       // we used to render on every fresh-but-errored fetch.
-      if (snap.stale_seconds >= 60) {
+      if (snap.stale_seconds >= STALE_SECONDS) {
         var sub = Math.floor(snap.stale_seconds / 60) + 'm';
         text += ' (stale ' + sub + ' ago)';
       }
@@ -4212,7 +4218,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
   }
 
   function isStale(snap) {
-    return snap.error && snap.stale_seconds >= 60;
+    return snap.error && snap.stale_seconds >= STALE_SECONDS;
   }
 
   function renderEmpty(bar) {
