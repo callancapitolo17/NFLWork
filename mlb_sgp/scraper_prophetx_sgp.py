@@ -48,7 +48,7 @@ _ANSWER_KEYS = _REPO_ROOT / "Answer Keys"
 sys.path.insert(0, str(_ANSWER_KEYS))
 from canonical_match import load_team_dict, load_canonical_games, resolve_team_names
 
-from db import ensure_table, upsert_sgp_odds, clear_source, MLB_DB
+from db import ensure_table, upsert_sgp_odds, clear_source, MLB_DB, _connect_with_retry
 
 # ---------------------------------------------------------------------------
 # ProphetX API config
@@ -229,7 +229,9 @@ def fetch_prophetx_mlb_events(session) -> list[dict]:
 # ---------------------------------------------------------------------------
 def load_parlay_lines() -> dict:
     """Read FG+F5 spread/total lines + canonical team names from mlb_parlay_lines."""
-    con = duckdb.connect(str(MLB_DB), read_only=True)
+    # Use _connect_with_retry so parallel scraper runs don't lose the read
+    # to another scraper's brief write lock on mlb_mm.duckdb.
+    con = _connect_with_retry(str(MLB_DB), read_only=True)
     try:
         tables = [t[0] for t in con.execute("SHOW TABLES").fetchall()]
         if "mlb_parlay_lines" not in tables:

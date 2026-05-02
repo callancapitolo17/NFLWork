@@ -80,6 +80,19 @@ def test_poll_quotes_returns_list():
     assert "rfq_creator_user_id=user-uuid" in args[1]
 
 
+def test_accept_quote_uses_put_verb():
+    """Regression guard: accept_quote MUST call PUT, not POST. POST hits a
+    router-level 404 ('404 page not found' plain text); PUT is the verb the
+    Kalshi midland service routes correctly. Verified empirically 2026-05-02
+    by probing both verbs against a fake quote_id."""
+    with patch("kalshi_mlb_rfq.rfq_client.api",
+               return_value=(200, {"order": {"id": "ord-1"}}, {})) as mock_api:
+        rfq_client.accept_quote("q1", contracts=10)
+    method, path = mock_api.call_args.args[0], mock_api.call_args.args[1]
+    assert method == "PUT", f"accept_quote called {method}, must be PUT"
+    assert path == "/communications/quotes/q1/accept"
+
+
 def test_accept_quote_returns_response():
     with patch("kalshi_mlb_rfq.rfq_client.api",
                return_value=(200, {"order": {"id": "ord-1"}}, {})):
@@ -98,8 +111,21 @@ def test_accept_quote_also_accepts_201():
 
 
 def test_accept_quote_walked_returns_none():
+    """400 (quote_walked) and 409 are race conditions — return None, no raise."""
     with patch("kalshi_mlb_rfq.rfq_client.api",
                return_value=(400, {"error": {"code": "quote_walked"}}, {})):
+        resp = rfq_client.accept_quote("q1", contracts=10)
+    assert resp is None
+
+
+def test_accept_quote_404_treated_as_walked():
+    """If Kalshi returns 404 on a real quote_id (e.g. quote already accepted
+    by someone else, or expired between our gate evaluation and the accept
+    call), treat it as 'walked' — return None instead of raising. This avoids
+    the bot's quote_poll loop logging a noisy KalshiAPIError when the outcome
+    was simply that we lost the race."""
+    with patch("kalshi_mlb_rfq.rfq_client.api",
+               return_value=(404, "404 page not found", {})):
         resp = rfq_client.accept_quote("q1", contracts=10)
     assert resp is None
 
