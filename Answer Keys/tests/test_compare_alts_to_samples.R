@@ -93,7 +93,7 @@ test_that("compare_alts_to_samples emits h2h_1st_3_innings bets when home wins F
     ev_threshold = 0.02
   )
 
-  expect_true(nrow(bets) >= 1)
+  expect_equal(nrow(bets), 1L)
   home_bet <- bets[bets$bet_on == "Test Home", ]
   expect_equal(nrow(home_bet), 1)
   # 600/(600+300) = 0.6667 — exclude pushes from denominator
@@ -164,4 +164,43 @@ test_that("compare_alts_to_samples returns no bets when h2h row has NA odds", {
   )
 
   expect_equal(nrow(bets), 0)
+})
+
+test_that("compare_alts_to_samples emits spreads_1st_3_innings bets — verifies suffix fix unblocks the spread branch for F3", {
+  # Home covers -1.5 in 700/1000 sims → 70% cover. Wagerzon -110/-110 = 50/50 fair → big home edge.
+  # Encode this with margins: 700 sims at margin=2 (home wins by 2, covers -1.5),
+  # 300 sims at margin=-3 (away wins, home doesn't cover).
+  margins <- c(rep(2L, 700), rep(-3L, 300))
+  samples <- make_synthetic_samples(margins_f3 = margins)
+  consensus <- make_consensus()
+
+  offshore <- tibble(
+    bookmaker_key = "wagerzon",
+    home_team = "Test Home",
+    away_team = "Test Away",
+    game_date = "2026-05-02",
+    game_time = "19:00",
+    market = "spreads_1st_3_innings",
+    line = -1.5,
+    odds_away = -110L,
+    odds_home = -110L,
+    odds_over = NA_integer_,
+    odds_under = NA_integer_,
+    home_spread = -1.5,
+    away_spread = 1.5
+  )
+
+  bets <- compare_alts_to_samples(
+    samples = samples,
+    offshore_odds = offshore,
+    consensus_odds = consensus,
+    bankroll = 100,
+    kelly_mult = 0.25,
+    ev_threshold = 0.02
+  )
+
+  # Home -1.5 covers in 700/1000 sims (margin > -(-1.5) = 1.5)
+  home_bet <- bets[bets$bet_on == "Test Home" & bets$market == "spreads_1st_3_innings", ]
+  expect_equal(nrow(home_bet), 1)
+  expect_equal(home_bet$prob, 700 / 1000, tolerance = 1e-9)
 })
