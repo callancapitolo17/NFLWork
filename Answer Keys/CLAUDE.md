@@ -66,16 +66,17 @@ CBB.R
 - Backward compat: `first_to_10_h1` still extracted alongside FG columns during transition
 
 ### Triple-Play Data Flow
-Triple-play props = team scores first in the game AND wins F5 (3-way, strict lead) AND wins the game.
+Triple-play props = team scores ≥1 run in the 1st inning AND wins F5 (3-way,
+strict lead) AND wins the game.
 ```
 MLB.R Phase 1 (DT load)
-  └── determine_home_scored_first_vec() → home_scored_first column on DT
-      (baseball half-inning order: away bats first → away scored first if
-       away_runs_in_first_scoring_inning > 0)
+  └── determine_inning_1_scoring_vec() → home_scored_in_1st + away_scored_in_1st
+      columns on DT (each is 1 if the team scored ≥1 run in inning 1,
+      derived from m1 = home_margin_inning_1 and t1 = total_inning_1).
 MLB.R Phase 4 (samples export)
-  └── home_scored_first carried into mlb_game_samples as 0/1/NA column
-      (preserved automatically because run_answer_key_sample returns a row
-       subset of DT with all columns intact)
+  └── home_scored_in_1st + away_scored_in_1st carried into mlb_game_samples
+      as 0/1/NA columns (preserved automatically because run_answer_key_sample
+      returns a row subset of DT with all columns intact)
 wagerzon_odds/scraper_specials.py (NEW)
   ├── Authenticated GET to NewScheduleHelper.aspx?WT=0&lg=4899
   ├── Filters to single-team TRIPLE-PLAY + GRAND-SLAM (cross-game props skipped)
@@ -89,7 +90,7 @@ parse_legs.R (generic prop parser)
   ├── parse_legs(description) → list of leg specs (or NULL + warning on unknown)
   ├── eval_leg(leg, samples, side, team_runs, opp_runs) → logical vector
   └── compute_prop_fair(samples, side, legs) → AND-reduce across legs,
-        NA rows on home_scored_first excluded before the mean
+        NA rows on home_scored_in_1st / away_scored_in_1st excluded before the mean
 
 mlb_triple_play.R (standalone pricer)
   ├── Reads wagerzon_specials (latest scraped_at) for posted lines
@@ -110,15 +111,26 @@ mlb_triple_play.R (standalone pricer)
   ├── Prints model_odds, dk_odds, fair_odds (blended), book_odds, edge_pct
   └── Writes mlb_trifecta_opportunities (game_id, hash, kelly_bet, ...) for the dashboard
 ```
-- `home_scored_first` is NA for games with no scoring in innings 1–5 (~5% of historical games); excluded from the mean before the ratio is computed.
+- `home_scored_in_1st` / `away_scored_in_1st` are NA only when inning-1 PBP
+  data is missing — extremely rare. Each is independent of the other (both
+  teams can score in inning 1). The pricer drops NA rows from the leg's
+  AND-reduce inside `compute_prop_fair`.
 - F5 3-way: `wins_period` with period=F5 passes only with strict lead (`margin_f5 > 0` for home, `< 0` for away). F5 ties kill the parlay.
 - `SCR U<N>` means the listed team's team-total under N (team_total_under leg). Numeric parser handles `"2"`, `"2.5"`, and unicode `"2½"`.
-- Helpers: `triple_play_helpers.R` (determine_home_scored_first*) is sourced by MLB.R Phase 1; `parse_legs.R` is sourced by mlb_triple_play.R's main block. Both files are pure — no DB or network side effects.
+- Helpers: `triple_play_helpers.R` (determine_inning_1_scoring*) is sourced by MLB.R Phase 1; `parse_legs.R` is sourced by mlb_triple_play.R's main block. Both files are pure — no DB or network side effects.
 - Adding a new prop type = add a token to `TOKEN_REGISTRY`. No new function needed.
 - Adding new MLB teams (none today, but if expansion happens) requires updating `WZ_TO_CANONICAL` in the pricer.
 - DK trifecta SGP blend mirrors mlb_correlated_parlay.R but uses `DK_SGP_VIG_DEFAULT = 1.25` (vs. 1.10 for parlays) because trifectas are 3-4 legs and DK shaves harder on additional legs. Only 2 obs/game (home + away) so per-game vig fitting isn't possible; revisit the constant once Plan #2 collects real DK data.
 - Blend = mean of available probs (model + DK). When DK is unavailable (table empty, missing leg, scraper failure), blend reduces to model-only.
-- DK trifecta SGP odds populated by `mlb_sgp/scraper_draftkings_trifecta.py`, invoked from the pricer via `system2()`. Resolvers in `mlb_sgp/dk_leg_resolvers.py` map each `parse_legs` leg type to a DK selection ID using primitive markets: `1st Run` (scores_first), `Moneyline` (FG ML), `1st 5 Innings` (F5 ML), `<TEAM>: Team Total Runs` (team totals). All four are SGP-eligible per recon (2026-04-22).
+- DK trifecta SGP odds populated by `mlb_sgp/scraper_draftkings_trifecta.py`,
+  invoked from the pricer via `system2()`. Resolvers in
+  `mlb_sgp/dk_leg_resolvers.py` map each `parse_legs` leg type to a DK
+  selection ID using primitive markets: `<TEAM> Run Scored - 1st Inning?`
+  (scores_first → 'Yes' selection), `Moneyline` (FG ML), `1st 5 Innings`
+  (F5 ML), `<TEAM>: Team Total Runs` (team totals). The inning-1 Y/N market
+  may not be SGP-eligible at all events (it was absent from the 2026-04 SGP
+  event_state dump); when missing, the resolver returns None and the blend
+  degrades to model-only — same graceful-degrade path as F3/F7 legs.
 - F3 / F7 wins_period legs and opp_total_* legs return NULL from the resolver — DK doesn't reliably post these as 2-way primitives. Props containing them get NULL `sgp_decimal` and the R blend correctly degrades to model-only.
 - 4-leg GRAND-SLAM SGPs (scores_first + F5 ML + FG ML + team_total_under) are accepted by DK as resolvers but combinability tests have shown DK rejects the 4-leg combination at calculateBets time. Those rows currently get NULL `sgp_decimal` and degrade to model-only fair. TRIPLE-PLAY 3-leg SGPs are accepted cleanly.
 - Dashboard tab: `mlb_dashboard.R` reads `mlb_trifecta_opportunities` + `placed_trifectas` and renders a Trifectas tab next to Parlays. Manual-log only — `/api/place-trifecta` and `/api/remove-trifecta` toggle a row in `placed_trifectas` (in `mlb_dashboard.duckdb`). Sizing settings: `trifecta_bankroll`, `trifecta_kelly_mult`, `trifecta_min_edge` rows in `sizing_settings`.
