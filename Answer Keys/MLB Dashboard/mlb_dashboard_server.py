@@ -1404,6 +1404,9 @@ def _get_default_account_label() -> str | None:
 
 @app.route("/api/wagerzon/last-used", methods=["GET"])
 def api_wagerzon_last_used_get():
+    # Returns {"label": "<wz-account-label>"} or {"label": null} when no
+    # accounts are configured. Phase 6 UI: render selector as disabled
+    # placeholder ("No Wagerzon accounts configured") when label is null.
     return jsonify({"label": _get_default_account_label()})
 
 
@@ -1412,10 +1415,10 @@ def api_wagerzon_last_used_post():
     data = request.get_json(silent=True) or {}
     label = data.get("label")
     if not isinstance(label, str) or not label:
-        return jsonify({"error": "label required"}), 400
+        return jsonify({"success": False, "error": "label required"}), 400
     valid = {a.label for a in wz_list_accounts()}
     if label not in valid:
-        return jsonify({"error": f"unknown label: {label}"}), 400
+        return jsonify({"success": False, "error": f"unknown label: {label}"}), 400
     _set_setting("wagerzon_last_used", label)
     return jsonify({"ok": True})
 
@@ -1480,7 +1483,7 @@ def api_place_parlay():
     con = duckdb.connect(str(DASHBOARD_DB), read_only=True)
     try:
         existing = con.execute(
-            "SELECT status, ticket_number, error_msg FROM placed_parlays "
+            "SELECT status, ticket_number, error_msg, account FROM placed_parlays "
             "WHERE parlay_hash = ? AND status IN ('placing', 'placed')",
             [parlay_hash],
         ).fetchone()
@@ -1491,6 +1494,7 @@ def api_place_parlay():
             "status": existing[0],
             "ticket_number": existing[1],
             "error_msg": existing[2] or "",
+            "account": existing[3],
             "transient": False,
         })
 
