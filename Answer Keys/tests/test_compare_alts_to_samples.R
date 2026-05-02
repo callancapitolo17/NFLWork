@@ -62,8 +62,12 @@ test_that("compare_alts_to_samples emits h2h_1st_3_innings bets when home wins F
 
   # Wagerzon-shaped row: away_ml -110 / home_ml -110 (so devigged fair = 50/50)
   # Model says home wins 60% of non-push → big edge on home.
-  # game_date/game_time required by nearest_game_match() (called inside
-  # compare_alts_to_samples) — these come from the standard 18-column scraper schema.
+  # game_date/game_time are required by nearest_game_match() (called inside
+  # compare_alts_to_samples). NOTE: real get_wagerzon_odds() output does NOT
+  # carry a commence_time column — the consensus_odds side supplies it through
+  # the inner join inside nearest_game_match. Adding commence_time to the
+  # scraper side would create suffixed `commence_time.x` / `commence_time.y`
+  # after the join and break the post-join `row$commence_time` lookup.
   offshore <- tibble(
     bookmaker_key = "wagerzon",
     home_team = "Test Home",
@@ -77,8 +81,7 @@ test_that("compare_alts_to_samples emits h2h_1st_3_innings bets when home wins F
     home_spread = NA_real_,
     away_spread = NA_real_,
     game_date = "2026-05-02",
-    game_time = "19:00",
-    commence_time = as.POSIXct("2026-05-02 19:00:00", tz = "UTC")
+    game_time = "19:00"
   )
 
   bets <- compare_alts_to_samples(
@@ -96,4 +99,69 @@ test_that("compare_alts_to_samples emits h2h_1st_3_innings bets when home wins F
   # 600/(600+300) = 0.6667 — exclude pushes from denominator
   expect_equal(home_bet$prob, 600 / 900, tolerance = 1e-9)
   expect_equal(home_bet$market, "h2h_1st_3_innings")
+})
+
+test_that("compare_alts_to_samples emits h2h_1st_7_innings bets using F7 margins", {
+  # 700 home wins, 250 away wins, 50 ties — at F7
+  margins <- c(rep(3L, 700), rep(-3L, 250), rep(0L, 50))
+  samples <- make_synthetic_samples(margins_f7 = margins)
+  consensus <- make_consensus()
+
+  offshore <- tibble(
+    bookmaker_key = "wagerzon",
+    home_team = "Test Home",
+    away_team = "Test Away",
+    market = "h2h_1st_7_innings",
+    line = NA_real_,
+    odds_away = +200L,   # implied 33.3% — way too long if home is 73.7%
+    odds_home = -150L,   # implied 60.0% — undervaluing home
+    odds_over = NA_integer_,
+    odds_under = NA_integer_,
+    home_spread = NA_real_,
+    away_spread = NA_real_,
+    game_date = "2026-05-02",
+    game_time = "19:00"
+  )
+
+  bets <- compare_alts_to_samples(
+    samples = samples,
+    offshore_odds = offshore,
+    consensus_odds = consensus,
+    bankroll = 100,
+    kelly_mult = 0.25,
+    ev_threshold = 0.02
+  )
+
+  home_bet <- bets[bets$bet_on == "Test Home" & bets$market == "h2h_1st_7_innings", ]
+  expect_equal(nrow(home_bet), 1)
+  expect_equal(home_bet$prob, 700 / 950, tolerance = 1e-9)
+})
+
+test_that("compare_alts_to_samples returns no bets when h2h row has NA odds", {
+  margins <- c(rep(2L, 600), rep(-2L, 400))
+  samples <- make_synthetic_samples(margins_f3 = margins)
+  consensus <- make_consensus()
+
+  offshore <- tibble(
+    bookmaker_key = "wagerzon",
+    home_team = "Test Home",
+    away_team = "Test Away",
+    market = "h2h_1st_3_innings",
+    line = NA_real_,
+    odds_away = NA_integer_,   # missing odds — must skip cleanly
+    odds_home = NA_integer_,
+    odds_over = NA_integer_,
+    odds_under = NA_integer_,
+    home_spread = NA_real_,
+    away_spread = NA_real_,
+    game_date = "2026-05-02",
+    game_time = "19:00"
+  )
+
+  bets <- compare_alts_to_samples(
+    samples = samples, offshore_odds = offshore, consensus_odds = consensus,
+    bankroll = 100, kelly_mult = 0.25, ev_threshold = 0.02
+  )
+
+  expect_equal(nrow(bets), 0)
 })

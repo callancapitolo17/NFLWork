@@ -4552,8 +4552,16 @@ compare_alts_to_samples <- function(
     sample_df <- samples[[game_id]]$sample
     if (is.null(sample_df) || nrow(sample_df) == 0) next
 
-    # Extract period from market name (e.g., "alternate_spreads_h1" → "h1" → "Half1")
-    suffix <- sub(".*_", "", row$market)
+    # Extract period from market name. MLB derivative markets use multi-token
+    # suffixes ("1st_3_innings", "1st_7_innings"); everything else uses a single
+    # trailing token ("alternate_spreads_h1" → "h1" → "Half1").
+    suffix <- if (grepl("1st_3_innings$", row$market)) {
+      "f3"
+    } else if (grepl("1st_7_innings$", row$market)) {
+      "f7"
+    } else {
+      sub(".*_", "", row$market)
+    }
     period <- period_map[suffix]
     if (is.na(period)) next
 
@@ -4686,6 +4694,49 @@ compare_alts_to_samples <- function(
           market = row$market, bet_on = paste(team_name, "Under"),
           line = total_line, bet_size = under_size, ev = under_ev,
           odds = row$odds_under, prob = p_under
+        )
+      }
+
+    } else if (grepl("^h2h_", row$market) && !is.na(row$odds_home) && !is.na(row$odds_away)) {
+      # Derivative moneyline (e.g. h2h_1st_3_innings, h2h_1st_7_innings).
+      # 2-way pricing: home wins iff margin > 0, away wins iff margin < 0,
+      # margin == 0 is a push (refund) and excluded from the denominator —
+      # mirrors how Wagerzon settles F-period MLs in practice.
+      col_name <- paste0(margin_col, "_", period)
+      if (!col_name %in% names(sample_df)) next
+      margins <- sample_df[[col_name]]
+      margins <- margins[!is.na(margins)]
+      if (length(margins) == 0) next
+
+      non_push <- margins[margins != 0]
+      if (length(non_push) == 0) next
+      p_home <- sum(non_push > 0) / length(non_push)
+      p_away <- 1 - p_home
+
+      probs <- american_prob(row$odds_away, row$odds_home)
+      if (any(is.na(probs)) || any(probs == 0)) next
+
+      home_ev <- compute_ev(p_home, probs$p2)
+      away_ev <- compute_ev(p_away, probs$p1)
+      home_size <- kelly_stake(home_ev, probs$p2, bankroll, kelly_mult)
+      away_size <- kelly_stake(away_ev, probs$p1, bankroll, kelly_mult)
+
+      if (home_ev >= ev_threshold) {
+        all_bets[[length(all_bets) + 1]] <- tibble(
+          id = game_id, home_team = row$home_team, away_team = row$away_team,
+          pt_start_time = pt_start_time, bookmaker_key = book_key,
+          market = row$market, bet_on = row$home_team,
+          line = NA_real_, bet_size = home_size, ev = home_ev,
+          odds = row$odds_home, prob = p_home
+        )
+      }
+      if (away_ev >= ev_threshold) {
+        all_bets[[length(all_bets) + 1]] <- tibble(
+          id = game_id, home_team = row$home_team, away_team = row$away_team,
+          pt_start_time = pt_start_time, bookmaker_key = book_key,
+          market = row$market, bet_on = row$away_team,
+          line = NA_real_, bet_size = away_size, ev = away_ev,
+          odds = row$odds_away, prob = p_away
         )
       }
     }
