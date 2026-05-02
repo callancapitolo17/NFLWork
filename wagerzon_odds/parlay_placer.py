@@ -5,25 +5,26 @@ See docs/superpowers/specs/2026-04-26-mlb-parlay-auto-placement-design.md
 for the full design. This module provides:
     - ParlaySpec / Leg / PlacementResult dataclasses
     - encode_sel / encode_detail_data leg-encoding helpers
-    - _get_session / _clear_session session management
     - _confirm_preflight / _drift_ok price safety checks
-    - place_parlays(specs) — top-level entry point
+    - place_parlays(specs, account) — top-level entry point
+
+Session management is delegated to wagerzon_auth.get_session(account); see
+wagerzon_odds/wagerzon_auth.py for the per-label session cache and login
+flow.
 """
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-import os
-import re
 import requests
 import json as _json
 
-# Load WAGERZON_USERNAME / WAGERZON_PASSWORD from bet_logger/.env at import
-# time, matching the pattern in wagerzon_odds/scraper_v2.py. This way the
-# placer works whether it's imported by the dashboard server, run as a
-# script, or called from a Python REPL — no shell-export dance required.
-# Falls through silently if dotenv isn't installed; in that case the caller
-# is expected to have set the env vars some other way.
+# Load Wagerzon env vars from bet_logger/.env at import time. wagerzon_auth /
+# wagerzon_accounts also do this themselves, but we keep it here so callers
+# importing only parlay_placer (e.g. the dashboard server) still get .env
+# loaded without depending on import order. Falls through silently if dotenv
+# isn't installed; in that case the caller is expected to have set the env
+# vars some other way.
 try:
     from dotenv import load_dotenv
     _ENV_PATH = Path(__file__).resolve().parent.parent / "bet_logger" / ".env"
@@ -32,9 +33,10 @@ try:
 except ImportError:
     pass
 
-WAGERZON_BASE_URL = "https://backend.wagerzon.com"
+import wagerzon_auth
+from wagerzon_accounts import WagerzonAccount
 
-_CACHED_SESSION: Optional[requests.Session] = None
+WAGERZON_BASE_URL = "https://backend.wagerzon.com"
 
 
 @dataclass
@@ -128,49 +130,6 @@ def encode_detail_data(legs: list[Leg], amount: float) -> list[dict]:
     ]
 
 
-def _get_session() -> requests.Session:
-    """Return a logged-in Wagerzon session, reusing a cached one if present.
-
-    Mirrors the login pattern in wagerzon_odds/parlay_pricer.py: GET base URL,
-    if not already authenticated, parse __VIEWSTATE etc. and form-POST
-    Account/Password.
-
-    Resets via _clear_session() (called from auth_error retry path).
-    """
-    global _CACHED_SESSION
-    if _CACHED_SESSION is not None:
-        return _CACHED_SESSION
-
-    session = requests.Session()
-    resp = session.get(WAGERZON_BASE_URL, timeout=15)
-    resp.raise_for_status()
-    if "NewSchedule" in resp.url or "Welcome" in resp.url:
-        _CACHED_SESSION = session
-        return session
-
-    html = resp.text
-    fields = {}
-    for name in ("__VIEWSTATE", "__VIEWSTATEGENERATOR", "__EVENTVALIDATION",
-                 "__EVENTTARGET", "__EVENTARGUMENT"):
-        m = re.search(rf'(?:name|id)="{name}"[^>]*value="([^"]*)"', html)
-        if m:
-            fields[name] = m.group(1)
-    fields["Account"] = os.environ["WAGERZON_USERNAME"]
-    fields["Password"] = os.environ["WAGERZON_PASSWORD"]
-    fields["BtnSubmit"] = ""
-
-    resp = session.post(WAGERZON_BASE_URL, data=fields, timeout=15)
-    resp.raise_for_status()
-    _CACHED_SESSION = session
-    return session
-
-
-def _clear_session() -> None:
-    """Force the next _get_session() call to re-login."""
-    global _CACHED_SESSION
-    _CACHED_SESSION = None
-
-
 CONFIRM_URL = f"{WAGERZON_BASE_URL}/wager/ConfirmWagerHelper.aspx"
 DRIFT_TOLERANCE_USD = 0.01
 
@@ -190,13 +149,14 @@ def _raise_if_html(resp) -> None:
         raise AuthExpired(f"Non-JSON response: content-type={ct!r}")
 
 
-def _confirm_preflight(legs: list[Leg], amount: float) -> tuple[float, float]:
+def _confirm_preflight(legs: list[Leg], amount: float,
+                       account: WagerzonAccount) -> tuple[float, float]:
     """Call ConfirmWagerHelper, return (Win, Risk).
 
     Raises ValueError on malformed response. Auth/HTML responses raise
     AuthExpired (handled by caller).
     """
-    session = _get_session()
+    session = wagerzon_auth.get_session(account)
     detail_data = encode_detail_data(legs, amount)
     params = {
         "IDWT": "0",
@@ -244,15 +204,15 @@ def _build_post_request(spec: ParlaySpec, password: str) -> dict:
     }
 
 
-def _post_wagers(specs: list[ParlaySpec]) -> list[PlacementResult]:
+def _post_wagers(specs: list[ParlaySpec],
+                 account: WagerzonAccount) -> list[PlacementResult]:
     """POST one bulk request to PostWagerMultipleHelper. Returns one
     PlacementResult per input spec, in order.
 
     Raises AuthExpired on HTML response.
     """
-    session = _get_session()
-    password = os.environ["WAGERZON_PASSWORD"]
-    payload = [_build_post_request(s, password) for s in specs]
+    session = wagerzon_auth.get_session(account)
+    payload = [_build_post_request(s, account.password) for s in specs]
     body = {"postWagerRequests": _json.dumps(payload)}
 
     resp = session.post(POST_URL, data=body, timeout=30,
@@ -337,16 +297,18 @@ def _drift_error_msg(expected: float, actual: float) -> str:
     return f"Expected ${expected:.2f}, Wagerzon offered ${actual:.2f}"
 
 
-def _preflight_with_retry(spec: ParlaySpec) -> tuple[float, float]:
+def _preflight_with_retry(spec: ParlaySpec,
+                          account: WagerzonAccount) -> tuple[float, float]:
     """ConfirmWagerHelper with one re-login retry on AuthExpired."""
     try:
-        return _confirm_preflight(spec.legs, spec.amount)
+        return _confirm_preflight(spec.legs, spec.amount, account)
     except AuthExpired:
-        _clear_session()
-        return _confirm_preflight(spec.legs, spec.amount)
+        wagerzon_auth.clear_session_cache(account.label)
+        return _confirm_preflight(spec.legs, spec.amount, account)
 
 
-def _post_with_retry(specs: list[ParlaySpec]) -> list[PlacementResult]:
+def _post_with_retry(specs: list[ParlaySpec],
+                     account: WagerzonAccount) -> list[PlacementResult]:
     """PostWagerMultipleHelper with one re-login + re-preflight retry.
 
     On AuthExpired: re-login, re-preflight EACH spec independently, mark
@@ -355,13 +317,13 @@ def _post_with_retry(specs: list[ParlaySpec]) -> list[PlacementResult]:
     have already consumed the one allowed auth retry.
     """
     try:
-        return _post_wagers(specs)
+        return _post_wagers(specs, account)
     except AuthExpired:
-        _clear_session()
+        wagerzon_auth.clear_session_cache(account.label)
         retry_results: dict[str, PlacementResult] = {}
         retry_survivors: list[ParlaySpec] = []
         for spec in specs:
-            win, risk = _confirm_preflight(spec.legs, spec.amount)
+            win, risk = _confirm_preflight(spec.legs, spec.amount, account)
             if not _drift_ok(spec.expected_win, win):
                 retry_results[spec.parlay_hash] = PlacementResult(
                     parlay_hash=spec.parlay_hash, status="price_moved",
@@ -371,13 +333,23 @@ def _post_with_retry(specs: list[ParlaySpec]) -> list[PlacementResult]:
             else:
                 retry_survivors.append(spec)
         if retry_survivors:
-            for r in _post_wagers(retry_survivors):
+            for r in _post_wagers(retry_survivors, account):
                 retry_results[r.parlay_hash] = r
         return [retry_results[spec.parlay_hash] for spec in specs]
 
 
-def place_parlays(specs: list[ParlaySpec]) -> list[PlacementResult]:
+def place_parlays(
+    specs: list[ParlaySpec],
+    account: WagerzonAccount,
+) -> list[PlacementResult]:
     """Place a batch of parlays at Wagerzon.
+
+    Args:
+        specs: Parlays to place. Empty list returns []; duplicate
+            parlay_hashes raise ValueError.
+        account: Which Wagerzon login to use; required. The account's
+            credentials drive both session cookies (for the API calls)
+            and the `confirmPassword` field on PostWagerMultipleHelper.
 
     For each spec:
       1) ConfirmWagerHelper preflight (with one auth-retry)
@@ -398,7 +370,7 @@ def place_parlays(specs: list[ParlaySpec]) -> list[PlacementResult]:
     # Preflight + drift check per spec
     for spec in specs:
         try:
-            win, risk = _preflight_with_retry(spec)
+            win, risk = _preflight_with_retry(spec, account)
         except AuthExpired:
             results_by_hash[spec.parlay_hash] = PlacementResult(
                 parlay_hash=spec.parlay_hash, status="auth_error",
@@ -423,7 +395,7 @@ def place_parlays(specs: list[ParlaySpec]) -> list[PlacementResult]:
     # Live placement for specs that passed preflight
     if survivors:
         try:
-            live_results = _post_with_retry(survivors)
+            live_results = _post_with_retry(survivors, account)
         except AuthExpired:
             live_results = [
                 PlacementResult(parlay_hash=s.parlay_hash, status="auth_error",
