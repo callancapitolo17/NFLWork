@@ -35,11 +35,80 @@ from parlay_pricer import (
     get_combined_parlay_price as wz_get_combined_parlay_price,
     get_wz_session as _get_wz_session,
 )
+from wagerzon_accounts import (
+    list_accounts as wz_list_accounts,
+    get_account as wz_get_account,
+    AccountNotFoundError,
+)
+import wagerzon_balance
 
 # Combined parlay pricing cache: keyed on sorted (hash_a, hash_b) tuple.
 # TTL prevents stale prices when WZ moves their lines. 60s is a safe default.
 _COMBO_PRICE_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
 _COMBO_PRICE_TTL_SECONDS = 60
+
+# Balance cache: keyed on account label. Each value is the most recent
+# successful (or stale-preserved) BalanceSnapshot. Errors update the cache
+# without overwriting the prior good value/timestamp so the UI can show
+# "stale Xs ago" honestly while still surfacing the error.
+_BALANCE_CACHE: dict[str, "wagerzon_balance.BalanceSnapshot"] = {}
+_BALANCE_CACHE_LOCK = threading.RLock()
+
+
+def _balance_snapshot_to_json(snap: "wagerzon_balance.BalanceSnapshot") -> dict:
+    now = datetime.now(timezone.utc)
+    stale_seconds = int((now - snap.fetched_at).total_seconds())
+    return {
+        "label": snap.label,
+        "available": snap.available,
+        "cash": snap.cash,
+        "fetched_at": snap.fetched_at.isoformat().replace("+00:00", "Z"),
+        "error": snap.error,
+        "stale_seconds": stale_seconds,
+    }
+
+
+def _refresh_one_balance(account) -> "wagerzon_balance.BalanceSnapshot":
+    """Fetch balance for one account and update cache. On error, preserve
+    the prior successful snapshot's value + timestamp so the UI can show
+    'stale Xs ago' with honest freshness."""
+    snap = wagerzon_balance.fetch_available_balance(account)
+    with _BALANCE_CACHE_LOCK:
+        prior = _BALANCE_CACHE.get(snap.label)
+        if snap.error and prior is not None and prior.error is None:
+            snap = wagerzon_balance.BalanceSnapshot(
+                label=prior.label,
+                available=prior.available,
+                cash=prior.cash,
+                fetched_at=prior.fetched_at,
+                error=snap.error,
+            )
+        _BALANCE_CACHE[snap.label] = snap
+    return snap
+
+
+def _refresh_all_balances() -> list:
+    """Fan-out balance fetch for all configured accounts. Same stale-preservation
+    semantics as _refresh_one_balance."""
+    accounts = wz_list_accounts()
+    if not accounts:
+        return []
+    snaps = wagerzon_balance.fetch_all(accounts)
+    with _BALANCE_CACHE_LOCK:
+        for snap in snaps:
+            prior = _BALANCE_CACHE.get(snap.label)
+            if snap.error and prior is not None and prior.error is None:
+                snap = wagerzon_balance.BalanceSnapshot(
+                    label=prior.label,
+                    available=prior.available,
+                    cash=prior.cash,
+                    fetched_at=prior.fetched_at,
+                    error=snap.error,
+                )
+            _BALANCE_CACHE[snap.label] = snap
+        return list(_BALANCE_CACHE.values())
+
+
 app = Flask(__name__)
 
 # Make wagerzon_odds importable for parlay placement
@@ -1269,6 +1338,19 @@ def _record_orphan(result: parlay_placer.PlacementResult,
         f"parlay_hash={parlay_hash} reason={db_error!r}",
         file=sys.stderr, flush=True,
     )
+
+
+@app.route("/api/wagerzon/balances", methods=["GET"])
+def api_wagerzon_balances():
+    """Return per-account Wagerzon balance snapshots.
+
+    HTTP is always 200; per-account errors are surfaced inside each
+    snapshot's `error` field. The cache preserves the prior successful
+    value when a fetch fails — UI can render the staleness with
+    `stale_seconds`.
+    """
+    snaps = _refresh_all_balances()
+    return jsonify({"balances": [_balance_snapshot_to_json(s) for s in snaps]})
 
 
 @app.route("/api/place-parlay", methods=["POST"])
