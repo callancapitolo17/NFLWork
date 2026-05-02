@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import pytest
+import requests
 import requests_mock
 
 from wagerzon_accounts import WagerzonAccount
@@ -38,7 +39,7 @@ def test_first_call_logs_in(acct):
                headers={"Location": LOGGED_IN_URL}, status_code=302)
         m.get(LOGGED_IN_URL, text="logged in")
         sess = wagerzon_auth.get_session(acct)
-        assert isinstance(sess, requests_mock.Adapter) is False  # got a Session
+        assert isinstance(sess, requests.Session)
         assert m.call_count == 3  # GET login page + POST login form + GET redirect target
 
 
@@ -91,3 +92,42 @@ def test_clear_session_cache_forces_relogin(acct):
         wagerzon_auth.get_session(acct)
         # Two full login sequences (GET + POST + GET redirect each) = 6 calls
         assert m.call_count == 6
+
+
+def test_concurrent_logins_for_different_accounts_run_in_parallel():
+    """The per-label lock means a slow login for account A must not block
+    account B's login. We synthesize this by making A's login sleep, then
+    asserting B finishes before A."""
+    import threading
+    import time
+    a = WagerzonAccount(label="Wagerzon",  suffix="",  username="u1", password="p1")
+    b = WagerzonAccount(label="WagerzonJ", suffix="J", username="u2", password="p2")
+
+    finish_order: list[str] = []
+    finish_lock = threading.Lock()
+
+    # Patch _login so account A sleeps; account B returns immediately.
+    original_login = wagerzon_auth._login
+
+    def slow_for_a(session, account):
+        if account.label == a.label:
+            time.sleep(0.3)  # simulate slow network for A only
+        # Don't actually call original_login (no HTTP mock here); just succeed.
+
+    wagerzon_auth._login = slow_for_a
+    try:
+        def go(acct):
+            wagerzon_auth.get_session(acct)
+            with finish_lock:
+                finish_order.append(acct.label)
+
+        ta = threading.Thread(target=go, args=(a,))
+        tb = threading.Thread(target=go, args=(b,))
+        ta.start(); tb.start()
+        ta.join(); tb.join()
+    finally:
+        wagerzon_auth._login = original_login
+
+    # B started after A but finished first because its login wasn't blocked
+    # by A's per-label lock.
+    assert finish_order == [b.label, a.label]

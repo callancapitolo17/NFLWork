@@ -426,6 +426,7 @@ from __future__ import annotations
 
 import re
 import pytest
+import requests
 import requests_mock
 
 from wagerzon_accounts import WagerzonAccount
@@ -461,7 +462,7 @@ def test_first_call_logs_in(acct):
                headers={"Location": LOGGED_IN_URL}, status_code=302)
         m.get(LOGGED_IN_URL, text="logged in")  # _login uses allow_redirects=True
         sess = wagerzon_auth.get_session(acct)
-        assert isinstance(sess, requests_mock.Adapter) is False  # got a Session
+        assert isinstance(sess, requests.Session)
         assert m.call_count == 3  # GET login page + POST login form + GET redirect target
 
 
@@ -514,6 +515,45 @@ def test_clear_session_cache_forces_relogin(acct):
         wagerzon_auth.get_session(acct)
         # Two full login sequences (GET page + POST + GET redirect) = 6 calls
         assert m.call_count == 6
+
+
+def test_concurrent_logins_for_different_accounts_run_in_parallel():
+    """The per-label lock means a slow login for account A must not block
+    account B's login. We synthesize this by making A's login sleep, then
+    asserting B finishes before A."""
+    import threading
+    import time
+    a = WagerzonAccount(label="Wagerzon",  suffix="",  username="u1", password="p1")
+    b = WagerzonAccount(label="WagerzonJ", suffix="J", username="u2", password="p2")
+
+    finish_order: list[str] = []
+    finish_lock = threading.Lock()
+
+    # Patch _login so account A sleeps; account B returns immediately.
+    original_login = wagerzon_auth._login
+
+    def slow_for_a(session, account):
+        if account.label == a.label:
+            time.sleep(0.3)  # simulate slow network for A only
+        # Don't actually call original_login (no HTTP mock here); just succeed.
+
+    wagerzon_auth._login = slow_for_a
+    try:
+        def go(acct):
+            wagerzon_auth.get_session(acct)
+            with finish_lock:
+                finish_order.append(acct.label)
+
+        ta = threading.Thread(target=go, args=(a,))
+        tb = threading.Thread(target=go, args=(b,))
+        ta.start(); tb.start()
+        ta.join(); tb.join()
+    finally:
+        wagerzon_auth._login = original_login
+
+    # B started after A but finished first because its login wasn't blocked
+    # by A's per-label lock.
+    assert finish_order == [b.label, a.label]
 ```
 
 - [ ] **Step 2: Run tests — they should FAIL (module not yet implemented)**
@@ -524,6 +564,8 @@ python3 -m pytest test_wagerzon_auth.py -v
 ```
 
 Expected: ImportError or `AttributeError` on `wagerzon_auth.get_session`.
+
+Expected: 6 tests pass (after Phase 2 code review fixes are applied).
 
 ### Task 2.3: Implement the auth helper
 
@@ -564,28 +606,62 @@ POOL_SIZE = 8
 
 # label -> Session
 _SESSION_CACHE: dict[str, requests.Session] = {}
-_LOCK = threading.RLock()
+# Guards mutations of _SESSION_CACHE itself and of _LABEL_LOCKS.
+_CACHE_LOCK = threading.Lock()
+# Per-label lock so concurrent logins for *different* accounts can run in
+# parallel. A cache miss for label X holds only the lock for X — other
+# labels are unaffected.
+_LABEL_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _lock_for_label(label: str) -> threading.Lock:
+    with _CACHE_LOCK:
+        return _LABEL_LOCKS.setdefault(label, threading.Lock())
 
 
 def get_session(account: WagerzonAccount) -> requests.Session:
-    """Return a logged-in Session for `account`, logging in on first call."""
-    with _LOCK:
+    """Return a logged-in Session for `account`, logging in on first call.
+
+    Concurrent calls for *different* accounts run in parallel (each label
+    has its own lock). Concurrent calls for the *same* account serialize
+    on that label's lock; the loser sees the winner's cached session.
+    """
+    # Fast path: cache hit, no lock acquisition.
+    cached = _SESSION_CACHE.get(account.label)
+    if cached is not None:
+        return cached
+    label_lock = _lock_for_label(account.label)
+    with label_lock:
+        # Re-check under the per-label lock — another thread may have
+        # logged in for this same label while we were waiting.
         cached = _SESSION_CACHE.get(account.label)
         if cached is not None:
             return cached
         session = _build_session()
-        _login(session, account)
-        _SESSION_CACHE[account.label] = session
+        _login(session, account)  # network I/O — held only by THIS label's lock
+        with _CACHE_LOCK:
+            _SESSION_CACHE[account.label] = session
         return session
 
 
 def clear_session_cache(label: Optional[str] = None) -> None:
-    """Drop cached sessions. Pass a label to drop one; omit to drop all."""
-    with _LOCK:
+    """Drop cached sessions. Pass a label to drop one; omit to drop all.
+
+    Closes the underlying connection pool of any session dropped, so
+    Phase 3's "401 -> clear -> retry" path doesn't leak idle connections.
+    """
+    with _CACHE_LOCK:
         if label is None:
+            dropped = list(_SESSION_CACHE.values())
             _SESSION_CACHE.clear()
         else:
-            _SESSION_CACHE.pop(label, None)
+            dropped_one = _SESSION_CACHE.pop(label, None)
+            dropped = [dropped_one] if dropped_one is not None else []
+    for sess in dropped:
+        try:
+            sess.close()
+        except Exception:
+            pass
 
 
 def _build_session() -> requests.Session:
@@ -612,6 +688,11 @@ def _login(session: requests.Session, account: WagerzonAccount) -> None:
         m = re.search(rf'(?:name|id)="{name}"[^>]*value="([^"]*)"', html)
         if m:
             fields[name] = m.group(1)
+    if "__VIEWSTATE" not in fields:
+        raise RuntimeError(
+            "Could not find __VIEWSTATE on Wagerzon login page — "
+            "page structure may have changed (account=%s)" % account.label
+        )
     fields["Account"] = account.username
     fields["Password"] = account.password
     fields["BtnSubmit"] = ""
@@ -636,7 +717,7 @@ cd /Users/callancapitolo/NFLWork/.worktrees/wagerzon-multi-account-dashboard/wag
 python3 -m pytest test_wagerzon_auth.py -v
 ```
 
-Expected: 5 tests pass.
+Expected: 6 tests pass.
 
 - [ ] **Step 3: Commit**
 
