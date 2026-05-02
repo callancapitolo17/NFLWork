@@ -103,7 +103,7 @@ def find_team_total_market(
 
 
 def _pick_team_selection(market: dict, team_label: str) -> Optional[str]:
-    """Given a 2-way team market (e.g. '1st Run', 'Moneyline', '1st 5 Innings'),
+    """Given a 2-way team market (e.g. 'Moneyline', '1st 5 Innings'),
     return the selection.id whose name matches team_label exactly.
     DK selection names are e.g. 'CHI Cubs', 'SD Padres'.
     """
@@ -118,11 +118,22 @@ def _pick_team_selection(market: dict, team_label: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def resolve_scores_first(leg, side, event_state, team_names) -> Optional[str]:
-    """leg = {'type': 'scores_first'}; side = 'home' | 'away'."""
-    market = find_market_by_name(event_state, '1st Run')
+    """leg = {'type': 'scores_first'}; side = 'home' | 'away'.
+
+    Wagerzon's SCR 1ST = "named team scored ≥1 run in inning 1, Y/N".
+    DK posts this as '<TEAM> Run Scored - 1st Inning?' (Y/N). The market
+    may not be SGP-eligible — if missing, the R-side blend degrades to
+    model-only (same graceful-degrade path used for F3/F7 legs).
+    """
+    target_team = team_names[side]
+    market_name = f"{target_team} Run Scored - 1st Inning?"
+    market = find_market_by_name(event_state, market_name)
     if market is None:
         return None
-    return _pick_team_selection(market, team_names[side])
+    for sel in market.get('selections', []):
+        if (sel.get('name') or '').strip() == 'Yes':
+            return sel.get('id') or sel.get('selectionId')
+    return None
 
 
 def resolve_wins_period(leg, side, event_state, team_names) -> Optional[str]:
