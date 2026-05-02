@@ -9,29 +9,40 @@ library(data.table)
 source("../Tools.R")
 
 # Helper: build a synthetic samples list with one game.
-# margins_f3 / margins_f7 / totals_fg are vectors of 1000 sim outcomes.
+# Every axis (F3/F7/FG margin and F3/F7/FG total) is independently overridable
+# so downstream tests (Task 2 = derivative h2h, Task 3 = odd/even) can dial in
+# whatever distribution they need without surprise coupling.
 make_synthetic_samples <- function(
-    game_id = "test-game-1",
+    game_id    = "test-game-1",
     margins_f3 = NULL,
     margins_f7 = NULL,
-    totals_fg = NULL
+    margins_fg = NULL,
+    totals_f3  = NULL,
+    totals_f7  = NULL,
+    totals_fg  = NULL
 ) {
   n <- 1000L
   if (is.null(margins_f3)) margins_f3 <- rep(0L, n)
   if (is.null(margins_f7)) margins_f7 <- rep(0L, n)
-  if (is.null(totals_fg)) totals_fg <- rep(8L, n)
-  stopifnot(length(margins_f3) == n, length(margins_f7) == n, length(totals_fg) == n)
+  if (is.null(margins_fg)) margins_fg <- margins_f7   # default: FG margin mirrors F7
+  if (is.null(totals_f3))  totals_f3  <- abs(margins_f3) + 6L
+  if (is.null(totals_f7))  totals_f7  <- abs(margins_f7) + 8L
+  if (is.null(totals_fg))  totals_fg  <- rep(8L, n)
+  stopifnot(
+    length(margins_f3) == n, length(margins_f7) == n, length(margins_fg) == n,
+    length(totals_f3) == n,  length(totals_f7) == n,  length(totals_fg) == n
+  )
   samp <- data.frame(
     game_home_margin_period_F3 = margins_f3,
-    game_total_period_F3       = abs(margins_f3) + 6L,  # plausible total
-    game_home_margin_period_F5 = margins_f3,            # placeholder
-    game_total_period_F5       = abs(margins_f3) + 7L,
+    game_total_period_F3       = totals_f3,
+    game_home_margin_period_F5 = margins_f3,            # placeholder — F5 not exercised in this file
+    game_total_period_F5       = abs(margins_f3) + 7L,  # placeholder
     game_home_margin_period_F7 = margins_f7,
-    game_total_period_F7       = abs(margins_f7) + 8L,
-    game_home_margin_period_FG = margins_f7,
+    game_total_period_F7       = totals_f7,
+    game_home_margin_period_FG = margins_fg,
     game_total_period_FG       = totals_fg
   )
-  list(setNames(list(list(sample = samp)), game_id))[[1]]
+  setNames(list(list(sample = samp)), game_id)
 }
 
 make_consensus <- function(game_id = "test-game-1") {
