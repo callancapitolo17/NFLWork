@@ -104,7 +104,7 @@ mlb_triple_play.R (standalone pricer)
   │     ↑ populated by mlb_sgp/scraper_draftkings_trifecta.py via system2():
   │       - Map Odds API id → DK event id (last-word team match)
   │       - Resolve each leg via dk_leg_resolvers.LEG_RESOLVERS
-  │         (1st Run, 1st 5 Innings, Moneyline, <Team>: Team Total Runs)
+  │         (<Team> Run Scored - 1st Inning?, 1st 5 Innings, Moneyline, <Team>: Team Total Runs)
   │       - POST to DK calculateBets with selectionsForYourBet payload
   │       - Write per-prop rows to mlb_trifecta_sgp_odds (atomic snapshot)
   │     blend_dk_with_model(model, dk, vig) → fair_prob (the published fair)
