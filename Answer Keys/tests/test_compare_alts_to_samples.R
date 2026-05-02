@@ -204,3 +204,36 @@ test_that("compare_alts_to_samples emits spreads_1st_3_innings bets — verifies
   expect_equal(nrow(home_bet), 1)
   expect_equal(home_bet$prob, 700 / 1000, tolerance = 1e-9)
 })
+
+test_that("compare_alts_to_samples emits odd_even_runs bet when totals are odd 60% of the time", {
+  totals <- c(rep(7L, 600), rep(8L, 400))   # 60% odd, 40% even
+  samples <- make_synthetic_samples(totals_fg = totals)
+  consensus <- make_consensus()
+
+  # Wagerzon convention: away_ml = ODD price, home_ml = EVEN price
+  # (scraper_v2.py:446-453 — vtm = "TOTAL RUNS ODD", htm = "TOTAL RUNS EVEN")
+  offshore <- tibble(
+    bookmaker_key = "wagerzon",
+    home_team = "Test Home",
+    away_team = "Test Away",
+    game_date = "2026-05-02",
+    game_time = "19:00",
+    market = "odd_even_runs",
+    line = NA_real_,
+    odds_away = -110L,   # ODD — fair if 52.4%
+    odds_home = -110L,   # EVEN — fair if 52.4%
+    odds_over = NA_integer_,
+    odds_under = NA_integer_,
+    home_spread = NA_real_,
+    away_spread = NA_real_
+  )
+
+  bets <- compare_alts_to_samples(
+    samples = samples, offshore_odds = offshore, consensus_odds = consensus,
+    bankroll = 100, kelly_mult = 0.25, ev_threshold = 0.02
+  )
+
+  odd_bet <- bets[bets$bet_on == "Odd" & bets$market == "odd_even_runs", ]
+  expect_equal(nrow(odd_bet), 1)
+  expect_equal(odd_bet$prob, 0.60, tolerance = 1e-9)
+})
