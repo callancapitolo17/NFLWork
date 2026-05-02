@@ -3782,10 +3782,10 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           btn.disabled = true;
           btn.textContent = "Placing...";
 
-          // Phase 6: every placement must specify which Wagerzon account it
-          // lands on. The selector in #wz-account-bar is the source of truth;
-          // bail loudly if for some reason no account is set (e.g. server
-          // returned no accounts at startup).
+          // Every placement must specify which Wagerzon account it lands on.
+          // window.WZ_SELECTED_ACCOUNT (set by the header pill row) is the
+          // source of truth; bail loudly if for some reason no account is
+          // set (e.g. server returned no accounts at startup).
           if (!window.WZ_SELECTED_ACCOUNT) {
             showToast("No Wagerzon account selected", "error");
             btn.disabled = false;
