@@ -459,9 +459,10 @@ def test_first_call_logs_in(acct):
         m.get(wagerzon_auth.WAGERZON_BASE_URL, text=LOGIN_PAGE_HTML)
         m.post(wagerzon_auth.WAGERZON_BASE_URL, text="ok",
                headers={"Location": LOGGED_IN_URL}, status_code=302)
+        m.get(LOGGED_IN_URL, text="logged in")  # _login uses allow_redirects=True
         sess = wagerzon_auth.get_session(acct)
         assert isinstance(sess, requests_mock.Adapter) is False  # got a Session
-        assert m.call_count == 2  # GET login page + POST login form
+        assert m.call_count == 3  # GET login page + POST login form + GET redirect target
 
 
 def test_second_call_returns_cached(acct):
@@ -469,10 +470,11 @@ def test_second_call_returns_cached(acct):
         m.get(wagerzon_auth.WAGERZON_BASE_URL, text=LOGIN_PAGE_HTML)
         m.post(wagerzon_auth.WAGERZON_BASE_URL, text="ok",
                headers={"Location": LOGGED_IN_URL}, status_code=302)
+        m.get(LOGGED_IN_URL, text="logged in")
         s1 = wagerzon_auth.get_session(acct)
         s2 = wagerzon_auth.get_session(acct)
         assert s1 is s2
-        assert m.call_count == 2  # no second login
+        assert m.call_count == 3  # one full login; second call is cached
 
 
 def test_already_logged_in_skips_form_post(acct):
@@ -495,6 +497,7 @@ def test_two_accounts_get_separate_sessions():
         m.get(wagerzon_auth.WAGERZON_BASE_URL, text=LOGIN_PAGE_HTML)
         m.post(wagerzon_auth.WAGERZON_BASE_URL, text="ok",
                headers={"Location": LOGGED_IN_URL}, status_code=302)
+        m.get(LOGGED_IN_URL, text="logged in")
         s_a = wagerzon_auth.get_session(a)
         s_b = wagerzon_auth.get_session(b)
         assert s_a is not s_b
@@ -505,11 +508,12 @@ def test_clear_session_cache_forces_relogin(acct):
         m.get(wagerzon_auth.WAGERZON_BASE_URL, text=LOGIN_PAGE_HTML)
         m.post(wagerzon_auth.WAGERZON_BASE_URL, text="ok",
                headers={"Location": LOGGED_IN_URL}, status_code=302)
+        m.get(LOGGED_IN_URL, text="logged in")
         wagerzon_auth.get_session(acct)
         wagerzon_auth.clear_session_cache(label=acct.label)
         wagerzon_auth.get_session(acct)
-        # Two full login sequences (GET + POST) = 4 calls
-        assert m.call_count == 4
+        # Two full login sequences (GET page + POST + GET redirect) = 6 calls
+        assert m.call_count == 6
 ```
 
 - [ ] **Step 2: Run tests — they should FAIL (module not yet implemented)**
