@@ -637,26 +637,31 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
           # Default: Place button (manually placed via "pending" status OR no record)
           # data-size drives the bet amount. Prefer exact_wager from Stage 2;
           # fall back to Kelly-ideal if Stage 2 couldn't price this row.
+          # data-risk mirrors data-size and is the attribute the Phase 6
+          # insufficient-balance warning sweep reads (decoupled name so a
+          # future change to data-size semantics doesn't break the warning).
           data_size <- if (!is.na(row$exact_wager)) row$exact_wager else row$kelly_bet
           data_attrs <- sprintf(
-            'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-combo="%s" data-spread="%s" data-total="%s" data-fair-odds="%s" data-wz-odds="%s" data-edge="%s" data-size="%s"',
+            'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-combo="%s" data-spread="%s" data-total="%s" data-fair-odds="%s" data-wz-odds="%s" data-edge="%s" data-size="%s" data-risk="%s"',
             row$parlay_hash, row$game_id, row$home_team, row$away_team,
             ifelse(is.na(row$game_time), "", as.character(row$game_time)),
             row$combo, row$spread_line, row$total_line,
-            row$fair_odds, row$wz_odds, row$edge_pct, data_size
+            row$fair_odds, row$wz_odds, row$edge_pct, data_size, data_size
           )
           if (value) {
             sprintf('<button class="btn-placed" onclick="removeParlay(this)" %s>Placed</button>', data_attrs)
           } else {
-            # Two buttons side-by-side:
-            # [Place] = auto-place via Wagerzon REST (records ticket from API)
-            # [Log]   = manual record only, no Wagerzon API call (used when
-            #           the user placed the bet themselves and just wants
-            #           the dashboard to track it)
+            # Two buttons side-by-side, plus a transient warning span. The
+            # warning is populated by window._wzRecomputeWarnings() whenever
+            # the selector changes, balances refresh, or the parlay table
+            # re-renders. Empty by default; gets text only when the selected
+            # account's available balance is below the row's risk.
             sprintf(paste0(
               '<button class="btn-place" onclick="placeParlay(this)" %s>Place</button>',
               ' ',
-              '<button class="btn-log" onclick="logParlay(this)" %s>Log</button>'
+              '<button class="btn-log" onclick="logParlay(this)" %s>Log</button>',
+              ' ',
+              '<span class="wz-insufficient-warning" style="margin-left:6px; color:#f85149; font-size:11px;"></span>'
             ), data_attrs, data_attrs)
           }
         }
