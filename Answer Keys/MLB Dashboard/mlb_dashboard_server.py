@@ -1195,8 +1195,18 @@ def _resolve_amount_and_win(row: dict) -> tuple[float, float]:
     return amount, round(amount * (decimal - 1), 2)
 
 
-def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> None:
-    """Insert or update placed_parlays in mlb_dashboard.duckdb. Idempotent on parlay_hash."""
+def _upsert_placed_parlay(
+    result: parlay_placer.PlacementResult,
+    row: dict,
+    account_label: str,
+) -> None:
+    """Insert or update placed_parlays in mlb_dashboard.duckdb. Idempotent on parlay_hash.
+
+    `account_label` is the resolved Wagerzon account this placement was made
+    under. It's set on insert and also on conflict — the prior 'placing'
+    breadcrumb row didn't include account, so we want to overwrite NULL with
+    the real value. Account is immutable per parlay_hash placement attempt.
+    """
     spec = _build_spec_from_row(row)
     legs_json = json.dumps([
         {"play": l.play, "idgm": l.idgm, "points": l.points, "odds": l.odds}
@@ -1216,8 +1226,9 @@ def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> N
                 spread_line, total_line, fair_odds, edge_pct,
                 recommended_size, expected_odds, expected_win,
                 actual_size, actual_win, ticket_number, idwt,
-                legs_json, error_msg, error_msg_key, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                legs_json, error_msg, error_msg_key, updated_at,
+                account
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (parlay_hash) DO UPDATE SET
                 status        = EXCLUDED.status,
                 actual_size   = EXCLUDED.actual_size,
@@ -1230,7 +1241,8 @@ def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> N
                 edge_pct      = COALESCE(placed_parlays.edge_pct,    EXCLUDED.edge_pct),
                 error_msg     = EXCLUDED.error_msg,
                 error_msg_key = EXCLUDED.error_msg_key,
-                updated_at    = EXCLUDED.updated_at
+                updated_at    = EXCLUDED.updated_at,
+                account       = EXCLUDED.account
         """, [
             result.parlay_hash,
             result.status,
@@ -1260,6 +1272,7 @@ def _upsert_placed_parlay(result: parlay_placer.PlacementResult, row: dict) -> N
             result.error_msg,
             result.error_msg_key,
             now,
+            account_label,
         ])
     finally:
         con.close()
@@ -1424,8 +1437,14 @@ def api_wagerzon_balances():
 def api_place_parlay():
     """Auto-place a parlay at Wagerzon via the REST API.
 
-    Accepts JSON: {parlay_hash: str}
-    Returns JSON: {status, transient, short_label, ticket_number, error_msg}
+    Accepts JSON: {parlay_hash: str, account: str}
+      - account: label of the Wagerzon account to place under (required;
+        e.g. "Wagerzon", "WagerzonJ", "WagerzonC"). Resolved through the
+        wagerzon_accounts registry.
+    Returns JSON: {status, transient, short_label, ticket_number,
+                   error_msg, balance_after?}
+      - balance_after: BalanceSnapshot for the placed-on account fetched
+        immediately post-placement, included only on status="placed".
 
     Persistence rule (option A): only `placed` and `orphaned` represent real
     money moving at Wagerzon and persist as audit rows in placed_parlays.
@@ -1442,6 +1461,20 @@ def api_place_parlay():
 
     if not parlay_hash:
         return jsonify({"status": "error", "error_msg": "missing parlay_hash"}), 400
+
+    # Multi-account: caller MUST specify which Wagerzon account to place under.
+    # The dashboard UI tracks the "active" account in a header pill and sends
+    # it on every /api/place-parlay call.
+    account_label = payload.get("account")
+    if not account_label:
+        return jsonify({"status": "error", "error_msg": "account required"}), 400
+    try:
+        account = wz_get_account(account_label)
+    except AccountNotFoundError:
+        return jsonify({
+            "status": "error",
+            "error_msg": f"unknown account: {account_label}",
+        }), 400
 
     # Idempotency check: skip if already in flight or terminally placed
     con = duckdb.connect(str(DASHBOARD_DB), read_only=True)
@@ -1483,8 +1516,8 @@ def api_place_parlay():
                 wz_odds, kelly_bet,
                 spread_line, total_line, fair_odds, edge_pct,
                 recommended_size, expected_odds,
-                updated_at
-            ) VALUES (?, 'placing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                updated_at, account
+            ) VALUES (?, 'placing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (parlay_hash) DO NOTHING
         """, [
             parlay_hash,
@@ -1502,12 +1535,13 @@ def api_place_parlay():
             float(row["kelly_bet"]),
             int(row["wz_odds"]),
             now,
+            account.label,
         ])
     finally:
         con.close()
 
     spec = _build_spec_from_row(row)
-    results = parlay_placer.place_parlays([spec])
+    results = parlay_placer.place_parlays([spec], account)
     result = results[0]
 
     # Transient outcomes (option A): delete the breadcrumb and report to the
@@ -1537,7 +1571,7 @@ def api_place_parlay():
     # record an orphan (audit) and return status="orphaned" — the only other
     # persistent status because real money is at risk.
     try:
-        _upsert_placed_parlay(result, row)
+        _upsert_placed_parlay(result, row, account.label)
     except Exception as e:
         _record_orphan(result, parlay_hash, e)
         return jsonify({
@@ -1548,12 +1582,23 @@ def api_place_parlay():
             "error_msg": f"orphan: {e}",
         })
 
+    # Refresh balance for the placed-on account so the UI can update its pill
+    # without a separate fetch. Best-effort: a failure here doesn't undo the
+    # successful placement; the UI just falls back to its cached value.
+    try:
+        fresh = _refresh_one_balance(account)
+        balance_after = _balance_snapshot_to_json(fresh)
+    except Exception as e:
+        app.logger.warning("post-placement balance refresh failed: %s", e)
+        balance_after = None
+
     return jsonify({
         "status": result.status,
         "transient": False,
         "short_label": _short_label_for(result.status, result.error_msg_key, result.error_msg),
         "ticket_number": result.ticket_number,
         "error_msg": result.error_msg,
+        "balance_after": balance_after,
     })
 
 
