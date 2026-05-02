@@ -4,15 +4,32 @@ import pytest
 import json
 from unittest.mock import patch, MagicMock
 from parlay_placer import Leg, ParlaySpec, encode_sel, encode_detail_data
+from wagerzon_accounts import WagerzonAccount
+
+
+@pytest.fixture
+def primary_acct():
+    """A throwaway WagerzonAccount used to satisfy the explicit-account
+    contract on place_parlays / _confirm_preflight / _post_wagers. Tests
+    never actually log in (they patch wagerzon_auth.get_session), so the
+    credentials don't have to be real — but `password` IS used directly
+    by _post_wagers as the `confirmPassword` field, so set it to
+    something distinguishable in case a future test asserts on it."""
+    return WagerzonAccount(
+        label="Wagerzon", suffix="",
+        username="test_user", password="test_pw",
+    )
 
 
 @pytest.fixture(autouse=True)
 def reset_session():
-    """Clear cached session before/after each test to avoid leakage."""
-    import parlay_placer
-    parlay_placer._clear_session()
+    """Clear cached sessions in wagerzon_auth before/after each test to
+    avoid leakage between cases. Phase 4 dropped the old module-level
+    _CACHED_SESSION on parlay_placer; the cache now lives in wagerzon_auth."""
+    import wagerzon_auth
+    wagerzon_auth.clear_session_cache()
     yield
-    parlay_placer._clear_session()
+    wagerzon_auth.clear_session_cache()
 
 
 def test_leg_dataclass_basic():
@@ -65,68 +82,6 @@ def test_encode_detail_data_non_integer_amount():
     assert out[0]["Amount"] == "15.75"
 
 
-def test_get_session_caches_within_call(monkeypatch):
-    """Two calls to _get_session in the same place_parlays() invocation
-    should reuse one session, not log in twice."""
-    import parlay_placer
-    monkeypatch.setenv("WAGERZON_USERNAME", "user")
-    monkeypatch.setenv("WAGERZON_PASSWORD", "pass")
-
-    with patch("parlay_placer.requests.Session") as MockSession:
-        mock_session = MagicMock()
-        # Simulate already-authenticated GET (URL contains NewSchedule)
-        response = MagicMock(url="https://backend.wagerzon.com/wager/NewSchedule.aspx")
-        mock_session.get.return_value = response
-        MockSession.return_value = mock_session
-
-        s1 = parlay_placer._get_session()
-        s2 = parlay_placer._get_session()
-        assert s1 is s2
-        # Only one Session() instantiation
-        assert MockSession.call_count == 1
-
-
-def test_get_session_form_post_login_path(monkeypatch):
-    """When GET lands on the login page, _get_session parses ASP.NET tokens
-    out of the HTML and form-POSTs Account/Password."""
-    import parlay_placer
-    monkeypatch.setenv("WAGERZON_USERNAME", "user42")
-    monkeypatch.setenv("WAGERZON_PASSWORD", "secret-pw")
-
-    login_html = """
-    <html><body><form>
-      <input name="__VIEWSTATE" value="VS123" />
-      <input name="__VIEWSTATEGENERATOR" value="VSG456" />
-      <input name="__EVENTVALIDATION" value="EV789" />
-      <input name="Account" />
-      <input name="Password" />
-    </form></body></html>
-    """
-
-    with patch("parlay_placer.requests.Session") as MockSession:
-        mock_session = MagicMock()
-        get_resp = MagicMock(url="https://backend.wagerzon.com/")
-        get_resp.text = login_html
-        mock_session.get.return_value = get_resp
-        # Login POST returns a generic OK
-        post_resp = MagicMock()
-        mock_session.post.return_value = post_resp
-        MockSession.return_value = mock_session
-
-        sess = parlay_placer._get_session()
-        assert sess is mock_session
-
-        # Verify the POST happened with the parsed tokens + creds
-        mock_session.post.assert_called_once()
-        post_kwargs = mock_session.post.call_args.kwargs
-        data = post_kwargs["data"]
-        assert data["__VIEWSTATE"] == "VS123"
-        assert data["__VIEWSTATEGENERATOR"] == "VSG456"
-        assert data["__EVENTVALIDATION"] == "EV789"
-        assert data["Account"] == "user42"
-        assert data["Password"] == "secret-pw"
-
-
 CONFIRM_OK_RESPONSE = {
     "result": {
         "details": [{"Risk": 15.0, "Win": 30.0, "WagerType": 1,
@@ -176,12 +131,13 @@ def _make_session_with_post(json_response):
     return sess
 
 
-def test_confirm_preflight_returns_win_risk(monkeypatch):
-    monkeypatch.setattr("parlay_placer._get_session",
-                        lambda: _make_session_with_post(CONFIRM_OK_RESPONSE))
+def test_confirm_preflight_returns_win_risk(monkeypatch, primary_acct):
+    sess = _make_session_with_post(CONFIRM_OK_RESPONSE)
+    monkeypatch.setattr("wagerzon_auth.get_session", lambda acct: sess)
     import parlay_placer
     legs = [Leg(idgm=5632938, play=1, points=-1.5, odds=117)]
-    win, risk = parlay_placer._confirm_preflight(legs, amount=15.0)
+    win, risk = parlay_placer._confirm_preflight(legs, amount=15.0,
+                                                 account=primary_acct)
     assert win == 30.0
     assert risk == 15.0
 
@@ -198,17 +154,16 @@ def test_drift_check_beyond_penny_fails():
     assert parlay_placer._drift_ok(expected=30.00, actual=28.50) is False
 
 
-def test_post_wagers_success(monkeypatch):
-    monkeypatch.setattr("parlay_placer._get_session",
-                        lambda: _make_session_with_post(POST_OK_RESPONSE))
-    monkeypatch.setenv("WAGERZON_PASSWORD", "secret")
+def test_post_wagers_success(monkeypatch, primary_acct):
+    sess = _make_session_with_post(POST_OK_RESPONSE)
+    monkeypatch.setattr("wagerzon_auth.get_session", lambda acct: sess)
     import parlay_placer
     specs = [ParlaySpec(
         parlay_hash="h1",
         legs=[Leg(idgm=5632938, play=1, points=-1.5, odds=117)],
         amount=15.0, expected_win=30.0, expected_risk=15.0,
     )]
-    results = parlay_placer._post_wagers(specs)
+    results = parlay_placer._post_wagers(specs, account=primary_acct)
     assert len(results) == 1
     r = results[0]
     assert r.status == "placed"
@@ -217,17 +172,16 @@ def test_post_wagers_success(monkeypatch):
     assert r.actual_win == 30.0
 
 
-def test_post_wagers_rejected(monkeypatch):
-    monkeypatch.setattr("parlay_placer._get_session",
-                        lambda: _make_session_with_post(POST_REJECTED_RESPONSE))
-    monkeypatch.setenv("WAGERZON_PASSWORD", "secret")
+def test_post_wagers_rejected(monkeypatch, primary_acct):
+    sess = _make_session_with_post(POST_REJECTED_RESPONSE)
+    monkeypatch.setattr("wagerzon_auth.get_session", lambda acct: sess)
     import parlay_placer
     specs = [ParlaySpec(
         parlay_hash="h1",
         legs=[Leg(idgm=5632938, play=1, points=-1.5, odds=117)],
         amount=15.0, expected_win=30.0, expected_risk=15.0,
     )]
-    results = parlay_placer._post_wagers(specs)
+    results = parlay_placer._post_wagers(specs, account=primary_acct)
     assert results[0].status == "rejected"
     assert results[0].error_msg_key == "insufficient_funds"
 
@@ -258,24 +212,22 @@ def _session_for_calls(*responses_per_call):
     return sess
 
 
-def test_place_parlays_happy_path(monkeypatch):
-    monkeypatch.setenv("WAGERZON_PASSWORD", "secret")
+def test_place_parlays_happy_path(monkeypatch, primary_acct):
     sess = _session_for_calls(CONFIRM_OK_RESPONSE, POST_OK_RESPONSE)
-    monkeypatch.setattr("parlay_placer._get_session", lambda: sess)
+    monkeypatch.setattr("wagerzon_auth.get_session", lambda acct: sess)
     import parlay_placer
-    results = parlay_placer.place_parlays([_spec()])
+    results = parlay_placer.place_parlays([_spec()], primary_acct)
     assert results[0].status == "placed"
 
 
-def test_place_parlays_price_drift_aborts(monkeypatch):
-    monkeypatch.setenv("WAGERZON_PASSWORD", "secret")
+def test_place_parlays_price_drift_aborts(monkeypatch, primary_acct):
     drifted_response = {
         "result": {"details": [{"Win": 28.50, "Risk": 15.0}], "Confirm": True}
     }
     sess = _session_for_calls(drifted_response)  # only the preflight call expected
-    monkeypatch.setattr("parlay_placer._get_session", lambda: sess)
+    monkeypatch.setattr("wagerzon_auth.get_session", lambda acct: sess)
     import parlay_placer
-    results = parlay_placer.place_parlays([_spec(win=30.0)])
+    results = parlay_placer.place_parlays([_spec(win=30.0)], primary_acct)
     assert results[0].status == "price_moved"
     # Drift message uses two-decimal format (per _drift_error_msg)
     assert "$28.50" in results[0].error_msg
@@ -284,11 +236,9 @@ def test_place_parlays_price_drift_aborts(monkeypatch):
     assert sess.post.call_count == 1
 
 
-def test_place_parlays_auth_retry_succeeds(monkeypatch):
+def test_place_parlays_auth_retry_succeeds(monkeypatch, primary_acct):
     """First preflight returns HTML (session expired) -> re-login -> retry -> OK."""
     import parlay_placer
-    monkeypatch.setenv("WAGERZON_USERNAME", "u")
-    monkeypatch.setenv("WAGERZON_PASSWORD", "p")
     html_resp = MagicMock()
     html_resp.headers = {"content-type": "text/html"}
     html_resp.text = "<html>login</html>"
@@ -305,33 +255,31 @@ def test_place_parlays_auth_retry_succeeds(monkeypatch):
     session2 = MagicMock(); session2.post.side_effect = [ok_resp, post_ok]
     call_count = [0]
 
-    def _get_sess():
+    def _get_sess(account):
         call_count[0] += 1
         return session1 if call_count[0] == 1 else session2
 
-    monkeypatch.setattr("parlay_placer._get_session", _get_sess)
-    monkeypatch.setattr("parlay_placer._clear_session", lambda: None)
-    results = parlay_placer.place_parlays([_spec()])
+    monkeypatch.setattr("wagerzon_auth.get_session", _get_sess)
+    monkeypatch.setattr("wagerzon_auth.clear_session_cache",
+                        lambda label=None: None)
+    results = parlay_placer.place_parlays([_spec()], primary_acct)
     assert results[0].status == "placed"
 
 
-def test_place_parlays_network_error_no_retry(monkeypatch):
+def test_place_parlays_network_error_no_retry(monkeypatch, primary_acct):
     import parlay_placer
     sess = MagicMock()
     sess.post.side_effect = parlay_placer.requests.exceptions.Timeout()
-    monkeypatch.setattr("parlay_placer._get_session", lambda: sess)
-    monkeypatch.setenv("WAGERZON_PASSWORD", "p")
-    results = parlay_placer.place_parlays([_spec()])
+    monkeypatch.setattr("wagerzon_auth.get_session", lambda acct: sess)
+    results = parlay_placer.place_parlays([_spec()], primary_acct)
     assert results[0].status == "network_error"
     assert sess.post.call_count == 1  # no retry
 
 
-def test_place_parlays_post_auth_retry_succeeds(monkeypatch):
+def test_place_parlays_post_auth_retry_succeeds(monkeypatch, primary_acct):
     """Preflight OK -> post raises AuthExpired -> re-login -> re-preflight OK
     -> post succeeds. No drift, no network error."""
     import parlay_placer
-    monkeypatch.setenv("WAGERZON_USERNAME", "u")
-    monkeypatch.setenv("WAGERZON_PASSWORD", "p")
 
     def _json_resp(payload):
         r = MagicMock()
@@ -353,38 +301,37 @@ def test_place_parlays_post_auth_retry_succeeds(monkeypatch):
         _json_resp(CONFIRM_OK_RESPONSE),
         _json_resp(POST_OK_RESPONSE),
     ]
-    monkeypatch.setattr("parlay_placer._get_session", lambda: sess)
-    monkeypatch.setattr("parlay_placer._clear_session", lambda: None)
+    monkeypatch.setattr("wagerzon_auth.get_session", lambda acct: sess)
+    monkeypatch.setattr("wagerzon_auth.clear_session_cache",
+                        lambda label=None: None)
 
-    results = parlay_placer.place_parlays([_spec()])
+    results = parlay_placer.place_parlays([_spec()], primary_acct)
     assert results[0].status == "placed"
     assert sess.post.call_count == 4
 
 
-def test_place_parlays_empty_list(monkeypatch):
+def test_place_parlays_empty_list(monkeypatch, primary_acct):
     """Empty input must return empty output without making any API calls."""
     import parlay_placer
     sess = MagicMock()
-    monkeypatch.setattr("parlay_placer._get_session", lambda: sess)
-    assert parlay_placer.place_parlays([]) == []
+    monkeypatch.setattr("wagerzon_auth.get_session", lambda acct: sess)
+    assert parlay_placer.place_parlays([], primary_acct) == []
     assert sess.post.call_count == 0
 
 
-def test_place_parlays_duplicate_hash_raises(monkeypatch):
+def test_place_parlays_duplicate_hash_raises(monkeypatch, primary_acct):
     """Duplicate parlay_hash in a batch is a programming error, raise loudly."""
     import parlay_placer
     a = _spec(hash="dup")
     b = _spec(hash="dup")
     with pytest.raises(ValueError, match="duplicate parlay_hash"):
-        parlay_placer.place_parlays([a, b])
+        parlay_placer.place_parlays([a, b], primary_acct)
 
 
-def test_place_parlays_post_retry_per_spec_drift(monkeypatch):
+def test_place_parlays_post_retry_per_spec_drift(monkeypatch, primary_acct):
     """Multi-spec batch where post AuthExpires; on retry one spec drifts.
     Only the drifted spec gets price_moved; others should still be placed."""
     import parlay_placer
-    monkeypatch.setenv("WAGERZON_USERNAME", "u")
-    monkeypatch.setenv("WAGERZON_PASSWORD", "p")
 
     def _json_resp(payload):
         r = MagicMock()
@@ -423,12 +370,13 @@ def test_place_parlays_post_retry_per_spec_drift(monkeypatch):
         _json_resp(CONFIRM_OK_RESPONSE),  # B re-preflight (OK)
         _json_resp(post_ok_one),          # post B only
     ]
-    monkeypatch.setattr("parlay_placer._get_session", lambda: sess)
-    monkeypatch.setattr("parlay_placer._clear_session", lambda: None)
+    monkeypatch.setattr("wagerzon_auth.get_session", lambda acct: sess)
+    monkeypatch.setattr("wagerzon_auth.clear_session_cache",
+                        lambda label=None: None)
 
     a = _spec(hash="A", win=30.0)
     b = _spec(hash="B", win=30.0)
-    results = parlay_placer.place_parlays([a, b])
+    results = parlay_placer.place_parlays([a, b], primary_acct)
 
     # Order preserved: A first, B second
     assert results[0].parlay_hash == "A"

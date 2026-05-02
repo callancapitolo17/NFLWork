@@ -637,26 +637,31 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
           # Default: Place button (manually placed via "pending" status OR no record)
           # data-size drives the bet amount. Prefer exact_wager from Stage 2;
           # fall back to Kelly-ideal if Stage 2 couldn't price this row.
+          # data-risk mirrors data-size and is the attribute the Phase 6
+          # insufficient-balance warning sweep reads (decoupled name so a
+          # future change to data-size semantics doesn't break the warning).
           data_size <- if (!is.na(row$exact_wager)) row$exact_wager else row$kelly_bet
           data_attrs <- sprintf(
-            'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-combo="%s" data-spread="%s" data-total="%s" data-fair-odds="%s" data-wz-odds="%s" data-edge="%s" data-size="%s"',
+            'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-combo="%s" data-spread="%s" data-total="%s" data-fair-odds="%s" data-wz-odds="%s" data-edge="%s" data-size="%s" data-risk="%s"',
             row$parlay_hash, row$game_id, row$home_team, row$away_team,
             ifelse(is.na(row$game_time), "", as.character(row$game_time)),
             row$combo, row$spread_line, row$total_line,
-            row$fair_odds, row$wz_odds, row$edge_pct, data_size
+            row$fair_odds, row$wz_odds, row$edge_pct, data_size, data_size
           )
           if (value) {
             sprintf('<button class="btn-placed" onclick="removeParlay(this)" %s>Placed</button>', data_attrs)
           } else {
-            # Two buttons side-by-side:
-            # [Place] = auto-place via Wagerzon REST (records ticket from API)
-            # [Log]   = manual record only, no Wagerzon API call (used when
-            #           the user placed the bet themselves and just wants
-            #           the dashboard to track it)
+            # Two buttons side-by-side, plus a transient warning span. The
+            # warning is populated by window._wzRecomputeWarnings() whenever
+            # the selector changes, balances refresh, or the parlay table
+            # re-renders. Empty by default; gets text only when the selected
+            # account's available balance is below the row's risk.
             sprintf(paste0(
               '<button class="btn-place" onclick="placeParlay(this)" %s>Place</button>',
               ' ',
-              '<button class="btn-log" onclick="logParlay(this)" %s>Log</button>'
+              '<button class="btn-log" onclick="logParlay(this)" %s>Log</button>',
+              ' ',
+              '<span class="wz-insufficient-warning" style="margin-left:6px; color:#f85149; font-size:11px;"></span>'
             ), data_attrs, data_attrs)
           }
         }
@@ -1985,6 +1990,30 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
     ),
 
     tags$body(
+      # Wagerzon multi-account header bar (Phase 6).
+      # Sits ABOVE the .container so it's visible on every tab. Renders one
+      # pill per configured Wagerzon account (label + available balance) and
+      # a global selector that drives placement. JS lives below in the main
+      # script block; populated on DOMContentLoaded by /api/wagerzon/balances
+      # and /api/wagerzon/last-used.
+      tags$div(
+        id = "wz-account-bar",
+        style = paste(
+          "display:flex; align-items:center; gap:14px;",
+          "padding:8px 16px; background:#161b22;",
+          "border-bottom:1px solid #30363d; color:#c9d1d9;",
+          "font-family:sans-serif;"
+        ),
+        tags$div(id = "wz-account-pills", style = "display:flex; gap:8px;"),
+        tags$button(
+          id = "wz-refresh-btn", type = "button",
+          style = "border:none; background:transparent; cursor:pointer; font-size:18px;",
+          title = "Refresh balances",
+          HTML("&#x21bb;")  # circular-arrow refresh glyph
+        ),
+        tags$span("Placing on:", style = "margin-left:auto; font-weight:bold;"),
+        tags$select(id = "wz-account-select", style = "padding:4px 8px; font-size:14px;")
+      ),
       tags$div(class = "container",
         # Header
         tags$div(class = "header",
@@ -3694,10 +3723,24 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           btn.disabled = true;
           btn.textContent = "Placing...";
 
+          // Phase 6: every placement must specify which Wagerzon account it
+          // lands on. The selector in #wz-account-bar is the source of truth;
+          // bail loudly if for some reason no account is set (e.g. server
+          // returned no accounts at startup).
+          if (!window.WZ_SELECTED_ACCOUNT) {
+            showToast("No Wagerzon account selected", "error");
+            btn.disabled = false;
+            btn.textContent = originalText;
+            return;
+          }
+
           fetch("/api/place-parlay", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ parlay_hash: hash })
+            body: JSON.stringify({
+              parlay_hash: hash,
+              account: window.WZ_SELECTED_ACCOUNT
+            })
           })
             .then(function(r) { return r.json(); })
             .then(function(result) {
@@ -3712,8 +3755,16 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 // No ticket → just "placed" (cleaner than "placed · #")
                 span.textContent = ticket ? ("placed \xb7 #" + ticket) : "placed";
                 _replaceActionCell(btn, span);
-                showToast(ticket ? ("Placed at Wagerzon (#" + ticket + ")") :
-                                   "Placed at Wagerzon", "success");
+                // Server returns the post-placement balance snapshot for the
+                // account it landed on. Push it into the pill immediately
+                // (no extra GET) so the user sees the debit reflected.
+                if (result.balance_after && window.wzApplyBalanceAfter) {
+                  window.wzApplyBalanceAfter(result.balance_after.label, result.balance_after);
+                }
+                showToast(ticket
+                  ? ("Placed on " + window.WZ_SELECTED_ACCOUNT + " (#" + ticket + ")")
+                  : ("Placed on " + window.WZ_SELECTED_ACCOUNT),
+                  "success");
               } else if (result.transient) {
                 // Transient: the bet did not go through (network glitch, line
                 // moved, balance / limit refusal, auth blip). The breadcrumb
@@ -4052,7 +4103,198 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             placeBtn.textContent = "Place combined →";
           }
         }
-      '))
+      ')),
+
+      # =====================================================================
+      # Wagerzon multi-account header bar — JS controller (Phase 6).
+      # Owns:
+      #   * window.WZ_SELECTED_ACCOUNT (string, source-of-truth selection)
+      #   * window.WZ_BALANCES         (label -> snapshot from /api/wagerzon/balances)
+      #   * window.wzApplyBalanceAfter (called by placeParlay() after a successful
+      #                                 placement to refresh the pill without a full GET)
+      #   * window._wzRecomputeWarnings (sweeps every Place button with data-risk and
+      #                                  populates the sibling .wz-insufficient-warning)
+      # Uses raw string r"(...)" so the embedded JS can keep its single-quote
+      # literals without backslash-escaping every one.
+      # =====================================================================
+      tags$script(HTML(r"(
+(function() {
+  var BAR_ID    = 'wz-account-pills';
+  var SELECT_ID = 'wz-account-select';
+  var REFRESH_BTN_ID = 'wz-refresh-btn';
+
+  // Currently-selected account label, source of truth for the dashboard.
+  window.WZ_SELECTED_ACCOUNT = null;
+  window.WZ_BALANCES = {};   // label -> snapshot
+
+  function fmtMoney(n) {
+    if (n === null || n === undefined) return '—';
+    return '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  }
+
+  function renderPills() {
+    var bar = document.getElementById(BAR_ID);
+    if (!bar) return;
+    bar.innerHTML = '';
+    Object.keys(WZ_BALANCES).forEach(function(label) {
+      var snap = WZ_BALANCES[label];
+      var pill = document.createElement('span');
+      pill.className = 'wz-pill';
+      pill.dataset.label = label;
+      var stale = snap.error && snap.stale_seconds > 600;
+      pill.style.cssText = 'padding:4px 10px; border-radius:14px; ' +
+        'background:' + (stale ? '#3a1d1d' : '#21262d') + '; ' +
+        'color:#c9d1d9; ' +
+        'border:' + (label === window.WZ_SELECTED_ACCOUNT ? '2px solid #58a6ff' : '1px solid #30363d') + ';' +
+        'font-size:13px;';
+      var text = label + ': ' + fmtMoney(snap.available);
+      if (snap.error) {
+        text += ' ⚠';  // warning sign
+        var sub = snap.stale_seconds < 60
+          ? snap.stale_seconds + 's'
+          : Math.floor(snap.stale_seconds/60) + 'm';
+        text += ' (stale ' + sub + ' ago)';
+      }
+      pill.textContent = text;
+      bar.appendChild(pill);
+    });
+  }
+
+  function renderSelect(orderedLabels) {
+    var sel = document.getElementById(SELECT_ID);
+    if (!sel) return;
+    sel.innerHTML = '';
+    orderedLabels.forEach(function(label) {
+      var opt = document.createElement('option');
+      opt.value = label;
+      opt.textContent = label;
+      if (label === window.WZ_SELECTED_ACCOUNT) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    if (orderedLabels.length === 0) {
+      var opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No Wagerzon accounts configured';
+      opt.disabled = true; opt.selected = true;
+      sel.appendChild(opt);
+      sel.disabled = true;
+    } else if (orderedLabels.length === 1) {
+      sel.disabled = true;
+    } else {
+      sel.disabled = false;
+    }
+  }
+
+  function refreshBalances() {
+    return fetch('/api/wagerzon/balances')
+      .then(function(r) { return r.json(); })
+      .then(function(payload) {
+        var orderedLabels = [];
+        WZ_BALANCES = {};
+        (payload.balances || []).forEach(function(snap) {
+          WZ_BALANCES[snap.label] = snap;
+          orderedLabels.push(snap.label);
+        });
+        renderPills();
+        renderSelect(orderedLabels);
+        recomputeAllInsufficiencyWarnings();
+      });
+  }
+
+  function loadLastUsed() {
+    return fetch('/api/wagerzon/last-used')
+      .then(function(r) { return r.json(); })
+      .then(function(payload) {
+        window.WZ_SELECTED_ACCOUNT = payload.label || null;
+      });
+  }
+
+  function persistSelection(label) {
+    return fetch('/api/wagerzon/last-used', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({label: label})
+    });
+  }
+
+  function recomputeAllInsufficiencyWarnings() {
+    if (typeof window._wzRecomputeWarnings === 'function') {
+      window._wzRecomputeWarnings();
+    }
+  }
+
+  // Public hook used by placeParlay() after a successful placement
+  // to update the pill without a full re-fetch.
+  window.wzApplyBalanceAfter = function(label, snap) {
+    if (!snap) return;
+    WZ_BALANCES[label] = snap;
+    renderPills();
+    recomputeAllInsufficiencyWarnings();
+  };
+
+  // Per-parlay insufficient-balance warning. Reads each Place button's
+  // data-risk against the currently-selected account's available balance
+  // and writes a short message into the sibling .wz-insufficient-warning
+  // span. Suppresses output when the account has no successful fetch yet
+  // (available === null) to avoid showing misleading text.
+  window._wzRecomputeWarnings = function() {
+    var label = window.WZ_SELECTED_ACCOUNT;
+    var snap  = label ? WZ_BALANCES[label] : null;
+    var available = snap ? snap.available : null;
+
+    document.querySelectorAll('button[data-hash][data-risk]').forEach(function(btn) {
+      var risk = parseFloat(btn.dataset.risk);
+      var warn = btn.parentElement.querySelector('.wz-insufficient-warning');
+      if (!warn) return;
+
+      if (available === null || isNaN(risk)) {
+        warn.textContent = '';
+        return;
+      }
+      if (risk > available) {
+        warn.textContent = '⚠ insufficient on ' + label +
+          ' (' + fmtMoney(available) + ' < ' + fmtMoney(risk) + ' risk)';
+      } else {
+        warn.textContent = '';
+      }
+    });
+  };
+
+  document.addEventListener('DOMContentLoaded', function() {
+    var sel = document.getElementById(SELECT_ID);
+    sel.addEventListener('change', function() {
+      if (!sel.value) return;  // disabled empty-state has value=''
+      window.WZ_SELECTED_ACCOUNT = sel.value;
+      persistSelection(sel.value);
+      renderPills();
+      recomputeAllInsufficiencyWarnings();
+    });
+    document.getElementById(REFRESH_BTN_ID).addEventListener('click', refreshBalances);
+
+    loadLastUsed().catch(function() {
+      // Network blip on the last-used GET shouldn't block the rest of the
+      // initial render. Pills will still populate; selector will land on
+      // whatever the server returns next time.
+    }).then(refreshBalances);
+
+    // Watch for parlay-table re-renders (reactable pagination, hot-swap after
+    // combined placement, etc.) so the warning is recomputed for the new rows.
+    // Same pattern as the existing same-game observer on bets-table-container.
+    var parlayContainer = document.getElementById('parlays-table-container');
+    if (parlayContainer && typeof MutationObserver === 'function') {
+      var _wzWarnDebounce = null;
+      var obs = new MutationObserver(function() {
+        if (_wzWarnDebounce) clearTimeout(_wzWarnDebounce);
+        _wzWarnDebounce = setTimeout(function() {
+          _wzWarnDebounce = null;
+          recomputeAllInsufficiencyWarnings();
+        }, 100);
+      });
+      obs.observe(parlayContainer, {childList: true, subtree: true});
+    }
+  });
+})();
+)"))
     )
   )
 

@@ -18,11 +18,13 @@ import duckdb
 from datetime import datetime, timezone
 from pathlib import Path
 
-from scraper_v2 import login, DB_PATH
+from scraper_v2 import DB_PATH
 from config import WAGERZON_BASE_URL
 import requests
 from concurrent.futures import ThreadPoolExecutor
-from requests.adapters import HTTPAdapter
+
+import wagerzon_auth
+from wagerzon_accounts import list_accounts
 
 CONFIRM_URL = f"{WAGERZON_BASE_URL}/wager/ConfirmWagerHelper.aspx"
 # Workers for parallel ConfirmWagerHelper calls. WZ has not been observed to
@@ -32,22 +34,17 @@ MAX_WORKERS = 8
 
 
 def get_wz_session() -> requests.Session:
-    """Return an authenticated Wagerzon session.
+    """Return an authenticated Wagerzon session for the primary account.
 
-    Builds a `requests.Session`, mounts an HTTPAdapter sized for MAX_WORKERS
-    concurrent connections (so urllib3 doesn't warn about a full pool when
-    parlay pricing fans out), logs in via `scraper_v2.login()`, and returns
-    it ready to call ConfirmWagerHelper. Raises RuntimeError if login fails.
+    Pricing is account-agnostic (the `RiskWin=2` trick in
+    ConfirmWagerHelper skips balance validation), so we always use the
+    primary login. Callers that need a specific account should call
+    wagerzon_auth.get_session(acct) directly.
     """
-    session = requests.Session()
-    adapter = HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    try:
-        login(session)
-    except Exception as e:
-        raise RuntimeError(f"Failed to authenticate with Wagerzon: {e}") from e
-    return session
+    accounts = list_accounts()
+    if not accounts:
+        raise RuntimeError("no Wagerzon accounts configured (env vars missing)")
+    return wagerzon_auth.get_session(accounts[0])
 
 # Play codes (from Wagerzon React bundle main.db15c074.js):
 #   0 = away spread, 1 = home spread

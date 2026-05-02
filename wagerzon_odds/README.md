@@ -33,6 +33,62 @@ Requires in `.env`:
 - `WAGERZON_USERNAME`
 - `WAGERZON_PASSWORD`
 
+## Multi-account support
+
+The Wagerzon modules support multiple accounts simultaneously.
+
+### Account discovery
+
+Accounts are discovered from environment variables in `bet_logger/.env`
+matching the pattern `WAGERZON{SUFFIX}_USERNAME` / `WAGERZON{SUFFIX}_PASSWORD`,
+where `{SUFFIX}` is empty (primary) or a single uppercase letter:
+
+```
+WAGERZON_USERNAME=...     WAGERZON_PASSWORD=...      # primary, label = "Wagerzon"
+WAGERZONJ_USERNAME=...    WAGERZONJ_PASSWORD=...     # label = "WagerzonJ"
+WAGERZONC_USERNAME=...    WAGERZONC_PASSWORD=...     # label = "WagerzonC"
+```
+
+Adding a new account = two env vars + restart of any consumer process
+(e.g. the MLB dashboard server). No code changes required.
+
+### Modules
+
+- `wagerzon_accounts.py` — registry. `list_accounts()`, `get_account(label)`.
+- `wagerzon_auth.py` — logged-in `requests.Session` cache keyed by account
+  label, with per-label locks so concurrent logins for different accounts
+  run in parallel.
+- `wagerzon_balance.py` — `fetch_available_balance(account)` and
+  `fetch_all(accounts)` returning `BalanceSnapshot`. Calls
+  `GET https://backend.wagerzon.com/wager/PlayerInfoHelper.aspx` and
+  extracts `result.RealAvailBalance` (cash + credit line — the actual
+  wagerable amount) as `available`, and `result.CurrentBalance` as `cash`.
+  The response body also includes the user's password in plaintext;
+  the parser extracts only the two numeric fields and never logs the
+  raw response.
+
+### parlay_placer
+
+`place_parlays(specs, account)` requires an explicit `account: WagerzonAccount`
+argument. The previous module-level `_get_session` and `_CACHED_SESSION`
+are gone; auth flows through `wagerzon_auth.get_session(account)`.
+
+### Dashboard integration
+
+The MLB correlated parlay dashboard (`Answer Keys/MLB Dashboard/`)
+exposes:
+- `GET /api/wagerzon/balances` — list all accounts' current balances
+  (server caches last good value; surfaces `stale_seconds` when a
+  fetch fails).
+- `GET /api/wagerzon/last-used` — persisted selector value (or null
+  when no accounts configured).
+- `POST /api/wagerzon/last-used` — body `{"label": "<account-label>"}`.
+- `POST /api/place-parlay` — now requires `{"account": "<label>"}` in
+  the body alongside `parlay_hash`. Resolves the label through the
+  registry, threads the resolved account into `place_parlays`, writes
+  the label onto the `placed_parlays.account` column, and returns a
+  fresh `balance_after` snapshot in the response.
+
 ## Files
 
 | File | Purpose |
@@ -107,12 +163,14 @@ Also: `wagerzon_cbb.duckdb` (CBB-specific historical data).
 **Public API:**
 ```python
 from parlay_placer import place_parlays, ParlaySpec, PlacementResult
+from wagerzon_accounts import get_account
 
 specs = [
     ParlaySpec(legs=[(game_id, "spread", -1.5), ...], wager_amount=100.00, expected_payout=250.00),
     ...
 ]
-results: list[PlacementResult] = place_parlays(specs, dry_run=False)
+account = get_account("Wagerzon")  # or "WagerzonJ", "WagerzonC", ...
+results: list[PlacementResult] = place_parlays(specs, account)
 ```
 
 **Status values in `PlacementResult`:**
@@ -130,7 +188,7 @@ results: list[PlacementResult] = place_parlays(specs, dry_run=False)
 python3 wagerzon_odds/parlay_placer.py --help
 ```
 
-**Tests:** `pytest wagerzon_odds/test_parlay_placer.py -v` (22 test cases)
+**Tests:** `pytest wagerzon_odds/test_parlay_placer.py -v` (19 test cases)
 
 **Used by:** MLB dashboard's `/api/place-parlay` endpoint
 
