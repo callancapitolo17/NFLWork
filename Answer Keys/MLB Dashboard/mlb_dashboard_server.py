@@ -210,7 +210,23 @@ def init_db():
                 legs_json TEXT,
                 error_msg TEXT,
                 error_msg_key TEXT,
-                updated_at TIMESTAMP
+                updated_at TIMESTAMP,
+                -- Multi-account support: which Wagerzon account this bet was placed under.
+                account TEXT
+            )
+        """)
+        # Multi-account support: add `account` column to existing placed_parlays.
+        try:
+            con.execute("ALTER TABLE placed_parlays ADD COLUMN account TEXT")
+        except duckdb.CatalogException:
+            pass  # Column already exists.
+
+        # Generic key/value settings store (e.g. last-used Wagerzon account).
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS dashboard_settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         # Migration: add auto-placement columns to existing placed_parlays tables
