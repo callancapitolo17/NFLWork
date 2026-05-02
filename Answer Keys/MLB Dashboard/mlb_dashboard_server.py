@@ -1340,6 +1340,73 @@ def _record_orphan(result: parlay_placer.PlacementResult,
     )
 
 
+def _get_setting(key: str) -> str | None:
+    """Read one row from dashboard_settings."""
+    con = duckdb.connect(str(DB_PATH))
+    try:
+        row = con.execute(
+            "SELECT value FROM dashboard_settings WHERE key = ?", [key]
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        con.close()
+
+
+def _set_setting(key: str, value: str) -> None:
+    """Upsert one row into dashboard_settings.
+
+    Note: DuckDB 1.4 has a binder bug where CURRENT_TIMESTAMP inside
+    INSERT...ON CONFLICT...DO UPDATE SET ... = excluded.<col> resolves the
+    bare identifier as a column reference and fails. Same workaround used
+    in _upsert_placed_parlay: pass a parameterized timestamp.
+    """
+    now = datetime.now()
+    con = duckdb.connect(str(DB_PATH))
+    try:
+        con.execute(
+            """
+            INSERT INTO dashboard_settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT (key)
+            DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            """,
+            [key, value, now],
+        )
+    finally:
+        con.close()
+
+
+def _get_default_account_label() -> str | None:
+    """Return last-used label if it's still in the registry, else fall back
+    to the registry primary, else None (no accounts configured)."""
+    accounts = wz_list_accounts()
+    if not accounts:
+        return None
+    valid = {a.label for a in accounts}
+    saved = _get_setting("wagerzon_last_used")
+    if saved in valid:
+        return saved
+    return accounts[0].label
+
+
+@app.route("/api/wagerzon/last-used", methods=["GET"])
+def api_wagerzon_last_used_get():
+    return jsonify({"label": _get_default_account_label()})
+
+
+@app.route("/api/wagerzon/last-used", methods=["POST"])
+def api_wagerzon_last_used_post():
+    data = request.get_json(silent=True) or {}
+    label = data.get("label")
+    if not isinstance(label, str) or not label:
+        return jsonify({"error": "label required"}), 400
+    valid = {a.label for a in wz_list_accounts()}
+    if label not in valid:
+        return jsonify({"error": f"unknown label: {label}"}), 400
+    _set_setting("wagerzon_last_used", label)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/wagerzon/balances", methods=["GET"])
 def api_wagerzon_balances():
     """Return per-account Wagerzon balance snapshots.
