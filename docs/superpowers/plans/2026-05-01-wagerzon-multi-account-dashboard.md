@@ -730,7 +730,8 @@ feat(wagerzon): consolidate auth into wagerzon_auth module
 New module owns the ASP.NET form-login flow and a per-account session
 cache. Replaces the two ad-hoc auth implementations in parlay_placer
 (_get_session) and parlay_pricer (get_wz_session). Sessions are keyed
-by account label and protected by an RLock for thread safety.
+by account label and protected by per-label Locks so concurrent logins
+for different accounts can run in parallel.
 
 Includes pytest tests using requests-mock covering first-call login,
 cache hit, redirect-when-already-logged-in, per-account separation, and
