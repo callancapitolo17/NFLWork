@@ -3717,10 +3717,24 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           btn.disabled = true;
           btn.textContent = "Placing...";
 
+          // Phase 6: every placement must specify which Wagerzon account it
+          // lands on. The selector in #wz-account-bar is the source of truth;
+          // bail loudly if for some reason no account is set (e.g. server
+          // returned no accounts at startup).
+          if (!window.WZ_SELECTED_ACCOUNT) {
+            showToast("No Wagerzon account selected", "error");
+            btn.disabled = false;
+            btn.textContent = originalText;
+            return;
+          }
+
           fetch("/api/place-parlay", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ parlay_hash: hash })
+            body: JSON.stringify({
+              parlay_hash: hash,
+              account: window.WZ_SELECTED_ACCOUNT
+            })
           })
             .then(function(r) { return r.json(); })
             .then(function(result) {
@@ -3735,8 +3749,16 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 // No ticket → just "placed" (cleaner than "placed · #")
                 span.textContent = ticket ? ("placed \xb7 #" + ticket) : "placed";
                 _replaceActionCell(btn, span);
-                showToast(ticket ? ("Placed at Wagerzon (#" + ticket + ")") :
-                                   "Placed at Wagerzon", "success");
+                // Server returns the post-placement balance snapshot for the
+                // account it landed on. Push it into the pill immediately
+                // (no extra GET) so the user sees the debit reflected.
+                if (result.balance_after && window.wzApplyBalanceAfter) {
+                  window.wzApplyBalanceAfter(result.balance_after.label, result.balance_after);
+                }
+                showToast(ticket
+                  ? ("Placed on " + window.WZ_SELECTED_ACCOUNT + " (#" + ticket + ")")
+                  : ("Placed on " + window.WZ_SELECTED_ACCOUNT),
+                  "success");
               } else if (result.transient) {
                 // Transient: the bet did not go through (network glitch, line
                 // moved, balance / limit refusal, auth blip). The breadcrumb
