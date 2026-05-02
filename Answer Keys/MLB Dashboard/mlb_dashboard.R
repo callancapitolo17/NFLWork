@@ -2000,8 +2000,9 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         id = "wz-account-bar",
         style = paste(
           "display:flex; align-items:center; gap:14px;",
-          "padding:8px 16px; background:#f7f7f7;",
-          "border-bottom:1px solid #ddd; font-family:sans-serif;"
+          "padding:8px 16px; background:#161b22;",
+          "border-bottom:1px solid #30363d; color:#c9d1d9;",
+          "font-family:sans-serif;"
         ),
         tags$div(id = "wz-account-pills", style = "display:flex; gap:8px;"),
         tags$button(
@@ -4142,8 +4143,9 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       pill.dataset.label = label;
       var stale = snap.error && snap.stale_seconds > 600;
       pill.style.cssText = 'padding:4px 10px; border-radius:14px; ' +
-        'background:' + (stale ? '#fdd' : '#fff') + '; ' +
-        'border:' + (label === window.WZ_SELECTED_ACCOUNT ? '2px solid #333' : '1px solid #bbb') + ';' +
+        'background:' + (stale ? '#3a1d1d' : '#21262d') + '; ' +
+        'color:#c9d1d9; ' +
+        'border:' + (label === window.WZ_SELECTED_ACCOUNT ? '2px solid #58a6ff' : '1px solid #30363d') + ';' +
         'font-size:13px;';
       var text = label + ': ' + fmtMoney(snap.available);
       if (snap.error) {
@@ -4251,8 +4253,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       }
       if (risk > available) {
         warn.textContent = '⚠ insufficient on ' + label +
-          ' ($' + Number(available).toFixed(2) + ' < $' +
-          risk.toFixed(2) + ' risk)';
+          ' (' + fmtMoney(available) + ' < ' + fmtMoney(risk) + ' risk)';
       } else {
         warn.textContent = '';
       }
@@ -4262,6 +4263,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
   document.addEventListener('DOMContentLoaded', function() {
     var sel = document.getElementById(SELECT_ID);
     sel.addEventListener('change', function() {
+      if (!sel.value) return;  // disabled empty-state has value=''
       window.WZ_SELECTED_ACCOUNT = sel.value;
       persistSelection(sel.value);
       renderPills();
@@ -4269,15 +4271,24 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
     });
     document.getElementById(REFRESH_BTN_ID).addEventListener('click', refreshBalances);
 
-    loadLastUsed().then(refreshBalances);
+    loadLastUsed().catch(function() {
+      // Network blip on the last-used GET shouldn't block the rest of the
+      // initial render. Pills will still populate; selector will land on
+      // whatever the server returns next time.
+    }).then(refreshBalances);
 
     // Watch for parlay-table re-renders (reactable pagination, hot-swap after
     // combined placement, etc.) so the warning is recomputed for the new rows.
     // Same pattern as the existing same-game observer on bets-table-container.
     var parlayContainer = document.getElementById('parlays-table-container');
     if (parlayContainer && typeof MutationObserver === 'function') {
+      var _wzWarnDebounce = null;
       var obs = new MutationObserver(function() {
-        recomputeAllInsufficiencyWarnings();
+        if (_wzWarnDebounce) clearTimeout(_wzWarnDebounce);
+        _wzWarnDebounce = setTimeout(function() {
+          _wzWarnDebounce = null;
+          recomputeAllInsufficiencyWarnings();
+        }, 100);
       });
       obs.observe(parlayContainer, {childList: true, subtree: true});
     }
