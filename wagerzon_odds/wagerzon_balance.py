@@ -38,20 +38,16 @@ def fetch_available_balance(account: WagerzonAccount) -> BalanceSnapshot:
     """Fetch the available balance. Network/auth failures return a snapshot
     with `error` set rather than raising."""
     try:
-        snap = _fetch_once(account)
-        return snap
+        return _fetch_once(account)
     except _UnauthorizedError:
-        # Force re-login and try once more.
+        # Force re-login and try once more. _fetch_once swallows network
+        # failures into error snapshots, so the only thing that can still
+        # raise is another _UnauthorizedError on the retry.
         wagerzon_auth.clear_session_cache(label=account.label)
         try:
             return _fetch_once(account)
         except _UnauthorizedError:
             return _error_snapshot(account, "auth_failed")
-        except requests.exceptions.Timeout:
-            return _error_snapshot(account, "timeout")
-        except requests.exceptions.RequestException as e:
-            logger.warning("balance fetch retry failed for %s: %s", account.label, e)
-            return _error_snapshot(account, "wz_error")
 
 
 def fetch_all(accounts: list[WagerzonAccount]) -> list[BalanceSnapshot]:

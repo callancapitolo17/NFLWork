@@ -46,12 +46,12 @@ BALANCE_URL = "https://backend.wagerzon.com/wager/PlayerInfoHelper.aspx"
 MOCK_BALANCE_RESPONSE = {
     "result": {
         "AmountAtRisk": "715 ",
-        "AvailBalance": "1,245.32 ",       # the gating number we display
+        "AvailBalance": "1,245.32 ",       # cash minus open exposure (NOT what we display)
         "BonusPoints": 0.0000,
         "CreditLimit": "2,000 ",
         "CurrentBalance": "1,300.00 ",     # the "cash" we expose for tooltip/debug
         "FreePlayAmount": "0 ",
-        "RealAvailBalance": "3,245.32 ",
+        "RealAvailBalance": "3,245.32 ",   # the gating number we display (cash + credit)
         # NOTE: real responses also include "Player" and "Password" fields
         # (yes, the password in plaintext). The parser MUST extract only the
         # numeric balance fields and never log the raw response body.
