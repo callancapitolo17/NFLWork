@@ -25,7 +25,7 @@ Today the MLB correlated parlay dashboard (`Answer Keys/MLB Dashboard/`) automat
 | Q7 | Default account on dashboard load = last-used (persisted across sessions). |
 | Q8 | On balance-fetch failure: show last-known balance with `stale Xs ago` tag; allow placement; turn pill red if stale > 10 minutes. |
 | Q9 | Scope is **only** the MLB correlated parlay dashboard placement flow. |
-| —  | "Available balance" specifically (cash minus open exposure / pending), not raw cash. |
+| —  | "Available balance" = RealAvailBalance (cash + credit line) — the amount WZ will actually let you wager. |
 
 ## Architecture overview
 
@@ -102,8 +102,8 @@ def list_accounts() -> list[WagerzonAccount]:
 @dataclass
 class BalanceSnapshot:
     label: str
-    available: float | None      # None when error is set
-    cash: float | None           # optional, may be None even on success
+    available: float | None      # None when error is set; RealAvailBalance (cash + credit)
+    cash: float | None           # optional, may be None even on success; CurrentBalance
     fetched_at: datetime         # UTC
     error: str | None            # one of: timeout, auth_failed, wz_error, None
 
@@ -114,7 +114,9 @@ def fetch_all(accounts: list[WagerzonAccount]) -> list[BalanceSnapshot]:
     Per-account fetch timeout = 5 seconds."""
 ```
 
-**Endpoint discovery deferred to implementation:** Memory has notes on `ConfirmWagerHelper` (pricing) and `PostWagerMultipleHelper` (placement) but nothing on a balance endpoint. The implementation plan must include a "discover the WZ balance endpoint" task before writing this module — likely via browser devtools while logged into the WZ web UI.
+The `available` field is `RealAvailBalance` from the WZ response — the precomputed sum of `AvailBalance` (cash minus open exposure) + `CreditLimit`. This is what WZ uses to gate bet acceptance, so it's what the dashboard's insufficient-balance warning gates on. Using `AvailBalance` alone would cause the warning to fire whenever the account uses any credit, making it useless with credit-enabled accounts.
+
+**Endpoint:** `GET https://backend.wagerzon.com/wager/PlayerInfoHelper.aspx` (discovered in Phase 3.1).
 
 ## Auth helper
 

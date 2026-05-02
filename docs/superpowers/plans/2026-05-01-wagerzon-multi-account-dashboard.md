@@ -759,11 +759,11 @@ No browser/devtools work required — the endpoint was found in `wagerzon_odds/r
 | Required query params | none |
 | Required POST body | none (it's a GET) |
 | Required headers beyond cookies | none — session cookies from `wagerzon_auth.get_session()` carry identity |
-| Response body | JSON: `{"result": {"AvailBalance": "1,245.32 ", "CurrentBalance": "1,300 ", "AmountAtRisk": "715 ", "RealAvailBalance": "...", "CreditLimit": "...", "BonusPoints": 0.0, "FreePlayAmount": "0 ", "Player": "<acct>", "Password": "<plaintext>", "ErrorCode": {}, "ErrorMsg": "", ...}}` |
-| Path to available balance | `result.AvailBalance` (string with thousand-separator comma + trailing space; parse with `float(s.strip().replace(",", ""))`) |
+| Response body | JSON: `{"result": {"RealAvailBalance": "256 ", "AvailBalance": "-1,744 ", "CurrentBalance": "-959 ", "CreditLimit": "2,000 ", "AmountAtRisk": "785 ", "Player": "<acct>", "Password": "<plaintext>", "ErrorCode": {}, "ErrorMsg": "", ...}}` |
+| Path to available balance | `result.RealAvailBalance` (string with thousand-separator comma + trailing space; parse with `float(s.strip().replace(",", ""))`) |
 | Path to cash balance | `result.CurrentBalance` (same string format) |
 
-**Why `AvailBalance` and not `RealAvailBalance`:** `AvailBalance` = `CurrentBalance - AmountAtRisk` (the wagerable amount from your own cash). `RealAvailBalance` adds `CreditLimit` on top — not what we want for the gating decision.
+**Why `RealAvailBalance` and not `AvailBalance`:** `AvailBalance` = `CurrentBalance - AmountAtRisk` (the cash minus open exposure). When an account uses its credit line, `AvailBalance` goes negative, which would cause the dashboard's insufficient-balance warning to fire on almost every parlay. `RealAvailBalance` = `AvailBalance + CreditLimit` — the actual amount WZ will accept for a new bet. This is what the gating logic should use.
 
 **Security gotcha (CRITICAL):** the response body also includes `result.Player` and `result.Password` (the user's WZ password in plaintext). The balance parser MUST extract only the two numeric fields above and never log the raw response body. Tests in Task 3.2 include an explicit assertion that the password value never appears in `caplog`.
 
@@ -827,12 +827,12 @@ BALANCE_URL = "https://backend.wagerzon.com/wager/PlayerInfoHelper.aspx"
 MOCK_BALANCE_RESPONSE = {
     "result": {
         "AmountAtRisk": "715 ",
-        "AvailBalance": "1,245.32 ",       # the gating number we display
+        "AvailBalance": "1,245.32 ",       # the gating number we display (now RealAvailBalance)
         "BonusPoints": 0.0000,
         "CreditLimit": "2,000 ",
         "CurrentBalance": "1,300.00 ",     # the "cash" we expose for tooltip/debug
         "FreePlayAmount": "0 ",
-        "RealAvailBalance": "3,245.32 ",
+        "RealAvailBalance": "3,245.32 ",   # the actual wagerable amount (= AvailBalance + CreditLimit)
         # NOTE: real responses also include "Player" and "Password" fields
         # (yes, the password in plaintext). The parser MUST extract only the
         # numeric balance fields and never log the raw response body.
@@ -848,7 +848,7 @@ def test_fetch_returns_snapshot(acct):
         m.get(BALANCE_URL, json=MOCK_BALANCE_RESPONSE)
         snap = wagerzon_balance.fetch_available_balance(acct)
         assert snap.label == "Wagerzon"
-        assert snap.available == 1245.32
+        assert snap.available == 3245.32  # RealAvailBalance from mock
         assert snap.cash == 1300.00
         assert snap.error is None
         assert snap.fetched_at.tzinfo == timezone.utc
@@ -860,7 +860,8 @@ def test_fetch_does_not_log_password_from_response(acct, caplog):
     import logging
     response_with_password = {
         "result": {
-            "AvailBalance": "100 ", "CurrentBalance": "100 ",
+            "RealAvailBalance": "1,100 ", "AvailBalance": "100 ",
+            "CurrentBalance": "100 ", "CreditLimit": "1,000 ",
             "Player": "MYACCT", "Password": "supersecret-do-not-log",
             "ErrorCode": {}, "ErrorMsg": "",
         }
@@ -902,7 +903,7 @@ def test_fetch_401_triggers_relogin_then_retries_once(acct):
         ])
         snap = wagerzon_balance.fetch_available_balance(acct)
         assert snap.error is None
-        assert snap.available == 1245.32
+        assert snap.available == 3245.32  # RealAvailBalance from mock
 
 
 def test_fetch_all_runs_in_parallel():
@@ -1050,21 +1051,34 @@ def _parse_balance_response(resp: requests.Response) -> tuple[float, Optional[fl
     """Parse the WZ PlayerInfoHelper response.
 
     Response shape:
-        {"result": {"AvailBalance": "1,245.32 ", "CurrentBalance": "1,300 ", ...,
-                    "Player": "ACCT", "Password": "<plaintext>", ...}}
+        {"result": {"RealAvailBalance": "256 ", "AvailBalance": "-1,744 ",
+                    "CurrentBalance": "-959 ", "CreditLimit": "2,000 ",
+                    "AmountAtRisk": "785 ", "Player": "ACCT",
+                    "Password": "<plaintext>", ...}}
 
-    Numbers come as strings with comma thousand-separators and a trailing
-    space. We extract ONLY AvailBalance (gating value) and CurrentBalance
-    (cash, optional). The response body also contains the user's password
-    in plaintext — never log the full body and never return any field
-    other than the two below.
+    Returns:
+        (available, cash)
+        - available: RealAvailBalance — the actual wagerable amount
+          (= AvailBalance + CreditLimit, precomputed by WZ). This is
+          what determines whether WZ will accept a new bet, so it's
+          what the dashboard's insufficient-balance warning gates on.
+          AvailBalance alone (cash minus open exposure) goes negative
+          whenever the user is using their credit line, which would
+          cause the warning to fire on almost every bet.
+        - cash: CurrentBalance — raw cash on deposit, exposed for
+          tooltip / debugging. Optional.
+
+    Numbers come as strings with comma thousand-separators and a
+    trailing space. We extract ONLY the two numeric fields above.
+    The response body also contains the user's password in plaintext
+    (result.Password); never log the raw body.
     """
     data = resp.json()
     result = data.get("result") or {}
 
-    raw_avail = result.get("AvailBalance")
+    raw_avail = result.get("RealAvailBalance")
     if raw_avail is None:
-        raise ValueError("balance response missing 'AvailBalance'")
+        raise ValueError("balance response missing 'RealAvailBalance'")
     available = _parse_money_string(raw_avail)
 
     raw_cash = result.get("CurrentBalance")

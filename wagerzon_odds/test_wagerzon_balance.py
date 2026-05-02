@@ -67,7 +67,7 @@ def test_fetch_returns_snapshot(acct):
         m.get(BALANCE_URL, json=MOCK_BALANCE_RESPONSE)
         snap = wagerzon_balance.fetch_available_balance(acct)
         assert snap.label == "Wagerzon"
-        assert snap.available == 1245.32
+        assert snap.available == 3245.32
         assert snap.cash == 1300.00
         assert snap.error is None
         assert snap.fetched_at.tzinfo == timezone.utc
@@ -79,7 +79,8 @@ def test_fetch_does_not_log_password_from_response(acct, caplog):
     import logging
     response_with_password = {
         "result": {
-            "AvailBalance": "100 ", "CurrentBalance": "100 ",
+            "RealAvailBalance": "1,100 ", "AvailBalance": "100 ",
+            "CurrentBalance": "100 ", "CreditLimit": "1,000 ",
             "Player": "MYACCT", "Password": "supersecret-do-not-log",
             "ErrorCode": {}, "ErrorMsg": "",
         }
@@ -121,7 +122,7 @@ def test_fetch_401_triggers_relogin_then_retries_once(acct):
         ])
         snap = wagerzon_balance.fetch_available_balance(acct)
         assert snap.error is None
-        assert snap.available == 1245.32
+        assert snap.available == 3245.32
 
 
 def test_fetch_all_runs_in_parallel():

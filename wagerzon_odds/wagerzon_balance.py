@@ -109,21 +109,34 @@ def _parse_balance_response(resp: requests.Response) -> tuple[float, Optional[fl
     """Parse the WZ PlayerInfoHelper response.
 
     Response shape:
-        {"result": {"AvailBalance": "1,245.32 ", "CurrentBalance": "1,300 ", ...,
-                    "Player": "ACCT", "Password": "<plaintext>", ...}}
+        {"result": {"RealAvailBalance": "256 ", "AvailBalance": "-1,744 ",
+                    "CurrentBalance": "-959 ", "CreditLimit": "2,000 ",
+                    "AmountAtRisk": "785 ", "Player": "ACCT",
+                    "Password": "<plaintext>", ...}}
 
-    Numbers come as strings with comma thousand-separators and a trailing
-    space. We extract ONLY AvailBalance (gating value) and CurrentBalance
-    (cash, optional). The response body also contains the user's password
-    in plaintext — never log the full body and never return any field
-    other than the two below.
+    Returns:
+        (available, cash)
+        - available: RealAvailBalance — the actual wagerable amount
+          (= AvailBalance + CreditLimit, precomputed by WZ). This is
+          what determines whether WZ will accept a new bet, so it's
+          what the dashboard's insufficient-balance warning gates on.
+          AvailBalance alone (cash minus open exposure) goes negative
+          whenever the user is using their credit line, which would
+          cause the warning to fire on almost every bet.
+        - cash: CurrentBalance — raw cash on deposit, exposed for
+          tooltip / debugging. Optional.
+
+    Numbers come as strings with comma thousand-separators and a
+    trailing space. We extract ONLY the two numeric fields above.
+    The response body also contains the user's password in plaintext
+    (result.Password); never log the raw body.
     """
     data = resp.json()
     result = data.get("result") or {}
 
-    raw_avail = result.get("AvailBalance")
+    raw_avail = result.get("RealAvailBalance")
     if raw_avail is None:
-        raise ValueError("balance response missing 'AvailBalance'")
+        raise ValueError("balance response missing 'RealAvailBalance'")
     available = _parse_money_string(raw_avail)
 
     raw_cash = result.get("CurrentBalance")
