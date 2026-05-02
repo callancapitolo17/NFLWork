@@ -94,7 +94,7 @@ parse_legs.R (generic prop parser)
 
 mlb_triple_play.R (standalone pricer)
   ├── Reads wagerzon_specials (latest scraped_at) for posted lines
-  ├── Reads mlb_game_samples (total_final_score + margin at F3/F5/F7/FG + scored_first)
+  ├── Reads mlb_game_samples (total_final_score + margin at F3/F5/F7/FG + home/away_scored_in_1st)
   ├── Reads mlb_trifecta_sgp_odds (latest fetch_time) for DK SGP fair odds
   ├── Maps Wagerzon team names → Odds API canonical via WZ_TO_CANONICAL dict
   ├── Joins to consensus_temp for game_id + side (home/away)
