@@ -96,6 +96,29 @@ american_prob <- function(odd1, odd2) {
     )
   )
 }
+
+#' Devig three American odds (3-way market: home/draw/away)
+#'
+#' Sum-and-normalize devig: each implied prob divided by the sum of all three.
+#' Used for Wagerzon's F5 3-way market where push is its own outcome (not refund).
+#'
+#' @param odds_away,odds_home,odds_draw American odds for the three outcomes
+#' @return list with p_away, p_home, p_draw (each in [0,1], sum to 1.0)
+american_prob_3way <- function(odds_away, odds_home, odds_draw) {
+  implied <- function(odds) {
+    if (is.na(odds) || odds == 0) return(NA_real_)
+    if (odds > 0) 100 / (odds + 100)
+    else (-odds) / (-odds + 100)
+  }
+  p_a <- implied(odds_away)
+  p_h <- implied(odds_home)
+  p_d <- implied(odds_draw)
+  if (any(is.na(c(p_a, p_h, p_d)))) {
+    return(list(p_away = NA_real_, p_home = NA_real_, p_draw = NA_real_))
+  }
+  total <- p_a + p_h + p_d
+  list(p_away = p_a / total, p_home = p_h / total, p_draw = p_d / total)
+}
 # Sharp books for live consensus — weight > 0 included, 0 excluded.
 # Pinnacle + Bookmaker at 1.1 = tiebreaker preference over 1.0-weight sharps.
 SHARP_BOOKS <- list(

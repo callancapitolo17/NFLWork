@@ -238,3 +238,31 @@ test_that("compare_alts_to_samples emits odd_even_runs bet when totals are odd 6
   expect_equal(nrow(odd_bet), 1)
   expect_equal(odd_bet$prob, 0.60, tolerance = 1e-9)
 })
+
+test_that("american_prob_3way devigs three American odds via sum-and-normalize", {
+  # CLE @ ATH 3-way from the recon: away=+105, home=+130, draw=+475
+  # Implied: 100/205, 100/230, 100/575 = 0.4878, 0.4348, 0.1739; sum=1.0965
+  # Devigged: 0.4448, 0.3966, 0.1586
+  result <- american_prob_3way(105, 130, 475)
+  expect_equal(result$p_away, 0.4448, tolerance = 1e-3)
+  expect_equal(result$p_home, 0.3966, tolerance = 1e-3)
+  expect_equal(result$p_draw, 0.1586, tolerance = 1e-3)
+  expect_equal(result$p_away + result$p_home + result$p_draw, 1.0, tolerance = 1e-9)
+})
+
+test_that("american_prob_3way handles negative odds", {
+  # Heavy home favorite: away=+200, home=-150, draw=+500
+  # Implied: 0.3333, 0.6, 0.1667; sum=1.1
+  # Devigged: 0.3030, 0.5455, 0.1515
+  result <- american_prob_3way(200, -150, 500)
+  expect_equal(result$p_away, 0.3030, tolerance = 1e-3)
+  expect_equal(result$p_home, 0.5455, tolerance = 1e-3)
+  expect_equal(result$p_draw, 0.1515, tolerance = 1e-3)
+})
+
+test_that("american_prob_3way returns NA for any NA input", {
+  result <- american_prob_3way(NA_integer_, 130, 475)
+  expect_true(is.na(result$p_away))
+  expect_true(is.na(result$p_home))
+  expect_true(is.na(result$p_draw))
+})
