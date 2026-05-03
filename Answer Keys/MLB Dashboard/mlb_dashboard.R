@@ -1164,9 +1164,11 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
 
         .header {
+          /* Two-row header: .header-row-top (title + Refresh) on top,
+             .header-row-accounts (Wagerzon pills) below. Each row owns
+             its own internal flex; the parent stacks them vertically. */
           display: flex;
-          justify-content: space-between;
-          align-items: center;
+          flex-direction: column;
           margin-bottom: 28px;
           padding-bottom: 20px;
           border-bottom: 1px solid #21262d;
