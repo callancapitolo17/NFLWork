@@ -151,6 +151,26 @@ One-click parlay placement from the Parlays tab. No manual confirmation, no brow
 **Sheets Integration:**
 Auto-placed bets are picked up by the existing `bet_logger/scraper_wagerzon.py` on its next run (HistoryHelper feed). No special handling needed — they log like manually-placed bets.
 
+## Wagerzon account selector
+
+The dashboard header includes a row of pills — one per configured Wagerzon
+account (discovered by `wagerzon_odds/wagerzon_accounts.py`). Each pill shows
+the account label and current available balance. Click a pill to switch the
+active placement account; the selection is persisted to
+`dashboard_settings.wagerzon_last_used` via `POST /api/wagerzon/last-used`
+and used by `POST /api/place-parlay`.
+
+- The selected pill is filled blue. Click an inactive pill (dark grey) to
+  switch.
+- A pill rendered as `Label · — ⚠` indicates the latest balance fetch
+  failed but is still considered fresh (under one minute old). After one
+  minute, it gains a `(stale Nm ago)` suffix and turns red-tinted.
+- The small `↻` icon next to the pills refetches balances on demand. The
+  green **Refresh** button on the right of the title row re-runs the
+  dashboard pipeline.
+- With zero accounts configured, the row renders a single dashed
+  "No Wagerzon accounts configured" pill. Placement is disabled.
+
 ## Troubleshooting
 
 - **"Port 8083 already in use"** — `run.sh` kills existing processes, but if you started Flask manually, `lsof -ti:8083 | xargs kill`

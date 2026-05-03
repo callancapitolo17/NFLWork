@@ -1164,9 +1164,11 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
 
         .header {
+          /* Two-row header: .header-row-top (title + Refresh) on top,
+             .header-row-accounts (Wagerzon pills) below. Each row owns
+             its own internal flex; the parent stacks them vertically. */
           display: flex;
-          justify-content: space-between;
-          align-items: center;
+          flex-direction: column;
           margin-bottom: 28px;
           padding-bottom: 20px;
           border-bottom: 1px solid #21262d;
@@ -1756,6 +1758,79 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
 
 
+        /* === Wagerzon multi-account header pill row (Phase 7 layout merge) ===
+           Lives inside .header as a second row. Replaces the old
+           full-bleed wz-account-bar that sat above .container. */
+        .header-row-top {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding-bottom: 10px;
+        }
+        .header-row-accounts {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 10px 0 4px 0;
+        }
+        .wz-pills {
+          display: flex;
+          gap: 6px;
+          align-items: center;
+        }
+        .header-label {
+          font-size: 11px;
+          color: #8b949e;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          margin-right: 2px;
+        }
+        .wz-pill {
+          padding: 4px 10px;
+          border-radius: 14px;
+          background: #21262d;
+          border: 1px solid #30363d;
+          color: #c9d1d9;
+          font-size: 13px;
+          cursor: pointer;
+          user-select: none;
+          transition: border-color 0.12s, background 0.12s;
+        }
+        .wz-pill:hover { border-color: #58a6ff; }
+        .wz-pill.selected {
+          background: #1f6feb;
+          border-color: #1f6feb;
+          color: #ffffff;
+          font-weight: 600;
+        }
+        .wz-pill.stale {
+          background: #3a1d1d;
+          border-color: #4a2a2a;
+          color: #ffa198;
+        }
+        .wz-pill.empty {
+          background: transparent;
+          border-style: dashed;
+          color: #6e7681;
+          cursor: default;
+        }
+        .wz-pill.empty:hover { border-color: #30363d; }
+        .wz-icon-btn {
+          background: transparent;
+          border: 1px solid #30363d;
+          color: #8b949e;
+          width: 28px;
+          height: 28px;
+          border-radius: 6px;
+          cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 14px;
+          padding: 0;
+        }
+        .wz-icon-btn:hover { color: #c9d1d9; border-color: #58a6ff; }
+
         /* Parlay tab — books strip (M / DK / FD / PX / NV / Cons pill row) */
         .books-strip {
           display: flex;
@@ -1990,38 +2065,29 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
     ),
 
     tags$body(
-      # Wagerzon multi-account header bar (Phase 6).
-      # Sits ABOVE the .container so it's visible on every tab. Renders one
-      # pill per configured Wagerzon account (label + available balance) and
-      # a global selector that drives placement. JS lives below in the main
-      # script block; populated on DOMContentLoaded by /api/wagerzon/balances
-      # and /api/wagerzon/last-used.
-      tags$div(
-        id = "wz-account-bar",
-        style = paste(
-          "display:flex; align-items:center; gap:14px;",
-          "padding:8px 16px; background:#161b22;",
-          "border-bottom:1px solid #30363d; color:#c9d1d9;",
-          "font-family:sans-serif;"
-        ),
-        tags$div(id = "wz-account-pills", style = "display:flex; gap:8px;"),
-        tags$button(
-          id = "wz-refresh-btn", type = "button",
-          style = "border:none; background:transparent; cursor:pointer; font-size:18px;",
-          title = "Refresh balances",
-          HTML("&#x21bb;")  # circular-arrow refresh glyph
-        ),
-        tags$span("Placing on:", style = "margin-left:auto; font-weight:bold;"),
-        tags$select(id = "wz-account-select", style = "padding:4px 8px; font-size:14px;")
-      ),
       tags$div(class = "container",
-        # Header
+        # Header — two rows.
+        # Row 1: title + subtitle (left) | "Refresh" data button (right).
+        # Row 2: "Placing on" caption + clickable Wagerzon account pills +
+        #        balance-refresh icon. Replaces the old full-bleed
+        #        wz-account-bar that lived above .container.
         tags$div(class = "header",
-          tags$div(
-            tags$h1("MLB Answer Key Dashboard"),
-            tags$div(class = "subtitle", paste("Updated", timestamp))
+          tags$div(class = "header-row-top",
+            tags$div(
+              tags$h1("MLB Answer Key Dashboard"),
+              tags$div(class = "subtitle", paste("Updated", timestamp))
+            ),
+            tags$button(class = "refresh-btn", onclick = "refreshData()", "Refresh")
           ),
-          tags$button(class = "refresh-btn", onclick = "refreshData()", "Refresh")
+          tags$div(class = "header-row-accounts", id = "wz-account-row",
+            tags$span(class = "header-label", "Placing on"),
+            tags$div(id = "wz-account-pills", class = "wz-pills"),
+            tags$button(
+              id = "wz-refresh-btn", type = "button", class = "wz-icon-btn",
+              title = "Refresh balances",
+              HTML("&#x21bb;")
+            )
+          )
         ),
 
         # Tab Navigation
@@ -3723,10 +3789,10 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           btn.disabled = true;
           btn.textContent = "Placing...";
 
-          // Phase 6: every placement must specify which Wagerzon account it
-          // lands on. The selector in #wz-account-bar is the source of truth;
-          // bail loudly if for some reason no account is set (e.g. server
-          // returned no accounts at startup).
+          // Every placement must specify which Wagerzon account it lands on.
+          // window.WZ_SELECTED_ACCOUNT (set by the header pill row) is the
+          // source of truth; bail loudly if for some reason no account is
+          // set (e.g. server returned no accounts at startup).
           if (!window.WZ_SELECTED_ACCOUNT) {
             showToast("No Wagerzon account selected", "error");
             btn.disabled = false;
@@ -4105,84 +4171,98 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
       ')),
 
-      # =====================================================================
-      # Wagerzon multi-account header bar — JS controller (Phase 6).
-      # Owns:
-      #   * window.WZ_SELECTED_ACCOUNT (string, source-of-truth selection)
-      #   * window.WZ_BALANCES         (label -> snapshot from /api/wagerzon/balances)
-      #   * window.wzApplyBalanceAfter (called by placeParlay() after a successful
-      #                                 placement to refresh the pill without a full GET)
-      #   * window._wzRecomputeWarnings (sweeps every Place button with data-risk and
-      #                                  populates the sibling .wz-insufficient-warning)
-      # Uses raw string r"(...)" so the embedded JS can keep its single-quote
-      # literals without backslash-escaping every one.
-      # =====================================================================
       tags$script(HTML(r"(
 (function() {
-  var BAR_ID    = 'wz-account-pills';
-  var SELECT_ID = 'wz-account-select';
+  // Wagerzon multi-account header pill row controller (Phase 7).
+  // Owns:
+  //   * window.WZ_SELECTED_ACCOUNT (string, source-of-truth selection)
+  //   * window.WZ_BALANCES         (label -> snapshot from /api/wagerzon/balances)
+  //   * window.wzApplyBalanceAfter (called by placeParlay() after a successful
+  //                                 placement to refresh the pill without a full GET)
+  //   * window._wzRecomputeWarnings (sweeps every Place button with data-risk and
+  //                                  populates the sibling .wz-insufficient-warning)
+  var PILLS_ID  = 'wz-account-pills';
   var REFRESH_BTN_ID = 'wz-refresh-btn';
+  var STALE_SECONDS = 60;   // suffix + .stale class only kick in past this
 
-  // Currently-selected account label, source of truth for the dashboard.
   window.WZ_SELECTED_ACCOUNT = null;
   window.WZ_BALANCES = {};   // label -> snapshot
 
   function fmtMoney(n) {
-    if (n === null || n === undefined) return '—';
+    if (n === null || n === undefined) return '—';  // em dash
     return '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
   }
 
-  function renderPills() {
-    var bar = document.getElementById(BAR_ID);
-    if (!bar) return;
-    bar.innerHTML = '';
-    Object.keys(WZ_BALANCES).forEach(function(label) {
-      var snap = WZ_BALANCES[label];
-      var pill = document.createElement('span');
-      pill.className = 'wz-pill';
-      pill.dataset.label = label;
-      var stale = snap.error && snap.stale_seconds > 600;
-      pill.style.cssText = 'padding:4px 10px; border-radius:14px; ' +
-        'background:' + (stale ? '#3a1d1d' : '#21262d') + '; ' +
-        'color:#c9d1d9; ' +
-        'border:' + (label === window.WZ_SELECTED_ACCOUNT ? '2px solid #58a6ff' : '1px solid #30363d') + ';' +
-        'font-size:13px;';
-      var text = label + ': ' + fmtMoney(snap.available);
-      if (snap.error) {
-        text += ' ⚠';  // warning sign
-        var sub = snap.stale_seconds < 60
-          ? snap.stale_seconds + 's'
-          : Math.floor(snap.stale_seconds/60) + 'm';
-        text += ' (stale ' + sub + ' ago)';
-      }
-      pill.textContent = text;
-      bar.appendChild(pill);
+  function persistSelection(label) {
+    return fetch('/api/wagerzon/last-used', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({label: label})
     });
   }
 
-  function renderSelect(orderedLabels) {
-    var sel = document.getElementById(SELECT_ID);
-    if (!sel) return;
-    sel.innerHTML = '';
-    orderedLabels.forEach(function(label) {
-      var opt = document.createElement('option');
-      opt.value = label;
-      opt.textContent = label;
-      if (label === window.WZ_SELECTED_ACCOUNT) opt.selected = true;
-      sel.appendChild(opt);
-    });
-    if (orderedLabels.length === 0) {
-      var opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = 'No Wagerzon accounts configured';
-      opt.disabled = true; opt.selected = true;
-      sel.appendChild(opt);
-      sel.disabled = true;
-    } else if (orderedLabels.length === 1) {
-      sel.disabled = true;
-    } else {
-      sel.disabled = false;
+  function pillTextFor(label, snap) {
+    // Healthy:        Label . $1,234.56
+    // Errored, fresh: Label . -- (warning sign)
+    // Errored, stale: Label . -- (warning sign) followed by (stale Nm ago)
+    var text = label + ' · ' + fmtMoney(snap.available);
+    if (snap.error) {
+      text += ' ⚠';
+      // Only label as "stale" when it has been at least a minute since the
+      // last successful fetch. Avoids the contradictory "stale 0s ago" text
+      // we used to render on every fresh-but-errored fetch.
+      if (snap.stale_seconds >= STALE_SECONDS) {
+        var sub = Math.floor(snap.stale_seconds / 60) + 'm';
+        text += ' (stale ' + sub + ' ago)';
+      }
     }
+    return text;
+  }
+
+  function isStale(snap) {
+    return snap.error && snap.stale_seconds >= STALE_SECONDS;
+  }
+
+  function renderEmpty(bar) {
+    var pill = document.createElement('span');
+    pill.className = 'wz-pill empty';
+    pill.textContent = 'No Wagerzon accounts configured';
+    bar.appendChild(pill);
+  }
+
+  function renderPills(orderedLabels) {
+    var bar = document.getElementById(PILLS_ID);
+    if (!bar) return;
+    bar.innerHTML = '';
+
+    if (orderedLabels.length === 0) {
+      renderEmpty(bar);
+      return;
+    }
+
+    orderedLabels.forEach(function(label) {
+      var snap = WZ_BALANCES[label] || {available: null, error: 'no_data', stale_seconds: 0};
+      var pill = document.createElement('span');
+      var classes = ['wz-pill'];
+      if (label === window.WZ_SELECTED_ACCOUNT) classes.push('selected');
+      if (isStale(snap)) classes.push('stale');
+      pill.className = classes.join(' ');
+      pill.dataset.label = label;
+      pill.textContent = pillTextFor(label, snap);
+
+      pill.addEventListener('click', function() {
+        if (label === window.WZ_SELECTED_ACCOUNT) return;
+        window.WZ_SELECTED_ACCOUNT = label;
+        persistSelection(label).catch(function() {
+          // Network blip on persist shouldn't block UI; selection still
+          // applies for this session and will retry on next click.
+        });
+        renderPills(orderedLabels);
+        recomputeAllInsufficiencyWarnings();
+      });
+
+      bar.appendChild(pill);
+    });
   }
 
   function refreshBalances() {
@@ -4195,8 +4275,16 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           WZ_BALANCES[snap.label] = snap;
           orderedLabels.push(snap.label);
         });
-        renderPills();
-        renderSelect(orderedLabels);
+
+        // Default-to-first behaviour. The old <select> got this for free
+        // via browser default-first-option; the div-based pill row needs
+        // an explicit default + persist so the next page load is stable.
+        if (!window.WZ_SELECTED_ACCOUNT && orderedLabels.length > 0) {
+          window.WZ_SELECTED_ACCOUNT = orderedLabels[0];
+          persistSelection(orderedLabels[0]).catch(function() {});
+        }
+
+        renderPills(orderedLabels);
         recomputeAllInsufficiencyWarnings();
       });
   }
@@ -4207,14 +4295,6 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       .then(function(payload) {
         window.WZ_SELECTED_ACCOUNT = payload.label || null;
       });
-  }
-
-  function persistSelection(label) {
-    return fetch('/api/wagerzon/last-used', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({label: label})
-    });
   }
 
   function recomputeAllInsufficiencyWarnings() {
@@ -4228,7 +4308,17 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
   window.wzApplyBalanceAfter = function(label, snap) {
     if (!snap) return;
     WZ_BALANCES[label] = snap;
-    renderPills();
+    // Caller doesn't have orderedLabels — derive from the current DOM
+    // so render order is preserved.
+    var bar = document.getElementById(PILLS_ID);
+    var labels = [];
+    if (bar) {
+      bar.querySelectorAll('.wz-pill[data-label]').forEach(function(el) {
+        labels.push(el.dataset.label);
+      });
+    }
+    if (labels.length === 0) labels = Object.keys(WZ_BALANCES);
+    renderPills(labels);
     recomputeAllInsufficiencyWarnings();
   };
 
@@ -4261,25 +4351,21 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
   };
 
   document.addEventListener('DOMContentLoaded', function() {
-    var sel = document.getElementById(SELECT_ID);
-    sel.addEventListener('change', function() {
-      if (!sel.value) return;  // disabled empty-state has value=''
-      window.WZ_SELECTED_ACCOUNT = sel.value;
-      persistSelection(sel.value);
-      renderPills();
-      recomputeAllInsufficiencyWarnings();
-    });
-    document.getElementById(REFRESH_BTN_ID).addEventListener('click', refreshBalances);
+    var refreshBtn = document.getElementById(REFRESH_BTN_ID);
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', refreshBalances);
+    }
 
     loadLastUsed().catch(function() {
       // Network blip on the last-used GET shouldn't block the rest of the
-      // initial render. Pills will still populate; selector will land on
-      // whatever the server returns next time.
+      // initial render. Pills will still populate; default-to-first kicks
+      // in inside refreshBalances if WZ_SELECTED_ACCOUNT is still null.
     }).then(refreshBalances);
 
-    // Watch for parlay-table re-renders (reactable pagination, hot-swap after
-    // combined placement, etc.) so the warning is recomputed for the new rows.
-    // Same pattern as the existing same-game observer on bets-table-container.
+    // Watch for parlay-table re-renders (reactable pagination, hot-swap
+    // after combined placement, etc.) so the warning is recomputed for
+    // the new rows. Same pattern as the existing same-game observer on
+    // bets-table-container.
     var parlayContainer = document.getElementById('parlays-table-container');
     if (parlayContainer && typeof MutationObserver === 'function') {
       var _wzWarnDebounce = null;
