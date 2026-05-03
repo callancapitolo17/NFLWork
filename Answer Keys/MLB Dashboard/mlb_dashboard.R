@@ -4269,9 +4269,22 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
     return fetch('/api/wagerzon/balances')
       .then(function(r) { return r.json(); })
       .then(function(payload) {
+        var incoming = Array.isArray(payload && payload.balances) ? payload.balances : null;
+
+        // Guard against transient empty/malformed payloads wiping good
+        // pills mid-session. If we already have rendered balances and the
+        // server hands back nothing, keep the old state and warn — a real
+        // "no accounts configured" state will still render on first load
+        // because WZ_BALANCES is empty then.
+        var hadBalances = Object.keys(WZ_BALANCES).length > 0;
+        if (!incoming || (incoming.length === 0 && hadBalances)) {
+          console.warn('refreshBalances: empty/invalid payload; keeping prior pills', payload);
+          return;
+        }
+
         var orderedLabels = [];
         WZ_BALANCES = {};
-        (payload.balances || []).forEach(function(snap) {
+        incoming.forEach(function(snap) {
           WZ_BALANCES[snap.label] = snap;
           orderedLabels.push(snap.label);
         });
@@ -4286,6 +4299,11 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
         renderPills(orderedLabels);
         recomputeAllInsufficiencyWarnings();
+      })
+      .catch(function(err) {
+        // Network failure or non-JSON response. Don't touch UI state —
+        // surface to console so the click doesn't feel like a no-op.
+        console.warn('refreshBalances failed:', err);
       });
   }
 
