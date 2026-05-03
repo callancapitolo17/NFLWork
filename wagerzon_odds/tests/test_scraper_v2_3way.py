@@ -62,3 +62,63 @@ def test_init_database_idempotent_ALTER_on_existing_db(monkeypatch):
         cols_after_2 = [r[0] for r in con.execute("DESCRIBE mlb_odds").fetchall()]
         con.close()
         assert cols_after_1 == cols_after_2, "Second init_database call changed schema"
+
+
+def _make_3way_base():
+    """Synthetic base dict matching what parse_odds builds before calling helpers."""
+    return {
+        "fetch_time": "2026-05-03 19:30:00",
+        "sport_key": "baseball_mlb",
+        "away_team": "Cleveland Guardians",
+        "home_team": "Athletics",
+        "game_date": "05/03",
+        "game_time": "19:30",
+        "idgm": 5635900,
+    }
+
+
+def test_parse_3way_line_emits_record_with_draw_ml():
+    """A 3-way GameLine with all three prices populates the row correctly."""
+    from scraper_v2 import parse_3way_line
+    line = {
+        "voddst": "105",   # away ML
+        "hoddst": "130",   # home ML
+        "vspoddst": "475", # draw price
+        # ...other fields like vsprdt/vsprdoddst exist but are empty/irrelevant
+    }
+    rec = parse_3way_line(line, "test-game-1", "f5", "h2h_3way_1st_5_innings", _make_3way_base())
+
+    assert rec is not None
+    assert rec["market"] == "h2h_3way_1st_5_innings"
+    assert rec["period"] == "f5"
+    assert rec["away_ml"] == 105
+    assert rec["home_ml"] == 130
+    assert rec["draw_ml"] == 475
+    # Spread/total fields must be NULL for 3-way rows
+    assert rec["away_spread"] is None
+    assert rec["home_spread"] is None
+    assert rec["total"] is None
+    assert rec["over_price"] is None
+    assert rec["under_price"] is None
+    # Base fields preserved
+    assert rec["away_team"] == "Cleveland Guardians"
+    assert rec["home_team"] == "Athletics"
+    assert rec["game_id"] == "test-game-1"
+
+
+def test_parse_3way_line_returns_none_when_all_three_prices_missing():
+    """If voddst/hoddst/vspoddst are all empty, no row should be emitted."""
+    from scraper_v2 import parse_3way_line
+    line = {"voddst": "", "hoddst": "", "vspoddst": ""}
+    rec = parse_3way_line(line, "test-game-2", "f5", "h2h_3way_1st_5_innings", _make_3way_base())
+    assert rec is None
+
+
+def test_parse_3way_line_handles_negative_prices():
+    """Negative American odds (e.g. heavy favorite) parse correctly."""
+    from scraper_v2 import parse_3way_line
+    line = {"voddst": "-150", "hoddst": "+200", "vspoddst": "+500"}
+    rec = parse_3way_line(line, "test-game-3", "f5", "h2h_3way_1st_5_innings", _make_3way_base())
+    assert rec["away_ml"] == -150
+    assert rec["home_ml"] == 200
+    assert rec["draw_ml"] == 500

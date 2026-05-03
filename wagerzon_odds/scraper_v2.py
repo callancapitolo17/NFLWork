@@ -156,6 +156,7 @@ def parse_game_line(line: dict, game_id: str, period: str, market: str,
         "under_price": under_price,
         "away_ml": away_ml,
         "home_ml": home_ml,
+        "draw_ml": None,    # required by save_odds columns list
     }
 
 
@@ -183,6 +184,7 @@ def parse_team_total(line: dict, game_id: str, period: str, market: str,
         "under_price": under_price,
         "away_ml": None,
         "home_ml": None,
+        "draw_ml": None,    # required by save_odds columns list
     }
 
 
@@ -213,6 +215,45 @@ def parse_moneyline_only(line: dict, game_id: str, period: str, market: str,
         "under_price": None,
         "away_ml": away_ml,
         "home_ml": home_ml,
+        "draw_ml": None,    # required by save_odds columns list
+    }
+
+
+def parse_3way_line(line: dict, game_id: str, period: str, market: str,
+                    base: dict) -> Optional[dict]:
+    """Parse a 3-way GameLine (e.g. lg=1280 MLB - 1ST 5 INN WINNER (3-WAY)).
+
+    Wagerzon's 3-way market uses three price fields on a single GameLine:
+        voddst    -> away ML
+        hoddst    -> home ML
+        vspoddst  -> draw price
+                     (the 'spread' field is repurposed to hold the third outcome)
+
+    Returns None if all three prices are missing (Wagerzon posts placeholder
+    games with empty prices when lines aren't yet posted).
+    """
+    away_ml = safe_int(line.get("voddst"))
+    home_ml = safe_int(line.get("hoddst"))
+    draw_ml = safe_int(line.get("vspoddst"))
+
+    if away_ml is None and home_ml is None and draw_ml is None:
+        return None
+
+    return {
+        **base,
+        "game_id": game_id,
+        "market": market,
+        "period": period,
+        "away_spread": None,
+        "away_spread_price": None,
+        "home_spread": None,
+        "home_spread_price": None,
+        "total": None,
+        "over_price": None,
+        "under_price": None,
+        "away_ml": away_ml,
+        "home_ml": home_ml,
+        "draw_ml": draw_ml,
     }
 
 
@@ -398,6 +439,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                             "under_price": None,
                             "away_ml": None,
                             "home_ml": None,
+                            "draw_ml": None,    # required by save_odds columns list
                         })
 
                     # Alt total
@@ -417,6 +459,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                             "under_price": safe_int(child_line.get("unoddst")),
                             "away_ml": None,
                             "home_ml": None,
+                            "draw_ml": None,    # required by save_odds columns list
                         })
 
                 alt_counter += 1
@@ -565,6 +608,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 "under_price": None,
                 "away_ml": away_odds,
                 "home_ml": home_odds,
+                "draw_ml": None,    # required by save_odds columns list
                 "idgm": game.get("idgm"),
             })
             print(f"  {market_name}: {away_team} @ {home_team} | {away_odds}/{home_odds}")
