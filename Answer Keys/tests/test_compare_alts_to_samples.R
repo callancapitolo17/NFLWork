@@ -266,3 +266,109 @@ test_that("american_prob_3way returns NA for any NA input", {
   expect_true(is.na(result$p_home))
   expect_true(is.na(result$p_draw))
 })
+
+test_that("compare_alts_to_samples emits h2h_3way bets — fair home wins 70%, draws 10%", {
+  # 700 home wins (margin > 0), 200 away wins (margin < 0), 100 ties (margin == 0)
+  margins <- c(rep(2L, 700), rep(-2L, 200), rep(0L, 100))
+  samples <- make_synthetic_samples(margins_f3 = margins)   # margins_f3 doubles as F5 placeholder per fixture
+  # Force F5 margins specifically: override the placeholder
+  samples[["test-game-1"]]$sample$game_home_margin_period_F5 <- margins
+  consensus <- make_consensus()
+
+  # Wagerzon-shaped 3-way row: home -110, away +200, draw +500
+  # devigged: implied 0.524 + 0.333 + 0.167 = 1.024; norm 0.512, 0.325, 0.163
+  # vs model 0.70/0.20/0.10 → home is BIG +EV, away/draw -EV
+  offshore <- tibble(
+    bookmaker_key = "wagerzon",
+    home_team = "Test Home",
+    away_team = "Test Away",
+    game_date = "2026-05-03",
+    game_time = "19:00",
+    market = "h2h_3way_1st_5_innings",
+    market_type = "h2h_3way",
+    line = NA_real_,
+    odds_away = 200L,
+    odds_home = -110L,
+    odds_draw = 500L,
+    odds_over = NA_integer_,
+    odds_under = NA_integer_,
+    home_spread = NA_real_,
+    away_spread = NA_real_
+  )
+
+  bets <- compare_alts_to_samples(
+    samples = samples, offshore_odds = offshore, consensus_odds = consensus,
+    bankroll = 100, kelly_mult = 0.25, ev_threshold = 0.02
+  )
+
+  home_bet <- bets[bets$bet_on == "Test Home" & bets$market == "h2h_3way_1st_5_innings", ]
+  expect_equal(nrow(home_bet), 1)
+  expect_equal(home_bet$prob, 0.70, tolerance = 1e-9)
+})
+
+test_that("compare_alts_to_samples emits Tie bet when draw is +EV", {
+  # 200 home wins, 200 away wins, 600 ties — model says 60% chance of tie
+  margins <- c(rep(2L, 200), rep(-2L, 200), rep(0L, 600))
+  samples <- make_synthetic_samples()
+  samples[["test-game-1"]]$sample$game_home_margin_period_F5 <- margins
+  consensus <- make_consensus()
+
+  # Wagerzon prices the draw at +200 (implied 33%) — model says 60% tie → big +EV on draw
+  offshore <- tibble(
+    bookmaker_key = "wagerzon",
+    home_team = "Test Home",
+    away_team = "Test Away",
+    game_date = "2026-05-03",
+    game_time = "19:00",
+    market = "h2h_3way_1st_5_innings",
+    market_type = "h2h_3way",
+    line = NA_real_,
+    odds_away = 200L,
+    odds_home = 200L,
+    odds_draw = 200L,
+    odds_over = NA_integer_,
+    odds_under = NA_integer_,
+    home_spread = NA_real_,
+    away_spread = NA_real_
+  )
+
+  bets <- compare_alts_to_samples(
+    samples = samples, offshore_odds = offshore, consensus_odds = consensus,
+    bankroll = 100, kelly_mult = 0.25, ev_threshold = 0.02
+  )
+
+  tie_bet <- bets[bets$bet_on == "Tie" & bets$market == "h2h_3way_1st_5_innings", ]
+  expect_equal(nrow(tie_bet), 1)
+  expect_equal(tie_bet$prob, 0.60, tolerance = 1e-9)
+})
+
+test_that("compare_alts_to_samples returns no bets when 3-way row has any NA odds", {
+  margins <- c(rep(2L, 700), rep(-2L, 200), rep(0L, 100))
+  samples <- make_synthetic_samples()
+  samples[["test-game-1"]]$sample$game_home_margin_period_F5 <- margins
+  consensus <- make_consensus()
+
+  offshore <- tibble(
+    bookmaker_key = "wagerzon",
+    home_team = "Test Home",
+    away_team = "Test Away",
+    game_date = "2026-05-03",
+    game_time = "19:00",
+    market = "h2h_3way_1st_5_innings",
+    market_type = "h2h_3way",
+    line = NA_real_,
+    odds_away = 200L,
+    odds_home = -110L,
+    odds_draw = NA_integer_,    # missing draw price — must skip cleanly
+    odds_over = NA_integer_,
+    odds_under = NA_integer_,
+    home_spread = NA_real_,
+    away_spread = NA_real_
+  )
+
+  bets <- compare_alts_to_samples(
+    samples = samples, offshore_odds = offshore, consensus_odds = consensus,
+    bankroll = 100, kelly_mult = 0.25, ev_threshold = 0.02
+  )
+  expect_equal(nrow(bets), 0)
+})

@@ -4565,7 +4565,8 @@ compare_alts_to_samples <- function(
       grepl("^team_totals_", market) |
       grepl("1st_3_innings", market) |
       grepl("1st_7_innings", market) |
-      market == "odd_even_runs"
+      market == "odd_even_runs" |
+      grepl("^h2h_3way_", market)
     )
 
   if (nrow(alt_odds) == 0) return(tibble())
@@ -4603,6 +4604,8 @@ compare_alts_to_samples <- function(
     # lookup; the handler hardcodes _FG anyway.
     suffix <- if (grepl("1st_3_innings$", row$market)) {
       "f3"
+    } else if (grepl("1st_5_innings$", row$market)) {
+      "f5"
     } else if (grepl("1st_7_innings$", row$market)) {
       "f7"
     } else if (row$market == "odd_even_runs") {
@@ -4745,11 +4748,14 @@ compare_alts_to_samples <- function(
         )
       }
 
-    } else if (grepl("^h2h_", row$market) && !is.na(row$odds_home) && !is.na(row$odds_away)) {
+    } else if (grepl("^h2h_", row$market) && !grepl("^h2h_3way_", row$market) &&
+               !is.na(row$odds_home) && !is.na(row$odds_away)) {
       # Derivative moneyline (e.g. h2h_1st_3_innings, h2h_1st_7_innings).
       # 2-way pricing: home wins iff margin > 0, away wins iff margin < 0,
       # margin == 0 is a push (refund) and excluded from the denominator —
       # mirrors how Wagerzon settles F-period MLs in practice.
+      # Explicitly exclude h2h_3way_* — those go to the dedicated 3-way branch
+      # below where ties are a real outcome, not a refund.
       col_name <- paste0(margin_col, "_", period)
       if (!col_name %in% names(sample_df)) next
       margins <- sample_df[[col_name]]
@@ -4825,6 +4831,57 @@ compare_alts_to_samples <- function(
           market = row$market, bet_on = "Even",
           line = NA_real_, bet_size = even_size, ev = even_ev,
           odds = row$odds_home, prob = p_even
+        )
+      }
+    } else if (grepl("^h2h_3way_", row$market) &&
+               !is.na(row$odds_home) && !is.na(row$odds_away) && !is.na(row$odds_draw)) {
+      # 3-way moneyline (Wagerzon F5 3-way market). Tie is its OWN outcome,
+      # not a refund — so p_home + p_away + p_draw = 1, no exclusion.
+      col_name <- paste0(margin_col, "_", period)
+      if (!col_name %in% names(sample_df)) next
+      margins <- sample_df[[col_name]]
+      margins <- margins[!is.na(margins)]
+      if (length(margins) == 0) next
+
+      p_home <- sum(margins > 0) / length(margins)
+      p_away <- sum(margins < 0) / length(margins)
+      p_draw <- sum(margins == 0) / length(margins)
+
+      probs <- american_prob_3way(row$odds_away, row$odds_home, row$odds_draw)
+      if (any(is.na(unlist(probs)))) next
+
+      home_ev <- compute_ev(p_home, probs$p_home)
+      away_ev <- compute_ev(p_away, probs$p_away)
+      draw_ev <- compute_ev(p_draw, probs$p_draw)
+      home_size <- kelly_stake(home_ev, probs$p_home, bankroll, kelly_mult)
+      away_size <- kelly_stake(away_ev, probs$p_away, bankroll, kelly_mult)
+      draw_size <- kelly_stake(draw_ev, probs$p_draw, bankroll, kelly_mult)
+
+      if (home_ev >= ev_threshold) {
+        all_bets[[length(all_bets) + 1]] <- tibble(
+          id = game_id, home_team = row$home_team, away_team = row$away_team,
+          pt_start_time = pt_start_time, bookmaker_key = book_key,
+          market = row$market, bet_on = row$home_team,
+          line = NA_real_, bet_size = home_size, ev = home_ev,
+          odds = row$odds_home, prob = p_home
+        )
+      }
+      if (away_ev >= ev_threshold) {
+        all_bets[[length(all_bets) + 1]] <- tibble(
+          id = game_id, home_team = row$home_team, away_team = row$away_team,
+          pt_start_time = pt_start_time, bookmaker_key = book_key,
+          market = row$market, bet_on = row$away_team,
+          line = NA_real_, bet_size = away_size, ev = away_ev,
+          odds = row$odds_away, prob = p_away
+        )
+      }
+      if (draw_ev >= ev_threshold) {
+        all_bets[[length(all_bets) + 1]] <- tibble(
+          id = game_id, home_team = row$home_team, away_team = row$away_team,
+          pt_start_time = pt_start_time, bookmaker_key = book_key,
+          market = row$market, bet_on = "Tie",
+          line = NA_real_, bet_size = draw_size, ev = draw_ev,
+          odds = row$odds_draw, prob = p_draw
         )
       }
     }
