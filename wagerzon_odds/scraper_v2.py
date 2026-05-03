@@ -603,14 +603,15 @@ def init_database(sport: str):
             under_price INTEGER,
             away_ml INTEGER,
             home_ml INTEGER,
+            draw_ml INTEGER,
             idgm INTEGER
         )
     """)
-    # Add idgm column to existing tables that predate this change
-    try:
-        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN idgm INTEGER")
-    except Exception:
-        pass  # column already exists
+    # Idempotent upgrades for existing DBs that pre-date these columns.
+    # ADD COLUMN IF NOT EXISTS is supported in DuckDB 1.4+ and is a no-op
+    # when the column already exists.
+    for col_def in ("idgm INTEGER", "draw_ml INTEGER"):
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_def}")
     conn.close()
 
 
@@ -629,7 +630,8 @@ def save_odds(odds_data: list[dict], sport: str):
         "fetch_time", "sport_key", "game_id", "game_date", "game_time",
         "away_team", "home_team", "market", "period",
         "away_spread", "away_spread_price", "home_spread", "home_spread_price",
-        "total", "over_price", "under_price", "away_ml", "home_ml", "idgm"
+        "total", "over_price", "under_price", "away_ml", "home_ml",
+        "draw_ml", "idgm"
     ]
 
     placeholders = ", ".join(["?" for _ in columns])
