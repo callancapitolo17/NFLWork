@@ -138,3 +138,71 @@ def test_parse_3way_line_emits_record_when_only_two_prices_present():
     assert rec["away_ml"] == 105
     assert rec["home_ml"] == 130
     assert rec["draw_ml"] is None
+
+
+def test_parse_odds_routes_idgmtyp_29_to_3way_parser():
+    """Synthetic JSON with a 3-way league should produce h2h_3way_* rows."""
+    from scraper_v2 import parse_odds
+
+    synthetic = {
+        "result": {
+            "listLeagues": [[
+                {
+                    "Description": "MLB - 1ST 5 INN WINNER (3-WAY)",
+                    "Games": [
+                        {
+                            "vtm": "1H CLE GUARDIANS 3WAY",
+                            "htm": "1H ATHLETICS 3WAY",
+                            "vnum": 12345,
+                            "hnum": 12346,
+                            "gmdt": "20260503",
+                            "gmtm": "19:30:00",
+                            "gpd": "GAME",
+                            "idgmtyp": 29,
+                            "idlg": 1280,
+                            "idspt": "MLB",
+                            "idgm": 5635900,
+                            "GameLines": [{
+                                "voddst": "105",
+                                "hoddst": "130",
+                                "vspoddst": "475",
+                            }],
+                            "GameChilds": [],
+                        },
+                        {
+                            # Empty placeholder game (Wagerzon posts these
+                            # before lines are set) — should be skipped.
+                            "vtm": ".",
+                            "htm": ".",
+                            "vnum": 0, "hnum": 0,
+                            "gmdt": "20260503", "gmtm": "00:00:00",
+                            "gpd": "GAME", "idgmtyp": 29, "idlg": 1280,
+                            "idspt": "MLB", "idgm": 5635901,
+                            "GameLines": [{"voddst": "", "hoddst": "", "vspoddst": ""}],
+                            "GameChilds": [],
+                        },
+                    ],
+                }
+            ]]
+        }
+    }
+
+    records = parse_odds(synthetic, "mlb")
+
+    three_way = [r for r in records if r["market"] == "h2h_3way_1st_5_innings"]
+    assert len(three_way) == 1, f"Expected 1 three-way row, got {len(three_way)}: {three_way}"
+
+    rec = three_way[0]
+    assert rec["away_ml"] == 105
+    assert rec["home_ml"] == 130
+    assert rec["draw_ml"] == 475
+    assert rec["period"] == "f5"
+
+    # Team names: "1H " prefix and " 3WAY" suffix must be stripped before
+    # team-name resolution. Without canonical mapping the test sees the
+    # stripped raw names — exact-match isn't asserted (depends on local
+    # team_dict), but they must not still contain "1H" or "3WAY".
+    assert "1H" not in rec["away_team"], f"1H not stripped: {rec['away_team']}"
+    assert "3WAY" not in rec["away_team"], f"3WAY not stripped: {rec['away_team']}"
+    assert "1H" not in rec["home_team"]
+    assert "3WAY" not in rec["home_team"]

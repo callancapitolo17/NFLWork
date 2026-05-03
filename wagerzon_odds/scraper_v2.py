@@ -313,6 +313,51 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
         if not game.get("GameLines"):
             continue
 
+        # 3-way market parents: idgmtyp=29 lives in lg=1280 ("MLB - 1ST 5 INN
+        # WINNER (3-WAY)"). Route to parse_3way_line, strip "1H " prefix and
+        # " 3WAY" suffix from team names, and skip the standard parent + child
+        # parsing (3-way games have no derivatives).
+        if game.get("idgmtyp") == 29:
+            line = game["GameLines"][0]
+            # Strip "1H " prefix and " 3WAY" suffix before team resolution
+            away_raw_3w = re.sub(r"^1H\s+|\s+3WAY$", "", game["vtm"])
+            home_raw_3w = re.sub(r"^1H\s+|\s+3WAY$", "", game["htm"])
+
+            gmdt = game.get("gmdt", "")
+            game_date = f"{gmdt[4:6]}/{gmdt[6:8]}" if len(gmdt) == 8 else ""
+            game_time = game.get("gmtm", "")[:5]
+
+            if team_dict or canonical_games:
+                away_team, home_team = resolve_team_names(
+                    away_raw_3w, home_raw_3w, team_dict, canonical_games
+                )
+            else:
+                away_team = normalize_team_name(away_raw_3w, sport)
+                home_team = normalize_team_name(home_raw_3w, sport)
+
+            away_rot = str(game["vnum"])
+            home_rot = str(game["hnum"])
+            game_id = f"{away_rot}-{home_rot}"
+
+            base = {
+                "fetch_time": fetch_time,
+                "sport_key": sport_key,
+                "game_date": game_date,
+                "game_time": game_time,
+                "away_team": away_team,
+                "home_team": home_team,
+                "idgm": game.get("idgm"),
+            }
+
+            rec = parse_3way_line(
+                line, game_id, "f5", "h2h_3way_1st_5_innings", base
+            )
+            if rec:
+                records.append(rec)
+                print(f"  3-way: {away_team} @ {home_team} | "
+                      f"{rec['away_ml']}/{rec['home_ml']}/{rec['draw_ml']}")
+            continue   # 3-way games have no GameChilds we care about
+
         away_raw = game["vtm"]
         home_raw = game["htm"]
 
