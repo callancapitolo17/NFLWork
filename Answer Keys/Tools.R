@@ -3052,6 +3052,26 @@ get_wagerzon_odds <- function(
       idgm = if ("idgm" %in% names(row)) row$idgm else NA_integer_
     )
 
+    # 3-way market: emit one record per game with all three prices
+    # (h2h_3way_1st_5_innings — Wagerzon's F5 3-way market). Skip the
+    # standard spread/total/h2h triplet emission because 3-way rows have
+    # all those fields NULL by definition.
+    if (!is.null(row$draw_ml) && !is.na(row$draw_ml) &&
+        grepl("^h2h_3way_", row$market)) {
+      three_way_rec <- c(base, list(
+        market = row$market,
+        market_type = "h2h_3way",
+        line = NA_real_,
+        odds_away = row$away_ml,
+        odds_home = row$home_ml,
+        odds_draw = row$draw_ml,
+        odds_over = NA_integer_,
+        odds_under = NA_integer_
+      ))
+      result_list[[length(result_list) + 1]] <- three_way_rec
+      next   # don't fall through to spread/total/h2h record emission
+    }
+
     # Spreads record
     if (!is.na(row$away_spread)) {
       market_name <- row$market
