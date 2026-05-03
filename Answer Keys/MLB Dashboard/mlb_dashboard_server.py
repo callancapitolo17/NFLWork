@@ -2295,6 +2295,14 @@ def refresh():
         if not success:
             return jsonify({"success": False, "error": message}), 500
 
+        # Refresh WZ balances as part of the dashboard refresh so the pills
+        # update via the cache even if the post-reload JS fetch fails.
+        # Best-effort: a balance fetch failure shouldn't fail the refresh.
+        try:
+            _refresh_all_balances()
+        except Exception as e:
+            app.logger.warning("balance refresh during /refresh failed: %s", e)
+
         return jsonify({
             "success": True,
             "message": message,
