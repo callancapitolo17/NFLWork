@@ -583,36 +583,38 @@ def init_database(sport: str):
     table_name = config["table_name"]
 
     conn = duckdb.connect(str(DB_PATH))
-    conn.execute(f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            fetch_time TIMESTAMP,
-            sport_key VARCHAR,
-            game_id VARCHAR,
-            game_date VARCHAR,
-            game_time VARCHAR,
-            away_team VARCHAR,
-            home_team VARCHAR,
-            market VARCHAR,
-            period VARCHAR,
-            away_spread FLOAT,
-            away_spread_price INTEGER,
-            home_spread FLOAT,
-            home_spread_price INTEGER,
-            total FLOAT,
-            over_price INTEGER,
-            under_price INTEGER,
-            away_ml INTEGER,
-            home_ml INTEGER,
-            draw_ml INTEGER,
-            idgm INTEGER
-        )
-    """)
-    # Idempotent upgrades for existing DBs that pre-date these columns.
-    # ADD COLUMN IF NOT EXISTS is supported in DuckDB 1.4+ and is a no-op
-    # when the column already exists.
-    for col_def in ("idgm INTEGER", "draw_ml INTEGER"):
-        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_def}")
-    conn.close()
+    try:
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                fetch_time TIMESTAMP,
+                sport_key VARCHAR,
+                game_id VARCHAR,
+                game_date VARCHAR,
+                game_time VARCHAR,
+                away_team VARCHAR,
+                home_team VARCHAR,
+                market VARCHAR,
+                period VARCHAR,
+                away_spread FLOAT,
+                away_spread_price INTEGER,
+                home_spread FLOAT,
+                home_spread_price INTEGER,
+                total FLOAT,
+                over_price INTEGER,
+                under_price INTEGER,
+                away_ml INTEGER,
+                home_ml INTEGER,
+                draw_ml INTEGER,
+                idgm INTEGER
+            )
+        """)
+        # Idempotent upgrades for existing DBs that pre-date these columns.
+        # ADD COLUMN IF NOT EXISTS is supported in DuckDB 1.4+ and is a no-op
+        # when the column already exists.
+        for col_def in ("idgm INTEGER", "draw_ml INTEGER"):
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_def}")
+    finally:
+        conn.close()
 
 
 def save_odds(odds_data: list[dict], sport: str):
