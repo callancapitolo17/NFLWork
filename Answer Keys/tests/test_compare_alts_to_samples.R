@@ -304,6 +304,14 @@ test_that("compare_alts_to_samples emits h2h_3way bets — fair home wins 70%, d
   home_bet <- bets[bets$bet_on == "Test Home" & bets$market == "h2h_3way_1st_5_innings", ]
   expect_equal(nrow(home_bet), 1)
   expect_equal(home_bet$prob, 0.70, tolerance = 1e-9)
+  # Lock in "exactly one bet on home, no spurious bets" — would fail if the
+  # 2-way ^h2h_ branch's guard against h2h_3way_* gets removed (regression
+  # would emit a second home bet at 700/(700+200)=0.778 push-exclusion math).
+  expect_equal(nrow(bets), 1L)
+  away_bet <- bets[bets$bet_on == "Test Away" & bets$market == "h2h_3way_1st_5_innings", ]
+  tie_bet  <- bets[bets$bet_on == "Tie"       & bets$market == "h2h_3way_1st_5_innings", ]
+  expect_equal(nrow(away_bet), 0L)
+  expect_equal(nrow(tie_bet), 0L)
 })
 
 test_that("compare_alts_to_samples emits Tie bet when draw is +EV", {
@@ -340,6 +348,12 @@ test_that("compare_alts_to_samples emits Tie bet when draw is +EV", {
   tie_bet <- bets[bets$bet_on == "Tie" & bets$market == "h2h_3way_1st_5_innings", ]
   expect_equal(nrow(tie_bet), 1)
   expect_equal(tie_bet$prob, 0.60, tolerance = 1e-9)
+  # Lock in "exactly one bet on Tie, no spurious bets"
+  expect_equal(nrow(bets), 1L)
+  home_bet <- bets[bets$bet_on == "Test Home" & bets$market == "h2h_3way_1st_5_innings", ]
+  away_bet <- bets[bets$bet_on == "Test Away" & bets$market == "h2h_3way_1st_5_innings", ]
+  expect_equal(nrow(home_bet), 0L)
+  expect_equal(nrow(away_bet), 0L)
 })
 
 test_that("compare_alts_to_samples returns no bets when 3-way row has any NA odds", {
