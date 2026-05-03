@@ -22,6 +22,12 @@ helpers used by the MLB correlated parlay dashboard.
 - **Auth:** `wagerzon_auth.py::get_session(account)` caches one logged-in
   `requests.Session` per account label, in-memory only. Per-label locks
   so concurrent logins for different accounts run in parallel.
+- **3-way F5 ML scraping:** `scraper_v2.py::parse_odds()` routes `idgmtyp=29` parent
+  games (league `lg=1280` — "MLB - 1ST 5 INN WINNER (3-WAY)") through
+  `parse_3way_line()`. Records have `market = "h2h_3way_1st_5_innings"`,
+  `period = "f5"`, and the new `draw_ml INTEGER` column populated with
+  the third (draw) outcome's American odds. `*_odds` tables include
+  `draw_ml` via idempotent `ALTER TABLE ADD COLUMN IF NOT EXISTS`.
 
 ## Adding a new Wagerzon account
 

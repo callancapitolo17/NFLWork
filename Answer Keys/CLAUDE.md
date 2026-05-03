@@ -28,6 +28,7 @@ run.py mlb (orchestrator)
   - F3 / F7 spreads + totals + h2h (Wagerzon, Bookmaker for F3 only). Note: Wagerzon currently posts spread+total at F3/F7 but rarely posts moneyline — h2h_1st_*_innings branch is built but typically idle until a book posts F-period MLs.
   - FG alt spreads + alt totals (Wagerzon, Bet105)
   - FG odd/even total runs (Wagerzon — single-game prop, away_ml side = ODD, home_ml side = EVEN per scraper convention)
+  - F5 3-way moneyline `h2h_3way_1st_5_innings` (Wagerzon only — `idgmtyp=29` league `lg=1280`). Tie is a real outcome, not push refund. Coexists with the existing 2-way F5 ML matched via `compare_moneylines_to_wagerzon`.
 - Team totals (`team_totals_*_fg`, `team_totals_*_h1`) are scraped but NOT yet matched — MLB samples lack per-team score columns. Tracked as gap #2 in the broader matching plan.
 - Historical data: `pbp.duckdb/mlb_betting_pbp` (12,719 games)
 - Dashboard: port 8083
