@@ -125,6 +125,23 @@ def test_fetch_401_triggers_relogin_then_retries_once(acct):
         assert snap.available == 3245.32
 
 
+def test_fetch_302_redirect_triggers_relogin(acct):
+    # Regression: when WZ's ASP.NET session expires, PlayerInfoHelper
+    # responds with 302 to "/" (not "Default.aspx", not "Login"). The
+    # fetcher must treat any 3xx on this API as a logged-out signal so
+    # the auto-relogin retry kicks in instead of silently returning
+    # wz_error and pinning the dashboard in a broken state until restart.
+    with requests_mock.Mocker() as m:
+        _mock_login(m)
+        m.get(BALANCE_URL, [
+            {"status_code": 302, "headers": {"Location": "/"}, "text": ""},
+            {"json": MOCK_BALANCE_RESPONSE, "status_code": 200},
+        ])
+        snap = wagerzon_balance.fetch_available_balance(acct)
+        assert snap.error is None
+        assert snap.available == 3245.32
+
+
 def test_fetch_all_runs_in_parallel():
     a = WagerzonAccount(label="Wagerzon",  suffix="",  username="u1", password="p1")
     b = WagerzonAccount(label="WagerzonJ", suffix="J", username="u2", password="p2")

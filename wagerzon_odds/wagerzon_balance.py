@@ -77,7 +77,9 @@ def _fetch_once(account: WagerzonAccount) -> BalanceSnapshot:
         logger.warning("balance fetch transport error for %s: %s", account.label, e)
         return _error_snapshot(account, "wz_error")
 
-    if resp.status_code == 401 or _looks_like_login_redirect(resp):
+    if resp.status_code == 401 or _looks_like_logged_out(resp):
+        logger.warning("balance fetch for %s lost session (status=%s loc=%r); forcing relogin",
+                       account.label, resp.status_code, resp.headers.get("Location"))
         raise _UnauthorizedError()
     if resp.status_code >= 500:
         return _error_snapshot(account, "wz_error")
@@ -148,9 +150,17 @@ def _parse_money_string(s) -> float:
     return float(str(s).strip().replace(",", ""))
 
 
-def _looks_like_login_redirect(resp: requests.Response) -> bool:
-    loc = resp.headers.get("Location", "")
-    return "Default.aspx" in loc or "Login" in loc
+def _looks_like_logged_out(resp: requests.Response) -> bool:
+    """Detect when WZ is bouncing us out of the balance API due to session loss.
+
+    PlayerInfoHelper.aspx returns 200 + JSON on success. When the ASP.NET
+    session has expired, WZ instead serves a 302 to the site root ("/")
+    or to a login page (Default.aspx). The exact redirect target has
+    drifted historically (observed: "/", "/Default.aspx", "?login=1"),
+    so we don't pattern-match on the Location header — any 3xx on this
+    API endpoint means we're logged out and need to relogin.
+    """
+    return 300 <= resp.status_code < 400
 
 
 def _error_snapshot(account: WagerzonAccount, error_code: str) -> BalanceSnapshot:
