@@ -122,3 +122,19 @@ def test_parse_3way_line_handles_negative_prices():
     assert rec["away_ml"] == -150
     assert rec["home_ml"] == 200
     assert rec["draw_ml"] == 500
+
+
+def test_parse_3way_line_emits_record_when_only_two_prices_present():
+    """Partial price coverage (no draw posted yet) must still emit a row.
+
+    Locks the `if all three are None` guard against a future refactor that
+    accidentally flips AND to OR — which would silently drop rows where
+    Wagerzon hasn't yet posted the third leg.
+    """
+    from scraper_v2 import parse_3way_line
+    line = {"voddst": "105", "hoddst": "130", "vspoddst": ""}
+    rec = parse_3way_line(line, "g", "f5", "h2h_3way_1st_5_innings", _make_3way_base())
+    assert rec is not None
+    assert rec["away_ml"] == 105
+    assert rec["home_ml"] == 130
+    assert rec["draw_ml"] is None
