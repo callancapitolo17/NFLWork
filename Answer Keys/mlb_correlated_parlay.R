@@ -677,7 +677,8 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
       }
 
       # Blend model fair prob with DK and FD SGP fair probs (each per-game devigged).
-      # Equal-weight average across model + whichever books are present.
+      # Median across model + whichever books are present — robust to a single
+      # stale or buggy book without assuming any source is sharper than the others.
       model_fair_prob <- fair$joint_prob
       probs_to_blend  <- c(model_fair_prob)
 
@@ -729,7 +730,7 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
       }
 
       n_books_blended <- length(probs_to_blend) - 1  # subtract model itself
-      blended_prob    <- mean(probs_to_blend)
+      blended_prob    <- median(probs_to_blend)
       fair_dec        <- 1 / blended_prob
       fair_american   <- round(prob_to_american(blended_prob))
 

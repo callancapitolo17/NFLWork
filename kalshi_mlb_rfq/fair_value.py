@@ -1,5 +1,6 @@
 """Fair-value computation for combos: model + sportsbooks + blend."""
 
+import statistics
 from dataclasses import dataclass
 from typing import Literal
 
@@ -69,10 +70,14 @@ def devig_book(book_rows: pd.DataFrame, combo: str,
 
 
 def blend(model_fair_value: float, book_fairs: dict[str, float]) -> float | None:
-    """2-source gate: returns simple mean of model + non-null books, or None
+    """2-source gate: returns median of model + non-null books, or None
     if fewer than 2 sources.
+
+    Median (vs arithmetic mean) is robust to a single stale or buggy book
+    without assuming any source is sharper than the others. With exactly 2
+    sources, median == mean by definition.
     """
     sources = [model_fair_value] + [v for v in book_fairs.values() if v is not None]
     if len(sources) < 2:
         return None
-    return sum(sources) / len(sources)
+    return statistics.median(sources)
