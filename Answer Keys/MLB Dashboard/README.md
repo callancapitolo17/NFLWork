@@ -5,7 +5,7 @@ Interactive web dashboard displaying +EV MLB F5 betting opportunities and correl
 ## Architecture
 
 ```
-run.py mlb (pipeline)  →  mlb.duckdb/mlb_bets_combined             (dashboard refresh)
+run.py mlb (pipeline)  →  mlb_mm.duckdb/mlb_bets_combined          (dashboard refresh)
                        →  mlb_mm.duckdb/mlb_parlay_opportunities    (place-bet loader)
                        →  mlb_mm.duckdb/mlb_trifecta_opportunities
                                 ↓
@@ -64,7 +64,7 @@ run.py mlb (pipeline)  →  mlb.duckdb/mlb_bets_combined             (dashboard 
   - `filter_settings` — UI filter state
   - `closing_snapshots` — odds captured 15 min before first pitch (for CLV)
   - `bet_clv` — post-game CLV computations
-- Pipeline bets read from `Answer Keys/mlb.duckdb` (`mlb_bets_combined`) and `Answer Keys/mlb_mm.duckdb` (`mlb_parlay_opportunities`, `mlb_trifecta_opportunities`)
+- Pipeline bets read from `Answer Keys/mlb_mm.duckdb` (`mlb_bets_combined`, `mlb_parlay_opportunities`, `mlb_trifecta_opportunities`) — all consumer tables now in one DB to avoid contention with the pipeline's long write lock on `mlb.duckdb`
 - Historical PBP + odds in `Answer Keys/pbp.duckdb` (`mlb_betting_pbp`, `mlb_betting_history`, `mlb_pbp_all`)
 
 ## Running
@@ -175,7 +175,7 @@ and used by `POST /api/place-parlay`.
 
 - **"Port 8083 already in use"** — `run.sh` kills existing processes, but if you started Flask manually, `lsof -ti:8083 | xargs kill`
 - **Parlays tab empty** — `mlb_parlay_opportunities` hasn't been populated; ensure `mlb_correlated_parlay.R` ran successfully (check `run.sh` output)
-- **No bets shown** — check `mlb_bets_combined` has rows; if empty, check MLB.R output in pipeline logs
+- **No bets shown** — check `mlb_bets_combined` has rows in `mlb_mm.duckdb`; if empty, check MLB.R output in pipeline logs
 - **CLV not computed** — ensure `clv_compute.py` ran post-game; the closing snapshots must exist in `closing_snapshots` table
 - **Auto-place fails** — single-leg auto-queue supports `wagerzon`, `hoop88`, `bfa`, `betonlineag`; parlay auto-placement supports `wagerzon` only. Other books must be placed manually.
 - **Place button doesn't show** — Browser cache; hard refresh (Cmd+Shift+R)

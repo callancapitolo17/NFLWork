@@ -47,8 +47,8 @@ run.py mlb (orchestrator)
 ### DuckDB Databases
 - `cbb.duckdb` — CBB pipeline data (historical odds, betting PBP, dashboard bets)
 - `cbb_mm.duckdb` — CBB MM export (predictions, game samples). Separate to avoid lock contention.
-- `mlb.duckdb` — MLB pipeline output (`mlb_bets_combined`, `mlb_team_dict`, `mlb_consensus_temp`, `mlb_odds_temp`, `mlb_trifecta_sgp_odds`, scraper raw odds, historical PBP joins). Consumer-facing tables moved to `mlb_mm.duckdb`.
-- `mlb_mm.duckdb` — MLB MM consumer tables (`mlb_game_samples`, `mlb_samples_meta`, `mlb_sgp_odds`, `mlb_parlay_lines`, `mlb_parlay_opportunities`, `mlb_trifecta_opportunities`). Separate from `mlb.duckdb` so the pipeline's write lock on `mlb.duckdb` never blocks the RFQ bot or the dashboard's bet-log loaders. Mirrors the CBB pattern.
+- `mlb.duckdb` — MLB pipeline working tables (`mlb_team_dict`, `mlb_consensus_temp`, `mlb_odds_temp`, `mlb_trifecta_sgp_odds`, scraper raw odds, historical PBP joins). Held under a long write lock during a pipeline run; nothing the dashboard or RFQ bot needs lives here anymore.
+- `mlb_mm.duckdb` — MLB MM consumer tables (`mlb_bets_combined`, `mlb_game_samples`, `mlb_samples_meta`, `mlb_sgp_odds`, `mlb_parlay_lines`, `mlb_parlay_opportunities`, `mlb_trifecta_opportunities`). Separate from `mlb.duckdb` so the pipeline's write lock on `mlb.duckdb` never blocks the RFQ bot or the dashboard. `mlb_bets_combined` moved here on 2026-05-05; the others moved 2026-04-30. Mirrors the CBB pattern.
 - `mlb_dashboard.duckdb` — MLB dashboard state (placed_bets, settings, CLV)
 - `pbp.duckdb` — Historical play-by-play data (shared: MLB + others)
 - `cbb_dashboard.duckdb` — CBB dashboard state (placed_bets, settings, CLV)
