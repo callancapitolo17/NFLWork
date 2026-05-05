@@ -841,9 +841,18 @@ print(all_bets_combined %>% head(20))
 # PHASE 8: SAVE TO DUCKDB
 # =============================================================================
 
-dbExecute(con_mlb, "DROP TABLE IF EXISTS mlb_bets_combined")
-dbWriteTable(con_mlb, "mlb_bets_combined", all_bets_combined)
+# Disconnect the long-held mlb.duckdb writer FIRST so it cannot block the
+# brief mlb_mm.duckdb write below.
 dbDisconnect(con_mlb)
+
+# Write mlb_bets_combined to mlb_mm.duckdb (moved from mlb.duckdb on
+# 2026-05-05 to free the dashboard's bet loader from the pipeline's long
+# write lock on mlb.duckdb — finishes the migration started 2026-04-30).
+con_bets <- duckdb_connect_retry("mlb_mm.duckdb")
+on.exit(tryCatch(dbDisconnect(con_bets), error = function(e) NULL), add = TRUE)
+dbExecute(con_bets, "DROP TABLE IF EXISTS mlb_bets_combined")
+dbWriteTable(con_bets, "mlb_bets_combined", all_bets_combined)
+dbDisconnect(con_bets)
 on.exit(NULL)
 
 timer$mark("save_bets")
