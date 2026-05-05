@@ -4464,19 +4464,27 @@ if (any(commandArgs(trailingOnly = TRUE) == "--parlay-fragment")) {
 
 cat("=== MLB Answer Key Dashboard ===\n\n")
 
-# Load bets from duckdb (saved by MLBCombine.R or equivalent)
+# Load bets from duckdb. Source moved from mlb.duckdb → mlb_mm.duckdb
+# on 2026-05-05 so the dashboard is no longer blocked by the pipeline's
+# long write lock on mlb.duckdb. tryCatch mirrors the parlay/trifecta
+# loaders below: a transient lock or missing DB degrades to empty bets
+# rather than crashing the whole render.
 cat("Loading bets from database...\n")
-con <- dbConnect(duckdb(), dbdir = "Answer Keys/mlb.duckdb", read_only = TRUE)
-
-# Check if table exists
-tables <- dbListTables(con)
-if (!"mlb_bets_combined" %in% tables) {
-  all_bets <- tibble()
-} else {
-  all_bets <- dbGetQuery(con, "SELECT * FROM mlb_bets_combined") %>%
-    filter(is.na(pt_start_time) | pt_start_time > Sys.time())
-}
-dbDisconnect(con, shutdown = TRUE)
+all_bets <- tryCatch({
+  con <- dbConnect(duckdb(), dbdir = "Answer Keys/mlb_mm.duckdb", read_only = TRUE)
+  tables <- dbListTables(con)
+  result <- if (!"mlb_bets_combined" %in% tables) {
+    tibble()
+  } else {
+    dbGetQuery(con, "SELECT * FROM mlb_bets_combined") %>%
+      filter(is.na(pt_start_time) | pt_start_time > Sys.time())
+  }
+  dbDisconnect(con, shutdown = TRUE)
+  result
+}, error = function(e) {
+  cat(sprintf("  Warning: could not load mlb_bets_combined (%s) — rendering with empty bets\n", e$message))
+  tibble()
+})
 
 cat(sprintf("Loaded %d bets\n", nrow(all_bets)))
 
