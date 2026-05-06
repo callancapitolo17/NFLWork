@@ -107,7 +107,7 @@ python3 clv_compute.py
 | Database | Table | Purpose |
 |----------|-------|---------|
 | `pbp.duckdb` | `mlb_betting_pbp` | Historical games with inning-by-inning outcomes (12,719 games) |
-| `mlb.duckdb` | `mlb_bets_combined` | Pipeline output (daily +EV bets) |
+| `mlb_mm.duckdb` | `mlb_bets_combined` | Pipeline output (daily +EV bets) — moved from `mlb.duckdb` on 2026-05-05 to avoid lock contention |
 | `mlb.duckdb` | `mlb_team_dict` | Team name dictionary |
 | `mlb_dashboard.duckdb` | `placed_bets` | Bet placement tracking |
 | `mlb_dashboard.duckdb` | `bet_clv` | Post-game CLV results |
