@@ -328,6 +328,67 @@ def test_place_parlays_duplicate_hash_raises(monkeypatch, primary_acct):
         parlay_placer.place_parlays([a, b], primary_acct)
 
 
+CONFIRM_REJECTED_INSUFFICIENT_FUNDS = {
+    "result": {
+        "details": [],
+        "ErrorMsgKey": "insufficient_funds",
+        "ErrorMsg": "Insufficient funds.",
+        "Confirm": False,
+    }
+}
+
+CONFIRM_REJECTED_LINE_UNAVAILABLE = {
+    "result": {
+        "details": [],
+        "ErrorMsgKey": "line_unavailable",
+        "ErrorMsg": "One or more lines are no longer available.",
+        "Confirm": False,
+    }
+}
+
+CONFIRM_REJECTED_NO_KEY = {
+    "result": {
+        "details": [],
+        "Confirm": False,
+    }
+}
+
+
+def test_place_parlays_preflight_insufficient_funds(monkeypatch, primary_acct):
+    """Empty details + ErrorMsgKey=insufficient_funds → rejected, no IndexError."""
+    sess = _session_for_calls(CONFIRM_REJECTED_INSUFFICIENT_FUNDS)
+    monkeypatch.setattr("wagerzon_auth.get_session", lambda acct: sess)
+    import parlay_placer
+    results = parlay_placer.place_parlays([_spec()], primary_acct)
+    assert results[0].status == "rejected"
+    assert results[0].error_msg_key == "insufficient_funds"
+    assert "insufficient balance" in results[0].error_msg
+    # PostWager must NOT be called when preflight rejects
+    assert sess.post.call_count == 1
+
+
+def test_place_parlays_preflight_line_unavailable(monkeypatch, primary_acct):
+    """Empty details + ErrorMsgKey=line_unavailable → rejected as 'line pulled'."""
+    sess = _session_for_calls(CONFIRM_REJECTED_LINE_UNAVAILABLE)
+    monkeypatch.setattr("wagerzon_auth.get_session", lambda acct: sess)
+    import parlay_placer
+    results = parlay_placer.place_parlays([_spec()], primary_acct)
+    assert results[0].status == "rejected"
+    assert results[0].error_msg_key == "line_unavailable"
+    assert "line pulled" in results[0].error_msg
+
+
+def test_place_parlays_preflight_rejected_no_key(monkeypatch, primary_acct):
+    """Empty details with no error key → graceful 'rejected', no IndexError."""
+    sess = _session_for_calls(CONFIRM_REJECTED_NO_KEY)
+    monkeypatch.setattr("wagerzon_auth.get_session", lambda acct: sess)
+    import parlay_placer
+    results = parlay_placer.place_parlays([_spec()], primary_acct)
+    assert results[0].status == "rejected"
+    assert results[0].error_msg_key == ""
+    assert "rejected" in results[0].error_msg.lower()
+
+
 def test_place_parlays_post_retry_per_spec_drift(monkeypatch, primary_acct):
     """Multi-spec batch where post AuthExpires; on retry one spec drifts.
     Only the drifted spec gets price_moved; others should still be placed."""
@@ -384,3 +445,62 @@ def test_place_parlays_post_retry_per_spec_drift(monkeypatch, primary_acct):
     assert results[0].status == "price_moved"
     assert results[1].status == "placed"
     assert results[1].ticket_number == "TKT-B"
+
+
+def test_place_parlays_post_retry_per_spec_preflight_rejected(monkeypatch, primary_acct):
+    """Multi-spec batch where post AuthExpires; on retry one spec's line is
+    pulled (re-preflight returns empty details). Only the rejected spec gets
+    status='rejected'; the other should still be placed."""
+    import parlay_placer
+
+    def _json_resp(payload):
+        r = MagicMock()
+        r.headers = {"content-type": "application/json"}
+        r.json.return_value = payload
+        r.text = json.dumps(payload)
+        return r
+
+    html_resp = MagicMock()
+    html_resp.headers = {"content-type": "text/html"}
+    html_resp.text = "<html>login</html>"
+
+    # Post-OK response for the SINGLE surviving spec (A) — A is placed
+    # alone after B is rejected on re-preflight.
+    post_ok_one = {
+        "result": [{
+            "WagerPostResult": {
+                "details": [], "IDWT": 999002, "TicketNumber": "TKT-A",
+                "Risk": 15.0, "Win": 30.0, "Confirm": True,
+                "ErrorMsg": "", "ErrorMsgKey": "", "ErrorCode": {},
+            }
+        }]
+    }
+
+    sess = MagicMock()
+    # Sequence:
+    #   preflight A OK, preflight B OK -> post (HTML AuthExpired) ->
+    #   re-preflight A OK, re-preflight B line_unavailable ->
+    #   post A only OK
+    sess.post.side_effect = [
+        _json_resp(CONFIRM_OK_RESPONSE),                 # A preflight
+        _json_resp(CONFIRM_OK_RESPONSE),                 # B preflight
+        html_resp,                                       # post -> AuthExpired
+        _json_resp(CONFIRM_OK_RESPONSE),                 # A re-preflight (OK)
+        _json_resp(CONFIRM_REJECTED_LINE_UNAVAILABLE),   # B re-preflight (rejected)
+        _json_resp(post_ok_one),                         # post A only
+    ]
+    monkeypatch.setattr("wagerzon_auth.get_session", lambda acct: sess)
+    monkeypatch.setattr("wagerzon_auth.clear_session_cache",
+                        lambda label=None: None)
+
+    a = _spec(hash="A", win=30.0)
+    b = _spec(hash="B", win=30.0)
+    results = parlay_placer.place_parlays([a, b], primary_acct)
+
+    assert results[0].parlay_hash == "A"
+    assert results[1].parlay_hash == "B"
+    assert results[0].status == "placed"
+    assert results[0].ticket_number == "TKT-A"
+    assert results[1].status == "rejected"
+    assert results[1].error_msg_key == "line_unavailable"
+    assert "line pulled" in results[1].error_msg
