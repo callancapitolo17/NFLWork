@@ -104,12 +104,12 @@ def encode_detail_data(legs: list[Leg], amount: float) -> list[dict]:
         only ever queries at the user's actual chosen wager, so the
         balance check is appropriate.
 
-        Edge case (TODO): if account balance < wager at preflight time,
-        Wagerzon returns an error response without a `details` array and
-        _confirm_preflight raises an unhandled IndexError/KeyError. This
-        is rare in practice (user has $3k+ balance, bets $15-$100) but
-        worth handling cleanly in a future hardening pass — surface as
-        a `rejected: insufficient_balance` status instead of a 500.
+        When the preflight is refused (insufficient balance, line pulled,
+        bet too large, etc.), Wagerzon returns `result.details=[]` plus an
+        `ErrorMsgKey`/`ErrorMsg` describing why. `_confirm_preflight` raises
+        `PreflightRejected` in that case and `place_parlays` converts it to
+        a `PlacementResult(status="rejected", ...)` with the friendly text
+        from `ERROR_KEY_MAP`.
     """
     return [
         {
@@ -143,6 +143,19 @@ class AuthExpired(Exception):
     """Wagerzon returned an HTML login page instead of JSON."""
 
 
+class PreflightRejected(Exception):
+    """Wagerzon refused to price the parlay (empty `details` array).
+
+    Carries the response's `ErrorMsgKey` (e.g. `line_unavailable`,
+    `insufficient_funds`, `bet_too_large`) and the human-readable
+    `ErrorMsg` so the caller can build a friendly PlacementResult.
+    """
+    def __init__(self, error_msg_key: str, error_msg: str):
+        self.error_msg_key = error_msg_key or ""
+        self.error_msg = error_msg or ""
+        super().__init__(self.error_msg_key or self.error_msg or "rejected")
+
+
 def _raise_if_html(resp) -> None:
     ct = resp.headers.get("content-type", "")
     if "json" not in ct:
@@ -153,8 +166,12 @@ def _confirm_preflight(legs: list[Leg], amount: float,
                        account: WagerzonAccount) -> tuple[float, float]:
     """Call ConfirmWagerHelper, return (Win, Risk).
 
-    Raises ValueError on malformed response. Auth/HTML responses raise
-    AuthExpired (handled by caller).
+    Raises:
+        AuthExpired: Wagerzon returned an HTML login page.
+        PreflightRejected: Wagerzon returned an empty `details` array,
+            meaning the parlay can't be priced (line pulled, insufficient
+            funds, max parlay risk, etc.). The exception carries the
+            ErrorMsgKey/ErrorMsg from the response.
     """
     session = wagerzon_auth.get_session(account)
     detail_data = encode_detail_data(legs, amount)
@@ -173,8 +190,15 @@ def _confirm_preflight(legs: list[Leg], amount: float,
                         headers={"Accept": "application/json"})
     _raise_if_html(resp)
     data = resp.json()
-    details = data["result"]["details"][0]
-    return float(details["Win"]), float(details["Risk"])
+    result = data.get("result") or {}
+    details = result.get("details") or []
+    if not details:
+        raise PreflightRejected(
+            error_msg_key=result.get("ErrorMsgKey", "") or "",
+            error_msg=result.get("ErrorMsg", "") or "",
+        )
+    first = details[0]
+    return float(first["Win"]), float(first["Risk"])
 
 
 POST_URL = f"{WAGERZON_BASE_URL}/wager/PostWagerMultipleHelper.aspx"
@@ -297,6 +321,28 @@ def _drift_error_msg(expected: float, actual: float) -> str:
     return f"Expected ${expected:.2f}, Wagerzon offered ${actual:.2f}"
 
 
+def _rejected_result_from_preflight(spec: ParlaySpec,
+                                    exc: PreflightRejected) -> PlacementResult:
+    """Build a PlacementResult(status='rejected') from a PreflightRejected.
+
+    Mirrors how `_post_wagers` formats post-time rejections so the dashboard
+    sees the same shape regardless of whether WZ refused at preflight or
+    placement.
+    """
+    key = exc.error_msg_key
+    friendly = ERROR_KEY_MAP.get(key, key) or "unknown error"
+    if key:
+        msg = f"rejected: {friendly}"
+    else:
+        msg = exc.error_msg or "rejected"
+    return PlacementResult(
+        parlay_hash=spec.parlay_hash,
+        status="rejected",
+        error_msg=msg,
+        error_msg_key=key,
+    )
+
+
 def _preflight_with_retry(spec: ParlaySpec,
                           account: WagerzonAccount) -> tuple[float, float]:
     """ConfirmWagerHelper with one re-login retry on AuthExpired."""
@@ -323,7 +369,11 @@ def _post_with_retry(specs: list[ParlaySpec],
         retry_results: dict[str, PlacementResult] = {}
         retry_survivors: list[ParlaySpec] = []
         for spec in specs:
-            win, risk = _confirm_preflight(spec.legs, spec.amount, account)
+            try:
+                win, risk = _confirm_preflight(spec.legs, spec.amount, account)
+            except PreflightRejected as e:
+                retry_results[spec.parlay_hash] = _rejected_result_from_preflight(spec, e)
+                continue
             if not _drift_ok(spec.expected_win, win):
                 retry_results[spec.parlay_hash] = PlacementResult(
                     parlay_hash=spec.parlay_hash, status="price_moved",
@@ -376,6 +426,9 @@ def place_parlays(
                 parlay_hash=spec.parlay_hash, status="auth_error",
                 error_msg="auth_error: session expired",
             )
+            continue
+        except PreflightRejected as e:
+            results_by_hash[spec.parlay_hash] = _rejected_result_from_preflight(spec, e)
             continue
         except requests.exceptions.RequestException as e:
             results_by_hash[spec.parlay_hash] = PlacementResult(

@@ -328,6 +328,67 @@ def test_place_parlays_duplicate_hash_raises(monkeypatch, primary_acct):
         parlay_placer.place_parlays([a, b], primary_acct)
 
 
+CONFIRM_REJECTED_INSUFFICIENT_FUNDS = {
+    "result": {
+        "details": [],
+        "ErrorMsgKey": "insufficient_funds",
+        "ErrorMsg": "Insufficient funds.",
+        "Confirm": False,
+    }
+}
+
+CONFIRM_REJECTED_LINE_UNAVAILABLE = {
+    "result": {
+        "details": [],
+        "ErrorMsgKey": "line_unavailable",
+        "ErrorMsg": "One or more lines are no longer available.",
+        "Confirm": False,
+    }
+}
+
+CONFIRM_REJECTED_NO_KEY = {
+    "result": {
+        "details": [],
+        "Confirm": False,
+    }
+}
+
+
+def test_place_parlays_preflight_insufficient_funds(monkeypatch, primary_acct):
+    """Empty details + ErrorMsgKey=insufficient_funds → rejected, no IndexError."""
+    sess = _session_for_calls(CONFIRM_REJECTED_INSUFFICIENT_FUNDS)
+    monkeypatch.setattr("wagerzon_auth.get_session", lambda acct: sess)
+    import parlay_placer
+    results = parlay_placer.place_parlays([_spec()], primary_acct)
+    assert results[0].status == "rejected"
+    assert results[0].error_msg_key == "insufficient_funds"
+    assert "insufficient balance" in results[0].error_msg
+    # PostWager must NOT be called when preflight rejects
+    assert sess.post.call_count == 1
+
+
+def test_place_parlays_preflight_line_unavailable(monkeypatch, primary_acct):
+    """Empty details + ErrorMsgKey=line_unavailable → rejected as 'line pulled'."""
+    sess = _session_for_calls(CONFIRM_REJECTED_LINE_UNAVAILABLE)
+    monkeypatch.setattr("wagerzon_auth.get_session", lambda acct: sess)
+    import parlay_placer
+    results = parlay_placer.place_parlays([_spec()], primary_acct)
+    assert results[0].status == "rejected"
+    assert results[0].error_msg_key == "line_unavailable"
+    assert "line pulled" in results[0].error_msg
+
+
+def test_place_parlays_preflight_rejected_no_key(monkeypatch, primary_acct):
+    """Empty details with no error key → graceful 'rejected', no IndexError."""
+    sess = _session_for_calls(CONFIRM_REJECTED_NO_KEY)
+    monkeypatch.setattr("wagerzon_auth.get_session", lambda acct: sess)
+    import parlay_placer
+    results = parlay_placer.place_parlays([_spec()], primary_acct)
+    assert results[0].status == "rejected"
+    assert results[0].error_msg_key == ""
+    assert "rejected" in results[0].error_msg.lower()
+
+
 def test_place_parlays_post_retry_per_spec_drift(monkeypatch, primary_acct):
     """Multi-spec batch where post AuthExpires; on retry one spec drifts.
     Only the drifted spec gets price_moved; others should still be placed."""
