@@ -497,12 +497,6 @@ def _all_per_accept_gates_pass(quote: dict, fair: float,
     if not risk.fair_in_bounds(fair, config.MIN_FAIR_PROB, config.MAX_FAIR_PROB):
         return False, "declined_kelly_zero"
 
-    # Sanity bound
-    no_bid = float(quote.get("no_bid_dollars") or 0)
-    quote_implied = 1 - no_bid
-    if not risk.sanity_bound_ok(quote_implied, fair, config.MAX_QUOTE_DEVIATION):
-        return False, "declined_sanity"
-
     # Kill switch
     if not risk.kill_switch_ok():
         return False, "declined_killswitch"
@@ -618,6 +612,7 @@ def _kelly_size_for_quote(quote: dict, fair: float) -> int:
 
     return kelly.kelly_size_combo(
         outcome_vec=np.asarray(outcome_vec),
+        blended_fair=fair,
         existing_positions=existing,
         effective_price=effective_price,
         bankroll=config.BANKROLL,

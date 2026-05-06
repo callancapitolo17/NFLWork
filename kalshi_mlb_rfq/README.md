@@ -65,7 +65,7 @@ Four internal loops:
 
 See `.env.example`. Most relevant:
 - `BANKROLL`, `KELLY_FRACTION` — sizing
-- `MIN_EV_PCT`, `MAX_QUOTE_DEVIATION` — accept thresholds
+- `MIN_EV_PCT` — accept threshold
 - `MAX_GAME_EXPOSURE_PCT`, `DAILY_EXPOSURE_CAP_USD` — exposure caps
 - `MAX_PREDICTION_STALENESS_SEC` — accept-gate staleness threshold (10 min default)
 - `MIN_FILL_RATIO`, `FILL_RATIO_WINDOW` — adverse-selection halt
@@ -73,7 +73,7 @@ See `.env.example`. Most relevant:
 ## Safety scaffold (per-accept gates)
 
 Every quote acceptance must pass ALL of:
-- Min EV after fee · Fair-value bounds · Sanity bound (quote vs fair) · Prediction staleness
+- Min EV after fee · Fair-value bounds · Prediction staleness
 - Tipoff window (5 min before first pitch) · Line-move check · Per-game exposure cap (% of bankroll)
 - Daily exposure cap · Kill-switch off · Inverse-combo not held · 2-source gate (model + ≥1 book)
 - Per-combo cooldown (30s post-fill) · Positions API health · Fill-ratio halt (rolling 50 attempts)

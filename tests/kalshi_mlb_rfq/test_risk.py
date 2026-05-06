@@ -32,11 +32,6 @@ def test_fair_bounds_gate():
     assert not risk.fair_in_bounds(0.97, lower=0.05, upper=0.95)
 
 
-def test_sanity_bound_gate():
-    assert risk.sanity_bound_ok(quote_implied=0.27, blended_fair=0.30, max_deviation=0.15)
-    assert not risk.sanity_bound_ok(quote_implied=0.10, blended_fair=0.30, max_deviation=0.15)
-
-
 def test_tipoff_gate():
     now = datetime.now(timezone.utc)
     far_future_game = now + timedelta(minutes=60)

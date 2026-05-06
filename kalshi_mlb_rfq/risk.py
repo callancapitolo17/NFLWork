@@ -29,11 +29,6 @@ def fair_in_bounds(blended_fair: float, lower: float, upper: float) -> bool:
     return lower <= blended_fair <= upper
 
 
-def sanity_bound_ok(quote_implied: float, blended_fair: float,
-                    max_deviation: float) -> bool:
-    return abs(quote_implied - blended_fair) <= max_deviation
-
-
 def tipoff_ok(commence_time: datetime | None, cancel_min: int,
               now: datetime | None = None) -> bool:
     if commence_time is None:

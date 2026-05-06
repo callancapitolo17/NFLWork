@@ -48,7 +48,6 @@ KELLY_FRACTION = float(_get("KELLY_FRACTION", "0.25"))
 
 # Per-accept gates
 MIN_EV_PCT = float(_get("MIN_EV_PCT", "0.05"))
-MAX_QUOTE_DEVIATION = float(_get("MAX_QUOTE_DEVIATION", "0.15"))
 MIN_FAIR_PROB = float(_get("MIN_FAIR_PROB", "0.05"))
 MAX_FAIR_PROB = float(_get("MAX_FAIR_PROB", "0.95"))
 MAX_GAME_EXPOSURE_PCT = float(_get("MAX_GAME_EXPOSURE_PCT", "0.10"))
