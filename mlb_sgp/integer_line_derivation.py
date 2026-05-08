@@ -5,6 +5,9 @@ from two adjacent half-point alt SGP prices.
 See docs/superpowers/specs/2026-05-08-sgp-integer-line-derivation-design.md
 """
 
+import logging
+from typing import Optional
+
 # Floating-point tolerance for matching integer lines (WZ data sometimes
 # has 8.000001 / 7.999999 instead of exact 8.0)
 _INT_TOLERANCE = 1e-3
@@ -46,7 +49,9 @@ VIG_MIN = 1.05
 VIG_MAX = 1.30
 
 # Push-mass cross-consistency: |Δ_from_over - Δ_from_under| / max(...) tolerance
-PUSH_MASS_REL_TOL = 0.10
+# 0.15 accommodates real-world vig asymmetry (~11% observed in worked example);
+# still catches large disagreements (>30%) caused by scrape errors.
+PUSH_MASS_REL_TOL = 0.15
 
 # Total marginal push mass plausibility bounds (fraction of games landing on X)
 DELTA_TOTAL_MIN = 0.03
@@ -87,3 +92,112 @@ def validate_sum_to_one(fair_probs: list[float]) -> bool:
 def validate_per_combo_bounds(fair_prob: float) -> bool:
     """True if fair_prob is strictly between 0 and 1. Strict bounds reject degenerate certainty (likely a data error)."""
     return 0.0 < fair_prob < 1.0
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
+
+# Combo keys — must match exactly across all callers
+COMBO_KEYS = ("home_over", "home_under", "away_over", "away_under")
+
+
+def derive_fair_probs(
+    decimals_lo: dict[str, float],
+    decimals_hi: dict[str, float],
+) -> Optional[dict]:
+    """
+    Derive 4 joint fair probabilities at an integer total line X from
+    decimal odds at the two adjacent half-point alts (X-0.5 and X+0.5).
+
+    Args:
+        decimals_lo: 4 decimal odds at the lower alt (X-0.5). Keys: COMBO_KEYS.
+        decimals_hi: 4 decimal odds at the higher alt (X+0.5). Keys: COMBO_KEYS.
+
+    Returns:
+        dict with keys {'fair_probs': {combo: prob, ...}, 'delta_total': float}
+        or None if any bounds check fails.
+
+    On rejection, logs a structured WARN line.
+    """
+    # Validate inputs have the expected keys
+    if set(decimals_lo.keys()) != set(COMBO_KEYS) or set(decimals_hi.keys()) != set(COMBO_KEYS):
+        logger.warning(
+            "derive_fair_probs: invalid combo keys lo=%s hi=%s",
+            sorted(decimals_lo.keys()), sorted(decimals_hi.keys())
+        )
+        return None
+
+    # Per-alt devig
+    devig_lo, vig_lo = devig_alt_set(decimals_lo)
+    devig_hi, vig_hi = devig_alt_set(decimals_hi)
+
+    # Bounds check (1): per-alt vig sum
+    if not validate_per_alt_vig(vig_lo):
+        logger.warning("derive_fair_probs: vig_lo=%.4f out of [%g, %g]", vig_lo, VIG_MIN, VIG_MAX)
+        return None
+    if not validate_per_alt_vig(vig_hi):
+        logger.warning("derive_fair_probs: vig_hi=%.4f out of [%g, %g]", vig_hi, VIG_MIN, VIG_MAX)
+        return None
+
+    # Compute push masses two ways for each side
+    delta_cover_from_over = devig_lo["home_over"] - devig_hi["home_over"]
+    delta_cover_from_under = devig_hi["home_under"] - devig_lo["home_under"]
+    delta_uncover_from_over = devig_lo["away_over"] - devig_hi["away_over"]
+    delta_uncover_from_under = devig_hi["away_under"] - devig_lo["away_under"]
+
+    # Bounds check (2): push-mass cross-consistency
+    if not validate_push_mass_consistency(delta_cover_from_over, delta_cover_from_under):
+        logger.warning(
+            "derive_fair_probs: cover-side push mass inconsistent: from_over=%.4f from_under=%.4f",
+            delta_cover_from_over, delta_cover_from_under
+        )
+        return None
+    if not validate_push_mass_consistency(delta_uncover_from_over, delta_uncover_from_under):
+        logger.warning(
+            "derive_fair_probs: uncover-side push mass inconsistent: from_over=%.4f from_under=%.4f",
+            delta_uncover_from_over, delta_uncover_from_under
+        )
+        return None
+
+    # Average the consistent estimates per side (more robust than picking one)
+    delta_cover = (delta_cover_from_over + delta_cover_from_under) / 2.0
+    delta_uncover = (delta_uncover_from_over + delta_uncover_from_under) / 2.0
+    delta_total = delta_cover + delta_uncover
+
+    # Bounds check (3): Δ_total reasonableness
+    if not validate_delta_total(delta_total):
+        logger.warning(
+            "derive_fair_probs: delta_total=%.4f out of [%g, %g]",
+            delta_total, DELTA_TOTAL_MIN, DELTA_TOTAL_MAX
+        )
+        return None
+
+    # Apply the formula:
+    #   For Over combos: fair_prob = devig_hi["...over"] / (1 - delta_total)
+    #   For Under combos: fair_prob = devig_lo["...under"] / (1 - delta_total)
+    denom = 1.0 - delta_total
+    fair_probs = {
+        "home_over":  devig_hi["home_over"]  / denom,
+        "home_under": devig_lo["home_under"] / denom,
+        "away_over":  devig_hi["away_over"]  / denom,
+        "away_under": devig_lo["away_under"] / denom,
+    }
+
+    # Bounds check (4): sum to 1
+    if not validate_sum_to_one(list(fair_probs.values())):
+        logger.warning(
+            "derive_fair_probs: sum=%.4f out of [%g, %g] (probs=%s)",
+            sum(fair_probs.values()), SUM_MIN, SUM_MAX, fair_probs
+        )
+        return None
+
+    # Bounds check (5): per-combo (0, 1)
+    for k, v in fair_probs.items():
+        if not validate_per_combo_bounds(v):
+            logger.warning("derive_fair_probs: %s=%.4f out of (0, 1)", k, v)
+            return None
+
+    return {"fair_probs": fair_probs, "delta_total": delta_total}
