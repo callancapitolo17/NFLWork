@@ -49,9 +49,8 @@ VIG_MIN = 1.05
 VIG_MAX = 1.30
 
 # Push-mass cross-consistency: |Δ_from_over - Δ_from_under| / max(...) tolerance
-# 0.15 accommodates real-world vig asymmetry (~11% observed in worked example);
-# still catches large disagreements (>30%) caused by scrape errors.
-PUSH_MASS_REL_TOL = 0.15
+# 0.10 catches systematic vig asymmetry that signals scrape/parse errors at adjacent alts.
+PUSH_MASS_REL_TOL = 0.10
 
 # Total marginal push mass plausibility bounds (fraction of games landing on X)
 DELTA_TOTAL_MIN = 0.03

@@ -124,12 +124,12 @@ def test_derive_fair_probs_worked_example():
     """Yankees @ Red Sox example from spec §3.5.
 
     Devigged at Over 7.5: HO=0.320, HU=0.160, AO=0.347, AU=0.173 (sum=1.0)
-    Devigged at Over 8.5: HO=0.270, HU=0.213, AO=0.302, AU=0.218 (sum~1.003)
-    Δ_cover ≈ 0.05, Δ_uncover ≈ 0.045, Δ_total ≈ 0.095
+    Devigged at Over 8.5: HO=0.270, HU=0.210, AO=0.302, AU=0.218 (sum=1.0 exactly)
+    Δ_cover = 0.050, Δ_uncover = 0.045, Δ_total = 0.095 (internally consistent)
     Expected fair_prob_HSO at integer 8: 0.270 / (1 - 0.095) ≈ 0.2983
     """
     decimals_lo = _build_synthetic_alt(0.320, 0.160, 0.347, 0.173)
-    decimals_hi = _build_synthetic_alt(0.270, 0.215, 0.302, 0.213)
+    decimals_hi = _build_synthetic_alt(0.270, 0.210, 0.302, 0.218)
 
     result = derive_fair_probs(decimals_lo, decimals_hi)
 
