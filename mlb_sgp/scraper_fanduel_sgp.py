@@ -51,6 +51,7 @@ sys.path.insert(0, str(_ANSWER_KEYS))
 from canonical_match import load_team_dict, load_canonical_games, resolve_team_names
 
 from db import ensure_table, upsert_sgp_odds, clear_source, MLB_DB, _connect_with_retry
+from integer_line_derivation import is_integer_line, derive_fair_probs
 
 # ---------------------------------------------------------------------------
 # FD API config
@@ -488,12 +489,73 @@ def price_combo(session: cffi_requests.Session,
 
 
 # ---------------------------------------------------------------------------
+# Integer-line fallback helper
+# ---------------------------------------------------------------------------
+
+def try_integer_fallback_fd(
+    session,
+    sel: dict,
+    home_line: float,
+    away_line: float,
+    total_line: float,
+    verbose: bool = False,
+):
+    """FD: spread keyed by ('home'|'away', signed_line), totals by ('O'|'U', line).
+
+    When WZ quotes an integer total that FD's selection-ID dict doesn't have,
+    price all 8 adjacent-alt combos and pass them to derive_fair_probs.
+    Returns a derive_fair_probs result dict or None.
+    """
+    if not is_integer_line(total_line):
+        return None
+
+    lo, hi = total_line - 0.5, total_line + 0.5
+
+    home_spread = sel["spreads"].get(("home", home_line))
+    away_spread = sel["spreads"].get(("away", away_line))
+    over_lo  = sel["totals"].get(("O", lo))
+    under_lo = sel["totals"].get(("U", lo))
+    over_hi  = sel["totals"].get(("O", hi))
+    under_hi = sel["totals"].get(("U", hi))
+
+    if not all([home_spread, away_spread, over_lo, under_lo, over_hi, under_hi]):
+        if verbose:
+            print(f"      integer fallback: missing alts for {total_line}")
+        return None
+
+    def _price(sp_pair, tot_pair):
+        result = price_combo(session, sp_pair[0], sp_pair[1], tot_pair[0], tot_pair[1], verbose=verbose)
+        return result["decimal"] if result else None
+
+    decimals_lo = {
+        "home_over":  _price(home_spread, over_lo),
+        "home_under": _price(home_spread, under_lo),
+        "away_over":  _price(away_spread, over_lo),
+        "away_under": _price(away_spread, under_lo),
+    }
+    decimals_hi = {
+        "home_over":  _price(home_spread, over_hi),
+        "home_under": _price(home_spread, under_hi),
+        "away_over":  _price(away_spread, over_hi),
+        "away_under": _price(away_spread, under_hi),
+    }
+
+    if any(d is None for d in decimals_lo.values()) or any(d is None for d in decimals_hi.values()):
+        if verbose:
+            print(f"      integer fallback: pricing failed for {total_line}")
+        return None
+
+    return derive_fair_probs(decimals_lo, decimals_hi)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def scrape_fd_sgp(verbose: bool = False):
     # Wipe all previous FD SGP prices so only this run's results exist.
     clear_source("fanduel_direct")
+    clear_source("fanduel_interpolated")
 
     print("Loading parlay lines from DuckDB...")
     parlay_lines = load_parlay_lines()
@@ -565,6 +627,7 @@ def scrape_fd_sgp(verbose: bool = False):
 
     # ── Phase 2: build combo items ──
     combo_items = []
+    interpolated_results = []   # (game_id, period, combo_name, fair_prob)
     for game in matched:
         gid = game["game_id"]
         if gid not in game_runners:
@@ -595,14 +658,32 @@ def scrape_fd_sgp(verbose: bool = False):
             under = sel["totals"].get(("U", total_line))
 
             if not (home_spread and away_spread and over and under):
-                if verbose:
-                    missing = []
-                    if not home_spread: missing.append(f"home {home_line:+g}")
-                    if not away_spread: missing.append(f"away {away_line:+g}")
-                    if not over: missing.append(f"over {total_line}")
-                    if not under: missing.append(f"under {total_line}")
-                    print(f"  {game['away_team']} @ {game['home_team']} [{period.upper()}]: missing {missing}")
-                continue
+                # Exact-line lookup miss. Try integer-line fallback.
+                fallback = try_integer_fallback_fd(
+                    session, sel, home_line, away_line, total_line, verbose=verbose,
+                )
+                if fallback is None:
+                    if verbose:
+                        missing = []
+                        if not home_spread: missing.append(f"home {home_line:+g}")
+                        if not away_spread: missing.append(f"away {away_line:+g}")
+                        if not over: missing.append(f"over {total_line}")
+                        if not under: missing.append(f"under {total_line}")
+                        print(f"  {game['away_team']} @ {game['home_team']} [{period.upper()}]: missing {missing}")
+                    continue
+                # Append 4 derived rows (bypass the main parallel pricing loop)
+                prefix = "" if period == "fg" else "F5 "
+                COMBO_DISPLAY = {
+                    "home_over":  "Home Spread + Over",
+                    "home_under": "Home Spread + Under",
+                    "away_over":  "Away Spread + Over",
+                    "away_under": "Away Spread + Under",
+                }
+                for k, name in COMBO_DISPLAY.items():
+                    interpolated_results.append((
+                        gid, period, prefix + name, fallback["fair_probs"][k]
+                    ))
+                continue   # don't enqueue this period in the main combo_items
 
             prefix = "" if period == "fg" else "F5 "
             for combo_name, sp_pair, tot_pair in [
@@ -666,6 +747,28 @@ def scrape_fd_sgp(verbose: bool = False):
         print(f"{'='*60}")
     else:
         print("\nNo SGP odds collected.")
+
+    # Append rows for integer-line interpolation fallback
+    interp_rows = []
+    for gid, period, combo_name, fair_prob in interpolated_results:
+        decimal = 1.0 / fair_prob
+        american = decimal_to_american(decimal)
+        game = game_lookup.get(gid, {})
+        print(f"\n  {game.get('away_team', '?')} @ {game.get('home_team', '?')} [interpolated]")
+        print(f"    {combo_name}: {decimal:.4f} ({american:+d})")
+        interp_rows.append({
+            "game_id": gid,
+            "combo": combo_name,
+            "period": "FG" if period == "fg" else "F5",
+            "bookmaker": "fanduel",
+            "sgp_decimal": round(decimal, 4),
+            "sgp_american": american,
+            "source": "fanduel_interpolated",
+        })
+
+    if interp_rows:
+        upsert_sgp_odds(interp_rows)
+        print(f"  Wrote {len(interp_rows)} interpolated FD SGP odds")
 
     return rows
 
