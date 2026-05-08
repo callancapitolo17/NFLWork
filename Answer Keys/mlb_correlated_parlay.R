@@ -523,16 +523,19 @@ sgp_odds <- tryCatch({
   dbGetQuery(sgp_con, "
     SELECT game_id, combo, sgp_decimal, sgp_american, source
     FROM mlb_sgp_odds
-    WHERE source IN ('draftkings_direct', 'fanduel_direct', 'prophetx_direct', 'novig_direct')
+    WHERE source LIKE 'draftkings_%'
+       OR source LIKE 'fanduel_%'
+       OR source LIKE 'prophetx_%'
+       OR source LIKE 'novig_%'
   ")
 }, error = function(e) data.frame())
 
 dbDisconnect(sgp_con)
 
-dk_sgp <- sgp_odds[sgp_odds$source == "draftkings_direct", ]
-fd_sgp <- sgp_odds[sgp_odds$source == "fanduel_direct", ]
-px_sgp <- sgp_odds[sgp_odds$source == "prophetx_direct", ]
-nv_sgp <- sgp_odds[sgp_odds$source == "novig_direct", ]
+dk_sgp <- sgp_odds[startsWith(sgp_odds$source, "draftkings_"), ]
+fd_sgp <- sgp_odds[startsWith(sgp_odds$source, "fanduel_"), ]
+px_sgp <- sgp_odds[startsWith(sgp_odds$source, "prophetx_"), ]
+nv_sgp <- sgp_odds[startsWith(sgp_odds$source, "novig_"), ]
 
 if (nrow(dk_sgp) > 0) cat(sprintf("  Loaded %d DK SGP odds for blending\n", nrow(dk_sgp)))
 if (nrow(fd_sgp) > 0) cat(sprintf("  Loaded %d FD SGP odds for blending\n", nrow(fd_sgp)))
