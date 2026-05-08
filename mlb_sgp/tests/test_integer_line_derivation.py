@@ -40,3 +40,68 @@ def test_devig_alt_set_preserves_keys():
     devigged, _ = devig_alt_set(decimals)
     assert set(devigged.keys()) == {"a", "b", "c", "d"}
     assert all(v == pytest.approx(0.25) for v in devigged.values())
+
+
+from mlb_sgp.integer_line_derivation import (
+    validate_per_alt_vig,
+    validate_push_mass_consistency,
+    validate_delta_total,
+    validate_sum_to_one,
+    validate_per_combo_bounds,
+    VIG_MIN, VIG_MAX,
+    PUSH_MASS_REL_TOL,
+    DELTA_TOTAL_MIN, DELTA_TOTAL_MAX,
+    SUM_MIN, SUM_MAX,
+)
+
+
+def test_validate_per_alt_vig_in_range():
+    assert validate_per_alt_vig(1.125) is True
+    assert validate_per_alt_vig(1.05) is True
+    assert validate_per_alt_vig(1.30) is True
+
+def test_validate_per_alt_vig_out_of_range():
+    assert validate_per_alt_vig(1.04) is False
+    assert validate_per_alt_vig(1.31) is False
+    assert validate_per_alt_vig(0.95) is False
+
+def test_validate_push_mass_consistency_close():
+    # 0.050 vs 0.053 = 5.7% relative diff, within 10% tolerance
+    assert validate_push_mass_consistency(0.050, 0.053) is True
+
+def test_validate_push_mass_consistency_diverging():
+    # 0.050 vs 0.080 = 37.5% relative diff, fails
+    assert validate_push_mass_consistency(0.050, 0.080) is False
+
+def test_validate_push_mass_consistency_handles_zero():
+    # Both zero is consistent (no push mass)
+    assert validate_push_mass_consistency(0.0, 0.0) is True
+    # One zero, one nonzero -> max=nonzero, diff=nonzero -> 100% rel = fail
+    assert validate_push_mass_consistency(0.0, 0.05) is False
+
+def test_validate_delta_total_in_range():
+    assert validate_delta_total(0.095) is True
+    assert validate_delta_total(0.03) is True
+    assert validate_delta_total(0.18) is True
+
+def test_validate_delta_total_out_of_range():
+    assert validate_delta_total(0.02) is False
+    assert validate_delta_total(0.20) is False
+
+def test_validate_sum_to_one_in_range():
+    assert validate_sum_to_one([0.30, 0.20, 0.30, 0.20]) is True
+    assert validate_sum_to_one([0.97]) is True   # single-value edge
+    assert validate_sum_to_one([1.03]) is True
+
+def test_validate_sum_to_one_drift():
+    assert validate_sum_to_one([0.20, 0.20, 0.20, 0.20]) is False  # sums to 0.8
+    assert validate_sum_to_one([0.30, 0.30, 0.30, 0.30]) is False  # sums to 1.2
+
+def test_validate_per_combo_bounds():
+    assert validate_per_combo_bounds(0.5) is True
+    assert validate_per_combo_bounds(0.001) is True
+    assert validate_per_combo_bounds(0.999) is True
+    assert validate_per_combo_bounds(0.0) is False
+    assert validate_per_combo_bounds(1.0) is False
+    assert validate_per_combo_bounds(-0.01) is False
+    assert validate_per_combo_bounds(1.01) is False
