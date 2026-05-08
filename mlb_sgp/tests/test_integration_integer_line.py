@@ -12,9 +12,13 @@ Exits 1 if integer-line games exist but no _interpolated rows appeared
 Exits 2 if no integer-line games on slate (test inconclusive).
 """
 import sys
+from pathlib import Path
+
 import duckdb
 
-DB_PATH = "/Users/callancapitolo/NFLWork/Answer Keys/mlb_mm.duckdb"
+# Resolve repo root from this file's location: <repo>/mlb_sgp/tests/test_integration_integer_line.py
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+DB_PATH = str(_REPO_ROOT / "Answer Keys" / "mlb_mm.duckdb")
 
 
 def main() -> int:
