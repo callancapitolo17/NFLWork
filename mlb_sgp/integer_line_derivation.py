@@ -58,6 +58,7 @@ SUM_MAX = 1.03
 
 
 def validate_per_alt_vig(vig_sum: float) -> bool:
+    """True if per-alt implied-prob sum is within plausible bounds [VIG_MIN, VIG_MAX]."""
     return VIG_MIN <= vig_sum <= VIG_MAX
 
 
@@ -73,13 +74,16 @@ def validate_push_mass_consistency(delta_a: float, delta_b: float) -> bool:
 
 
 def validate_delta_total(delta_total: float) -> bool:
+    """True if marginal joint push mass is within plausible bounds [DELTA_TOTAL_MIN, DELTA_TOTAL_MAX]."""
     return DELTA_TOTAL_MIN <= delta_total <= DELTA_TOTAL_MAX
 
 
 def validate_sum_to_one(fair_probs: list[float]) -> bool:
+    """True if sum of derived fair_probs falls within [SUM_MIN, SUM_MAX]. Typically 4 combos summing to ~1.0."""
     s = sum(fair_probs)
     return SUM_MIN <= s <= SUM_MAX
 
 
 def validate_per_combo_bounds(fair_prob: float) -> bool:
+    """True if fair_prob is strictly between 0 and 1. Strict bounds reject degenerate certainty (likely a data error)."""
     return 0.0 < fair_prob < 1.0
