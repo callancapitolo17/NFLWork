@@ -50,6 +50,7 @@ sys.path.insert(0, str(_ANSWER_KEYS))
 from canonical_match import load_team_dict, load_canonical_games, resolve_team_names
 
 from db import ensure_table, upsert_sgp_odds, clear_source, MLB_DB, _connect_with_retry
+from integer_line_derivation import is_integer_line, derive_fair_probs
 
 # ---------------------------------------------------------------------------
 # Novig API config
@@ -340,8 +341,12 @@ def _float_eq(a, b, eps=1e-6) -> bool:
         return False
 
 
-def fetch_event_legs(session, game: dict, verbose: bool = False) -> dict:
-    """Fetch market tree for one event, extract the 4 outcome UUIDs per period."""
+def fetch_event_legs(session, game: dict, verbose: bool = False) -> tuple[dict, list]:
+    """Fetch market tree for one event, extract the 4 outcome UUIDs per period.
+
+    Returns (legs, markets) where legs is the per-period dict and markets is the
+    raw market list from the API (needed by the integer-line fallback helper).
+    """
     query_text = _load_event_markets_query()
     # The captured post_data is already a full JSON blob including operationName,
     # variables, query — we need to rewrite the eventId variable.
@@ -352,7 +357,7 @@ def fetch_event_legs(session, game: dict, verbose: bool = False) -> dict:
     except Exception as e:
         if verbose:
             print(f"      EventMarkets error for {game['nv_event_id']}: {e}")
-        return _empty_legs()
+        return _empty_legs(), []
 
     ev = ((data.get("data") or {}).get("event") or [{}])[0]
     markets = ev.get("markets") or []
@@ -410,7 +415,7 @@ def fetch_event_legs(session, game: dict, verbose: bool = False) -> dict:
                 print(f"      [{period.upper()}] {game['game_id'][:8]}: "
                       f"missing {missing}  (target spread={target_spread}, total={target_total})")
 
-    return out
+    return out, markets
 
 
 def _empty_legs():
@@ -418,6 +423,106 @@ def _empty_legs():
         "fg": {"home_spread": None, "away_spread": None, "over": None, "under": None},
         "f5": {"home_spread": None, "away_spread": None, "over": None, "under": None},
     }
+
+
+# ---------------------------------------------------------------------------
+# Integer-line fallback helper
+# ---------------------------------------------------------------------------
+
+def try_integer_fallback_nv(
+    session,
+    markets: list,
+    home_sym: str,
+    away_sym: str,
+    spread_line: float,
+    total_line: float,
+    period: str,
+    verbose: bool = False,
+):
+    """NV: when WZ quotes an integer total that Novig's market tree doesn't have
+    at the exact strike, look up the two adjacent half-point alt total markets
+    (total_line - 0.5 and total_line + 0.5), price all 8 combos, and call
+    derive_fair_probs to recover the integer-line fair probabilities.
+
+    Args:
+        markets: raw market list from fetch_event_legs (the full API response).
+        home_sym / away_sym: Novig competitor symbols for spread leg lookup.
+        spread_line: target spread from mlb_parlay_lines (home perspective).
+        total_line: the integer total line from mlb_parlay_lines.
+        period: 'fg' or 'f5' — selects the correct market type strings.
+
+    Returns a derive_fair_probs result dict or None.
+    """
+    if not is_integer_line(total_line):
+        return None
+
+    lo, hi = total_line - 0.5, total_line + 0.5
+
+    # --- Spread legs: reuse the exact-match spread that was already found ---
+    spread_type = SPREAD_TYPE[period]
+    spread_matches = [m for m in markets
+                      if m.get("type") == spread_type
+                      and _float_eq(m.get("strike"), spread_line)]
+    spread_mkt = next((m for m in spread_matches if m.get("is_consensus") is True),
+                      spread_matches[0] if spread_matches else None)
+    if spread_mkt is None:
+        if verbose:
+            print(f"      integer fallback: no spread market at {spread_line}")
+        return None
+    home_leg, away_leg = _find_outcome_in_spread(spread_mkt, home_sym, away_sym)
+    if not (home_leg and away_leg):
+        if verbose:
+            print(f"      integer fallback: spread legs missing for {spread_line}")
+        return None
+
+    # --- Adjacent total markets ---
+    total_type = TOTAL_TYPE[period]
+
+    def _get_total_legs(strike):
+        mkt_list = [m for m in markets
+                    if m.get("type") == total_type and _float_eq(m.get("strike"), strike)]
+        mkt = next((m for m in mkt_list if m.get("is_consensus") is True),
+                   mkt_list[0] if mkt_list else None)
+        if mkt is None:
+            return None, None
+        return _find_outcome_in_total(mkt)
+
+    over_lo, under_lo = _get_total_legs(lo)
+    over_hi, under_hi = _get_total_legs(hi)
+
+    if not all([over_lo, under_lo, over_hi, under_hi]):
+        if verbose:
+            missing = []
+            if not over_lo:  missing.append(f"over {lo}")
+            if not under_lo: missing.append(f"under {lo}")
+            if not over_hi:  missing.append(f"over {hi}")
+            if not under_hi: missing.append(f"under {hi}")
+            print(f"      integer fallback: missing adjacent alt legs {missing} for total={total_line}")
+        return None
+
+    def _price(sp_leg, tot_leg):
+        priced, _ = submit_parlay(session, [sp_leg["id"], tot_leg["id"]], verbose=verbose)
+        return priced["decimal"] if priced else None
+
+    decimals_lo = {
+        "home_over":  _price(home_leg, over_lo),
+        "home_under": _price(home_leg, under_lo),
+        "away_over":  _price(away_leg, over_lo),
+        "away_under": _price(away_leg, under_lo),
+    }
+    decimals_hi = {
+        "home_over":  _price(home_leg, over_hi),
+        "home_under": _price(home_leg, under_hi),
+        "away_over":  _price(away_leg, over_hi),
+        "away_under": _price(away_leg, under_hi),
+    }
+
+    if any(d is None for d in decimals_lo.values()) or any(d is None for d in decimals_hi.values()):
+        if verbose:
+            print(f"      integer fallback: pricing failed for total={total_line}")
+        return None
+
+    return derive_fair_probs(decimals_lo, decimals_hi)
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +591,7 @@ def submit_parlay(session, outcome_ids: list[str],
 # ---------------------------------------------------------------------------
 def scrape_novig_sgp(verbose: bool = False):
     clear_source("novig_direct")
+    clear_source("novig_interpolated")
 
     print("Loading parlay lines from DuckDB...")
     parlay_lines = load_parlay_lines()
@@ -525,6 +631,7 @@ def scrape_novig_sgp(verbose: bool = False):
     print("Fetching market trees (parallel)...")
     t0 = time.time()
     legs_by_game = {}
+    markets_by_game = {}  # raw market lists for integer-line fallback
 
     def _fetch(g):
         return g["game_id"], fetch_event_legs(session, g, verbose)
@@ -533,8 +640,9 @@ def scrape_novig_sgp(verbose: bool = False):
         futures = {pool.submit(_fetch, g): g for g in matched}
         for fut in as_completed(futures):
             try:
-                gid, legs = fut.result()
+                gid, (legs, markets) = fut.result()
                 legs_by_game[gid] = legs
+                markets_by_game[gid] = markets
             except Exception as e:
                 g = futures[fut]
                 print(f"  Error fetching markets for "
@@ -545,6 +653,7 @@ def scrape_novig_sgp(verbose: bool = False):
     print("Pricing SGP combos (parallel)...")
     t1 = time.time()
     combo_items = []
+    interpolated_results = []   # (game_id, period, combo_name, fair_prob)
     for g in matched:
         gid = g["game_id"]
         legs = legs_by_game.get(gid)
@@ -557,6 +666,31 @@ def scrape_novig_sgp(verbose: bool = False):
             over = p.get("over")
             under = p.get("under")
             if not (home and away and over and under):
+                # Exact-line lookup miss. Try integer-line fallback.
+                total_line = g[f"{period}_total_line"]
+                spread_line = g[f"{period}_spread_line"]
+                if total_line is None or spread_line is None:
+                    continue
+                markets = markets_by_game.get(gid, [])
+                fallback = try_integer_fallback_nv(
+                    session, markets,
+                    g["nv_home_sym"], g["nv_away_sym"],
+                    spread_line, total_line, period,
+                    verbose=verbose,
+                )
+                if fallback is None:
+                    continue
+                prefix = "" if period == "fg" else "F5 "
+                COMBO_DISPLAY = {
+                    "home_over":  "Home Spread + Over",
+                    "home_under": "Home Spread + Under",
+                    "away_over":  "Away Spread + Over",
+                    "away_under": "Away Spread + Under",
+                }
+                for k, name in COMBO_DISPLAY.items():
+                    interpolated_results.append((
+                        gid, period, prefix + name, fallback["fair_probs"][k]
+                    ))
                 continue
             prefix = "" if period == "fg" else "F5 "
             for combo_name, sp, to in [
@@ -681,6 +815,28 @@ def scrape_novig_sgp(verbose: bool = False):
         else:
             reason = " — events matched but no parlay prices returned. Try --verbose."
         print(f"\n!! ERROR: No Novig SGP odds collected{reason}")
+
+    # Append rows for integer-line interpolation fallback
+    interp_rows = []
+    for gid, period, combo_name, fair_prob in interpolated_results:
+        decimal = round(1.0 / fair_prob, 4)
+        american = decimal_to_american(decimal)
+        game = game_lookup.get(gid, {})
+        print(f"\n  {game.get('away_team', '?')} @ {game.get('home_team', '?')} [interpolated]")
+        print(f"    {combo_name}: {decimal:.4f} ({american:+d})")
+        interp_rows.append({
+            "game_id":      gid,
+            "combo":        combo_name,
+            "period":       "FG" if period == "fg" else "F5",
+            "bookmaker":    "novig",
+            "sgp_decimal":  decimal,
+            "sgp_american": american,
+            "source":       "novig_interpolated",
+        })
+
+    if interp_rows:
+        upsert_sgp_odds(interp_rows)
+        print(f"  Wrote {len(interp_rows)} interpolated Novig SGP odds")
 
     return all_rows
 
