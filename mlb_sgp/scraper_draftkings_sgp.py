@@ -38,7 +38,7 @@ sys.path.insert(0, str(_ANSWER_KEYS))
 from canonical_match import load_team_dict, load_canonical_games, resolve_team_names
 
 from db import ensure_table, upsert_sgp_odds, clear_source, MLB_DB, _connect_with_retry
-from integer_line_derivation import is_integer_line, derive_fair_probs, COMBO_KEYS
+from integer_line_derivation import is_integer_line, derive_fair_probs
 
 # ---------------------------------------------------------------------------
 # DK API config
