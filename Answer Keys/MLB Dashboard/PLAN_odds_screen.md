@@ -27,32 +27,58 @@ the placement flow stay identical to today. Only the *display* changes.
 
 ## Final design (locked)
 
-Layout — two rows per bet (both sides of the market), one block per
-`(game × market × line the model picked)`:
+**Card layout, mirroring the parlays tab.** Each bet renders as a card
+(reactable row with `display:flex` + per-cell `order:` overrides), not as
+a flat table row. Inside the card the visual stack is:
+
+1. **Game header** (full width) — matchup + date/time
+2. **Market header** (full width) — e.g., `Spread NYY -1.5`
+3. **Pick-side pills row** (full width) — side label + one pill per book
+4. **Other-side pills row** (full width) — side label + one pill per book
+5. **Metadata strip** (inline-flex) — `Pick / EV / Size / To Win / [Place]`
 
 ```
-┌────────────────────┬─────────┬──────┬─────┬─────┬──────────────┬────────────────────────────────────────┬───────┐
-│ Game               │ Market  │ Side │ EV% │ Size│ Pick         │ WZ   H88  BFA  BKM  B105  DK   FD  Pin │ Place │
-├────────────────────┼─────────┼──────┼─────┼─────┼──────────────┼────────────────────────────────────────┼───────┤
-│ NYY @ BOS  7:05 PM │ Spread  │ NYY  │     │     │              │ -1.5 -1.5 -1.5 -2   -1.5 -1.5 -1.5 -1.5│       │
-│                    │         │      │ 4.2 │ $42 │ ★ H88  +115  │ +110 ▓+115▓+108 -120 +112 -110 -108-105│ [Bet] │
-│                    │         │ BOS  │     │     │              │ +1.5 +1.5 +1.5 +2   +1.5 +1.5 +1.5 +1.5│       │
-│                    │         │      │     │     │              │ -130 -135 -128 +100 -132 -130 -132 -135│       │
-└────────────────────┴─────────┴──────┴─────┴─────┴──────────────┴────────────────────────────────────────┴───────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│ NYY @ BOS  Fri 7:05 PM                                                     │
+│ Spread NYY -1.5                                                            │
+│ NYY -1.5:  [WZ +110] [▓H88 +115 ★▓] [BFA +108] [BKM ⟨-2⟩ -120] [B105 +112] │
+│            [DK -110] [FD -108] [Pinn -105]                                 │
+│ BOS +1.5:  [WZ -130] [H88 -135] [BFA -128] [BKM ⟨+2⟩ +100] [B105 -132]    │
+│            [DK -130] [FD -132] [Pinn -135]                                 │
+│ Pick H88 +115   EV 4.2%   Size $42   To Win $48                   [Place]  │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Highlight:** picked book's cell on the picked side gets a green/yellow
-  background (style `(c)` from design discussion).
-- **Pick column:** explicit `★ {Book}  {line} / {odds}` so a long slate
-  scans easily.
-- **Line mismatch:** when a book doesn't quote the model's exact line, show
-  that book's nearest line + its price for the same side, with the line
-  rendered in amber so the mismatch is visually obvious.
-- **Missing quote:** book has no line on that side at all → `—`.
-- **Column order:** by-account books first (WZ, H88, BFA, BKM, B105),
-  reference books after (DK, FD, Pinnacle). No visual divider.
-- **Place button:** unchanged behavior. Single button per bet, places at the
-  Pick book at the Pick price.
+**CSS pattern** mirrors parlays directly (`mlb_dashboard.R:1907-2070`):
+- Row container `display:flex; flex-wrap:wrap`.
+- Full-width cells (`cell-game`, `cell-market`, `cell-pickside`,
+  `cell-otherside`) carry `flex-basis:100%`.
+- Metadata cells (`cell-pick`, `cell-ev`, `cell-size`, `cell-towin`,
+  `cell-action`) are `display:inline-flex` and flow horizontally.
+- Each metadata cell has its label baked in via `::before` pseudo-element
+  (e.g., `.cell-pick::before { content: "Pick" }`) — same pattern as
+  parlays' Fair / WZ / Size / To Win labels.
+- Place button pushed right via `margin-left:auto` on the preceding flex
+  item, identical to parlays' Edge → Action pattern.
+- `order:` overrides give the visual stack independent of the dataframe
+  column order reactable preserves.
+- Same responsive override block (`min-width:0 !important; flex:0 1 auto`)
+  so cards reflow at narrow widths.
+
+**Pill rendering** — new helper `render_book_odds_strip(side_label, model_line, books)`
+in `mlb_dashboard.R`, analogous to the existing `render_books_strip`:
+- Always renders all 8 books in fixed order (WZ, H88, BFA, BKM, B105, DK,
+  FD, Pinn) so the eye learns positions across cards.
+- Exact-line pill: `BookCode  +Odds` (e.g., `H88  +115`).
+- Mismatched-line pill: `BookCode  ⟨line⟩  Odds` with the bracketed line
+  in amber (e.g., `BKM  ⟨-2⟩  -120`).
+- Missing-quote pill: `BookCode  —` in muted grey.
+- Pick pill on the pick side: green/yellow background tint + ★ glyph,
+  reusing the `cell-pick-highlight` class.
+
+**Place button:** unchanged behavior. Single `[Place]` per card in the
+metadata strip, places at the Pick book at the Pick price. Same JS hooks
+and `data-*` attributes as today.
 
 ## Data sources (already exist)
 
