@@ -49,6 +49,7 @@ sys.path.insert(0, str(_ANSWER_KEYS))
 from canonical_match import load_team_dict, load_canonical_games, resolve_team_names
 
 from db import ensure_table, upsert_sgp_odds, clear_source, MLB_DB, _connect_with_retry
+from integer_line_derivation import is_integer_line, derive_fair_probs
 
 # ---------------------------------------------------------------------------
 # ProphetX API config
@@ -360,7 +361,7 @@ def fetch_event_legs(session, game: dict, verbose: bool = False) -> dict:
     if resp.status_code != 200:
         if verbose:
             print(f"      markets HTTP {resp.status_code} for {game['px_event_id']}")
-        return out
+        return out, []
 
     markets = resp.json().get("data", {}).get("markets", [])
     home_id = game["px_home_competitor_id"]
@@ -373,7 +374,7 @@ def fetch_event_legs(session, game: dict, verbose: bool = False) -> dict:
               f"(event {game['px_event_id']}): competitorId mismatch between "
               f"tournaments (home={home_id}, away={away_id}) and markets — skipping. "
               "If this persists, switch to name-based outcome matching.")
-        return out
+        return out, markets
 
     def _leg_from_sel(sel, market_id):
         if not sel:
@@ -444,7 +445,7 @@ def fetch_event_legs(session, game: dict, verbose: bool = False) -> dict:
                 print(f"      [{period.upper()}] {game['game_id'][:8]}: "
                       f"missing {missing}  (spread={target_spread_line}, total={target_total_line})")
 
-    return out
+    return out, markets
 
 
 def _line_eq(a, b, eps=1e-6) -> bool:
@@ -455,6 +456,147 @@ def _line_eq(a, b, eps=1e-6) -> bool:
         return abs(float(a) - float(b)) < eps
     except (TypeError, ValueError):
         return False
+
+
+# ---------------------------------------------------------------------------
+# Integer-line fallback helper
+# ---------------------------------------------------------------------------
+
+def try_integer_fallback_px(
+    session,
+    markets: list,
+    home_id,
+    away_id,
+    px_event_id,
+    spread_line: float,
+    total_line: float,
+    period: str,
+    verbose: bool = False,
+):
+    """PX: when WZ quotes an integer total that PX's market tree doesn't have
+    at the exact strike, look up the two adjacent half-point alt total markets
+    (total_line - 0.5 and total_line + 0.5), price all 8 combos via the shared
+    submit_parlay_rfq (which already applies MIN_OFFER_STAKE filtering), and
+    call derive_fair_probs to recover the integer-line fair probabilities.
+
+    Args:
+        markets: raw market list from fetch_event_legs.
+        home_id / away_id: PX competitor IDs for spread leg lookup.
+        px_event_id: ProphetX event ID — required for RFQ leg dicts.
+        spread_line: target spread from mlb_parlay_lines (home perspective).
+        total_line: the integer total line from mlb_parlay_lines.
+        period: 'fg' or 'f5' — selects the correct market name strings.
+
+    Returns a derive_fair_probs result dict or None.
+    """
+    if not is_integer_line(total_line):
+        return None
+
+    lo, hi = total_line - 0.5, total_line + 0.5
+
+    def _leg_from_sel(sel, market_id):
+        if not sel:
+            return None
+        return {
+            "marketId":  market_id,
+            "outcomeId": sel.get("id"),
+            "lineId":    sel.get("lineID"),
+            "line":      sel.get("line"),
+            "leg_am":    sel.get("odds"),
+        }
+
+    # --- Spread legs at the exact spread_line ---
+    spread_mkt = _find_market(markets, MARKET_NAMES[period]["spread"])
+    if spread_mkt is None:
+        if verbose:
+            print(f"      integer fallback: no spread market for {period} spread={spread_line}")
+        return None
+    mid_spread = spread_mkt.get("id")
+    home_sel = _pick_selection(
+        spread_mkt,
+        lambda s, lv=spread_line, hid=home_id: (
+            s.get("competitorId") == hid and _line_eq(s.get("line"), lv)
+        ),
+    )
+    away_sel = _pick_selection(
+        spread_mkt,
+        lambda s, lv=-spread_line, aid=away_id: (
+            s.get("competitorId") == aid and _line_eq(s.get("line"), lv)
+        ),
+    )
+    home_leg = _leg_from_sel(home_sel, mid_spread)
+    away_leg = _leg_from_sel(away_sel, mid_spread)
+    if not (home_leg and away_leg):
+        if verbose:
+            print(f"      integer fallback: spread legs missing at spread={spread_line}")
+        return None
+
+    # --- Adjacent total markets at lo and hi ---
+    total_mkt = _find_market(markets, MARKET_NAMES[period]["total"])
+    if total_mkt is None:
+        if verbose:
+            print(f"      integer fallback: no total market for {period}")
+        return None
+    mid_total = total_mkt.get("id")
+
+    def _get_total_leg(name_prefix, strike):
+        sel = _pick_selection(
+            total_mkt,
+            lambda s, p=name_prefix, lv=strike: (
+                (s.get("name") or "").lower().startswith(p)
+                and _line_eq(s.get("line"), lv)
+            ),
+        )
+        return _leg_from_sel(sel, mid_total)
+
+    over_lo  = _get_total_leg("over",  lo)
+    under_lo = _get_total_leg("under", lo)
+    over_hi  = _get_total_leg("over",  hi)
+    under_hi = _get_total_leg("under", hi)
+
+    if not all([over_lo, under_lo, over_hi, under_hi]):
+        if verbose:
+            missing = []
+            if not over_lo:  missing.append(f"over {lo}")
+            if not under_lo: missing.append(f"under {lo}")
+            if not over_hi:  missing.append(f"over {hi}")
+            if not under_hi: missing.append(f"under {hi}")
+            print(f"      integer fallback: missing adjacent alt legs {missing} for total={total_line}")
+        return None
+
+    def _build_rfq_legs(sp_leg, tot_leg):
+        return [
+            {"sportEventId": px_event_id,
+             "marketId": sp_leg["marketId"], "outcomeId": sp_leg["outcomeId"],
+             "lineId":   sp_leg["lineId"],   "line": sp_leg["line"]},
+            {"sportEventId": px_event_id,
+             "marketId": tot_leg["marketId"], "outcomeId": tot_leg["outcomeId"],
+             "lineId":   tot_leg["lineId"],   "line": tot_leg["line"]},
+        ]
+
+    def _price(sp_leg, tot_leg):
+        priced, _ = submit_parlay_rfq(session, _build_rfq_legs(sp_leg, tot_leg), verbose=verbose)
+        return priced["decimal"] if priced else None
+
+    decimals_lo = {
+        "home_over":  _price(home_leg, over_lo),
+        "home_under": _price(home_leg, under_lo),
+        "away_over":  _price(away_leg, over_lo),
+        "away_under": _price(away_leg, under_lo),
+    }
+    decimals_hi = {
+        "home_over":  _price(home_leg, over_hi),
+        "home_under": _price(home_leg, under_hi),
+        "away_over":  _price(away_leg, over_hi),
+        "away_under": _price(away_leg, under_hi),
+    }
+
+    if any(d is None for d in decimals_lo.values()) or any(d is None for d in decimals_hi.values()):
+        if verbose:
+            print(f"      integer fallback: pricing failed for total={total_line}")
+        return None
+
+    return derive_fair_probs(decimals_lo, decimals_hi)
 
 
 # ---------------------------------------------------------------------------
@@ -526,6 +668,7 @@ def submit_parlay_rfq(session, legs: list[dict], verbose: bool = False) -> tuple
 def scrape_prophetx_sgp(verbose: bool = False):
     # Clear previous prices — missing combo means NA, not stale.
     clear_source("prophetx_direct")
+    clear_source("prophetx_interpolated")
 
     print("Loading parlay lines from DuckDB...")
     parlay_lines = load_parlay_lines()
@@ -570,6 +713,7 @@ def scrape_prophetx_sgp(verbose: bool = False):
     print("Fetching market trees (parallel)...")
     t0 = time.time()
     legs_by_game = {}
+    markets_by_game = {}  # raw market lists for integer-line fallback
 
     def _fetch(g):
         return g["game_id"], fetch_event_legs(session, g, verbose)
@@ -578,8 +722,9 @@ def scrape_prophetx_sgp(verbose: bool = False):
         futures = {pool.submit(_fetch, g): g for g in matched}
         for fut in as_completed(futures):
             try:
-                gid, legs = fut.result()
+                gid, (legs, markets) = fut.result()
                 legs_by_game[gid] = legs
+                markets_by_game[gid] = markets
             except Exception as e:
                 g = futures[fut]
                 print(f"  Error fetching markets for {g.get('home_team')}/{g.get('away_team')}: {e}")
@@ -589,6 +734,7 @@ def scrape_prophetx_sgp(verbose: bool = False):
     print("Pricing SGP combos (parallel RFQ)...")
     t1 = time.time()
     combo_items = []
+    interpolated_results = []   # (game_id, period, combo_name, fair_prob)
     for g in matched:
         gid = g["game_id"]
         legs = legs_by_game.get(gid)
@@ -601,6 +747,32 @@ def scrape_prophetx_sgp(verbose: bool = False):
             over = p.get("over")
             under = p.get("under")
             if not (home and away and over and under):
+                # Exact-line lookup miss — try integer-line fallback.
+                total_line = g[f"{period}_total_line"]
+                spread_line = g[f"{period}_spread_line"]
+                if total_line is None or spread_line is None:
+                    continue
+                markets = markets_by_game.get(gid, [])
+                fallback = try_integer_fallback_px(
+                    session, markets,
+                    g["px_home_competitor_id"], g["px_away_competitor_id"],
+                    g["px_event_id"],
+                    spread_line, total_line, period,
+                    verbose=verbose,
+                )
+                if fallback is None:
+                    continue
+                prefix = "" if period == "fg" else "F5 "
+                COMBO_DISPLAY = {
+                    "home_over":  "Home Spread + Over",
+                    "home_under": "Home Spread + Under",
+                    "away_over":  "Away Spread + Over",
+                    "away_under": "Away Spread + Under",
+                }
+                for k, name in COMBO_DISPLAY.items():
+                    interpolated_results.append((
+                        gid, period, prefix + name, fallback["fair_probs"][k]
+                    ))
                 continue
             prefix = "" if period == "fg" else "F5 "
             for combo_name, sp, to in [
@@ -737,6 +909,28 @@ def scrape_prophetx_sgp(verbose: bool = False):
         else:
             reason = " — events matched but no RFQ returned priced offers. Try --verbose."
         print(f"\n!! ERROR: No ProphetX SGP odds collected{reason}")
+
+    # Append rows for integer-line interpolation fallback
+    interp_rows = []
+    for gid, period, combo_name, fair_prob in interpolated_results:
+        decimal = round(1.0 / fair_prob, 4)
+        american = decimal_to_american(decimal)
+        game = game_lookup.get(gid, {})
+        print(f"\n  {game.get('away_team', '?')} @ {game.get('home_team', '?')} [interpolated]")
+        print(f"    {combo_name}: {decimal:.4f} ({american:+d})")
+        interp_rows.append({
+            "game_id":      gid,
+            "combo":        combo_name,
+            "period":       "FG" if period == "fg" else "F5",
+            "bookmaker":    "prophetx",
+            "sgp_decimal":  decimal,
+            "sgp_american": american,
+            "source":       "prophetx_interpolated",
+        })
+
+    if interp_rows:
+        upsert_sgp_odds(interp_rows)
+        print(f"  Wrote {len(interp_rows)} interpolated ProphetX SGP odds")
 
     return all_rows
 

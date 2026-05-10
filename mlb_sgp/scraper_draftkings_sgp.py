@@ -38,6 +38,7 @@ sys.path.insert(0, str(_ANSWER_KEYS))
 from canonical_match import load_team_dict, load_canonical_games, resolve_team_names
 
 from db import ensure_table, upsert_sgp_odds, clear_source, MLB_DB, _connect_with_retry
+from integer_line_derivation import is_integer_line, derive_fair_probs
 
 # ---------------------------------------------------------------------------
 # DK API config
@@ -166,6 +167,88 @@ def load_parlay_lines() -> dict:
         return result
     finally:
         con.close()
+
+
+# ---------------------------------------------------------------------------
+# Integer-line fallback helper
+# ---------------------------------------------------------------------------
+
+def try_integer_fallback_dk(
+    session,
+    sel_ids: dict,
+    spread_line: float,
+    total_line: float,
+    canonical: set,
+    verbose: bool = False,
+):
+    """Try to derive 4 fair_probs at an integer total line from adjacent
+    half-point alts. Returns the derive_fair_probs result dict or None.
+
+    Mirrors the spread/total-sel lookup the main loop does for the matched
+    line, but for the two adjacent half-point alts.
+    """
+    if not is_integer_line(total_line):
+        return None
+
+    lo_total = total_line - 0.5
+    hi_total = total_line + 0.5
+
+    # Sign convention same as main loop
+    if spread_line < 0:
+        home_sign, away_sign = "N", "P"
+    else:
+        home_sign, away_sign = "P", "N"
+    spread = abs(spread_line)
+
+    home_spread_sels = sel_ids["spreads"].get((home_sign, spread, "1")) or []
+    away_spread_sels = sel_ids["spreads"].get((away_sign, spread, "3")) or []
+
+    over_lo_sels  = sel_ids["totals"].get(("O", lo_total)) or []
+    under_lo_sels = sel_ids["totals"].get(("U", lo_total)) or []
+    over_hi_sels  = sel_ids["totals"].get(("O", hi_total)) or []
+    under_hi_sels = sel_ids["totals"].get(("U", hi_total)) or []
+
+    if not (home_spread_sels and away_spread_sels and
+            over_lo_sels and under_lo_sels and over_hi_sels and under_hi_sels):
+        if verbose:
+            print(f"      integer fallback: missing alts for {total_line}")
+        return None
+
+    # Helper: price one canonical-canonical combo, return decimal or None
+    def _price(sp_sels, tot_sels):
+        for sp in sp_sels:
+            sp_mnum = _market_num(sp)
+            if sp_mnum not in canonical:
+                continue
+            for to in tot_sels:
+                to_mnum = _market_num(to)
+                if to_mnum not in canonical:
+                    continue
+                sgp = calculate_sgp(session, sp, to, verbose=verbose)
+                if sgp:
+                    return sgp["trueOdds"]
+        return None
+
+    # 8 calls: 4 combos × 2 alts
+    decimals_lo = {
+        "home_over":  _price(home_spread_sels, over_lo_sels),
+        "home_under": _price(home_spread_sels, under_lo_sels),
+        "away_over":  _price(away_spread_sels, over_lo_sels),
+        "away_under": _price(away_spread_sels, under_lo_sels),
+    }
+    decimals_hi = {
+        "home_over":  _price(home_spread_sels, over_hi_sels),
+        "home_under": _price(home_spread_sels, under_hi_sels),
+        "away_over":  _price(away_spread_sels, over_hi_sels),
+        "away_under": _price(away_spread_sels, under_hi_sels),
+    }
+
+    if any(d is None for d in decimals_lo.values()) or any(d is None for d in decimals_hi.values()):
+        if verbose:
+            print(f"      integer fallback: pricing call failed for {total_line}")
+        return None
+
+    return derive_fair_probs(decimals_lo, decimals_hi)
 
 
 # ---------------------------------------------------------------------------
@@ -550,6 +633,7 @@ def scrape_dk_sgp(verbose: bool = False):
     # If DK blocks a parlay that was priced last run, it simply won't have
     # a row — the R blending code will see NA instead of a stale price.
     clear_source("draftkings_direct")
+    clear_source("draftkings_interpolated")
 
     print("Loading parlay lines from DuckDB...")
     parlay_lines = load_parlay_lines()
@@ -620,6 +704,7 @@ def scrape_dk_sgp(verbose: bool = False):
 
     # Build all (game_id, period, combo_name, spread_sel, total_sel) tuples
     combo_items = []
+    interpolated_results = []   # (game_id, period, combo_name, fair_prob)
     for game in matched:
         gid = game["game_id"]
         if gid not in game_data:
@@ -651,7 +736,28 @@ def scrape_dk_sgp(verbose: bool = False):
             under_sels = sel_ids["totals"].get(("U", total)) or []
 
             if not home_spread_sels or not away_spread_sels or not over_sels or not under_sels:
-                continue
+                # Existing exact-line lookup miss. Try integer-line fallback.
+                canonical = sel_ids.get("canonical", set())
+                fallback = try_integer_fallback_dk(
+                    session, sel_ids, spread_line, total,
+                    canonical, verbose=verbose,
+                )
+                if fallback is None:
+                    continue
+                # Append 4 derived rows to interpolated_results
+                # (separate list from combo_items so they bypass the main parallel pricing loop)
+                prefix = "" if period == "fg" else "F5 "
+                COMBO_DISPLAY = {
+                    "home_over":  "Home Spread + Over",
+                    "home_under": "Home Spread + Under",
+                    "away_over":  "Away Spread + Over",
+                    "away_under": "Away Spread + Under",
+                }
+                for k, name in COMBO_DISPLAY.items():
+                    interpolated_results.append((
+                        gid, period, prefix + name, fallback["fair_probs"][k]
+                    ))
+                continue   # don't enqueue this period in the main combo_items
 
             # Canonical market set for this period = main RL + main total +
             # any alt market that contains BOTH spreads and totals. Pairs
@@ -769,6 +875,24 @@ def scrape_dk_sgp(verbose: bool = False):
                 "source": "draftkings_direct",
             })
 
+    # Append rows for integer-line interpolation fallback
+    interp_rows = []
+    for gid, period, combo_name, fair_prob in interpolated_results:
+        decimal = 1.0 / fair_prob
+        american = decimal_to_american(decimal)
+        game = game_lookup.get(gid, {})
+        print(f"\n  {game.get('away_team', '?')} @ {game.get('home_team', '?')} [interpolated]")
+        print(f"    {combo_name}: {decimal:.4f} ({american:+d})")
+        interp_rows.append({
+            "game_id": gid,
+            "combo": combo_name,
+            "period": "FG" if period == "fg" else "F5",
+            "bookmaker": "draftkings",
+            "sgp_decimal": round(decimal, 4),
+            "sgp_american": american,
+            "source": "draftkings_interpolated",
+        })
+
     # Validate directional consistency before writing
     if all_rows:
         _validate_spread_direction(all_rows, game_lookup, parlay_lines)
@@ -778,6 +902,10 @@ def scrape_dk_sgp(verbose: bool = False):
         print(f"{'='*60}")
     else:
         print("\nNo SGP odds collected.")
+
+    if interp_rows:
+        upsert_sgp_odds(interp_rows)
+        print(f"  Wrote {len(interp_rows)} interpolated SGP odds")
 
     return all_rows
 

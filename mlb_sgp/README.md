@@ -188,9 +188,46 @@ This sum exceeds 1.0 by the book's vig charge. Measured values:
 
 **FG and F5 are separate partitions.** Never sum across both periods — that doubles the measured vig. Group by `(game_id, period)`.
 
-### Exact line matching
+### Line matching
 
-The scraper must match Wagerzon's exact spread and total lines. If the book doesn't have the precise line (e.g., Wagerzon has total 8.5 but the book only offers 8.0), skip the game entirely. No rounding, no closest-line fallback. The parlay fair odds are calibrated to Wagerzon's specific lines — a different line is a different bet.
+The scraper first attempts exact-line matching: Wagerzon's exact spread and total lines must exist in the book's selection-ID dictionary, and that pair gets priced via `calculateBets` / `implyBets` / equivalent.
+
+**Integer-line fallback.** When Wagerzon posts an SGP at an integer total line (e.g., FG Over 8, F5 Over 4) that the book doesn't quote directly, the scraper falls back to interpolating from the two adjacent half-point alts (X-0.5 and X+0.5). The integer-line derivation is implemented in `mlb_sgp/integer_line_derivation.py`. See "Integer-Line Derivation" below.
+
+**No-fallback behavior.** If the book doesn't have either adjacent half-point alt, or any of the 5 bounds checks fails on the derived prices, the game's period is skipped for that book — same graceful degradation as today's "WZ line not found" path. The R blender treats the book as missing for that game.
+
+### Integer-Line Derivation
+
+When an integer total line `X` is missing, the scraper issues 8 SGP pricing calls (4 combos × 2 alts at `X − 0.5` and `X + 0.5`), per-alt-devigs each set, and derives joint fair probabilities at the integer line:
+
+```
+Δ_total      = (devig_HomeOver_lo − devig_HomeOver_hi)
+             + (devig_AwayOver_lo − devig_AwayOver_hi)
+             = P(T = X)   (the joint marginal push mass)
+
+fair_prob_X  = devig_hi_combo / (1 − Δ_total)   for Over combos
+             = devig_lo_combo / (1 − Δ_total)   for Under combos
+```
+
+Interpretation: the conditional joint probability "this combo wins outright, given the bet doesn't push." Books refund pushed legs regardless of spread side, so the conditioning matches real-world settlement. Pure-joint computation — no singles totals market accessed.
+
+**Underlying principle:** Breeden & Litzenberger (1978) showed in options markets that adjacent strike prices implicitly carry the probability mass of the in-between outcome (the second derivative of call prices w.r.t. strike). This is the discrete sports analog: the difference between adjacent half-point alt SGPs gives us the implied joint integer-mass at `X`. Half-point pricing calculators (Sportsbook Review, Bookmakers Review, Unabated) apply the same skeleton in singles markets; we extend it to two-leg correlated parlays.
+
+The derived rows are written with `source = '<book>_interpolated'` so post-hoc analysis can compare realized P&L on interpolated vs directly-priced rows.
+
+**Bounds checks** (config constants in `integer_line_derivation.py`):
+
+| # | Check | Threshold |
+|---|---|---|
+| 1 | Per-alt vig sum | `[1.05, 1.30]` |
+| 2 | Push-mass cross-consistency | <10% relative diff per side |
+| 3 | `Δ_total` plausibility | `[0.03, 0.18]` |
+| 4 | Sum of 4 derived fair_probs | `[0.97, 1.03]` |
+| 5 | Per-combo bounds | `(0, 1)` strict |
+
+On any failure: the game's period is skipped for that book, structured WARN logged with inputs and the violated check.
+
+**Manual integration test:** `/Users/callancapitolo/NFLWork/mlb_sgp/venv/bin/python -m mlb_sgp.tests.test_integration_integer_line` — verifies a recent slate has interpolated rows with sum-to-one invariant holding. Exit 0=pass, 1=fail, 2=inconclusive (no integer-line games).
 
 ### Integration into the R scanner
 
@@ -282,7 +319,7 @@ A future v2 may bootstrap this automatically via headless Chrome.
 - **FD's SGP vig is bimodal by time-to-game:** ~13% for games >21h out, ~21% for games <16h out. The step change happens around 16-21h before first pitch — possibly tied to lineup posting windows.
 - **Alt total runner names use parens:** `"Over (8.5)"`, `"Under (7.5)"`. Main total runners are just `"Over"` / `"Under"` with the line in the `handicap` field.
 - **Alt spread runner names embed the team:** `"Cincinnati Reds +3.5"`. The `handicap` field is 0 for alts. Parse team name + signed line from the string, match team to home/away.
-- **F5 totals at integer values (e.g., 5.0) may not exist.** FD's F5 alt totals jump in 1.0 increments (2.5, 3.5, 4.5, 5.5...). If Wagerzon has F5 total 5.0, FD won't have it and the game is correctly skipped.
+- **F5 totals at integer values (e.g., 5.0) trigger interpolation.** FD's F5 alt totals jump in 1.0 increments (2.5, 3.5, 4.5, 5.5...). When Wagerzon has F5 total 5.0, FD's exact-line lookup misses → the integer-line fallback kicks in, using FD's F5 alts at 4.5 and 5.5. See "Integer-Line Derivation" above.
 
 ## Files
 
