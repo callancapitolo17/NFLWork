@@ -16,14 +16,8 @@ BANKROLL <- 1000
 # 3-WAY HELPER FUNCTIONS
 # =============================================================================
 
-# Devig 3-way American odds
-devig_american_3way <- function(home_odds, away_odds, tie_odds) {
-  p_home <- american_to_prob(home_odds)
-  p_away <- american_to_prob(away_odds)
-  p_tie <- american_to_prob(tie_odds)
-  total <- p_home + p_away + p_tie
-  list(home_prob = p_home / total, away_prob = p_away / total, tie_prob = p_tie / total)
-}
+# devig_american_3way() is sourced from Tools.R (probit-based, returns
+# data.frame with p_home/p_away/p_tie columns).
 
 # Compute EV for 3-way (same formula, just accepts American odds)
 calc_ev_3way <- function(pred_prob, book_odds) {
@@ -72,16 +66,8 @@ st <- disp$st
 N <- round(nrow(DT_all) * 0.10, 0)
 
 # Helper functions
-american_to_prob <- function(odds) {
-  ifelse(odds > 0, 100 / (odds + 100), abs(odds) / (abs(odds) + 100))
-}
-
-devig_american_pair <- function(home_odds, away_odds) {
-  p_home <- american_to_prob(home_odds)
-  p_away <- american_to_prob(away_odds)
-  total <- p_home + p_away
-  list(home_prob = p_home / total, away_prob = p_away / total)
-}
+# devig_american() (2-way pair) is sourced from Tools.R (probit-based,
+# returns data.frame with p1/p2 columns).
 
 calc_ev <- function(pred_prob, book_odds) {
   decimal_odds <- ifelse(book_odds > 0, 1 + book_odds / 100, 1 + 100 / abs(book_odds))
@@ -198,7 +184,7 @@ for (i in seq_along(all_test_games)) {
       best_away_odds <- max(market_odds$odds_away, na.rm = TRUE)
       if (is.infinite(best_home_odds) || is.infinite(best_away_odds)) next
 
-      devigged <- devig_american_pair(best_home_odds, best_away_odds)
+      devigged <- devig_american(best_home_odds, best_away_odds)
       ev_home <- calc_ev(pred_prob, best_home_odds)
       ev_away <- calc_ev(1 - pred_prob, best_away_odds)
 
@@ -206,7 +192,7 @@ for (i in seq_along(all_test_games)) {
       all_predictions[[length(all_predictions) + 1]] <- list(
         game_id = test_game_id, market = market, market_type = "2way",
         bet_side = "home", spread = parent_spread,
-        algo_prob = pred_prob, book_prob = devigged$home_prob,
+        algo_prob = pred_prob, book_prob = devigged$p1,
         book_odds = best_home_odds, ev = ev_home,
         actual_outcome = actual_outcome
       )
@@ -215,7 +201,7 @@ for (i in seq_along(all_test_games)) {
       all_predictions[[length(all_predictions) + 1]] <- list(
         game_id = test_game_id, market = market, market_type = "2way",
         bet_side = "away", spread = parent_spread,
-        algo_prob = 1 - pred_prob, book_prob = devigged$away_prob,
+        algo_prob = 1 - pred_prob, book_prob = devigged$p2,
         book_odds = best_away_odds, ev = ev_away,
         actual_outcome = 1 - actual_outcome
       )
@@ -255,7 +241,7 @@ for (i in seq_along(all_test_games)) {
       all_predictions[[length(all_predictions) + 1]] <- list(
         game_id = test_game_id, market = market, market_type = "3way",
         bet_side = "home", spread = parent_spread,
-        algo_prob = pred_prob_home, book_prob = devigged$home_prob,
+        algo_prob = pred_prob_home, book_prob = devigged$p_home,
         book_odds = best_home_odds, ev = ev_home,
         actual_outcome = actual_outcome_home
       )
@@ -264,7 +250,7 @@ for (i in seq_along(all_test_games)) {
       all_predictions[[length(all_predictions) + 1]] <- list(
         game_id = test_game_id, market = market, market_type = "3way",
         bet_side = "away", spread = parent_spread,
-        algo_prob = pred_prob_away, book_prob = devigged$away_prob,
+        algo_prob = pred_prob_away, book_prob = devigged$p_away,
         book_odds = best_away_odds, ev = ev_away,
         actual_outcome = actual_outcome_away
       )
@@ -273,7 +259,7 @@ for (i in seq_along(all_test_games)) {
       all_predictions[[length(all_predictions) + 1]] <- list(
         game_id = test_game_id, market = market, market_type = "3way",
         bet_side = "tie", spread = parent_spread,
-        algo_prob = pred_prob_tie, book_prob = devigged$tie_prob,
+        algo_prob = pred_prob_tie, book_prob = devigged$p_tie,
         book_odds = best_tie_odds, ev = ev_tie,
         actual_outcome = actual_outcome_tie
       )

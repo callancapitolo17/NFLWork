@@ -5,17 +5,9 @@ library(nflreadr)
 library(data.table)
 library(dplyr)
 
-# Helper: de-vig two American-style odds, return data.frame
-devig_american <- function(odd1, odd2) {
-  p1_raw <- ifelse(odd1 > 0,
-                   100 / (odd1 + 100),
-                   -odd1 / (-odd1 + 100))
-  p2_raw <- ifelse(odd2 > 0,
-                   100 / (odd2 + 100),
-                   -odd2 / (-odd2 + 100))
-  total_raw <- p1_raw + p2_raw
-  data.frame(p1 = p1_raw/total_raw, p2 = p2_raw/total_raw)
-}
+# Use canonical devig_american() from Tools.R (probit-based).
+setwd("~/NFLWork/Answer Keys")
+source("Tools.R")
 
 # 2. Fetch historical odds and compute de-vig probabilities
 DT <- load_schedules(1999:2024) %>%

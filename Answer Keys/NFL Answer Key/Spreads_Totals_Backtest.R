@@ -16,16 +16,8 @@ BANKROLL <- 1000
 # HELPER FUNCTIONS
 # =============================================================================
 
-american_to_prob <- function(odds) {
-  ifelse(odds > 0, 100 / (odds + 100), abs(odds) / (abs(odds) + 100))
-}
-
-devig_american_pair <- function(odds1, odds2) {
-  p1 <- american_to_prob(odds1)
-  p2 <- american_to_prob(odds2)
-  total <- p1 + p2
-  list(prob1 = p1 / total, prob2 = p2 / total)
-}
+# devig_american() is sourced from Tools.R (probit-based, returns
+# data.frame with p1/p2 columns).
 
 calc_ev <- function(pred_prob, book_odds) {
   decimal_odds <- ifelse(book_odds > 0, 1 + book_odds / 100, 1 + 100 / abs(book_odds))
@@ -220,7 +212,7 @@ for (i in seq_along(all_test_games)) {
         if (actual_margin == -line) next  # Push - skip
         actual_home_cover <- ifelse(actual_margin > -line, 1, 0)
 
-        devigged <- devig_american_pair(best_home_odds, best_away_odds)
+        devigged <- devig_american(best_home_odds, best_away_odds)
         ev_home <- calc_ev(home_cover_prob, best_home_odds)
         ev_away <- calc_ev(away_cover_prob, best_away_odds)
 
@@ -228,7 +220,7 @@ for (i in seq_along(all_test_games)) {
         all_predictions[[length(all_predictions) + 1]] <- list(
           game_id = test_game_id, market = market_name, market_type = ifelse(is_alt, "spreads_alt", "spreads"),
           bet_side = "home", line = line, period = period,
-          algo_prob = home_cover_prob, book_prob = devigged$prob1,
+          algo_prob = home_cover_prob, book_prob = devigged$p1,
           book_odds = best_home_odds, ev = ev_home,
           actual_outcome = actual_home_cover
         )
@@ -237,7 +229,7 @@ for (i in seq_along(all_test_games)) {
         all_predictions[[length(all_predictions) + 1]] <- list(
           game_id = test_game_id, market = market_name, market_type = ifelse(is_alt, "spreads_alt", "spreads"),
           bet_side = "away", line = line, period = period,
-          algo_prob = away_cover_prob, book_prob = devigged$prob2,
+          algo_prob = away_cover_prob, book_prob = devigged$p2,
           book_odds = best_away_odds, ev = ev_away,
           actual_outcome = 1 - actual_home_cover
         )
@@ -279,7 +271,7 @@ for (i in seq_along(all_test_games)) {
         if (actual_total == line) next  # Push - skip
         actual_over <- ifelse(actual_total > line, 1, 0)
 
-        devigged <- devig_american_pair(best_over_odds, best_under_odds)
+        devigged <- devig_american(best_over_odds, best_under_odds)
         ev_over <- calc_ev(over_prob, best_over_odds)
         ev_under <- calc_ev(under_prob, best_under_odds)
 
@@ -287,7 +279,7 @@ for (i in seq_along(all_test_games)) {
         all_predictions[[length(all_predictions) + 1]] <- list(
           game_id = test_game_id, market = market_name, market_type = ifelse(is_alt, "totals_alt", "totals"),
           bet_side = "over", line = line, period = period,
-          algo_prob = over_prob, book_prob = devigged$prob1,
+          algo_prob = over_prob, book_prob = devigged$p1,
           book_odds = best_over_odds, ev = ev_over,
           actual_outcome = actual_over
         )
@@ -296,7 +288,7 @@ for (i in seq_along(all_test_games)) {
         all_predictions[[length(all_predictions) + 1]] <- list(
           game_id = test_game_id, market = market_name, market_type = ifelse(is_alt, "totals_alt", "totals"),
           bet_side = "under", line = line, period = period,
-          algo_prob = under_prob, book_prob = devigged$prob2,
+          algo_prob = under_prob, book_prob = devigged$p2,
           book_odds = best_under_odds, ev = ev_under,
           actual_outcome = 1 - actual_over
         )

@@ -5591,16 +5591,7 @@ run_derivative_backtest <- function(
   # HELPER FUNCTIONS
   # ============================================================================
 
-  american_to_prob <- function(odds) {
-    ifelse(odds > 0, 100 / (odds + 100), abs(odds) / (abs(odds) + 100))
-  }
-
-  devig_american_pair <- function(odds1, odds2) {
-    p1 <- american_to_prob(odds1)
-    p2 <- american_to_prob(odds2)
-    total <- p1 + p2
-    list(prob1 = p1 / total, prob2 = p2 / total)
-  }
+  # Devigging handled by canonical devig_american() in Tools.R (probit-based).
 
   calc_ev <- function(pred_prob, book_odds) {
     decimal_odds <- ifelse(book_odds > 0, 1 + book_odds / 100, 1 + 100 / abs(book_odds))
