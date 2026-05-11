@@ -1,7 +1,10 @@
 # Answer Keys/MLB Answer Key/odds_screen.R
 # Pure helpers for the bets-tab odds-screen pipeline path:
-#   - normalize_book_odds_frame()    -- raw scraper rows -> canonical shape
-#   - expand_bets_to_book_prices()   -- +/-1 unit nearest-line matching
+#   - normalize_book_odds_frame()        -- raw scraper rows -> canonical shape
+#   - expand_bets_to_book_prices()       -- +/-1 unit nearest-line matching
+#   - scraper_to_canonical()             -- wide scraper frame -> canonical
+#   - odds_api_to_canonical()            -- Odds API long frame -> canonical
+#   - parse_prefetched_to_long()         -- raw JSON cache -> long frame
 #
 # Sourced by MLB.R between the dedup step and the table write.
 # Tested by tests/test_odds_screen.R.
@@ -9,6 +12,8 @@
 library(dplyr)
 library(tibble)
 library(stringr)
+library(lubridate)
+library(jsonlite)
 
 LINE_MATCH_TOLERANCE <- 1.0  # max abs(line_quoted - model_line) we'll emit
 
@@ -201,4 +206,199 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
                   fetch_time = as.POSIXct(character())))
   }
   bind_rows(out_rows[1:k])
+}
+
+# =============================================================================
+# PREFETCH PARSER & CANONICAL CONVERTERS
+# (moved from MLB.R so they can be sourced and tested independently)
+# =============================================================================
+
+# Small NULL-coalesce helper (matches rlang's %||% behaviour without the dep).
+`%||%` <- function(x, y) if (is.null(x)) y else x
+
+#' Parse the prefetched_odds frame (event_id + raw JSON from the Odds API
+#' /events/{id}/odds endpoint) into the long format expected by
+#' odds_api_to_canonical().
+#'
+#' @param prefetched_odds tibble with columns event_id, json_response (char)
+#' @param bookmaker_keys  character vector of book keys to retain
+#' @return tibble: id, bookmaker_key, market_key, outcomes_name,
+#'         outcomes_price, outcomes_point, fetch_time
+parse_prefetched_to_long <- function(prefetched_odds, bookmaker_keys) {
+  if (is.null(prefetched_odds) || nrow(prefetched_odds) == 0) {
+    return(tibble(
+      id = character(), bookmaker_key = character(), market_key = character(),
+      outcomes_name = character(), outcomes_price = integer(),
+      outcomes_point = numeric(), fetch_time = as.POSIXct(character(), tz = "UTC")
+    ))
+  }
+
+  out <- list()
+  for (i in seq_len(nrow(prefetched_odds))) {
+    js <- prefetched_odds$json_response[i]
+    if (is.na(js) || !nzchar(js)) next
+    parsed <- tryCatch(
+      jsonlite::fromJSON(js, simplifyVector = FALSE),
+      error = function(e) {
+        warning(sprintf(
+          "[parse_prefetched] JSON parse failed for event %s: %s",
+          prefetched_odds$event_id[i], conditionMessage(e)))
+        NULL
+      }
+    )
+    if (is.null(parsed) || is.null(parsed$bookmakers)) next
+    eid <- parsed$id %||% prefetched_odds$event_id[i]
+
+    for (bm in parsed$bookmakers) {
+      bk <- bm$key
+      if (is.null(bk) || !(bk %in% bookmaker_keys)) next
+      bm_lu <- bm$last_update  # ISO8601 string, or NULL
+
+      for (mk in bm$markets %||% list()) {
+        mkey <- mk$key
+        if (is.null(mkey)) next
+        # Prefer market-level last_update (more granular); fall back to bookmaker-level.
+        ft_str <- mk$last_update %||% bm_lu
+        ft_val <- if (!is.null(ft_str)) {
+          tryCatch(ymd_hms(ft_str, tz = "UTC", quiet = TRUE),
+                   error = function(e) Sys.time())
+        } else Sys.time()
+        if (is.na(ft_val)) ft_val <- Sys.time()
+
+        for (oc in mk$outcomes %||% list()) {
+          out[[length(out) + 1]] <- tibble(
+            id             = as.character(eid),
+            bookmaker_key  = bk,
+            market_key     = mkey,
+            outcomes_name  = oc$name %||% NA_character_,
+            outcomes_price = if (!is.null(oc$price)) as.integer(oc$price) else NA_integer_,
+            outcomes_point = if (!is.null(oc$point)) as.numeric(oc$point) else NA_real_,
+            fetch_time     = ft_val
+          )
+        }
+      }
+    }
+  }
+
+  if (length(out) == 0) {
+    return(tibble(
+      id = character(), bookmaker_key = character(), market_key = character(),
+      outcomes_name = character(), outcomes_price = integer(),
+      outcomes_point = numeric(), fetch_time = as.POSIXct(character(), tz = "UTC")
+    ))
+  }
+  bind_rows(out)
+}
+
+#' Convert a wide-format scraper frame to canonical shape for
+#' normalize_book_odds_frame(). Scraper frames have odds_home/odds_away/
+#' odds_over/odds_under as separate columns; we pivot to long.
+#'
+#' @param raw    Wide scraper tibble (wagerzon/hoop88/bfa/bookmaker/bet105)
+#' @param lookup tibble with columns id, home_team, away_team — used to join
+#'               scraper team names to Odds API game IDs. Typically derived
+#'               from mlb_odds in MLB.R.
+#' @return normalized tibble (output of normalize_book_odds_frame), or NULL
+scraper_to_canonical <- function(raw, lookup) {
+  if (is.null(raw) || nrow(raw) == 0) return(NULL)
+  if (!"fetch_time" %in% names(raw)) raw$fetch_time <- as.POSIXct(NA, tz = "UTC")
+
+  # Replace NA fetch_times with now for consistency with odds_api_to_canonical.
+  if (!is.null(raw$fetch_time)) {
+    raw$fetch_time[is.na(raw$fetch_time)] <- Sys.time()
+  }
+
+  # Join to Odds API game IDs. Scraper frames have home_team + away_team
+  # already resolved to canonical names by resolve_offshore_teams().
+  joined <- raw %>%
+    inner_join(lookup, by = c("home_team", "away_team")) %>%
+    rename(game_id = id)
+
+  if (nrow(joined) == 0) return(NULL)
+
+  rows <- list()
+
+  for (i in seq_len(nrow(joined))) {
+    row <- joined[i, , drop = FALSE]
+    mkt <- row$market
+    ft  <- row$fetch_time
+    gid <- row$game_id
+
+    # Spread side (home / away)
+    if (!is.na(row$odds_home) && !is.na(row$line)) {
+      rows[[length(rows) + 1]] <- tibble(
+        game_id = gid, market_name = mkt,
+        bet_on = row$home_team, line = as.numeric(row$line),
+        american_odds = as.integer(row$odds_home), fetch_time = ft
+      )
+    }
+    if (!is.na(row$odds_away) && !is.na(row$line)) {
+      rows[[length(rows) + 1]] <- tibble(
+        game_id = gid, market_name = mkt,
+        bet_on = row$away_team,
+        line = -as.numeric(row$line),   # away spread is negated home spread
+        american_odds = as.integer(row$odds_away), fetch_time = ft
+      )
+    }
+    # Totals (Over / Under)
+    if (!is.na(row$odds_over) && !is.na(row$line)) {
+      rows[[length(rows) + 1]] <- tibble(
+        game_id = gid, market_name = mkt,
+        bet_on = "Over", line = as.numeric(row$line),
+        american_odds = as.integer(row$odds_over), fetch_time = ft
+      )
+    }
+    if (!is.na(row$odds_under) && !is.na(row$line)) {
+      rows[[length(rows) + 1]] <- tibble(
+        game_id = gid, market_name = mkt,
+        bet_on = "Under", line = as.numeric(row$line),
+        american_odds = as.integer(row$odds_under), fetch_time = ft
+      )
+    }
+    # Moneyline (h2h) — odds_home/odds_away with no line.
+    if (!is.na(row$odds_home) && is.na(row$line)) {
+      rows[[length(rows) + 1]] <- tibble(
+        game_id = gid, market_name = mkt,
+        bet_on = row$home_team, line = NA_real_,
+        american_odds = as.integer(row$odds_home), fetch_time = ft
+      )
+    }
+    if (!is.na(row$odds_away) && is.na(row$line)) {
+      rows[[length(rows) + 1]] <- tibble(
+        game_id = gid, market_name = mkt,
+        bet_on = row$away_team, line = NA_real_,
+        american_odds = as.integer(row$odds_away), fetch_time = ft
+      )
+    }
+  }
+
+  if (length(rows) == 0) return(NULL)
+  result <- bind_rows(rows)
+  normalize_book_odds_frame(result)
+}
+
+#' Convert an Odds API long-format frame (one row per outcome) to canonical
+#' shape. Expected columns: id, bookmaker_key, market_key, outcomes_name,
+#' outcomes_price, outcomes_point. Optionally honors a fetch_time column;
+#' falls back to Sys.time() when absent so staleness chips don't show stale.
+#'
+#' @param raw Odds API long tibble
+#' @return normalized tibble (output of normalize_book_odds_frame), or NULL
+odds_api_to_canonical <- function(raw) {
+  if (is.null(raw) || nrow(raw) == 0) return(NULL)
+  ft <- if ("fetch_time" %in% names(raw)) raw$fetch_time else rep(Sys.time(), nrow(raw))
+  # Replace any NA fetch_times with now (NA breaks staleness chip rendering).
+  ft <- as.POSIXct(ft, tz = "UTC")
+  ft[is.na(ft)] <- Sys.time()
+
+  result <- raw %>%
+    transmute(
+      game_id      = id,
+      market_name  = market_key,
+      bet_on       = outcomes_name,
+      line         = as.numeric(outcomes_point),
+      american_odds = as.integer(outcomes_price),
+      fetch_time   = ft
+    )
+  normalize_book_odds_frame(result)
 }

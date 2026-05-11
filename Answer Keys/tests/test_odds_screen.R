@@ -8,6 +8,7 @@
 library(testthat)
 library(dplyr)
 library(tibble)
+library(jsonlite)
 source("../MLB Answer Key/odds_screen.R")
 
 # A canonical 1-bet input frame matching the columns mlb_bets_combined
@@ -216,4 +217,94 @@ test_that("expand_bets_to_book_prices accepts 'id' as an alias for 'game_id'", {
   out <- expand_bets_to_book_prices(bets, book_odds)
   expect_equal(nrow(out), 2)
   expect_setequal(out$side, c("pick", "opposite"))
+})
+
+# =============================================================================
+# parse_prefetched_to_long tests
+# =============================================================================
+
+test_that("parse_prefetched_to_long emits one row per outcome", {
+  fake_json <- toJSON(list(
+    id = "evt1",
+    bookmakers = list(
+      list(
+        key = "draftkings",
+        last_update = "2026-05-11T12:00:00Z",
+        markets = list(
+          list(
+            key = "totals_1st_5_innings",
+            last_update = "2026-05-11T12:00:00Z",
+            outcomes = list(
+              list(name = "Over", price = -110, point = 5.5),
+              list(name = "Under", price = -110, point = 5.5)
+            )
+          )
+        )
+      )
+    )
+  ), auto_unbox = TRUE, pretty = FALSE)
+  prefetched <- tibble(event_id = "evt1", json_response = fake_json)
+  out <- parse_prefetched_to_long(prefetched, bookmaker_keys = c("draftkings"))
+  expect_equal(nrow(out), 2)
+  expect_setequal(out$outcomes_name, c("Over", "Under"))
+  expect_equal(unique(out$bookmaker_key), "draftkings")
+  expect_equal(unique(out$market_key), "totals_1st_5_innings")
+  expect_false(any(is.na(out$fetch_time)))
+})
+
+test_that("parse_prefetched_to_long filters out non-listed bookmakers", {
+  fake_json <- toJSON(list(
+    id = "evt1",
+    bookmakers = list(
+      list(key = "draftkings", last_update = "2026-05-11T12:00:00Z",
+           markets = list(list(key = "h2h", last_update = "2026-05-11T12:00:00Z",
+             outcomes = list(list(name = "Home", price = -110, point = NULL),
+                             list(name = "Away", price = -110, point = NULL))))),
+      list(key = "betmgm", last_update = "2026-05-11T12:00:00Z",
+           markets = list(list(key = "h2h", last_update = "2026-05-11T12:00:00Z",
+             outcomes = list(list(name = "Home", price = -105, point = NULL),
+                             list(name = "Away", price = -115, point = NULL)))))
+    )
+  ), auto_unbox = TRUE, null = "null")
+  prefetched <- tibble(event_id = "evt1", json_response = fake_json)
+  out <- parse_prefetched_to_long(prefetched, bookmaker_keys = c("draftkings", "fanduel"))
+  expect_equal(nrow(out), 2)
+  expect_true(all(out$bookmaker_key == "draftkings"))
+})
+
+test_that("parse_prefetched_to_long emits warning on malformed JSON", {
+  prefetched <- tibble(event_id = "evt1", json_response = "{ malformed json")
+  expect_warning(
+    out <- parse_prefetched_to_long(prefetched, bookmaker_keys = c("draftkings")),
+    "JSON parse failed"
+  )
+  expect_equal(nrow(out), 0)
+})
+
+test_that("parse_prefetched_to_long handles NA point on moneyline", {
+  fake_json <- toJSON(list(
+    id = "evt1",
+    bookmakers = list(list(
+      key = "draftkings", last_update = "2026-05-11T12:00:00Z",
+      markets = list(list(
+        key = "h2h", last_update = "2026-05-11T12:00:00Z",
+        outcomes = list(list(name = "Home", price = -110, point = NULL),
+                        list(name = "Away", price = -110, point = NULL))
+      ))
+    ))
+  ), auto_unbox = TRUE, null = "null")
+  prefetched <- tibble(event_id = "evt1", json_response = fake_json)
+  out <- parse_prefetched_to_long(prefetched, bookmaker_keys = c("draftkings"))
+  expect_equal(nrow(out), 2)
+  expect_true(all(is.na(out$outcomes_point)))
+})
+
+test_that("parse_prefetched_to_long returns empty schema on empty input", {
+  out <- parse_prefetched_to_long(
+    tibble(event_id = character(), json_response = character()),
+    bookmaker_keys = c("draftkings"))
+  expect_equal(nrow(out), 0)
+  expect_true(all(c("id", "bookmaker_key", "market_key", "outcomes_name",
+                    "outcomes_price", "outcomes_point", "fetch_time")
+                  %in% names(out)))
 })
