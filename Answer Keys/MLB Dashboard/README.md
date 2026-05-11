@@ -114,6 +114,7 @@ Derivatives (priced via `compare_alts_to_samples` against scraped Wagerzon/Bookm
 - `alternate_spreads_fg`, `alternate_totals_fg` — full-game alt lines (Wagerzon, Bet105)
 - `alternate_totals_f5`, `alternate_spreads_f5` — F5 alt lines (h1-suffix scrapers like BFA/Bet105 are remapped to f5)
 - `odd_even_runs` — full-game total runs odd vs even (Wagerzon only)
+- `h2h_3way_1st_5_innings` — F5 3-way moneyline (Wagerzon only) with home/away/tie outcomes; bet_on label is the team name for home/away or `"Tie"` for the draw
 
 ## Configuration
 

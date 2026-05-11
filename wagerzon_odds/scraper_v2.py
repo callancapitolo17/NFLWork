@@ -156,6 +156,7 @@ def parse_game_line(line: dict, game_id: str, period: str, market: str,
         "under_price": under_price,
         "away_ml": away_ml,
         "home_ml": home_ml,
+        "draw_ml": None,    # required by save_odds columns list
     }
 
 
@@ -183,6 +184,7 @@ def parse_team_total(line: dict, game_id: str, period: str, market: str,
         "under_price": under_price,
         "away_ml": None,
         "home_ml": None,
+        "draw_ml": None,    # required by save_odds columns list
     }
 
 
@@ -213,6 +215,45 @@ def parse_moneyline_only(line: dict, game_id: str, period: str, market: str,
         "under_price": None,
         "away_ml": away_ml,
         "home_ml": home_ml,
+        "draw_ml": None,    # required by save_odds columns list
+    }
+
+
+def parse_3way_line(line: dict, game_id: str, period: str, market: str,
+                    base: dict) -> Optional[dict]:
+    """Parse a 3-way GameLine (e.g. lg=1280 MLB - 1ST 5 INN WINNER (3-WAY)).
+
+    Wagerzon's 3-way market uses three price fields on a single GameLine:
+        voddst    -> away ML
+        hoddst    -> home ML
+        vspoddst  -> draw price
+                     (the 'spread' field is repurposed to hold the third outcome)
+
+    Returns None if all three prices are missing (Wagerzon posts placeholder
+    games with empty prices when lines aren't yet posted).
+    """
+    away_ml = safe_int(line.get("voddst"))
+    home_ml = safe_int(line.get("hoddst"))
+    draw_ml = safe_int(line.get("vspoddst"))
+
+    if away_ml is None and home_ml is None and draw_ml is None:
+        return None
+
+    return {
+        **base,
+        "game_id": game_id,
+        "market": market,
+        "period": period,
+        "away_spread": None,
+        "away_spread_price": None,
+        "home_spread": None,
+        "home_spread_price": None,
+        "total": None,
+        "over_price": None,
+        "under_price": None,
+        "away_ml": away_ml,
+        "home_ml": home_ml,
+        "draw_ml": draw_ml,
     }
 
 
@@ -271,6 +312,51 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
     for game in games:
         if not game.get("GameLines"):
             continue
+
+        # 3-way market parents: idgmtyp=29 lives in lg=1280 ("MLB - 1ST 5 INN
+        # WINNER (3-WAY)"). Route to parse_3way_line, strip "1H " prefix and
+        # " 3WAY" suffix from team names, and skip the standard parent + child
+        # parsing (3-way games have no derivatives).
+        if game.get("idgmtyp") == 29:
+            line = game["GameLines"][0]
+            # Strip "1H " prefix and " 3WAY" suffix before team resolution
+            away_raw_3w = re.sub(r"^1H\s+|\s+3WAY$", "", game["vtm"])
+            home_raw_3w = re.sub(r"^1H\s+|\s+3WAY$", "", game["htm"])
+
+            gmdt = game.get("gmdt", "")
+            game_date = f"{gmdt[4:6]}/{gmdt[6:8]}" if len(gmdt) == 8 else ""
+            game_time = game.get("gmtm", "")[:5]
+
+            if team_dict or canonical_games:
+                away_team, home_team = resolve_team_names(
+                    away_raw_3w, home_raw_3w, team_dict, canonical_games
+                )
+            else:
+                away_team = normalize_team_name(away_raw_3w, sport)
+                home_team = normalize_team_name(home_raw_3w, sport)
+
+            away_rot = str(game["vnum"])
+            home_rot = str(game["hnum"])
+            game_id = f"{away_rot}-{home_rot}"
+
+            base = {
+                "fetch_time": fetch_time,
+                "sport_key": sport_key,
+                "game_date": game_date,
+                "game_time": game_time,
+                "away_team": away_team,
+                "home_team": home_team,
+                "idgm": game.get("idgm"),
+            }
+
+            rec = parse_3way_line(
+                line, game_id, "f5", "h2h_3way_1st_5_innings", base
+            )
+            if rec:
+                records.append(rec)
+                print(f"  3-way: {away_team} @ {home_team} | "
+                      f"{rec['away_ml']}/{rec['home_ml']}/{rec['draw_ml']}")
+            continue   # 3-way games have no GameChilds we care about
 
         away_raw = game["vtm"]
         home_raw = game["htm"]
@@ -398,6 +484,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                             "under_price": None,
                             "away_ml": None,
                             "home_ml": None,
+                            "draw_ml": None,    # required by save_odds columns list
                         })
 
                     # Alt total
@@ -417,6 +504,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                             "under_price": safe_int(child_line.get("unoddst")),
                             "away_ml": None,
                             "home_ml": None,
+                            "draw_ml": None,    # required by save_odds columns list
                         })
 
                 alt_counter += 1
@@ -565,6 +653,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 "under_price": None,
                 "away_ml": away_odds,
                 "home_ml": home_odds,
+                "draw_ml": None,    # required by save_odds columns list
                 "idgm": game.get("idgm"),
             })
             print(f"  {market_name}: {away_team} @ {home_team} | {away_odds}/{home_odds}")
@@ -583,35 +672,38 @@ def init_database(sport: str):
     table_name = config["table_name"]
 
     conn = duckdb.connect(str(DB_PATH))
-    conn.execute(f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            fetch_time TIMESTAMP,
-            sport_key VARCHAR,
-            game_id VARCHAR,
-            game_date VARCHAR,
-            game_time VARCHAR,
-            away_team VARCHAR,
-            home_team VARCHAR,
-            market VARCHAR,
-            period VARCHAR,
-            away_spread FLOAT,
-            away_spread_price INTEGER,
-            home_spread FLOAT,
-            home_spread_price INTEGER,
-            total FLOAT,
-            over_price INTEGER,
-            under_price INTEGER,
-            away_ml INTEGER,
-            home_ml INTEGER,
-            idgm INTEGER
-        )
-    """)
-    # Add idgm column to existing tables that predate this change
     try:
-        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN idgm INTEGER")
-    except Exception:
-        pass  # column already exists
-    conn.close()
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                fetch_time TIMESTAMP,
+                sport_key VARCHAR,
+                game_id VARCHAR,
+                game_date VARCHAR,
+                game_time VARCHAR,
+                away_team VARCHAR,
+                home_team VARCHAR,
+                market VARCHAR,
+                period VARCHAR,
+                away_spread FLOAT,
+                away_spread_price INTEGER,
+                home_spread FLOAT,
+                home_spread_price INTEGER,
+                total FLOAT,
+                over_price INTEGER,
+                under_price INTEGER,
+                away_ml INTEGER,
+                home_ml INTEGER,
+                draw_ml INTEGER,
+                idgm INTEGER
+            )
+        """)
+        # Idempotent upgrades for existing DBs that pre-date these columns.
+        # ADD COLUMN IF NOT EXISTS is supported in DuckDB 1.4+ and is a no-op
+        # when the column already exists.
+        for col_def in ("idgm INTEGER", "draw_ml INTEGER"):
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_def}")
+    finally:
+        conn.close()
 
 
 def save_odds(odds_data: list[dict], sport: str):
@@ -629,7 +721,8 @@ def save_odds(odds_data: list[dict], sport: str):
         "fetch_time", "sport_key", "game_id", "game_date", "game_time",
         "away_team", "home_team", "market", "period",
         "away_spread", "away_spread_price", "home_spread", "home_spread_price",
-        "total", "over_price", "under_price", "away_ml", "home_ml", "idgm"
+        "total", "over_price", "under_price", "away_ml", "home_ml",
+        "draw_ml", "idgm"
     ]
 
     placeholders = ", ".join(["?" for _ in columns])
