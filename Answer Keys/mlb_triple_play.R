@@ -60,9 +60,9 @@ if (!interactive() && sys.nframe() == 0L) {
   # is a no-op, so a transient lock failure on a follow-up run is safe to skip.
   migrate_sgp_table <- function(db_path, max_attempts = 6, base_sleep = 0.5) {
     for (i in seq_len(max_attempts)) {
+      con_mig <- NULL
       ok <- tryCatch({
         con_mig <- dbConnect(duckdb(), dbdir = db_path)
-        on.exit(dbDisconnect(con_mig), add = TRUE)
         dbExecute(con_mig, "
           CREATE TABLE IF NOT EXISTS mlb_trifecta_sgp_odds (
             fetch_time     TIMESTAMP,
@@ -84,6 +84,11 @@ if (!interactive() && sys.nframe() == 0L) {
         }
         cat(sprintf("Warning: mlb_trifecta_sgp_odds migration skipped (%s)\n", e$message))
         return(TRUE)  # stop retrying — table likely exists from a prior run
+      }, finally = {
+        # Per-iteration disconnect so a failed dbExecute doesn't leak a
+        # connection on the next retry. tryCatch swallows the rare case where
+        # the connection was already invalidated by the error path.
+        if (!is.null(con_mig)) tryCatch(dbDisconnect(con_mig), error = function(e) NULL)
       })
       if (isTRUE(ok)) break
     }
@@ -99,8 +104,10 @@ if (!interactive() && sys.nframe() == 0L) {
     dbExecute(ext_con, "INSTALL icu")
     dbExecute(ext_con, "LOAD icu")
   }, error = function(e) {
-    cat(sprintf("Warning: icu extension unavailable (%s) — using fixed offset fallback\n",
-                e$message))
+    # Loud warning, no fallback: the SQL filter below requires icu for named-tz
+    # support. If install fails (offline, permissions), the filter query will
+    # error out — preferable to the silent 0-row regression this fix replaced.
+    cat(sprintf("Warning: icu extension install failed (%s)\n", e$message))
   })
   dbDisconnect(ext_con)
 
