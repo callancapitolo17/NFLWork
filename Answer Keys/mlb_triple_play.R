@@ -109,7 +109,7 @@ if (!interactive() && sys.nframe() == 0L) {
     # error out — preferable to the silent 0-row regression this fix replaced.
     cat(sprintf("Warning: icu extension install failed (%s)\n", e$message))
   })
-  dbDisconnect(ext_con)
+  duckdb::dbDisconnect(ext_con, shutdown = TRUE)
 
   # Read today's posted specials from the wagerzon_specials scraper output.
   # Uses the most recent snapshot AND filters to upcoming games. The game_time
