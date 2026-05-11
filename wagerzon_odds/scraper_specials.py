@@ -48,8 +48,21 @@ SPECIALS_URL_TPL = WAGERZON_BASE_URL + "/wager/NewSchedule" + "Helper.aspx?WT=0&
 # Regex used to extract the subject team. Anchors on known prop-type tokens
 # so multi-word team names (WHITE SOX, RED SOX, BLUE JAYS) work. Extend the
 # alternation when new prop types are added (e.g. DOUBLE-PLAY, MEGA).
-PROP_TYPE_RE = re.compile(r"^(.+?)\s+(TRIPLE-PLAY|GRAND-SLAM)\b")
-SECTION_RE = re.compile(r"\b(TRIPLE-PLAY|GRAND-SLAM)\b")
+#
+# Wagerzon posts abbreviated variants for the same prop (GRD-SLM = GRAND-SLAM,
+# TRPLE-PLAY = TRIPLE-PLAY typo). They have identical leg grammar in the
+# parens, so we accept the variants here and canonicalize via PROP_TYPE_CANONICAL
+# below before storing — downstream pricer and dashboard see only the canonical
+# names and need no changes.
+PROP_TYPE_RE = re.compile(r"^(.+?)\s+(TRIPLE-PLAY|TRPLE-PLAY|GRAND-SLAM|GRD-SLM)\b")
+SECTION_RE = re.compile(r"\b(TRIPLE-PLAY|TRPLE-PLAY|GRAND-SLAM|GRD-SLM)\b")
+
+PROP_TYPE_CANONICAL = {
+    "TRIPLE-PLAY": "TRIPLE-PLAY",
+    "TRPLE-PLAY":  "TRIPLE-PLAY",
+    "GRAND-SLAM":  "GRAND-SLAM",
+    "GRD-SLM":     "GRAND-SLAM",
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("scraper_specials")
@@ -73,8 +86,14 @@ def extract_team_from_htm(htm: str) -> Optional[str]:
 
 
 def extract_prop_type(htm: str) -> Optional[str]:
+    """Return the canonical prop type (TRIPLE-PLAY / GRAND-SLAM), normalizing
+    Wagerzon's abbreviated variants (GRD-SLM, TRPLE-PLAY). Returns None if no
+    recognized prop type token is present in the description.
+    """
     m = SECTION_RE.search(htm or "")
-    return m.group(1) if m else None
+    if not m:
+        return None
+    return PROP_TYPE_CANONICAL.get(m.group(1))
 
 
 def parse_specials_json(payload: dict, sport: str, league_id: int) -> list[dict]:
