@@ -22,6 +22,14 @@ helpers used by the MLB correlated parlay dashboard.
 - **Auth:** `wagerzon_auth.py::get_session(account)` caches one logged-in
   `requests.Session` per account label, in-memory only. Per-label locks
   so concurrent logins for different accounts run in parallel.
+- **Specials prop-type aliases:** Wagerzon posts the same single-team specials
+  under abbreviated names — `GRD-SLM` ≡ `GRAND-SLAM`, `TRPLE-PLAY` ≡
+  `TRIPLE-PLAY`. `scraper_specials.py::PROP_TYPE_RE` accepts the variants and
+  `extract_prop_type()` canonicalizes via `PROP_TYPE_CANONICAL` before the row
+  is written, so `wagerzon_specials.prop_type` is always one of the two
+  canonical names. The raw description string is preserved verbatim. Add new
+  variants to both the regex alternation AND the canonical map; downstream
+  pricer + dashboard reads remain unchanged.
 - **3-way F5 ML scraping:** `scraper_v2.py::parse_odds()` routes `idgmtyp=29` parent
   games (league `lg=1280` — "MLB - 1ST 5 INN WINNER (3-WAY)") through
   `parse_3way_line()`. Records have `market = "h2h_3way_1st_5_innings"`,
