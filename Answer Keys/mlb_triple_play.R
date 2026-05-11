@@ -51,28 +51,74 @@ if (!interactive() && sys.nframe() == 0L) {
 
   # Ensure DK trifecta SGP table exists (idempotent; created lazily on first
   # pricer run). The Plan #2 scraper writes here; Plan #1 reads it (empty).
-  con_mig <- dbConnect(duckdb(), dbdir = MLB_DB)
-  dbExecute(con_mig, "
-    CREATE TABLE IF NOT EXISTS mlb_trifecta_sgp_odds (
-      fetch_time     TIMESTAMP,
-      game_id        VARCHAR,
-      prop_type      VARCHAR,
-      side           VARCHAR,
-      legs_json      VARCHAR,
-      selection_ids  VARCHAR,
-      sgp_decimal    DOUBLE,
-      sgp_american   INTEGER,
-      source         VARCHAR
-    )
-  ")
-  dbDisconnect(con_mig)
+  #
+  # Lock-retry: when /refresh launches the parlay R script in parallel with
+  # this one, both want a writer connection on mlb.duckdb. Whoever loses the
+  # race used to crash immediately with errno 35 — silent empty Trifectas tab.
+  # Now we retry with backoff. After max attempts we log and continue: the
+  # table is created once per machine and after that the CREATE IF NOT EXISTS
+  # is a no-op, so a transient lock failure on a follow-up run is safe to skip.
+  migrate_sgp_table <- function(db_path, max_attempts = 6, base_sleep = 0.5) {
+    for (i in seq_len(max_attempts)) {
+      ok <- tryCatch({
+        con_mig <- dbConnect(duckdb(), dbdir = db_path)
+        on.exit(dbDisconnect(con_mig), add = TRUE)
+        dbExecute(con_mig, "
+          CREATE TABLE IF NOT EXISTS mlb_trifecta_sgp_odds (
+            fetch_time     TIMESTAMP,
+            game_id        VARCHAR,
+            prop_type      VARCHAR,
+            side           VARCHAR,
+            legs_json      VARCHAR,
+            selection_ids  VARCHAR,
+            sgp_decimal    DOUBLE,
+            sgp_american   INTEGER,
+            source         VARCHAR
+          )
+        ")
+        TRUE
+      }, error = function(e) {
+        if (grepl("Conflicting lock", e$message, fixed = TRUE) && i < max_attempts) {
+          Sys.sleep(base_sleep * 2^(i - 1))
+          return(FALSE)
+        }
+        cat(sprintf("Warning: mlb_trifecta_sgp_odds migration skipped (%s)\n", e$message))
+        return(TRUE)  # stop retrying — table likely exists from a prior run
+      })
+      if (isTRUE(ok)) break
+    }
+  }
+  migrate_sgp_table(MLB_DB)
+
+  # Ensure icu extension is installed for AT TIME ZONE named-tz support below.
+  # First call downloads ~1 MB to the duckdb extension cache; subsequent calls
+  # are no-ops. Without icu, `NOW() AT TIME ZONE 'America/New_York'` fails to
+  # autoload and the SQL filter crashes — see the timezone-aware filter below.
+  ext_con <- dbConnect(duckdb())
+  tryCatch({
+    dbExecute(ext_con, "INSTALL icu")
+    dbExecute(ext_con, "LOAD icu")
+  }, error = function(e) {
+    cat(sprintf("Warning: icu extension unavailable (%s) — using fixed offset fallback\n",
+                e$message))
+  })
+  dbDisconnect(ext_con)
 
   # Read today's posted specials from the wagerzon_specials scraper output.
-  # Uses the most recent snapshot AND filters to upcoming games (game_time > NOW()).
-  # The game_time filter is the real safeguard against stale data: if WZ has no
-  # specials posted today, MAX(scraped_at) returns yesterday's snapshot, but every
-  # row in it has a past game_time and gets filtered out. Off-day → zero rows →
+  # Uses the most recent snapshot AND filters to upcoming games. The game_time
+  # filter is the real safeguard against stale data: if WZ has no specials
+  # posted today, MAX(scraped_at) returns yesterday's snapshot, but every row
+  # in it has a past game_time and gets filtered out. Off-day → zero rows →
   # empty Trifectas tab (correct behavior).
+  #
+  # Timezone gotcha: scraper_specials.py stores `game_time` as a NAIVE TIMESTAMP
+  # holding Eastern wall-clock (e.g. 18:35 means 6:35 PM ET, no tz attached).
+  # DuckDB's NOW() returns TIMESTAMPTZ. When comparing them, DuckDB casts the
+  # naive value using the session timezone — R's DuckDB defaults to UTC, so
+  # `game_time > NOW()` would interpret 18:35 as UTC and incorrectly drop the
+  # row once real UTC time passes 18:35 (≈4h before first pitch). Comparing
+  # against `(NOW() AT TIME ZONE 'America/New_York')::TIMESTAMP` puts both
+  # sides in naive Eastern wall-clock, which is what the scraper writes.
   WZ_DB <- "~/NFLWork/wagerzon_odds/wagerzon.duckdb"
   wz_con <- dbConnect(duckdb(), dbdir = path.expand(WZ_DB), read_only = TRUE)
   on.exit(tryCatch(dbDisconnect(wz_con), error = function(e) NULL), add = TRUE)
@@ -82,7 +128,7 @@ if (!interactive() && sys.nframe() == 0L) {
     WHERE sport = 'mlb'
       AND prop_type IN ('TRIPLE-PLAY', 'GRAND-SLAM')
       AND scraped_at = (SELECT MAX(scraped_at) FROM wagerzon_specials WHERE sport = 'mlb')
-      AND game_time > NOW()
+      AND game_time > (NOW() AT TIME ZONE 'America/New_York')::TIMESTAMP
   ")
   dbDisconnect(wz_con)
 
