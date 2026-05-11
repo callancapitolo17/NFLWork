@@ -38,3 +38,4 @@ if __name__ == "__main__":
         print(f"Usage: {sys.argv[0]} <path-to-mlb_dashboard.duckdb>", file=sys.stderr)
         sys.exit(1)
     run(sys.argv[1])
+    print(f"Migration 002 applied to {sys.argv[1]}")
