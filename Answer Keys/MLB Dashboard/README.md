@@ -30,6 +30,10 @@ run.py mlb (pipeline)  →  mlb_mm.duckdb/mlb_bets_combined          (dashboard 
 - CLV (Closing Line Value) computation post-game via `MLB Answer Key/clv_compute.py`
 - Auto-place integration via Playwright for supported books (wagerzon, hoop88, bfa, betonlineag)
 
+## Devigging method
+
+The MLB dashboard's "Books (devigged fair %)" column uses probit (additive z-shift) devigging via `Tools.R::devig_american`. See `docs/superpowers/specs/2026-05-11-probit-devig-design.md`. Historical samples in `mlb_betting_pbp` are also probit-devigged (sharp-weighted across Pinnacle, Bookmaker, LowVig, Circa, Bet105).
+
 ## API Endpoints
 
 | Endpoint | Method | Purpose |

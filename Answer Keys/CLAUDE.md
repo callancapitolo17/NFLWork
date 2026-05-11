@@ -33,8 +33,9 @@ run.py mlb (orchestrator)
 - Dashboard: port 8083
 
 ### Consensus Architecture
-- **Historical consensus** (Phase 1): All-book median with 0.5 prob hardcode. Used for sample building. Do not change.
+- **Historical consensus** (Phase 1): MLB and CBB both use sharp-weighted probit-devigged consensus computed at PBP-build time and stored in `mlb_betting_pbp` / `cbb_betting_pbp`. CBB no longer uses the 0.5 prob hardcode — historical samples now match the live consensus methodology. NFL legacy paths still use the older `Consensus Betting History.R` output.
 - **Live consensus** (Phase 2): Sharp books only via `SHARP_BOOKS` in `Tools.R`. Rec books get weight=0. Pinnacle + Bookmaker at 1.1 weight (tiebreaker), LowVig/Circa/Bet105 at 1.0. Games with no sharp coverage are dropped.
+- **Devigging method:** All devig in `Tools.R::devig_american` / `devig_american_3way` uses probit (additive z-shift). 2-way uses closed-form `c = -(z1+z2)/2`; 3-way+ uses `uniroot`. See `docs/superpowers/specs/2026-05-11-probit-devig-design.md` for math and rationale.
 - **Scraper integration**: `scraper_to_odds_api_format()` converts offshore scraper output to Odds API long format so sharp scrapers (bookmaker, bet105) can participate in consensus.
 - Sharp scrapers run before R starts so their DuckDB data is fresh when CBB.R Phase 2 reads it.
 

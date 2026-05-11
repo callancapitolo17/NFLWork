@@ -23,6 +23,10 @@ CBB.R (pipeline output)  →  cbb_dashboard.R (HTML generation)  →  cbb_dashbo
 - CLV (Closing Line Value) computation post-game
 - Auto-place integration via Playwright (spawns bet_placer)
 
+## Devigging method
+
+The CBB dashboard's "Books (devigged fair %)" column uses probit (additive z-shift) devigging via `Tools.R::devig_american`. See `docs/superpowers/specs/2026-05-11-probit-devig-design.md`. Historical samples in `cbb_betting_pbp` are also probit-devigged (sharp-weighted across Pinnacle, Bookmaker, LowVig, Circa, Bet105) — the prior 0.5 prob hardcode is gone, so historical samples now match the live consensus methodology.
+
 ## API Endpoints
 
 | Endpoint | Method | Purpose |
