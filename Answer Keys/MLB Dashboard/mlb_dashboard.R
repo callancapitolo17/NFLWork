@@ -4507,6 +4507,29 @@ book_prices_long <- tryCatch({
   NULL
 })
 
+# Pivot long -> wide so each bet has a single row with per-book columns.
+# Output columns per side:
+#   <book>_line_quoted, <book>_american_odds, <book>_is_exact_line
+# for book in (wagerzon, hoop88, bfa, bookmaker, bet105,
+#              draftkings, fanduel, pinnacle).
+# Two rows per bet (one with side='pick', one with side='opposite').
+pivot_book_prices_wide <- function(long_frame) {
+  if (is.null(long_frame) || nrow(long_frame) == 0) return(NULL)
+  long_frame %>%
+    select(bet_row_id, side, bookmaker,
+           line_quoted, american_odds, is_exact_line) %>%
+    tidyr::pivot_wider(
+      names_from  = bookmaker,
+      values_from = c(line_quoted, american_odds, is_exact_line),
+      names_glue  = "{bookmaker}_{.value}",
+      values_fill = list(line_quoted = NA_real_,
+                         american_odds = NA_integer_,
+                         is_exact_line = NA)
+    )
+}
+
+book_prices_wide <- pivot_book_prices_wide(book_prices_long)
+
 placed_bets <- load_placed_bets(DB_PATH)
 cat(sprintf("Found %d placed bets\n", nrow(placed_bets)))
 
