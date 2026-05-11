@@ -194,7 +194,7 @@ The scraper first attempts exact-line matching: Wagerzon's exact spread and tota
 
 **Integer-line fallback.** When Wagerzon posts an SGP at an integer total line (e.g., FG Over 8, F5 Over 4) that the book doesn't quote directly, the scraper falls back to interpolating from the two adjacent half-point alts (X-0.5 and X+0.5). The integer-line derivation is implemented in `mlb_sgp/integer_line_derivation.py`. See "Integer-Line Derivation" below.
 
-**No-fallback behavior.** If the book doesn't have either adjacent half-point alt, or any of the 5 bounds checks fails on the derived prices, the game's period is skipped for that book — same graceful degradation as today's "WZ line not found" path. The R blender treats the book as missing for that game.
+**No-fallback behavior.** If the book doesn't have either adjacent half-point alt, or any of the 4 bounds checks fails on the derived prices, the game's period is skipped for that book — same graceful degradation as today's "WZ line not found" path. The R blender treats the book as missing for that game.
 
 ### Integer-Line Derivation
 
@@ -220,10 +220,11 @@ The derived rows are written with `source = '<book>_interpolated'` so post-hoc a
 | # | Check | Threshold |
 |---|---|---|
 | 1 | Per-alt vig sum | `[1.05, 1.30]` |
-| 2 | Push-mass cross-consistency | <10% relative diff per side |
-| 3 | `Δ_total` plausibility | `[0.03, 0.18]` |
-| 4 | Sum of 4 derived fair_probs | `[0.97, 1.03]` |
-| 5 | Per-combo bounds | `(0, 1)` strict |
+| 2 | `Δ_total` plausibility | `[0.03, 0.18]` |
+| 3 | Sum of 4 derived fair_probs | `[0.97, 1.03]` |
+| 4 | Per-combo bounds | `(0, 1)` strict |
+
+The push-mass cross-consistency check (initially shipped as bounds check #2) was removed after production data showed it tripping on real-world FD vig asymmetry (~10-15% disagreement is normal market noise, not data corruption). The two push-mass derivations are still computed and averaged for robustness.
 
 On any failure: the game's period is skipped for that book, structured WARN logged with inputs and the violated check.
 

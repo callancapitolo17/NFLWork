@@ -48,10 +48,6 @@ def devig_alt_set(decimals: dict[str, float]) -> tuple[dict[str, float], float]:
 VIG_MIN = 1.05
 VIG_MAX = 1.30
 
-# Push-mass cross-consistency: |Δ_from_over - Δ_from_under| / max(...) tolerance
-# 0.10 catches systematic vig asymmetry that signals scrape/parse errors at adjacent alts.
-PUSH_MASS_REL_TOL = 0.10
-
 # Total marginal push mass plausibility bounds (fraction of games landing on X)
 DELTA_TOTAL_MIN = 0.03
 DELTA_TOTAL_MAX = 0.18
@@ -64,17 +60,6 @@ SUM_MAX = 1.03
 def validate_per_alt_vig(vig_sum: float) -> bool:
     """True if per-alt implied-prob sum is within plausible bounds [VIG_MIN, VIG_MAX]."""
     return VIG_MIN <= vig_sum <= VIG_MAX
-
-
-def validate_push_mass_consistency(delta_a: float, delta_b: float) -> bool:
-    """The push mass derived from the Over side must approximately equal the
-    push mass derived from the Under side (they're the same joint event).
-    Tolerance: PUSH_MASS_REL_TOL relative to the larger of the two.
-    """
-    max_delta = max(abs(delta_a), abs(delta_b))
-    if max_delta == 0:
-        return delta_a == delta_b == 0
-    return abs(delta_a - delta_b) / max_delta < PUSH_MASS_REL_TOL
 
 
 def validate_delta_total(delta_total: float) -> bool:
@@ -141,32 +126,20 @@ def derive_fair_probs(
         logger.warning("derive_fair_probs: vig_hi=%.4f out of [%g, %g]", vig_hi, VIG_MIN, VIG_MAX)
         return None
 
-    # Compute push masses two ways for each side
+    # Compute push masses two ways for each side. The two derivations target
+    # the same joint event, so we average them — both estimates carry signal
+    # about the true push mass; averaging absorbs real-market vig asymmetry
+    # without rejecting otherwise-usable data.
     delta_cover_from_over = devig_lo["home_over"] - devig_hi["home_over"]
     delta_cover_from_under = devig_hi["home_under"] - devig_lo["home_under"]
     delta_uncover_from_over = devig_lo["away_over"] - devig_hi["away_over"]
     delta_uncover_from_under = devig_hi["away_under"] - devig_lo["away_under"]
 
-    # Bounds check (2): push-mass cross-consistency
-    if not validate_push_mass_consistency(delta_cover_from_over, delta_cover_from_under):
-        logger.warning(
-            "derive_fair_probs: cover-side push mass inconsistent: from_over=%.4f from_under=%.4f",
-            delta_cover_from_over, delta_cover_from_under
-        )
-        return None
-    if not validate_push_mass_consistency(delta_uncover_from_over, delta_uncover_from_under):
-        logger.warning(
-            "derive_fair_probs: uncover-side push mass inconsistent: from_over=%.4f from_under=%.4f",
-            delta_uncover_from_over, delta_uncover_from_under
-        )
-        return None
-
-    # Average the consistent estimates per side (more robust than picking one)
     delta_cover = (delta_cover_from_over + delta_cover_from_under) / 2.0
     delta_uncover = (delta_uncover_from_over + delta_uncover_from_under) / 2.0
     delta_total = delta_cover + delta_uncover
 
-    # Bounds check (3): Δ_total reasonableness
+    # Bounds check: Δ_total reasonableness
     if not validate_delta_total(delta_total):
         logger.warning(
             "derive_fair_probs: delta_total=%.4f out of [%g, %g]",

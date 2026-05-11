@@ -44,12 +44,10 @@ def test_devig_alt_set_preserves_keys():
 
 from mlb_sgp.integer_line_derivation import (
     validate_per_alt_vig,
-    validate_push_mass_consistency,
     validate_delta_total,
     validate_sum_to_one,
     validate_per_combo_bounds,
     VIG_MIN, VIG_MAX,
-    PUSH_MASS_REL_TOL,
     DELTA_TOTAL_MIN, DELTA_TOTAL_MAX,
     SUM_MIN, SUM_MAX,
 )
@@ -64,20 +62,6 @@ def test_validate_per_alt_vig_out_of_range():
     assert validate_per_alt_vig(1.04) is False
     assert validate_per_alt_vig(1.31) is False
     assert validate_per_alt_vig(0.95) is False
-
-def test_validate_push_mass_consistency_close():
-    # 0.050 vs 0.053 = 5.7% relative diff, within 10% tolerance
-    assert validate_push_mass_consistency(0.050, 0.053) is True
-
-def test_validate_push_mass_consistency_diverging():
-    # 0.050 vs 0.080 = 37.5% relative diff, fails
-    assert validate_push_mass_consistency(0.050, 0.080) is False
-
-def test_validate_push_mass_consistency_handles_zero():
-    # Both zero is consistent (no push mass)
-    assert validate_push_mass_consistency(0.0, 0.0) is True
-    # One zero, one nonzero -> max=nonzero, diff=nonzero -> 100% rel = fail
-    assert validate_push_mass_consistency(0.0, 0.05) is False
 
 def test_validate_delta_total_in_range():
     assert validate_delta_total(0.095) is True
@@ -147,17 +131,6 @@ def test_derive_fair_probs_rejects_bad_vig():
     # Synthesize an alt with raw vig 1.40 (way out of range)
     decimals_lo = _build_synthetic_alt(0.30, 0.20, 0.30, 0.20, vig=1.40)
     decimals_hi = _build_synthetic_alt(0.27, 0.22, 0.30, 0.21)
-    result = derive_fair_probs(decimals_lo, decimals_hi)
-    assert result is None
-
-
-def test_derive_fair_probs_rejects_inconsistent_push_mass():
-    # Force Δ_cover_from_over and Δ_cover_from_under to disagree by a wide margin.
-    # devig_lo: HO=0.30, HU=0.10  → Δ_cover_from_over = 0.30 - 0.25 = 0.05
-    # devig_hi: HO=0.25, HU=0.30  → Δ_cover_from_under = 0.30 - 0.10 = 0.20
-    # 0.05 vs 0.20 → 75% relative diff → fails
-    decimals_lo = _build_synthetic_alt(0.30, 0.10, 0.30, 0.30)
-    decimals_hi = _build_synthetic_alt(0.25, 0.30, 0.25, 0.20)
     result = derive_fair_probs(decimals_lo, decimals_hi)
     assert result is None
 
