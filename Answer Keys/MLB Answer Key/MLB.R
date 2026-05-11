@@ -16,9 +16,11 @@ suppressPackageStartupMessages({
   library(DBI)
   library(httr)
   library(jsonlite)
+  library(digest)
 })
 source("Tools.R")
 source("triple_play_helpers.R")
+source("MLB Answer Key/odds_screen.R")
 timer <- pipeline_timer()
 startup_secs <- as.numeric(difftime(Sys.time(), .t_script_start, units = "secs"))
 timer$mark(sprintf("r_startup (%.1fs total)", startup_secs))
@@ -799,6 +801,14 @@ all_bets_combined <- bind_rows(
 ) %>%
   { if (!is.null(enabled_books)) filter(., bookmaker_key %in% enabled_books) else . } %>%
   filter(is.na(pt_start_time) | pt_start_time > Sys.time()) %>%
+  # bet_row_id: stable hash of (game_id, market, line, bet_on) — shared key
+  # across mlb_bets_combined and mlb_bets_book_prices. Excludes bookmaker so
+  # all books for the same bet line/side share an id.
+  mutate(bet_row_id = vapply(
+    paste(id, market, ifelse(is.na(line), "", as.character(line)), bet_on, sep = "|"),
+    function(s) digest::digest(s, algo = "md5"),
+    character(1)
+  )) %>%
   mutate(base_market = gsub("^alternate_", "", market)) %>%
   group_by(id, base_market, bet_on) %>%
   filter(ev == max(ev)) %>%
@@ -847,6 +857,149 @@ cat("\n=== TOP 20 BETS ===\n")
 print(all_bets_combined %>% head(20))
 
 # =============================================================================
+# PHASE 7b: BUILD mlb_bets_book_prices (per-book pill odds)
+# =============================================================================
+
+# Game id lookup: join scraper wide frames to Odds API game IDs via home/away team.
+.game_id_lookup <- mlb_odds %>%
+  select(id, home_team, away_team) %>%
+  distinct()
+
+# Convert a wide-format scraper frame (wagerzon/hoop88/bfa/bookmaker/bet105)
+# to canonical shape for normalize_book_odds_frame:
+#   game_id, market_name, bet_on, line, american_odds, fetch_time.
+# The scraper frames are wide (odds_home, odds_away, odds_over, odds_under).
+# We join to .game_id_lookup on home_team/away_team to get the Odds API id,
+# then pivot to long format.
+.scraper_to_canonical <- function(raw) {
+  if (is.null(raw) || nrow(raw) == 0) return(NULL)
+  if (!"fetch_time" %in% names(raw)) raw$fetch_time <- as.POSIXct(NA, tz = "UTC")
+
+  # Join to Odds API game IDs. Scraper frames have home_team + away_team
+  # already resolved to canonical names by resolve_offshore_teams().
+  joined <- raw %>%
+    inner_join(.game_id_lookup, by = c("home_team", "away_team")) %>%
+    rename(game_id = id)
+
+  if (nrow(joined) == 0) return(NULL)
+
+  rows <- list()
+
+  for (i in seq_len(nrow(joined))) {
+    row <- joined[i, , drop = FALSE]
+    mkt <- row$market
+    ft  <- row$fetch_time
+    gid <- row$game_id
+
+    # Spread side (home / away)
+    if (!is.na(row$odds_home) && !is.na(row$line)) {
+      rows[[length(rows) + 1]] <- tibble(
+        game_id = gid, market_name = mkt,
+        bet_on = row$home_team, line = as.numeric(row$line),
+        american_odds = as.integer(row$odds_home), fetch_time = ft
+      )
+    }
+    if (!is.na(row$odds_away) && !is.na(row$line)) {
+      rows[[length(rows) + 1]] <- tibble(
+        game_id = gid, market_name = mkt,
+        bet_on = row$away_team,
+        line = -as.numeric(row$line),   # away spread is negated home spread
+        american_odds = as.integer(row$odds_away), fetch_time = ft
+      )
+    }
+    # Totals (Over / Under) — use odds_over/odds_under with totals market
+    totals_mkt <- gsub("spreads", "totals", mkt)
+    if (!is.na(row$odds_over) && !is.na(row$line)) {
+      rows[[length(rows) + 1]] <- tibble(
+        game_id = gid, market_name = totals_mkt,
+        bet_on = "Over", line = as.numeric(row$line),
+        american_odds = as.integer(row$odds_over), fetch_time = ft
+      )
+    }
+    if (!is.na(row$odds_under) && !is.na(row$line)) {
+      rows[[length(rows) + 1]] <- tibble(
+        game_id = gid, market_name = totals_mkt,
+        bet_on = "Under", line = as.numeric(row$line),
+        american_odds = as.integer(row$odds_under), fetch_time = ft
+      )
+    }
+    # Moneyline (h2h) — use odds_home/odds_away with h2h market (no line)
+    h2h_mkt <- gsub("spreads", "h2h", mkt)
+    if (!is.na(row$odds_home) && is.na(row$line)) {
+      rows[[length(rows) + 1]] <- tibble(
+        game_id = gid, market_name = h2h_mkt,
+        bet_on = row$home_team, line = NA_real_,
+        american_odds = as.integer(row$odds_home), fetch_time = ft
+      )
+    }
+    if (!is.na(row$odds_away) && is.na(row$line)) {
+      rows[[length(rows) + 1]] <- tibble(
+        game_id = gid, market_name = h2h_mkt,
+        bet_on = row$away_team, line = NA_real_,
+        american_odds = as.integer(row$odds_away), fetch_time = ft
+      )
+    }
+  }
+
+  if (length(rows) == 0) return(NULL)
+  result <- bind_rows(rows)
+  normalize_book_odds_frame(result)
+}
+
+# Convert an Odds API long-format frame (already one row per outcome) to
+# canonical shape. game_odds has: id, bookmaker_key, market_key,
+# outcomes_name, outcomes_price, outcomes_point, commence_time.
+.odds_api_to_canonical <- function(raw) {
+  if (is.null(raw) || nrow(raw) == 0) return(NULL)
+  result <- raw %>%
+    transmute(
+      game_id      = id,
+      market_name  = market_key,
+      bet_on       = outcomes_name,
+      line         = as.numeric(outcomes_point),
+      american_odds = as.integer(outcomes_price),
+      fetch_time   = as.POSIXct(NA, tz = "UTC")
+    )
+  normalize_book_odds_frame(result)
+}
+
+book_odds_by_book <- list(
+  wagerzon  = .scraper_to_canonical(wagerzon_odds),
+  hoop88    = .scraper_to_canonical(hoop88_odds),
+  bfa       = .scraper_to_canonical(bfa_odds),
+  bookmaker = .scraper_to_canonical(bookmaker_odds),
+  bet105    = .scraper_to_canonical(bet105_odds),
+  draftkings = .odds_api_to_canonical(
+                 game_odds %>% filter(bookmaker_key == "draftkings")),
+  fanduel   = .odds_api_to_canonical(
+                 game_odds %>% filter(bookmaker_key == "fanduel")),
+  pinnacle  = .odds_api_to_canonical(
+                 game_odds %>% filter(bookmaker_key == "pinnacle"))
+)
+
+# Strip NULL entries so expand_bets_to_book_prices doesn't iterate empty lists.
+book_odds_by_book <- Filter(Negate(is.null), book_odds_by_book)
+
+book_prices_long <- expand_bets_to_book_prices(all_bets_combined,
+                                               book_odds_by_book)
+
+# Data-bug guard: pick book should always be on the exact line.
+pick_book_mismatches <- book_prices_long %>%
+  inner_join(all_bets_combined %>%
+               select(bet_row_id, pick_book = bookmaker_key),
+             by = "bet_row_id") %>%
+  filter(side == "pick" & bookmaker == pick_book & !is_exact_line)
+if (nrow(pick_book_mismatches) > 0) {
+  warning(sprintf(
+    "[odds_screen] %d pick-book rows on mismatched line — investigate (data bug)",
+    nrow(pick_book_mismatches)))
+}
+
+cat(sprintf("Built %d book_prices rows for %d bets across %d books.\n",
+            nrow(book_prices_long), nrow(all_bets_combined),
+            length(unique(book_prices_long$bookmaker))))
+
+# =============================================================================
 # PHASE 8: SAVE TO DUCKDB
 # =============================================================================
 
@@ -861,6 +1014,8 @@ con_bets <- duckdb_connect_retry("mlb_mm.duckdb")
 on.exit(tryCatch(dbDisconnect(con_bets), error = function(e) NULL), add = TRUE)
 dbExecute(con_bets, "DROP TABLE IF EXISTS mlb_bets_combined")
 dbWriteTable(con_bets, "mlb_bets_combined", all_bets_combined)
+dbExecute(con_bets, "DROP TABLE IF EXISTS mlb_bets_book_prices")
+dbWriteTable(con_bets, "mlb_bets_book_prices", as.data.frame(book_prices_long))
 dbDisconnect(con_bets)
 on.exit(NULL)
 
