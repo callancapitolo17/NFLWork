@@ -41,6 +41,11 @@ from wagerzon_accounts import (
     AccountNotFoundError,
 )
 import wagerzon_balance
+import single_placer  # direct WZ API single-bet placement
+
+# Books handled by each placement path
+WZ_DIRECT_API_BOOKS = {"wagerzon"}
+PLAYWRIGHT_BOOKS = {"hoop88", "bfa", "betonlineag"}
 
 # Combined parlay pricing cache: keyed on sorted (hash_a, hash_b) tuple.
 # TTL prevents stale prices when WZ moves their lines. 60s is a safe default.
@@ -697,84 +702,178 @@ def serve_lib(filename):
     return Response(content, mimetype=mimetype or "application/octet-stream")
 
 
+# ---------------------------------------------------------------------------
+# Single-bet placement helpers
+# ---------------------------------------------------------------------------
+
+def _spawn_playwright_placer(data: dict) -> dict:
+    """Spawn the existing Playwright bet placer subprocess.
+
+    Returns a dict with {success, status, message} on success or
+    {success: False, error} on failure.  This is the single source of truth
+    for the Playwright spawn logic — both the new /api/place-bet dispatcher
+    and the legacy /api/auto-place route call this function.
+    """
+    bookmaker = data.get("bookmaker_key") or data.get("bookmaker")
+    if bookmaker not in PLAYWRIGHT_BOOKS:
+        return {"success": False,
+                "error": f"Playwright path not configured for '{bookmaker}'"}
+    try:
+        local_root = PROJECT_ROOT
+        repo_root = _REPO_ROOT
+
+        placer_script = str(local_root / "bet_placer" / "placer.py")
+        bet_json = json.dumps(data)
+
+        # Prefer the wagerzon_odds venv (has playwright + duckdb + dotenv)
+        placer_python = str(repo_root / "wagerzon_odds" / "venv" / "bin" / "python3")
+        if not Path(placer_python).exists():
+            placer_python = sys.executable  # fallback
+
+        log_path = str(local_root / "bet_placer" / "placer.log")
+        with open(log_path, "a") as log_file:
+            subprocess.Popen(
+                [placer_python, placer_script, bet_json],
+                cwd=str(local_root / "bet_placer"),
+                stdout=log_file,
+                stderr=log_file,
+                start_new_session=True,
+            )
+        return {"success": True, "status": "playwright_launched",
+                "message": f"Browser launching for {bookmaker}..."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def _insert_placement_breadcrumb(bet_hash: str, account, bet_meta: dict,
+                                  status: str = "placing"):
+    """Insert (or upsert) a placed_bets row before invoking the placer.
+
+    Idempotent — a retry won't duplicate the row.  Uses INSERT when the row
+    doesn't exist yet, UPDATE when it does (e.g. a retry after a transient
+    failure).
+    """
+    con = duckdb.connect(str(DB_PATH))
+    try:
+        existing = con.execute(
+            "SELECT bet_hash FROM placed_bets WHERE bet_hash = ?",
+            [bet_hash]
+        ).fetchone()
+
+        if existing is None:
+            con.execute("""
+                INSERT INTO placed_bets
+                  (bet_hash, game_id, home_team, away_team, market, bet_on,
+                   line, odds, actual_size, recommended_size, bookmaker,
+                   account, status, wz_odds_at_place)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                bet_hash,
+                bet_meta.get("game_id"),
+                bet_meta.get("home_team"),
+                bet_meta.get("away_team"),
+                bet_meta.get("market"),
+                bet_meta.get("bet_on"),
+                bet_meta.get("line"),
+                bet_meta.get("american_odds"),
+                bet_meta.get("actual_size"),
+                bet_meta.get("kelly_bet"),
+                bet_meta.get("bookmaker_key") or bet_meta.get("bookmaker"),
+                account,
+                status,
+                bet_meta.get("wz_odds_at_place"),
+            ])
+        else:
+            con.execute("""
+                UPDATE placed_bets
+                SET status = ?, account = ?, wz_odds_at_place = ?
+                WHERE bet_hash = ?
+            """, [
+                status,
+                account,
+                bet_meta.get("wz_odds_at_place"),
+                bet_hash,
+            ])
+    finally:
+        con.close()
+
+
+def _finalize_placement(bet_hash: str, result: dict):
+    """Upsert the final status from the placer's result onto the breadcrumb row."""
+    con = duckdb.connect(str(DB_PATH))
+    try:
+        con.execute("""
+            UPDATE placed_bets
+            SET status = ?, ticket_number = ?,
+                error_msg = ?, error_msg_key = ?
+            WHERE bet_hash = ?
+        """, [
+            result.get("status"),
+            result.get("ticket_number"),
+            result.get("error_msg"),
+            result.get("error_msg_key"),
+            bet_hash,
+        ])
+    finally:
+        con.close()
+
+
 @app.route("/api/place-bet", methods=["POST"])
 def place_bet():
-    """Mark a bet as placed in the database."""
-    data = request.json
+    """Dispatch a single-bet placement request by bookmaker_key.
 
-    required = ["bet_hash", "game_id", "home_team", "away_team", "game_time",
-                "market", "bet_on", "model_prob", "model_ev", "recommended_size",
-                "odds", "bookmaker"]
+    Routes:
+      - wagerzon       → WZ direct API via single_placer.place_single
+      - hoop88 / bfa / betonlineag → Playwright subprocess
+      - everything else → 400 (use /api/log-bet for manual logging)
+    """
+    data = request.json or {}
+    bookmaker_key = data.get("bookmaker_key")
+    bet_hash      = data.get("bet_hash")
+    account       = data.get("account")
 
-    missing = [k for k in required if k not in data]
-    if missing:
-        return jsonify({"success": False, "error": f"Missing fields: {missing}"}), 400
+    if not bet_hash:
+        return jsonify({"success": False, "error": "bet_hash required"}), 400
 
-    try:
-        con = duckdb.connect(str(DB_PATH))
-        try:
-            # Check if already placed — allow overwrite if status is not 'pending' (i.e. queued/nav_error/ready_to_confirm)
-            existing = con.execute(
-                "SELECT bet_hash, status FROM placed_bets WHERE bet_hash = ?",
-                [data["bet_hash"]]
-            ).fetchone()
+    # --- WZ direct-API path ---
+    if bookmaker_key in WZ_DIRECT_API_BOOKS:
+        if not account:
+            return jsonify({"success": False,
+                            "error": "account required for wagerzon placement"}), 400
+        _insert_placement_breadcrumb(bet_hash, account, data, status="placing")
+        result = single_placer.place_single(account=account, bet=data)
+        _finalize_placement(bet_hash, result)
+        return jsonify(result)
 
-            if existing and existing[1] == "pending":
-                return jsonify({"success": False, "error": "Bet already placed"}), 409
+    # --- Playwright path (hoop88 / bfa / betonlineag) ---
+    if bookmaker_key in PLAYWRIGHT_BOOKS:
+        return jsonify(_spawn_playwright_placer(data))
 
-            if existing:
-                # Overwrite non-confirmed bet (queued, nav_error, ready_to_confirm)
-                con.execute("""
-                    UPDATE placed_bets SET
-                        actual_size = ?, recommended_size = ?, odds = ?,
-                        placed_at = ?, status = 'pending'
-                    WHERE bet_hash = ?
-                """, [
-                    float(data.get("actual_size", data["recommended_size"])),
-                    float(data["recommended_size"]),
-                    int(data["odds"]),
-                    datetime.now().isoformat(),
-                    data["bet_hash"],
-                ])
-            else:
-                # Insert new placed bet
-                con.execute("""
-                    INSERT INTO placed_bets (
-                        bet_hash, game_id, home_team, away_team, game_time,
-                        market, bet_on, line, model_prob, model_ev, recommended_size,
-                        actual_size, odds, bookmaker, placed_at, status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-                """, [
-                    data["bet_hash"],
-                    data["game_id"],
-                    data["home_team"],
-                    data["away_team"],
-                    None if data["game_time"] in ("NA", "", None) else data["game_time"],
-                    data["market"],
-                    data["bet_on"],
-                    data.get("line"),
-                    data["model_prob"],
-                    data["model_ev"],
-                    data["recommended_size"],
-                    data.get("actual_size", data["recommended_size"]),
-                    data["odds"],
-                    data["bookmaker"],
-                    datetime.now().isoformat()
-                ])
-        finally:
-            con.close()
+    # --- Everything else: no placement integration ---
+    return jsonify({"success": False,
+                    "error": f"manual log only for '{bookmaker_key}'; "
+                             f"use /api/log-bet to record a manual placement"}), 400
 
-        # Schedule CLV closing-odds capture for this game (best-effort, don't fail the bet)
-        try:
-            if data.get("game_time") not in ("NA", "", None):
-                schedule_capture(data["game_id"], data["game_time"], data["bookmaker"])
-        except Exception as e:
-            log.warning("Failed to schedule CLV capture: %s", e)
 
-        return jsonify({"success": True, "message": "Bet placed successfully"})
+@app.route("/api/log-bet", methods=["POST"])
+def log_bet():
+    """Manually log a bet placement without contacting any sportsbook.
 
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+    Use this for reference/sharp books (Pinnacle, DraftKings, etc.) where
+    you placed the bet yourself and just want a record in the dashboard.
+    Accepts any bookmaker_key — no routing logic applied.
+    """
+    data = request.json or {}
+    bet_hash = data.get("bet_hash")
+    if not bet_hash:
+        return jsonify({"success": False, "error": "bet_hash required"}), 400
+    _insert_placement_breadcrumb(
+        bet_hash,
+        data.get("account"),
+        data,
+        status="placed",
+    )
+    return jsonify({"success": True, "status": "placed", "ticket_number": None})
 
 
 @app.route("/api/remove-bet", methods=["POST"])
@@ -2013,48 +2112,29 @@ def update_filter_settings():
 
 @app.route("/api/auto-place", methods=["POST"])
 def auto_place():
-    """Launch Playwright to navigate to book and pre-fill bet.
+    """Launch Playwright to navigate to book and pre-fill bet (legacy endpoint).
 
-    Spawns placer.py as a non-blocking subprocess with the bet data as JSON arg.
-    The subprocess opens a visible browser, logs in, navigates to the game,
-    and pre-fills the bet slip. User confirms manually on the book's site.
+    Kept for backward compatibility with the old dashboard JS.  All spawn logic
+    now lives in _spawn_playwright_placer so there is a single source of truth.
+    New code should call /api/place-bet with bookmaker_key set.
     """
-    data = request.json
-    bookmaker = data.get("bookmaker")
+    data = request.json or {}
+    # Legacy callers use "bookmaker"; normalise so _spawn_playwright_placer works
+    if "bookmaker" in data and "bookmaker_key" not in data:
+        data = {**data, "bookmaker_key": data["bookmaker"]}
+    bookmaker = data.get("bookmaker_key")
 
-    if bookmaker not in SUPPORTED_AUTO_BOOKS:
+    if bookmaker not in PLAYWRIGHT_BOOKS:
         return jsonify({
             "success": False,
-            "error": f"Auto-place not supported for '{bookmaker}'. Supported: {SUPPORTED_AUTO_BOOKS}"
+            "error": f"Auto-place not supported for '{bookmaker}'. "
+                     f"Supported: {sorted(PLAYWRIGHT_BOOKS)}",
         }), 400
 
-    try:
-        local_root = PROJECT_ROOT
-        repo_root = _REPO_ROOT
-
-        placer_script = str(local_root / "bet_placer" / "placer.py")
-        bet_json = json.dumps(data)
-
-        # Use wagerzon_odds venv (has playwright + duckdb + dotenv)
-        placer_python = str(repo_root / "wagerzon_odds" / "venv" / "bin" / "python3")
-        if not Path(placer_python).exists():
-            placer_python = sys.executable  # fallback
-
-        log_path = str(local_root / "bet_placer" / "placer.log")
-        log_file = open(log_path, "a")
-        subprocess.Popen(
-            [placer_python, placer_script, bet_json],
-            cwd=str(local_root / "bet_placer"),
-            stdout=log_file,
-            stderr=log_file,
-            start_new_session=True,
-        )
-        log_file.close()
-
-        return jsonify({"success": True, "message": f"Browser launching for {bookmaker}..."})
-
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+    result = _spawn_playwright_placer(data)
+    if result.get("success"):
+        return jsonify(result)
+    return jsonify(result), 500
 
 
 @app.route("/api/nav-status/<bet_hash>", methods=["GET"])
