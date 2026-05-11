@@ -33,37 +33,10 @@ con <- dbConnect(duckdb(), dbdir = "cbb.duckdb", read_only = TRUE)
 
 betting_pbp <- dbGetQuery(con, "SELECT * FROM cbb_betting_pbp")
 
-closing_odds <- dbGetQuery(con, "
-  SELECT
-    id as odds_id,
-    home_spread,
-    total_line,
-    spread_home_odds,
-    spread_away_odds,
-    tot_over_odds,
-    tot_under_odds,
-    bookmaker_key
-  FROM cbb_closing_odds
-  WHERE home_spread IS NOT NULL
-    AND total_line IS NOT NULL
-")
-
-historical_consensus <- closing_odds %>%
-  group_by(odds_id) %>%
-  summarize(
-    home_spread = median(home_spread, na.rm = TRUE),
-    total_line = median(total_line, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    consensus_devig_home_odds = 0.5,
-    consensus_devig_away_odds = 0.5,
-    consensus_devig_over_odds = 0.5,
-    consensus_devig_under_odds = 0.5
-  )
-
+# consensus_devig_* + home_spread/total_line now live on cbb_betting_pbp
+# directly (sharp-weighted probit-devigged consensus, written by
+# build_betting_pbp.R). No runtime 0.5 hardcode anymore.
 DT <- betting_pbp %>%
-  inner_join(historical_consensus, by = "odds_id") %>%
   rename(
     home_margin = game_home_margin_fg,
     total_final_score = game_total_fg,
