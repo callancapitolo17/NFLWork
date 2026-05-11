@@ -6,6 +6,10 @@ Mocks the WZ HTTP session and verifies:
 - successful path: returns {status: 'placed', ticket_number: ...}
 - error classification: auth_error / rejected / network_error / orphaned
 - empty details from ConfirmWagerHelper → rejected (line pulled)
+- confirmPassword included in PostWagerMultipleHelper payload (production path)
+- both WZ error key conventions handled (ErrorMsgKey vs ErrorCode)
+- orphaned when WagerNumber missing from make response
+- missing_odds in preflight details → rejected
 """
 import sys
 from pathlib import Path
@@ -141,3 +145,87 @@ def test_empty_details_treated_as_rejected():
     assert result["status"] == "rejected"
     assert "details" in (result.get("error_msg") or "").lower() or \
            result.get("error_msg_key") == "empty_details"
+
+
+def test_successful_placement_includes_confirm_password(monkeypatch):
+    """Production path must send confirmPassword in PostWagerMultipleHelper.
+
+    confirmPassword is required by WZ to authorize the placement. The test
+    path (session= injected) skips it because mock sessions do not validate
+    credentials.
+    """
+    from wagerzon_accounts import WagerzonAccount
+    fake_account = WagerzonAccount(
+        label="Wagerzon", suffix="", username="u", password="secret123"
+    )
+    monkeypatch.setattr("single_placer.get_account", lambda label: fake_account)
+
+    fake_session = MagicMock()
+    confirm = _make_json_response(
+        {"result": {"details": [{"Win": 4620, "Risk": 4200, "Odds": 110}]}}
+    )
+    make = _make_json_response(
+        {"result": {"WagerNumber": "T-1", "AvailBalance": 100.0}}
+    )
+    fake_session.post.side_effect = [confirm, make]
+
+    monkeypatch.setattr("single_placer.wagerzon_auth.get_session",
+                        lambda acct: fake_session)
+
+    result = single_placer.place_single("Wagerzon", make_bet())
+
+    # Inspect the second post call's data payload for confirmPassword
+    make_call = fake_session.post.call_args_list[1]
+    # post() is called as sess.post(URL, data=payload, ...) — keyword arg
+    payload = make_call[1].get("data", {})
+    assert payload.get("confirmPassword") == "secret123"
+    assert result["status"] == "placed"
+
+
+def test_wz_error_msg_key_convention_also_rejected():
+    """WZ ConfirmWagerHelper may use ErrorMsgKey/ErrorMsg instead of
+    ErrorCode/ErrorMessage. Both must be classified as 'rejected'."""
+    bet = make_bet()
+    fake_session = MagicMock()
+    # ErrorMsgKey is the parlay_placer convention; single_placer must handle it too
+    confirm_response = _make_json_response({
+        "result": {
+            "details": [],
+            "ErrorMsgKey": "line_unavailable",
+            "ErrorMsg": "Line is no longer available",
+        }
+    })
+    fake_session.post.return_value = confirm_response
+
+    result = single_placer.place_single("primary", bet, session=fake_session)
+    assert result["status"] == "rejected"
+    assert result.get("error_msg_key") == "line_unavailable"
+
+
+def test_orphaned_when_make_succeeds_but_no_wager_number():
+    """WZ confirmed submission but didn't return WagerNumber -> orphaned."""
+    fake_session = MagicMock()
+    confirm = _make_json_response(
+        {"result": {"details": [{"Win": 4620, "Risk": 4200, "Odds": 110}]}}
+    )
+    make = _make_json_response(
+        {"result": {"AvailBalance": 100.0}}  # no WagerNumber
+    )
+    fake_session.post.side_effect = [confirm, make]
+
+    result = single_placer.place_single("primary", make_bet(), session=fake_session)
+    assert result["status"] == "orphaned"
+    assert result["error_msg_key"] == "no_ticket"
+
+
+def test_missing_odds_in_preflight_details_returns_rejected():
+    """Preflight details present but missing Odds field -> rejected."""
+    fake_session = MagicMock()
+    fake_response = _make_json_response({
+        "result": {"details": [{"Win": 4620, "Risk": 4200}]}  # no Odds
+    })
+    fake_session.post.return_value = fake_response
+
+    result = single_placer.place_single("primary", make_bet(), session=fake_session)
+    assert result["status"] == "rejected"
+    assert result["error_msg_key"] == "missing_odds"

@@ -43,6 +43,13 @@ recon for singles) and confirm:
      (grep confirms it is absent from parlay_placer.py) — so it is likely
      a Wagerzon UI-only step and is not required in our API path
   3. The actual ticket-extraction key (WagerNumber vs different name)
+
+Password / confirmPassword:
+  PostWagerMultipleHelper requires `confirmPassword` in the submission payload
+  to authorize the wager (mirrors parlay_placer._build_post_request). In the
+  production path the field is populated from wz_account.password resolved via
+  get_account(). In the test path (session= injected), the field is omitted
+  because mock sessions do not validate credentials.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -72,7 +79,7 @@ MAKE_URL    = f"{WAGERZON_BASE_URL}/wager/PostWagerMultipleHelper.aspx"
 # Tolerance for American-odds drift check. If WZ's preflight returns an Odds
 # value that differs from what the dashboard showed the user by more than this,
 # we abort and return price_moved.
-DRIFT_TOLERANCE_AMERICAN = 1
+DRIFT_TOLERANCE_AMERICAN_ODDS = 1
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +217,7 @@ def place_single(account: str, bet: dict, session=None) -> dict:
     # Session resolution: injected (tests) or from live auth cache (production)
     if session is not None:
         sess = session
+        wz_account = None  # test path — no live account object
     else:
         wz_account: WagerzonAccount = get_account(account)
         sess = wagerzon_auth.get_session(wz_account)
@@ -230,16 +238,22 @@ def place_single(account: str, bet: dict, session=None) -> dict:
         return _network_error(f"{type(e).__name__}: {e}")
 
     if _is_html_response(confirm_resp):
+        # No auth_error retry: single placer is stateless; caller is expected to
+        # retry on auth_error. The parlay placer retries internally because parlay
+        # state is more complex to reconstruct. Singles are cheap to retry.
         return _auth_error("Wagerzon returned HTML at preflight (session expired)")
 
     confirm_json = confirm_resp.json()
     result_block = confirm_json.get("result") or {}
 
-    # Check for an error code in the preflight response itself
-    if "ErrorCode" in result_block:
-        key = result_block["ErrorCode"]
-        msg = result_block.get("ErrorMessage") or key
-        return _rejected(msg, key)
+    # Check for an error code in the preflight response itself.
+    # WZ endpoints are inconsistent: ConfirmWagerHelper uses ErrorMsgKey/ErrorMsg
+    # (same convention as parlay_placer) while other endpoints use ErrorCode/ErrorMessage.
+    # Check both so we handle either shape defensively.
+    err_key = result_block.get("ErrorMsgKey") or result_block.get("ErrorCode")
+    if err_key:
+        err_msg = result_block.get("ErrorMsg") or result_block.get("ErrorMessage") or err_key
+        return _rejected(err_msg, err_key)
 
     details = result_block.get("details") or []
     if not details:
@@ -258,7 +272,7 @@ def place_single(account: str, bet: dict, session=None) -> dict:
         )
 
     expected_odds = int(bet["wz_odds_at_place"])
-    if abs(int(wz_odds_now) - expected_odds) > DRIFT_TOLERANCE_AMERICAN:
+    if abs(int(wz_odds_now) - expected_odds) > DRIFT_TOLERANCE_AMERICAN_ODDS:
         return _price_moved(expected_odds, int(wz_odds_now))
 
     # -----------------------------------------------------------------------
@@ -268,6 +282,11 @@ def place_single(account: str, bet: dict, session=None) -> dict:
     # return network_error so the dashboard can surface it.
     # -----------------------------------------------------------------------
     make_payload = dict(confirm_payload)
+    # confirmPassword is required by WZ to authorize the placement (mirrors
+    # parlay_placer._build_post_request). The test path (wz_account is None)
+    # skips it because mock sessions do not validate credentials.
+    if wz_account is not None:
+        make_payload["confirmPassword"] = wz_account.password
     try:
         make_resp = sess.post(
             MAKE_URL,
@@ -279,16 +298,20 @@ def place_single(account: str, bet: dict, session=None) -> dict:
         return _network_error(f"{type(e).__name__}: {e}")
 
     if _is_html_response(make_resp):
+        # No auth_error retry: single placer is stateless; caller is expected to
+        # retry on auth_error. The parlay placer retries internally because parlay
+        # state is more complex to reconstruct. Singles are cheap to retry.
         return _auth_error("Wagerzon returned HTML at submission (session expired)")
 
     make_json = make_resp.json()
     make_result = make_json.get("result") or {}
 
-    # Post-submission rejection (e.g. INSUFFICIENT_BALANCE at placement time)
-    if "ErrorCode" in make_result:
-        key = make_result["ErrorCode"]
-        msg = make_result.get("ErrorMessage") or key
-        return _rejected(msg, key)
+    # Post-submission rejection (e.g. INSUFFICIENT_BALANCE at placement time).
+    # Defensive: check both WZ error key conventions (same as preflight above).
+    make_err_key = make_result.get("ErrorMsgKey") or make_result.get("ErrorCode")
+    if make_err_key:
+        make_err_msg = make_result.get("ErrorMsg") or make_result.get("ErrorMessage") or make_err_key
+        return _rejected(make_err_msg, make_err_key)
 
     ticket = make_result.get("WagerNumber")
     if not ticket:
