@@ -816,7 +816,7 @@ create_trifectas_table <- function(trifecta_opps, placed_trifectas) {
   )
 }
 
-create_bets_table <- function(all_bets, placed_bets) {
+create_bets_table_legacy <- function(all_bets, placed_bets) {
   placed_hashes <- if (nrow(placed_bets) > 0) placed_bets$bet_hash else character()
   # Build lookups for placed bet actual_size and recommended_size by hash
   placed_actual <- setNames(
@@ -1123,6 +1123,332 @@ create_bets_table <- function(all_bets, placed_bets) {
         backgroundColor = "#58a6ff",
         color = "#0d1117"
       )
+    )
+  )
+}
+
+# -----------------------------------------------------------------------------
+# create_bets_table — card layout (Task 11 of odds-screen rebuild)
+# -----------------------------------------------------------------------------
+# Replaces the flat per-bet table with a card-per-bet layout that shows the
+# pick + opposite side's price across all 8 sportsbooks as pill rows. Each
+# pill is rendered server-side via render_book_pill() with three states:
+#   - exact line match    -> standard pill
+#   - mismatched line     -> amber-tinted pill + line tag
+#   - no quote            -> muted dashed em-dash pill
+# The pick book's pill gets the green `.pick` override.
+#
+# Falls back to the legacy flat layout when book_prices_wide is NULL (e.g.,
+# when the loader couldn't read mlb_bets_book_prices).
+create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
+  if (is.null(book_prices_wide)) {
+    warning("[bets-tab] book_prices_wide is NULL — using legacy flat layout")
+    return(create_bets_table_legacy(all_bets, placed_bets))
+  }
+
+  placed_hashes <- if (nrow(placed_bets) > 0) placed_bets$bet_hash else character()
+
+  # Lookups for placement state (status + ticket number) used by the action cell.
+  placed_status_lookup <- if (nrow(placed_bets) > 0 && "status" %in% names(placed_bets)) {
+    setNames(placed_bets$status, placed_bets$bet_hash)
+  } else setNames(character(), character())
+  placed_ticket_lookup <- if (nrow(placed_bets) > 0 && "ticket_number" %in% names(placed_bets)) {
+    setNames(placed_bets$ticket_number, placed_bets$bet_hash)
+  } else setNames(character(), character())
+  # Keep the legacy placed_actual / placed_rec lookups around so we can still
+  # surface "partial fill" data via the action-cell data attrs (Task 12 hook).
+  placed_actual_lookup <- setNames(
+    if (nrow(placed_bets) > 0 && "actual_size" %in% names(placed_bets)) placed_bets$actual_size else numeric(),
+    if (nrow(placed_bets) > 0) placed_bets$bet_hash else character()
+  )
+
+  # Same-game correlation lookup (reuse the existing helper unchanged).
+  same_game_info <- lapply(seq_len(nrow(all_bets)), function(i) {
+    find_same_game_bets(i, all_bets, placed_bets)
+  })
+
+  # Re-compute bet_row_id on the bets frame using the same formula MLB.R uses
+  # so the join to book_prices_wide matches mlb_bets_book_prices.
+  all_bets <- all_bets %>%
+    mutate(bet_row_id = vapply(
+      paste(id, market, ifelse(is.na(line), "", as.character(line)), bet_on, sep = "|"),
+      function(s) digest::digest(s, algo = "md5"), character(1)
+    ))
+
+  BOOK_ORDER  <- c("wagerzon", "hoop88", "bfa", "bookmaker", "bet105",
+                   "draftkings", "fanduel", "pinnacle")
+  BOOK_LABELS <- c(wagerzon = "WZ", hoop88 = "H88", bfa = "BFA",
+                   bookmaker = "BKM", bet105 = "B105",
+                   draftkings = "DK", fanduel = "FD", pinnacle = "Pinn")
+
+  # Render one full side-row (label + 8 book pills).
+  render_side_row <- function(wide_row, side_label_text, is_pick_side,
+                              pick_book, side_word) {
+    pills <- vapply(BOOK_ORDER, function(b) {
+      odds_col  <- paste0(b, "_american_odds")
+      lq_col    <- paste0(b, "_line_quoted")
+      exact_col <- paste0(b, "_is_exact_line")
+      odds  <- if (odds_col  %in% names(wide_row)) wide_row[[odds_col]]  else NA_integer_
+      lq    <- if (lq_col    %in% names(wide_row)) wide_row[[lq_col]]    else NA_real_
+      exact <- if (exact_col %in% names(wide_row)) wide_row[[exact_col]] else NA
+      render_book_pill(
+        book          = BOOK_LABELS[[b]],
+        american_odds = if (is.na(odds)) NA_integer_ else as.integer(odds),
+        line_quoted   = lq,
+        is_exact_line = exact,
+        is_pick       = is_pick_side && (b == pick_book),
+        side          = side_word
+      )
+    }, character(1))
+    paste0(
+      '<div class="side-row">',
+      sprintf('<span class="side-label">%s</span>',
+              htmltools::htmlEscape(side_label_text)),
+      paste(pills, collapse = ""),
+      '</div>'
+    )
+  }
+
+  # Display data: one card per bet (no fan-out by book; pills carry that info).
+  table_data <- all_bets %>%
+    mutate(
+      bet_hash = pmap_chr(list(id, market, bet_on, line), generate_bet_hash),
+      is_placed = bet_hash %in% placed_hashes,
+      game_display = paste(away_team, "@", home_team),
+      ev_pct = ev * 100,
+      ev_display = ifelse(ev >= 0, sprintf("+%.1f%%", ev * 100),
+                                   sprintf("%.1f%%", ev * 100)),
+      m_display = sprintf("%.1f%%", prob * 100),
+      size_display = sprintf("$%.0f", bet_size),
+      towin_display = sprintf("$%.0f",
+                              ifelse(odds > 0, bet_size * odds / 100,
+                                               bet_size * 100 / abs(odds))),
+      pick_display = sprintf("%s %s",
+                             toupper(bookmaker_key),
+                             ifelse(odds > 0, paste0("+", odds),
+                                              as.character(odds))),
+      market_display = paste(
+        format_market_name(market),
+        ifelse(is.na(line), bet_on,
+               paste(bet_on,
+                     ifelse(line > 0, paste0("+", line), as.character(line))))
+      )
+    ) %>%
+    arrange(desc(ev))
+
+  # Pre-render the pick-side HTML for each row. Picks side_word from the
+  # bet_on text ("Over X" -> "over"; "Under X" -> "under"; everything else
+  # defaults to "over" — only used for the line tag prefix on mismatches).
+  table_data$pickside_html <- vapply(seq_len(nrow(table_data)), function(i) {
+    bet_id <- table_data$bet_row_id[i]
+    wide_pick <- book_prices_wide %>% filter(bet_row_id == bet_id, side == "pick")
+    if (nrow(wide_pick) == 0) return("")
+    side_word <- if (grepl("^Over",  table_data$bet_on[i], ignore.case = TRUE)) "over"
+                 else if (grepl("^Under", table_data$bet_on[i], ignore.case = TRUE)) "under"
+                 else "over"
+    render_side_row(
+      wide_row         = wide_pick[1, ],
+      side_label_text  = table_data$bet_on[i],
+      is_pick_side     = TRUE,
+      pick_book        = table_data$bookmaker_key[i],
+      side_word        = side_word
+    )
+  }, character(1))
+
+  # Pre-render the opposite-side HTML.
+  table_data$otherside_html <- vapply(seq_len(nrow(table_data)), function(i) {
+    bet_id <- table_data$bet_row_id[i]
+    wide_opp <- book_prices_wide %>% filter(bet_row_id == bet_id, side == "opposite")
+    if (nrow(wide_opp) == 0) return("")
+    opposite_label <- if (grepl("^Over",  table_data$bet_on[i], ignore.case = TRUE)) "Under"
+                      else if (grepl("^Under", table_data$bet_on[i], ignore.case = TRUE)) "Over"
+                      else "Opp"
+    side_word <- if (grepl("^Over", opposite_label, ignore.case = TRUE)) "over" else "under"
+    render_side_row(
+      wide_row         = wide_opp[1, ],
+      side_label_text  = opposite_label,
+      is_pick_side     = FALSE,
+      pick_book        = table_data$bookmaker_key[i],
+      side_word        = side_word
+    )
+  }, character(1))
+
+  # Same-game correlation corner badge. Reuse the legacy tooltip builder so
+  # the hover detail (markets/sizes/books for related legs) is unchanged.
+  table_data$corr_html <- vapply(seq_len(nrow(table_data)), function(i) {
+    info <- same_game_info[[i]]
+    if (!info$has_same_game) return("")
+    dot <- intToUtf8(0xB7)
+    chk <- intToUtf8(0x2713)
+    cir <- intToUtf8(0x2013)
+    lines <- vapply(info$details, function(d) {
+      market_name <- format_market_name(d$market)
+      line_str <- if (!is.null(d$line) && !is.na(d$line)) {
+        if (d$line > 0) paste0(" +", d$line) else paste0(" ", d$line)
+      } else ""
+      odds_str <- if (!is.null(d$odds) && !is.na(d$odds)) {
+        if (d$odds > 0) sprintf(" (%+d)", d$odds) else sprintf(" (%d)", d$odds)
+      } else ""
+      if (isTRUE(d$is_placed)) {
+        size_str <- if (!is.null(d$actual_size) && !is.na(d$actual_size)) {
+          sprintf("$%.0f", d$actual_size)
+        } else ""
+        prefix <- chk
+      } else {
+        size_str <- if (!is.null(d$bet_size) && !is.na(d$bet_size)) {
+          sprintf("$%.0f", d$bet_size)
+        } else ""
+        prefix <- cir
+      }
+      book_str <- if (!is.null(d$bookmaker) && !is.na(d$bookmaker)) d$bookmaker else ""
+      paste(prefix, paste(Filter(nzchar, c(
+        paste0(market_name, " - ", d$bet_on, line_str, odds_str),
+        size_str, book_str
+      )), collapse = paste0(" ", dot, " ")))
+    }, character(1))
+    tooltip <- paste(lines, collapse = "\n")
+    sprintf('<span class="corr-badge" title="%s">&#9679;</span>',
+            escape_tooltip(tooltip))
+  }, character(1))
+
+  # The reactable. elementId = "bets-table" so the wrapping container gets
+  # id="bets-table-container", matching the CSS scope.
+  reactable(
+    table_data,
+    elementId = "bets-table",
+    searchable = TRUE,
+    filterable = TRUE,
+    defaultPageSize = 25,
+    pageSizeOptions = c(25, 50, 100),
+    showPageSizeOptions = TRUE,
+    columns = list(
+      # Hidden data carriers
+      bet_hash       = colDef(show = FALSE),
+      bet_row_id     = colDef(show = FALSE),
+      id             = colDef(show = FALSE),
+      home_team      = colDef(show = FALSE),
+      away_team      = colDef(show = FALSE),
+      market         = colDef(show = FALSE),
+      line           = colDef(show = FALSE),
+      bet_on         = colDef(show = FALSE),
+      bet_size       = colDef(show = FALSE),
+      odds           = colDef(show = FALSE),
+      prob           = colDef(show = FALSE),
+      ev             = colDef(show = FALSE),
+      ev_pct         = colDef(show = FALSE),
+      bookmaker_key  = colDef(show = FALSE),
+      pt_start_time  = colDef(show = FALSE),
+      corr_html      = colDef(show = FALSE),
+
+      # Visible cells (ordering via CSS `order:` in #bets-table-container).
+      game_display = colDef(
+        name = "", html = TRUE, class = "cell-game",
+        cell = function(value, index) {
+          row <- table_data[index, ]
+          time_str <- if (!is.na(row$pt_start_time))
+            format(row$pt_start_time, "%a %I:%M %p") else ""
+          paste0(
+            htmltools::htmlEscape(value),
+            sprintf(' <span style="color:#8b949e;font-size:11px;margin-left:8px">%s</span>',
+                    htmltools::htmlEscape(time_str)),
+            row$corr_html
+          )
+        }
+      ),
+      market_display = colDef(
+        name = "", class = "cell-market", html = TRUE,
+        cell = function(value, index) htmltools::htmlEscape(value)
+      ),
+      pickside_html = colDef(
+        name = "", html = TRUE, class = "cell-pickside",
+        cell = function(value, index) value
+      ),
+      otherside_html = colDef(
+        name = "", html = TRUE, class = "cell-otherside",
+        cell = function(value, index) value
+      ),
+      m_display = colDef(
+        name = "", class = "cell-m",
+        style = list(color = "#7ee787", fontWeight = 600)
+      ),
+      pick_display = colDef(
+        name = "", class = "cell-pick"
+      ),
+      ev_display = colDef(
+        name = "", class = "cell-ev",
+        cell = function(value, index) {
+          ep <- table_data$ev[index] * 100
+          color <- if (ep >= 15) "#3fb950"
+                   else if (ep >= 10) "#56d364"
+                   else if (ep >= 5) "#7ee787"
+                   else "#a5d6a7"
+          div(style = list(color = color, fontWeight = "600"), value)
+        }
+      ),
+      size_display = colDef(
+        name = "", class = "cell-size",
+        html = TRUE,
+        cell = function(value, index) {
+          sz <- table_data$bet_size[index]
+          sprintf('<span data-bet-size="%.2f">%s</span>', sz, value)
+        }
+      ),
+      towin_display = colDef(
+        name = "", class = "cell-towin",
+        style = list(color = "#3fb950")
+      ),
+      is_placed = colDef(
+        name = "", class = "cell-action", html = TRUE,
+        cell = function(value, index) {
+          row <- table_data[index, ]
+          status <- placed_status_lookup[row$bet_hash]
+          ticket <- placed_ticket_lookup[row$bet_hash]
+          placed_actual <- placed_actual_lookup[row$bet_hash]
+          data_attrs <- sprintf(
+            'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-market="%s" data-bet-on="%s" data-line="%s" data-prob="%s" data-ev="%s" data-size="%s" data-odds="%s" data-book="%s" data-actual="%s" data-fill-status="%s"',
+            row$bet_hash, row$id, row$home_team, row$away_team,
+            as.character(row$pt_start_time), row$market, row$bet_on,
+            ifelse(is.na(row$line), "", row$line),
+            row$prob, row$ev, row$bet_size, row$odds, row$bookmaker_key,
+            ifelse(is.na(placed_actual), "", placed_actual),
+            ifelse(is.na(status), "not_placed", status)
+          )
+          if (!is.na(status) && status == "placed") {
+            label <- if (!is.na(ticket) && nchar(ticket) > 0)
+              sprintf('placed &middot; #%s', htmltools::htmlEscape(ticket))
+              else "placed"
+            return(sprintf('<span class="placed-bet-label" %s>%s</span>',
+                           data_attrs, label))
+          }
+          if (!is.na(status) && status %in% c("price_moved","rejected","auth_error","network_error","orphaned")) {
+            short <- switch(status,
+              price_moved   = "drift",
+              rejected      = "rejected",
+              auth_error    = "auth err",
+              network_error = "net err",
+              orphaned      = "orphan",
+              status)
+            return(sprintf(
+              '<span class="pill error" %s>%s</span><button class="btn-place" onclick="placeBet(this)" %s>Retry</button><button class="btn-log" onclick="logBet(this)" %s>Log</button>',
+              data_attrs, short, data_attrs, data_attrs))
+          }
+          # Default: not yet placed
+          supported_place <- row$bookmaker_key %in% c("wagerzon","hoop88","bfa","betonlineag")
+          place_btn <- if (supported_place) {
+            sprintf('<button class="btn-place" onclick="placeBet(this)" %s>Place</button>', data_attrs)
+          } else {
+            sprintf('<button class="btn-place" disabled title="manual log only for this book" %s>Place</button>', data_attrs)
+          }
+          log_btn <- sprintf('<button class="btn-log" onclick="logBet(this)" %s>Log</button>', data_attrs)
+          paste0(place_btn, " ", log_btn)
+        }
+      )
+    ),
+    theme = reactableTheme(
+      backgroundColor = "transparent",
+      borderColor = "transparent",
+      stripedColor = "transparent",
+      highlightColor = "transparent"
     )
   )
 }
@@ -4664,7 +4990,8 @@ stats <- list(
 
 # Create tables
 if (nrow(all_bets) > 0) {
-  bets_table <- create_bets_table(all_bets, placed_bets)
+  bets_table <- create_bets_table(all_bets, placed_bets,
+                                  book_prices_wide = book_prices_wide)
 } else {
   bets_table <- tags$div(
     style = "text-align: center; padding: 48px; color: #8b949e;",
