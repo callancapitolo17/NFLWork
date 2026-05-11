@@ -253,17 +253,11 @@ if (!interactive() && sys.nframe() == 0L) {
     )
 
   matched <- todays_lines  # consensus join already done; keep var name compatible
-
-  # Derive prop_type from the description so the scraper invocation can
-  # send it (the rowwise mutate below previously did this — moved up so
-  # the scraper request includes it).
-  matched <- matched %>%
-    mutate(
-      prop_type = vapply(description, function(d) {
-        m <- regmatches(d, regexec("\\b(TRIPLE-PLAY|GRAND-SLAM)\\b", d))[[1]]
-        if (length(m) >= 2) m[[2]] else NA_character_
-      }, character(1))
-    )
+  # `prop_type` is already canonicalized by scraper_specials.py::extract_prop_type
+  # (via PROP_TYPE_CANONICAL) and carried through the consensus join above.
+  # Don't re-derive it from the raw description — the scraper handles aliases
+  # like GRD-SLM / TRPLE-PLAY that a local regex would miss, silently setting
+  # them to NA and breaking the DK scraper invocation downstream.
 
   n_matched <- nrow(matched)
   n_posted  <- nrow(specials)
