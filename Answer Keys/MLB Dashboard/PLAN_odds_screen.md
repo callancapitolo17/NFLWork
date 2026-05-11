@@ -3,7 +3,8 @@
 **Branch:** `claude/mlb-sportsbook-comparison-98fM8`
 **Status:** Plan, not yet implemented
 **Authored:** 2026-05-09
-**Revised:** 2026-05-11 (added auto-placer, dropped nearest-line fallback, locked
+**Revised:** 2026-05-11 (added auto-placer, re-scoped nearest-line fallback to
+a single ±1-unit comparison pill with amber visual treatment, locked
 fixed-width pill columns, added M pill in metadata strip, expanded Odds API
 coverage, added worktree lifecycle)
 
@@ -80,8 +81,12 @@ when the pick book is Wagerzon.
 
 ## Non-goals (v1)
 
-- No alt ladder. Each bet block anchors on the model's exact line; books
-  that don't quote that line render `—` (no nearest-line fallback).
+- No alt ladder. Each bet block shows one pill per book — either the
+  book's price at the model's exact line, or (if the book doesn't quote
+  the exact line) the book's price at its closest line within ±1 unit,
+  visually flagged amber. Books whose closest line is more than ±1 unit
+  away render `—`. The card never shows multiple lines from the same
+  book stacked.
 - No EV recompute at non-pick prices.
 - No new tab. This *replaces* the existing bets tab.
 - No changes to the parlays tab, trifectas tab, RFQ bot, or scrapers.
@@ -109,22 +114,33 @@ stack is:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ NYY @ BOS  Fri 7:05 PM PT                                               │
-│ Spread F5 · NYY -1.5                                                    │
+│ CIN @ HOU  Sat 8:11 PM PT                                               │
+│ Total F3 · Over 5.5                                                     │
 │                                                                         │
-│ NYY -1.5  [WZ +110] [H88 +115] [BFA +108] [BKM —]                       │
-│           [B105 +112] [DK -110] [FD -108] [Pinn -105]                   │
-│ BOS +1.5  [WZ -130] [H88 -135] [BFA -128] [BKM —]                       │
-│           [B105 -132] [DK -130] [FD -132] [Pinn -135]                   │
+│ O 5.5     [WZ +120] [H88 +125★] [BFA·O5 -115] [BKM —]                   │
+│           [B105·O6 +155] [DK —] [FD —] [Pinn —]                         │
+│ U 5.5     [WZ -140] [H88 -145] [BFA·U5 -105] [BKM —]                    │
+│           [B105·U6 -175] [DK —] [FD —] [Pinn —]                         │
 │                                                                         │
-│ M 52.4%  Pick H88 +115  EV +4.2%  Size $42  To Win $48  [Place] [Log]   │
+│ M 57.9%  Pick H88 +125  EV +6.5%  Size $38  To Win $48  [Place] [Log]   │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-Pick-book pill (H88 in the example) renders with green background + green
-border + bold weight. Same shape as other pills — no star, no extra glyph
-that would break column alignment. Books that don't quote the model's line
-render as a muted dashed `—` pill ("no quote at this line" on hover).
+(The ★ in the sketch marks the pick book — the real card uses green
+tint + bold weight, no star. ASCII has no equivalent for color.)
+
+Three pill states:
+
+- **Exact-line match:** standard pill, just price (e.g., `WZ +120`).
+  Pick book gets green tint + bold weight.
+- **Mismatched line within ±1 unit:** subtle amber-tinted background +
+  amber border + amber line tag above the price showing the book's
+  actual line (e.g., `BFA · O5 -115` when the model is at O5.5). The
+  amber treatment is the at-a-glance signal that this isn't an
+  apples-to-apples price comparison — useful for verifying the model
+  has a sane view of the game, not for picking the best price.
+- **No quote within ±1 unit:** muted dashed `—` pill ("no quote at
+  this line" on hover).
 
 **CSS pattern** mirrors parlays directly (`mlb_dashboard.R:1907-2070`):
 
@@ -150,14 +166,22 @@ render as a muted dashed `—` pill ("no quote at this line" on hover).
 - Place button pushed right via `margin-left:auto` on the preceding flex
   item.
 
-**Pill rendering** — new helper `render_book_pill(book, american_odds)` in
-`mlb_dashboard.R`:
+**Pill rendering** — new helper
+`render_book_pill(book, american_odds, line_quoted, model_line, is_pick)`
+in `mlb_dashboard.R`:
 
 - 8 books in fixed left-to-right order: `WZ, H88, BFA, BKM, B105, DK, FD,
   Pinn`. Same order on every card so the eye learns positions.
-- Quoted: `BookCode` (small, top) over `+Odds` (mono, below).
-- No quote at the model's line: muted dashed pill with `—`.
-- Pick highlight: green tint, green border, bold weight (no star).
+- **Exact match** (`line_quoted == model_line`): `BookCode` (small,
+  top, muted) over `+Odds` (mono, below). Default pill background.
+- **Mismatched within ±1 unit**: `BookCode · LineTag` (line tag in
+  amber `#f0883e`, small) over `Odds` (mono, below). Pill background
+  amber-tinted (`#2a2317` bg + `#5a3d1a` border) so the mismatch is
+  visible from peripheral vision.
+- **No quote within ±1 unit** (or no quote at all): muted dashed pill
+  with `—`. Hover tooltip: "no comparable quote within ±1 unit."
+- **Pick highlight** (overrides background when `is_pick == TRUE`):
+  green tint + green border + bold weight. No star.
 
 **No M pill in the pill row.** M (model fair %) lives in the metadata
 strip, next to Pick, so the pill row stays book-only and column-aligned.
@@ -349,10 +373,14 @@ All scrapers already write canonical names. The join key
    signal without breaking pill width.
 10. **Metadata strip text size:** bumped values 12 → 14px, labels
     10 → 11px, button 12 → 13px so the actionable strip is scannable.
-11. **Nearest-line fallback dropped:** when a book doesn't quote the
-    exact line, render `—` (no row in `mlb_bets_book_prices`) rather
-    than amber-colored "kind-of comparison." Removes the
-    `is_exact_line` column from the schema.
+11. **Nearest-line fallback re-scoped (not dropped):** initial revision
+    dropped it; user pushed back because for obscure markets (F3
+    totals, etc.) the model's exact line is often unique to one book,
+    and seeing other books' nearby quotes still helps verify the
+    model's view of the game. Final behavior: one pill per book, at
+    the model's exact line if quoted, else the closest line within ±1
+    unit (visually amber-tagged), else `—`. Schema keeps
+    `line_quoted` and `is_exact_line`.
 12. **Odds API expansion approved:** add FG mains + F3/F7 mains + FG
     alts + F5 alt spreads to `markets=`. Future scrapers reserved for
     team-totals / odd-even-runs if needed.
@@ -407,8 +435,10 @@ single-leg scrapers if verification on these markets becomes important.
 ## Schema — new table `mlb_bets_book_prices`
 
 Long format, written to `mlb_mm.duckdb` alongside `mlb_bets_combined`.
-One row per `(bet × book × side)`. Only exact-line quotes are written —
-no nearest-line fallback.
+One row per `(bet × book × side)` whenever the book's closest quote on
+the same `(market, period, side)` is within ±1 unit of the model's line.
+Books farther than ±1 unit (or with no quote at all) get no row, which
+the dashboard renders as a muted `—`.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -418,8 +448,10 @@ no nearest-line fallback.
 | `period` | VARCHAR | `FG`, `F5`, `F3`, `F7` |
 | `side` | VARCHAR | `pick` or `opposite` (relative to the bet the model recommended) |
 | `bookmaker` | VARCHAR | One of: `wagerzon`, `hoop88`, `bfa`, `bookmaker`, `bet105`, `draftkings`, `fanduel`, `pinnacle` |
-| `line` | DOUBLE | Always equals the model's line (since we only write exact-line rows) |
-| `american_odds` | INTEGER | Price at `line` |
+| `line` | DOUBLE | The model's line (same for all books in a card; this is the comparison anchor) |
+| `line_quoted` | DOUBLE | The line *this book* is actually showing on this side. Equals `line` for exact matches; differs (but is within ±1 unit) for mismatched-line rows |
+| `is_exact_line` | BOOLEAN | TRUE when `line_quoted == line`; FALSE for mismatched-line rows. Derived from the two columns above; kept explicit so the dashboard renderer doesn't have to compare DOUBLEs |
+| `american_odds` | INTEGER | Price at `line_quoted` |
 | `fetch_time` | TIMESTAMP | Source row's `fetch_time` (per-book freshness signal) |
 
 Grain: `(bet_row_id, bookmaker, side)`. ~250 bets × 8 books × 2 sides ≈
@@ -447,16 +479,23 @@ the `adjust_kelly_for_correlation` step (~line 820).
    of `(game_id, market, line, bet_on)`.
 3. Build `book_prices_long`:
    - For each row in `all_bets_combined`, expand into one row per
-     `(bookmaker, side ∈ {pick, opposite})` **only when that book quotes
-     the exact line+market+side**.
+     `(bookmaker, side ∈ {pick, opposite})` using this matching logic:
+     1. For each book, filter to rows matching
+        `(game_id, market, period, side)`.
+     2. If the book quotes the model's exact line, take that row →
+        `line_quoted = line`, `is_exact_line = TRUE`.
+     3. Otherwise find the closest line the book quotes with
+        `abs(line_quoted - line) <= 1.0`. Take that row →
+        `line_quoted` differs from `line`, `is_exact_line = FALSE`.
+        Tiebreaker when two lines are equidistant: prefer the line
+        worse for the bettor (more conservative comparison).
+     4. If no book quote within ±1 unit: emit no row. The dashboard
+        renders this as `—`.
    - For offshore books: source from per-book `mlb_odds` tables already
      loaded (`wagerzon_odds`, `hoop88_odds`, `bfa_odds`, `bookmaker_odds`,
      `bet105_odds`).
    - For DK / FD / Pinn: source from `game_odds` filtered to those
      `bookmaker_key`s.
-   - Join key: `(game_id, market, period, side, line)` — strict equality
-     on `line`. No book contributes a row if it doesn't quote that
-     exact line.
 4. Write `mlb_bets_book_prices` to `mlb_mm.duckdb` in the same writer
    block as `mlb_bets_combined` (`MLB.R:851-857`). Drop-and-replace,
    same as the bets table.
@@ -483,10 +522,19 @@ frames, returns the long-format table. Unit-testable in isolation.
 3. **Replace `create_bets_table()`** with a card-layout reactable
    matching the locked layout. Use the same column-classes pattern as
    the parlays table.
-4. **New helper `render_book_pill(book, american_odds)`:** renders one
-   pill. NA odds → muted dashed pill with `—`. Pick book (when
-   `book == pick_book && side == pick_side`) → green-tint pill with
-   bold weight.
+4. **New helper `render_book_pill(book, american_odds, line_quoted, model_line, is_pick)`:**
+   renders one pill. Three states (driven by `is_exact_line` and NA
+   handling):
+   - Exact: book label + price.
+   - Mismatched: book label + amber line tag (e.g., `O5` when model is
+     at O5.5) + amber-tinted pill background + price.
+   - No row in `mlb_bets_book_prices` for this `(bet_row_id, bookmaker,
+     side)` → muted dashed `—` pill.
+   Pick override (when `book == pick_book && side == pick_side`):
+   green tint + bold; takes precedence over the amber treatment in the
+   rare case the pick book is on a mismatched line (which only happens
+   if the model's line wasn't available anywhere — flagged as a data
+   bug if seen).
 5. **Metadata strip cells** (`cell-m`, `cell-pick`, `cell-ev`,
    `cell-size`, `cell-towin`, `cell-action`) with bumped font sizing
    per the design.
@@ -617,6 +665,25 @@ duckdb "Answer Keys/mlb_mm.duckdb" \
    ORDER BY market, period"
 # Reference rows should be non-zero for FG/F3/F5/F7 mains + alts.
 # Should be zero for team_totals_* and odd_even_runs (Odds API doesn't carry).
+
+# 5. Mismatched-line distribution
+duckdb "Answer Keys/mlb_mm.duckdb" \
+  "SELECT market, period, is_exact_line, COUNT(*) AS rows
+   FROM mlb_bets_book_prices
+   GROUP BY market, period, is_exact_line
+   ORDER BY market, period, is_exact_line"
+# Expect most F5 mains rows to be is_exact_line=TRUE (books quote the
+# common lines). F3/F7 totals likely show a higher proportion of
+# is_exact_line=FALSE — that's the whole reason mismatched pills exist.
+
+# 6. Mismatched-line distance distribution (no rows should exceed 1.0)
+duckdb "Answer Keys/mlb_mm.duckdb" \
+  "SELECT ABS(line_quoted - line) AS dist, COUNT(*) AS rows
+   FROM mlb_bets_book_prices
+   WHERE is_exact_line = FALSE
+   GROUP BY dist
+   ORDER BY dist"
+# Threshold violation if any row has dist > 1.0.
 ```
 
 In the dashboard:
@@ -628,6 +695,10 @@ In the dashboard:
 - Pick book pill is green-tinted + bold (no star).
 - At least one card should show `—` pills for some books — verify
   muted dashed rendering.
+- At least one F3 or F7 totals card should show amber-tagged
+  mismatched-line pills (e.g., `BFA · O5 -115` when model is on O5.5).
+  Verify amber background + line tag rendering, and that the tooltip
+  on hover surfaces the book's actual line.
 - Click `[Place]` on a WZ-pick card → toast `placed · #<ticket>`; card
   flips to placed pill; ticket appears in `placed_bets` with
   `status='placed'` and `ticket_number` populated.
@@ -711,7 +782,19 @@ Files to update in the same PR as the code:
   per-book scraper DBs.
 - **Book outage / missed scrape:** column shows `—` for affected games.
 - **Alts:** alt bets get their own card; within each card, books that
-  don't offer that exact alt show `—`.
+  don't offer that exact alt show their closest line within ±1 unit
+  (amber-tagged) if any, else `—`.
+- **Mismatched-line pick book (rare):** the pick book is the one with
+  the best EV at the model's line. If `is_exact_line == FALSE` for the
+  pick book it means the model recommended a line nobody quotes —
+  almost certainly a data bug. The renderer still highlights the pick
+  pill in green; the tooltip surfaces `is_exact_line = FALSE` so the
+  case is debuggable. Pipeline-side defense: log a warning when this
+  happens.
+- **Spread-line sign and side semantics:** ±1 unit threshold compares
+  absolute line differences only after the `(market, period, side)`
+  filter is applied, so we never accidentally compare a home-spread
+  line to an away-spread line on the same card.
 - **First run after deploy with no `mlb_bets_book_prices` table yet:**
   dashboard loader try/catch falls back to today's column set, prints
   a warning. Pipeline run repopulates it within one cycle.
@@ -746,6 +829,10 @@ Per `CLAUDE.md` pre-merge requirements, before merging to `main`:
       `bet_row_id`s → no row collision
 - [ ] Odds API expansion didn't push the daily credit budget over a
       red line; check usage after one full pipeline run
+- [ ] Mismatched-line threshold respected: `ABS(line_quoted - line) <= 1.0`
+      holds for every row where `is_exact_line = FALSE`
+- [ ] No pick-book rows with `is_exact_line = FALSE` (data-bug guard:
+      pipeline logs a warning if it sees one)
 
 **Dashboard (Phase 2):**
 
