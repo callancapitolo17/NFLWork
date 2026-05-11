@@ -51,7 +51,7 @@ def test_sel_encoding_single_leg():
 
 def test_preflight_drift_returns_price_moved():
     """If WZ's ConfirmWagerHelper returns Odds different from wz_odds_at_place,
-    placer must NOT call MakeWagerHelper and must return price_moved."""
+    placer must NOT call PostWagerMultipleHelper and must return price_moved."""
     bet = make_bet(wz_odds_at_place=110)
     fake_session = MagicMock()
     fake_session.post.return_value = _make_json_response({
@@ -62,9 +62,9 @@ def test_preflight_drift_returns_price_moved():
                                         session=fake_session)
     assert result["status"] == "price_moved"
     assert result.get("ticket_number") is None
-    # MakeWagerHelper should NOT have been called
+    # PostWagerMultipleHelper should NOT have been called
     make_calls = [c for c in fake_session.post.call_args_list
-                  if "MakeWagerHelper" in str(c)]
+                  if "PostWagerMultipleHelper" in str(c)]
     assert len(make_calls) == 0
 
 
@@ -75,7 +75,7 @@ def test_successful_placement_returns_ticket():
     confirm_response = _make_json_response({
         "result": {"details": [{"Win": 4620, "Risk": 4200, "Odds": 110}]}
     })
-    # MakeWagerHelper: success with ticket
+    # PostWagerMultipleHelper: success with ticket
     make_response = _make_json_response({
         "result": {"WagerNumber": "T-9876", "AvailBalance": 153.50}
     })

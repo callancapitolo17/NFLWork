@@ -24,13 +24,25 @@ Session management:
 
 Endpoints:
     Preflight:   /wager/ConfirmWagerHelper.aspx  (same as parlay placer)
-    Submission:  /wager/MakeWagerHelper.aspx      (single-bet endpoint;
-                 parlay placer uses PostWagerMultipleHelper.aspx instead)
+    Submission:  /wager/PostWagerMultipleHelper.aspx  (same endpoint parlays
+                 use; WT=0 distinguishes singles from parlays which use WT=1)
 
 Tech debt note:
     _is_html_response() and _network_error() duplicate logic from
     parlay_placer.py (_raise_if_html / no equivalent helper). If the
     pattern stabilises, these could be extracted to a shared wagerzon_helpers.py.
+
+DEPLOYMENT NOTE (2026-05-11): The submission flow uses PostWagerMultipleHelper.aspx
+(same endpoint parlays use) with WT=0 to distinguish singles. This payload shape
+is inferred from recon — it has NOT been verified end-to-end against a live
+Wagerzon account for singles. Before enabling this module in /api/place-bet
+for production traffic, run wagerzon_odds/recon_place_parlay.py (or analogous
+recon for singles) and confirm:
+  1. PostWagerMultipleHelper accepts a single-leg payload with WT=0
+  2. CreateWagerHelper.aspx is NOT called in the parlay placement flow
+     (grep confirms it is absent from parlay_placer.py) — so it is likely
+     a Wagerzon UI-only step and is not required in our API path
+  3. The actual ticket-extraction key (WagerNumber vs different name)
 """
 from __future__ import annotations
 from pathlib import Path
@@ -55,7 +67,7 @@ from wagerzon_accounts import WagerzonAccount, get_account
 
 WAGERZON_BASE_URL = "https://backend.wagerzon.com"
 CONFIRM_URL = f"{WAGERZON_BASE_URL}/wager/ConfirmWagerHelper.aspx"
-MAKE_URL    = f"{WAGERZON_BASE_URL}/wager/MakeWagerHelper.aspx"
+MAKE_URL    = f"{WAGERZON_BASE_URL}/wager/PostWagerMultipleHelper.aspx"
 
 # Tolerance for American-odds drift check. If WZ's preflight returns an Odds
 # value that differs from what the dashboard showed the user by more than this,
@@ -250,7 +262,8 @@ def place_single(account: str, bet: dict, session=None) -> dict:
         return _price_moved(expected_odds, int(wz_odds_now))
 
     # -----------------------------------------------------------------------
-    # Step 2: MakeWagerHelper (real submission)
+    # Step 2: PostWagerMultipleHelper (real submission; same endpoint parlays
+    # use, distinguished by WT=0 in the confirm_payload built above)
     # Network failure here is an orphan candidate — we log forensics and
     # return network_error so the dashboard can surface it.
     # -----------------------------------------------------------------------
