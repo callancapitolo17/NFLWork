@@ -12,6 +12,23 @@ library(stringr)
 
 LINE_MATCH_TOLERANCE <- 1.0  # max abs(line_quoted - model_line) we'll emit
 
+# Internal helpers for period/market-type derivation.
+# Extracted here so normalize_book_odds_frame and expand_bets_to_book_prices
+# share the same logic without duplication.
+
+.derive_period <- function(market_name) {
+  case_when(
+    str_detect(market_name, "_1st_3_innings$") ~ "F3",
+    str_detect(market_name, "_1st_5_innings$") ~ "F5",
+    str_detect(market_name, "_1st_7_innings$") ~ "F7",
+    TRUE                                       ~ "FG"
+  )
+}
+
+.derive_market_type <- function(market_name) {
+  str_replace(market_name, "_1st_[357]_innings$", "")
+}
+
 #' Normalize a raw scraper / Odds API frame to the canonical shape consumed
 #' by expand_bets_to_book_prices.
 normalize_book_odds_frame <- function(raw) {
@@ -23,13 +40,8 @@ normalize_book_odds_frame <- function(raw) {
   }
   raw %>%
     mutate(
-      period = case_when(
-        str_detect(market_name, "_1st_3_innings$") ~ "F3",
-        str_detect(market_name, "_1st_5_innings$") ~ "F5",
-        str_detect(market_name, "_1st_7_innings$") ~ "F7",
-        TRUE                                       ~ "FG"
-      ),
-      market = str_replace(market_name, "_1st_[357]_innings$", "")
+      period = .derive_period(market_name),
+      market = .derive_market_type(market_name)
     ) %>%
     transmute(
       game_id, market, period,
@@ -58,7 +70,7 @@ normalize_book_odds_frame <- function(raw) {
     # Equidistant tiebreaker: prefer the line worse for the bettor.
     # Over side: pick higher line; Under side: pick lower line.
     # Spread favorite (negative line): pick lower (more negative); dog: pick higher.
-    pick_high <- grepl("^(Over|over)", bet_on) || (model_line < 0)
+    pick_high <- grepl("^Over", bet_on, ignore.case = TRUE) || (model_line < 0)
     if (pick_high) c3 <- c3 %>% slice_max(line, n = 1)
     else c3 <- c3 %>% slice_min(line, n = 1)
   }
@@ -72,18 +84,33 @@ normalize_book_odds_frame <- function(raw) {
 
 #' Map a bet's bet_on string to the "pick" and "opposite" side labels used
 #' in the per-book odds frames.
-.sides_for_bet <- function(bet_on, market_type) {
+#'
+#' For totals, opposite is derived automatically (Over <-> Under).
+#' For spreads and moneyline, the opposite side is the other team's name --
+#' information not available inside this helper. The caller must supply it
+#' on the bet row as column `opposite_side`. If `opposite_side` is present
+#' on the bet, .sides_for_bet returns it as the opposite. Otherwise NA
+#' (no opposite-side row is emitted).
+.sides_for_bet <- function(bet_on, market_type, opposite_side = NA_character_) {
   if (market_type == "totals") {
     list(pick = bet_on,
-         opposite = if (grepl("^Over", bet_on)) "Under" else "Over")
-  } else if (market_type %in% c("spreads", "moneyline")) {
-    list(pick = bet_on, opposite = NA_character_)  # caller wires up opp
+         opposite = if (grepl("^Over", bet_on, ignore.case = TRUE)) "Under" else "Over")
   } else {
-    list(pick = bet_on, opposite = NA_character_)
+    # spreads, moneyline, h2h, etc. -- opposite must be supplied by caller
+    list(pick = bet_on, opposite = opposite_side)
   }
 }
 
 #' Main entry point.
+#'
+#' @param bets         A data frame of bets. Must contain: bet_row_id, game_id
+#'                     (or `id` as an alias), market_type, period (or `market`
+#'                     as a fallback to derive it from), line, bet_on.
+#'                     Optional: opposite_side (required for spreads/moneyline
+#'                     to emit the opposite-side row).
+#' @param book_odds_by_book Named list of normalized book frames (output of
+#'                     normalize_book_odds_frame). Each frame may also use `id`
+#'                     instead of `game_id`; both are accepted.
 expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
   if (nrow(bets) == 0) {
     return(tibble(bet_row_id = character(), game_id = character(),
@@ -94,12 +121,35 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
                   fetch_time = as.POSIXct(character())))
   }
 
+  # --- Defensive column renames for bets frame ---
+  # all_bets_combined uses `id` (Odds API game id), not `game_id`.
+  if (!"game_id" %in% names(bets) && "id" %in% names(bets)) {
+    bets <- bets %>% rename(game_id = id)
+  }
+
+  # all_bets_combined has `market` (e.g. "totals_1st_5_innings") but no
+  # separate `period` or `market_type` columns. Derive them if absent.
+  if (!"period" %in% names(bets)) {
+    bets <- bets %>% mutate(period = .derive_period(market))
+  }
+  if (!"market_type" %in% names(bets)) {
+    bets <- bets %>% mutate(market_type = .derive_market_type(market))
+  }
+
+  # --- Defensive column renames for each book frame ---
+  book_odds_by_book <- lapply(book_odds_by_book, function(b) {
+    if (!is.null(b) && !"game_id" %in% names(b) && "id" %in% names(b)) {
+      b %>% rename(game_id = id)
+    } else b
+  })
+
   out_rows <- vector("list", length(book_odds_by_book) * nrow(bets) * 2)
   k <- 0L
 
   for (i in seq_len(nrow(bets))) {
     bet <- bets[i, , drop = FALSE]
-    sides <- .sides_for_bet(bet$bet_on, bet$market_type)
+    opposite_col_value <- if ("opposite_side" %in% names(bet)) bet$opposite_side else NA_character_
+    sides <- .sides_for_bet(bet$bet_on, bet$market_type, opposite_col_value)
     side_labels <- c(pick = sides$pick, opposite = sides$opposite)
 
     for (book_name in names(book_odds_by_book)) {

@@ -168,3 +168,52 @@ test_that("normalize_book_odds_frame handles F7 and alts", {
   expect_equal(out$market, c("totals", "alternate_spreads"))
   expect_equal(out$period, c("F7", "F5"))
 })
+
+test_that("empty book_odds_by_book list returns empty schema tibble", {
+  bets <- make_bet_row()
+  out <- expand_bets_to_book_prices(bets, list())
+  expect_equal(nrow(out), 0)
+  # Verify columns exist even when empty
+  expect_true(all(c("bet_row_id", "game_id", "market", "period", "side",
+                    "bookmaker", "line", "line_quoted", "is_exact_line",
+                    "american_odds", "fetch_time") %in% names(out)))
+})
+
+test_that("equidistant tiebreak prefers the line worse for the Under bettor", {
+  bets <- make_bet_row(line = 5.5, bet_on = "Under")
+  book_odds <- list(bfa = bind_rows(
+    book_row("g1", "totals", "F5", "Over", 5.0, +110),
+    book_row("g1", "totals", "F5", "Over", 6.0, -130),
+    book_row("g1", "totals", "F5", "Under", 5.0, -130),
+    book_row("g1", "totals", "F5", "Under", 6.0, +110)
+  ))
+  out <- expand_bets_to_book_prices(bets, book_odds) %>%
+    filter(side == "pick")
+  expect_equal(out$line_quoted, 5.0)  # lower line is harder for Under bettor
+})
+
+test_that("normalize_book_odds_frame returns empty-schema tibble on empty input", {
+  raw <- tibble(game_id = character(), market_name = character(),
+                bet_on = character(), line = numeric(),
+                american_odds = integer(),
+                fetch_time = as.POSIXct(character()))
+  out <- normalize_book_odds_frame(raw)
+  expect_equal(nrow(out), 0)
+  expect_true(all(c("game_id", "market", "period", "side", "line",
+                    "american_odds", "fetch_time") %in% names(out)))
+})
+
+test_that("expand_bets_to_book_prices accepts 'id' as an alias for 'game_id'", {
+  bets <- make_bet_row() %>%
+    rename(game_id_alt_renamed_via_id = game_id) %>%
+    rename(id = game_id_alt_renamed_via_id)
+  # Drop the period column to also exercise the period-derivation fallback
+  bets <- bets %>% select(-period)
+  book_odds <- list(wagerzon = bind_rows(
+    book_row("g1", "totals", "F5", "Over",  5.5, +120),
+    book_row("g1", "totals", "F5", "Under", 5.5, -140)
+  ))
+  out <- expand_bets_to_book_prices(bets, book_odds)
+  expect_equal(nrow(out), 2)
+  expect_setequal(out$side, c("pick", "opposite"))
+})
