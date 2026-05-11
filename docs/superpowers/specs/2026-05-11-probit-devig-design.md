@@ -31,8 +31,13 @@ For each market with raw vigged implied probabilities `p_raw_1, ..., p_raw_n`:
 
 1. Clip each `p_raw_i` to `[eps, 1 - eps]` (eps = 1e-9) to avoid `qnorm(0) = -Inf` / `qnorm(1) = +Inf`.
 2. Compute z-scores: `z_i = qnorm(p_clipped_i)` — R's inverse normal CDF (Python: `scipy.stats.norm.ppf`).
-3. Find a scalar `c` such that `sum(pnorm(z_i + c)) = 1` via 1-D root-find (R: `uniroot`, Python: `scipy.optimize.brentq`), bracket `[-5, 5]`.
+3. Find a scalar `c` such that `sum(pnorm(z_i + c)) = 1`.
 4. Return `pnorm(z_i + c)` for each side.
+
+**Solving for `c`:**
+
+- **n = 2 (closed form):** `c = -(z_1 + z_2) / 2`. This works because the standard normal is symmetric: `pnorm(-x) = 1 - pnorm(x)`, so `pnorm(z_1+c) + pnorm(z_2+c) = 1` requires `z_1+c = -(z_2+c)`, which solves to `c = -(z_1+z_2)/2`. ~50× faster than root-finding on the hot path (every spread, total, ML).
+- **n ≥ 3 (root-find):** 1-D root-find on `f(c) = sum(pnorm(z_i + c)) - 1` (R: `uniroot`, Python: `scipy.optimize.brentq`), bracket `[-5, 5]`, tolerance `1e-9`. No closed form because the symmetry argument fails once you have 3+ asymmetric sides.
 
 **Properties:**
 - Output sums to exactly 1.0 (the root-find tolerance, 1e-9).
@@ -56,13 +61,19 @@ For each market with raw vigged implied probabilities `p_raw_1, ..., p_raw_n`:
 Public functions keep their exact signatures and return shapes. Internal body swapped for probit.
 
 ```r
-# Internal: shared n-way probit devig
+# Internal: shared n-way probit devig with 2-way closed-form fast path
 .probit_devig_n <- function(p_raw, eps = 1e-9) {
   if (any(is.na(p_raw))) return(rep(NA_real_, length(p_raw)))
   p_clipped <- pmin(pmax(p_raw, eps), 1 - eps)
   z <- qnorm(p_clipped)
-  f <- function(c) sum(pnorm(z + c)) - 1
-  c_star <- uniroot(f, interval = c(-5, 5), tol = 1e-9)$root
+
+  if (length(z) == 2) {
+    # Closed form: pnorm symmetry → c = -(z1+z2)/2
+    c_star <- -(z[1] + z[2]) / 2
+  } else {
+    f <- function(c) sum(pnorm(z + c)) - 1
+    c_star <- uniroot(f, interval = c(-5, 5), tol = 1e-9)$root
+  }
   pnorm(z + c_star)
 }
 
@@ -98,8 +109,13 @@ from scipy.optimize import brentq
 def _probit_devig_n(p_raw: list[float], eps: float = 1e-9) -> list[float]:
     p_clipped = [min(max(p, eps), 1 - eps) for p in p_raw]
     z = [norm.ppf(p) for p in p_clipped]
-    f = lambda c: sum(norm.cdf(zi + c) for zi in z) - 1
-    c_star = brentq(f, -5, 5, xtol=1e-9)
+
+    if len(z) == 2:
+        # Closed form: norm symmetry → c = -(z[0]+z[1])/2
+        c_star = -(z[0] + z[1]) / 2
+    else:
+        f = lambda c: sum(norm.cdf(zi + c) for zi in z) - 1
+        c_star = brentq(f, -5, 5, xtol=1e-9)
     return [norm.cdf(zi + c_star) for zi in z]
 
 def devig_book(book_rows, combo, vig_fallback=0.0):
@@ -183,6 +199,7 @@ After the change:
 | `devig_american(NA, -110)` | `(NA, NA)` (NA propagation) |
 | `devig_american_3way(+150, +200, +400)` | sums to 1.0 exactly |
 | `devig_american_3way(-110, -110, NA)` | falls back to 2-way: `(0.5, 0.5, NA)` |
+| **Negative test:** `devig_american(-1000, +800)` differs from multiplicative output by ≥ 0.001 | Catches accidental method regression (a revert to multiplicative would still produce sum=1, valid probs — only this test fails) |
 
 ### 6.2 Python unit tests — `kalshi_mlb_rfq/tests/test_probit_devig.py` (new file)
 
@@ -192,6 +209,7 @@ After the change:
 | `_probit_devig_n([0.27, 0.27, 0.27, 0.27])` | all four ≈ 0.25 (symmetric 4-cell) |
 | `devig_book(synthetic_4_row_df, "Home Spread + Over")` | round-trip matches `_probit_devig_n` output for that index |
 | `devig_book(single_row_df, "Home Spread + Over", vig_fallback=0.10)` | matches `(1/decimal) / 1.10` (fallback heuristic unchanged) |
+| **Negative test:** `_probit_devig_n([0.111, 0.901])` differs from multiplicative output by ≥ 0.001 | Catches accidental method regression — multiplicative on this tail case gives ≈ (0.110, 0.890); probit gives ≈ (0.112, 0.888) |
 
 ### 6.3 Backtest validation (gates the merge)
 
