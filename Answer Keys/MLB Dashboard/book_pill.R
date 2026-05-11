@@ -1,9 +1,9 @@
 # Answer Keys/MLB Dashboard/book_pill.R
 # Render one book pill for the bets-tab odds-screen card.
 #
-# Three visual states (driven by line_quoted vs model_line):
+# Three visual states (driven by precomputed is_exact_line flag):
 #   - exact-line match    -> standard pill, just book + price
-#   - mismatched (within +/-1 unit) -> amber-tinted pill + amber line tag
+#   - mismatched          -> amber-tinted pill + amber line tag showing line_quoted
 #   - no quote (NA odds)  -> muted dashed pill with em-dash
 # Pick override (is_pick = TRUE) applies the green pick class on top of
 # whichever state the row is in.
@@ -22,13 +22,15 @@
 #' @param book Display label for the book (e.g., "WZ", "H88").
 #' @param american_odds Integer odds (e.g., 125, -110). NA -> no-quote pill.
 #' @param line_quoted The line this book is actually showing on this side.
-#' @param model_line The model's line (comparison anchor).
+#' @param is_exact_line Precomputed BOOLEAN: TRUE when book's line matches the
+#'   model line exactly; FALSE triggers the amber mismatched state. Ignored
+#'   when american_odds is NA.
 #' @param is_pick TRUE if this is the pick book on the pick side; applies green.
 #' @param side Either "over" (default for totals over / favorite spread) or
 #'   "under" (totals under / dog spread). Drives O/U prefix on mismatched
 #'   line tag.
 #' @return HTML string for the pill.
-render_book_pill <- function(book, american_odds, line_quoted, model_line,
+render_book_pill <- function(book, american_odds, line_quoted, is_exact_line,
                              is_pick = FALSE, side = "over") {
   # State 1: no quote
   if (is.na(american_odds)) {
@@ -38,7 +40,7 @@ render_book_pill <- function(book, american_odds, line_quoted, model_line,
 
   price_str <- if (american_odds > 0) paste0("+", american_odds) else as.character(american_odds)
 
-  is_mismatched <- !is.na(line_quoted) && !is.na(model_line) && line_quoted != model_line
+  is_mismatched <- !isTRUE(is_exact_line)
 
   classes <- "pill"
   if (is_pick) classes <- paste(classes, "pick")
