@@ -1236,6 +1236,25 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
     ) %>%
     arrange(desc(ev))
 
+  # Partial-fill detection (mirrors legacy behavior)
+  placed_actual <- if (nrow(placed_bets) > 0 && "actual_size" %in% names(placed_bets)) {
+    setNames(placed_bets$actual_size, placed_bets$bet_hash)
+  } else setNames(numeric(), character())
+
+  table_data <- table_data %>%
+    mutate(
+      placed_actual = ifelse(is_placed, placed_actual[bet_hash], NA_real_),
+      fill_status = case_when(
+        !is_placed                                           ~ "not_placed",
+        is.na(placed_actual)                                  ~ "placed",
+        round(placed_actual) >= round(bet_size)               ~ "placed",
+        TRUE                                                  ~ "partial"
+      ),
+      fill_diff = ifelse(fill_status == "partial",
+                         round(bet_size) - round(placed_actual),
+                         NA_real_)
+    )
+
   # Pre-render the pick-side HTML for each row. Picks side_word from the
   # bet_on text ("Over X" -> "over"; "Under X" -> "under"; everything else
   # defaults to "over" — only used for the line tag prefix on mismatches).
@@ -1411,8 +1430,15 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
             ifelse(is.na(row$line), "", row$line),
             row$prob, row$ev, row$bet_size, row$odds, row$bookmaker_key,
             ifelse(is.na(placed_actual), "", placed_actual),
-            ifelse(is.na(status), "not_placed", status)
+            row$fill_status
           )
+          # Partial fill: show the Partial -$X button so user can update actual_size
+          if (!is.na(row$fill_status) && row$fill_status == "partial") {
+            diff_label <- sprintf("-$%.0f", row$fill_diff)
+            return(sprintf(
+              '<button class="btn-partial" onclick="updateBet(this)" %s>Partial %s</button>',
+              data_attrs, diff_label))
+          }
           if (!is.na(status) && status == "placed") {
             label <- if (!is.na(ticket) && nchar(ticket) > 0)
               sprintf('placed &middot; #%s', htmltools::htmlEscape(ticket))
