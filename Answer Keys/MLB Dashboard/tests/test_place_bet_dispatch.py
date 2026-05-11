@@ -41,11 +41,23 @@ def _wz_bet(**overrides):
     return payload
 
 
+def _mock_no_existing_bet():
+    """Return a context manager that patches duckdb.connect so the 409 duplicate
+    guard sees no existing row (fetchone() -> None).  Use in WZ-path tests that
+    patch _insert_placement_breadcrumb but don't want to hit a real DB file."""
+    mock_con = MagicMock()
+    mock_con.execute.return_value.fetchone.return_value = None
+    mock_con.__enter__ = lambda s: s
+    mock_con.__exit__ = MagicMock(return_value=False)
+    return patch("mlb_dashboard_server.duckdb.connect", return_value=mock_con)
+
+
 def test_dispatch_wagerzon_calls_single_placer(client):
     fake_result = {"status": "placed", "ticket_number": "T-9876",
                    "balance_after": 153.50,
                    "error_msg": None, "error_msg_key": None}
-    with patch("mlb_dashboard_server.single_placer.place_single",
+    with _mock_no_existing_bet(), \
+         patch("mlb_dashboard_server.single_placer.place_single",
                return_value=fake_result) as mock_place, \
          patch("mlb_dashboard_server._insert_placement_breadcrumb"), \
          patch("mlb_dashboard_server._finalize_placement"):
@@ -111,7 +123,8 @@ def test_wagerzon_dispatch_writes_breadcrumb_before_call(client):
     fake_result = {"status": "placed", "ticket_number": "T-1",
                    "balance_after": 100.0,
                    "error_msg": None, "error_msg_key": None}
-    with patch("mlb_dashboard_server.single_placer.place_single",
+    with _mock_no_existing_bet(), \
+         patch("mlb_dashboard_server.single_placer.place_single",
                return_value=fake_result), \
          patch("mlb_dashboard_server._insert_placement_breadcrumb") as mock_bc, \
          patch("mlb_dashboard_server._finalize_placement"):
@@ -132,7 +145,8 @@ def test_wagerzon_failure_finalizes_with_error_status(client):
     fake_result = {"status": "price_moved", "ticket_number": None,
                    "balance_after": None,
                    "error_msg": "Odds drifted", "error_msg_key": "drift"}
-    with patch("mlb_dashboard_server.single_placer.place_single",
+    with _mock_no_existing_bet(), \
+         patch("mlb_dashboard_server.single_placer.place_single",
                return_value=fake_result), \
          patch("mlb_dashboard_server._insert_placement_breadcrumb"), \
          patch("mlb_dashboard_server._finalize_placement") as mock_fin:
@@ -163,3 +177,30 @@ def test_log_bet_works_for_unsupported_book(client):
         resp = client.post("/api/log-bet",
                            json=_wz_bet(bookmaker_key="pinnacle"))
     assert resp.status_code == 200
+
+
+def test_missing_bet_hash_returns_400(client):
+    resp = client.post("/api/place-bet",
+                       json={"bookmaker_key": "wagerzon", "account": "primary"})
+    assert resp.status_code == 400
+    body = resp.get_json()
+    assert "bet_hash" in (body.get("error") or "").lower()
+
+
+def test_log_bet_missing_bet_hash_returns_400(client):
+    resp = client.post("/api/log-bet",
+                       json={"bookmaker_key": "wagerzon"})
+    assert resp.status_code == 400
+
+
+def test_dispatch_wagerzon_returns_409_on_in_flight_duplicate(client):
+    """If placed_bets already has a 'placing' row for this bet_hash,
+    /api/place-bet returns 409 instead of re-calling single_placer."""
+    with patch("mlb_dashboard_server.duckdb.connect") as mock_connect, \
+         patch("mlb_dashboard_server.single_placer.place_single") as mock_place:
+        mock_con = MagicMock()
+        mock_con.execute.return_value.fetchone.return_value = ("placing",)
+        mock_connect.return_value = mock_con
+        resp = client.post("/api/place-bet", json=_wz_bet())
+    assert resp.status_code == 409
+    mock_place.assert_not_called()

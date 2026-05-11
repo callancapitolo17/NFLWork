@@ -840,13 +840,39 @@ def place_bet():
         if not account:
             return jsonify({"success": False,
                             "error": "account required for wagerzon placement"}), 400
+        con = duckdb.connect(str(DB_PATH), read_only=True)
+        try:
+            existing = con.execute(
+                "SELECT status FROM placed_bets WHERE bet_hash = ?",
+                [bet_hash]).fetchone()
+        finally:
+            con.close()
+        if existing is not None and existing[0] in ("placing", "placed"):
+            return jsonify({
+                "success": False,
+                "error": f"Bet already in flight (status={existing[0]})",
+                "status": existing[0],
+            }), 409
         _insert_placement_breadcrumb(bet_hash, account, data, status="placing")
         result = single_placer.place_single(account=account, bet=data)
         _finalize_placement(bet_hash, result)
+        if result.get("status") == "placed":
+            try:
+                if data.get("game_time") not in ("NA", "", None):
+                    schedule_capture(data["game_id"], data["game_time"],
+                                     data["bookmaker_key"])
+            except Exception as e:
+                log.warning("Failed to schedule CLV capture: %s", e)
         return jsonify(result)
 
     # --- Playwright path (hoop88 / bfa / betonlineag) ---
     if bookmaker_key in PLAYWRIGHT_BOOKS:
+        try:
+            if data.get("game_time") not in ("NA", "", None):
+                schedule_capture(data["game_id"], data["game_time"],
+                                 data["bookmaker_key"])
+        except Exception as e:
+            log.warning("Failed to schedule CLV capture: %s", e)
         return jsonify(_spawn_playwright_placer(data))
 
     # --- Everything else: no placement integration ---
@@ -1395,13 +1421,20 @@ def _cleanup_stale_placing_rows(max_age_seconds: int = 60) -> int:
             WHERE status = 'placing' AND updated_at < ?
             RETURNING parlay_hash
         """, [cutoff]).fetchall()
-        if rows:
+        bet_rows = con.execute("""
+            DELETE FROM placed_bets
+            WHERE status = 'placing' AND placed_at < ?
+            RETURNING bet_hash
+        """, [cutoff]).fetchall()
+        total = len(rows) + len(bet_rows)
+        if total:
             print(
-                f"!! cleaned up {len(rows)} stale 'placing' breadcrumb(s) "
-                f"older than {max_age_seconds}s",
+                f"!! cleaned up {total} stale 'placing' breadcrumb(s) "
+                f"older than {max_age_seconds}s "
+                f"({len(rows)} parlays, {len(bet_rows)} bets)",
                 file=sys.stderr, flush=True,
             )
-        return len(rows)
+        return total
     finally:
         con.close()
 
