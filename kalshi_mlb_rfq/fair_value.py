@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 import pandas as pd
+from scipy.stats import norm
+from scipy.optimize import brentq
 
 
 @dataclass(frozen=True)
@@ -46,13 +48,31 @@ def model_fair(samples: pd.DataFrame, legs: list[Leg]) -> float:
     return float(mask.mean())
 
 
+def _probit_devig_n(p_raw, eps=1e-9):
+    """Internal: n-way probit (additive z-shift) devig.
+
+    n = 2 uses closed-form c = -(z1+z2)/2; n >= 3 uses brentq root-find.
+    Spec: docs/superpowers/specs/2026-05-11-probit-devig-design.md
+    """
+    p_clipped = [min(max(p, eps), 1 - eps) for p in p_raw]
+    z = [norm.ppf(p) for p in p_clipped]
+
+    if len(z) == 2:
+        c_star = -(z[0] + z[1]) / 2
+    else:
+        f = lambda c: sum(norm.cdf(zi + c) for zi in z) - 1
+        c_star = brentq(f, -5, 5, xtol=1e-9)
+    return [float(norm.cdf(zi + c_star)) for zi in z]
+
+
 def devig_book(book_rows: pd.DataFrame, combo: str,
                vig_fallback: float = 0.0) -> float | None:
     """Devig a single combo's fair value from rows of mlb_sgp_odds.
 
     book_rows must already be filtered to (game_id, period, bookmaker, spread_line, total_line).
-    Uses the 4-side per-game vig method when >=4 sides exist; else falls back
-    to (1/decimal_odds) / (1 + vig_fallback).
+    Uses probit (additive z-shift) on the 4-cell SGP joint distribution when
+    >=4 sides exist; falls back to (1/decimal_odds) / (1 + vig_fallback) when
+    fewer than 4 sides are visible.
     """
     if book_rows.empty:
         return None
@@ -63,9 +83,14 @@ def devig_book(book_rows: pd.DataFrame, combo: str,
     target_decimal = float(target["sgp_decimal"].iloc[0])
 
     if len(book_rows) >= 4:
-        vig_sum = float((1.0 / book_rows["sgp_decimal"]).sum())
-        return (1.0 / target_decimal) / vig_sum
+        raw_probs = [1.0 / d for d in book_rows["sgp_decimal"]]
+        devigged = _probit_devig_n(raw_probs)
+        # target_idx: index of the row whose 'combo' matches the requested combo
+        # (after duplicates collapse, target.iloc[0] is the chosen row)
+        target_idx = book_rows.index.get_loc(target.index[0])
+        return float(devigged[target_idx])
 
+    # Single-side fallback: heuristic, no devig math possible with 1 cell
     return (1.0 / target_decimal) / (1.0 + vig_fallback)
 
 

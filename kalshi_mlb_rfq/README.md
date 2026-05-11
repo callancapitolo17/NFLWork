@@ -51,6 +51,12 @@ rm .kill
 
 See spec §3. TL;DR: standalone daemon, reads `Answer Keys/mlb_mm.duckdb` (samples + sgp_odds) read-only, writes `kalshi_mlb_rfq.duckdb`. Continuous priority-queue pipeline of up to 80 in-flight RFQs.
 
+## Devigging
+
+`fair_value.devig_book` uses probit (additive z-shift) devigging on the 4-cell SGP joint distribution (Home/Away Spread × Over/Under). When fewer than 4 sides are visible (interpolated combos with partial coverage), falls back to `(1/decimal) / (1 + vig_fallback)` heuristic. See `docs/superpowers/specs/2026-05-11-probit-devig-design.md`.
+
+Requires `scipy>=1.10` (added to `requirements.txt`). Run `pip install -r requirements.txt` after pulling this change.
+
 ## Data Sources
 
 The bot reads `Answer Keys/mlb_mm.duckdb` (read-only). This file holds the six consumer-facing tables and is written by `MLB.R`, `mlb_correlated_parlay.R`, `mlb_triple_play.R`, and the SGP scrapers — separate from `mlb.duckdb` (the pipeline's main write target) so lock contention can't block the bot's cache refreshes.
