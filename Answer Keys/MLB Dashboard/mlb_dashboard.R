@@ -3499,113 +3499,121 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
 
         function placeBet(btn) {
-          var recommended = parseFloat(btn.dataset.size) || 0;
-          var betOn = btn.dataset.betOn || \'\';
-          var odds = btn.dataset.odds || \'\';
-          var book = btn.dataset.book || \'\';
-          var oddsDisplay = (parseInt(odds) > 0 ? \'+\' : \'\') + odds;
+          var data = btn.dataset;
+          var book = data.book;
+          var account = window.WZ_SELECTED_ACCOUNT || null;
 
-          // Build modal
-          var overlay = document.createElement(\'div\');
-          overlay.className = \'modal-overlay\';
-          overlay.innerHTML =
-            \'<div class="modal-box">\' +
-              \'<div class="modal-title">Place Bet</div>\' +
-              \'<div class="modal-detail">Pick: <span>\' + escapeHtml(betOn) + \' \' + escapeHtml(oddsDisplay) + \'</span></div>\' +
-              \'<div class="modal-detail">Book: <span>\' + escapeHtml(book) + \'</span></div>\' +
-              \'<div class="modal-recommended">Recommended: $\' + recommended.toFixed(0) + \'</div>\' +
-              \'<div class="modal-input-group">\' +
-                \'<label class="modal-input-label">Actual Amount ($)</label>\' +
-                \'<input type="number" class="modal-input" value="\' + recommended.toFixed(0) + \'" step="1" min="1">\' +
-              \'</div>\' +
-              \'<div class="modal-actions">\' +
-                \'<button class="modal-btn-cancel">Cancel</button>\' +
-                \'<button class="modal-btn-confirm">Confirm</button>\' +
-              \'</div>\' +
-            \'</div>\';
+          var body = {
+            bet_hash:         data.hash,
+            bookmaker_key:    book,
+            account:          account,
+            bet_on:           data.betOn,
+            line:             (data.line === \'\' || data.line === undefined) ? null : parseFloat(data.line),
+            market:           data.market,
+            american_odds:    parseInt(data.odds, 10),
+            actual_size:      parseFloat(data.size),
+            kelly_bet:        parseFloat(data.size),
+            wz_odds_at_place: parseInt(data.odds, 10),
+            game_id:          data.gameId,
+            home_team:        data.home,
+            away_team:        data.away,
+            game_time:        data.time
+          };
 
-          document.body.appendChild(overlay);
-
-          var input = overlay.querySelector(\'.modal-input\');
-          input.focus();
-          input.select();
-
-          // Confirm handler
-          function doConfirm() {
-            var actualSize = parseFloat(input.value);
-            if (!actualSize || actualSize <= 0) {
-              showToast("Enter a valid bet amount", "error");
-              input.focus();
-              return;
-            }
-
-            var data = {
-              bet_hash: btn.dataset.hash,
-              game_id: btn.dataset.gameId,
-              home_team: btn.dataset.home,
-              away_team: btn.dataset.away,
-              game_time: btn.dataset.time,
-              market: btn.dataset.market,
-              bet_on: btn.dataset.betOn,
-              line: btn.dataset.line === "" ? null : parseFloat(btn.dataset.line),
-              model_prob: parseFloat(btn.dataset.prob),
-              model_ev: parseFloat(btn.dataset.ev),
-              recommended_size: recommended,
-              actual_size: actualSize,
-              odds: parseInt(btn.dataset.odds),
-              bookmaker: btn.dataset.book
-            };
-
-            var confirmBtn = overlay.querySelector(\'.modal-btn-confirm\');
-            confirmBtn.disabled = true;
-            confirmBtn.textContent = \'Placing...\';
-
-            fetch("/api/place-bet", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(data)
-            })
-              .then(function(r) { return r.json(); })
-              .then(function(result) {
-                if (result.success) {
-                  overlay.remove();
-                  btn.dataset.actual = actualSize;
-                  if (Math.round(actualSize) >= Math.round(recommended)) {
-                    btn.className = \'btn-placed\';
-                    btn.textContent = \'Placed\';
-                    btn.setAttribute(\'data-fill-status\', \'placed\');
-                    btn.onclick = function() { removeBet(this); };
-                    _sessionPlaced[btn.dataset.hash] = { className: \'btn-placed\', text: \'Placed\', fillStatus: \'placed\', actual: actualSize, action: \'remove\' };
-                  } else {
-                    var diff = Math.round(recommended) - Math.round(actualSize);
-                    btn.className = \'btn-partial\';
-                    btn.textContent = \'Partial -$\' + diff.toFixed(0);
-                    btn.setAttribute(\'data-fill-status\', \'partial\');
-                    btn.onclick = function() { updateBet(this); };
-                    _sessionPlaced[btn.dataset.hash] = { className: \'btn-partial\', text: \'Partial -$\' + diff.toFixed(0), fillStatus: \'partial\', actual: actualSize, action: \'update\' };
-                  }
-                  showToast("Bet placed: $" + actualSize.toFixed(0), "success");
-                  recalcSameGame(btn.dataset.gameId);
-                  applyFilters();
-                } else {
-                  showToast(result.error, "error");
-                  confirmBtn.disabled = false;
-                  confirmBtn.textContent = \'Confirm\';
-                }
-              })
-              .catch(function() {
-                showToast("Server error", "error");
-                confirmBtn.disabled = false;
-                confirmBtn.textContent = \'Confirm\';
-              });
+          if (book === \'wagerzon\' && !account) {
+            showToast(\'No Wagerzon account selected — pick one in the header pills\', \'error\');
+            return;
           }
 
-          overlay.querySelector(\'.modal-btn-confirm\').addEventListener(\'click\', doConfirm);
-          overlay.querySelector(\'.modal-btn-cancel\').addEventListener(\'click\', function() { overlay.remove(); });
-          overlay.addEventListener(\'click\', function(e) { if (e.target === overlay) overlay.remove(); });
-          input.addEventListener(\'keydown\', function(e) {
-            if (e.key === \'Enter\') { e.preventDefault(); doConfirm(); }
-            else if (e.key === \'Escape\') { e.preventDefault(); overlay.remove(); }
+          btn.disabled = true;
+          var originalLabel = btn.textContent;
+          btn.textContent = \'Placing...\';
+
+          fetch(\'/api/place-bet\', {
+            method: \'POST\',
+            headers: {\'Content-Type\': \'application/json\'},
+            body: JSON.stringify(body)
+          })
+          .then(function(r) {
+            return r.json().then(function(j) { return {ok: r.ok, status: r.status, body: j}; });
+          })
+          .then(function(resp) {
+            var ok = resp.ok, status = resp.status, result = resp.body;
+            if (status === 409) {
+              showToast(\'Bet already in flight: \' + (result.error || result.status), \'warning\');
+              btn.disabled = false; btn.textContent = originalLabel;
+              return;
+            }
+            if (result.status === \'placed\') {
+              var ticket = result.ticket_number ? \' #\' + result.ticket_number : \'\';
+              showToast(\'Placed at \' + book + ticket, \'success\');
+              setTimeout(function() { location.reload(); }, 800);
+              return;
+            }
+            if (result.status === \'playwright_launched\') {
+              showToast(result.message || \'Browser launching...\', \'info\');
+              btn.disabled = false; btn.textContent = originalLabel;
+              return;
+            }
+            if (result.status === \'price_moved\') {
+              showToast(\'Price moved — bet not placed\', \'warning\');
+              btn.disabled = false; btn.textContent = originalLabel;
+              return;
+            }
+            if (result.error) {
+              showToast(result.error, \'error\');
+            } else if (result.status) {
+              showToast(\'Status: \' + result.status + (result.error_msg ? \' — \' + result.error_msg : \'\'), \'error\');
+            } else {
+              showToast(\'Unknown response\', \'error\');
+            }
+            btn.disabled = false; btn.textContent = originalLabel;
+          })
+          .catch(function(e) {
+            showToast(\'Network error: \' + e.message, \'error\');
+            btn.disabled = false; btn.textContent = originalLabel;
+          });
+        }
+
+        function logBet(btn) {
+          var data = btn.dataset;
+          var account = window.WZ_SELECTED_ACCOUNT || null;
+          var body = {
+            bet_hash:        data.hash,
+            account:         account,
+            bookmaker_key:   data.book,
+            bet_on:          data.betOn,
+            line:            (data.line === \'\' || data.line === undefined) ? null : parseFloat(data.line),
+            market:          data.market,
+            american_odds:   parseInt(data.odds, 10),
+            actual_size:     parseFloat(data.size),
+            kelly_bet:       parseFloat(data.size),
+            game_id:         data.gameId,
+            home_team:       data.home,
+            away_team:       data.away,
+            game_time:       data.time
+          };
+
+          btn.disabled = true;
+          btn.textContent = \'Logging...\';
+
+          fetch(\'/api/log-bet\', {
+            method: \'POST\',
+            headers: {\'Content-Type\': \'application/json\'},
+            body: JSON.stringify(body)
+          })
+          .then(function(r) { return r.json(); })
+          .then(function(result) {
+            if (result.success !== false) {
+              setTimeout(function() { location.reload(); }, 400);
+            } else {
+              showToast(\'Log failed: \' + (result.error || \'unknown\'), \'error\');
+              btn.disabled = false; btn.textContent = \'Log\';
+            }
+          })
+          .catch(function(e) {
+            showToast(\'Log failed: \' + e.message, \'error\');
+            btn.disabled = false; btn.textContent = \'Log\';
           });
         }
 
