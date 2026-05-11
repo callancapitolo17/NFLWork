@@ -33,6 +33,8 @@ DB_PATH <- file.path(DASHBOARD_DIR, "mlb_dashboard.duckdb")
 source(file.path(DASHBOARD_DIR, "..", "books_strip.R"))
 # Conditional Kelly residual solver (Task 1) — drives Parlay tab combo residuals
 source(file.path(DASHBOARD_DIR, "..", "conditional_kelly.R"))
+# Book pill renderer (Task 1) — renders individual book prices
+source(file.path(DASHBOARD_DIR, "book_pill.R"))
 OUTPUT_PATH <- file.path(DASHBOARD_DIR, "report.html")
 
 # =============================================================================
@@ -4487,6 +4489,23 @@ all_bets <- tryCatch({
 })
 
 cat(sprintf("Loaded %d bets\n", nrow(all_bets)))
+
+book_prices_long <- tryCatch({
+  con <- dbConnect(duckdb(), dbdir = "Answer Keys/mlb_mm.duckdb", read_only = TRUE)
+  tables <- dbListTables(con)
+  result <- if (!"mlb_bets_book_prices" %in% tables) {
+    NULL
+  } else {
+    dbGetQuery(con, "SELECT * FROM mlb_bets_book_prices")
+  }
+  dbDisconnect(con, shutdown = TRUE)
+  result
+}, error = function(e) {
+  warning(sprintf(
+    "[bets-tab] mlb_bets_book_prices not loaded (%s) — falling back to single-book layout",
+    conditionMessage(e)))
+  NULL
+})
 
 placed_bets <- load_placed_bets(DB_PATH)
 cat(sprintf("Found %d placed bets\n", nrow(placed_bets)))
