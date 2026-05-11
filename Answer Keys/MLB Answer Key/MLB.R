@@ -296,12 +296,21 @@ events <- tryCatch({
   return(data.frame())
 })
 
-# F5 derivative markets
+# Derivative markets fetched per-event via fetch_odds_bulk().
+# Covers FG mains + alts, F3 mains, F5 mains + alts, F7 mains.
+# NOTE: do NOT add these FG mains to the Phase 2 toa_sports_odds() call above —
+# mixing FG and F-period markets in that pivot crashes devig_american().
 all_deriv_markets <- c(
-  "h2h_1st_5_innings",
-  "spreads_1st_5_innings",
-  "totals_1st_5_innings",
-  "alternate_totals_1st_5_innings"
+  # Full game
+  "h2h", "totals", "spreads",
+  "alternate_totals", "alternate_spreads",
+  # First 3 innings
+  "h2h_1st_3_innings", "totals_1st_3_innings", "spreads_1st_3_innings",
+  # First 5 innings
+  "h2h_1st_5_innings", "totals_1st_5_innings", "spreads_1st_5_innings",
+  "alternate_totals_1st_5_innings", "alternate_spreads_1st_5_innings",
+  # First 7 innings
+  "h2h_1st_7_innings", "totals_1st_7_innings", "spreads_1st_7_innings"
 )
 
 cat("Generating samples for all games...\n")
