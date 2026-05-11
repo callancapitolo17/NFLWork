@@ -54,35 +54,72 @@ odds_to_prob <- function(odds) {
   ifelse(odds > 0, 100 / (odds + 100), -odds / (-odds + 100))
 }
 
+# Internal: shared n-way probit (additive z-shift) devig.
+# n = 2 uses closed-form c = -(z1+z2)/2; n >= 3 uses uniroot.
+# Spec: docs/superpowers/specs/2026-05-11-probit-devig-design.md
+.probit_devig_n <- function(p_raw, eps = 1e-9) {
+  if (any(is.na(p_raw))) return(rep(NA_real_, length(p_raw)))
+  p_clipped <- pmin(pmax(p_raw, eps), 1 - eps)
+  z <- qnorm(p_clipped)
+
+  if (length(z) == 2) {
+    c_star <- -(z[1] + z[2]) / 2
+  } else {
+    f <- function(c) sum(pnorm(z + c)) - 1
+    c_star <- uniroot(f, interval = c(-5, 5), tol = 1e-9)$root
+  }
+  pnorm(z + c_star)
+}
+
 devig_american <- function(odd1, odd2) {
-  p1_raw <- ifelse(odd1 > 0,
-                   100 / (odd1 + 100),
-                   -odd1 / (-odd1 + 100)
-  )
-  p2_raw <- ifelse(odd2 > 0,
-                   100 / (odd2 + 100),
-                   -odd2 / (-odd2 + 100)
-  )
-  total_raw <- p1_raw + p2_raw
-  data.frame(p1 = p1_raw / total_raw, p2 = p2_raw / total_raw)
+  # Defensive: 0 or NA inputs -> NA outputs (was: silent miscalculation)
+  bad <- is.na(odd1) | is.na(odd2) | odd1 == 0 | odd2 == 0
+  p1_raw <- ifelse(odd1 > 0, 100 / (odd1 + 100), -odd1 / (-odd1 + 100))
+  p2_raw <- ifelse(odd2 > 0, 100 / (odd2 + 100), -odd2 / (-odd2 + 100))
+
+  result <- mapply(function(p1, p2, is_bad) {
+    if (isTRUE(is_bad)) return(c(NA_real_, NA_real_))
+    .probit_devig_n(c(p1, p2))
+  }, p1_raw, p2_raw, bad, SIMPLIFY = TRUE)
+
+  # mapply returns a 2-row matrix when each call returns length-2; convert to df
+  if (is.matrix(result)) {
+    data.frame(p1 = result[1, ], p2 = result[2, ])
+  } else {
+    # Scalar input case
+    data.frame(p1 = result[1], p2 = result[2])
+  }
 }
 
 #' Devig 3-way American odds (home/away/tie)
 #' @param odd_home Home win odds (American format)
 #' @param odd_away Away win odds (American format)
-#' @param odd_tie Tie/Draw odds (American format)
+#' @param odd_tie Tie/Draw odds (American format). If fully NA, falls back to
+#'   2-way devig (returns p_tie = NA).
 #' @return data.frame with p_home, p_away, p_tie (devigged probabilities summing to 1)
 devig_american_3way <- function(odd_home, odd_away, odd_tie) {
+  # If tie market is fully absent, transparently degrade to 2-way devig.
+  if (all(is.na(odd_tie))) {
+    res <- devig_american(odd_home, odd_away)
+    return(data.frame(p_home = res$p1, p_away = res$p2, p_tie = NA_real_))
+  }
+
+  bad <- is.na(odd_home) | is.na(odd_away) | is.na(odd_tie) |
+         odd_home == 0 | odd_away == 0 | odd_tie == 0
   p_home_raw <- ifelse(odd_home > 0, 100 / (odd_home + 100), -odd_home / (-odd_home + 100))
   p_away_raw <- ifelse(odd_away > 0, 100 / (odd_away + 100), -odd_away / (-odd_away + 100))
-  p_tie_raw <- ifelse(odd_tie > 0, 100 / (odd_tie + 100), -odd_tie / (-odd_tie + 100))
+  p_tie_raw  <- ifelse(odd_tie  > 0, 100 / (odd_tie  + 100), -odd_tie  / (-odd_tie  + 100))
 
-  total_raw <- p_home_raw + p_away_raw + p_tie_raw
-  data.frame(
-    p_home = p_home_raw / total_raw,
-    p_away = p_away_raw / total_raw,
-    p_tie = p_tie_raw / total_raw
-  )
+  result <- mapply(function(ph, pa, pt, is_bad) {
+    if (isTRUE(is_bad)) return(c(NA_real_, NA_real_, NA_real_))
+    .probit_devig_n(c(ph, pa, pt))
+  }, p_home_raw, p_away_raw, p_tie_raw, bad, SIMPLIFY = TRUE)
+
+  if (is.matrix(result)) {
+    data.frame(p_home = result[1, ], p_away = result[2, ], p_tie = result[3, ])
+  } else {
+    data.frame(p_home = result[1], p_away = result[2], p_tie = result[3])
+  }
 }
 american_prob <- function(odd1, odd2) {
   data.frame(
