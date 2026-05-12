@@ -44,6 +44,9 @@ recon_*.png
 *.duckdb-journal
 *.rds
 *.csv
+# Test fixtures (golden baselines) are tracked despite the *.csv rule above
+!mlb_sgp/tests/golden/
+!mlb_sgp/tests/golden/**
 
 # Jupyter
 .ipynb_checkpoints/

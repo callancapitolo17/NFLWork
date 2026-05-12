@@ -643,10 +643,30 @@ def scrape_dk_sgp(verbose: bool = False):
     print(f"  {len(parlay_lines)} games with lines")
 
     print("Initializing DK session...")
-    session = init_session()
+    # Use the shared DraftKingsClient so the SGP scraper and the upcoming
+    # singles scraper share one Chrome-TLS session + one event-list call.
+    # Legacy helpers (init_session, fetch_dk_events, fetch_main_market_nums,
+    # fetch_selection_ids, _fetch_subcat_markets) stay defined in this file —
+    # dk_client.py imports them.
+    from dk_client import DraftKingsClient
+
+    client = DraftKingsClient(verbose=verbose)
+    session = client.session
 
     print("Fetching DraftKings MLB events...")
-    dk_events = fetch_dk_events(session)
+    # Adapt Event dataclass back to the dict shape downstream code expects.
+    # `name` is used only in print/error messages; "Away @ Home" matches DK's
+    # own event name convention for MLB.
+    dk_events = [
+        {
+            "dk_event_id": e.event_id,
+            "dk_home": e.home_team,
+            "dk_away": e.away_team,
+            "start_time": e.start_time,
+            "name": f"{e.away_team} @ {e.home_team}",
+        }
+        for e in client.list_events()
+    ]
     print(f"  {len(dk_events)} DK events")
 
     # Filter out events that have already started — live games return empty or
