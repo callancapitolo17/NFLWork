@@ -60,7 +60,96 @@ class DraftKingsClient:
         ) for e in raw]
 
     def fetch_event_markets(self, event_id: str) -> list[Market]:
-        raise NotImplementedError("Task 4")
+        """Returns market metadata for one event (game lines + alt lines).
+
+        Hits the DK subcategory endpoint twice:
+          - subcat 4519 -> game lines (Moneyline, Run Line, Total)
+          - subcat 15628 -> alt lines (alt RL, alt totals)
+
+        We DO NOT get prices here — only (market_id, name) tuples. Prices live
+        in the parlays endpoint, fetched by fetch_event_selections.
+        """
+        from scraper_draftkings_sgp import _fetch_subcat_markets
+        results: list[Market] = []
+        for subcat_id, subcat_label in (
+            ("4519", "game_lines"),
+            ("15628", "alt_lines"),
+        ):
+            for m_id, m_name in _fetch_subcat_markets(self.session, event_id, subcat_id):
+                results.append(Market(
+                    market_id=str(m_id),
+                    name=str(m_name or ""),
+                    subcategory=subcat_label,
+                ))
+        return results
 
     def fetch_event_selections(self, event_id: str) -> list[Selection]:
-        raise NotImplementedError("Task 4")
+        """Returns all selections (with prices) for one event from the parlays endpoint.
+
+        DK's parlays/v1/sgp/events/{event_id} returns a payload of shape:
+          data.markets[] -> { id, name, selections[] -> {
+              id, marketId, name, outcomeType, points (float|null),
+              displayOdds.american (str like "+260" or Unicode-minus "−370"),
+              isDisabled, status }}
+
+        Selections that are disabled or missing displayOdds.american are skipped
+        — the singles scraper can't price an unavailable bet.
+        """
+        from scraper_draftkings_sgp import DK_SGP_PARLAYS_URL
+        resp = self.session.get(
+            f"{DK_SGP_PARLAYS_URL}/{event_id}",
+            timeout=60,
+        )
+        if getattr(resp, "status_code", 200) != 200:
+            return []
+        payload = resp.json()
+        markets = (payload.get("data") or {}).get("markets") or []
+        out: list[Selection] = []
+        for mkt in markets:
+            market_id = str(mkt.get("id", ""))
+            for sel in mkt.get("selections", []) or []:
+                if sel.get("isDisabled"):
+                    continue
+                disp = sel.get("displayOdds") or {}
+                american_str = disp.get("american")
+                if american_str in (None, ""):
+                    continue
+                try:
+                    american = _parse_american_odds(american_str)
+                except (ValueError, TypeError):
+                    continue
+                points = sel.get("points")
+                line: float | None
+                if points is None:
+                    line = None
+                else:
+                    try:
+                        line = float(points)
+                    except (TypeError, ValueError):
+                        line = None
+                out.append(Selection(
+                    selection_id=str(sel.get("id", "")),
+                    market_id=str(sel.get("marketId", market_id)),
+                    name=str(sel.get("name", "") or sel.get("outcomeType", "")),
+                    line=line,
+                    american_odds=american,
+                ))
+        return out
+
+
+def _parse_american_odds(value) -> int:
+    """Parse DK's american-odds string (e.g. '+260', '−370', '-110') to int.
+
+    DK uses the Unicode minus sign U+2212 ('−') for negatives in displayOdds —
+    not the ASCII hyphen. Both must be handled.
+    """
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    s = str(value).strip()
+    # Normalize: strip leading '+', convert Unicode minus to ASCII '-'
+    s = s.replace("−", "-")
+    if s.startswith("+"):
+        s = s[1:]
+    return int(s)
