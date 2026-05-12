@@ -151,6 +151,14 @@ mlb_triple_play.R (standalone pricer)
 5. **18-column schema** — All scrapers MUST write this exact schema. Kalshi is the exception (26 columns with probability fields).
 6. **`tol_error` auto-scales to 0.2% of N** — Per Feustel's spec ("+/-1 means you are within 0.2% of your target"), `run_answer_key_sample()` and `generate_all_samples()` default `tol_error = NULL` which computes `max(1L, round(0.002 * current_N))` inside the shrink loop. At N=500 this is 1 (Feustel's canonical value); at N=1272 it's 3. **Never hardcode `tol_error = 1` at the caller** — that silently tightens the rule by 2.5× at MLB's N and causes pathological shrinkage of sparse-region games.
 
+## Known model biases
+
+**MLB correlated parlay — FG `-1.5` fav + over at total ≤ 7 is structurally -EV.**
+- Evidence: n=33 placed bets, ROI -73%, bootstrap 95% CI [-97%, -38%] (fully below zero). Confirmed 2026-05-11.
+- Mechanism: `mlb_game_samples` overstates the marginal probability of over at low totals. The correlation factor itself (~1.04) is mild — the issue is the underlying over-leg simulator, not the joint structure.
+- Mitigation: filter Home Spread + Over and Away Spread + Over combos in `mlb_correlated_parlay.R` when `row$total_line <= 7.0` for FG slice.
+- Details: `docs/superpowers/analysis/2026-05-11-fg-fav-leak/findings.md`. Memory: `memory/mlb_parlay_edge_overestimation.md`.
+
 ## When Making Changes
 
 - **Adding a new scraper**: Add to `run.py` scraper config, create DuckDB table with 18-column schema, add team name mappings
