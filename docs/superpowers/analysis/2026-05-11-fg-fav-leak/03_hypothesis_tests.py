@@ -63,6 +63,41 @@ def h1():
 results['H1_over_vs_under'] = h1()
 print("H1:", json.dumps(results['H1_over_vs_under'], indent=2))
 
+# ---------- H2: calibration on placed_parlays subset ----------
+def h2():
+    sub = fg_fav[fg_fav['edge_pct'].notna() & fg_fav['fair_odds'].notna()].copy()
+    if len(sub) < 10:
+        return {'status': 'insufficient_data', 'n': len(sub)}
+    def amer_to_dec(a):
+        a = float(a)
+        return 1 + a/100 if a > 0 else 1 + 100/abs(a)
+    sub['fair_dec'] = sub['fair_odds'].apply(amer_to_dec)
+    sub['model_prob'] = 1 / sub['fair_dec']
+    sub['hit'] = sub['result'].apply(lambda r: 1 if r == 'win' else (0 if r == 'loss' else np.nan))
+    settled = sub.dropna(subset=['hit']).copy()
+    # bin by model_prob into quartiles (or fewer if N small)
+    n_bins = min(4, max(2, len(settled) // 5))
+    settled['mp_q'] = pd.qcut(settled['model_prob'], q=n_bins, duplicates='drop')
+    cal = settled.groupby('mp_q', observed=True).agg(
+        n=('hit', 'count'),
+        model_prob=('model_prob', 'mean'),
+        actual_hit=('hit', 'mean'),
+    ).reset_index(drop=True)
+    cal['gap_pp'] = (cal['model_prob'] - cal['actual_hit']) * 100
+    # Sum-of-model-prob vs observed wins (overall calibration test)
+    expected = settled['model_prob'].sum()
+    observed = settled['hit'].sum()
+    return {
+        'n_settled': len(settled),
+        'expected_wins': round(float(expected), 2),
+        'observed_wins': int(observed),
+        'gap_wins': round(float(observed - expected), 2),
+        'bins': cal.round(4).to_dict(orient='records'),
+    }
+
+results['H2_calibration'] = h2()
+print("H2:", json.dumps(results['H2_calibration'], indent=2, default=str))
+
 # Save partial results (will be overwritten as more H{n} are added in later tasks)
 with open(OUT_JSON, 'w') as f:
     json.dump(results, f, indent=2)
