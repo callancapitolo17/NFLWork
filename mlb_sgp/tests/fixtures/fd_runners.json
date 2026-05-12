@@ -1,0 +1,2449 @@
+{
+  "event_id": "35596596",
+  "home_team": "Athletics",
+  "away_team": "St. Louis Cardinals",
+  "event_name": "St. Louis Cardinals (A Pallante) @ Athletics (J Springs)",
+  "raw_market_count": 158,
+  "raw_markets_sample": [
+    {
+      "marketId": "734.168631180",
+      "eventTypeId": 7511,
+      "competitionId": 11196870,
+      "eventId": 35596596,
+      "marketName": "To Record A Stolen Base",
+      "marketTime": "2026-05-13T01:41:00.000Z",
+      "marketType": "TO_RECORD_A_STOLEN_BASE",
+      "bspMarket": false,
+      "sgmMarket": true,
+      "inPlay": false,
+      "numberOfRunners": 18,
+      "numberOfActiveRunners": 18,
+      "numberOfWinners": 1,
+      "sortPriority": 1816,
+      "bettingType": "ODDS",
+      "marketStatus": "OPEN",
+      "runners": [
+        {
+          "selectionId": 52013201,
+          "handicap": 0,
+          "runnerName": "Zack Gelof",
+          "sortPriority": 1,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/0739bc40-7821-40d4-a3c9-e58c143910ad/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 520,
+              "americanOddsInt": 520
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 6.2
+              },
+              "fractionalOdds": {
+                "numerator": 52,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 550,
+                "americanOddsInt": 550
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 6.5
+                },
+                "fractionalOdds": {
+                  "numerator": 55,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 53665304,
+          "handicap": 0,
+          "runnerName": "Masyn Winn",
+          "sortPriority": 2,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/7b078e08-c52d-4d61-9906-9bc0892d1326/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 640,
+              "americanOddsInt": 640
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 7.4
+              },
+              "fractionalOdds": {
+                "numerator": 64,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 630,
+                "americanOddsInt": 630
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 7.3
+                },
+                "fractionalOdds": {
+                  "numerator": 63,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 59267030,
+          "handicap": 0,
+          "runnerName": "Lawrence Butler",
+          "sortPriority": 3,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/31a24dbe-1a9d-4f30-88c8-08cd0e1c79f8/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 680,
+              "americanOddsInt": 680
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 7.8
+              },
+              "fractionalOdds": {
+                "numerator": 68,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 700,
+                "americanOddsInt": 700
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 8
+                },
+                "fractionalOdds": {
+                  "numerator": 70,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 87351651,
+          "handicap": 0,
+          "runnerName": "Nathan Church",
+          "sortPriority": 4,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/84760cc2-dba8-4f5d-8b62-9cad88c6393d/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 750,
+              "americanOddsInt": 750
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 8.5
+              },
+              "fractionalOdds": {
+                "numerator": 75,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 700,
+                "americanOddsInt": 700
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 8
+                },
+                "fractionalOdds": {
+                  "numerator": 70,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 65312398,
+          "handicap": 0,
+          "runnerName": "Nick Kurtz",
+          "sortPriority": 5,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/0973be13-f8b8-4445-86bc-00c4d4986b65/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 800,
+              "americanOddsInt": 800
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 9
+              },
+              "fractionalOdds": {
+                "numerator": 80,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 750,
+                "americanOddsInt": 750
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 8.5
+                },
+                "fractionalOdds": {
+                  "numerator": 75,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 65321017,
+          "handicap": 0,
+          "runnerName": "JJ Wetherholt",
+          "sortPriority": 6,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/b129161f-234c-4666-b068-1665fadabdd8/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 850,
+              "americanOddsInt": 850
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 9.5
+              },
+              "fractionalOdds": {
+                "numerator": 85,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 800,
+                "americanOddsInt": 800
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 9
+                },
+                "fractionalOdds": {
+                  "numerator": 80,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 52013228,
+          "handicap": 0,
+          "runnerName": "Jordan Walker",
+          "sortPriority": 7,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/33441757-d898-4545-a329-e94ef81d7e67/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 880,
+              "americanOddsInt": 880
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 9.8
+              },
+              "fractionalOdds": {
+                "numerator": 88,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 920,
+                "americanOddsInt": 920
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 10.2
+                },
+                "fractionalOdds": {
+                  "numerator": 92,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 58057690,
+          "handicap": 0,
+          "runnerName": "Jose Fermin",
+          "sortPriority": 8,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/4b758419-e046-43c7-b71c-beebe3bafc70/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 880,
+              "americanOddsInt": 880
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 9.8
+              },
+              "fractionalOdds": {
+                "numerator": 88,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 1200,
+                "americanOddsInt": 1200
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 13
+                },
+                "fractionalOdds": {
+                  "numerator": 120,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 46148326,
+          "handicap": 0,
+          "runnerName": "Ivan Herrera",
+          "sortPriority": 9,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/20636d41-00bf-4a42-bc1e-812bffc3045f/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 880,
+              "americanOddsInt": 880
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 9.8
+              },
+              "fractionalOdds": {
+                "numerator": 88,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 850,
+                "americanOddsInt": 850
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 9.5
+                },
+                "fractionalOdds": {
+                  "numerator": 85,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 28643740,
+          "handicap": 0,
+          "runnerName": "Tyler Soderstrom",
+          "sortPriority": 10,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/85e7cee8-c2a7-494a-809a-8eab60f6a169/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 1100,
+              "americanOddsInt": 1100
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 12
+              },
+              "fractionalOdds": {
+                "numerator": 110,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 1200,
+                "americanOddsInt": 1200
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 13
+                },
+                "fractionalOdds": {
+                  "numerator": 120,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 86430092,
+          "handicap": 0,
+          "runnerName": "Carlos Cortes",
+          "sortPriority": 11,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/770f5524-9d86-4c00-bc21-981d69db7a16/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 1100,
+              "americanOddsInt": 1100
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 12
+              },
+              "fractionalOdds": {
+                "numerator": 110,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 1000,
+                "americanOddsInt": 1000
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 11
+                },
+                "fractionalOdds": {
+                  "numerator": 100,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 67652873,
+          "handicap": 0,
+          "runnerName": "Darell Hernaiz",
+          "sortPriority": 12,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/b7769d90-0dbd-45da-8b10-5b34f342b781/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 1100,
+              "americanOddsInt": 1100
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 12
+              },
+              "fractionalOdds": {
+                "numerator": 110,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 1000,
+                "americanOddsInt": 1000
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 11
+                },
+                "fractionalOdds": {
+                  "numerator": 100,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 47635197,
+          "handicap": 0,
+          "runnerName": "Shea Langeliers",
+          "sortPriority": 13,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/634aa9a6-1413-4683-8d57-9f59b1d0b71b/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 1200,
+              "americanOddsInt": 1200
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 13
+              },
+              "fractionalOdds": {
+                "numerator": 120,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 1260,
+                "americanOddsInt": 1260
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 13.6
+                },
+                "fractionalOdds": {
+                  "numerator": 126,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 35875484,
+          "handicap": 0,
+          "runnerName": "Brent Rooker",
+          "sortPriority": 14,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/9f2837e8-8a99-4ea3-9e2c-4a9e25996634/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 1200,
+              "americanOddsInt": 1200
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 13
+              },
+              "fractionalOdds": {
+                "numerator": 120,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 1100,
+                "americanOddsInt": 1100
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 12
+                },
+                "fractionalOdds": {
+                  "numerator": 110,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 23581103,
+          "handicap": 0,
+          "runnerName": "Jeff McNeil",
+          "sortPriority": 15,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/5b06e9c7-bd31-4257-9eb7-7883d0bea0ee/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 1200,
+              "americanOddsInt": 1200
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 13
+              },
+              "fractionalOdds": {
+                "numerator": 120,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 1100,
+                "americanOddsInt": 1100
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 12
+                },
+                "fractionalOdds": {
+                  "numerator": 110,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 73718699,
+          "handicap": 0,
+          "runnerName": "Thomas Saggese",
+          "sortPriority": 16,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/f355d377-899f-47c3-8f0d-45783197d6f3/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 1200,
+              "americanOddsInt": 1200
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 13
+              },
+              "fractionalOdds": {
+                "numerator": 120,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 1260,
+                "americanOddsInt": 1260
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 13.6
+                },
+                "fractionalOdds": {
+                  "numerator": 126,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 48302205,
+          "handicap": 0,
+          "runnerName": "Alec Burleson",
+          "sortPriority": 17,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/b5d09d7a-1964-4d5d-b056-e73aefa76626/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 1280,
+              "americanOddsInt": 1280
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 13.8
+              },
+              "fractionalOdds": {
+                "numerator": 128,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 1260,
+                "americanOddsInt": 1260
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 13.6
+                },
+                "fractionalOdds": {
+                  "numerator": 126,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 40568742,
+          "handicap": 0,
+          "runnerName": "Yohel Pozo",
+          "sortPriority": 18,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/4c95cc10-08d8-4fc6-ac2b-1c5dd4267efe/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 1700,
+              "americanOddsInt": 1700
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 18
+              },
+              "fractionalOdds": {
+                "numerator": 170,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 1500,
+                "americanOddsInt": 1500
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 16
+                },
+                "fractionalOdds": {
+                  "numerator": 150,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "canTurnInPlay": false,
+      "associatedMarkets": [
+        {
+          "eventId": 35596596,
+          "eventTypeId": 7511,
+          "externalMarketId": "42.577982596"
+        }
+      ],
+      "isSuperSubEnabled": false,
+      "shouldDisplayStatsInRunner": false,
+      "eachwayAvailable": false,
+      "legTypes": [
+        "SIMPLE_SELECTION"
+      ]
+    },
+    {
+      "marketId": "734.168631181",
+      "eventTypeId": 7511,
+      "competitionId": 11196870,
+      "eventId": 35596596,
+      "marketName": "Race To 7 Runs",
+      "marketTime": "2026-05-13T01:41:00.000Z",
+      "marketType": "RACE_TO_7_RUNS",
+      "bspMarket": false,
+      "sgmMarket": true,
+      "inPlay": false,
+      "numberOfRunners": 3,
+      "numberOfActiveRunners": 3,
+      "numberOfWinners": 1,
+      "sortPriority": 1450,
+      "bettingType": "ODDS",
+      "marketStatus": "OPEN",
+      "runners": [
+        {
+          "selectionId": 50291,
+          "handicap": 0,
+          "runnerName": "St. Louis Cardinals",
+          "sortPriority": 1,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "nameAbbr": "STL Cardinals",
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 310,
+              "americanOddsInt": 310
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 4.1
+              },
+              "fractionalOdds": {
+                "numerator": 31,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 320,
+                "americanOddsInt": 320
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 4.2
+                },
+                "fractionalOdds": {
+                  "numerator": 32,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 75117758,
+          "handicap": 0,
+          "runnerName": "Athletics",
+          "sortPriority": 2,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "nameAbbr": "Athletics",
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 240,
+              "americanOddsInt": 240
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 3.4
+              },
+              "fractionalOdds": {
+                "numerator": 24,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 230,
+                "americanOddsInt": 230
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 3.3
+                },
+                "fractionalOdds": {
+                  "numerator": 23,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 7534609,
+          "handicap": 0,
+          "runnerName": "Neither",
+          "sortPriority": 3,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": -110,
+              "americanOddsInt": -110
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 1.909090909090909
+              },
+              "fractionalOdds": {
+                "numerator": 100,
+                "denominator": 110
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": -105,
+                "americanOddsInt": -105
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 1.952380952380952
+                },
+                "fractionalOdds": {
+                  "numerator": 100,
+                  "denominator": 105
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "canTurnInPlay": true,
+      "associatedMarkets": [
+        {
+          "eventId": 35596596,
+          "eventTypeId": 7511,
+          "externalMarketId": "42.577982543"
+        }
+      ],
+      "isSuperSubEnabled": false,
+      "shouldDisplayStatsInRunner": true,
+      "eachwayAvailable": false,
+      "legTypes": [
+        "SIMPLE_SELECTION"
+      ]
+    },
+    {
+      "marketId": "734.168631184",
+      "eventTypeId": 7511,
+      "competitionId": 11196870,
+      "eventId": 35596596,
+      "marketName": "4th Inning Runs Odd/Even",
+      "marketTime": "2026-05-13T01:41:00.000Z",
+      "marketType": "4TH_INNING_RUNS_ODD/EVEN",
+      "bspMarket": false,
+      "sgmMarket": true,
+      "inPlay": false,
+      "numberOfRunners": 2,
+      "numberOfActiveRunners": 2,
+      "numberOfWinners": 1,
+      "sortPriority": 640,
+      "bettingType": "ODDS",
+      "marketStatus": "OPEN",
+      "runners": [
+        {
+          "selectionId": 7534607,
+          "handicap": 0,
+          "runnerName": "Odd",
+          "sortPriority": 1,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 194,
+              "americanOddsInt": 194
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 2.94
+              },
+              "fractionalOdds": {
+                "numerator": 194,
+                "denominator": 100
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 198,
+                "americanOddsInt": 198
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 2.98
+                },
+                "fractionalOdds": {
+                  "numerator": 198,
+                  "denominator": 100
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 7534608,
+          "handicap": 0,
+          "runnerName": "Even",
+          "sortPriority": 2,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": -245,
+              "americanOddsInt": -245
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 1.408163265306122
+              },
+              "fractionalOdds": {
+                "numerator": 100,
+                "denominator": 245
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": -250,
+                "americanOddsInt": -250
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 1.4
+                },
+                "fractionalOdds": {
+                  "numerator": 10,
+                  "denominator": 25
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "canTurnInPlay": true,
+      "associatedMarkets": [
+        {
+          "eventId": 35596596,
+          "eventTypeId": 7511,
+          "externalMarketId": "42.577982487"
+        }
+      ],
+      "isSuperSubEnabled": false,
+      "shouldDisplayStatsInRunner": true,
+      "eachwayAvailable": false,
+      "legTypes": [
+        "SIMPLE_SELECTION"
+      ]
+    },
+    {
+      "marketId": "734.168631185",
+      "eventTypeId": 7511,
+      "competitionId": 11196870,
+      "eventId": 35596596,
+      "marketName": "Player To Record 4+ Hits + Runs + RBIs",
+      "marketTime": "2026-05-13T01:41:00.000Z",
+      "marketType": "PLAYER_TO_RECORD_4+_HITS+RUNS+RBIS",
+      "bspMarket": false,
+      "sgmMarket": true,
+      "inPlay": false,
+      "numberOfRunners": 18,
+      "numberOfActiveRunners": 18,
+      "numberOfWinners": 1,
+      "sortPriority": 11129,
+      "bettingType": "ODDS",
+      "marketStatus": "OPEN",
+      "runners": [
+        {
+          "selectionId": 47635197,
+          "handicap": 0,
+          "runnerName": "Shea Langeliers",
+          "sortPriority": 1,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/634aa9a6-1413-4683-8d57-9f59b1d0b71b/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 180,
+              "americanOddsInt": 180
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 2.8
+              },
+              "fractionalOdds": {
+                "numerator": 180,
+                "denominator": 100
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 175,
+                "americanOddsInt": 175
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 2.75
+                },
+                "fractionalOdds": {
+                  "numerator": 175,
+                  "denominator": 100
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 52013228,
+          "handicap": 0,
+          "runnerName": "Jordan Walker",
+          "sortPriority": 2,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/33441757-d898-4545-a329-e94ef81d7e67/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 200,
+              "americanOddsInt": 200
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 3
+              },
+              "fractionalOdds": {
+                "numerator": 200,
+                "denominator": 100
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 195,
+                "americanOddsInt": 195
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 2.95
+                },
+                "fractionalOdds": {
+                  "numerator": 195,
+                  "denominator": 100
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 65312398,
+          "handicap": 0,
+          "runnerName": "Nick Kurtz",
+          "sortPriority": 3,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/0973be13-f8b8-4445-86bc-00c4d4986b65/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 200,
+              "americanOddsInt": 200
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 3
+              },
+              "fractionalOdds": {
+                "numerator": 200,
+                "denominator": 100
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 195,
+                "americanOddsInt": 195
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 2.95
+                },
+                "fractionalOdds": {
+                  "numerator": 195,
+                  "denominator": 100
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 35875484,
+          "handicap": 0,
+          "runnerName": "Brent Rooker",
+          "sortPriority": 4,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/9f2837e8-8a99-4ea3-9e2c-4a9e25996634/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 210,
+              "americanOddsInt": 210
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 3.1
+              },
+              "fractionalOdds": {
+                "numerator": 21,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 200,
+                "americanOddsInt": 200
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 3
+                },
+                "fractionalOdds": {
+                  "numerator": 200,
+                  "denominator": 100
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 46148326,
+          "handicap": 0,
+          "runnerName": "Ivan Herrera",
+          "sortPriority": 5,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/20636d41-00bf-4a42-bc1e-812bffc3045f/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 240,
+              "americanOddsInt": 240
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 3.4
+              },
+              "fractionalOdds": {
+                "numerator": 24,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 230,
+                "americanOddsInt": 230
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 3.3
+                },
+                "fractionalOdds": {
+                  "numerator": 23,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 28643740,
+          "handicap": 0,
+          "runnerName": "Tyler Soderstrom",
+          "sortPriority": 6,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/85e7cee8-c2a7-494a-809a-8eab60f6a169/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 250,
+              "americanOddsInt": 250
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 3.5
+              },
+              "fractionalOdds": {
+                "numerator": 25,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 260,
+                "americanOddsInt": 260
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 3.6
+                },
+                "fractionalOdds": {
+                  "numerator": 26,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 48302205,
+          "handicap": 0,
+          "runnerName": "Alec Burleson",
+          "sortPriority": 7,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/b5d09d7a-1964-4d5d-b056-e73aefa76626/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 270,
+              "americanOddsInt": 270
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 3.7
+              },
+              "fractionalOdds": {
+                "numerator": 27,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 260,
+                "americanOddsInt": 260
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 3.6
+                },
+                "fractionalOdds": {
+                  "numerator": 26,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 65321017,
+          "handicap": 0,
+          "runnerName": "JJ Wetherholt",
+          "sortPriority": 8,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/b129161f-234c-4666-b068-1665fadabdd8/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 280,
+              "americanOddsInt": 280
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 3.8
+              },
+              "fractionalOdds": {
+                "numerator": 28,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 270,
+                "americanOddsInt": 270
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 3.7
+                },
+                "fractionalOdds": {
+                  "numerator": 27,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 52013201,
+          "handicap": 0,
+          "runnerName": "Zack Gelof",
+          "sortPriority": 9,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/0739bc40-7821-40d4-a3c9-e58c143910ad/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 340,
+              "americanOddsInt": 340
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 4.4
+              },
+              "fractionalOdds": {
+                "numerator": 34,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 350,
+                "americanOddsInt": 350
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 4.5
+                },
+                "fractionalOdds": {
+                  "numerator": 35,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 86430092,
+          "handicap": 0,
+          "runnerName": "Carlos Cortes",
+          "sortPriority": 10,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/770f5524-9d86-4c00-bc21-981d69db7a16/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 350,
+              "americanOddsInt": 350
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 4.5
+              },
+              "fractionalOdds": {
+                "numerator": 35,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 340,
+                "americanOddsInt": 340
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 4.4
+                },
+                "fractionalOdds": {
+                  "numerator": 34,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 53665304,
+          "handicap": 0,
+          "runnerName": "Masyn Winn",
+          "sortPriority": 11,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/7b078e08-c52d-4d61-9906-9bc0892d1326/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 360,
+              "americanOddsInt": 360
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 4.6
+              },
+              "fractionalOdds": {
+                "numerator": 36,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 440,
+                "americanOddsInt": 440
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 5.4
+                },
+                "fractionalOdds": {
+                  "numerator": 44,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 23581103,
+          "handicap": 0,
+          "runnerName": "Jeff McNeil",
+          "sortPriority": 12,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/5b06e9c7-bd31-4257-9eb7-7883d0bea0ee/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 390,
+              "americanOddsInt": 390
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 4.9
+              },
+              "fractionalOdds": {
+                "numerator": 39,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 380,
+                "americanOddsInt": 380
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 4.8
+                },
+                "fractionalOdds": {
+                  "numerator": 38,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 59267030,
+          "handicap": 0,
+          "runnerName": "Lawrence Butler",
+          "sortPriority": 13,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/31a24dbe-1a9d-4f30-88c8-08cd0e1c79f8/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 400,
+              "americanOddsInt": 400
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 5
+              },
+              "fractionalOdds": {
+                "numerator": 40,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 410,
+                "americanOddsInt": 410
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 5.1
+                },
+                "fractionalOdds": {
+                  "numerator": 41,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 40568742,
+          "handicap": 0,
+          "runnerName": "Yohel Pozo",
+          "sortPriority": 14,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/4c95cc10-08d8-4fc6-ac2b-1c5dd4267efe/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 440,
+              "americanOddsInt": 440
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 5.4
+              },
+              "fractionalOdds": {
+                "numerator": 44,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 430,
+                "americanOddsInt": 430
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 5.3
+                },
+                "fractionalOdds": {
+                  "numerator": 43,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 87351651,
+          "handicap": 0,
+          "runnerName": "Nathan Church",
+          "sortPriority": 15,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/84760cc2-dba8-4f5d-8b62-9cad88c6393d/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 460,
+              "americanOddsInt": 460
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 5.6
+              },
+              "fractionalOdds": {
+                "numerator": 46,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 470,
+                "americanOddsInt": 470
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 5.7
+                },
+                "fractionalOdds": {
+                  "numerator": 47,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 58057690,
+          "handicap": 0,
+          "runnerName": "Jose Fermin",
+          "sortPriority": 16,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/4b758419-e046-43c7-b71c-beebe3bafc70/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 460,
+              "americanOddsInt": 460
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 5.6
+              },
+              "fractionalOdds": {
+                "numerator": 46,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 450,
+                "americanOddsInt": 450
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 5.5
+                },
+                "fractionalOdds": {
+                  "numerator": 45,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 73718699,
+          "handicap": 0,
+          "runnerName": "Thomas Saggese",
+          "sortPriority": 17,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/f355d377-899f-47c3-8f0d-45783197d6f3/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/st_louis_cardinals.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 460,
+              "americanOddsInt": 460
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 5.6
+              },
+              "fractionalOdds": {
+                "numerator": 46,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 480,
+                "americanOddsInt": 480
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 5.8
+                },
+                "fractionalOdds": {
+                  "numerator": 48,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 67652873,
+          "handicap": 0,
+          "runnerName": "Darell Hernaiz",
+          "sortPriority": 18,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "logo": "https://fdx-api.sportsbook.fanduel.com/images/headshots/mlb/2025/b7769d90-0dbd-45da-8b10-5b34f342b781/120x120.png",
+          "secondaryLogo": "https://assets.sportsbook.fanduel.com/images/team/mlb/athletics.png",
+          "isPlayerSelection": true,
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": 470,
+              "americanOddsInt": 470
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 5.7
+              },
+              "fractionalOdds": {
+                "numerator": 47,
+                "denominator": 10
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": 480,
+                "americanOddsInt": 480
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 5.8
+                },
+                "fractionalOdds": {
+                  "numerator": 48,
+                  "denominator": 10
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "canTurnInPlay": false,
+      "associatedMarkets": [
+        {
+          "eventId": 35596596,
+          "eventTypeId": 7511,
+          "externalMarketId": "42.577982626"
+        }
+      ],
+      "isSuperSubEnabled": false,
+      "shouldDisplayStatsInRunner": true,
+      "eachwayAvailable": false,
+      "legTypes": [
+        "SIMPLE_SELECTION"
+      ]
+    },
+    {
+      "marketId": "734.168631182",
+      "eventTypeId": 7511,
+      "competitionId": 11196870,
+      "eventId": 35596596,
+      "marketName": "7th Inning Over/Under 0.5 Runs",
+      "marketTime": "2026-05-13T01:41:00.000Z",
+      "marketType": "***OVER/UNDER_0.5_RUNS_7TH_INNINGS",
+      "bspMarket": false,
+      "sgmMarket": true,
+      "inPlay": false,
+      "numberOfRunners": 2,
+      "numberOfActiveRunners": 2,
+      "numberOfWinners": 1,
+      "sortPriority": 960,
+      "bettingType": "ODDS",
+      "marketStatus": "OPEN",
+      "runners": [
+        {
+          "selectionId": 7017905,
+          "handicap": 0,
+          "runnerName": "Over",
+          "sortPriority": 1,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": -115,
+              "americanOddsInt": -115
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 1.869565217391304
+              },
+              "fractionalOdds": {
+                "numerator": 100,
+                "denominator": 115
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": -114,
+                "americanOddsInt": -114
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 1.87719298245614
+                },
+                "fractionalOdds": {
+                  "numerator": 100,
+                  "denominator": 114
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selectionId": 7017906,
+          "handicap": 0,
+          "runnerName": "Under",
+          "sortPriority": 2,
+          "result": {},
+          "runnerStatus": "ACTIVE",
+          "winRunnerOdds": {
+            "americanDisplayOdds": {
+              "americanOdds": -105,
+              "americanOddsInt": -105
+            },
+            "trueOdds": {
+              "decimalOdds": {
+                "decimalOdds": 1.952380952380952
+              },
+              "fractionalOdds": {
+                "numerator": 100,
+                "denominator": 105
+              }
+            }
+          },
+          "previousWinRunnerOdds": [
+            {
+              "americanDisplayOdds": {
+                "americanOdds": -106,
+                "americanOddsInt": -106
+              },
+              "trueOdds": {
+                "decimalOdds": {
+                  "decimalOdds": 1.943396226415094
+                },
+                "fractionalOdds": {
+                  "numerator": 100,
+                  "denominator": 106
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "canTurnInPlay": true,
+      "associatedMarkets": [
+        {
+          "eventId": 35596596,
+          "eventTypeId": 7511,
+          "externalMarketId": "42.577982461"
+        }
+      ],
+      "isSuperSubEnabled": false,
+      "shouldDisplayStatsInRunner": true,
+      "eachwayAvailable": false,
+      "legTypes": [
+        "SIMPLE_SELECTION"
+      ]
+    }
+  ],
+  "all_market_names": [
+    "1st Inning 0.5 Runs",
+    "1st Inning Correct Score",
+    "1st Inning Hits",
+    "1st Inning Over/Under 1.5 Runs",
+    "1st Inning Result",
+    "1st Inning Runs Odd/Even",
+    "2nd Inning Correct Score",
+    "2nd Inning Hits",
+    "2nd Inning Over/Under 0.5 Runs",
+    "2nd Inning Over/Under 1.5 Runs",
+    "2nd Inning Result",
+    "2nd Inning Runs Odd/Even",
+    "3rd Inning Correct Score",
+    "3rd Inning Hits",
+    "3rd Inning Over/Under 0.5 Runs",
+    "3rd Inning Over/Under 1.5 Runs",
+    "3rd Inning Result",
+    "3rd Inning Runs Odd/Even",
+    "4th Inning Correct Score",
+    "4th Inning Hits",
+    "4th Inning Over/Under 0.5 Runs",
+    "4th Inning Over/Under 1.5 Runs",
+    "4th Inning Result",
+    "4th Inning Runs Odd/Even",
+    "5th Inning Correct Score",
+    "5th Inning Hits",
+    "5th Inning Over/Under 0.5 Runs",
+    "5th Inning Over/Under 1.5 Runs",
+    "5th Inning Result",
+    "5th Inning Runs Odd/Even",
+    "6th Inning Correct Score",
+    "6th Inning Hits",
+    "6th Inning Over/Under 0.5 Runs",
+    "6th Inning Over/Under 1.5 Runs",
+    "6th Inning Result",
+    "6th Inning Runs Odd/Even",
+    "7th Inning Correct Score",
+    "7th Inning Hits",
+    "7th Inning Over/Under 0.5 Runs",
+    "7th Inning Over/Under 1.5 Runs",
+    "7th Inning Result",
+    "7th Inning Runs Odd/Even",
+    "8th Inning Correct Score",
+    "8th Inning Hits",
+    "8th Inning Over/Under 0.5 Runs",
+    "8th Inning Over/Under 1.5 Runs",
+    "8th Inning Result",
+    "8th Inning Runs Odd/Even",
+    "9th Inning Correct Score",
+    "9th Inning Result",
+    "Alternate Run Lines",
+    "Alternate Total Runs",
+    "Andre Pallante - Alt Strikeouts",
+    "Andre Pallante - Strikeouts",
+    "Athletics Alt. Total Runs",
+    "Athletics Total Runs",
+    "Athletics Total Runs Odd/Even",
+    "Correct Score",
+    "First 2 Innings Result",
+    "First 3 Innings Result",
+    "First 4 Innings Result",
+    "First 5 Innings Alternate Run Lines",
+    "First 5 Innings Alternate Total Runs",
+    "First 5 Innings Money Line",
+    "First 5 Innings Result",
+    "First 5 Innings Run Line",
+    "First 5 Innings Run Line / Total Runs Parlay",
+    "First 5 Innings Total Runs",
+    "First 5 Innings Winning Margin (5-Way)",
+    "First 5 Innings Winning Margin (Exact)",
+    "First 6 Innings Result",
+    "First 7 Innings Result",
+    "First Pitch Result - Bottom 1st",
+    "First Pitch Result - Top 1st",
+    "First Scoring Play",
+    "Home Run / Moneyline Parlay",
+    "Jeffrey Springs - Alt Strikeouts",
+    "Jeffrey Springs - Strikeouts",
+    "Line / Total Parlay 1",
+    "Line / Total Parlay 10",
+    "Line / Total Parlay 11",
+    "Line / Total Parlay 12",
+    "Line / Total Parlay 2",
+    "Line / Total Parlay 3",
+    "Line / Total Parlay 4",
+    "Line / Total Parlay 5",
+    "Line / Total Parlay 6",
+    "Line / Total Parlay 7",
+    "Line / Total Parlay 8",
+    "Line / Total Parlay 9",
+    "Money Line / Total Runs Parlay",
+    "Moneyline",
+    "Moneyline Away Listed",
+    "Moneyline Both Listed",
+    "Moneyline Home Listed",
+    "Player To Record 1+ Hits + Runs + RBIs",
+    "Player To Record 2+ Hits + Runs + RBIs",
+    "Player To Record 3+ Hits + Runs + RBIs",
+    "Player To Record 4+ Hits + Runs + RBIs",
+    "Players To Combine For 2+ Hits",
+    "Players To Combine For 2+ Home Runs",
+    "Players To Combine For 2+ RBIs",
+    "Players To Combine For 2+ Total Bases",
+    "Players To Combine For 3+ Hits",
+    "Players To Combine For 3+ RBIs",
+    "Players To Combine For 3+ Total Bases",
+    "Players To Combine For 4+ Hits",
+    "Players To Combine For 4+ RBIs",
+    "Players To Combine For 4+ Total Bases",
+    "Players To Combine For 5+ Total Bases",
+    "Players To Combine For 6+ Total Bases",
+    "Players To Combine For A Hit",
+    "Players To Combine For A Home Run",
+    "Players To Combine for An RBI",
+    "Race To 3 Runs",
+    "Race To 4 Runs",
+    "Race To 5 Runs",
+    "Race To 6 Runs",
+    "Race To 7 Runs",
+    "Run Line",
+    "Run Line / Total Runs Parlay",
+    "Score First / Win Game Parlay",
+    "St. Louis Cardinals Alt. Total Runs",
+    "St. Louis Cardinals Total Runs",
+    "Team To Score First Wins Game",
+    "Team To Score Last Wins Game",
+    "To Hit 2+ Home Runs",
+    "To Hit A Double",
+    "To Hit A Home Run",
+    "To Hit A Single",
+    "To Hit A Triple",
+    "To Hit First Home Run",
+    "To Record 2+ Hits",
+    "To Record 2+ RBIs",
+    "To Record 2+ Runs",
+    "To Record 2+ Stolen Bases",
+    "To Record 2+ Total Bases",
+    "To Record 3+ Hits",
+    "To Record 3+ RBIs",
+    "To Record 3+ Runs",
+    "To Record 3+ Total Bases",
+    "To Record 4+ Hits",
+    "To Record 4+ RBIs",
+    "To Record 4+ Total Bases",
+    "To Record 5+ Total Bases",
+    "To Record A Hit",
+    "To Record A Run",
+    "To Record A Stolen Base",
+    "To Record An RBI",
+    "Total Runs",
+    "Total Runs (Bands)",
+    "Total Runs Odd/Even",
+    "Tri-Bet",
+    "Tri-Bet 2",
+    "Tri-Bet 3",
+    "Winning Margin (4-Way)",
+    "Winning Margin (Bands)",
+    "Winning Margin (Exact)"
+  ],
+  "runners_processed": {
+    "fg": {
+      "spreads": {
+        "('away', 1.5)": [
+          "734.168608001",
+          50291
+        ],
+        "('home', -1.5)": [
+          "734.168608001",
+          75117758
+        ],
+        "('away', 3.5)": [
+          "734.168631135",
+          12805956
+        ],
+        "('away', 2.5)": [
+          "734.168631135",
+          12805955
+        ],
+        "('away', -1.5)": [
+          "734.168631135",
+          12801960
+        ],
+        "('away', -2.5)": [
+          "734.168631135",
+          12805739
+        ],
+        "('away', -3.5)": [
+          "734.168631135",
+          12805705
+        ],
+        "('home', -3.5)": [
+          "734.168631135",
+          81813202
+        ],
+        "('home', -2.5)": [
+          "734.168631135",
+          81813161
+        ],
+        "('home', 1.5)": [
+          "734.168631135",
+          81813149
+        ],
+        "('home', 2.5)": [
+          "734.168631135",
+          81813137
+        ],
+        "('home', 3.5)": [
+          "734.168631135",
+          81813138
+        ]
+      },
+      "totals": {
+        "('O', 8.5)": [
+          "734.168631115",
+          12493612
+        ],
+        "('O', 9.5)": [
+          "734.168631115",
+          12493614
+        ],
+        "('O', 10.5)": [
+          "734.168631115",
+          12493616
+        ],
+        "('O', 11.5)": [
+          "734.168631115",
+          12810130
+        ],
+        "('O', 12.5)": [
+          "734.168631115",
+          12821808
+        ],
+        "('O', 13.5)": [
+          "734.168631115",
+          12833155
+        ],
+        "('O', 14.5)": [
+          "734.168631115",
+          12856578
+        ],
+        "('O', 15.5)": [
+          "734.168631115",
+          14298518
+        ],
+        "('O', 16.5)": [
+          "734.168631115",
+          19203800
+        ],
+        "('U', 8.5)": [
+          "734.168631115",
+          12493613
+        ],
+        "('U', 9.5)": [
+          "734.168631115",
+          12493615
+        ],
+        "('U', 10.5)": [
+          "734.168631115",
+          12493617
+        ],
+        "('U', 11.5)": [
+          "734.168631115",
+          12810131
+        ],
+        "('U', 12.5)": [
+          "734.168631115",
+          12821809
+        ],
+        "('U', 13.5)": [
+          "734.168631115",
+          12833156
+        ],
+        "('U', 14.5)": [
+          "734.168631115",
+          12856579
+        ],
+        "('U', 15.5)": [
+          "734.168631115",
+          14298519
+        ],
+        "('U', 16.5)": [
+          "734.168631115",
+          19203799
+        ],
+        "('O', 10.0)": [
+          "734.168608002",
+          7017905
+        ],
+        "('U', 10.0)": [
+          "734.168608002",
+          7017906
+        ]
+      }
+    },
+    "f5": {
+      "spreads": {
+        "('away', 0.5)": [
+          "734.168631208",
+          50291
+        ],
+        "('home', -0.5)": [
+          "734.168631208",
+          75117758
+        ],
+        "('away', 3.5)": [
+          "734.168631087",
+          12805956
+        ],
+        "('away', 2.5)": [
+          "734.168631087",
+          12805955
+        ],
+        "('away', 1.5)": [
+          "734.168631087",
+          12805701
+        ],
+        "('away', -0.5)": [
+          "734.168631087",
+          71724246
+        ],
+        "('away', -1.5)": [
+          "734.168631087",
+          12801960
+        ],
+        "('away', -2.5)": [
+          "734.168631087",
+          12805739
+        ],
+        "('away', -3.5)": [
+          "734.168631087",
+          12805705
+        ],
+        "('home', -3.5)": [
+          "734.168631087",
+          81813202
+        ],
+        "('home', -2.5)": [
+          "734.168631087",
+          81813161
+        ],
+        "('home', -1.5)": [
+          "734.168631087",
+          79563336
+        ],
+        "('home', 0.5)": [
+          "734.168631087",
+          81813172
+        ],
+        "('home', 1.5)": [
+          "734.168631087",
+          81813149
+        ],
+        "('home', 2.5)": [
+          "734.168631087",
+          81813137
+        ],
+        "('home', 3.5)": [
+          "734.168631087",
+          81813138
+        ]
+      },
+      "totals": {
+        "('O', 5.5)": [
+          "734.168631074",
+          7017905
+        ],
+        "('U', 5.5)": [
+          "734.168631074",
+          7017906
+        ],
+        "('O', 3.5)": [
+          "734.168631137",
+          12805103
+        ],
+        "('O', 4.5)": [
+          "734.168631137",
+          12493604
+        ],
+        "('O', 6.5)": [
+          "734.168631137",
+          12493608
+        ],
+        "('O', 7.5)": [
+          "734.168631137",
+          12493610
+        ],
+        "('O', 8.5)": [
+          "734.168631137",
+          12493612
+        ],
+        "('O', 9.5)": [
+          "734.168631137",
+          12493614
+        ],
+        "('O', 10.5)": [
+          "734.168631137",
+          12493616
+        ],
+        "('O', 11.5)": [
+          "734.168631137",
+          12810130
+        ],
+        "('U', 3.5)": [
+          "734.168631137",
+          12805104
+        ],
+        "('U', 4.5)": [
+          "734.168631137",
+          12493605
+        ],
+        "('U', 6.5)": [
+          "734.168631137",
+          12493609
+        ],
+        "('U', 7.5)": [
+          "734.168631137",
+          12493611
+        ],
+        "('U', 8.5)": [
+          "734.168631137",
+          12493613
+        ],
+        "('U', 9.5)": [
+          "734.168631137",
+          12493615
+        ],
+        "('U', 10.5)": [
+          "734.168631137",
+          12493617
+        ],
+        "('U', 11.5)": [
+          "734.168631137",
+          12810131
+        ]
+      }
+    }
+  }
+}

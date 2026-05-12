@@ -267,3 +267,26 @@ Updates required before merge (exact wording in the implementation plan):
 - New market types (props, futures, alternate moneylines).
 - Frontend changes — the dashboard is agnostic to the upstream source.
 - Performance optimization beyond per-game isolation and atomic DB write.
+
+---
+
+## Phase 1 findings (2026-05-12)
+
+- **DK selection price field:** `displayOdds.american` (string e.g. `"+260"`) plus `displayOdds.decimal` and a top-level numeric `trueOdds` (present in `parlays/v1/sgp/events/{id}` payload: **YES**). The parlays endpoint returns full `data.markets[].selections[]` with prices baked in, so the singles scraper is **one-call-per-event** — no need to also call `event/eventSubcategory/v1/markets`. The subcategory endpoint only returns `(market_id, name)` tuples (no selections), so it's not useful for pricing. Selection objects also expose `outcomeType` (`Over`/`Under`/team-side), `points` (line value as float), `name`, `status`, `isDisabled`, and the team-prefixed market `name` (e.g. `"Run Line"`, `"Total"`, `"Run Line - 1st 5 Innings"`).
+- **DK F3 markets:** `ABSENT` — no markets in the parlays payload contain `"1st 3"` / `"F3"` / `"3rd Innings"`. DK does post per-inning `3rd Inning (3 Way)` style markets but no cumulative first-3-innings spread/total.
+- **DK F5 markets:** `PRESENT` — exact `marketType.name` values: `"Run Line - 1st 5 Innings"`, `"Total Runs - 1st 5 Innings"`, `"Total Alternate - 1st 5 Innings"`, `"Team Total Runs - 1st 5 Innings"`.
+- **DK F7 markets:** `PRESENT` — exact `marketType.name` values: `"Run Line - 1st 7 Innings"`, `"Total Runs - 1st 7 Innings"`, `"Total Alternate - 1st 7 Innings"`, `"Team Total Runs - 1st 7 Innings"`.
+- **FD F3/F5/F7 markets:**
+  - F3 spread/total: `ABSENT` — only `"First 3 Innings Result"` (3-way moneyline-style) exists; no run line, no total.
+  - F5: `PRESENT` — `"First 5 Innings Run Line"`, `"First 5 Innings Alternate Run Lines"`, `"First 5 Innings Total Runs"`, `"First 5 Innings Alternate Total Runs"`, `"First 5 Innings Money Line"`.
+  - F7 spread/total: `ABSENT` — only `"First 7 Innings Result"`; no spread, no total.
+- **FD runner price field:** `runner.winRunnerOdds.americanDisplayOdds.americanOdds` (integer, e.g. `520`). Also available: `winRunnerOdds.americanDisplayOdds.americanOddsInt` (same value), `winRunnerOdds.trueOdds.decimalOdds.decimalOdds` (float). Runners also expose `handicap` (numeric line), `runnerName`, `runnerStatus`, `previousWinRunnerOdds` (history list).
+- **DK team-name drift:** `LIST` — DK uses abbreviated city prefixes ("CLE Guardians", "LA Angels", "STL Cardinals") for **all 30 teams**; canonical (`mlb_consensus_temp`) uses full names ("Cleveland Guardians", "Los Angeles Angels", "St. Louis Cardinals"). Existing `resolve_offshore_teams()` in `Tools.R` does substring/word-overlap matching but DK's prefix form (e.g. "cleguardians" stripped) is not a substring of canonical "clevelandguardians" — needs explicit mapping or game-level word-overlap rescue. Note that the SGP scraper today already handles this via the `mlb_parlay_lines` join on team names from the R-side resolver, so DK is already being canonicalized somewhere — but the singles scraper must not skip that step.
+- **FD team-name drift:** `NONE` — all 30 FD team names match canonical exactly (e.g. `"St. Louis Cardinals"`, `"Athletics"`, `"Cleveland Guardians"`).
+
+**Implications for plan:**
+- Tasks 4 + 5 client parsers should use field names: DK = `displayOdds.american` (parse `"+260"` → `260`) extracted from `data.markets[].selections[]` in the parlays endpoint response; FD = `runner.winRunnerOdds.americanDisplayOdds.americanOdds` (already an integer).
+- Task 4 (DK singles parser) only needs **one HTTP call per event** (`parlays/v1/sgp/events/{id}`). The subcategory markets endpoint can be skipped for pricing — only useful if a future task needs market metadata lookup independent of selections.
+- If FD doesn't post F3/F7 spread/total (confirmed), `scraper_fanduel_singles.py` emits only FG + F5 rows (matches today's SGP scraper behavior).
+- DK posts F5 + F7 spread/total. The singles scraper for DK should emit rows for FG + F5 + F7 (F7 is a **new** period not currently produced by the SGP scraper — confirm this is desired before Task 9 wires DB writes).
+- Team-name dictionary updates: `NEEDED` for DK. Two options: (a) extend `Answer Keys/Tools.R::resolve_offshore_teams()` substring rules to handle 2-3-char city prefixes ("CLE" → "Cleveland", "LA" → "Los Angeles"), or (b) build a DK-specific mapping table inside `scraper_draftkings_singles.py` keyed off the team-dict canonical list. Recommend (b) — keeps the resolver generic and the mapping co-located with the scraper that introduces the variant naming. FD needs no mapping changes.
