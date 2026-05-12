@@ -153,6 +153,37 @@ def h4():
 results['H4_wz_shave_check'] = h4()
 print("H4:", json.dumps(results['H4_wz_shave_check'], indent=2))
 
+# ---------- H5: push EV accounting ----------
+def h5():
+    sub = fg_fav.copy()
+    pushes = sub[sub['result'] == 'push']
+    push_rate = len(pushes) / len(sub) if len(sub) > 0 else 0
+    # Counterfactual: if pushes had been "win the single total leg" (since spread leg pushes, parlay collapses to total)
+    # we'd have earned (total_dec - 1) * stake instead of 0. But that requires the total leg to have ALSO won.
+    # Without per-bet leg-level outcome data we can only put an upper bound.
+    # Compute hypothetical EV: assume total_leg hits at its break-even rate (1/total_dec) inside pushes.
+    def amer_to_dec(a):
+        if pd.isna(a): return None
+        a = float(a)
+        return 1 + a/100 if a > 0 else 1 + 100/abs(a)
+    pushes = pushes.copy()
+    pushes['total_dec'] = pushes['total_amer'].apply(amer_to_dec)
+    pushes['total_breakeven_prob'] = 1 / pushes['total_dec']
+    pushes['expected_payout_if_collapsed'] = (pushes['total_dec'] - 1) * pushes['stake'] * pushes['total_breakeven_prob']
+    pushes['expected_loss_if_collapsed'] = -pushes['stake'] * (1 - pushes['total_breakeven_prob'])
+    pushes['expected_net_if_collapsed'] = pushes['expected_payout_if_collapsed'] + pushes['expected_loss_if_collapsed']
+    return {
+        'n_total': len(sub),
+        'n_pushes': len(pushes),
+        'push_rate': round(push_rate, 4),
+        'realized_push_pnl': 0.0,  # by definition
+        'counterfactual_net_if_pushed_to_single': round(pushes['expected_net_if_collapsed'].sum(), 2) if len(pushes) > 0 else 0,
+        'note': 'WZ pushes refund the full stake; this is the SAME as treating push as 0. The counterfactual quantifies opportunity cost if WZ instead paid the surviving leg.',
+    }
+
+results['H5_push_ev'] = h5()
+print("H5:", json.dumps(results['H5_push_ev'], indent=2))
+
 # Save partial results (will be overwritten as more H{n} are added in later tasks)
 with open(OUT_JSON, 'w') as f:
     json.dump(results, f, indent=2)
