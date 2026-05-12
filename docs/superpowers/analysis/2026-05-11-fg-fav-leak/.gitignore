@@ -1,0 +1,4 @@
+# Intermediate outputs not committed (memo + scripts only)
+*.parquet
+*.csv
+findings_data.json

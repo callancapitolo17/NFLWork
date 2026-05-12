@@ -153,6 +153,14 @@ mlb_triple_play.R (standalone pricer)
 7. **Naive TIMESTAMP vs `NOW()` in DuckDB R sessions** — `NOW()` returns TIMESTAMPTZ; comparing it to a NAIVE TIMESTAMP forces a cast using the session timezone. R's DuckDB defaults to **UTC**; Python's defaults to local. So `wagerzon_specials.game_time` (naive Eastern, e.g. `18:35` ET written verbatim by `scraper_specials.py`) gets interpreted as `18:35 UTC` in R — silently dropping every row once UTC time passes the nominal Eastern start (~4h pre-game). Compare against `(NOW() AT TIME ZONE 'America/New_York')::TIMESTAMP` to put both sides in naive Eastern wall-clock. Requires the `icu` extension (`INSTALL icu; LOAD icu;` at script startup — first call downloads ~1MB to user cache, then no-op). Same trap applies to any other naive-Eastern timestamp from offshore scrapers.
 8. **Parallel R scripts on `mlb.duckdb`** — `/refresh` launches `mlb_correlated_parlay.R` and `mlb_triple_play.R` in parallel (server line 2235-2244). Both want a writer connection on `mlb.duckdb` (parlay for working tables, trifecta only briefly to `CREATE TABLE IF NOT EXISTS mlb_trifecta_sgp_odds`). Whoever loses crashes with `errno 35` "Conflicting lock". Trifecta pricer now retries with exponential backoff and falls through non-fatally — the SGP table is created once per machine, so a transient miss on a follow-up run is safe. If you add a new short-lived `mlb.duckdb` writer in the parallel section, follow the same retry pattern.
 
+## Known model biases
+
+**MLB correlated parlay — FG `-1.5` fav + over at total ≤ 7 is structurally -EV.**
+- Evidence: n=33 placed bets, ROI -73%, bootstrap 95% CI [-97%, -38%] (fully below zero). Confirmed 2026-05-11.
+- Mechanism: `mlb_game_samples` overstates the marginal probability of over at low totals. The correlation factor itself (~1.04) is mild — the issue is the underlying over-leg simulator, not the joint structure.
+- Mitigation: filter Home Spread + Over and Away Spread + Over combos in `mlb_correlated_parlay.R` when `row$total_line <= 7.0` for FG slice.
+- Details: `docs/superpowers/analysis/2026-05-11-fg-fav-leak/findings.md`. Memory: `memory/mlb_parlay_edge_overestimation.md`.
+
 ## When Making Changes
 
 - **Adding a new scraper**: Add to `run.py` scraper config, create DuckDB table with 18-column schema, add team name mappings
