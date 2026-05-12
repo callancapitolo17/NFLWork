@@ -1,0 +1,33 @@
+game_id,combo,period,bookmaker,sgp_decimal,sgp_american,fetch_time,source
+265d87925f501ac50a2a12c6b5a91354,Away Spread + Over,FG,fanduel,3.0464,204,2026-05-12 16:46:08.679193,fanduel_direct
+265d87925f501ac50a2a12c6b5a91354,Away Spread + Under,FG,fanduel,2.6716,167,2026-05-12 16:46:08.679193,fanduel_direct
+265d87925f501ac50a2a12c6b5a91354,F5 Away Spread + Over,F5,fanduel,3.5853,258,2026-05-12 16:46:08.679193,fanduel_direct
+265d87925f501ac50a2a12c6b5a91354,F5 Away Spread + Under,F5,fanduel,2.9766,197,2026-05-12 16:46:08.679193,fanduel_direct
+265d87925f501ac50a2a12c6b5a91354,F5 Home Spread + Over,F5,fanduel,3.1101,211,2026-05-12 16:46:08.679193,fanduel_direct
+265d87925f501ac50a2a12c6b5a91354,F5 Home Spread + Under,F5,fanduel,3.3816,238,2026-05-12 16:46:08.679193,fanduel_direct
+265d87925f501ac50a2a12c6b5a91354,Home Spread + Over,FG,fanduel,3.5891,258,2026-05-12 16:46:08.679193,fanduel_direct
+265d87925f501ac50a2a12c6b5a91354,Home Spread + Under,FG,fanduel,3.7186,271,2026-05-12 16:46:08.679193,fanduel_direct
+34393ecc2b2d109779095b1d4935225b,Away Spread + Over,FG,fanduel,2.7469,174,2026-05-12 16:46:08.679193,fanduel_direct
+34393ecc2b2d109779095b1d4935225b,Away Spread + Under,FG,fanduel,2.4897,148,2026-05-12 16:46:08.679193,fanduel_direct
+34393ecc2b2d109779095b1d4935225b,F5 Away Spread + Over,F5,fanduel,3.5895,258,2026-05-12 16:46:08.679193,fanduel_direct
+34393ecc2b2d109779095b1d4935225b,F5 Away Spread + Under,F5,fanduel,2.6619,166,2026-05-12 16:46:08.679193,fanduel_direct
+34393ecc2b2d109779095b1d4935225b,F5 Home Spread + Over,F5,fanduel,3.32,231,2026-05-12 16:46:08.679193,fanduel_direct
+34393ecc2b2d109779095b1d4935225b,F5 Home Spread + Under,F5,fanduel,3.6264,262,2026-05-12 16:46:08.679193,fanduel_direct
+34393ecc2b2d109779095b1d4935225b,Home Spread + Over,FG,fanduel,4.0236,302,2026-05-12 16:46:08.679193,fanduel_direct
+34393ecc2b2d109779095b1d4935225b,Home Spread + Under,FG,fanduel,4.175,317,2026-05-12 16:46:08.679193,fanduel_direct
+a0929cf66d445eec19f118010165e95c,Away Spread + Over,FG,fanduel,4.0152,301,2026-05-12 16:46:08.679193,fanduel_direct
+a0929cf66d445eec19f118010165e95c,Away Spread + Under,FG,fanduel,3.4298,242,2026-05-12 16:46:08.679193,fanduel_direct
+a0929cf66d445eec19f118010165e95c,F5 Away Spread + Over,F5,fanduel,5.9796,498,2026-05-12 16:46:08.726146,fanduel_interpolated
+a0929cf66d445eec19f118010165e95c,F5 Away Spread + Under,F5,fanduel,3.7834,278,2026-05-12 16:46:08.726146,fanduel_interpolated
+a0929cf66d445eec19f118010165e95c,F5 Home Spread + Over,F5,fanduel,3.4042,240,2026-05-12 16:46:08.726146,fanduel_interpolated
+a0929cf66d445eec19f118010165e95c,F5 Home Spread + Under,F5,fanduel,3.6405,264,2026-05-12 16:46:08.726146,fanduel_interpolated
+a0929cf66d445eec19f118010165e95c,Home Spread + Over,FG,fanduel,3.0379,203,2026-05-12 16:46:08.679193,fanduel_direct
+a0929cf66d445eec19f118010165e95c,Home Spread + Under,FG,fanduel,3.289,228,2026-05-12 16:46:08.679193,fanduel_direct
+a1fa0d550bd68cf44d71f0657fa93d6a,Away Spread + Over,FG,fanduel,2.7762,177,2026-05-12 16:46:08.679193,fanduel_direct
+a1fa0d550bd68cf44d71f0657fa93d6a,Away Spread + Under,FG,fanduel,3.9734,297,2026-05-12 16:46:08.679193,fanduel_direct
+a1fa0d550bd68cf44d71f0657fa93d6a,F5 Away Spread + Over,F5,fanduel,2.7858,178,2026-05-12 16:46:08.679193,fanduel_direct
+a1fa0d550bd68cf44d71f0657fa93d6a,F5 Away Spread + Under,F5,fanduel,3.5842,258,2026-05-12 16:46:08.679193,fanduel_direct
+a1fa0d550bd68cf44d71f0657fa93d6a,F5 Home Spread + Over,F5,fanduel,4.0508,305,2026-05-12 16:46:08.679193,fanduel_direct
+a1fa0d550bd68cf44d71f0657fa93d6a,F5 Home Spread + Under,F5,fanduel,2.8932,189,2026-05-12 16:46:08.679193,fanduel_direct
+a1fa0d550bd68cf44d71f0657fa93d6a,Home Spread + Over,FG,fanduel,4.0943,309,2026-05-12 16:46:08.679193,fanduel_direct
+a1fa0d550bd68cf44d71f0657fa93d6a,Home Spread + Under,FG,fanduel,3.1567,215,2026-05-12 16:46:08.679193,fanduel_direct

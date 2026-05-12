@@ -98,3 +98,62 @@ def test_dk_sgp_output_matches_baseline():
         f"{len(drift)}/{len(shared)} ({drift_frac:.0%}). "
         f"Sample: {dict(list(drift.items())[:5])}"
     )
+
+
+@pytest.mark.integration
+def test_fd_sgp_output_matches_baseline():
+    """Live API; re-runs the FD SGP scraper and diffs against the golden CSV.
+
+    Mirrors the DK pattern (Task 6): intersection-only comparison on
+    (game_id, combo, period), 0.20 absolute tolerance, <=15% drift cap.
+    Required because FD markets move naturally between consecutive scrapes
+    and games tipping off legitimately drop out of the current set.
+    """
+    mlb_sgp_dir = Path(__file__).resolve().parent.parent
+    result = subprocess.run(
+        [sys.executable, "scraper_fanduel_sgp.py"],
+        capture_output=True, text=True,
+        cwd=mlb_sgp_dir,
+    )
+    assert result.returncode == 0, (
+        f"Scraper failed: stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+    db_path = mlb_sgp_dir.parent / "Answer Keys" / "mlb_mm.duckdb"
+    con = duckdb.connect(str(db_path), read_only=True)
+    current = {
+        (row[0], row[1], row[2]): float(row[3])
+        for row in con.execute(
+            "SELECT game_id, combo, period, sgp_decimal "
+            "FROM mlb_sgp_odds WHERE bookmaker='fanduel'"
+        ).fetchall()
+    }
+    con.close()
+
+    baseline_path = Path(__file__).resolve().parent / "golden" / "fd_sgp_baseline.csv"
+    baseline = {}
+    with open(baseline_path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            baseline[(row["game_id"], row["combo"], row["period"])] = float(
+                row["sgp_decimal"]
+            )
+
+    shared = baseline.keys() & current.keys()
+    assert shared, (
+        "No (game_id, combo, period) keys in common between baseline and "
+        "current run. Either the baseline is fully stale (all games tipped "
+        f"off) or the refactor broke event discovery. baseline rows: "
+        f"{len(baseline)}, current rows: {len(current)}"
+    )
+    drift = {
+        k: (baseline[k], current[k])
+        for k in shared
+        if abs(baseline[k] - current[k]) > 0.20
+    }
+    drift_frac = len(drift) / len(shared)
+    assert drift_frac <= 0.15, (
+        f"Too many combos drifted >0.20 decimal odds: "
+        f"{len(drift)}/{len(shared)} ({drift_frac:.0%}). "
+        f"Sample: {dict(list(drift.items())[:5])}"
+    )
