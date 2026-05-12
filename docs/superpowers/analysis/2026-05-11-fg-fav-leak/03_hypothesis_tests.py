@@ -126,6 +126,33 @@ def h3():
 results['H3_total_line_stratification'] = h3()
 print("H3:", json.dumps(results['H3_total_line_stratification'], indent=2))
 
+# ---------- H4: effective WZ shave check ----------
+def h4():
+    def amer_to_dec(a):
+        if pd.isna(a): return None
+        a = float(a)
+        return 1 + a/100 if a > 0 else 1 + 100/abs(a)
+
+    sub = fg_fav.copy()
+    sub['spread_dec'] = sub['spread_amer'].apply(amer_to_dec)
+    sub['total_dec'] = sub['total_amer'].apply(amer_to_dec)
+    sub['independent_dec'] = sub['spread_dec'] * sub['total_dec']
+    sub['effective_shave'] = sub['dec_odds'] / sub['independent_dec']
+    valid = sub.dropna(subset=['effective_shave'])
+    valid = valid[(valid['effective_shave'] > 0.5) & (valid['effective_shave'] < 1.1)]  # exclude pushes (dec_odds=0) and parsing errors
+    return {
+        'n': len(valid),
+        'mean_shave': round(valid['effective_shave'].mean(), 4),
+        'median_shave': round(valid['effective_shave'].median(), 4),
+        'p10_shave': round(valid['effective_shave'].quantile(0.10), 4),
+        'p90_shave': round(valid['effective_shave'].quantile(0.90), 4),
+        'model_assumed_shave': 0.989,
+        'gap': round(0.989 - valid['effective_shave'].mean(), 4),
+    }
+
+results['H4_wz_shave_check'] = h4()
+print("H4:", json.dumps(results['H4_wz_shave_check'], indent=2))
+
 # Save partial results (will be overwritten as more H{n} are added in later tasks)
 with open(OUT_JSON, 'w') as f:
     json.dump(results, f, indent=2)
