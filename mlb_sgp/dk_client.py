@@ -41,7 +41,23 @@ class DraftKingsClient:
         self.verbose = verbose
 
     def list_events(self) -> list[Event]:
-        raise NotImplementedError("Task 3")
+        """Returns one Event per MLB game today.
+
+        Thin wrapper over the legacy fetch_dk_events function. The SGP refactor
+        in Task 6 keeps fetch_dk_events in place; this method just adapts its
+        dict output to the Event dataclass.
+
+        fetch_dk_events returns dicts with keys:
+          dk_event_id, dk_home, dk_away, start_time, name
+        """
+        from scraper_draftkings_sgp import fetch_dk_events
+        raw = fetch_dk_events(self.session)
+        return [Event(
+            event_id=str(e["dk_event_id"]),
+            home_team=e["dk_home"],
+            away_team=e["dk_away"],
+            start_time=e.get("start_time", ""),
+        ) for e in raw]
 
     def fetch_event_markets(self, event_id: str) -> list[Market]:
         raise NotImplementedError("Task 4")

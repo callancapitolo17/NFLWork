@@ -26,3 +26,32 @@ def test_selection_dataclass_has_required_fields():
 def test_market_dataclass_has_required_fields():
     m = Market(market_id="1234", name="Run Line", subcategory="game_lines")
     assert m.subcategory == "game_lines"
+
+
+def test_list_events_parses_fixture():
+    """Verifies list_events parses a captured DK league API response."""
+    fixture_path = FIXTURES / "dk_league_response.json"
+    with open(fixture_path) as f:
+        fake_response_body = json.load(f)
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return fake_response_body
+
+        def raise_for_status(self):
+            pass  # 200 OK — nothing to raise
+
+    class FakeSession:
+        def get(self, url, **kwargs):
+            return FakeResponse()
+
+    client = DraftKingsClient.__new__(DraftKingsClient)  # bypass __init__
+    client.session = FakeSession()
+    client.verbose = False
+
+    events = client.list_events()
+    assert len(events) > 0
+    assert all(isinstance(e, Event) for e in events)
+    assert all(e.event_id and e.home_team and e.away_team for e in events)
