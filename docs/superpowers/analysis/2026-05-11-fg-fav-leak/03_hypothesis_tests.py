@@ -98,6 +98,34 @@ def h2():
 results['H2_calibration'] = h2()
 print("H2:", json.dumps(results['H2_calibration'], indent=2, default=str))
 
+# ---------- H3: total-line stratification ----------
+def h3():
+    sub = fg_fav[fg_fav['total_line'].notna()].copy()
+    sub['tot_bucket'] = pd.cut(sub['total_line'], bins=[0, 7, 8, 9, 20], labels=['≤7', '7-8', '8-9', '9+'])
+    out = []
+    for bucket, g in sub.groupby('tot_bucket', observed=True):
+        if len(g) == 0: continue
+        settled = g[g['result'].isin(['win', 'loss'])]
+        wins = int((settled['result'] == 'win').sum())
+        losses = int((settled['result'] == 'loss').sum())
+        if wins + losses == 0: continue
+        wagered = g['stake'].sum()
+        pnl = g['pnl'].sum()
+        be = 1 / settled['dec_odds'].mean()
+        ci_lo, ci_hi = bootstrap_roi(g) if len(g) >= 10 else (None, None)
+        out.append({
+            'bucket': str(bucket), 'n': len(g), 'wins': wins, 'losses': losses,
+            'wagered': round(wagered, 2), 'pnl': round(pnl, 2),
+            'roi': round(pnl / wagered, 4) if wagered > 0 else None,
+            'hit_rate': round(wins / (wins + losses), 4), 'break_even': round(be, 4),
+            'ci_lo_roi': round(ci_lo, 4) if ci_lo is not None else None,
+            'ci_hi_roi': round(ci_hi, 4) if ci_hi is not None else None,
+        })
+    return out
+
+results['H3_total_line_stratification'] = h3()
+print("H3:", json.dumps(results['H3_total_line_stratification'], indent=2))
+
 # Save partial results (will be overwritten as more H{n} are added in later tasks)
 with open(OUT_JSON, 'w') as f:
     json.dump(results, f, indent=2)
