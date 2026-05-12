@@ -184,6 +184,57 @@ def h5():
 results['H5_push_ev'] = h5()
 print("H5:", json.dumps(results['H5_push_ev'], indent=2))
 
+# ---------- H6: sample-correlation vs realized ----------
+def h6():
+    import json
+    try:
+        sample = json.load(open('/tmp/fg_fav_leak/sample_corr.json'))
+    except FileNotFoundError:
+        return {'status': 'sample_corr.json missing — run 04_sample_correlation.R first'}
+
+    # Realized "correlation factor" from FG-fav-1.5 over bets:
+    # We can approximate by treating each bet's outcome as a sample of (covers, over_hits).
+    # But we don't have leg-level outcomes per bet — only joint outcome (win = both hit).
+    # So we estimate realized P(joint hit) and compare to model's expected joint.
+    fg_fav_over = fg_fav[fg_fav['ou'] == 'over'].copy()
+    settled = fg_fav_over[fg_fav_over['result'].isin(['win', 'loss'])]
+    realized_joint = (settled['result'] == 'win').mean() if len(settled) > 0 else None
+
+    # Stratify realized joint by total_line bucket — this is where H3 found the leak
+    realized_by_tot = []
+    for bucket, g in fg_fav_over.groupby(pd.cut(fg_fav_over['total_line'], bins=[0, 7, 8, 9, 20], labels=['≤7', '7-8', '8-9', '9+']), observed=True):
+        s = g[g['result'].isin(['win', 'loss'])]
+        if len(s) == 0:
+            continue
+        realized_by_tot.append({
+            'bucket': str(bucket),
+            'n': len(s),
+            'realized_joint_hit_prob': round((s['result'] == 'win').mean(), 4),
+        })
+
+    # Model's implied joint = 1 / fair_dec, averaged across the matched subset
+    matched = fg_fav_over[fg_fav_over['fair_odds'].notna()].copy()
+    def amer_to_dec(a):
+        a = float(a)
+        return 1 + a/100 if a > 0 else 1 + 100/abs(a)
+    if len(matched) > 0:
+        matched['model_joint'] = matched['fair_odds'].apply(lambda a: 1 / amer_to_dec(a))
+        model_joint_mean = float(matched['model_joint'].mean())
+    else:
+        model_joint_mean = None
+
+    return {
+        'sample_corr_by_total_line': sample.get('by_total_line'),
+        'realized_joint_hit_prob_fav_over_overall': round(realized_joint, 4) if realized_joint is not None else None,
+        'realized_joint_hit_prob_fav_over_by_total': realized_by_tot,
+        'model_predicted_joint_hit_prob_fav_over (matched subset)': round(model_joint_mean, 4) if model_joint_mean else None,
+        'gap_pp_model_minus_realized_overall': round((model_joint_mean - realized_joint) * 100, 2) if (model_joint_mean and realized_joint) else None,
+        'note': 'Per-bet model joint is not available without re-running the pricer; this uses the matched-subset average as a proxy.',
+    }
+
+results['H6_sample_corr_vs_realized'] = h6()
+print("H6:", json.dumps(results['H6_sample_corr_vs_realized'], indent=2, default=str))
+
 # Save partial results (will be overwritten as more H{n} are added in later tasks)
 with open(OUT_JSON, 'w') as f:
     json.dump(results, f, indent=2)
