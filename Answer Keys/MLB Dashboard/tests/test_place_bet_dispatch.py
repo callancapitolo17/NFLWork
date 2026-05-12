@@ -70,7 +70,8 @@ def test_dispatch_wagerzon_calls_single_placer(client):
 
 
 def test_dispatch_hoop88_routes_to_playwright(client):
-    with patch("mlb_dashboard_server._spawn_playwright_placer") as mock_pw:
+    with patch("mlb_dashboard_server._spawn_playwright_placer") as mock_pw, \
+         patch("mlb_dashboard_server._insert_placement_breadcrumb"):
         mock_pw.return_value = {"success": True,
                                  "status": "playwright_launched",
                                  "message": "Browser launching..."}
@@ -81,7 +82,8 @@ def test_dispatch_hoop88_routes_to_playwright(client):
 
 
 def test_dispatch_bfa_routes_to_playwright(client):
-    with patch("mlb_dashboard_server._spawn_playwright_placer") as mock_pw:
+    with patch("mlb_dashboard_server._spawn_playwright_placer") as mock_pw, \
+         patch("mlb_dashboard_server._insert_placement_breadcrumb"):
         mock_pw.return_value = {"success": True,
                                  "status": "playwright_launched",
                                  "message": "Browser launching..."}
@@ -92,7 +94,8 @@ def test_dispatch_bfa_routes_to_playwright(client):
 
 
 def test_dispatch_betonlineag_routes_to_playwright(client):
-    with patch("mlb_dashboard_server._spawn_playwright_placer") as mock_pw:
+    with patch("mlb_dashboard_server._spawn_playwright_placer") as mock_pw, \
+         patch("mlb_dashboard_server._insert_placement_breadcrumb"):
         mock_pw.return_value = {"success": True,
                                  "status": "playwright_launched",
                                  "message": "Browser launching..."}
@@ -204,3 +207,81 @@ def test_dispatch_wagerzon_returns_409_on_in_flight_duplicate(client):
         resp = client.post("/api/place-bet", json=_wz_bet())
     assert resp.status_code == 409
     mock_place.assert_not_called()
+
+
+def test_integration_wagerzon_breadcrumb_writes_to_real_db(tmp_path, monkeypatch):
+    """Real DuckDB insertion test — catches schema mismatches the unit tests
+    miss. Builds a fresh placed_bets table with the production NOT NULL
+    columns (model_prob, model_ev) and verifies the dispatcher actually
+    INSERTs without violating constraints."""
+    import duckdb
+    import mlb_dashboard_server as srv
+
+    # Create a temporary DB mirroring the production placed_bets schema.
+    db_path = tmp_path / "test_dashboard.duckdb"
+    con = duckdb.connect(str(db_path))
+    con.execute("""
+        CREATE TABLE placed_bets (
+            bet_hash VARCHAR PRIMARY KEY,
+            game_id VARCHAR,
+            home_team VARCHAR,
+            away_team VARCHAR,
+            game_time TIMESTAMP,
+            market VARCHAR,
+            bet_on VARCHAR,
+            line FLOAT,
+            model_prob FLOAT NOT NULL,
+            model_ev FLOAT NOT NULL,
+            recommended_size FLOAT,
+            actual_size FLOAT,
+            odds INTEGER,
+            bookmaker VARCHAR,
+            placed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status VARCHAR DEFAULT 'pending',
+            ticket_number VARCHAR,
+            error_msg VARCHAR,
+            error_msg_key VARCHAR,
+            wz_odds_at_place INTEGER,
+            account VARCHAR
+        )
+    """)
+    con.close()
+
+    monkeypatch.setattr(srv, "DB_PATH", db_path)
+    fake_result = {"status": "placed", "ticket_number": "T-1",
+                   "balance_after": 100.0,
+                   "error_msg": None, "error_msg_key": None}
+    monkeypatch.setattr(srv.single_placer, "place_single",
+                        lambda **kwargs: fake_result)
+    # Bypass the WZ scraper lookup — supply idgm/play directly.
+    monkeypatch.setattr(srv, "_resolve_wagerzon_play_idgm",
+                        lambda bet: {"idgm": 100001, "play": 1})
+
+    srv.app.config["TESTING"] = True
+    with srv.app.test_client() as client:
+        bet = dict(
+            bet_hash="real_insert_test",
+            bookmaker_key="wagerzon",
+            account="primary",
+            kelly_bet=42, actual_size=42,
+            line=-1.5, american_odds=110, wz_odds_at_place=110,
+            game_id="g1", market="spreads_1st_5_innings",
+            bet_on="Home", home_team="NYY", away_team="BOS",
+            model_prob=0.57, model_ev=0.06,
+        )
+        resp = client.post("/api/place-bet", json=bet)
+
+    assert resp.status_code == 200, resp.get_json()
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    row = con.execute(
+        "SELECT model_prob, model_ev, status, ticket_number "
+        "FROM placed_bets WHERE bet_hash = ?",
+        ["real_insert_test"]
+    ).fetchone()
+    con.close()
+    assert row is not None
+    assert abs(row[0] - 0.57) < 1e-6
+    assert abs(row[1] - 0.06) < 1e-6
+    assert row[2] == "placed"
+    assert row[3] == "T-1"

@@ -765,8 +765,9 @@ def _insert_placement_breadcrumb(bet_hash: str, account, bet_meta: dict,
                 INSERT INTO placed_bets
                   (bet_hash, game_id, home_team, away_team, market, bet_on,
                    line, odds, actual_size, recommended_size, bookmaker,
+                   model_prob, model_ev,
                    account, status, wz_odds_at_place)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 bet_hash,
                 bet_meta.get("game_id"),
@@ -779,6 +780,8 @@ def _insert_placement_breadcrumb(bet_hash: str, account, bet_meta: dict,
                 bet_meta.get("actual_size"),
                 bet_meta.get("kelly_bet"),
                 bet_meta.get("bookmaker_key") or bet_meta.get("bookmaker"),
+                float(bet_meta.get("model_prob") or 0.0),
+                float(bet_meta.get("model_ev") or 0.0),
                 account,
                 status,
                 bet_meta.get("wz_odds_at_place"),
@@ -796,6 +799,170 @@ def _insert_placement_breadcrumb(bet_hash: str, account, bet_meta: dict,
             ])
     finally:
         con.close()
+
+
+def _resolve_wagerzon_play_idgm(bet: dict) -> dict | None:
+    """Look up WZ's idgm + play (side code) from the latest wagerzon mlb_odds
+    row matching this bet's (home_team, away_team, market, line, bet_on).
+
+    Returns {'idgm': int, 'play': int} or None if the WZ scraper hasn't
+    populated a matching row yet.
+
+    play codes (matches parlay_placer.Leg.play):
+        0 = away spread, 1 = home spread,
+        2 = over,        3 = under,
+        4 = away ML,     5 = home ML
+
+    The dashboard sends canonical market names like 'spreads_1st_5_innings'
+    that MLB.R maps from the WZ scraper's raw labels (spreads_h1, spreads_f5,
+    etc.). We reverse that mapping here so the lookup can use scraper-side
+    column values.
+    """
+    wz_db = _REPO_ROOT / "wagerzon_odds" / "wagerzon.duckdb"
+    if not wz_db.exists():
+        return None
+
+    market = (bet.get("market") or "").strip()
+    bet_on = (bet.get("bet_on") or "").strip()
+    home   = (bet.get("home_team") or "").strip()
+    away   = (bet.get("away_team") or "").strip()
+    line   = bet.get("line")
+
+    # Canonical market -> list of possible (market, period) tuples to match
+    # against the raw wagerzon mlb_odds table. WZ posts F5/1st-5 markets under
+    # both the 'spreads_f5' (market column) and 'spreads_h1' conventions, and
+    # FG markets just under 'spreads'/'totals' with period='fg'. We try every
+    # plausible row and order by fetch_time DESC.
+    market_candidates: list[tuple[str, str | None]] = []
+    if market == "spreads_1st_5_innings":
+        market_candidates = [("spreads_f5", None), ("spreads_h1", None),
+                              ("spreads", "f5"), ("spreads", "h1")]
+    elif market == "totals_1st_5_innings":
+        market_candidates = [("totals_f5", None), ("totals_h1", None),
+                              ("totals", "f5"), ("totals", "h1")]
+    elif market == "h2h_1st_5_innings":
+        market_candidates = [("h2h_f5", None), ("h2h_h1", None),
+                              ("h2h", "f5"), ("h2h", "h1")]
+    elif market == "spreads_1st_3_innings":
+        market_candidates = [("spreads_f3", None), ("spreads", "f3")]
+    elif market == "totals_1st_3_innings":
+        market_candidates = [("totals_f3", None), ("totals", "f3")]
+    elif market == "spreads_1st_7_innings":
+        market_candidates = [("spreads_f7", None), ("spreads", "f7")]
+    elif market == "totals_1st_7_innings":
+        market_candidates = [("totals_f7", None), ("totals", "f7")]
+    elif market in ("spreads", "totals", "h2h",
+                    "alternate_spreads_fg", "alternate_totals_fg"):
+        # FG markets
+        market_candidates = [(market, None), (market, "fg")]
+    else:
+        # Unknown / unsupported market for WZ placement (props, team totals etc.)
+        return None
+
+    # Decide which scraper column holds the line and the side->play mapping.
+    # WZ stores spreads as (away_spread, home_spread) and totals as a single
+    # `total` value. ML uses (away_ml, home_ml) with no line.
+    if "spread" in market:
+        kind = "spread"
+    elif "total" in market:
+        kind = "total"
+    elif market.startswith("h2h"):
+        kind = "h2h"
+    else:
+        return None
+
+    # Map bet_on -> play code. For spreads/h2h we need to know if the bet is on
+    # the home or away team. For totals we look at "over" / "under" in bet_on.
+    bet_on_lower = bet_on.lower()
+    is_over  = "over"  in bet_on_lower
+    is_under = "under" in bet_on_lower
+    is_home  = bet_on == home
+    is_away  = bet_on == away
+
+    if kind == "spread":
+        if is_home:
+            play = 1
+        elif is_away:
+            play = 0
+        else:
+            return None
+    elif kind == "total":
+        if is_over:
+            play = 2
+        elif is_under:
+            play = 3
+        else:
+            return None
+    elif kind == "h2h":
+        if is_home:
+            play = 5
+        elif is_away:
+            play = 4
+        else:
+            return None
+    else:
+        return None
+
+    con = duckdb.connect(str(wz_db), read_only=True)
+    try:
+        for mkt, period in market_candidates:
+            # Build the line predicate based on market kind. For totals there's a
+            # single `total` column; for spreads we match the side-specific column.
+            if kind == "spread":
+                if play == 1:  # home spread
+                    line_col = "home_spread"
+                else:
+                    line_col = "away_spread"
+                params: list = [home, away, mkt]
+                line_clause = ""
+                if line is not None:
+                    line_clause = f" AND {line_col} = ?"
+                    params.append(float(line))
+                period_clause = ""
+                if period is not None:
+                    period_clause = " AND period = ?"
+                    params.append(period)
+                sql = (
+                    "SELECT idgm FROM mlb_odds "
+                    "WHERE home_team = ? AND away_team = ? AND market = ?"
+                    + line_clause + period_clause +
+                    " ORDER BY fetch_time DESC LIMIT 1"
+                )
+            elif kind == "total":
+                params = [home, away, mkt]
+                line_clause = ""
+                if line is not None:
+                    line_clause = " AND total = ?"
+                    params.append(float(line))
+                period_clause = ""
+                if period is not None:
+                    period_clause = " AND period = ?"
+                    params.append(period)
+                sql = (
+                    "SELECT idgm FROM mlb_odds "
+                    "WHERE home_team = ? AND away_team = ? AND market = ?"
+                    + line_clause + period_clause +
+                    " ORDER BY fetch_time DESC LIMIT 1"
+                )
+            else:  # h2h
+                params = [home, away, mkt]
+                period_clause = ""
+                if period is not None:
+                    period_clause = " AND period = ?"
+                    params.append(period)
+                sql = (
+                    "SELECT idgm FROM mlb_odds "
+                    "WHERE home_team = ? AND away_team = ? AND market = ?"
+                    + period_clause +
+                    " ORDER BY fetch_time DESC LIMIT 1"
+                )
+
+            row = con.execute(sql, params).fetchone()
+            if row is not None and row[0] is not None:
+                return {"idgm": int(row[0]), "play": int(play)}
+    finally:
+        con.close()
+    return None
 
 
 def _finalize_placement(bet_hash: str, result: dict):
@@ -828,6 +995,11 @@ def place_bet():
       - everything else → 400 (use /api/log-bet for manual logging)
     """
     data = request.json or {}
+    # Normalise legacy "bookmaker" key (sent by the legacy fallback table
+    # and the auto-place modal) to the canonical "bookmaker_key" expected
+    # downstream.
+    if "bookmaker_key" not in data and "bookmaker" in data:
+        data["bookmaker_key"] = data["bookmaker"]
     bookmaker_key = data.get("bookmaker_key")
     bet_hash      = data.get("bet_hash")
     account       = data.get("account")
@@ -853,8 +1025,34 @@ def place_bet():
                 "error": f"Bet already in flight (status={existing[0]})",
                 "status": existing[0],
             }), 409
+
+        # Resolve WZ's per-row idgm + side (play) from the scraper table.
+        # The dashboard doesn't carry these because the bets-tab is built
+        # from mlb_bets_combined (cross-book), not the WZ scraper.
+        if "idgm" not in data or "play" not in data:
+            wz_play = _resolve_wagerzon_play_idgm(data)
+            if wz_play is None:
+                return jsonify({
+                    "success": False,
+                    "error": "Could not find this bet in wagerzon_odds; "
+                             "the scraper may not have populated it yet"}), 400
+            data["idgm"] = wz_play["idgm"]
+            data["play"] = wz_play["play"]
+
         _insert_placement_breadcrumb(bet_hash, account, data, status="placing")
-        result = single_placer.place_single(account=account, bet=data)
+        # Wrap the placer call so an uncaught exception (e.g. malformed bet
+        # shape) doesn't leave the breadcrumb stuck on 'placing'.
+        try:
+            result = single_placer.place_single(account=account, bet=data)
+        except Exception as e:
+            log.exception("single_placer raised; finalizing row as exception")
+            result = {
+                "status": "network_error",
+                "ticket_number": None,
+                "balance_after": None,
+                "error_msg": f"placer exception: {e}",
+                "error_msg_key": "exception",
+            }
         _finalize_placement(bet_hash, result)
         if result.get("status") == "placed":
             try:
@@ -867,6 +1065,10 @@ def place_bet():
 
     # --- Playwright path (hoop88 / bfa / betonlineag) ---
     if bookmaker_key in PLAYWRIGHT_BOOKS:
+        # Insert a breadcrumb so placer.py has a row to UPDATE on completion.
+        # Use status='pending' so the WZ 60s 'placing'-sweep cleanup doesn't
+        # touch it (Playwright runs are user-paced and routinely exceed 60s).
+        _insert_placement_breadcrumb(bet_hash, account, data, status="pending")
         try:
             if data.get("game_time") not in ("NA", "", None):
                 schedule_capture(data["game_id"], data["game_time"],
@@ -890,6 +1092,9 @@ def log_bet():
     Accepts any bookmaker_key — no routing logic applied.
     """
     data = request.json or {}
+    # Normalise legacy "bookmaker" key for parity with /api/place-bet.
+    if "bookmaker_key" not in data and "bookmaker" in data:
+        data["bookmaker_key"] = data["bookmaker"]
     bet_hash = data.get("bet_hash")
     if not bet_hash:
         return jsonify({"success": False, "error": "bet_hash required"}), 400

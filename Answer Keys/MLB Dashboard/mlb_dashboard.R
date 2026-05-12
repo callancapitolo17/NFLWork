@@ -3517,7 +3517,9 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             game_id:          data.gameId,
             home_team:        data.home,
             away_team:        data.away,
-            game_time:        data.time
+            game_time:        data.time,
+            model_prob:       data.prob ? parseFloat(data.prob) : 0.0,
+            model_ev:         data.ev   ? parseFloat(data.ev)   : 0.0
           };
 
           if (book === \'wagerzon\' && !account) {
@@ -3591,7 +3593,9 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             game_id:         data.gameId,
             home_team:       data.home,
             away_team:       data.away,
-            game_time:       data.time
+            game_time:       data.time,
+            model_prob:      data.prob ? parseFloat(data.prob) : 0.0,
+            model_ev:        data.ev   ? parseFloat(data.ev)   : 0.0
           };
 
           btn.disabled = true;
