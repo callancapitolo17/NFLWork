@@ -481,3 +481,130 @@ tests/test_fd_client.py` → 22/22 passed.
   `dk_league_response.json` 9k lines).
 
 **Verdict: cleared for merge to `main` once user explicitly approves.**
+
+---
+
+## Post-smoke addendum (2026-05-13)
+
+The first visual smoke session against real bets-tab data surfaced **seven**
+latent bugs. Five were fixed in the feature branch (commits `8889b74`,
+`70537ad`, `e09ddec`, `5566784`, `f3d6875`); the remaining two are fixed in
+this follow-up session. Root-cause traces for all seven are documented in
+`docs/superpowers/specs/2026-05-13-dashboard-card-layout-bugs.md`. Headline:
+
+| # | Bug | Status | Commit / file |
+|---|-----|--------|---------------|
+| 1 | Mixed-type NA columns crash reactable (cents/placed_actual/fill_diff) | ✅ Fixed | `8889b74`, `70537ad` |
+| 2 | Bets-tab book filter reads wrong cell text | ✅ Fixed | `e09ddec` |
+| 3 | DK/FD canonical `market_name` missed `_1st_X_innings` suffix | ✅ Fixed | `5566784` |
+| 4 | CSS `.cell-pickside` missing `!important` → vertical pill stacking | ✅ Fixed | `f3d6875` |
+| 5 | `LINE_MATCH_TOLERANCE = 1.0` too strict for F-period totals display | ✅ Fixed (raised to 3.0) | `f3d6875` |
+| 6 | DK F5/F7 multi-line markets bundled into single bucket, last-write-wins | ✅ Fixed (this session) | `scraper_draftkings_singles.py` |
+| 7 | Spread-bet pill line tag rendered as `O-1.5` instead of `-1.5` | ✅ Fixed (this session) | `book_pill.R`, `mlb_dashboard.R` |
+
+### Bug #6 root cause and fix
+
+DraftKings posts each F5/F7 run-line and total as a **single market** that
+contains the main line *and* all alt lines side by side. Example payload from
+`parlays/v1/sgp/events/<id>` on 2026-05-13:
+
+```
+'Run Line - 1st 7 Innings'   id=2_84775087  selections=8  lines={-1.5,-0.5,0.5,1.5}
+'Total Runs - 1st 7 Innings' id=3_84775084  selections=6  lines={5.5, 6.5, 7.5}
+```
+
+`classify_market` correctly labeled both as `(F7, "main")`, but
+`parse_selections_to_wide_rows` keyed its bucket by `(period, market_type,
+None)` for all `"main"` rows — so all 6 over/under selections (and all 8
+spread selections) collapsed into one row per period, and **only the last
+selection written survived**. The DB therefore stored 15 main F7 rows total
+across 15 games (one line each) when DK was actually posting 3 total lines
+and 2 spread lines per game.
+
+Fix: pre-pass over the selection list counts distinct totals lines (Over/
+Under) and distinct spread `|line|` values per `market_id`. Any
+`"main"`-classified market carrying more than one distinct line is
+reclassified per selection as `alternate_totals` / `alternate_spreads`, so
+each line gets its own bucketed row. FG markets are unaffected — DK already
+splits FG main from FG alt into separate markets (`Run Line` vs
+`Run Line Alternate`, `Total` vs `Total Alternate`), so the pre-pass count
+stays at 1 and the existing `"main"` coalescing into one ML+RL+Total row
+per game is preserved.
+
+**Verification:**
+- Worktree `dk.duckdb` after re-scrape: 30 F5 alt-spread rows (was 0), 45 F5
+  alt-total rows (was 0); same for F7 (was 15 total → now 75 split by line).
+  FG row counts unchanged (150 alt-spread, 305 alt-total, 15 main).
+- The `_1st_5_innings`/`_1st_7_innings` ML market (DK names it bare, e.g.
+  `1st 5 Innings`) is still **not captured** because `classify_market` only
+  matches names containing one of `run line` / `moneyline` / `total`. This is
+  a pre-existing gap (predates the singles-scraper feature) — flagged as
+  follow-up, not blocking.
+
+### Bug #7 root cause and fix
+
+`render_book_pill()` rendered the mismatched-line tag with a hard-coded
+`prefix <- if (side == "under") "U" else "O"`, regardless of whether the
+underlying bet was a totals market. Spread bets pass `side_word = "over"`
+by default (the cascade in `create_bets_table` only checks `bet_on` for
+"Over" / "Under" prefix), so a Yankees -1.5 pill showed `O-1.5` as the
+mismatched-line tag.
+
+Fix: added an `is_totals` parameter (default `TRUE` for backwards
+compatibility with existing call sites) to `render_book_pill`. When
+`is_totals = FALSE`, the mismatched-line tag uses a new `signed = TRUE`
+mode on `.format_line_value()` to render `-1.5` / `+0.5` directly, with no
+O/U prefix. Plumbed through `render_side_row` and both `create_bets_table`
+call sites by computing `is_totals_market <- grepl("^totals",
+table_data$market[i])`.
+
+**Verification:** all 24 unit tests in `tests/test_book_pill.R` pass,
+including 3 new tests for the spread-tag case:
+- spread mismatch on favorite side → tag shows `-1.5`, no `O` prefix
+- spread mismatch on dog side → tag shows `+1.5`, no `U` prefix
+- spread exact-line → no tag rendered (unchanged from totals exact-line)
+
+### Pre-merge checklist (re-run after follow-up)
+
+- **Data integrity.** DK `dk.duckdb` now correctly stores N rows per
+  (game, period, market_type) when DK bundles multiple lines in one market.
+  Atomic DELETE-then-INSERT transaction is unchanged. FG behaviour and FD
+  behaviour are bit-identical to pre-fix output (FD already produced per-line
+  rows because FD splits markets cleanly by name).
+- **Resource safety.** No new connections, no new lock-file paths. The
+  parse_selections_to_wide_rows change is purely in-memory.
+- **Edge cases.** New tests cover: bundled multi-line "main" markets (DK
+  F5/F7), spread mismatch on both sides, spread exact-line. Pre-existing FG
+  tests still pass.
+- **Dead code.** None introduced. The pre-pass and the
+  `effective_market_type` variable are both used on every iteration.
+- **Backwards compatibility.** `render_book_pill`'s new `is_totals`
+  defaults to `TRUE`, so any existing caller that did not pass it keeps
+  emitting the O/U prefix. All test cases that don't pass `is_totals` still
+  exercise the totals path.
+
+### Known gaps (not blocking — pre-existing, separate workstream)
+
+- **DK F-period moneyline (`1st N Innings` market) still uncaptured.**
+  `classify_market` requires a market name containing `run line` /
+  `moneyline` / `total`; DK names its F5/F7 ML markets just `1st 5 Innings`
+  / `1st 7 Innings`. Result: F5/F7 ML bets have no DK pill on the dashboard.
+  This predates the singles-scraper feature (the previous Odds-API source
+  also lacked DK F-period ML). To fix: extend `classify_market` to detect a
+  bare period name with 2 no-line selections as `(period, "main")` ML; add a
+  fixture + test. Out of scope for this merge.
+- **Worktree DB path mismatch during testing.** The Python scrapers write to
+  `<repo>/dk_odds/dk.duckdb` and `<repo>/fd_odds/fd.duckdb` (path is relative
+  to the script via `Path(__file__).parent.parent`), so when a scraper is run
+  from a `git worktree`, the DBs land in the worktree. But MLB.R has
+  `setwd("~/NFLWork/Answer Keys")` hardcoded (line 6 of `MLB.R`), and
+  `get_dk_odds()` / `get_fd_odds()` default `db_path = "~/NFLWork/dk_odds/
+  dk.duckdb"` — both forcing main repo paths. Testing in a worktree therefore
+  requires copying the per-book DBs from `worktree/dk_odds/dk.duckdb` →
+  `~/NFLWork/dk_odds/dk.duckdb` (and same for FD) before re-running the
+  pipeline. The CLAUDE.md guidance ("NEVER symlink DuckDB databases — always
+  copy") covers this; flagging here as a pre-merge testing footgun. Not a
+  code defect.
+
+**Updated verdict: cleared for merge to `main` after user explicitly
+approves.** Two follow-ups noted but not blocking this PR.
