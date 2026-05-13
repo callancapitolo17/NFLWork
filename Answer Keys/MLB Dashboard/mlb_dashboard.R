@@ -1348,6 +1348,7 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
       home_team      = colDef(show = FALSE),
       away_team      = colDef(show = FALSE),
       market         = colDef(show = FALSE),
+      market_type    = colDef(show = FALSE),
       line           = colDef(show = FALSE),
       bet_on         = colDef(show = FALSE),
       bet_size       = colDef(show = FALSE),
@@ -1358,6 +1359,15 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
       bookmaker_key  = colDef(show = FALSE),
       pt_start_time  = colDef(show = FALSE),
       corr_html      = colDef(show = FALSE),
+      # Columns whose values are NA-mostly or mixed numeric / "NA"-string after
+      # htmlwidgets JSON serialization. Reactable's React widget can't render
+      # a column whose declared type is numeric but whose JSON has both numbers
+      # and "NA" strings, and silently fails (no cards). Hide them.
+      cents           = colDef(show = FALSE),
+      correlation_adj = colDef(show = FALSE),
+      placed_actual   = colDef(show = FALSE),
+      fill_status     = colDef(show = FALSE),
+      fill_diff       = colDef(show = FALSE),
 
       # Visible cells (ordering via CSS `order:` in #bets-table-container).
       game_display = colDef(
