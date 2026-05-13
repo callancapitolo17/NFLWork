@@ -44,6 +44,14 @@ SCRAPER_CONFIGS = {
         "script": "../kalshi_odds/scraper.py",
         "sports": ["cbb", "mlb"]
     },
+    "draftkings_singles": {
+        "script": "../mlb_sgp/scraper_draftkings_singles.py",
+        "sports": ["mlb"]
+    },
+    "fanduel_singles": {
+        "script": "../mlb_sgp/scraper_fanduel_singles.py",
+        "sports": ["mlb"]
+    },
 }
 
 # Sport key mapping for Odds API
