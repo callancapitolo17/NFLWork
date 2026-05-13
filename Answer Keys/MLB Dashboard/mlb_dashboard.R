@@ -1182,8 +1182,10 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
                    draftkings = "DK", fanduel = "FD", pinnacle = "Pinn")
 
   # Render one full side-row (label + 8 book pills).
+  # `is_totals` gates whether mismatched-line tags get the O/U prefix
+  # (totals: "O5.5") or a signed line value (spreads: "-1.5").
   render_side_row <- function(wide_row, side_label_text, is_pick_side,
-                              pick_book, side_word) {
+                              pick_book, side_word, is_totals = TRUE) {
     pills <- vapply(BOOK_ORDER, function(b) {
       odds_col  <- paste0(b, "_american_odds")
       lq_col    <- paste0(b, "_line_quoted")
@@ -1197,7 +1199,8 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
         line_quoted   = lq,
         is_exact_line = exact,
         is_pick       = is_pick_side && (b == pick_book),
-        side          = side_word
+        side          = side_word,
+        is_totals     = is_totals
       )
     }, character(1))
     paste0(
@@ -1258,6 +1261,8 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
   # Pre-render the pick-side HTML for each row. Picks side_word from the
   # bet_on text ("Over X" -> "over"; "Under X" -> "under"; everything else
   # defaults to "over" — only used for the line tag prefix on mismatches).
+  # `is_totals` is derived from the canonical market name; spread bets get
+  # signed-line tags ("-1.5") instead of an O/U prefix.
   table_data$pickside_html <- vapply(seq_len(nrow(table_data)), function(i) {
     bet_id <- table_data$bet_row_id[i]
     wide_pick <- book_prices_wide %>% filter(bet_row_id == bet_id, side == "pick")
@@ -1265,12 +1270,17 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
     side_word <- if (grepl("^Over",  table_data$bet_on[i], ignore.case = TRUE)) "over"
                  else if (grepl("^Under", table_data$bet_on[i], ignore.case = TRUE)) "under"
                  else "over"
+    # Totals markets show Over/Under in bet_on; any other bet_on (team name)
+    # is a spread/ML. This naturally covers totals, totals_1st_N_innings,
+    # alternate_totals_fg, and team_totals_* without an explicit market regex.
+    is_totals_market <- grepl("^(Over|Under)", table_data$bet_on[i], ignore.case = TRUE)
     render_side_row(
       wide_row         = wide_pick[1, ],
       side_label_text  = table_data$bet_on[i],
       is_pick_side     = TRUE,
       pick_book        = table_data$bookmaker_key[i],
-      side_word        = side_word
+      side_word        = side_word,
+      is_totals        = is_totals_market
     )
   }, character(1))
 
@@ -1283,12 +1293,17 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
                       else if (grepl("^Under", table_data$bet_on[i], ignore.case = TRUE)) "Over"
                       else "Opp"
     side_word <- if (grepl("^Over", opposite_label, ignore.case = TRUE)) "over" else "under"
+    # Totals markets show Over/Under in bet_on; any other bet_on (team name)
+    # is a spread/ML. This naturally covers totals, totals_1st_N_innings,
+    # alternate_totals_fg, and team_totals_* without an explicit market regex.
+    is_totals_market <- grepl("^(Over|Under)", table_data$bet_on[i], ignore.case = TRUE)
     render_side_row(
       wide_row         = wide_opp[1, ],
       side_label_text  = opposite_label,
       is_pick_side     = FALSE,
       pick_book        = table_data$bookmaker_key[i],
-      side_word        = side_word
+      side_word        = side_word,
+      is_totals        = is_totals_market
     )
   }, character(1))
 

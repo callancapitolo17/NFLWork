@@ -65,3 +65,23 @@ test_that("half-run line renders with .5", {
   out <- render_book_pill("BFA", -115, 5.5, is_exact_line = FALSE, FALSE)
   expect_match(out, '<span class="line-tag">O5.5</span>', fixed = TRUE)
 })
+
+test_that("spread mismatch shows signed line value with no O/U prefix", {
+  out <- render_book_pill("DK", -110, line_quoted = -1.5, is_exact_line = FALSE,
+                          is_pick = FALSE, side = "over", is_totals = FALSE)
+  expect_match(out, '<span class="line-tag">-1.5</span>', fixed = TRUE)
+  expect_false(grepl("O-1.5", out, fixed = TRUE))
+})
+
+test_that("spread mismatch on dog side shows positive signed line", {
+  out <- render_book_pill("DK", +120, line_quoted = 1.5, is_exact_line = FALSE,
+                          is_pick = FALSE, side = "under", is_totals = FALSE)
+  expect_match(out, '<span class="line-tag">+1.5</span>', fixed = TRUE)
+  expect_false(grepl("U1.5", out, fixed = TRUE))
+})
+
+test_that("spread exact-line does not render any tag (is_totals=FALSE)", {
+  out <- render_book_pill("DK", -110, line_quoted = -1.5, is_exact_line = TRUE,
+                          is_pick = FALSE, is_totals = FALSE)
+  expect_false(grepl("line-tag", out))
+})

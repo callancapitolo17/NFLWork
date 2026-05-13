@@ -11,10 +11,13 @@
 # Companion file: Answer Keys/books_strip.R (parlays-tab pill row)
 
 #' Format a line value for the line tag (e.g., 5.0 -> "5", 5.5 -> "5.5").
-.format_line_value <- function(x) {
+#' When `signed = TRUE` a leading "+" is added for positive values, matching
+#' the convention used by spread display ("+1.5" / "-1.5").
+.format_line_value <- function(x, signed = FALSE) {
   if (is.na(x)) return("")
-  if (x == round(x)) format(as.integer(x))
-  else sub("\\.?0+$", "", sprintf("%.2f", x))
+  base <- if (x == round(x)) format(as.integer(x))
+          else sub("\\.?0+$", "", sprintf("%.2f", x))
+  if (signed && x > 0) paste0("+", base) else base
 }
 
 #' Render one book pill.
@@ -28,10 +31,14 @@
 #' @param is_pick TRUE if this is the pick book on the pick side; applies green.
 #' @param side Either "over" (default for totals over / favorite spread) or
 #'   "under" (totals under / dog spread). Drives O/U prefix on mismatched
-#'   line tag.
+#'   line tag (only when `is_totals = TRUE`).
+#' @param is_totals TRUE when the bet is a totals market (O/U prefix added on
+#'   mismatched line tag); FALSE for spread bets (signed line value shown
+#'   instead, e.g. "-1.5"). Defaults to TRUE for backwards compatibility with
+#'   the original totals-only call sites.
 #' @return HTML string for the pill.
 render_book_pill <- function(book, american_odds, line_quoted, is_exact_line,
-                             is_pick = FALSE, side = "over") {
+                             is_pick = FALSE, side = "over", is_totals = TRUE) {
   # State 1: no quote
   if (is.na(american_odds)) {
     return(sprintf('<span class="pill muted"><span class="book">%s</span>&mdash;</span>',
@@ -48,9 +55,15 @@ render_book_pill <- function(book, american_odds, line_quoted, is_exact_line,
 
   tag_html <- ""
   if (is_mismatched) {
-    prefix <- if (side == "under") "U" else "O"
-    tag_html <- sprintf('<span class="line-tag">%s%s</span>',
-                        prefix, .format_line_value(line_quoted))
+    if (is_totals) {
+      prefix <- if (side == "under") "U" else "O"
+      tag_html <- sprintf('<span class="line-tag">%s%s</span>',
+                          prefix, .format_line_value(line_quoted))
+    } else {
+      # Spread: display the signed line value directly (e.g. "-1.5", "+0.5").
+      tag_html <- sprintf('<span class="line-tag">%s</span>',
+                          .format_line_value(line_quoted, signed = TRUE))
+    }
   }
 
   sprintf('<span class="%s"><span class="book">%s</span>%s%s</span>',
