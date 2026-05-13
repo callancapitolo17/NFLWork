@@ -8,6 +8,7 @@ against sample-based fair odds for cross-validation.
 """
 
 import duckdb
+import os
 import random
 import time
 from pathlib import Path
@@ -19,7 +20,11 @@ _REPO_ROOT = _THIS_DIR.parent
 if ".worktrees" in str(_REPO_ROOT):
     _REPO_ROOT = Path(str(_REPO_ROOT).split(".worktrees")[0].rstrip("/"))
 
-MLB_DB = _REPO_ROOT / "Answer Keys" / "mlb_mm.duckdb"
+# MLB_DB resolution: env override > default dashboard DB.
+# Bot sets MLB_SGP_DB_PATH=<bot_market_db> when spawning scrapers so the
+# bot-owned DB is the read/write target without touching scraper code.
+_DEFAULT_MLB_DB = _REPO_ROOT / "Answer Keys" / "mlb_mm.duckdb"
+MLB_DB = Path(os.environ.get("MLB_SGP_DB_PATH", str(_DEFAULT_MLB_DB)))
 
 # DuckDB allows only one writer per file. When the four SGP scrapers run in
 # parallel they will occasionally collide at connect() — this helper retries

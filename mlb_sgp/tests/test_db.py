@@ -1,6 +1,9 @@
 """Tests for mlb_sgp/db.py — schema migration + writers."""
+import importlib
+
 import duckdb
 
+import mlb_sgp.db as db_mod
 from mlb_sgp.db import ensure_table
 
 
@@ -45,3 +48,16 @@ def test_ensure_table_idempotent(tmp_path):
     ensure_table(db_path=db)
     ensure_table(db_path=db)  # second call must not error
     ensure_table(db_path=db)  # third call must not error either
+
+
+def test_mlb_db_default_when_env_unset(monkeypatch):
+    monkeypatch.delenv("MLB_SGP_DB_PATH", raising=False)
+    importlib.reload(db_mod)
+    assert str(db_mod.MLB_DB).endswith("mlb_mm.duckdb")
+
+
+def test_mlb_db_uses_env_override(monkeypatch, tmp_path):
+    override = str(tmp_path / "override.duckdb")
+    monkeypatch.setenv("MLB_SGP_DB_PATH", override)
+    importlib.reload(db_mod)
+    assert str(db_mod.MLB_DB) == override
