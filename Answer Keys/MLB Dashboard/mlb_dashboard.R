@@ -1332,10 +1332,11 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
 
   # Drop columns that are nominally numeric but contain NAs htmlwidgets
   # serializes as "NA" strings. Mixed types in a single JSON column crash
-  # reactable's React widget silently. `cents` is Kalshi-only; it's NA for
-  # every other book so on slates without a Kalshi bet the column is absent
-  # entirely and a colDef hide would error — `any_of` handles both cases.
-  table_data <- table_data %>% select(-any_of("cents"))
+  # reactable's React widget silently. `cents` is Kalshi-only; `placed_actual`
+  # and `fill_diff` are mostly-NA legacy carriers from create_bets_table_legacy.
+  # The new card layout doesn't need any of them. `any_of` tolerates absent
+  # columns (cents disappears on slates with no Kalshi bet).
+  table_data <- table_data %>% select(-any_of(c("cents", "placed_actual", "fill_diff")))
 
   # The reactable. elementId = "bets-table" so the wrapping container gets
   # id="bets-table-container", matching the CSS scope.
@@ -1367,9 +1368,7 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
       pt_start_time  = colDef(show = FALSE),
       corr_html      = colDef(show = FALSE),
       correlation_adj = colDef(show = FALSE),
-      placed_actual   = colDef(show = FALSE),
       fill_status     = colDef(show = FALSE),
-      fill_diff       = colDef(show = FALSE),
 
       # Visible cells (ordering via CSS `order:` in #bets-table-container).
       game_display = colDef(
