@@ -7,7 +7,8 @@ Module-private (`_` prefix) but stable API consumed by per-book modules
 from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from datetime import datetime as _dt
+from typing import Literal, Union
 
 Period = Literal["FG", "F5"]
 
@@ -37,3 +38,34 @@ class PricedRow:
     sgp_decimal: float
     sgp_american: int
     fetch_time: datetime
+
+
+def decimal_to_american(dec: float) -> int:
+    """Convert decimal odds to American format. Favorites are negative."""
+    if dec >= 2.0:
+        return int(round((dec - 1.0) * 100))
+    return int(round(-100.0 / (dec - 1.0)))
+
+
+def american_to_decimal(am: int) -> float:
+    """Inverse of decimal_to_american."""
+    if am > 0:
+        return 1.0 + am / 100.0
+    return 1.0 + 100.0 / abs(am)
+
+
+def _utc_bucket(ts: Union[_dt, str]) -> str:
+    """Extract a UTC "YYYY-MM-DDTHH" bucket string from a timestamp.
+
+    Used as a match key when correlating events across data sources at
+    date+hour granularity (avoids spurious matches across doubleheaders).
+    Accepts both datetime objects and ISO-8601 strings.
+    """
+    if isinstance(ts, str):
+        # Normalize Z suffix to +00:00 for fromisoformat
+        normalized = ts.replace("Z", "+00:00") if ts.endswith("Z") else ts
+        ts = _dt.fromisoformat(normalized)
+    if ts.tzinfo is None:
+        from datetime import timezone
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.strftime("%Y-%m-%dT%H")

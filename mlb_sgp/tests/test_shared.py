@@ -54,3 +54,32 @@ def test_priced_row_immutable():
     )
     with pytest.raises(dataclasses.FrozenInstanceError):
         p.sgp_decimal = 3.0  # type: ignore[misc]
+
+
+from mlb_sgp._shared import decimal_to_american, american_to_decimal, _utc_bucket
+
+
+def test_decimal_to_american_favorite():
+    # Standard formula: dec >= 2.0 → +((dec-1)*100); dec < 2.0 → -100/(dec-1)
+    assert decimal_to_american(1.5) == -200  # -100 / 0.5 = -200
+    assert decimal_to_american(2.0) == 100   # +(1.0 * 100)
+    assert decimal_to_american(2.5) == 150   # +(1.5 * 100)
+    assert decimal_to_american(3.0) == 200
+
+
+def test_american_to_decimal_round_trip():
+    for am in [-300, -150, 100, 150, 300]:
+        dec = american_to_decimal(am)
+        back = decimal_to_american(dec)
+        assert back == am, f"round trip {am} → {dec} → {back}"
+
+
+def test_utc_bucket_isolates_hour():
+    from datetime import datetime, timezone
+    t = datetime(2026, 5, 13, 23, 17, 42, tzinfo=timezone.utc)
+    assert _utc_bucket(t) == "2026-05-13T23"
+
+
+def test_utc_bucket_handles_iso_string():
+    assert _utc_bucket("2026-05-13T23:17:42Z") == "2026-05-13T23"
+    assert _utc_bucket("2026-05-13T23:17:42+00:00") == "2026-05-13T23"
