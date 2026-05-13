@@ -18,10 +18,14 @@ run.py cbb (orchestrator)
 ```
 run.py mlb (orchestrator)
   ├── [first]    Sharp scrapers (bookmaker, bet105) → their DuckDB files
-  ├── [parallel] Other scrapers (wagerzon, hoop88, bfa) + MLB.R
+  ├── [parallel] Other scrapers (wagerzon, hoop88, bfa, draftkings_singles, fanduel_singles) + MLB.R
   ├── Sentinel: .scrapers_done_mlb signals all scrapers complete
   └── MLB.R reads scraper DBs, generates F5 fair prices, writes pipeline output
 ```
+- DraftKings and FanDuel **single-leg** odds are scraper-sourced (per-book
+  DuckDBs at `dk_odds/dk.duckdb` and `fd_odds/fd.duckdb`), not from the
+  Odds API. Pinnacle remains on the Odds API (no public REST API).
+  See `mlb_sgp/README.md` for scraper details.
 - MLB uses moneyline-based matching (`use_spread_line = FALSE`)
 - F5 (first 5 innings) markets matched via Odds API: h2h, totals, spreads, alternate_totals
 - Derivative markets matched via `compare_alts_to_samples` against scraped offshore odds:

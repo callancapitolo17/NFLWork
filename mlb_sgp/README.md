@@ -28,6 +28,58 @@ DK calculateBets       → correlation-adjusted SGP trueOdds
                        → mlb_sgp_odds table in DuckDB
 ```
 
+## Singles scrapers
+
+Two scrapers fetch single-leg odds for the MLB Dashboard bets tab,
+replacing the Odds API for DraftKings and FanDuel pill data:
+
+- `scraper_draftkings_singles.py` → writes `../dk_odds/dk.duckdb::mlb_odds`
+- `scraper_fanduel_singles.py`    → writes `../fd_odds/fd.duckdb::mlb_odds`
+
+Both use the shared client classes (`dk_client.py`, `fd_client.py`) — same
+curl_cffi sessions, same Akamai bypass, same event-discovery code path as
+the SGP scrapers. No second auth path, no duplicate rate-limit budget.
+
+Output schema matches the wagerzon offshore convention (18-column wide
+`mlb_odds` table). MLB.R consumes via `get_dk_odds()` / `get_fd_odds()`
+(in `Tools.R`) → `scraper_to_canonical()` → `book_odds_by_book`.
+
+### Coverage
+
+| Period | DK | FD | Notes |
+|---|---|---|---|
+| FG main (spread + total + ML)        | ✅ | ✅ | All 30 teams |
+| FG alternate spreads                 | ✅ | ✅ | When DK/FD posts them |
+| FG alternate totals                  | ✅ | ✅ | When DK/FD posts them |
+| F5 main (spread + total + ML)        | ✅ | ✅ | F5 ML may be ✗ at DK |
+| F5 alternate spreads / totals        | ✅ | ✅ | |
+| F7 main (spread + total)             | ✅ | ✗ | FD doesn't post F7 |
+| F7 alternate totals                  | ✅ | ✗ | |
+| F3 (any market)                      | ✗ | ✗ | Neither book posts F3 spread/total/ML |
+
+### Run timing
+
+Orchestrated by `Answer Keys/run.py mlb` in the parallel scrape phase
+(pre-MLB.R), gated by `.scrapers_done_mlb`. The SGP scrapers continue to
+run post-MLB.R (they depend on `mlb_parlay_lines`) on a separate trigger.
+
+### Refactor — SGP scrapers now share clients
+
+`scraper_draftkings_sgp.py` and `scraper_fanduel_sgp.py` were refactored
+to import event discovery from `dk_client` / `fd_client`. SGP combo logic
+and `calculateBets` / `implyBets` pricing stay in the SGP files.
+Behavior-preserving — regression tests in `tests/test_sgp_regression.py`
+compare current sgp_decimal output against captured golden baselines
+within 0.20 decimal-odds tolerance.
+
+### Team-name canonicalization
+
+DK returns abbreviated city prefixes (`"CLE Guardians"`, `"LA Angels"`,
+`"STL Cardinals"`). `scraper_draftkings_singles.py` maintains a
+30-entry `DK_TEAM_MAP` that translates DK names → canonical (Odds API
+format) before writing rows. FD names already match canonical — no
+mapping needed.
+
 ## DraftKings API Endpoints
 
 | Endpoint | Auth | Purpose |

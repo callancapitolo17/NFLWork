@@ -122,6 +122,27 @@ This repo contains tools for:
 - **NFL Draft portal** (`nfl_draft/`) - Cross-venue EV portal unifying Kalshi + DK/FD/Bookmaker/Wagerzon/Hoop88; single DuckDB at `nfl_draft/nfl_draft.duckdb`, cron-driven orchestrator, extended Dash dashboard (port 8090). See `nfl_draft/README.md`.
 - **Autonomous Kalshi MLB SGP taker bot** (`kalshi_mlb_rfq/`) — wide-mode RFQs on cross-category MVE combos with model+book blended fair value, conditional Kelly sizing, full per-accept gate scaffold (staleness, tipoff, line-move, exposure caps, fill-ratio halt). Standalone process; reads `mlb.duckdb` read-only and writes `kalshi_mlb_rfq.duckdb`. See `kalshi_mlb_rfq/README.md`.
 
+### MLB Dashboard — Odds screen
+
+The MLB Dashboard bets tab (port 8083) renders a per-book pill row for
+every tracked sportsbook. See `Answer Keys/CLAUDE.md` for the full
+architecture.
+
+#### Data flow
+
+1. MLB.R writes `mlb_bets_book_prices` to `mlb_mm.duckdb` alongside
+   `mlb_bets_combined`. Each row is one (bet × book × side) at the
+   model's exact line OR the closest line within ±1 unit.
+2. Dashboard loads `mlb_bets_book_prices`, pivots long→wide, and
+   passes the wide frame to `create_bets_table()` which renders cards.
+3. **DraftKings and FanDuel pill data** is written by
+   `mlb_sgp/scraper_draftkings_singles.py` and
+   `mlb_sgp/scraper_fanduel_singles.py` to per-book DuckDBs
+   (`dk_odds/dk.duckdb`, `fd_odds/fd.duckdb`). MLB.R reads via
+   `get_dk_odds()` / `get_fd_odds()` in `Tools.R` →
+   `scraper_to_canonical()`. **Pinnacle** still comes from the Odds API
+   (`prefetched_long` filtered to `bookmaker_key == "pinnacle"`).
+
 ## Technical Stack
 - **Python** - Playwright for scraping, BeautifulSoup for parsing
 - **R** - Statistical analysis, visualization, answer key generation
