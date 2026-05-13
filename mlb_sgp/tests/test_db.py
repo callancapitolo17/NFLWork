@@ -75,3 +75,65 @@ def test_mlb_db_uses_env_override(monkeypatch, tmp_path):
     monkeypatch.setenv("MLB_SGP_DB_PATH", override)
     importlib.reload(db_mod)
     assert str(db_mod.MLB_DB) == override
+
+
+from datetime import datetime, timezone
+from mlb_sgp._shared import PricedRow
+from mlb_sgp.db import upsert_priced_rows, ensure_table
+
+
+def test_upsert_priced_rows_inserts(tmp_path):
+    db = str(tmp_path / "u.duckdb")
+    ensure_table(db_path=db)
+    rows = [
+        PricedRow(
+            game_id="g1", combo="Home Spread + Over", period="FG",
+            spread_line=-1.5, total_line=8.5,
+            bookmaker="draftkings", source="draftkings_direct",
+            sgp_decimal=2.85, sgp_american=185,
+            fetch_time=datetime.now(timezone.utc),
+        ),
+        PricedRow(
+            game_id="g1", combo="Home Spread + Under", period="FG",
+            spread_line=-1.5, total_line=8.5,
+            bookmaker="draftkings", source="draftkings_direct",
+            sgp_decimal=3.20, sgp_american=220,
+            fetch_time=datetime.now(timezone.utc),
+        ),
+    ]
+    upsert_priced_rows(rows, db_path=db)
+
+    con = duckdb.connect(db, read_only=True)
+    out = con.execute(
+        "SELECT game_id, combo, spread_line, total_line, sgp_american FROM mlb_sgp_odds ORDER BY combo"
+    ).fetchall()
+    con.close()
+    assert len(out) == 2
+    assert out[0] == ("g1", "Home Spread + Over", -1.5, 8.5, 185)
+    assert out[1] == ("g1", "Home Spread + Under", -1.5, 8.5, 220)
+
+
+def test_upsert_priced_rows_replaces_same_key(tmp_path):
+    """Same (game, combo, period, spread, total, bookmaker, source) → replace."""
+    db = str(tmp_path / "r.duckdb")
+    ensure_table(db_path=db)
+    def make(price):
+        return PricedRow(
+            game_id="g1", combo="Home Spread + Over", period="FG",
+            spread_line=-1.5, total_line=8.5,
+            bookmaker="draftkings", source="draftkings_direct",
+            sgp_decimal=price, sgp_american=185,
+            fetch_time=datetime.now(timezone.utc),
+        )
+    upsert_priced_rows([make(2.50)], db_path=db)
+    upsert_priced_rows([make(2.75)], db_path=db)
+    con = duckdb.connect(db, read_only=True)
+    out = con.execute("SELECT COUNT(*), MAX(sgp_decimal) FROM mlb_sgp_odds").fetchone()
+    con.close()
+    assert out == (1, 2.75)
+
+
+def test_upsert_priced_rows_empty_is_noop(tmp_path):
+    db = str(tmp_path / "e.duckdb")
+    ensure_table(db_path=db)
+    upsert_priced_rows([], db_path=db)  # must not error

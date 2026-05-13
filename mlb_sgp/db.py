@@ -147,6 +147,65 @@ def upsert_sgp_odds(rows: list[dict], db_path: str = None):
         con.close()
 
 
+def upsert_priced_rows(rows: list, db_path: str = None):
+    """Insert PricedRow objects, replacing any existing row with the same
+    (game_id, combo, period, spread_line, total_line, bookmaker, source) key.
+
+    The new line columns are part of the composite key, so a single game can
+    carry many distinct (spread, total) tuples per book/source.
+
+    Empty `rows` is a no-op.
+
+    Note: type hint is plain `list` (rather than `list[PricedRow]`) to avoid
+    a circular import — `_shared.py` may eventually pull in db helpers. The
+    function reads only attribute access (`r.game_id`, etc.) so any duck-
+    typed object works.
+    """
+    if not rows:
+        return
+
+    db_path = db_path or str(MLB_DB)
+    con = _connect_with_retry(db_path)
+    try:
+        ensure_table(db_path)
+
+        # Batch delete by composite key. Note: DuckDB's tuple IN matches NULLs
+        # as NULL, so this only deletes when all 7 cols match exactly. For
+        # PricedRow we always have line cols set (enumeration writes them),
+        # so the simple equality form is correct.
+        keys = [
+            (r.game_id, r.combo, r.period, r.spread_line, r.total_line,
+             r.bookmaker, r.source)
+            for r in rows
+        ]
+        placeholders = ",".join(["(?, ?, ?, ?, ?, ?, ?)"] * len(keys))
+        flat = [v for k in keys for v in k]
+        con.execute(f"""
+            DELETE FROM mlb_sgp_odds
+            WHERE (game_id, combo, period, spread_line, total_line, bookmaker, source) IN (
+                SELECT * FROM (VALUES {placeholders})
+            )
+        """, flat)
+
+        # Batch insert
+        ins_placeholders = ",".join(["(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"] * len(rows))
+        values = []
+        for r in rows:
+            values.extend([
+                r.game_id, r.combo, r.period, r.bookmaker,
+                r.sgp_decimal, r.sgp_american, r.fetch_time, r.source,
+                r.spread_line, r.total_line,
+            ])
+        con.execute(f"""
+            INSERT INTO mlb_sgp_odds
+                (game_id, combo, period, bookmaker, sgp_decimal, sgp_american,
+                 fetch_time, source, spread_line, total_line)
+            VALUES {ins_placeholders}
+        """, values)
+    finally:
+        con.close()
+
+
 def get_sgp_odds(game_id: str = None, max_age_minutes: int = 15, db_path: str = None):
     """
     Read SGP odds from the table, optionally filtered by game_id.
