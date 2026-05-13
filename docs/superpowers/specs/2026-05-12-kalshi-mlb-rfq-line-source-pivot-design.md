@@ -1,11 +1,13 @@
 # Kalshi MLB RFQ — Line Source Pivot Design
 
-**Date:** 2026-05-12
-**Status:** Design — awaiting plan
+**Date:** 2026-05-12 (drafted), 2026-05-13 (revised for client layer alignment)
+**Status:** Design — gated on `feature+mlb-dk-fd-singles-scrapers` branch merging to main before implementation
 **Branch:** `worktree-kalshi-mlb-rfq-line-source-pivot`
 **Predecessors:**
 - `docs/2026-05-12-kalshi-mlb-rfq-architecture-pivot.md` — chat summary that motivated this design
 - `docs/superpowers/specs/2026-04-27-kalshi-mlb-rfq-bot-design.md` — original bot spec
+**Hard dependency:**
+- `feature+mlb-dk-fd-singles-scrapers` branch — extracts `DraftKingsClient` (`mlb_sgp/dk_client.py`) and `FanDuelClient` (`mlb_sgp/fd_client.py`) as the HTTP/auth layer for DK and FD. This spec's library functions consume those clients. Implementation cannot start until that branch lands on main.
 
 ---
 
@@ -83,7 +85,28 @@ No concurrent writers to `mlb_target_lines`. SGP cadence and RFQ refresh share e
 
 ---
 
-## Library API
+## Library API — layered above the HTTP clients
+
+```
+┌────────────────────────────────────────────────┐
+│ Library layer (this spec)                      │
+│   mlb_sgp/draftkings.py::price_sgps()          │  ← orchestration:
+│   mlb_sgp/fanduel.py::price_sgps()             │     combine spread+total
+│   mlb_sgp/prophetx.py::price_sgps()            │     legs, request SGP
+│   mlb_sgp/novig.py::price_sgps()               │     price, return
+│                                                 │     list[PricedRow]
+└────────────────────────────────────────────────┘
+                       │ uses
+                       ▼
+┌────────────────────────────────────────────────┐
+│ HTTP/auth client layer                         │
+│   mlb_sgp/dk_client.py   (EXISTS post-merge)   │  ← HTTP, auth,
+│   mlb_sgp/fd_client.py   (EXISTS post-merge)   │     parse responses,
+│   mlb_sgp/prophetx_client.py  (NEW this spec)  │     return dataclasses
+│   mlb_sgp/novig_client.py     (NEW this spec)  │     (Event, Selection,
+│                                                 │      Runner, etc.)
+└────────────────────────────────────────────────┘
+```
 
 ```python
 # mlb_sgp/_shared.py
@@ -114,36 +137,58 @@ class PricedRow:
     sgp_american: int
     fetch_time: datetime
 
-# mlb_sgp/draftkings.py  (and 3 siblings, same signature)
+# mlb_sgp/draftkings.py
+from mlb_sgp.dk_client import DraftKingsClient
+
 def price_sgps(
     target_lines: list[TargetLine],
     periods: list[str] = ("FG",),
-    session: Session | None = None,
+    client: DraftKingsClient | None = None,
     verbose: bool = False,
-) -> list[PricedRow]: ...
+) -> list[PricedRow]:
+    """Orchestrate DK SGP pricing over target lines using DraftKingsClient
+    for HTTP/auth. No DB I/O. Returns priced rows."""
+    client = client or DraftKingsClient(verbose=verbose)
+    # ... combine spread+total legs per target_line, request SGP from client,
+    # apply combo flavoring, devig sanity, return PricedRows.
+
+# Same signature pattern for fanduel.py (uses FanDuelClient), prophetx.py
+# (uses ProphetXClient — extracted as part of this spec), novig.py (uses
+# NovigClient — extracted as part of this spec).
 ```
 
 - `target_lines` is multi-row by design. Dashboard passes `[FG, F5] × N games`; bot passes `[FG, FG, ...]` (many FG lines per game).
 - `periods` filters which subset of `target_lines` actually get priced. Bot sets `("FG",)`; dashboard sets `("FG", "F5")`.
-- `session` is optional so callers can reuse a session across invocations (rare, but useful for testing).
+- `client` is optional so callers can reuse a client across invocations (useful for testing with mocks).
 - No DB I/O inside the library. Caller is responsible for loading inputs and writing outputs.
+- The library function is the SGP-pricing orchestrator. The client is the HTTP boundary. The split mirrors how the singles-scrapers branch uses DK/FD clients today: `DraftKingsClient` is invoked by both the SGP scraper and the singles scraper for their own orchestration logic.
 
 ---
 
 ## File map (deltas only)
+
+### Existing dependency (lands via `feature+mlb-dk-fd-singles-scrapers` merge)
+
+| Path | Status |
+|---|---|
+| `mlb_sgp/dk_client.py` | `DraftKingsClient`, `Event`/`Market`/`Selection` dataclasses. Consumed by this spec's `mlb_sgp/draftkings.py::price_sgps()`. Not modified. |
+| `mlb_sgp/fd_client.py` | `FanDuelClient`, `Event`/`Runner`/`Market` dataclasses. Consumed by this spec's `mlb_sgp/fanduel.py::price_sgps()`. Not modified. |
+| Refactored `scraper_draftkings_sgp.py` / `scraper_fanduel_sgp.py` | Use clients internally. We thin them further into shims (see Modified). |
 
 ### New
 
 | Path | Purpose |
 |---|---|
 | `mlb_sgp/_shared.py` | `TargetLine`, `PricedRow`, `_utc_bucket`, `decimal_to_american`/inverse, vig-sanity helpers, `load_target_lines()` (handles both table names) |
-| `mlb_sgp/draftkings.py` | Pure DK book-API module exposing `price_sgps()`. Auth/session, market fetching, selection-ID resolution, batch SGP pricing call. |
-| `mlb_sgp/fanduel.py` | Same for FanDuel (`implyBets` endpoint, sid encoding). |
-| `mlb_sgp/prophetx.py` | Same for ProphetX (RFQ endpoint, profile-cookie auth, MIN_OFFER_STAKE filter, F5-Over SANITY_MULT_RATIO defense). |
-| `mlb_sgp/novig.py` | Same for Novig (anonymous GraphQL, Hasura market tree). |
+| `mlb_sgp/draftkings.py` | DK SGP orchestrator — `price_sgps(target_lines, periods, client)`. Uses `DraftKingsClient` for HTTP; combines legs, requests SGP price, devig sanity, returns `PricedRow` list. |
+| `mlb_sgp/fanduel.py` | FD SGP orchestrator — same shape, uses `FanDuelClient`. |
+| `mlb_sgp/prophetx_client.py` | NEW: HTTP/auth client for ProphetX. Mirrors `dk_client.py` shape: dataclasses + thin methods (`list_events`, `fetch_event_markets`, `submit_parlay_rfq`). Owns curl_cffi session + profile-cookie auth. |
+| `mlb_sgp/prophetx.py` | PX SGP orchestrator — uses `ProphetXClient`. Carries the existing MIN_OFFER_STAKE filter and F5-Over SANITY_MULT_RATIO defense. |
+| `mlb_sgp/novig_client.py` | NEW: HTTP/auth client for Novig. Mirrors the pattern: dataclasses + thin methods (`list_events`, `fetch_event_legs`, `submit_parlay`). Anonymous endpoint, Hasura GraphQL market tree. |
+| `mlb_sgp/novig.py` | NV SGP orchestrator — uses `NovigClient`. |
 | `kalshi_mlb_rfq/sgp_runner.py` | Bot caller: `enumerate_kalshi_targets()`, `write_target_lines()`, `run_scrapers(env=...)`, `read_priced_rows()`. Subsumes the existing `should_scrape` helper (already committed). |
 | `kalshi_mlb_rfq/kalshi_mlb_rfq_market.duckdb` | Bot's market data DB (sibling to `kalshi_mlb_rfq.duckdb`). Holds `mlb_target_lines` + `mlb_sgp_odds`. Created at startup if missing. |
-| Tests: `mlb_sgp/tests/test_shared.py`, `kalshi_mlb_rfq/tests/test_sgp_runner.py` (extend existing) | Unit tests for shared utilities and bot caller. |
+| Tests: `mlb_sgp/tests/test_shared.py`, `mlb_sgp/tests/test_prophetx_client.py`, `mlb_sgp/tests/test_novig_client.py`, `kalshi_mlb_rfq/tests/test_sgp_runner.py` (extend existing) | Unit tests for shared utilities, new clients, and bot caller. |
 
 ### Rewritten thin (preserved subprocess invocation contract)
 
@@ -235,9 +280,11 @@ Bot enumerates every open Kalshi MVE `(spread, total)` tuple per game and writes
 
 Bot reads `mlb_odds_temp` directly from `Answer Keys/mlb.duckdb` for `(game_id, home_team, away_team, commence_time)` mapping. Read-only. Zero R-pipeline changes. The bot's `_PARLAY_LINES_CACHE` is populated from two sources merged: `mlb_odds_temp` (schedule) + bot DB `mlb_target_lines` (lines).
 
-### D4 — Library refactor (Option 3)
+### D4 — Library refactor (Option 3), layered above existing HTTP clients
 
-Each book becomes an importable Python module with no DB I/O. Existing `scraper_X_sgp.py` files become thin subprocess shims that call the library. Dashboard's R subprocess invocation contract is preserved.
+Each book becomes an importable Python module exposing `price_sgps()` with no DB I/O. The library function uses the book's HTTP client (`DraftKingsClient`, `FanDuelClient`, `ProphetXClient`, `NovigClient`) for all network operations. Existing `scraper_X_sgp.py` files become thin subprocess shims that call the library. Dashboard's R subprocess invocation contract is preserved.
+
+**Alignment with singles-scrapers branch:** That branch already extracts `DraftKingsClient` and `FanDuelClient` and refactors the DK/FD SGP scrapers to use them. This spec extends that pattern to PX and NV (extracting their clients), then lifts the SGP-pricing orchestration out of every scraper file into the new `price_sgps()` modules. Net effect after both branches land: SGP scrapers are ~60-line shims; pricing orchestration is in library modules; HTTP is in client modules. Singles scrapers (also on their branch) continue to use the clients independently.
 
 **v1 benefit: code organization + testability.** Runtime speed gain (in-process scraping from bot, avoiding subprocess + DuckDB lock from child processes) is a v2 follow-up and explicitly NOT shipped here. The library refactor is what enables v2.
 
@@ -416,6 +463,8 @@ def _load_book_fairs(game_id, spread_line, total_line):
 ## Version control
 
 - **Branch:** `worktree-kalshi-mlb-rfq-line-source-pivot` (worktree). Active during implementation.
+- **Implementation prerequisite:** `feature+mlb-dk-fd-singles-scrapers` branch must merge to main first. This worktree currently holds only the design spec; implementation is gated.
+- **Rebase on prereq merge:** After singles-scrapers merges, rebase this worktree branch onto fresh main, then proceed with the implementation plan.
 - **Files created/modified:** See "File map" section above.
 - **Commit structure:** One commit per task in the implementation plan. Each commit passes its own tests before the next begins.
 - **Merge prerequisite:** Full smoke test on live MVE markets (Test plan #5 + #6) before requesting merge approval.
