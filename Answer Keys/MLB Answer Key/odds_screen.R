@@ -15,7 +15,14 @@ library(stringr)
 library(lubridate)
 library(jsonlite)
 
-LINE_MATCH_TOLERANCE <- 1.0  # max abs(line_quoted - model_line) we'll emit
+LINE_MATCH_TOLERANCE <- 3.0  # max abs(line_quoted - model_line) we'll emit
+# Raised from 1.0 -> 3.0 on 2026-05-13. With 1.0, F7 totals where the
+# model bets Over 5.5 but DK posts 7.5 (a 2.0 spread normal for F7)
+# showed no DK pill at all. book_pill.R already renders the pill amber
+# with a line tag like "O7.5" when is_exact_line is FALSE, so wider
+# tolerance exposes more book quotes with their actual line clearly
+# marked. The pick book is still required to be on the exact line per
+# the data-bug guard in MLB.R, so this affects display only.
 
 # Internal helpers for period/market-type derivation.
 # Extracted here so normalize_book_odds_frame and expand_bets_to_book_prices

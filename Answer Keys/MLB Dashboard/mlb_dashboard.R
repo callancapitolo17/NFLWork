@@ -2449,12 +2449,17 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           flex: 0 1 auto;
         }
 
-        #bets-table-container .cell-game,
-        #bets-table-container .cell-market,
-        #bets-table-container .cell-pickside,
-        #bets-table-container .cell-otherside {
-          flex-basis: 100%;
-          width: 100%;
+        /* !important is required to override the reactable inline
+           style="flex: 100 0 auto" on every .rt-td cell. Without it the
+           cells stay at content-width and pills wrap vertically into
+           narrow columns. The parlays tab already does this for its
+           equivalent cells (see #parlays-table-container rules below). */
+        #bets-table-container .rt-td.cell-game,
+        #bets-table-container .rt-td.cell-market,
+        #bets-table-container .rt-td.cell-pickside,
+        #bets-table-container .rt-td.cell-otherside {
+          flex-basis: 100% !important;
+          width: 100% !important;
           padding: 2px 0;
         }
 
