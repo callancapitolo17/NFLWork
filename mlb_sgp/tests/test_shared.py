@@ -2,6 +2,7 @@
 import dataclasses
 from datetime import datetime, timezone
 
+import duckdb
 import pytest
 
 from mlb_sgp._shared import (
@@ -10,6 +11,7 @@ from mlb_sgp._shared import (
     decimal_to_american,
     american_to_decimal,
     _utc_bucket,
+    load_target_lines,
 )
 
 
@@ -108,14 +110,8 @@ def test_utc_bucket_converts_non_utc_tz():
     assert _utc_bucket(t) == "2026-05-14T03"
 
 
-import duckdb
-import tempfile
-from pathlib import Path
-
-
 def test_load_target_lines_prefers_mlb_target_lines(tmp_path):
     """When both tables exist, mlb_target_lines wins."""
-    from mlb_sgp._shared import load_target_lines
     db = str(tmp_path / "t.duckdb")
     con = duckdb.connect(db)
     con.execute("""
@@ -150,7 +146,6 @@ def test_load_target_lines_prefers_mlb_target_lines(tmp_path):
 
 def test_load_target_lines_legacy_fallback(tmp_path):
     """When only mlb_parlay_lines exists, emit FG + F5 rows from each game."""
-    from mlb_sgp._shared import load_target_lines
     db = str(tmp_path / "t.duckdb")
     con = duckdb.connect(db)
     con.execute("""
@@ -177,8 +172,57 @@ def test_load_target_lines_legacy_fallback(tmp_path):
 
 
 def test_load_target_lines_empty_db(tmp_path):
-    from mlb_sgp._shared import load_target_lines
     db = str(tmp_path / "empty.duckdb")
     con = duckdb.connect(db)
     con.close()
     assert load_target_lines(db_path=db) == []
+
+
+def test_load_target_lines_missing_db():
+    assert load_target_lines("/tmp/this-path-does-not-exist-2026.duckdb") == []
+
+
+def test_load_target_lines_skips_malformed_commence_time(tmp_path):
+    """Legacy fallback: row with non-ISO commence_time string is skipped."""
+    db = str(tmp_path / "t.duckdb")
+    con = duckdb.connect(db)
+    con.execute("""
+        CREATE TABLE mlb_parlay_lines (
+            game_id VARCHAR, home_team VARCHAR, away_team VARCHAR,
+            commence_time VARCHAR, fg_spread DOUBLE, fg_total DOUBLE,
+            f5_spread DOUBLE, f5_total DOUBLE
+        )
+    """)
+    con.execute("""
+        INSERT INTO mlb_parlay_lines VALUES
+            ('g1', 'NYY', 'BOS', 'not-an-iso-timestamp', -1.5, 8.5, NULL, NULL),
+            ('g2', 'LAD', 'SF',  '2026-05-14T02:00:00+00:00', -2.5, 7.5, NULL, NULL)
+    """)
+    con.close()
+    rows = load_target_lines(db_path=db)
+    assert len(rows) == 1
+    assert rows[0].game_id == "g2"
+
+
+def test_load_target_lines_empty_target_table_does_not_fallthrough(tmp_path):
+    """Empty mlb_target_lines should NOT fall through to mlb_parlay_lines."""
+    db = str(tmp_path / "t.duckdb")
+    con = duckdb.connect(db)
+    con.execute("""
+        CREATE TABLE mlb_target_lines (
+            game_id VARCHAR, home_team VARCHAR, away_team VARCHAR,
+            commence_time TIMESTAMP, period VARCHAR,
+            spread DOUBLE, total DOUBLE, written_at TIMESTAMP
+        )
+    """)
+    con.execute("""
+        CREATE TABLE mlb_parlay_lines (
+            game_id VARCHAR, home_team VARCHAR, away_team VARCHAR,
+            commence_time VARCHAR, fg_spread DOUBLE, fg_total DOUBLE,
+            f5_spread DOUBLE, f5_total DOUBLE
+        )
+    """)
+    con.execute("INSERT INTO mlb_parlay_lines VALUES ('g1','NYY','BOS','2026-05-13T23:00:00+00:00',-1.5,8.5,NULL,NULL)")
+    con.close()
+    rows = load_target_lines(db_path=db)
+    assert rows == [], "Empty mlb_target_lines is the source of truth — no fallthrough"

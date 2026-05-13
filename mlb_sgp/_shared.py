@@ -5,12 +5,15 @@ Module-private (`_` prefix) but stable API consumed by per-book modules
 (dashboard scraper shims, kalshi_mlb_rfq/sgp_runner.py).
 """
 from __future__ import annotations
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
 import duckdb
+
+logger = logging.getLogger(__name__)
 
 Period = Literal["FG", "F5"]
 
@@ -90,6 +93,10 @@ def load_target_lines(db_path: str) -> list[TargetLine]:
 
     Returns [] for missing DB or missing tables — callers decide what
     to do with empty input.
+
+    Note: Returns all rows without filtering by `written_at` or recency.
+    If the caller needs fresh data, it is the caller's responsibility to
+    filter at the SQL level or post-process the returned list.
     """
     if not Path(db_path).exists():
         return []
@@ -105,7 +112,7 @@ def load_target_lines(db_path: str) -> list[TargetLine]:
         con.close()
 
 
-def _load_from_target_lines(con) -> list[TargetLine]:
+def _load_from_target_lines(con: duckdb.DuckDBPyConnection) -> list[TargetLine]:
     rows = con.execute("""
         SELECT game_id, home_team, away_team, commence_time, period, spread, total
         FROM mlb_target_lines
@@ -119,7 +126,7 @@ def _load_from_target_lines(con) -> list[TargetLine]:
     ]
 
 
-def _load_from_parlay_lines(con) -> list[TargetLine]:
+def _load_from_parlay_lines(con: duckdb.DuckDBPyConnection) -> list[TargetLine]:
     rows = con.execute("""
         SELECT game_id, home_team, away_team, commence_time,
                fg_spread, fg_total, f5_spread, f5_total
@@ -129,10 +136,19 @@ def _load_from_parlay_lines(con) -> list[TargetLine]:
     out: list[TargetLine] = []
     for r in rows:
         game_id, home, away, ct_raw, fg_s, fg_t, f5_s, f5_t = r
-        # commence_time in legacy table is sometimes VARCHAR, sometimes TIMESTAMP
+        # commence_time in legacy table may be VARCHAR or TIMESTAMP.
+        # Parse VARCHAR defensively — skip rows with malformed timestamps.
         if isinstance(ct_raw, str):
-            normalized = ct_raw.replace("Z", "+00:00") if ct_raw.endswith("Z") else ct_raw
-            ct = datetime.fromisoformat(normalized)
+            try:
+                normalized = ct_raw.replace("Z", "+00:00") if ct_raw.endswith("Z") else ct_raw
+                ct = datetime.fromisoformat(normalized)
+            except (ValueError, AttributeError):
+                # Malformed/empty timestamp — skip this game's rows entirely.
+                logger.warning(
+                    "load_target_lines: skipping game_id=%s with malformed commence_time=%r",
+                    game_id, ct_raw,
+                )
+                continue
         else:
             ct = ct_raw
         if fg_s is not None and fg_t is not None:
