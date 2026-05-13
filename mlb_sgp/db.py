@@ -51,17 +51,29 @@ CREATE TABLE IF NOT EXISTS mlb_sgp_odds (
     sgp_decimal   DOUBLE,
     sgp_american  INTEGER,
     fetch_time    TIMESTAMP,
-    source        VARCHAR
+    source        VARCHAR,
+    spread_line   DOUBLE,
+    total_line    DOUBLE
 );
 """
 
+# Backward-compat ALTERs — make sure pre-existing tables gain the new columns.
+# Both ADD COLUMN IF NOT EXISTS statements are idempotent; DuckDB raises only
+# if syntax/semantics are wrong, not on repeat add.
+_MIGRATIONS = [
+    "ALTER TABLE mlb_sgp_odds ADD COLUMN IF NOT EXISTS spread_line DOUBLE",
+    "ALTER TABLE mlb_sgp_odds ADD COLUMN IF NOT EXISTS total_line DOUBLE",
+]
+
 
 def ensure_table(db_path: str = None):
-    """Create the mlb_sgp_odds table if it doesn't exist."""
+    """Create the mlb_sgp_odds table if it doesn't exist; migrate if it does."""
     db_path = db_path or str(MLB_DB)
     con = _connect_with_retry(db_path)
     try:
         con.execute(CREATE_TABLE_SQL)
+        for sql in _MIGRATIONS:
+            con.execute(sql)
     finally:
         con.close()
 
