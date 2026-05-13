@@ -1,0 +1,4489 @@
+{
+  "data": {
+    "markets": [
+      {
+        "id": 251,
+        "name": "Moneyline",
+        "status": "active",
+        "selections": [
+          [
+            {
+              "id": 4,
+              "name": "Cincinnati Reds -310",
+              "displayName": "Cincinnati Reds -310",
+              "competitorId": 10000002,
+              "odds": -310,
+              "line": 0,
+              "displayOdds": "-310",
+              "value": 3974.2,
+              "stake": 1282,
+              "lineID": "6f42a855ee9d88fd17bd366dcc1e5298",
+              "abbreviatedName": "CIN -310"
+            },
+            {
+              "id": 4,
+              "name": "Cincinnati Reds -320",
+              "displayName": "Cincinnati Reds -320",
+              "competitorId": 10000002,
+              "odds": -320,
+              "line": 0,
+              "displayOdds": "-320",
+              "value": 320,
+              "stake": 100,
+              "lineID": "6f42a855ee9d88fd17bd366dcc1e5298",
+              "abbreviatedName": "CIN -320"
+            },
+            {
+              "id": 4,
+              "name": "Cincinnati Reds -335",
+              "displayName": "Cincinnati Reds -335",
+              "competitorId": 10000002,
+              "odds": -335,
+              "line": 0,
+              "displayOdds": "-335",
+              "value": 3852.5,
+              "stake": 1150,
+              "lineID": "6f42a855ee9d88fd17bd366dcc1e5298",
+              "abbreviatedName": "CIN -335"
+            }
+          ],
+          [
+            {
+              "id": 5,
+              "name": "Washington Nationals +255",
+              "displayName": "Washington Nationals +255",
+              "competitorId": 10000035,
+              "odds": 255,
+              "line": 0,
+              "displayOdds": "+255",
+              "value": 2856.86,
+              "stake": 7285,
+              "lineID": "f62b6d24b2c46e11e164df3173d664bd",
+              "abbreviatedName": "WSH +255"
+            },
+            {
+              "id": 5,
+              "name": "Washington Nationals +200",
+              "displayName": "Washington Nationals +200",
+              "competitorId": 10000035,
+              "odds": 200,
+              "line": 0,
+              "displayOdds": "+200",
+              "value": 1.05,
+              "stake": 2.1,
+              "lineID": "f62b6d24b2c46e11e164df3173d664bd",
+              "abbreviatedName": "WSH +200"
+            }
+          ]
+        ],
+        "outcomes": [
+          {
+            "id": 4,
+            "competitorId": 10000002,
+            "lineID": "6f42a855ee9d88fd17bd366dcc1e5298"
+          },
+          {
+            "id": 5,
+            "competitorId": 10000035,
+            "lineID": "f62b6d24b2c46e11e164df3173d664bd"
+          }
+        ],
+        "totalStake": 57039.75,
+        "sportEventId": 10077925,
+        "type": "moneyline",
+        "subType": "moneyline",
+        "categoryID": 1,
+        "categoryName": "Game Lines"
+      },
+      {
+        "id": 256,
+        "name": "Run Line",
+        "status": "active",
+        "totalStake": 11879.039999999999,
+        "sportEventId": 10077925,
+        "type": "spread",
+        "marketLines": [
+          {
+            "id": 256,
+            "name": "Fixed home -5.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 1714,
+                "name": "Cincinnati Reds -5.5",
+                "displayName": "Cincinnati Reds -5.5",
+                "competitorId": 10000002,
+                "line": -5.5,
+                "displayLine": "-5.5",
+                "lineID": "14b00908605bf1e912a77f8929477dea",
+                "abbreviatedName": "CIN -5.5"
+              },
+              {
+                "id": 1715,
+                "name": "Washington Nationals +5.5",
+                "displayName": "Washington Nationals +5.5",
+                "competitorId": 10000035,
+                "line": 5.5,
+                "displayLine": "+5.5",
+                "lineID": "55953deb55877737eef82ddd4afd82ee",
+                "abbreviatedName": "WSH +5.5"
+              }
+            ],
+            "type": "spread"
+          },
+          {
+            "id": 256,
+            "name": "Fixed home -4.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 1714,
+                "name": "Cincinnati Reds -4.5",
+                "displayName": "Cincinnati Reds -4.5",
+                "competitorId": 10000002,
+                "line": -4.5,
+                "displayLine": "-4.5",
+                "lineID": "0783529c88f0319b391563ca3bd364e7",
+                "abbreviatedName": "CIN -4.5"
+              },
+              {
+                "id": 1715,
+                "name": "Washington Nationals +4.5",
+                "displayName": "Washington Nationals +4.5",
+                "competitorId": 10000035,
+                "line": 4.5,
+                "displayLine": "+4.5",
+                "lineID": "2438cefa80fe53c0999cd47127449e1a",
+                "abbreviatedName": "WSH +4.5"
+              }
+            ],
+            "type": "spread"
+          },
+          {
+            "id": 256,
+            "name": "Fixed home -2.5",
+            "selections": [
+              [
+                {
+                  "id": 1714,
+                  "name": "Cincinnati Reds -2.5",
+                  "displayName": "Cincinnati Reds -2.5",
+                  "competitorId": 10000002,
+                  "odds": 119,
+                  "line": -2.5,
+                  "displayOdds": "+119",
+                  "displayLine": "-2.5",
+                  "value": 1177.31,
+                  "stake": 1401,
+                  "lineID": "e941d3ba8bd2ccce52c89754fca9ad60",
+                  "abbreviatedName": "CIN -2.5"
+                }
+              ],
+              [
+                {
+                  "id": 1715,
+                  "name": "Washington Nationals +2.5",
+                  "displayName": "Washington Nationals +2.5",
+                  "competitorId": 10000035,
+                  "odds": -138,
+                  "line": 2.5,
+                  "displayOdds": "-138",
+                  "displayLine": "+2.5",
+                  "value": 1700.16,
+                  "stake": 1232,
+                  "lineID": "42ce7cc2ee39c96154ee7a99fe8fe77b",
+                  "abbreviatedName": "WSH +2.5"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 1714,
+                "name": "Cincinnati Reds -2.5",
+                "displayName": "Cincinnati Reds -2.5",
+                "competitorId": 10000002,
+                "line": -2.5,
+                "displayLine": "-2.5",
+                "lineID": "e941d3ba8bd2ccce52c89754fca9ad60",
+                "abbreviatedName": "CIN -2.5"
+              },
+              {
+                "id": 1715,
+                "name": "Washington Nationals +2.5",
+                "displayName": "Washington Nationals +2.5",
+                "competitorId": 10000035,
+                "line": 2.5,
+                "displayLine": "+2.5",
+                "lineID": "42ce7cc2ee39c96154ee7a99fe8fe77b",
+                "abbreviatedName": "WSH +2.5"
+              }
+            ],
+            "type": "spread"
+          },
+          {
+            "id": 256,
+            "name": "Fixed home -1.5",
+            "selections": [
+              [
+                {
+                  "id": 1714,
+                  "name": "Cincinnati Reds -1.5",
+                  "displayName": "Cincinnati Reds -1.5",
+                  "competitorId": 10000002,
+                  "odds": -138,
+                  "line": -1.5,
+                  "displayOdds": "-138",
+                  "displayLine": "-1.5",
+                  "value": 1718.1,
+                  "stake": 1245,
+                  "lineID": "a07eceed9b8e06f7f858d55aad9563e4",
+                  "abbreviatedName": "CIN -1.5"
+                },
+                {
+                  "id": 1714,
+                  "name": "Cincinnati Reds -1.5",
+                  "displayName": "Cincinnati Reds -1.5",
+                  "competitorId": 10000002,
+                  "odds": -150,
+                  "line": -1.5,
+                  "displayOdds": "-150",
+                  "displayLine": "-1.5",
+                  "value": 600,
+                  "stake": 400,
+                  "lineID": "a07eceed9b8e06f7f858d55aad9563e4",
+                  "abbreviatedName": "CIN -1.5"
+                }
+              ],
+              [
+                {
+                  "id": 1715,
+                  "name": "Washington Nationals +1.5",
+                  "displayName": "Washington Nationals +1.5",
+                  "competitorId": 10000035,
+                  "odds": 119,
+                  "line": 1.5,
+                  "displayOdds": "+119",
+                  "displayLine": "+1.5",
+                  "value": 1137.82,
+                  "stake": 1354,
+                  "lineID": "cb39deddb73a76e04664bfd938f2422a",
+                  "abbreviatedName": "WSH +1.5"
+                },
+                {
+                  "id": 1715,
+                  "name": "Washington Nationals +1.5",
+                  "displayName": "Washington Nationals +1.5",
+                  "competitorId": 10000035,
+                  "odds": 107,
+                  "line": 1.5,
+                  "displayOdds": "+107",
+                  "displayLine": "+1.5",
+                  "value": 485.05,
+                  "stake": 519,
+                  "lineID": "cb39deddb73a76e04664bfd938f2422a",
+                  "abbreviatedName": "WSH +1.5"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 1714,
+                "name": "Cincinnati Reds -1.5",
+                "displayName": "Cincinnati Reds -1.5",
+                "competitorId": 10000002,
+                "line": -1.5,
+                "displayLine": "-1.5",
+                "lineID": "a07eceed9b8e06f7f858d55aad9563e4",
+                "abbreviatedName": "CIN -1.5"
+              },
+              {
+                "id": 1715,
+                "name": "Washington Nationals +1.5",
+                "displayName": "Washington Nationals +1.5",
+                "competitorId": 10000035,
+                "line": 1.5,
+                "displayLine": "+1.5",
+                "lineID": "cb39deddb73a76e04664bfd938f2422a",
+                "abbreviatedName": "WSH +1.5"
+              }
+            ],
+            "type": "spread",
+            "favourite": true
+          }
+        ],
+        "subType": "spread",
+        "categoryID": 1,
+        "categoryName": "Game Lines"
+      },
+      {
+        "id": 258,
+        "name": "Total Runs",
+        "status": "active",
+        "totalStake": 40634.19000000002,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 258,
+            "name": "Fixed total 8.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 8.5",
+                "displayName": "over 8.5",
+                "line": 8.5,
+                "displayLine": "8.5",
+                "lineID": "9b611eeec292dbf9fc860420faefd887"
+              },
+              {
+                "id": 13,
+                "name": "under 8.5",
+                "displayName": "under 8.5",
+                "line": 8.5,
+                "displayLine": "8.5",
+                "lineID": "bfc0e41cabe40a396dd98231be21972b"
+              }
+            ],
+            "type": "total"
+          },
+          {
+            "id": 258,
+            "name": "Fixed total 9",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 9",
+                "displayName": "over 9",
+                "line": 9,
+                "displayLine": "9",
+                "lineID": "8d6abef57440f8d71ab2593f999b910c"
+              },
+              {
+                "id": 13,
+                "name": "under 9",
+                "displayName": "under 9",
+                "line": 9,
+                "displayLine": "9",
+                "lineID": "d73412f17f898c6db72161ef2427bfc3"
+              }
+            ],
+            "type": "total"
+          },
+          {
+            "id": 258,
+            "name": "Fixed total 9.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 9.5",
+                  "displayName": "under 9.5",
+                  "odds": 100,
+                  "line": 9.5,
+                  "displayOdds": "+100",
+                  "displayLine": "9.5",
+                  "value": 10,
+                  "stake": 10,
+                  "lineID": "f8068043f62cfb87c4aad3533dd4956f"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 9.5",
+                "displayName": "over 9.5",
+                "line": 9.5,
+                "displayLine": "9.5",
+                "lineID": "8d35d8af82487591d44a8e3dcda95529"
+              },
+              {
+                "id": 13,
+                "name": "under 9.5",
+                "displayName": "under 9.5",
+                "line": 9.5,
+                "displayLine": "9.5",
+                "lineID": "f8068043f62cfb87c4aad3533dd4956f"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          },
+          {
+            "id": 258,
+            "name": "Fixed total 10.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 10.5",
+                "displayName": "over 10.5",
+                "line": 10.5,
+                "displayLine": "10.5",
+                "lineID": "325e5883615c361ab35dc6c0b651fe38"
+              },
+              {
+                "id": 13,
+                "name": "under 10.5",
+                "displayName": "under 10.5",
+                "line": 10.5,
+                "displayLine": "10.5",
+                "lineID": "b58931a795f8f084084c9572d8e7f301"
+              }
+            ],
+            "type": "total"
+          },
+          {
+            "id": 258,
+            "name": "Fixed total 12.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 12.5",
+                "displayName": "over 12.5",
+                "line": 12.5,
+                "displayLine": "12.5",
+                "lineID": "9d3bf5230b1031a4da4867e101aa0cef"
+              },
+              {
+                "id": 13,
+                "name": "under 12.5",
+                "displayName": "under 12.5",
+                "line": 12.5,
+                "displayLine": "12.5",
+                "lineID": "9a28651f1a43a9b99765dd6e03cae224"
+              }
+            ],
+            "type": "total"
+          },
+          {
+            "id": 258,
+            "name": "Fixed total 13.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 13.5",
+                "displayName": "over 13.5",
+                "line": 13.5,
+                "displayLine": "13.5",
+                "lineID": "bb01be79d80ca9597ed9ffdc0db8f6a8"
+              },
+              {
+                "id": 13,
+                "name": "under 13.5",
+                "displayName": "under 13.5",
+                "line": 13.5,
+                "displayLine": "13.5",
+                "lineID": "93da482bb7dc7ff4096ed3068a63a5c0"
+              }
+            ],
+            "type": "total"
+          },
+          {
+            "id": 258,
+            "name": "Fixed total 14.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 14.5",
+                "displayName": "over 14.5",
+                "line": 14.5,
+                "displayLine": "14.5",
+                "lineID": "761468ed3c2cd20e6992ffdedff5cba0"
+              },
+              {
+                "id": 13,
+                "name": "under 14.5",
+                "displayName": "under 14.5",
+                "line": 14.5,
+                "displayLine": "14.5",
+                "lineID": "85b40721eb80e6383b03c9737cd19706"
+              }
+            ],
+            "type": "total"
+          }
+        ],
+        "subType": "total",
+        "categoryID": 1,
+        "categoryName": "Game Lines"
+      },
+      {
+        "id": 440007044,
+        "name": "Nick Lodolo Total Pitching Strikeouts",
+        "status": "active",
+        "totalStake": 2743.3200000000006,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 440007044,
+            "name": "Fixed total 5.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 5.5",
+                "displayName": "over 5.5",
+                "line": 5.5,
+                "displayLine": "5.5",
+                "lineID": "88b152f0cd95580be5e256016b56e07a"
+              },
+              {
+                "id": 13,
+                "name": "under 5.5",
+                "displayName": "under 5.5",
+                "line": 5.5,
+                "displayLine": "5.5",
+                "lineID": "783bb955e754993eac005258de8f19ad"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_pitching_strikeouts",
+        "categoryID": 127,
+        "categoryName": "Strikeouts"
+      },
+      {
+        "id": 440009337,
+        "name": "Jake Irvin Total Pitching Strikeouts",
+        "status": "active",
+        "totalStake": 4025.85,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 440009337,
+            "name": "Fixed total 4.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 4.5",
+                "displayName": "over 4.5",
+                "line": 4.5,
+                "displayLine": "4.5",
+                "lineID": "66e9455e1d49afbb28c2f3da54377302"
+              },
+              {
+                "id": 13,
+                "name": "under 4.5",
+                "displayName": "under 4.5",
+                "line": 4.5,
+                "displayLine": "4.5",
+                "lineID": "08bd7a7c773007c3960e7c994e9a9389"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_pitching_strikeouts",
+        "categoryID": 127,
+        "categoryName": "Strikeouts"
+      },
+      {
+        "id": 460006053,
+        "name": "Ke'Bryan Hayes Total Hits",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460006053,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "c2af2553124715ac203d8053d9386b69"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "ccf707ff6ffdd8a70d0358ca3402ee4f"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460006804,
+        "name": "Tyler Stephenson Total Hits",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460006804,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "fc8c1a48dd30832d6b1660eca632be78"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "3d15a95b106cd81620f9388eaeaa7cda"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460007012,
+        "name": "Will Benson Total Hits",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460007012,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "056dd5c473835bccef0d6aac631e34ab"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "919daa5bef985c68cab82a4eba8ba6a5"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460007252,
+        "name": "TJ Friedl Total Hits",
+        "status": "active",
+        "totalStake": 21.98,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460007252,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "52a679b5b7b98d88da02bb09f1246e86"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "210e07c7528b51b04b57f0d684ea71b5"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460007310,
+        "name": "Keibert Ruiz Total Hits",
+        "status": "active",
+        "totalStake": 125.44999999999999,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460007310,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "bc9d4789d185e9caacae2dd529e2a188"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "b4147b1ccc2f87f37fb0f6d3285213bb"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460008989,
+        "name": "Nathaniel Lowe Total Hits",
+        "status": "active",
+        "totalStake": 52,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460008989,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": 108,
+                  "line": 0.5,
+                  "displayOdds": "+108",
+                  "displayLine": "0.5",
+                  "value": 48.15,
+                  "stake": 52,
+                  "lineID": "51ecd8a862b67fd8a48ff6da932e7fcd"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "35afd54aca874e3f2cf329dee144ca14"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "51ecd8a862b67fd8a48ff6da932e7fcd"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460009348,
+        "name": "Matt McLain Total Hits",
+        "status": "active",
+        "totalStake": 50,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460009348,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": 101,
+                  "line": 0.5,
+                  "displayOdds": "+101",
+                  "displayLine": "0.5",
+                  "value": 49.5,
+                  "stake": 50,
+                  "lineID": "316547e44026a52555732a7b5508c24e"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "91b55f36d5ab05d3bdbd2d0ceea2b25f"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "316547e44026a52555732a7b5508c24e"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460010333,
+        "name": "CJ Abrams Total Hits",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460010333,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "daea799819025251cd441f8d738acc89"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "af2c50398fa563cdc351614f8b992423"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460010337,
+        "name": "JJ Bleday Total Hits",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460010337,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "60eb7c53704555ca239139d6066f946e"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "645a9adadbe78024f1e882608ada97a8"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460010422,
+        "name": "Nasim Nu\u00f1ez Total Hits",
+        "status": "active",
+        "totalStake": 287.53,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460010422,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": -117,
+                  "line": 0.5,
+                  "displayOdds": "-117",
+                  "displayLine": "0.5",
+                  "value": 53.82,
+                  "stake": 46,
+                  "lineID": "660ef543bf2426307035d9ea6b2343d8"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "1776251d177a3ee9f2453cce14ba514a"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "660ef543bf2426307035d9ea6b2343d8"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460010446,
+        "name": "Spencer Steer Total Hits",
+        "status": "active",
+        "totalStake": 982.1099999999999,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460010446,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": 138,
+                  "line": 0.5,
+                  "displayOdds": "+138",
+                  "displayLine": "0.5",
+                  "value": 41.96,
+                  "stake": 57.9,
+                  "lineID": "5a25a40bef37e0156231058f8d13ae75"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "f839febd51d2c762e5ee5889bcb315bc"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "5a25a40bef37e0156231058f8d13ae75"
+              }
+            ],
+            "type": "total"
+          },
+          {
+            "id": 460010446,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 1.5",
+                  "displayName": "under 1.5",
+                  "odds": -485,
+                  "line": 1.5,
+                  "displayOdds": "-485",
+                  "displayLine": "1.5",
+                  "value": 82.45,
+                  "stake": 17,
+                  "lineID": "c376db42bb078204d5c0dd11c0dd18fb"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "2eff2caf2bb1e1638c5abaee9cd0b0cb"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "c376db42bb078204d5c0dd11c0dd18fb"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460010800,
+        "name": "Curtis Mead Total Hits",
+        "status": "active",
+        "totalStake": 57,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460010800,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": 132,
+                  "line": 0.5,
+                  "displayOdds": "+132",
+                  "displayLine": "0.5",
+                  "value": 43.18,
+                  "stake": 57,
+                  "lineID": "79cbae6cfaba785cc1b1b5c36b2af0bd"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "7fb77968cba0ce04758398b9238eefd8"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "79cbae6cfaba785cc1b1b5c36b2af0bd"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460011607,
+        "name": "Joey Wiemer Total Hits",
+        "status": "active",
+        "totalStake": 10.05,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460011607,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "702f1511be25c20f340c2ecedd731c91"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "904e55b8f1bc0c276482a3914d156555"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460012490,
+        "name": "Brady House Total Hits",
+        "status": "active",
+        "totalStake": 52,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460012490,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": 108,
+                  "line": 0.5,
+                  "displayOdds": "+108",
+                  "displayLine": "0.5",
+                  "value": 48.15,
+                  "stake": 52,
+                  "lineID": "4e37bbad7fdfa4e783db71b3e0aac432"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "f4de648bbf758ee872eeeb3ea8a79309"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "4e37bbad7fdfa4e783db71b3e0aac432"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460012568,
+        "name": "Daylen Lile Total Hits",
+        "status": "active",
+        "totalStake": 72,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460012568,
+            "name": "Fixed total 0.5",
+            "selections": [
+              [
+                {
+                  "id": 12,
+                  "name": "over 0.5",
+                  "displayName": "over 0.5",
+                  "odds": -194,
+                  "line": 0.5,
+                  "displayOdds": "-194",
+                  "displayLine": "0.5",
+                  "value": 32.98,
+                  "stake": 17,
+                  "lineID": "1dd4c15a891d08cd31080fca69a16e4c"
+                }
+              ],
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": 122,
+                  "line": 0.5,
+                  "displayOdds": "+122",
+                  "displayLine": "0.5",
+                  "value": 45.08,
+                  "stake": 55,
+                  "lineID": "659fa6e6cdb51cda98c600b99c09fa30"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "1dd4c15a891d08cd31080fca69a16e4c"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "659fa6e6cdb51cda98c600b99c09fa30"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460012669,
+        "name": "James Wood Total Hits",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460012669,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "041ef471b1f89c29937d22e0e50c09ce"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "293996b998bfe2ec6179431588e6686b"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460012721,
+        "name": "Elly De La Cruz Total Hits",
+        "status": "active",
+        "totalStake": 249.73000000000002,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460012721,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "4b343ddfa115f99f823deb6283a1113b"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "1c12a60688ae3e603e7198d0e73037ae"
+              }
+            ],
+            "type": "total"
+          },
+          {
+            "id": 460012721,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "9ae3c6a2e2e3e3862ae65bce14e83572"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "003001cdaa64b657c4ad52f90fb2755e"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460013683,
+        "name": "Jacob Young Total Hits",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460013683,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "20b4fc576c3676b5b11809c7509a6ae7"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "7e65d888f0896aeee064260a7b32a554"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 460014087,
+        "name": "Sal Stewart Total Hits",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 460014087,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "2fa82d51b0d99e26cca319584a929261"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "9c61769afb2517b0843e00e932c3b5df"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits",
+        "categoryID": 129,
+        "categoryName": "Hits"
+      },
+      {
+        "id": 490006053,
+        "name": "Ke'Bryan Hayes Total Bases",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490006053,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "d6fd046935b65780b6926d71adb1af68"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "4e2e22c4c1ecb32047a3470d90997158"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490006804,
+        "name": "Tyler Stephenson Total Bases",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490006804,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "a779239468ce2930459a7c9647577143"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "9127bf9129171c17d3e0e2232bcd21ea"
+              }
+            ],
+            "type": "total"
+          },
+          {
+            "id": 490006804,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "50e5da7243d637e8227a5faf5a18940b"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "0b831b1458c9e99ce5f8884d65261c54"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490007012,
+        "name": "Will Benson Total Bases",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490007012,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "cf0738ac0b1c43ccbd8c381f1c396e8e"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "ca5b2661166826f387b8c07a730c2dac"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490007252,
+        "name": "TJ Friedl Total Bases",
+        "status": "active",
+        "totalStake": 54.8,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490007252,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "07f9c14e36dd4d8cc2b6b030d3aa8c47"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "ce68ff276a7f67b0d755bfbcc77d8265"
+              }
+            ],
+            "type": "total"
+          },
+          {
+            "id": 490007252,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 1.5",
+                  "displayName": "under 1.5",
+                  "odds": -375,
+                  "line": 1.5,
+                  "displayOdds": "-375",
+                  "displayLine": "1.5",
+                  "value": 78.75,
+                  "stake": 21,
+                  "lineID": "535cc51415845214c808fff7026f8a85"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "c38a4a1423d08377dedf4418c2ca84c6"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "535cc51415845214c808fff7026f8a85"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490007310,
+        "name": "Keibert Ruiz Total Bases",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490007310,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "4147ef7777e0f9a05325f8fe1017e552"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "9637c8264d2d7d5db091b54deaeed4f6"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490008989,
+        "name": "Nathaniel Lowe Total Bases",
+        "status": "active",
+        "totalStake": 28,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490008989,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 1.5",
+                  "displayName": "under 1.5",
+                  "odds": -255,
+                  "line": 1.5,
+                  "displayOdds": "-255",
+                  "displayLine": "1.5",
+                  "value": 71.4,
+                  "stake": 28,
+                  "lineID": "5876ebe03c906ab68052df9d9d17c01b"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "262f31caa3b14546d14d372ff6fc7a0c"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "5876ebe03c906ab68052df9d9d17c01b"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490009348,
+        "name": "Matt McLain Total Bases",
+        "status": "active",
+        "totalStake": 22,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490009348,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "0769d4a8c2a32ca69e076208eb8b9239"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "6e7a1a2f3c402581687d62b345535a89"
+              }
+            ],
+            "type": "total"
+          },
+          {
+            "id": 490009348,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 1.5",
+                  "displayName": "under 1.5",
+                  "odds": -350,
+                  "line": 1.5,
+                  "displayOdds": "-350",
+                  "displayLine": "1.5",
+                  "value": 77,
+                  "stake": 22,
+                  "lineID": "5658c3b70df6356b9417c58b3d1a703c"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "86cf59c3d606fe96c293cf6efdfebf0e"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "5658c3b70df6356b9417c58b3d1a703c"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490010333,
+        "name": "CJ Abrams Total Bases",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490010333,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "412194ae159bfdb55f9db481bc3cb5c8"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "d2e9dd20cadfe819ab8964f110be602d"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490010337,
+        "name": "JJ Bleday Total Bases",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490010337,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "c4ee055cb8c1013492a41ff9167eda9c"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "be42e2cf7103912bad16d8185cac6290"
+              }
+            ],
+            "type": "total"
+          },
+          {
+            "id": 490010337,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "2e41150d8e644e2c59ae178b4cdbf505"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "44dfafbda15b1c92d0cc37031cd8f470"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490010422,
+        "name": "Nasim Nu\u00f1ez Total Bases",
+        "status": "active",
+        "totalStake": 8.05,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490010422,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "9be7956d0998babcd8d0f3b77c3ec422"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "153d8cf02dbbba7a836e1b517cd5a064"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490010446,
+        "name": "Spencer Steer Total Bases",
+        "status": "active",
+        "totalStake": 33,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490010446,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 1.5",
+                  "displayName": "under 1.5",
+                  "odds": -200,
+                  "line": 1.5,
+                  "displayOdds": "-200",
+                  "displayLine": "1.5",
+                  "value": 66,
+                  "stake": 33,
+                  "lineID": "799727c331e9a18617deb711f0adcd7f"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "58c3e32a97816fc8378ab763014aef8b"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "799727c331e9a18617deb711f0adcd7f"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490010800,
+        "name": "Curtis Mead Total Bases",
+        "status": "active",
+        "totalStake": 189.52,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490010800,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 1.5",
+                  "displayName": "under 1.5",
+                  "odds": -230,
+                  "line": 1.5,
+                  "displayOdds": "-230",
+                  "displayLine": "1.5",
+                  "value": 69,
+                  "stake": 30,
+                  "lineID": "7242e0b04f103299b9056029474284fe"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "0c72eec5557c0c9b8911849d4485a6c7"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "7242e0b04f103299b9056029474284fe"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490011607,
+        "name": "Joey Wiemer Total Bases",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490011607,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "7d4f2dc9c94ad3c5b0968bc16c35b34f"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "58e28cbf454c988a6477fb70da1effb0"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490012490,
+        "name": "Brady House Total Bases",
+        "status": "active",
+        "totalStake": 58.5,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490012490,
+            "name": "Fixed total 1.5",
+            "selections": [
+              [
+                {
+                  "id": 12,
+                  "name": "over 1.5",
+                  "displayName": "over 1.5",
+                  "odds": 170,
+                  "line": 1.5,
+                  "displayOdds": "+170",
+                  "displayLine": "1.5",
+                  "value": 18.53,
+                  "stake": 31.5,
+                  "lineID": "ed351a649eeb799de92ff9e373c29c65"
+                }
+              ],
+              [
+                {
+                  "id": 13,
+                  "name": "under 1.5",
+                  "displayName": "under 1.5",
+                  "odds": -270,
+                  "line": 1.5,
+                  "displayOdds": "-270",
+                  "displayLine": "1.5",
+                  "value": 72.9,
+                  "stake": 27,
+                  "lineID": "a5993cb3d784b827180091cff340a179"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "ed351a649eeb799de92ff9e373c29c65"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "a5993cb3d784b827180091cff340a179"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490012568,
+        "name": "Daylen Lile Total Bases",
+        "status": "active",
+        "totalStake": 60,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490012568,
+            "name": "Fixed total 1.5",
+            "selections": [
+              [
+                {
+                  "id": 12,
+                  "name": "over 1.5",
+                  "displayName": "over 1.5",
+                  "odds": 164,
+                  "line": 1.5,
+                  "displayOdds": "+164",
+                  "displayLine": "1.5",
+                  "value": 18.9,
+                  "stake": 31,
+                  "lineID": "26c62ce31284de552a6dc8b24d3ee1cb"
+                }
+              ],
+              [
+                {
+                  "id": 13,
+                  "name": "under 1.5",
+                  "displayName": "under 1.5",
+                  "odds": -240,
+                  "line": 1.5,
+                  "displayOdds": "-240",
+                  "displayLine": "1.5",
+                  "value": 69.6,
+                  "stake": 29,
+                  "lineID": "e9beacc7a95f329c4ec1d1dd4cc6ccf2"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "26c62ce31284de552a6dc8b24d3ee1cb"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "e9beacc7a95f329c4ec1d1dd4cc6ccf2"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490012669,
+        "name": "James Wood Total Bases",
+        "status": "active",
+        "totalStake": 185.1,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490012669,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 1.5",
+                  "displayName": "under 1.5",
+                  "odds": -330,
+                  "line": 1.5,
+                  "displayOdds": "-330",
+                  "displayLine": "1.5",
+                  "value": 75.9,
+                  "stake": 23,
+                  "lineID": "eb548426e26071ca8ebfb32f72b279e0"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "0ce599b979d90066c01e1ac4a780ea9d"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "eb548426e26071ca8ebfb32f72b279e0"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490012721,
+        "name": "Elly De La Cruz Total Bases",
+        "status": "active",
+        "totalStake": 132.08,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490012721,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "0d6ea3d5220bf40043f29e57752e9a06"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "400bc64cead30371201a2cc564ac46e8"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490013683,
+        "name": "Jacob Young Total Bases",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490013683,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "38c70f1b9faaf6c6cda2918781a3551b"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "83d447a0491ec8e9ca29afa7f8edffe6"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 490014087,
+        "name": "Sal Stewart Total Bases",
+        "status": "active",
+        "totalStake": 594.6700000000001,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 490014087,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "fd363d878c11506c55f4e4917bad3488"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "dba225feffe3bb7112b08602b1461658"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_bases",
+        "categoryID": 132,
+        "categoryName": "Total Bases"
+      },
+      {
+        "id": 530006053,
+        "name": "Ke'Bryan Hayes Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530006053,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "4103ef503fae7156a5d36364c50ac8e8"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "f16ad9ef6a9f1c7b9166ccca668bf214"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530006804,
+        "name": "Tyler Stephenson Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530006804,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "76c4146fc43d4119959825e516129375"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "d0fc988d46d53d65505c3069221d67f5"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530007012,
+        "name": "Will Benson Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530007012,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "c1eb58b99e2305a1f11da66d560a9877"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "6a769cdf8d369dc8df96bd0655c7028e"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530007252,
+        "name": "TJ Friedl Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530007252,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "69710a1bd1899e5faa2336a040847e49"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "71f3605312027ab55357c4450fa447fc"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530007310,
+        "name": "Keibert Ruiz Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530007310,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "ee1b8c9cd0f08160970492666d6be2b3"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "f7ee8e028d684eb82c73c8e6956923cf"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530008989,
+        "name": "Nathaniel Lowe Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530008989,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "39847cbcec07942ecb92b56da8fa9744"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "890c4ab29cba905ebfbb6d4968a220ed"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530009348,
+        "name": "Matt McLain Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 200,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530009348,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "5db9ce048883ba62753f3b7b54dae62a"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "85f2e12d4c5bad8d1334a16ed321b2e1"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530010333,
+        "name": "CJ Abrams Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 46.010000000000005,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530010333,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "169ca0f71d21c2314453f1a38b2ff36c"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "c1e289cce8c48040ede6dcdd742d072d"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530010337,
+        "name": "JJ Bleday Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 22.58,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530010337,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "910838024e151ada36f9c4ef89d08870"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "e7a1f7a5deec7aa59801502d3249d3f7"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530010422,
+        "name": "Nasim Nu\u00f1ez Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530010422,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "70d1e5aecde03ff589f92395beae260d"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "2b09d642b4236c47fb0983184ef5707b"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530010446,
+        "name": "Spencer Steer Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 654.04,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530010446,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "8bb9fc2665d50b70fd84705dfe6698bc"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "68873949d6b965c5f2a5145cbbb2e17a"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530010800,
+        "name": "Curtis Mead Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530010800,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "32ca92289ee85aef943eb0245464ec44"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "c7884142a26c2ed7cde6d42dc1bf43ff"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530011607,
+        "name": "Joey Wiemer Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530011607,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "35188e4854235717f730bb6599215a71"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "aeb89631b0cfaa370c1c77f9b9d53c45"
+              }
+            ],
+            "type": "total"
+          },
+          {
+            "id": 530011607,
+            "name": "Fixed total 1",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1",
+                "displayName": "over 1",
+                "line": 1,
+                "displayLine": "1",
+                "lineID": "a53be44fc12221c5016f748c080d49b7"
+              },
+              {
+                "id": 13,
+                "name": "under 1",
+                "displayName": "under 1",
+                "line": 1,
+                "displayLine": "1",
+                "lineID": "c2c816274bce1d729c4722c0fe35d7f2"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          },
+          {
+            "id": 530011607,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "f07ef2e811794d1328eb1dbcf9fc7a80"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "a4da313c403e6a9a048bf6384e3284aa"
+              }
+            ],
+            "type": "total"
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530012490,
+        "name": "Brady House Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530012490,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "50022e3f40c01a6825093514b502aadd"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "2291e9c6f400cbcca577c6a24cd04680"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530012568,
+        "name": "Daylen Lile Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530012568,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "2892933c3b8f1f71941a367b77410be6"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "c621d111633164a1ac33761609330e10"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530012669,
+        "name": "James Wood Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530012669,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "b1b047b9c6c7ca19a0555f81addf624b"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "04e999b0b7a85fd0ab7935e5459d0096"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530012721,
+        "name": "Elly De La Cruz Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 7.81,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530012721,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "f18d7eab48cc9c0274ae01167eb10d52"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "9e98831c683d3929933700ff3d3c1a1f"
+              }
+            ],
+            "type": "total"
+          },
+          {
+            "id": 530012721,
+            "name": "Fixed total 2.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 2.5",
+                "displayName": "over 2.5",
+                "line": 2.5,
+                "displayLine": "2.5",
+                "lineID": "fd73b7023781eaedd0f4dc1343bb90b7"
+              },
+              {
+                "id": 13,
+                "name": "under 2.5",
+                "displayName": "under 2.5",
+                "line": 2.5,
+                "displayLine": "2.5",
+                "lineID": "4f47ab104a1b29f683fee0ce34228cd3"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530013683,
+        "name": "Jacob Young Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530013683,
+            "name": "Fixed total 1.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 1.5",
+                "displayName": "over 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "803f922b707b3772d904ee9255c300d0"
+              },
+              {
+                "id": 13,
+                "name": "under 1.5",
+                "displayName": "under 1.5",
+                "line": 1.5,
+                "displayLine": "1.5",
+                "lineID": "2348da5eee35a9721dd733b2e27c7e5a"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 530014087,
+        "name": "Sal Stewart Total Hits, Runs & RBIs",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 530014087,
+            "name": "Fixed total 2.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 2.5",
+                "displayName": "over 2.5",
+                "line": 2.5,
+                "displayLine": "2.5",
+                "lineID": "d6e545b8356e9a8d536d612333669a86"
+              },
+              {
+                "id": 13,
+                "name": "under 2.5",
+                "displayName": "under 2.5",
+                "line": 2.5,
+                "displayLine": "2.5",
+                "lineID": "2fb372c53e88024a9641a55715f4c147"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_hits_runs_rbis",
+        "categoryID": 136,
+        "categoryName": "Hits + Runs + RBIs"
+      },
+      {
+        "id": 580006053,
+        "name": "Ke'Bryan Hayes Total Home Runs",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580006053,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "59e09e05485563ca5985be409b1b0cf8"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "685ae8e1177a2396bb6e5213c9f993e2"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580006804,
+        "name": "Tyler Stephenson Total Home Runs",
+        "status": "active",
+        "totalStake": 11.11,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580006804,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "a73d0455db5467aaec6e371e26a25a00"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "6cd9acfb385aefe1d93c1216255ba378"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580007012,
+        "name": "Will Benson Total Home Runs",
+        "status": "active",
+        "totalStake": 62.25,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580007012,
+            "name": "Fixed total 0.5",
+            "selections": [
+              [
+                {
+                  "id": 12,
+                  "name": "over 0.5",
+                  "displayName": "over 0.5",
+                  "odds": 490,
+                  "line": 0.5,
+                  "displayOdds": "+490",
+                  "displayLine": "0.5",
+                  "value": 12.7,
+                  "stake": 62.25,
+                  "lineID": "3b3975a6a153873fb441c663171333df"
+                }
+              ],
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "3b3975a6a153873fb441c663171333df"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "97ee559b696128084b8181b99fa5764b"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580007252,
+        "name": "TJ Friedl Total Home Runs",
+        "status": "active",
+        "totalStake": 5,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580007252,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": -4900,
+                  "line": 0.5,
+                  "displayOdds": "-4900",
+                  "displayLine": "0.5",
+                  "value": 245,
+                  "stake": 5,
+                  "lineID": "b3899ab5be84bbd05f89670dcc42ea64"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "3a25d2e18928a81d229347055a1798a5"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "b3899ab5be84bbd05f89670dcc42ea64"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580007310,
+        "name": "Keibert Ruiz Total Home Runs",
+        "status": "active",
+        "totalStake": 18.75,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580007310,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "3952c8182803e613202d85e380d065ec"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "7f087f7fd3a1efe9df63e1f23acf9fd4"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580008989,
+        "name": "Nathaniel Lowe Total Home Runs",
+        "status": "active",
+        "totalStake": 382.05,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580008989,
+            "name": "Fixed total 0.5",
+            "selections": [
+              [
+                {
+                  "id": 12,
+                  "name": "over 0.5",
+                  "displayName": "over 0.5",
+                  "odds": 570,
+                  "line": 0.5,
+                  "displayOdds": "+570",
+                  "displayLine": "0.5",
+                  "value": 37.28,
+                  "stake": 212.5,
+                  "lineID": "8e5cb2ddfb27f5349b64d0017a18a366"
+                }
+              ],
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": -1300,
+                  "line": 0.5,
+                  "displayOdds": "-1300",
+                  "displayLine": "0.5",
+                  "value": 227.5,
+                  "stake": 17.5,
+                  "lineID": "2b1b64c5eb84f04b6ae9f1ddc2243145"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "8e5cb2ddfb27f5349b64d0017a18a366"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "2b1b64c5eb84f04b6ae9f1ddc2243145"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580009348,
+        "name": "Matt McLain Total Home Runs",
+        "status": "active",
+        "totalStake": 87.03999999999999,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580009348,
+            "name": "Fixed total 0.5",
+            "selections": [
+              [
+                {
+                  "id": 12,
+                  "name": "over 0.5",
+                  "displayName": "over 0.5",
+                  "odds": 740,
+                  "line": 0.5,
+                  "displayOdds": "+740",
+                  "displayLine": "0.5",
+                  "value": 8.92,
+                  "stake": 66,
+                  "lineID": "c5b89287687970a2f602392310886c69"
+                }
+              ],
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": -2400,
+                  "line": 0.5,
+                  "displayOdds": "-2400",
+                  "displayLine": "0.5",
+                  "value": 240,
+                  "stake": 10,
+                  "lineID": "5dd5dec2a49551dad476492b1ad05ade"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "c5b89287687970a2f602392310886c69"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "5dd5dec2a49551dad476492b1ad05ade"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580010333,
+        "name": "CJ Abrams Total Home Runs",
+        "status": "active",
+        "totalStake": 27.6,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580010333,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": -1550,
+                  "line": 0.5,
+                  "displayOdds": "-1550",
+                  "displayLine": "0.5",
+                  "value": 232.5,
+                  "stake": 15,
+                  "lineID": "178459668d578e966115c1b47d1d9d9b"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "d151d76a682e599b6ccd53cfd061c92d"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "178459668d578e966115c1b47d1d9d9b"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580010337,
+        "name": "JJ Bleday Total Home Runs",
+        "status": "active",
+        "totalStake": 2717.2300000000005,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580010337,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": -800,
+                  "line": 0.5,
+                  "displayOdds": "-800",
+                  "displayLine": "0.5",
+                  "value": 220,
+                  "stake": 27.5,
+                  "lineID": "b17af31e63743183e414283400400cb4"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "dd72dea7c0aed86d1f59d07075f7f7f2"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "b17af31e63743183e414283400400cb4"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580010422,
+        "name": "Nasim Nu\u00f1ez Total Home Runs",
+        "status": "active",
+        "totalStake": 2.5,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580010422,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": -9750,
+                  "line": 0.5,
+                  "displayOdds": "-9750",
+                  "displayLine": "0.5",
+                  "value": 243.75,
+                  "stake": 2.5,
+                  "lineID": "938d51bc9ef225e1452a010562c3d87a"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "2ca26b75f61cd079693be849594d252d"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "938d51bc9ef225e1452a010562c3d87a"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580010446,
+        "name": "Spencer Steer Total Home Runs",
+        "status": "active",
+        "totalStake": 384.43,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580010446,
+            "name": "Fixed total 0.5",
+            "selections": [
+              [
+                {
+                  "id": 12,
+                  "name": "over 0.5",
+                  "displayName": "over 0.5",
+                  "odds": 490,
+                  "line": 0.5,
+                  "displayOdds": "+490",
+                  "displayLine": "0.5",
+                  "value": 42.35,
+                  "stake": 207.5,
+                  "lineID": "2ed2b0810c8c543a7d871bbd2ad216b4"
+                }
+              ],
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": -1000,
+                  "line": 0.5,
+                  "displayOdds": "-1000",
+                  "displayLine": "0.5",
+                  "value": 225,
+                  "stake": 22.5,
+                  "lineID": "71cae6f43ad8eb7c7cc8f97dd3c5be0a"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "2ed2b0810c8c543a7d871bbd2ad216b4"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "71cae6f43ad8eb7c7cc8f97dd3c5be0a"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580010800,
+        "name": "Curtis Mead Total Home Runs",
+        "status": "active",
+        "totalStake": 261,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580010800,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": -900,
+                  "line": 0.5,
+                  "displayOdds": "-900",
+                  "displayLine": "0.5",
+                  "value": 229.5,
+                  "stake": 25.5,
+                  "lineID": "883523beb0c2950857fbe7e5fa38c07e"
+                },
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": -1550,
+                  "line": 0.5,
+                  "displayOdds": "-1550",
+                  "displayLine": "0.5",
+                  "value": 232.5,
+                  "stake": 15,
+                  "lineID": "883523beb0c2950857fbe7e5fa38c07e"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "064f5a2b898f12b56d79605fc4fb0355"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "883523beb0c2950857fbe7e5fa38c07e"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580011607,
+        "name": "Joey Wiemer Total Home Runs",
+        "status": "active",
+        "totalStake": 0,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580011607,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "3fb7583f3fefc6b262d5b601dde02c37"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "4c6fa6aee90515ba4fa21ef875bbc319"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580012490,
+        "name": "Brady House Total Home Runs",
+        "status": "active",
+        "totalStake": 452.18,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580012490,
+            "name": "Fixed total 0.5",
+            "selections": [
+              [
+                {
+                  "id": 12,
+                  "name": "over 0.5",
+                  "displayName": "over 0.5",
+                  "odds": 670,
+                  "line": 0.5,
+                  "displayOdds": "+670",
+                  "displayLine": "0.5",
+                  "value": 32.46,
+                  "stake": 227.48,
+                  "lineID": "dd4c18ace870d29499de798006fd6983"
+                }
+              ],
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": -1900,
+                  "line": 0.5,
+                  "displayOdds": "-1900",
+                  "displayLine": "0.5",
+                  "value": 237.5,
+                  "stake": 12.5,
+                  "lineID": "da86be4606b70044a3188fadc90135bd"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "dd4c18ace870d29499de798006fd6983"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "da86be4606b70044a3188fadc90135bd"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580012568,
+        "name": "Daylen Lile Total Home Runs",
+        "status": "active",
+        "totalStake": 230,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580012568,
+            "name": "Fixed total 0.5",
+            "selections": [
+              [
+                {
+                  "id": 12,
+                  "name": "over 0.5",
+                  "displayName": "over 0.5",
+                  "odds": 900,
+                  "line": 0.5,
+                  "displayOdds": "+900",
+                  "displayLine": "0.5",
+                  "value": 25,
+                  "stake": 225,
+                  "lineID": "1e7291a93977d85c758d3de02b90e58e"
+                }
+              ],
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": -4900,
+                  "line": 0.5,
+                  "displayOdds": "-4900",
+                  "displayLine": "0.5",
+                  "value": 245,
+                  "stake": 5,
+                  "lineID": "7e33210988d90ed4842c32cb843d820e"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "1e7291a93977d85c758d3de02b90e58e"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "7e33210988d90ed4842c32cb843d820e"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580012669,
+        "name": "James Wood Total Home Runs",
+        "status": "active",
+        "totalStake": 744.1099999999999,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580012669,
+            "name": "Fixed total 0.5",
+            "selections": [
+              [
+                {
+                  "id": 12,
+                  "name": "over 0.5",
+                  "displayName": "over 0.5",
+                  "odds": 570,
+                  "line": 0.5,
+                  "displayOdds": "+570",
+                  "displayLine": "0.5",
+                  "value": 37.28,
+                  "stake": 212.5,
+                  "lineID": "7093b07fffbc91cecd5a323f7f2492da"
+                }
+              ],
+              [
+                {
+                  "id": 13,
+                  "name": "under 0.5",
+                  "displayName": "under 0.5",
+                  "odds": -1150,
+                  "line": 0.5,
+                  "displayOdds": "-1150",
+                  "displayLine": "0.5",
+                  "value": 230,
+                  "stake": 20,
+                  "lineID": "3fe7a47983eb69bffc9061f2c7fd3ac7"
+                }
+              ]
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "7093b07fffbc91cecd5a323f7f2492da"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "3fe7a47983eb69bffc9061f2c7fd3ac7"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580012721,
+        "name": "Elly De La Cruz Total Home Runs",
+        "status": "active",
+        "totalStake": 435.41,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580012721,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "9d4723ee4bcf00a887c3bf1ac962e305"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "1a3a3e48a3eab77513efdddb08fb1929"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580013683,
+        "name": "Jacob Young Total Home Runs",
+        "status": "active",
+        "totalStake": 72,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580013683,
+            "name": "Fixed total 0.5",
+            "selections": [
+              [
+                {
+                  "id": 12,
+                  "name": "over 0.5",
+                  "displayName": "over 0.5",
+                  "odds": 2400,
+                  "line": 0.5,
+                  "displayOdds": "+2400",
+                  "displayLine": "0.5",
+                  "value": 3,
+                  "stake": 72,
+                  "lineID": "83d52d11ef12358239f8297783948720"
+                }
+              ],
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "83d52d11ef12358239f8297783948720"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "9d08abd7228322689dc4c7f3d74d3429"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      },
+      {
+        "id": 580014087,
+        "name": "Sal Stewart Total Home Runs",
+        "status": "active",
+        "totalStake": 155.9,
+        "sportEventId": 10077925,
+        "type": "total",
+        "marketLines": [
+          {
+            "id": 580014087,
+            "name": "Fixed total 0.5",
+            "selections": [
+              null,
+              null
+            ],
+            "outcomes": [
+              {
+                "id": 12,
+                "name": "over 0.5",
+                "displayName": "over 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "add6ce21d784b1de4e2822b6e2ca61c3"
+              },
+              {
+                "id": 13,
+                "name": "under 0.5",
+                "displayName": "under 0.5",
+                "line": 0.5,
+                "displayLine": "0.5",
+                "lineID": "8340dafa8f11b91a5e70f994d834e7d7"
+              }
+            ],
+            "type": "total",
+            "favourite": true
+          }
+        ],
+        "subType": "player_total_home_runs",
+        "categoryID": 141,
+        "categoryName": "Home Runs"
+      }
+    ]
+  }
+}
