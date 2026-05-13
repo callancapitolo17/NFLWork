@@ -1330,6 +1330,13 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
             escape_tooltip(tooltip))
   }, character(1))
 
+  # Drop columns that are nominally numeric but contain NAs htmlwidgets
+  # serializes as "NA" strings. Mixed types in a single JSON column crash
+  # reactable's React widget silently. `cents` is Kalshi-only; it's NA for
+  # every other book so on slates without a Kalshi bet the column is absent
+  # entirely and a colDef hide would error — `any_of` handles both cases.
+  table_data <- table_data %>% select(-any_of("cents"))
+
   # The reactable. elementId = "bets-table" so the wrapping container gets
   # id="bets-table-container", matching the CSS scope.
   reactable(
@@ -1359,11 +1366,6 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
       bookmaker_key  = colDef(show = FALSE),
       pt_start_time  = colDef(show = FALSE),
       corr_html      = colDef(show = FALSE),
-      # Columns whose values are NA-mostly or mixed numeric / "NA"-string after
-      # htmlwidgets JSON serialization. Reactable's React widget can't render
-      # a column whose declared type is numeric but whose JSON has both numbers
-      # and "NA" strings, and silently fails (no cards). Hide them.
-      cents           = colDef(show = FALSE),
       correlation_adj = colDef(show = FALSE),
       placed_actual   = colDef(show = FALSE),
       fill_status     = colDef(show = FALSE),
