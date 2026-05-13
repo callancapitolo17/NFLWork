@@ -7,7 +7,10 @@ Module-private (`_` prefix) but stable API consumed by per-book modules
 from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal
+
+import duckdb
 
 Period = Literal["FG", "F5"]
 
@@ -75,3 +78,71 @@ def _utc_bucket(ts: datetime | str) -> str:
     else:
         ts = ts.astimezone(timezone.utc)
     return ts.strftime("%Y-%m-%dT%H")
+
+
+def load_target_lines(db_path: str) -> list[TargetLine]:
+    """Load target lines from a DuckDB file.
+
+    Prefers `mlb_target_lines` (bot-written, multi-row per game) when
+    present. Falls back to legacy `mlb_parlay_lines` (dashboard-written,
+    one row per game with FG+F5 columns) and emits one TargetLine per
+    period per game (FG always; F5 only when F5 columns are non-NULL).
+
+    Returns [] for missing DB or missing tables — callers decide what
+    to do with empty input.
+    """
+    if not Path(db_path).exists():
+        return []
+    con = duckdb.connect(db_path, read_only=True)
+    try:
+        tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
+        if "mlb_target_lines" in tables:
+            return _load_from_target_lines(con)
+        if "mlb_parlay_lines" in tables:
+            return _load_from_parlay_lines(con)
+        return []
+    finally:
+        con.close()
+
+
+def _load_from_target_lines(con) -> list[TargetLine]:
+    rows = con.execute("""
+        SELECT game_id, home_team, away_team, commence_time, period, spread, total
+        FROM mlb_target_lines
+        ORDER BY game_id, period, spread, total
+    """).fetchall()
+    return [
+        TargetLine(
+            game_id=r[0], home_team=r[1], away_team=r[2],
+            commence_time=r[3], period=r[4], spread=r[5], total=r[6],
+        ) for r in rows
+    ]
+
+
+def _load_from_parlay_lines(con) -> list[TargetLine]:
+    rows = con.execute("""
+        SELECT game_id, home_team, away_team, commence_time,
+               fg_spread, fg_total, f5_spread, f5_total
+        FROM mlb_parlay_lines
+        ORDER BY game_id
+    """).fetchall()
+    out: list[TargetLine] = []
+    for r in rows:
+        game_id, home, away, ct_raw, fg_s, fg_t, f5_s, f5_t = r
+        # commence_time in legacy table is sometimes VARCHAR, sometimes TIMESTAMP
+        if isinstance(ct_raw, str):
+            normalized = ct_raw.replace("Z", "+00:00") if ct_raw.endswith("Z") else ct_raw
+            ct = datetime.fromisoformat(normalized)
+        else:
+            ct = ct_raw
+        if fg_s is not None and fg_t is not None:
+            out.append(TargetLine(
+                game_id=game_id, home_team=home, away_team=away,
+                commence_time=ct, period="FG", spread=fg_s, total=fg_t,
+            ))
+        if f5_s is not None and f5_t is not None:
+            out.append(TargetLine(
+                game_id=game_id, home_team=home, away_team=away,
+                commence_time=ct, period="F5", spread=f5_s, total=f5_t,
+            ))
+    return out

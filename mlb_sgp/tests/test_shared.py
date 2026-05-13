@@ -106,3 +106,79 @@ def test_utc_bucket_converts_non_utc_tz():
     # 23:00 EDT = 03:00 UTC next day
     t = datetime(2026, 5, 13, 23, 0, tzinfo=eastern)
     assert _utc_bucket(t) == "2026-05-14T03"
+
+
+import duckdb
+import tempfile
+from pathlib import Path
+
+
+def test_load_target_lines_prefers_mlb_target_lines(tmp_path):
+    """When both tables exist, mlb_target_lines wins."""
+    from mlb_sgp._shared import load_target_lines
+    db = str(tmp_path / "t.duckdb")
+    con = duckdb.connect(db)
+    con.execute("""
+        CREATE TABLE mlb_target_lines (
+            game_id VARCHAR, home_team VARCHAR, away_team VARCHAR,
+            commence_time TIMESTAMP, period VARCHAR,
+            spread DOUBLE, total DOUBLE, written_at TIMESTAMP
+        )
+    """)
+    con.execute("""
+        INSERT INTO mlb_target_lines VALUES
+            ('g1', 'NYY', 'BOS', '2026-05-13 23:00', 'FG', -1.5, 8.5, NOW()),
+            ('g1', 'NYY', 'BOS', '2026-05-13 23:00', 'FG', -2.5, 8.5, NOW()),
+            ('g1', 'NYY', 'BOS', '2026-05-13 23:00', 'FG', -1.5, 9.5, NOW())
+    """)
+    con.execute("""
+        CREATE TABLE mlb_parlay_lines (
+            game_id VARCHAR, home_team VARCHAR, away_team VARCHAR,
+            commence_time VARCHAR, fg_spread DOUBLE, fg_total DOUBLE,
+            f5_spread DOUBLE, f5_total DOUBLE
+        )
+    """)
+    con.execute("INSERT INTO mlb_parlay_lines VALUES ('g1','NYY','BOS','2026-05-13T23:00Z',-3.5,7.5,NULL,NULL)")
+    con.close()
+
+    rows = load_target_lines(db_path=db)
+    assert len(rows) == 3, "multi-row from mlb_target_lines"
+    spreads = sorted({r.spread for r in rows})
+    assert -3.5 not in spreads, "should NOT pull from mlb_parlay_lines"
+    assert all(r.period == "FG" for r in rows)
+
+
+def test_load_target_lines_legacy_fallback(tmp_path):
+    """When only mlb_parlay_lines exists, emit FG + F5 rows from each game."""
+    from mlb_sgp._shared import load_target_lines
+    db = str(tmp_path / "t.duckdb")
+    con = duckdb.connect(db)
+    con.execute("""
+        CREATE TABLE mlb_parlay_lines (
+            game_id VARCHAR, home_team VARCHAR, away_team VARCHAR,
+            commence_time VARCHAR, fg_spread DOUBLE, fg_total DOUBLE,
+            f5_spread DOUBLE, f5_total DOUBLE
+        )
+    """)
+    con.execute("""
+        INSERT INTO mlb_parlay_lines VALUES
+            ('g1', 'NYY', 'BOS', '2026-05-13T23:00:00+00:00', -1.5, 8.5, -0.5, 4.5),
+            ('g2', 'LAD', 'SF',  '2026-05-14T02:00:00+00:00', -2.5, 7.5, NULL, NULL)
+    """)
+    con.close()
+
+    rows = load_target_lines(db_path=db)
+    fg = [r for r in rows if r.period == "FG"]
+    f5 = [r for r in rows if r.period == "F5"]
+    assert len(fg) == 2, "two FG rows (one per game)"
+    assert len(f5) == 1, "one F5 row (g2 had NULL F5)"
+    assert {r.game_id for r in fg} == {"g1", "g2"}
+    assert {r.game_id for r in f5} == {"g1"}
+
+
+def test_load_target_lines_empty_db(tmp_path):
+    from mlb_sgp._shared import load_target_lines
+    db = str(tmp_path / "empty.duckdb")
+    con = duckdb.connect(db)
+    con.close()
+    assert load_target_lines(db_path=db) == []
