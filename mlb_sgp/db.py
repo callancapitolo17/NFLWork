@@ -7,12 +7,18 @@ in the shared MLB database. Downstream, mlb_correlated_parlay.R can join these
 against sample-based fair odds for cross-validation.
 """
 
+from __future__ import annotations
+
 import duckdb
 import os
 import random
 import time
 from pathlib import Path
 from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mlb_sgp._shared import PricedRow
 
 # Resolve repo root dynamically — works from main repo or worktrees.
 _THIS_DIR = Path(__file__).resolve().parent
@@ -147,19 +153,19 @@ def upsert_sgp_odds(rows: list[dict], db_path: str = None):
         con.close()
 
 
-def upsert_priced_rows(rows: list, db_path: str = None):
+def upsert_priced_rows(rows: list["PricedRow"], db_path: str = None) -> None:
     """Insert PricedRow objects, replacing any existing row with the same
     (game_id, combo, period, spread_line, total_line, bookmaker, source) key.
 
-    The new line columns are part of the composite key, so a single game can
-    carry many distinct (spread, total) tuples per book/source.
-
     Empty `rows` is a no-op.
 
-    Note: type hint is plain `list` (rather than `list[PricedRow]`) to avoid
-    a circular import — `_shared.py` may eventually pull in db helpers. The
-    function reads only attribute access (`r.game_id`, etc.) so any duck-
-    typed object works.
+    Note: Unlike `upsert_sgp_odds` (which stamps `fetch_time = now()` at
+    write time), this function preserves the caller's `PricedRow.fetch_time`.
+    This is intentional — staleness gates downstream (bot's _SGP_ODDS_CACHE
+    age filter, dashboard's "fresh SGP odds" window) need the true book-query
+    timestamp, not the DB-write timestamp. Library orchestrators
+    (`mlb_sgp/draftkings.py::price_sgps` etc.) set fetch_time when they
+    receive the price; this writer respects that.
     """
     if not rows:
         return
