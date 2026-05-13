@@ -16,9 +16,11 @@ suppressPackageStartupMessages({
   library(DBI)
   library(httr)
   library(jsonlite)
+  library(digest)
 })
 source("Tools.R")
 source("triple_play_helpers.R")
+source("MLB Answer Key/odds_screen.R")
 timer <- pipeline_timer()
 startup_secs <- as.numeric(difftime(Sys.time(), .t_script_start, units = "secs"))
 timer$mark(sprintf("r_startup (%.1fs total)", startup_secs))
@@ -296,12 +298,21 @@ events <- tryCatch({
   return(data.frame())
 })
 
-# F5 derivative markets
+# Derivative markets fetched per-event via fetch_odds_bulk().
+# Covers FG mains + alts, F3 mains, F5 mains + alts, F7 mains.
+# NOTE: do NOT add these FG mains to the Phase 2 toa_sports_odds() call above —
+# mixing FG and F-period markets in that pivot crashes devig_american().
 all_deriv_markets <- c(
-  "h2h_1st_5_innings",
-  "spreads_1st_5_innings",
-  "totals_1st_5_innings",
-  "alternate_totals_1st_5_innings"
+  # Full game
+  "h2h", "totals", "spreads",
+  "alternate_totals", "alternate_spreads",
+  # First 3 innings
+  "h2h_1st_3_innings", "totals_1st_3_innings", "spreads_1st_3_innings",
+  # First 5 innings
+  "h2h_1st_5_innings", "totals_1st_5_innings", "spreads_1st_5_innings",
+  "alternate_totals_1st_5_innings", "alternate_spreads_1st_5_innings",
+  # First 7 innings
+  "h2h_1st_7_innings", "totals_1st_7_innings", "spreads_1st_7_innings"
 )
 
 cat("Generating samples for all games...\n")
@@ -790,6 +801,14 @@ all_bets_combined <- bind_rows(
 ) %>%
   { if (!is.null(enabled_books)) filter(., bookmaker_key %in% enabled_books) else . } %>%
   filter(is.na(pt_start_time) | pt_start_time > Sys.time()) %>%
+  # bet_row_id: stable hash of (game_id, market, line, bet_on) — shared key
+  # across mlb_bets_combined and mlb_bets_book_prices. Excludes bookmaker so
+  # all books for the same bet line/side share an id.
+  mutate(bet_row_id = vapply(
+    paste(id, market, ifelse(is.na(line), "", as.character(line)), bet_on, sep = "|"),
+    function(s) digest::digest(s, algo = "md5"),
+    character(1)
+  )) %>%
   mutate(base_market = gsub("^alternate_", "", market)) %>%
   group_by(id, base_market, bet_on) %>%
   filter(ev == max(ev)) %>%
@@ -838,6 +857,65 @@ cat("\n=== TOP 20 BETS ===\n")
 print(all_bets_combined %>% head(20))
 
 # =============================================================================
+# PHASE 7b: BUILD mlb_bets_book_prices (per-book pill odds)
+# =============================================================================
+
+# Game id lookup: join scraper wide frames to Odds API game IDs via home/away team.
+# Passed as `lookup` argument to scraper_to_canonical() (defined in odds_screen.R).
+.game_id_lookup <- mlb_odds %>%
+  select(id, home_team, away_team) %>%
+  distinct()
+
+# Parse the prefetched_odds JSON cache into long format so DK/FD/Pinnacle
+# have F-period (F3/F5/F7) and alt-market coverage in book_odds_by_book.
+# Without this, the pill grid only shows DK/FD/Pinn odds for FG h2h + FG
+# totals (the only markets in game_odds) and is empty for the F-period bets
+# that dominate all_bets_combined.
+prefetched_long <- parse_prefetched_to_long(
+  prefetched_odds,
+  bookmaker_keys = c("draftkings", "fanduel", "pinnacle")
+)
+
+# Kalshi is intentionally excluded from book_odds_by_book — it's a
+# peer-to-peer venue with its own dashboard tab/flow, not a sportsbook
+# to compare against for the odds-screen view.
+book_odds_by_book <- list(
+  wagerzon  = scraper_to_canonical(wagerzon_odds,  .game_id_lookup),
+  hoop88    = scraper_to_canonical(hoop88_odds,    .game_id_lookup),
+  bfa       = scraper_to_canonical(bfa_odds,       .game_id_lookup),
+  bookmaker = scraper_to_canonical(bookmaker_odds, .game_id_lookup),
+  bet105    = scraper_to_canonical(bet105_odds,    .game_id_lookup),
+  draftkings = odds_api_to_canonical(
+                 prefetched_long %>% filter(bookmaker_key == "draftkings")),
+  fanduel   = odds_api_to_canonical(
+                 prefetched_long %>% filter(bookmaker_key == "fanduel")),
+  pinnacle  = odds_api_to_canonical(
+                 prefetched_long %>% filter(bookmaker_key == "pinnacle"))
+)
+
+# Strip NULL entries so expand_bets_to_book_prices doesn't iterate empty lists.
+book_odds_by_book <- Filter(Negate(is.null), book_odds_by_book)
+
+book_prices_long <- expand_bets_to_book_prices(all_bets_combined,
+                                               book_odds_by_book)
+
+# Data-bug guard: pick book should always be on the exact line.
+pick_book_mismatches <- book_prices_long %>%
+  inner_join(all_bets_combined %>%
+               select(bet_row_id, pick_book = bookmaker_key),
+             by = "bet_row_id") %>%
+  filter(side == "pick" & bookmaker == pick_book & !is_exact_line)
+if (nrow(pick_book_mismatches) > 0) {
+  warning(sprintf(
+    "[odds_screen] %d pick-book rows on mismatched line — investigate (data bug)",
+    nrow(pick_book_mismatches)))
+}
+
+cat(sprintf("Built %d book_prices rows for %d bets across %d books.\n",
+            nrow(book_prices_long), nrow(all_bets_combined),
+            length(unique(book_prices_long$bookmaker))))
+
+# =============================================================================
 # PHASE 8: SAVE TO DUCKDB
 # =============================================================================
 
@@ -852,6 +930,8 @@ con_bets <- duckdb_connect_retry("mlb_mm.duckdb")
 on.exit(tryCatch(dbDisconnect(con_bets), error = function(e) NULL), add = TRUE)
 dbExecute(con_bets, "DROP TABLE IF EXISTS mlb_bets_combined")
 dbWriteTable(con_bets, "mlb_bets_combined", all_bets_combined)
+dbExecute(con_bets, "DROP TABLE IF EXISTS mlb_bets_book_prices")
+dbWriteTable(con_bets, "mlb_bets_book_prices", book_prices_long)
 dbDisconnect(con_bets)
 on.exit(NULL)
 
