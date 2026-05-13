@@ -3505,6 +3505,26 @@ get_bookmaker_odds <- function(
 #' @param sport Sport key (e.g., "mlb")
 #' @param db_path Path to dk.duckdb
 #' @return Data frame in long format, or empty data.frame() if DB missing.
+# Per-period suffix on a market name, matching the convention that
+# .derive_period() / .derive_market_type() in odds_screen.R already
+# understand. Used by get_dk_odds() and get_fd_odds() to compose
+# market values from the (market_type, period) pair their per-book scrapers
+# write to dk_odds/fd_odds.
+#
+# FG -> ""                       (e.g. "totals")
+# F5 -> "_1st_5_innings"         (e.g. "totals_1st_5_innings")
+# F7 -> "_1st_7_innings"
+# F3 -> "_1st_3_innings"
+#
+# Anything else falls back to no suffix (treated as FG).
+.singles_market_name <- function(market_type, period) {
+  per <- toupper(as.character(period))
+  suffix <- ifelse(per == "F3", "_1st_3_innings",
+            ifelse(per == "F5", "_1st_5_innings",
+            ifelse(per == "F7", "_1st_7_innings", "")))
+  paste0(market_type, suffix)
+}
+
 get_dk_odds <- function(
     sport = "mlb",
     db_path = "~/NFLWork/dk_odds/dk.duckdb"
@@ -3551,10 +3571,11 @@ get_dk_odds <- function(
       period = row$period
     )
 
-    # Spreads record
+    # Spreads record. Alt spreads and main spreads collapse to the same
+    # market_type ("spreads"); the line value distinguishes them.
     if (!is.na(row$away_spread)) {
       spread_rec <- c(base, list(
-        market = row$market,
+        market = .singles_market_name("spreads", row$period),
         market_type = "spreads",
         line = row$home_spread,
         odds_away = row$away_spread_price,
@@ -3569,9 +3590,8 @@ get_dk_odds <- function(
 
     # Totals record
     if (!is.na(row$total)) {
-      totals_market <- gsub("spreads", "totals", row$market)
       totals_rec <- c(base, list(
-        market = totals_market,
+        market = .singles_market_name("totals", row$period),
         market_type = "totals",
         line = row$total,
         odds_away = NA_integer_,
@@ -3584,9 +3604,8 @@ get_dk_odds <- function(
 
     # Moneyline record
     if (!is.na(row$away_ml)) {
-      ml_market <- gsub("spreads", "h2h", row$market)
       ml_rec <- c(base, list(
-        market = ml_market,
+        market = .singles_market_name("h2h", row$period),
         market_type = "h2h",
         line = NA_real_,
         odds_away = row$away_ml,
@@ -3668,10 +3687,11 @@ get_fd_odds <- function(
       period = row$period
     )
 
-    # Spreads record
+    # Spreads record. Alt spreads collapse to "spreads" market_type;
+    # the line value distinguishes alts from main. See .singles_market_name().
     if (!is.na(row$away_spread)) {
       spread_rec <- c(base, list(
-        market = row$market,
+        market = .singles_market_name("spreads", row$period),
         market_type = "spreads",
         line = row$home_spread,
         odds_away = row$away_spread_price,
@@ -3686,9 +3706,8 @@ get_fd_odds <- function(
 
     # Totals record
     if (!is.na(row$total)) {
-      totals_market <- gsub("spreads", "totals", row$market)
       totals_rec <- c(base, list(
-        market = totals_market,
+        market = .singles_market_name("totals", row$period),
         market_type = "totals",
         line = row$total,
         odds_away = NA_integer_,
@@ -3701,9 +3720,8 @@ get_fd_odds <- function(
 
     # Moneyline record
     if (!is.na(row$away_ml)) {
-      ml_market <- gsub("spreads", "h2h", row$market)
       ml_rec <- c(base, list(
-        market = ml_market,
+        market = .singles_market_name("h2h", row$period),
         market_type = "h2h",
         line = NA_real_,
         odds_away = row$away_ml,
