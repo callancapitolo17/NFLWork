@@ -22,7 +22,13 @@ run.py mlb (pipeline)  →  mlb_mm.duckdb/mlb_bets_combined          (dashboard 
 
 ## Features
 
-- Filterable bet table (book, market, EV threshold, correlation status)
+- **Bets tab odds screen** — card-based layout (mirrors the parlays-tab style) showing every recommended single bet at every tracked sportsbook. Eight books displayed in fixed order: WZ, H88, BFA, BKM, B105, DK, FD, Pinn. Each book is represented by a pill in one of three states:
+  - **Exact-line price** — book offers the bet at the model's exact line; shows the American odds.
+  - **Mismatched-line** — book offers the bet but at a different line (within ±1 unit threshold); pill shows the line tag in amber.
+  - **No-quote** — book has no line for this bet; pill renders muted with a dashed border.
+  The pick book's pill is green-tinted and bold. Below the book pills, a metadata strip shows: `M / Pick / EV / Size / To Win / [Place] [Log]`.
+  - `[Place]` dispatches by book: Wagerzon → direct REST API (no browser, returns ticket #); Hoop88 / BFA / BetOnlineAG → existing Playwright browser flow; DraftKings / FanDuel / Pinnacle / Bookmaker / Bet105 → button disabled (use `[Log]` instead).
+  - `[Log]` records a manual placement without contacting any book — works for any sportsbook.
 - **Parlay tab** — MLB-specific: correlated 2-leg parlays (spread + total) priced via `mlb_correlated_parlay.R` with conditional Kelly sizing. Each opportunity renders as a card containing the matchup, legs, a Books pill row (model M plus per-book devigged fair probabilities for DK / FD / PX / NV plus blended consensus Cons), and a metadata strip (Fair / WZ / Size / To Win) with edge percentage and the Place / placed-label / error-pill action. The card layout reads identically across laptop, split-screen, and phone — no column hiding, no horizontal scroll. Combined-parlay selection (the Sel checkbox in the top-right corner of each card) and auto-placement still work unchanged.
 - Kelly sizing with configurable bankroll + multiplier
 - Same-game correlation detection with visual tooltips
@@ -39,7 +45,8 @@ The MLB dashboard's "Books (devigged fair %)" column uses probit (additive z-shi
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/` | GET | Serve dashboard HTML |
-| `/api/place-bet` | POST | Record a placed bet |
+| `/api/place-bet` | POST | Dispatch by bookmaker: WZ direct API, Playwright for offshore, 400 for reference books |
+| `/api/log-bet` | POST | Manual placement log (no book contact) |
 | `/api/remove-bet` | POST | Remove a placed bet |
 | `/api/update-bet` | POST | Update actual_size (partial fills) |
 | `/api/placed-bets` | GET | Retrieve all placed bets |
@@ -54,7 +61,7 @@ The MLB dashboard's "Books (devigged fair %)" column uses probit (additive z-shi
 | `/api/clv-summary` | GET | CLV aggregated by market/book |
 | `/api/clv-details` | GET | Per-bet CLV detail |
 | `/api/scheduled-captures` | GET | Upcoming closing-odds snapshot schedule |
-| `/api/auto-place` | POST | Launch Playwright bet placer |
+| `/api/auto-place` | POST | Legacy Playwright spawn (kept for backwards-compat with the fallback table) |
 | `/api/nav-status/<bet_hash>` | GET | Poll navigator status |
 | `/refresh` | POST | Re-run the MLB pipeline end-to-end |
 
@@ -68,7 +75,7 @@ The MLB dashboard's "Books (devigged fair %)" column uses probit (additive z-shi
   - `filter_settings` — UI filter state
   - `closing_snapshots` — odds captured 15 min before first pitch (for CLV)
   - `bet_clv` — post-game CLV computations
-- Pipeline bets read from `Answer Keys/mlb_mm.duckdb` (`mlb_bets_combined`, `mlb_parlay_opportunities`, `mlb_trifecta_opportunities`) — all consumer tables now in one DB to avoid contention with the pipeline's long write lock on `mlb.duckdb`
+- Pipeline bets read from `Answer Keys/mlb_mm.duckdb`: `mlb_bets_combined`, `mlb_bets_book_prices` (new — per-book pill rows for the bets-tab odds screen), `mlb_parlay_opportunities`, `mlb_trifecta_opportunities` — all consumer tables in one DB to avoid contention with the pipeline's long write lock on `mlb.duckdb`
 - Historical PBP + odds in `Answer Keys/pbp.duckdb` (`mlb_betting_pbp`, `mlb_betting_history`, `mlb_pbp_all`)
 
 ## Running
@@ -102,19 +109,30 @@ Both use normal CDF re-pricing when the closing line differs from the placement 
 
 ## Markets
 
-F5 mains (priced via `build_*_from_samples` against the Odds API):
-- `h2h_1st_5_innings` — F5 moneyline
-- `totals_1st_5_innings` — F5 total + alternate totals
-- `spreads_1st_5_innings` — F5 run line
+The Odds API call in `MLB Answer Key/MLB.R` requests 16 markets via `all_deriv_markets` (defined at MLB.R:305):
 
-Derivatives (priced via `compare_alts_to_samples` against scraped Wagerzon/Bookmaker/BFA/Bet105 data):
-- `h2h_1st_3_innings`, `h2h_1st_7_innings` — F3/F7 moneyline (fires only when a book posts F-period MLs; Wagerzon currently posts spread+total only at F3/F7)
-- `spreads_1st_3_innings`, `spreads_1st_7_innings` — F3/F7 run line (Wagerzon, Bookmaker for F3 only)
-- `totals_1st_3_innings`, `totals_1st_7_innings` — F3/F7 total
-- `alternate_spreads_fg`, `alternate_totals_fg` — full-game alt lines (Wagerzon, Bet105)
-- `alternate_totals_f5`, `alternate_spreads_f5` — F5 alt lines (h1-suffix scrapers like BFA/Bet105 are remapped to f5)
+Full game (5):
+- `h2h`, `totals`, `spreads` — FG mains
+- `alternate_totals`, `alternate_spreads` — FG alt lines (Wagerzon, Bet105)
+
+First 3 innings (3):
+- `h2h_1st_3_innings`, `totals_1st_3_innings`, `spreads_1st_3_innings`
+
+First 5 innings (5):
+- `h2h_1st_5_innings` — F5 moneyline
+- `totals_1st_5_innings`, `spreads_1st_5_innings` — F5 total + run line
+- `alternate_totals_1st_5_innings`, `alternate_spreads_1st_5_innings` — F5 alt lines
+
+First 7 innings (3):
+- `h2h_1st_7_innings`, `totals_1st_7_innings`, `spreads_1st_7_innings`
+
+Additional derivative markets (scraped Wagerzon/Bookmaker/BFA/Bet105 data, not via Odds API):
 - `odd_even_runs` — full-game total runs odd vs even (Wagerzon only)
 - `h2h_3way_1st_5_innings` — F5 3-way moneyline (Wagerzon only) with home/away/tie outcomes; bet_on label is the team name for home/away or `"Tie"` for the draw
+
+Notes:
+- F3/F7 moneyline fires only when a book posts F-period MLs; Wagerzon currently posts spread+total only at F3/F7
+- F5 alt lines (h1-suffix scrapers like BFA/Bet105 are remapped to f5)
 
 ## Configuration
 

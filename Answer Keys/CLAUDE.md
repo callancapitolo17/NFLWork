@@ -18,10 +18,14 @@ run.py cbb (orchestrator)
 ```
 run.py mlb (orchestrator)
   ├── [first]    Sharp scrapers (bookmaker, bet105) → their DuckDB files
-  ├── [parallel] Other scrapers (wagerzon, hoop88, bfa) + MLB.R
+  ├── [parallel] Other scrapers (wagerzon, hoop88, bfa, draftkings_singles, fanduel_singles) + MLB.R
   ├── Sentinel: .scrapers_done_mlb signals all scrapers complete
   └── MLB.R reads scraper DBs, generates F5 fair prices, writes pipeline output
 ```
+- DraftKings and FanDuel **single-leg** odds are scraper-sourced (per-book
+  DuckDBs at `dk_odds/dk.duckdb` and `fd_odds/fd.duckdb`), not from the
+  Odds API. Pinnacle remains on the Odds API (no public REST API).
+  See `mlb_sgp/README.md` for scraper details.
 - MLB uses moneyline-based matching (`use_spread_line = FALSE`)
 - F5 (first 5 innings) markets matched via Odds API: h2h, totals, spreads, alternate_totals
 - Derivative markets matched via `compare_alts_to_samples` against scraped offshore odds:
@@ -50,7 +54,7 @@ run.py mlb (orchestrator)
 - `cbb.duckdb` — CBB pipeline data (historical odds, betting PBP, dashboard bets)
 - `cbb_mm.duckdb` — CBB MM export (predictions, game samples). Separate to avoid lock contention.
 - `mlb.duckdb` — MLB pipeline working tables (`mlb_team_dict`, `mlb_consensus_temp`, `mlb_odds_temp`, `mlb_trifecta_sgp_odds`, scraper raw odds, historical PBP joins). Held under a long write lock during a pipeline run; nothing the dashboard or RFQ bot needs lives here anymore.
-- `mlb_mm.duckdb` — MLB MM consumer tables (`mlb_bets_combined`, `mlb_game_samples`, `mlb_samples_meta`, `mlb_sgp_odds`, `mlb_parlay_lines`, `mlb_parlay_opportunities`, `mlb_trifecta_opportunities`). Separate from `mlb.duckdb` so the pipeline's write lock on `mlb.duckdb` never blocks the RFQ bot or the dashboard. `mlb_bets_combined` moved here on 2026-05-05; the others moved 2026-04-30. Mirrors the CBB pattern.
+- `mlb_mm.duckdb` — MLB MM consumer tables (`mlb_bets_combined`, `mlb_bets_book_prices` [new 2026-05-12 — per-book pill rows for the bets-tab odds screen, written by MLB.R via `expand_bets_to_book_prices` helper from `odds_screen.R`], `mlb_game_samples`, `mlb_samples_meta`, `mlb_sgp_odds`, `mlb_parlay_lines`, `mlb_parlay_opportunities`, `mlb_trifecta_opportunities`). Separate from `mlb.duckdb` so the pipeline's write lock on `mlb.duckdb` never blocks the RFQ bot or the dashboard. `mlb_bets_combined` moved here on 2026-05-05; the others moved 2026-04-30. Mirrors the CBB pattern.
 - `mlb_dashboard.duckdb` — MLB dashboard state (placed_bets, settings, CLV)
 - `pbp.duckdb` — Historical play-by-play data (shared: MLB + others)
 - `cbb_dashboard.duckdb` — CBB dashboard state (placed_bets, settings, CLV)
@@ -196,3 +200,59 @@ an account.
   finalising upsert.
 - `dashboard_settings(key, value, updated_at)` — generic key/value
   preferences. Currently only `wagerzon_last_used`.
+
+## MLB Dashboard — Odds screen + WZ single-bet placer
+
+The MLB Dashboard's bets tab uses an odds-screen card layout that shows
+every bet at every tracked sportsbook. See `Answer Keys/MLB Dashboard/PLAN_odds_screen.md`
+for the design spec.
+
+### Data flow
+
+1. MLB.R writes `mlb_bets_book_prices` to `mlb_mm.duckdb` alongside
+   `mlb_bets_combined`. Each row is one (bet × book × side) at the
+   model's exact line OR the closest line within ±1 unit.
+2. Dashboard loads `mlb_bets_book_prices`, pivots long→wide, and
+   passes the wide frame to `create_bets_table()` which renders cards.
+3. Old `create_bets_table_legacy()` is preserved as a fallback if the
+   new table is missing (first deploy after merge).
+
+### Helpers
+
+- `Answer Keys/MLB Answer Key/odds_screen.R` — pure helpers:
+  - `normalize_book_odds_frame()` — raw scraper rows → canonical shape
+  - `parse_prefetched_to_long()` — flatten Odds API prefetched JSON
+  - `scraper_to_canonical()` — wide scraper frame → long
+  - `odds_api_to_canonical()` — Odds API long → canonical
+  - `expand_bets_to_book_prices()` — ±1 unit nearest-line matching
+- `Answer Keys/MLB Dashboard/book_pill.R` — `render_book_pill()` HTML helper
+
+### WZ single-bet auto-placer
+
+`wagerzon_odds/single_placer.py` exposes `place_single(account, bet)`
+returning `{status, ticket_number, balance_after, error_msg, error_msg_key}`.
+Statuses: `placed / price_moved / rejected / auth_error / network_error / orphaned`.
+
+**Deployment note:** `place_single` uses the recon-confirmed
+`PostWagerMultipleHelper.aspx` endpoint with `WT=0` for singles. The
+endpoint + WT value are inferred from parlay placer recon, NOT verified
+end-to-end against a live WZ account for singles. Before enabling in
+production, run an end-to-end placement of a $1 single bet via the
+dashboard and verify the ticket appears in WZ's history.
+
+### Server endpoints
+
+- `POST /api/place-bet` — dispatcher: WZ → single_placer; Hoop88/BFA/BetOnlineAG → Playwright; else 400.
+- `POST /api/log-bet` — manual placement log (no book contact).
+- `POST /api/auto-place` — legacy Playwright (still used by `create_bets_table_legacy` fallback).
+
+### Schema additions
+
+`placed_bets` columns added by `Answer Keys/MLB Dashboard/migrations/002_single_placer_columns.py`:
+`account`, `status`, `ticket_number`, `error_msg`, `error_msg_key`, `wz_odds_at_place`.
+
+Migration is idempotent — run once per environment:
+```
+python "Answer Keys/MLB Dashboard/migrations/002_single_placer_columns.py" \
+    "Answer Keys/MLB Dashboard/mlb_dashboard.duckdb"
+```

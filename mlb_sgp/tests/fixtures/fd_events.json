@@ -1,0 +1,1109 @@
+{
+  "facets": [
+    {
+      "values": [
+        {
+          "key": {
+            "eventId": 35596584
+          },
+          "cardinality": 138
+        },
+        {
+          "key": {
+            "eventId": 35596582
+          },
+          "cardinality": 145
+        },
+        {
+          "key": {
+            "eventId": 35596578
+          },
+          "cardinality": 158
+        },
+        {
+          "key": {
+            "eventId": 35596591
+          },
+          "cardinality": 155
+        },
+        {
+          "key": {
+            "eventId": 35596593
+          },
+          "cardinality": 160
+        },
+        {
+          "key": {
+            "eventId": 35596580
+          },
+          "cardinality": 178
+        },
+        {
+          "key": {
+            "eventId": 35596595
+          },
+          "cardinality": 173
+        },
+        {
+          "key": {
+            "eventId": 35596592
+          },
+          "cardinality": 174
+        },
+        {
+          "key": {
+            "eventId": 35596590
+          },
+          "cardinality": 233
+        },
+        {
+          "key": {
+            "eventId": 35596589
+          },
+          "cardinality": 229
+        },
+        {
+          "key": {
+            "eventId": 35596588
+          },
+          "cardinality": 228
+        },
+        {
+          "key": {
+            "eventId": 35596587
+          },
+          "cardinality": 233
+        },
+        {
+          "key": {
+            "eventId": 35596594
+          },
+          "cardinality": 233
+        },
+        {
+          "key": {
+            "eventId": 35596596
+          },
+          "cardinality": 232
+        },
+        {
+          "key": {
+            "eventId": 35596585
+          },
+          "cardinality": 232
+        },
+        {
+          "key": {
+            "eventId": 35600626
+          },
+          "cardinality": 4
+        },
+        {
+          "key": {
+            "eventId": 35600624
+          },
+          "cardinality": 4
+        },
+        {
+          "key": {
+            "eventId": 35600615
+          },
+          "cardinality": 4
+        },
+        {
+          "key": {
+            "eventId": 35600622
+          },
+          "cardinality": 4
+        },
+        {
+          "key": {
+            "eventId": 35600612
+          },
+          "cardinality": 4
+        },
+        {
+          "key": {
+            "eventId": 35600616
+          },
+          "cardinality": 4
+        },
+        {
+          "key": {
+            "eventId": 35600625
+          },
+          "cardinality": 4
+        },
+        {
+          "key": {
+            "eventId": 35600623
+          },
+          "cardinality": 4
+        },
+        {
+          "key": {
+            "eventId": 35600620
+          },
+          "cardinality": 4
+        },
+        {
+          "key": {
+            "eventId": 35600618
+          },
+          "cardinality": 4
+        },
+        {
+          "key": {
+            "eventId": 35600613
+          },
+          "cardinality": 4
+        },
+        {
+          "key": {
+            "eventId": 35600614
+          },
+          "cardinality": 4
+        },
+        {
+          "key": {
+            "eventId": 35600619
+          },
+          "cardinality": 4
+        },
+        {
+          "key": {
+            "eventId": 35600617
+          },
+          "cardinality": 4
+        }
+      ],
+      "totalResults": 29,
+      "type": "EVENT"
+    }
+  ],
+  "results": [
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168739869",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631300",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740957",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631301",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631297",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740420",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168607167",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631310",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168607168",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631302",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631303",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631304",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631282",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631283",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168741486",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631284",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631277",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631413",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631278",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631414",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168728934",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631289",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631292",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631293",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631285",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631286",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631287",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631333",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631334",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631329",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740850",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168741805",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740851",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631341",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168741274",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631342",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631343",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631344",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631336",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631338",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631337",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631339",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631318",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631311",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631312",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631313",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631324",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740848",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631325",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740849",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631326",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740847",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631319",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631322",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631321",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168561533",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631366",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631367",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631368",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631369",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631362",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168742387",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631363",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740339",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631365",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631375",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631377",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631378",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168741444",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631371",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631370",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631372",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740737",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740192",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631349",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740738",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631350",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740189",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631351",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168742099",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740735",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740190",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740191",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168728867",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740188",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631346",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168741140",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631358",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740881",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631355",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631354",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740739",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168740740",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168728922",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631400",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631265",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631266",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631404",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168631403",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    },
+    {
+      "eventId": 35596584,
+      "sportsbookMarketId": "734.168741603",
+      "competitionId": 11196870,
+      "eventTypeId": 7511
+    }
+  ],
+  "attachments": {
+    "events": {
+      "35596596": {
+        "eventId": 35596596,
+        "key": "EVENT:35596596",
+        "name": "St. Louis Cardinals (A Pallante) @ Athletics (J Springs)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-13T01:41:00.000Z",
+        "videoAvailable": false
+      },
+      "35596595": {
+        "eventId": 35596595,
+        "key": "EVENT:35596595",
+        "name": "Detroit Tigers (J Flaherty) @ New York Mets (F Peralta)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-12T23:11:00.000Z",
+        "videoAvailable": false
+      },
+      "35596594": {
+        "eventId": 35596594,
+        "key": "EVENT:35596594",
+        "name": "Seattle Mariners (B Woo) @ Houston Astros (T Imai)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-13T00:11:00.000Z",
+        "videoAvailable": false
+      },
+      "35600626": {
+        "eventId": 35600626,
+        "key": "EVENT:35600626",
+        "name": "Los Angeles Angels (R Detmers) @ Cleveland Guardians (P Messick)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-13T17:11:00.000Z",
+        "videoAvailable": false
+      },
+      "35596593": {
+        "eventId": 35596593,
+        "key": "EVENT:35596593",
+        "name": "Philadelphia Phillies (Z Wheeler) @ Boston Red Sox (J Moran)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-12T22:46:00.000Z",
+        "videoAvailable": false
+      },
+      "35600625": {
+        "eventId": 35600625,
+        "key": "EVENT:35600625",
+        "name": "Chicago Cubs (S Imanaga) @ Atlanta Braves (J Ritchie)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-13T23:16:00.000Z",
+        "videoAvailable": false
+      },
+      "35596592": {
+        "eventId": 35596592,
+        "key": "EVENT:35596592",
+        "name": "Chicago Cubs (C Rea) @ Atlanta Braves (G Holmes)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-12T23:16:00.000Z",
+        "videoAvailable": false
+      },
+      "35600624": {
+        "eventId": 35600624,
+        "key": "EVENT:35600624",
+        "name": "Colorado Rockies (J Quintana) @ Pittsburgh Pirates (M Keller)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-13T22:41:00.000Z",
+        "videoAvailable": false
+      },
+      "35596591": {
+        "eventId": 35596591,
+        "key": "EVENT:35596591",
+        "name": "Washington Nationals (M Mikolas) @ Cincinnati Reds (B Singer)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-12T22:41:00.000Z",
+        "videoAvailable": false
+      },
+      "35600623": {
+        "eventId": 35600623,
+        "key": "EVENT:35600623",
+        "name": "Miami Marlins (M Meyer) @ Minnesota Twins (S Woods Richardson)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-13T23:41:00.000Z",
+        "videoAvailable": false
+      },
+      "35596590": {
+        "eventId": 35596590,
+        "key": "EVENT:35596590",
+        "name": "Miami Marlins (E Perez) @ Minnesota Twins (B Ober)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-12T23:41:00.000Z",
+        "videoAvailable": false
+      },
+      "35600622": {
+        "eventId": 35600622,
+        "key": "EVENT:35600622",
+        "name": "Philadelphia Phillies (A Painter) @ Boston Red Sox (S Gray)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-13T22:46:00.000Z",
+        "videoAvailable": false
+      },
+      "35596589": {
+        "eventId": 35596589,
+        "key": "EVENT:35596589",
+        "name": "Kansas City Royals (S Kolek) @ Chicago White Sox (E Fedde)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-12T23:41:00.000Z",
+        "videoAvailable": false
+      },
+      "35596588": {
+        "eventId": 35596588,
+        "key": "EVENT:35596588",
+        "name": "San Diego Padres (B Rodriguez) @ Milwaukee Brewers (B Sproat)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-12T23:41:00.000Z",
+        "videoAvailable": false
+      },
+      "35600620": {
+        "eventId": 35600620,
+        "key": "EVENT:35600620",
+        "name": "San Diego Padres (M King) @ Milwaukee Brewers (J Misiorowski)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-13T23:41:00.000Z",
+        "videoAvailable": false
+      },
+      "35596587": {
+        "eventId": 35596587,
+        "key": "EVENT:35596587",
+        "name": "Arizona Diamondbacks (Z Gallen) @ Texas Rangers (M Gore)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-13T00:06:00.000Z",
+        "videoAvailable": false
+      },
+      "35600619": {
+        "eventId": 35600619,
+        "key": "EVENT:35600619",
+        "name": "St. Louis Cardinals (M Liberatore) @ Athletics (J Ginn)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-14T01:41:00.000Z",
+        "videoAvailable": false
+      },
+      "35600618": {
+        "eventId": 35600618,
+        "key": "EVENT:35600618",
+        "name": "Kansas City Royals (S Lugo) @ Chicago White Sox (N Schultz)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-13T23:41:00.000Z",
+        "videoAvailable": false
+      },
+      "35596585": {
+        "eventId": 35596585,
+        "key": "EVENT:35596585",
+        "name": "San Francisco Giants (A Houser) @ Los Angeles Dodgers (Y Yamamoto)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-13T02:11:00.000Z",
+        "videoAvailable": false
+      },
+      "35600617": {
+        "eventId": 35600617,
+        "key": "EVENT:35600617",
+        "name": "San Francisco Giants (R Ray) @ Los Angeles Dodgers (S Ohtani)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-14T02:11:00.000Z",
+        "videoAvailable": false
+      },
+      "35596584": {
+        "eventId": 35596584,
+        "key": "EVENT:35596584",
+        "name": "Los Angeles Angels (W Urena) @ Cleveland Guardians (S Cecconi)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-12T22:11:00.000Z",
+        "videoAvailable": false
+      },
+      "35600616": {
+        "eventId": 35600616,
+        "key": "EVENT:35600616",
+        "name": "Detroit Tigers (TBD) @ New York Mets (TBD)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-13T23:11:00.000Z",
+        "videoAvailable": false
+      },
+      "35600615": {
+        "eventId": 35600615,
+        "key": "EVENT:35600615",
+        "name": "Washington Nationals (J Irvin) @ Cincinnati Reds (N Lodolo)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-13T22:41:00.000Z",
+        "videoAvailable": false
+      },
+      "35596582": {
+        "eventId": 35596582,
+        "key": "EVENT:35596582",
+        "name": "New York Yankees (W Warren) @ Baltimore Orioles (T Rogers)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-12T22:36:00.000Z",
+        "videoAvailable": false
+      },
+      "35600614": {
+        "eventId": 35600614,
+        "key": "EVENT:35600614",
+        "name": "Seattle Mariners (B Miller) @ Houston Astros (L McCullers)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-14T00:11:00.000Z",
+        "videoAvailable": false
+      },
+      "35600613": {
+        "eventId": 35600613,
+        "key": "EVENT:35600613",
+        "name": "Arizona Diamondbacks (R Nelson) @ Texas Rangers (K Rocker)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-14T00:06:00.000Z",
+        "videoAvailable": false
+      },
+      "35596580": {
+        "eventId": 35596580,
+        "key": "EVENT:35596580",
+        "name": "Tampa Bay Rays (S McClanahan) @ Toronto Blue Jays (P Corbin)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-12T23:08:00.000Z",
+        "videoAvailable": false
+      },
+      "35600612": {
+        "eventId": 35600612,
+        "key": "EVENT:35600612",
+        "name": "Tampa Bay Rays (G Jax) @ Toronto Blue Jays (D Cease)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-13T23:08:00.000Z",
+        "videoAvailable": false
+      },
+      "35596578": {
+        "eventId": 35596578,
+        "key": "EVENT:35596578",
+        "name": "Colorado Rockies (M Lorenzen) @ Pittsburgh Pirates (P Skenes)",
+        "eventTypeId": 7511,
+        "competitionId": 11196870,
+        "countryCode": "GB",
+        "timezone": "GMT",
+        "openDate": "2026-05-12T22:41:00.000Z",
+        "videoAvailable": false
+      }
+    }
+  }
+}

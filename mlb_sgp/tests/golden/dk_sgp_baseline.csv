@@ -1,0 +1,53 @@
+game_id,combo,period,source,sgp_decimal,fetch_time
+265d87925f501ac50a2a12c6b5a91354,Away Spread + Over,FG,draftkings_direct,3.08,2026-05-12 16:38:09.506171
+265d87925f501ac50a2a12c6b5a91354,Away Spread + Under,FG,draftkings_direct,2.94,2026-05-12 16:38:09.506171
+265d87925f501ac50a2a12c6b5a91354,F5 Away Spread + Over,F5,draftkings_direct,3.72,2026-05-12 16:38:09.506171
+265d87925f501ac50a2a12c6b5a91354,F5 Away Spread + Under,F5,draftkings_direct,3.1,2026-05-12 16:38:09.506171
+265d87925f501ac50a2a12c6b5a91354,F5 Home Spread + Over,F5,draftkings_direct,3.06,2026-05-12 16:38:09.506171
+265d87925f501ac50a2a12c6b5a91354,F5 Home Spread + Under,F5,draftkings_direct,3.32,2026-05-12 16:38:09.506171
+265d87925f501ac50a2a12c6b5a91354,Home Spread + Over,FG,draftkings_direct,4.05,2026-05-12 16:38:09.506171
+265d87925f501ac50a2a12c6b5a91354,Home Spread + Under,FG,draftkings_direct,4.0,2026-05-12 16:38:09.506171
+34393ecc2b2d109779095b1d4935225b,Away Spread + Over,FG,draftkings_direct,2.74,2026-05-12 16:38:09.506171
+34393ecc2b2d109779095b1d4935225b,Away Spread + Under,FG,draftkings_direct,2.74,2026-05-12 16:38:09.506171
+34393ecc2b2d109779095b1d4935225b,F5 Away Spread + Over,F5,draftkings_direct,3.56,2026-05-12 16:38:09.506171
+34393ecc2b2d109779095b1d4935225b,F5 Away Spread + Under,F5,draftkings_direct,2.76,2026-05-12 16:38:09.506171
+34393ecc2b2d109779095b1d4935225b,F5 Home Spread + Over,F5,draftkings_direct,3.28,2026-05-12 16:38:09.506171
+34393ecc2b2d109779095b1d4935225b,F5 Home Spread + Under,F5,draftkings_direct,3.68,2026-05-12 16:38:09.506171
+34393ecc2b2d109779095b1d4935225b,Home Spread + Over,FG,draftkings_direct,4.5,2026-05-12 16:38:09.506171
+34393ecc2b2d109779095b1d4935225b,Home Spread + Under,FG,draftkings_direct,4.7,2026-05-12 16:38:09.506171
+a0929cf66d445eec19f118010165e95c,Away Spread + Over,FG,draftkings_direct,4.4,2026-05-12 16:38:09.506171
+a0929cf66d445eec19f118010165e95c,Away Spread + Under,FG,draftkings_direct,3.56,2026-05-12 16:38:09.506171
+a0929cf66d445eec19f118010165e95c,F5 Away Spread + Over,F5,draftkings_interpolated,6.5008,2026-05-12 16:38:09.561933
+a0929cf66d445eec19f118010165e95c,F5 Away Spread + Under,F5,draftkings_interpolated,3.941,2026-05-12 16:38:09.561933
+a0929cf66d445eec19f118010165e95c,F5 Home Spread + Over,F5,draftkings_interpolated,3.1684,2026-05-12 16:38:09.561933
+a0929cf66d445eec19f118010165e95c,F5 Home Spread + Under,F5,draftkings_interpolated,3.6125,2026-05-12 16:38:09.561933
+a0929cf66d445eec19f118010165e95c,Home Spread + Over,FG,draftkings_direct,2.84,2026-05-12 16:38:09.506171
+a0929cf66d445eec19f118010165e95c,Home Spread + Under,FG,draftkings_direct,3.3,2026-05-12 16:38:09.506171
+a0a43f882e4a4ab92fa1024e42f33be0,Away Spread + Over,FG,draftkings_direct,2.62,2026-05-12 16:38:09.506171
+a0a43f882e4a4ab92fa1024e42f33be0,Away Spread + Under,FG,draftkings_direct,2.9,2026-05-12 16:38:09.506171
+a0a43f882e4a4ab92fa1024e42f33be0,F5 Away Spread + Over,F5,draftkings_interpolated,4.2723,2026-05-12 16:38:09.561933
+a0a43f882e4a4ab92fa1024e42f33be0,F5 Away Spread + Under,F5,draftkings_interpolated,3.4088,2026-05-12 16:38:09.561933
+a0a43f882e4a4ab92fa1024e42f33be0,F5 Home Spread + Over,F5,draftkings_interpolated,4.0338,2026-05-12 16:38:09.561933
+a0a43f882e4a4ab92fa1024e42f33be0,F5 Home Spread + Under,F5,draftkings_interpolated,4.451,2026-05-12 16:38:09.561933
+a0a43f882e4a4ab92fa1024e42f33be0,Home Spread + Over,FG,draftkings_direct,3.92,2026-05-12 16:38:09.506171
+a0a43f882e4a4ab92fa1024e42f33be0,Home Spread + Under,FG,draftkings_direct,4.6,2026-05-12 16:38:09.506171
+a1fa0d550bd68cf44d71f0657fa93d6a,F5 Away Spread + Over,F5,draftkings_direct,2.9,2026-05-12 16:38:09.506171
+a1fa0d550bd68cf44d71f0657fa93d6a,F5 Away Spread + Under,F5,draftkings_direct,3.56,2026-05-12 16:38:09.506171
+a1fa0d550bd68cf44d71f0657fa93d6a,F5 Home Spread + Over,F5,draftkings_direct,4.05,2026-05-12 16:38:09.506171
+a1fa0d550bd68cf44d71f0657fa93d6a,F5 Home Spread + Under,F5,draftkings_direct,2.88,2026-05-12 16:38:09.506171
+ad3552c4909328a0be4de1ec98e97bcf,Away Spread + Over,FG,draftkings_direct,2.54,2026-05-12 16:38:09.506171
+ad3552c4909328a0be4de1ec98e97bcf,Away Spread + Under,FG,draftkings_direct,2.6,2026-05-12 16:38:09.506171
+ad3552c4909328a0be4de1ec98e97bcf,F5 Away Spread + Over,F5,draftkings_interpolated,3.7766,2026-05-12 16:38:09.561933
+ad3552c4909328a0be4de1ec98e97bcf,F5 Away Spread + Under,F5,draftkings_interpolated,3.3266,2026-05-12 16:38:09.561933
+ad3552c4909328a0be4de1ec98e97bcf,F5 Home Spread + Over,F5,draftkings_interpolated,4.3442,2026-05-12 16:38:09.561933
+ad3552c4909328a0be4de1ec98e97bcf,F5 Home Spread + Under,F5,draftkings_interpolated,4.8921,2026-05-12 16:38:09.561933
+ad3552c4909328a0be4de1ec98e97bcf,Home Spread + Over,FG,draftkings_direct,4.6,2026-05-12 16:38:09.506171
+ad3552c4909328a0be4de1ec98e97bcf,Home Spread + Under,FG,draftkings_direct,4.85,2026-05-12 16:38:09.506171
+c125a2382938301b1e4462c3600de32b,Away Spread + Over,FG,draftkings_direct,3.82,2026-05-12 16:38:09.506171
+c125a2382938301b1e4462c3600de32b,Away Spread + Under,FG,draftkings_direct,4.6,2026-05-12 16:38:09.506171
+c125a2382938301b1e4462c3600de32b,F5 Away Spread + Over,F5,draftkings_interpolated,3.9889,2026-05-12 16:38:09.561933
+c125a2382938301b1e4462c3600de32b,F5 Away Spread + Under,F5,draftkings_interpolated,5.1784,2026-05-12 16:38:09.561933
+c125a2382938301b1e4462c3600de32b,F5 Home Spread + Over,F5,draftkings_interpolated,3.6619,2026-05-12 16:38:09.561933
+c125a2382938301b1e4462c3600de32b,F5 Home Spread + Under,F5,draftkings_interpolated,3.5322,2026-05-12 16:38:09.561933
+c125a2382938301b1e4462c3600de32b,Home Spread + Over,FG,draftkings_direct,3.44,2026-05-12 16:38:09.506171
+c125a2382938301b1e4462c3600de32b,Home Spread + Under,FG,draftkings_direct,2.54,2026-05-12 16:38:09.506171

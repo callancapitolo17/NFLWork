@@ -564,10 +564,28 @@ def scrape_fd_sgp(verbose: bool = False):
     print(f"  {len(parlay_lines)} games with lines")
 
     print("Initializing FD session...")
-    session = init_session()
+    from fd_client import FanDuelClient
+
+    client = FanDuelClient(verbose=verbose)
+    session = client.session
 
     print("Fetching FanDuel MLB events...")
-    fd_events = fetch_fd_events(session)
+    # Adapt FanDuelClient.list_events() back to the dict shape downstream
+    # code (filtering, dedup, match_events, fetch_event_runners) expects.
+    # `name` is reconstructed from home/away because match_events copies it
+    # into the matched dict as `fd_name`; the (P) pitcher annotations from
+    # the raw FD payload aren't read anywhere, so a plain "Away @ Home" is
+    # behavior-equivalent.
+    fd_events = [
+        {
+            "fd_event_id": e.event_id,
+            "name": f"{e.away_team} @ {e.home_team}",
+            "fd_home": e.home_team,
+            "fd_away": e.away_team,
+            "open_date": e.start_time,
+        }
+        for e in client.list_events()
+    ]
     print(f"  {len(fd_events)} FD events")
 
     # Filter out events that have already started — those return live (in-game)
