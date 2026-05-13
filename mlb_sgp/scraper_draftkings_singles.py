@@ -130,7 +130,32 @@ def parse_selections_to_wide_rows(
     market_meta: dict[str, tuple[str, str]],   # market_id -> (period, market_type)
     fetch_time: datetime,
 ) -> list[dict[str, Any]]:
-    """Group selections by (period, market_type, line); emit wide rows."""
+    """Group selections by (period, market_type, line); emit wide rows.
+
+    DK's F5/F7 run-line and total markets bundle the main line and all alt
+    lines into ONE market (e.g. "Total Runs - 1st 7 Innings" carries Over/
+    Under at 5.5, 6.5, AND 7.5 as 6 selections in one market id). Without
+    detecting that, the parser would coalesce every selection into the same
+    (period, "main", None) bucket and lose all but the last line. The
+    pre-pass below counts distinct lines per market and any "main"-classified
+    market carrying >1 distinct line is reclassified per selection as
+    alternate_* so each line becomes its own DB row. FG markets are unaffected
+    (DK splits FG main from FG alt into separate markets).
+    """
+    # Pre-pass: count distinct totals lines and distinct spread |lines| per
+    # market_id. Used below to detect bundled multi-line "main" markets.
+    totals_lines_by_market: dict[str, set[float]] = {}
+    spread_lines_by_market: dict[str, set[float]] = {}
+    for sel in selections:
+        if sel.market_id not in market_meta:
+            continue
+        if sel.line is None:
+            continue
+        if sel.name.lower().startswith(("over", "under")):
+            totals_lines_by_market.setdefault(sel.market_id, set()).add(sel.line)
+        else:
+            spread_lines_by_market.setdefault(sel.market_id, set()).add(abs(sel.line))
+
     buckets: dict[tuple[str, str, float | None], dict[str, Any]] = {}
 
     def _row_skeleton(period: str, market_type: str) -> dict:
@@ -155,23 +180,33 @@ def parse_selections_to_wide_rows(
         if meta is None:
             continue
         period, market_type = meta
+        name_lower = sel.name.lower()
+
+        # If this is a "main"-classified market whose selections bundle multiple
+        # distinct lines (DK F5/F7 quirk), reclassify per-selection as alt.
+        effective_market_type = market_type
+        if market_type == "main":
+            if name_lower.startswith(("over", "under")):
+                if len(totals_lines_by_market.get(sel.market_id, ())) > 1:
+                    effective_market_type = "alternate_totals"
+            elif sel.line is not None:
+                if len(spread_lines_by_market.get(sel.market_id, ())) > 1:
+                    effective_market_type = "alternate_spreads"
 
         # Bucket key: main rows coalesce by period only; alt rows split by line.
         # For alt-spreads, both sides (e.g. Yankees -2.5 and Red Sox +2.5) share
         # the same row, so bucket by absolute line. For alt-totals, Over/Under
         # already share the same line value.
-        if market_type == "main":
+        if effective_market_type == "main":
             bucket_line: float | None = None
-        elif market_type == "alternate_spreads" and sel.line is not None:
+        elif effective_market_type == "alternate_spreads" and sel.line is not None:
             bucket_line = abs(sel.line)
         else:
             bucket_line = sel.line
-        key = (period, market_type, bucket_line)
+        key = (period, effective_market_type, bucket_line)
         if key not in buckets:
-            buckets[key] = _row_skeleton(period, market_type)
+            buckets[key] = _row_skeleton(period, effective_market_type)
         row = buckets[key]
-
-        name_lower = sel.name.lower()
 
         # Totals detection: name starts with "over" or "under"
         if name_lower.startswith("over"):
