@@ -79,10 +79,13 @@ test_that("nearest-line within +/-1 unit is taken with is_exact_line=FALSE", {
   expect_equal(unique(out$line_quoted), 5.0)
 })
 
-test_that("lines outside +/-1 unit emit no row", {
+test_that("lines outside the display tolerance emit no row", {
+  # LINE_MATCH_TOLERANCE = 3.0 (raised from 1.0 on 2026-05-13 to expose more
+  # book quotes with amber line tags). Anything > 3.0 units off should still
+  # be dropped — a bet at 5.5 with a book line at 1.5 (4 units off) qualifies.
   bets <- make_bet_row(line = 5.5)
   book_odds <- list(bfa = bind_rows(
-    book_row("g1", "totals", "F5", "Over", 3.5, -115)  # 2 units off
+    book_row("g1", "totals", "F5", "Over", 1.5, -115)  # 4 units off
   ))
   out <- expand_bets_to_book_prices(bets, book_odds)
   expect_equal(nrow(out), 0)
