@@ -145,13 +145,26 @@ def parse_runners_to_wide_rows(
                     effective_line = None
 
         # Bucket key: main rows coalesce by period only; alt rows split by line.
-        # For alt-spreads, both sides (e.g. Yankees -2.5 and Red Sox +2.5) share
-        # the same row, so bucket by absolute line. For alt-totals, Over/Under
-        # already share the same line value.
+        # For alt-spreads, both sides of a paired line (e.g. Yankees -2.5 and
+        # Red Sox +2.5) share the same row, BUT the opposite-direction pair
+        # (Yankees +2.5 and Red Sox -2.5) must be a DIFFERENT row. We bucket
+        # by the home-team-signed line so both sides of a paired line collapse
+        # to one key while the opposite-direction pair stays separate.
         if market_type == "main":
             bucket_line: float | None = None
         elif market_type == "alternate_spreads" and effective_line is not None:
-            bucket_line = abs(effective_line)
+            # Determine signed home-team line from the runner name. The home
+            # team's line is its own when the runner is home; otherwise it's
+            # the negation of the away-team runner's line.
+            if event.home_team in r.name:
+                bucket_line = effective_line
+            elif event.away_team in r.name:
+                bucket_line = -effective_line
+            else:
+                # Runner name doesn't match either team -- shouldn't happen,
+                # but degrade gracefully: bucket by absolute line (legacy
+                # behaviour) so this row at least doesn't crash.
+                bucket_line = abs(effective_line)
         else:
             bucket_line = effective_line
         key = (period, market_type, bucket_line)
