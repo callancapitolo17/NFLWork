@@ -3493,6 +3493,244 @@ get_bookmaker_odds <- function(
   return(result)
 }
 
+#' Load DraftKings single-leg odds from DuckDB
+#'
+#' DK writes its raw 18-column wide-format schema to dk_odds/dk.duckdb. This
+#' helper mirrors get_bookmaker_odds(): pivots that wide frame into the long
+#' format consumed by scraper_to_canonical() in odds_screen.R (one row per
+#' market_type with `line`, `odds_home`, `odds_away`, `odds_over`,
+#' `odds_under`). Team names are already canonical (DK uses Odds API names),
+#' but we still run resolve_offshore_teams() so behaviour matches other books.
+#'
+#' @param sport Sport key (e.g., "mlb")
+#' @param db_path Path to dk.duckdb
+#' @return Data frame in long format, or empty data.frame() if DB missing.
+get_dk_odds <- function(
+    sport = "mlb",
+    db_path = "~/NFLWork/dk_odds/dk.duckdb"
+) {
+  db_path <- normalizePath(path.expand(db_path), mustWork = FALSE)
+
+  if (!file.exists(db_path)) {
+    warning(sprintf("DraftKings database not found at %s. Run scraper first.", db_path))
+    return(data.frame())
+  }
+
+  table_name <- paste0(sport, "_odds")
+
+  con <- dbConnect(duckdb(), dbdir = db_path, read_only = TRUE)
+  on.exit(dbDisconnect(con, shutdown = TRUE))
+
+  tables <- dbListTables(con)
+  if (!table_name %in% tables) {
+    warning(sprintf("Table '%s' not found in DraftKings database. Run scraper first.", table_name))
+    return(data.frame())
+  }
+
+  raw_odds <- dbGetQuery(con, sprintf("SELECT * FROM %s", table_name))
+
+  if (nrow(raw_odds) == 0) {
+    warning("No odds found in DraftKings database.")
+    return(data.frame())
+  }
+
+  result_list <- list()
+
+  for (i in seq_len(nrow(raw_odds))) {
+    row <- raw_odds[i, ]
+
+    base <- list(
+      bookmaker_key = "draftkings",
+      sport_key = row$sport_key,
+      home_team = row$home_team,
+      away_team = row$away_team,
+      game_date = row$game_date,
+      game_time = row$game_time,
+      dk_game_id = row$game_id,
+      fetch_time = row$fetch_time,
+      period = row$period
+    )
+
+    # Spreads record
+    if (!is.na(row$away_spread)) {
+      spread_rec <- c(base, list(
+        market = row$market,
+        market_type = "spreads",
+        line = row$home_spread,
+        odds_away = row$away_spread_price,
+        odds_home = row$home_spread_price,
+        odds_over = NA_integer_,
+        odds_under = NA_integer_,
+        away_spread = row$away_spread,
+        home_spread = row$home_spread
+      ))
+      result_list[[length(result_list) + 1]] <- spread_rec
+    }
+
+    # Totals record
+    if (!is.na(row$total)) {
+      totals_market <- gsub("spreads", "totals", row$market)
+      totals_rec <- c(base, list(
+        market = totals_market,
+        market_type = "totals",
+        line = row$total,
+        odds_away = NA_integer_,
+        odds_home = NA_integer_,
+        odds_over = row$over_price,
+        odds_under = row$under_price
+      ))
+      result_list[[length(result_list) + 1]] <- totals_rec
+    }
+
+    # Moneyline record
+    if (!is.na(row$away_ml)) {
+      ml_market <- gsub("spreads", "h2h", row$market)
+      ml_rec <- c(base, list(
+        market = ml_market,
+        market_type = "h2h",
+        line = NA_real_,
+        odds_away = row$away_ml,
+        odds_home = row$home_ml,
+        odds_over = NA_integer_,
+        odds_under = NA_integer_
+      ))
+      result_list[[length(result_list) + 1]] <- ml_rec
+    }
+  }
+
+  if (length(result_list) == 0) {
+    return(data.frame())
+  }
+
+  result <- bind_rows(lapply(result_list, as.data.frame))
+
+  cat(sprintf("Loaded %d DraftKings odds records (%d spreads, %d totals, %d ML)\n",
+              nrow(result),
+              sum(result$market_type == "spreads"),
+              sum(result$market_type == "totals"),
+              sum(result$market_type == "h2h")))
+
+  result <- resolve_offshore_teams(result, sport = sport)
+  return(result)
+}
+
+#' Load FanDuel single-leg odds from DuckDB
+#'
+#' Mirror of get_dk_odds() — same schema, different bookmaker_key + db_path.
+#' FanDuel scraper writes fd_odds/fd.duckdb with the canonical 18-column schema.
+#'
+#' @param sport Sport key (e.g., "mlb")
+#' @param db_path Path to fd.duckdb
+#' @return Data frame in long format, or empty data.frame() if DB missing.
+get_fd_odds <- function(
+    sport = "mlb",
+    db_path = "~/NFLWork/fd_odds/fd.duckdb"
+) {
+  db_path <- normalizePath(path.expand(db_path), mustWork = FALSE)
+
+  if (!file.exists(db_path)) {
+    warning(sprintf("FanDuel database not found at %s. Run scraper first.", db_path))
+    return(data.frame())
+  }
+
+  table_name <- paste0(sport, "_odds")
+
+  con <- dbConnect(duckdb(), dbdir = db_path, read_only = TRUE)
+  on.exit(dbDisconnect(con, shutdown = TRUE))
+
+  tables <- dbListTables(con)
+  if (!table_name %in% tables) {
+    warning(sprintf("Table '%s' not found in FanDuel database. Run scraper first.", table_name))
+    return(data.frame())
+  }
+
+  raw_odds <- dbGetQuery(con, sprintf("SELECT * FROM %s", table_name))
+
+  if (nrow(raw_odds) == 0) {
+    warning("No odds found in FanDuel database.")
+    return(data.frame())
+  }
+
+  result_list <- list()
+
+  for (i in seq_len(nrow(raw_odds))) {
+    row <- raw_odds[i, ]
+
+    base <- list(
+      bookmaker_key = "fanduel",
+      sport_key = row$sport_key,
+      home_team = row$home_team,
+      away_team = row$away_team,
+      game_date = row$game_date,
+      game_time = row$game_time,
+      fd_game_id = row$game_id,
+      fetch_time = row$fetch_time,
+      period = row$period
+    )
+
+    # Spreads record
+    if (!is.na(row$away_spread)) {
+      spread_rec <- c(base, list(
+        market = row$market,
+        market_type = "spreads",
+        line = row$home_spread,
+        odds_away = row$away_spread_price,
+        odds_home = row$home_spread_price,
+        odds_over = NA_integer_,
+        odds_under = NA_integer_,
+        away_spread = row$away_spread,
+        home_spread = row$home_spread
+      ))
+      result_list[[length(result_list) + 1]] <- spread_rec
+    }
+
+    # Totals record
+    if (!is.na(row$total)) {
+      totals_market <- gsub("spreads", "totals", row$market)
+      totals_rec <- c(base, list(
+        market = totals_market,
+        market_type = "totals",
+        line = row$total,
+        odds_away = NA_integer_,
+        odds_home = NA_integer_,
+        odds_over = row$over_price,
+        odds_under = row$under_price
+      ))
+      result_list[[length(result_list) + 1]] <- totals_rec
+    }
+
+    # Moneyline record
+    if (!is.na(row$away_ml)) {
+      ml_market <- gsub("spreads", "h2h", row$market)
+      ml_rec <- c(base, list(
+        market = ml_market,
+        market_type = "h2h",
+        line = NA_real_,
+        odds_away = row$away_ml,
+        odds_home = row$home_ml,
+        odds_over = NA_integer_,
+        odds_under = NA_integer_
+      ))
+      result_list[[length(result_list) + 1]] <- ml_rec
+    }
+  }
+
+  if (length(result_list) == 0) {
+    return(data.frame())
+  }
+
+  result <- bind_rows(lapply(result_list, as.data.frame))
+
+  cat(sprintf("Loaded %d FanDuel odds records (%d spreads, %d totals, %d ML)\n",
+              nrow(result),
+              sum(result$market_type == "spreads"),
+              sum(result$market_type == "totals"),
+              sum(result$market_type == "h2h")))
+
+  result <- resolve_offshore_teams(result, sport = sport)
+  return(result)
+}
+
 get_bet105_odds <- function(
     sport = "cbb",
     db_path = "~/NFLWork/bet105_odds/bet105.duckdb"

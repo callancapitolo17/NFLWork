@@ -565,6 +565,16 @@ cat(sprintf("Loaded %d Bookmaker records.\n", nrow(bookmaker_odds)))
 bet105_odds <- tryCatch(get_bet105_odds("mlb"), error = function(e) { cat(sprintf("Bet105 skip: %s\n", e$message)); tibble() })
 cat(sprintf("Loaded %d Bet105 records.\n", nrow(bet105_odds)))
 
+# DK + FD single-leg odds are scraped to their own DuckDB files; used only
+# for the bets-tab odds-screen pills (book_odds_by_book below). Pinnacle
+# still flows through the Odds API prefetched cache. Helpers in Tools.R
+# mirror get_bookmaker_odds(): wide 18-col schema -> canonical long format.
+dk_odds <- tryCatch(get_dk_odds("mlb"), error = function(e) { cat(sprintf("DraftKings skip: %s\n", e$message)); tibble() })
+cat(sprintf("Loaded %d DraftKings records.\n", nrow(dk_odds)))
+
+fd_odds <- tryCatch(get_fd_odds("mlb"), error = function(e) { cat(sprintf("FanDuel skip: %s\n", e$message)); tibble() })
+cat(sprintf("Loaded %d FanDuel records.\n", nrow(fd_odds)))
+
 kalshi_odds <- tryCatch(get_kalshi_odds("mlb"), error = function(e) { cat(sprintf("Kalshi skip: %s\n", e$message)); tibble() })
 cat(sprintf("Loaded %d Kalshi records.\n", nrow(kalshi_odds)))
 
@@ -574,6 +584,8 @@ hoop88_odds    <- map_scraper_markets_mlb(hoop88_odds)
 bfa_odds       <- map_scraper_markets_mlb(bfa_odds)
 bookmaker_odds <- map_scraper_markets_mlb(bookmaker_odds)
 bet105_odds    <- map_scraper_markets_mlb(bet105_odds)
+dk_odds        <- map_scraper_markets_mlb(dk_odds)
+fd_odds        <- map_scraper_markets_mlb(fd_odds)
 kalshi_odds    <- map_scraper_markets_mlb(kalshi_odds)
 timer$mark("load_scrapers")
 
@@ -885,10 +897,8 @@ book_odds_by_book <- list(
   bfa       = scraper_to_canonical(bfa_odds,       .game_id_lookup),
   bookmaker = scraper_to_canonical(bookmaker_odds, .game_id_lookup),
   bet105    = scraper_to_canonical(bet105_odds,    .game_id_lookup),
-  draftkings = odds_api_to_canonical(
-                 prefetched_long %>% filter(bookmaker_key == "draftkings")),
-  fanduel   = odds_api_to_canonical(
-                 prefetched_long %>% filter(bookmaker_key == "fanduel")),
+  draftkings = scraper_to_canonical(dk_odds, .game_id_lookup),
+  fanduel    = scraper_to_canonical(fd_odds, .game_id_lookup),
   pinnacle  = odds_api_to_canonical(
                  prefetched_long %>% filter(bookmaker_key == "pinnacle"))
 )
