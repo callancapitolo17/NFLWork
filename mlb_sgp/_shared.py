@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
+Period = Literal["FG", "F5"]
+
 
 @dataclass(frozen=True)
 class TargetLine:
@@ -17,7 +19,7 @@ class TargetLine:
     home_team: str
     away_team: str
     commence_time: datetime
-    period: Literal["FG", "F5"]
+    period: Period
     spread: float   # signed, home-perspective (negative = home favored)
     total: float
 
@@ -27,7 +29,7 @@ class PricedRow:
     """One book's SGP price for a (game, period, spread, total, combo) tuple."""
     game_id: str
     combo: str
-    period: str
+    period: Period
     spread_line: float
     total_line: float
     bookmaker: str
