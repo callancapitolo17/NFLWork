@@ -30,6 +30,12 @@ class Runner:
     american_odds: int
 
 
+@dataclass
+class Market:
+    market_id: str
+    name: str            # FD marketName, e.g. "Run Line", "First 5 Innings Total Runs"
+
+
 class FanDuelClient:
     def __init__(self, verbose: bool = False) -> None:
         from scraper_fanduel_sgp import init_session
@@ -132,6 +138,62 @@ class FanDuelClient:
                     american_odds=american,
                 ))
         return out
+
+    def fetch_event_markets(self, event_id: str) -> list[Market]:
+        """Returns market metadata (id + name) for one event.
+
+        FD's event-page endpoint returns markets + runners in one response,
+        but `fetch_event_runners` only emits Runner objects. To classify each
+        runner's market we also need the market NAME, which is on the same
+        payload — so this method re-walks the same response and emits Markets.
+
+        For the singles scraper we call both methods, then build a
+        `market_id -> (period, market_type)` map via classify_market.
+
+        We intentionally do NOT share state between the two calls (no caching)
+        because (a) the FD payload is small, (b) keeping the two methods
+        independent matches DraftKingsClient's separation, and (c) the singles
+        scraper is invoked once per event so doing two HTTP fetches doubles
+        traffic but stays well under FD's rate limits.
+        """
+        from scraper_fanduel_sgp import FD_EVENT_PAGE_URL, FD_AK, FD_HEADERS
+
+        url = (
+            f"{FD_EVENT_PAGE_URL}?_ak={FD_AK}&eventId={event_id}"
+            f"&tab=same-game-parlay-"
+            f"&useCombinedTouchdownsVirtualMarket=true&useQuickBets=true"
+        )
+        try:
+            resp = self.session.get(url, headers=FD_HEADERS, timeout=20)
+        except TypeError:
+            resp = self.session.get(url)
+
+        if getattr(resp, "status_code", 200) != 200:
+            return []
+        payload = resp.json()
+
+        markets: list[dict] = []
+
+        def walk(o):
+            if isinstance(o, dict):
+                if "marketId" in o and "marketName" in o:
+                    markets.append(o)
+                for v in o.values():
+                    walk(v)
+            elif isinstance(o, list):
+                for it in o:
+                    walk(it)
+
+        walk(payload)
+
+        seen: dict[str, str] = {}
+        for m in markets:
+            mid = str(m.get("marketId", ""))
+            name = str(m.get("marketName", "") or "")
+            if mid and mid not in seen:
+                seen[mid] = name
+
+        return [Market(market_id=mid, name=name) for mid, name in seen.items()]
 
 
 def _extract_american_odds(run: dict) -> int | None:
