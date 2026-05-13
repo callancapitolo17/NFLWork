@@ -290,3 +290,194 @@ Updates required before merge (exact wording in the implementation plan):
 - If FD doesn't post F3/F7 spread/total (confirmed), `scraper_fanduel_singles.py` emits only FG + F5 rows (matches today's SGP scraper behavior).
 - DK posts F5 + F7 spread/total. The singles scraper for DK should emit rows for FG + F5 + F7 (F7 is a **new** period not currently produced by the SGP scraper — confirm this is desired before Task 9 wires DB writes).
 - Team-name dictionary updates: `NEEDED` for DK. Two options: (a) extend `Answer Keys/Tools.R::resolve_offshore_teams()` substring rules to handle 2-3-char city prefixes ("CLE" → "Cleveland", "LA" → "Los Angeles"), or (b) build a DK-specific mapping table inside `scraper_draftkings_singles.py` keyed off the team-dict canonical list. Recommend (b) — keeps the resolver generic and the mapping co-located with the scraper that introduces the variant naming. FD needs no mapping changes.
+
+---
+
+## Pre-merge executive review (2026-05-12)
+
+**Scope:** singles scrapers feature only. The odds-screen feature (merged in
+via 6056fd5) was reviewed separately on its own branch.
+
+**Reviewed commits (singles-only, 13 non-merge):** 1ad39bb, 389e4d9, f1c074b,
+4f3f1b1, d4885ea, 0ec6541, b35d612, c51d6a0, 03c8639, 7ff70db, 8eb9b71,
+5613ff6, 94c8757, f61433e.
+
+**Unit-test verification:** `pytest tests/test_dk_singles_parser.py
+tests/test_fd_singles_parser.py tests/test_dk_client.py
+tests/test_fd_client.py` → 22/22 passed.
+
+### Checklist results
+
+**1. Data integrity**
+
+- *No duplicate writes?* **YES.** Both `scraper_draftkings_singles.write_to_duckdb`
+  and `scraper_fanduel_singles.write_to_duckdb` wrap the rewrite in a single
+  `BEGIN TRANSACTION` / `DELETE FROM mlb_odds` / `executemany INSERT` /
+  `COMMIT` with a try/except `ROLLBACK`. Partial-commit is impossible.
+- *Proper deduplication?* **YES.** `mlb_odds` is fully rewritten each cycle
+  (DELETE-then-INSERT inside a transaction). The parser's
+  `parse_*_to_wide_rows` buckets by `(period, market_type, line)` so duplicate
+  selections within a single scrape collapse to one row.
+- *Incomplete records filtered?* **YES.**
+  - DK: `fetch_event_selections` skips selections with `isDisabled` or empty
+    `displayOdds.american`; `_parse_american_odds` failure → skip
+    (dk_client.py:111–120).
+  - FD: `fetch_event_runners` skips `runnerStatus != "ACTIVE"` (empty allowed),
+    skips missing `selectionId`, skips missing american odds
+    (fd_client.py:122–132).
+  - Both parsers skip selections whose `market_id` isn't in `market_meta`
+    (props/futures/team totals filtered out by `classify_market` →
+    market never reaches `market_meta` map).
+  - DK alt-spread-shaped selections whose name doesn't match either team are
+    skipped (singles parser :191–193). Same for FD :183–185.
+
+**2. Resource safety**
+
+- *All DB connections use try/finally?* **YES.**
+  - Python: both `write_to_duckdb` functions use `con = duckdb.connect(...)`
+    followed by `try: ... finally: con.close()`
+    (scraper_draftkings_singles.py:305–353; scraper_fanduel_singles.py:257–305).
+  - R: `get_dk_odds` and `get_fd_odds` both use
+    `on.exit(dbDisconnect(con, shutdown = TRUE))` immediately after
+    `dbConnect` (Tools.R additions). Mirrors the pattern of the surrounding
+    `get_bookmaker_odds`/`get_bet105_odds` helpers.
+  - MLB.R loaders use `tryCatch(...)` to demote any scraper read to an empty
+    tibble — but DB disconnection is owned by `get_dk_odds`/`get_fd_odds` via
+    `on.exit`, so an exception inside the helper still closes the connection.
+- *No lock-file leaks?* **YES.** Inspected `dk_odds/` and `fd_odds/` after
+  recent scrapes — only `dk.duckdb`/`fd.duckdb` + `README.md`. No stale
+  `.wal`/`.lock`/`*-journal` artifacts. (Note: `.gitignore` excludes
+  `*.duckdb` and `*.duckdb-journal`, so even if WAL files transiently exist
+  during a scrape they won't be committed.)
+
+**3. Edge cases**
+
+- *Off-season behavior?* **YES.**
+  - DK: `client.list_events()` returns `[]` → loop body skipped → `all_rows`
+    empty → `write_to_duckdb([])` still creates the table if missing and
+    issues `DELETE FROM mlb_odds` (no-op on empty table). Resulting `mlb_odds`
+    is empty.
+  - FD: same flow.
+  - MLB.R: `get_dk_odds("mlb")` finds an empty table → emits warning and
+    returns `data.frame()` → `map_scraper_markets_mlb()` on an empty frame is
+    a no-op → `scraper_to_canonical(dk_odds, ...)` returns NULL on empty input
+    → `Filter(Negate(is.null), book_odds_by_book)` drops it → DK pills empty
+    on the dashboard. Same for FD. **Graceful degradation matches the design
+    spec's failure table.**
+- *First-run with no existing DuckDB?* **YES.** `write_to_duckdb` runs
+  `db_path.parent.mkdir(exist_ok=True)` and `CREATE TABLE IF NOT EXISTS
+  mlb_odds (...)` before the DELETE. `duckdb.connect(...)` creates the file
+  if missing. MLB.R-side `get_dk_odds` checks `file.exists(db_path)` and
+  short-circuits to `data.frame()` with a warning if the DB hasn't been
+  produced yet (Tools.R additions).
+- *Timezone boundaries?* **YES.** `fetch_time = datetime.utcnow()` stored as
+  naive UTC TIMESTAMP. Singles scrapers don't filter by tipoff — they snap
+  whatever DK/FD post; downstream tipoff filtering is `MLB.R`'s
+  responsibility via the `pt_start_time > Sys.time()` filter on
+  `all_bets_combined`. No TZ ambiguity in the scraper itself.
+- *DK Unicode-minus handling?* **YES.** `_parse_american_odds`
+  (dk_client.py:140–155) normalizes `"−"` (U+2212) → `"-"` before `int(...)`.
+  Covered by `test_dk_client.py`.
+
+**4. Dead code**
+
+- *No unused imports / flags?* **YES.** All imports in
+  `scraper_draftkings_singles.py` (`argparse`, `re`, `datetime`, `Path`,
+  `Any`, `duckdb`, `DraftKingsClient`/`Event`/`Selection`) are used.
+  `scraper_fanduel_singles.py` similarly. Both `dk_client.py` and
+  `fd_client.py` import only what they need (cleanup commit f1c074b removed
+  an unused typing import from dk_client).
+- *No dead branches?* **YES.** Reviewed `classify_market` (DK keyword-blacklist
+  + period detection + market-type detection; every branch is reachable from
+  the test fixtures) and FD's whitelist (10 entries — checked against
+  `fd_events.json` fixture).
+- **Acceptable duplication noted by implementer:** `get_dk_odds` and
+  `get_fd_odds` in Tools.R are near-identical (~120 lines each, differ only in
+  `bookmaker_key`, `dk_game_id`/`fd_game_id`, `db_path`). They mirror the
+  established `get_bookmaker_odds` / `get_bet105_odds` pattern (also
+  near-duplicates) so the redundancy is consistent with the codebase. **Not
+  blocking — flagged as follow-up refactor.**
+
+**5. Log/disk hygiene**
+
+- *Log rotation?* **N/A.** Singles scrapers log to stdout via `print(...,
+  flush=True)`. The `run.py` orchestrator captures stdout into its own
+  per-cycle log; no new file-based logging introduced.
+- *Unbounded file growth?* **NO** (i.e. growth is bounded). `dk.duckdb` and
+  `fd.duckdb` are atomically rewritten each cycle (DELETE-then-INSERT inside
+  a transaction). Observed size ~525 KB per DB; bounded by per-cycle row
+  count (~1,300 rows estimated in design spec, 409–910 measured in commit
+  messages).
+
+**6. Security**
+
+- *Secrets in logs?* **NO.** Every `print(...)` statement in the singles
+  scrapers prints only event counts, event IDs, exception messages, or row
+  counts — no cookies, headers, session tokens. `verbose` mode just adds
+  per-event row counts and a parlays-enrich exception (also limited to the
+  exception's `str(e)`).
+- *API keys exposed?* **N/A.** Neither DK nor FD use authenticated REST
+  endpoints. Both rely on curl_cffi Chrome-TLS impersonation; no API key,
+  bearer token, or username/password is ever in the codebase or logs.
+- *New .env / .pem / credentials files?* **NO.** Only new files are Python
+  source, JSON fixtures (sanitized public DK/FD payloads), CSV golden
+  baselines (4-column odds data, no PII), READMEs, R helpers, and CLAUDE.md
+  edits. Inspected `git diff --stat 1ad39bb^..HEAD` — no secret files.
+
+### Issues to fix before merge
+
+- **None.**
+
+### Acceptable risks (noted, not blocking)
+
+- **Live-API fragility.** Both scrapers depend on DK's `parlays/v1/sgp/events`
+  and FD's `event-page` endpoints. If DK changes its `displayOdds.american`
+  shape (e.g. switches to a different Unicode minus, returns floats, or
+  changes path), the parser silently emits zero rows for affected selections.
+  Same for FD's `winRunnerOdds.americanDisplayOdds.americanOdds`. Mitigated by
+  per-event isolation (one bad event doesn't tank the scrape) and by the
+  dashboard's graceful-degrade-to-empty behavior — but operational
+  monitoring of row counts on `dk.duckdb`/`fd.duckdb` is recommended.
+- **`unmapped_teams` warning is print-only.** DK adds expansion teams rarely;
+  if/when DK adds a 31st team or rebrands, the singles scraper will emit a
+  WARNING line and ship rows with the un-canonicalized DK name. MLB.R-side
+  `resolve_offshore_teams` will probably fail to match, and that game's DK
+  pills will be empty. Self-healing once `DK_TEAM_MAP` is updated.
+- **Parlays-enrich is best-effort.** DK singles scraper does an additional
+  enrichment GET on the parlays endpoint after the markets subcategory call;
+  failure is caught and only logged in `--verbose`. If this call goes
+  permanently 4xx, F7 totals/alts silently disappear from the DK output. Not
+  catastrophic (downstream just sees empty pills for those markets) but worth
+  watching during the first few production cycles.
+
+### Follow-up refactors (not blocking)
+
+- **Tools.R `get_*_odds` helper duplication.** `get_dk_odds`, `get_fd_odds`,
+  `get_bookmaker_odds`, `get_bet105_odds` share ~85% of their bodies. A
+  single `get_scraper_odds(bookmaker_key, db_path, sport)` parameterized
+  helper would shrink Tools.R by ~400 lines and centralize schema changes.
+  Punted because the redundancy was already established before this PR.
+- **Singles scraper main-loop duplication.** `scrape_singles` in
+  `scraper_draftkings_singles.py` and `scraper_fanduel_singles.py` differ only
+  in (a) the client class, (b) FD's lack of parlays-enrich, and (c) DK's
+  team-name canonicalization step. Could collapse into a shared
+  `_scrape_singles(client, classify_fn, canonicalize_fn=None)` helper. Punted
+  to keep this PR minimal.
+- **No integration test in CI.** The SGP regression test
+  (`test_sgp_regression.py`) requires live DK/FD APIs and is `@pytest.mark.
+  integration` — not run by default. A unit-test-only smoke that mocks the
+  HTTP layer end-to-end (events list → markets → selections → write_to_duckdb
+  → query) would catch parser regressions before they hit production.
+
+### Verification commands run
+
+- `pytest mlb_sgp/tests/test_dk_singles_parser.py
+  mlb_sgp/tests/test_fd_singles_parser.py mlb_sgp/tests/test_dk_client.py
+  mlb_sgp/tests/test_fd_client.py -q` → 22/22 passed (0.31s).
+- `ls -la dk_odds/ fd_odds/` → only `*.duckdb` + `README.md`; no stale WAL.
+- `git diff --stat 1ad39bb^..HEAD -- ':!Answer Keys/MLB Dashboard/'
+  ':!docs/superpowers/specs/2026-05-11-mlb-odds-screen-*'` → 34 files,
+  +69,206 −11 (bulk is fixtures: `dk_event_markets.json` 49k lines,
+  `dk_league_response.json` 9k lines).
+
+**Verdict: cleared for merge to `main` once user explicitly approves.**
