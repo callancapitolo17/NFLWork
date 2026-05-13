@@ -2,9 +2,23 @@
 import importlib
 
 import duckdb
+import pytest
 
 import mlb_sgp.db as db_mod
 from mlb_sgp.db import ensure_table
+
+
+@pytest.fixture(autouse=True)
+def _reset_db_module():
+    """Restore db_mod.MLB_DB to its default after each test.
+
+    Several tests use importlib.reload(db_mod) to exercise env-var-driven
+    module init. Without this fixture, the last reload leaves MLB_DB
+    pointing at a tmp_path that no longer exists, leaking state to any
+    later test that imports MLB_DB.
+    """
+    yield
+    importlib.reload(db_mod)
 
 
 def test_ensure_table_fresh_db(tmp_path):
