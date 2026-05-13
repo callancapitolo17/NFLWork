@@ -33,8 +33,11 @@ DB_PATH <- file.path(DASHBOARD_DIR, "mlb_dashboard.duckdb")
 source(file.path(DASHBOARD_DIR, "..", "books_strip.R"))
 # Conditional Kelly residual solver (Task 1) — drives Parlay tab combo residuals
 source(file.path(DASHBOARD_DIR, "..", "conditional_kelly.R"))
-# Book pill renderer (Task 1) — renders individual book prices
-source(file.path(DASHBOARD_DIR, "book_pill.R"))
+# Book cell renderer (V8 grid layout) — renders individual book prices.
+# The legacy book_pill.R was renamed to book_cell.R; render_book_pill is
+# preserved inside book_cell.R as a deprecation shim so the legacy bets
+# table fallback still works during the V8 transition.
+source(file.path(DASHBOARD_DIR, "book_cell.R"))
 OUTPUT_PATH <- file.path(DASHBOARD_DIR, "report.html")
 
 # =============================================================================
