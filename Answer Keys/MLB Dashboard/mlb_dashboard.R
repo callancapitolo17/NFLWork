@@ -3301,8 +3301,13 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               }
             });
 
-            const bookCell = cells[cells.length - 2];
-            if (bookCell) bookText = bookCell.textContent.trim();
+            // In the new card layout the second-to-last cell is pickside_html
+            // (the full pill row), not a single book name as in the legacy
+            // table layout. Read the pick book from the Place/Log button
+            // data-book attribute, which carries the bet bookmaker_key
+            // (e.g. wagerzon, draftkings).
+            const bookBtn = row.querySelector("button[data-book]");
+            if (bookBtn) bookText = bookBtn.getAttribute("data-book").trim();
 
             let marketType = "Other";
             if (marketText.includes("ML")) {
