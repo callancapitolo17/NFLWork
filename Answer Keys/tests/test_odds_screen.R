@@ -311,3 +311,70 @@ test_that("parse_prefetched_to_long returns empty schema on empty input", {
                     "outcomes_price", "outcomes_point", "fetch_time")
                   %in% names(out)))
 })
+
+test_that("expand_bets_to_book_prices emits opposite row for spread bets", {
+  bets <- tibble(
+    bet_row_id   = "row1",
+    id           = "g1",
+    home_team    = "New York Yankees",
+    away_team    = "Boston Red Sox",
+    market       = "spreads",
+    market_type  = "spreads",
+    period       = "FG",
+    line         = -1.5,
+    bet_on       = "New York Yankees"
+  )
+
+  # WZ has -1.5 on home and +1.5 on away.
+  wz <- tibble(
+    game_id       = "g1",
+    market        = "spreads",
+    period        = "FG",
+    side          = c("New York Yankees", "Boston Red Sox"),
+    line          = c(-1.5, 1.5),
+    american_odds = c(-120L, 100L),
+    fetch_time    = as.POSIXct("2026-05-13 12:00", tz = "UTC")
+  )
+
+  out <- expand_bets_to_book_prices(bets, list(wz = wz))
+
+  expect_equal(nrow(out), 2)  # one pick row + one opposite row
+  expect_setequal(out$side, c("pick", "opposite"))
+
+  pick <- out[out$side == "pick", ]
+  opp  <- out[out$side == "opposite", ]
+  expect_equal(pick$american_odds, -120L)
+  expect_equal(pick$line_quoted, -1.5)
+  expect_equal(opp$american_odds,  100L)
+  expect_equal(opp$line_quoted,    1.5)
+})
+
+test_that("expand_bets_to_book_prices emits opposite row for moneyline bets", {
+  bets <- tibble(
+    bet_row_id   = "row2",
+    id           = "g2",
+    home_team    = "New York Yankees",
+    away_team    = "Boston Red Sox",
+    market       = "h2h",
+    market_type  = "h2h",
+    period       = "FG",
+    line         = NA_real_,
+    bet_on       = "Boston Red Sox"
+  )
+
+  wz <- tibble(
+    game_id       = "g2",
+    market        = "h2h",
+    period        = "FG",
+    side          = c("Boston Red Sox", "New York Yankees"),
+    line          = c(NA_real_, NA_real_),
+    american_odds = c(150L, -170L),
+    fetch_time    = as.POSIXct("2026-05-13 12:00", tz = "UTC")
+  )
+
+  out <- expand_bets_to_book_prices(bets, list(wz = wz))
+  expect_equal(nrow(out), 2)
+  expect_setequal(out$side, c("pick", "opposite"))
+  expect_equal(out[out$side == "pick", ]$american_odds,  150L)
+  expect_equal(out[out$side == "opposite", ]$american_odds, -170L)
+})

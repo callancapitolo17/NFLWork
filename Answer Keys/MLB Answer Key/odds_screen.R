@@ -69,6 +69,23 @@ normalize_book_odds_frame <- function(raw) {
     return(tibble(line_quoted = numeric(), american_odds = integer(),
                   is_exact_line = logical()))
   }
+  # Moneyline / h2h have no line on either side — model_line is NA and the
+  # book quotes have NA line. abs(NA - NA) is NA, which dplyr::filter would
+  # drop, so handle this case explicitly: any NA-line candidate is an
+  # "exact" match.
+  if (is.na(model_line)) {
+    c_ml <- candidates %>% filter(is.na(line))
+    if (nrow(c_ml) == 0) {
+      return(tibble(line_quoted = numeric(), american_odds = integer(),
+                    is_exact_line = logical()))
+    }
+    row <- c_ml[1, , drop = FALSE]
+    return(tibble(
+      line_quoted   = NA_real_,
+      american_odds = row$american_odds,
+      is_exact_line = TRUE
+    ))
+  }
   c2 <- candidates %>%
     mutate(.dist = abs(line - model_line)) %>%
     filter(.dist <= LINE_MATCH_TOLERANCE)
@@ -98,18 +115,26 @@ normalize_book_odds_frame <- function(raw) {
 #' in the per-book odds frames.
 #'
 #' For totals, opposite is derived automatically (Over <-> Under).
-#' For spreads and moneyline, the opposite side is the other team's name --
-#' information not available inside this helper. The caller must supply it
-#' on the bet row as column `opposite_side`. If `opposite_side` is present
-#' on the bet, .sides_for_bet returns it as the opposite. Otherwise NA
-#' (no opposite-side row is emitted).
-.sides_for_bet <- function(bet_on, market_type, opposite_side = NA_character_) {
-  if (market_type == "totals") {
+#' For spreads, moneyline, and h2h, the opposite side is the OTHER team —
+#' resolved from home_team / away_team if present, else from the explicit
+#' opposite_side column, else NA (no opposite-side row emitted).
+.sides_for_bet <- function(bet_on, market_type,
+                            opposite_side = NA_character_,
+                            home_team = NA_character_,
+                            away_team = NA_character_) {
+  if (market_type == "totals" || grepl("^alternate_totals", market_type) ||
+      grepl("^totals_1st_[357]_innings$", market_type)) {
     list(pick = bet_on,
          opposite = if (grepl("^Over", bet_on, ignore.case = TRUE)) "Under" else "Over")
   } else {
-    # spreads, moneyline, h2h, etc. -- opposite must be supplied by caller
-    list(pick = bet_on, opposite = opposite_side)
+    # Spreads / alt_spreads / h2h / moneyline: opposite is the other team.
+    derived_opp <- if (!is.na(home_team) && !is.na(away_team)) {
+      if (identical(bet_on, home_team)) away_team
+      else if (identical(bet_on, away_team)) home_team
+      else NA_character_
+    } else NA_character_
+    final_opp <- if (!is.na(derived_opp)) derived_opp else opposite_side
+    list(pick = bet_on, opposite = final_opp)
   }
 }
 
@@ -161,7 +186,10 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
   for (i in seq_len(nrow(bets))) {
     bet <- bets[i, , drop = FALSE]
     opposite_col_value <- if ("opposite_side" %in% names(bet)) bet$opposite_side else NA_character_
-    sides <- .sides_for_bet(bet$bet_on, bet$market_type, opposite_col_value)
+    home_team_value    <- if ("home_team"     %in% names(bet)) bet$home_team     else NA_character_
+    away_team_value    <- if ("away_team"     %in% names(bet)) bet$away_team     else NA_character_
+    sides <- .sides_for_bet(bet$bet_on, bet$market_type, opposite_col_value,
+                            home_team = home_team_value, away_team = away_team_value)
     side_labels <- c(pick = sides$pick, opposite = sides$opposite)
 
     for (book_name in names(book_odds_by_book)) {
@@ -181,10 +209,16 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
         chosen <- .pick_closest_line(candidates, bet$line, bet$bet_on)
         if (nrow(chosen) == 0) next
 
-        ft <- candidates %>%
-          filter(abs(line - chosen$line_quoted) < 1e-9) %>%
-          slice_head(n = 1) %>%
-          pull(fetch_time)
+        # Find the fetch_time for the chosen quote. Moneyline / h2h have
+        # NA lines on both sides; match on is.na() in that case.
+        ft <- if (is.na(chosen$line_quoted)) {
+          candidates %>% filter(is.na(line)) %>%
+            slice_head(n = 1) %>% pull(fetch_time)
+        } else {
+          candidates %>%
+            filter(abs(line - chosen$line_quoted) < 1e-9) %>%
+            slice_head(n = 1) %>% pull(fetch_time)
+        }
 
         k <- k + 1L
         out_rows[[k]] <- tibble(
