@@ -3,7 +3,7 @@
 **Status:** Design · 2026-05-13
 **Branch / worktree:** `worktree-mlb-bets-tab-improvements`
 **Owner:** Callan
-**Mockups:** `.superpowers/brainstorm/37414-1778712316/content/bet-card-layouts-v6.html`
+**Mockups:** `.superpowers/brainstorm/37414-1778712316/content/bet-card-layouts-v8.html` (V7 Variant B + centered stats)
 
 ---
 
@@ -17,8 +17,8 @@ A redesign of the "Available Bets" cards on the MLB Dashboard (port 8083). Each 
 
 - **Decision:** Render each bet as a 2×N price grid (rows = sides, columns = books) with cell-level alignment. **Rejected:** keep current pill rows; add a sidebar summary; promote stats to a header chip strip. **Why:** the underlying data *is* a sides × books matrix, and column alignment makes cross-book price comparison the primary affordance — that is the whole point of the bets tab.
 - **Decision:** Always render both sides on spreads (e.g., BOS -2.5 row + PHI +2.5 row), mirroring how totals already render Over + Under. **Rejected:** only render the picked side. **Why:** user explicitly asked to see opponent + other side odds; symmetry with totals removes a special case.
-- **Decision:** Drop the "Market %" stat entirely. **Rejected:** rename it to "Fair %". **Why:** user didn't recognize what it meant; EV/Edge already encodes the de-vigged probability.
-- **Decision:** Rename "EV" → "Edge" in the UI. **Rejected:** keep "EV". **Why:** more readable for a non-quant audience and matches the more common bettor vocabulary.
+- **Decision:** Replace "Market %" with "Fair" (fair de-vigged American odds, e.g. `+199`) as a standalone stat in the hero strip alongside EV / Risk / To Win. **Rejected:** keep "Market %" as a probability; tuck Fair under the pick odds in muted text; drop Fair entirely. **Why:** fair price in American odds is the most legible side-by-side comparison to the actual quoted odds — "I'm getting +160, fair is +199" reads at a glance, while "Market 33.4%" did not. Giving Fair its own slot rather than tucking it under the pick odds also makes it scannable across cards.
+- **Decision:** Keep the label "EV". **Rejected:** rename to "Edge". **Why:** user prefers the existing label; "Edge" was speculative on my part.
 - **Decision:** Recon FanDuel's actual market availability for F7 + alt-run-lines *before* coding the fixes. **Rejected:** ship the whitelist extension blind. **Why:** if FD doesn't post F7 totals or paginates alt lines server-side, the fix path is different.
 
 **Risks / push back here**
@@ -26,7 +26,7 @@ A redesign of the "Available Bets" cards on the MLB Dashboard (port 8083). Each 
 - The grid degrades below ~400px wide (8 book columns get cramped). MLB Dashboard is desktop-only today, but if you ever want it on a phone, we'd need a stacked layout breakpoint.
 - The FD alt-spread fix has unknown scope until recon — it could be a one-line whitelist tweak or it could require pagination logic in the scraper.
 - Some bets won't have a clean "opposite" — e.g., when the model is on an alt-spread line that's not symmetric across books. The opposite row will show alt-line fallbacks (amber) rather than exact matches, same as the pick side already does. Flagging in case you want a stricter "hide opposite when no exact match" behavior.
-- The renaming "EV" → "Edge" propagates to other dashboard tabs only if you want consistency. We can leave EV on other tabs untouched for now and only change the Bets tab.
+- Fair price is computed by de-vigging the consensus / Pinnacle line — make sure the pipeline that already produces "Market %" continues to expose enough info to derive a fair American-odds number cleanly. If the existing pricing path drops the fair-prob → fair-odds conversion downstream of the model, we'll need to surface it in `mlb_bets_combined`.
 
 **Worth understanding**
 
@@ -58,10 +58,11 @@ Visual reference: `bet-card-layouts-v6.html` in the brainstorm directory. Mockup
 
 1. **Bet title row** — uniform 18px. Primary text (bright): the bet itself, e.g. `BOS -2.5`. Secondary text (muted): the market type, e.g. `· Alt Spread · Full Game`. Same font size on the whole row; color contrast does the hierarchy.
 2. **Matchup row** — uniform 15px. Primary (bright): team names, e.g. `Philadelphia Phillies @ Boston Red Sox`. Secondary (muted): tipoff time, e.g. `· Wed 10:46 PM`. Same size-on-row rule applies.
-3. **Hero strip** — bordered green-tinted band containing five elements in a flex row:
+3. **Hero strip** — bordered green-tinted band containing six elements in a flex row. The four stats (Fair / EV / Risk / To Win) are **center-aligned within their slots** (label and value both centered, each slot has a `min-width: 60px` so they don't squeeze together); the pick block stays left-anchored and the action buttons stay grouped immediately after To Win.
    - **Pick block:** book name (small all-caps green) + odds (big white, 22px tabular-nums)
    - **Vertical divider** (1px, low opacity)
-   - **Edge stat:** label "EDGE" (small) + value (18px, green when positive)
+   - **Fair stat:** label "FAIR" (small) + fair de-vigged American odds (18px white), e.g. `+199`
+   - **EV stat:** label "EV" (small) + percentage (18px, **always green** — every bet on this tab is pre-filtered to +EV, so the value never goes negative; no conditional coloring)
    - **Risk stat:** label "RISK" (small) + dollar value (18px white)
    - **To Win stat:** label "TO WIN" (small) + dollar value (18px green)
    - **Action buttons:** Place Bet (filled green-tint, bold) + Log (outlined). Sit immediately after To Win with an 8px gap — no auto-spacer.
@@ -78,9 +79,9 @@ Visual reference: `bet-card-layouts-v6.html` in the brainstorm directory. Mockup
 
 Grid columns are `1fr` so cells resize with viewport width. Hero strip uses `flex-wrap: wrap` so buttons drop to a second line below the stats on narrow widths. **Known limitation:** below ~400px wide, book column headers begin to overlap and alt-line cells get cramped. Acceptable for a desktop dashboard; would need a stacked breakpoint for mobile (out of scope).
 
-### Removed from current UI
+### Removed / replaced from current UI
 
-- **"Market %" stat** — dropped entirely. It was the de-vigged fair probability, which is already implicit in EV/Edge.
+- **"Market %"** — replaced by **"Fair"** in the hero strip. Same underlying number (de-vigged probability), expressed as American odds instead of a percentage so it sits next to the actual quoted odds visually.
 - **Empty pills as visible placeholders** — replaced by dim "—" cells in the grid. Still visible (so you can tell at a glance which books aren't posting), but they don't dominate visually because they're transparent rather than bordered.
 
 ## Scope of changes (code)
@@ -108,9 +109,9 @@ Replace the pill-row rendering with the grid layout from V6. Concrete substeps:
 
 - Replace `BOOK_ORDER` flex loop with a CSS Grid template. Move per-row rendering into a `render_price_row(side_label, prices_for_side, pick_book, is_totals_market)` helper.
 - Replace `render_book_pill()` with `render_book_cell()` — same inputs, but emits a grid cell (one of `pick` / `exact` / `alt` / `empty`) rather than a fixed-width pill.
-- Build the hero strip as a separate component: takes `(pick_book, pick_odds, edge_pct, risk_dollars, towin_dollars, place_button_html, log_button_html)` and renders the green-tinted band.
+- Build the hero strip as a separate component: takes `(pick_book, pick_odds, fair_odds, ev_pct, risk_dollars, towin_dollars, place_button_html, log_button_html)` and renders the green-tinted band with the four stats centered in their slots.
 - Header: switch from two distinct font sizes per line to uniform-per-row sizing with color-only hierarchy.
-- Drop the Market % cell entirely.
+- Replace the Market % cell with the new Fair stat. Compute fair American odds from the existing fair probability (`if p >= 0.5: -100 * p / (1 - p)` else `100 * (1 - p) / p`). If `mlb_bets_combined` already exposes a fair-odds column, use it directly; otherwise add the conversion in the pricing path upstream.
 - Inline CSS for the new card class (single style block at the top of `mlb_dashboard.R`, near the existing card CSS around line 2544).
 
 ### 3. Data fix: FanDuel First-7-Innings market coverage
@@ -145,7 +146,7 @@ Fix scope depends on what recon finds. The lightweight outcome is "the FD API re
 
 ### 5. Label & copy polish
 
-- "EV" → "Edge" in the bets-tab hero strip. Other tabs untouched unless you want consistency (call this out in the implementation plan).
+- Keep label "EV" as-is (no rename). EV value always renders green since bets-tab is pre-filtered to +EV; no `if ev > 0` conditional in the rendering code.
 - Time/date format on the matchup row: use the existing `Wed 10:46 PM` format, just shifted to smaller secondary text.
 - Place button copy: "Place Bet" (current is "Place"). Worth checking that the button handler still wires up — should be a pure text change.
 
@@ -154,7 +155,7 @@ Fix scope depends on what recon finds. The lightweight outcome is "the FD API re
 | File | Change | Workstream |
 |------|--------|------------|
 | `Answer Keys/MLB Answer Key/odds_screen.R` | `expand_bets_to_book_prices`: emit opposite rows for spreads + ML | 1 |
-| `Answer Keys/MLB Dashboard/mlb_dashboard.R` | Rewrite `create_bets_table()`; new card CSS; drop Market % | 2 |
+| `Answer Keys/MLB Dashboard/mlb_dashboard.R` | Rewrite `create_bets_table()`; new card CSS; replace Market % with Fair | 2 |
 | `Answer Keys/MLB Dashboard/book_pill.R` → `book_cell.R` | Convert pill renderer → grid cell renderer | 2 |
 | `mlb_sgp/scraper_fanduel_singles.py` | Extend `_FD_MARKET_WHITELIST` w/ F7 markets after recon | 3 |
 | `mlb_sgp/scraper_fanduel_singles.py` | Alt-line fix (scope TBD by recon) | 4 |
