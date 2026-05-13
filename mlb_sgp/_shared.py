@@ -6,9 +6,8 @@ Module-private (`_` prefix) but stable API consumed by per-book modules
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from datetime import datetime
-from datetime import datetime as _dt
-from typing import Literal, Union
+from datetime import datetime, timezone
+from typing import Literal
 
 Period = Literal["FG", "F5"]
 
@@ -54,18 +53,25 @@ def american_to_decimal(am: int) -> float:
     return 1.0 + 100.0 / abs(am)
 
 
-def _utc_bucket(ts: Union[_dt, str]) -> str:
+def _utc_bucket(ts: datetime | str) -> str:
     """Extract a UTC "YYYY-MM-DDTHH" bucket string from a timestamp.
 
     Used as a match key when correlating events across data sources at
     date+hour granularity (avoids spurious matches across doubleheaders).
     Accepts both datetime objects and ISO-8601 strings.
+
+    Empty/None input returns "" to match existing scraper behavior
+    (callers pass `lines.get("commence_time", "")` and rely on "" to
+    trigger their team-only fallback matcher).
     """
+    if not ts:
+        return ""
     if isinstance(ts, str):
         # Normalize Z suffix to +00:00 for fromisoformat
         normalized = ts.replace("Z", "+00:00") if ts.endswith("Z") else ts
-        ts = _dt.fromisoformat(normalized)
+        ts = datetime.fromisoformat(normalized)
     if ts.tzinfo is None:
-        from datetime import timezone
         ts = ts.replace(tzinfo=timezone.utc)
+    else:
+        ts = ts.astimezone(timezone.utc)
     return ts.strftime("%Y-%m-%dT%H")
