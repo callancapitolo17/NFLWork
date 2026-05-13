@@ -1674,12 +1674,16 @@ def price_sgps(
                 period=period, main_nums=main_nums,
             )
             if not sel_ids:
-                # Try integer fallback (existing DK helper handles this)
+                # Off-main line: try integer fallback. Rows produced here are
+                # tagged as interpolated so the dashboard reader can keep
+                # filtering them out (`source IN ('draftkings_direct', ...)`).
                 priced = try_integer_fallback_dk(
                     client.session, game, period, spread, total, main_nums,
                 )
+                row_source = SOURCE_LABEL_FALLBACK
             else:
                 priced = calculate_sgp(client.session, game, sel_ids, period=period)
+                row_source = SOURCE_LABEL
             if not priced:
                 continue
             # priced is a dict {combo_name: sgp_decimal}; convert to PricedRows.
@@ -1691,13 +1695,15 @@ def price_sgps(
                     spread_line=spread,
                     total_line=total,
                     bookmaker=BOOK_NAME,
-                    source=SOURCE_LABEL,  # mark interpolated if helper returned that
+                    source=row_source,
                     sgp_decimal=sgp_dec,
                     sgp_american=decimal_to_american(sgp_dec),
                     fetch_time=fetch_now,
                 ))
     return out
 ```
+
+**Note on Kalshi-side relevance:** Kalshi's MVE markets always use main half-integer lines (`-(N-0.5)` for spreads, `N-0.5` for totals). When the bot drives target lines from Kalshi MVE enumeration, the `try_integer_fallback_dk` path won't fire — all bot-mode rows are tagged `_direct`. The fallback path matters only in dashboard mode, where Wagerzon-derived lines can be off-main. The label preservation is purely defensive: it keeps dashboard parlay-tab behavior byte-identical with pre-refactor.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1763,6 +1769,7 @@ from mlb_sgp.fd_client import FanDuelClient
 
 BOOK_NAME = "fanduel"
 SOURCE_LABEL = "fanduel_direct"
+SOURCE_LABEL_FALLBACK = "fanduel_interpolated"
 
 
 def price_sgps(
@@ -1813,12 +1820,21 @@ def price_sgps(
             runners = fetch_event_runners(client.session, game["fd_event_id"])
             if not runners:
                 continue
-            # Find spread leg + total leg matching this period+line
+            # Find spread leg + total leg matching this period+line. Try
+            # main lines first; fall back to alt lines (tagged _interpolated
+            # so dashboard parlay-tab reader keeps filtering them out).
             home_code = game.get("home_code", "")
             spread_leg = _parse_spread_runner(runners, home_code, "main",
                                                 period=period, target_line=spread)
             total_leg = _parse_total_runner(runners, home_code, "main",
                                               period=period, target_line=total)
+            row_source = SOURCE_LABEL
+            if not spread_leg or not total_leg:
+                spread_leg = _parse_spread_runner(runners, home_code, "alt",
+                                                    period=period, target_line=spread)
+                total_leg = _parse_total_runner(runners, home_code, "alt",
+                                                  period=period, target_line=total)
+                row_source = SOURCE_LABEL_FALLBACK
             if not spread_leg or not total_leg:
                 continue
             # Price all 4 combos: (home/away spread) × (over/under total)
@@ -1829,7 +1845,7 @@ def price_sgps(
                 out.append(PricedRow(
                     game_id=game_id, combo=combo_name, period=period,
                     spread_line=spread, total_line=total,
-                    bookmaker=BOOK_NAME, source=SOURCE_LABEL,
+                    bookmaker=BOOK_NAME, source=row_source,
                     sgp_decimal=priced, sgp_american=decimal_to_american(priced),
                     fetch_time=fetch_now,
                 ))
@@ -2128,6 +2144,7 @@ from mlb_sgp.novig_client import NovigClient
 
 BOOK_NAME = "novig"
 SOURCE_LABEL = "novig_direct"
+SOURCE_LABEL_FALLBACK = "novig_interpolated"
 
 
 def price_sgps(
@@ -2200,15 +2217,36 @@ def price_sgps(
 
 def _select_outcome_ids_for_combo(legs_data, game, period, spread, total, combo_name):
     """Pick two outcome IDs (one spread leg + one total leg) matching the
-    combo flavor at the target line. Returns None if any leg is missing."""
+    combo flavor at the target line.
+
+    Returns (outcome_ids, was_interpolated):
+      - outcome_ids: list of 2 strings, or None if no matching legs exist.
+      - was_interpolated: True if any leg was sourced via the fallback path
+        (alt-line lookup since Novig pulls legs from DK). Used by caller to
+        tag the PricedRow source as `novig_direct` vs `novig_interpolated`.
+    """
     # Stub: lift the existing dispatch logic from scraper_novig_sgp.py
     # The original lives in `scrape_novig_sgp()` around line 580-650.
-    # Implementation here mirrors that loop, but parameterized by
-    # (period, spread, total, combo_name) instead of iterating internally.
-    raise NotImplementedError("Lift from scraper_novig_sgp.scrape_novig_sgp body — leg selection per combo")
+    # Implementation here mirrors that loop, parameterized by
+    # (period, spread, total, combo_name) instead of iterating internally,
+    # and surfaces the direct-vs-interpolated decision to the caller.
+    raise NotImplementedError("Lift from scraper_novig_sgp.scrape_novig_sgp body — leg selection per combo + interpolation flag")
 ```
 
-Note: the `_select_outcome_ids_for_combo` body is non-trivial. The implementing engineer should lift it from `scrape_novig_sgp()` in `scraper_novig_sgp.py:487-691`, focusing on the leg-selection-per-combo logic. The TDD test just verifies the empty-target case for v1; full combo-selection coverage relies on the golden regression test in Task 16.
+When the orchestrator loop calls `_select_outcome_ids_for_combo`, the caller does:
+
+```python
+result = _select_outcome_ids_for_combo(...)
+if not result or result[0] is None:
+    continue
+outcome_ids, was_interpolated = result
+row_source = SOURCE_LABEL_FALLBACK if was_interpolated else SOURCE_LABEL
+parlay = client.submit_parlay(outcome_ids)
+...
+out.append(PricedRow(..., source=row_source, ...))
+```
+
+Note: the `_select_outcome_ids_for_combo` body is non-trivial. The implementing engineer should lift it from `scrape_novig_sgp()` in `scraper_novig_sgp.py:487-691`, focusing on the leg-selection-per-combo logic. Preserve the existing direct-vs-interpolated source tagging so dashboard parlay-tab behavior is byte-identical post-refactor. The TDD test just verifies the empty-target case for v1; full combo-selection coverage relies on the golden regression test in Task 16.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -4345,10 +4383,31 @@ Expected:
 - [ ] **Step 4: Inspect mlb_sgp_odds in bot DB**
 
 ```bash
-duckdb kalshi_mlb_rfq/kalshi_mlb_rfq_market.duckdb "SELECT bookmaker, COUNT(*) as n, COUNT(DISTINCT game_id) as games, MIN(fetch_time) as oldest, MAX(fetch_time) as newest FROM mlb_sgp_odds GROUP BY bookmaker ORDER BY bookmaker"
+duckdb kalshi_mlb_rfq/kalshi_mlb_rfq_market.duckdb "SELECT bookmaker, source, COUNT(*) as n, COUNT(DISTINCT game_id) as games, MIN(fetch_time) as oldest, MAX(fetch_time) as newest FROM mlb_sgp_odds GROUP BY bookmaker, source ORDER BY bookmaker, source"
 ```
 
 Expected: 4 books (draftkings, fanduel, novig, prophetx), each with non-zero `n` and fresh `newest` (within last 5 min). `games` count should match the open MLB slate.
+
+**Source distribution sanity (bot mode):** Kalshi MVE markets always use main half-integer lines, so the integer-fallback paths in the orchestrators never fire when targets come from Kalshi enumeration. Therefore in the bot's market DB, expected source distribution is **100% `_direct`, 0% `_interpolated`** for all four books. Any non-zero `_interpolated` rows in the bot DB indicate an off-main target line snuck through enumeration — investigate before merging.
+
+**Dashboard regression sanity (separate check, run after Step 4):** Independently re-run the four scraper shims against the dashboard's `mlb_mm.duckdb` (unset `MLB_SGP_DB_PATH`) and verify per-source row distribution matches the pre-refactor baseline within ±5%:
+
+```bash
+unset MLB_SGP_DB_PATH
+python mlb_sgp/scraper_draftkings_sgp.py 2>&1 | tail -3
+python mlb_sgp/scraper_fanduel_sgp.py 2>&1 | tail -3
+python mlb_sgp/scraper_prophetx_sgp.py 2>&1 | tail -3
+python mlb_sgp/scraper_novig_sgp.py 2>&1 | tail -3
+duckdb "Answer Keys/mlb_mm.duckdb" "SELECT source, COUNT(*) FROM mlb_sgp_odds WHERE fetch_time > NOW() - INTERVAL 15 MINUTE GROUP BY source ORDER BY source"
+```
+
+Expected (approximately, from main-branch baseline at session start):
+- `draftkings_direct` ≈ 80, `draftkings_interpolated` ≈ 28
+- `fanduel_direct` ≈ 76, `fanduel_interpolated` ≈ 36
+- `prophetx_direct` ≈ 108, `prophetx_interpolated` ≈ 0 (PX has no fallback path)
+- `novig_direct` ≈ 52, `novig_interpolated` ≈ 32
+
+If `_interpolated` counts collapse to 0, the orchestrator is mislabeling fallback rows as `_direct` — the dashboard parlay-tab reader would now include them, changing tab output. Halt and fix before merging.
 
 - [ ] **Step 5: Inspect mlb_target_lines**
 
