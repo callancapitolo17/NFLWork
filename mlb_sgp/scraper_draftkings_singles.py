@@ -355,8 +355,13 @@ def write_to_duckdb(rows: list[dict]) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description="DraftKings MLB singles scraper")
+    p.add_argument("sport", nargs="?", default="mlb",
+                   help="Sport key (from run.py orchestrator). Only 'mlb' runs the scrape.")
     p.add_argument("--verbose", action="store_true", help="Per-event row logging")
     args = p.parse_args()
+    if args.sport != "mlb":
+        print(f"[dk_singles] sport={args.sport!r} not supported, exiting", flush=True)
+        return
     scrape_singles(verbose=args.verbose)
 
 
