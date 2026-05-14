@@ -56,3 +56,62 @@ def test_latest_sgp_fetch_time_returns_max(tmp_path):
     result = latest_sgp_fetch_time(db)
     assert result is not None
     assert result.hour == 10 and result.minute == 5
+
+
+def test_enumerate_kalshi_targets_returns_target_lines(monkeypatch, tmp_path):
+    """When Kalshi API returns 1 open game with 2 spreads x 2 totals,
+    enumerate_kalshi_targets yields 4 TargetLine entries (one per combo)."""
+    from kalshi_mlb_rfq import sgp_runner
+
+    # Kalshi event ticker format: YYMMMDDHHMM{AwayCode}{HomeCode} (11-char date prefix).
+    # Schedule below has home=NYY, away=BOS, so ticker tail must be BOSNYY.
+    fake_event = {
+        "event_ticker": "KXMLBGAME-26MAY132300BOSNYY",
+        "status": "open",
+    }
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events",
+                         lambda: [fake_event])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_spread_lines",
+                         lambda suffix: [(-1.5, "home"), (-2.5, "home")])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_total_lines",
+                         lambda suffix: [8.5, 9.5])
+    schedule_db = str(tmp_path / "mlb.duckdb")
+    con = duckdb.connect(schedule_db)
+    con.execute("""
+        CREATE TABLE mlb_odds_temp (
+            date VARCHAR, id VARCHAR, home_team VARCHAR, away_team VARCHAR,
+            total_line DOUBLE, consensus_prob_home DOUBLE, commence_time VARCHAR
+        )
+    """)
+    con.execute("INSERT INTO mlb_odds_temp VALUES ('2026-05-13','g1','New York Yankees','Boston Red Sox',8.5,0.55,'2026-05-13T23:00:00+00:00')")
+    con.close()
+
+    targets = sgp_runner.enumerate_kalshi_targets(schedule_db_path=schedule_db)
+    assert len(targets) == 4
+    spreads = sorted({t.spread for t in targets})
+    totals = sorted({t.total for t in targets})
+    assert spreads == [-2.5, -1.5]
+    assert totals == [8.5, 9.5]
+    assert all(t.period == "FG" for t in targets)
+    assert all(t.game_id == "g1" for t in targets)
+
+
+def test_enumerate_kalshi_targets_no_events_returns_empty(monkeypatch):
+    from kalshi_mlb_rfq import sgp_runner
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events", lambda: [])
+    assert sgp_runner.enumerate_kalshi_targets(schedule_db_path="/nonexistent.duckdb") == []
+
+
+def test_enumerate_kalshi_targets_skips_unknown_team_codes(monkeypatch, tmp_path):
+    """If event_ticker has unknown team codes, skip the event."""
+    from kalshi_mlb_rfq import sgp_runner
+    fake_event = {"event_ticker": "KXMLBGAME-26MAY132300ZZZXXX"}
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events", lambda: [fake_event])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_spread_lines",
+                         lambda suffix: [(-1.5, "home")])
+    monkeypatch.setattr(sgp_runner, "_fetch_kalshi_total_lines", lambda suffix: [8.5])
+    schedule_db = str(tmp_path / "mlb.duckdb")
+    con = duckdb.connect(schedule_db)
+    con.execute("CREATE TABLE mlb_odds_temp (id VARCHAR, home_team VARCHAR, away_team VARCHAR, commence_time VARCHAR)")
+    con.close()
+    assert sgp_runner.enumerate_kalshi_targets(schedule_db_path=schedule_db) == []
