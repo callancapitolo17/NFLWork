@@ -305,15 +305,34 @@ def _find_market(markets: list[dict], target_name: str) -> dict | None:
 def _pick_selection(market: dict, predicate) -> dict | None:
     """Scan market.marketLines[].selections[][] for the first selection
     matching `predicate(selection_dict)`. Returns the raw selection dict
-    so caller can extract outcomeId (selection['id']), lineID, line."""
+    so caller can extract outcomeId (selection['id']), lineID, line.
+
+    Some PX market lines have `selections: [null, null]` and put the actual
+    outcomes under a separate `outcomes` field — skip None sides defensively.
+    """
     for line_grp in market.get("marketLines") or []:
         for side in line_grp.get("selections") or []:
+            if side is None:
+                continue
             for sel in side:
+                if sel is None:
+                    continue
                 if predicate(sel):
                     return sel
+        # Fallback: this line_grp uses `outcomes` (flat list of selections)
+        # instead of `selections` (nested per-side). Try that shape too.
+        for sel in line_grp.get("outcomes") or []:
+            if sel is None:
+                continue
+            if predicate(sel):
+                return sel
     # Some markets (moneyline) have flat selections at the top level
     for side in market.get("selections") or []:
+        if side is None:
+            continue
         for sel in side:
+            if sel is None:
+                continue
             if predicate(sel):
                 return sel
     return None
