@@ -2744,6 +2744,119 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           cursor: help;
         }
 
+        /* === V8 BET CARD =========================================================== */
+        .bet-card-v8 {
+          background: #0d1117;
+          border: 1px solid #30363d;
+          border-radius: 12px;
+          padding: 18px 20px;
+          font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, sans-serif;
+          color: #c9d1d9;
+          margin-bottom: 14px;
+        }
+
+        .bet-card-v8 .bet-line {
+          font-size: 18px;
+          font-weight: 600;
+          letter-spacing: -0.01em;
+          line-height: 1.25;
+        }
+        .bet-card-v8 .bet-line .primary    { color: #f0f6fc; font-weight: 700; }
+        .bet-card-v8 .bet-line .sep        { color: #484f58; margin: 0 8px; }
+        .bet-card-v8 .bet-line .secondary  { color: #8b949e; font-weight: 500; }
+
+        .bet-card-v8 .matchup-line {
+          font-size: 15px;
+          font-weight: 500;
+          line-height: 1.3;
+          margin-top: 6px;
+        }
+        .bet-card-v8 .matchup-line .primary    { color: #c9d1d9; }
+        .bet-card-v8 .matchup-line .sep        { color: #484f58; margin: 0 8px; }
+        .bet-card-v8 .matchup-line .secondary  { color: #8b949e; }
+
+        .bet-card-v8 .hero {
+          display: flex;
+          align-items: center;
+          gap: 24px;
+          flex-wrap: wrap;
+          margin: 14px 0 16px;
+          padding: 12px 14px;
+          background: linear-gradient(90deg, rgba(63,185,80,0.10) 0%, rgba(63,185,80,0.04) 60%, transparent 100%);
+          border: 1px solid rgba(63,185,80,0.30);
+          border-radius: 8px;
+        }
+        .bet-card-v8 .hero .pick { display: flex; flex-direction: column; gap: 2px; }
+        .bet-card-v8 .hero .pick .book {
+          color: #3fb950; font-weight: 700; font-size: 13px; letter-spacing: 0.04em;
+        }
+        .bet-card-v8 .hero .pick .odds {
+          color: #f0f6fc; font-weight: 700; font-size: 22px;
+          font-variant-numeric: tabular-nums; line-height: 1;
+        }
+        .bet-card-v8 .hero .divider {
+          width: 1px; height: 32px; background: rgba(255,255,255,0.08);
+        }
+        .bet-card-v8 .hero .stat {
+          display: flex; flex-direction: column; gap: 3px;
+          align-items: center; text-align: center; min-width: 60px;
+        }
+        .bet-card-v8 .hero .stat .lbl {
+          color: #8b949e; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+        }
+        .bet-card-v8 .hero .stat .val {
+          color: #f0f6fc; font-weight: 700; font-size: 18px;
+          font-variant-numeric: tabular-nums; line-height: 1;
+        }
+        .bet-card-v8 .hero .stat .val.ev    { color: #3fb950; }
+        .bet-card-v8 .hero .stat .val.win   { color: #3fb950; }
+        .bet-card-v8 .hero .stat .val.risk  { color: #c9d1d9; }
+        .bet-card-v8 .hero .stat .val.fair  { color: #c9d1d9; }
+        .bet-card-v8 .hero .actions {
+          display: flex; gap: 8px; margin-left: 8px;
+        }
+        .bet-card-v8 .hero .actions button {
+          border: 1px solid #30363d; border-radius: 6px; padding: 9px 18px;
+          color: #c9d1d9; background: #161b22;
+          font-size: 12px; font-weight: 600; cursor: pointer;
+        }
+        .bet-card-v8 .hero .actions button.btn-place {
+          border-color: #3fb950; color: #ffffff;
+          background: rgba(63,185,80,0.28); font-weight: 700;
+        }
+
+        .bet-card-v8 .price-grid {
+          display: grid;
+          grid-template-columns: minmax(85px, 125px) repeat(8, minmax(0, 1fr));
+          gap: 3px;
+          font-variant-numeric: tabular-nums;
+        }
+        .bet-card-v8 .price-grid .col-hdr {
+          text-align: center; color: #8b949e; font-size: 9px;
+          letter-spacing: 0.08em; text-transform: uppercase;
+          padding: 0 2px 6px 2px; border-bottom: 1px solid #21262d;
+        }
+        .bet-card-v8 .price-grid .row-hdr {
+          color: #c9d1d9; font-weight: 600; font-size: 12px;
+          display: flex; align-items: center; padding: 8px 8px 8px 0;
+        }
+        .bet-card-v8 .price-grid .cell {
+          display: flex; flex-direction: column;
+          align-items: center; justify-content: center;
+          padding: 6px 2px;
+          background: #0d1117; border: 1px solid transparent; border-radius: 5px;
+          min-height: 36px; font-size: 12px;
+        }
+        .bet-card-v8 .price-grid .cell .price       { color: #c9d1d9; font-weight: 600; }
+        .bet-card-v8 .price-grid .cell .alt-line    { color: #d29922; font-size: 10px; margin-bottom: 1px; }
+        .bet-card-v8 .price-grid .cell.empty .price { color: #484f58; }
+        .bet-card-v8 .price-grid .cell.exact        { background: #161b22; }
+        .bet-card-v8 .price-grid .cell.alt          { background: rgba(210,153,34,0.06); }
+        .bet-card-v8 .price-grid .cell.pick {
+          background: rgba(63,185,80,0.18); border-color: #3fb950;
+        }
+        .bet-card-v8 .price-grid .cell.pick .price { color: #3fb950; }
+
       '))
     ),
 
