@@ -113,6 +113,10 @@ def get_single_price(session: requests.Session, bet: dict, amount: float) -> dic
     result = body.get("result") or {}
     err_key = result.get("ErrorMsgKey") or result.get("ErrorCode") or ""
     err_msg = result.get("ErrorMsg") or result.get("ErrorMessage") or ""
+    # Unlike parlay_pricer (which still surfaces Win/Risk when err_key is
+    # something like MINWAGERONLINE), single_pricer treats any error key as
+    # fatal — the caller's UI shows the key directly, so we don't need the
+    # valid-but-flagged data.
     if err_key:
         return {
             "win": None,

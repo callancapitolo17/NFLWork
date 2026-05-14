@@ -56,7 +56,6 @@ def bet():
         "play": 5,            # home ML per WZ play codes
         "line": 0.0,
         "american_odds": -140,
-        "amount": 25.0,
         "pitcher": 0,
     }
 
@@ -94,3 +93,12 @@ def test_network_exception_returns_network_error(bet):
     out = get_single_price(sess, bet, amount=25)
     assert out["error_msg_key"] == "network_error"
     assert "connreset" in out["error_msg"]
+
+
+def test_empty_details_returns_error(bet):
+    # WZ returns 200 OK with no error key but empty details (line pulled mid-session).
+    sess = _mock_response(json_body={"result": {"details": [], "ErrorMsgKey": "", "ErrorMsg": ""}})
+    out = get_single_price(sess, bet, amount=25)
+    assert out["error_msg_key"] == "empty_details"
+    assert out["win"] is None
+    assert out["current_wz_odds"] is None
