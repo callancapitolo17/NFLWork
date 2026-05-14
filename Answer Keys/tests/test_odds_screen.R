@@ -485,13 +485,18 @@ test_that("alt-total bet (e.g. Royals Under 6.5) joins to a book with un-suffixe
     bet_on      = "Under",
     market_type = "alternate_totals"
   )
-  # Production scenario: MLB.R pre-sets market_type to the stale bare
-  # value "totals" for alt bets (the mutate at MLB.R:622). Set it
-  # explicitly here so the test exercises the actual code path that
-  # was failing — not the rare path where the column is absent.
-  # period is also pre-set in production via format_bets_table.
+  # Production scenario:
+  #   * MLB.R pre-sets market_type to a stale bare "totals" via
+  #     mutate(market_type = ifelse(grepl("spread", market), "spreads", "totals"))
+  #     at MLB.R:622 etc. (wrong for alt-total bets, where it should be
+  #     "alternate_totals").
+  #   * compare_alts_to_samples emits frames without a `period` column.
+  #     bind_rows in MLB.R merges them with non-alt frames that do carry
+  #     period, filling the alt rows' period with NA.
+  # The fix in expand_bets_to_book_prices must handle BOTH (re-derive
+  # market_type unconditionally; derive period when NA or absent).
   bets$market_type <- "totals"
-  bets$period      <- "FG"
+  bets$period      <- NA_character_   # production scenario after bind_rows fill
 
   book_odds <- list(bet105 = bind_rows(
     book_row("g1", "alternate_totals", "FG", "Over",  6.5, +200),

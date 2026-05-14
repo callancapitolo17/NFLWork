@@ -181,15 +181,31 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
   # matches the book frame, and for non-alt markets the function is idempotent
   # (e.g. .derive_market_type("spreads") == "spreads") so nothing changes.
   #
-  # period is derived from `market` only when absent: a bare market name like
-  # "alternate_spreads" (no period suffix) falls back to "FG" in
-  # .derive_period, which would wrongly override an explicit period like "F5"
-  # that a caller already set correctly. market_type never has this problem
-  # because its derivation strips the suffix rather than inferring from it.
+  # Always re-derive market_type from the canonical `market` column.
+  # Production callers (MLB.R::wz_alt_bets etc.) pre-set market_type to a
+  # stale bare value like "totals" for alt bets that have
+  # market="alternate_totals_fg" — the join then fails to match book frames
+  # where market="alternate_totals". Re-deriving unconditionally keeps the
+  # join honest: .derive_market_type("alternate_totals_fg") == "alternate_totals"
+  # matches the book frame, and for non-alt markets the function is idempotent
+  # (e.g. .derive_market_type("spreads") == "spreads") so nothing changes.
   bets <- bets %>%
     mutate(market_type = .derive_market_type(market))
+
+  # Period — derive when the column is absent OR when individual rows are
+  # NA. Both happen in production: compare_alts_to_samples emits frames
+  # without a period column, then bind_rows in MLB.R merges them with
+  # non-alt frames that do carry period, filling the alt rows with NA.
+  # The previous "absent column" guard never fired because the column
+  # technically existed. Row-level if_else preserves explicitly-set
+  # period values (e.g. "F5" set by callers / format_bets_table) and
+  # fills NAs from the canonical `market` column.
   if (!"period" %in% names(bets)) {
     bets <- bets %>% mutate(period = .derive_period(market))
+  } else {
+    bets <- bets %>% mutate(period = if_else(is.na(period),
+                                             .derive_period(market),
+                                             period))
   }
 
   # --- Defensive column renames for each book frame ---
