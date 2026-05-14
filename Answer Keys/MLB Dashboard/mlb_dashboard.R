@@ -5270,6 +5270,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       tags$script(HTML(r"(
   (function setupEditableRisk() {
     var WZ_BOOK = 'wagerzon';
+    var _verifyGen = new WeakMap();  // card -> latest in-flight verify generation
 
     function fmtMoney(x) {
       if (x == null || !isFinite(x)) return '$0';
@@ -5384,6 +5385,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         showError(card, 'pick a WZ account first');
         return;
       }
+      var gen = (_verifyGen.get(card) || 0) + 1;
+      _verifyGen.set(card, gen);
       setTowinStatus(card, 'spinner', 'verifying...');
       var body = {
         bet_hash:      btn.dataset.hash,
@@ -5405,6 +5408,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       })
         .then(function(r) { return r.json(); })
         .then(function(j) {
+          if (_verifyGen.get(card) !== gen) return;   // stale; discard
           var towinEl = card.querySelector('.towin-value');
           if (j.error_msg_key) {
             showError(card, j.error_msg || j.error_msg_key);
@@ -5425,6 +5429,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           }
         })
         .catch(function(e) {
+          if (_verifyGen.get(card) !== gen) return;   // stale; discard
           showError(card, 'verify failed: ' + e.message);
           setTowinStatus(card, null);
         });
@@ -5441,6 +5446,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         var card = resetBtn.closest('.bet-card-v8');
         var stat = card.querySelector('.risk-stat');
         var modelRisk = Number(stat.dataset.modelRisk);
+        _verifyGen.set(card, (_verifyGen.get(card) || 0) + 1);
         setOverride(card, modelRisk, false);
         clearError(card);
         setTowinStatus(card, null);
@@ -5452,17 +5458,27 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
     });
     document.addEventListener('keydown', function(ev) {
       var valueEl = ev.target.closest && ev.target.closest('.risk-value');
-      if (!valueEl || !valueEl.classList.contains('editing')) return;
+      if (!valueEl) return;
+      // Open edit on Enter/Space when focused but not yet editing.
+      if (!valueEl.classList.contains('editing')) {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          startEdit(valueEl);
+        }
+        return;
+      }
       if (ev.key === 'Enter')   { ev.preventDefault(); valueEl.blur(); }
       if (ev.key === 'Escape')  {
         ev.preventDefault();
         var card = valueEl.closest('.bet-card-v8');
         var stat = card.querySelector('.risk-stat');
         var modelRisk = Number(stat.dataset.modelRisk);
+        _verifyGen.set(card, (_verifyGen.get(card) || 0) + 1);
         valueEl.classList.remove('editing');
         valueEl.contentEditable = 'false';
         setOverride(card, modelRisk, false);
         clearError(card);
+        setTowinStatus(card, null);
       }
     });
   })();
