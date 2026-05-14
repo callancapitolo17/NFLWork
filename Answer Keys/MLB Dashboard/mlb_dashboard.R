@@ -1313,7 +1313,8 @@ render_bet_card <- function(bet_title, market_label, matchup, tipoff, hero_html,
                                      is_pick_side = TRUE,
                                      pick_book = pick_book,
                                      side_word = side_word,
-                                     is_totals = is_totals)
+                                     is_totals = is_totals,
+                                     other_side_wide_row = oppside_wide_row)
 
   opp_row <- if (!is.null(oppside_wide_row) && !is.na(oppside_label) &&
                  nchar(oppside_label) > 0) {
@@ -1321,7 +1322,8 @@ render_bet_card <- function(bet_title, market_label, matchup, tipoff, hero_html,
                            is_pick_side = FALSE,
                            pick_book = pick_book,
                            side_word = if (side_word == "over") "under" else "over",
-                           is_totals = is_totals)
+                           is_totals = is_totals,
+                           other_side_wide_row = pickside_wide_row)
   } else ""
 
   grid_html <- paste0('<div class="price-grid">', col_hdrs, pick_row, opp_row, '</div>')
