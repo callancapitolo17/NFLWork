@@ -100,7 +100,23 @@ def load_target_lines(db_path: str) -> list[TargetLine]:
     """
     if not Path(db_path).exists():
         return []
-    con = duckdb.connect(db_path, read_only=True)
+    # Retry on lock conflict — parallel SGP scrapers may be writing to the same
+    # bot market DB and briefly hold an exclusive lock during upsert_priced_rows.
+    # Without retry, a read_only open during that window raises IOException.
+    import time as _time
+    last_err = None
+    for attempt in range(10):
+        try:
+            con = duckdb.connect(db_path, read_only=True)
+            break
+        except duckdb.IOException as e:
+            msg = str(e).lower()
+            if "lock" not in msg and "in use" not in msg:
+                raise
+            last_err = e
+            if attempt == 9:
+                raise
+            _time.sleep(min(0.1 * (2 ** attempt), 1.5))
     try:
         tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
         if "mlb_target_lines" in tables:

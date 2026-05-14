@@ -150,9 +150,26 @@ def _load_schedule(schedule_db_path: str) -> dict[tuple, dict]:
     """Read mlb_odds_temp from mlb.duckdb. Returns dict keyed by (home, away) tuple
     -> {game_id, home_team, away_team, commence_time}."""
     from datetime import datetime as _dt
+    import time as _time
     if not Path(schedule_db_path).exists():
         return {}
-    con = duckdb.connect(schedule_db_path, read_only=True)
+    # Retry on lock conflict — R pipeline (mlb_correlated_parlay.R, MLB.R)
+    # may briefly hold a write lock on mlb.duckdb during refresh.
+    con = None
+    last_err = None
+    for attempt in range(10):
+        try:
+            con = duckdb.connect(schedule_db_path, read_only=True)
+            break
+        except duckdb.IOException as e:
+            msg = str(e).lower()
+            if "lock" not in msg and "in use" not in msg:
+                raise
+            last_err = e
+            if attempt == 9:
+                print(f"  _load_schedule: gave up after 10 attempts; {last_err}", flush=True)
+                return {}
+            _time.sleep(min(0.1 * (2 ** attempt), 1.5))
     try:
         tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
         if "mlb_odds_temp" not in tables:
@@ -163,11 +180,20 @@ def _load_schedule(schedule_db_path: str) -> dict[tuple, dict]:
     finally:
         con.close()
     out = {}
-    for game_id, home, away, ct_str in rows:
-        normalized = ct_str.replace("Z", "+00:00") if ct_str and ct_str.endswith("Z") else ct_str
-        try:
-            ct = _dt.fromisoformat(normalized) if normalized else None
-        except Exception:
+    for game_id, home, away, ct_raw in rows:
+        # commence_time can be TIMESTAMP (datetime) or VARCHAR depending on
+        # how the R pipeline wrote it. Handle both shapes.
+        if ct_raw is None:
+            ct = None
+        elif isinstance(ct_raw, _dt):
+            ct = ct_raw
+        elif isinstance(ct_raw, str):
+            normalized = ct_raw.replace("Z", "+00:00") if ct_raw.endswith("Z") else ct_raw
+            try:
+                ct = _dt.fromisoformat(normalized)
+            except Exception:
+                ct = None
+        else:
             ct = None
         out[(home, away)] = {"game_id": game_id, "home_team": home,
                               "away_team": away, "commence_time": ct}
@@ -179,9 +205,13 @@ def enumerate_kalshi_targets(schedule_db_path: str) -> list[TargetLine]:
     Returns a TargetLine per (game x spread x total) combination, FG only."""
     events = _fetch_kalshi_mlb_events()
     if not events:
+        print("  enumerate: 0 kalshi events", flush=True)
         return []
     schedule = _load_schedule(schedule_db_path)
+    print(f"  enumerate: {len(events)} kalshi events, {len(schedule)} schedule rows",
+          flush=True)
     targets: list[TargetLine] = []
+    matched_games = 0
     for ev in events:
         event_ticker = ev.get("event_ticker", "")
         if not event_ticker.startswith("KXMLBGAME-"):
@@ -195,6 +225,7 @@ def enumerate_kalshi_targets(schedule_db_path: str) -> list[TargetLine]:
         sched = schedule.get((home_team, away_team))
         if not sched:
             continue
+        matched_games += 1
         spreads = _fetch_kalshi_spread_lines(suffix)
         totals = _fetch_kalshi_total_lines(suffix)
         if not spreads or not totals:
@@ -207,6 +238,8 @@ def enumerate_kalshi_targets(schedule_db_path: str) -> list[TargetLine]:
                     commence_time=sched["commence_time"],
                     period="FG", spread=spread, total=total,
                 ))
+    print(f"  enumerate: matched_games={matched_games} → {len(targets)} target lines",
+          flush=True)
     return targets
 
 
