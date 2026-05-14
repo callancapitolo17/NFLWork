@@ -3882,6 +3882,26 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
         document.addEventListener(\'DOMContentLoaded\', function() { renderTipoffs(); });
 
+        // ============ DEVIG VIEW TOGGLE (RAW / FAIR) ============
+        // Per-card RAW/FAIR toggle for the price grid.
+        // Each .grid-toggle has two buttons; clicking one flips the parent
+        // .price-grid\'s class between .show-raw and .show-fair. Cells emit
+        // both <span class="raw"> and <span class="fair"> server-side; CSS
+        // hides one based on the grid\'s class. Default state (.show-fair)
+        // is set in the rendered markup, so refreshes preserve it.
+        function toggleDevigView(btn, view) {
+          var toggle = btn.parentElement;            // .grid-toggle
+          var grid   = toggle.nextElementSibling;    // .price-grid
+          if (!grid || !grid.classList.contains("price-grid")) return;
+          toggle.querySelectorAll("button").forEach(function(b) {
+            b.classList.toggle("on", b.dataset.view === view);
+          });
+          grid.classList.remove("show-raw", "show-fair");
+          grid.classList.add(view === "raw" ? "show-raw" : "show-fair");
+        }
+        // Expose for inline onclick handlers.
+        window.toggleDevigView = toggleDevigView;
+
         function placeBet(btn) {
           var data = btn.dataset;
           var book = data.book;
