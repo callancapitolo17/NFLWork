@@ -145,3 +145,48 @@ def test_current_book_lines_for_combo_removed():
     """The function should no longer exist on the module."""
     from kalshi_mlb_rfq import main
     assert not hasattr(main, "_current_book_lines_for_combo")
+
+
+def test_refresh_sgp_cache_partial_reload(monkeypatch, tmp_path):
+    """_refresh_sgp_cache reads only mlb_sgp_odds from bot DB, atomic swap."""
+    import duckdb
+    from datetime import datetime, timezone
+    from pathlib import Path
+    from kalshi_mlb_rfq import main, config
+
+    bot_db = tmp_path / "bot.duckdb"
+    con = duckdb.connect(str(bot_db))
+    con.execute("""
+        CREATE TABLE mlb_sgp_odds (
+            game_id VARCHAR, combo VARCHAR, period VARCHAR, bookmaker VARCHAR,
+            sgp_decimal DOUBLE, sgp_american INTEGER, fetch_time TIMESTAMP,
+            source VARCHAR, spread_line DOUBLE, total_line DOUBLE
+        )
+    """)
+    con.execute("INSERT INTO mlb_sgp_odds VALUES ('g1','H+O','FG','dk',2.85,185,NOW(),'dk_direct',-1.5,8.5)")
+    con.close()
+
+    monkeypatch.setattr(config, "BOT_MARKET_DB", bot_db)
+    monkeypatch.setattr(config, "MAX_BOOK_STALENESS_SEC", 60)
+
+    result = main._refresh_sgp_cache()
+    assert result is True
+    assert main._SGP_ODDS_CACHE is not None
+    assert len(main._SGP_ODDS_CACHE) == 1
+    assert "spread_line" in main._SGP_ODDS_CACHE.columns
+
+
+def test_refresh_sgp_cache_missing_db(monkeypatch, tmp_path):
+    """_refresh_sgp_cache returns False on missing DB."""
+    from kalshi_mlb_rfq import main, config
+    monkeypatch.setattr(config, "BOT_MARKET_DB", tmp_path / "nonexistent.duckdb")
+    result = main._refresh_sgp_cache()
+    assert result is False
+
+
+def test_main_loop_imports_sgp_runner():
+    """Sanity: main module must import sgp_runner without error."""
+    from kalshi_mlb_rfq import main
+    from kalshi_mlb_rfq import sgp_runner
+    assert hasattr(main, "main_loop")
+    assert hasattr(sgp_runner, "sgp_cycle")
