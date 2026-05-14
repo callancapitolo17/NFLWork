@@ -4,7 +4,14 @@ import os
 from pathlib import Path
 
 PKG_DIR = Path(__file__).parent
-PROJECT_ROOT = PKG_DIR.parent
+_RAW_PROJECT_ROOT = PKG_DIR.parent
+# Worktree-aware: when running from .claude/worktrees/<name>/kalshi_mlb_rfq/,
+# resolve PROJECT_ROOT to the main repo so we find Answer Keys/, mlb_sgp/, etc.
+# Matches mlb_sgp/db.py:19-20 pattern.
+if ".worktrees" in str(_RAW_PROJECT_ROOT):
+    PROJECT_ROOT = Path(str(_RAW_PROJECT_ROOT).split(".worktrees")[0].rstrip("/"))
+else:
+    PROJECT_ROOT = _RAW_PROJECT_ROOT
 DB_PATH = PKG_DIR / "kalshi_mlb_rfq.duckdb"
 LOG_PATH = PKG_DIR / "bot.log"
 KILL_FILE = PKG_DIR / ".kill"
@@ -79,3 +86,19 @@ NOVIG_VIG_FALLBACK = float(_get("NOVIG_VIG_FALLBACK", "0.05"))
 
 # Source path for the answer-key DB
 ANSWER_KEY_DB = PROJECT_ROOT / "Answer Keys" / "mlb_mm.duckdb"
+
+# SGP scraper cadence (bot-driven independent of dashboard refresh)
+SGP_REFRESH_SEC = int(_get("SGP_REFRESH_SEC", "60"))
+SGP_SCRAPER_TIMEOUT_SEC = int(_get("SGP_SCRAPER_TIMEOUT_SEC", "90"))
+SGP_MIN_INTERVAL_SEC = int(_get("SGP_MIN_INTERVAL_SEC", "30"))
+
+# Bot market DB (sibling to bot state DB, holds mlb_target_lines + mlb_sgp_odds)
+BOT_MARKET_DB = Path(_get("BOT_MARKET_DB",
+                          str(PKG_DIR / "kalshi_mlb_rfq_market.duckdb")))
+
+# Path to mlb_sgp directory (for subprocess scraper invocation).
+# Resolved through PROJECT_ROOT so worktree contexts use the main repo's venv.
+MLB_SGP_DIR = Path(_get("MLB_SGP_DIR", str(PROJECT_ROOT / "mlb_sgp")))
+
+# Cross-book book-count gate (drop candidate if fewer than N books priced).
+MIN_BOOK_COUNT_FOR_BLEND = int(_get("MIN_BOOK_COUNT_FOR_BLEND", "2"))
