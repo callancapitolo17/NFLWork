@@ -274,11 +274,26 @@ def write_target_lines(target_lines: list[TargetLine], db_path: str):
         con.execute("BEGIN TRANSACTION")
         con.execute("DELETE FROM mlb_target_lines")
         if target_lines:
-            now = datetime.now(timezone.utc)
+            # DuckDB TIMESTAMP columns are naive. Inserting a tz-aware datetime
+            # converts it to LOCAL wall-clock and strips the tz (Python duckdb
+            # driver behavior). That silently corrupts UTC hour-bucket matching
+            # downstream (e.g. legacy match_events in scraper_*_sgp.py uses
+            # _utc_bucket which reads .hour off the stored naive value).
+            # Convert to UTC and strip tz before insert so the stored value
+            # is wall-clock UTC.
+            def _to_utc_naive(dt):
+                if dt is None:
+                    return None
+                if dt.tzinfo is None:
+                    return dt
+                return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+            now = _to_utc_naive(datetime.now(timezone.utc))
             values = []
             for t in target_lines:
+                ct = _to_utc_naive(t.commence_time)
                 values.extend([t.game_id, t.home_team, t.away_team,
-                                t.commence_time, t.period, t.spread, t.total, now])
+                                ct, t.period, t.spread, t.total, now])
             placeholders = ",".join(["(?, ?, ?, ?, ?, ?, ?, ?)"] * len(target_lines))
             con.execute(f"INSERT INTO mlb_target_lines VALUES {placeholders}", values)
         con.execute("COMMIT")
