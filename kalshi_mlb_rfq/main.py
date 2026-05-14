@@ -363,33 +363,26 @@ def _load_samples_for_game(game_id: str) -> pd.DataFrame | None:
 
 
 def _load_book_fairs(game_id: str, spread_line: float, total_line: float) -> dict[str, float]:
-    """Devig per book from the in-memory mlb_sgp_odds slice for this game.
+    """Per-line book lookup with N>=2 gate.
 
-    mlb_sgp_odds doesn't store the spread/total lines — they're implicit per
-    game via mlb_parlay_lines.fg_spread / fg_total. Only return fairs if the
-    candidate's (spread, total) matches the line this game is priced at;
-    candidates at alt lines have no book fair and fail the 2-source gate.
+    Returns {book -> devigged_fair} only if at least MIN_BOOK_COUNT_FOR_BLEND
+    books priced the matching (game, spread, total) tuple. Empty dict
+    otherwise — caller treats as 'no book signal, drop candidate'.
     """
-    pl = _PARLAY_LINES_CACHE.get(game_id)
-    if not pl:
-        return {}
-    fg_spread = pl.get("fg_spread")
-    fg_total = pl.get("fg_total")
-    if fg_spread is None or fg_total is None:
-        return {}
-    # Candidate-line vs the priced line: must match exactly (same convention
-    # as DK/FD scrapers — exact match or skip).
-    if abs(spread_line - float(fg_spread)) > 1e-6:
-        return {}
-    if abs(total_line - float(fg_total)) > 1e-6:
-        return {}
-
     if _SGP_ODDS_CACHE is None or _SGP_ODDS_CACHE.empty:
         return {}
-    rows = _SGP_ODDS_CACHE[_SGP_ODDS_CACHE["game_id"] == game_id]
-    out: dict[str, float] = {}
+    if "spread_line" not in _SGP_ODDS_CACHE.columns or "total_line" not in _SGP_ODDS_CACHE.columns:
+        # Transition state — cache still has legacy schema. Drop candidates
+        # until Task 26 wires _refresh_sgp_cache (new-schema reader).
+        return {}
+    rows = _SGP_ODDS_CACHE[
+        (_SGP_ODDS_CACHE["game_id"] == game_id)
+        & (_SGP_ODDS_CACHE["spread_line"].astype(float).round(2) == round(float(spread_line), 2))
+        & (_SGP_ODDS_CACHE["total_line"].astype(float).round(2) == round(float(total_line), 2))
+    ]
     if rows.empty:
-        return out
+        return {}
+    out: dict[str, float] = {}
     for book in rows["bookmaker"].unique():
         sub = rows[rows["bookmaker"] == book].copy()
         fair_per_book = fair_value.devig_book(
@@ -398,6 +391,8 @@ def _load_book_fairs(game_id: str, spread_line: float, total_line: float) -> dic
         )
         if fair_per_book is not None:
             out[book] = fair_per_book
+    if len(out) < config.MIN_BOOK_COUNT_FOR_BLEND:
+        return {}
     return out
 
 

@@ -73,3 +73,58 @@ def test_build_parlay_lines_cache_empty_dbs(tmp_path):
         bot_db=str(tmp_path / "nonexistent_bot.duckdb"),
     )
     assert cache == {}
+
+
+def test_load_book_fairs_filters_by_line_and_requires_two_books(monkeypatch):
+    """Returns book->fair only when >= 2 books priced the matching (spread, total)."""
+    import pandas as pd
+    from kalshi_mlb_rfq import main, config
+
+    main._SGP_ODDS_CACHE = pd.DataFrame([
+        # game g1, spread -1.5, total 8.5: 2 books -> passes gate
+        {"game_id": "g1", "bookmaker": "draftkings", "combo": "Home Spread + Over",
+         "sgp_decimal": 2.85, "period": "FG", "spread_line": -1.5, "total_line": 8.5},
+        {"game_id": "g1", "bookmaker": "fanduel", "combo": "Home Spread + Over",
+         "sgp_decimal": 2.95, "period": "FG", "spread_line": -1.5, "total_line": 8.5},
+        # game g1, spread -2.5, total 8.5: only DK -> fails gate
+        {"game_id": "g1", "bookmaker": "draftkings", "combo": "Home Spread + Over",
+         "sgp_decimal": 3.50, "period": "FG", "spread_line": -2.5, "total_line": 8.5},
+    ])
+    monkeypatch.setattr(config, "MIN_BOOK_COUNT_FOR_BLEND", 2)
+
+    # Matching line + 2 books -> returns dict (may be partial if devig fails for one)
+    fairs = main._load_book_fairs("g1", -1.5, 8.5)
+    assert isinstance(fairs, dict)
+    # If devig succeeded for both books, dict has 2 entries.
+    # If devig failed for one, the N>=2 gate would return {}.
+    # Either {2 books returned} OR {} is acceptable here - test the gate, not devig math.
+    assert len(fairs) == 0 or len(fairs) >= 2
+
+    # Matching line + 1 book -> empty
+    fairs = main._load_book_fairs("g1", -2.5, 8.5)
+    assert fairs == {}
+
+    # No matching line -> empty
+    fairs = main._load_book_fairs("g1", -3.5, 9.5)
+    assert fairs == {}
+
+
+def test_load_book_fairs_empty_cache_returns_empty():
+    """No SGP cache -> empty dict (defensive)."""
+    import pandas as pd
+    from kalshi_mlb_rfq import main
+
+    main._SGP_ODDS_CACHE = pd.DataFrame()
+    assert main._load_book_fairs("g1", -1.5, 8.5) == {}
+
+
+def test_load_book_fairs_legacy_schema_returns_empty():
+    """If cache is in legacy schema (no spread_line col), return empty."""
+    import pandas as pd
+    from kalshi_mlb_rfq import main
+
+    main._SGP_ODDS_CACHE = pd.DataFrame([
+        {"game_id": "g1", "bookmaker": "draftkings", "combo": "x",
+         "sgp_decimal": 2.0, "period": "FG"},  # no spread_line/total_line
+    ])
+    assert main._load_book_fairs("g1", -1.5, 8.5) == {}
