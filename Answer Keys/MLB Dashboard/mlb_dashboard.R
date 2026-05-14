@@ -1329,7 +1329,10 @@ if (!exists("%||%")) `%||%` <- function(x, y) if (is.null(x)) y else x
     "Texas Rangers" = "TEX",       "Toronto Blue Jays" = "TOR",
     "Washington Nationals" = "WSN"
   )
-  abbr_map[[full_name]] %||% toupper(substr(full_name, 1, 3))
+  if (is.null(full_name) || length(full_name) == 0 || is.na(full_name) ||
+      nchar(full_name) == 0) return("")
+  if (full_name %in% names(abbr_map)) abbr_map[[full_name]]
+  else toupper(substr(full_name, 1, 3))
 }
 
 #' Produce the human-readable market label for the V8 card title row.
