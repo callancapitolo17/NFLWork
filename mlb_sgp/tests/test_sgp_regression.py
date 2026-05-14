@@ -203,3 +203,50 @@ def test_dk_shim_writes_new_schema_cols(tmp_path):
     con.close()
     assert "spread_line" in cols
     assert "total_line" in cols
+
+
+def test_fd_shim_writes_new_schema_cols(tmp_path):
+    """After shim refactor, scraper writes spread_line/total_line cols.
+
+    Mirror of test_dk_shim_writes_new_schema_cols for FanDuel. Shim-shape
+    check only — verifies the scraper:
+      1) exits 0 when there are no target lines to scrape,
+      2) creates the mlb_sgp_odds table with the post-Task-4 schema
+         (spread_line + total_line columns present).
+
+    Full pricing correctness is covered by the live-API golden tests
+    above and by Task 28's manual smoke test.
+    """
+    import os
+    import subprocess
+
+    db = str(tmp_path / "shim_test.duckdb")
+    # Empty parlay_lines table so the shim has no targets to scrape and
+    # never hits FD's API. The shim should still ensure_table + exit 0.
+    con = duckdb.connect(db)
+    con.execute("""
+        CREATE TABLE mlb_parlay_lines (
+            game_id VARCHAR, home_team VARCHAR, away_team VARCHAR,
+            commence_time VARCHAR, fg_spread DOUBLE, fg_total DOUBLE,
+            f5_spread DOUBLE, f5_total DOUBLE
+        )
+    """)
+    con.close()
+
+    env = os.environ.copy()
+    env["MLB_SGP_DB_PATH"] = db
+    repo_root = (
+        "/Users/callancapitolo/NFLWork/.claude/worktrees/"
+        "kalshi-mlb-rfq-line-source-pivot"
+    )
+    result = subprocess.run(
+        [sys.executable, "mlb_sgp/scraper_fanduel_sgp.py"],
+        env=env, capture_output=True, timeout=60, cwd=repo_root,
+    )
+    assert result.returncode == 0, f"stderr: {result.stderr.decode()}"
+
+    con = duckdb.connect(db, read_only=True)
+    cols = {c[1] for c in con.execute("PRAGMA table_info('mlb_sgp_odds')").fetchall()}
+    con.close()
+    assert "spread_line" in cols
+    assert "total_line" in cols
