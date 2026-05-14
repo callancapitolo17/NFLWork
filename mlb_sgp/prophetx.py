@@ -74,6 +74,12 @@ SOURCE_LABEL_FALLBACK = "prophetx_interpolated"
 # F5-Over systematic-bug defense. See module docstring.
 SANITY_MULT_RATIO = 1.5
 
+# Cross-target parallelism. PX's RFQ endpoint is rate-limited, so we
+# keep this conservative: 2 concurrent targets × 4 concurrent combos =
+# 8 in-flight RFQs per book. If we see 429s or connection refused in
+# production, drop to 1 (effectively disables target-level concurrency).
+PX_TARGET_PARALLELISM = 2
+
 # Combo names — byte-identical to scraper_prophetx_sgp.py so the
 # dashboard / kalshi_mlb_rfq leg lookups keep matching. The "F5 "
 # prefix is applied to F5-period rows in the orchestrator.
@@ -271,36 +277,35 @@ def price_sgps(
             print(f"  game {game_id}: {pre} kalshi → {post} offered", flush=True)
 
     # ----- Phase 2: per target row, build 4 legs and price 4 combos ----- #
-    for t in filtered_targets:
+    # Layer target-level concurrency on top of the per-combo parallelism
+    # inside _price_combos_parallel. 2 concurrent targets × 4 combos = 8
+    # in-flight RFQs per book — conservative given PX's rate limit.
+    def _price_one_target(t: TargetLine) -> list[PricedRow]:
+        """Compute up to 4 PricedRows for a single (game, period, spread, total).
+
+        Pure function over the surrounding closure (markets_cache,
+        matched_by_gid, skip_games, client, fetch_now, verbose). Returns
+        an empty list when the target can't be priced (any missing leg,
+        any combo dropped by SANITY_MULT_RATIO).
+        """
         if t.game_id in skip_games:
-            continue
+            return []
         game = matched_by_gid.get(t.game_id)
         if game is None:
-            continue
-
+            return []
         period_key = "fg" if t.period == "FG" else "f5"
-
-        # Markets cache is now guaranteed-populated by the filter loop
-        # above. Translate Market dataclasses to the legacy raw-dict
-        # shape (with `id`, `name`, `marketLines`, `outcomes`) so
-        # `_find_market`, `_pick_selection`, AND `_verify_competitor_ids`
-        # work unmodified.
         markets = markets_cache[t.game_id]
-
         home_id = game["px_home_competitor_id"]
         away_id = game["px_away_competitor_id"]
 
-        # ----- Locate spread + total markets for this period ----- #
         spread_mkt = _find_market(markets, MARKET_NAMES[period_key]["spread"])
         total_mkt = _find_market(markets, MARKET_NAMES[period_key]["total"])
         if not spread_mkt or not total_mkt:
-            continue
+            return []
 
-        # ----- Pick the four legs at the target spread/total lines ----- #
-        # Spread legs: pick selection where competitorId matches and the
-        # signed line equals the target. PX stores each outcome's line
-        # from its own perspective: home_spread = +1.5 means home outcome
-        # has line == +1.5.
+        # Pick the four legs at the target spread/total lines. PX stores
+        # each outcome's line from its own perspective: home_spread = +1.5
+        # means home outcome has line == +1.5.
         home_sel = _pick_selection(
             spread_mkt,
             lambda s, lv=t.spread, hid=home_id: (
@@ -327,11 +332,8 @@ def price_sgps(
                 and _line_eq(s.get("line"), lv)
             ),
         )
-
-        # If any leg is missing, the target line is off-main for PX.
-        # We do NOT run the integer-fallback path here (see module docstring).
         if not (home_sel and away_sel and over_sel and under_sel):
-            continue
+            return []
 
         prefix = "" if t.period == "FG" else "F5 "
         combos = (
@@ -344,22 +346,17 @@ def price_sgps(
         spread_mid = spread_mkt.get("id")
         total_mid = total_mkt.get("id")
 
-        # ----- Main path: price the 4 canonical combos in parallel ----- #
-        # 4 independent RFQ submissions on the same curl_cffi session.
-        # Mirrors the DK orchestrator pattern (commit fd9900e). The
-        # SANITY_MULT_RATIO filter runs inside each worker so its
-        # behavior is unchanged — failing combos return None.
         priced_by_combo = _price_combos_parallel(
             client, game["px_event_id"], spread_mid, total_mid,
             combos, verbose,
         )
 
-        # Iterate combos (not the dict) to preserve deterministic order.
+        target_rows: list[PricedRow] = []
         for combo_name, _sp_sel, _tot_sel in combos:
             sgp_decimal = priced_by_combo.get(combo_name)
             if sgp_decimal is None:
                 continue
-            out.append(PricedRow(
+            target_rows.append(PricedRow(
                 game_id=t.game_id,
                 combo=prefix + combo_name,
                 period=t.period,
@@ -371,6 +368,16 @@ def price_sgps(
                 sgp_american=decimal_to_american(sgp_decimal),
                 fetch_time=fetch_now,
             ))
+        return target_rows
+
+    with ThreadPoolExecutor(max_workers=PX_TARGET_PARALLELISM) as pool:
+        futures = [pool.submit(_price_one_target, t) for t in filtered_targets]
+        for f in as_completed(futures):
+            try:
+                out.extend(f.result())
+            except Exception as e:
+                if verbose:
+                    print(f"  px target error: {e}", flush=True)
 
     return out
 
