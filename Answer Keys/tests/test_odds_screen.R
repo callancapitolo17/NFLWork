@@ -347,6 +347,7 @@ test_that("expand_bets_to_book_prices emits opposite row for spread bets", {
   expect_equal(pick$line_quoted, -1.5)
   expect_equal(opp$american_odds,  100L)
   expect_equal(opp$line_quoted,    1.5)
+  expect_true(all(out$is_exact_line))
 })
 
 test_that("expand_bets_to_book_prices emits opposite row for moneyline bets", {
@@ -423,4 +424,29 @@ test_that("spread bet: opposite-side cell on a different line is alt", {
   expect_equal(nrow(out), 2)
   expect_false(any(out$is_exact_line),
                info = "both pick and opposite are on line 0, not the bet's -0.5")
+})
+
+test_that("alternate_spreads bet: opposite-side cell on the same line is exact (not alt)", {
+  # Mirror of the 'spreads' same-line test, but for alternate_spreads.
+  # Exercises the alternate_spreads branch of the is_spread_market check
+  # in expand_bets_to_book_prices. The fix in commit 928a30c includes
+  # alternate_spreads in the spread-opposite-line negation; this test
+  # guards that branch from regressing.
+  bets <- make_bet_row(
+    market      = "alternate_spreads",
+    line        = -1.5,
+    bet_on      = "Athletics",
+    market_type = "alternate_spreads"
+  ) %>% mutate(home_team = "Athletics", away_team = "St. Louis Cardinals")
+
+  book_odds <- list(bet105 = bind_rows(
+    book_row("g1", "alternate_spreads", "F5", "Athletics",            -1.5, +180),
+    book_row("g1", "alternate_spreads", "F5", "St. Louis Cardinals",  +1.5, -210)
+  ))
+
+  out <- expand_bets_to_book_prices(bets, book_odds)
+  expect_equal(nrow(out), 2)
+  expect_setequal(out$side, c("pick", "opposite"))
+  expect_true(all(out$is_exact_line),
+              info = "alternate_spreads opposite slot must use -bet$line for comparison")
 })
