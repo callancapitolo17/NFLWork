@@ -74,7 +74,7 @@ test_that("render_book_cell with both odds emits raw + fair spans", {
   expect_false(grepl('alt-line', html))
 })
 
-test_that("render_book_cell without opposite_american_odds emits raw only (legacy)", {
+test_that("render_book_cell without opposite_american_odds emits raw + fair em-dash (no opposite available)", {
   html <- render_book_cell(
     american_odds = +120,
     line_quoted   = -0.5,
@@ -83,9 +83,44 @@ test_that("render_book_cell without opposite_american_odds emits raw only (legac
     side_word     = "over",
     is_totals     = FALSE
   )
-  # Raw span present; fair span omitted (or empty) when opposite missing
+  # Raw span present; fair span renders the em-dash fallback (no devig
+  # computable without the opposite side's odds). Guarantees the Task 5
+  # CSS toggle (.show-fair hides .raw) never produces a blank cell.
   expect_match(html, '<span class="raw">\\+120</span>', fixed = FALSE)
-  expect_false(grepl('<span class="fair">\\+', html))
+  expect_match(html, '<span class="fair">&mdash;</span>', fixed = TRUE)
+})
+
+test_that("render_book_cell pick cell with both odds emits green pick class and both spans, no alt tag", {
+  html <- render_book_cell(
+    american_odds          = +120,
+    opposite_american_odds = -140,
+    line_quoted            = -0.5,
+    is_exact_line          = TRUE,
+    is_pick                = TRUE,
+    side_word              = "over",
+    is_totals              = FALSE
+  )
+  expect_match(html, 'class="cell pick"',                  fixed = TRUE)
+  expect_match(html, '<span class="raw">\\+120</span>',    fixed = FALSE)
+  expect_match(html, '<span class="fair">\\+130</span>',   fixed = FALSE)
+  expect_false(grepl('alt-line', html))
+})
+
+test_that("render_book_cell formats negative fair odds without a + prefix", {
+  # Inverse asymmetric input: -140 raw should devig fair to -130 (negative side
+  # of the same pair as the +130 test above). Confirms the fair_str else-branch
+  # used for negative odds emits "-130" rather than "+-130" or "+130".
+  html <- render_book_cell(
+    american_odds          = -140,
+    opposite_american_odds = +120,
+    line_quoted            = -0.5,
+    is_exact_line          = TRUE,
+    is_pick                = FALSE,
+    side_word              = "under",
+    is_totals              = FALSE
+  )
+  expect_match(html, '<span class="raw">-140</span>',  fixed = FALSE)
+  expect_match(html, '<span class="fair">-130</span>', fixed = FALSE)
 })
 
 test_that("render_book_cell on alt line keeps amber tag in both views", {

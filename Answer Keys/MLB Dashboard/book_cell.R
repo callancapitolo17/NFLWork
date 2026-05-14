@@ -88,7 +88,10 @@ render_book_cell <- function(american_odds, line_quoted, is_exact_line,
   raw_str <- if (american_odds > 0) paste0("+", american_odds) else as.character(american_odds)
 
   # Compute devigged American for the FAIR span (if we have both sides).
-  fair_html <- ""
+  # Fallback to em-dash so every non-empty cell still emits <span class="fair">;
+  # otherwise the Task 5 CSS toggle (.show-fair hides .raw) would render this
+  # cell blank in FAIR view when the book quotes only one side.
+  fair_html <- '<span class="fair">&mdash;</span>'  # fallback when no devig available
   if (!is.na(opposite_american_odds)) {
     pair <- .devig_american_pair(american_odds, opposite_american_odds)
     if (!is.na(pair$fair1)) {
