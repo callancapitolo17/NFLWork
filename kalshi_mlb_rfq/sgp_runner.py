@@ -146,68 +146,79 @@ def _fetch_kalshi_total_lines(suffix: str) -> list[float]:
     return out
 
 
-def _load_schedule(schedule_db_path: str) -> dict[tuple, dict]:
-    """Read mlb_odds_temp from mlb.duckdb. Returns dict keyed by (home, away) tuple
-    -> {game_id, home_team, away_team, commence_time}."""
+def _fetch_schedule_from_odds_api() -> dict[tuple, dict]:
+    """Fetch today's MLB events from the Odds API.
+
+    Returns dict keyed by (home_team, away_team) tuple →
+    {game_id, home_team, away_team, commence_time}.
+
+    Decouples bot from the dashboard's mlb.duckdb (R-locked) for schedule.
+    ODDS_API_KEY is read from env first, falling back to ~/.Renviron (R's
+    env file) per the run.py pattern (commit 75e02e9). Returns {} if the
+    key is missing or the Odds API call fails — caller drops the cycle.
+    """
     from datetime import datetime as _dt
-    import time as _time
-    if not Path(schedule_db_path).exists():
+    import json
+    import urllib.request
+
+    key = os.environ.get("ODDS_API_KEY")
+    if not key:
+        # Fallback: parse ~/.Renviron (R-side env file). Python doesn't read
+        # it automatically the way Rscript does.
+        renviron = Path.home() / ".Renviron"
+        if renviron.exists():
+            for raw_line in renviron.read_text().splitlines():
+                line = raw_line.strip()
+                if line.startswith("ODDS_API_KEY"):
+                    _, _, val = line.partition("=")
+                    key = val.strip().strip('"').strip("'")
+                    break
+    if not key:
+        print("  _fetch_schedule: ODDS_API_KEY not set (env or ~/.Renviron)",
+              flush=True)
         return {}
-    # Retry on lock conflict — R pipeline (mlb_correlated_parlay.R, MLB.R)
-    # may briefly hold a write lock on mlb.duckdb during refresh.
-    con = None
-    last_err = None
-    for attempt in range(10):
-        try:
-            con = duckdb.connect(schedule_db_path, read_only=True)
-            break
-        except duckdb.IOException as e:
-            msg = str(e).lower()
-            if "lock" not in msg and "in use" not in msg:
-                raise
-            last_err = e
-            if attempt == 9:
-                print(f"  _load_schedule: gave up after 10 attempts; {last_err}", flush=True)
-                return {}
-            _time.sleep(min(0.1 * (2 ** attempt), 1.5))
+
+    url = f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events?apiKey={key}"
     try:
-        tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
-        if "mlb_odds_temp" not in tables:
-            return {}
-        rows = con.execute(
-            "SELECT id, home_team, away_team, commence_time FROM mlb_odds_temp"
-        ).fetchall()
-    finally:
-        con.close()
-    out = {}
-    for game_id, home, away, ct_raw in rows:
-        # commence_time can be TIMESTAMP (datetime) or VARCHAR depending on
-        # how the R pipeline wrote it. Handle both shapes.
-        if ct_raw is None:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            events = json.loads(resp.read().decode())
+    except Exception as e:
+        print(f"  _fetch_schedule: Odds API call failed — {e}", flush=True)
+        return {}
+
+    out: dict[tuple, dict] = {}
+    for e in events:
+        game_id = e.get("id")
+        home = e.get("home_team")
+        away = e.get("away_team")
+        ct_str = e.get("commence_time")
+        if not (game_id and home and away):
+            continue
+        normalized = (ct_str.replace("Z", "+00:00")
+                      if ct_str and ct_str.endswith("Z") else ct_str)
+        try:
+            ct = _dt.fromisoformat(normalized) if normalized else None
+        except Exception:
             ct = None
-        elif isinstance(ct_raw, _dt):
-            ct = ct_raw
-        elif isinstance(ct_raw, str):
-            normalized = ct_raw.replace("Z", "+00:00") if ct_raw.endswith("Z") else ct_raw
-            try:
-                ct = _dt.fromisoformat(normalized)
-            except Exception:
-                ct = None
-        else:
-            ct = None
-        out[(home, away)] = {"game_id": game_id, "home_team": home,
-                              "away_team": away, "commence_time": ct}
+        out[(home, away)] = {
+            "game_id": game_id, "home_team": home, "away_team": away,
+            "commence_time": ct,
+        }
     return out
 
 
-def enumerate_kalshi_targets(schedule_db_path: str) -> list[TargetLine]:
+def enumerate_kalshi_targets() -> list[TargetLine]:
     """Enumerate all open Kalshi MVE (spread, total) tuples per MLB game.
-    Returns a TargetLine per (game x spread x total) combination, FG only."""
+    Returns a TargetLine per (game x spread x total) combination, FG only.
+
+    Schedule is fetched directly from the Odds API; we no longer read
+    Answer Keys/mlb.duckdb (which is R-write-locked during pipeline runs).
+    """
     events = _fetch_kalshi_mlb_events()
     if not events:
         print("  enumerate: 0 kalshi events", flush=True)
         return []
-    schedule = _load_schedule(schedule_db_path)
+    schedule = _fetch_schedule_from_odds_api()
     print(f"  enumerate: {len(events)} kalshi events, {len(schedule)} schedule rows",
           flush=True)
     targets: list[TargetLine] = []
@@ -377,19 +388,18 @@ SCRAPER_NAMES = [
 
 def sgp_cycle(
     bot_market_db: str,
-    schedule_db_path: str,
     scraper_dir: str,
     venv_python: str,
     timeout_sec: int,
 ) -> dict[str, int]:
     """One full SGP scrape tick (atomic, serial):
-      1. Enumerate Kalshi MVE → list[TargetLine]
+      1. Enumerate Kalshi MVE → list[TargetLine] (schedule from Odds API)
       2. Write to mlb_target_lines in bot_market_db
       3. Spawn the 4 scrapers with MLB_SGP_DB_PATH=bot_market_db, MLB_SGP_PERIODS=FG
 
     Returns {scraper_name: return_code}.
     """
-    targets = enumerate_kalshi_targets(schedule_db_path=schedule_db_path)
+    targets = enumerate_kalshi_targets()
     write_target_lines(targets, db_path=bot_market_db)
     rcs = run_scrapers(
         scraper_dir=scraper_dir,

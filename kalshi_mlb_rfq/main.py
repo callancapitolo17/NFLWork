@@ -112,11 +112,10 @@ def _refresh_caches(retries: int = 5) -> bool:
             # bot market DB so the first RFQ refresh has something to read.
             sgp_df = pd.DataFrame()  # populated by _refresh_sgp_cache
 
-            # mlb_parlay_lines replaced by merged schedule + target_lines cache.
-            # Schedule from mlb.duckdb::mlb_odds_temp, target lines from bot
-            # market DB::mlb_target_lines.
+            # mlb_parlay_lines replaced by bot DB::mlb_target_lines cache.
+            # Schedule (team names + commence_time) now lives directly in
+            # mlb_target_lines rows, written by sgp_runner from the Odds API.
             parlay_lines = _build_parlay_lines_cache(
-                schedule_db=str(config.PROJECT_ROOT / "Answer Keys" / "mlb.duckdb"),
                 bot_db=str(config.BOT_MARKET_DB),
             )
 
@@ -197,59 +196,42 @@ def _refresh_sgp_cache(retries: int = 3) -> bool:
     return False
 
 
-def _build_parlay_lines_cache(schedule_db: str, bot_db: str) -> dict[str, dict]:
-    """Build the bot's parlay_lines cache from two sources:
-      1. mlb_odds_temp in schedule_db (mlb.duckdb) — game metadata
-      2. mlb_target_lines in bot_db (bot market DB) — available (spread, total) tuples per game
+def _build_parlay_lines_cache(bot_db: str) -> dict[str, dict]:
+    """Build the bot's parlay_lines cache from bot DB::mlb_target_lines only.
 
     Returns {game_id: {home_team, away_team, commence_time, fg_lines: list[(spread, total)]}}.
     Drops games with no target lines.
+
+    Schedule (game_id, team names, commence_time) is sourced from
+    mlb_target_lines rows directly — written by sgp_runner.write_target_lines
+    from Odds API data on each cycle. The old mlb.duckdb::mlb_odds_temp
+    read path was removed in Task 29 to decouple the bot from the R-locked
+    dashboard DB.
     """
-    from datetime import datetime as _dt
     from pathlib import Path as _Path
 
-    # 1. Schedule
-    schedule: dict[str, dict] = {}
-    if _Path(schedule_db).exists():
-        con = duckdb.connect(schedule_db, read_only=True)
-        try:
-            tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
-            if "mlb_odds_temp" in tables:
-                for game_id, home, away, ct_str in con.execute(
-                    "SELECT id, home_team, away_team, commence_time FROM mlb_odds_temp"
-                ).fetchall():
-                    normalized = ct_str.replace("Z", "+00:00") if ct_str and ct_str.endswith("Z") else ct_str
-                    try:
-                        ct = _dt.fromisoformat(normalized) if normalized else None
-                    except Exception:
-                        ct = None
-                    schedule[game_id] = {
-                        "home_team": home, "away_team": away, "commence_time": ct,
-                    }
-        finally:
-            con.close()
-
-    # 2. Target lines per game
-    lines_by_game: dict[str, list[tuple[float, float]]] = {}
-    if _Path(bot_db).exists():
-        con = duckdb.connect(bot_db, read_only=True)
-        try:
-            tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
-            if "mlb_target_lines" in tables:
-                for game_id, spread, total in con.execute(
-                    "SELECT game_id, spread, total FROM mlb_target_lines WHERE period = 'FG' ORDER BY game_id, spread, total"
-                ).fetchall():
-                    lines_by_game.setdefault(game_id, []).append((spread, total))
-        finally:
-            con.close()
-
-    # 3. Merge — only include games present in both sources
     out: dict[str, dict] = {}
-    for game_id, lines in lines_by_game.items():
-        sched = schedule.get(game_id)
-        if not sched:
-            continue
-        out[game_id] = {**sched, "fg_lines": lines}
+    if not _Path(bot_db).exists():
+        return out
+    con = duckdb.connect(bot_db, read_only=True)
+    try:
+        tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
+        if "mlb_target_lines" not in tables:
+            return out
+        rows = con.execute(
+            "SELECT game_id, home_team, away_team, commence_time, spread, total "
+            "FROM mlb_target_lines WHERE period = 'FG' "
+            "ORDER BY game_id, spread, total"
+        ).fetchall()
+    finally:
+        con.close()
+    for game_id, home, away, ct, spread, total in rows:
+        if game_id not in out:
+            out[game_id] = {
+                "home_team": home, "away_team": away,
+                "commence_time": ct, "fg_lines": [],
+            }
+        out[game_id]["fg_lines"].append((spread, total))
     return out
 
 
@@ -1095,7 +1077,6 @@ def main_loop(dry_run: bool):
     try:
         rcs = sgp_runner.sgp_cycle(
             bot_market_db=str(config.BOT_MARKET_DB),
-            schedule_db_path=str(config.PROJECT_ROOT / "Answer Keys" / "mlb.duckdb"),
             scraper_dir=str(config.MLB_SGP_DIR),
             venv_python=str(config.MLB_SGP_DIR / "venv" / "bin" / "python"),
             timeout_sec=config.SGP_SCRAPER_TIMEOUT_SEC,
@@ -1153,7 +1134,6 @@ def main_loop(dry_run: bool):
                 try:
                     rcs = sgp_runner.sgp_cycle(
                         bot_market_db=str(config.BOT_MARKET_DB),
-                        schedule_db_path=str(config.PROJECT_ROOT / "Answer Keys" / "mlb.duckdb"),
                         scraper_dir=str(config.MLB_SGP_DIR),
                         venv_python=str(config.MLB_SGP_DIR / "venv" / "bin" / "python"),
                         timeout_sec=config.SGP_SCRAPER_TIMEOUT_SEC,

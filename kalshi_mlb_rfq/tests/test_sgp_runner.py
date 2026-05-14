@@ -58,9 +58,11 @@ def test_latest_sgp_fetch_time_returns_max(tmp_path):
     assert result.hour == 10 and result.minute == 5
 
 
-def test_enumerate_kalshi_targets_returns_target_lines(monkeypatch, tmp_path):
+def test_enumerate_kalshi_targets_returns_target_lines(monkeypatch):
     """When Kalshi API returns 1 open game with 2 spreads x 2 totals,
-    enumerate_kalshi_targets yields 4 TargetLine entries (one per combo)."""
+    enumerate_kalshi_targets yields 4 TargetLine entries (one per combo).
+    Schedule comes from the Odds API (mocked here)."""
+    from datetime import datetime, timezone
     from kalshi_mlb_rfq import sgp_runner
 
     # Kalshi event ticker format: YYMMMDDHHMM{AwayCode}{HomeCode} (11-char date prefix).
@@ -75,18 +77,19 @@ def test_enumerate_kalshi_targets_returns_target_lines(monkeypatch, tmp_path):
                          lambda suffix: [(-1.5, "home"), (-2.5, "home")])
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_total_lines",
                          lambda suffix: [8.5, 9.5])
-    schedule_db = str(tmp_path / "mlb.duckdb")
-    con = duckdb.connect(schedule_db)
-    con.execute("""
-        CREATE TABLE mlb_odds_temp (
-            date VARCHAR, id VARCHAR, home_team VARCHAR, away_team VARCHAR,
-            total_line DOUBLE, consensus_prob_home DOUBLE, commence_time VARCHAR
-        )
-    """)
-    con.execute("INSERT INTO mlb_odds_temp VALUES ('2026-05-13','g1','New York Yankees','Boston Red Sox',8.5,0.55,'2026-05-13T23:00:00+00:00')")
-    con.close()
+    ct = datetime(2026, 5, 13, 23, 0, tzinfo=timezone.utc)
+    fake_schedule = {
+        ("New York Yankees", "Boston Red Sox"): {
+            "game_id": "g1",
+            "home_team": "New York Yankees",
+            "away_team": "Boston Red Sox",
+            "commence_time": ct,
+        }
+    }
+    monkeypatch.setattr(sgp_runner, "_fetch_schedule_from_odds_api",
+                         lambda: fake_schedule)
 
-    targets = sgp_runner.enumerate_kalshi_targets(schedule_db_path=schedule_db)
+    targets = sgp_runner.enumerate_kalshi_targets()
     assert len(targets) == 4
     spreads = sorted({t.spread for t in targets})
     totals = sorted({t.total for t in targets})
@@ -99,10 +102,10 @@ def test_enumerate_kalshi_targets_returns_target_lines(monkeypatch, tmp_path):
 def test_enumerate_kalshi_targets_no_events_returns_empty(monkeypatch):
     from kalshi_mlb_rfq import sgp_runner
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events", lambda: [])
-    assert sgp_runner.enumerate_kalshi_targets(schedule_db_path="/nonexistent.duckdb") == []
+    assert sgp_runner.enumerate_kalshi_targets() == []
 
 
-def test_enumerate_kalshi_targets_skips_unknown_team_codes(monkeypatch, tmp_path):
+def test_enumerate_kalshi_targets_skips_unknown_team_codes(monkeypatch):
     """If event_ticker has unknown team codes, skip the event."""
     from kalshi_mlb_rfq import sgp_runner
     fake_event = {"event_ticker": "KXMLBGAME-26MAY132300ZZZXXX"}
@@ -110,11 +113,17 @@ def test_enumerate_kalshi_targets_skips_unknown_team_codes(monkeypatch, tmp_path
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_spread_lines",
                          lambda suffix: [(-1.5, "home")])
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_total_lines", lambda suffix: [8.5])
-    schedule_db = str(tmp_path / "mlb.duckdb")
-    con = duckdb.connect(schedule_db)
-    con.execute("CREATE TABLE mlb_odds_temp (id VARCHAR, home_team VARCHAR, away_team VARCHAR, commence_time VARCHAR)")
-    con.close()
-    assert sgp_runner.enumerate_kalshi_targets(schedule_db_path=schedule_db) == []
+    monkeypatch.setattr(sgp_runner, "_fetch_schedule_from_odds_api", lambda: {})
+    assert sgp_runner.enumerate_kalshi_targets() == []
+
+
+def test_fetch_schedule_from_odds_api_handles_missing_key(monkeypatch, tmp_path):
+    """When ODDS_API_KEY is unset (env + ~/.Renviron absent), returns {}."""
+    from kalshi_mlb_rfq import sgp_runner
+    monkeypatch.delenv("ODDS_API_KEY", raising=False)
+    # Point HOME to a tmp dir with no .Renviron so the fallback finds nothing.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert sgp_runner._fetch_schedule_from_odds_api() == {}
 
 
 def test_write_target_lines_atomic_replace(tmp_path):
@@ -235,7 +244,7 @@ def test_sgp_cycle_orchestrates_full_tick(monkeypatch, tmp_path):
     from kalshi_mlb_rfq import sgp_runner
 
     call_order = []
-    def fake_enum(schedule_db_path):
+    def fake_enum():
         call_order.append("enum")
         return []
     def fake_write(targets, db_path):
@@ -250,7 +259,6 @@ def test_sgp_cycle_orchestrates_full_tick(monkeypatch, tmp_path):
 
     rcs = sgp_runner.sgp_cycle(
         bot_market_db=str(tmp_path / "bot.duckdb"),
-        schedule_db_path=str(tmp_path / "schedule.duckdb"),
         scraper_dir=str(tmp_path / "scrapers"),
         venv_python="python",
         timeout_sec=60,
@@ -268,13 +276,12 @@ def test_sgp_cycle_passes_env_to_scrapers(monkeypatch, tmp_path):
         captured_env.update(env or {})
         return {}
 
-    monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets", lambda schedule_db_path: [])
+    monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets", lambda: [])
     monkeypatch.setattr(sgp_runner, "write_target_lines", lambda targets, db_path: None)
     monkeypatch.setattr(sgp_runner, "run_scrapers", fake_run)
 
     sgp_runner.sgp_cycle(
         bot_market_db="/tmp/bot.duckdb",
-        schedule_db_path="/tmp/schedule.duckdb",
         scraper_dir="/tmp/scrapers",
         venv_python="python",
         timeout_sec=60,
