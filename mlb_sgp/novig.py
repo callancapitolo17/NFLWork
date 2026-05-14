@@ -63,6 +63,11 @@ SOURCE_LABEL_FALLBACK = "novig_interpolated"
 # ProphetX (and defensively guarded against here in case Novig regresses).
 SANITY_MULT_RATIO = 1.5
 
+# Cross-target parallelism. NV's anonymous GraphQL endpoint tolerates
+# more concurrency than PX's RFQ, so we run 4 concurrent targets ×
+# 4 concurrent combos = 16 in-flight requests per book.
+NV_TARGET_PARALLELISM = 4
+
 # Combo names — byte-identical to scraper_novig_sgp.py so the dashboard /
 # kalshi_mlb_rfq leg lookups keep matching. The "F5 " prefix is applied to
 # F5-period rows in the orchestrator.
@@ -251,14 +256,22 @@ def price_sgps(
             print(f"  game {game_id}: {pre} kalshi → {post} offered", flush=True)
 
     # ----- Phase 2: per target row, price 4 combos (or fall back) ----- #
-    for t in filtered_targets:
+    # Layer target-level concurrency on top of the per-combo parallelism
+    # inside _price_combos_parallel. 4 concurrent targets × 4 combos =
+    # 16 in-flight requests per book. NV's anonymous GraphQL endpoint
+    # tolerates more concurrency than PX's RFQ.
+    def _price_one_target(t: TargetLine) -> list[PricedRow]:
+        """Compute up to 4 PricedRows for a single (game, period, spread, total).
+
+        Pure function over the surrounding closure (legs_cache,
+        matched_by_gid, client.session, fetch_now, verbose). Returns an
+        empty list when the target can't be priced (any missing leg + no
+        fallback hit).
+        """
         game = matched_by_gid.get(t.game_id)
         if game is None:
-            continue
-
+            return []
         period_key = "fg" if t.period == "FG" else "f5"
-
-        # legs_cache is now guaranteed-populated by the filter loop above.
         legs, markets = legs_cache[t.game_id]
 
         p = legs.get(period_key, {}) or {}
@@ -268,6 +281,7 @@ def price_sgps(
         under = p.get("under")
 
         prefix = "" if t.period == "FG" else "F5 "
+        target_rows: list[PricedRow] = []
 
         # ----- Fallback path: any leg missing -> integer-line derivation ----- #
         if not (home and away and over and under):
@@ -278,14 +292,14 @@ def price_sgps(
                 verbose=verbose,
             )
             if fallback is None:
-                continue
+                return []
             fair_probs = fallback["fair_probs"]
             for key, base_combo in _COMBO_DISPLAY.items():
                 fair_p = fair_probs.get(key)
                 if not fair_p or fair_p <= 0:
                     continue
                 dec = 1.0 / fair_p
-                out.append(PricedRow(
+                target_rows.append(PricedRow(
                     game_id=t.game_id,
                     combo=prefix + base_combo,
                     period=t.period,
@@ -297,13 +311,9 @@ def price_sgps(
                     sgp_american=decimal_to_american(dec),
                     fetch_time=fetch_now,
                 ))
-            continue
+            return target_rows
 
         # ----- Main path: price the 4 canonical combos via /parlay/request ----- #
-        # 4 independent submit_parlay calls on the same curl_cffi session.
-        # Mirrors the DK orchestrator pattern (commit fd9900e). The
-        # SANITY_MULT_RATIO filter runs inside each worker so its
-        # behavior is unchanged — failing combos return None.
         combos = (
             ("Home Spread + Over",  home, over),
             ("Home Spread + Under", home, under),
@@ -315,13 +325,12 @@ def price_sgps(
             client.session, combos, submit_parlay, verbose,
         )
 
-        # Iterate combos (not the dict) to preserve deterministic order.
         for combo_name, _sp, _to in combos:
             priced = priced_by_combo.get(combo_name)
             if priced is None:
                 continue
             dec = priced["decimal"]
-            out.append(PricedRow(
+            target_rows.append(PricedRow(
                 game_id=t.game_id,
                 combo=prefix + combo_name,
                 period=t.period,
@@ -333,6 +342,16 @@ def price_sgps(
                 sgp_american=priced["american"],
                 fetch_time=fetch_now,
             ))
+        return target_rows
+
+    with ThreadPoolExecutor(max_workers=NV_TARGET_PARALLELISM) as pool:
+        futures = [pool.submit(_price_one_target, t) for t in filtered_targets]
+        for f in as_completed(futures):
+            try:
+                out.extend(f.result())
+            except Exception as e:
+                if verbose:
+                    print(f"  nv target error: {e}", flush=True)
 
     return out
 
