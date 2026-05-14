@@ -1211,6 +1211,9 @@ render_hero_strip <- function(pick_book, pick_odds, fair_odds,
   fair_str <- .format_odds_signed(fair_odds)
   odds_str <- .format_odds_signed(pick_odds)
 
+  # Risk and To Win get extra wrappers so the bets-tab JS coordinator
+  # can attach click-to-edit + the WZ-verified-quote swap. data-model-risk
+  # carries the original Kelly value so the snap-back button can revert.
   sprintf(
     '<div class="hero">
        <div class="pick">
@@ -1220,12 +1223,19 @@ render_hero_strip <- function(pick_book, pick_odds, fair_odds,
        <div class="divider"></div>
        <div class="stat"><span class="lbl">Fair</span><span class="val fair">%s</span></div>
        <div class="stat"><span class="lbl">EV</span><span class="val ev">%s</span></div>
-       <div class="stat"><span class="lbl">Risk</span><span class="val risk">%s</span></div>
-       <div class="stat"><span class="lbl">To Win</span><span class="val win">%s</span></div>
+       <div class="stat risk-stat" data-model-risk="%.0f" data-american-odds="%d">
+         <span class="lbl">Risk</span>
+         <span class="val risk risk-value" tabindex="0" title="click to edit">%s</span>
+         <button type="button" class="risk-reset" title="reset to model size">&#8634;</button>
+         <span class="risk-error" hidden></span>
+       </div>
+       <div class="stat"><span class="lbl">To Win</span><span class="val win towin-value">%s</span><span class="towin-status" hidden></span></div>
        <div class="actions">%s</div>
      </div>',
     htmltools::htmlEscape(pick_book),
-    odds_str, fair_str, ev_str, risk_str, win_str, action_html
+    odds_str, fair_str, ev_str,
+    risk_dollars, as.integer(pick_odds),
+    risk_str, win_str, action_html
   )
 }
 
@@ -2787,6 +2797,68 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           border-color: #3fb950; color: #ffffff;
           background: rgba(63,185,80,0.28); font-weight: 700;
         }
+
+        .bet-card-v8 .hero .risk-stat { position: relative; }
+        .bet-card-v8 .hero .risk-value {
+          cursor: text;
+          padding: 1px 6px;
+          margin: -1px -6px;
+          border-radius: 5px;
+          border: 1px dashed transparent;
+          display: inline-block;
+          min-width: 48px;
+          transition: all 0.15s ease;
+        }
+        .bet-card-v8 .hero .risk-value:hover:not(.editing):not(.overridden) {
+          border-color: #3a4658;
+          background: rgba(255, 255, 255, 0.02);
+        }
+        .bet-card-v8 .hero .risk-value.editing {
+          border-style: solid;
+          border-color: #3fb950;
+          background: #0d1117;
+          box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.15);
+          outline: none;
+          cursor: text;
+        }
+        .bet-card-v8 .hero .risk-value.overridden { color: #d29922; }
+
+        .bet-card-v8 .hero .risk-reset {
+          display: none;
+          margin-left: 6px;
+          width: 18px; height: 18px;
+          padding: 0;
+          border-radius: 50%;
+          border: 1px solid #3a4658;
+          background: #161b22;
+          color: #7d8590;
+          cursor: pointer;
+          font-size: 11px;
+          line-height: 1;
+          vertical-align: middle;
+        }
+        .bet-card-v8 .hero .risk-stat.is-overridden .risk-reset { display: inline-flex; align-items: center; justify-content: center; }
+        .bet-card-v8 .hero .risk-reset:hover {
+          color: #3fb950; border-color: #3fb950; background: rgba(63, 185, 80, 0.10);
+        }
+
+        .bet-card-v8 .hero .risk-error {
+          display: none;
+          margin-left: 8px;
+          padding: 2px 8px;
+          border-radius: 5px;
+          background: rgba(248, 81, 73, 0.12);
+          color: #f85149;
+          font-size: 11px;
+          font-family: \'SF Mono\', monospace;
+        }
+        .bet-card-v8 .hero .risk-error[hidden] { display: none; }
+        .bet-card-v8 .hero .risk-stat.has-error .risk-error { display: inline-block; }
+
+        .bet-card-v8 .hero .towin-status { margin-left: 6px; font-size: 11px; }
+        .bet-card-v8 .hero .towin-status.verified { color: #3fb950; }
+        .bet-card-v8 .hero .towin-status.spinner  { color: #7d8590; }
+        .bet-card-v8 .hero .towin-status[hidden]  { display: none; }
 
         .bet-card-v8 .price-grid {
           display: grid;
