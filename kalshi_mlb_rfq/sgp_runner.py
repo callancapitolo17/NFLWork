@@ -205,3 +205,38 @@ def enumerate_kalshi_targets(schedule_db_path: str) -> list[TargetLine]:
                     period="FG", spread=spread, total=total,
                 ))
     return targets
+
+
+def write_target_lines(target_lines: list[TargetLine], db_path: str):
+    """Atomic DELETE+INSERT of mlb_target_lines in bot market DB.
+    Creates the table if missing."""
+    con = duckdb.connect(db_path)
+    try:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS mlb_target_lines (
+                game_id        VARCHAR,
+                home_team      VARCHAR,
+                away_team      VARCHAR,
+                commence_time  TIMESTAMP,
+                period         VARCHAR,
+                spread         DOUBLE,
+                total          DOUBLE,
+                written_at     TIMESTAMP
+            )
+        """)
+        con.execute("BEGIN TRANSACTION")
+        con.execute("DELETE FROM mlb_target_lines")
+        if target_lines:
+            now = datetime.now(timezone.utc)
+            values = []
+            for t in target_lines:
+                values.extend([t.game_id, t.home_team, t.away_team,
+                                t.commence_time, t.period, t.spread, t.total, now])
+            placeholders = ",".join(["(?, ?, ?, ?, ?, ?, ?, ?)"] * len(target_lines))
+            con.execute(f"INSERT INTO mlb_target_lines VALUES {placeholders}", values)
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
+    finally:
+        con.close()

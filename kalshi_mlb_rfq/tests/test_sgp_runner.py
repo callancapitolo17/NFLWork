@@ -115,3 +115,48 @@ def test_enumerate_kalshi_targets_skips_unknown_team_codes(monkeypatch, tmp_path
     con.execute("CREATE TABLE mlb_odds_temp (id VARCHAR, home_team VARCHAR, away_team VARCHAR, commence_time VARCHAR)")
     con.close()
     assert sgp_runner.enumerate_kalshi_targets(schedule_db_path=schedule_db) == []
+
+
+def test_write_target_lines_atomic_replace(tmp_path):
+    """write_target_lines DELETEs all existing rows then INSERTs new ones,
+    in a single transaction."""
+    from kalshi_mlb_rfq.sgp_runner import write_target_lines
+    from mlb_sgp._shared import TargetLine
+    from datetime import datetime, timezone
+
+    db = str(tmp_path / "bot.duckdb")
+    ct = datetime(2026, 5, 13, 23, 0, tzinfo=timezone.utc)
+    first = [
+        TargetLine("g1", "NYY", "BOS", ct, "FG", -1.5, 8.5),
+        TargetLine("g1", "NYY", "BOS", ct, "FG", -1.5, 9.5),
+    ]
+    write_target_lines(first, db_path=db)
+
+    con = duckdb.connect(db, read_only=True)
+    out = con.execute("SELECT COUNT(*) FROM mlb_target_lines").fetchone()[0]
+    con.close()
+    assert out == 2
+
+    # Second write (different lines) → must replace, not append
+    second = [TargetLine("g1", "NYY", "BOS", ct, "FG", -2.5, 8.5)]
+    write_target_lines(second, db_path=db)
+
+    con = duckdb.connect(db, read_only=True)
+    out = con.execute("SELECT COUNT(*), MIN(spread) FROM mlb_target_lines").fetchone()
+    con.close()
+    assert out == (1, -2.5)
+
+
+def test_write_target_lines_empty_clears_existing(tmp_path):
+    """Empty list still clears the table."""
+    from kalshi_mlb_rfq.sgp_runner import write_target_lines
+    from mlb_sgp._shared import TargetLine
+    from datetime import datetime, timezone
+
+    db = str(tmp_path / "bot.duckdb")
+    ct = datetime(2026, 5, 13, 23, 0, tzinfo=timezone.utc)
+    write_target_lines([TargetLine("g1", "NYY", "BOS", ct, "FG", -1.5, 8.5)], db_path=db)
+    write_target_lines([], db_path=db)
+    con = duckdb.connect(db, read_only=True)
+    assert con.execute("SELECT COUNT(*) FROM mlb_target_lines").fetchone() == (0,)
+    con.close()
