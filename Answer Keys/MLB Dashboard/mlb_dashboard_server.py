@@ -21,6 +21,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import requests
 import duckdb
 from flask import Flask, Response, jsonify, request
 
@@ -1140,8 +1141,16 @@ def wz_quote_single():
         "pitcher":       data.get("pitcher", 0),
     }
 
-    wz_account = wz_get_account(account)
-    sess = wagerzon_auth.get_session(wz_account)
+    try:
+        wz_account = wz_get_account(account)
+    except AccountNotFoundError:
+        return jsonify({"error_msg_key": "bad_request",
+                        "error_msg": f"unknown account: {account}"}), 400
+    try:
+        sess = wagerzon_auth.get_session(wz_account)
+    except (RuntimeError, requests.RequestException) as e:
+        return jsonify({"error_msg_key": "auth_error",
+                        "error_msg": f"Wagerzon auth failed: {e}"}), 503
     result = single_pricer.get_single_price(sess, bet_for_pricer, amount=amount_f)
     result["bet_hash"] = bet_hash
     result["amount"]   = amount_f
