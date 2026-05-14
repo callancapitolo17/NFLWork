@@ -172,13 +172,24 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
     bets <- bets %>% rename(game_id = id)
   }
 
-  # all_bets_combined has `market` (e.g. "totals_1st_5_innings") but no
-  # separate `period` or `market_type` columns. Derive them if absent.
+  # Always re-derive market_type from the canonical `market` column.
+  # Production callers (MLB.R::wz_alt_bets etc.) pre-set market_type to a
+  # stale bare value like "totals" for alt bets that have
+  # market="alternate_totals_fg" — the join then fails to match book frames
+  # where market="alternate_totals". Re-deriving unconditionally keeps the
+  # join honest: .derive_market_type("alternate_totals_fg") == "alternate_totals"
+  # matches the book frame, and for non-alt markets the function is idempotent
+  # (e.g. .derive_market_type("spreads") == "spreads") so nothing changes.
+  #
+  # period is derived from `market` only when absent: a bare market name like
+  # "alternate_spreads" (no period suffix) falls back to "FG" in
+  # .derive_period, which would wrongly override an explicit period like "F5"
+  # that a caller already set correctly. market_type never has this problem
+  # because its derivation strips the suffix rather than inferring from it.
+  bets <- bets %>%
+    mutate(market_type = .derive_market_type(market))
   if (!"period" %in% names(bets)) {
     bets <- bets %>% mutate(period = .derive_period(market))
-  }
-  if (!"market_type" %in% names(bets)) {
-    bets <- bets %>% mutate(market_type = .derive_market_type(market))
   }
 
   # --- Defensive column renames for each book frame ---

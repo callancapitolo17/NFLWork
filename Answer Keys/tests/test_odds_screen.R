@@ -485,10 +485,13 @@ test_that("alt-total bet (e.g. Royals Under 6.5) joins to a book with un-suffixe
     bet_on      = "Under",
     market_type = "alternate_totals"
   )
-  # Force re-derivation by removing market_type so the inside-helper
-  # path is exercised the same way mlb_bets_combined would feed it.
-  bets$market_type <- NULL
-  bets$period <- NULL
+  # Production scenario: MLB.R pre-sets market_type to the stale bare
+  # value "totals" for alt bets (the mutate at MLB.R:622). Set it
+  # explicitly here so the test exercises the actual code path that
+  # was failing — not the rare path where the column is absent.
+  # period is also pre-set in production via format_bets_table.
+  bets$market_type <- "totals"
+  bets$period      <- "FG"
 
   book_odds <- list(bet105 = bind_rows(
     book_row("g1", "alternate_totals", "FG", "Over",  6.5, +200),
