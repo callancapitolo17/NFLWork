@@ -2899,6 +2899,107 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .price-grid .cell.empty .raw,
         .price-grid .cell.empty .fair { color: #7d8590; }
 
+        /* ====== KELLY CALCULATOR WIDGET ====== */
+        .kelly-calc {
+          display: grid;
+          grid-template-columns: auto 1fr auto;
+          gap: 24px;
+          align-items: center;
+          padding: 14px 18px;
+          background: linear-gradient(135deg,
+            rgba(63, 185, 80, 0.06) 0%,
+            rgba(63, 185, 80, 0.02) 50%,
+            #161b22 100%);
+          border: 1px solid #2a3442;
+          border-left: 3px solid #3fb950;
+          border-radius: 10px;
+          margin: 0 0 14px 0;
+        }
+        .kelly-calc .kelly-label .h {
+          font-family: "SF Mono", monospace;
+          font-size: 11px;
+          letter-spacing: 0.14em;
+          color: #e6edf3;
+          font-weight: 600;
+        }
+        .kelly-calc .kelly-label .s {
+          color: #7d8590;
+          font-size: 11px;
+          margin-top: 2px;
+        }
+        .kelly-calc .kelly-fields {
+          display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+        }
+        .kelly-calc .field {
+          display: flex; flex-direction: column; gap: 4px;
+        }
+        .kelly-calc .field label {
+          font-size: 10px; letter-spacing: 0.12em;
+          text-transform: uppercase; color: #7d8590;
+        }
+        .kelly-calc .kc-input {
+          background: #0d1117;
+          border: 1px solid #2a3442;
+          color: #e6edf3;
+          font-family: "SF Mono", monospace;
+          font-size: 16px;
+          font-variant-numeric: tabular-nums;
+          font-weight: 500;
+          padding: 8px 12px;
+          border-radius: 7px;
+          width: 110px;
+          text-align: center;
+          transition: all 0.15s ease;
+        }
+        .kelly-calc .kc-input:focus {
+          outline: none;
+          border-color: #3fb950;
+          background: #1c222b;
+          box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.15);
+        }
+        .kelly-calc .kc-input.invalid {
+          border-color: #f85149;
+          box-shadow: 0 0 0 3px rgba(248, 81, 73, 0.12);
+        }
+        .kelly-calc .arrow {
+          color: #7d8590;
+          font-family: "SF Mono", monospace;
+          font-size: 18px;
+          margin-top: 14px;
+        }
+        .kelly-calc .kelly-out {
+          text-align: right;
+          display: flex; flex-direction: column; gap: 4px;
+        }
+        .kelly-calc .risk-row {
+          display: flex; align-items: baseline; justify-content: flex-end; gap: 8px;
+        }
+        .kelly-calc .risk-label {
+          font-size: 10px; letter-spacing: 0.14em;
+          text-transform: uppercase; color: #7d8590;
+        }
+        .kelly-calc .risk-value {
+          font-family: "SF Mono", monospace;
+          font-size: 28px; font-weight: 600;
+          color: #3fb950; font-variant-numeric: tabular-nums;
+        }
+        .kelly-calc .risk-value.neg { color: #7d8590; }
+        .kelly-calc .towin {
+          font-family: "SF Mono", monospace;
+          font-size: 11px; color: #7d8590;
+        }
+        .kelly-calc .detail {
+          font-family: "SF Mono", monospace;
+          font-size: 11px; color: #7d8590;
+          font-variant-numeric: tabular-nums;
+        }
+        .kelly-calc .detail .chip {
+          padding: 2px 7px; border-radius: 4px; margin-left: 6px;
+        }
+        .kelly-calc .detail .chip.pos { color: #3fb950; background: rgba(63, 185, 80, 0.10); }
+        .kelly-calc .detail .chip.neg { color: #f85149; background: rgba(248, 81, 73, 0.10); }
+        .kelly-calc .detail .sep { color: #3a4658; margin: 0 6px; }
+
       '))
     ),
 
@@ -2980,6 +3081,50 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 value = "0.25", min = "0.01", max = "1", step = "0.05")
             ),
             tags$button(class = "apply-sizing-btn", onclick = "recalculateBetSizes()", "Apply")
+          ),
+
+          # Kelly Calculator widget — manual no-vig Kelly sizing tool.
+          # Reads dashboard's Bankroll + Kelly Fraction live; computes
+          # risk / to-win / edge / Kelly% / breakeven from two text
+          # inputs (Odds, Fair). Read-only — does not mutate any bet
+          # card. JS handler lives in the main <script> block below.
+          tags$div(class = "kelly-calc",
+            tags$div(class = "kelly-label",
+              tags$div(class = "h", "KELLY CALCULATOR"),
+              tags$div(class = "s", "manual sizing tool")
+            ),
+            tags$div(class = "kelly-fields",
+              tags$div(class = "field",
+                tags$label("Offered Odds"),
+                tags$input(id = "kc-odds", type = "text",
+                           class = "kc-input", placeholder = "+120")
+              ),
+              tags$span(class = "arrow", intToUtf8(0xB7)),  # middle dot
+              tags$div(class = "field",
+                tags$label("Your Fair"),
+                tags$input(id = "kc-fair", type = "text",
+                           class = "kc-input", placeholder = "52.5% or -110")
+              )
+            ),
+            tags$div(class = "kelly-out",
+              tags$div(class = "risk-row",
+                tags$span(class = "risk-label", "Risk"),
+                tags$span(class = "risk-value", id = "kc-risk", "$0")
+              ),
+              tags$div(class = "towin",
+                "to win ", tags$span(id = "kc-towin", "$0")
+              ),
+              tags$div(class = "detail",
+                tags$span("edge"),
+                tags$span(id = "kc-edge", class = "chip", "-"),
+                tags$span(class = "sep", intToUtf8(0xB7)),
+                tags$span("Kelly"),
+                tags$span(id = "kc-kelly", "-"),
+                tags$span(class = "sep", intToUtf8(0xB7)),
+                tags$span("BE"),
+                tags$span(id = "kc-be", "-")
+              )
+            )
           ),
 
           # Filter Bar
@@ -5060,6 +5205,95 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             placeBtn.textContent = "Place combined →";
           }
         }
+
+        // ============ KELLY CALCULATOR WIDGET ============
+        // Manual no-vig Kelly sizing tool. Reads bankroll-input +
+        // kelly-input live on every keystroke so the dashboard is
+        // a single source of truth for sizing math. Self-contained:
+        // does not call calculateKellyBet, does not mutate any card.
+        (function setupKellyCalc() {
+          var $ = function(id) { return document.getElementById(id); };
+
+          // Parse American odds (e.g. "+120", "-110"). Returns the
+          // signed number or null if the input is blank/invalid.
+          function parseAmerican(s) {
+            if (s == null) return null;
+            s = String(s).trim().replace(/\\s/g, "");
+            if (!s) return null;
+            var n = Number(s);
+            if (!isFinite(n) || n === 0) return null;
+            return n;
+          }
+
+          // Parse the "Your Fair" field. Accepts percent ("52.5%"),
+          // decimal probability (0.525), whole percent (52.5), or
+          // American fair odds (-110 / +120). Returns a probability in
+          // (0,1) or null on bad input.
+          function parseFair(s) {
+            if (s == null) return null;
+            s = String(s).trim();
+            if (!s) return null;
+            if (s.endsWith("%")) {
+              var p = Number(s.slice(0, -1));
+              return isFinite(p) ? p / 100 : null;
+            }
+            var n = Number(s);
+            if (!isFinite(n)) return null;
+            if (n > 0 && n < 1) return n;          // 0.525 -> 52.5%
+            if (n > 1 && n < 100) return n / 100;  // 52.5  -> 52.5%
+            // Otherwise: American fair odds (e.g. -110, +120)
+            return n > 0 ? 100 / (n + 100) : -n / (-n + 100);
+          }
+
+          function fmtMoney(x) {
+            if (x == null || !isFinite(x) || x <= 0) return "$0";
+            return "$" + Math.round(x).toLocaleString();
+          }
+          function fmtPct(x, signed) {
+            if (x == null || !isFinite(x)) return "-";
+            var v = (x * 100).toFixed(1);
+            return (signed && x > 0 ? "+" : "") + v + "%";
+          }
+
+          function recompute() {
+            var oddsEl = $("kc-odds");
+            var fairEl = $("kc-fair");
+            if (!oddsEl || !fairEl) return;
+            var american = parseAmerican(oddsEl.value);
+            var fairProb = parseFair(fairEl.value);
+            oddsEl.classList.toggle("invalid", oddsEl.value !== "" && american == null);
+            fairEl.classList.toggle("invalid", fairEl.value !== "" && fairProb == null);
+
+            var bankroll  = Number(($("bankroll-input") || {}).value) || 0;
+            var kellyMult = Number(($("kelly-input")     || {}).value) || 0;
+
+            var risk = 0, towin = 0, edge = NaN, kellyPct = NaN, be = NaN;
+            if (american != null && fairProb != null && bankroll > 0 && kellyMult > 0) {
+              var dec = american > 0 ? american / 100 + 1 : 100 / Math.abs(american) + 1;
+              be = american > 0 ? 100 / (american + 100) : Math.abs(american) / (Math.abs(american) + 100);
+              var b = dec - 1, p = fairProb, q = 1 - p;
+              kellyPct = Math.max(0, (b * p - q) / b);
+              risk = Math.min(bankroll, bankroll * kellyMult * kellyPct);
+              towin = american > 0 ? risk * american / 100 : risk * 100 / Math.abs(american);
+              edge = p - be;
+            }
+
+            $("kc-risk").textContent  = fmtMoney(risk);
+            $("kc-risk").classList.toggle("neg", !(risk > 0));
+            $("kc-towin").textContent = fmtMoney(towin);
+            var edgeEl = $("kc-edge");
+            edgeEl.textContent = isNaN(edge) ? "-" : fmtPct(edge, true);
+            edgeEl.className   = "chip" + (isFinite(edge) ? (edge > 0 ? " pos" : " neg") : "");
+            $("kc-kelly").textContent = isNaN(kellyPct) ? "-" : fmtPct(kellyPct, false);
+            $("kc-be").textContent    = isNaN(be) ? "-" : fmtPct(be, false);
+          }
+
+          ["kc-odds", "kc-fair", "bankroll-input", "kelly-input"].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.addEventListener("input", recompute);
+          });
+          recompute();
+        })();
       ')),
 
       tags$script(HTML(r"(
