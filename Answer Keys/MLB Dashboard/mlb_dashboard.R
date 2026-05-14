@@ -1519,11 +1519,11 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
     ticket        <- placed_ticket_lookup[row$bet_hash]
     placed_actual <- placed_actual_lookup[row$bet_hash]
     data_attrs <- sprintf(
-      'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-market="%s" data-bet-on="%s" data-line="%s" data-prob="%s" data-ev="%s" data-size="%s" data-odds="%s" data-book="%s" data-actual="%s" data-fill-status="%s"',
+      'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-market="%s" data-bet-on="%s" data-line="%s" data-prob="%s" data-ev="%s" data-size="%s" data-model-size="%s" data-odds="%s" data-book="%s" data-actual="%s" data-fill-status="%s"',
       row$bet_hash, row$id, row$home_team, row$away_team,
       as.character(row$pt_start_time), row$market, row$bet_on,
       ifelse(is.na(row$line), "", row$line),
-      row$prob, row$ev, row$bet_size, row$odds, row$bookmaker_key,
+      row$prob, row$ev, row$bet_size, row$bet_size, row$odds, row$bookmaker_key,
       ifelse(is.na(placed_actual), "", placed_actual),
       row$fill_status
     )
@@ -3801,7 +3801,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             market:           data.market,
             american_odds:    parseInt(data.odds, 10),
             actual_size:      parseFloat(data.size),
-            kelly_bet:        parseFloat(data.size),
+            kelly_bet:        parseFloat(data.modelSize || data.size),
             wz_odds_at_place: parseInt(data.odds, 10),
             game_id:          data.gameId,
             home_team:        data.home,
