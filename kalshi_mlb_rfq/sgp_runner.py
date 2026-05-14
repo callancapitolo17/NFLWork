@@ -332,3 +332,40 @@ def read_priced_rows(bot_market_db: str, max_age_sec: int):
         return df
     finally:
         con.close()
+
+
+SCRAPER_NAMES = [
+    "scraper_draftkings_sgp.py",
+    "scraper_fanduel_sgp.py",
+    "scraper_prophetx_sgp.py",
+    "scraper_novig_sgp.py",
+]
+
+
+def sgp_cycle(
+    bot_market_db: str,
+    schedule_db_path: str,
+    scraper_dir: str,
+    venv_python: str,
+    timeout_sec: int,
+) -> dict[str, int]:
+    """One full SGP scrape tick (atomic, serial):
+      1. Enumerate Kalshi MVE → list[TargetLine]
+      2. Write to mlb_target_lines in bot_market_db
+      3. Spawn the 4 scrapers with MLB_SGP_DB_PATH=bot_market_db, MLB_SGP_PERIODS=FG
+
+    Returns {scraper_name: return_code}.
+    """
+    targets = enumerate_kalshi_targets(schedule_db_path=schedule_db_path)
+    write_target_lines(targets, db_path=bot_market_db)
+    rcs = run_scrapers(
+        scraper_dir=scraper_dir,
+        scraper_names=SCRAPER_NAMES,
+        venv_python=venv_python,
+        timeout_sec=timeout_sec,
+        env={
+            "MLB_SGP_DB_PATH": bot_market_db,
+            "MLB_SGP_PERIODS": "FG",
+        },
+    )
+    return rcs

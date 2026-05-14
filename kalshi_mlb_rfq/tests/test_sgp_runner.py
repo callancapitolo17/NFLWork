@@ -227,3 +227,57 @@ def test_read_priced_rows_missing_db(tmp_path):
     from kalshi_mlb_rfq.sgp_runner import read_priced_rows
     df = read_priced_rows(str(tmp_path / "nonexistent.duckdb"), max_age_sec=60)
     assert df.empty
+
+
+def test_sgp_cycle_orchestrates_full_tick(monkeypatch, tmp_path):
+    """sgp_cycle() composes enumerate → write → run_scrapers → return rc map.
+    Stubs out the API + subprocess to verify orchestration ordering."""
+    from kalshi_mlb_rfq import sgp_runner
+
+    call_order = []
+    def fake_enum(schedule_db_path):
+        call_order.append("enum")
+        return []
+    def fake_write(targets, db_path):
+        call_order.append("write")
+    def fake_run(**kw):
+        call_order.append("scrape")
+        return {}
+
+    monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets", fake_enum)
+    monkeypatch.setattr(sgp_runner, "write_target_lines", fake_write)
+    monkeypatch.setattr(sgp_runner, "run_scrapers", fake_run)
+
+    rcs = sgp_runner.sgp_cycle(
+        bot_market_db=str(tmp_path / "bot.duckdb"),
+        schedule_db_path=str(tmp_path / "schedule.duckdb"),
+        scraper_dir=str(tmp_path / "scrapers"),
+        venv_python="python",
+        timeout_sec=60,
+    )
+    assert call_order == ["enum", "write", "scrape"]
+    assert isinstance(rcs, dict)
+
+
+def test_sgp_cycle_passes_env_to_scrapers(monkeypatch, tmp_path):
+    """sgp_cycle must set MLB_SGP_DB_PATH and MLB_SGP_PERIODS=FG in env."""
+    from kalshi_mlb_rfq import sgp_runner
+
+    captured_env = {}
+    def fake_run(scraper_dir, scraper_names, venv_python, timeout_sec, env=None):
+        captured_env.update(env or {})
+        return {}
+
+    monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets", lambda schedule_db_path: [])
+    monkeypatch.setattr(sgp_runner, "write_target_lines", lambda targets, db_path: None)
+    monkeypatch.setattr(sgp_runner, "run_scrapers", fake_run)
+
+    sgp_runner.sgp_cycle(
+        bot_market_db="/tmp/bot.duckdb",
+        schedule_db_path="/tmp/schedule.duckdb",
+        scraper_dir="/tmp/scrapers",
+        venv_python="python",
+        timeout_sec=60,
+    )
+    assert captured_env.get("MLB_SGP_DB_PATH") == "/tmp/bot.duckdb"
+    assert captured_env.get("MLB_SGP_PERIODS") == "FG"
