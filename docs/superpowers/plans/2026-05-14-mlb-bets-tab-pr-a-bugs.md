@@ -8,7 +8,7 @@
 
 **Tech Stack:** R 4.x, testthat, dplyr, tibble (existing); plain DOM JavaScript for the timezone fix (existing pattern).
 
-**Worktree:** This plan executes inside `/Users/callancapitolo/NFLWork/.claude/worktrees/mlb-bets-tab-followups` on branch `worktree-mlb-bets-tab-followups`. Spec already committed at `30fb7be`.
+**Worktree:** Before Task 1, create a fresh worktree off `main` named `mlb-bets-tab-pr-a-bugs` (e.g. via `EnterWorktree({name: "mlb-bets-tab-pr-a-bugs"})` if you have the Superpowers worktree skill, or `git worktree add .claude/worktrees/mlb-bets-tab-pr-a-bugs -b worktree-mlb-bets-tab-pr-a-bugs main` otherwise). All paths in this plan assume that worktree as the working directory. The spec at `docs/superpowers/specs/2026-05-14-mlb-bets-tab-followups-design.md` should already be on `main`.
 
 ---
 
