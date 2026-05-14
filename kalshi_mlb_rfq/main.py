@@ -414,22 +414,6 @@ def _home_code_from_event_ticker(event_ticker: str) -> str | None:
     return home
 
 
-def _current_book_lines_for_combo(game_id: str) -> dict | None:
-    """Spread/total snapshot from cached mlb_parlay_lines for line-move detection.
-
-    mlb_sgp_odds doesn't store the line directly — mlb_parlay_lines is the
-    canonical source. Returns None if the game is not in the cache.
-    """
-    pl = _PARLAY_LINES_CACHE.get(game_id)
-    if not pl:
-        return None
-    fg_spread = pl.get("fg_spread")
-    fg_total = pl.get("fg_total")
-    if fg_spread is None or fg_total is None:
-        return None
-    return {"spread": float(fg_spread), "total": float(fg_total)}
-
-
 # ------------------------------------------------------------------------ #
 # Leg-typing helpers                                                       #
 # ------------------------------------------------------------------------ #
@@ -527,18 +511,9 @@ def _all_per_accept_gates_pass(quote: dict, fair: float,
     if not risk.tipoff_ok(ct, config.TIPOFF_CANCEL_MIN):
         return False, "declined_tipoff"
 
-    # Line-move check (uses reference_lines snapshot from RFQ submission)
-    rfq_id = quote["rfq_id"]
-    with db.connect(read_only=True) as con:
-        ref_row = con.execute(
-            "SELECT lines_json FROM reference_lines WHERE rfq_id=?", [rfq_id]
-        ).fetchone()
-    if ref_row:
-        ref_lines = json.loads(ref_row[0])
-        current_lines = _current_book_lines_for_combo(combo_meta["game_id"])
-        if current_lines and not risk.line_move_ok(
-                ref_lines, current_lines, config.LINE_MOVE_THRESHOLD):
-            return False, "declined_line_move"
+    # Line-move gate removed (D7 of line-source pivot): each candidate's
+    # (spread, total) is baked into its Kalshi ticker — line can't move
+    # per-candidate. Drift handled by RFQ refresh re-scoring every 30s.
 
     # Positions API health
     if _POSITIONS_API_FAIL_COUNT >= config.POSITIONS_HEALTH_RETRIES:
@@ -875,14 +850,6 @@ def _refresh_rfqs(candidates: list[combo_enumerator.ComboCandidate],
                      blended_fair, kalshi_ref, edge, "open",
                      datetime.now(timezone.utc)],
                 )
-                # Snapshot reference lines for line-move detection.
-                lines_now = _current_book_lines_for_combo(c.game_id)
-                if lines_now:
-                    con.execute(
-                        "INSERT INTO reference_lines (rfq_id, lines_json, snapped_at) "
-                        "VALUES (?, ?, ?) ON CONFLICT (rfq_id) DO NOTHING",
-                        [rid, json.dumps(lines_now), datetime.now(timezone.utc)],
-                    )
         except Exception as e:
             print(f"  add {c.leg_set_hash[:8]} failed: {e}", flush=True)
 

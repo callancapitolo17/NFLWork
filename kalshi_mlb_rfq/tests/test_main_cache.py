@@ -128,3 +128,20 @@ def test_load_book_fairs_legacy_schema_returns_empty():
          "sgp_decimal": 2.0, "period": "FG"},  # no spread_line/total_line
     ])
     assert main._load_book_fairs("g1", -1.5, 8.5) == {}
+
+
+def test_per_accept_gates_skip_line_move():
+    """After D7, line_move_ok is no longer called from _all_per_accept_gates_pass.
+    Verify the gate path doesn't reference _current_book_lines_for_combo."""
+    import inspect
+    from kalshi_mlb_rfq import main
+    src = inspect.getsource(main._all_per_accept_gates_pass)
+    assert "_current_book_lines_for_combo" not in src
+    assert "line_move_ok" not in src
+    assert "reference_lines" not in src
+
+
+def test_current_book_lines_for_combo_removed():
+    """The function should no longer exist on the module."""
+    from kalshi_mlb_rfq import main
+    assert not hasattr(main, "_current_book_lines_for_combo")
