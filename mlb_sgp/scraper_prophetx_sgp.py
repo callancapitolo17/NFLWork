@@ -1,41 +1,39 @@
 #!/usr/bin/env python3
+"""ProphetX MLB SGP Scraper — thin shim invoking the prophetx library.
+
+Reads target_lines from MLB_DB (default: mlb_mm.duckdb; bot overrides via
+MLB_SGP_DB_PATH env var). Calls mlb_sgp.prophetx.price_sgps() with the
+periods configured via MLB_SGP_PERIODS env var (default: FG,F5).
+Writes PricedRow results back to MLB_DB via mlb_sgp.db.upsert_priced_rows.
+
+Legacy helpers (init_session, fetch_prophetx_mlb_events, match_events,
+_find_market, _pick_selection, _verify_competitor_ids, fetch_event_legs,
+submit_parlay_rfq, try_integer_fallback_px, MARKET_NAMES / NAME_ALIASES /
+MIN_OFFER_STAKE / SANITY_MULT_RATIO constants) are preserved in this file
+because the new prophetx orchestrator + prophetx_client import them lazily.
+They stay here during the transition; a follow-up refactor can lift them
+into the library module.
+
+PX-specific SANITY_MULT_RATIO defense (F5-Over bug) lives in the prophetx.py
+orchestrator now. The integer-fallback path is retained in this module for
+backward compat with legacy callers but is no longer wired to any emitter —
+the orchestrator does not invoke it because PX has produced zero
+`prophetx_interpolated` rows in practice (Task 11 design decision).
+
+Note on the legacy live-event filter
+------------------------------------
+The previous orchestrator filtered ``scheduled > now_utc`` and deduped
+events by ``(home, away, hour)`` to suppress live (in-progress) games.
+The shim intentionally drops both: ``mlb_target_lines`` / ``mlb_parlay_lines``
+are written upstream and already contain only the games we want to price,
+so a second client-side filter would be redundant. Matches DK/FD's shim
+shape and behavior.
 """
-ProphetX MLB SGP Scraper (Pure REST API)
 
-Fetches Same Game Parlay (SGP) odds from ProphetX for MLB spread+total combos,
-both full-game (FG) and first-5-innings (F5). Uses curl_cffi to post to the
-RFQ endpoint and writes results to mlb_sgp_odds with source='prophetx_direct'.
-
-Architectural notes (see recon_prophetx_sgp.py + memory notes for details):
-    - ProphetX is a P2P exchange with an RFQ-style parlay pricer. The endpoint
-      /parlay/public/api/v1/user/request returns an array of offers at
-      different stake tiers. We use offers[0].odds (tightest available) as
-      "the price", consistent with DK/FD one-price semantics.
-    - All API calls go to www.prophetx.co — no separate backend domain.
-    - Market tree has explicit names for FG ('Run Line', 'Total Runs') vs F5
-      ('1st-5th Inning Spread', '1st-5th Inning Total Runs') — no heuristic
-      period classification needed.
-    - Selection IDs are structured (marketId, outcomeId, lineId, line), not
-      regex-parsed strings.
-    - LineIds are hex fingerprints that change when lines move — we fetch the
-      market tree and POST the RFQ in quick succession.
-
-Usage:
-    cd mlb_sgp
-    source venv/bin/activate
-    python scraper_prophetx_sgp.py           # all games
-    python scraper_prophetx_sgp.py --verbose  # show details
-"""
-
-import argparse
-import json
 import os
 import sys
-import time
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import duckdb
 from curl_cffi import requests as cffi_requests
 
 # Resolve repo root dynamically (works from worktrees too)
@@ -48,7 +46,7 @@ _ANSWER_KEYS = _REPO_ROOT / "Answer Keys"
 sys.path.insert(0, str(_ANSWER_KEYS))
 from canonical_match import load_team_dict, load_canonical_games, resolve_team_names
 
-from db import ensure_table, upsert_sgp_odds, clear_source, MLB_DB, _connect_with_retry
+from db import MLB_DB, _connect_with_retry
 from integer_line_derivation import is_integer_line, derive_fair_probs
 
 # ---------------------------------------------------------------------------
@@ -663,290 +661,66 @@ def submit_parlay_rfq(session, legs: list[dict], verbose: bool = False) -> tuple
 
 
 # ---------------------------------------------------------------------------
-# Main pipeline
+# Shim entry point
 # ---------------------------------------------------------------------------
-def scrape_prophetx_sgp(verbose: bool = False):
-    # Clear previous prices — missing combo means NA, not stale.
-    clear_source("prophetx_direct")
-    clear_source("prophetx_interpolated")
-
-    print("Loading parlay lines from DuckDB...")
-    parlay_lines = load_parlay_lines()
-    if not parlay_lines:
-        return
-    print(f"  {len(parlay_lines)} games with lines")
-
-    print("Initializing ProphetX session...")
-    session = init_session()
-
-    print("Fetching ProphetX MLB events...")
-    try:
-        px_events = fetch_prophetx_mlb_events(session)
-    except Exception as e:
-        print(f"  Failed to fetch events: {e}")
-        return
-    print(f"  {len(px_events)} ProphetX MLB events")
-
-    # Drop live / already-started games
-    from datetime import datetime, timezone
-    now_utc = datetime.now(timezone.utc).isoformat()
-    px_events = [e for e in px_events if (e.get("scheduled") or "") > now_utc]
-
-    # Dedup: one event per (home, away, start-hour) — preserves doubleheaders
-    seen = set()
-    deduped = []
-    for e in sorted(px_events, key=lambda x: x.get("scheduled") or ""):
-        key = (e["px_home"], e["px_away"], (e.get("scheduled") or "")[:13])
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(e)
-
-    print("Matching teams via canonical_match...")
-    matched = match_events(deduped, parlay_lines)
-    print(f"  {len(matched)} matched games")
-    if not matched:
-        print("  No matches found.")
-        return
-
-    # ── Phase 1: fetch market trees + extract legs (parallel) ──
-    print("Fetching market trees (parallel)...")
-    t0 = time.time()
-    legs_by_game = {}
-    markets_by_game = {}  # raw market lists for integer-line fallback
-
-    def _fetch(g):
-        return g["game_id"], fetch_event_legs(session, g, verbose)
-
-    with ThreadPoolExecutor(max_workers=PARALLEL_MARKETS) as pool:
-        futures = {pool.submit(_fetch, g): g for g in matched}
-        for fut in as_completed(futures):
-            try:
-                gid, (legs, markets) = fut.result()
-                legs_by_game[gid] = legs
-                markets_by_game[gid] = markets
-            except Exception as e:
-                g = futures[fut]
-                print(f"  Error fetching markets for {g.get('home_team')}/{g.get('away_team')}: {e}")
-    print(f"  Fetched {len(legs_by_game)} games in {time.time() - t0:.1f}s")
-
-    # ── Phase 2: build combo items and RFQ (parallel) ──
-    print("Pricing SGP combos (parallel RFQ)...")
-    t1 = time.time()
-    combo_items = []
-    interpolated_results = []   # (game_id, period, combo_name, fair_prob)
-    for g in matched:
-        gid = g["game_id"]
-        legs = legs_by_game.get(gid)
-        if not legs:
-            continue
-        for period in ("fg", "f5"):
-            p = legs.get(period, {})
-            home = p.get("home_spread")
-            away = p.get("away_spread")
-            over = p.get("over")
-            under = p.get("under")
-            if not (home and away and over and under):
-                # Exact-line lookup miss — try integer-line fallback.
-                total_line = g[f"{period}_total_line"]
-                spread_line = g[f"{period}_spread_line"]
-                if total_line is None or spread_line is None:
-                    continue
-                markets = markets_by_game.get(gid, [])
-                fallback = try_integer_fallback_px(
-                    session, markets,
-                    g["px_home_competitor_id"], g["px_away_competitor_id"],
-                    g["px_event_id"],
-                    spread_line, total_line, period,
-                    verbose=verbose,
-                )
-                if fallback is None:
-                    continue
-                prefix = "" if period == "fg" else "F5 "
-                COMBO_DISPLAY = {
-                    "home_over":  "Home Spread + Over",
-                    "home_under": "Home Spread + Under",
-                    "away_over":  "Away Spread + Over",
-                    "away_under": "Away Spread + Under",
-                }
-                for k, name in COMBO_DISPLAY.items():
-                    interpolated_results.append((
-                        gid, period, prefix + name, fallback["fair_probs"][k]
-                    ))
-                continue
-            prefix = "" if period == "fg" else "F5 "
-            for combo_name, sp, to in [
-                ("Home Spread + Over",  home, over),
-                ("Home Spread + Under", home, under),
-                ("Away Spread + Over",  away, over),
-                ("Away Spread + Under", away, under),
-            ]:
-                combo_items.append((gid, period, prefix + combo_name, sp, to))
-
-    pricing_results = []
-    event_id_by_game = {g["game_id"]: g["px_event_id"] for g in matched}
-    auth_failures = {"count": 0}
-
-    def _price(item):
-        gid, period, combo_name, sp, to = item
-        eid = event_id_by_game.get(gid)
-        legs = [
-            {"sportEventId": eid,
-             "marketId": sp["marketId"], "outcomeId": sp["outcomeId"],
-             "lineId":   sp["lineId"],   "line": sp["line"]},
-            {"sportEventId": eid,
-             "marketId": to["marketId"], "outcomeId": to["outcomeId"],
-             "lineId":   to["lineId"],   "line": to["line"]},
-        ]
-        priced, auth_failed = submit_parlay_rfq(session, legs, verbose=verbose)
-        if auth_failed:
-            auth_failures["count"] += 1
-
-        # Sanity filter: reject combos that exceed naive leg-product by > SANITY_MULT_RATIO.
-        # Catches ProphetX's systematic F5-Over bug where the parlay pricer quotes
-        # decimals 5-7x larger than independent multiply suggests.
-        if priced is not None and sp.get("leg_am") is not None and to.get("leg_am") is not None:
-            sp_dec = american_to_decimal(int(sp["leg_am"]))
-            to_dec = american_to_decimal(int(to["leg_am"]))
-            naive = sp_dec * to_dec
-            if priced["decimal"] > naive * SANITY_MULT_RATIO:
-                if verbose:
-                    print(f"      SANITY-DROP {combo_name[:30]:<30} "
-                          f"parlay={priced['decimal']:.2f} > naive×{SANITY_MULT_RATIO}="
-                          f"{naive*SANITY_MULT_RATIO:.2f}")
-                priced = None
-        return gid, period, combo_name, priced
-
-    with ThreadPoolExecutor(max_workers=PARALLEL_PRICING) as pool:
-        futures = {pool.submit(_price, it): it for it in combo_items}
-        for fut in as_completed(futures):
-            try:
-                pricing_results.append(fut.result())
-            except Exception as e:
-                it = futures[fut]
-                print(f"  Error pricing {it[2]} ({it[0][:8]}): {e}")
-                pricing_results.append((it[0], it[1], it[2], None))
-
-    print(f"  Priced {len(pricing_results)} combos in {time.time() - t1:.1f}s")
-
-    # ── Phase 2b: retry failed combos once ──
-    failed = [r for r in pricing_results if r[3] is None]
-    if failed:
-        by_key = {(it[0], it[2]): it for it in combo_items}
-        retry_items = [by_key[(r[0], r[2])] for r in failed if (r[0], r[2]) in by_key]
-        if retry_items:
-            print(f"  Retrying {len(retry_items)} failed combos...")
-            time.sleep(1)
-            with ThreadPoolExecutor(max_workers=PARALLEL_PRICING) as pool:
-                fmap = {pool.submit(_price, it): it for it in retry_items}
-                # Dict-based merge: latest result per (game, combo) wins.
-                results_by_key = {(r[0], r[2]): r for r in pricing_results}
-                for fut in as_completed(fmap):
-                    try:
-                        res = fut.result()
-                        if res[3] is not None:
-                            results_by_key[(res[0], res[2])] = res
-                    except Exception as e:
-                        it = fmap[fut]
-                        print(f"  Retry error {it[2]} ({it[0][:8]}): {e}")
-                pricing_results = list(results_by_key.values())
-
-    # ── Phase 3: write ──
-    ensure_table()
-    all_rows = []
-    game_lookup = {g["game_id"]: g for g in matched}
-    priced_by_game = {}
-    for gid, period, combo_name, priced in pricing_results:
-        if priced:
-            priced_by_game.setdefault(gid, []).append((period, combo_name, priced))
-
-    for gid, combos in sorted(priced_by_game.items()):
-        g = game_lookup[gid]
-        print(f"\n  {g['away_team']} @ {g['home_team']}")
-        # Per-game vig instrumentation — split by period
-        vig_by_period = {"fg": [], "f5": []}
-        for period, combo_name, priced in combos:
-            dec = priced["decimal"]
-            am = priced["american"]
-            print(f"    {combo_name}: {dec:.4f} ({am:+d})  "
-                  f"[{len(priced['offers'])} tiers]")
-            vig_by_period[period].append(dec)
-            all_rows.append({
-                "game_id": gid, "combo": combo_name,
-                "period": "FG" if period == "fg" else "F5",
-                "bookmaker": "prophetx",
-                "sgp_decimal": dec, "sgp_american": am,
-                "source": "prophetx_direct",
-            })
-        for period, decs in vig_by_period.items():
-            if len(decs) == 4:
-                vig = sum(1 / d for d in decs)
-                label = "FG" if period == "fg" else "F5"
-                # Flag when measured vig materially exceeds our default (1.10).
-                # Consistent readings >1.12 OR <1.08 mean PROPHETX_SGP_VIG_DEFAULT
-                # needs re-tuning in either direction.
-                flag = ""
-                if vig > 1.12:
-                    flag = "  <-- high vs default 1.10"
-                elif vig < 1.08:
-                    flag = "  <-- low vs default 1.10"
-                print(f"    [{label} vig: {vig:.4f}]{flag}")
-
-    if all_rows:
-        upsert_sgp_odds(all_rows)
-        print(f"\n{'='*60}")
-        print(f"  Wrote {len(all_rows)} ProphetX SGP odds in {time.time() - t0:.1f}s total")
-        print(f"{'='*60}")
-    else:
-        # M2: don't fail silently. Loud diagnostic when zero rows written.
-        reason = ""
-        if auth_failures["count"] > 0:
-            reason = (f" — {auth_failures['count']} RFQ calls returned 401/403 "
-                      "(auth). Cookies from .prophetx_profile may be stale; log in "
-                      "again via recon_prophetx_sgp.py to refresh.")
-        elif not matched:
-            reason = " — zero events matched; check MLB tournament name filter."
-        else:
-            reason = " — events matched but no RFQ returned priced offers. Try --verbose."
-        print(f"\n!! ERROR: No ProphetX SGP odds collected{reason}")
-
-    # Append rows for integer-line interpolation fallback
-    interp_rows = []
-    for gid, period, combo_name, fair_prob in interpolated_results:
-        decimal = round(1.0 / fair_prob, 4)
-        american = decimal_to_american(decimal)
-        game = game_lookup.get(gid, {})
-        print(f"\n  {game.get('away_team', '?')} @ {game.get('home_team', '?')} [interpolated]")
-        print(f"    {combo_name}: {decimal:.4f} ({american:+d})")
-        interp_rows.append({
-            "game_id":      gid,
-            "combo":        combo_name,
-            "period":       "FG" if period == "fg" else "F5",
-            "bookmaker":    "prophetx",
-            "sgp_decimal":  decimal,
-            "sgp_american": american,
-            "source":       "prophetx_interpolated",
-        })
-
-    if interp_rows:
-        upsert_sgp_odds(interp_rows)
-        print(f"  Wrote {len(interp_rows)} interpolated ProphetX SGP odds")
-
-    return all_rows
+#
+# Everything below replaces the legacy scrape_prophetx_sgp() + main() pair.
+# The shim delegates orchestration to mlb_sgp.prophetx.price_sgps(), which
+# composes the helpers above. Helpers stay defined at module level because
+# mlb_sgp/prophetx.py and mlb_sgp/prophetx_client.py import them lazily.
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description="ProphetX MLB SGP Scraper")
-    parser.add_argument("--verbose", action="store_true")
-    args = parser.parse_args()
-    print("=" * 60)
-    print("  PROPHETX MLB SGP SCRAPER (RFQ)")
-    print("=" * 60)
-    scrape_prophetx_sgp(verbose=args.verbose)
+    """Entry point: load targets, price SGPs, write rows.
+
+    Path / import gymnastics: this script can be launched in three modes —
+    (1) `python mlb_sgp/scraper_prophetx_sgp.py` from the repo root
+        (test_sgp_regression's shim test path),
+    (2) `python scraper_prophetx_sgp.py` from inside mlb_sgp/
+        (legacy direct-invocation path, also how kalshi_mlb_rfq spawns it),
+    (3) `python -m mlb_sgp.scraper_prophetx_sgp` (package mode).
+
+    For (1) and (2) we need `mlb_sgp` importable as a top-level package so
+    `mlb_sgp.prophetx` resolves. Make that work by ensuring the repo root
+    is on sys.path before importing the orchestrator + db modules.
+
+    Live-event filtering: the legacy ``scrape_prophetx_sgp`` post-filtered
+    PX events by ``scheduled > now_utc`` and deduped by ``(home, away, hour)``.
+    The shim deliberately drops both — ``mlb_target_lines`` /
+    ``mlb_parlay_lines`` is written upstream and only contains the games
+    we want to price, so the post-filter would be redundant.
+    """
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+
+    from mlb_sgp import db
+    from mlb_sgp._shared import load_target_lines
+
+    db_path = str(db.MLB_DB)
+    db.ensure_table(db_path)
+
+    targets = load_target_lines(db_path)
+    if not targets:
+        print(f"  No target lines in {db_path} — nothing to scrape.")
+        return 0
+
+    periods_raw = os.environ.get("MLB_SGP_PERIODS", "FG,F5").split(",")
+    periods = tuple(p.strip() for p in periods_raw if p.strip())
+
+    from mlb_sgp import prophetx
+    print(f"  PX shim: {len(targets)} target lines, periods={periods}")
+    rows = prophetx.price_sgps(targets, periods=periods, verbose=False)
+    print(f"  PX shim: priced {len(rows)} rows")
+
+    # Wipe both source labels so stale rows from a previous run never linger.
+    # The orchestrator currently emits only _direct rows; clearing
+    # _interpolated too preserves the "fresh prices only" invariant in case
+    # the legacy integer-fallback path is ever re-wired.
+    db.clear_source("prophetx_direct", db_path=db_path)
+    db.clear_source("prophetx_interpolated", db_path=db_path)
+    db.upsert_priced_rows(rows, db_path=db_path)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
