@@ -375,12 +375,49 @@ A future v2 may bootstrap this automatically via headless Chrome.
 - **F5 totals at integer values (e.g., 5.0) trigger interpolation.** FD's F5 alt totals jump in 1.0 increments (2.5, 3.5, 4.5, 5.5...). When Wagerzon has F5 total 5.0, FD's exact-line lookup misses → the integer-line fallback kicks in, using FD's F5 alts at 4.5 and 5.5. See "Integer-Line Derivation" above.
 - **2026-05-13:** Fixed alt-spread bucket key in `scraper_fanduel_singles.py` — was `abs(effective_line)` which collapsed opposite-direction same-magnitude lines (e.g. KC -2.5 and KC +2.5) into one row. Now buckets by signed home-team line so both directions persist. Verified event 35600618 went 7 → 14 alt-spread rows. See `docs/superpowers/research/2026-05-13-fd-recon-findings.md`.
 
+## Library architecture (line-source pivot, 2026-05-13)
+
+The SGP scrapers were refactored into a 3-layer stack so the same pricing code
+can serve both the MLB dashboard (writes to `mlb_mm.duckdb`) and the Kalshi
+MLB RFQ bot (writes to a sibling `kalshi_mlb_rfq_market.duckdb`).
+
+- **Per-book HTTP clients** — pure transport, no domain logic:
+  - `dk_client.py` — DK leagues / event-markets / parlays / `calculateBets`
+  - `fd_client.py` — FD scan / event-page / `implyBets`
+  - `prophetx_client.py` — ProphetX RFQ endpoint
+  - `novig_client.py` — Novig anonymous `/unauthenticated` SGP endpoint
+- **Per-book SGP orchestrators** — `price_sgps(targets) -> List[PricedRow]`:
+  - `draftkings.py`, `fanduel.py`, `prophetx.py`, `novig.py`
+  - Each loads its client, walks the target `(game_id, period, spread_line, total_line)` tuples, prices all 4 combos per tuple, devigs, returns `PricedRow`s.
+- **Thin scraper shims** — `scraper_{book}_sgp.py`:
+  - Load target lines via `_shared.load_target_lines()`
+  - Call the book's `price_sgps()`
+  - Upsert via `_shared.upsert_priced_rows()`
+  - No pricing logic — just I/O glue.
+
+**Target-line tables.** Two sources, same shape:
+- `mlb_parlay_lines` in `mlb_mm.duckdb` — Wagerzon-derived; one target line per game/period; used by the dashboard pipeline.
+- `mlb_target_lines` in the bot's sibling market DB — Kalshi MVE-derived; many target lines per game (every `(spread, total)` tuple Kalshi lists); used by the bot's SGP cadence loop.
+
+`load_target_lines()` reads whichever table exists in the connected DB.
+
+**Env overrides** (consumed by every scraper shim and `_shared.py`):
+- `MLB_SGP_DB_PATH` — full path to the DuckDB the scraper should read targets from and write priced rows back to. Defaults to `Answer Keys/mlb_mm.duckdb`. The bot sets it to its sibling market DB so dashboard data is never touched.
+- `MLB_SGP_PERIODS` — comma-separated list of periods to price (`FG`, `F5`, `F7`). Defaults to all. The bot sets `FG` only.
+
+**Output schema.** `mlb_sgp_odds` now carries `spread_line` and `total_line` columns alongside `combo`, so multi-line target lines from Kalshi can be priced and dedupe-merged without collision (the dashboard pipeline writes a single line per game/period, the bot writes many).
+
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `scraper_draftkings_sgp.py` | DK SGP scraper (pure REST, curl_cffi) |
-| `scraper_fanduel_sgp.py` | FD SGP scraper (pure REST, curl_cffi) |
+| `scraper_draftkings_sgp.py` | DK SGP scraper shim (calls `draftkings.price_sgps`) |
+| `scraper_fanduel_sgp.py` | FD SGP scraper shim (calls `fanduel.price_sgps`) |
+| `scraper_prophetx_sgp.py` | ProphetX SGP scraper shim |
+| `scraper_novig_sgp.py` | Novig SGP scraper shim |
+| `draftkings.py` / `fanduel.py` / `prophetx.py` / `novig.py` | Per-book orchestrators (`price_sgps`) |
+| `dk_client.py` / `fd_client.py` / `prophetx_client.py` / `novig_client.py` | Per-book HTTP clients |
+| `_shared.py` | `TargetLine` / `PricedRow` dataclasses, `load_target_lines`, `upsert_priced_rows`, decimal/american helpers |
 | `scraper_pikkit_mlb.py` | Pikkit MLB SGP scraper (fallback) |
 | `pikkit_common.py` | Reusable Pikkit functions |
 | `recon_draftkings_sgp.py` | DK network recon tool |

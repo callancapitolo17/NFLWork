@@ -92,3 +92,27 @@ Acceptance is serialized via `ACCEPT_LOCK` so concurrent quotes Kelly-size again
 - **All quotes declining `declined_stale_predictions`:** rerun the pipeline; samples are over 10 minutes old.
 - **Bot halted on `fill_ratio_collapse`:** investigate — makers are walking on accepts at a rate that suggests adverse selection. Check `quote_log` for the maker `creator_id`s causing it.
 - **`mint_combo_ticker` failing with 400:** the MVE collection ticker may have changed or one of the leg market_tickers doesn't exist. Re-run `mlb_sgp/recon_kalshi_mlb_rfq.py` for a fresh probe.
+
+## SGP cadence loop (line-source pivot, 2026-05-13)
+
+The bot drives its own SGP scrape cadence independent of the MLB dashboard.
+
+**Data flow on each SGP tick (every `SGP_REFRESH_SEC`, default 60s):**
+
+1. Bot enumerates open Kalshi MVE markets per MLB game (every `(spread, total)` tuple Kalshi lists).
+2. Bot rewrites `mlb_target_lines` in `kalshi_mlb_rfq_market.duckdb` (sibling to state DB).
+3. Bot spawns the four scrapers (`mlb_sgp/scraper_{draftkings,fanduel,prophetx,novig}_sgp.py`) with `MLB_SGP_DB_PATH=<market DB>` and `MLB_SGP_PERIODS=FG` env overrides.
+4. Scrapers read `mlb_target_lines`, price every tuple at their respective book, write back to `mlb_sgp_odds` in the bot's market DB with new `spread_line`/`total_line` columns.
+5. Bot reloads `_SGP_ODDS_CACHE` from the bot market DB.
+
+**Edge surface:** any Kalshi MVE combo with ≥2 books priced at the matching (spread, total). Off-line combos (only 1 book) are dropped — the bot does not bet model-only or single-book candidates.
+
+**Schedule source:** game IDs and team metadata come from `Answer Keys/mlb.duckdb::mlb_odds_temp` (read-only). The bot has no dependency on Wagerzon-derived `mlb_parlay_lines` anymore.
+
+**Cold start:** the first SGP cycle runs synchronously before `main_loop` enters its tick. Bot blocks ~60-90s on startup.
+
+**Config:**
+- `SGP_REFRESH_SEC` (default 60) — SGP cadence interval
+- `SGP_SCRAPER_TIMEOUT_SEC` (default 90) — per-scraper kill deadline
+- `BOT_MARKET_DB` (default `kalshi_mlb_rfq_market.duckdb` in this package) — sibling market DB
+- `MIN_BOOK_COUNT_FOR_BLEND` (default 2) — drop-candidate threshold
