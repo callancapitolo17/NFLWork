@@ -3969,7 +3969,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             market:          data.market,
             american_odds:   parseInt(data.odds, 10),
             actual_size:     parseFloat(data.size),
-                kelly_bet:       parseFloat(data.modelSize || data.size),
+            kelly_bet:       parseFloat(data.modelSize || data.size),
             game_id:         data.gameId,
             home_team:       data.home,
             away_team:       data.away,
@@ -5268,7 +5268,6 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 )"))
 ,
       tags$script(HTML(r"(
-<script>
   (function setupEditableRisk() {
     var WZ_BOOK = 'wagerzon';
 
@@ -5467,7 +5466,6 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       }
     });
   })();
-</script>
 )"))
     )
   )
