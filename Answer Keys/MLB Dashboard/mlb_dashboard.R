@@ -1266,15 +1266,30 @@ render_bet_card <- function(bet_title, market_label, matchup, tipoff, hero_html,
     corr_badge_html
   )
 
-  matchup_line <- sprintf(
-    '<div class="matchup-line">
-       <span class="primary">%s</span>
-       <span class="sep">&middot;</span>
-       <span class="secondary">%s</span>
-     </div>',
-    htmltools::htmlEscape(matchup),
-    htmltools::htmlEscape(tipoff)
-  )
+  # tipoff is now a UTC ISO string (e.g. "2026-05-15T02:06:00Z"). The
+  # bets-tab page-level <script> walks every [data-tipoff] element on
+  # DOMContentLoaded and renders it via Date.toLocaleString() in the
+  # viewer's local timezone. Pre-render with &nbsp; so layout doesn't
+  # shift before JS runs. Empty tipoff (NA pt_start_time) renders as
+  # an empty separator block.
+  matchup_line <- if (nzchar(tipoff)) {
+    sprintf(
+      '<div class="matchup-line">
+         <span class="primary">%s</span>
+         <span class="sep">&middot;</span>
+         <span class="secondary" data-tipoff="%s">&nbsp;</span>
+       </div>',
+      htmltools::htmlEscape(matchup),
+      htmltools::htmlEscape(tipoff)
+    )
+  } else {
+    sprintf(
+      '<div class="matchup-line">
+         <span class="primary">%s</span>
+       </div>',
+      htmltools::htmlEscape(matchup)
+    )
+  }
 
   # Column header row (book labels)
   col_hdrs <- paste(
@@ -1422,8 +1437,15 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
       bet_hash       = pmap_chr(list(id, market, bet_on, line), generate_bet_hash),
       is_placed      = bet_hash %in% placed_hashes,
       matchup        = paste(away_team, "@", home_team),
+      # tipoff carries a UTC ISO string; client-side JS in the bets-tab
+      # template walks every [data-tipoff] element and renders it via
+      # toLocaleString() in the viewer's local timezone (matches the
+      # parlay-table approach at mlb_dashboard.R:515-524). Server-side
+      # format() printed UTC clock time because pt_start_time loses its
+      # America/Los_Angeles tag round-tripping through DuckDB.
       tipoff         = ifelse(is.na(pt_start_time), "",
-                              format(pt_start_time, "%a %I:%M %p")),
+                              format(lubridate::with_tz(pt_start_time, "UTC"),
+                                     "%Y-%m-%dT%H:%M:%SZ")),
       ev_pct         = ev * 100,
       risk_amt       = bet_size,
       towin_amt      = ifelse(odds > 0, bet_size * odds / 100,
@@ -3785,6 +3807,28 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               btn.textContent = "Refresh";
               btn.disabled = false;
             });
+        }
+
+        // ============ TIPOFF LOCAL-TIME RENDERER ============
+        // Render UTC ISO tipoffs in the viewer local timezone.
+        // Mirrors the parlay table renderer at mlb_dashboard.R:515-524.
+        function renderTipoffs(root) {
+          (root || document).querySelectorAll(\'[data-tipoff]\').forEach(function(el) {
+            var iso = el.getAttribute(\'data-tipoff\');
+            if (!iso) return;
+            var d = new Date(iso);
+            if (isNaN(d.getTime())) return;
+            el.textContent = d.toLocaleString(undefined, {
+              weekday: \'short\', hour: \'numeric\', minute: \'2-digit\'
+            });
+          });
+        }
+        document.addEventListener(\'DOMContentLoaded\', function() { renderTipoffs(); });
+        // Re-render after refresh swaps in new card HTML
+        if (window.MLB_AFTER_REFRESH) {
+          window.MLB_AFTER_REFRESH.push(renderTipoffs);
+        } else {
+          window.MLB_AFTER_REFRESH = [renderTipoffs];
         }
 
         function placeBet(btn) {
