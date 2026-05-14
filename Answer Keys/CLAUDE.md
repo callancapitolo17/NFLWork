@@ -156,6 +156,19 @@ mlb_triple_play.R (standalone pricer)
 6. **`tol_error` auto-scales to 0.2% of N** — Per Feustel's spec ("+/-1 means you are within 0.2% of your target"), `run_answer_key_sample()` and `generate_all_samples()` default `tol_error = NULL` which computes `max(1L, round(0.002 * current_N))` inside the shrink loop. At N=500 this is 1 (Feustel's canonical value); at N=1272 it's 3. **Never hardcode `tol_error = 1` at the caller** — that silently tightens the rule by 2.5× at MLB's N and causes pathological shrinkage of sparse-region games.
 7. **Naive TIMESTAMP vs `NOW()` in DuckDB R sessions** — `NOW()` returns TIMESTAMPTZ; comparing it to a NAIVE TIMESTAMP forces a cast using the session timezone. R's DuckDB defaults to **UTC**; Python's defaults to local. So `wagerzon_specials.game_time` (naive Eastern, e.g. `18:35` ET written verbatim by `scraper_specials.py`) gets interpreted as `18:35 UTC` in R — silently dropping every row once UTC time passes the nominal Eastern start (~4h pre-game). Compare against `(NOW() AT TIME ZONE 'America/New_York')::TIMESTAMP` to put both sides in naive Eastern wall-clock. Requires the `icu` extension (`INSTALL icu; LOAD icu;` at script startup — first call downloads ~1MB to user cache, then no-op). Same trap applies to any other naive-Eastern timestamp from offshore scrapers.
 8. **Parallel R scripts on `mlb.duckdb`** — `/refresh` launches `mlb_correlated_parlay.R` and `mlb_triple_play.R` in parallel (server line 2235-2244). Both want a writer connection on `mlb.duckdb` (parlay for working tables, trifecta only briefly to `CREATE TABLE IF NOT EXISTS mlb_trifecta_sgp_odds`). Whoever loses crashes with `errno 35` "Conflicting lock". Trifecta pricer now retries with exponential backoff and falls through non-fatally — the SGP table is created once per machine, so a transient miss on a follow-up run is safe. If you add a new short-lived `mlb.duckdb` writer in the parallel section, follow the same retry pattern.
+9. **Alt-market suffix conventions** — `compare_alts_to_samples` writes
+   `alternate_totals_fg / alternate_spreads_f5` (suffixed). Some scrapers
+   (Bet105, BFA) write the un-suffixed `alternate_totals / alternate_spreads`.
+   Both conventions are now canonicalized in `MLB Answer Key/odds_screen.R`'s
+   `.derive_period()` and `.derive_market_type()` so the join in
+   `expand_bets_to_book_prices` matches across either form. Additionally,
+   `expand_bets_to_book_prices` re-derives `market_type` unconditionally
+   and `period` for any NA values — both because MLB.R pre-sets
+   `market_type` to a stale bare value (`"totals"` for alt-totals via
+   `mutate(market_type = ifelse(grepl("spread", market), ...))`) and
+   `bind_rows` fills `period` with NA for alt rows (since
+   `compare_alts_to_samples` doesn't set it). If you add a new scraper
+   that uses a third suffix convention, extend those helpers.
 
 ## Known model biases
 
