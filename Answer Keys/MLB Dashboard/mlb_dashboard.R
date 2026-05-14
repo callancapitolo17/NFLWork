@@ -3824,12 +3824,6 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           });
         }
         document.addEventListener(\'DOMContentLoaded\', function() { renderTipoffs(); });
-        // Re-render after refresh swaps in new card HTML
-        if (window.MLB_AFTER_REFRESH) {
-          window.MLB_AFTER_REFRESH.push(renderTipoffs);
-        } else {
-          window.MLB_AFTER_REFRESH = [renderTipoffs];
-        }
 
         function placeBet(btn) {
           var data = btn.dataset;
