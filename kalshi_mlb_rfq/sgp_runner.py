@@ -9,9 +9,12 @@ Owns the cycle that:
 This module is invoked from main_loop on the SGP cadence tick.
 """
 from __future__ import annotations
+import os
+import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 import duckdb
 
@@ -238,5 +241,94 @@ def write_target_lines(target_lines: list[TargetLine], db_path: str):
     except Exception:
         con.execute("ROLLBACK")
         raise
+    finally:
+        con.close()
+
+
+def run_scrapers(
+    scraper_dir: str,
+    scraper_names: list[str],
+    venv_python: str,
+    timeout_sec: int,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, int]:
+    """Spawn each scraper as a subprocess in parallel. Returns
+    {scraper_name: return_code}.
+
+    - All scrapers share `env` (defaulting to os.environ) and a global
+      deadline of `timeout_sec` after which any still-running scraper
+      is killed.
+    - Hardened against handle leaks: subprocess Popen failures close
+      log handles before re-raising.
+    """
+    if env is None:
+        env_dict = dict(os.environ)
+    else:
+        env_dict = dict(os.environ)
+        env_dict.update(env)
+
+    log_handles: list = []
+    procs: dict[str, subprocess.Popen] = {}
+    try:
+        for name in scraper_names:
+            log_path = Path(scraper_dir) / f"{name}.runner.log"
+            handle = open(log_path, "w")
+            log_handles.append(handle)
+            try:
+                p = subprocess.Popen(
+                    [venv_python, name],
+                    cwd=scraper_dir,
+                    env=env_dict,
+                    stdout=handle,
+                    stderr=subprocess.STDOUT,
+                )
+                procs[name] = p
+            except Exception:
+                handle.close()
+                raise
+        deadline = time.time() + timeout_sec
+        rcs: dict[str, int] = {}
+        for name, p in procs.items():
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                p.kill()
+                rcs[name] = -1
+                continue
+            try:
+                rcs[name] = p.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                try:
+                    p.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                rcs[name] = -1
+        return rcs
+    finally:
+        for h in log_handles:
+            try:
+                h.close()
+            except Exception:
+                pass
+
+
+def read_priced_rows(bot_market_db: str, max_age_sec: int):
+    """Read mlb_sgp_odds rows fresher than max_age_sec from the bot DB.
+    Returns a pandas DataFrame; empty if no fresh data."""
+    import pandas as pd
+    if not Path(bot_market_db).exists():
+        return pd.DataFrame()
+    con = duckdb.connect(bot_market_db, read_only=True)
+    try:
+        tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
+        if "mlb_sgp_odds" not in tables:
+            return pd.DataFrame()
+        df = con.execute(
+            "SELECT game_id, combo, period, bookmaker, sgp_decimal, sgp_american, "
+            "fetch_time, source, spread_line, total_line "
+            "FROM mlb_sgp_odds WHERE fetch_time > NOW() - INTERVAL (CAST(? AS BIGINT)) SECOND",
+            [max_age_sec],
+        ).fetchdf()
+        return df
     finally:
         con.close()

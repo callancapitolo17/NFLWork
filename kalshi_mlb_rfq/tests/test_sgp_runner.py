@@ -160,3 +160,70 @@ def test_write_target_lines_empty_clears_existing(tmp_path):
     con = duckdb.connect(db, read_only=True)
     assert con.execute("SELECT COUNT(*) FROM mlb_target_lines").fetchone() == (0,)
     con.close()
+
+
+def test_run_scrapers_subprocess_plumbing(tmp_path):
+    """Verify subprocess invocation: correct env, success path."""
+    from kalshi_mlb_rfq.sgp_runner import run_scrapers
+    import sys
+
+    scraper_dir = tmp_path / "fake_scrapers"
+    scraper_dir.mkdir()
+    fake = scraper_dir / "fake_scraper.py"
+    fake.write_text(
+        "import os\n"
+        "open(os.environ['TARGET'], 'w').write(os.environ.get('MLB_SGP_DB_PATH', 'unset'))\n"
+    )
+    marker = tmp_path / "marker.txt"
+
+    result = run_scrapers(
+        scraper_dir=str(scraper_dir),
+        scraper_names=["fake_scraper.py"],
+        venv_python=sys.executable,
+        timeout_sec=10,
+        env={"MLB_SGP_DB_PATH": "/tmp/test.duckdb", "TARGET": str(marker)},
+    )
+    assert result == {"fake_scraper.py": 0}
+    assert marker.read_text() == "/tmp/test.duckdb"
+
+
+def test_run_scrapers_handles_timeout(tmp_path):
+    """If a scraper exceeds timeout_sec, kill it and return -1."""
+    from kalshi_mlb_rfq.sgp_runner import run_scrapers
+    import sys
+
+    scraper_dir = tmp_path / "fake"
+    scraper_dir.mkdir()
+    fake = scraper_dir / "slow_scraper.py"
+    fake.write_text("import time; time.sleep(60)\n")
+
+    result = run_scrapers(
+        scraper_dir=str(scraper_dir), scraper_names=["slow_scraper.py"],
+        venv_python=sys.executable, timeout_sec=2, env={},
+    )
+    assert result["slow_scraper.py"] != 0
+
+
+def test_read_priced_rows_filters_by_staleness(tmp_path):
+    from kalshi_mlb_rfq.sgp_runner import read_priced_rows
+    db = str(tmp_path / "r.duckdb")
+    con = duckdb.connect(db)
+    con.execute("""
+        CREATE TABLE mlb_sgp_odds (
+            game_id VARCHAR, combo VARCHAR, period VARCHAR, bookmaker VARCHAR,
+            sgp_decimal DOUBLE, sgp_american INTEGER, fetch_time TIMESTAMP,
+            source VARCHAR, spread_line DOUBLE, total_line DOUBLE
+        )
+    """)
+    con.execute("INSERT INTO mlb_sgp_odds VALUES ('g1','A','FG','dk',2.0,100,NOW(),'dk_direct',-1.5,8.5)")
+    con.execute("INSERT INTO mlb_sgp_odds VALUES ('g1','A','FG','dk',2.0,100,NOW() - INTERVAL 10 MINUTE,'dk_direct',-2.5,8.5)")
+    con.close()
+    df = read_priced_rows(db, max_age_sec=60)
+    assert len(df) == 1
+    assert df.iloc[0]["spread_line"] == -1.5
+
+
+def test_read_priced_rows_missing_db(tmp_path):
+    from kalshi_mlb_rfq.sgp_runner import read_priced_rows
+    df = read_priced_rows(str(tmp_path / "nonexistent.duckdb"), max_age_sec=60)
+    assert df.empty
