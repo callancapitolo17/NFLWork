@@ -52,6 +52,7 @@ adapts to the real signatures:
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from mlb_sgp._shared import PricedRow, TargetLine, decimal_to_american
@@ -173,31 +174,37 @@ def price_sgps(
     # loop. match_events guarantees one entry per game_id.
     matched_by_gid = {m["game_id"]: m for m in matched}
 
-    out: list[PricedRow] = []
-    fetch_now = datetime.now(timezone.utc)
-
-    # ----- Phase 2: per game, per period, build and price 4 combos ----- #
-    # Iterate target rows directly (not by_game) so a single TargetLine
-    # produces exactly one (period, spread, total) priced call. This
-    # mirrors the bot use-case where each Kalshi MVE enumeration becomes
-    # one target row.
-    for t in targets:
-        game = matched_by_gid.get(t.game_id)
-        if game is None:
-            continue
-
-        period_key = t.period.lower()  # "FG" -> "fg" for legacy dict keys
-
-        # Fetch market nums and per-period selection IDs for this game.
-        # Note: in the legacy scraper these are cached per-game across
-        # both periods. We re-fetch here for simplicity; the bot calls
-        # this once per cycle (~minute cadence) so the extra hits are
-        # negligible. If profiling shows this matters, we can memoize
-        # by (game_id, dk_event_id).
+    # ----- Phase 1.5: per-game fetch hoisting ----- #
+    # fetch_main_market_nums + fetch_selection_ids only depend on
+    # dk_event_id, NOT on (spread, total). For a game with 33 target
+    # lines that meant 32 redundant call pairs before this change. Now
+    # we do them once per game and stash the result in per_game_cache.
+    per_game_cache: dict[str, dict] = {}
+    for game_id, game in matched_by_gid.items():
         main_nums = fetch_main_market_nums(client.session, game["dk_event_id"])
         sel_ids_all = fetch_selection_ids(
             client.session, game["dk_event_id"], main_nums, verbose,
         )
+        per_game_cache[game_id] = {
+            "game": game,
+            "main_nums": main_nums,
+            "sel_ids_all": sel_ids_all,
+        }
+
+    out: list[PricedRow] = []
+    fetch_now = datetime.now(timezone.utc)
+
+    # ----- Phase 2: per target row, build and price 4 combos ----- #
+    # Iterate target rows directly so each TargetLine produces exactly
+    # one (period, spread, total) priced call. This mirrors the bot
+    # use-case where each Kalshi MVE enumeration becomes one target row.
+    for t in targets:
+        cache = per_game_cache.get(t.game_id)
+        if cache is None:
+            continue
+
+        period_key = t.period.lower()  # "FG" -> "fg" for legacy dict keys
+        sel_ids_all = cache["sel_ids_all"]
         sel_ids = sel_ids_all.get(period_key, {"spreads": {}, "totals": {}})
         canonical = sel_ids.get("canonical", set())
 
@@ -249,7 +256,12 @@ def price_sgps(
                 ))
             continue
 
-        # ----- Main path: price the 4 canonical combos ----- #
+        # ----- Main path: price the 4 canonical combos in parallel ----- #
+        # The 4 combos make independent calculateBets calls on the same
+        # curl_cffi session. Precedent: scraper_prophetx_sgp.py:577 does
+        # this on shared cffi session (known-safe). Each combo is a few
+        # 100ms of network latency, so 4-way parallelism is ~3-4x speedup
+        # on this loop.
         prefix = "" if t.period == "FG" else "F5 "
         combos = (
             ("Home Spread + Over",  home_spread_sels, over_sels),
@@ -258,11 +270,13 @@ def price_sgps(
             ("Away Spread + Under", away_spread_sels, under_sels),
         )
 
-        for combo_name, sp_sels, tot_sels in combos:
-            sgp = _price_combo(
-                client.session, sp_sels, tot_sels, canonical,
-                calculate_sgp, _market_num, verbose,
-            )
+        priced_by_combo = _price_combos_parallel(
+            client.session, combos, canonical,
+            calculate_sgp, _market_num, verbose,
+        )
+
+        for combo_name, _sp_sels, _tot_sels in combos:
+            sgp = priced_by_combo.get(combo_name)
             if not sgp:
                 continue
             dec = sgp["trueOdds"]
@@ -280,6 +294,51 @@ def price_sgps(
             ))
 
     return out
+
+
+def _price_combos_parallel(
+    session,
+    combos: tuple,
+    canonical: set,
+    calculate_sgp_fn,
+    market_num_fn,
+    verbose: bool,
+) -> dict:
+    """Price the 4 combo flavors in parallel and return {combo_name: sgp_dict}.
+
+    Each combo runs ``_price_combo`` (which itself iterates candidate
+    sel_id pairs and calls calculateBets). The 4 combos hit DK's API
+    independently on the same curl_cffi session — safe because cffi
+    sessions are thread-safe for separate requests, and we never share
+    request state between threads. Pattern proven by
+    scraper_prophetx_sgp.py:577 which has been in production since the
+    PX integration shipped.
+
+    A combo that fails to price (None) is simply omitted from the
+    result dict, mirroring the sequential path's ``if not sgp: continue``
+    behavior.
+    """
+    results: dict = {}
+
+    def _price_one(combo_name, sp_sels, tot_sels):
+        return combo_name, _price_combo(
+            session, sp_sels, tot_sels, canonical,
+            calculate_sgp_fn, market_num_fn, verbose,
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [
+            pool.submit(_price_one, combo_name, sp_sels, tot_sels)
+            for combo_name, sp_sels, tot_sels in combos
+        ]
+        for fut in as_completed(futures):
+            try:
+                combo_name, sgp = fut.result()
+            except Exception:
+                continue
+            if sgp:
+                results[combo_name] = sgp
+    return results
 
 
 def _price_combo(
