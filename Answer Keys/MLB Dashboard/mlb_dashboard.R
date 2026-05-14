@@ -1150,8 +1150,11 @@ BOOK_LABELS_V8 <- c(wagerzon = "WZ", hoop88 = "H88", bfa = "BFA",
 
 #' Render one row of the price grid (1 row label + 8 book cells).
 #'
-#' @param wide_row Single-row tibble from book_prices_wide (the pivoted side's data),
+#' @param wide_row Single-row tibble from book_prices_wide (THIS side's data),
 #'   or NULL if no row exists for this side.
+#' @param other_side_wide_row Single-row tibble from book_prices_wide (the
+#'   OTHER side's data — pass oppside when rendering the pick row, and vice
+#'   versa). NULL is allowed; the cells will fall back to raw-only display.
 #' @param side_label Text for the leftmost cell, e.g. "BOS -2.5" or "Over 5.5"
 #' @param is_pick_side TRUE for the pick row; FALSE for the opposite row
 #' @param pick_book Bookmaker key (e.g. "wagerzon") of the picked book
@@ -1159,7 +1162,8 @@ BOOK_LABELS_V8 <- c(wagerzon = "WZ", hoop88 = "H88", bfa = "BFA",
 #' @param is_totals Boolean — drives spread vs totals line-tag formatting
 #' @return HTML string: row-label cell + 8 grid cells.
 render_price_grid_row <- function(wide_row, side_label, is_pick_side,
-                                   pick_book, side_word, is_totals) {
+                                   pick_book, side_word, is_totals,
+                                   other_side_wide_row = NULL) {
   cells <- vapply(BOOK_ORDER_V8, function(b) {
     odds_col  <- paste0(b, "_american_odds")
     lq_col    <- paste0(b, "_line_quoted")
@@ -1167,13 +1171,19 @@ render_price_grid_row <- function(wide_row, side_label, is_pick_side,
     odds  <- if (!is.null(wide_row) && odds_col  %in% names(wide_row)) wide_row[[odds_col]]  else NA_integer_
     lq    <- if (!is.null(wide_row) && lq_col    %in% names(wide_row)) wide_row[[lq_col]]    else NA_real_
     exact <- if (!is.null(wide_row) && exact_col %in% names(wide_row)) wide_row[[exact_col]] else NA
+    # Other-side odds for THIS book — used for devig FAIR view.
+    opp_odds <- if (!is.null(other_side_wide_row) &&
+                    odds_col %in% names(other_side_wide_row)) {
+      other_side_wide_row[[odds_col]]
+    } else NA_integer_
     render_book_cell(
-      american_odds = if (is.na(odds)) NA_integer_ else as.integer(odds),
-      line_quoted   = lq,
-      is_exact_line = exact,
-      is_pick       = is_pick_side && (b == pick_book),
-      side_word     = side_word,
-      is_totals     = is_totals
+      american_odds          = if (is.na(odds))     NA_integer_ else as.integer(odds),
+      opposite_american_odds = if (is.na(opp_odds)) NA_integer_ else as.integer(opp_odds),
+      line_quoted            = lq,
+      is_exact_line          = exact,
+      is_pick                = is_pick_side && (b == pick_book),
+      side_word              = side_word,
+      is_totals              = is_totals
     )
   }, character(1))
 
