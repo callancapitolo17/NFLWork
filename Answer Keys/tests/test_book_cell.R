@@ -40,3 +40,65 @@ test_that(".devig_american_pair returns NA on bad inputs", {
   expect_true(is.na(.devig_american_pair(0,  +120)$fair1))
   expect_true(is.na(.devig_american_pair(-110, NA)$fair2))
 })
+
+# ----------------------------------------------------------------------------
+# render_book_cell HTML output tests (PR B Task 2)
+# ----------------------------------------------------------------------------
+# These tests verify that render_book_cell emits BOTH a <span class="raw">
+# (the book's actual American odds) and a <span class="fair"> (the
+# probit-devigged fair American odds) when the opposite side's odds are
+# supplied. Later PR-B tasks add CSS + JS to hide one or the other based
+# on a class on the parent .price-grid container (the toggle).
+#
+# Backwards-compat: when opposite_american_odds is NA (legacy callers
+# like render_book_pill), no fair span should be emitted — only raw.
+#
+# NOTE on expected fair values: .devig_american_pair(+120, -140) returns
+# fair1 = +130 (NOT +129 as the original PR-B plan documented). The plan's
+# literal values were off by 1 due to rounding (+129.604 rounds to +130).
+# The asymmetric devig math test above already documents this.
+
+test_that("render_book_cell with both odds emits raw + fair spans", {
+  html <- render_book_cell(
+    american_odds          = +120,
+    opposite_american_odds = -140,
+    line_quoted            = -0.5,
+    is_exact_line          = TRUE,
+    is_pick                = FALSE,
+    side_word              = "over",
+    is_totals              = FALSE
+  )
+  expect_match(html, '<span class="raw">\\+120</span>',  fixed = FALSE)
+  expect_match(html, '<span class="fair">\\+130</span>', fixed = FALSE)
+  # No alt-line tag because is_exact_line = TRUE
+  expect_false(grepl('alt-line', html))
+})
+
+test_that("render_book_cell without opposite_american_odds emits raw only (legacy)", {
+  html <- render_book_cell(
+    american_odds = +120,
+    line_quoted   = -0.5,
+    is_exact_line = TRUE,
+    is_pick       = FALSE,
+    side_word     = "over",
+    is_totals     = FALSE
+  )
+  # Raw span present; fair span omitted (or empty) when opposite missing
+  expect_match(html, '<span class="raw">\\+120</span>', fixed = FALSE)
+  expect_false(grepl('<span class="fair">\\+', html))
+})
+
+test_that("render_book_cell on alt line keeps amber tag in both views", {
+  html <- render_book_cell(
+    american_odds          = -117,
+    opposite_american_odds = +102,
+    line_quoted            = 0,
+    is_exact_line          = FALSE,
+    is_pick                = FALSE,
+    side_word              = "over",
+    is_totals              = FALSE
+  )
+  expect_match(html, 'alt-line', fixed = FALSE)
+  expect_match(html, '<span class="raw">-117</span>',  fixed = FALSE)
+  expect_match(html, '<span class="fair">', fixed = FALSE)  # devig present
+})
