@@ -198,12 +198,20 @@ def price_sgps(
         period_key = "fg" if t.period == "FG" else "f5"
 
         # Fetch + cache markets for this game. Translate Market dataclasses
-        # to the legacy raw-dict shape (with `id`, `name`, `marketLines`)
-        # so `_find_market` and `_pick_selection` work unmodified.
+        # to the legacy raw-dict shape (with `id`, `name`, `marketLines`,
+        # `outcomes`) so `_find_market`, `_pick_selection`, AND
+        # `_verify_competitor_ids` work unmodified. The Moneyline market on
+        # the live PX API carries a flat top-level `outcomes` list with
+        # competitorIds — without it, the C1 guard rejects every game.
         if t.game_id not in markets_cache:
             market_objs = client.fetch_event_markets(game["px_event_id"])
             markets_cache[t.game_id] = [
-                {"id": m.market_id, "name": m.name, "marketLines": m.selections}
+                {
+                    "id": m.market_id,
+                    "name": m.name,
+                    "marketLines": m.selections,
+                    "outcomes": m.outcomes,
+                }
                 for m in market_objs
             ]
         markets = markets_cache[t.game_id]

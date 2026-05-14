@@ -76,6 +76,12 @@ class Market:
     # Raw marketLines passthrough. Each entry has the shape:
     #   {"id": ..., "name": ..., "outcomes": [{"id", "line", "lineID", ...}], ...}
     selections: list[dict]
+    # Raw top-level `outcomes` passthrough. PX's Moneyline market carries a
+    # flat `outcomes` list at the market level (with `competitorId` per side)
+    # alongside `marketLines`. The legacy `_verify_competitor_ids` helper
+    # reads this list to confirm home/away IDs match the tournaments endpoint.
+    # Often empty for non-moneyline markets; the helper is permissive.
+    outcomes: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -138,10 +144,16 @@ class ProphetXClient:
         too.
         """
         url = f"{PROPHETX_BASE}/parlay/public/api/v1/user/request"
+        # ProphetX expects sportEventId / marketId / outcomeId as int64 on
+        # the wire. The SelectionLeg dataclass stores them as strings (so
+        # tests and mocks don't have to fuss with types), so we coerce
+        # back to int here. lineId is a hex hash and stays a string.
         payload = {
             "marketLines": [
-                {"sportEventId": l.sport_event_id, "marketId": l.market_id,
-                 "outcomeId": l.outcome_id, "lineId": l.line_id, "line": l.line}
+                {"sportEventId": _to_int_or_str(l.sport_event_id),
+                 "marketId": _to_int_or_str(l.market_id),
+                 "outcomeId": _to_int_or_str(l.outcome_id),
+                 "lineId": l.line_id, "line": l.line}
                 for l in legs
             ],
             "stake": stake,
@@ -173,6 +185,23 @@ class ProphetXClient:
 # ---------------------------------------------------------------------------
 # Pure parser / policy helpers — exposed at module level for tests
 # ---------------------------------------------------------------------------
+
+def _to_int_or_str(val):
+    """Coerce a stringified numeric ID back to int for the PX RFQ wire format.
+
+    PX rejects string IDs with `cannot unmarshal string into ... int64`. The
+    SelectionLeg dataclass stores IDs as strings (test ergonomics), so we
+    parse to int at the network boundary. If the value isn't a parseable
+    int (e.g. an empty string from a missing field), we pass it through
+    unchanged — the API will return a 500 the caller already handles.
+    """
+    if isinstance(val, bool):
+        return val  # don't let True/False slip through int()
+    if isinstance(val, int):
+        return val
+    if isinstance(val, str) and val.strip().lstrip("-").isdigit():
+        return int(val)
+    return val
 
 def _parse_events_response(raw: dict) -> list[Event]:
     """Filter a raw `tournaments` response to MLB events.
@@ -244,6 +273,7 @@ def _parse_event_markets(raw: dict) -> list[Market]:
             name=m.get("name", "") or "",
             strike=m.get("strike"),
             selections=list(m.get("marketLines") or []),
+            outcomes=list(m.get("outcomes") or []),
         ))
     return out
 
