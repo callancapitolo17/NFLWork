@@ -22,11 +22,11 @@ run.py mlb (pipeline)  →  mlb_mm.duckdb/mlb_bets_combined          (dashboard 
 
 ## Features
 
-- **Bets tab odds screen** — card-based layout (mirrors the parlays-tab style) showing every recommended single bet at every tracked sportsbook. Eight books displayed in fixed order: WZ, H88, BFA, BKM, B105, DK, FD, Pinn. Each book is represented by a pill in one of three states:
+- **Bets tab odds screen** — card-based layout (mirrors the parlays-tab style) showing every recommended single bet at every tracked sportsbook. The card body renders a strict **2×8 price grid** (2 sides × 8 books) — books in fixed order: WZ, H88, BFA, BKM, B105, DK, FD, Pinn. Spreads, alt-spreads, and moneyline bets now render **both sides** (e.g. `BOS -2.5` and `PHI +2.5`), mirroring how totals already showed Over + Under. Each grid cell is in one of three states:
   - **Exact-line price** — book offers the bet at the model's exact line; shows the American odds.
-  - **Mismatched-line** — book offers the bet but at a different line (within ±1 unit threshold); pill shows the line tag in amber.
-  - **No-quote** — book has no line for this bet; pill renders muted with a dashed border.
-  The pick book's pill is green-tinted and bold. Below the book pills, a metadata strip shows: `M / Pick / EV / Size / To Win / [Place] [Log]`.
+  - **Mismatched-line** — book offers the bet at a nearby line (within ±3.0 units); the cell shows the line tag in amber.
+  - **No-quote** — book has no line for this bet; cell renders muted with a dashed border.
+  Above the grid, a green-tinted **hero strip** surfaces the pick book / Fair (de-vigged American odds) / EV / Risk / To Win, plus the `[Place]` and `[Log]` buttons.
   - `[Place]` dispatches by book: Wagerzon → direct REST API (no browser, returns ticket #); Hoop88 / BFA / BetOnlineAG → existing Playwright browser flow; DraftKings / FanDuel / Pinnacle / Bookmaker / Bet105 → button disabled (use `[Log]` instead).
   - `[Log]` records a manual placement without contacting any book — works for any sportsbook.
 - **Parlay tab** — MLB-specific: correlated 2-leg parlays (spread + total) priced via `mlb_correlated_parlay.R` with conditional Kelly sizing. Each opportunity renders as a card containing the matchup, legs, a Books pill row (model M plus per-book devigged fair probabilities for DK / FD / PX / NV plus blended consensus Cons), and a metadata strip (Fair / WZ / Size / To Win) with edge percentage and the Place / placed-label / error-pill action. The card layout reads identically across laptop, split-screen, and phone — no column hiding, no horizontal scroll. Combined-parlay selection (the Sel checkbox in the top-right corner of each card) and auto-placement still work unchanged.

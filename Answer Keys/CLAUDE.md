@@ -211,10 +211,15 @@ for the design spec.
 
 1. MLB.R writes `mlb_bets_book_prices` to `mlb_mm.duckdb` alongside
    `mlb_bets_combined`. Each row is one (bet × book × side) at the
-   model's exact line OR the closest line within ±1 unit.
-2. Dashboard loads `mlb_bets_book_prices`, pivots long→wide, and
+   model's exact line OR the closest line within ±3.0 units (per
+   `LINE_MATCH_TOLERANCE = 3.0` in `odds_screen.R:18`; raised from
+   1.0 on 2026-05-13).
+2. Spread / alt-spread / moneyline bets now emit both a `pick` row
+   AND an `opposite` row (previously only totals did this). That's
+   what powers the 2×8 grid showing both sides per card.
+3. Dashboard loads `mlb_bets_book_prices`, pivots long→wide, and
    passes the wide frame to `create_bets_table()` which renders cards.
-3. Old `create_bets_table_legacy()` is preserved as a fallback if the
+4. Old `create_bets_table_legacy()` is preserved as a fallback if the
    new table is missing (first deploy after merge).
 
 ### Helpers
@@ -224,8 +229,17 @@ for the design spec.
   - `parse_prefetched_to_long()` — flatten Odds API prefetched JSON
   - `scraper_to_canonical()` — wide scraper frame → long
   - `odds_api_to_canonical()` — Odds API long → canonical
-  - `expand_bets_to_book_prices()` — ±1 unit nearest-line matching
-- `Answer Keys/MLB Dashboard/book_pill.R` — `render_book_pill()` HTML helper
+  - `expand_bets_to_book_prices()` — ±3.0 unit nearest-line matching (`LINE_MATCH_TOLERANCE`); now emits both pick and opposite rows for spreads/ML
+- `Answer Keys/MLB Dashboard/book_cell.R` — `render_book_cell()` grid-cell HTML helper. (Renamed from `book_pill.R` 2026-05-13 as part of the V8 card redesign. A deprecation shim `render_book_pill()` is preserved for legacy callers.)
+
+### V8 card layout (2026-05-13)
+
+The bets-tab card uses a strict 2×8 price grid (sides × books) with a green-tinted hero strip that surfaces the pick book + odds, Fair (de-vigged American odds), EV, Risk, and To Win.
+Place / Log buttons live in the same hero strip.
+Spread / alt-spread / moneyline bets render both sides (BOS -2.5 + PHI +2.5).
+Helpers in `mlb_dashboard.R`: `render_price_grid_row`, `render_hero_strip`, `render_bet_card`, `format_market_for_card`, `.team_abbr`.
+`fair_odds` is derived inline from `prob` (`mlb_bets_combined` doesn't expose it directly).
+Visual reference: `docs/superpowers/specs/2026-05-13-mlb-bets-tab-improvements-design.md` and the V8 mockup in the brainstorm dir.
 
 ### WZ single-bet auto-placer
 
