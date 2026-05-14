@@ -46,6 +46,7 @@ verbatim.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from mlb_sgp._shared import PricedRow, TargetLine, decimal_to_american
@@ -234,6 +235,10 @@ def price_sgps(
             continue
 
         # ----- Main path: price the 4 canonical combos via /parlay/request ----- #
+        # 4 independent submit_parlay calls on the same curl_cffi session.
+        # Mirrors the DK orchestrator pattern (commit fd9900e). The
+        # SANITY_MULT_RATIO filter runs inside each worker so its
+        # behavior is unchanged — failing combos return None.
         combos = (
             ("Home Spread + Over",  home, over),
             ("Home Spread + Under", home, under),
@@ -241,27 +246,15 @@ def price_sgps(
             ("Away Spread + Under", away, under),
         )
 
-        for combo_name, sp, to in combos:
-            priced, _auth_failed = submit_parlay(
-                client.session, [sp["id"], to["id"]], verbose=verbose,
-            )
+        priced_by_combo = _price_combos_parallel(
+            client.session, combos, submit_parlay, verbose,
+        )
+
+        # Iterate combos (not the dict) to preserve deterministic order.
+        for combo_name, _sp, _to in combos:
+            priced = priced_by_combo.get(combo_name)
             if priced is None:
                 continue
-
-            # Sanity filter: drop combos where the parlay decimal exceeds
-            # SANITY_MULT_RATIO * naive_leg_product. Same defense as the
-            # ProphetX orchestrator. `available` is implied probability,
-            # so leg decimal = 1 / available.
-            sp_av = sp.get("available")
-            to_av = to.get("available")
-            if not _passes_sanity_mult_ratio(priced["decimal"], sp_av, to_av):
-                if verbose:
-                    print(
-                        f"      SANITY-DROP {combo_name} "
-                        f"parlay={priced['decimal']:.2f}"
-                    )
-                continue
-
             dec = priced["decimal"]
             out.append(PricedRow(
                 game_id=t.game_id,
@@ -277,6 +270,61 @@ def price_sgps(
             ))
 
     return out
+
+
+def _price_combos_parallel(
+    session,
+    combos: tuple,
+    submit_parlay_fn,
+    verbose: bool,
+) -> dict:
+    """Price the 4 combo flavors in parallel and return {combo_name: priced}.
+
+    Each combo submits a parlay RFQ via ``submit_parlay`` on the shared
+    curl_cffi session. The SANITY_MULT_RATIO filter runs *inside* the
+    worker so a combo that fails sanity is omitted from the result dict
+    — same behavior as the sequential path, just executed concurrently.
+    """
+    results: dict = {}
+
+    def _price_one(combo_name, sp, to):
+        try:
+            priced, _auth_failed = submit_parlay_fn(
+                session, [sp["id"], to["id"]], verbose=verbose,
+            )
+            if priced is None:
+                return combo_name, None
+
+            # Sanity filter: drop combos where the parlay decimal exceeds
+            # SANITY_MULT_RATIO * naive_leg_product. `available` is implied
+            # probability so leg decimal = 1 / available.
+            sp_av = sp.get("available")
+            to_av = to.get("available")
+            if not _passes_sanity_mult_ratio(priced["decimal"], sp_av, to_av):
+                if verbose:
+                    print(
+                        f"      SANITY-DROP {combo_name} "
+                        f"parlay={priced['decimal']:.2f}"
+                    )
+                return combo_name, None
+
+            return combo_name, priced
+        except Exception:
+            return combo_name, None
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [
+            pool.submit(_price_one, combo_name, sp, to)
+            for combo_name, sp, to in combos
+        ]
+        for fut in as_completed(futures):
+            try:
+                combo_name, priced = fut.result()
+            except Exception:
+                continue
+            if priced is not None:
+                results[combo_name] = priced
+    return results
 
 
 # ---------------------------------------------------------------------------

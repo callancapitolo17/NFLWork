@@ -60,6 +60,7 @@ The plan-spec didn't match the actual helper signatures shipped in
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from mlb_sgp._shared import PricedRow, TargetLine, american_to_decimal, decimal_to_american
@@ -269,35 +270,21 @@ def price_sgps(
         spread_mid = spread_mkt.get("id")
         total_mid = total_mkt.get("id")
 
-        for combo_name, sp_sel, tot_sel in combos:
-            legs = [
-                _selection_to_leg(game["px_event_id"], spread_mid, sp_sel),
-                _selection_to_leg(game["px_event_id"], total_mid, tot_sel),
-            ]
-            offer, _used_fallback = client.submit_parlay_rfq(legs)
-            if offer is None:
-                continue
+        # ----- Main path: price the 4 canonical combos in parallel ----- #
+        # 4 independent RFQ submissions on the same curl_cffi session.
+        # Mirrors the DK orchestrator pattern (commit fd9900e). The
+        # SANITY_MULT_RATIO filter runs inside each worker so its
+        # behavior is unchanged — failing combos return None.
+        priced_by_combo = _price_combos_parallel(
+            client, game["px_event_id"], spread_mid, total_mid,
+            combos, verbose,
+        )
 
-            # chosen_offer["odds"] is American. Convert to decimal.
-            am_parlay = offer.get("odds")
-            if am_parlay is None:
+        # Iterate combos (not the dict) to preserve deterministic order.
+        for combo_name, _sp_sel, _tot_sel in combos:
+            sgp_decimal = priced_by_combo.get(combo_name)
+            if sgp_decimal is None:
                 continue
-            try:
-                sgp_decimal = american_to_decimal(int(am_parlay))
-            except (TypeError, ValueError):
-                continue
-
-            # SANITY filter — block F5-Over systematic mispricing.
-            leg1_dec = _safe_leg_decimal(sp_sel)
-            leg2_dec = _safe_leg_decimal(tot_sel)
-            if not _passes_sanity_mult_ratio(sgp_decimal, leg1_dec, leg2_dec):
-                if verbose:
-                    print(
-                        f"      SANITY-DROP {combo_name} "
-                        f"parlay={sgp_decimal:.2f} naive={leg1_dec * leg2_dec:.2f}"
-                    )
-                continue
-
             out.append(PricedRow(
                 game_id=t.game_id,
                 combo=prefix + combo_name,
@@ -312,6 +299,72 @@ def price_sgps(
             ))
 
     return out
+
+
+def _price_combos_parallel(
+    client: ProphetXClient,
+    px_event_id: str,
+    spread_mid,
+    total_mid,
+    combos: tuple,
+    verbose: bool,
+) -> dict:
+    """Price the 4 combo flavors in parallel and return {combo_name: sgp_decimal}.
+
+    Each combo submits a parlay RFQ via ``client.submit_parlay_rfq`` on
+    the shared curl_cffi session. The SANITY_MULT_RATIO filter (F5-Over
+    defense) runs *inside* the worker so a combo that fails sanity is
+    omitted from the result dict — same behavior as the sequential path,
+    just executed concurrently.
+    """
+    results: dict = {}
+
+    def _price_one(combo_name, sp_sel, tot_sel):
+        try:
+            legs = [
+                _selection_to_leg(px_event_id, spread_mid, sp_sel),
+                _selection_to_leg(px_event_id, total_mid, tot_sel),
+            ]
+            offer, _used_fallback = client.submit_parlay_rfq(legs)
+            if offer is None:
+                return combo_name, None
+
+            am_parlay = offer.get("odds")
+            if am_parlay is None:
+                return combo_name, None
+            try:
+                sgp_decimal = american_to_decimal(int(am_parlay))
+            except (TypeError, ValueError):
+                return combo_name, None
+
+            # SANITY filter — block F5-Over systematic mispricing.
+            leg1_dec = _safe_leg_decimal(sp_sel)
+            leg2_dec = _safe_leg_decimal(tot_sel)
+            if not _passes_sanity_mult_ratio(sgp_decimal, leg1_dec, leg2_dec):
+                if verbose:
+                    print(
+                        f"      SANITY-DROP {combo_name} "
+                        f"parlay={sgp_decimal:.2f} naive={leg1_dec * leg2_dec:.2f}"
+                    )
+                return combo_name, None
+
+            return combo_name, sgp_decimal
+        except Exception:
+            return combo_name, None
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [
+            pool.submit(_price_one, combo_name, sp_sel, tot_sel)
+            for combo_name, sp_sel, tot_sel in combos
+        ]
+        for fut in as_completed(futures):
+            try:
+                combo_name, sgp_decimal = fut.result()
+            except Exception:
+                continue
+            if sgp_decimal is not None:
+                results[combo_name] = sgp_decimal
+    return results
 
 
 # ---------------------------------------------------------------------------

@@ -55,6 +55,7 @@ signatures. This orchestrator adapts:
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from mlb_sgp._shared import PricedRow, TargetLine, decimal_to_american
@@ -237,7 +238,11 @@ def price_sgps(
                 ))
             continue
 
-        # ----- Main path: price the 4 canonical combos ----- #
+        # ----- Main path: price the 4 canonical combos in parallel ----- #
+        # 4 independent implyBets calls on the same curl_cffi session.
+        # Mirrors the DK orchestrator pattern (commit fd9900e). Session
+        # is thread-safe for independent requests; no shared per-request
+        # state is mutated across threads.
         prefix = "" if t.period == "FG" else "F5 "
         combos = (
             ("Home Spread + Over",  home_spread, over),
@@ -246,13 +251,13 @@ def price_sgps(
             ("Away Spread + Under", away_spread, under),
         )
 
-        for combo_name, sp_pair, tot_pair in combos:
-            result = price_combo(
-                client.session,
-                sp_pair[0], sp_pair[1],
-                tot_pair[0], tot_pair[1],
-                verbose=verbose,
-            )
+        priced_by_combo = _price_combos_parallel(
+            client.session, combos, price_combo, verbose,
+        )
+
+        # Iterate combos (not the dict) to preserve deterministic order.
+        for combo_name, _sp_pair, _tot_pair in combos:
+            result = priced_by_combo.get(combo_name)
             if not result:
                 continue
             dec = float(result["decimal"])
@@ -271,3 +276,48 @@ def price_sgps(
             ))
 
     return out
+
+
+def _price_combos_parallel(
+    session,
+    combos: tuple,
+    price_combo_fn,
+    verbose: bool,
+) -> dict:
+    """Price the 4 combo flavors in parallel and return {combo_name: result}.
+
+    Each combo runs a single implyBets call (FD's pricer is leg-pair
+    direct, no canonical filter needed). 4-way parallelism on the same
+    curl_cffi session — safe because cffi sessions are thread-safe for
+    separate requests and we never share request state between threads.
+
+    A combo that fails to price (None / falsy result) is omitted from
+    the result dict, mirroring the sequential path's ``if not result:
+    continue`` behavior.
+    """
+    results: dict = {}
+
+    def _price_one(combo_name, sp_pair, tot_pair):
+        try:
+            return combo_name, price_combo_fn(
+                session,
+                sp_pair[0], sp_pair[1],
+                tot_pair[0], tot_pair[1],
+                verbose=verbose,
+            )
+        except Exception:
+            return combo_name, None
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [
+            pool.submit(_price_one, combo_name, sp_pair, tot_pair)
+            for combo_name, sp_pair, tot_pair in combos
+        ]
+        for fut in as_completed(futures):
+            try:
+                combo_name, result = fut.result()
+            except Exception:
+                continue
+            if result:
+                results[combo_name] = result
+    return results
