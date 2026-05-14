@@ -174,22 +174,80 @@ def price_sgps(
     # game (e.g. FG + F5) only hit FD's event-page endpoint once.
     runners_cache: dict[str, dict] = {}
 
-    # ----- Phase 2: per target row, price 4 combos ----- #
+    # ----- Phase 1.6: group targets by game (Filter A) ----- #
+    # We need to know what lines FD offers per game before we can drop
+    # targets the book doesn't carry. Fetch runners up-front per matched
+    # game, then build a per-period set of offered (spread, total) lines.
+    targets_by_game: dict[str, list[TargetLine]] = {}
     for t in targets:
+        targets_by_game.setdefault(t.game_id, []).append(t)
+
+    filtered_targets: list[TargetLine] = []
+    for game_id, game_targets in targets_by_game.items():
+        game = matched_by_gid.get(game_id)
+        if game is None:
+            continue
+        if game_id not in runners_cache:
+            runners_cache[game_id] = fetch_event_runners(
+                client.session,
+                game["fd_event_id"],
+                game["fd_home"],
+                game["fd_away"],
+            )
+        sel_ids_per_period = runners_cache[game_id]
+        # Build offered (spread, total) sets per period. FD keys spreads
+        # as (side, signed_line) — we collapse to a single signed-line
+        # set by only consuming the "home" entries (away entries mirror
+        # the same magnitude).
+        offered_per_period: dict[str, dict[str, set]] = {}
+        for period_key in ("fg", "f5"):
+            sel = sel_ids_per_period.get(period_key, {"spreads": {}, "totals": {}})
+            spreads = {
+                line for (side, line) in sel.get("spreads", {}).keys()
+                if side == "home"
+            }
+            totals = {
+                line for (ou, line) in sel.get("totals", {}).keys()
+            }
+            offered_per_period[period_key] = {
+                "spreads": spreads,
+                "totals": totals,
+            }
+        # Filter this game's targets.
+        pre = 0
+        post = 0
+        for t in game_targets:
+            pre += 1
+            offered = offered_per_period.get(t.period.lower())
+            if offered is None:
+                continue
+            if t.spread not in offered["spreads"]:
+                continue
+            if t.total in offered["totals"]:
+                filtered_targets.append(t)
+                post += 1
+                continue
+            # Fallback: integer total + adjacent half-point alts both offered.
+            if float(t.total).is_integer() and (
+                (t.total - 0.5) in offered["totals"]
+                and (t.total + 0.5) in offered["totals"]
+            ):
+                filtered_targets.append(t)
+                post += 1
+        if verbose:
+            print(f"  game {game_id}: {pre} kalshi → {post} offered", flush=True)
+
+    # ----- Phase 2: per target row, price 4 combos ----- #
+    for t in filtered_targets:
         game = matched_by_gid.get(t.game_id)
         if game is None:
             continue
 
         period_key = t.period.lower()  # "FG" -> "fg"
 
-        # Fetch SGP-tab runners for this game (cached per game_id).
-        if t.game_id not in runners_cache:
-            runners_cache[t.game_id] = fetch_event_runners(
-                client.session,
-                game["fd_event_id"],
-                game["fd_home"],
-                game["fd_away"],
-            )
+        # Runners cache is now guaranteed-populated by the filter loop
+        # above (we only added a target if its game's runners were
+        # fetched successfully).
         sel_ids_per_period = runners_cache[t.game_id]
         sel = sel_ids_per_period.get(period_key, {"spreads": {}, "totals": {}})
 

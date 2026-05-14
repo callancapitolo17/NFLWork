@@ -183,17 +183,82 @@ def price_sgps(
     # try_integer_fallback_nv).
     legs_cache: dict[str, tuple[dict, list]] = {}
 
-    # ----- Phase 2: per target row, price 4 combos (or fall back) ----- #
+    # ----- Phase 1.6: group + cache + filter (Filter A) ----- #
+    # NV markets are very sparse for alt lines (often only main +/- one
+    # half-point neighbor). Drop targets where the spread isn't offered
+    # at all OR the total isn't offered AND no half-point neighbors are
+    # offered (the latter would let try_integer_fallback_nv rescue an
+    # integer total). NV's spread match in fetch_event_legs is strict —
+    # if NV's market strike differs from the target, no leg comes back.
+    from scraper_novig_sgp import SPREAD_TYPE, TOTAL_TYPE
+
+    targets_by_game: dict[str, list[TargetLine]] = {}
     for t in targets:
+        targets_by_game.setdefault(t.game_id, []).append(t)
+
+    filtered_targets: list[TargetLine] = []
+    for game_id, game_targets in targets_by_game.items():
+        game = matched_by_gid.get(game_id)
+        if game is None:
+            continue
+        if game_id not in legs_cache:
+            legs_cache[game_id] = fetch_event_legs(client.session, game, verbose)
+        _legs_dict, markets = legs_cache[game_id]
+
+        # Build offered (spread, total) sets per period from the raw
+        # market list. Each spread/total market carries one `strike`
+        # value; the home-perspective spread set is the union of strikes
+        # across all SPREAD-type markets for the period.
+        offered_per_period: dict[str, dict[str, set]] = {}
+        for period_key in ("fg", "f5"):
+            sp_type = SPREAD_TYPE[period_key]
+            to_type = TOTAL_TYPE[period_key]
+            spreads = {
+                float(m["strike"]) for m in markets
+                if m.get("type") == sp_type and m.get("strike") is not None
+            }
+            totals = {
+                float(m["strike"]) for m in markets
+                if m.get("type") == to_type and m.get("strike") is not None
+            }
+            offered_per_period[period_key] = {
+                "spreads": spreads,
+                "totals": totals,
+            }
+
+        pre = 0
+        post = 0
+        for t in game_targets:
+            pre += 1
+            offered = offered_per_period.get(t.period.lower())
+            if offered is None:
+                continue
+            if float(t.spread) not in offered["spreads"]:
+                continue
+            if float(t.total) in offered["totals"]:
+                filtered_targets.append(t)
+                post += 1
+                continue
+            # Fallback path requires integer target total + adjacent
+            # half-point neighbors both offered.
+            if float(t.total).is_integer() and (
+                (float(t.total) - 0.5) in offered["totals"]
+                and (float(t.total) + 0.5) in offered["totals"]
+            ):
+                filtered_targets.append(t)
+                post += 1
+        if verbose:
+            print(f"  game {game_id}: {pre} kalshi → {post} offered", flush=True)
+
+    # ----- Phase 2: per target row, price 4 combos (or fall back) ----- #
+    for t in filtered_targets:
         game = matched_by_gid.get(t.game_id)
         if game is None:
             continue
 
         period_key = "fg" if t.period == "FG" else "f5"
 
-        # Fetch + cache legs for this game.
-        if t.game_id not in legs_cache:
-            legs_cache[t.game_id] = fetch_event_legs(client.session, game, verbose)
+        # legs_cache is now guaranteed-populated by the filter loop above.
         legs, markets = legs_cache[t.game_id]
 
         p = legs.get(period_key, {}) or {}

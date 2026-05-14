@@ -189,23 +189,25 @@ def price_sgps(
     # (e.g. FG + F5) only hit the event-markets endpoint once.
     markets_cache: dict[str, list[dict]] = {}
 
-    # ----- Phase 2: per target row, build 4 legs and price 4 combos ----- #
+    # ----- Phase 1.6: group + cache + filter (Filter A) ----- #
+    # Fetch per-game markets up-front so we can know what lines PX
+    # offers before iterating targets, then drop targets PX doesn't
+    # carry. PX has no integer-line fallback path in this orchestrator,
+    # so the filter is strict: spread and total must both be offered.
+    targets_by_game: dict[str, list[TargetLine]] = {}
     for t in targets:
-        game = matched_by_gid.get(t.game_id)
+        targets_by_game.setdefault(t.game_id, []).append(t)
+
+    filtered_targets: list[TargetLine] = []
+    skip_games: set[str] = set()
+    for game_id, game_targets in targets_by_game.items():
+        game = matched_by_gid.get(game_id)
         if game is None:
+            skip_games.add(game_id)
             continue
-
-        period_key = "fg" if t.period == "FG" else "f5"
-
-        # Fetch + cache markets for this game. Translate Market dataclasses
-        # to the legacy raw-dict shape (with `id`, `name`, `marketLines`,
-        # `outcomes`) so `_find_market`, `_pick_selection`, AND
-        # `_verify_competitor_ids` work unmodified. The Moneyline market on
-        # the live PX API carries a flat top-level `outcomes` list with
-        # competitorIds — without it, the C1 guard rejects every game.
-        if t.game_id not in markets_cache:
+        if game_id not in markets_cache:
             market_objs = client.fetch_event_markets(game["px_event_id"])
-            markets_cache[t.game_id] = [
+            markets_cache[game_id] = [
                 {
                     "id": m.market_id,
                     "name": m.name,
@@ -214,15 +216,79 @@ def price_sgps(
                 }
                 for m in market_objs
             ]
-        markets = markets_cache[t.game_id]
+        markets = markets_cache[game_id]
 
-        # C1 guard: ensure tournaments + markets use the same competitorId
-        # namespace. If not, every competitorId-based spread leg lookup
-        # would silently fail. Skip the game loudly via the legacy helper.
         home_id = game["px_home_competitor_id"]
         away_id = game["px_away_competitor_id"]
         if not _verify_competitor_ids(markets, home_id, away_id):
+            skip_games.add(game_id)
             continue
+
+        # Build offered (spread, total) sets per period from the cached
+        # raw-dict markets. PX stores `line` on each selection from the
+        # outcome's own perspective, so we restrict spread lines to the
+        # home_id outcomes to get a home-perspective set.
+        offered_per_period: dict[str, dict[str, set]] = {}
+        for period_key in ("fg", "f5"):
+            spread_mkt = _find_market(markets, MARKET_NAMES[period_key]["spread"])
+            total_mkt = _find_market(markets, MARKET_NAMES[period_key]["total"])
+            spreads: set = set()
+            totals: set = set()
+            if spread_mkt:
+                for sel in _iter_selections(spread_mkt):
+                    if sel.get("competitorId") != home_id:
+                        continue
+                    line_val = sel.get("line")
+                    if line_val is not None:
+                        spreads.add(float(line_val))
+            if total_mkt:
+                for sel in _iter_selections(total_mkt):
+                    nm = (sel.get("name") or "").lower()
+                    if not (nm.startswith("over") or nm.startswith("under")):
+                        continue
+                    line_val = sel.get("line")
+                    if line_val is not None:
+                        totals.add(float(line_val))
+            offered_per_period[period_key] = {
+                "spreads": spreads,
+                "totals": totals,
+            }
+
+        pre = 0
+        post = 0
+        for t in game_targets:
+            pre += 1
+            offered = offered_per_period.get(t.period.lower())
+            if offered is None:
+                continue
+            if float(t.spread) not in offered["spreads"]:
+                continue
+            if float(t.total) not in offered["totals"]:
+                continue
+            filtered_targets.append(t)
+            post += 1
+        if verbose:
+            print(f"  game {game_id}: {pre} kalshi → {post} offered", flush=True)
+
+    # ----- Phase 2: per target row, build 4 legs and price 4 combos ----- #
+    for t in filtered_targets:
+        if t.game_id in skip_games:
+            continue
+        game = matched_by_gid.get(t.game_id)
+        if game is None:
+            continue
+
+        period_key = "fg" if t.period == "FG" else "f5"
+
+        # Markets cache is now guaranteed-populated by the filter loop
+        # above. Translate Market dataclasses to the legacy raw-dict
+        # shape (with `id`, `name`, `marketLines`, `outcomes`) so
+        # `_find_market`, `_pick_selection`, AND `_verify_competitor_ids`
+        # work unmodified.
+        markets = markets_cache[t.game_id]
+
+        home_id = game["px_home_competitor_id"]
+        away_id = game["px_away_competitor_id"]
 
         # ----- Locate spread + total markets for this period ----- #
         spread_mkt = _find_market(markets, MARKET_NAMES[period_key]["spread"])
@@ -397,6 +463,40 @@ def _passes_sanity_mult_ratio(
     if naive <= 0:
         return False
     return parlay_decimal / naive <= SANITY_MULT_RATIO
+
+
+def _iter_selections(market: dict):
+    """Yield every concrete selection dict under a PX market.
+
+    PX market lines come in two shapes (mirrors ``_pick_selection``):
+    - ``marketLines[].selections`` — nested per-side lists (with Nones
+      sprinkled in when only one side is offered),
+    - ``marketLines[].outcomes`` — flat list,
+    - top-level ``market.selections`` — used by moneyline.
+
+    We walk all three shapes and yield every non-None selection dict, so
+    callers can collect line values without caring which shape PX
+    returned for this particular market.
+    """
+    for line_grp in market.get("marketLines") or []:
+        for side in line_grp.get("selections") or []:
+            if side is None:
+                continue
+            for sel in side:
+                if sel is None:
+                    continue
+                yield sel
+        for sel in line_grp.get("outcomes") or []:
+            if sel is None:
+                continue
+            yield sel
+    for side in market.get("selections") or []:
+        if side is None:
+            continue
+        for sel in side:
+            if sel is None:
+                continue
+            yield sel
 
 
 def _line_eq(a, b, eps: float = 1e-6) -> bool:

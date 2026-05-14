@@ -179,26 +179,97 @@ def price_sgps(
     # dk_event_id, NOT on (spread, total). For a game with 33 target
     # lines that meant 32 redundant call pairs before this change. Now
     # we do them once per game and stash the result in per_game_cache.
+    #
+    # While we're here, also compute the set of offered spread/total
+    # lines per period from the cached sel_ids. We use that downstream
+    # to drop targets the book doesn't carry at all before the pricing
+    # loop runs — a no-op for behavior (those targets would have
+    # silently produced zero rows) but saves a lot of wasted iteration
+    # on sparse-line books.
     per_game_cache: dict[str, dict] = {}
     for game_id, game in matched_by_gid.items():
         main_nums = fetch_main_market_nums(client.session, game["dk_event_id"])
         sel_ids_all = fetch_selection_ids(
             client.session, game["dk_event_id"], main_nums, verbose,
         )
+        # Extract per-period offered (spread, total) line sets so we can
+        # filter targets later. DK keys spreads as (sign, abs_line,
+        # participant) where sign 'N' means the negative-line side. We
+        # reconstruct the signed home-perspective line by checking
+        # participant == "1" (home).
+        offered_per_period: dict[str, dict[str, set]] = {}
+        for period_key in ("fg", "f5"):
+            sel_ids = sel_ids_all.get(period_key, {"spreads": {}, "totals": {}})
+            spreads = set()
+            for (sign, abs_line, participant) in sel_ids.get("spreads", {}).keys():
+                # Home perspective: home is participant "1" so its sign
+                # is the home-perspective sign directly. Away is "3"
+                # and carries the mirror sign — we skip it to avoid
+                # double-counting (we only want one signed entry per
+                # home-perspective line).
+                if participant != "1":
+                    continue
+                signed = -abs_line if sign == "N" else abs_line
+                spreads.add(signed)
+            totals = {line for (ou, line) in sel_ids.get("totals", {}).keys()}
+            offered_per_period[period_key] = {
+                "spreads": spreads,
+                "totals": totals,
+            }
         per_game_cache[game_id] = {
             "game": game,
             "main_nums": main_nums,
             "sel_ids_all": sel_ids_all,
+            "offered_per_period": offered_per_period,
         }
 
     out: list[PricedRow] = []
     fetch_now = datetime.now(timezone.utc)
 
+    # ----- Phase 1.6: per-game target filter (Filter A) ----- #
+    # Drop targets the book doesn't carry at all. We still preserve
+    # integer-total targets when adjacent half-point alts exist, since
+    # try_integer_fallback_dk derives integer-line rows from those.
+    filtered_targets: list[TargetLine] = []
+    for t in targets:
+        cache = per_game_cache.get(t.game_id)
+        if cache is None:
+            continue
+        period_key = t.period.lower()
+        offered = cache["offered_per_period"].get(period_key)
+        if offered is None:
+            continue
+        offered_spreads = offered["spreads"]
+        offered_totals = offered["totals"]
+        if t.spread not in offered_spreads:
+            continue
+        # Main path: exact total offered.
+        if t.total in offered_totals:
+            filtered_targets.append(t)
+            continue
+        # Fallback path: integer total with adjacent half-point alts.
+        if float(t.total).is_integer() and (
+            (t.total - 0.5) in offered_totals
+            and (t.total + 0.5) in offered_totals
+        ):
+            filtered_targets.append(t)
+    if verbose:
+        # Group counts per game for log readability.
+        pre_per_game: dict[str, int] = {}
+        post_per_game: dict[str, int] = {}
+        for t in targets:
+            pre_per_game[t.game_id] = pre_per_game.get(t.game_id, 0) + 1
+        for t in filtered_targets:
+            post_per_game[t.game_id] = post_per_game.get(t.game_id, 0) + 1
+        for gid, pre in pre_per_game.items():
+            post = post_per_game.get(gid, 0)
+            print(f"  game {gid}: {pre} kalshi → {post} offered", flush=True)
+
     # ----- Phase 2: per target row, build and price 4 combos ----- #
     # Iterate target rows directly so each TargetLine produces exactly
     # one (period, spread, total) priced call. This mirrors the bot
     # use-case where each Kalshi MVE enumeration becomes one target row.
-    for t in targets:
+    for t in filtered_targets:
         cache = per_game_cache.get(t.game_id)
         if cache is None:
             continue
