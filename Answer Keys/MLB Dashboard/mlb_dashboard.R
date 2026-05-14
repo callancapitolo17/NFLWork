@@ -3969,7 +3969,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             market:          data.market,
             american_odds:   parseInt(data.odds, 10),
             actual_size:     parseFloat(data.size),
-            kelly_bet:       parseFloat(data.size),
+                kelly_bet:       parseFloat(data.modelSize || data.size),
             game_id:         data.gameId,
             home_team:       data.home,
             away_team:       data.away,
@@ -4006,7 +4006,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           var btn = autoBtn.previousElementSibling;
           if (!btn || !btn.dataset.hash) btn = autoBtn; // fallback if no sibling
 
-          var recommended = parseFloat(btn.dataset.size) || 0;
+          var recommended = parseFloat(btn.dataset.modelSize || btn.dataset.size) || 0;
           var betOn = btn.dataset.betOn || \'\';
           var odds = btn.dataset.odds || \'\';
           var book = btn.dataset.book || \'\';
@@ -5265,6 +5265,209 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
     }
   });
 })();
+)"))
+,
+      tags$script(HTML(r"(
+<script>
+  (function setupEditableRisk() {
+    var WZ_BOOK = 'wagerzon';
+
+    function fmtMoney(x) {
+      if (x == null || !isFinite(x)) return '$0';
+      return '$' + Math.round(x).toLocaleString();
+    }
+
+    function localTowin(risk, americanOdds) {
+      if (!isFinite(risk) || risk <= 0 || !isFinite(americanOdds) || americanOdds === 0) return 0;
+      return americanOdds > 0 ? risk * americanOdds / 100 : risk * 100 / Math.abs(americanOdds);
+    }
+
+    function placeBtnFor(card) {
+      // Place button is in .actions; only one per card.
+      return card.querySelector('.actions .btn-place, .actions [onclick*="placeBet"]');
+    }
+
+    function bookFor(card) {
+      var btn = placeBtnFor(card);
+      return btn ? (btn.dataset.book || '').toLowerCase() : '';
+    }
+
+    function setOverride(card, riskValue, isOverride) {
+      var stat    = card.querySelector('.risk-stat');
+      var valueEl = stat.querySelector('.risk-value');
+      var towinEl = card.querySelector('.towin-value');
+      var amerOdds = parseInt(stat.dataset.americanOdds, 10);
+
+      valueEl.textContent = fmtMoney(riskValue);
+      // After Task 4's CSS consolidation, only toggle the parent's
+      // is-overridden — that class drives both the reset-button visibility
+      // and the amber color on .risk-value via CSS descendant selectors.
+      stat.classList.toggle('is-overridden', isOverride);
+
+      // Optimistic local to-win update; verified-quote will overwrite if WZ.
+      towinEl.textContent = fmtMoney(localTowin(riskValue, amerOdds));
+
+      // Sync the placement button's data-size so the existing placeBet flow uses the override.
+      var btn = placeBtnFor(card);
+      if (btn) btn.dataset.size = String(riskValue);
+    }
+
+    function clearError(card) {
+      var stat   = card.querySelector('.risk-stat');
+      var errEl  = stat.querySelector('.risk-error');
+      stat.classList.remove('has-error');
+      errEl.hidden = true;
+      errEl.textContent = '';
+    }
+    function showError(card, msg) {
+      var stat  = card.querySelector('.risk-stat');
+      var errEl = stat.querySelector('.risk-error');
+      errEl.textContent = msg;
+      errEl.hidden = false;
+      stat.classList.add('has-error');
+    }
+
+    function setTowinStatus(card, kind, text) {
+      // kind: 'verified' | 'spinner' | null (clear)
+      var status = card.querySelector('.towin-status');
+      if (!status) return;
+      status.classList.remove('verified', 'spinner');
+      if (!kind) {
+        status.hidden = true;
+        status.textContent = '';
+        return;
+      }
+      status.classList.add(kind);
+      status.textContent = text || '';
+      status.hidden = false;
+    }
+
+    function startEdit(valueEl) {
+      if (valueEl.classList.contains('editing')) return;
+      var current = Number(valueEl.textContent.replace(/[^0-9.]/g, ''));
+      valueEl.classList.add('editing');
+      valueEl.contentEditable = 'true';
+      valueEl.textContent = isFinite(current) ? String(current) : '';
+      var sel = window.getSelection();
+      var range = document.createRange();
+      range.selectNodeContents(valueEl);
+      sel.removeAllRanges(); sel.addRange(range);
+      valueEl.focus();
+    }
+
+    function commitEdit(valueEl) {
+      if (!valueEl.classList.contains('editing')) return;
+      var card = valueEl.closest('.bet-card-v8');
+      var stat = card.querySelector('.risk-stat');
+      var modelRisk = Number(stat.dataset.modelRisk);
+      var raw = valueEl.textContent.replace(/[^0-9.]/g, '');
+      var amount = Number(raw);
+      if (!isFinite(amount) || amount <= 0) amount = modelRisk;
+      valueEl.classList.remove('editing');
+      valueEl.contentEditable = 'false';
+      var isOverride = Math.abs(amount - modelRisk) > 0.005;
+      setOverride(card, amount, isOverride);
+      clearError(card);
+
+      if (bookFor(card) === WZ_BOOK) {
+        verifyWithWz(card, amount);
+      } else {
+        // Non-WZ: local math is already shown; clear any verified badge.
+        setTowinStatus(card, null);
+      }
+    }
+
+    function verifyWithWz(card, amount) {
+      var btn = placeBtnFor(card);
+      if (!btn) return;
+      var account = (window.WZ_SELECTED_ACCOUNT || null);
+      if (!account) {
+        showError(card, 'pick a WZ account first');
+        return;
+      }
+      setTowinStatus(card, 'spinner', 'verifying...');
+      var body = {
+        bet_hash:      btn.dataset.hash,
+        amount:        amount,
+        account:       account,
+        bet_on:        btn.dataset.betOn,
+        line:          (btn.dataset.line === '' || btn.dataset.line === undefined)
+                          ? null : parseFloat(btn.dataset.line),
+        market:        btn.dataset.market,
+        american_odds: parseInt(btn.dataset.odds, 10),
+        game_id:       btn.dataset.gameId,
+        home_team:     btn.dataset.home,
+        away_team:     btn.dataset.away
+      };
+      fetch('/api/wz-quote-single', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+      })
+        .then(function(r) { return r.json(); })
+        .then(function(j) {
+          var towinEl = card.querySelector('.towin-value');
+          if (j.error_msg_key) {
+            showError(card, j.error_msg || j.error_msg_key);
+            setTowinStatus(card, null);
+            return;
+          }
+          var expectedOdds = parseInt(btn.dataset.odds, 10);
+          if (j.current_wz_odds && j.current_wz_odds !== expectedOdds) {
+            showError(card, 'WZ now ' + (j.current_wz_odds > 0 ? '+' : '') +
+                            j.current_wz_odds + ' (was ' + (expectedOdds > 0 ? '+' : '') +
+                            expectedOdds + ')');
+          }
+          if (j.win != null) {
+            towinEl.textContent = fmtMoney(j.win);
+            setTowinStatus(card, 'verified', '✓ wz');
+          } else {
+            setTowinStatus(card, null);
+          }
+        })
+        .catch(function(e) {
+          showError(card, 'verify failed: ' + e.message);
+          setTowinStatus(card, null);
+        });
+    }
+
+    document.addEventListener('click', function(ev) {
+      var valueEl = ev.target.closest && ev.target.closest('.risk-value');
+      if (valueEl) {
+        startEdit(valueEl);
+        return;
+      }
+      var resetBtn = ev.target.closest && ev.target.closest('.risk-reset');
+      if (resetBtn) {
+        var card = resetBtn.closest('.bet-card-v8');
+        var stat = card.querySelector('.risk-stat');
+        var modelRisk = Number(stat.dataset.modelRisk);
+        setOverride(card, modelRisk, false);
+        clearError(card);
+        setTowinStatus(card, null);
+      }
+    });
+    document.addEventListener('focusout', function(ev) {
+      var valueEl = ev.target.closest && ev.target.closest('.risk-value');
+      if (valueEl && valueEl.classList.contains('editing')) commitEdit(valueEl);
+    });
+    document.addEventListener('keydown', function(ev) {
+      var valueEl = ev.target.closest && ev.target.closest('.risk-value');
+      if (!valueEl || !valueEl.classList.contains('editing')) return;
+      if (ev.key === 'Enter')   { ev.preventDefault(); valueEl.blur(); }
+      if (ev.key === 'Escape')  {
+        ev.preventDefault();
+        var card = valueEl.closest('.bet-card-v8');
+        var stat = card.querySelector('.risk-stat');
+        var modelRisk = Number(stat.dataset.modelRisk);
+        valueEl.classList.remove('editing');
+        valueEl.contentEditable = 'false';
+        setOverride(card, modelRisk, false);
+        clearError(card);
+      }
+    });
+  })();
+</script>
 )"))
     )
   )
