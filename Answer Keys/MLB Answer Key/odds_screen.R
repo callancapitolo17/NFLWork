@@ -33,12 +33,20 @@ LINE_MATCH_TOLERANCE <- 3.0  # max abs(line_quoted - model_line) we'll emit
     str_detect(market_name, "_1st_3_innings$") ~ "F3",
     str_detect(market_name, "_1st_5_innings$") ~ "F5",
     str_detect(market_name, "_1st_7_innings$") ~ "F7",
+    # Alt-market convention used by compare_alts_to_samples: <market>_<period>
+    # (e.g. alternate_totals_fg, alternate_spreads_f5). Recognize all four.
+    str_detect(market_name, "_f3$")            ~ "F3",
+    str_detect(market_name, "_f5$")            ~ "F5",
+    str_detect(market_name, "_f7$")            ~ "F7",
+    str_detect(market_name, "_fg$")            ~ "FG",
     TRUE                                       ~ "FG"
   )
 }
 
 .derive_market_type <- function(market_name) {
-  str_replace(market_name, "_1st_[357]_innings$", "")
+  market_name %>%
+    str_replace("_1st_[357]_innings$", "") %>%
+    str_replace("_(fg|f3|f5|f7)$", "")
 }
 
 #' Normalize a raw scraper / Odds API frame to the canonical shape consumed

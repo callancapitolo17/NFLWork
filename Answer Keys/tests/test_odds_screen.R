@@ -450,3 +450,54 @@ test_that("alternate_spreads bet: opposite-side cell on the same line is exact (
   expect_true(all(out$is_exact_line),
               info = "alternate_spreads opposite slot must use -bet$line for comparison")
 })
+
+test_that(".derive_period recognizes _fg/_f3/_f5/_f7 alt-suffix convention", {
+  # Internal helpers are unexported but live in the script env via source().
+  # Call them by bare name (no namespace prefix — odds_screen.R is sourced
+  # as a script, not a package).
+  expect_equal(.derive_period("alternate_totals_fg"),  "FG")
+  expect_equal(.derive_period("alternate_spreads_f3"), "F3")
+  expect_equal(.derive_period("alternate_totals_f5"),  "F5")
+  expect_equal(.derive_period("alternate_spreads_f7"), "F7")
+  # Existing convention still works
+  expect_equal(.derive_period("totals_1st_5_innings"), "F5")
+  expect_equal(.derive_period("totals"),               "FG")
+})
+
+test_that(".derive_market_type strips _fg/_f3/_f5/_f7 alt-suffix", {
+  expect_equal(.derive_market_type("alternate_totals_fg"),  "alternate_totals")
+  expect_equal(.derive_market_type("alternate_spreads_f3"), "alternate_spreads")
+  expect_equal(.derive_market_type("alternate_totals_f5"),  "alternate_totals")
+  expect_equal(.derive_market_type("alternate_spreads_f7"), "alternate_spreads")
+  # Existing convention still works
+  expect_equal(.derive_market_type("totals_1st_5_innings"), "totals")
+  expect_equal(.derive_market_type("totals"),               "totals")
+})
+
+test_that("alt-total bet (e.g. Royals Under 6.5) joins to a book with un-suffixed alt market", {
+  # Mimics the real failure mode: bet from compare_alts_to_samples uses
+  # 'alternate_totals_fg'; Bet105/BFA scraper writes 'alternate_totals'.
+  # After the fix both sides canonicalize to (alternate_totals, FG) and
+  # the join produces both pick + opposite rows.
+  bets <- make_bet_row(
+    market      = "alternate_totals_fg",
+    line        = 6.5,
+    bet_on      = "Under",
+    market_type = "alternate_totals"
+  )
+  # Force re-derivation by removing market_type so the inside-helper
+  # path is exercised the same way mlb_bets_combined would feed it.
+  bets$market_type <- NULL
+  bets$period <- NULL
+
+  book_odds <- list(bet105 = bind_rows(
+    book_row("g1", "alternate_totals", "FG", "Over",  6.5, +200),
+    book_row("g1", "alternate_totals", "FG", "Under", 6.5, -240)
+  ))
+
+  out <- expand_bets_to_book_prices(bets, book_odds)
+  expect_equal(nrow(out), 2)
+  expect_setequal(out$side, c("pick", "opposite"))
+  expect_true(all(out$is_exact_line))
+  expect_equal(out$american_odds[out$side == "pick"], -240)
+})
