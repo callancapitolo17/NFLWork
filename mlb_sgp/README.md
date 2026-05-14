@@ -373,6 +373,7 @@ A future v2 may bootstrap this automatically via headless Chrome.
 - **Alt total runner names use parens:** `"Over (8.5)"`, `"Under (7.5)"`. Main total runners are just `"Over"` / `"Under"` with the line in the `handicap` field.
 - **Alt spread runner names embed the team:** `"Cincinnati Reds +3.5"`. The `handicap` field is 0 for alts. Parse team name + signed line from the string, match team to home/away.
 - **F5 totals at integer values (e.g., 5.0) trigger interpolation.** FD's F5 alt totals jump in 1.0 increments (2.5, 3.5, 4.5, 5.5...). When Wagerzon has F5 total 5.0, FD's exact-line lookup misses → the integer-line fallback kicks in, using FD's F5 alts at 4.5 and 5.5. See "Integer-Line Derivation" above.
+- **2026-05-13:** Fixed alt-spread bucket key in `scraper_fanduel_singles.py` — was `abs(effective_line)` which collapsed opposite-direction same-magnitude lines (e.g. KC -2.5 and KC +2.5) into one row. Now buckets by signed home-team line so both directions persist. Verified event 35600618 went 7 → 14 alt-spread rows. See `docs/superpowers/research/2026-05-13-fd-recon-findings.md`.
 
 ## Files
 
