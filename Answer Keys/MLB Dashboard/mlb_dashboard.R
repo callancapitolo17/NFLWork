@@ -1211,9 +1211,17 @@ render_hero_strip <- function(pick_book, pick_odds, fair_odds,
   fair_str <- .format_odds_signed(fair_odds)
   odds_str <- .format_odds_signed(pick_odds)
 
+  # Guard against NA propagating into data-* attributes — Number("NA") in JS
+  # is NaN and silently breaks the snap-back / verify-quote coordinator.
+  risk_raw <- if (is.na(risk_dollars)) 0 else risk_dollars
+  odds_raw <- if (is.na(pick_odds)) 0L else as.integer(pick_odds)
+
   # Risk and To Win get extra wrappers so the bets-tab JS coordinator
   # can attach click-to-edit + the WZ-verified-quote swap. data-model-risk
   # carries the original Kelly value so the snap-back button can revert.
+  # .risk-row / .towin-row are inner flex rows so the reset button and
+  # status badge sit beside the value, not stacked below it (the parent
+  # .stat is flex-direction: column).
   sprintf(
     '<div class="hero">
        <div class="pick">
@@ -1225,16 +1233,18 @@ render_hero_strip <- function(pick_book, pick_odds, fair_odds,
        <div class="stat"><span class="lbl">EV</span><span class="val ev">%s</span></div>
        <div class="stat risk-stat" data-model-risk="%.0f" data-american-odds="%d">
          <span class="lbl">Risk</span>
-         <span class="val risk risk-value" tabindex="0" title="click to edit">%s</span>
-         <button type="button" class="risk-reset" title="reset to model size">&#8634;</button>
-         <span class="risk-error" hidden></span>
+         <div class="risk-row">
+           <span class="val risk risk-value" tabindex="0" title="click to edit">%s</span>
+           <button type="button" class="risk-reset" title="reset to model size">&#8634;</button>
+           <span class="risk-error" hidden></span>
+         </div>
        </div>
-       <div class="stat"><span class="lbl">To Win</span><span class="val win towin-value">%s</span><span class="towin-status" hidden></span></div>
+       <div class="stat"><span class="lbl">To Win</span><div class="towin-row"><span class="val win towin-value">%s</span><span class="towin-status" hidden></span></div></div>
        <div class="actions">%s</div>
      </div>',
     htmltools::htmlEscape(pick_book),
     odds_str, fair_str, ev_str,
-    risk_dollars, as.integer(pick_odds),
+    risk_raw, odds_raw,
     risk_str, win_str, action_html
   )
 }
@@ -2799,6 +2809,11 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
 
         .bet-card-v8 .hero .risk-stat { position: relative; }
+        .bet-card-v8 .hero .risk-row {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
         .bet-card-v8 .hero .risk-value {
           cursor: text;
           padding: 1px 6px;
@@ -2821,11 +2836,10 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           outline: none;
           cursor: text;
         }
-        .bet-card-v8 .hero .risk-value.overridden { color: #d29922; }
+        .bet-card-v8 .hero .risk-stat.is-overridden .risk-value { color: #d29922; }
 
         .bet-card-v8 .hero .risk-reset {
           display: none;
-          margin-left: 6px;
           width: 18px; height: 18px;
           padding: 0;
           border-radius: 50%;
@@ -2855,7 +2869,12 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .bet-card-v8 .hero .risk-error[hidden] { display: none; }
         .bet-card-v8 .hero .risk-stat.has-error .risk-error { display: inline-block; }
 
-        .bet-card-v8 .hero .towin-status { margin-left: 6px; font-size: 11px; }
+        .bet-card-v8 .hero .towin-row {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+        .bet-card-v8 .hero .towin-status { font-size: 11px; }
         .bet-card-v8 .hero .towin-status.verified { color: #3fb950; }
         .bet-card-v8 .hero .towin-status.spinner  { color: #7d8590; }
         .bet-card-v8 .hero .towin-status[hidden]  { display: none; }
