@@ -164,6 +164,62 @@ def _refresh_caches(retries: int = 5) -> bool:
     return False
 
 
+def _build_parlay_lines_cache(schedule_db: str, bot_db: str) -> dict[str, dict]:
+    """Build the bot's parlay_lines cache from two sources:
+      1. mlb_odds_temp in schedule_db (mlb.duckdb) — game metadata
+      2. mlb_target_lines in bot_db (bot market DB) — available (spread, total) tuples per game
+
+    Returns {game_id: {home_team, away_team, commence_time, fg_lines: list[(spread, total)]}}.
+    Drops games with no target lines.
+    """
+    from datetime import datetime as _dt
+    from pathlib import Path as _Path
+
+    # 1. Schedule
+    schedule: dict[str, dict] = {}
+    if _Path(schedule_db).exists():
+        con = duckdb.connect(schedule_db, read_only=True)
+        try:
+            tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
+            if "mlb_odds_temp" in tables:
+                for game_id, home, away, ct_str in con.execute(
+                    "SELECT id, home_team, away_team, commence_time FROM mlb_odds_temp"
+                ).fetchall():
+                    normalized = ct_str.replace("Z", "+00:00") if ct_str and ct_str.endswith("Z") else ct_str
+                    try:
+                        ct = _dt.fromisoformat(normalized) if normalized else None
+                    except Exception:
+                        ct = None
+                    schedule[game_id] = {
+                        "home_team": home, "away_team": away, "commence_time": ct,
+                    }
+        finally:
+            con.close()
+
+    # 2. Target lines per game
+    lines_by_game: dict[str, list[tuple[float, float]]] = {}
+    if _Path(bot_db).exists():
+        con = duckdb.connect(bot_db, read_only=True)
+        try:
+            tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
+            if "mlb_target_lines" in tables:
+                for game_id, spread, total in con.execute(
+                    "SELECT game_id, spread, total FROM mlb_target_lines WHERE period = 'FG' ORDER BY game_id, spread, total"
+                ).fetchall():
+                    lines_by_game.setdefault(game_id, []).append((spread, total))
+        finally:
+            con.close()
+
+    # 3. Merge — only include games present in both sources
+    out: dict[str, dict] = {}
+    for game_id, lines in lines_by_game.items():
+        sched = schedule.get(game_id)
+        if not sched:
+            continue
+        out[game_id] = {**sched, "fg_lines": lines}
+    return out
+
+
 # ------------------------------------------------------------------------ #
 # Pipeline-refresh subprocess                                              #
 # ------------------------------------------------------------------------ #
