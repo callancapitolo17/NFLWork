@@ -378,3 +378,49 @@ test_that("expand_bets_to_book_prices emits opposite row for moneyline bets", {
   expect_equal(out[out$side == "pick", ]$american_odds,  150L)
   expect_equal(out[out$side == "opposite", ]$american_odds, -170L)
 })
+
+test_that("spread bet: opposite-side cell on the same line is exact (not alt)", {
+  # Pick: ATH home -0.5 at +120
+  # Book: ATH -0.5 (+120) / STL +0.5 (-140)
+  # Expected: BOTH the pick row AND the opposite row should report
+  # is_exact_line = TRUE because both teams are on the bet's line.
+  bets <- make_bet_row(
+    market      = "spreads_1st_5_innings",
+    line        = -0.5,
+    bet_on      = "Athletics",
+    market_type = "spreads"
+  ) %>% mutate(home_team = "Athletics", away_team = "St. Louis Cardinals")
+
+  book_odds <- list(hoop88 = bind_rows(
+    book_row("g1", "spreads", "F5", "Athletics",            -0.5, +120),
+    book_row("g1", "spreads", "F5", "St. Louis Cardinals",  +0.5, -140)
+  ))
+
+  out <- expand_bets_to_book_prices(bets, book_odds)
+  expect_equal(nrow(out), 2)
+  expect_setequal(out$side, c("pick", "opposite"))
+  expect_true(all(out$is_exact_line),
+              info = "both pick and opposite should be exact when book is on the bet's line")
+})
+
+test_that("spread bet: opposite-side cell on a different line is alt", {
+  # Pick: ATH home -0.5
+  # Book: ATH 0 (-117) / STL 0 (+102) -- different line
+  # Expected: opposite row reports is_exact_line = FALSE (correctly alt).
+  bets <- make_bet_row(
+    market      = "spreads_1st_5_innings",
+    line        = -0.5,
+    bet_on      = "Athletics",
+    market_type = "spreads"
+  ) %>% mutate(home_team = "Athletics", away_team = "St. Louis Cardinals")
+
+  book_odds <- list(bet105 = bind_rows(
+    book_row("g1", "spreads", "F5", "Athletics",             0.0, -117),
+    book_row("g1", "spreads", "F5", "St. Louis Cardinals",   0.0, +102)
+  ))
+
+  out <- expand_bets_to_book_prices(bets, book_odds)
+  expect_equal(nrow(out), 2)
+  expect_false(any(out$is_exact_line),
+               info = "both pick and opposite are on line 0, not the bet's -0.5")
+})

@@ -206,7 +206,18 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
                  period  == bet$period,
                  side    == side_value)
 
-        chosen <- .pick_closest_line(candidates, bet$line, bet$bet_on)
+        # Spread/alt_spread: away-side candidates carry the negated line
+        # (see scraper_to_canonical()). The opposite slot must compare
+        # against -bet$line, not bet$line, or every same-line book gets
+        # flagged as a line mismatch. Totals share one line across both
+        # sides; moneyline has line=NA.
+        is_spread_market <- bet$market_type %in% c("spreads", "alternate_spreads")
+        effective_line <- if (slot == "opposite" && is_spread_market && !is.na(bet$line)) {
+          -bet$line
+        } else {
+          bet$line
+        }
+        chosen <- .pick_closest_line(candidates, effective_line, bet$bet_on)
         if (nrow(chosen) == 0) next
 
         # Find the fetch_time for the chosen quote. Moneyline / h2h have
