@@ -1326,7 +1326,20 @@ render_bet_card <- function(bet_title, market_label, matchup, tipoff, hero_html,
                            other_side_wide_row = pickside_wide_row)
   } else ""
 
-  grid_html <- paste0('<div class="price-grid">', col_hdrs, pick_row, opp_row, '</div>')
+  # Toggle buttons sit just above the grid; clicking "RAW" or "FAIR"
+  # flips the `show-raw` / `show-fair` class on the .price-grid below it
+  # (JS handler in the bets-tab page template; see Task 6). Default is
+  # `show-fair` — matches user's manual no-vig workflow. Per-card state,
+  # no global preference.
+  toggle_html <- paste0(
+    '<div class="grid-toggle">',
+      '<button type="button" data-view="raw"  onclick="toggleDevigView(this, \'raw\')">RAW</button>',
+      '<button type="button" data-view="fair" class="on" onclick="toggleDevigView(this, \'fair\')">FAIR</button>',
+    '</div>'
+  )
+  grid_html <- paste0(toggle_html,
+                       '<div class="price-grid show-fair">',
+                       col_hdrs, pick_row, opp_row, '</div>')
 
   paste0('<div class="bet-card-v8">', bet_line, matchup_line, hero_html, grid_html, '</div>')
 }
@@ -2853,6 +2866,38 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           background: rgba(63,185,80,0.18); border-color: #3fb950;
         }
         .bet-card-v8 .price-grid .cell.pick .price { color: #3fb950; }
+
+        /* Per-card toggle for raw vs devigged American odds. Default: show fair. */
+        .grid-toggle {
+          display: inline-flex;
+          background: #161b22;
+          border: 1px solid #2a3442;
+          border-radius: 7px;
+          overflow: hidden;
+          font-size: 11px;
+          letter-spacing: 0.04em;
+          font-family: "SF Mono", monospace;
+          margin: 8px 0 6px auto;
+        }
+        .grid-toggle button {
+          padding: 5px 12px;
+          background: transparent;
+          border: none;
+          color: #7d8590;
+          cursor: pointer;
+          font-family: inherit;
+        }
+        .grid-toggle button.on {
+          background: rgba(63, 185, 80, 0.15);
+          color: #3fb950;
+        }
+        .price-grid .cell .raw,
+        .price-grid .cell .fair { display: none; }
+        .price-grid.show-raw  .cell .raw  { display: inline; }
+        .price-grid.show-fair .cell .fair { display: inline; }
+        /* Empty cells render a dash for both spans; show whichever the parent class wants. */
+        .price-grid .cell.empty .raw,
+        .price-grid .cell.empty .fair { color: #7d8590; }
 
       '))
     ),
