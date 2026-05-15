@@ -2857,15 +2857,18 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           background: #0d1117; border: 1px solid transparent; border-radius: 5px;
           min-height: 36px; font-size: 12px;
         }
-        .bet-card-v8 .price-grid .cell .price       { color: #c9d1d9; font-weight: 600; }
+        .bet-card-v8 .price-grid .cell .raw,
+        .bet-card-v8 .price-grid .cell .fair        { color: #c9d1d9; font-weight: 600; }
         .bet-card-v8 .price-grid .cell .alt-line    { color: #d29922; font-size: 10px; margin-bottom: 1px; }
-        .bet-card-v8 .price-grid .cell.empty .price { color: #484f58; }
+        .bet-card-v8 .price-grid .cell.empty .raw,
+        .bet-card-v8 .price-grid .cell.empty .fair  { color: #484f58; }
         .bet-card-v8 .price-grid .cell.exact        { background: #161b22; }
         .bet-card-v8 .price-grid .cell.alt          { background: rgba(210,153,34,0.06); }
         .bet-card-v8 .price-grid .cell.pick {
           background: rgba(63,185,80,0.18); border-color: #3fb950;
         }
-        .bet-card-v8 .price-grid .cell.pick .price { color: #3fb950; }
+        .bet-card-v8 .price-grid .cell.pick .raw,
+        .bet-card-v8 .price-grid .cell.pick .fair   { color: #3fb950; }
 
         /* Per-card toggle for raw vs devigged American odds. Default: show fair. */
         .grid-toggle {
