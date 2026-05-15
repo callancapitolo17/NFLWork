@@ -39,7 +39,7 @@ def _wz_confirm_body(win, odds, error_key=None, error_msg=None):
                     "Amount": 25.0,
                     "Risk": 25.0,
                     "Win": win,
-                    "details": [{"Odds": odds, "IsMLine": True}],
+                    "Odds": odds,
                 }
             ],
             "ErrorMsgKey": error_key or "",

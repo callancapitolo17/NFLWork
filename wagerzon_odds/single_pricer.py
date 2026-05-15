@@ -134,9 +134,8 @@ def get_single_price(session: requests.Session, bet: dict, amount: float) -> dic
             "error_msg_key": "empty_details",
         }
     outer = details[0]
-    legs = outer.get("details") or []
     win = outer.get("Win")
-    odds_now = legs[0].get("Odds") if legs else None
+    odds_now = outer.get("Odds")
     return {
         "win": win,
         "current_wz_odds": int(odds_now) if odds_now is not None else None,

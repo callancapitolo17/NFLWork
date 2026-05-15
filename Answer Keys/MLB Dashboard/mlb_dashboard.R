@@ -2824,7 +2824,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           min-width: 48px;
           transition: all 0.15s ease;
         }
-        .bet-card-v8 .hero .risk-value:hover:not(.editing):not(.overridden) {
+        .bet-card-v8 .hero .risk-stat:not(.is-overridden) .risk-value:hover:not(.editing) {
           border-color: #3a4658;
           background: rgba(255, 255, 255, 0.02);
         }
