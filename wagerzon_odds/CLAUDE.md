@@ -9,6 +9,11 @@ helpers used by the MLB correlated parlay dashboard.
   `wagerzon_odds/wagerzon.duckdb`.
 - **Pricing parlays:** `parlay_pricer.py::get_parlay_price()` calls
   `ConfirmWagerHelper` with `RiskWin=2` (skips balance validation).
+- **Pricing singles:** `single_pricer.py::get_single_price()` calls
+  `ConfirmWagerHelper` with `WT=0` (single) and `RiskWin=2` (skip
+  balance check). Returns `{win, current_wz_odds, error_msg, error_msg_key}`.
+  Used by the MLB Dashboard's editable-Risk feature to verify to-win
+  and detect line drift before placement.
 - **Placing parlays:** `parlay_placer.py::place_parlays(specs, account)`
   calls `PostWagerMultipleHelper`. **Requires** an explicit account.
 - **Balance:** `wagerzon_balance.py::fetch_available_balance(account)`

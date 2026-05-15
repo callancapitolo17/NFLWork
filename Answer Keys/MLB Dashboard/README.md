@@ -202,6 +202,28 @@ and used by `POST /api/place-parlay`.
 - With zero accounts configured, the row renders a single dashed
   "No Wagerzon accounts configured" pill. Placement is disabled.
 
+### Editable Risk + WZ verified to-win (PR C, 2026-05)
+
+The hero-strip `Risk $XX` value on every bet card is click-to-edit.
+Type any number and press Enter — for **Wagerzon** picks, the dashboard
+fires a `ConfirmWagerHelper` preflight (`POST /api/wz-quote-single`)
+and replaces the local-math "to win" with the actual `Win` WZ would
+credit, plus a `✓ wz` verified badge. Inline error pill surfaces line
+drift (`WZ now -125 (was +120)`), amount-rule rejections (integer-only,
+min stake), or any other `ErrorMsg` WZ returns.
+
+Non-WZ books (Hoop88, BFA, BetOnlineAG) still let you edit Risk, but
+"to win" stays as local American-odds math (no preview API exposed
+by those books).
+
+The `↶` button next to an overridden Risk snaps back to the
+Kelly-recommended size. Page refresh wipes overrides — they don't
+persist across reloads.
+
+Note: `placed_bets.recommended_size` continues to record the model's
+Kelly number even when you override (`actual_size`), so CLV analysis
+can later ask "when did I override and how did I do?"
+
 ## Troubleshooting
 
 - **"Port 8083 already in use"** — `run.sh` kills existing processes, but if you started Flask manually, `lsof -ti:8083 | xargs kill`

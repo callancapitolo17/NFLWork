@@ -297,3 +297,17 @@ Migration is idempotent — run once per environment:
 python "Answer Keys/MLB Dashboard/migrations/002_single_placer_columns.py" \
     "Answer Keys/MLB Dashboard/mlb_dashboard.duckdb"
 ```
+
+### Editable Risk + WZ verified-quote (PR C, 2026-05)
+
+`POST /api/wz-quote-single` (in `mlb_dashboard_server.py`) wraps
+`wagerzon_odds.single_pricer.get_single_price()` for client-side
+preview-on-edit. Body: `{bet_hash, amount, account}`; returns
+`{win, current_wz_odds, error_msg, error_msg_key}`. The bets-tab JS
+coordinator fires this on every Risk-edit commit for WZ picks.
+
+Placement plumbing now keeps `data-size` (editable override → `actual_size`)
+separate from `data-model-size` (immutable Kelly → `kelly_bet` /
+`recommended_size`). The two attributes are siblings on every Place
+button; legacy callers without `data-model-size` fall back to `data-size`
+as a default to keep `create_bets_table_legacy` working.

@@ -21,6 +21,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import requests
 import duckdb
 from flask import Flask, Response, jsonify, request
 
@@ -41,7 +42,9 @@ from wagerzon_accounts import (
     AccountNotFoundError,
 )
 import wagerzon_balance
-import single_placer  # direct WZ API single-bet placement
+import wagerzon_auth
+import single_placer   # direct WZ API single-bet placement
+import single_pricer   # WZ ConfirmWagerHelper preview (quote without placing)
 
 # Books handled by each placement path
 WZ_DIRECT_API_BOOKS = {"wagerzon"}
@@ -1081,6 +1084,77 @@ def place_bet():
     return jsonify({"success": False,
                     "error": f"manual log only for '{bookmaker_key}'; "
                              f"use /api/log-bet to record a manual placement"}), 400
+
+
+@app.route("/api/wz-quote-single", methods=["POST"])
+def wz_quote_single():
+    """Preview a Wagerzon single bet at a user-typed amount.
+
+    Calls ConfirmWagerHelper with RiskWin=2 so WZ returns the current
+    quote without doing a balance check. Used by the bets-tab editable-
+    Risk feature to swap the local-math To Win for the actual Win the
+    user would receive, and to detect line drift / amount-rule
+    rejections before the user clicks Place.
+
+    Body:    {bet_hash, amount, account}
+    Returns: {win, current_wz_odds, error_msg, error_msg_key}
+             plus echo of {bet_hash, amount} so the client can correlate
+             responses to their originating field.
+    """
+    data = request.json or {}
+    bet_hash = data.get("bet_hash")
+    amount   = data.get("amount")
+    account  = data.get("account")
+
+    if not bet_hash:
+        return jsonify({"error_msg_key": "bad_request",
+                        "error_msg": "bet_hash required"}), 400
+    if amount is None:
+        return jsonify({"error_msg_key": "bad_request",
+                        "error_msg": "amount required"}), 400
+    try:
+        amount_f = float(amount)
+    except (TypeError, ValueError):
+        return jsonify({"error_msg_key": "bad_request",
+                        "error_msg": "amount must be numeric"}), 400
+    if not account:
+        return jsonify({"error_msg_key": "bad_request",
+                        "error_msg": "account required"}), 400
+
+    # The dashboard caller passes the same bet payload it would send to
+    # /api/place-bet (idgm + play already resolved client-side via the
+    # placement modal flow). If those keys are missing, fall back to the
+    # idgm/play resolver used by /api/place-bet.
+    if "idgm" not in data or "play" not in data:
+        wz_play = _resolve_wagerzon_play_idgm(data)
+        if wz_play is None:
+            return jsonify({"error_msg_key": "not_found",
+                            "error_msg": "Could not find this bet in wagerzon_odds"}), 400
+        data["idgm"] = wz_play["idgm"]
+        data["play"] = wz_play["play"]
+
+    bet_for_pricer = {
+        "idgm":          data["idgm"],
+        "play":          data["play"],
+        "line":          data.get("line", 0.0) or 0.0,
+        "american_odds": data.get("american_odds"),
+        "pitcher":       data.get("pitcher", 0),
+    }
+
+    try:
+        wz_account = wz_get_account(account)
+    except AccountNotFoundError:
+        return jsonify({"error_msg_key": "bad_request",
+                        "error_msg": f"unknown account: {account}"}), 400
+    try:
+        sess = wagerzon_auth.get_session(wz_account)
+    except (RuntimeError, requests.RequestException) as e:
+        return jsonify({"error_msg_key": "auth_error",
+                        "error_msg": f"Wagerzon auth failed: {e}"}), 503
+    result = single_pricer.get_single_price(sess, bet_for_pricer, amount=amount_f)
+    result["bet_hash"] = bet_hash
+    result["amount"]   = amount_f
+    return jsonify(result)
 
 
 @app.route("/api/log-bet", methods=["POST"])
