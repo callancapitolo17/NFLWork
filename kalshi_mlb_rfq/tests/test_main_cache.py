@@ -169,3 +169,43 @@ def test_main_loop_imports_sgp_runner():
     from kalshi_mlb_rfq import sgp_runner
     assert hasattr(main, "main_loop")
     assert hasattr(sgp_runner, "sgp_cycle")
+
+
+def test_refresh_caches_retries_on_catalog_exception(monkeypatch, tmp_path):
+    """CatalogException (R mid-atomic-replace: DROP+CREATE) must trigger the same
+    exponential-backoff retry as IOException, not immediately return False.
+
+    Before fix: bot returned False on schema mismatch, then waited
+    PIPELINE_REFRESH_SEC=600 (10 min) before next retry, operating on stale
+    samples or zero candidates in between. Now we retry with backoff.
+
+    This test points ANSWER_KEY_DB at a DB without mlb_game_samples so every
+    attempt hits CatalogException, then verifies the function:
+      (a) does not raise,
+      (b) honored `retries` (gave up after N attempts), and
+      (c) returned False cleanly.
+    """
+    import time as time_mod
+    from kalshi_mlb_rfq import main
+
+    # Build a DB that exists but is missing mlb_game_samples — simulates the
+    # window between R's DROP and CREATE.
+    bad_db = tmp_path / "bad_mlb_mm.duckdb"
+    con = duckdb.connect(str(bad_db))
+    con.execute("CREATE TABLE other_table (x INTEGER)")
+    con.close()
+
+    monkeypatch.setattr(main, "ANSWER_KEY_DB", bad_db)
+
+    # Count sleeps to verify we actually retried, and skip the real wait.
+    sleep_calls = []
+    monkeypatch.setattr(time_mod, "sleep", lambda s: sleep_calls.append(s))
+    # main.py imports `time` at module scope, so patch its bound name too.
+    monkeypatch.setattr(main.time, "sleep", lambda s: sleep_calls.append(s))
+
+    result = main._refresh_caches(retries=3)
+
+    assert result is False  # gave up cleanly without raising
+    # Should have slept between attempts (one sleep per retry attempt; the
+    # loop continues to the next iteration after each sleep).
+    assert len(sleep_calls) == 3, f"expected 3 retry-sleeps, got {sleep_calls}"

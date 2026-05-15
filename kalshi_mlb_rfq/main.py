@@ -126,9 +126,20 @@ def _refresh_caches(retries: int = 5) -> bool:
             ).fetchone()
             generated_at = meta_row[0] if meta_row else None
         except duckdb.CatalogException as e:
-            con.close()
-            print(f"  cache_refresh: schema mismatch — {e}", flush=True)
-            return False
+            # Schema mismatch / table missing — typically the R pipeline is
+            # mid-atomic-replace (DROP + CREATE). Retry with backoff parallel
+            # to the IOException handling above instead of waiting the full
+            # PIPELINE_REFRESH_SEC tick.
+            last_err = e
+            try:
+                con.close()
+            except Exception:
+                pass
+            wait = 1.0 * (2 ** attempt)
+            print(f"  cache_refresh: schema mismatch (attempt {attempt+1}/{retries}); "
+                  f"retrying in {wait:.1f}s — {e}", flush=True)
+            time.sleep(wait)
+            continue
         finally:
             try:
                 con.close()
