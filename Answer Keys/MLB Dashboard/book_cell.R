@@ -22,9 +22,48 @@
   if (signed && x > 0) paste0("+", base) else base
 }
 
+#' 2-way probit devig: given two American odds, return the no-vig
+#' (fair) American odds for both sides.
+#'
+#' Mirrors `Tools.R::devig_american()` for the 2-way case using the
+#' closed-form solution `c* = -(z1 + z2) / 2`. Inlined here to avoid
+#' sourcing all of Tools.R into the dashboard. A parity test in
+#' `Answer Keys/tests/test_devig_pair_matches_tools.R` guards against
+#' drift across a table of representative inputs.
+#'
+#' @param odd1 American odds for side 1 (integer or numeric).
+#' @param odd2 American odds for side 2.
+#' @return list(fair1 = numeric, fair2 = numeric). Returns NA pair when
+#'   either input is NA or zero.
+.devig_american_pair <- function(odd1, odd2) {
+  if (is.na(odd1) || is.na(odd2) || odd1 == 0 || odd2 == 0) {
+    return(list(fair1 = NA_real_, fair2 = NA_real_))
+  }
+  # Implied probabilities from American odds
+  p1 <- if (odd1 > 0) 100 / (odd1 + 100) else -odd1 / (-odd1 + 100)
+  p2 <- if (odd2 > 0) 100 / (odd2 + 100) else -odd2 / (-odd2 + 100)
+  # Probit z-shift: z' = z + c, with c chosen so p1' + p2' = 1
+  eps <- 1e-9
+  z1 <- qnorm(min(max(p1, eps), 1 - eps))
+  z2 <- qnorm(min(max(p2, eps), 1 - eps))
+  c_star <- -(z1 + z2) / 2
+  q1 <- pnorm(z1 + c_star)
+  q2 <- pnorm(z2 + c_star)
+  # Convert devigged probabilities back to American odds
+  to_amer <- function(p) {
+    if (p >= 0.5) round(-100 * p / (1 - p))
+    else          round( 100 * (1 - p) / p)
+  }
+  list(fair1 = to_amer(q1), fair2 = to_amer(q2))
+}
+
 #' Render one bets-tab grid cell.
 #'
 #' @param american_odds Integer odds (e.g., 125, -110). NA -> empty state.
+#' @param opposite_american_odds Integer odds for the OTHER side at the same
+#'   book (e.g., the Under price when this cell is the Over). Used to compute
+#'   probit-devigged fair odds for the FAIR view of the toggle. NA -> no
+#'   fair span emitted (cell shows raw only, behaves like legacy).
 #' @param line_quoted Numeric line the book is showing on this side.
 #' @param is_exact_line Boolean: TRUE when book's line matches the model line
 #'   exactly; FALSE -> alt state.
@@ -34,16 +73,33 @@
 #'   mismatched totals line tag.
 #' @param is_totals TRUE for totals markets (line tag gets O/U prefix);
 #'   FALSE for spreads (signed line value, e.g. "-1.5").
-#' @return HTML string for the cell (a single <div class="cell ..."> ... </div>).
+#' @return HTML string for the cell. Contains both <span class="raw"> and
+#'   (when devig is computable) <span class="fair">; CSS on the parent
+#'   .price-grid container determines which is visible (toggle).
 render_book_cell <- function(american_odds, line_quoted, is_exact_line,
                               is_pick = FALSE, side_word = "over",
-                              is_totals = TRUE) {
+                              is_totals = TRUE,
+                              opposite_american_odds = NA_integer_) {
   # State 1: empty (no quote)
   if (is.na(american_odds)) {
-    return('<div class="cell empty"><span class="price">&mdash;</span></div>')
+    return('<div class="cell empty"><span class="raw">&mdash;</span><span class="fair">&mdash;</span></div>')
   }
 
-  price_str <- if (american_odds > 0) paste0("+", american_odds) else as.character(american_odds)
+  raw_str <- if (american_odds > 0) paste0("+", american_odds) else as.character(american_odds)
+
+  # Compute devigged American for the FAIR span (if we have both sides).
+  # Fallback to em-dash so every non-empty cell still emits <span class="fair">;
+  # otherwise the Task 5 CSS toggle (.show-fair hides .raw) would render this
+  # cell blank in FAIR view when the book quotes only one side.
+  fair_html <- '<span class="fair">&mdash;</span>'  # fallback when no devig available
+  if (!is.na(opposite_american_odds)) {
+    pair <- .devig_american_pair(american_odds, opposite_american_odds)
+    if (!is.na(pair$fair1)) {
+      fair_str <- if (pair$fair1 > 0) paste0("+", as.integer(pair$fair1))
+                  else as.character(as.integer(pair$fair1))
+      fair_html <- sprintf('<span class="fair">%s</span>', fair_str)
+    }
+  }
 
   is_mismatched <- !isTRUE(is_exact_line)
 
@@ -63,8 +119,8 @@ render_book_cell <- function(american_odds, line_quoted, is_exact_line,
     }
   }
 
-  sprintf('<div class="%s">%s<span class="price">%s</span></div>',
-          cell_class, tag_html, price_str)
+  sprintf('<div class="%s">%s<span class="raw">%s</span>%s</div>',
+          cell_class, tag_html, raw_str, fair_html)
 }
 
 # Backwards-compat shim: old code may still source book_pill.R via legacy paths.

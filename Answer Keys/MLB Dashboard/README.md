@@ -30,6 +30,14 @@ run.py mlb (pipeline)  →  mlb_mm.duckdb/mlb_bets_combined          (dashboard 
   - `[Place]` dispatches by book: Wagerzon → direct REST API (no browser, returns ticket #); Hoop88 / BFA / BetOnlineAG → existing Playwright browser flow; DraftKings / FanDuel / Pinnacle / Bookmaker / Bet105 → button disabled (use `[Log]` instead).
   - `[Log]` records a manual placement without contacting any book — works for any sportsbook.
 - **Parlay tab** — MLB-specific: correlated 2-leg parlays (spread + total) priced via `mlb_correlated_parlay.R` with conditional Kelly sizing. Each opportunity renders as a card containing the matchup, legs, a Books pill row (model M plus per-book devigged fair probabilities for DK / FD / PX / NV plus blended consensus Cons), and a metadata strip (Fair / WZ / Size / To Win) with edge percentage and the Place / placed-label / error-pill action. The card layout reads identically across laptop, split-screen, and phone — no column hiding, no horizontal scroll. Combined-parlay selection (the Sel checkbox in the top-right corner of each card) and auto-placement still work unchanged.
+- **Kelly Calculator** — manual sizing tool below the settings strip on the
+  bets tab. Type American odds + a fair % (or American fair odds), get a
+  recommended Risk based on your bankroll × Kelly fraction. Useful when
+  you've devigged a market manually and want to size at your own fair.
+- **Per-cell devig toggle** — every bet card's price grid has a
+  `RAW / FAIR` toggle. FAIR is the default view: each book cell shows
+  its own probit-devigged American odds (computed against the book's
+  own two-sided quote). Click `RAW` to see the original book prices.
 - Kelly sizing with configurable bankroll + multiplier
 - Same-game correlation detection with visual tooltips
 - Bet placement tracking (placed vs recommended)

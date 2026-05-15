@@ -254,6 +254,20 @@ Helpers in `mlb_dashboard.R`: `render_price_grid_row`, `render_hero_strip`, `ren
 `fair_odds` is derived inline from `prob` (`mlb_bets_combined` doesn't expose it directly).
 Visual reference: `docs/superpowers/specs/2026-05-13-mlb-bets-tab-improvements-design.md` and the V8 mockup in the brainstorm dir.
 
+### Per-cell devig toggle + Kelly Calculator widget (PR B, 2026-05)
+
+- Bets-tab cards have a per-card `RAW` / `FAIR` toggle in the top
+  corner of the price grid. Default is `FAIR`: each cell shows the
+  book's own probit-devigged American odds (math via
+  `book_cell.R::.devig_american_pair`, parity-tested against
+  `Tools.R::devig_american` in `tests/test_devig_pair_matches_tools.R`).
+  RAW shows the original book quotes. Per-card state — no persistence,
+  no global preference.
+- A "Kelly Calculator" strip sits below the Bankroll/Kelly Fraction
+  settings on the bets tab. Manual sizing tool: type Odds + Fair, get
+  recommended Risk and To Win. Reuses the existing JS Kelly math and
+  reads the dashboard's bankroll/kelly_mult inputs live.
+
 ### WZ single-bet auto-placer
 
 `wagerzon_odds/single_placer.py` exposes `place_single(account, bet)`
