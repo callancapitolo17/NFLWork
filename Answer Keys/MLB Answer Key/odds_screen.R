@@ -39,6 +39,11 @@ LINE_MATCH_TOLERANCE <- 3.0  # max abs(line_quoted - model_line) we'll emit
     str_detect(market_name, "_f5$")            ~ "F5",
     str_detect(market_name, "_f7$")            ~ "F7",
     str_detect(market_name, "_fg$")            ~ "FG",
+    # H2 = MLB 2nd halves (innings 6-9) — emitted by the BKM scraper from
+    # league 503. Not currently modeled, but recognized here so H2 rows
+    # are tagged explicitly instead of silently defaulting to FG (which
+    # would mis-classify them as full-game data).
+    str_detect(market_name, "_h2$")            ~ "H2",
     TRUE                                       ~ "FG"
   )
 }
@@ -46,7 +51,7 @@ LINE_MATCH_TOLERANCE <- 3.0  # max abs(line_quoted - model_line) we'll emit
 .derive_market_type <- function(market_name) {
   market_name %>%
     str_replace("_1st_[357]_innings$", "") %>%
-    str_replace("_(fg|f3|f5|f7)$", "")
+    str_replace("_(fg|f3|f5|f7|h2)$", "")
 }
 
 #' Normalize a raw scraper / Odds API frame to the canonical shape consumed
