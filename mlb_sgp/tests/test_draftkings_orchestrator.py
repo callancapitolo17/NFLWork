@@ -57,3 +57,62 @@ def test_source_labels_exposed():
     assert SOURCE_LABEL == "draftkings_direct"
     assert SOURCE_LABEL_FALLBACK == "draftkings_interpolated"
     assert BOOK_NAME == "draftkings"
+
+
+def test_filter_a_extracts_signed_home_spreads_dk():
+    """Filter A regression: ``_extract_offered_lines_dk`` must return the
+    home-perspective signed spread set + flat total set.
+
+    DK keys spreads as (sign, abs_line, participant). Sign 'N' is the
+    negative-line side; participant '1' is home, '3' is away. The helper
+    must:
+      - flip sign to negative when sign == 'N' on participant '1',
+      - keep sign positive when sign == 'P' on participant '1',
+      - ignore participant '3' (away mirrors home; double-counting).
+
+    If this sign convention drifts, Filter A silently drops valid
+    targets (the dropped target's spread won't appear in the offered
+    set, so price_sgps skips it). This test pins the convention.
+    """
+    from mlb_sgp.draftkings import _extract_offered_lines_dk
+
+    # Fixture mirrors what scraper_draftkings_sgp.fetch_selection_ids
+    # returns post-parse: tuple keys, not JSON-encoded strings.
+    sel_ids_all = {
+        "fg": {
+            "spreads": {
+                # Home favored: home gets ('N', 1.5, '1') -> -1.5
+                ("N", 1.5, "1"): "id_h_main",
+                # Away mirror at +1.5 on participant '3' — ignored.
+                ("P", 1.5, "3"): "id_a_main",
+                # Alt home -2.5
+                ("N", 2.5, "1"): "id_h_alt",
+                ("P", 2.5, "3"): "id_a_alt",
+                # Home underdog +1.5 (sign 'P' on home)
+                ("P", 1.5, "1"): "id_h_dog",
+                ("N", 1.5, "3"): "id_a_dog",
+            },
+            "totals": {
+                ("O", 8.5): "id_o_main",
+                ("U", 8.5): "id_u_main",
+                ("O", 9.0): "id_o_int",
+                ("U", 9.0): "id_u_int",
+                ("O", 9.5): "id_o_alt",
+                ("U", 9.5): "id_u_alt",
+            },
+        },
+        "f5": {"spreads": {}, "totals": {}},
+    }
+
+    offered = _extract_offered_lines_dk(sel_ids_all, "fg")
+
+    # Home-perspective signed lines: -1.5 (fav), -2.5 (fav alt), +1.5 (dog).
+    assert offered["spreads"] == {-1.5, -2.5, 1.5}, (
+        f"home-perspective signed spreads wrong: {offered['spreads']}"
+    )
+    # Totals flatten (over/under collapse).
+    assert offered["totals"] == {8.5, 9.0, 9.5}
+
+    # Missing period -> empty sets (defensive).
+    empty = _extract_offered_lines_dk(sel_ids_all, "f5")
+    assert empty == {"spreads": set(), "totals": set()}

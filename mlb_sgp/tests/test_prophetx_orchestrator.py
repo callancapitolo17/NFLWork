@@ -88,3 +88,94 @@ def test_source_labels_exposed():
     assert SOURCE_LABEL_FALLBACK == "prophetx_interpolated"
     assert BOOK_NAME == "prophetx"
     assert SANITY_MULT_RATIO == 1.5
+
+
+def test_filter_a_extracts_signed_home_spreads_px():
+    """Filter A regression: ``_extract_offered_lines_px`` must return the
+    home-perspective signed spread set + flat total set.
+
+    PX stores ``line`` on each selection from the *outcome's* own
+    perspective. If home is favored at -1.5, the home selection carries
+    ``line = -1.5`` and the away selection carries ``line = +1.5``. To
+    get one home-perspective signed line per market, the helper must
+    restrict to ``competitorId == home_id``. If we accidentally
+    iterated away selections we'd get the mirrored sign, which would
+    silently let through targets that don't match what PX actually
+    offers from the home side.
+
+    Totals are filtered to selection names starting with "over"/"under"
+    so auxiliary buckets (if any) don't pollute the line set.
+    """
+    from mlb_sgp.prophetx import _extract_offered_lines_px
+
+    # Build a minimal PX market list mirroring the shape that
+    # ProphetXClient.fetch_event_markets emits (after `_iter_selections`
+    # walks marketLines[].outcomes for the flat-list shape).
+    markets = [
+        {
+            "name": "Run Line",
+            "marketLines": [
+                {
+                    "outcomes": [
+                        # Main -1.5 — home perspective.
+                        {"competitorId": "home123", "line": -1.5,
+                         "name": "Yankees -1.5"},
+                        {"competitorId": "away456", "line": 1.5,
+                         "name": "Red Sox +1.5"},
+                        # Alt: home -2.5
+                        {"competitorId": "home123", "line": -2.5,
+                         "name": "Yankees -2.5"},
+                        {"competitorId": "away456", "line": 2.5,
+                         "name": "Red Sox +2.5"},
+                    ],
+                },
+            ],
+        },
+        {
+            "name": "Total Runs",
+            "marketLines": [
+                {
+                    "outcomes": [
+                        {"name": "Over 8.5", "line": 8.5},
+                        {"name": "Under 8.5", "line": 8.5},
+                        {"name": "Over 9.0", "line": 9.0},
+                        {"name": "Under 9.0", "line": 9.0},
+                        # Auxiliary garbage selection — must be filtered out.
+                        {"name": "Push", "line": 9.0},
+                    ],
+                },
+            ],
+        },
+    ]
+
+    # Pass find_market + the FG market names directly so the helper
+    # doesn't need to import scraper_prophetx_sgp (which would force
+    # mlb_sgp/ onto sys.path and shadow the project-root db module).
+    def find_market(mkts, name):
+        for m in mkts:
+            if m.get("name") == name:
+                return m
+        return None
+
+    offered = _extract_offered_lines_px(
+        markets, "fg", home_id="home123",
+        find_market=find_market,
+        spread_market_name="Run Line",
+        total_market_name="Total Runs",
+    )
+
+    # Only home-side lines (negative signs preserved from outcome view).
+    assert offered["spreads"] == {-1.5, -2.5}, (
+        f"home-perspective signed spreads wrong: {offered['spreads']}"
+    )
+    # "Push" filtered out; over/under both collapse to {8.5, 9.0}.
+    assert offered["totals"] == {8.5, 9.0}
+
+    # No matching F5 markets in the fixture -> empty sets.
+    empty = _extract_offered_lines_px(
+        markets, "f5", home_id="home123",
+        find_market=find_market,
+        spread_market_name="1st-5th Inning Spread",
+        total_market_name="1st-5th Inning Total Runs",
+    )
+    assert empty == {"spreads": set(), "totals": set()}

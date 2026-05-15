@@ -91,6 +91,74 @@ _COMBO_NAMES = (
 )
 
 
+def _extract_offered_lines_px(
+    markets: list[dict],
+    period_key: str,
+    home_id,
+    find_market=None,
+    spread_market_name: str | None = None,
+    total_market_name: str | None = None,
+) -> dict[str, set]:
+    """Return ``{"spreads": set, "totals": set}`` for one period from PX
+    raw event markets.
+
+    PX stores each selection's ``line`` from the *outcome's* own
+    perspective. To get a single home-perspective signed line per
+    market, we restrict the spread iteration to selections whose
+    ``competitorId == home_id``.
+
+    Total selections are filtered to those whose name starts with
+    "over" or "under" (defensive — some auxiliary selections sit in the
+    same market).
+
+    ``find_market`` is the market-lookup callable (signature
+    ``(markets, name) -> dict | None``). In production we pass
+    ``scraper_prophetx_sgp._find_market`` which honors PX's
+    ``NAME_ALIASES`` for renamed markets — keeping that behavior in the
+    Filter A path matters because a missed market would silently drop
+    every target. ``spread_market_name`` / ``total_market_name`` are
+    the PX market display names for this period (``"Run Line"`` /
+    ``"Total Runs"`` for FG, ``"1st-5th Inning Spread"`` etc. for F5).
+    All three default to ``None`` and are resolved from
+    ``scraper_prophetx_sgp`` when omitted — that lazy lookup keeps the
+    production call site unchanged while letting tests pass everything
+    in directly (avoiding ``sys.path`` mucking that would shadow the
+    project-root ``db`` module).
+
+    Used by Filter A in ``price_sgps`` to drop targets PX doesn't offer
+    before the pricing loop runs.
+    """
+    if find_market is None or spread_market_name is None or total_market_name is None:
+        from scraper_prophetx_sgp import _find_market as _fm, MARKET_NAMES
+        if find_market is None:
+            find_market = _fm
+        if spread_market_name is None:
+            spread_market_name = MARKET_NAMES[period_key]["spread"]
+        if total_market_name is None:
+            total_market_name = MARKET_NAMES[period_key]["total"]
+
+    spread_mkt = find_market(markets, spread_market_name)
+    total_mkt = find_market(markets, total_market_name)
+    spreads: set = set()
+    totals: set = set()
+    if spread_mkt:
+        for sel in _iter_selections(spread_mkt):
+            if sel.get("competitorId") != home_id:
+                continue
+            line_val = sel.get("line")
+            if line_val is not None:
+                spreads.add(float(line_val))
+    if total_mkt:
+        for sel in _iter_selections(total_mkt):
+            nm = (sel.get("name") or "").lower()
+            if not (nm.startswith("over") or nm.startswith("under")):
+                continue
+            line_val = sel.get("line")
+            if line_val is not None:
+                totals.add(float(line_val))
+    return {"spreads": spreads, "totals": totals}
+
+
 def price_sgps(
     target_lines: list[TargetLine],
     periods: tuple[str, ...] = ("FG",),
@@ -231,34 +299,14 @@ def price_sgps(
             continue
 
         # Build offered (spread, total) sets per period from the cached
-        # raw-dict markets. PX stores `line` on each selection from the
-        # outcome's own perspective, so we restrict spread lines to the
-        # home_id outcomes to get a home-perspective set.
-        offered_per_period: dict[str, dict[str, set]] = {}
-        for period_key in ("fg", "f5"):
-            spread_mkt = _find_market(markets, MARKET_NAMES[period_key]["spread"])
-            total_mkt = _find_market(markets, MARKET_NAMES[period_key]["total"])
-            spreads: set = set()
-            totals: set = set()
-            if spread_mkt:
-                for sel in _iter_selections(spread_mkt):
-                    if sel.get("competitorId") != home_id:
-                        continue
-                    line_val = sel.get("line")
-                    if line_val is not None:
-                        spreads.add(float(line_val))
-            if total_mkt:
-                for sel in _iter_selections(total_mkt):
-                    nm = (sel.get("name") or "").lower()
-                    if not (nm.startswith("over") or nm.startswith("under")):
-                        continue
-                    line_val = sel.get("line")
-                    if line_val is not None:
-                        totals.add(float(line_val))
-            offered_per_period[period_key] = {
-                "spreads": spreads,
-                "totals": totals,
-            }
+        # raw-dict markets via the testable _extract_offered_lines_px
+        # helper. PX stores `line` on each selection from the outcome's
+        # own perspective, so we restrict spread lines to the home_id
+        # outcomes to get a home-perspective set.
+        offered_per_period: dict[str, dict[str, set]] = {
+            period_key: _extract_offered_lines_px(markets, period_key, home_id)
+            for period_key in ("fg", "f5")
+        }
 
         pre = 0
         post = 0

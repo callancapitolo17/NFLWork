@@ -77,6 +77,32 @@ _FALLBACK_KEY_TO_COMBO = {
 }
 
 
+def _extract_offered_lines_fd(
+    sel_ids_per_period: dict, period_key: str,
+) -> dict[str, set]:
+    """Return ``{"spreads": set, "totals": set}`` for one period from FD
+    ``fetch_event_runners`` output.
+
+    FD keys spreads as ``(side, signed_line)`` where ``side`` is
+    ``"home"`` or ``"away"``. Each magnitude appears twice (once per
+    side, with opposite signs), so we collapse to one signed line per
+    market by restricting to ``side == "home"`` — that's already the
+    home-perspective signed line.
+
+    Totals are keyed ``(over_under, line)`` — we collect ``line``.
+
+    Used by Filter A in ``price_sgps`` to drop targets the book doesn't
+    offer before the pricing loop runs.
+    """
+    sel = sel_ids_per_period.get(period_key, {"spreads": {}, "totals": {}})
+    spreads = {
+        line for (side, line) in sel.get("spreads", {}).keys()
+        if side == "home"
+    }
+    totals = {line for (ou, line) in sel.get("totals", {}).keys()}
+    return {"spreads": spreads, "totals": totals}
+
+
 def price_sgps(
     target_lines: list[TargetLine],
     periods: tuple[str, ...] = ("FG",),
@@ -195,24 +221,10 @@ def price_sgps(
                 game["fd_away"],
             )
         sel_ids_per_period = runners_cache[game_id]
-        # Build offered (spread, total) sets per period. FD keys spreads
-        # as (side, signed_line) — we collapse to a single signed-line
-        # set by only consuming the "home" entries (away entries mirror
-        # the same magnitude).
-        offered_per_period: dict[str, dict[str, set]] = {}
-        for period_key in ("fg", "f5"):
-            sel = sel_ids_per_period.get(period_key, {"spreads": {}, "totals": {}})
-            spreads = {
-                line for (side, line) in sel.get("spreads", {}).keys()
-                if side == "home"
-            }
-            totals = {
-                line for (ou, line) in sel.get("totals", {}).keys()
-            }
-            offered_per_period[period_key] = {
-                "spreads": spreads,
-                "totals": totals,
-            }
+        offered_per_period: dict[str, dict[str, set]] = {
+            period_key: _extract_offered_lines_fd(sel_ids_per_period, period_key)
+            for period_key in ("fg", "f5")
+        }
         # Filter this game's targets.
         pre = 0
         post = 0

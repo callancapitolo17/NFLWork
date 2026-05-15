@@ -82,6 +82,36 @@ _FALLBACK_KEY_TO_COMBO = {
 }
 
 
+def _extract_offered_lines_dk(
+    sel_ids_all: dict, period_key: str,
+) -> dict[str, set]:
+    """Return ``{"spreads": set, "totals": set}`` for one period from DK
+    ``fetch_selection_ids`` output.
+
+    DK keys spreads as ``(sign, abs_line, participant)`` where sign 'N'
+    means the negative-line side. To get one home-perspective signed line
+    per market, we restrict to ``participant == "1"`` (the home outcome)
+    and flip the sign when sign == 'N'. Away outcomes (participant "3")
+    are mirrors and would double-count, so we skip them.
+
+    Totals are keyed as ``(over_under, line)`` — we just collect the line
+    side.
+
+    Used by Filter A in ``price_sgps`` to drop targets the book doesn't
+    offer before the pricing loop runs. Extracted into a standalone
+    helper so the per-book sign convention is independently testable.
+    """
+    sel_ids = sel_ids_all.get(period_key, {"spreads": {}, "totals": {}})
+    spreads: set = set()
+    for (sign, abs_line, participant) in sel_ids.get("spreads", {}).keys():
+        if participant != "1":
+            continue
+        signed = -abs_line if sign == "N" else abs_line
+        spreads.add(signed)
+    totals = {line for (ou, line) in sel_ids.get("totals", {}).keys()}
+    return {"spreads": spreads, "totals": totals}
+
+
 def price_sgps(
     target_lines: list[TargetLine],
     periods: tuple[str, ...] = ("FG",),
@@ -192,30 +222,10 @@ def price_sgps(
         sel_ids_all = fetch_selection_ids(
             client.session, game["dk_event_id"], main_nums, verbose,
         )
-        # Extract per-period offered (spread, total) line sets so we can
-        # filter targets later. DK keys spreads as (sign, abs_line,
-        # participant) where sign 'N' means the negative-line side. We
-        # reconstruct the signed home-perspective line by checking
-        # participant == "1" (home).
-        offered_per_period: dict[str, dict[str, set]] = {}
-        for period_key in ("fg", "f5"):
-            sel_ids = sel_ids_all.get(period_key, {"spreads": {}, "totals": {}})
-            spreads = set()
-            for (sign, abs_line, participant) in sel_ids.get("spreads", {}).keys():
-                # Home perspective: home is participant "1" so its sign
-                # is the home-perspective sign directly. Away is "3"
-                # and carries the mirror sign — we skip it to avoid
-                # double-counting (we only want one signed entry per
-                # home-perspective line).
-                if participant != "1":
-                    continue
-                signed = -abs_line if sign == "N" else abs_line
-                spreads.add(signed)
-            totals = {line for (ou, line) in sel_ids.get("totals", {}).keys()}
-            offered_per_period[period_key] = {
-                "spreads": spreads,
-                "totals": totals,
-            }
+        offered_per_period: dict[str, dict[str, set]] = {
+            period_key: _extract_offered_lines_dk(sel_ids_all, period_key)
+            for period_key in ("fg", "f5")
+        }
         per_game_cache[game_id] = {
             "game": game,
             "main_nums": main_nums,

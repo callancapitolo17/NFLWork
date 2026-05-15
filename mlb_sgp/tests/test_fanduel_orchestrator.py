@@ -58,3 +58,53 @@ def test_source_labels_exposed():
     assert SOURCE_LABEL == "fanduel_direct"
     assert SOURCE_LABEL_FALLBACK == "fanduel_interpolated"
     assert BOOK_NAME == "fanduel"
+
+
+def test_filter_a_extracts_signed_home_spreads_fd():
+    """Filter A regression: ``_extract_offered_lines_fd`` must return the
+    home-perspective signed spread set + flat total set.
+
+    FD keys spreads as (side, signed_line) — each magnitude appears
+    twice (once per side, with opposite signs). The helper must collapse
+    to one signed line per market by restricting to ``side == "home"``.
+    If we mistakenly included ``side == "away"`` we'd get both signs
+    and Filter A would let through targets the home side doesn't carry
+    just because the away mirror does. This test pins ``side == "home"``
+    selection.
+    """
+    from mlb_sgp.fanduel import _extract_offered_lines_fd
+
+    # Mirror of fetch_event_runners output shape (post-parse).
+    sel_ids_per_period = {
+        "fg": {
+            "spreads": {
+                ("home", -1.5): ("mid1", "sid1"),
+                ("away", 1.5):  ("mid1", "sid2"),  # mirror -> filtered out
+                ("home", -2.5): ("mid2", "sid3"),
+                ("away", 2.5):  ("mid2", "sid4"),
+                ("home", 1.5):  ("mid3", "sid5"),  # home as underdog
+                ("away", -1.5): ("mid3", "sid6"),
+            },
+            "totals": {
+                ("O", 8.5): ("mid_t1", "sid_o1"),
+                ("U", 8.5): ("mid_t1", "sid_u1"),
+                ("O", 9.0): ("mid_t2", "sid_o2"),
+                ("U", 9.0): ("mid_t2", "sid_u2"),
+                ("O", 9.5): ("mid_t3", "sid_o3"),
+                ("U", 9.5): ("mid_t3", "sid_u3"),
+            },
+        },
+        "f5": {"spreads": {}, "totals": {}},
+    }
+
+    offered = _extract_offered_lines_fd(sel_ids_per_period, "fg")
+
+    # Only "home" side entries — already signed home-perspective.
+    assert offered["spreads"] == {-1.5, -2.5, 1.5}, (
+        f"home-side-only signed spreads wrong: {offered['spreads']}"
+    )
+    assert offered["totals"] == {8.5, 9.0, 9.5}
+
+    # F5 with empty markets -> empty sets (typical NB game).
+    empty = _extract_offered_lines_fd(sel_ids_per_period, "f5")
+    assert empty == {"spreads": set(), "totals": set()}

@@ -79,6 +79,50 @@ _COMBO_DISPLAY = {
 }
 
 
+def _extract_offered_lines_nv(
+    markets: list[dict],
+    period_key: str,
+    spread_type: str | None = None,
+    total_type: str | None = None,
+) -> dict[str, set]:
+    """Return ``{"spreads": set, "totals": set}`` for one period from NV
+    raw GraphQL ``markets`` list.
+
+    Each spread/total market on NV carries one ``strike`` value (the
+    line). The home-perspective signed spread set is the union of
+    strikes across all SPREAD-type markets for the period; the totals
+    set is the union across TOTAL-type markets.
+
+    ``spread_type`` and ``total_type`` are the NV market-type constants
+    (``"SPREAD"``/``"TOTAL"`` for FG, ``"SPREAD_1H"``/``"TOTAL_1H"`` for
+    F5). They default to ``None`` and are resolved from
+    ``scraper_novig_sgp.SPREAD_TYPE`` / ``TOTAL_TYPE`` if not provided —
+    that lazy lookup keeps the production call sites unchanged while
+    letting tests pass the strings directly (so the helper can be
+    exercised without putting ``mlb_sgp/`` on ``sys.path`` and
+    accidentally shadowing the project-root ``db`` module).
+
+    Used by Filter A in ``price_sgps`` to drop targets the book doesn't
+    offer before the pricing loop runs.
+    """
+    if spread_type is None or total_type is None:
+        from scraper_novig_sgp import SPREAD_TYPE, TOTAL_TYPE
+        if spread_type is None:
+            spread_type = SPREAD_TYPE[period_key]
+        if total_type is None:
+            total_type = TOTAL_TYPE[period_key]
+
+    spreads = {
+        float(m["strike"]) for m in markets
+        if m.get("type") == spread_type and m.get("strike") is not None
+    }
+    totals = {
+        float(m["strike"]) for m in markets
+        if m.get("type") == total_type and m.get("strike") is not None
+    }
+    return {"spreads": spreads, "totals": totals}
+
+
 def price_sgps(
     target_lines: list[TargetLine],
     periods: tuple[str, ...] = ("FG",),
@@ -195,7 +239,7 @@ def price_sgps(
     # offered (the latter would let try_integer_fallback_nv rescue an
     # integer total). NV's spread match in fetch_event_legs is strict —
     # if NV's market strike differs from the target, no leg comes back.
-    from scraper_novig_sgp import SPREAD_TYPE, TOTAL_TYPE
+    # (SPREAD_TYPE/TOTAL_TYPE are now imported inside the helper.)
 
     targets_by_game: dict[str, list[TargetLine]] = {}
     for t in targets:
@@ -210,26 +254,12 @@ def price_sgps(
             legs_cache[game_id] = fetch_event_legs(client.session, game, verbose)
         _legs_dict, markets = legs_cache[game_id]
 
-        # Build offered (spread, total) sets per period from the raw
-        # market list. Each spread/total market carries one `strike`
-        # value; the home-perspective spread set is the union of strikes
-        # across all SPREAD-type markets for the period.
-        offered_per_period: dict[str, dict[str, set]] = {}
-        for period_key in ("fg", "f5"):
-            sp_type = SPREAD_TYPE[period_key]
-            to_type = TOTAL_TYPE[period_key]
-            spreads = {
-                float(m["strike"]) for m in markets
-                if m.get("type") == sp_type and m.get("strike") is not None
-            }
-            totals = {
-                float(m["strike"]) for m in markets
-                if m.get("type") == to_type and m.get("strike") is not None
-            }
-            offered_per_period[period_key] = {
-                "spreads": spreads,
-                "totals": totals,
-            }
+        # Build offered (spread, total) sets per period via the testable
+        # _extract_offered_lines_nv helper.
+        offered_per_period: dict[str, dict[str, set]] = {
+            period_key: _extract_offered_lines_nv(markets, period_key)
+            for period_key in ("fg", "f5")
+        }
 
         pre = 0
         post = 0
