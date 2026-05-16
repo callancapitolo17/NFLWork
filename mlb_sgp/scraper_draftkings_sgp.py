@@ -1,30 +1,21 @@
 #!/usr/bin/env python3
-"""
-DraftKings MLB SGP Scraper (Pure REST API)
+"""DraftKings MLB SGP Scraper — thin shim invoking the draftkings library.
 
-Fetches Same Game Parlay (SGP) odds from DraftKings for MLB spread+total combos.
-No browser needed — uses curl_cffi with Chrome TLS impersonation to bypass Akamai.
+Reads target_lines from MLB_DB (default: mlb_mm.duckdb; bot overrides via
+MLB_SGP_DB_PATH env var). Calls mlb_sgp.draftkings.price_sgps() with the
+periods configured via MLB_SGP_PERIODS env var (default: FG,F5).
+Writes PricedRow results back to MLB_DB via mlb_sgp.db.upsert_priced_rows.
 
-How it works:
-1. Fetch DK events via public REST API
-2. For each game, fetch the SGP parlays data (curl_cffi) — returns ALL selection IDs
-3. Look up the exact selection IDs for our spread + total lines
-4. Call calculateBets with those IDs to get correlation-adjusted SGP price
-
-Usage:
-    cd mlb_sgp
-    source venv/bin/activate
-    python scraper_draftkings_sgp.py           # all games
-    python scraper_draftkings_sgp.py --verbose  # show details
+Legacy helpers (fetch_dk_events, match_events, calculate_sgp, etc.) are
+preserved in this file because the new draftkings orchestrator + dk_client
+import them lazily. They stay here during the transition; a follow-up
+refactor can lift them into the library module.
 """
 
-import argparse
+import os
 import re
 import sys
-import time
-import duckdb
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from curl_cffi import requests as cffi_requests
 
 # Resolve repo root dynamically (works from worktrees too)
@@ -37,7 +28,7 @@ _ANSWER_KEYS = _REPO_ROOT / "Answer Keys"
 sys.path.insert(0, str(_ANSWER_KEYS))
 from canonical_match import load_team_dict, load_canonical_games, resolve_team_names
 
-from db import ensure_table, upsert_sgp_odds, clear_source, MLB_DB, _connect_with_retry
+from db import MLB_DB, _connect_with_retry
 from integer_line_derivation import is_integer_line, derive_fair_probs
 
 # ---------------------------------------------------------------------------
@@ -617,374 +608,59 @@ def calculate_sgp(session: cffi_requests.Session,
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Shim entry point
 # ---------------------------------------------------------------------------
-
-def scrape_dk_sgp(verbose: bool = False):
-    """Main: fetch DK SGP odds for all MLB games via pure REST API.
-
-    Uses parallel fetching for speed:
-    - Phase 1: Fetch market nums + selection IDs for all games in parallel
-    - Phase 2: Price all spread+total combos in parallel
-    - Phase 3: Batch write to DuckDB
-    """
-
-    # Wipe all previous DK SGP prices so only this run's results exist.
-    # If DK blocks a parlay that was priced last run, it simply won't have
-    # a row — the R blending code will see NA instead of a stale price.
-    clear_source("draftkings_direct")
-    clear_source("draftkings_interpolated")
-
-    print("Loading parlay lines from DuckDB...")
-    parlay_lines = load_parlay_lines()
-    if not parlay_lines:
-        return
-
-    print(f"  {len(parlay_lines)} games with lines")
-
-    print("Initializing DK session...")
-    # Use the shared DraftKingsClient so the SGP scraper and the upcoming
-    # singles scraper share one Chrome-TLS session + one event-list call.
-    # Legacy helpers (init_session, fetch_dk_events, fetch_main_market_nums,
-    # fetch_selection_ids, _fetch_subcat_markets) stay defined in this file —
-    # dk_client.py imports them.
-    from dk_client import DraftKingsClient
-
-    client = DraftKingsClient(verbose=verbose)
-    session = client.session
-
-    print("Fetching DraftKings MLB events...")
-    # Adapt Event dataclass back to the dict shape downstream code expects.
-    # `name` is used only in print/error messages; "Away @ Home" matches DK's
-    # own event name convention for MLB.
-    dk_events = [
-        {
-            "dk_event_id": e.event_id,
-            "dk_home": e.home_team,
-            "dk_away": e.away_team,
-            "start_time": e.start_time,
-            "name": f"{e.away_team} @ {e.home_team}",
-        }
-        for e in client.list_events()
-    ]
-    print(f"  {len(dk_events)} DK events")
-
-    # Filter out events that have already started — live games return empty or
-    # running-score-adjusted selections that don't match pre-game lines.
-    from datetime import datetime, timezone
-    now_utc = datetime.now(timezone.utc).isoformat()
-    dk_events = [e for e in dk_events if e["start_time"] > now_utc]
-
-    # Deduplicate: keep one event per team matchup per start hour.
-    # This filters out live-game duplicates (same matchup, same hour) while
-    # preserving both games of a doubleheader (same teams, different hours).
-    seen_matchups = set()
-    deduped_events = []
-    for evt in sorted(dk_events, key=lambda e: e["start_time"]):
-        matchup = (evt["dk_home"], evt["dk_away"], evt["start_time"][:13])
-        if matchup not in seen_matchups:
-            seen_matchups.add(matchup)
-            deduped_events.append(evt)
-
-    print("Matching teams via canonical_match...")
-    matched = match_events(deduped_events, parlay_lines)
-    print(f"  {len(matched)} matched games")
-
-    if not matched:
-        print("  No matches found.")
-        return
-
-    # ── Phase 1: Parallel fetch of market nums + selection IDs ──
-    print("Fetching selection IDs (parallel)...")
-    t0 = time.time()
-
-    game_data = {}  # game_id -> sel_ids (per-period dict, includes canonical)
-
-    def fetch_one_game(game):
-        dk_eid = game["dk_event_id"]
-        main_nums = fetch_main_market_nums(session, dk_eid)
-        sel_ids = fetch_selection_ids(session, dk_eid, main_nums, verbose)
-        return game["game_id"], sel_ids
-
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(fetch_one_game, g): g for g in matched}
-        for future in as_completed(futures):
-            try:
-                game_id, sel_ids = future.result()
-                game_data[game_id] = sel_ids
-            except Exception as e:
-                game = futures[future]
-                print(f"  Error fetching {game['dk_name']}: {e}")
-
-    print(f"  Fetched {len(game_data)} games in {time.time() - t0:.1f}s")
-
-    # ── Phase 2: Build combo pairs and price in parallel ──
-    print("Pricing SGP combos (parallel)...")
-    t1 = time.time()
-
-    # Build all (game_id, period, combo_name, spread_sel, total_sel) tuples
-    combo_items = []
-    interpolated_results = []   # (game_id, period, combo_name, fair_prob)
-    for game in matched:
-        gid = game["game_id"]
-        if gid not in game_data:
-            continue
-
-        sel_ids_per_period = game_data[gid]
-
-        for period in ("fg", "f5"):
-            spread_line = game[f"{period}_spread_line"]
-            total = game[f"{period}_total_line"]
-            if spread_line is None or total is None:
-                continue
-
-            sel_ids = sel_ids_per_period.get(period, {"spreads": {}, "totals": {}})
-            if not sel_ids["spreads"]:
-                continue
-
-            if spread_line < 0:
-                home_sign, away_sign = "N", "P"
-            else:
-                home_sign, away_sign = "P", "N"
-
-            spread = abs(spread_line)
-
-            # Suffix _1 = home team, _3 = away team
-            home_spread_sels = sel_ids["spreads"].get((home_sign, spread, "1")) or []
-            away_spread_sels = sel_ids["spreads"].get((away_sign, spread, "3")) or []
-            over_sels = sel_ids["totals"].get(("O", total)) or []
-            under_sels = sel_ids["totals"].get(("U", total)) or []
-
-            if not home_spread_sels or not away_spread_sels or not over_sels or not under_sels:
-                # Existing exact-line lookup miss. Try integer-line fallback.
-                canonical = sel_ids.get("canonical", set())
-                fallback = try_integer_fallback_dk(
-                    session, sel_ids, spread_line, total,
-                    canonical, verbose=verbose,
-                )
-                if fallback is None:
-                    continue
-                # Append 4 derived rows to interpolated_results
-                # (separate list from combo_items so they bypass the main parallel pricing loop)
-                prefix = "" if period == "fg" else "F5 "
-                COMBO_DISPLAY = {
-                    "home_over":  "Home Spread + Over",
-                    "home_under": "Home Spread + Under",
-                    "away_over":  "Away Spread + Over",
-                    "away_under": "Away Spread + Under",
-                }
-                for k, name in COMBO_DISPLAY.items():
-                    interpolated_results.append((
-                        gid, period, prefix + name, fallback["fair_probs"][k]
-                    ))
-                continue   # don't enqueue this period in the main combo_items
-
-            # Canonical market set for this period = main RL + main total +
-            # any alt market that contains BOTH spreads and totals. Pairs
-            # between two canonical markets are allowed; anything involving
-            # a non-canonical secondary market is skipped.
-            canonical = sel_ids.get("canonical", set())
-
-            prefix = "" if period == "fg" else "F5 "
-            for combo_name, sp_sels, tot_sels in [
-                ("Home Spread + Over",  home_spread_sels, over_sels),
-                ("Home Spread + Under", home_spread_sels, under_sels),
-                ("Away Spread + Over",  away_spread_sels, over_sels),
-                ("Away Spread + Under", away_spread_sels, under_sels),
-            ]:
-                combo_items.append((gid, period, prefix + combo_name,
-                                    sp_sels, tot_sels, canonical))
-
-    # Price all combos in parallel
-    pricing_results = []  # (game_id, period, combo_name, sgp_result)
-
-    def price_one(item):
-        gid, period, combo_name, sp_sels, tot_sels, canonical = item
-        # A pair is allowed when BOTH legs come from canonical markets —
-        # i.e. main RL, main total, or any "primary alt" market that contains
-        # both spreads and totals for this period. This covers:
-        #   - main + main (same or different markets; typical FG and F5)
-        #   - main + primary alt (WZ wanted an alt line that lives in DK's
-        #     primary alt market alongside its own spread variants)
-        #   - primary alt + primary alt (both legs alt, same or different
-        #     primary alt markets if a game has more than one)
-        # Pairs that involve a non-canonical secondary market (e.g. DK's
-        # 84267310 in the Athletics case, a totals-only standalone whose
-        # "Under 7.5" sits at a non-canonical price) are blocked. Those are
-        # exactly the combos where calculateBets returns 200 with a nonsense
-        # price that doesn't match DK's UI.
-        sgp = None
-        for sp in sp_sels:
-            sp_mnum = _market_num(sp)
-            if sp_mnum not in canonical:
-                continue
-            for to in tot_sels:
-                to_mnum = _market_num(to)
-                if to_mnum not in canonical:
-                    continue
-                sgp = calculate_sgp(session, sp, to, verbose=verbose)
-                if sgp:
-                    break
-            if sgp:
-                break
-        return gid, period, combo_name, sgp
-
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(price_one, item): item for item in combo_items}
-        for future in as_completed(futures):
-            try:
-                pricing_results.append(future.result())
-            except Exception as e:
-                item = futures[future]
-                print(f"  Error pricing {item[2]} ({item[0][:8]}): {e}")
-                pricing_results.append((item[0], item[1], item[2], None))
-
-    print(f"  Priced {len(pricing_results)} combos in {time.time() - t1:.1f}s")
-
-    # ── Phase 2b: Retry failed combos ──
-    # Retry ANY combo that returned None (not just fully-failed games).
-    # Transient network errors, rate limits, or session hiccups can cause
-    # individual combos to fail while others in the same game succeed.
-    failed_combos = [r for r in pricing_results if r[3] is None]
-
-    priced_by_game = {}
-    for gid, period, combo_name, sgp in pricing_results:
-        if sgp:
-            priced_by_game.setdefault(gid, []).append((period, combo_name, sgp))
-
-    if failed_combos:
-        # Build a lookup from (game_id, combo_name) back to the original item
-        item_lookup = {(item[0], item[2]): item for item in combo_items}
-        retry_items = [item_lookup[(r[0], r[2])] for r in failed_combos
-                       if (r[0], r[2]) in item_lookup]
-        if retry_items:
-            print(f"  Retrying {len(retry_items)} failed combos...")
-            time.sleep(1)
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                futures = {pool.submit(price_one, item): item for item in retry_items}
-                for future in as_completed(futures):
-                    try:
-                        gid, period, combo_name, sgp = future.result()
-                        if sgp:
-                            priced_by_game.setdefault(gid, []).append((period, combo_name, sgp))
-                    except Exception as e:
-                        item = futures[future]
-                        print(f"  Retry error {item[2]} ({item[0][:8]}): {e}")
-
-    # ── Phase 3: Collect results and write to DuckDB ──
-    ensure_table()
-    all_rows = []
-
-    # Build game lookup for printing
-    game_lookup = {g["game_id"]: g for g in matched}
-
-    for gid, combos in sorted(priced_by_game.items()):
-        game = game_lookup[gid]
-        print(f"\n  {game['away_team']} @ {game['home_team']}")
-        for period, combo_name, sgp in combos:
-            odds = sgp["trueOdds"]
-            am = decimal_to_american(odds)
-            print(f"    {combo_name}: {odds:.4f} ({am:+d})")
-            all_rows.append({
-                "game_id": gid,
-                "combo": combo_name,
-                "period": "FG" if period == "fg" else "F5",
-                "bookmaker": "draftkings",
-                "sgp_decimal": round(odds, 4),
-                "sgp_american": am,
-                "source": "draftkings_direct",
-            })
-
-    # Append rows for integer-line interpolation fallback
-    interp_rows = []
-    for gid, period, combo_name, fair_prob in interpolated_results:
-        decimal = 1.0 / fair_prob
-        american = decimal_to_american(decimal)
-        game = game_lookup.get(gid, {})
-        print(f"\n  {game.get('away_team', '?')} @ {game.get('home_team', '?')} [interpolated]")
-        print(f"    {combo_name}: {decimal:.4f} ({american:+d})")
-        interp_rows.append({
-            "game_id": gid,
-            "combo": combo_name,
-            "period": "FG" if period == "fg" else "F5",
-            "bookmaker": "draftkings",
-            "sgp_decimal": round(decimal, 4),
-            "sgp_american": american,
-            "source": "draftkings_interpolated",
-        })
-
-    # Validate directional consistency before writing
-    if all_rows:
-        _validate_spread_direction(all_rows, game_lookup, parlay_lines)
-        upsert_sgp_odds(all_rows)
-        print(f"\n{'='*60}")
-        print(f"  Wrote {len(all_rows)} DK SGP odds in {time.time() - t0:.1f}s total")
-        print(f"{'='*60}")
-    else:
-        print("\nNo SGP odds collected.")
-
-    if interp_rows:
-        upsert_sgp_odds(interp_rows)
-        print(f"  Wrote {len(interp_rows)} interpolated SGP odds")
-
-    return all_rows
-
-
-def _validate_spread_direction(all_rows: list[dict], game_lookup: dict,
-                               parlay_lines: dict):
-    """Warn if DK's devigged home probability contradicts the spread direction.
-
-    Groups the 4 combos per (game, period), devigs, and checks that the home
-    team's implied win probability is consistent with being the favorite or
-    underdog. A large violation (e.g. home underdog at >60%) signals that the
-    participant suffix mapping may be wrong.
-    """
-    from collections import defaultdict
-    by_key = defaultdict(dict)  # (game_id, period) -> {combo: decimal}
-    for row in all_rows:
-        by_key[(row["game_id"], row["period"])][row["combo"]] = row["sgp_decimal"]
-
-    for (gid, period), combos in by_key.items():
-        if len(combos) < 4:
-            continue
-        prefix = "F5 " if period == "F5" else ""
-        home_decs = [d for c, d in combos.items() if c.startswith(f"{prefix}Home")]
-        away_decs = [d for c, d in combos.items() if c.startswith(f"{prefix}Away")]
-        if len(home_decs) != 2 or len(away_decs) != 2:
-            continue
-
-        vig = sum(1 / d for d in combos.values())
-        home_prob = sum(1 / d for d in home_decs) / vig
-
-        lines = parlay_lines.get(gid, {})
-        sp_key = "f5_spread_line" if period == "F5" else "fg_spread_line"
-        spread = lines.get(sp_key, 0) or 0
-        game = game_lookup.get(gid, {})
-        label = f"{game.get('away_team', '?')} @ {game.get('home_team', '?')} [{period}]"
-
-        # Only validate ±0.5 spreads (moneyline-equivalent). For ±1.5
-        # spreads, a favorite covering -1.5 legitimately has < 40% probability.
-        if abs(spread) > 0.5:
-            continue
-        if spread > 0 and home_prob > 0.60:
-            print(f"  WARNING: {label}: home underdog (+{spread}) but DK "
-                  f"home_prob={home_prob:.1%} — possible participant mismatch")
-        elif spread < 0 and home_prob < 0.40:
-            print(f"  WARNING: {label}: home favorite ({spread}) but DK "
-                  f"home_prob={home_prob:.1%} — possible participant mismatch")
+#
+# Everything below replaces the legacy scrape_dk_sgp() + main() pair. The shim
+# delegates orchestration to mlb_sgp.draftkings.price_sgps(), which composes
+# the helpers above. Helpers stay defined at module level because
+# mlb_sgp/draftkings.py and mlb_sgp/dk_client.py import them lazily.
 
 
 def main():
-    parser = argparse.ArgumentParser(description="DraftKings MLB SGP Scraper")
-    parser.add_argument("--verbose", action="store_true", help="Show detailed output")
-    args = parser.parse_args()
+    """Entry point: load targets, price SGPs, write rows.
 
-    print("=" * 60)
-    print("  DRAFTKINGS MLB SGP SCRAPER (Pure REST)")
-    print("=" * 60)
+    Path / import gymnastics: this script can be launched in three modes —
+    (1) `python mlb_sgp/scraper_draftkings_sgp.py` from the repo root
+        (test_sgp_regression's shim test path),
+    (2) `python scraper_draftkings_sgp.py` from inside mlb_sgp/
+        (legacy direct-invocation path, also how kalshi_mlb_rfq spawns it),
+    (3) `python -m mlb_sgp.scraper_draftkings_sgp` (package mode).
 
-    scrape_dk_sgp(verbose=args.verbose)
+    For (1) and (2) we need `mlb_sgp` importable as a top-level package so
+    `mlb_sgp.draftkings` resolves. Make that work by ensuring the repo root
+    is on sys.path before importing the orchestrator + db modules.
+    """
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+
+    from mlb_sgp import db
+    from mlb_sgp._shared import load_target_lines
+
+    db_path = str(db.MLB_DB)
+    db.ensure_table(db_path)
+
+    targets = load_target_lines(db_path)
+    if not targets:
+        print(f"  No target lines in {db_path} — nothing to scrape.")
+        return 0
+
+    periods_raw = os.environ.get("MLB_SGP_PERIODS", "FG,F5").split(",")
+    periods = tuple(p.strip() for p in periods_raw if p.strip())
+
+    from mlb_sgp import draftkings
+    print(f"  DK shim: {len(targets)} target lines, periods={periods}")
+    rows = draftkings.price_sgps(targets, periods=periods, verbose=False)
+    print(f"  DK shim: priced {len(rows)} rows")
+
+    # Wipe both source labels so stale rows from a previous run never linger.
+    # The orchestrator tags _direct vs _interpolated rows; clearing both
+    # preserves the "fresh prices only" invariant per source.
+    db.clear_source("draftkings_direct", db_path=db_path)
+    db.clear_source("draftkings_interpolated", db_path=db_path)
+    db.upsert_priced_rows(rows, db_path=db_path)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

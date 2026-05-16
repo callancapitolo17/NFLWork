@@ -1,42 +1,57 @@
 #!/usr/bin/env python3
+"""Novig MLB SGP Scraper — thin shim invoking the novig library.
+
+Reads target_lines from MLB_DB (default: mlb_mm.duckdb; bot overrides via
+MLB_SGP_DB_PATH env var). Calls mlb_sgp.novig.price_sgps() with the
+periods configured via MLB_SGP_PERIODS env var (default: FG,F5).
+Writes PricedRow results back to MLB_DB via mlb_sgp.db.upsert_priced_rows.
+
+Legacy helpers (init_session, fetch_novig_mlb_events, match_events,
+fetch_event_legs, submit_parlay, try_integer_fallback_nv,
+_load_event_markets_query, load_parlay_lines, _find_outcome_in_spread /
+_total, _empty_legs, _utc_bucket, _float_eq, decimal_to_american,
+prob_to_decimal, _gql, and the MLB_EVENTS_QUERY / EVENT_MARKETS_QUERY /
+EVENT_MARKETS_PATH / SPREAD_TYPE / TOTAL_TYPE / NOVIG_GRAPHQL /
+NOVIG_PARLAY / RFQ_TIMEOUT / GQL_TIMEOUT / EVENT_WINDOW_HOURS /
+SANITY_MULT_RATIO constants) are preserved in this file because
+mlb_sgp/novig.py and mlb_sgp/novig_client.py import them lazily.
+They stay here during the transition; a follow-up refactor can lift
+them into the library module.
+
+Final scraper in the DK/FD/PX/NV shim sequence — all four now route
+through their library orchestrators with the same shim contract:
+load_target_lines, price_sgps, upsert_priced_rows.
+
+Note on dropped legacy orchestration
+------------------------------------
+The previous orchestrator (1) post-filtered by ``scheduled > now_utc``
+and deduped events by ``(home, away, hour)``, (2) ran phase-1 market
+fetches in a ``ThreadPoolExecutor(max_workers=PARALLEL_MARKETS)`` and
+phase-2 RFQ pricing in another pool of size ``PARALLEL_PRICING``, and
+(3) retried failed RFQ combos once after an 0.8-1.6s jitter. The shim
+intentionally drops all three:
+
+* Live-event filter: ``mlb_target_lines`` / ``mlb_parlay_lines`` is
+  written upstream and already contains only the games we want to
+  price, so a second client-side filter would be redundant.
+  ``match_events`` (preserved) still maps Novig events to canonical
+  game_ids, so any natural duplicates resolve to the same canonical
+  game.
+* Parallel pricing: the orchestrator is serial. For a 60s bot cadence
+  this is acceptable; if smoke-testing reveals throughput issues we
+  can add parallelization to the orchestrator later. Same call made
+  for the DK/FD/PX shims.
+* Retry-on-failure pass: the bot's cadence loop already invokes the
+  scraper once per cycle, so the next cycle is the retry. Same call
+  made for the DK/FD/PX shims.
 """
-Novig MLB SGP Scraper
 
-Fetches Same Game Parlay (SGP) prices from Novig's GraphQL + REST API, both
-full-game and first-5-innings (Novig types F5 as *_1H). Writes to mlb_sgp_odds
-with source='novig_direct'.
-
-Architectural notes (see plan doc + recon memory for details):
-    - All API calls go to api.novig.us. No auth required — the parlay endpoint
-      is literally named /unauthenticated.
-    - Novig pulls leg prices from DraftKings (every observed leg returned
-      vendor="DRAFTKINGS"). The combined parlay price IS correlation-adjusted
-      (empirically 1.09x-1.12x more generous than naive independent multiply
-      for fav+over combos). What Novig adds to the blend = the delta between
-      Novig's correlation model and DK's calculateBets, applied to the same
-      underlying leg prices.
-    - Market types: SPREAD (FG), TOTAL (FG), SPREAD_1H (F5 spread),
-      TOTAL_1H (F5 total). Novig offers only the main F5 line, no alts.
-    - strike field is signed from home's perspective — matches our
-      mlb_parlay_lines.fg_spread convention exactly.
-    - Response prices are implied-probability strings like "0.26600"; we
-      convert to decimal via 1/p and to American odds for storage.
-
-Usage:
-    cd mlb_sgp
-    venv/bin/python3 scraper_novig_sgp.py           # all games
-    venv/bin/python3 scraper_novig_sgp.py --verbose  # show details
-"""
-
-import argparse
+import os
 import json
 import sys
-import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import duckdb
 from curl_cffi import requests as cffi_requests
 
 # Resolve repo root dynamically (works from worktrees too)
@@ -49,7 +64,9 @@ _ANSWER_KEYS = _REPO_ROOT / "Answer Keys"
 sys.path.insert(0, str(_ANSWER_KEYS))
 from canonical_match import load_team_dict, load_canonical_games, resolve_team_names
 
-from db import ensure_table, upsert_sgp_odds, clear_source, MLB_DB, _connect_with_retry
+# Preserved helpers below (load_parlay_lines) still read mlb_parlay_lines via
+# the legacy db.py helpers. The shim's main() uses mlb_sgp.db separately.
+from db import MLB_DB, _connect_with_retry
 from integer_line_derivation import is_integer_line, derive_fair_probs
 
 # ---------------------------------------------------------------------------
@@ -587,272 +604,72 @@ def submit_parlay(session, outcome_ids: list[str],
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Shim entry point
 # ---------------------------------------------------------------------------
-def scrape_novig_sgp(verbose: bool = False):
-    clear_source("novig_direct")
-    clear_source("novig_interpolated")
-
-    print("Loading parlay lines from DuckDB...")
-    parlay_lines = load_parlay_lines()
-    if not parlay_lines:
-        return
-    print(f"  {len(parlay_lines)} games with lines")
-
-    print("Initializing Novig session (anonymous)...")
-    session = init_session()
-
-    print("Fetching Novig MLB events...")
-    try:
-        nv_events = fetch_novig_mlb_events(session)
-    except Exception as e:
-        print(f"  Failed to fetch events: {e}")
-        return
-    print(f"  {len(nv_events)} upcoming MLB events from Novig")
-
-    # De-dupe by (home, away, start-hour) — preserves doubleheaders
-    seen = set()
-    deduped = []
-    for e in sorted(nv_events, key=lambda x: x.get("scheduled") or ""):
-        key = (e["nv_home"], e["nv_away"], (e.get("scheduled") or "")[:13])
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(e)
-
-    print("Matching teams via canonical_match...")
-    matched = match_events(deduped, parlay_lines)
-    print(f"  {len(matched)} matched games")
-    if not matched:
-        print("  No matches found.")
-        return
-
-    # ── Phase 1: fetch market trees + extract outcome UUIDs ──
-    print("Fetching market trees (parallel)...")
-    t0 = time.time()
-    legs_by_game = {}
-    markets_by_game = {}  # raw market lists for integer-line fallback
-
-    def _fetch(g):
-        return g["game_id"], fetch_event_legs(session, g, verbose)
-
-    with ThreadPoolExecutor(max_workers=PARALLEL_MARKETS) as pool:
-        futures = {pool.submit(_fetch, g): g for g in matched}
-        for fut in as_completed(futures):
-            try:
-                gid, (legs, markets) = fut.result()
-                legs_by_game[gid] = legs
-                markets_by_game[gid] = markets
-            except Exception as e:
-                g = futures[fut]
-                print(f"  Error fetching markets for "
-                      f"{g.get('home_team')}/{g.get('away_team')}: {e}")
-    print(f"  Fetched {len(legs_by_game)} games in {time.time() - t0:.1f}s")
-
-    # ── Phase 2: build combo items + parlay RFQ ──
-    print("Pricing SGP combos (parallel)...")
-    t1 = time.time()
-    combo_items = []
-    interpolated_results = []   # (game_id, period, combo_name, fair_prob)
-    for g in matched:
-        gid = g["game_id"]
-        legs = legs_by_game.get(gid)
-        if not legs:
-            continue
-        for period in ("fg", "f5"):
-            p = legs.get(period, {})
-            home = p.get("home_spread")
-            away = p.get("away_spread")
-            over = p.get("over")
-            under = p.get("under")
-            if not (home and away and over and under):
-                # Exact-line lookup miss. Try integer-line fallback.
-                total_line = g[f"{period}_total_line"]
-                spread_line = g[f"{period}_spread_line"]
-                if total_line is None or spread_line is None:
-                    continue
-                markets = markets_by_game.get(gid, [])
-                fallback = try_integer_fallback_nv(
-                    session, markets,
-                    g["nv_home_sym"], g["nv_away_sym"],
-                    spread_line, total_line, period,
-                    verbose=verbose,
-                )
-                if fallback is None:
-                    continue
-                prefix = "" if period == "fg" else "F5 "
-                COMBO_DISPLAY = {
-                    "home_over":  "Home Spread + Over",
-                    "home_under": "Home Spread + Under",
-                    "away_over":  "Away Spread + Over",
-                    "away_under": "Away Spread + Under",
-                }
-                for k, name in COMBO_DISPLAY.items():
-                    interpolated_results.append((
-                        gid, period, prefix + name, fallback["fair_probs"][k]
-                    ))
-                continue
-            prefix = "" if period == "fg" else "F5 "
-            for combo_name, sp, to in [
-                ("Home Spread + Over",  home, over),
-                ("Home Spread + Under", home, under),
-                ("Away Spread + Over",  away, over),
-                ("Away Spread + Under", away, under),
-            ]:
-                combo_items.append((gid, period, prefix + combo_name, sp, to))
-
-    pricing_results = []
-    auth_failures = {"count": 0}
-
-    def _price(item):
-        gid, period, combo_name, sp, to = item
-        priced, auth_failed = submit_parlay(session, [sp["id"], to["id"]], verbose=verbose)
-        if auth_failed:
-            auth_failures["count"] += 1
-
-        # Sanity filter: reject if parlay decimal > naive leg-product × SANITY_MULT_RATIO.
-        # Same logic as ProphetX — catches systematic mispricings where a book's
-        # correlation model returns decimals multiples larger than independent-multiply.
-        if priced is not None:
-            sp_av = sp.get("available")
-            to_av = to.get("available")
-            if sp_av and to_av and sp_av > 0 and to_av > 0:
-                naive = (1.0 / sp_av) * (1.0 / to_av)
-                if priced["decimal"] > naive * SANITY_MULT_RATIO:
-                    if verbose:
-                        print(f"      SANITY-DROP {combo_name[:30]:<30} "
-                              f"parlay={priced['decimal']:.2f} > naive×{SANITY_MULT_RATIO}="
-                              f"{naive*SANITY_MULT_RATIO:.2f}")
-                    priced = None
-        return gid, period, combo_name, priced
-
-    with ThreadPoolExecutor(max_workers=PARALLEL_PRICING) as pool:
-        futures = {pool.submit(_price, it): it for it in combo_items}
-        for fut in as_completed(futures):
-            try:
-                pricing_results.append(fut.result())
-            except Exception as e:
-                it = futures[fut]
-                print(f"  Error pricing {it[2]} ({it[0][:8]}): {e}")
-                pricing_results.append((it[0], it[1], it[2], None))
-    print(f"  Priced {len(pricing_results)} combos in {time.time() - t1:.1f}s")
-
-    # ── Phase 2b: retry failed combos once ──
-    failed = [r for r in pricing_results if r[3] is None]
-    if failed:
-        by_key = {(it[0], it[2]): it for it in combo_items}
-        retry_items = [by_key[(r[0], r[2])] for r in failed if (r[0], r[2]) in by_key]
-        if retry_items:
-            print(f"  Retrying {len(retry_items)} failed combos...")
-            # Jitter between 0.8s-1.6s to avoid a thundering 3-worker burst exactly
-            # 1s after the original batch, which is worst-case for IP-based rate limits.
-            import random
-            time.sleep(random.uniform(0.8, 1.6))
-            with ThreadPoolExecutor(max_workers=PARALLEL_PRICING) as pool:
-                fmap = {pool.submit(_price, it): it for it in retry_items}
-                results_by_key = {(r[0], r[2]): r for r in pricing_results}
-                for fut in as_completed(fmap):
-                    try:
-                        res = fut.result()
-                        if res[3] is not None:
-                            results_by_key[(res[0], res[2])] = res
-                    except Exception as e:
-                        it = fmap[fut]
-                        print(f"  Retry error {it[2]} ({it[0][:8]}): {e}")
-                pricing_results = list(results_by_key.values())
-
-    # ── Phase 3: write ──
-    ensure_table()
-    all_rows = []
-    game_lookup = {g["game_id"]: g for g in matched}
-    priced_by_game = {}
-    for gid, period, combo_name, priced in pricing_results:
-        if priced:
-            priced_by_game.setdefault(gid, []).append((period, combo_name, priced))
-
-    for gid, combos in sorted(priced_by_game.items()):
-        g = game_lookup[gid]
-        print(f"\n  {g['away_team']} @ {g['home_team']}")
-        vig_by_period = {"fg": [], "f5": []}
-        for period, combo_name, priced in combos:
-            dec = priced["decimal"]
-            am = priced["american"]
-            print(f"    {combo_name}: {dec:.4f} ({am:+d})  "
-                  f"p={priced['price_str']}  {priced.get('status','?')}")
-            vig_by_period[period].append(dec)
-            all_rows.append({
-                "game_id":      gid,
-                "combo":        combo_name,
-                "period":       "FG" if period == "fg" else "F5",
-                "bookmaker":    "novig",
-                "sgp_decimal":  dec,
-                "sgp_american": am,
-                "source":       "novig_direct",
-            })
-        for period, decs in vig_by_period.items():
-            if len(decs) == 4:
-                vig = sum(1 / d for d in decs)
-                label = "FG" if period == "fg" else "F5"
-                flag = ""
-                if vig > 1.12:
-                    flag = "  <-- high vs default 1.10"
-                elif vig < 1.08:
-                    flag = "  <-- low vs default 1.10"
-                print(f"    [{label} vig: {vig:.4f}]{flag}")
-
-    if all_rows:
-        upsert_sgp_odds(all_rows)
-        print(f"\n{'='*60}")
-        print(f"  Wrote {len(all_rows)} Novig SGP odds in {time.time() - t0:.1f}s total")
-        print(f"{'='*60}")
-    else:
-        if auth_failures["count"] > 0:
-            reason = (f" — {auth_failures['count']} RFQ calls returned 401/403. "
-                      "This is unexpected for /unauthenticated — Novig may be "
-                      "rate-limiting or requiring auth now.")
-        elif not matched:
-            reason = " — zero events matched; check MLB league filter."
-        else:
-            reason = " — events matched but no parlay prices returned. Try --verbose."
-        print(f"\n!! ERROR: No Novig SGP odds collected{reason}")
-
-    # Append rows for integer-line interpolation fallback
-    interp_rows = []
-    for gid, period, combo_name, fair_prob in interpolated_results:
-        decimal = round(1.0 / fair_prob, 4)
-        american = decimal_to_american(decimal)
-        game = game_lookup.get(gid, {})
-        print(f"\n  {game.get('away_team', '?')} @ {game.get('home_team', '?')} [interpolated]")
-        print(f"    {combo_name}: {decimal:.4f} ({american:+d})")
-        interp_rows.append({
-            "game_id":      gid,
-            "combo":        combo_name,
-            "period":       "FG" if period == "fg" else "F5",
-            "bookmaker":    "novig",
-            "sgp_decimal":  decimal,
-            "sgp_american": american,
-            "source":       "novig_interpolated",
-        })
-
-    if interp_rows:
-        upsert_sgp_odds(interp_rows)
-        print(f"  Wrote {len(interp_rows)} interpolated Novig SGP odds")
-
-    return all_rows
+#
+# Everything below replaces the legacy scrape_novig_sgp() + main() pair.
+# The shim delegates orchestration to mlb_sgp.novig.price_sgps(), which
+# composes the helpers above. Helpers stay defined at module level because
+# mlb_sgp/novig.py and mlb_sgp/novig_client.py import them lazily.
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description="Novig MLB SGP Scraper")
-    parser.add_argument("--verbose", action="store_true")
-    args = parser.parse_args()
-    print("=" * 60)
-    print("  NOVIG MLB SGP SCRAPER (GraphQL + parlay RFQ)")
-    print("=" * 60)
-    scrape_novig_sgp(verbose=args.verbose)
+    """Entry point: load targets, price SGPs, write rows.
+
+    Path / import gymnastics: this script can be launched in three modes —
+    (1) `python mlb_sgp/scraper_novig_sgp.py` from the repo root
+        (test_sgp_regression's shim test path),
+    (2) `python scraper_novig_sgp.py` from inside mlb_sgp/
+        (legacy direct-invocation path, also how kalshi_mlb_rfq spawns it),
+    (3) `python -m mlb_sgp.scraper_novig_sgp` (package mode).
+
+    For (1) and (2) we need `mlb_sgp` importable as a top-level package so
+    `mlb_sgp.novig` resolves. Make that work by ensuring the repo root
+    is on sys.path before importing the orchestrator + db modules.
+
+    Live-event filter / parallel pricing / retry pass: the legacy
+    ``scrape_novig_sgp`` post-filtered Novig events by ``scheduled > now_utc``,
+    deduped events by ``(home, away, hour)``, fanned out market fetches and
+    RFQ pricing over a ThreadPoolExecutor, and retried failed combos once
+    after an 0.8-1.6s jitter. The shim deliberately drops all three:
+    ``mlb_target_lines`` / ``mlb_parlay_lines`` is written upstream and
+    only contains the games we want to price (and ``match_events`` still
+    handles canonical resolution so doubleheaders / dupes collapse to the
+    same game_id); the orchestrator is serial because the bot's 60s cadence
+    loop tolerates it and the next cycle is the natural retry. Matches
+    DK/FD/PX shim shape.
+    """
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+
+    from mlb_sgp import db
+    from mlb_sgp._shared import load_target_lines
+
+    db_path = str(db.MLB_DB)
+    db.ensure_table(db_path)
+
+    targets = load_target_lines(db_path)
+    if not targets:
+        print(f"  No target lines in {db_path} — nothing to scrape.")
+        return 0
+
+    periods_raw = os.environ.get("MLB_SGP_PERIODS", "FG,F5").split(",")
+    periods = tuple(p.strip() for p in periods_raw if p.strip())
+
+    from mlb_sgp import novig
+    print(f"  NV shim: {len(targets)} target lines, periods={periods}")
+    rows = novig.price_sgps(targets, periods=periods, verbose=False)
+    print(f"  NV shim: priced {len(rows)} rows")
+
+    # Wipe both source labels so stale rows from a previous run never linger.
+    # novig.price_sgps emits both ``novig_direct`` (main RFQ path) and
+    # ``novig_interpolated`` (integer-line fallback path) rows; clearing
+    # both preserves the "fresh prices only" invariant.
+    db.clear_source("novig_direct", db_path=db_path)
+    db.clear_source("novig_interpolated", db_path=db_path)
+    db.upsert_priced_rows(rows, db_path=db_path)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

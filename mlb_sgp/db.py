@@ -7,11 +7,18 @@ in the shared MLB database. Downstream, mlb_correlated_parlay.R can join these
 against sample-based fair odds for cross-validation.
 """
 
+from __future__ import annotations
+
 import duckdb
+import os
 import random
 import time
 from pathlib import Path
 from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mlb_sgp._shared import PricedRow
 
 # Resolve repo root dynamically — works from main repo or worktrees.
 _THIS_DIR = Path(__file__).resolve().parent
@@ -19,7 +26,11 @@ _REPO_ROOT = _THIS_DIR.parent
 if ".worktrees" in str(_REPO_ROOT):
     _REPO_ROOT = Path(str(_REPO_ROOT).split(".worktrees")[0].rstrip("/"))
 
-MLB_DB = _REPO_ROOT / "Answer Keys" / "mlb_mm.duckdb"
+# MLB_DB resolution: env override > default dashboard DB.
+# Bot sets MLB_SGP_DB_PATH=<bot_market_db> when spawning scrapers so the
+# bot-owned DB is the read/write target without touching scraper code.
+_DEFAULT_MLB_DB = _REPO_ROOT / "Answer Keys" / "mlb_mm.duckdb"
+MLB_DB = Path(os.environ.get("MLB_SGP_DB_PATH", str(_DEFAULT_MLB_DB)))
 
 # DuckDB allows only one writer per file. When the four SGP scrapers run in
 # parallel they will occasionally collide at connect() — this helper retries
@@ -51,17 +62,29 @@ CREATE TABLE IF NOT EXISTS mlb_sgp_odds (
     sgp_decimal   DOUBLE,
     sgp_american  INTEGER,
     fetch_time    TIMESTAMP,
-    source        VARCHAR
+    source        VARCHAR,
+    spread_line   DOUBLE,
+    total_line    DOUBLE
 );
 """
 
+# Backward-compat ALTERs — make sure pre-existing tables gain the new columns.
+# Both ADD COLUMN IF NOT EXISTS statements are idempotent; DuckDB raises only
+# if syntax/semantics are wrong, not on repeat add.
+_MIGRATIONS = [
+    "ALTER TABLE mlb_sgp_odds ADD COLUMN IF NOT EXISTS spread_line DOUBLE",
+    "ALTER TABLE mlb_sgp_odds ADD COLUMN IF NOT EXISTS total_line DOUBLE",
+]
+
 
 def ensure_table(db_path: str = None):
-    """Create the mlb_sgp_odds table if it doesn't exist."""
+    """Create the mlb_sgp_odds table if it doesn't exist; migrate if it does."""
     db_path = db_path or str(MLB_DB)
     con = _connect_with_retry(db_path)
     try:
         con.execute(CREATE_TABLE_SQL)
+        for sql in _MIGRATIONS:
+            con.execute(sql)
     finally:
         con.close()
 
@@ -125,6 +148,65 @@ def upsert_sgp_odds(rows: list[dict], db_path: str = None):
             INSERT INTO mlb_sgp_odds
                 (game_id, combo, period, bookmaker, sgp_decimal, sgp_american, fetch_time, source)
             VALUES {placeholders}
+        """, values)
+    finally:
+        con.close()
+
+
+def upsert_priced_rows(rows: list["PricedRow"], db_path: str = None) -> None:
+    """Insert PricedRow objects, replacing any existing row with the same
+    (game_id, combo, period, spread_line, total_line, bookmaker, source) key.
+
+    Empty `rows` is a no-op.
+
+    Note: Unlike `upsert_sgp_odds` (which stamps `fetch_time = now()` at
+    write time), this function preserves the caller's `PricedRow.fetch_time`.
+    This is intentional — staleness gates downstream (bot's _SGP_ODDS_CACHE
+    age filter, dashboard's "fresh SGP odds" window) need the true book-query
+    timestamp, not the DB-write timestamp. Library orchestrators
+    (`mlb_sgp/draftkings.py::price_sgps` etc.) set fetch_time when they
+    receive the price; this writer respects that.
+    """
+    if not rows:
+        return
+
+    db_path = db_path or str(MLB_DB)
+    con = _connect_with_retry(db_path)
+    try:
+        ensure_table(db_path)
+
+        # Batch delete by composite key. Note: DuckDB's tuple IN matches NULLs
+        # as NULL, so this only deletes when all 7 cols match exactly. For
+        # PricedRow we always have line cols set (enumeration writes them),
+        # so the simple equality form is correct.
+        keys = [
+            (r.game_id, r.combo, r.period, r.spread_line, r.total_line,
+             r.bookmaker, r.source)
+            for r in rows
+        ]
+        placeholders = ",".join(["(?, ?, ?, ?, ?, ?, ?)"] * len(keys))
+        flat = [v for k in keys for v in k]
+        con.execute(f"""
+            DELETE FROM mlb_sgp_odds
+            WHERE (game_id, combo, period, spread_line, total_line, bookmaker, source) IN (
+                SELECT * FROM (VALUES {placeholders})
+            )
+        """, flat)
+
+        # Batch insert
+        ins_placeholders = ",".join(["(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"] * len(rows))
+        values = []
+        for r in rows:
+            values.extend([
+                r.game_id, r.combo, r.period, r.bookmaker,
+                r.sgp_decimal, r.sgp_american, r.fetch_time, r.source,
+                r.spread_line, r.total_line,
+            ])
+        con.execute(f"""
+            INSERT INTO mlb_sgp_odds
+                (game_id, combo, period, bookmaker, sgp_decimal, sgp_american,
+                 fetch_time, source, spread_line, total_line)
+            VALUES {ins_placeholders}
         """, values)
     finally:
         con.close()

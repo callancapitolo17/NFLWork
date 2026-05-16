@@ -1,0 +1,10 @@
+[
+  {
+    "price": "0.35088",
+    "status": "OPEN",
+    "outcomes": [
+      {"id": "988d6d70-16a9-4da1-bcdc-6e900189f522"},
+      {"id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}
+    ]
+  }
+]
