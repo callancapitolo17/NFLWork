@@ -94,12 +94,6 @@ CREATE TABLE IF NOT EXISTS combo_cooldown (
     cooled_until  TIMESTAMP NOT NULL,
     reason        VARCHAR
 );
-
-CREATE TABLE IF NOT EXISTS reference_lines (
-    rfq_id     VARCHAR PRIMARY KEY,
-    lines_json VARCHAR NOT NULL,
-    snapped_at TIMESTAMP NOT NULL
-);
 """
 
 
