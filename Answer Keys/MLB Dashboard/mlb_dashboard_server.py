@@ -816,10 +816,14 @@ def _resolve_wagerzon_play_idgm(bet: dict) -> dict | None:
         2 = over,        3 = under,
         4 = away ML,     5 = home ML
 
-    The dashboard sends canonical market names like 'spreads_1st_5_innings'
-    that MLB.R maps from the WZ scraper's raw labels (spreads_h1, spreads_f5,
-    etc.). We reverse that mapping here so the lookup can use scraper-side
-    column values.
+    Schema note: WZ stores spread, total, and moneyline for a given
+    (game, period) combined on a single row keyed by market='spreads'
+    (FG) or market='spreads_<period>'. The `total`/`over_price`/
+    `under_price` columns hold the period total; `home_ml`/`away_ml`
+    hold the moneyline. There are no standalone `totals_*` or `h2h_*`
+    market rows, so total / h2h lookups must target the spreads_<period>
+    row and read the relevant columns from there. Alt markets
+    (`alternate_spreads_fg`, `alternate_totals_fg`) ARE their own rows.
     """
     wz_db = _REPO_ROOT / "wagerzon_odds" / "wagerzon.duckdb"
     if not wz_db.exists():
@@ -831,41 +835,15 @@ def _resolve_wagerzon_play_idgm(bet: dict) -> dict | None:
     away   = (bet.get("away_team") or "").strip()
     line   = bet.get("line")
 
-    # Canonical market -> list of possible (market, period) tuples to match
-    # against the raw wagerzon mlb_odds table. WZ posts F5/1st-5 markets under
-    # both the 'spreads_f5' (market column) and 'spreads_h1' conventions, and
-    # FG markets just under 'spreads'/'totals' with period='fg'. We try every
-    # plausible row and order by fetch_time DESC.
-    market_candidates: list[tuple[str, str | None]] = []
-    if market == "spreads_1st_5_innings":
-        market_candidates = [("spreads_f5", None), ("spreads_h1", None),
-                              ("spreads", "f5"), ("spreads", "h1")]
-    elif market == "totals_1st_5_innings":
-        market_candidates = [("totals_f5", None), ("totals_h1", None),
-                              ("totals", "f5"), ("totals", "h1")]
-    elif market == "h2h_1st_5_innings":
-        market_candidates = [("h2h_f5", None), ("h2h_h1", None),
-                              ("h2h", "f5"), ("h2h", "h1")]
-    elif market == "spreads_1st_3_innings":
-        market_candidates = [("spreads_f3", None), ("spreads", "f3")]
-    elif market == "totals_1st_3_innings":
-        market_candidates = [("totals_f3", None), ("totals", "f3")]
-    elif market == "spreads_1st_7_innings":
-        market_candidates = [("spreads_f7", None), ("spreads", "f7")]
-    elif market == "totals_1st_7_innings":
-        market_candidates = [("totals_f7", None), ("totals", "f7")]
-    elif market in ("spreads", "totals", "h2h",
-                    "alternate_spreads_fg", "alternate_totals_fg"):
-        # FG markets
-        market_candidates = [(market, None), (market, "fg")]
-    else:
-        # Unknown / unsupported market for WZ placement (props, team totals etc.)
-        return None
-
-    # Decide which scraper column holds the line and the side->play mapping.
-    # WZ stores spreads as (away_spread, home_spread) and totals as a single
-    # `total` value. ML uses (away_ml, home_ml) with no line.
-    if "spread" in market:
+    # Classify what columns we need to read off the matched row.
+    if market.startswith("alternate_"):
+        if "spread" in market:
+            kind = "spread"
+        elif "total" in market:
+            kind = "total"
+        else:
+            return None
+    elif "spread" in market:
         kind = "spread"
     elif "total" in market:
         kind = "total"
@@ -874,8 +852,28 @@ def _resolve_wagerzon_play_idgm(bet: dict) -> dict | None:
     else:
         return None
 
-    # Map bet_on -> play code. For spreads/h2h we need to know if the bet is on
-    # the home or away team. For totals we look at "over" / "under" in bet_on.
+    # Map canonical market -> candidate (scraper market, period) rows. For
+    # non-alt totals/h2h, candidates are the spreads_<period> rows that
+    # carry the total/ML columns alongside the spread.
+    market_candidates: list[tuple[str, str | None]] = []
+    if market in ("spreads_1st_5_innings",
+                  "totals_1st_5_innings",
+                  "h2h_1st_5_innings"):
+        market_candidates = [("spreads_h1", None), ("spreads_f5", None),
+                              ("spreads", "h1"),    ("spreads", "f5")]
+    elif market in ("spreads_1st_3_innings", "totals_1st_3_innings"):
+        market_candidates = [("spreads_f3", None), ("spreads", "f3")]
+    elif market in ("spreads_1st_7_innings", "totals_1st_7_innings"):
+        market_candidates = [("spreads_f7", None), ("spreads", "f7")]
+    elif market in ("spreads", "totals", "h2h"):
+        # FG game-line markets all live on the 'spreads' row.
+        market_candidates = [("spreads", None), ("spreads", "fg")]
+    elif market in ("alternate_spreads_fg", "alternate_totals_fg"):
+        market_candidates = [(market, None), (market, "fg")]
+    else:
+        return None
+
+    # Map bet_on -> play code.
     bet_on_lower = bet_on.lower()
     is_over  = "over"  in bet_on_lower
     is_under = "under" in bet_on_lower
@@ -909,56 +907,41 @@ def _resolve_wagerzon_play_idgm(bet: dict) -> dict | None:
     con = duckdb.connect(str(wz_db), read_only=True)
     try:
         for mkt, period in market_candidates:
-            # Build the line predicate based on market kind. For totals there's a
-            # single `total` column; for spreads we match the side-specific column.
+            params: list = [home, away, mkt]
+            extra_clauses = ""
+
             if kind == "spread":
-                if play == 1:  # home spread
-                    line_col = "home_spread"
-                else:
-                    line_col = "away_spread"
-                params: list = [home, away, mkt]
-                line_clause = ""
+                # Spread is in home_spread / away_spread on the same row.
+                line_col = "home_spread" if play == 1 else "away_spread"
                 if line is not None:
-                    line_clause = f" AND {line_col} = ?"
+                    extra_clauses += f" AND {line_col} = ?"
                     params.append(float(line))
-                period_clause = ""
-                if period is not None:
-                    period_clause = " AND period = ?"
-                    params.append(period)
-                sql = (
-                    "SELECT idgm FROM mlb_odds "
-                    "WHERE home_team = ? AND away_team = ? AND market = ?"
-                    + line_clause + period_clause +
-                    " ORDER BY fetch_time DESC LIMIT 1"
-                )
             elif kind == "total":
-                params = [home, away, mkt]
-                line_clause = ""
+                # Total lives in `total`; we also require the side's price
+                # column to be non-null so we don't match a row that only
+                # carried a spread (those leave over_price/under_price NULL).
                 if line is not None:
-                    line_clause = " AND total = ?"
+                    extra_clauses += " AND total = ?"
                     params.append(float(line))
-                period_clause = ""
-                if period is not None:
-                    period_clause = " AND period = ?"
-                    params.append(period)
-                sql = (
-                    "SELECT idgm FROM mlb_odds "
-                    "WHERE home_team = ? AND away_team = ? AND market = ?"
-                    + line_clause + period_clause +
-                    " ORDER BY fetch_time DESC LIMIT 1"
-                )
+                side_col = "over_price" if play == 2 else "under_price"
+                extra_clauses += f" AND {side_col} IS NOT NULL"
             else:  # h2h
-                params = [home, away, mkt]
-                period_clause = ""
-                if period is not None:
-                    period_clause = " AND period = ?"
-                    params.append(period)
-                sql = (
-                    "SELECT idgm FROM mlb_odds "
-                    "WHERE home_team = ? AND away_team = ? AND market = ?"
-                    + period_clause +
-                    " ORDER BY fetch_time DESC LIMIT 1"
-                )
+                # Moneyline lives in home_ml / away_ml; require the side
+                # non-null so we don't return a spreads-only row that has
+                # no ML posted.
+                side_col = "home_ml" if play == 5 else "away_ml"
+                extra_clauses += f" AND {side_col} IS NOT NULL"
+
+            if period is not None:
+                extra_clauses += " AND period = ?"
+                params.append(period)
+
+            sql = (
+                "SELECT idgm FROM mlb_odds "
+                "WHERE home_team = ? AND away_team = ? AND market = ?"
+                + extra_clauses +
+                " ORDER BY fetch_time DESC LIMIT 1"
+            )
 
             row = con.execute(sql, params).fetchone()
             if row is not None and row[0] is not None:
