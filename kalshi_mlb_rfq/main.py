@@ -77,7 +77,9 @@ def _refresh_caches(retries: int = 5) -> bool:
     Tries up to `retries` times with exponential backoff to handle the brief lock
     window when the R pipeline (or dashboard_server) is writing.
     """
-    global _SAMPLES_CACHE, _SGP_ODDS_CACHE, _PARLAY_LINES_CACHE
+    # _SGP_ODDS_CACHE is intentionally NOT in this global list — see
+    # _refresh_sgp_cache, which owns it. _refresh_caches must not touch it.
+    global _SAMPLES_CACHE, _PARLAY_LINES_CACHE
     global _SAMPLES_META_GENERATED_AT, _CACHE_LOADED_AT
 
     if not ANSWER_KEY_DB.exists():
@@ -106,11 +108,11 @@ def _refresh_caches(retries: int = 5) -> bool:
             samples_by_game = {gid: g.reset_index(drop=True)
                                 for gid, g in samples_df.groupby("game_id")}
 
-            # mlb_sgp_odds (last hour, FG period only). New schema includes
-            # spread_line/total_line; loaded separately by _refresh_sgp_cache
-            # on its own cadence. Here we still warm the cache from the
-            # bot market DB so the first RFQ refresh has something to read.
-            sgp_df = pd.DataFrame()  # populated by _refresh_sgp_cache
+            # mlb_sgp_odds is owned exclusively by _refresh_sgp_cache (reads
+            # the bot market DB on its own 60s cadence). Do NOT touch
+            # _SGP_ODDS_CACHE in this function — _refresh_caches runs on the
+            # 10-min PIPELINE_REFRESH_SEC tick and would wipe the fresh
+            # bot-DB rows _refresh_sgp_cache loaded seconds ago.
 
             # mlb_parlay_lines replaced by bot DB::mlb_target_lines cache.
             # Schedule (team names + commence_time) now lives directly in
@@ -147,16 +149,16 @@ def _refresh_caches(retries: int = 5) -> bool:
                 pass
 
         # Atomic swap into the caches under the lock.
+        # _SGP_ODDS_CACHE intentionally NOT touched here — owned by
+        # _refresh_sgp_cache.
         with _CACHE_LOCK:
             _SAMPLES_CACHE = samples_by_game
-            _SGP_ODDS_CACHE = sgp_df
             _PARLAY_LINES_CACHE = parlay_lines
             _SAMPLES_META_GENERATED_AT = generated_at
             _CACHE_LOADED_AT = datetime.now(timezone.utc)
 
         elapsed = time.time() - t0
         print(f"  cache_refresh: {len(samples_by_game)} games, "
-              f"{len(sgp_df)} sgp_odds rows, "
               f"{len(parlay_lines)} parlay_lines, "
               f"samples gen_at={generated_at} ({elapsed:.1f}s)", flush=True)
         return True
