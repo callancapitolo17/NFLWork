@@ -54,6 +54,21 @@ LINE_MATCH_TOLERANCE <- 3.0  # max abs(line_quoted - model_line) we'll emit
     str_replace("_(fg|f3|f5|f7|h2)$", "")
 }
 
+# When matching a bet to per-book candidates, treat alt and main as the
+# same bucket. Different scrapers use different conventions:
+#   - WZ/BKM/Bet105 label alt rows "alternate_spreads"/"alternate_totals"
+#   - DK/FD (via get_dk_odds/get_fd_odds in Tools.R) collapse alt rows into
+#     "spreads"/"totals" with the alt line carried in the `line` column
+# The closest-line picker decides which row wins, so we just union the
+# possible labels here. Moneyline (h2h) has no alt variant.
+.related_market_types <- function(mt) {
+  if (mt == "spreads"           || mt == "alternate_spreads")
+    return(c("spreads", "alternate_spreads"))
+  if (mt == "totals"            || mt == "alternate_totals")
+    return(c("totals", "alternate_totals"))
+  mt
+}
+
 #' Normalize a raw scraper / Odds API frame to the canonical shape consumed
 #' by expand_bets_to_book_prices.
 normalize_book_odds_frame <- function(raw) {
@@ -233,7 +248,7 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
 
         candidates <- book_frame %>%
           filter(game_id == bet$game_id,
-                 market  == bet$market_type,
+                 market  %in% .related_market_types(bet$market_type),
                  period  == bet$period,
                  side    == side_value)
 

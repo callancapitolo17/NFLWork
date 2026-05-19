@@ -509,3 +509,67 @@ test_that("alt-total bet (e.g. Royals Under 6.5) joins to a book with un-suffixe
   expect_true(all(out$is_exact_line))
   expect_equal(out$american_odds[out$side == "pick"], -240)
 })
+
+test_that("alt-spread bet finds DK quote labeled 'spreads' (matcher-side union)", {
+  # Bet from compare_alts_to_samples: market_type = "alternate_spreads".
+  bets <- tibble(
+    bet_row_id  = "h1",
+    game_id     = "g1",
+    market      = "alternate_spreads_fg",
+    market_type = "alternate_spreads",
+    period      = "FG",
+    line        = -2.5,
+    bet_on      = "Boston Red Sox",
+    home_team   = "Boston Red Sox",
+    away_team   = "Philadelphia Phillies",
+    pick_side   = "pick"
+  )
+  # DK book frame as it appears after get_dk_odds + scraper_to_canonical
+  # under the CURRENT (collapsed) labeling: market = "spreads" even though
+  # the raw DK row was alternate_spreads at -2.5.
+  dk <- bind_rows(
+    book_row("g1", "spreads", "FG", "Boston Red Sox",        -2.5, +205),
+    book_row("g1", "spreads", "FG", "Philadelphia Phillies",  2.5, -280)
+  )
+  out <- expand_bets_to_book_prices(bets, list(draftkings = dk))
+  expect_equal(nrow(out), 2)
+  expect_true(all(out$is_exact_line))
+  expect_equal(out$american_odds[out$side == "pick"], 205L)
+})
+
+test_that("main spread bet still finds 'spreads' candidates (union does not break the common case)", {
+  bets <- make_bet_row(market = "spreads_1st_5_innings", line = 0.5,
+                        bet_on = "Boston Red Sox", market_type = "spreads")
+  bets$home_team <- "Boston Red Sox"
+  bets$away_team <- "Philadelphia Phillies"
+  book <- bind_rows(
+    book_row("g1", "spreads", "F5", "Boston Red Sox",         0.5, -115),
+    book_row("g1", "spreads", "F5", "Philadelphia Phillies", -0.5, -105)
+  )
+  out <- expand_bets_to_book_prices(bets, list(wagerzon = book))
+  expect_equal(nrow(out), 2)
+  expect_true(all(out$is_exact_line))
+})
+
+test_that("alt-total bet finds 'totals' and 'alternate_totals' candidates", {
+  bets <- tibble(
+    bet_row_id  = "h2", game_id = "g1",
+    market      = "alternate_totals_fg",
+    market_type = "alternate_totals",
+    period      = "FG", line = 10.0, bet_on = "Over",
+    pick_side   = "pick"
+  )
+  # One book labels its alt totals as "alternate_totals"; another labels them
+  # all as "totals" (e.g. DK after get_dk_odds). Union should match both.
+  wz <- bind_rows(
+    book_row("g1", "alternate_totals", "FG", "Over", 10.0, +135),
+    book_row("g1", "alternate_totals", "FG", "Under", 10.0, -160)
+  )
+  dk <- bind_rows(
+    book_row("g1", "totals", "FG", "Over", 10.0, +130),
+    book_row("g1", "totals", "FG", "Under", 10.0, -155)
+  )
+  out <- expand_bets_to_book_prices(bets, list(wagerzon = wz, draftkings = dk))
+  # Both books should appear on the pick side.
+  expect_setequal(out$bookmaker[out$side == "pick"], c("wagerzon", "draftkings"))
+})
