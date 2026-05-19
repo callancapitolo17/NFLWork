@@ -51,6 +51,10 @@ load_placed_bets <- function(db_path) {
   con <- dbConnect(duckdb(), db_path, read_only = TRUE)
   on.exit(dbDisconnect(con, shutdown = TRUE))
   tryCatch({
+    # Fetch all statuses so the dashboard can render placement state:
+    # "pending"/"placing"   = in-flight (manual or auto path)
+    # "placed"              = finalized (show ticket pill)
+    # "price_moved"/"rejected"/"auth_error"/"network_error"/"orphaned" = show error pill
     dbGetQuery(con, "SELECT * FROM placed_bets WHERE game_time IS NULL OR game_time > NOW()")
   }, error = function(e) {
     tibble(bet_hash = character())
@@ -1461,6 +1465,12 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
   placed_ticket_lookup <- if (nrow(placed_bets) > 0 && "ticket_number" %in% names(placed_bets)) {
     setNames(placed_bets$ticket_number, placed_bets$bet_hash)
   } else setNames(character(), character())
+  placed_error_lookup <- if (nrow(placed_bets) > 0 && "error_msg" %in% names(placed_bets)) {
+    setNames(placed_bets$error_msg, placed_bets$bet_hash)
+  } else setNames(character(), character())
+  placed_error_key_lookup <- if (nrow(placed_bets) > 0 && "error_msg_key" %in% names(placed_bets)) {
+    setNames(placed_bets$error_msg_key, placed_bets$bet_hash)
+  } else setNames(character(), character())
   placed_actual_lookup <- setNames(
     if (nrow(placed_bets) > 0 && "actual_size" %in% names(placed_bets)) placed_bets$actual_size else numeric(),
     if (nrow(placed_bets) > 0) placed_bets$bet_hash else character()
@@ -1604,12 +1614,16 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
       sprintf('<span class="placed-bet-label" %s>%s</span>', data_attrs, label)
     } else if (!is.na(status) && status %in%
                c("price_moved","rejected","auth_error","network_error","orphaned")) {
-      short <- switch(status, price_moved="drift", rejected="rejected",
-                              auth_error="auth err", network_error="net err",
-                              orphaned="orphan", status)
+      err_msg <- placed_error_lookup[row$bet_hash]
+      err_key <- placed_error_key_lookup[row$bet_hash]
+      if (is.na(err_key)) err_key <- ""
+      short <- short_label_for_status(status, err_key)
+      full_msg <- if (!is.na(err_msg) && nchar(err_msg) > 0) err_msg else status
       sprintf(
-        '<span class="pill error" %s>%s</span><button class="btn-place" onclick="placeBet(this)" %s>Retry</button><button class="btn-log" onclick="logBet(this)" %s>Log</button>',
-        data_attrs, short, data_attrs, data_attrs)
+        '<span class="pill error" title="%s" %s>%s</span><button class="btn-place" onclick="placeBet(this)" %s>Retry</button><button class="btn-log" onclick="logBet(this)" %s>Log</button>',
+        htmltools::htmlEscape(full_msg), data_attrs,
+        htmltools::htmlEscape(short),
+        data_attrs, data_attrs)
     } else {
       supported_place <- row$bookmaker_key %in% c("wagerzon","hoop88","bfa","betonlineag")
       place_btn <- if (supported_place) {
