@@ -649,3 +649,18 @@ test_that("scraper_to_canonical preserves NA fetch_time (does not silently fill)
   expect_true(!is.null(out))
   expect_true(all(is.na(out$fetch_time)))
 })
+
+test_that("scraper_to_canonical warns when team names don't resolve", {
+  raw <- tibble(
+    home_team = "Atlanta Braves", away_team = "Mystery Team",
+    market = "h2h", line = NA_real_,
+    odds_home = -150L, odds_away = +130L,
+    odds_over = NA_integer_, odds_under = NA_integer_,
+    fetch_time = Sys.time()
+  )
+  lookup <- tibble(id = "g1",
+                   home_team = "Atlanta Braves",
+                   away_team = "Boston Red Sox",
+                   commence_time = as.POSIXct("2030-01-01", tz = "UTC"))
+  expect_warning(scraper_to_canonical(raw, lookup), "unmatched team pair")
+})

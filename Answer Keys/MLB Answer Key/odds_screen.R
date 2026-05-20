@@ -422,6 +422,21 @@ scraper_to_canonical <- function(raw, lookup) {
     inner_join(lookup, by = c("home_team", "away_team")) %>%
     rename(game_id = id)
 
+  # Surface silent drops: if any raw rows did not match the lookup, log the
+  # unmatched team pairs so a roster rename or scraper drift surfaces in the
+  # run output instead of silently producing fewer pills on the dashboard.
+  n_dropped <- nrow(raw) - nrow(joined)
+  if (n_dropped > 0) {
+    unmatched <- raw %>%
+      anti_join(lookup, by = c("home_team", "away_team")) %>%
+      distinct(home_team, away_team)
+    warning(sprintf(
+      "[scraper_to_canonical] dropped %d row(s) for %d unmatched team pair(s): %s",
+      n_dropped, nrow(unmatched),
+      paste(paste(unmatched$away_team, "@", unmatched$home_team), collapse = "; ")
+    ))
+  }
+
   if (nrow(joined) == 0) return(NULL)
 
   rows <- list()
