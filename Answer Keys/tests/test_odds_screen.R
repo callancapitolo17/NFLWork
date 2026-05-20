@@ -632,3 +632,20 @@ test_that("equidistant tiebreaker picks the worse line for the bettor (spread fa
   expect_equal(pick$line_quoted, -3)         # worse line for -2.5 fav
   expect_equal(pick$american_odds, 110L)
 })
+
+test_that("scraper_to_canonical preserves NA fetch_time (does not silently fill)", {
+  raw <- tibble(
+    home_team = "Boston Red Sox", away_team = "Philadelphia Phillies",
+    market = "totals", line = 5.5,
+    odds_over = -110L, odds_under = -110L,
+    odds_home = NA_integer_, odds_away = NA_integer_,
+    fetch_time = as.POSIXct(NA, tz = "UTC")
+  )
+  lookup <- tibble(id = "g1",
+                   home_team = "Boston Red Sox",
+                   away_team = "Philadelphia Phillies",
+                   commence_time = as.POSIXct("2030-01-01", tz = "UTC"))
+  out <- scraper_to_canonical(raw, lookup)
+  expect_true(!is.null(out))
+  expect_true(all(is.na(out$fetch_time)))
+})

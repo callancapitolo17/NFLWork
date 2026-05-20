@@ -416,11 +416,6 @@ scraper_to_canonical <- function(raw, lookup) {
   if (is.null(raw) || nrow(raw) == 0) return(NULL)
   if (!"fetch_time" %in% names(raw)) raw$fetch_time <- as.POSIXct(NA, tz = "UTC")
 
-  # Replace NA fetch_times with now for consistency with odds_api_to_canonical.
-  if (!is.null(raw$fetch_time)) {
-    raw$fetch_time[is.na(raw$fetch_time)] <- Sys.time()
-  }
-
   # Join to Odds API game IDs. Scraper frames have home_team + away_team
   # already resolved to canonical names by resolve_offshore_teams().
   joined <- raw %>%
@@ -500,9 +495,7 @@ scraper_to_canonical <- function(raw, lookup) {
 odds_api_to_canonical <- function(raw) {
   if (is.null(raw) || nrow(raw) == 0) return(NULL)
   ft <- if ("fetch_time" %in% names(raw)) raw$fetch_time else rep(Sys.time(), nrow(raw))
-  # Replace any NA fetch_times with now (NA breaks staleness chip rendering).
   ft <- as.POSIXct(ft, tz = "UTC")
-  ft[is.na(ft)] <- Sys.time()
 
   result <- raw %>%
     transmute(
