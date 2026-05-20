@@ -3362,7 +3362,7 @@ get_bfa_odds <- function(
   }
 
   raw_odds <- dbGetQuery(con, sprintf("SELECT * FROM %s", table_name))
-  raw_odds <- .drop_past_games(raw_odds, .parse_wz_game_dt, source_label = "bfa")
+  raw_odds <- .drop_past_games(raw_odds, .parse_bfa_game_dt, source_label = "bfa")
 
   if (nrow(raw_odds) == 0) {
     warning("No odds found in BFA database.")
@@ -3654,6 +3654,15 @@ get_bookmaker_odds <- function(
     out[bump] <- as.POSIXct(combined[bump], format = "%Y/%m/%d %H:%M", tz = "UTC")
   }
   out
+}
+
+
+# Parse BFA dates: game_date "YYYY-MM-DD", game_time "HH:MM:SS" interpreted as
+# UTC. The scraper stores both fields explicitly so no year inference is needed.
+.parse_bfa_game_dt <- function(date_str, time_str) {
+  if (length(date_str) == 0) return(as.POSIXct(character(), tz = "UTC"))
+  combined <- paste0(date_str, "T", time_str, "Z")
+  lubridate::ymd_hms(combined, tz = "UTC", quiet = TRUE)
 }
 
 # Drop rows where the game has already started (5-min grace for first-pitch

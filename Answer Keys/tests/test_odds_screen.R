@@ -599,22 +599,17 @@ test_that(".parse_wz_game_dt parses Eastern wall-clock with year inference", {
 
 test_that(".drop_past_games filters by game start, not by fetch time", {
   source("../Tools.R", local = TRUE)
+  # Use a relative future time so the test stays exercised regardless of when
+  # it runs (was previously hardcoded to 2026-05-19T20:10:00Z which expired).
+  future_iso <- format(Sys.time() + 86400, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
   raw <- tibble(
     game_date = c("2026-05-19", "2020-01-01"),
-    game_time = c("2026-05-19T20:10:00Z", "2020-01-01T20:10:00Z"),
+    game_time = c(future_iso, "2020-01-01T20:10:00Z"),
     home_team = c("A", "B"), away_team = c("C", "D"),
     fetch_time = Sys.time()   # both rows have a fresh fetch_time
   )
   out <- .drop_past_games(raw, .parse_iso_game_dt, source_label = "test")
-  # The 2020 game has started long ago; should be dropped regardless of fetch_time.
-  # Note: the 2026-05-19 game may also be in the past by the time you read this;
-  # if both are in the past, expect 0 rows, but ensure the helper at least
-  # WARNS (we test the warning separately).
-  if (Sys.time() < as.POSIXct("2026-05-19T20:00:00Z", tz = "UTC")) {
-    expect_equal(nrow(out), 1)
-    expect_equal(out$home_team, "A")
-    expect_true("game_start_time" %in% names(out))
-  } else {
-    expect_equal(nrow(out), 0)
-  }
+  expect_equal(nrow(out), 1)
+  expect_equal(out$home_team, "A")
+  expect_true("game_start_time" %in% names(out))
 })
