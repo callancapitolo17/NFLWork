@@ -940,8 +940,28 @@ con_bets <- duckdb_connect_retry("mlb_mm.duckdb")
 on.exit(tryCatch(dbDisconnect(con_bets), error = function(e) NULL), add = TRUE)
 dbExecute(con_bets, "DROP TABLE IF EXISTS mlb_bets_combined")
 dbWriteTable(con_bets, "mlb_bets_combined", all_bets_combined)
+# Pre-declare schema so fetch_time keeps its UTC timezone (otherwise
+# dbWriteTable downgrades POSIXct to naive TIMESTAMP and breaks
+# downstream NOW()-fetch_time math).
 dbExecute(con_bets, "DROP TABLE IF EXISTS mlb_bets_book_prices")
-dbWriteTable(con_bets, "mlb_bets_book_prices", book_prices_long)
+dbExecute(con_bets, "
+  CREATE TABLE mlb_bets_book_prices (
+    bet_row_id    VARCHAR,
+    game_id       VARCHAR,
+    market        VARCHAR,
+    period        VARCHAR,
+    side          VARCHAR,
+    bookmaker     VARCHAR,
+    line          DOUBLE,
+    line_quoted   DOUBLE,
+    is_exact_line BOOLEAN,
+    american_odds INTEGER,
+    fetch_time    TIMESTAMPTZ
+  )
+")
+# Ensure POSIXct is in UTC so DuckDB sees a TZ-aware value.
+book_prices_long$fetch_time <- as.POSIXct(book_prices_long$fetch_time, tz = "UTC")
+dbAppendTable(con_bets, "mlb_bets_book_prices", book_prices_long)
 dbDisconnect(con_bets)
 on.exit(NULL)
 
