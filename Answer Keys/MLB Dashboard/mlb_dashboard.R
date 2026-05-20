@@ -4157,6 +4157,10 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             actual_size:      parseFloat(data.size),
             kelly_bet:        parseFloat(data.modelSize || data.size),
             wz_odds_at_place: parseInt(data.odds, 10),
+            // WZ-verified to-win from /api/wz-quote-single (set by verifyWithWz).
+            // When present, the placer drift-checks against this instead of
+            // computing from odds × stake. Cleared on every Risk change.
+            expected_win:     data.expectedWin ? parseFloat(data.expectedWin) : null,
             game_id:          data.gameId,
             home_team:        data.home,
             away_team:        data.away,
@@ -5660,8 +5664,14 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       towinEl.textContent = fmtMoney(localTowin(riskValue, amerOdds));
 
       // Sync the placement button's data-size so the existing placeBet flow uses the override.
+      // Also clear any stale verified-Win — Risk just changed, so the previous
+      // WZ-verified value (if any) is no longer authoritative. verifyWithWz()
+      // will re-set data-expected-win on successful re-quote.
       var btn = placeBtnFor(card);
-      if (btn) btn.dataset.size = String(riskValue);
+      if (btn) {
+        btn.dataset.size = String(riskValue);
+        delete btn.dataset.expectedWin;
+      }
     }
 
     function clearError(card) {
@@ -5776,8 +5786,14 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           if (j.win != null) {
             towinEl.textContent = fmtMoney(j.win);
             setTowinStatus(card, 'verified', '✓ wz');
+            // Round-trip the WZ-verified Win onto the place button so
+            // /api/place-bet can send it as expected_win — the placer's
+            // Win-on-Win drift check then compares WZ-said-X (now) vs
+            // WZ-said-X (then) instead of having to recompute from odds.
+            btn.dataset.expectedWin = String(j.win);
           } else {
             setTowinStatus(card, null);
+            delete btn.dataset.expectedWin;
           }
         })
         .catch(function(e) {
