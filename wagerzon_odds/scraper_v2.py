@@ -104,11 +104,131 @@ def login(session: requests.Session):
 # API CLIENT
 # =============================================================================
 
+WAGERZON_LEAGUES_URL = f"{WAGERZON_BASE_URL}/wager/ActiveLeaguesHelper.aspx"
+
+
+def fetch_active_leagues(session: requests.Session) -> Optional[list[dict]]:
+    """Fetch WZ's full active-league catalog.
+
+    Returns the `result` list (one dict per active league) or None on HTTP
+    failure. Each row looks like:
+        {"IdLeague": 416, "Description": "MLB - GAME LINES",
+         "IdSport": "MLB", "IndexName": "MLB", "Active": True, ...}
+
+    Used by `resolve_leagues()` to map declared markets (by Description
+    pattern) to the live `lg=` IDs the scheduler endpoint expects. The
+    BKM scraper does the same trick against GetRoutingInfo; same idea here.
+    """
+    try:
+        resp = session.get(
+            f"{WAGERZON_LEAGUES_URL}?WT=0",
+            timeout=15,
+            headers={
+                "Accept": "application/json, text/plain, */*",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        result = data.get("result")
+        if not isinstance(result, list):
+            return None
+        return result
+    except Exception:
+        return None
+
+
+def resolve_leagues(catalog: Optional[list[dict]], index_name: str,
+                    markets: list[dict]) -> list[dict]:
+    """Resolve each declared market against WZ's live catalog.
+
+    For every entry in `markets`, find the catalog row where
+    `(IndexName, Description) == (index_name, market["description"])` and
+    attach its `IdLeague` so the scheduler endpoint knows which `lg=` to
+    request. Markets that don't match are dropped with a clear WARN that
+    lists what IS available at that IndexName — better to surface "no
+    such market here" loudly than to silently fetch the wrong data
+    (which is exactly the BKM-503 bug pattern we just fixed).
+
+    Returns a list of resolved configs:
+        [{"id": "416", "description": "MLB - GAME LINES",
+          "period": "fg", "kind": "lines"}, ...]
+    """
+    if not catalog:
+        print("WARNING: WZ ActiveLeaguesHelper unavailable — cannot resolve leagues.")
+        return []
+
+    # Index the catalog by (IndexName, Description) — the unique key. Also
+    # build patterns_by_scope so we can produce a "did you mean" hint when
+    # a pattern misses. Skip entries missing IdLeague (corrupt catalog rows
+    # would cause silent matches against phantom leagues).
+    catalog_by_key: dict[tuple[str, str], dict] = {}
+    patterns_by_scope: dict[str, list[str]] = {}
+    for row in catalog:
+        if not row.get("IdLeague"):
+            continue
+        idx = row.get("IndexName") or ""
+        desc = row.get("Description") or ""
+        catalog_by_key[(idx, desc)] = row
+        patterns_by_scope.setdefault(idx, []).append(desc)
+
+    resolved: list[dict] = []
+    for mkt in markets:
+        desc = mkt["description"]
+        row = catalog_by_key.get((index_name, desc))
+        if row is None:
+            available = patterns_by_scope.get(index_name, [])
+            if available:
+                # Cap at 20 to keep the log readable when IndexName has
+                # many leagues (MLB alone has 26+).
+                shown = available[:20]
+                hint = (f"available patterns under IndexName='{index_name}'"
+                        f"{' (first 20)' if len(available) > 20 else ''}: "
+                        f"{shown}")
+            else:
+                hint = (f"no WZ leagues under IndexName='{index_name}' "
+                        f"— off-season or wrong index_name?")
+            print(f"  WARNING: no WZ league matching "
+                  f"Description='{desc}' — skipping. {hint}")
+            continue
+        resolved.append({
+            "id": str(row["IdLeague"]),
+            "description": desc,
+            "period": mkt.get("period", "fg"),
+            "kind": mkt.get("kind", "lines"),
+        })
+    return resolved
+
 
 def fetch_odds_json(session: requests.Session, sport: str) -> dict:
-    """Fetch odds JSON from NewScheduleHelper.aspx."""
+    """Fetch odds JSON from NewScheduleHelper.aspx.
+
+    Resolves the sport's wanted markets against WZ's live catalog at call
+    time (so we never request a stale leagueId), then fetches all resolved
+    leagues in one combined `?lg=<csv>` request. Returns an empty-shape
+    response if no markets resolve — caller sees zero rows, which is the
+    correct behavior during off-season or if WZ has renamed everything.
+    """
     config = get_sport_config(sport)
-    url = f"{WAGERZON_HELPER_URL}?WT=0&{config['url_params']}"
+    catalog = fetch_active_leagues(session)
+    resolved = resolve_leagues(catalog, config["wz_index_name"], config["markets"])
+
+    if not resolved:
+        print(f"No {sport.upper()} markets resolved from WZ catalog — "
+              f"saving empty (off-season, all patterns renamed, or "
+              f"wrong wz_index_name).")
+        return {"result": {"listLeagues": [[]]}}
+
+    # One-line summary so the operator can eyeball what got wired up.
+    # Format: "MLB - GAME LINES→416, MLB - 1ST 5 FULL INNINGS→417, ..."
+    summary = ", ".join(f"{lg['description']}→{lg['id']}" for lg in resolved[:6])
+    suffix = f" (+{len(resolved) - 6} more)" if len(resolved) > 6 else ""
+    print(f"Resolved {len(resolved)} WZ {sport.upper()} market(s): "
+          f"{summary}{suffix}")
+
+    lg_csv = ",".join(lg["id"] for lg in resolved)
+    url = f"{WAGERZON_HELPER_URL}?WT=0&lg={lg_csv}"
 
     resp = session.get(url, timeout=30, headers={
         "Accept": "application/json, text/plain, */*",
