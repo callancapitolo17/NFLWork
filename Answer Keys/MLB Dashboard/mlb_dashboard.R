@@ -5681,6 +5681,13 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         btn.dataset.size = String(riskValue);
         delete btn.dataset.expectedWin;
       }
+      // Also sync the sibling Log button so manual logging uses the override.
+      // Without this, logBet reads its own stale data-size (the Kelly value
+      // from R-render time) and POSTs the wrong actual_size.
+      var logBtn = card.querySelector('.actions .btn-log');
+      if (logBtn) {
+        logBtn.dataset.size = String(riskValue);
+      }
     }
 
     function clearError(card) {
