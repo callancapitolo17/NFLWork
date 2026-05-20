@@ -4205,7 +4205,17 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             if (result.status === \'placed\') {
               var ticket = result.ticket_number ? \' #\' + result.ticket_number : \'\';
               showToast(\'Placed at \' + book + ticket, \'success\');
-              setTimeout(function() { location.reload(); }, 800);
+              // In-place DOM swap (no reload). Label matches what R would render
+              // for status=\'placed\' on the next dashboard regen.
+              var labelText = result.ticket_number
+                ? (\'placed \\u00b7 #\' + result.ticket_number)
+                : \'placed\';
+              var span = document.createElement(\'span\');
+              span.className = \'placed-bet-label\';
+              span.textContent = labelText;
+              for (var key in btn.dataset) { span.dataset[key] = btn.dataset[key]; }
+              span.dataset.fillStatus = \'placed\';
+              _replaceActionCell(btn, span);
               return;
             }
             if (result.status === \'playwright_launched\') {
@@ -4265,7 +4275,17 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           .then(function(r) { return r.json(); })
           .then(function(result) {
             if (result.success !== false) {
-              setTimeout(function() { location.reload(); }, 400);
+              // In-place DOM swap mirroring the parlay tab\'s logParlay.
+              // Build a placed-bet-label that R will render identically on
+              // the next dashboard regen — no visual discontinuity.
+              var span = document.createElement(\'span\');
+              span.className = \'placed-bet-label\';
+              span.textContent = \'placed\';
+              // Forward all data-* attrs so post-render filters keep classifying the row.
+              for (var key in btn.dataset) { span.dataset[key] = btn.dataset[key]; }
+              span.dataset.fillStatus = \'placed\';
+              _replaceActionCell(btn, span);
+              showToast(\'Logged $\' + Math.round(parseFloat(body.actual_size)), \'success\');
             } else {
               showToast(\'Log failed: \' + (result.error || \'unknown\'), \'error\');
               btn.disabled = false; btn.textContent = \'Log\';
@@ -5003,12 +5023,14 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             });
         }
 
-        // Replace the parlay row\'s entire Action cell content with `node`.
-        // Walk up from the clicked button to the reactable cell wrapper so
-        // both buttons ([Place] AND [Log]) get cleared together — preserves
-        // the cell\'s data attrs implicitly because the new node carries them.
+        // Replace a row\'s entire action area content with `node`.
+        // Serves both tabs:
+        //   - Bets tab V8 cards: action area is <div class="actions"> in the hero strip
+        //   - Parlay tab reactable: action area is the .rt-td cell wrapper
+        // Walks up to whichever ancestor exists so both buttons (Place + Log)
+        // get cleared together — the new node carries the row\'s data attrs.
         function _replaceActionCell(btn, node) {
-          var cell = btn.closest(\'.rt-td\') || btn.parentNode;
+          var cell = btn.closest(\'.actions\') || btn.closest(\'.rt-td\') || btn.parentNode;
           while (cell.firstChild) cell.removeChild(cell.firstChild);
           cell.appendChild(node);
         }
