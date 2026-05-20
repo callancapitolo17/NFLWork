@@ -946,21 +946,23 @@ dbWriteTable(con_bets, "mlb_bets_combined", all_bets_combined)
 dbExecute(con_bets, "DROP TABLE IF EXISTS mlb_bets_book_prices")
 dbExecute(con_bets, "
   CREATE TABLE mlb_bets_book_prices (
-    bet_row_id    VARCHAR,
-    game_id       VARCHAR,
-    market        VARCHAR,
-    period        VARCHAR,
-    side          VARCHAR,
-    bookmaker     VARCHAR,
-    line          DOUBLE,
-    line_quoted   DOUBLE,
-    is_exact_line BOOLEAN,
-    american_odds INTEGER,
-    fetch_time    TIMESTAMPTZ
+    bet_row_id      VARCHAR,
+    game_id         VARCHAR,
+    market          VARCHAR,
+    period          VARCHAR,
+    side            VARCHAR,
+    bookmaker       VARCHAR,
+    line            DOUBLE,
+    line_quoted     DOUBLE,
+    is_exact_line   BOOLEAN,
+    american_odds   INTEGER,
+    fetch_time      TIMESTAMPTZ,
+    game_start_time TIMESTAMPTZ
   )
 ")
-# Ensure POSIXct is in UTC so DuckDB sees a TZ-aware value.
-book_prices_long$fetch_time <- as.POSIXct(book_prices_long$fetch_time, tz = "UTC")
+# Ensure POSIXct columns are in UTC so DuckDB sees TZ-aware values.
+book_prices_long$fetch_time      <- as.POSIXct(book_prices_long$fetch_time,      tz = "UTC")
+book_prices_long$game_start_time <- as.POSIXct(book_prices_long$game_start_time, tz = "UTC")
 dbAppendTable(con_bets, "mlb_bets_book_prices", book_prices_long)
 dbDisconnect(con_bets)
 on.exit(NULL)

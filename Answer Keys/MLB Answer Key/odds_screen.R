@@ -183,7 +183,8 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
                   side = character(), bookmaker = character(),
                   line = numeric(), line_quoted = numeric(),
                   is_exact_line = logical(), american_odds = integer(),
-                  fetch_time = as.POSIXct(character())))
+                  fetch_time = as.POSIXct(character()),
+                  game_start_time = as.POSIXct(character(), tz = "UTC")))
   }
 
   # --- Defensive column renames for bets frame ---
@@ -231,6 +232,7 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
 
   for (i in seq_len(nrow(bets))) {
     bet <- bets[i, , drop = FALSE]
+    bet_game_start <- if ("pt_start_time" %in% names(bet)) bet$pt_start_time else as.POSIXct(NA, tz = "UTC")
     opposite_col_value <- if ("opposite_side" %in% names(bet)) bet$opposite_side else NA_character_
     home_team_value    <- if ("home_team"     %in% names(bet)) bet$home_team     else NA_character_
     away_team_value    <- if ("away_team"     %in% names(bet)) bet$away_team     else NA_character_
@@ -279,17 +281,18 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
 
         k <- k + 1L
         out_rows[[k]] <- tibble(
-          bet_row_id    = bet$bet_row_id,
-          game_id       = bet$game_id,
-          market        = bet$market_type,
-          period        = bet$period,
-          side          = slot,
-          bookmaker     = book_name,
-          line          = bet$line,
-          line_quoted   = chosen$line_quoted,
-          is_exact_line = chosen$is_exact_line,
-          american_odds = as.integer(chosen$american_odds),
-          fetch_time    = ft
+          bet_row_id      = bet$bet_row_id,
+          game_id         = bet$game_id,
+          market          = bet$market_type,
+          period          = bet$period,
+          side            = slot,
+          bookmaker       = book_name,
+          line            = bet$line,
+          line_quoted     = chosen$line_quoted,
+          is_exact_line   = chosen$is_exact_line,
+          american_odds   = as.integer(chosen$american_odds),
+          fetch_time      = ft,
+          game_start_time = bet_game_start
         )
       }
     }
@@ -301,7 +304,8 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
                   side = character(), bookmaker = character(),
                   line = numeric(), line_quoted = numeric(),
                   is_exact_line = logical(), american_odds = integer(),
-                  fetch_time = as.POSIXct(character())))
+                  fetch_time = as.POSIXct(character()),
+                  game_start_time = as.POSIXct(character(), tz = "UTC")))
   }
   bind_rows(out_rows[1:k])
 }
