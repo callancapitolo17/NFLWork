@@ -154,7 +154,7 @@ mlb_triple_play.R (standalone pricer)
 4. **Sample staleness** — parlay.R and props.R auto-regenerate if >5 min old. Don't cache samples.
 5. **18-column schema** — All scrapers MUST write this exact schema. Kalshi is the exception (26 columns with probability fields).
 6. **`tol_error` auto-scales to 0.2% of N** — Per Feustel's spec ("+/-1 means you are within 0.2% of your target"), `run_answer_key_sample()` and `generate_all_samples()` default `tol_error = NULL` which computes `max(1L, round(0.002 * current_N))` inside the shrink loop. At N=500 this is 1 (Feustel's canonical value); at N=1272 it's 3. **Never hardcode `tol_error = 1` at the caller** — that silently tightens the rule by 2.5× at MLB's N and causes pathological shrinkage of sparse-region games.
-7. **Naive TIMESTAMP vs `NOW()` in DuckDB R sessions** — `NOW()` returns TIMESTAMPTZ; comparing it to a NAIVE TIMESTAMP forces a cast using the session timezone. R's DuckDB defaults to **UTC**; Python's defaults to local. So `wagerzon_specials.game_time` (naive Eastern, e.g. `18:35` ET written verbatim by `scraper_specials.py`) gets interpreted as `18:35 UTC` in R — silently dropping every row once UTC time passes the nominal Eastern start (~4h pre-game). Compare against `(NOW() AT TIME ZONE 'America/New_York')::TIMESTAMP` to put both sides in naive Eastern wall-clock. Requires the `icu` extension (`INSTALL icu; LOAD icu;` at script startup — first call downloads ~1MB to user cache, then no-op). Same trap applies to any other naive-Eastern timestamp from offshore scrapers.
+7. **Naive TIMESTAMP vs `NOW()` in DuckDB R sessions** — `NOW()` returns TIMESTAMPTZ; comparing it to a NAIVE TIMESTAMP forces a cast using the session timezone. R's DuckDB defaults to **UTC**; Python's defaults to local. So `wagerzon_specials.game_time` (naive Eastern, e.g. `18:35` ET written verbatim by `scraper_specials.py`) gets interpreted as `18:35 UTC` in R — silently dropping every row once UTC time passes the nominal Eastern start (~4h pre-game). Compare against `(NOW() AT TIME ZONE 'America/New_York')::TIMESTAMP` to put both sides in naive Eastern wall-clock. Requires the `icu` extension (`INSTALL icu; LOAD icu;` at script startup — first call downloads ~1MB to user cache, then no-op). Same trap applies to any other naive-Eastern timestamp from offshore scrapers. **Partially fixed 2026-05-19**: all per-book scraper DBs (DK, FD, WZ, Hoop88, BFA, BKM, Bet105) and `mlb_mm.duckdb::mlb_bets_book_prices` now store `fetch_time` as `TIMESTAMPTZ`, so `NOW() - fetch_time` works without timezone tricks. The workaround above is still needed for `wagerzon_specials.game_time` and any other naive-Eastern column that hasn't been migrated.
 8. **Parallel R scripts on `mlb.duckdb`** — `/refresh` launches `mlb_correlated_parlay.R` and `mlb_triple_play.R` in parallel (server line 2235-2244). Both want a writer connection on `mlb.duckdb` (parlay for working tables, trifecta only briefly to `CREATE TABLE IF NOT EXISTS mlb_trifecta_sgp_odds`). Whoever loses crashes with `errno 35` "Conflicting lock". Trifecta pricer now retries with exponential backoff and falls through non-fatally — the SGP table is created once per machine, so a transient miss on a follow-up run is safe. If you add a new short-lived `mlb.duckdb` writer in the parallel section, follow the same retry pattern.
 9. **Alt-market suffix conventions** — `compare_alts_to_samples` writes
    `alternate_totals_fg / alternate_spreads_f5` (suffixed). Some scrapers
@@ -169,6 +169,25 @@ mlb_triple_play.R (standalone pricer)
    `bind_rows` fills `period` with NA for alt rows (since
    `compare_alts_to_samples` doesn't set it). If you add a new scraper
    that uses a third suffix convention, extend those helpers.
+10. **Alt + main markets are unioned at match time, not the loader** —
+    `odds_screen.R::.related_market_types(mt)` treats
+    `{spreads, alternate_spreads}` and `{totals, alternate_totals}` as one
+    bucket inside `expand_bets_to_book_prices`. DO NOT rely on the bet's
+    `market_type` matching the book's row label exactly — different scrapers
+    use different conventions (WZ/BKM/Bet105 label alt rows `alternate_*`;
+    DK/FD via `get_dk_odds` collapse alt rows into `spreads`/`totals`). The
+    closest-line picker breaks ties. Moneyline (`h2h`) is intentionally
+    not unioned.
+11. **Per-book `game_time` formats vary** — DK/FD store ISO 8601 UTC strings
+    in `game_time` (`game_date` is also ISO); WZ/Hoop88/BKM use naive Eastern
+    wall-clock (`MM/DD` + `HH:MM`, year inferred at parse time); BFA uses
+    `YYYY-MM-DD` + `HH:MM:SS` UTC; Bet105 uses `MM/DD` + `HH:MM` UTC with date
+    rollover. `Tools.R::.drop_past_games()` is the canonical gate — it calls
+    the right parser per book (`.parse_iso_game_dt` / `.parse_wz_game_dt` /
+    `.parse_bfa_game_dt` / `.parse_bet105_game_dt`) and drops rows where the
+    game has already started (5-min grace). If you add a new scraper, write
+    a per-book parser and wire it into the matching `get_*_odds()` helper or
+    yesterday's snapshot will leak into today's pills via the team-name join.
 
 ## Known model biases
 
@@ -234,6 +253,21 @@ for the design spec.
    passes the wide frame to `create_bets_table()` which renders cards.
 4. Old `create_bets_table_legacy()` is preserved as a fallback if the
    new table is missing (first deploy after merge).
+5. Each `get_*_odds()` helper in `Tools.R` parses its scraper's
+   `(game_date, game_time)` and drops rows where the game has already
+   started (5-min grace, via `.drop_past_games()`). This prevents
+   yesterday's stale snapshot from being silently re-tagged with today's
+   `game_id` via the team-name join. Every row in `mlb_bets_book_prices`
+   also carries `game_start_time TIMESTAMPTZ` (copied from the bet's
+   `pt_start_time`, derived from Odds API `commence_time`) so the
+   dashboard can render the game start time on each card.
+6. `expand_bets_to_book_prices()` unions related market types: an
+   `alternate_spreads` bet sees both `spreads` and `alternate_spreads`
+   book rows; the closest-line picker (±3.0 units) decides which one
+   wins. See pitfall #10 above.
+7. `mlb_bets_book_prices.fetch_time` and the per-book scraper DBs all
+   store `fetch_time` as `TIMESTAMPTZ`, so dashboard staleness math
+   (`NOW() - fetch_time`) works directly without timezone tricks.
 
 ### Helpers
 
