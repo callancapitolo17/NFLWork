@@ -67,11 +67,16 @@ def poll_quotes(rfq_id: str, user_id: str) -> list[dict]:
     return body.get("quotes") or []
 
 
-def accept_quote(quote_id: str, contracts: int) -> dict | None:
+def accept_quote(quote_id: str, contracts: int) -> tuple[dict | None, dict | str | None]:
     """Accept a quote for the given contract count.
 
-    Returns the accept-response dict on success, or None if the quote walked /
-    expired before our accept landed.
+    Returns (response, error_body):
+      - success: (response_dict, None)
+      - walked / expired race: (None, error_body) — error_body is whatever Kalshi
+        returned (dict on JSON, str otherwise). Lets the caller distinguish
+        'quote_expired' / 'rfq_closed' / etc. in walk diagnostics.
+
+    Raises KalshiAPIError on any other (unexpected) status.
     """
     body = {"contracts": contracts}
     # Kalshi accept endpoint requires PUT, not POST. POST returns a router-level
@@ -85,12 +90,21 @@ def accept_quote(quote_id: str, contracts: int) -> dict | None:
     # Accept both — the alternative is a silent failure with a real position
     # opened on Kalshi's side and no local tracking.
     if status in (200, 201):
-        return resp if isinstance(resp, dict) else {}
+        return (resp if isinstance(resp, dict) else {}), None
     if status in (400, 404, 409):
         # Common race: quote walked or expired. Not a hard error. Including 404
         # in case Kalshi returns it for an already-accepted quote (defensive).
-        return None
+        return None, resp
     raise KalshiAPIError(f"accept_quote failed: status={status} body={resp}")
+
+
+def get_rfq_safe(rfq_id: str) -> dict | None:
+    """get_rfq variant that returns None on any failure. Used for post-walk
+    diagnostics — must never crash the bot on a follow-up inspection."""
+    try:
+        return get_rfq(rfq_id)
+    except Exception:
+        return None
 
 
 def get_position_contracts(market_ticker: str) -> int:
