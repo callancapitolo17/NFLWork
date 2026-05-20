@@ -878,14 +878,13 @@ print(all_bets_combined %>% head(20))
   select(id, home_team, away_team) %>%
   distinct()
 
-# Parse the prefetched_odds JSON cache into long format so DK/FD/Pinnacle
-# have F-period (F3/F5/F7) and alt-market coverage in book_odds_by_book.
-# Without this, the pill grid only shows DK/FD/Pinn odds for FG h2h + FG
-# totals (the only markets in game_odds) and is empty for the F-period bets
-# that dominate all_bets_combined.
+# Parse the prefetched_odds JSON cache into long format for Pinnacle pill
+# coverage. DK and FD come from their per-book DuckDBs via get_dk_odds /
+# get_fd_odds (see Tools.R); the Odds API path is used only for Pinnacle,
+# which has no public REST API.
 prefetched_long <- parse_prefetched_to_long(
   prefetched_odds,
-  bookmaker_keys = c("draftkings", "fanduel", "pinnacle")
+  bookmaker_keys = "pinnacle"
 )
 
 # Kalshi is intentionally excluded from book_odds_by_book — it's a
