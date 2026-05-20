@@ -680,24 +680,53 @@ def _kelly_size_for_quote(quote: dict, fair: float) -> int:
 
 def _log_quote_decision(quote: dict, fair: float | None,
                          decision: str, reason: str | None = None,
-                         post_fee_ev: float | None = None):
+                         post_fee_ev: float | None = None,
+                         diag: dict | None = None):
+    """Write one quote evaluation outcome to quote_log.
+
+    `diag` carries walk-diagnostic context (competitor state, latency timestamps,
+    accept-error body, rfq terminal status). All keys are optional; missing keys
+    are stored as NULL. See db.py SCHEMA_SQL for the column set.
+    """
+    d = diag or {}
     with db.connect() as con:
         con.execute(
             "INSERT INTO quote_log (quote_id, rfq_id, combo_market_ticker, "
             "creator_id, yes_bid_dollars, no_bid_dollars, blended_fair_at_eval, "
-            "post_fee_ev_pct, decision, reason_detail, observed_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            "post_fee_ev_pct, decision, reason_detail, observed_at, "
+            "competitor_count, best_competitor_no_bid_dollars, "
+            "accept_response_body, rfq_terminal_status, "
+            "quote_first_seen_at, accept_attempted_at, accept_response_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT DO NOTHING",
             [quote["id"], quote["rfq_id"], quote.get("market_ticker"),
              quote.get("creator_id"),
              float(quote["yes_bid_dollars"]) if quote.get("yes_bid_dollars") else None,
              float(quote["no_bid_dollars"]) if quote.get("no_bid_dollars") else None,
              fair, post_fee_ev, decision, reason,
-             datetime.now(timezone.utc)],
+             datetime.now(timezone.utc),
+             d.get("competitor_count"),
+             d.get("best_competitor_no_bid_dollars"),
+             d.get("accept_response_body"),
+             d.get("rfq_terminal_status"),
+             d.get("quote_first_seen_at"),
+             d.get("accept_attempted_at"),
+             d.get("accept_response_at")],
         )
 
 
-def _evaluate_quote(quote: dict, dry_run: bool):
-    """Per-quote: evaluate gates, accept if all pass, log decision."""
+def _evaluate_quote(quote: dict, dry_run: bool,
+                    *,
+                    competitor_count: int | None = None,
+                    best_competitor_no_bid_dollars: float | None = None,
+                    quote_first_seen_at: datetime | None = None):
+    """Per-quote: evaluate gates, accept if all pass, log decision.
+
+    The kwargs starting with `competitor_count` carry walk-diagnostic context
+    computed by the caller from the full quotes-on-RFQ list. They are stored on
+    every decision row (declined and walked alike) so we can later distinguish
+    'we were too slow' from 'we were too cheap' on walks. See _log_quote_decision.
+    """
     rfq_id = quote["rfq_id"]
     with db.connect(read_only=True) as con:
         row = con.execute(
@@ -716,39 +745,60 @@ def _evaluate_quote(quote: dict, dry_run: bool):
         ).fetchone()
     legs_json = cc_row[0] if cc_row else "[]"
 
+    diag: dict = {
+        "competitor_count": competitor_count,
+        "best_competitor_no_bid_dollars": best_competitor_no_bid_dollars,
+        "quote_first_seen_at": quote_first_seen_at,
+    }
+
     with ACCEPT_LOCK:
         fair = _fresh_blended_fair(combo_market_ticker)
         if fair is None:
-            _log_quote_decision(quote, None, "declined_ev", reason="no_fresh_fair")
+            _log_quote_decision(quote, None, "declined_ev", reason="no_fresh_fair", diag=diag)
             return
 
         passed, decision = _all_per_accept_gates_pass(
             quote, fair, {"leg_set_hash": leg_set_hash, "game_id": game_id,
                           "legs_json": legs_json})
         if not passed:
-            _log_quote_decision(quote, fair, decision)
+            _log_quote_decision(quote, fair, decision, diag=diag)
             return
 
         no_bid = float(quote.get("no_bid_dollars") or 0)
         ev_dollars, ev_pct = ev_calc.post_fee_ev_buy_yes(fair, no_bid)
         if ev_pct < config.MIN_EV_PCT:
-            _log_quote_decision(quote, fair, "declined_ev", post_fee_ev=ev_pct)
+            _log_quote_decision(quote, fair, "declined_ev", post_fee_ev=ev_pct, diag=diag)
             return
 
         if dry_run:
-            _log_quote_decision(quote, fair, "declined_dry_run", post_fee_ev=ev_pct)
+            _log_quote_decision(quote, fair, "declined_dry_run", post_fee_ev=ev_pct, diag=diag)
             return
 
         contracts = _kelly_size_for_quote(quote, fair)
         if contracts <= 0:
             _log_quote_decision(quote, fair, "declined_kelly_zero",
-                                 post_fee_ev=ev_pct)
+                                 post_fee_ev=ev_pct, diag=diag)
             return
 
-        resp = rfq_client.accept_quote(quote["id"], contracts=contracts)
+        diag["accept_attempted_at"] = datetime.now(timezone.utc)
+        resp, err_body = rfq_client.accept_quote(quote["id"], contracts=contracts)
+        diag["accept_response_at"] = datetime.now(timezone.utc)
         if resp is None:
+            # Walked. Capture Kalshi's error body + a fresh look at the RFQ's
+            # terminal state. get_rfq_safe swallows any errors so diagnostics
+            # never crash the bot.
+            try:
+                diag["accept_response_body"] = (
+                    json.dumps(err_body) if err_body is not None else None
+                )
+            except (TypeError, ValueError):
+                diag["accept_response_body"] = str(err_body)
+            rfq_obj = rfq_client.get_rfq_safe(rfq_id)
+            diag["rfq_terminal_status"] = (
+                rfq_obj.get("status") if rfq_obj else None
+            )
             _log_quote_decision(quote, fair, "failed_quote_walked",
-                                 post_fee_ev=ev_pct)
+                                 post_fee_ev=ev_pct, diag=diag)
             return
 
         # Post-accept fill reconciliation via /portfolio/positions
@@ -790,7 +840,7 @@ def _evaluate_quote(quote: dict, dry_run: bool):
                 "cooled_until = EXCLUDED.cooled_until",
                 [leg_set_hash, game_id, cooled_until, "post_accept"],
             )
-        _log_quote_decision(quote, fair, "accepted", post_fee_ev=ev_pct)
+        _log_quote_decision(quote, fair, "accepted", post_fee_ev=ev_pct, diag=diag)
         notify.fill(rfq_id=rfq_id, combo_market_ticker=combo_market_ticker,
                     contracts=actual, price=yes_ask, ev_pct=ev_pct)
 
@@ -896,16 +946,39 @@ def _poll_all_live_rfqs(dry_run: bool):
             quotes = rfq_client.poll_quotes(rid, user_id=config.KALSHI_USER_ID or "")
         except Exception:
             continue
-        for q in quotes:
-            if q.get("status") != "open":
-                continue
+        # Stamp "we first saw this batch" once per poll_quotes call. All quotes
+        # in `quotes` arrived in the same response, so they share the same
+        # observed-arrival time from the bot's perspective.
+        first_seen_at = datetime.now(timezone.utc)
+        open_quotes = [q for q in quotes if q.get("status") == "open"]
+        for q in open_quotes:
+            # Competitor stats relative to *this* quote: every OTHER open quote
+            # on the same RFQ. Used in walk diagnostics to tell whether a
+            # cheaper/better quote was sitting right there when we walked on
+            # this one.
+            others = [oq for oq in open_quotes if oq.get("id") != q.get("id")]
+            competitor_count = len(others)
+            other_no_bids = [
+                float(oq["no_bid_dollars"]) for oq in others
+                if oq.get("no_bid_dollars") is not None
+            ]
+            # Higher no_bid_dollars ⇒ lower yes_ask ⇒ better for the buyer
+            # (this bot is the RFQ creator buying YES). "Best" = max.
+            best_competitor_no_bid = max(other_no_bids) if other_no_bids else None
+
             with db.connect(read_only=True) as con:
                 already = con.execute(
                     "SELECT 1 FROM quote_log WHERE quote_id=?", [q["id"]]
                 ).fetchone()
             if already:
                 continue
-            _evaluate_quote(q, dry_run=dry_run)
+            _evaluate_quote(
+                q,
+                dry_run=dry_run,
+                competitor_count=competitor_count,
+                best_competitor_no_bid_dollars=best_competitor_no_bid,
+                quote_first_seen_at=first_seen_at,
+            )
 
 
 # ------------------------------------------------------------------------ #
