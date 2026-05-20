@@ -1171,15 +1171,22 @@ render_price_grid_row <- function(wide_row, side_label, is_pick_side,
     odds  <- if (!is.null(wide_row) && odds_col  %in% names(wide_row)) wide_row[[odds_col]]  else NA_integer_
     lq    <- if (!is.null(wide_row) && lq_col    %in% names(wide_row)) wide_row[[lq_col]]    else NA_real_
     exact <- if (!is.null(wide_row) && exact_col %in% names(wide_row)) wide_row[[exact_col]] else NA
-    # Other-side odds for THIS book — used for devig FAIR view.
+    # Other-side odds + line for THIS book — used for devig FAIR view.
+    # We pass the opposite line so render_book_cell can refuse to devig when
+    # the two slots landed on different alt markets at the same book.
     opp_odds <- if (!is.null(other_side_wide_row) &&
                     odds_col %in% names(other_side_wide_row)) {
       other_side_wide_row[[odds_col]]
     } else NA_integer_
+    opp_lq   <- if (!is.null(other_side_wide_row) &&
+                    lq_col %in% names(other_side_wide_row)) {
+      other_side_wide_row[[lq_col]]
+    } else NA_real_
     render_book_cell(
       american_odds          = if (is.na(odds))     NA_integer_ else as.integer(odds),
       opposite_american_odds = if (is.na(opp_odds)) NA_integer_ else as.integer(opp_odds),
       line_quoted            = lq,
+      opposite_line_quoted   = if (is.na(opp_lq))   NA_real_    else as.numeric(opp_lq),
       is_exact_line          = exact,
       is_pick                = is_pick_side && (b == pick_book),
       side_word              = side_word,
