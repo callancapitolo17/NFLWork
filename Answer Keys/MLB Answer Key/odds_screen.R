@@ -125,9 +125,20 @@ normalize_book_odds_frame <- function(raw) {
   c3 <- c2 %>% filter(.dist == min_dist)
   if (nrow(c3) > 1) {
     # Equidistant tiebreaker: prefer the line worse for the bettor.
-    # Over side: pick higher line; Under side: pick lower line.
-    # Spread favorite (negative line): pick lower (more negative); dog: pick higher.
-    pick_high <- grepl("^Over", bet_on, ignore.case = TRUE) || (model_line < 0)
+    # Over total: pick_high = TRUE -> slice_max -> higher total (harder to go over).
+    # Under total: pick_high = FALSE -> slice_min -> lower total (harder to go under).
+    # Spread dog (model_line > 0): pick_high = TRUE -> slice_max -> larger +N
+    #   (less cushion = harder to cover).
+    # Spread favorite (model_line < 0): pick_high = FALSE -> slice_min -> more
+    #   negative line (must cover by more = harder).
+    if (grepl("^Over", bet_on, ignore.case = TRUE)) {
+      pick_high <- TRUE
+    } else if (grepl("^Under", bet_on, ignore.case = TRUE)) {
+      pick_high <- FALSE
+    } else {
+      # It's a spread; use line sign to determine dog vs favorite
+      pick_high <- model_line > 0
+    }
     if (pick_high) c3 <- c3 %>% slice_max(line, n = 1)
     else c3 <- c3 %>% slice_min(line, n = 1)
   }

@@ -613,3 +613,22 @@ test_that(".drop_past_games filters by game start, not by fetch time", {
   expect_equal(out$home_team, "A")
   expect_true("game_start_time" %in% names(out))
 })
+
+test_that("equidistant tiebreaker picks the worse line for the bettor (spread favorite)", {
+  bets <- make_bet_row(market = "spreads_1st_5_innings", line = -2.5,
+                        bet_on = "Boston Red Sox", market_type = "spreads")
+  bets$home_team <- "Boston Red Sox"
+  bets$away_team <- "Philadelphia Phillies"
+  # Book offers BOS at -2 and BOS at -3, both 0.5 away from model -2.5.
+  # The "worse for bettor" of a -2.5 favorite is -3 (must cover by more).
+  book <- bind_rows(
+    book_row("g1", "spreads", "F5", "Boston Red Sox",         -2,   -150),
+    book_row("g1", "spreads", "F5", "Boston Red Sox",         -3,   +110),
+    book_row("g1", "spreads", "F5", "Philadelphia Phillies",  +2,   +130),
+    book_row("g1", "spreads", "F5", "Philadelphia Phillies",  +3,   -130)
+  )
+  out <- expand_bets_to_book_prices(bets, list(wagerzon = book))
+  pick <- out[out$side == "pick", ]
+  expect_equal(pick$line_quoted, -3)         # worse line for -2.5 fav
+  expect_equal(pick$american_odds, 110L)
+})
