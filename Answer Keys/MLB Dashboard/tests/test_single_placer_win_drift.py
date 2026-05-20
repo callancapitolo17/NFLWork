@@ -163,6 +163,31 @@ def test_drift_within_tolerance_still_proceeds():
     assert result["status"] == "placed"
 
 
+def test_supplied_expected_win_takes_priority_over_math_fallback():
+    """Tightening test: prove the dashboard-supplied expected_win is the
+    value actually used, not just coincidentally equal to the math.
+
+    Setup: bet has wz_odds_at_place=215 + actual_size=205, so the math
+    fallback would compute $440.75. We supply expected_win=300 (a value
+    the math would NEVER produce for this bet) and have WZ return Win=300.
+
+      - If supplied is used (correct): expected=300 vs WZ=300 -> place.
+      - If math is silently used (broken): expected=440.75 vs WZ=300
+        -> $140.75 drift -> price_moved.
+
+    Asserting 'placed' proves the supplied value is what the drift check
+    consumed."""
+    preflight = {"result": {"details": [{"Win": 300.00, "Risk": 205.0}]}}
+    sess = _make_session(preflight, PLACED_BODY_OK)
+    result = single_placer.place_single(
+        account=None,
+        bet=_wz_bet(expected_win=300.00),
+        session=sess,
+    )
+    assert result["status"] == "placed", \
+        f"supplied expected_win was ignored; got {result}"
+
+
 # ---------------------------------------------------------------------------
 # _compute_expected_win — pure math
 # ---------------------------------------------------------------------------
