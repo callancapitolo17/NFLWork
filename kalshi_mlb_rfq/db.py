@@ -37,17 +37,24 @@ CREATE TABLE IF NOT EXISTS live_rfqs (
 );
 
 CREATE TABLE IF NOT EXISTS quote_log (
-    quote_id              VARCHAR PRIMARY KEY,
-    rfq_id                VARCHAR NOT NULL,
-    combo_market_ticker   VARCHAR,
-    creator_id            VARCHAR,
-    yes_bid_dollars       DOUBLE,
-    no_bid_dollars        DOUBLE,
-    blended_fair_at_eval  DOUBLE,
-    post_fee_ev_pct       DOUBLE,
-    decision              VARCHAR NOT NULL,
-    reason_detail         VARCHAR,
-    observed_at           TIMESTAMP NOT NULL
+    quote_id                         VARCHAR PRIMARY KEY,
+    rfq_id                           VARCHAR NOT NULL,
+    combo_market_ticker              VARCHAR,
+    creator_id                       VARCHAR,
+    yes_bid_dollars                  DOUBLE,
+    no_bid_dollars                   DOUBLE,
+    blended_fair_at_eval             DOUBLE,
+    post_fee_ev_pct                  DOUBLE,
+    decision                         VARCHAR NOT NULL,
+    reason_detail                    VARCHAR,
+    observed_at                      TIMESTAMP NOT NULL,
+    competitor_count                 INTEGER,
+    best_competitor_no_bid_dollars   DOUBLE,
+    accept_response_body             VARCHAR,
+    rfq_terminal_status              VARCHAR,
+    quote_first_seen_at              TIMESTAMP,
+    accept_attempted_at              TIMESTAMP,
+    accept_response_at               TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS fills (
@@ -96,6 +103,16 @@ CREATE TABLE IF NOT EXISTS combo_cooldown (
 );
 """
 
+MIGRATE_SQL = """
+ALTER TABLE quote_log ADD COLUMN IF NOT EXISTS competitor_count                 INTEGER;
+ALTER TABLE quote_log ADD COLUMN IF NOT EXISTS best_competitor_no_bid_dollars   DOUBLE;
+ALTER TABLE quote_log ADD COLUMN IF NOT EXISTS accept_response_body             VARCHAR;
+ALTER TABLE quote_log ADD COLUMN IF NOT EXISTS rfq_terminal_status              VARCHAR;
+ALTER TABLE quote_log ADD COLUMN IF NOT EXISTS quote_first_seen_at              TIMESTAMP;
+ALTER TABLE quote_log ADD COLUMN IF NOT EXISTS accept_attempted_at              TIMESTAMP;
+ALTER TABLE quote_log ADD COLUMN IF NOT EXISTS accept_response_at               TIMESTAMP;
+"""
+
 
 @contextmanager
 def connect(read_only: bool = False, retries: int = 10):
@@ -119,6 +136,7 @@ def init_database():
     """Apply schema migrations idempotently."""
     with connect() as con:
         con.execute(SCHEMA_SQL)
+        con.execute(MIGRATE_SQL)
 
 
 def start_session(pid: int, dry_run: bool, version: str) -> str:
