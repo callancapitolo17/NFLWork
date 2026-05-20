@@ -512,7 +512,7 @@ class Bet105Scraper:
 
     def _build_records(self) -> list[dict]:
         """Convert collected data into 18-column DuckDB records."""
-        fetch_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        fetch_time = datetime.now(timezone.utc)
         sport_key = self.config["sport_key"]
 
         team_dict = load_team_dict(self.sport)
@@ -644,9 +644,22 @@ def init_database(sport: str):
     table_name = config["table_name"]
 
     conn = duckdb.connect(str(DB_PATH))
+
+    # Migrate naive-TIMESTAMP schema to TIMESTAMPTZ if needed.
+    # DuckDB does not support ALTER COLUMN TYPE between these, so drop+create.
+    existing = conn.execute(
+        "SELECT column_name, data_type FROM information_schema.columns "
+        "WHERE table_name = ? AND column_name = 'fetch_time'",
+        [table_name]
+    ).fetchone()
+    if existing is not None and "WITH TIME ZONE" not in (existing[1] or "").upper():
+        print(f"[bet105] Migrating {table_name}.fetch_time TIMESTAMP -> TIMESTAMPTZ "
+              f"(existing snapshot will be re-populated this run)")
+        conn.execute(f"DROP TABLE {table_name}")
+
     conn.execute(f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
-            fetch_time TIMESTAMP,
+            fetch_time TIMESTAMPTZ,
             sport_key VARCHAR,
             game_id VARCHAR,
             game_date VARCHAR,
