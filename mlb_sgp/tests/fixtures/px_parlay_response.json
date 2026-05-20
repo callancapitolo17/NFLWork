@@ -1,0 +1,9 @@
+{
+  "data": {
+    "offers": [
+      {"odds": 5.0, "stake": 50, "estimatedPrices": []},
+      {"odds": 2.85, "stake": 200, "estimatedPrices": []},
+      {"odds": 2.85, "stake": 500, "estimatedPrices": []}
+    ]
+  }
+}

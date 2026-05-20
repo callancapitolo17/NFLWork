@@ -63,7 +63,14 @@ SPORT_CONFIGS = {
         "leagues": [
             {"id": "5", "name": "Game Lines", "market": "spreads", "period": "fg"},
             {"id": "6", "name": "1st 5 Innings", "market": "spreads_f5", "period": "F5"},
-            {"id": "503", "name": "1st 3 Innings", "market": "spreads_f3", "period": "F3"},
+            # League 503 is BKM's "2ND HALVES" market (innings 6-9 lines —
+            # spread/total/ML for the back half of the game), per recon
+            # routedSports metadata. Previously mislabeled as "1st 3 Innings",
+            # which caused 2nd-half totals (e.g. U3.5) to surface on F3
+            # totals cards in the MLB dashboard. BKM does NOT post a true
+            # 1st 3 Innings market — the recon list only contains
+            # leagueId 6 (1ST 5 INNINGS) and 19723 (INNINGS) for MLB.
+            {"id": "503", "name": "2nd Halves", "market": "spreads_h2", "period": "H2"},
         ],
     },
 }

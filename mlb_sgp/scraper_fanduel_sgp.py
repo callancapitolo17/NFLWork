@@ -1,43 +1,34 @@
 #!/usr/bin/env python3
-"""
-FanDuel MLB SGP Scraper (Pure REST API)
+"""FanDuel MLB SGP Scraper — thin shim invoking the fanduel library.
 
-Fetches Same Game Parlay (SGP) odds from FanDuel for MLB spread+total combos.
-Supports FG (full game) and F5 (first 5 innings), main + alt spreads and totals.
-Uses curl_cffi with Chrome TLS impersonation. Three required headers:
-  - x-application       (FD's API key, also passed as ?_ak= query param)
-  - x-sportsbook-region (geo: NJ — same value works from any state, FD just routes)
-  - x-px-context        (PerimeterX visitor token — captured from a real Chrome session)
+Reads target_lines from MLB_DB (default: mlb_mm.duckdb; bot overrides via
+MLB_SGP_DB_PATH env var). Calls mlb_sgp.fanduel.price_sgps() with the
+periods configured via MLB_SGP_PERIODS env var (default: FG,F5).
+Writes PricedRow results back to MLB_DB via mlb_sgp.db.upsert_priced_rows.
 
-How it works:
-1. List today's MLB events from the scan endpoint (competitionId 11196870)
-2. Match each event to our internal game_ids via canonical_match
-3. For each game, GET event-page with SGP tab to extract ALL runner IDs
-   (main + alt spreads and totals, FG + F5)
-4. Match exact Wagerzon lines — if FD doesn't have the exact line, skip the game
-5. For each matched combo, POST to implyBets and parse the isSGM=true entry
-6. Upsert into mlb_sgp_odds with bookmaker='fanduel'
+Legacy helpers (fetch_fd_events, match_events, fetch_event_runners,
+price_combo, try_integer_fallback_fd, init_session, FD_AK/FD_HEADERS/
+FD_EVENT_PAGE_URL constants) are preserved in this file because the new
+fanduel orchestrator + fd_client import them lazily. They stay here
+during the transition; a follow-up refactor can lift them into the
+library module.
 
-The PerimeterX token is hardcoded for v1. If FD starts returning 400s with empty
-bodies or implyBets stops returning the isSGM entry, refresh from a real browser
-session (see README.md for instructions).
-
-Usage:
-    cd mlb_sgp
-    source venv/bin/activate
-    python3 scraper_fanduel_sgp.py
-    python3 scraper_fanduel_sgp.py --verbose
+Note on the legacy live-event filter
+------------------------------------
+The previous orchestrator filtered ``open_date > now_utc`` and deduped
+events by ``(home, away, hour)`` to suppress live (in-progress) games.
+The shim intentionally drops both: ``mlb_target_lines`` / ``mlb_parlay_lines``
+are written upstream and already contain only the games we want to price,
+so a second client-side filter would be redundant. Matches DK's shim
+shape and behavior.
 """
 
-import argparse
-import json
+import os
 import re
 import sys
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
 from pathlib import Path
 
-import duckdb
 from curl_cffi import requests as cffi_requests
 
 # Resolve repo root dynamically (works from worktrees too)
@@ -50,7 +41,7 @@ _ANSWER_KEYS = _REPO_ROOT / "Answer Keys"
 sys.path.insert(0, str(_ANSWER_KEYS))
 from canonical_match import load_team_dict, load_canonical_games, resolve_team_names
 
-from db import ensure_table, upsert_sgp_odds, clear_source, MLB_DB, _connect_with_retry
+from db import MLB_DB, _connect_with_retry
 from integer_line_derivation import is_integer_line, derive_fair_probs
 
 # ---------------------------------------------------------------------------
@@ -549,258 +540,65 @@ def try_integer_fallback_fd(
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Shim entry point
 # ---------------------------------------------------------------------------
-
-def scrape_fd_sgp(verbose: bool = False):
-    # Wipe all previous FD SGP prices so only this run's results exist.
-    clear_source("fanduel_direct")
-    clear_source("fanduel_interpolated")
-
-    print("Loading parlay lines from DuckDB...")
-    parlay_lines = load_parlay_lines()
-    if not parlay_lines:
-        return
-    print(f"  {len(parlay_lines)} games with lines")
-
-    print("Initializing FD session...")
-    from fd_client import FanDuelClient
-
-    client = FanDuelClient(verbose=verbose)
-    session = client.session
-
-    print("Fetching FanDuel MLB events...")
-    # Adapt FanDuelClient.list_events() back to the dict shape downstream
-    # code (filtering, dedup, match_events, fetch_event_runners) expects.
-    # `name` is reconstructed from home/away because match_events copies it
-    # into the matched dict as `fd_name`; the (P) pitcher annotations from
-    # the raw FD payload aren't read anywhere, so a plain "Away @ Home" is
-    # behavior-equivalent.
-    fd_events = [
-        {
-            "fd_event_id": e.event_id,
-            "name": f"{e.away_team} @ {e.home_team}",
-            "fd_home": e.home_team,
-            "fd_away": e.away_team,
-            "open_date": e.start_time,
-        }
-        for e in client.list_events()
-    ]
-    print(f"  {len(fd_events)} FD events")
-
-    # Filter out events that have already started — those return live (in-game)
-    # markets with running-score adjusted handicaps that don't match our
-    # pre-game lines. Compare openDate (ISO UTC) against now.
-    from datetime import datetime, timezone
-    now_utc = datetime.now(timezone.utc).isoformat()
-    fd_events = [e for e in fd_events if e["open_date"] > now_utc]
-
-    # Dedupe by matchup + start hour, prefer earliest per slot.
-    # This filters out live-game duplicates (same matchup, same hour) while
-    # preserving both games of a doubleheader (same teams, different hours).
-    seen = set()
-    deduped = []
-    for ev in sorted(fd_events, key=lambda e: e["open_date"]):
-        key = (ev["fd_home"], ev["fd_away"], ev["open_date"][:13])
-        if key not in seen:
-            seen.add(key)
-            deduped.append(ev)
-
-    print("Matching teams via canonical_match...")
-    matched = match_events(deduped, parlay_lines)
-
-    # Dedupe by canonical game_id
-    seen_gids = set()
-    deduped_matches = []
-    for m in matched:
-        if m["game_id"] in seen_gids:
-            continue
-        seen_gids.add(m["game_id"])
-        deduped_matches.append(m)
-    matched = deduped_matches
-
-    print(f"  {len(matched)} matched games")
-    if not matched:
-        return
-
-    # ── Phase 1: parallel fetch of runner IDs ──
-    print("Fetching event runners (parallel)...")
-    t0 = time.time()
-    game_runners = {}
-
-    def fetch_one(game):
-        return game["game_id"], fetch_event_runners(
-            session, game["fd_event_id"], game["fd_home"], game["fd_away"])
-
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {pool.submit(fetch_one, g): g for g in matched}
-        for f in as_completed(futures):
-            try:
-                gid, runners = f.result()
-                game_runners[gid] = runners
-            except Exception as e:
-                print(f"  Error: {e}")
-
-    print(f"  Fetched {len(game_runners)} games in {time.time() - t0:.1f}s")
-
-    # ── Phase 2: build combo items ──
-    combo_items = []
-    interpolated_results = []   # (game_id, period, combo_name, fair_prob)
-    for game in matched:
-        gid = game["game_id"]
-        if gid not in game_runners:
-            continue
-
-        sel_ids_per_period = game_runners[gid]
-
-        for period in ("fg", "f5"):
-            spread_line = game[f"{period}_spread_line"]
-            total_line = game[f"{period}_total_line"]
-            if spread_line is None or total_line is None:
-                continue
-
-            sel = sel_ids_per_period.get(period, {"spreads": {}, "totals": {}})
-            if not sel["spreads"]:
-                continue
-
-            # Use signed spread lines so that home +1.5 and home -1.5
-            # are distinct keys. When WZ and FD disagree on the favorite,
-            # the lookup returns None and the game is correctly skipped
-            # instead of silently pricing the wrong side of the market.
-            home_line = spread_line       # WZ home_spread, already signed
-            away_line = -spread_line      # away is the opposite sign
-
-            home_spread = sel["spreads"].get(("home", home_line))
-            away_spread = sel["spreads"].get(("away", away_line))
-            over = sel["totals"].get(("O", total_line))
-            under = sel["totals"].get(("U", total_line))
-
-            if not (home_spread and away_spread and over and under):
-                # Exact-line lookup miss. Try integer-line fallback.
-                fallback = try_integer_fallback_fd(
-                    session, sel, home_line, away_line, total_line, verbose=verbose,
-                )
-                if fallback is None:
-                    if verbose:
-                        missing = []
-                        if not home_spread: missing.append(f"home {home_line:+g}")
-                        if not away_spread: missing.append(f"away {away_line:+g}")
-                        if not over: missing.append(f"over {total_line}")
-                        if not under: missing.append(f"under {total_line}")
-                        print(f"  {game['away_team']} @ {game['home_team']} [{period.upper()}]: missing {missing}")
-                    continue
-                # Append 4 derived rows (bypass the main parallel pricing loop)
-                prefix = "" if period == "fg" else "F5 "
-                COMBO_DISPLAY = {
-                    "home_over":  "Home Spread + Over",
-                    "home_under": "Home Spread + Under",
-                    "away_over":  "Away Spread + Over",
-                    "away_under": "Away Spread + Under",
-                }
-                for k, name in COMBO_DISPLAY.items():
-                    interpolated_results.append((
-                        gid, period, prefix + name, fallback["fair_probs"][k]
-                    ))
-                continue   # don't enqueue this period in the main combo_items
-
-            prefix = "" if period == "fg" else "F5 "
-            for combo_name, sp_pair, tot_pair in [
-                ("Home Spread + Over",  home_spread, over),
-                ("Home Spread + Under", home_spread, under),
-                ("Away Spread + Over",  away_spread, over),
-                ("Away Spread + Under", away_spread, under),
-            ]:
-                combo_items.append((gid, period, prefix + combo_name, sp_pair, tot_pair))
-
-    print(f"Pricing {len(combo_items)} SGP combos (parallel)...")
-    t1 = time.time()
-
-    def price_one(item):
-        gid, period, name, sp, tot = item
-        result = price_combo(session, sp[0], sp[1], tot[0], tot[1], verbose=verbose)
-        return gid, period, name, result
-
-    pricing_results = []
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = [pool.submit(price_one, it) for it in combo_items]
-        for f in as_completed(futures):
-            try:
-                pricing_results.append(f.result())
-            except Exception as e:
-                if verbose:
-                    print(f"  pricing error: {e}")
-
-    print(f"  Priced {sum(1 for _,_,_,r in pricing_results if r)}/{len(pricing_results)} "
-          f"combos in {time.time() - t1:.1f}s")
-
-    # ── Phase 3: write to DuckDB ──
-    ensure_table()
-    rows = []
-    game_lookup = {g["game_id"]: g for g in matched}
-    by_game = {}
-    for gid, period, name, result in pricing_results:
-        if not result:
-            continue
-        by_game.setdefault(gid, []).append((period, name, result))
-
-    for gid, items in sorted(by_game.items()):
-        g = game_lookup[gid]
-        print(f"\n  {g['away_team']} @ {g['home_team']}")
-        for period, name, r in items:
-            print(f"    {name}: {r['decimal']:.4f} ({r['american']:+d})")
-            rows.append({
-                "game_id": gid,
-                "combo": name,
-                "period": "FG" if period == "fg" else "F5",
-                "bookmaker": "fanduel",
-                "sgp_decimal": round(r["decimal"], 4),
-                "sgp_american": r["american"],
-                "source": "fanduel_direct",
-            })
-
-    if rows:
-        upsert_sgp_odds(rows)
-        print(f"\n{'='*60}")
-        print(f"  Wrote {len(rows)} FD SGP odds in {time.time() - t0:.1f}s total")
-        print(f"{'='*60}")
-    else:
-        print("\nNo SGP odds collected.")
-
-    # Append rows for integer-line interpolation fallback
-    interp_rows = []
-    for gid, period, combo_name, fair_prob in interpolated_results:
-        decimal = 1.0 / fair_prob
-        american = decimal_to_american(decimal)
-        game = game_lookup.get(gid, {})
-        print(f"\n  {game.get('away_team', '?')} @ {game.get('home_team', '?')} [interpolated]")
-        print(f"    {combo_name}: {decimal:.4f} ({american:+d})")
-        interp_rows.append({
-            "game_id": gid,
-            "combo": combo_name,
-            "period": "FG" if period == "fg" else "F5",
-            "bookmaker": "fanduel",
-            "sgp_decimal": round(decimal, 4),
-            "sgp_american": american,
-            "source": "fanduel_interpolated",
-        })
-
-    if interp_rows:
-        upsert_sgp_odds(interp_rows)
-        print(f"  Wrote {len(interp_rows)} interpolated FD SGP odds")
-
-    return rows
+#
+# Everything below replaces the legacy scrape_fd_sgp() + main() pair. The shim
+# delegates orchestration to mlb_sgp.fanduel.price_sgps(), which composes the
+# helpers above. Helpers stay defined at module level because
+# mlb_sgp/fanduel.py and mlb_sgp/fd_client.py import them lazily.
 
 
 def main():
-    parser = argparse.ArgumentParser(description="FanDuel MLB SGP Scraper")
-    parser.add_argument("--verbose", action="store_true")
-    args = parser.parse_args()
+    """Entry point: load targets, price SGPs, write rows.
 
-    print("=" * 60)
-    print("  FANDUEL MLB SGP SCRAPER (Pure REST)")
-    print("=" * 60)
-    scrape_fd_sgp(verbose=args.verbose)
+    Path / import gymnastics: this script can be launched in three modes —
+    (1) `python mlb_sgp/scraper_fanduel_sgp.py` from the repo root
+        (test_sgp_regression's shim test path),
+    (2) `python scraper_fanduel_sgp.py` from inside mlb_sgp/
+        (legacy direct-invocation path, also how kalshi_mlb_rfq spawns it),
+    (3) `python -m mlb_sgp.scraper_fanduel_sgp` (package mode).
+
+    For (1) and (2) we need `mlb_sgp` importable as a top-level package so
+    `mlb_sgp.fanduel` resolves. Make that work by ensuring the repo root
+    is on sys.path before importing the orchestrator + db modules.
+
+    Live-event filtering: the legacy ``scrape_fd_sgp`` post-filtered FD
+    events by ``open_date > now_utc`` and deduped by ``(home, away, hour)``.
+    The shim deliberately drops both — ``mlb_target_lines`` /
+    ``mlb_parlay_lines`` is written upstream and only contains the games
+    we want to price, so the post-filter would be redundant.
+    """
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+
+    from mlb_sgp import db
+    from mlb_sgp._shared import load_target_lines
+
+    db_path = str(db.MLB_DB)
+    db.ensure_table(db_path)
+
+    targets = load_target_lines(db_path)
+    if not targets:
+        print(f"  No target lines in {db_path} — nothing to scrape.")
+        return 0
+
+    periods_raw = os.environ.get("MLB_SGP_PERIODS", "FG,F5").split(",")
+    periods = tuple(p.strip() for p in periods_raw if p.strip())
+
+    from mlb_sgp import fanduel
+    print(f"  FD shim: {len(targets)} target lines, periods={periods}")
+    rows = fanduel.price_sgps(targets, periods=periods, verbose=False)
+    print(f"  FD shim: priced {len(rows)} rows")
+
+    # Wipe both source labels so stale rows from a previous run never linger.
+    # The orchestrator tags _direct vs _interpolated rows; clearing both
+    # preserves the "fresh prices only" invariant per source.
+    db.clear_source("fanduel_direct", db_path=db_path)
+    db.clear_source("fanduel_interpolated", db_path=db_path)
+    db.upsert_priced_rows(rows, db_path=db_path)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

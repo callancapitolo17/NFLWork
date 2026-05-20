@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import duckdb
 import numpy as np
@@ -16,7 +17,7 @@ import pandas as pd
 
 from kalshi_mlb_rfq import (
     auth_client, combo_enumerator, config, db, ev_calc,
-    fair_value, kelly, notify, rfq_client, risk,
+    fair_value, kelly, notify, rfq_client, risk, sgp_runner,
 )
 from kalshi_mlb_rfq.config import (
     ANSWER_KEY_DB, KILL_FILE, MAX_BOOK_STALENESS_SEC,
@@ -76,7 +77,9 @@ def _refresh_caches(retries: int = 5) -> bool:
     Tries up to `retries` times with exponential backoff to handle the brief lock
     window when the R pipeline (or dashboard_server) is writing.
     """
-    global _SAMPLES_CACHE, _SGP_ODDS_CACHE, _PARLAY_LINES_CACHE
+    # _SGP_ODDS_CACHE is intentionally NOT in this global list — see
+    # _refresh_sgp_cache, which owns it. _refresh_caches must not touch it.
+    global _SAMPLES_CACHE, _PARLAY_LINES_CACHE
     global _SAMPLES_META_GENERATED_AT, _CACHE_LOADED_AT
 
     if not ANSWER_KEY_DB.exists():
@@ -105,28 +108,18 @@ def _refresh_caches(retries: int = 5) -> bool:
             samples_by_game = {gid: g.reset_index(drop=True)
                                 for gid, g in samples_df.groupby("game_id")}
 
-            # mlb_sgp_odds (last hour, FG period only). Real schema doesn't
-            # include spread_line/total_line — the lines are implicit per game
-            # via mlb_parlay_lines.fg_spread/fg_total.
-            sgp_df = con.execute(
-                "SELECT game_id, combo, period, bookmaker, sgp_decimal, fetch_time "
-                "FROM mlb_sgp_odds WHERE period='FG' "
-                "AND fetch_time > NOW() - INTERVAL (CAST(? AS BIGINT)) SECOND",
-                [config.MAX_BOOK_STALENESS_SEC]
-            ).fetchdf()
+            # mlb_sgp_odds is owned exclusively by _refresh_sgp_cache (reads
+            # the bot market DB on its own 60s cadence). Do NOT touch
+            # _SGP_ODDS_CACHE in this function — _refresh_caches runs on the
+            # 10-min PIPELINE_REFRESH_SEC tick and would wipe the fresh
+            # bot-DB rows _refresh_sgp_cache loaded seconds ago.
 
-            # mlb_parlay_lines — game metadata + the canonical spread/total this
-            # game's mlb_sgp_odds is priced at.
-            lines_rows = con.execute(
-                "SELECT game_id, home_team, away_team, commence_time, "
-                "fg_spread, fg_total FROM mlb_parlay_lines"
-            ).fetchall()
-            parlay_lines = {
-                r[0]: {"home_team": r[1], "away_team": r[2],
-                        "commence_time": r[3],
-                        "fg_spread": r[4], "fg_total": r[5]}
-                for r in lines_rows
-            }
+            # mlb_parlay_lines replaced by bot DB::mlb_target_lines cache.
+            # Schedule (team names + commence_time) now lives directly in
+            # mlb_target_lines rows, written by sgp_runner from the Odds API.
+            parlay_lines = _build_parlay_lines_cache(
+                bot_db=str(config.BOT_MARKET_DB),
+            )
 
             # samples meta — generated_at
             meta_row = con.execute(
@@ -135,9 +128,20 @@ def _refresh_caches(retries: int = 5) -> bool:
             ).fetchone()
             generated_at = meta_row[0] if meta_row else None
         except duckdb.CatalogException as e:
-            con.close()
-            print(f"  cache_refresh: schema mismatch — {e}", flush=True)
-            return False
+            # Schema mismatch / table missing — typically the R pipeline is
+            # mid-atomic-replace (DROP + CREATE). Retry with backoff parallel
+            # to the IOException handling above instead of waiting the full
+            # PIPELINE_REFRESH_SEC tick.
+            last_err = e
+            try:
+                con.close()
+            except Exception:
+                pass
+            wait = 1.0 * (2 ** attempt)
+            print(f"  cache_refresh: schema mismatch (attempt {attempt+1}/{retries}); "
+                  f"retrying in {wait:.1f}s — {e}", flush=True)
+            time.sleep(wait)
+            continue
         finally:
             try:
                 con.close()
@@ -145,16 +149,16 @@ def _refresh_caches(retries: int = 5) -> bool:
                 pass
 
         # Atomic swap into the caches under the lock.
+        # _SGP_ODDS_CACHE intentionally NOT touched here — owned by
+        # _refresh_sgp_cache.
         with _CACHE_LOCK:
             _SAMPLES_CACHE = samples_by_game
-            _SGP_ODDS_CACHE = sgp_df
             _PARLAY_LINES_CACHE = parlay_lines
             _SAMPLES_META_GENERATED_AT = generated_at
             _CACHE_LOADED_AT = datetime.now(timezone.utc)
 
         elapsed = time.time() - t0
         print(f"  cache_refresh: {len(samples_by_game)} games, "
-              f"{len(sgp_df)} sgp_odds rows, "
               f"{len(parlay_lines)} parlay_lines, "
               f"samples gen_at={generated_at} ({elapsed:.1f}s)", flush=True)
         return True
@@ -162,6 +166,86 @@ def _refresh_caches(retries: int = 5) -> bool:
     print(f"  cache_refresh: gave up after {retries} attempts; last error: {last_err}",
           flush=True)
     return False
+
+
+def _refresh_sgp_cache(retries: int = 3) -> bool:
+    """Narrow variant of _refresh_caches — reloads only mlb_sgp_odds from
+    the bot market DB. Atomic swap under _CACHE_LOCK.
+
+    Returns False on missing DB / table; True on success.
+    """
+    global _SGP_ODDS_CACHE
+    bot_db = str(config.BOT_MARKET_DB)
+    if not Path(bot_db).exists():
+        return False
+    last_err = None
+    for attempt in range(retries):
+        try:
+            con = duckdb.connect(bot_db, read_only=True)
+        except duckdb.IOException as e:
+            last_err = e
+            time.sleep(0.5 * (2 ** attempt))
+            continue
+        try:
+            tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
+            if "mlb_sgp_odds" not in tables:
+                return False
+            sgp_df = con.execute(
+                "SELECT game_id, combo, period, bookmaker, sgp_decimal, fetch_time, "
+                "spread_line, total_line "
+                "FROM mlb_sgp_odds WHERE period='FG' "
+                "AND fetch_time > NOW() - INTERVAL (CAST(? AS BIGINT)) SECOND",
+                [config.MAX_BOOK_STALENESS_SEC],
+            ).fetchdf()
+        finally:
+            con.close()
+
+        with _CACHE_LOCK:
+            _SGP_ODDS_CACHE = sgp_df
+        print(f"  sgp_cache_refresh: {len(sgp_df)} rows from bot_market_db", flush=True)
+        return True
+
+    print(f"  sgp_cache_refresh: gave up after {retries} attempts; {last_err}", flush=True)
+    return False
+
+
+def _build_parlay_lines_cache(bot_db: str) -> dict[str, dict]:
+    """Build the bot's parlay_lines cache from bot DB::mlb_target_lines only.
+
+    Returns {game_id: {home_team, away_team, commence_time, fg_lines: list[(spread, total)]}}.
+    Drops games with no target lines.
+
+    Schedule (game_id, team names, commence_time) is sourced from
+    mlb_target_lines rows directly — written by sgp_runner.write_target_lines
+    from Odds API data on each cycle. The old mlb.duckdb::mlb_odds_temp
+    read path was removed in Task 29 to decouple the bot from the R-locked
+    dashboard DB.
+    """
+    from pathlib import Path as _Path
+
+    out: dict[str, dict] = {}
+    if not _Path(bot_db).exists():
+        return out
+    con = duckdb.connect(bot_db, read_only=True)
+    try:
+        tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
+        if "mlb_target_lines" not in tables:
+            return out
+        rows = con.execute(
+            "SELECT game_id, home_team, away_team, commence_time, spread, total "
+            "FROM mlb_target_lines WHERE period = 'FG' "
+            "ORDER BY game_id, spread, total"
+        ).fetchall()
+    finally:
+        con.close()
+    for game_id, home, away, ct, spread, total in rows:
+        if game_id not in out:
+            out[game_id] = {
+                "home_team": home, "away_team": away,
+                "commence_time": ct, "fg_lines": [],
+            }
+        out[game_id]["fg_lines"].append((spread, total))
+    return out
 
 
 # ------------------------------------------------------------------------ #
@@ -307,33 +391,26 @@ def _load_samples_for_game(game_id: str) -> pd.DataFrame | None:
 
 
 def _load_book_fairs(game_id: str, spread_line: float, total_line: float) -> dict[str, float]:
-    """Devig per book from the in-memory mlb_sgp_odds slice for this game.
+    """Per-line book lookup with N>=2 gate.
 
-    mlb_sgp_odds doesn't store the spread/total lines — they're implicit per
-    game via mlb_parlay_lines.fg_spread / fg_total. Only return fairs if the
-    candidate's (spread, total) matches the line this game is priced at;
-    candidates at alt lines have no book fair and fail the 2-source gate.
+    Returns {book -> devigged_fair} only if at least MIN_BOOK_COUNT_FOR_BLEND
+    books priced the matching (game, spread, total) tuple. Empty dict
+    otherwise — caller treats as 'no book signal, drop candidate'.
     """
-    pl = _PARLAY_LINES_CACHE.get(game_id)
-    if not pl:
-        return {}
-    fg_spread = pl.get("fg_spread")
-    fg_total = pl.get("fg_total")
-    if fg_spread is None or fg_total is None:
-        return {}
-    # Candidate-line vs the priced line: must match exactly (same convention
-    # as DK/FD scrapers — exact match or skip).
-    if abs(spread_line - float(fg_spread)) > 1e-6:
-        return {}
-    if abs(total_line - float(fg_total)) > 1e-6:
-        return {}
-
     if _SGP_ODDS_CACHE is None or _SGP_ODDS_CACHE.empty:
         return {}
-    rows = _SGP_ODDS_CACHE[_SGP_ODDS_CACHE["game_id"] == game_id]
-    out: dict[str, float] = {}
+    if "spread_line" not in _SGP_ODDS_CACHE.columns or "total_line" not in _SGP_ODDS_CACHE.columns:
+        # Transition state — cache still has legacy schema. Drop candidates
+        # until Task 26 wires _refresh_sgp_cache (new-schema reader).
+        return {}
+    rows = _SGP_ODDS_CACHE[
+        (_SGP_ODDS_CACHE["game_id"] == game_id)
+        & (_SGP_ODDS_CACHE["spread_line"].astype(float).round(2) == round(float(spread_line), 2))
+        & (_SGP_ODDS_CACHE["total_line"].astype(float).round(2) == round(float(total_line), 2))
+    ]
     if rows.empty:
-        return out
+        return {}
+    out: dict[str, float] = {}
     for book in rows["bookmaker"].unique():
         sub = rows[rows["bookmaker"] == book].copy()
         fair_per_book = fair_value.devig_book(
@@ -342,6 +419,8 @@ def _load_book_fairs(game_id: str, spread_line: float, total_line: float) -> dic
         )
         if fair_per_book is not None:
             out[book] = fair_per_book
+    if len(out) < config.MIN_BOOK_COUNT_FOR_BLEND:
+        return {}
     return out
 
 
@@ -361,22 +440,6 @@ def _home_code_from_event_ticker(event_ticker: str) -> str | None:
     suffix = event_ticker.rsplit("-", 1)[-1]
     _, home = _parse_event_suffix(suffix)
     return home
-
-
-def _current_book_lines_for_combo(game_id: str) -> dict | None:
-    """Spread/total snapshot from cached mlb_parlay_lines for line-move detection.
-
-    mlb_sgp_odds doesn't store the line directly — mlb_parlay_lines is the
-    canonical source. Returns None if the game is not in the cache.
-    """
-    pl = _PARLAY_LINES_CACHE.get(game_id)
-    if not pl:
-        return None
-    fg_spread = pl.get("fg_spread")
-    fg_total = pl.get("fg_total")
-    if fg_spread is None or fg_total is None:
-        return None
-    return {"spread": float(fg_spread), "total": float(fg_total)}
 
 
 # ------------------------------------------------------------------------ #
@@ -476,18 +539,9 @@ def _all_per_accept_gates_pass(quote: dict, fair: float,
     if not risk.tipoff_ok(ct, config.TIPOFF_CANCEL_MIN):
         return False, "declined_tipoff"
 
-    # Line-move check (uses reference_lines snapshot from RFQ submission)
-    rfq_id = quote["rfq_id"]
-    with db.connect(read_only=True) as con:
-        ref_row = con.execute(
-            "SELECT lines_json FROM reference_lines WHERE rfq_id=?", [rfq_id]
-        ).fetchone()
-    if ref_row:
-        ref_lines = json.loads(ref_row[0])
-        current_lines = _current_book_lines_for_combo(combo_meta["game_id"])
-        if current_lines and not risk.line_move_ok(
-                ref_lines, current_lines, config.LINE_MOVE_THRESHOLD):
-            return False, "declined_line_move"
+    # Line-move gate removed (D7 of line-source pivot): each candidate's
+    # (spread, total) is baked into its Kalshi ticker — line can't move
+    # per-candidate. Drift handled by RFQ refresh re-scoring every 30s.
 
     # Positions API health
     if _POSITIONS_API_FAIL_COUNT >= config.POSITIONS_HEALTH_RETRIES:
@@ -824,14 +878,6 @@ def _refresh_rfqs(candidates: list[combo_enumerator.ComboCandidate],
                      blended_fair, kalshi_ref, edge, "open",
                      datetime.now(timezone.utc)],
                 )
-                # Snapshot reference lines for line-move detection.
-                lines_now = _current_book_lines_for_combo(c.game_id)
-                if lines_now:
-                    con.execute(
-                        "INSERT INTO reference_lines (rfq_id, lines_json, snapped_at) "
-                        "VALUES (?, ?, ?) ON CONFLICT (rfq_id) DO NOTHING",
-                        [rid, json.dumps(lines_now), datetime.now(timezone.utc)],
-                    )
         except Exception as e:
             print(f"  add {c.leg_set_hash[:8]} failed: {e}", flush=True)
 
@@ -1035,11 +1081,32 @@ def main_loop(dry_run: bool):
         print("  startup: cache_refresh failed; bot will retry on pipeline-refresh tick", flush=True)
     _phantom_rfq_cleanup()
 
+    # Synchronous SGP warm-up: run one full SGP cycle before entering the
+    # loop so _SGP_ODDS_CACHE is non-empty when the first RFQ refresh fires.
+    # Blocks ~60-90s; without this the first RFQ refresh would have zero
+    # book fairs and burn Kalshi quota on candidates that can't pass the
+    # N>=2 books gate.
+    print("  startup: warming SGP cache (one synchronous scrape tick)...", flush=True)
+    try:
+        rcs = sgp_runner.sgp_cycle(
+            bot_market_db=str(config.BOT_MARKET_DB),
+            scraper_dir=str(config.MLB_SGP_DIR),
+            venv_python=str(config.MLB_SGP_DIR / "venv" / "bin" / "python"),
+            timeout_sec=config.SGP_SCRAPER_TIMEOUT_SEC,
+        )
+        print(f"  startup: SGP warm-up done — return codes {rcs}", flush=True)
+    except Exception as e:
+        print(f"  startup: SGP warm-up failed ({e}); bot will retry on first cadence tick", flush=True)
+    _refresh_sgp_cache()
+    # Rebuild parlay_lines cache now that target_lines has rows
+    _refresh_caches()
+
     last_rfq_refresh = 0.0
     last_quote_poll = 0.0
     last_risk_sweep = 0.0
     last_pipeline = 0.0
     last_heartbeat = 0.0
+    last_sgp_cycle = time.time()  # warm-up just finished
 
     try:
         while _running.is_set():
@@ -1074,6 +1141,22 @@ def main_loop(dry_run: bool):
                 except Exception as e:
                     print(f"  risk_sweep error: {e}", flush=True)
                 last_risk_sweep = now
+
+            if now - last_sgp_cycle >= config.SGP_REFRESH_SEC:
+                t_sgp = time.time()
+                try:
+                    rcs = sgp_runner.sgp_cycle(
+                        bot_market_db=str(config.BOT_MARKET_DB),
+                        scraper_dir=str(config.MLB_SGP_DIR),
+                        venv_python=str(config.MLB_SGP_DIR / "venv" / "bin" / "python"),
+                        timeout_sec=config.SGP_SCRAPER_TIMEOUT_SEC,
+                    )
+                    _refresh_sgp_cache()
+                    _refresh_caches()  # parlay_lines_cache may have new (spread, total) tuples
+                    print(f"  sgp_cycle: rcs={rcs} ({time.time()-t_sgp:.1f}s)", flush=True)
+                except Exception as e:
+                    print(f"  sgp_cycle error: {e}", flush=True)
+                last_sgp_cycle = now
 
             if now - last_pipeline >= config.PIPELINE_REFRESH_SEC:
                 _run_pipeline()

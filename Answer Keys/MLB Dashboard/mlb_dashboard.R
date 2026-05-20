@@ -3008,105 +3008,105 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .price-grid .cell.empty .fair { color: #7d8590; }
 
         /* ====== KELLY CALCULATOR WIDGET ====== */
+        /* Tight inline strip sized to content. Uniform 15px SF Mono;     */
+        /* hierarchy from color + weight only. Same green-bar accent as   */
+        /* the V8 bet-card hero strips. JS keys off seven element IDs     */
+        /* (kc-odds, kc-fair, kc-risk, kc-towin, kc-edge, kc-kelly, kc-be)*/
+        /* and the .invalid / .risk.neg / .chip.pos / .chip.neg classes.  */
         .kelly-calc {
-          display: grid;
-          grid-template-columns: auto 1fr auto;
-          gap: 24px;
+          display: inline-flex;
           align-items: center;
-          padding: 14px 18px;
+          gap: 20px;
+          padding: 14px 22px 14px 20px;
           background: linear-gradient(135deg,
-            rgba(63, 185, 80, 0.06) 0%,
-            rgba(63, 185, 80, 0.02) 50%,
+            rgba(63, 185, 80, 0.10) 0%,
+            rgba(63, 185, 80, 0.03) 50%,
             #161b22 100%);
           border: 1px solid #2a3442;
-          border-left: 3px solid #3fb950;
+          border-left: 4px solid #3fb950;
           border-radius: 10px;
+          box-shadow: inset 1px 0 0 rgba(63, 185, 80, 0.18);
+          max-width: fit-content;
+          color: #7d8590;
+          font-family: "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+          font-size: 15px;
+          font-variant-numeric: tabular-nums;
+          line-height: 1.2;
           margin: 0 0 14px 0;
         }
-        .kelly-calc .kelly-label .h {
-          font-family: "SF Mono", monospace;
-          font-size: 11px;
-          letter-spacing: 0.14em;
+        .kelly-calc * {
+          font-family: inherit;
+          font-size: inherit;
+          font-variant-numeric: tabular-nums;
+          line-height: 1.2;
+        }
+        .kelly-calc .title {
           color: #e6edf3;
           font-weight: 600;
+          padding-right: 16px;
+          border-right: 1px solid #232b36;
         }
-        .kelly-calc .kelly-label .s {
-          color: #7d8590;
-          font-size: 11px;
-          margin-top: 2px;
+        .kelly-calc .pair {
+          display: flex; align-items: center; gap: 10px;
         }
-        .kelly-calc .kelly-fields {
-          display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+        .kelly-calc .pair label {
+          color: #7d8590; font-weight: 500;
         }
-        .kelly-calc .field {
-          display: flex; flex-direction: column; gap: 4px;
-        }
-        .kelly-calc .field label {
-          font-size: 10px; letter-spacing: 0.12em;
-          text-transform: uppercase; color: #7d8590;
-        }
-        .kelly-calc .kc-input {
+        .kelly-calc .pair input {
           background: #0d1117;
           border: 1px solid #2a3442;
           color: #e6edf3;
-          font-family: "SF Mono", monospace;
-          font-size: 16px;
-          font-variant-numeric: tabular-nums;
           font-weight: 500;
-          padding: 8px 12px;
-          border-radius: 7px;
-          width: 110px;
+          padding: 7px 13px;
+          border-radius: 6px;
+          width: 102px;
           text-align: center;
-          transition: all 0.15s ease;
+          transition: border-color 0.12s ease, box-shadow 0.12s ease;
         }
-        .kelly-calc .kc-input:focus {
+        .kelly-calc .pair input::placeholder { color: #484f58; }
+        .kelly-calc .pair input:focus {
           outline: none;
           border-color: #3fb950;
-          background: #1c222b;
-          box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.15);
+          box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.18);
         }
-        .kelly-calc .kc-input.invalid {
+        .kelly-calc .pair input.invalid {
           border-color: #f85149;
           box-shadow: 0 0 0 3px rgba(248, 81, 73, 0.12);
         }
-        .kelly-calc .arrow {
-          color: #7d8590;
-          font-family: "SF Mono", monospace;
-          font-size: 18px;
-          margin-top: 14px;
+        .kelly-calc .arrow { color: #3a4658; }
+        .kelly-calc .risk-grp {
+          display: flex; align-items: baseline; gap: 9px;
+          padding-left: 18px; border-left: 1px solid #232b36;
         }
-        .kelly-calc .kelly-out {
-          text-align: right;
-          display: flex; flex-direction: column; gap: 4px;
+        .kelly-calc .risk-grp .lbl   { color: #7d8590; font-weight: 500; }
+        .kelly-calc .risk-grp .risk  { color: #3fb950; font-weight: 700; }
+        .kelly-calc .risk-grp .risk.neg { color: #7d8590; }
+        .kelly-calc .risk-grp .towin { color: #7d8590; }
+        .kelly-calc .metrics {
+          display: flex; gap: 16px;
+          padding-left: 18px; border-left: 1px solid #232b36;
         }
-        .kelly-calc .risk-row {
-          display: flex; align-items: baseline; justify-content: flex-end; gap: 8px;
+        .kelly-calc .metrics .grp {
+          display: flex; align-items: baseline; gap: 7px;
         }
-        .kelly-calc .risk-label {
-          font-size: 10px; letter-spacing: 0.14em;
-          text-transform: uppercase; color: #7d8590;
+        .kelly-calc .metrics .k   { color: #7d8590; font-weight: 500; }
+        .kelly-calc .metrics .val { color: #c9d1d9; font-weight: 600; }
+        .kelly-calc .metrics .chip {
+          color: #5d6470;
+          font-weight: 600;
         }
-        .kelly-calc .risk-value {
-          font-family: "SF Mono", monospace;
-          font-size: 28px; font-weight: 600;
-          color: #3fb950; font-variant-numeric: tabular-nums;
+        .kelly-calc .metrics .chip.pos {
+          color: #3fb950;
+          background: rgba(63, 185, 80, 0.10);
+          padding: 2px 9px;
+          border-radius: 4px;
         }
-        .kelly-calc .risk-value.neg { color: #7d8590; }
-        .kelly-calc .towin {
-          font-family: "SF Mono", monospace;
-          font-size: 11px; color: #7d8590;
+        .kelly-calc .metrics .chip.neg {
+          color: #f85149;
+          background: rgba(248, 81, 73, 0.10);
+          padding: 2px 9px;
+          border-radius: 4px;
         }
-        .kelly-calc .detail {
-          font-family: "SF Mono", monospace;
-          font-size: 11px; color: #7d8590;
-          font-variant-numeric: tabular-nums;
-        }
-        .kelly-calc .detail .chip {
-          padding: 2px 7px; border-radius: 4px; margin-left: 6px;
-        }
-        .kelly-calc .detail .chip.pos { color: #3fb950; background: rgba(63, 185, 80, 0.10); }
-        .kelly-calc .detail .chip.neg { color: #f85149; background: rgba(248, 81, 73, 0.10); }
-        .kelly-calc .detail .sep { color: #3a4658; margin: 0 6px; }
 
       '))
     ),
@@ -3192,45 +3192,40 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           ),
 
           # Kelly Calculator widget — manual no-vig Kelly sizing tool.
-          # Reads dashboard's Bankroll + Kelly Fraction live; computes
-          # risk / to-win / edge / Kelly% / breakeven from two text
-          # inputs (Odds, Fair). Read-only — does not mutate any bet
-          # card. JS handler lives in the main <script> block below.
+          # Tight inline strip sized to content. Reads dashboard Bankroll
+          # + Kelly Fraction live; computes risk / to-win / edge / Kelly%
+          # / breakeven from two text inputs. Element IDs and class
+          # operations (.invalid / .neg / .pos) preserved so the
+          # setupKellyCalc() JS handler below runs unchanged.
           tags$div(class = "kelly-calc",
-            tags$div(class = "kelly-label",
-              tags$div(class = "h", "KELLY CALCULATOR"),
-              tags$div(class = "s", "manual sizing tool")
+            tags$span(class = "title", "Kelly Calculator"),
+            tags$div(class = "pair",
+              tags$label("Odds"),
+              tags$input(id = "kc-odds", type = "text", placeholder = "+120")
             ),
-            tags$div(class = "kelly-fields",
-              tags$div(class = "field",
-                tags$label("Offered Odds"),
-                tags$input(id = "kc-odds", type = "text",
-                           class = "kc-input", placeholder = "+120")
-              ),
-              tags$span(class = "arrow", intToUtf8(0xB7)),  # middle dot
-              tags$div(class = "field",
-                tags$label("Your Fair"),
-                tags$input(id = "kc-fair", type = "text",
-                           class = "kc-input", placeholder = "52.5% or -110")
-              )
+            tags$span(class = "arrow", HTML("&rarr;")),
+            tags$div(class = "pair",
+              tags$label("Fair"),
+              tags$input(id = "kc-fair", type = "text", placeholder = "52.5%")
             ),
-            tags$div(class = "kelly-out",
-              tags$div(class = "risk-row",
-                tags$span(class = "risk-label", "Risk"),
-                tags$span(class = "risk-value", id = "kc-risk", "$0")
+            tags$div(class = "risk-grp",
+              tags$span(class = "lbl", "Risk"),
+              tags$span(id = "kc-risk", class = "risk", "$0"),
+              tags$span(class = "towin", "/ to win "),
+              tags$span(id = "kc-towin", class = "towin", "$0")
+            ),
+            tags$div(class = "metrics",
+              tags$span(class = "grp",
+                tags$span(class = "k", "Edge"),
+                tags$span(id = "kc-edge", class = "chip", HTML("&mdash;"))
               ),
-              tags$div(class = "towin",
-                "to win ", tags$span(id = "kc-towin", "$0")
+              tags$span(class = "grp",
+                tags$span(class = "k", "Kelly"),
+                tags$span(id = "kc-kelly", class = "val", HTML("&mdash;"))
               ),
-              tags$div(class = "detail",
-                tags$span("edge"),
-                tags$span(id = "kc-edge", class = "chip", "-"),
-                tags$span(class = "sep", intToUtf8(0xB7)),
-                tags$span("Kelly"),
-                tags$span(id = "kc-kelly", "-"),
-                tags$span(class = "sep", intToUtf8(0xB7)),
-                tags$span("BE"),
-                tags$span(id = "kc-be", "-")
+              tags$span(class = "grp",
+                tags$span(class = "k", "BE"),
+                tags$span(id = "kc-be", class = "val", HTML("&mdash;"))
               )
             )
           ),
