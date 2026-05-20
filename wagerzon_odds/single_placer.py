@@ -71,15 +71,14 @@ except ImportError:
 
 import wagerzon_auth
 from wagerzon_accounts import WagerzonAccount, get_account
+# Single source of truth for the drift tolerance — same value parlay placement
+# uses ($0.01). Importing instead of re-declaring keeps the two placers in
+# lockstep if we ever revisit it.
+from parlay_placer import DRIFT_TOLERANCE_USD
 
 WAGERZON_BASE_URL = "https://backend.wagerzon.com"
 CONFIRM_URL = f"{WAGERZON_BASE_URL}/wager/ConfirmWagerHelper.aspx"
 MAKE_URL    = f"{WAGERZON_BASE_URL}/wager/PostWagerMultipleHelper.aspx"
-
-# Tolerance for American-odds drift check. If WZ's preflight returns an Odds
-# value that differs from what the dashboard showed the user by more than this,
-# we abort and return price_moved.
-DRIFT_TOLERANCE_AMERICAN_ODDS = 1
 
 
 # ---------------------------------------------------------------------------
@@ -148,14 +147,27 @@ def _rejected(msg: str, key: str = "") -> dict:
     }
 
 
-def _price_moved(expected: int, actual: int) -> dict:
+def _price_moved_by_win(expected: float, actual: float) -> dict:
+    """Drift detected via Win-on-Win comparison. Message names both dollar
+    values so a real drift is debuggable from the error toast alone."""
     return {
         "status": "price_moved",
         "ticket_number": None,
         "balance_after": None,
-        "error_msg": f"Odds drifted from {expected} to {actual}",
+        "error_msg": f"Expected ${expected:.2f}, Wagerzon offered ${actual:.2f}",
         "error_msg_key": "drift",
     }
+
+
+def _compute_expected_win(odds: int, risk: float) -> float:
+    """American-odds → expected Win at the given stake. Used as fallback
+    when the dashboard didn't supply a verified-from-WZ `expected_win`
+    (e.g. user clicked Place without ever editing the Risk field).
+
+    Mirrors the math in mlb_dashboard_server.py::_resolve_amount_and_win's
+    fallback branch so the placer and dashboard agree by construction."""
+    decimal = (odds / 100 + 1) if odds > 0 else (100 / -odds + 1)
+    return round(risk * (decimal - 1), 2)
 
 
 # ---------------------------------------------------------------------------
@@ -263,17 +275,33 @@ def place_single(account: str, bet: dict, session=None) -> dict:
             key="empty_details",
         )
 
+    # Price-match check: Win-on-Win, identical protocol to parlay_placer.
+    # WZ reliably returns `Win` in details[0]; `Odds` is per-market-conditional
+    # (omitted for some single shapes like alt-spreads and F-period totals).
+    # When the dashboard verified the bet via /api/wz-quote-single, it round-
+    # trips the verified Win as `expected_win` so the comparison is WZ-said-X
+    # against WZ-says-X. If absent, we fall back to math from the user's
+    # stake + dashboard-quoted American odds.
     first_detail = details[0]
-    wz_odds_now = first_detail.get("Odds")
-    if wz_odds_now is None:
+    wz_win = first_detail.get("Win")
+    if wz_win is None:
         return _rejected(
-            msg="Wagerzon preflight details missing Odds field",
-            key="missing_odds",
+            msg="Wagerzon preflight details missing Win field",
+            key="missing_win",
         )
 
-    expected_odds = int(bet["wz_odds_at_place"])
-    if abs(int(wz_odds_now) - expected_odds) > DRIFT_TOLERANCE_AMERICAN_ODDS:
-        return _price_moved(expected_odds, int(wz_odds_now))
+    expected_win = bet.get("expected_win")
+    if expected_win is None:
+        expected_win = _compute_expected_win(
+            odds=int(bet["wz_odds_at_place"]),
+            risk=float(bet["actual_size"]),
+        )
+
+    if abs(float(wz_win) - float(expected_win)) > DRIFT_TOLERANCE_USD:
+        return _price_moved_by_win(
+            expected=float(expected_win),
+            actual=float(wz_win),
+        )
 
     # -----------------------------------------------------------------------
     # Step 2: PostWagerMultipleHelper (real submission; same endpoint parlays
