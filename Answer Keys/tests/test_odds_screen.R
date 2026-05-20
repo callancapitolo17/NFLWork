@@ -535,6 +535,7 @@ test_that("alt-spread bet finds DK quote labeled 'spreads' (matcher-side union)"
   expect_equal(nrow(out), 2)
   expect_true(all(out$is_exact_line))
   expect_equal(out$american_odds[out$side == "pick"], 205L)
+  expect_equal(out$american_odds[out$side == "opposite"], -280L)
 })
 
 test_that("main spread bet still finds 'spreads' candidates (union does not break the common case)", {
