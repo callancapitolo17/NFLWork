@@ -549,13 +549,24 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
         class = "cell-books",
         cell = function(value, index) {
           row <- table_data[index, ]
+          # Agree k/n is computed over the 5 independent voices (DK / FD / PX /
+          # NV / model). Cons is excluded because it's a blended derivative of
+          # model+books. NA voices reduce the denominator rather than counting
+          # as "disagree" — see books_strip.R::compute_k_within.
+          agree <- compute_k_within(c(
+            row$dk_fair_prob, row$fd_fair_prob,
+            row$px_fair_prob, row$nv_fair_prob,
+            row$model_prob_raw
+          ))
           render_books_strip(
             model = row$model_prob_raw,
             dk    = row$dk_fair_prob,
             fd    = row$fd_fair_prob,
             px    = row$px_fair_prob,
             nv    = row$nv_fair_prob,
-            cons  = row$blended_prob_raw
+            cons  = row$blended_prob_raw,
+            k_agree = agree$k,
+            n_agree = agree$n
           )
         }
       ),
