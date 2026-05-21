@@ -818,17 +818,17 @@ def _evaluate_quote(quote: dict, dry_run: bool,
             return
 
         # Post-accept fill reconciliation via /portfolio/positions. If that
-        # fails, fall back to the quote's offered yes_contracts_fp (since the
-        # RFQ was created with rest_remainder=False — fill-or-kill — so the
-        # accepted size equals the LP's offered size). contracts_fp is the
-        # documented-required total field; yes_contracts_fp is per-side when
-        # the LP made a two-sided quote.
+        # fails, fall back to the quote's offered size on the side we accepted.
+        # We send accepted_side="no" (per the inversion explained above), so
+        # the LP's NO-side offer is what we filled against — no_contracts_fp.
+        # contracts_fp is the documented-required total field as a final
+        # fallback when neither side is populated.
         try:
             actual = rfq_client.get_position_contracts(combo_market_ticker)
             _record_positions_api_result(True)
         except Exception:
             _record_positions_api_result(False)
-            fallback_fp = quote.get("yes_contracts_fp") or quote.get("contracts_fp")
+            fallback_fp = quote.get("no_contracts_fp") or quote.get("contracts_fp")
             actual = int(float(fallback_fp)) if fallback_fp else 0
 
         yes_ask = 1.0 - no_bid

@@ -112,6 +112,8 @@ The `accepted_side` field names the side of the LP's two-sided quote we're accep
 
 The bot's EV gate is `ev_calc.post_fee_ev_buy_yes(fair, no_bid)` — it's evaluating whether to BUY YES at `1 − no_bid`. To actually open that position, the bot must send `accepted_side="no"`. The first ever fill landed at `no_price=$0.969` (1 NO contract) when the bot sent `"yes"`, costing a small −EV position before the bot was stopped. Single-contract scope thanks to the $1 RFQ default.
 
+**Scope note — the bot only ever buys YES.** The whole code path computes BUY YES EV (`post_fee_ev_buy_yes`) and always sends `accepted_side="no"` to open LONG YES. There is no BUY NO code path. The combo enumerator generates all 4 (spread side × total side) combinations as separate tickers, but on each ticker the bot only considers BUY YES — it does *not* check whether BUY NO of that same ticker might have more edge. For long-shot combos (model probability <15%), this is a real EV blind spot worth revisiting.
+
 Partial accepts exist at the protocol level via the FIX interface (`OrderQty` on `35=UA`), but the REST endpoint doesn't expose it. If partial accepts become necessary, a FIX-protocol migration would be required.
 
 ## Walk diagnostics
