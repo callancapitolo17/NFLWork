@@ -7,7 +7,7 @@
 # All inputs are probabilities on [0, 1] or NA. Output is a character string.
 
 render_books_strip <- function(model, dk, fd, px, nv, cons,
-                                k_agree = NULL, n_agree = NULL) {
+                               k_agree = NULL, n_agree = NULL) {
   fmt_pill <- function(label, prob, css_class) {
     if (is.na(prob)) {
       sprintf('<span class="pill %s dim">%s &mdash;</span>', css_class, label)
