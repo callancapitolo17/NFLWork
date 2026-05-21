@@ -90,3 +90,40 @@ test_that("compute_k_within: custom band widens the consensus window", {
   expect_equal(out$k, 4L)
   expect_equal(out$n, 5L)
 })
+
+# ---------------------------------------------------------------------------
+# render_books_strip(): optional Agree k/n suffix pill.
+# ---------------------------------------------------------------------------
+
+test_that("render_books_strip omits Agree pill when k_agree is not provided", {
+  out <- render_books_strip(0.40, 0.41, 0.42, 0.40, 0.55, 0.41)
+  expect_false(grepl("Agree", out, fixed = TRUE))
+})
+
+test_that("render_books_strip renders Agree pill when k/n provided", {
+  out <- render_books_strip(0.40, 0.41, 0.42, 0.40, 0.55, 0.41,
+                            k_agree = 4L, n_agree = 5L)
+  expect_match(out, '<span class="pill agree">Agree 4/5</span>', fixed = TRUE)
+})
+
+test_that("render_books_strip omits Agree pill when n_agree < 2", {
+  out <- render_books_strip(0.40, NA_real_, NA_real_, NA_real_, NA_real_, 0.40,
+                            k_agree = NA_integer_, n_agree = 1L)
+  expect_false(grepl("Agree", out, fixed = TRUE))
+})
+
+test_that("render_books_strip renders partial-denominator Agree pill (k/n=3/4)", {
+  # Four books quoted, one missing — denominator drops to 4.
+  out <- render_books_strip(0.40, 0.41, 0.42, NA_real_, 0.55, 0.41,
+                            k_agree = 3L, n_agree = 4L)
+  expect_match(out, '<span class="pill agree">Agree 3/4</span>', fixed = TRUE)
+})
+
+test_that("render_books_strip Agree pill appears AFTER the Cons pill", {
+  out <- render_books_strip(0.40, 0.41, 0.42, 0.40, 0.55, 0.41,
+                            k_agree = 4L, n_agree = 5L)
+  cons_pos <- regexpr('Cons 41.0', out, fixed = TRUE)
+  agree_pos <- regexpr('Agree 4/5', out, fixed = TRUE)
+  expect_true(cons_pos > 0 && agree_pos > 0)
+  expect_true(agree_pos > cons_pos)
+})
