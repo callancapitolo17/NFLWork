@@ -2474,6 +2474,12 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .pill.dim {
           opacity: 0.4;
         }
+        .pill.agree {
+          background: #1f6feb22;
+          color: #8ab4f8;
+          font-weight: 700;
+          margin-left: 2px;
+        }
         .pill.error {
           background: #3d1c1c;
           color: #f85149;
