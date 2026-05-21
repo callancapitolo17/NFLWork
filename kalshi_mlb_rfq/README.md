@@ -93,6 +93,51 @@ Acceptance is serialized via `ACCEPT_LOCK` so concurrent quotes Kelly-size again
 - **Bot halted on `fill_ratio_collapse`:** investigate — makers are walking on accepts at a rate that suggests adverse selection. Check `quote_log` for the maker `creator_id`s causing it.
 - **`mint_combo_ticker` failing with 400:** the MVE collection ticker may have changed or one of the leg market_tickers doesn't exist. Re-run `mlb_sgp/recon_kalshi_mlb_rfq.py` for a fresh probe.
 
+## Walk diagnostics
+
+Every row in `quote_log` carries walk-diagnostic context so we can tell apart **"we were too slow"** vs **"we were too cheap"** when a quote we tried to accept walked.
+
+**Columns** (in addition to the core decision fields):
+
+| Column | Meaning |
+|---|---|
+| `competitor_count` | Number of OTHER open quotes on the same RFQ at poll time |
+| `best_competitor_no_bid_dollars` | Max `no_bid_dollars` among competitors — the better quote we could have tried instead |
+| `accept_response_body` | Kalshi's error body on walk (e.g. `quote_expired`, `rfq_closed`) — null on success |
+| `rfq_terminal_status` | Status of the RFQ after walk, from a follow-up `get_rfq` call |
+| `quote_first_seen_at` | When our `poll_quotes` returned this quote |
+| `accept_attempted_at` | Right before we sent the PUT /accept |
+| `accept_response_at` | Right after Kalshi responded to our /accept |
+
+**Latency derivation:** `accept_response_at - quote_first_seen_at` = end-to-end round-trip. `accept_response_at - accept_attempted_at` = pure Kalshi PUT latency. The gap between them is internal bot processing.
+
+**Useful queries:**
+
+```sql
+-- How many walks were races vs price issues, last 24h?
+SELECT
+  CASE WHEN best_competitor_no_bid_dollars > no_bid_dollars THEN 'better_quote_existed'
+       WHEN competitor_count = 0 THEN 'sole_quote_walked'
+       ELSE 'we_were_best' END AS bucket,
+  COUNT(*) AS n,
+  AVG((accept_response_at - quote_first_seen_at) * 1000) AS avg_ms
+FROM quote_log
+WHERE decision = 'failed_quote_walked' AND observed_at > now() - INTERVAL 24 HOUR
+GROUP BY bucket;
+
+-- Latency distribution on walks vs accepts
+SELECT decision,
+       percentile_cont(0.5) WITHIN GROUP (ORDER BY epoch(accept_response_at - quote_first_seen_at) * 1000) AS p50_ms,
+       percentile_cont(0.95) WITHIN GROUP (ORDER BY epoch(accept_response_at - quote_first_seen_at) * 1000) AS p95_ms
+FROM quote_log
+WHERE accept_response_at IS NOT NULL
+GROUP BY decision;
+
+-- Walks by Kalshi error reason
+SELECT accept_response_body, COUNT(*) FROM quote_log
+WHERE decision = 'failed_quote_walked' GROUP BY 1 ORDER BY 2 DESC;
+```
+
 ## SGP cadence loop (line-source pivot, 2026-05-13)
 
 The bot drives its own SGP scrape cadence independent of the MLB dashboard.

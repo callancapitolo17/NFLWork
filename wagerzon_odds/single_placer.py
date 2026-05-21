@@ -52,6 +52,7 @@ Password / confirmPassword:
   because mock sessions do not validate credentials.
 """
 from __future__ import annotations
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 import json as _json
@@ -71,15 +72,14 @@ except ImportError:
 
 import wagerzon_auth
 from wagerzon_accounts import WagerzonAccount, get_account
+# Single source of truth for the drift tolerance — same value parlay placement
+# uses ($0.01). Importing instead of re-declaring keeps the two placers in
+# lockstep if we ever revisit it.
+from parlay_placer import DRIFT_TOLERANCE_USD
 
 WAGERZON_BASE_URL = "https://backend.wagerzon.com"
 CONFIRM_URL = f"{WAGERZON_BASE_URL}/wager/ConfirmWagerHelper.aspx"
 MAKE_URL    = f"{WAGERZON_BASE_URL}/wager/PostWagerMultipleHelper.aspx"
-
-# Tolerance for American-odds drift check. If WZ's preflight returns an Odds
-# value that differs from what the dashboard showed the user by more than this,
-# we abort and return price_moved.
-DRIFT_TOLERANCE_AMERICAN_ODDS = 1
 
 
 # ---------------------------------------------------------------------------
@@ -148,14 +148,102 @@ def _rejected(msg: str, key: str = "") -> dict:
     }
 
 
-def _price_moved(expected: int, actual: int) -> dict:
+def _price_moved_by_win(expected: float, actual: float) -> dict:
+    """Drift detected via Win-on-Win comparison. Message names both dollar
+    values so a real drift is debuggable from the error toast alone."""
     return {
         "status": "price_moved",
         "ticket_number": None,
         "balance_after": None,
-        "error_msg": f"Odds drifted from {expected} to {actual}",
+        "error_msg": f"Expected ${expected:.2f}, Wagerzon offered ${actual:.2f}",
         "error_msg_key": "drift",
     }
+
+
+def _compute_expected_win(odds: int, risk: float) -> float:
+    """American-odds → expected Win at the given stake. Used as fallback
+    when the dashboard didn't supply a verified-from-WZ `expected_win`
+    (e.g. user clicked Place without ever editing the Risk field).
+
+    Mirrors the math in mlb_dashboard_server.py::_resolve_amount_and_win's
+    fallback branch so the placer and dashboard agree by construction."""
+    decimal = (odds / 100 + 1) if odds > 0 else (100 / -odds + 1)
+    return round(risk * (decimal - 1), 2)
+
+
+def _first_present(*candidates):
+    """Return the first candidate that isn't None/""/0/0.0. Mirrors the
+    helper in parlay_placer._post_wagers so single + parlay handle WZ's
+    variable response shapes identically."""
+    for c in candidates:
+        if c not in (None, "", 0, 0.0):
+            return c
+    return None
+
+
+# Where placement-response forensics get written. Gitignored so we can
+# capture full WZ responses for orphan / rejection paths without leaking
+# them to source control. .gitignore pattern: .placement_debug_*.json
+_DEBUG_DIR = Path(__file__).resolve().parent
+_DEBUG_SENSITIVE_KEYS = {"confirmPassword", "password", "Password"}
+
+
+def _sanitize_for_log(obj):
+    """Recursively redact known-sensitive keys before writing to disk.
+    Defensive — WZ's balance endpoint is known to echo plaintext passwords,
+    so we never trust an arbitrary WZ response with raw on-disk persistence."""
+    if isinstance(obj, dict):
+        return {
+            k: ("<redacted>" if k in _DEBUG_SENSITIVE_KEYS else _sanitize_for_log(v))
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_sanitize_for_log(x) for x in obj]
+    return obj
+
+
+def _log_placement_response(
+    bet: dict,
+    make_payload: dict,
+    make_json: dict,
+    classification: str,
+    reason: str,
+) -> None:
+    """Dump WZ's placement response body (plus our request payload) to a
+    gitignored file. Best-effort: never raises, never blocks placement.
+
+    Only called when placement did NOT end in 'placed' — i.e. orphan or
+    rejection — so the file is the forensic trail for any surprise. Once
+    we've stabilised the response-shape understanding, this can be made
+    opt-in via an env flag.
+    """
+    try:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        bet_hash = (bet.get("bet_hash") or "no-hash")
+        # Strip path separators defensively; cap length to keep filenames sane.
+        safe_hash = "".join(c for c in bet_hash if c.isalnum() or c in "-_")[:40]
+        path = _DEBUG_DIR / f".placement_debug_{ts}_{safe_hash}.json"
+        payload = {
+            "classification": classification,
+            "reason":         reason,
+            "bet_summary": {
+                "bet_hash":      bet.get("bet_hash"),
+                "idgm":          bet.get("idgm"),
+                "play":          bet.get("play"),
+                "line":          bet.get("line"),
+                "american_odds": bet.get("american_odds"),
+                "actual_size":   bet.get("actual_size"),
+                "expected_win":  bet.get("expected_win"),
+                "market":        bet.get("market"),
+                "bet_on":        bet.get("bet_on"),
+            },
+            "request_payload":  _sanitize_for_log(make_payload),
+            "response_body":    _sanitize_for_log(make_json),
+        }
+        path.write_text(_json.dumps(payload, indent=2, default=str))
+    except Exception:
+        # NEVER raise from logging — placement flow must not break on disk I/O.
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -263,17 +351,33 @@ def place_single(account: str, bet: dict, session=None) -> dict:
             key="empty_details",
         )
 
+    # Price-match check: Win-on-Win, identical protocol to parlay_placer.
+    # WZ reliably returns `Win` in details[0]; `Odds` is per-market-conditional
+    # (omitted for some single shapes like alt-spreads and F-period totals).
+    # When the dashboard verified the bet via /api/wz-quote-single, it round-
+    # trips the verified Win as `expected_win` so the comparison is WZ-said-X
+    # against WZ-says-X. If absent, we fall back to math from the user's
+    # stake + dashboard-quoted American odds.
     first_detail = details[0]
-    wz_odds_now = first_detail.get("Odds")
-    if wz_odds_now is None:
+    wz_win = first_detail.get("Win")
+    if wz_win is None:
         return _rejected(
-            msg="Wagerzon preflight details missing Odds field",
-            key="missing_odds",
+            msg="Wagerzon preflight details missing Win field",
+            key="missing_win",
         )
 
-    expected_odds = int(bet["wz_odds_at_place"])
-    if abs(int(wz_odds_now) - expected_odds) > DRIFT_TOLERANCE_AMERICAN_ODDS:
-        return _price_moved(expected_odds, int(wz_odds_now))
+    expected_win = bet.get("expected_win")
+    if expected_win is None:
+        expected_win = _compute_expected_win(
+            odds=int(bet["wz_odds_at_place"]),
+            risk=float(bet["actual_size"]),
+        )
+
+    if abs(float(wz_win) - float(expected_win)) > DRIFT_TOLERANCE_USD:
+        return _price_moved_by_win(
+            expected=float(expected_win),
+            actual=float(wz_win),
+        )
 
     # -----------------------------------------------------------------------
     # Step 2: PostWagerMultipleHelper (real submission; same endpoint parlays
@@ -304,30 +408,86 @@ def place_single(account: str, bet: dict, session=None) -> dict:
         return _auth_error("Wagerzon returned HTML at submission (session expired)")
 
     make_json = make_resp.json()
-    make_result = make_json.get("result") or {}
 
-    # Post-submission rejection (e.g. INSUFFICIENT_BALANCE at placement time).
-    # Defensive: check both WZ error key conventions (same as preflight above).
-    make_err_key = make_result.get("ErrorMsgKey") or make_result.get("ErrorCode")
-    if make_err_key:
-        make_err_msg = make_result.get("ErrorMsg") or make_result.get("ErrorMessage") or make_err_key
-        return _rejected(make_err_msg, make_err_key)
+    # Navigate WZ's PostWagerMultipleHelper response defensively, the same
+    # way parlay_placer._post_wagers does. The shape we've observed for
+    # parlays is:
+    #     {"result": [ {"WagerPostResult": {Confirm, ErrorMsgKey,
+    #                                        TicketNumber, IDWT, Win, Risk,
+    #                                        details: [{...}]}} ]}
+    # but for singles (WT=0) we don't have an end-to-end verified sample,
+    # and the original prototype assumed a flat dict with `WagerNumber`.
+    # Handle all of:
+    #   - result as list (parlay-style)        → take result[0]
+    #   - result as dict (legacy single)       → use directly
+    #   - WagerPostResult wrapper present      → unwrap it
+    #   - fields at wpr top-level OR inside    → check both via _first_present
+    #     details[0]
+    #   - legacy "WagerNumber" key alongside   → accept either as ticket
+    #     the parlay-style "TicketNumber"
+    raw_result = make_json.get("result")
+    if isinstance(raw_result, list):
+        item = raw_result[0] if raw_result else {}
+    elif isinstance(raw_result, dict):
+        item = raw_result
+    else:
+        item = {}
 
-    ticket = make_result.get("WagerNumber")
-    if not ticket:
-        # WZ confirmed but returned no ticket; treat as orphan candidate.
+    wpr = item.get("WagerPostResult") if isinstance(item, dict) else None
+    if not isinstance(wpr, dict):
+        wpr = item if isinstance(item, dict) else {}
+
+    inner_list = wpr.get("details") if isinstance(wpr, dict) else None
+    inner = inner_list[0] if isinstance(inner_list, list) and inner_list and isinstance(inner_list[0], dict) else {}
+
+    # Explicit rejection takes priority — surface WZ's real reason
+    # (LINE_PULLED, MINWAGERONLINE, INSUFFICIENT_BALANCE, etc.) so the
+    # user sees what's blocking the placement instead of a generic orphan.
+    err_key = _first_present(
+        wpr.get("ErrorMsgKey"),   wpr.get("ErrorCode"),
+        inner.get("ErrorMsgKey"), inner.get("ErrorCode"),
+    )
+    if err_key:
+        err_msg = _first_present(
+            wpr.get("ErrorMsg"),   wpr.get("ErrorMessage"),
+            inner.get("ErrorMsg"), inner.get("ErrorMessage"),
+        ) or err_key
+        _log_placement_response(bet, make_payload, make_json,
+                                classification="rejected",
+                                reason=str(err_key))
+        return _rejected(str(err_msg), str(err_key))
+
+    # Ticket lookup at every plausible location. Includes the legacy
+    # `WagerNumber` key as a fallback so a partially-correct WZ response
+    # variant still recovers the ticket.
+    ticket = _first_present(
+        wpr.get("TicketNumber"),   inner.get("TicketNumber"),
+        wpr.get("WagerNumber"),    inner.get("WagerNumber"),
+    )
+    balance_after = _first_present(
+        wpr.get("AvailBalance"),   inner.get("AvailBalance"),
+    )
+
+    if ticket is None:
+        # No error key, no ticket — WZ returned SOMETHING but neither a
+        # success-confirmation nor a rejection reason we know how to read.
+        # Could be a third response shape variant we haven't sampled yet.
+        # Log the body so we can finally see what came back.
+        _log_placement_response(bet, make_payload, make_json,
+                                classification="orphaned",
+                                reason="no_ticket_no_error_key")
         return {
             "status": "orphaned",
             "ticket_number": None,
-            "balance_after": None,
-            "error_msg": "Submitted to WZ but no WagerNumber returned",
+            "balance_after": balance_after,
+            "error_msg": "Submitted to WZ but response had no ticket or error key",
             "error_msg_key": "no_ticket",
         }
 
     return {
         "status": "placed",
         "ticket_number": str(ticket),
-        "balance_after": make_result.get("AvailBalance"),
+        "balance_after": balance_after,
         "error_msg": None,
         "error_msg_key": None,
     }

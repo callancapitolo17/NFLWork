@@ -51,7 +51,11 @@ load_placed_bets <- function(db_path) {
   con <- dbConnect(duckdb(), db_path, read_only = TRUE)
   on.exit(dbDisconnect(con, shutdown = TRUE))
   tryCatch({
-    dbGetQuery(con, "SELECT * FROM placed_bets WHERE status = 'pending' AND (game_time IS NULL OR game_time > NOW())")
+    # Fetch all statuses so the dashboard can render placement state:
+    # "pending"/"placing"   = in-flight (manual or auto path)
+    # "placed"              = finalized (show ticket pill)
+    # "price_moved"/"rejected"/"auth_error"/"network_error"/"orphaned" = show error pill
+    dbGetQuery(con, "SELECT * FROM placed_bets WHERE game_time IS NULL OR game_time > NOW()")
   }, error = function(e) {
     tibble(bet_hash = character())
   })
@@ -1468,6 +1472,12 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
   placed_ticket_lookup <- if (nrow(placed_bets) > 0 && "ticket_number" %in% names(placed_bets)) {
     setNames(placed_bets$ticket_number, placed_bets$bet_hash)
   } else setNames(character(), character())
+  placed_error_lookup <- if (nrow(placed_bets) > 0 && "error_msg" %in% names(placed_bets)) {
+    setNames(placed_bets$error_msg, placed_bets$bet_hash)
+  } else setNames(character(), character())
+  placed_error_key_lookup <- if (nrow(placed_bets) > 0 && "error_msg_key" %in% names(placed_bets)) {
+    setNames(placed_bets$error_msg_key, placed_bets$bet_hash)
+  } else setNames(character(), character())
   placed_actual_lookup <- setNames(
     if (nrow(placed_bets) > 0 && "actual_size" %in% names(placed_bets)) placed_bets$actual_size else numeric(),
     if (nrow(placed_bets) > 0) placed_bets$bet_hash else character()
@@ -1611,12 +1621,16 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
       sprintf('<span class="placed-bet-label" %s>%s</span>', data_attrs, label)
     } else if (!is.na(status) && status %in%
                c("price_moved","rejected","auth_error","network_error","orphaned")) {
-      short <- switch(status, price_moved="drift", rejected="rejected",
-                              auth_error="auth err", network_error="net err",
-                              orphaned="orphan", status)
+      err_msg <- placed_error_lookup[row$bet_hash]
+      err_key <- placed_error_key_lookup[row$bet_hash]
+      if (is.na(err_key)) err_key <- ""
+      short <- short_label_for_status(status, err_key)
+      full_msg <- if (!is.na(err_msg) && nchar(err_msg) > 0) err_msg else status
       sprintf(
-        '<span class="pill error" %s>%s</span><button class="btn-place" onclick="placeBet(this)" %s>Retry</button><button class="btn-log" onclick="logBet(this)" %s>Log</button>',
-        data_attrs, short, data_attrs, data_attrs)
+        '<span class="pill error" title="%s" %s>%s</span><button class="btn-place" onclick="placeBet(this)" %s>Retry</button><button class="btn-log" onclick="logBet(this)" %s>Log</button>',
+        htmltools::htmlEscape(full_msg), data_attrs,
+        htmltools::htmlEscape(short),
+        data_attrs, data_attrs)
     } else {
       supported_place <- row$bookmaker_key %in% c("wagerzon","hoop88","bfa","betonlineag")
       place_btn <- if (supported_place) {
@@ -3004,7 +3018,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         /* Tight inline strip sized to content. Uniform 15px SF Mono;     */
         /* hierarchy from color + weight only. Same green-bar accent as   */
         /* the V8 bet-card hero strips. JS keys off seven element IDs     */
-        /* (kc-odds, kc-fair, kc-risk, kc-towin, kc-edge, kc-kelly, kc-be)*/
+        /* (kc-odds, kc-fair, kc-risk, kc-towin, kc-ev, kc-kelly, kc-be)  */
         /* and the .invalid / .risk.neg / .chip.pos / .chip.neg classes.  */
         .kelly-calc {
           display: inline-flex;
@@ -3209,8 +3223,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             ),
             tags$div(class = "metrics",
               tags$span(class = "grp",
-                tags$span(class = "k", "Edge"),
-                tags$span(id = "kc-edge", class = "chip", HTML("&mdash;"))
+                tags$span(class = "k", "EV"),
+                tags$span(id = "kc-ev", class = "chip", HTML("&mdash;"))
               ),
               tags$span(class = "grp",
                 tags$span(class = "k", "Kelly"),
@@ -4159,6 +4173,10 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             actual_size:      parseFloat(data.size),
             kelly_bet:        parseFloat(data.modelSize || data.size),
             wz_odds_at_place: parseInt(data.odds, 10),
+            // WZ-verified to-win from /api/wz-quote-single (set by verifyWithWz).
+            // When present, the placer drift-checks against this instead of
+            // computing from odds × stake. Cleared on every Risk change.
+            expected_win:     data.expectedWin ? parseFloat(data.expectedWin) : null,
             game_id:          data.gameId,
             home_team:        data.home,
             away_team:        data.away,
@@ -4194,7 +4212,17 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             if (result.status === \'placed\') {
               var ticket = result.ticket_number ? \' #\' + result.ticket_number : \'\';
               showToast(\'Placed at \' + book + ticket, \'success\');
-              setTimeout(function() { location.reload(); }, 800);
+              // In-place DOM swap (no reload). Label matches what R would render
+              // for status=\'placed\' on the next dashboard regen.
+              var labelText = result.ticket_number
+                ? (\'placed \\u00b7 #\' + result.ticket_number)
+                : \'placed\';
+              var span = document.createElement(\'span\');
+              span.className = \'placed-bet-label\';
+              span.textContent = labelText;
+              for (var key in btn.dataset) { span.dataset[key] = btn.dataset[key]; }
+              span.dataset.fillStatus = \'placed\';
+              _replaceActionCell(btn, span);
               return;
             }
             if (result.status === \'playwright_launched\') {
@@ -4254,7 +4282,17 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           .then(function(r) { return r.json(); })
           .then(function(result) {
             if (result.success !== false) {
-              setTimeout(function() { location.reload(); }, 400);
+              // In-place DOM swap mirroring the parlay tab\'s logParlay.
+              // Build a placed-bet-label that R will render identically on
+              // the next dashboard regen — no visual discontinuity.
+              var span = document.createElement(\'span\');
+              span.className = \'placed-bet-label\';
+              span.textContent = \'placed\';
+              // Forward all data-* attrs so post-render filters keep classifying the row.
+              for (var key in btn.dataset) { span.dataset[key] = btn.dataset[key]; }
+              span.dataset.fillStatus = \'placed\';
+              _replaceActionCell(btn, span);
+              showToast(\'Logged $\' + Math.round(parseFloat(body.actual_size)), \'success\');
             } else {
               showToast(\'Log failed: \' + (result.error || \'unknown\'), \'error\');
               btn.disabled = false; btn.textContent = \'Log\';
@@ -4992,12 +5030,14 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             });
         }
 
-        // Replace the parlay row\'s entire Action cell content with `node`.
-        // Walk up from the clicked button to the reactable cell wrapper so
-        // both buttons ([Place] AND [Log]) get cleared together — preserves
-        // the cell\'s data attrs implicitly because the new node carries them.
+        // Replace a row\'s entire action area content with `node`.
+        // Serves both tabs:
+        //   - Bets tab V8 cards: action area is <div class="actions"> in the hero strip
+        //   - Parlay tab reactable: action area is the .rt-td cell wrapper
+        // Walks up to whichever ancestor exists so both buttons (Place + Log)
+        // get cleared together — the new node carries the row\'s data attrs.
         function _replaceActionCell(btn, node) {
-          var cell = btn.closest(\'.rt-td\') || btn.parentNode;
+          var cell = btn.closest(\'.actions\') || btn.closest(\'.rt-td\') || btn.parentNode;
           while (cell.firstChild) cell.removeChild(cell.firstChild);
           cell.appendChild(node);
         }
@@ -5363,7 +5403,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             var bankroll  = Number(($("bankroll-input") || {}).value) || 0;
             var kellyMult = Number(($("kelly-input")     || {}).value) || 0;
 
-            var risk = 0, towin = 0, edge = NaN, kellyPct = NaN, be = NaN;
+            var risk = 0, towin = 0, ev = NaN, kellyPct = NaN, be = NaN;
             if (american != null && fairProb != null && bankroll > 0 && kellyMult > 0) {
               var dec = american > 0 ? american / 100 + 1 : 100 / Math.abs(american) + 1;
               be = american > 0 ? 100 / (american + 100) : Math.abs(american) / (Math.abs(american) + 100);
@@ -5371,15 +5411,15 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               kellyPct = Math.max(0, (b * p - q) / b);
               risk = Math.min(bankroll, bankroll * kellyMult * kellyPct);
               towin = american > 0 ? risk * american / 100 : risk * 100 / Math.abs(american);
-              edge = p - be;
+              ev = b * p - q;   // expected return per dollar staked
             }
 
             $("kc-risk").textContent  = fmtMoney(risk);
             $("kc-risk").classList.toggle("neg", !(risk > 0));
             $("kc-towin").textContent = fmtMoney(towin);
-            var edgeEl = $("kc-edge");
-            edgeEl.textContent = isNaN(edge) ? "-" : fmtPct(edge, true);
-            edgeEl.className   = "chip" + (isFinite(edge) ? (edge > 0 ? " pos" : " neg") : "");
+            var evEl = $("kc-ev");
+            evEl.textContent = isNaN(ev) ? "-" : fmtPct(ev, true);
+            evEl.className   = "chip" + (isFinite(ev) ? (ev > 0 ? " pos" : " neg") : "");
             $("kc-kelly").textContent = isNaN(kellyPct) ? "-" : fmtPct(kellyPct, false);
             $("kc-be").textContent    = isNaN(be) ? "-" : fmtPct(be, false);
           }
@@ -5662,8 +5702,21 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       towinEl.textContent = fmtMoney(localTowin(riskValue, amerOdds));
 
       // Sync the placement button's data-size so the existing placeBet flow uses the override.
+      // Also clear any stale verified-Win — Risk just changed, so the previous
+      // WZ-verified value (if any) is no longer authoritative. verifyWithWz()
+      // will re-set data-expected-win on successful re-quote.
       var btn = placeBtnFor(card);
-      if (btn) btn.dataset.size = String(riskValue);
+      if (btn) {
+        btn.dataset.size = String(riskValue);
+        delete btn.dataset.expectedWin;
+      }
+      // Also sync the sibling Log button so manual logging uses the override.
+      // Without this, logBet reads its own stale data-size (the Kelly value
+      // from R-render time) and POSTs the wrong actual_size.
+      var logBtn = card.querySelector('.actions .btn-log');
+      if (logBtn) {
+        logBtn.dataset.size = String(riskValue);
+      }
     }
 
     function clearError(card) {
@@ -5778,8 +5831,14 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           if (j.win != null) {
             towinEl.textContent = fmtMoney(j.win);
             setTowinStatus(card, 'verified', '✓ wz');
+            // Round-trip the WZ-verified Win onto the place button so
+            // /api/place-bet can send it as expected_win — the placer's
+            // Win-on-Win drift check then compares WZ-said-X (now) vs
+            // WZ-said-X (then) instead of having to recompute from odds.
+            btn.dataset.expectedWin = String(j.win);
           } else {
             setTowinStatus(card, null);
+            delete btn.dataset.expectedWin;
           }
         })
         .catch(function(e) {

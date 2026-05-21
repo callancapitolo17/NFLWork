@@ -38,39 +38,58 @@ API_BASE = "https://be.bookmaker.eu/gateway/BetslipProxy.aspx"
 COOKIE_PATH = Path(__file__).parent / ".bookmaker_cookies.json"
 DB_PATH = Path(__file__).parent / "bookmaker.duckdb"
 
-# Sport configurations — league IDs discovered via recon
+# Sport configurations — markets are described by their BKM leagueDescEn label
+# (the human-readable name visible on bookmaker.eu) plus the sportId code BKM
+# uses for that sport. League IDs are NOT hardcoded: they are resolved from
+# BKM's GetRoutingInfo endpoint at scrape time. This prevents the failure mode
+# where someone guesses a leagueId and the scraper silently fetches the wrong
+# market — that bug bit us once already (league 503 was labeled "1st 3 Innings"
+# but is actually BKM's "2ND HALVES" market; commit aecc669).
+#
+# To add a new BKM market: pick its leagueDescEn from a fresh GetRoutingInfo
+# response (or recon_bookmaker_api.json) and add an entry here. If BKM later
+# re-labels the league, scraping returns 0 games for that entry with a clear
+# warning — a visible break, not silent corruption.
 SPORT_CONFIGS = {
     "cbb": {
         "sport_key": "basketball_ncaab",
         "table_name": "cbb_odds",
-        "leagues": [
-            {"id": "4", "name": "Game Lines", "market": "spreads", "period": "fg"},
-            {"id": "13554", "name": "Extra Games", "market": "spreads", "period": "fg"},
-            {"id": "205", "name": "1st Halves", "market": "spreads_h1", "period": "Half1"},
+        # BKM groups leagues by sportId (broad category) and region (specific
+        # league within the category). E.g., BASKETBALL/sportId=NBA has both
+        # region=NBA (the real NBA) and region=WNBA — so sportId alone is NOT
+        # enough to disambiguate. Always pin both.
+        "bkm_sport_id": "NCB",  # UNVERIFIED: CBB was out of season at recon
+                                # capture time, so this sportId+region are
+                                # inferred. First in-season run WARN-and-skips
+                                # if wrong; verify against routing then.
+        "bkm_region": "NCAAB",
+        "markets": [
+            {"league_pattern": "GAME LINES",  "market": "spreads",     "period": "fg"},
+            {"league_pattern": "1ST HALVES",  "market": "spreads_h1",  "period": "Half1"},
+            # "Extra Games" / non-conference / tournament games may live
+            # under a separate region — verify the label in season
+            # before adding here.
         ],
     },
     "nba": {
         "sport_key": "basketball_nba",
         "table_name": "nba_odds",
-        "leagues": [
-            {"id": "3", "name": "Game Lines", "market": "spreads", "period": "fg"},
-            {"id": "202", "name": "1st Halves", "market": "spreads_h1", "period": "Half1"},
+        "bkm_sport_id": "NBA",
+        "bkm_region": "NBA",  # NOT "WNBA" — same sportId, different region.
+        "markets": [
+            {"league_pattern": "GAME LINES",  "market": "spreads",     "period": "fg"},
+            {"league_pattern": "1ST HALVES",  "market": "spreads_h1",  "period": "Half1"},
         ],
     },
     "mlb": {
         "sport_key": "baseball_mlb",
         "table_name": "mlb_odds",
-        "leagues": [
-            {"id": "5", "name": "Game Lines", "market": "spreads", "period": "fg"},
-            {"id": "6", "name": "1st 5 Innings", "market": "spreads_f5", "period": "F5"},
-            # League 503 is BKM's "2ND HALVES" market (innings 6-9 lines —
-            # spread/total/ML for the back half of the game), per recon
-            # routedSports metadata. Previously mislabeled as "1st 3 Innings",
-            # which caused 2nd-half totals (e.g. U3.5) to surface on F3
-            # totals cards in the MLB dashboard. BKM does NOT post a true
-            # 1st 3 Innings market — the recon list only contains
-            # leagueId 6 (1ST 5 INNINGS) and 19723 (INNINGS) for MLB.
-            {"id": "503", "name": "2nd Halves", "market": "spreads_h2", "period": "H2"},
+        "bkm_sport_id": "MLB",
+        "bkm_region": "MLB",
+        "markets": [
+            {"league_pattern": "GAME LINES",     "market": "spreads",     "period": "fg"},
+            {"league_pattern": "1ST 5 INNINGS",  "market": "spreads_f5",  "period": "F5"},
+            {"league_pattern": "2ND HALVES",     "market": "spreads_h2",  "period": "H2"},
         ],
     },
 }
@@ -142,6 +161,105 @@ def fetch_schedule(session, league_id: str) -> dict | None:
         return data
     except Exception:
         return None
+
+
+def fetch_routing_info(session) -> dict | None:
+    """Fetch BKM's league catalog (GetRoutingInfo).
+
+    The response shape is roughly:
+        {
+          "valid": true,
+          "routedSports": [
+            {"sportDescEn": "BASEBALL", "routedLeagues": [
+                {"sportId": "MLB", "leagueDescEn": "GAME LINES",    "leagueId": "5"},
+                {"sportId": "MLB", "leagueDescEn": "1ST 5 INNINGS", "leagueId": "6"},
+                {"sportId": "MLB", "leagueDescEn": "2ND HALVES",    "leagueId": "503"},
+                ...
+            ]},
+            ...
+          ]
+        }
+
+    Returns the parsed JSON, or None on HTTP error / blocked request.
+    """
+    body = {"o": {"BORequestData": {"BOParameters": {"BORt": {}, "LanguageId": "0"}}}}
+    try:
+        resp = session.post(f"{API_BASE}/GetRoutingInfo", json=body, timeout=15)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if not data.get("valid") or not data.get("routedSports"):
+            return None
+        return data
+    except Exception:
+        return None
+
+
+def resolve_leagues(routing_info: dict | None, sport_id: str, region: str,
+                    markets: list[dict]) -> list[dict]:
+    """Resolve each wanted market against BKM's live league catalog.
+
+    For each entry in `markets`, find the routedLeague where
+    `(sportId, region, leagueDescEn) == (sport_id, region, market["league_pattern"])`
+    and attach its `leagueId`. Markets that don't match anything are dropped
+    with a warning — better to see "no such market" loudly than to silently
+    fetch the wrong data.
+
+    Why all three keys: BKM's catalog has e.g. region=NBA + region=WNBA both
+    sitting under sportId=NBA, so sportId alone is ambiguous. The triple
+    (sportId, region, leagueDescEn) is the actual primary key.
+
+    Returns a list of `parse_schedule`-ready league configs (same shape as
+    the old hardcoded SPORT_CONFIGS[sport]["leagues"]: id/name/market/period).
+    """
+    if not routing_info:
+        print("WARNING: BKM GetRoutingInfo unavailable — cannot resolve leagues.")
+        return []
+
+    # Flatten all routedLeagues across sport buckets and index by
+    # (sportId, region, leagueDescEn). sportId + region live on the inner
+    # league, not the outer sport entry.
+    catalog: dict[tuple[str, str, str], dict] = {}
+    # Also track which leagueDescEn values are available per (sportId, region)
+    # scope, so when a pattern miss happens we can tell the operator what they
+    # COULD have asked for. Cheap and turns "WARN" into actionable feedback.
+    patterns_by_scope: dict[tuple[str, str], list[str]] = {}
+    for outer in routing_info.get("routedSports", []):
+        for lg in (outer.get("routedLeagues") or []):
+            # Skip malformed entries: a league with no leagueId is unusable
+            # downstream (fetch_schedule would fail) and indexing it would
+            # let us match against a phantom entry. Better to ignore it.
+            if not lg.get("leagueId"):
+                continue
+            sid = lg.get("sportId") or ""
+            rgn = lg.get("region") or ""
+            ldEn = lg.get("leagueDescEn") or ""
+            catalog[(sid, rgn, ldEn)] = lg
+            patterns_by_scope.setdefault((sid, rgn), []).append(ldEn)
+
+    resolved: list[dict] = []
+    for mkt in markets:
+        key = (sport_id, region, mkt["league_pattern"])
+        lg = catalog.get(key)
+        if lg is None:
+            available = patterns_by_scope.get((sport_id, region), [])
+            if available:
+                hint = (f"available patterns under "
+                        f"(sportId='{sport_id}', region='{region}'): {available}")
+            else:
+                hint = (f"no BKM leagues under "
+                        f"(sportId='{sport_id}', region='{region}') at all "
+                        f"— sport_id/region likely wrong or off-season")
+            print(f"  WARNING: no BKM league matching "
+                  f"leagueDescEn='{mkt['league_pattern']}' — skipping. {hint}")
+            continue
+        resolved.append({
+            "id": str(lg["leagueId"]),
+            "name": mkt["league_pattern"],
+            "market": mkt["market"],
+            "period": mkt["period"],
+        })
+    return resolved
 
 
 def login(session, username: str, password: str) -> bool:
@@ -493,35 +611,24 @@ def scrape_bookmaker(sport: str):
     except Exception:
         blocked = True
 
-    # Test with first league
-    first_league = config["leagues"][0]
-    test_data = None if blocked else fetch_schedule(session, first_league["id"])
+    # Session-health + league-discovery in one call: GetRoutingInfo returns
+    # the full league catalog AND verifies the session is valid (it requires
+    # cookies + a working CF bypass, same as GetSchedule).
+    routing_info = None if blocked else fetch_routing_info(session)
 
     login_ok = True  # Default: assume prior-session cookies are still valid
 
-    # If we didn't find games on the first probe, try login before anything drastic
-    if not _has_games(test_data):
+    # If routing failed, try login before anything drastic
+    if routing_info is None:
         login_ok = False
         if not blocked and BOOKMAKER_USERNAME and BOOKMAKER_PASSWORD:
-            print("No games returned, logging in...")
+            print("GetRoutingInfo returned nothing, logging in...")
             login_ok = login(session, BOOKMAKER_USERNAME, BOOKMAKER_PASSWORD)
             if login_ok:
-                test_data = fetch_schedule(session, first_league["id"])
+                routing_info = fetch_routing_info(session)
 
-    # If still no games, decide WHY before launching a browser popup.
-    if not _has_games(test_data):
-        # Case A: session is healthy, BM just has nothing posted right now.
-        # Happens at odd hours / off days. No recon needed. Save empty so
-        # any previous scrape's stale data gets cleared.
-        if _session_looks_healthy(blocked=blocked, login_ok=login_ok):
-            print("Session healthy but no games posted — saving empty.")
-            save_to_database(sport, [])
-            return []
-
-        # Case B: session is broken. Only allow the interactive recon popup
-        # when a human is at the keyboard AND we haven't attempted recon in
-        # the last hour. Otherwise log a clear message and exit cleanly —
-        # the pipeline cannot hang on a blocking input().
+    # If still no routing info, run the recon dance (same logic as before).
+    if routing_info is None:
         sentinel = Path(__file__).parent / ".last_recon_attempt"
         if not _can_launch_interactive_recon():
             print("Cookies appear stale but stdin is not a TTY.")
@@ -534,7 +641,6 @@ def scrape_bookmaker(sport: str):
             save_to_database(sport, [])
             return []
 
-        # Green light: touch the sentinel, run recon, retry once.
         sentinel.touch()
         refresh_cookies()
         session = _create_session()
@@ -545,17 +651,38 @@ def scrape_bookmaker(sport: str):
             return []
         if BOOKMAKER_USERNAME and BOOKMAKER_PASSWORD:
             login(session, BOOKMAKER_USERNAME, BOOKMAKER_PASSWORD)
-        test_data = fetch_schedule(session, first_league["id"])
-        if not _has_games(test_data):
-            print("ERROR: No games returned after recon + login. Clearing stale data.")
+        routing_info = fetch_routing_info(session)
+        if routing_info is None:
+            print("ERROR: GetRoutingInfo failed after recon + login. Clearing stale data.")
             save_to_database(sport, [])
             return []
 
-    # Fetch all leagues
+    # Resolve wanted markets against BKM's live catalog. Any market that
+    # doesn't match is logged and dropped — no silent mislabeling.
+    resolved_leagues = resolve_leagues(
+        routing_info,
+        config["bkm_sport_id"],
+        config["bkm_region"],
+        config["markets"],
+    )
+    if not resolved_leagues:
+        # Off-season, all markets renamed, or wrong sport_id. Session was
+        # healthy enough to get routing info, so this is "BKM has nothing
+        # for this sport right now" — save empty so stale rows clear.
+        print(f"No {sport.upper()} markets resolved from BKM catalog — saving empty.")
+        save_to_database(sport, [])
+        return []
+
+    # One-line summary so the operator can eyeball what got wired up before
+    # the schedule fetches start. Format: "GAME LINES→5, 1ST 5 INNINGS→6, ..."
+    routes = ", ".join(f"{lg['name']}→{lg['id']}" for lg in resolved_leagues)
+    print(f"Resolved {len(resolved_leagues)} BKM {sport.upper()} market(s): {routes}")
+
+    # Fetch each resolved league
     all_odds = []
-    for i, league in enumerate(config["leagues"]):
+    for league in resolved_leagues:
         print(f"Fetching {league['name']} (league {league['id']})...")
-        data = test_data if i == 0 else fetch_schedule(session, league["id"])
+        data = fetch_schedule(session, league["id"])
         if data is None:
             print(f"  Failed to fetch league {league['id']}")
             continue

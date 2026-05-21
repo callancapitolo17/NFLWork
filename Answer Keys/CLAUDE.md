@@ -308,12 +308,24 @@ Visual reference: `docs/superpowers/specs/2026-05-13-mlb-bets-tab-improvements-d
 returning `{status, ticket_number, balance_after, error_msg, error_msg_key}`.
 Statuses: `placed / price_moved / rejected / auth_error / network_error / orphaned`.
 
+**Price-match protocol:** Win-on-Win, identical to `parlay_placer`. The
+preflight's `details[0].Win` (dollars) is compared against an
+`expected_win` value supplied by the dashboard with $0.01 tolerance
+(`DRIFT_TOLERANCE_USD` imported from `parlay_placer`). The dashboard
+sources `expected_win` from `/api/wz-quote-single` (round-tripped via
+`btn.dataset.expectedWin`) and falls back to math from
+`wz_odds_at_place × actual_size` when no verified value is available.
+The `Odds` field is **not** required — WZ omits it for some single
+shapes (alt-spreads, F-period totals); the Win-based check works
+regardless. Drift detection surfaces both dollar values in the error
+message for debuggability.
+
 **Deployment note:** `place_single` uses the recon-confirmed
-`PostWagerMultipleHelper.aspx` endpoint with `WT=0` for singles. The
-endpoint + WT value are inferred from parlay placer recon, NOT verified
-end-to-end against a live WZ account for singles. Before enabling in
-production, run an end-to-end placement of a $1 single bet via the
-dashboard and verify the ticket appears in WZ's history.
+`PostWagerMultipleHelper.aspx` endpoint with `WT=0` for singles. End-to-
+end placement verified live on YYYY-MM-DD (fill in after first successful
+WZ ticket) — until then this remains in trial. The Win-on-Win drift
+check was put in place after a CLE -2.5 alt-spread placement attempt on
+2026-05-19 was wrongly rejected by the prior `Odds`-strict drift check.
 
 ### Server endpoints
 
