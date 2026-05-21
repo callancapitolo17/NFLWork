@@ -3011,7 +3011,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         /* Tight inline strip sized to content. Uniform 15px SF Mono;     */
         /* hierarchy from color + weight only. Same green-bar accent as   */
         /* the V8 bet-card hero strips. JS keys off seven element IDs     */
-        /* (kc-odds, kc-fair, kc-risk, kc-towin, kc-edge, kc-kelly, kc-be)*/
+        /* (kc-odds, kc-fair, kc-risk, kc-towin, kc-ev, kc-kelly, kc-be)  */
         /* and the .invalid / .risk.neg / .chip.pos / .chip.neg classes.  */
         .kelly-calc {
           display: inline-flex;
@@ -3216,8 +3216,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             ),
             tags$div(class = "metrics",
               tags$span(class = "grp",
-                tags$span(class = "k", "Edge"),
-                tags$span(id = "kc-edge", class = "chip", HTML("&mdash;"))
+                tags$span(class = "k", "EV"),
+                tags$span(id = "kc-ev", class = "chip", HTML("&mdash;"))
               ),
               tags$span(class = "grp",
                 tags$span(class = "k", "Kelly"),
@@ -5374,7 +5374,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             var bankroll  = Number(($("bankroll-input") || {}).value) || 0;
             var kellyMult = Number(($("kelly-input")     || {}).value) || 0;
 
-            var risk = 0, towin = 0, edge = NaN, kellyPct = NaN, be = NaN;
+            var risk = 0, towin = 0, ev = NaN, kellyPct = NaN, be = NaN;
             if (american != null && fairProb != null && bankroll > 0 && kellyMult > 0) {
               var dec = american > 0 ? american / 100 + 1 : 100 / Math.abs(american) + 1;
               be = american > 0 ? 100 / (american + 100) : Math.abs(american) / (Math.abs(american) + 100);
@@ -5382,15 +5382,15 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               kellyPct = Math.max(0, (b * p - q) / b);
               risk = Math.min(bankroll, bankroll * kellyMult * kellyPct);
               towin = american > 0 ? risk * american / 100 : risk * 100 / Math.abs(american);
-              edge = p - be;
+              ev = b * p - q;   // expected return per dollar staked
             }
 
             $("kc-risk").textContent  = fmtMoney(risk);
             $("kc-risk").classList.toggle("neg", !(risk > 0));
             $("kc-towin").textContent = fmtMoney(towin);
-            var edgeEl = $("kc-edge");
-            edgeEl.textContent = isNaN(edge) ? "-" : fmtPct(edge, true);
-            edgeEl.className   = "chip" + (isFinite(edge) ? (edge > 0 ? " pos" : " neg") : "");
+            var evEl = $("kc-ev");
+            evEl.textContent = isNaN(ev) ? "-" : fmtPct(ev, true);
+            evEl.className   = "chip" + (isFinite(ev) ? (ev > 0 ? " pos" : " neg") : "");
             $("kc-kelly").textContent = isNaN(kellyPct) ? "-" : fmtPct(kellyPct, false);
             $("kc-be").textContent    = isNaN(be) ? "-" : fmtPct(be, false);
           }
