@@ -377,6 +377,69 @@ def parse_3way_line(line: dict, game_id: str, period: str, market: str,
     }
 
 
+# Per-idgmtyp "probe fields": at least one of these must be non-None in
+# the child's GameLines[0] for the response to be considered a valid
+# instance of this market kind. Used by `validate_idgmtyp_shape()` for
+# warn-only shape validation — catches WZ silently changing what an
+# idgmtyp means OR introducing new idgmtyps the parser doesn't know
+# about. Doesn't drop records (the parser still tries to extract what
+# it can); the warning surfaces during scrape-log review.
+IDGMTYP_PROBE_FIELDS = {
+    10: ["vsprdt", "voddst", "ovt"],   # FG parent — any of spread/ML/total
+    15: ["vsprdt", "voddst", "ovt"],   # H1 line
+    19: ["ovt"],                       # Hits / H+R+E totals
+    25: ["vsprdt", "ovt"],             # Alt line OR period (F3/F7) line
+    29: ["voddst", "hoddst"],          # 3-way ML (draw is vspoddst, optional)
+    30: ["ovt"],                       # Pitcher prop (total only)
+    31: ["voddst", "hoddst"],          # Odd/even ML
+    35: ["ovt"],                       # FG team total
+    44: ["voddst", "hoddst"],          # Score-first ML
+    47: ["voddst", "hoddst"],          # Score in 1st inning Y/N ML
+    66: ["ovt"],                       # H1 team total
+}
+
+
+def validate_idgmtyp_shape(child: dict,
+                           warned_unknown: set | None = None) -> bool:
+    """Check that a `GameChild`'s response shape matches what its idgmtyp
+    is documented to return.
+
+    Returns True if the shape passes the probe (at least one expected
+    field is non-None). Returns False otherwise — and prints a one-line
+    warning. Unknown idgmtyps also warn (deduplicated per scrape via
+    `warned_unknown`) and return False.
+
+    Warn-only by design: the caller doesn't drop the record on False.
+    The goal is to surface drift during log review, not to gate
+    downstream consumers.
+    """
+    idgmtyp = child.get("idgmtyp")
+    lines = child.get("GameLines", [])
+    if not lines:
+        return False  # caller's existing `if not child_lines: continue` handles it
+
+    if idgmtyp not in IDGMTYP_PROBE_FIELDS:
+        if warned_unknown is not None and idgmtyp in warned_unknown:
+            return False  # already warned this scrape; stay quiet
+        if warned_unknown is not None:
+            warned_unknown.add(idgmtyp)
+        sample = (child.get("vtm") or "")[:50]
+        print(f"  WARNING: unknown WZ idgmtyp={idgmtyp} "
+              f"(sample child vtm: {sample!r}) — parser doesn't have a "
+              f"branch for this; row will be skipped or null")
+        return False
+
+    line = lines[0]
+    probes = IDGMTYP_PROBE_FIELDS[idgmtyp]
+    if not any(line.get(p) is not None for p in probes):
+        sample = (child.get("vtm") or "")[:50]
+        print(f"  WARNING: WZ idgmtyp={idgmtyp} child {sample!r} has all "
+              f"expected probe fields {probes} null — response shape may "
+              f"have drifted; parser may emit a null record")
+        return False
+    return True
+
+
 def parse_odds(data: dict, sport: str) -> list[dict]:
     """Parse NewScheduleHelper JSON response into DuckDB records.
 
@@ -398,6 +461,11 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
 
     team_dict = load_team_dict(sport) if sport != "nfl" else {}
     canonical_games = load_canonical_games(sport) if sport != "nfl" else []
+
+    # Scrape-scoped set so unknown-idgmtyp warnings deduplicate (otherwise
+    # a slate with 30 games × the same unknown child_type would spam 30
+    # identical lines). See validate_idgmtyp_shape() for details.
+    warned_unknown_idgmtyps: set = set()
 
     records = []
 
@@ -525,6 +593,15 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
             child_lines = child.get("GameLines", [])
             if not child_lines:
                 continue
+
+            # Warn (don't drop) if the child's shape doesn't match what
+            # we expect for its idgmtyp. Catches: WZ changing what an
+            # idgmtyp means, or introducing a new idgmtyp the parser
+            # doesn't handle. The parser still tries to extract what it
+            # can — bad data continues to flow but the warning surfaces
+            # during log review.
+            validate_idgmtyp_shape(child, warned_unknown_idgmtyps)
+
             child_line = child_lines[0]
             child_vtm = child.get("vtm", "")
             child_vtm_upper = child_vtm.upper()
