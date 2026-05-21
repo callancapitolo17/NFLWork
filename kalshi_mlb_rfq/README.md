@@ -93,6 +93,16 @@ Acceptance is serialized via `ACCEPT_LOCK` so concurrent quotes Kelly-size again
 - **Bot halted on `fill_ratio_collapse`:** investigate — makers are walking on accepts at a rate that suggests adverse selection. Check `quote_log` for the maker `creator_id`s causing it.
 - **`mint_combo_ticker` failing with 400:** the MVE collection ticker may have changed or one of the leg market_tickers doesn't exist. Re-run `mlb_sgp/recon_kalshi_mlb_rfq.py` for a fresh probe.
 
+## Accept semantics (corrected 2026-05-21)
+
+Kalshi's REST `PUT /communications/quotes/{id}/accept` is **all-or-nothing** — body is `{"accepted_side": "yes"|"no"}` and Kalshi returns 204 on success. There is no per-accept contract count parameter.
+
+Sizing happens **upstream at RFQ creation** via `target_cost_dollars`. With `rest_remainder: False`, the LP's quote is fill-or-kill at the requested size — accepting fills exactly what was requested.
+
+Historical bug: from first commit (2026-05-02) through 2026-05-21, this code sent body `{"contracts": N}`, which Kalshi rejected as `invalid_parameters` on every accept. The bug was masked because the failure looked identical to "lost the race." The walk-diagnostic columns added 2026-05-20 finally exposed it — every walked row showed `accept_response_body = "invalid_parameters"` AND `rfq_terminal_status = "open"` (no competitor had filled the RFQ; we just couldn't accept it).
+
+Partial accepts exist at the protocol level via the FIX interface (`OrderQty` on `35=UA`), but the REST endpoint doesn't expose it. If partial accepts become necessary, a FIX-protocol migration would be required.
+
 ## Walk diagnostics
 
 Every row in `quote_log` carries walk-diagnostic context so we can tell apart **"we were too slow"** vs **"we were too cheap"** when a quote we tried to accept walked.

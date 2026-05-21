@@ -67,33 +67,36 @@ def poll_quotes(rfq_id: str, user_id: str) -> list[dict]:
     return body.get("quotes") or []
 
 
-def accept_quote(quote_id: str, contracts: int) -> tuple[dict | None, dict | str | None]:
-    """Accept a quote for the given contract count.
+def accept_quote(quote_id: str, accepted_side: str) -> tuple[dict | None, dict | str | None]:
+    """Accept a quote on the given side ("yes" or "no").
+
+    The Kalshi REST accept endpoint takes only `accepted_side` — sizing happens
+    upstream when the RFQ is created via `target_cost_dollars`. Confirmed against
+    docs.kalshi.com/openapi.yaml (PUT /communications/quotes/{id}/accept). The
+    prior implementation sent `{"contracts": N}` which silently 400'd every
+    accept with `invalid_parameters` for the lifetime of the bot.
 
     Returns (response, error_body):
-      - success: (response_dict, None)
-      - walked / expired race: (None, error_body) — error_body is whatever Kalshi
-        returned (dict on JSON, str otherwise). Lets the caller distinguish
-        'quote_expired' / 'rfq_closed' / etc. in walk diagnostics.
+      - success: ({}, None) — Kalshi returns 204 with no body
+      - walked / expired race: (None, error_body) — error_body is whatever
+        Kalshi returned (dict on JSON, str otherwise). Lets the caller
+        distinguish 'quote_expired' / 'rfq_closed' / etc. in walk diagnostics.
 
     Raises KalshiAPIError on any other (unexpected) status.
     """
-    body = {"contracts": contracts}
+    body = {"accepted_side": accepted_side}
     # Kalshi accept endpoint requires PUT, not POST. POST returns a router-level
-    # 404 ("404 page not found" plain text). Verified empirically 2026-05-02
-    # by probing both verbs against a fake quote_id: PUT returned a structured
-    # 400 invalid_parameters error from midland (the right service), POST hit
-    # the upstream router's catch-all 404. Recon never tested this codepath
-    # ("We never accept a quote" — recon_kalshi_mlb_rfq.py:6).
+    # 404 ("404 page not found" plain text). Verified empirically 2026-05-02.
     status, resp, _ = api("PUT", f"/communications/quotes/{quote_id}/accept", body=body)
-    # Kalshi proved on create_rfq they may return 201 even on action endpoints.
-    # Accept both — the alternative is a silent failure with a real position
-    # opened on Kalshi's side and no local tracking.
-    if status in (200, 201):
+    # Success is 204 (empty body) per the OpenAPI spec. We also accept 200/201
+    # defensively — Kalshi has historically returned 201 on action endpoints
+    # (see create_rfq) and the cost of a silent missed-fill is higher than
+    # over-accepting status codes.
+    if status in (200, 201, 204):
         return (resp if isinstance(resp, dict) else {}), None
     if status in (400, 404, 409):
-        # Common race: quote walked or expired. Not a hard error. Including 404
-        # in case Kalshi returns it for an already-accepted quote (defensive).
+        # Common race: quote walked or expired. Also covers genuine bad
+        # quote_ids. The caller uses the error body to disambiguate.
         return None, resp
     raise KalshiAPIError(f"accept_quote failed: status={status} body={resp}")
 

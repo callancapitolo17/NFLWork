@@ -774,14 +774,21 @@ def _evaluate_quote(quote: dict, dry_run: bool,
             _log_quote_decision(quote, fair, "declined_dry_run", post_fee_ev=ev_pct, diag=diag)
             return
 
+        # Kelly is now a go/no-go gate, not a sizing decision. Kalshi's REST
+        # accept endpoint is all-or-nothing — sizing happens upstream at RFQ
+        # creation via target_cost_dollars. We still skip if Kelly would say
+        # "don't bet" at this price even at the LP's offered size, but we
+        # don't send a contract count to the accept call anymore.
         contracts = _kelly_size_for_quote(quote, fair)
         if contracts <= 0:
             _log_quote_decision(quote, fair, "declined_kelly_zero",
                                  post_fee_ev=ev_pct, diag=diag)
             return
 
+        # We're buy-yes (post_fee_ev_buy_yes drove the EV gate above), so we
+        # accept the YES side of the LP's two-sided quote.
         diag["accept_attempted_at"] = datetime.now(timezone.utc)
-        resp, err_body = rfq_client.accept_quote(quote["id"], contracts=contracts)
+        resp, err_body = rfq_client.accept_quote(quote["id"], accepted_side="yes")
         diag["accept_response_at"] = datetime.now(timezone.utc)
         if resp is None:
             # Walked. Capture Kalshi's error body + a fresh look at the RFQ's
@@ -801,13 +808,19 @@ def _evaluate_quote(quote: dict, dry_run: bool,
                                  post_fee_ev=ev_pct, diag=diag)
             return
 
-        # Post-accept fill reconciliation via /portfolio/positions
+        # Post-accept fill reconciliation via /portfolio/positions. If that
+        # fails, fall back to the quote's offered yes_contracts_fp (since the
+        # RFQ was created with rest_remainder=False — fill-or-kill — so the
+        # accepted size equals the LP's offered size). contracts_fp is the
+        # documented-required total field; yes_contracts_fp is per-side when
+        # the LP made a two-sided quote.
         try:
             actual = rfq_client.get_position_contracts(combo_market_ticker)
             _record_positions_api_result(True)
         except Exception:
             _record_positions_api_result(False)
-            actual = contracts
+            fallback_fp = quote.get("yes_contracts_fp") or quote.get("contracts_fp")
+            actual = int(float(fallback_fp)) if fallback_fp else 0
 
         yes_ask = 1.0 - no_bid
         fee = ev_calc.fee_per_contract(yes_ask)
