@@ -357,3 +357,37 @@ separate from `data-model-size` (immutable Kelly → `kelly_bet` /
 `recommended_size`). The two attributes are siblings on every Place
 button; legacy callers without `data-model-size` fall back to `data-size`
 as a default to keep `create_bets_table_legacy` working.
+
+## MLB Dashboard — Parlay tab "Agree" pill
+
+The parlay-tab Books cell ends with an `Agree k/n` pill (e.g. `Agree 4/5`)
+that summarizes how many of the five reference voices — DK, FD, ProphetX,
+Novig, and the model — sit within ±1pp of the median of the five. It is a
+display-only caution signal: high `k` means the market is in price-discovery
+consensus; low `k` means the books disagree and the edge against any single
+book is less trustworthy.
+
+- **Implementation:** `Answer Keys/books_strip.R::compute_k_within()` does the
+  count; `render_books_strip()` accepts optional `k_agree` / `n_agree` args
+  and appends the suffix pill. The caller (in `mlb_dashboard.R`'s
+  `create_parlays_table()`, around line 552) builds the 5-element voice
+  vector and passes the result through.
+- **Cons is intentionally excluded** from the count because it's a blended
+  derivative of model + books, not an independent voice.
+- **NA voices reduce the denominator** rather than counting as "disagree";
+  a row with only 4 quoting voices shows `Agree k/4`.
+- **No filter / no color / no auto-bet gate** in v1. Layer those on once
+  live values show what threshold actually feels right.
+- **Floating-point edge:** the consensus check is a strict `<=` comparison,
+  so values that sit *exactly* at the ±1pp boundary may flip in or out
+  depending on IEEE 754 representation. Real probit-devigged probabilities
+  are 4-decimal values that don't land on round boundaries, but if you
+  ever see an unexpected off-by-one and the inputs look right at exactly
+  0.01 from the median, that's the cause. Add an epsilon tolerance in
+  `compute_k_within` if it becomes annoying.
+- **Known blind spot:** when the model is the lone dissenter from a tight
+  book cluster, the metric reads identically to "a book is the lone dissenter"
+  — see scenario H in the design spec. Easy mitigation later: a separate
+  `model_in_cluster` boolean.
+- **Tests:** `Answer Keys/tests/test_books_strip.R` (both `compute_k_within`
+  and the `render_books_strip` extension).
