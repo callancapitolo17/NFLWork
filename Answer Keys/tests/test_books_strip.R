@@ -112,6 +112,12 @@ test_that("render_books_strip omits Agree pill when n_agree < 2", {
   expect_false(grepl("Agree", out, fixed = TRUE))
 })
 
+test_that("render_books_strip omits Agree pill when k_agree is NA even if n_agree >= 2", {
+  out <- render_books_strip(0.40, 0.41, 0.42, 0.40, 0.55, 0.41,
+                            k_agree = NA_integer_, n_agree = 5L)
+  expect_false(grepl("Agree", out, fixed = TRUE))
+})
+
 test_that("render_books_strip renders partial-denominator Agree pill (k/n=3/4)", {
   # Four books quoted, one missing — denominator drops to 4.
   out <- render_books_strip(0.40, 0.41, 0.42, NA_real_, 0.55, 0.41,
