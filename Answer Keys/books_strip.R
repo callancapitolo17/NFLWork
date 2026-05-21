@@ -16,7 +16,7 @@ render_books_strip <- function(model, dk, fd, px, nv, cons,
     }
   }
 
-  # Optional Agree k/n suffix pill — see compute_k_within() above.
+  # Optional Agree k/n suffix pill — see compute_k_within() below.
   # Omit entirely when n_agree < 2 (no meaningful consensus possible) or
   # when k_agree is NA. The caller is responsible for computing k/n via
   # compute_k_within() over whichever voices are in scope.
