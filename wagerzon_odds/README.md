@@ -6,25 +6,78 @@ Scrapes live odds from Wagerzon (private offshore book) via REST API with ASP.NE
 
 REST API:
 - Auth: ASP.NET form POST (username + password + hidden ViewState fields)
+- Catalog: `https://backend.wagerzon.com/wager/ActiveLeaguesHelper.aspx`
+  (resolves human-readable market labels → live `lg=` IDs at scrape time)
 - Odds: `https://backend.wagerzon.com/wager/NewScheduleHelper.aspx`
 - Session maintained via `ASP.NET_SessionId` cookie
 
-## Markets Captured
+## Sports + markets
 
-- Main spreads, totals, moneylines (full game + 1H)
-- Alt spreads, alt totals (paired, stored separately)
-- Team totals (full game + 1H)
+| Sport | Markets captured | Notes |
+|---|---|---|
+| MLB | spreads/totals/ML (FG, F5, F3, F7), alt lines, team totals (FG + H1), 3-way ML (1st inning, 1st 5 innings, highest-scoring inning), inning/score-first/odd-even ML, pitcher props, HRE/total-hits/total-bases | 27 declared markets |
+| NBA | spreads/totals/ML (FG, 1H), team totals (FG + H1), adjusted lines | 5 declared markets |
+| NFL | spreads/totals/ML (FG, halves, quarters), team totals, alt lines | UNVERIFIED off-season — first in-season scrape will WARN-and-skip any patterns that don't match the live catalog |
+| CBB | spreads/totals/ML (FG, 1H), race-to-10/20/40 (separate prop URLs) | UNVERIFIED off-season |
+| college_baseball | spreads/totals/ML | Late-season catalog is thin |
 
-## Sports
+Player-prop entries (`HOME RUN MARKET`, `PLAYER TO HIT A HOME RUN`,
+`1ST PLATE APPEARANCE EXACT RESULT`, `1ST INNING EXACT HITS`) resolve
+and get fetched but the current parser emits NULL-only rows because
+their response shape (`bml/odds/oddsh/tmname/tmnum` instead of the
+standard `vsprdt/voddst/ovt`) isn't handled. Marked
+`kind: "player_prop_unparsed"` in `config.py`. Building real
+player-prop parsing is a separate task.
 
-- NFL, CBB, NBA
+## How league IDs get resolved (no more hardcoded magic numbers)
+
+League IDs are **not hardcoded** in `config.py`. Each market is declared
+by its human-readable WZ `Description` label (the same string visible
+on the betslip) plus the `IndexName` qualifier. At scrape time, the
+scraper:
+
+1. Calls `ActiveLeaguesHelper.aspx` to fetch WZ's live league catalog.
+2. Calls `resolve_leagues()` to look each wanted market up by
+   `(IndexName, Description)`.
+3. Iterates the resolved `IdLeague`s and fetches one combined
+   `?lg=<csv>` schedule request.
+
+**Why:** the previous design hardcoded 25 MLB `lg=` IDs in `config.py`
+with most labeled `?` (e.g., `# 416=?, 417=Game Lines, ...`). Worse —
+`417` was labeled "Game Lines" in the comment but actually returns
+"1ST 5 FULL INNINGS"; the real Game Lines is `416`. Dynamic discovery
+turns "guessed ID with wrong comment" into "asks WZ what the market is
+called and uses the live ID." If WZ renames a league or the config has
+a typo, the scraper logs `WARNING: no WZ league matching
+Description='X'` and lists the patterns that ARE available — visible
+break, not silent corruption.
+
+Defense-in-depth: the parser also runs `validate_idgmtyp_shape()` on
+each `GameChild` and prints a warning if WZ changes what an `idgmtyp`
+code means or introduces a new one the parser doesn't handle. Warn-only
+— doesn't drop records, just surfaces drift during log review.
+
+### Adding a new market
+
+1. Hit `/wager/ActiveLeaguesHelper.aspx?WT=0`, find the league's
+   `Description` + `IndexName`.
+2. Add an entry to the sport's `markets` list in `config.py`:
+   ```python
+   {"description": "<exact label from catalog>",
+    "period": "<fg|F3|F5|F7|Half1|...>",
+    "kind": "<lines|team_total|ml_only|...>"},
+   ```
+3. Next scrape resolves the live ID automatically. The summary line
+   ("Resolved N WZ MLB market(s): ...") confirms it was picked up.
 
 ## Usage
 
 ```bash
+python scraper_v2.py mlb
+python scraper_v2.py nba
 python scraper_v2.py nfl
 python scraper_v2.py cbb
-python scraper_v2.py nba
+python scraper_v2.py college_baseball
 ```
 
 ## Auth
@@ -145,8 +198,9 @@ so "To Win" matches the WZ slip to the dollar.
 
 ## Storage
 
-DuckDB: `wagerzon.duckdb` → tables: `nfl_odds`, `cbb_odds`, `nba_odds`,
-`mlb_odds` (18-column standard schema), `mlb_parlay_prices` (Stage 1 output).
+DuckDB: `wagerzon.duckdb` → tables: `mlb_odds`, `nba_odds`, `nfl_odds`,
+`cbb_odds`, `college_baseball_odds` (18-column standard schema),
+`mlb_parlay_prices` (Stage 1 output).
 
 Also: `wagerzon_cbb.duckdb` (CBB-specific historical data).
 
