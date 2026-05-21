@@ -101,6 +101,17 @@ Sizing happens **upstream at RFQ creation** via `target_cost_dollars`. With `res
 
 Historical bug: from first commit (2026-05-02) through 2026-05-21, this code sent body `{"contracts": N}`, which Kalshi rejected as `invalid_parameters` on every accept. The bug was masked because the failure looked identical to "lost the race." The walk-diagnostic columns added 2026-05-20 finally exposed it — every walked row showed `accept_response_body = "invalid_parameters"` AND `rfq_terminal_status = "open"` (no competitor had filled the RFQ; we just couldn't accept it).
 
+### Side semantics — `accepted_side` is INVERTED from intuition
+
+The `accepted_side` field names the side of the LP's two-sided quote we're accepting — and accepting their bid on a side means *they buy that side from us*, leaving us LONG the OPPOSITE side. Verified empirically 2026-05-21 from the first real fill:
+
+| Field value | What Kalshi does | What we end up holding |
+|---|---|---|
+| `accepted_side="yes"` | LP buys YES from us at `yes_bid` | **LONG NO** at `1 − yes_bid` (≈ `no_ask`) |
+| `accepted_side="no"` | LP buys NO from us at `no_bid` | **LONG YES** at `1 − no_bid` (≈ `yes_ask`) |
+
+The bot's EV gate is `ev_calc.post_fee_ev_buy_yes(fair, no_bid)` — it's evaluating whether to BUY YES at `1 − no_bid`. To actually open that position, the bot must send `accepted_side="no"`. The first ever fill landed at `no_price=$0.969` (1 NO contract) when the bot sent `"yes"`, costing a small −EV position before the bot was stopped. Single-contract scope thanks to the $1 RFQ default.
+
 Partial accepts exist at the protocol level via the FIX interface (`OrderQty` on `35=UA`), but the REST endpoint doesn't expose it. If partial accepts become necessary, a FIX-protocol migration would be required.
 
 ## Walk diagnostics

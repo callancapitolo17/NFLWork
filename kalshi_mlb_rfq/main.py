@@ -785,10 +785,19 @@ def _evaluate_quote(quote: dict, dry_run: bool,
                                  post_fee_ev=ev_pct, diag=diag)
             return
 
-        # We're buy-yes (post_fee_ev_buy_yes drove the EV gate above), so we
-        # accept the YES side of the LP's two-sided quote.
+        # Side semantics (INVERTED FROM INTUITION — verified empirically
+        # 2026-05-21 from a real fill):
+        #   accepted_side="yes" → Kalshi makes us BUY NO at no_ask
+        #   accepted_side="no"  → Kalshi makes us BUY YES at yes_ask
+        # The field names the side of the LP's two-sided quote we're accepting,
+        # which is the side the LP is bidding on (so by accepting it we SELL
+        # them that side, leaving us long the opposite). Our EV gate above is
+        # post_fee_ev_buy_yes — to open the position our math evaluated, we
+        # must accept "no". The first-ever fill landed at no_price=$0.969
+        # (1 NO contract) when we sent "yes", confirming the inversion. See
+        # README "Accept semantics" for the full trace.
         diag["accept_attempted_at"] = datetime.now(timezone.utc)
-        resp, err_body = rfq_client.accept_quote(quote["id"], accepted_side="yes")
+        resp, err_body = rfq_client.accept_quote(quote["id"], accepted_side="no")
         diag["accept_response_at"] = datetime.now(timezone.utc)
         if resp is None:
             # Walked. Capture Kalshi's error body + a fresh look at the RFQ's
