@@ -145,14 +145,38 @@ def test_accept_quote_404_treated_as_walked():
     assert err == "404 page not found"
 
 
-def test_get_positions_for_combo():
+def test_get_positions_prefers_position_fp():
+    """Kalshi V2 portfolio response uses position_fp (fixed-point string).
+    Reading the legacy 'position' int field returned 0 for every real fill —
+    regression guard added 2026-05-21."""
     fake = (200, {"event_positions": [], "market_positions": [
-        {"ticker": "KXMVECROSSCATEGORY-S-FOO", "position": 100},
-        {"ticker": "OTHER", "position": 5},
+        {"ticker": "KXMVECROSSCATEGORY-S-FOO", "position_fp": "7.00"},
+        {"ticker": "OTHER", "position_fp": "5.00"},
     ]}, {})
     with patch("kalshi_mlb_rfq.rfq_client.api", return_value=fake):
         n = rfq_client.get_position_contracts("KXMVECROSSCATEGORY-S-FOO")
-    assert n == 100
+    assert n == 7
+
+
+def test_get_positions_handles_short_negative_fp():
+    """position_fp can be negative when we're short YES (= long NO)."""
+    fake = (200, {"event_positions": [], "market_positions": [
+        {"ticker": "KXMVECROSSCATEGORY-S-FOO", "position_fp": "-1.00"},
+    ]}, {})
+    with patch("kalshi_mlb_rfq.rfq_client.api", return_value=fake):
+        n = rfq_client.get_position_contracts("KXMVECROSSCATEGORY-S-FOO")
+    assert n == -1
+
+
+def test_get_positions_falls_back_to_legacy_position():
+    """If position_fp is missing (older shape / other markets), fall back to
+    the int 'position' field. Keeps the function compatible across responses."""
+    fake = (200, {"event_positions": [], "market_positions": [
+        {"ticker": "KXMVECROSSCATEGORY-S-FOO", "position": 42},
+    ]}, {})
+    with patch("kalshi_mlb_rfq.rfq_client.api", return_value=fake):
+        n = rfq_client.get_position_contracts("KXMVECROSSCATEGORY-S-FOO")
+    assert n == 42
 
 
 def test_list_open_rfqs_returns_list():

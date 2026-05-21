@@ -114,12 +114,28 @@ def get_position_contracts(market_ticker: str) -> int:
     """Authoritative current position count for a ticker via /portfolio/positions.
 
     Returns 0 if no position. Raises KalshiAPIError on API failure.
+
+    Field name: Kalshi returns positions as `position_fp` (fixed-point string,
+    e.g. "7.00" or "-1.00" for short). The legacy `position` (int) field is no
+    longer populated in the V2 portfolio response. Reading the wrong field
+    silently returned 0 for every fill — fixed 2026-05-21 after observing that
+    real on-Kalshi positions (`position_fp = "7.00"`) were being recorded as
+    `n=0` in our fills table.
+
+    Negative values mean a short YES position (i.e., effectively LONG NO). We
+    return the signed integer so callers can distinguish long YES from long NO
+    via the sign.
     """
     status, body, _ = api("GET", f"/portfolio/positions?ticker={market_ticker}&limit=10")
     if status != 200 or not isinstance(body, dict):
         raise KalshiAPIError(f"get_position_contracts failed: status={status} body={body}")
     for p in body.get("market_positions") or []:
         if p.get("ticker") == market_ticker:
+            # Prefer position_fp (V2 fixed-point); fall back to position for
+            # any legacy market still returning the int field.
+            fp = p.get("position_fp")
+            if fp is not None:
+                return int(float(fp))
             return int(p.get("position", 0))
     return 0
 
