@@ -171,6 +171,29 @@ def _compute_expected_win(odds: int, risk: float) -> float:
     return round(risk * (decimal - 1), 2)
 
 
+def _compute_wz_amount(risk: float, american_odds: int) -> float:
+    """WZ's `Amount` field at `RiskWin=0` is the SMALLER of (Risk, Win),
+    not the user's stake directly. Empirically derived from:
+
+      - recon (parlay):  Amount=15 at combined +203 odds  → WZ returned
+                         Risk=15, Win=30  (Risk is smaller, so Amount=Risk)
+      - 2026-05-22 single: Amount=22 at -110             → WZ returned
+                         Risk=24, Win=22  (Win is smaller, so the placer
+                         should have sent Amount=Win=20, not Amount=Risk=22)
+
+    Rule, both empirical and consistent across observed cases:
+      - american_odds < 0  (favorite, Risk > Win):  Amount = Win  = Risk × 100/|odds|
+      - american_odds >= 0 (underdog or even):      Amount = Risk
+
+    The drift check downstream remains Win-on-Win; sending the right
+    Amount makes WZ's preflight return the same (Risk, Win) pair the
+    dashboard verified, so |wz_win - expected_win| ≈ 0 and price_moved
+    no longer false-fires at negative odds."""
+    if american_odds < 0:
+        return round(risk * 100 / -american_odds, 2)
+    return float(risk)
+
+
 def _first_present(*candidates):
     """Return the first candidate that isn't None/""/0/0.0. Mirrors the
     helper in parlay_placer._post_wagers so single + parlay handle WZ's
@@ -260,9 +283,20 @@ def _log_placement_response(
 # ---------------------------------------------------------------------------
 
 def _build_confirm_payload(bet: dict) -> dict:
-    """Build the ConfirmWagerHelper POST parameters for a single leg."""
-    amount = bet["actual_size"]
-    amount_str = str(int(amount)) if amount == int(amount) else str(amount)
+    """Build the ConfirmWagerHelper POST parameters for a single leg.
+
+    Note on the Amount field: WZ at `RiskWin=0` interprets `Amount` as
+    the SMALLER of (Risk, Win) — see `_compute_wz_amount`. For favorites
+    (negative odds) that's Win, not the user's Risk. Sending Risk
+    directly at negative odds causes WZ's preflight to return a different
+    Win than expected, which the drift check then false-flags as
+    price_moved. We compute the right Amount up front.
+    """
+    risk = float(bet["actual_size"])
+    odds = int(bet["wz_odds_at_place"])
+    wz_amount = _compute_wz_amount(risk, odds)
+    amount_str = (str(int(wz_amount)) if wz_amount == int(wz_amount)
+                  else f"{wz_amount:.2f}")
     detail_data = [
         {
             "Amount": amount_str,
