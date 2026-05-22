@@ -654,9 +654,22 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                     # Period line (e.g. first 3 innings, first 7 innings)
                     # Use parse_game_line to capture spread + total + ML (not just totals)
                     innings = period_match.group(1)
+                    # Use the child's own idgm — mirrors the idgmtyp=15 (H1)
+                    # branch above. F3/F7 sub-markets at WZ are addressed
+                    # by a distinct child idgm keyed to the F-period game
+                    # (e.g. "3 INN TB RAYS vrs 3 INN NY YANKEES" → its own
+                    # idgm separate from the FG parent). Without this
+                    # override the row would inherit the parent FG idgm
+                    # via `base`, and Confirm/PostWagerMultipleHelper
+                    # would resolve sel to the FG total at that idgm →
+                    # GAMELINECHANGE on every F-period placement attempt.
+                    # Verified 2026-05-22 via recon_place_single_fperiod.json:
+                    # browser sel was "3_5697380_2.5_-120" while our
+                    # scraper had idgm=5697190 for the same F3 row.
+                    child_base = {**base, "idgm": child.get("idgm", base.get("idgm"))}
                     rec = parse_game_line(
                         child_line, f"{game_id}-{innings}inn", f"f{innings}",
-                        f"spreads_f{innings}", base
+                        f"spreads_f{innings}", child_base
                     )
                     if rec:
                         records.append(rec)

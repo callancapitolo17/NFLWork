@@ -9,7 +9,7 @@ Mocks the WZ HTTP session and verifies:
 - confirmPassword included in PostWagerMultipleHelper payload (production path)
 - both WZ error key conventions handled (ErrorMsgKey vs ErrorCode)
 - orphaned when WagerNumber missing from make response
-- missing_odds in preflight details → rejected
+- missing_win in preflight details → rejected
 """
 import sys
 from pathlib import Path
@@ -77,7 +77,7 @@ def test_successful_placement_returns_ticket():
     fake_session = MagicMock()
     # ConfirmWagerHelper: no drift
     confirm_response = _make_json_response({
-        "result": {"details": [{"Win": 4620, "Risk": 4200, "Odds": 110}]}
+        "result": {"details": [{"Win": 46.20, "Risk": 42.0, "Odds": 110}]}
     })
     # PostWagerMultipleHelper: success with ticket
     make_response = _make_json_response({
@@ -95,7 +95,7 @@ def test_wz_rejection_returns_rejected_with_reason():
     bet = make_bet()
     fake_session = MagicMock()
     confirm_response = _make_json_response({
-        "result": {"details": [{"Win": 4620, "Risk": 4200, "Odds": 110}]}
+        "result": {"details": [{"Win": 46.20, "Risk": 42.0, "Odds": 110}]}
     })
     make_response = _make_json_response({
         "result": {"ErrorCode": "INSUFFICIENT_BALANCE",
@@ -162,7 +162,7 @@ def test_successful_placement_includes_confirm_password(monkeypatch):
 
     fake_session = MagicMock()
     confirm = _make_json_response(
-        {"result": {"details": [{"Win": 4620, "Risk": 4200, "Odds": 110}]}}
+        {"result": {"details": [{"Win": 46.20, "Risk": 42.0, "Odds": 110}]}}
     )
     make = _make_json_response(
         {"result": {"WagerNumber": "T-1", "AvailBalance": 100.0}}
@@ -174,11 +174,15 @@ def test_successful_placement_includes_confirm_password(monkeypatch):
 
     result = single_placer.place_single("Wagerzon", make_bet())
 
-    # Inspect the second post call's data payload for confirmPassword
+    # Inspect the second post call. As of the 2026-05-22 envelope fix,
+    # PostWagerMultipleHelper's body is `{"postWagerRequests": "[<wager JSON>]"}`
+    # rather than the wager dict flat — confirmPassword lives INSIDE the
+    # JSON-encoded array, not as a top-level form key.
+    import json as _json
     make_call = fake_session.post.call_args_list[1]
-    # post() is called as sess.post(URL, data=payload, ...) — keyword arg
     payload = make_call[1].get("data", {})
-    assert payload.get("confirmPassword") == "secret123"
+    wager_request = _json.loads(payload["postWagerRequests"])[0]
+    assert wager_request.get("confirmPassword") == "secret123"
     assert result["status"] == "placed"
 
 
@@ -206,7 +210,7 @@ def test_orphaned_when_make_succeeds_but_no_wager_number():
     """WZ confirmed submission but didn't return WagerNumber -> orphaned."""
     fake_session = MagicMock()
     confirm = _make_json_response(
-        {"result": {"details": [{"Win": 4620, "Risk": 4200, "Odds": 110}]}}
+        {"result": {"details": [{"Win": 46.20, "Risk": 42.0, "Odds": 110}]}}
     )
     make = _make_json_response(
         {"result": {"AvailBalance": 100.0}}  # no WagerNumber
@@ -218,14 +222,29 @@ def test_orphaned_when_make_succeeds_but_no_wager_number():
     assert result["error_msg_key"] == "no_ticket"
 
 
-def test_missing_odds_in_preflight_details_returns_rejected():
-    """Preflight details present but missing Odds field -> rejected."""
+def test_missing_odds_in_preflight_details_proceeds_to_step2():
+    """Obsolete-behavior regression: as of the 2026-05-19 Win-on-Win drift
+    check rewrite, `Odds` is informational; only `Win` is required at
+    preflight. WZ omits `Odds` for some single-bet shapes (alt-spreads,
+    F-period totals), so the placer must keep going.
+
+    Asserts the inverse of the old behavior: with Win present and Odds
+    absent, the placer proceeds to Step 2 — it does NOT reject as
+    'missing_odds' (a status that no longer exists).
+
+    See also: test_single_placer_step2_response.py
+        ::test_odds_absent_but_win_present_proceeds_regression
+    """
     fake_session = MagicMock()
-    fake_response = _make_json_response({
-        "result": {"details": [{"Win": 4620, "Risk": 4200}]}  # no Odds
+    confirm = _make_json_response({
+        "result": {"details": [{"Win": 46.20, "Risk": 42.0}]}  # no Odds
     })
-    fake_session.post.return_value = fake_response
+    make = _make_json_response({
+        "result": [{"WagerPostResult": {
+            "Confirm": True, "TicketNumber": "T-OK"}}]
+    })
+    fake_session.post.side_effect = [confirm, make]
 
     result = single_placer.place_single("primary", make_bet(), session=fake_session)
-    assert result["status"] == "rejected"
-    assert result["error_msg_key"] == "missing_odds"
+    assert result["status"] == "placed"
+    assert result["ticket_number"] == "T-OK"
