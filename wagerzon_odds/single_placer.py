@@ -204,7 +204,7 @@ def _sanitize_for_log(obj):
 
 def _log_placement_response(
     bet: dict,
-    make_payload: dict,
+    wager_request: dict,
     make_json: dict,
     classification: str,
     reason: str,
@@ -237,7 +237,7 @@ def _log_placement_response(
                 "market":        bet.get("market"),
                 "bet_on":        bet.get("bet_on"),
             },
-            "request_payload":  _sanitize_for_log(make_payload),
+            "request_payload":  _sanitize_for_log(wager_request),
             "response_body":    _sanitize_for_log(make_json),
         }
         path.write_text(_json.dumps(payload, indent=2, default=str))
@@ -385,16 +385,23 @@ def place_single(account: str, bet: dict, session=None) -> dict:
     # Network failure here is an orphan candidate — we log forensics and
     # return network_error so the dashboard can surface it.
     # -----------------------------------------------------------------------
-    make_payload = dict(confirm_payload)
+    wager_request = dict(confirm_payload)
     # confirmPassword is required by WZ to authorize the placement (mirrors
     # parlay_placer._build_post_request). The test path (wz_account is None)
     # skips it because mock sessions do not validate credentials.
     if wz_account is not None:
-        make_payload["confirmPassword"] = wz_account.password
+        wager_request["confirmPassword"] = wz_account.password
+
+    # WZ's PostWagerMultipleHelper expects the wager(s) wrapped in a
+    # `postWagerRequests` JSON-serialized array — exactly the same envelope
+    # parlay_placer._post_wagers uses. Sending the wager dict flat returns
+    # `result: {ErrorMessage: "No Payload"}` (verified 2026-05-22 against
+    # a live account). For a single bet, the array has exactly one element.
+    make_body = {"postWagerRequests": _json.dumps([wager_request])}
     try:
         make_resp = sess.post(
             MAKE_URL,
-            data=make_payload,
+            data=make_body,
             timeout=20,
             headers={"Accept": "application/json"},
         )
@@ -441,21 +448,28 @@ def place_single(account: str, bet: dict, session=None) -> dict:
     inner = inner_list[0] if isinstance(inner_list, list) and inner_list and isinstance(inner_list[0], dict) else {}
 
     # Explicit rejection takes priority — surface WZ's real reason
-    # (LINE_PULLED, MINWAGERONLINE, INSUFFICIENT_BALANCE, etc.) so the
-    # user sees what's blocking the placement instead of a generic orphan.
+    # (LINE_PULLED, MINWAGERONLINE, INSUFFICIENT_BALANCE, "No Payload",
+    # etc.) so the user sees what's blocking the placement instead of a
+    # generic orphan. WZ may surface a rejection with either a machine
+    # key (ErrorMsgKey/ErrorCode) or a human message (ErrorMsg/
+    # ErrorMessage), or both — accept any combination as a rejection
+    # signal. When only the message is present, use a generic "wz_error"
+    # key so the dashboard knows this is a rejection.
     err_key = _first_present(
         wpr.get("ErrorMsgKey"),   wpr.get("ErrorCode"),
         inner.get("ErrorMsgKey"), inner.get("ErrorCode"),
     )
-    if err_key:
-        err_msg = _first_present(
-            wpr.get("ErrorMsg"),   wpr.get("ErrorMessage"),
-            inner.get("ErrorMsg"), inner.get("ErrorMessage"),
-        ) or err_key
-        _log_placement_response(bet, make_payload, make_json,
+    err_msg = _first_present(
+        wpr.get("ErrorMsg"),   wpr.get("ErrorMessage"),
+        inner.get("ErrorMsg"), inner.get("ErrorMessage"),
+    )
+    if err_key or err_msg:
+        final_msg = str(err_msg) if err_msg else str(err_key)
+        final_key = str(err_key) if err_key else "wz_error"
+        _log_placement_response(bet, wager_request, make_json,
                                 classification="rejected",
-                                reason=str(err_key))
-        return _rejected(str(err_msg), str(err_key))
+                                reason=final_key)
+        return _rejected(final_msg, final_key)
 
     # Ticket lookup at every plausible location. Includes the legacy
     # `WagerNumber` key as a fallback so a partially-correct WZ response
@@ -473,7 +487,7 @@ def place_single(account: str, bet: dict, session=None) -> dict:
         # success-confirmation nor a rejection reason we know how to read.
         # Could be a third response shape variant we haven't sampled yet.
         # Log the body so we can finally see what came back.
-        _log_placement_response(bet, make_payload, make_json,
+        _log_placement_response(bet, wager_request, make_json,
                                 classification="orphaned",
                                 reason="no_ticket_no_error_key")
         return {

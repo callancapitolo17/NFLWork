@@ -162,6 +162,66 @@ def test_ticket_inside_details_array_recovers():
 # Rejection unmasking (the main user-facing benefit)
 # ---------------------------------------------------------------------------
 
+def test_rejection_via_errormessage_only_returns_rejected(tmp_path, monkeypatch):
+    """REGRESSION for 2026-05-22: WZ rejected our flat (un-wrapped)
+    submission with `{result: {ErrorMessage: "No Payload"}}` — note no
+    ErrorMsgKey. Old logic required a machine error key, so this was
+    masked as 'orphaned' for two days. Now an ErrorMessage alone is a
+    sufficient rejection signal; the placer surfaces the message and
+    tags it with a generic 'wz_error' key so the dashboard renders it
+    as a rejection in the user-facing toast."""
+    monkeypatch.setattr(single_placer, "_DEBUG_DIR", tmp_path)
+    make_body = {"result": {"ErrorMessage": "No Payload"}}
+    sess = _make_session(PASS_PREFLIGHT, make_body)
+    result = single_placer.place_single(account=None, bet=_wz_bet(), session=sess)
+    assert result["status"] == "rejected"
+    assert "No Payload" in result["error_msg"]
+    # No machine key in the response → we fall back to a generic key so
+    # the dashboard still routes this as rejected, not orphan.
+    assert result["error_msg_key"] == "wz_error"
+
+
+def test_request_body_uses_postwagerrequests_envelope():
+    """REGRESSION for 2026-05-22 root cause: WZ's PostWagerMultipleHelper
+    only accepts the wager(s) wrapped in `postWagerRequests=[...]`.
+    Sending the wager dict flat returned `ErrorMessage: "No Payload"`.
+    Mirror parlay_placer._post_wagers' envelope exactly.
+
+    This test inspects what the placer actually POSTs to the MAKE_URL,
+    asserts the envelope structure, and verifies the wager dict (one
+    element) carries the same per-leg fields the preflight used."""
+    preflight_body = PASS_PREFLIGHT
+    make_body = {
+        "result": [{
+            "WagerPostResult": {
+                "Confirm":      True,
+                "TicketNumber": "T-9999",
+            }
+        }]
+    }
+    sess = _make_session(preflight_body, make_body)
+    single_placer.place_single(account=None, bet=_wz_bet(), session=sess)
+
+    # Two POSTs happened: [confirm, make]. Inspect the make POST's body.
+    assert sess.post.call_count == 2
+    make_call = sess.post.call_args_list[1]
+    # Sent under the `data=` kwarg.
+    data = make_call.kwargs.get("data") or (make_call.args[1] if len(make_call.args) > 1 else None)
+    assert isinstance(data, dict), f"expected dict body, got {type(data).__name__}"
+    assert "postWagerRequests" in data, \
+        f"placement body missing postWagerRequests envelope: keys={list(data.keys())}"
+
+    # The envelope value is a JSON-encoded array of wager dicts.
+    decoded = _json.loads(data["postWagerRequests"])
+    assert isinstance(decoded, list) and len(decoded) == 1
+    wager = decoded[0]
+    # Sanity: the single wager carries the WT=0 marker (singles vs parlays)
+    # and the same `sel` shape parlay_placer's encode_sel produces per leg.
+    assert wager["WT"] == "0"
+    assert wager["IDWT"] == "0"
+    assert wager["sel"] == "1_5685842_-2.5_215"  # matches _wz_bet defaults
+
+
 def test_rejection_inside_wagerpostresult_surfaces_real_error(tmp_path, monkeypatch):
     """The bug-of-the-day: WZ returns a real rejection inside
     WagerPostResult.ErrorMsgKey, but the old code only checked the top
