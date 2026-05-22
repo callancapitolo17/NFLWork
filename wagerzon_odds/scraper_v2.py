@@ -606,6 +606,18 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
             child_vtm = child.get("vtm", "")
             child_vtm_upper = child_vtm.upper()
 
+            # Every sub-market is keyed at WZ by the GameChild's OWN idgm,
+            # not the parent FG game's. Without this override (the historic
+            # behavior before 2026-05-22), every sub-market row inherited
+            # the parent idgm via `base`, and placement requests resolved
+            # to the main FG line at that shared idgm → WZ refused with
+            # GAMELINECHANGE on every F3/F7 single, every alt-spread,
+            # every alt-total, every team-total, every pitcher prop,
+            # every score-first, etc. Fall back to the parent idgm if WZ
+            # ever omits the child idgm. See recon_place_single_fperiod.json
+            # for the empirical proof (browser sel used the child idgm).
+            child_base = {**base, "idgm": child.get("idgm", base.get("idgm"))}
+
             # Helper: determine if a stripped child name belongs to the away
             # or home team.  Wagerzon child names drop the city abbreviation
             # (e.g. "GUARDIANS TEAM TOTAL" for parent "CLE GUARDIANS"), so we
@@ -618,9 +630,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
 
             if child_type == 15:
                 # First half line (F5 in baseball) — spread + total + ML
-                # Use child's own idgm (needed for ConfirmWagerHelper parlay pricing)
                 cid = f"{child['vnum']}-{child['hnum']}"
-                child_base = {**base, "idgm": child.get("idgm", base.get("idgm"))}
                 rec = parse_game_line(child_line, cid, "h1", "spreads_h1", child_base)
                 if rec:
                     records.append(rec)
@@ -631,14 +641,14 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 # "H+R+E (SF/SD)" → game-level hits+runs+errors total
                 if "H+R+E" in child_vtm_upper:
                     rec = parse_team_total(
-                        child_line, f"{game_id}-hre", "fg", "hre_total", base
+                        child_line, f"{game_id}-hre", "fg", "hre_total", child_base
                     )
                 elif "TOTAL HITS" in child_vtm_upper:
                     # Wagerzon labels this with the away team name but it's
                     # the game total hits (one per game, ~13-16 range)
                     rec = parse_team_total(
                         child_line, f"{game_id}-totalhits", "fg",
-                        "total_hits", base
+                        "total_hits", child_base
                     )
                 else:
                     rec = None
@@ -654,19 +664,6 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                     # Period line (e.g. first 3 innings, first 7 innings)
                     # Use parse_game_line to capture spread + total + ML (not just totals)
                     innings = period_match.group(1)
-                    # Use the child's own idgm — mirrors the idgmtyp=15 (H1)
-                    # branch above. F3/F7 sub-markets at WZ are addressed
-                    # by a distinct child idgm keyed to the F-period game
-                    # (e.g. "3 INN TB RAYS vrs 3 INN NY YANKEES" → its own
-                    # idgm separate from the FG parent). Without this
-                    # override the row would inherit the parent FG idgm
-                    # via `base`, and Confirm/PostWagerMultipleHelper
-                    # would resolve sel to the FG total at that idgm →
-                    # GAMELINECHANGE on every F-period placement attempt.
-                    # Verified 2026-05-22 via recon_place_single_fperiod.json:
-                    # browser sel was "3_5697380_2.5_-120" while our
-                    # scraper had idgm=5697190 for the same F3 row.
-                    child_base = {**base, "idgm": child.get("idgm", base.get("idgm"))}
                     rec = parse_game_line(
                         child_line, f"{game_id}-{innings}inn", f"f{innings}",
                         f"spreads_f{innings}", child_base
@@ -674,14 +671,16 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                     if rec:
                         records.append(rec)
                 else:
-                    # Alt line — spread and total are paired in each entry
+                    # Alt line — spread and total are paired in each entry.
+                    # Each alt rung is its own GameChild at WZ with its own
+                    # idgm — child_base above already encodes that.
                     child_id = str(child.get("idgm", alt_counter))
 
                     # Alt spread
                     alt_away_spread = safe_float(child_line.get("vsprdt"))
                     if alt_away_spread is not None:
                         records.append({
-                            **base,
+                            **child_base,
                             "game_id": f"{game_id}-alts-{child_id}",
                             "market": "alternate_spreads_fg",
                             "period": "fg",
@@ -701,7 +700,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                     alt_total = safe_float(child_line.get("unt"))
                     if alt_total is not None:
                         records.append({
-                            **base,
+                            **child_base,
                             "game_id": f"{game_id}-altt-{child_id}",
                             "market": "alternate_totals_fg",
                             "period": "fg",
@@ -736,7 +735,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                         f"{game_id}-pp-{pitcher_slug}-{prop_type}",
                         "fg",
                         f"pitcher_{prop_type}",
-                        {**base, "away_team": pitcher_name, "home_team": f"{away_team} @ {home_team}"},
+                        {**child_base, "away_team": pitcher_name, "home_team": f"{away_team} @ {home_team}"},
                     )
                     if rec:
                         records.append(rec)
@@ -745,7 +744,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 # Odd/even total runs — ML only
                 # "TOTAL RUNS ODD(CLE/LAD)" vs "TOTAL RUNS EVEN(CLE/LAD)"
                 rec = parse_moneyline_only(
-                    child_line, f"{game_id}-oddeven", "fg", "odd_even_runs", base
+                    child_line, f"{game_id}-oddeven", "fg", "odd_even_runs", child_base
                 )
                 if rec:
                     records.append(rec)
@@ -756,7 +755,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 tt_side = _side(tt_name)
                 rec = parse_team_total(
                     child_line, f"{game_id}-tt-{tt_side}", "fg",
-                    f"team_totals_{tt_side}_fg", base
+                    f"team_totals_{tt_side}_fg", child_base
                 )
                 if rec:
                     records.append(rec)
@@ -767,12 +766,12 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 #   "YES TM SCR 1ST WIN G(CLE/LAD)" — does the team that scores first win?
                 if "SC 1ST" in child_vtm_upper and "WIN" not in child_vtm_upper:
                     rec = parse_moneyline_only(
-                        child_line, f"{game_id}-scorefirst", "fg", "score_first", base
+                        child_line, f"{game_id}-scorefirst", "fg", "score_first", child_base
                     )
                 else:
                     rec = parse_moneyline_only(
                         child_line, f"{game_id}-scorefirst-wins", "fg",
-                        "score_first_wins_game", base
+                        "score_first_wins_game", child_base
                     )
                 if rec:
                     records.append(rec)
@@ -781,7 +780,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 # Score in 1st inning — yes/no ML
                 rec = parse_moneyline_only(
                     child_line, f"{game_id}-score1stinn", "fg",
-                    "score_1st_inning", base
+                    "score_1st_inning", child_base
                 )
                 if rec:
                     records.append(rec)
@@ -793,7 +792,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 tt_side = _side(tt_name)
                 rec = parse_team_total(
                     child_line, f"{game_id}-tt-{tt_side}-h1", "h1",
-                    f"team_totals_{tt_side}_h1", base
+                    f"team_totals_{tt_side}_h1", child_base
                 )
                 if rec:
                     records.append(rec)
