@@ -220,6 +220,14 @@ def test_request_body_uses_postwagerrequests_envelope():
     assert wager["WT"] == "0"
     assert wager["IDWT"] == "0"
     assert wager["sel"] == "1_5685842_-2.5_215"  # matches _wz_bet defaults
+    # Types and required keys must exactly match parlay_placer._build_post_request.
+    # PostWagerMultipleHelper JSON-decodes each wager strictly, so string-typed
+    # booleans ("false") would not parse as the bool `false` and could be the
+    # difference between accept and reject.
+    assert wager["open"] == 0 and isinstance(wager["open"], int)
+    assert wager["sameAmount"] is False
+    assert wager["useFreePlayAmount"] is False
+    assert wager["roundRobinCombinations"] == ""
 
 
 def test_rejection_inside_wagerpostresult_surfaces_real_error(tmp_path, monkeypatch):

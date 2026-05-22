@@ -386,6 +386,17 @@ def place_single(account: str, bet: dict, session=None) -> dict:
     # return network_error so the dashboard can surface it.
     # -----------------------------------------------------------------------
     wager_request = dict(confirm_payload)
+    # Normalize types + required keys to match parlay_placer._build_post_request
+    # exactly. confirm_payload uses string-typed booleans ("false") and string
+    # zeros ("0") because ConfirmWagerHelper (preflight) tolerates them when
+    # the payload is form-encoded. But PostWagerMultipleHelper JSON-decodes
+    # each wager inside `postWagerRequests`, where JSON "false" (string) is
+    # not the same as JSON false (bool). Parlay's working request uses bool
+    # types and includes `roundRobinCombinations: ""` — mirror it exactly.
+    wager_request["open"]                   = 0
+    wager_request["sameAmount"]             = False
+    wager_request["useFreePlayAmount"]      = False
+    wager_request["roundRobinCombinations"] = ""
     # confirmPassword is required by WZ to authorize the placement (mirrors
     # parlay_placer._build_post_request). The test path (wz_account is None)
     # skips it because mock sessions do not validate credentials.
