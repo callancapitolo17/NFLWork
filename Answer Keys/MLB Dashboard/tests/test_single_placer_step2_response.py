@@ -354,3 +354,104 @@ def test_first_present_treats_string_zero_as_present():
     """Edge case: a ticket number serialized as the string '0' is still
     a real value, not the int sentinel. Cover the boundary explicitly."""
     assert single_placer._first_present(None, "0") == "0"
+
+
+# ---------------------------------------------------------------------------
+# Preflight (ConfirmWagerHelper) failure logging — added 2026-05-22 to close
+# the diagnostic gap on price_moved / empty_details / missing_win paths.
+# Without these, when a placement fails at preflight we have no visibility
+# into what WZ actually returned (vs Step 2 failures, which were already
+# logged).
+# ---------------------------------------------------------------------------
+
+def test_price_moved_writes_debug_file_capturing_preflight_response(tmp_path, monkeypatch):
+    """REGRESSION for 2026-05-22: user reported repeated 'Price moved' on
+    bets where the line had not visibly moved at WZ. Previously the
+    price_moved path wrote nothing to disk, so we had no way to see what
+    Win WZ actually returned vs what expected_win the dashboard sent.
+
+    This test verifies that price_moved now writes the full preflight
+    response body (request + response) to a gitignored debug file with
+    classification='price_moved' so a future investigation can read it.
+    """
+    monkeypatch.setattr(single_placer, "_DEBUG_DIR", tmp_path)
+    # Preflight returns Win=$50 but expected_win is $440.75 -> drift fires.
+    preflight = {"result": {"details": [{"Win": 50.0, "Risk": 205.0}]}}
+    # Use a session that only returns the preflight response — the placer
+    # should refuse to call Step 2 because the drift check trips first.
+    sess = MagicMock()
+    sess.post.side_effect = [_json_resp(preflight),
+                              AssertionError("Step 2 must not fire on price_moved")]
+    result = single_placer.place_single(
+        account=None, bet=_wz_bet(expected_win=440.75), session=sess)
+    assert result["status"] == "price_moved"
+
+    # Find the debug file written for this rejection.
+    debug_files = list(tmp_path.glob(".placement_debug_*_price_moved_*.json"))
+    assert len(debug_files) == 1, \
+        f"expected exactly one price_moved debug file, got {debug_files}"
+    body = _json.loads(debug_files[0].read_text())
+    assert body["classification"] == "price_moved"
+    assert body["endpoint"] == "ConfirmWagerHelper"
+    # The captured response_body should be exactly the preflight JSON,
+    # giving the investigator everything WZ returned at preflight.
+    assert body["response_body"]["result"]["details"][0]["Win"] == 50.0
+    # The reason field encodes the drift amount so we can see at a glance
+    # how far off we were without opening the file.
+    assert body["reason"].startswith("win_drift_")
+
+
+def test_empty_details_writes_debug_file(tmp_path, monkeypatch):
+    """Symmetric coverage: empty_details at preflight also logs."""
+    monkeypatch.setattr(single_placer, "_DEBUG_DIR", tmp_path)
+    preflight = {"result": {"details": []}}  # WZ returned empty details
+    sess = MagicMock()
+    sess.post.side_effect = [_json_resp(preflight),
+                              AssertionError("Step 2 must not fire")]
+    result = single_placer.place_single(
+        account=None, bet=_wz_bet(), session=sess)
+    assert result["status"] == "rejected"
+    assert result["error_msg_key"] == "empty_details"
+    debug_files = list(tmp_path.glob(".placement_debug_*_empty_details_*.json"))
+    assert len(debug_files) == 1
+    body = _json.loads(debug_files[0].read_text())
+    assert body["endpoint"] == "ConfirmWagerHelper"
+
+
+def test_missing_win_at_preflight_writes_debug_file(tmp_path, monkeypatch):
+    """If WZ's preflight returns details[0] without a Win field at all,
+    we now log the body so we can finally see what was returned."""
+    monkeypatch.setattr(single_placer, "_DEBUG_DIR", tmp_path)
+    preflight = {"result": {"details": [{"Risk": 100.0}]}}  # no Win
+    sess = MagicMock()
+    sess.post.side_effect = [_json_resp(preflight),
+                              AssertionError("Step 2 must not fire")]
+    result = single_placer.place_single(
+        account=None, bet=_wz_bet(), session=sess)
+    assert result["status"] == "rejected"
+    assert result["error_msg_key"] == "missing_win"
+    debug_files = list(tmp_path.glob(".placement_debug_*_missing_win_*.json"))
+    assert len(debug_files) == 1
+    body = _json.loads(debug_files[0].read_text())
+    assert body["endpoint"] == "ConfirmWagerHelper"
+
+
+def test_preflight_error_key_writes_debug_file(tmp_path, monkeypatch):
+    """A preflight that returns an ErrorMsgKey (e.g. INSUFFICIENT_BALANCE)
+    also logs now — previously this path returned _rejected with no
+    forensics. Useful when WZ refuses for a reason we haven't seen before."""
+    monkeypatch.setattr(single_placer, "_DEBUG_DIR", tmp_path)
+    preflight = {"result": {"ErrorMsgKey": "MINWAGERONLINE",
+                              "ErrorMsg": "Below minimum wager"}}
+    sess = MagicMock()
+    sess.post.side_effect = [_json_resp(preflight),
+                              AssertionError("Step 2 must not fire")]
+    result = single_placer.place_single(
+        account=None, bet=_wz_bet(), session=sess)
+    assert result["status"] == "rejected"
+    assert result["error_msg_key"] == "MINWAGERONLINE"
+    debug_files = list(tmp_path.glob(".placement_debug_*_rejected_*.json"))
+    assert len(debug_files) == 1
+    body = _json.loads(debug_files[0].read_text())
+    assert body["endpoint"] == "ConfirmWagerHelper"
+    assert body["reason"] == "MINWAGERONLINE"

@@ -204,28 +204,37 @@ def _sanitize_for_log(obj):
 
 def _log_placement_response(
     bet: dict,
-    wager_request: dict,
-    make_json: dict,
+    request_payload: dict,
+    response_body: dict,
     classification: str,
     reason: str,
+    endpoint: str = "PostWagerMultipleHelper",
 ) -> None:
-    """Dump WZ's placement response body (plus our request payload) to a
-    gitignored file. Best-effort: never raises, never blocks placement.
+    """Dump WZ's request/response pair to a gitignored file. Best-effort:
+    never raises, never blocks the placement flow.
 
-    Only called when placement did NOT end in 'placed' — i.e. orphan or
-    rejection — so the file is the forensic trail for any surprise. Once
-    we've stabilised the response-shape understanding, this can be made
-    opt-in via an env flag.
+    Called whenever placement did NOT end in 'placed' — at EITHER the
+    preflight step (ConfirmWagerHelper: price_moved, empty_details,
+    missing_win, rejected) OR the submission step (PostWagerMultipleHelper:
+    rejected, orphaned). The captured file is the forensic trail for any
+    surprise; `endpoint` and `classification` together identify which
+    branch fired. Filename includes classification so multiple captures
+    for the same bet are triageable at a glance.
     """
     try:
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         bet_hash = (bet.get("bet_hash") or "no-hash")
         # Strip path separators defensively; cap length to keep filenames sane.
         safe_hash = "".join(c for c in bet_hash if c.isalnum() or c in "-_")[:40]
-        path = _DEBUG_DIR / f".placement_debug_{ts}_{safe_hash}.json"
+        # Include classification in the filename so multiple captures for the
+        # same bet (e.g. retry attempts that each hit price_moved) are easy to
+        # triage at a glance without opening each file.
+        safe_class = "".join(c for c in (classification or "unknown") if c.isalnum() or c in "-_")[:24]
+        path = _DEBUG_DIR / f".placement_debug_{ts}_{safe_class}_{safe_hash}.json"
         payload = {
             "classification": classification,
             "reason":         reason,
+            "endpoint":       endpoint,
             "bet_summary": {
                 "bet_hash":      bet.get("bet_hash"),
                 "idgm":          bet.get("idgm"),
@@ -237,8 +246,8 @@ def _log_placement_response(
                 "market":        bet.get("market"),
                 "bet_on":        bet.get("bet_on"),
             },
-            "request_payload":  _sanitize_for_log(wager_request),
-            "response_body":    _sanitize_for_log(make_json),
+            "request_payload":  _sanitize_for_log(request_payload),
+            "response_body":    _sanitize_for_log(response_body),
         }
         path.write_text(_json.dumps(payload, indent=2, default=str))
     except Exception:
@@ -341,11 +350,19 @@ def place_single(account: str, bet: dict, session=None) -> dict:
     err_key = result_block.get("ErrorMsgKey") or result_block.get("ErrorCode")
     if err_key:
         err_msg = result_block.get("ErrorMsg") or result_block.get("ErrorMessage") or err_key
+        _log_placement_response(bet, confirm_payload, confirm_json,
+                                classification="rejected",
+                                reason=str(err_key),
+                                endpoint="ConfirmWagerHelper")
         return _rejected(err_msg, err_key)
 
     details = result_block.get("details") or []
     if not details:
         # Line pulled, bet too large, or other server-side refusal
+        _log_placement_response(bet, confirm_payload, confirm_json,
+                                classification="empty_details",
+                                reason="line_pulled_or_refused",
+                                endpoint="ConfirmWagerHelper")
         return _rejected(
             msg="Wagerzon returned empty details (line pulled?)",
             key="empty_details",
@@ -361,6 +378,10 @@ def place_single(account: str, bet: dict, session=None) -> dict:
     first_detail = details[0]
     wz_win = first_detail.get("Win")
     if wz_win is None:
+        _log_placement_response(bet, confirm_payload, confirm_json,
+                                classification="missing_win",
+                                reason="no_win_in_details",
+                                endpoint="ConfirmWagerHelper")
         return _rejected(
             msg="Wagerzon preflight details missing Win field",
             key="missing_win",
@@ -374,6 +395,15 @@ def place_single(account: str, bet: dict, session=None) -> dict:
         )
 
     if abs(float(wz_win) - float(expected_win)) > DRIFT_TOLERANCE_USD:
+        # Log the preflight body so we can see WZ's exact Win + Odds + line
+        # info. This is the diagnostic gap we're closing — without this, a
+        # price_moved rejection gives us no visibility into what WZ actually
+        # returned, making it impossible to distinguish genuine line drift
+        # from a precision/rounding issue from a protocol mismatch.
+        _log_placement_response(bet, confirm_payload, confirm_json,
+                                classification="price_moved",
+                                reason=f"win_drift_{abs(float(wz_win) - float(expected_win)):.4f}",
+                                endpoint="ConfirmWagerHelper")
         return _price_moved_by_win(
             expected=float(expected_win),
             actual=float(wz_win),
@@ -479,7 +509,8 @@ def place_single(account: str, bet: dict, session=None) -> dict:
         final_key = str(err_key) if err_key else "wz_error"
         _log_placement_response(bet, wager_request, make_json,
                                 classification="rejected",
-                                reason=final_key)
+                                reason=final_key,
+                                endpoint="PostWagerMultipleHelper")
         return _rejected(final_msg, final_key)
 
     # Ticket lookup at every plausible location. Includes the legacy
@@ -500,7 +531,8 @@ def place_single(account: str, bet: dict, session=None) -> dict:
         # Log the body so we can finally see what came back.
         _log_placement_response(bet, wager_request, make_json,
                                 classification="orphaned",
-                                reason="no_ticket_no_error_key")
+                                reason="no_ticket_no_error_key",
+                                endpoint="PostWagerMultipleHelper")
         return {
             "status": "orphaned",
             "ticket_number": None,
