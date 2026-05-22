@@ -455,3 +455,99 @@ def test_preflight_error_key_writes_debug_file(tmp_path, monkeypatch):
     body = _json.loads(debug_files[0].read_text())
     assert body["endpoint"] == "ConfirmWagerHelper"
     assert body["reason"] == "MINWAGERONLINE"
+
+
+# ---------------------------------------------------------------------------
+# Amount-field semantics — added 2026-05-22 after capturing live evidence
+# that WZ at RiskWin=0 interprets `Amount` as the SMALLER of (Risk, Win).
+# At negative odds (favorites) the smaller value is Win, not Risk; sending
+# the user's Risk as Amount caused WZ to compute the "wrong" Risk and Win
+# back, which our drift check then false-flagged as price_moved.
+# ---------------------------------------------------------------------------
+
+def test_compute_wz_amount_negative_odds_returns_win():
+    """At -110 odds and $22 risk: Win = 22 × 100/110 = $20.00. WZ wants
+    that as Amount when RiskWin=0 because Win < Risk."""
+    assert single_placer._compute_wz_amount(22.0, -110) == 20.0
+
+
+def test_compute_wz_amount_positive_odds_returns_risk_unchanged():
+    """At +125 odds and $22 risk: Win would be $27.50; Risk ($22) is the
+    smaller value, so Amount = Risk = $22 unchanged."""
+    assert single_placer._compute_wz_amount(22.0, 125) == 22.0
+
+
+def test_compute_wz_amount_even_money_returns_risk():
+    """At ±100 odds, Risk == Win exactly; either works as Amount. Use
+    Risk for consistency with the positive-odds branch."""
+    assert single_placer._compute_wz_amount(22.0, 100) == 22.0
+    assert single_placer._compute_wz_amount(22.0, -100) == 22.0
+
+
+def test_compute_wz_amount_heavy_favorite():
+    """At -300 odds, $30 risk wins $10. Amount = $10."""
+    assert single_placer._compute_wz_amount(30.0, -300) == 10.0
+
+
+def test_build_confirm_payload_sends_win_as_amount_at_negative_odds():
+    """REGRESSION for the 2026-05-22 price_moved storm: at negative odds
+    the placer must send Win (not Risk) in Amount and sameAmountNumber,
+    so WZ's preflight returns the matching (Risk, Win) pair our verified
+    expected_win was computed against."""
+    bet = dict(
+        idgm=5697583, play=3, line=4.5,
+        american_odds=-110, wz_odds_at_place=-110,
+        actual_size=22.0,
+        pitcher=0,
+    )
+    payload = single_placer._build_confirm_payload(bet)
+    detail = _json.loads(payload["detailData"])[0]
+    # At -110 with risk=$22, WZ wants Amount=Win=$20, not Amount=Risk=$22.
+    assert detail["Amount"] == "20"
+    assert payload["sameAmountNumber"] == "20"
+
+
+def test_build_confirm_payload_sends_risk_as_amount_at_positive_odds():
+    """At positive odds (underdog), Risk is the smaller value — keep the
+    behavior that already worked (CLE -2.5 at +215, ARI -2.5 at +190
+    both reached Step 2 with the old code)."""
+    bet = dict(
+        idgm=5685842, play=1, line=-2.5,
+        american_odds=215, wz_odds_at_place=215,
+        actual_size=205.0,
+        pitcher=0,
+    )
+    payload = single_placer._build_confirm_payload(bet)
+    detail = _json.loads(payload["detailData"])[0]
+    assert detail["Amount"] == "205"
+    assert payload["sameAmountNumber"] == "205"
+
+
+def test_negative_odds_placement_no_longer_false_fires_price_moved():
+    """End-to-end: simulate the exact 2026-05-22 case. User risks $22 at
+    -110, expected_win=$20. With the fix, the placer sends Amount=$20 to
+    WZ; WZ's preflight returns Risk=$22, Win=$20; drift = $0 → proceeds
+    to Step 2 cleanly. Without the fix, WZ would have returned Win=$22
+    (the old bug), tripping the drift check."""
+    # Mirror what the WZ recon-style happy path returns when Amount=Win=20.
+    preflight = {"result": {"details": [{"Win": 20.0, "Risk": 22.0,
+                                          "Odds": -110}]}}
+    make_body = {"result": [{"WagerPostResult":
+                              {"Confirm": True, "TicketNumber": "T-FAV-OK"}}]}
+    sess = _make_session(preflight, make_body)
+    bet = _wz_bet(
+        idgm=5697583, play=3, line=4.5,
+        american_odds=-110, wz_odds_at_place=-110,
+        actual_size=22.0, expected_win=20.0,
+    )
+    result = single_placer.place_single(account=None, bet=bet, session=sess)
+    assert result["status"] == "placed", \
+        f"favorite-odds placement should now succeed, got {result}"
+    assert result["ticket_number"] == "T-FAV-OK"
+
+    # And confirm the request body actually sent Amount=20 (not 22).
+    confirm_call = sess.post.call_args_list[0]
+    confirm_body = confirm_call.kwargs.get("data") or confirm_call.args[1]
+    detail = _json.loads(confirm_body["detailData"])[0]
+    assert detail["Amount"] == "20", \
+        f"placer should have sent Amount=20 (= Win) for -110, sent {detail['Amount']}"
