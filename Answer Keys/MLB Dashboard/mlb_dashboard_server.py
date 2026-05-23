@@ -179,7 +179,8 @@ def init_db():
     try:
         con.execute("""
             CREATE TABLE IF NOT EXISTS placed_bets (
-                bet_hash TEXT PRIMARY KEY,
+                bet_hash TEXT NOT NULL,
+                account VARCHAR,
                 game_id TEXT NOT NULL,
                 home_team TEXT NOT NULL,
                 away_team TEXT NOT NULL,
@@ -194,7 +195,8 @@ def init_db():
                 odds INTEGER NOT NULL,
                 bookmaker TEXT NOT NULL,
                 placed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                status TEXT DEFAULT 'pending'
+                status TEXT DEFAULT 'pending',
+                PRIMARY KEY (bet_hash, account)
             )
         """)
 
@@ -1154,11 +1156,14 @@ def log_bet():
     if "bookmaker_key" not in data and "bookmaker" in data:
         data["bookmaker_key"] = data["bookmaker"]
     bet_hash = data.get("bet_hash")
+    account  = data.get("account")
     if not bet_hash:
         return jsonify({"success": False, "error": "bet_hash required"}), 400
+    if not account:
+        return jsonify({"success": False, "error": "account required"}), 400
     _insert_placement_breadcrumb(
         bet_hash,
-        data.get("account"),
+        account,
         data,
         status="placed",
     )
