@@ -44,6 +44,19 @@ Output schema matches the wagerzon offshore convention (18-column wide
 `mlb_odds` table). MLB.R consumes via `get_dk_odds()` / `get_fd_odds()`
 (in `Tools.R`) → `scraper_to_canonical()` → `book_odds_by_book`.
 
+**FanDuel market selection (2026-05-23).** FD's `event-page` endpoint returns
+a *different* market slice per `tab`, and no single tab has everything: the
+**default** tab (`tab=`) carries F7/F3 + per-inning lines, while the
+**same-game-parlay** tab carries FG-alts + all of F5. `scraper_fanduel_singles`
+therefore fetches **both** tabs (`FD_TABS`) via `fd_client.fetch_event_page()`
+and merges them (dedup by market/runner id). Market selection is a **keyword
+classifier** (`classify_market`, mirroring DK) — period + market-type detection
+with FD-specific junk exclusions (`parlay`, `listed`, `bands`, `tri-bet`,
+`specials`, per-inning, 3-way `Result`) and event-team team-total filtering —
+**not** the old exact-name whitelist, which silently missed any market FD posts
+under an unlisted name (that bug is why F7 totals were absent). It now covers
+FG/F5/F7/F3 main + alt wherever FD posts them and auto-picks-up new markets.
+
 ### Coverage
 
 | Period | DK | FD | Notes |
@@ -53,9 +66,11 @@ Output schema matches the wagerzon offshore convention (18-column wide
 | FG alternate totals                  | ✅ | ✅ | When DK/FD posts them |
 | F5 main (spread + total + ML)        | ✅ | ✅ | F5 ML may be ✗ at DK |
 | F5 alternate spreads / totals        | ✅ | ✅ | |
-| F7 main (spread + total)             | ✅ | ✗ | FD doesn't post F7 |
-| F7 alternate totals                  | ✅ | ✗ | |
-| F3 main + alternate totals/spreads   | ✅ | ✗ | DK posts `Total Runs - 1st 3 Innings` and `Run Line - 1st 3 Innings`. FD only posts `First 3 Innings Result` (3-way ML), not 2-way total/spread. |
+| F7 main (spread + total)             | ✅ | ✅ | FD posts `First 7 Innings Run Line` + `Total Runs` — but only on the **default** event-page tab (see note below). |
+| F7 alternate totals/spreads          | ✅ | ✗ | FD posts no F7 alts (vendor gap). |
+| F3 main (spread + total)             | ✅ | ✅ | FD posts `First 3 Innings Run Line` + `Total Runs` (default tab). FD also posts `First 3 Innings Result` (3-way ML) which we skip. |
+| F3 alternate totals/spreads          | ✅ | ✗ | FD posts no F3 alts (vendor gap). |
+| F7 / F3 two-way moneyline            | ✅ | ✗ | FD only posts the 3-way `Result` at F6/F7/F3 — no 2-way ML. |
 
 ### Run timing
 
@@ -212,7 +227,7 @@ Every book has these, just named differently:
 
 **Silent degradation > explicit errors.** FD returns 200 with single-leg prices when headers are wrong, instead of 403. DK returns 422 with a clear error code. Assume the worst: always verify the response contains the SGP combined entry, not just a 200 status.
 
-**Alt markets may hide behind a different tab/category.** FD's default event-page returns 3-5 markets. Adding `&tab=same-game-parlay-` returns 156+. Always check if there's a tab/category parameter that unlocks more markets.
+**Markets are split across tabs — no single tab is a superset (FD).** FD's `event-page?tab=` returns a *different* market slice per tab, and they only partially overlap. The `same-game-parlay-` tab returns ~156 markets (FG-alts + all F5) but **omits** the cumulative `First 7/3 Innings Run Line / Total Runs` and per-inning lines; the **default** tab (`tab=`) returns ~99 markets that **include** those F7/F3 lines but **omit** FG-alts and F5. Full coverage = the **union** of both tabs (`scraper_fanduel_singles.FD_TABS`), deduped by market/runner id. Lesson: don't assume one tab has everything — enumerate the tabs the event advertises and merge. (This is the bug that hid FD F7 totals: the singles scraper only read the SGP tab.)
 
 **Selection ID formats vary wildly.** DK encodes market number + sign + line + suffix into strings like `0HC84191361N150_1`. FD uses plain integer `selectionId` tied to a `marketId`. Don't assume one format.
 
