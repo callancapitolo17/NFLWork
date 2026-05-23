@@ -77,13 +77,16 @@ _SINGLE_INNING_RE = re.compile(r"\b\d+(st|nd|rd|th)\s+inning\b", re.IGNORECASE)
 #   - "listed"  -> "Moneyline Away/Home/Both Listed" (pitcher-conditional; keep plain "Moneyline")
 #   - "bands"   -> "Total Runs (Bands)"
 #   - "tri-bet", "specials" -> FD novelty markets
+#   - "result" -> 3-way "First N Innings Result" (Home/Tie/Away ML) — we only
+#     take 2-way lines; load-bearing so a rename like "Result Total" can't slip
+#     through the keyword fall-through. No 2-way line market name contains it.
 _FD_EXCLUDE_KEYWORDS = (
     "team total", "player", "prop", "futures", "to record", "to score",
     "to hit", "first to", "race to", "correct score", "winning margin",
     "total bases", "rbis", "hits o/u", "strikeouts thrown", "odd/even",
     "score last", "bat bottom", "highest scoring", "most innings",
     "last run", "both teams to score",
-    "parlay", "listed", "bands", "tri-bet", "specials",
+    "parlay", "listed", "bands", "tri-bet", "specials", "result",
 )
 
 
