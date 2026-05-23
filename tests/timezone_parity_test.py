@@ -7,6 +7,11 @@ tolerance. Run after any scraper-touching change.
 Exit code 0 = all scrapers within tolerance (or no overlap to test).
 Exit code 1 = at least one (scraper × game) pair outside tolerance.
 
+Runtime deps: duckdb + pytz (pytz is required by duckdb's Python client to
+materialize TIMESTAMPTZ columns into datetimes on read — without it the
+game_start_time SELECT raises "Required module 'pytz' failed to import").
+Install with: pip install -r tests/requirements.txt
+
 Compares ALL 8 MLB-relevant scrapers:
   - DK, FD, BFA, Kalshi (Group A — always wrote ISO UTC internally)
   - Wagerzon (EDT → UTC), Hoop88 (PDT → UTC, surprise from audit),
