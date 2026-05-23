@@ -26,6 +26,11 @@ DO NOT RUN until the corresponding Phase 3 scraper code has landed —
 otherwise the next scrape cycle will fail trying to write into a
 table that no longer exists (it'll auto-recreate with the OLD schema,
 which is harmless but wastes a cycle).
+
+CRITICAL: Stop the scraper orchestrator (e.g. run.py cron) before running
+this migration. A scraper writing to mlb_odds while we DROP it will either
+crash mid-cycle or recreate the table with the OLD schema before our
+Phase 3 changes can take effect.
 """
 import argparse
 import duckdb
@@ -66,8 +71,15 @@ def migrate_ephemeral(rollback=False):
             continue
         con = duckdb.connect(str(db_path))
         try:
-            con.execute("DROP TABLE IF EXISTS mlb_odds")
-            print(f"[{label}] dropped mlb_odds (will be recreated by next scraper run)")
+            # Report row count before dropping so the operator can tell
+            # what actually got removed vs. a no-op on a missing table.
+            try:
+                n = con.execute("SELECT count(*) FROM mlb_odds").fetchone()[0]
+                con.execute("DROP TABLE IF EXISTS mlb_odds")
+                print(f"[{label}] dropped mlb_odds ({n} rows) — "
+                      "will be recreated by next scraper run")
+            except duckdb.CatalogException:
+                print(f"[{label}] mlb_odds not present — nothing to drop")
         finally:
             con.close()
 
