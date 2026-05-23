@@ -55,10 +55,18 @@ def daily_cap_ok(today_fills: list[dict], daily_cap_usd: float) -> bool:
     return spent < daily_cap_usd
 
 
-def cooldown_ok(leg_set_hash: str, cooldown_map: dict, now: datetime | None = None) -> bool:
+def cooldown_ok(leg_set_hash: str, side: str, cooldown_map: dict,
+                now: datetime | None = None) -> bool:
+    """True iff the (leg_set_hash, side) pair is not in cooldown.
+
+    cooldown_map is keyed by (leg_set_hash, side) tuples. After our v2 schema
+    migration each side gets its own cooldown row, so e.g. just-filled YES
+    on combo X does not block a later NO fill on the same combo (which is
+    intentionally treated as a different position in our book).
+    """
     if now is None:
         now = datetime.now(timezone.utc)
-    cooled_until = cooldown_map.get(leg_set_hash)
+    cooled_until = cooldown_map.get((leg_set_hash, side))
     if cooled_until is None:
         return True
     if cooled_until.tzinfo is None:
