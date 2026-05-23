@@ -2984,7 +2984,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .bet-card-v8 .hero .stat .val.risk  { color: #c9d1d9; }
         .bet-card-v8 .hero .stat .val.fair  { color: #c9d1d9; }
         .bet-card-v8 .hero .actions {
-          display: flex; gap: 8px; margin-left: 8px;
+          display: flex; gap: 8px; margin-left: 8px; flex-wrap: wrap;
         }
         .bet-card-v8 .hero .actions button {
           border: 1px solid #30363d; border-radius: 6px; padding: 9px 18px;
@@ -3110,6 +3110,16 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .bet-card-v8 .hero .towin-status.verified { color: #3fb950; }
         .bet-card-v8 .hero .towin-status.spinner  { color: #7d8590; }
         .bet-card-v8 .hero .towin-status[hidden]  { display: none; }
+
+        /* Reopened editable hero (injected by addAnother inside .hero .actions).
+           Force it onto its own row in the flex container and give it full width
+           so it renders as a standalone strip below the placed chip row. */
+        .bet-card-v8 .hero .actions .hero.reopened {
+          flex-basis: 100%;
+          width: 100%;
+          margin-top: 8px;
+          box-sizing: border-box;
+        }
 
         .bet-card-v8 .price-grid {
           display: grid;
@@ -4588,7 +4598,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             market:           d.market,
             american_odds:    parseInt(d.pickOddsRaw, 10),
             actual_size:      Math.round(riskNum),
-            kelly_bet:        parseFloat(d.modelSize || d.kellyBet) || riskNum,
+            kelly_bet:        parseFloat(d.modelSize) || riskNum,
             wz_odds_at_place: parseInt(d.pickOddsRaw, 10),
             expected_win:     expectedWin,
             game_id:          d.gameId,
@@ -6083,10 +6093,21 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       return btn ? (btn.dataset.book || '').toLowerCase() : '';
     }
 
-    function setOverride(card, riskValue, isOverride) {
-      var stat    = card.querySelector('.risk-stat');
+    // Return the .risk-stat scoped to a specific .hero element within the card.
+    // contextEl is any element inside the relevant hero (e.g. the .risk-value
+    // being edited, or the .risk-reset button that was clicked). This prevents
+    // card.querySelector('.risk-stat') from returning the FIRST .risk-stat in
+    // the original .hero when a .hero.reopened is also present in the card.
+    function riskStatFor(card, contextEl) {
+      var hero = contextEl && contextEl.closest('.hero');
+      return hero ? hero.querySelector('.risk-stat') : card.querySelector('.risk-stat');
+    }
+
+    function setOverride(card, riskValue, isOverride, contextEl) {
+      var stat    = riskStatFor(card, contextEl);
       var valueEl = stat.querySelector('.risk-value');
-      var towinEl = card.querySelector('.towin-value');
+      var towinEl = (contextEl && contextEl.closest('.hero').querySelector('.towin-value'))
+                    || card.querySelector('.towin-value');
       var amerOdds = parseInt(stat.dataset.americanOdds, 10);
 
       valueEl.textContent = fmtMoney(riskValue);
@@ -6109,24 +6130,28 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       }
     }
 
-    function clearError(card) {
-      var stat   = card.querySelector('.risk-stat');
+    function clearError(card, contextEl) {
+      var stat   = riskStatFor(card, contextEl);
       var errEl  = stat.querySelector('.risk-error');
       stat.classList.remove('has-error');
       errEl.hidden = true;
       errEl.textContent = '';
     }
-    function showError(card, msg) {
-      var stat  = card.querySelector('.risk-stat');
+    function showError(card, msg, contextEl) {
+      var stat  = riskStatFor(card, contextEl);
       var errEl = stat.querySelector('.risk-error');
       errEl.textContent = msg;
       errEl.hidden = false;
       stat.classList.add('has-error');
     }
 
-    function setTowinStatus(card, kind, text) {
+    function setTowinStatus(card, kind, text, contextEl) {
       // kind: 'verified' | 'spinner' | null (clear)
-      var status = card.querySelector('.towin-status');
+      // contextEl is optional — when supplied we scope the lookup to the same
+      // .hero as the triggering element (prevents updating the wrong .towin-status
+      // when both .hero and .hero.reopened coexist in the card).
+      var hero = contextEl && contextEl.closest('.hero');
+      var status = hero ? hero.querySelector('.towin-status') : card.querySelector('.towin-status');
       if (!status) return;
       status.classList.remove('verified', 'spinner');
       if (!kind) {
@@ -6155,7 +6180,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
     function commitEdit(valueEl) {
       if (!valueEl.classList.contains('editing')) return;
       var card = valueEl.closest('.bet-card-v8');
-      var stat = card.querySelector('.risk-stat');
+      var stat = riskStatFor(card, valueEl);
       var modelRisk = Number(stat.dataset.modelRisk);
       var raw = valueEl.textContent.replace(/[^0-9.]/g, '');
       var amount = Number(raw);
@@ -6163,28 +6188,31 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       valueEl.classList.remove('editing');
       valueEl.contentEditable = 'false';
       var isOverride = Math.abs(amount - modelRisk) > 0.005;
-      setOverride(card, amount, isOverride);
-      clearError(card);
+      setOverride(card, amount, isOverride, valueEl);
+      clearError(card, valueEl);
 
       if (bookFor(card) === WZ_BOOK) {
         verifyWithWz(card, amount);
       } else {
         // Non-WZ: local math is already shown; clear any verified badge.
-        setTowinStatus(card, null);
+        setTowinStatus(card, null, null, valueEl);
       }
     }
 
     function verifyWithWz(card, amount) {
       var btn = placeBtnFor(card);
       if (!btn) return;
+      // Use the place button as contextEl so error + towin updates hit the
+      // correct hero when both the original .hero and a .hero.reopened coexist.
+      var hero = btn.closest('.hero');
       var account = (window.WZ_SELECTED_ACCOUNT || null);
       if (!account) {
-        showError(card, 'pick a WZ account first');
+        showError(card, 'pick a WZ account first', btn);
         return;
       }
       var gen = (_verifyGen.get(card) || 0) + 1;
       _verifyGen.set(card, gen);
-      setTowinStatus(card, 'spinner', 'verifying...');
+      setTowinStatus(card, 'spinner', 'verifying...', btn);
       var body = {
         bet_hash:      btn.dataset.hash,
         amount:        amount,
@@ -6206,35 +6234,35 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .then(function(r) { return r.json(); })
         .then(function(j) {
           if (_verifyGen.get(card) !== gen) return;   // stale; discard
-          var towinEl = card.querySelector('.towin-value');
+          var towinEl = hero ? hero.querySelector('.towin-value') : card.querySelector('.towin-value');
           if (j.error_msg_key) {
-            showError(card, j.error_msg || j.error_msg_key);
-            setTowinStatus(card, null);
+            showError(card, j.error_msg || j.error_msg_key, btn);
+            setTowinStatus(card, null, null, btn);
             return;
           }
           var expectedOdds = parseInt(btn.dataset.odds, 10);
           if (j.current_wz_odds && j.current_wz_odds !== expectedOdds) {
             showError(card, 'WZ now ' + (j.current_wz_odds > 0 ? '+' : '') +
                             j.current_wz_odds + ' (was ' + (expectedOdds > 0 ? '+' : '') +
-                            expectedOdds + ')');
+                            expectedOdds + ')', btn);
           }
           if (j.win != null) {
             towinEl.textContent = fmtMoney(j.win);
-            setTowinStatus(card, 'verified', '✓ wz');
+            setTowinStatus(card, 'verified', '✓ wz', btn);
             // Round-trip the WZ-verified Win onto the place button so
             // /api/place-bet can send it as expected_win — the placer's
             // Win-on-Win drift check then compares WZ-said-X (now) vs
             // WZ-said-X (then) instead of having to recompute from odds.
             btn.dataset.expectedWin = String(j.win);
           } else {
-            setTowinStatus(card, null);
+            setTowinStatus(card, null, null, btn);
             delete btn.dataset.expectedWin;
           }
         })
         .catch(function(e) {
           if (_verifyGen.get(card) !== gen) return;   // stale; discard
-          showError(card, 'verify failed: ' + e.message);
-          setTowinStatus(card, null);
+          showError(card, 'verify failed: ' + e.message, btn);
+          setTowinStatus(card, null, null, btn);
         });
     }
 
@@ -6247,12 +6275,12 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       var resetBtn = ev.target.closest && ev.target.closest('.risk-reset');
       if (resetBtn) {
         var card = resetBtn.closest('.bet-card-v8');
-        var stat = card.querySelector('.risk-stat');
+        var stat = riskStatFor(card, resetBtn);
         var modelRisk = Number(stat.dataset.modelRisk);
         _verifyGen.set(card, (_verifyGen.get(card) || 0) + 1);
-        setOverride(card, modelRisk, false);
-        clearError(card);
-        setTowinStatus(card, null);
+        setOverride(card, modelRisk, false, resetBtn);
+        clearError(card, resetBtn);
+        setTowinStatus(card, null, null, resetBtn);
       }
     });
     document.addEventListener('focusout', function(ev) {
@@ -6274,14 +6302,14 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       if (ev.key === 'Escape')  {
         ev.preventDefault();
         var card = valueEl.closest('.bet-card-v8');
-        var stat = card.querySelector('.risk-stat');
+        var stat = riskStatFor(card, valueEl);
         var modelRisk = Number(stat.dataset.modelRisk);
         _verifyGen.set(card, (_verifyGen.get(card) || 0) + 1);
         valueEl.classList.remove('editing');
         valueEl.contentEditable = 'false';
-        setOverride(card, modelRisk, false);
-        clearError(card);
-        setTowinStatus(card, null);
+        setOverride(card, modelRisk, false, valueEl);
+        clearError(card, valueEl);
+        setTowinStatus(card, null, null, valueEl);
       }
     });
   })();
