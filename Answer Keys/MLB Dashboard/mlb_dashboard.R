@@ -5949,6 +5949,17 @@ all_bets <- tryCatch({
 
 cat(sprintf("Loaded %d bets\n", nrow(all_bets)))
 
+# bet_row_id is derived from digest(id|market|line|bet_on). If two bets collapse to
+# the same hash we'd render two cards as one — surface it.
+if (nrow(all_bets) > 0 && "bet_row_id" %in% names(all_bets)) {
+  bet_id_dups <- all_bets %>% count(bet_row_id, name = ".n") %>% filter(.n > 1)
+  if (nrow(bet_id_dups) > 0) {
+    warning(sprintf(
+      "[bets-tab] %d bet_row_id collision(s) in all_bets — multiple bets share a hash",
+      nrow(bet_id_dups)))
+  }
+}
+
 book_prices_long <- tryCatch({
   con <- dbConnect(duckdb(), dbdir = "Answer Keys/mlb_mm.duckdb", read_only = TRUE)
   tables <- dbListTables(con)
@@ -5985,6 +5996,21 @@ pivot_book_prices_wide <- function(long_frame) {
                          american_odds = NA_integer_,
                          is_exact_line = NA)
     )
+}
+
+# Defensive: pivot_wider silently keeps the last of duplicate (bet_row_id, side, bookmaker)
+# triplets. Surface collisions if upstream ever emits >1 candidate per (bet, side, book).
+if (!is.null(book_prices_long) && nrow(book_prices_long) > 0) {
+  dup_check <- book_prices_long %>%
+    count(bet_row_id, side, bookmaker, name = ".n") %>%
+    filter(.n > 1)
+  if (nrow(dup_check) > 0) {
+    warning(sprintf(
+      "[bets-tab] %d duplicate (bet_row_id, side, bookmaker) row(s) in book_prices_long — pivot will keep last only",
+      nrow(dup_check)))
+    book_prices_long <- book_prices_long %>%
+      distinct(bet_row_id, side, bookmaker, .keep_all = TRUE)
+  }
 }
 
 book_prices_wide <- pivot_book_prices_wide(book_prices_long)

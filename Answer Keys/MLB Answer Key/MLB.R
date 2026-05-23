@@ -477,6 +477,10 @@ if (length(api_f5_books) > 0) {
 # Combine API bets
 EV_THRESHOLD <- 0.02  # 2% — maximizes total profit per parameter sweep
 
+# Per-book staleness cutoff — drop rows older than this before canonicalization.
+# Prevents stale book quotes from rendering as if they were fresh on the dashboard.
+BOOK_STALENESS_CUTOFF_MIN <- 30
+
 all_bets <- bind_rows(
   ml_bets %>% mutate(market_type = "moneyline"),
   total_bets %>% mutate(market_type = "totals"),
@@ -577,6 +581,32 @@ cat(sprintf("Loaded %d FanDuel records.\n", nrow(fd_odds)))
 
 kalshi_odds <- tryCatch(get_kalshi_odds("mlb"), error = function(e) { cat(sprintf("Kalshi skip: %s\n", e$message)); tibble() })
 cat(sprintf("Loaded %d Kalshi records.\n", nrow(kalshi_odds)))
+
+# Helper — drop scraper rows older than BOOK_STALENESS_CUTOFF_MIN minutes by
+# fetch_time. Defensive: a stuck scraper would otherwise render hours-old
+# quotes on the bets tab as if they were live. NA fetch_times are kept (they
+# get replaced with Sys.time() downstream in scraper_to_canonical).
+.drop_stale_book_rows <- function(df, book_label) {
+  if (is.null(df) || nrow(df) == 0) return(df)
+  if (!"fetch_time" %in% names(df)) return(df)
+  cutoff <- Sys.time() - lubridate::minutes(BOOK_STALENESS_CUTOFF_MIN)
+  fresh <- df %>% filter(is.na(fetch_time) | fetch_time >= cutoff)
+  dropped_n <- nrow(df) - nrow(fresh)
+  if (dropped_n > 0) {
+    message(sprintf("[%s] dropped %d row(s) older than %d min (fetch_time gate)",
+                    book_label, dropped_n, BOOK_STALENESS_CUTOFF_MIN))
+  }
+  fresh
+}
+
+wagerzon_odds  <- .drop_stale_book_rows(wagerzon_odds,  "wagerzon")
+hoop88_odds    <- .drop_stale_book_rows(hoop88_odds,    "hoop88")
+bfa_odds       <- .drop_stale_book_rows(bfa_odds,       "bfa")
+bookmaker_odds <- .drop_stale_book_rows(bookmaker_odds, "bookmaker")
+bet105_odds    <- .drop_stale_book_rows(bet105_odds,    "bet105")
+dk_odds        <- .drop_stale_book_rows(dk_odds,        "dk")
+fd_odds        <- .drop_stale_book_rows(fd_odds,        "fd")
+kalshi_odds    <- .drop_stale_book_rows(kalshi_odds,    "kalshi")
 
 # Map all scraper markets to Odds API F5 convention
 wagerzon_odds  <- map_scraper_markets_mlb(wagerzon_odds)
@@ -892,13 +922,13 @@ prefetched_long <- parse_prefetched_to_long(
 # peer-to-peer venue with its own dashboard tab/flow, not a sportsbook
 # to compare against for the odds-screen view.
 book_odds_by_book <- list(
-  wagerzon  = scraper_to_canonical(wagerzon_odds,  .game_id_lookup),
-  hoop88    = scraper_to_canonical(hoop88_odds,    .game_id_lookup),
-  bfa       = scraper_to_canonical(bfa_odds,       .game_id_lookup),
-  bookmaker = scraper_to_canonical(bookmaker_odds, .game_id_lookup),
-  bet105    = scraper_to_canonical(bet105_odds,    .game_id_lookup),
-  draftkings = scraper_to_canonical(dk_odds, .game_id_lookup),
-  fanduel    = scraper_to_canonical(fd_odds, .game_id_lookup),
+  wagerzon  = scraper_to_canonical(wagerzon_odds,  .game_id_lookup, book_name = "wagerzon"),
+  hoop88    = scraper_to_canonical(hoop88_odds,    .game_id_lookup, book_name = "hoop88"),
+  bfa       = scraper_to_canonical(bfa_odds,       .game_id_lookup, book_name = "bfa"),
+  bookmaker = scraper_to_canonical(bookmaker_odds, .game_id_lookup, book_name = "bookmaker"),
+  bet105    = scraper_to_canonical(bet105_odds,    .game_id_lookup, book_name = "bet105"),
+  draftkings = scraper_to_canonical(dk_odds, .game_id_lookup, book_name = "dk"),
+  fanduel    = scraper_to_canonical(fd_odds, .game_id_lookup, book_name = "fd"),
   pinnacle  = odds_api_to_canonical(
                  prefetched_long %>% filter(bookmaker_key == "pinnacle"))
 )

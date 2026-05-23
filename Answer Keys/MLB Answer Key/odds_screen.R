@@ -381,14 +381,33 @@ parse_prefetched_to_long <- function(prefetched_odds, bookmaker_keys) {
 #' @param lookup tibble with columns id, home_team, away_team — used to join
 #'               scraper team names to Odds API game IDs. Typically derived
 #'               from mlb_odds in MLB.R.
+#' @param book_name Optional book label used in coverage-drop log messages
+#'               (e.g. "dk", "fd", "wagerzon"). Defaults to "<book>".
 #' @return normalized tibble (output of normalize_book_odds_frame), or NULL
-scraper_to_canonical <- function(raw, lookup) {
+scraper_to_canonical <- function(raw, lookup, book_name = NULL) {
   if (is.null(raw) || nrow(raw) == 0) return(NULL)
   if (!"fetch_time" %in% names(raw)) raw$fetch_time <- as.POSIXct(NA, tz = "UTC")
 
   # Replace NA fetch_times with now for consistency with odds_api_to_canonical.
   if (!is.null(raw$fetch_time)) {
     raw$fetch_time[is.na(raw$fetch_time)] <- Sys.time()
+  }
+
+  # Coverage diagnostic — surface rows that would be silently dropped by inner_join.
+  # The #1 invisible failure mode of the bets tab is unmapped team-name pairs.
+  dropped <- anti_join(raw, lookup, by = c("home_team", "away_team"))
+  if (nrow(dropped) > 0) {
+    dropped_pairs <- dropped %>%
+      distinct(home_team, away_team) %>%
+      mutate(pair = paste(home_team, "vs", away_team)) %>%
+      pull(pair)
+    message(sprintf(
+      "[scraper_to_canonical] %s: %d row(s) across %d game(s) dropped (no game_id match): %s",
+      book_name %||% "<book>",
+      nrow(dropped),
+      length(dropped_pairs),
+      paste(dropped_pairs, collapse = "; ")
+    ))
   }
 
   # Join to Odds API game IDs. Scraper frames have home_team + away_team
