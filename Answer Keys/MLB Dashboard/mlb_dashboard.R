@@ -1443,15 +1443,16 @@ format_market_for_card <- function(market, bet_on, line, home_team, away_team) {
 
 # Returns character vector of WZ account labels in registry order:
 # primary (no suffix) first, then alphabetical by suffix. Mirrors
-# wagerzon_odds.wagerzon_accounts.list_accounts() — we re-derive in R
-# rather than shelling out to Python.
-.wagerzon_account_labels <- function(env_file = "bet_logger/.env") {
-  if (!file.exists(env_file)) return(character(0))
-  lines <- readLines(env_file, warn = FALSE)
-  pat   <- "^WAGERZON([A-Z]*)_USERNAME\\s*="
-  hits  <- regmatches(lines, regexec(pat, lines))
-  suffixes <- vapply(hits,
-    function(m) if (length(m) >= 2) m[[2]] else NA_character_,
+# wagerzon_odds.wagerzon_accounts.list_accounts() — uses Sys.getenv()
+# rather than reading bet_logger/.env so the path-resolution issue is
+# avoided entirely. By the time the dashboard launches, the env file
+# is already loaded into the process environment. nzchar() guards
+# against env vars that are set but empty (e.g. commented-out in .env).
+.wagerzon_account_labels <- function() {
+  env_vars <- names(Sys.getenv())
+  m <- regmatches(env_vars, regexec("^WAGERZON([A-Z]*)_USERNAME$", env_vars))
+  suffixes <- vapply(m,
+    function(x) if (length(x) >= 2 && nzchar(Sys.getenv(x[[1]]))) x[[2]] else NA_character_,
     character(1))
   suffixes <- suffixes[!is.na(suffixes)]
   primary <- if ("" %in% suffixes) "Wagerzon" else character(0)
@@ -1499,6 +1500,12 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
     placed_bets[is.na(placed_bets$status) | placed_bets$status != "placed", ]
   } else placed_bets[FALSE, ]
 
+  # NOTE: non_placed can contain multiple rows for the same bet_hash
+  # (one per account that hit a different error). setNames(..., bet_hash)
+  # silently keeps the last row's values. Acceptable for v1: the error
+  # chip shows one arbitrary status. If multi-account error display becomes
+  # important, replace with a per-account error list rendered alongside
+  # the chip strip.
   placed_status_lookup <- if (nrow(non_placed) > 0 && "status" %in% names(non_placed)) {
     setNames(non_placed$status, non_placed$bet_hash)
   } else setNames(character(), character())
@@ -1553,8 +1560,11 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
     ) %>%
     arrange(desc(ev))
 
-  # Sum actual_size across ALL successful placements for a given bet_hash
-  # so fill_status reflects the total stake placed across accounts.
+  # Sum actual_size across all chips for this bet_hash. fill_status is
+  # then computed against bet_size (Kelly model recommendation). If summed
+  # actual > bet_size (e.g. user placed more than Kelly via multi-account),
+  # the card simply shows "placed" — no distinction between filled-exactly
+  # and over-filled in v1. Spec deliberately scopes out the stacking case.
   placed_actual_by_hash <- if (length(chips_by_hash) > 0) {
     vapply(chips_by_hash, function(df) {
       vals <- df$actual_size
@@ -1640,7 +1650,15 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
     # Action button HTML
     status        <- placed_status_lookup[row$bet_hash]
     ticket        <- placed_ticket_lookup[row$bet_hash]
-    placed_actual <- placed_actual_lookup[row$bet_hash]
+    # For placed cards, read actual from placed_actual_by_hash (summed across all
+    # chips for this hash). non_placed has no row for successfully placed bets, so
+    # placed_actual_lookup[hash] would always be NA for them — leaving data-actual
+    # blank and breaking the JS fill-status display.
+    placed_actual <- if (isTRUE(row$is_placed)) {
+      placed_actual_by_hash[[row$bet_hash]]
+    } else {
+      placed_actual_lookup[row$bet_hash]
+    }
     data_attrs <- sprintf(
       'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-market="%s" data-bet-on="%s" data-line="%s" data-prob="%s" data-ev="%s" data-size="%s" data-model-size="%s" data-odds="%s" data-book="%s" data-actual="%s" data-fill-status="%s"',
       row$bet_hash, row$id, row$home_team, row$away_team,
@@ -2985,6 +3003,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .bet-card-v8 .hero .risk-error[hidden] { display: none; }
         .bet-card-v8 .hero .risk-stat.has-error .risk-error { display: inline-block; }
 
+        /* --- Placed strip: multi-account chips + dashed "+ another" --- */
         .bet-card-v8 .hero-placed {
           display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
           background: #0d1f12;
