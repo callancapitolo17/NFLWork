@@ -38,6 +38,8 @@ source(file.path(DASHBOARD_DIR, "..", "conditional_kelly.R"))
 # preserved inside book_cell.R as a deprecation shim so the legacy bets
 # table fallback still works during the V8 transition.
 source(file.path(DASHBOARD_DIR, "book_cell.R"))
+# Placed-bet strip renderer (multi-account chips + "+ another" affordance)
+source(file.path(DASHBOARD_DIR, "placed_strip.R"))
 OUTPUT_PATH <- file.path(DASHBOARD_DIR, "report.html")
 
 # =============================================================================
@@ -1439,6 +1441,24 @@ format_market_for_card <- function(market, bet_on, line, home_team, away_team) {
        market_label = paste(market_kind, period, sep = " · "))
 }
 
+# Returns character vector of WZ account labels in registry order:
+# primary (no suffix) first, then alphabetical by suffix. Mirrors
+# wagerzon_odds.wagerzon_accounts.list_accounts() — we re-derive in R
+# rather than shelling out to Python.
+.wagerzon_account_labels <- function(env_file = "bet_logger/.env") {
+  if (!file.exists(env_file)) return(character(0))
+  lines <- readLines(env_file, warn = FALSE)
+  pat   <- "^WAGERZON([A-Z]*)_USERNAME\\s*="
+  hits  <- regmatches(lines, regexec(pat, lines))
+  suffixes <- vapply(hits,
+    function(m) if (length(m) >= 2) m[[2]] else NA_character_,
+    character(1))
+  suffixes <- suffixes[!is.na(suffixes)]
+  primary <- if ("" %in% suffixes) "Wagerzon" else character(0)
+  rest    <- sort(setdiff(suffixes, ""))
+  c(primary, paste0("Wagerzon", rest))
+}
+
 # create_bets_table — card layout (Task 11 of odds-screen rebuild)
 # -----------------------------------------------------------------------------
 # Replaces the flat per-bet table with a card-per-bet layout that shows the
@@ -1457,23 +1477,43 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
     return(create_bets_table_legacy(all_bets, placed_bets))
   }
 
-  placed_hashes <- if (nrow(placed_bets) > 0) placed_bets$bet_hash else character()
+  # WZ account labels — captured once for the whole render pass.
+  wz_labels <- .wagerzon_account_labels()
 
-  placed_status_lookup <- if (nrow(placed_bets) > 0 && "status" %in% names(placed_bets)) {
-    setNames(placed_bets$status, placed_bets$bet_hash)
+  # --- chips_by_hash: one entry per successful placement (status == 'placed') ---
+  # Under the composite PK (bet_hash, account), multiple rows can share a
+  # bet_hash. Group them here so render_placed_strip gets all chips at once.
+  placed_only <- if (nrow(placed_bets) > 0 && "status" %in% names(placed_bets)) {
+    placed_bets[!is.na(placed_bets$status) & placed_bets$status == "placed", ]
+  } else placed_bets[FALSE, ]
+  chips_by_hash <- if (nrow(placed_only) > 0) {
+    split(placed_only, placed_only$bet_hash)
+  } else list()
+
+  # placed_hashes now reflects ANY successful placement (drives is_placed flag).
+  placed_hashes <- names(chips_by_hash)
+
+  # --- error/retry lookups: only look at non-placed rows so a successful chip
+  # on account A doesn't shadow a failed attempt on account B in the UI. ---
+  non_placed <- if (nrow(placed_bets) > 0 && "status" %in% names(placed_bets)) {
+    placed_bets[is.na(placed_bets$status) | placed_bets$status != "placed", ]
+  } else placed_bets[FALSE, ]
+
+  placed_status_lookup <- if (nrow(non_placed) > 0 && "status" %in% names(non_placed)) {
+    setNames(non_placed$status, non_placed$bet_hash)
   } else setNames(character(), character())
-  placed_ticket_lookup <- if (nrow(placed_bets) > 0 && "ticket_number" %in% names(placed_bets)) {
-    setNames(placed_bets$ticket_number, placed_bets$bet_hash)
+  placed_ticket_lookup <- if (nrow(non_placed) > 0 && "ticket_number" %in% names(non_placed)) {
+    setNames(non_placed$ticket_number, non_placed$bet_hash)
   } else setNames(character(), character())
-  placed_error_lookup <- if (nrow(placed_bets) > 0 && "error_msg" %in% names(placed_bets)) {
-    setNames(placed_bets$error_msg, placed_bets$bet_hash)
+  placed_error_lookup <- if (nrow(non_placed) > 0 && "error_msg" %in% names(non_placed)) {
+    setNames(non_placed$error_msg, non_placed$bet_hash)
   } else setNames(character(), character())
-  placed_error_key_lookup <- if (nrow(placed_bets) > 0 && "error_msg_key" %in% names(placed_bets)) {
-    setNames(placed_bets$error_msg_key, placed_bets$bet_hash)
+  placed_error_key_lookup <- if (nrow(non_placed) > 0 && "error_msg_key" %in% names(non_placed)) {
+    setNames(non_placed$error_msg_key, non_placed$bet_hash)
   } else setNames(character(), character())
   placed_actual_lookup <- setNames(
-    if (nrow(placed_bets) > 0 && "actual_size" %in% names(placed_bets)) placed_bets$actual_size else numeric(),
-    if (nrow(placed_bets) > 0) placed_bets$bet_hash else character()
+    if (nrow(non_placed) > 0 && "actual_size" %in% names(non_placed)) non_placed$actual_size else numeric(),
+    if (nrow(non_placed) > 0) non_placed$bet_hash else character()
   )
 
   same_game_info <- lapply(seq_len(nrow(all_bets)), function(i) {
@@ -1513,13 +1553,19 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
     ) %>%
     arrange(desc(ev))
 
-  placed_actual <- if (nrow(placed_bets) > 0 && "actual_size" %in% names(placed_bets)) {
-    setNames(placed_bets$actual_size, placed_bets$bet_hash)
+  # Sum actual_size across ALL successful placements for a given bet_hash
+  # so fill_status reflects the total stake placed across accounts.
+  placed_actual_by_hash <- if (length(chips_by_hash) > 0) {
+    vapply(chips_by_hash, function(df) {
+      vals <- df$actual_size
+      if (length(vals) == 0 || all(is.na(vals))) NA_real_
+      else sum(vals, na.rm = TRUE)
+    }, numeric(1))
   } else setNames(numeric(), character())
 
   table_data <- table_data %>%
     mutate(
-      placed_actual = ifelse(is_placed, placed_actual[bet_hash], NA_real_),
+      placed_actual = ifelse(is_placed, placed_actual_by_hash[bet_hash], NA_real_),
       fill_status = case_when(
         !is_placed                                   ~ "not_placed",
         is.na(placed_actual)                          ~ "placed",
@@ -1608,10 +1654,19 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
     action_html <- if (!is.na(row$fill_status) && row$fill_status == "partial") {
       sprintf('<button class="btn-partial" onclick="updateBet(this)" %s>Partial -$%.0f</button>',
               data_attrs, row$fill_diff)
-    } else if (!is.na(status) && status == "placed") {
-      label <- if (!is.na(ticket) && nchar(ticket) > 0)
-        sprintf("placed &middot; #%s", htmltools::htmlEscape(ticket)) else "placed"
-      sprintf('<span class="placed-bet-label" %s>%s</span>', data_attrs, label)
+    } else if (!is.null(chips_by_hash[[row$bet_hash]])) {
+      chips_df <- chips_by_hash[[row$bet_hash]]
+      chips_list <- lapply(seq_len(nrow(chips_df)), function(i) {
+        list(account = chips_df$account[i],
+             risk    = chips_df$actual_size[i],
+             ticket  = chips_df$ticket_number[i])
+      })
+      render_placed_strip(
+        chips           = chips_list,
+        all_wz_accounts = wz_labels,
+        bet_hash        = row$bet_hash,
+        book            = row$bookmaker_key
+      )
     } else if (!is.na(status) && status %in%
                c("price_moved","rejected","auth_error","network_error","orphaned")) {
       err_msg <- placed_error_lookup[row$bet_hash]
@@ -2929,6 +2984,49 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         }
         .bet-card-v8 .hero .risk-error[hidden] { display: none; }
         .bet-card-v8 .hero .risk-stat.has-error .risk-error { display: inline-block; }
+
+        .bet-card-v8 .hero-placed {
+          display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+          background: #0d1f12;
+          border: 1px solid #1f4d2e;
+          border-radius: 8px;
+          padding: 8px 14px;
+          margin-top: 12px;
+        }
+        .bet-card-v8 .hero-placed .placed-label {
+          color: #56d364;
+          font-size: 11px;
+          text-transform: uppercase;
+          letter-spacing: .5px;
+          font-weight: 700;
+        }
+        .bet-card-v8 .placement-chip {
+          display: inline-flex; align-items: center; gap: 6px;
+          background: #15321f;
+          border: 1px solid #1f4d2e;
+          border-radius: 5px;
+          padding: 3px 8px;
+          color: #c9d1d9;
+          font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        .bet-card-v8 .placement-chip .acct  { color: #56d364; font-weight: 700; }
+        .bet-card-v8 .placement-chip .ticket { color: #8b949e; font-size: 11px; }
+
+        .bet-card-v8 .add-another {
+          background: transparent;
+          border: 1px dashed #1f4d2e;
+          color: #56d364;
+          border-radius: 5px;
+          padding: 3px 10px;
+          font-size: 12px;
+          cursor: pointer;
+          font-weight: 600;
+        }
+        .bet-card-v8 .add-another[disabled] {
+          color: #6e7681;
+          border-color: #30363d;
+          cursor: not-allowed;
+        }
 
         .bet-card-v8 .hero .towin-row {
           display: flex;
