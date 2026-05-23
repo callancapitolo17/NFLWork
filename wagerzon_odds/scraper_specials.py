@@ -39,7 +39,7 @@ for _candidate in [_repo_root, _repo_root.parent, _repo_root.parent.parent]:
 
 # Reuse the existing login + base-URL logic
 sys.path.insert(0, str(Path(__file__).parent))
-from scraper_v2 import login  # noqa: E402
+from scraper_v2 import login, _wz_game_start_time  # noqa: E402
 from config import WAGERZON_BASE_URL  # noqa: E402
 
 DB_PATH = Path(__file__).parent / "wagerzon.duckdb"
@@ -139,13 +139,17 @@ def parse_specials_json(payload: dict, sport: str, league_id: int) -> list[dict]
             gmtm = g.get("gmtm") or ""
             game_date = datetime.strptime(gmdt, "%Y%m%d").date() if gmdt else None
             try:
-                # Wagerzon's gmtm appears to be local Eastern time — the scraper
-                # stores it verbatim (no tz conversion). Pricer's 12-hour filter
-                # uses commence_time from mlb_consensus_temp instead, which is
-                # authoritative UTC.
+                # Wagerzon's gmtm is naive Eastern wall-clock. We keep the
+                # naive `game_time` column for one safety cycle so any reader
+                # still on the old schema doesn't break, but the authoritative
+                # value going forward is `game_start_time` (TZ-aware UTC),
+                # computed via the shared `_wz_game_start_time` helper from
+                # scraper_v2 (ET → UTC via zoneinfo). Pricer + dashboard
+                # consume the UTC column.
                 game_time = datetime.strptime(f"{gmdt} {gmtm}", "%Y%m%d %H:%M:%S")
             except ValueError:
                 game_time = None
+            game_start_time = _wz_game_start_time(gmdt, gmtm)
             rows.append({
                 "scraped_at":      scraped_at,
                 "sport":           sport,
@@ -159,6 +163,7 @@ def parse_specials_json(payload: dict, sport: str, league_id: int) -> list[dict]
                 "odds":            odds,
                 "game_date":       game_date,
                 "game_time":       game_time,
+                "game_start_time": game_start_time,
             })
     return rows
 
@@ -177,7 +182,13 @@ def fetch_specials_json(lg: int) -> dict:
 
 
 def write_rows(con: duckdb.DuckDBPyConnection, rows: list[dict]) -> None:
-    """Idempotent: ensures table exists, then bulk inserts."""
+    """Idempotent: ensures table exists, then bulk inserts.
+
+    `game_start_time` (TZ-aware UTC) is the authoritative game-start column.
+    `game_date` + `game_time` are KEPT for one safety cycle so any pricer /
+    dashboard still on the legacy schema keeps working; a follow-up commit
+    will drop them once all consumers read from `game_start_time`.
+    """
     con.execute("""
         CREATE TABLE IF NOT EXISTS wagerzon_specials (
             scraped_at      TIMESTAMP,
@@ -191,19 +202,30 @@ def write_rows(con: duckdb.DuckDBPyConnection, rows: list[dict]) -> None:
             line            DOUBLE,
             odds            INTEGER,
             game_date       DATE,
-            game_time       TIMESTAMP
+            game_time       TIMESTAMP,
+            game_start_time TIMESTAMPTZ
         )
+    """)
+    # Idempotent column add for pre-existing tables created before this
+    # column existed. DuckDB 1.4 supports ADD COLUMN IF NOT EXISTS, so we
+    # can guard inline rather than reaching for DESCRIBE. The bulk backfill
+    # of NULLs on historical rows is handled by
+    # tools/migrate_scraper_schemas.py::migrate_specials.
+    con.execute("""
+        ALTER TABLE wagerzon_specials
+        ADD COLUMN IF NOT EXISTS game_start_time TIMESTAMPTZ
     """)
     if not rows:
         log.info("No rows to write.")
         return
     con.executemany(
         "INSERT INTO wagerzon_specials VALUES "
-        "(?,?,?,?,?,?,?,?,?,?,?,?)",
+        "(?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [
             (r["scraped_at"], r["sport"], r["league_id"], r["game_id"],
              r["rotation_number"], r["prop_type"], r["description"],
-             r["team"], r["line"], r["odds"], r["game_date"], r["game_time"])
+             r["team"], r["line"], r["odds"], r["game_date"],
+             r["game_time"], r["game_start_time"])
             for r in rows
         ],
     )
