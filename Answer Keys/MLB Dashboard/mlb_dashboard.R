@@ -1766,7 +1766,9 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
                                          sprintf("+%d", as.integer(row$fair_odds)),
                                          sprintf("%d",  as.integer(row$fair_odds))))
     card_ev_pct_str     <- ifelse(is.na(row$ev_pct), "",
-                                  sprintf("+%.1f%%", row$ev_pct))
+                                  ifelse(row$ev_pct >= 0,
+                                         sprintf("+%.1f%%", row$ev_pct),
+                                         sprintf("%.1f%%",  row$ev_pct)))
     card_data_attrs <- sprintf(
       'data-pick-book="%s" data-pick-odds="%s" data-pick-odds-raw="%s" data-fair-odds="%s" data-ev-pct="%s"',
       htmltools::htmlEscape(row$bookmaker_key),
@@ -5725,7 +5727,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         //   (Place is disabled when the active account matches an existing chip)
         document.querySelectorAll('.bet-card-v8').forEach(function(card) {
           card.querySelectorAll('[data-expected-win]').forEach(function(el) {
-            el.dataset.expectedWin = '';
+            delete el.dataset.expectedWin;
           });
           var reopened = card.querySelector('.hero.reopened');
           if (reopened && typeof window._refreshReopenedPlaceState === 'function') {
