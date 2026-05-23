@@ -146,7 +146,12 @@ so "To Win" matches the WZ slip to the dollar.
 ## Storage
 
 DuckDB: `wagerzon.duckdb` → tables: `nfl_odds`, `cbb_odds`, `nba_odds`,
-`mlb_odds` (18-column standard schema), `mlb_parlay_prices` (Stage 1 output).
+`mlb_odds` (17-column standard schema + `draw_ml` + `idgm` — 19 cols
+total for `mlb_odds`; game timing is `game_start_time TIMESTAMPTZ` (UTC),
+which replaces the legacy `game_date VARCHAR` + `game_time VARCHAR`
+pair. The scraper converts WZ's EDT response timestamps to UTC at
+write-time via `ZoneInfo("America/New_York")`),
+`mlb_parlay_prices` (Stage 1 output).
 
 Also: `wagerzon_cbb.duckdb` (CBB-specific historical data).
 
