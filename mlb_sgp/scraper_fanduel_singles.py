@@ -18,9 +18,9 @@ For MAIN markets FD uses `handicap` (line=-1.5 on the Runner), so those flow
 through identically to DK.
 
 Other FD specifics:
-  - classify_market is a strict whitelist against `_FD_MARKET_WHITELIST` —
-    FD posts ~150 markets per event and naive keyword matching catches dozens
-    of bogus "Line / Total Parlay" and team-total markets.
+  - classify_market is a keyword classifier (mirrors DK's approach) that
+    rejects FD-specific junk via exclusion keywords + event-team-name checks
+    and auto-covers F7/F3 periods and any new FD markets going forward.
   - No team-name canonicalization map — Phase 1 confirmed FD team names
     already match the canonical Odds-API forms (e.g. "St. Louis Cardinals",
     "Athletics", "New York Yankees").
@@ -44,46 +44,81 @@ _FD_ALT_SPREAD_RE = re.compile(r"^(?P<team>.+?)\s+(?P<line>[+-]\d+(?:\.\d+)?)\s*
 _FD_ALT_TOTAL_RE  = re.compile(r"^(?P<side>Over|Under)\s*\((?P<line>\d+(?:\.\d+)?)\)\s*$", re.IGNORECASE)
 
 
-# FD market name whitelist — these are the ONLY market names we accept.
-# Whitelist (vs DK's keyword blacklist) because FD posts ~150 markets per
-# event and a huge fraction match the obvious keywords ("Run Line", "Total
-# Runs", "Moneyline") but are NOT the markets we want:
-#   - "Run Line / Total Runs Parlay" (2-leg parlay, not a single bet)
-#   - "Money Line / Total Runs Parlay"
-#   - "Line / Total Parlay 1..12"
-#   - "Moneyline Away Listed" / "Moneyline Home Listed" / "Moneyline Both Listed"
-#     (pitcher-conditional ML variants — ignore; the plain "Moneyline" is the
-#     'action regardless of pitcher' version we use everywhere else)
-#   - "Total Runs (Bands)" (3+ way bands market, not over/under)
-#   - "<Team> Total Runs", "<Team> Alt. Total Runs" (team totals — out of scope)
-# Trying to blacklist all these is fragile; the canonical names are stable
-# and FD has never added new core line markets.
-_FD_MARKET_WHITELIST: dict[str, tuple[str, str]] = {
-    # FG main
-    "Run Line":                              ("FG", "main"),
-    "Total Runs":                            ("FG", "main"),
-    "Moneyline":                             ("FG", "main"),
-    # FG alt
-    "Alternate Run Lines":                   ("FG", "alternate_spreads"),
-    "Alternate Total Runs":                  ("FG", "alternate_totals"),
-    # F5 main
-    "First 5 Innings Run Line":              ("F5", "main"),
-    "First 5 Innings Total Runs":            ("F5", "main"),
-    "First 5 Innings Money Line":            ("F5", "main"),
-    # F5 alt
-    "First 5 Innings Alternate Run Lines":   ("F5", "alternate_spreads"),
-    "First 5 Innings Alternate Total Runs":  ("F5", "alternate_totals"),
-}
+# Single-inning markets ("7th Inning Total Runs", "1st Inning Run Line") are
+# out of scope — only cumulative "First N Innings" periods map to bet cards.
+# Plural "Innings" (First 5 Innings) deliberately does NOT match this.
+_SINGLE_INNING_RE = re.compile(r"\b\d+(st|nd|rd|th)\s+inning\b", re.IGNORECASE)
+
+# Substrings that disqualify a market. Ported from DraftKings'
+# classify_market exclusion list, plus FD-specific junk that keyword-collides
+# with real game lines (FD posts ~150 markets/event):
+#   - "parlay"  -> "First 5 Innings Run Line / Total Runs Parlay", "Line / Total Parlay N"
+#   - "listed"  -> "Moneyline Away/Home/Both Listed" (pitcher-conditional; keep plain "Moneyline")
+#   - "bands"   -> "Total Runs (Bands)"
+#   - "tri-bet", "specials" -> FD novelty markets
+_FD_EXCLUDE_KEYWORDS = (
+    "team total", "player", "prop", "futures", "to record", "to score",
+    "to hit", "first to", "race to", "correct score", "winning margin",
+    "total bases", "rbis", "hits o/u", "strikeouts thrown", "odd/even",
+    "score last", "bat bottom", "highest scoring", "most innings",
+    "last run", "both teams to score",
+    "parlay", "listed", "bands", "tri-bet", "specials",
+)
 
 
-def classify_market(name: str) -> tuple[str, str] | None:
-    """Map FD market name to (period, market_type), or None to skip.
+def classify_market(
+    name: str,
+    home_team: str | None = None,
+    away_team: str | None = None,
+) -> tuple[str, str] | None:
+    """Map an FD market name to (period, market_type), or None to skip.
 
-    Strict whitelist against `_FD_MARKET_WHITELIST`. Returns the same shape
-    as DK's classify_market — (period, market_type) — so the parser is
-    agnostic to which book the rows came from.
+    Keyword classifier (mirrors scraper_draftkings_singles.classify_market) so
+    FD picks up every FG/F5/F7/F3 main + alt line it posts and auto-covers new
+    ones. period is one of "FG", "F3", "F5", "F7".
+
+    home_team / away_team are optional; when provided, any market name that
+    contains a team name is treated as a per-team market (team total) and
+    excluded. They default to None so existing single-arg callers/tests work.
+    Game lines ("Run Line", "Total Runs", "Moneyline", "Alternate ...") never
+    contain a team name, so this never false-excludes them.
     """
-    return _FD_MARKET_WHITELIST.get(name)
+    n = name.lower()
+
+    # Team totals: "<Team> Total Runs", "<Team> Alt. Total Runs".
+    for team in (home_team, away_team):
+        if team and team.lower() in n:
+            return None
+
+    if any(k in n for k in _FD_EXCLUDE_KEYWORDS):
+        return None
+    if _SINGLE_INNING_RE.search(n):
+        return None
+
+    # Period detection. Default FG; F3/F5/F7 if matched explicitly.
+    if "first 7 innings" in n or "1st 7 innings" in n:
+        period = "F7"
+    elif "first 5 innings" in n or "1st 5 innings" in n:
+        period = "F5"
+    elif "first 3 innings" in n or "1st 3 innings" in n:
+        period = "F3"
+    else:
+        period = "FG"
+
+    # Market-type detection. Check "alternate" before main. Match both
+    # "moneyline" (FD's FG name) and "money line" (FD's F-period name, e.g.
+    # "First 5 Innings Money Line") so F-period MLs are not silently dropped.
+    if "alternate" in n and "run line" in n:
+        return (period, "alternate_spreads")
+    if "alternate" in n and "total" in n:
+        return (period, "alternate_totals")
+    if "run line" in n:
+        return (period, "main")
+    if "moneyline" in n or "money line" in n:
+        return (period, "main")
+    if "total" in n:
+        return (period, "main")
+    return None
 
 
 def parse_runners_to_wide_rows(
@@ -230,7 +265,7 @@ def scrape_singles(verbose: bool = False) -> int:
 
             market_meta: dict[str, tuple[str, str]] = {}
             for m in markets:
-                classified = classify_market(m.name)
+                classified = classify_market(m.name, event.home_team, event.away_team)
                 if classified is not None:
                     market_meta[m.market_id] = classified
 

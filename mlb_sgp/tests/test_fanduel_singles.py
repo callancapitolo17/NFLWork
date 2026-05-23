@@ -6,6 +6,8 @@ KC -2.5/CHW +2.5 with KC +2.5/CHW -2.5 into the same row.
 """
 from datetime import datetime
 
+import pytest
+
 from mlb_sgp.fd_client import Event, Runner
 from mlb_sgp.scraper_fanduel_singles import classify_market, parse_runners_to_wide_rows
 
@@ -69,3 +71,43 @@ def test_classify_market_existing_whitelist_unchanged():
     assert classify_market("Alternate Run Lines") == ("FG", "alternate_spreads")
     assert classify_market("First 5 Innings Alternate Run Lines") == ("F5", "alternate_spreads")
     assert classify_market("Random Garbage Market") is None
+
+
+# (home, away) used for team-total exclusion cases
+_H, _A = "San Francisco Giants", "Chicago White Sox"
+
+@pytest.mark.parametrize("name,home,away,expected", [
+    # --- ACCEPTED: real game lines, every period x type FD posts ---
+    ("Run Line", None, None, ("FG", "main")),
+    ("Total Runs", None, None, ("FG", "main")),
+    ("Moneyline", None, None, ("FG", "main")),
+    ("Alternate Run Lines", None, None, ("FG", "alternate_spreads")),
+    ("Alternate Total Runs", None, None, ("FG", "alternate_totals")),
+    ("First 5 Innings Run Line", None, None, ("F5", "main")),
+    ("First 5 Innings Total Runs", None, None, ("F5", "main")),
+    ("First 5 Innings Money Line", None, None, ("F5", "main")),  # NOTE the space
+    ("First 5 Innings Alternate Run Lines", None, None, ("F5", "alternate_spreads")),
+    ("First 5 Innings Alternate Total Runs", None, None, ("F5", "alternate_totals")),
+    ("First 7 Innings Total Runs", None, None, ("F7", "main")),
+    ("First 7 Innings Run Line", None, None, ("F7", "main")),
+    ("First 3 Innings Total Runs", None, None, ("F3", "main")),
+    ("First 3 Innings Run Line", None, None, ("F3", "main")),
+    # --- REJECTED: one example per junk family ---
+    ("First 5 Innings Run Line / Total Runs Parlay", None, None, None),  # parlay
+    ("Line / Total Parlay 7", None, None, None),                         # parlay
+    ("Total Runs (Bands)", None, None, None),                            # bands
+    ("Moneyline Away Listed", None, None, None),                         # listed
+    ("First 7 Innings Result", None, None, None),                        # 3-way result
+    ("First 6 Innings Result", None, None, None),                        # 3-way result
+    ("7th Inning Total Runs", None, None, None),                         # single inning
+    ("7th Inning Run Line", None, None, None),                           # single inning
+    ("First 5 Innings Winning Margin (5-Way)", None, None, None),        # winning margin
+    ("Race To 7 Runs", None, None, None),                                # race to
+    ("Tri-Bet", None, None, None),                                       # no line keyword
+    ("Chicago White Sox Total Runs", _H, _A, None),                      # team total (away)
+    ("San Francisco Giants Alt. Total Runs", _H, _A, None),              # team total (home)
+    ("Random Garbage Market", None, None, None),
+])
+def test_classify_market_keyword(name, home, away, expected):
+    from mlb_sgp.scraper_fanduel_singles import classify_market
+    assert classify_market(name, home, away) == expected
