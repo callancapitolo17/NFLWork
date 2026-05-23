@@ -273,7 +273,7 @@ def parse_spread_records(markets, team_dict, canonical_games, fetch_time, sport_
             raw_to_side = {team_list[0]: "away", team_list[1]: "home"}
 
         close_time = event_markets[0].get("close_time", "")
-        game_date, game_time_str = _parse_datetime(close_time)
+        game_start_time = _parse_game_start_time(close_time)
 
         for m in event_markets:
             strike = m.get("floor_strike")
@@ -325,8 +325,7 @@ def parse_spread_records(markets, team_dict, canonical_games, fetch_time, sport_
                 "fetch_time": fetch_time,
                 "sport_key": sport_cfg["sport_key"],
                 "game_id": f"kalshi-{event_ticker}-{m['ticker']}",
-                "game_date": game_date,
-                "game_time": game_time_str,
+                "game_start_time": game_start_time,
                 "away_team": away_resolved,
                 "home_team": home_resolved,
                 "market": sport_cfg["market_names"]["spreads"],
@@ -374,7 +373,7 @@ def parse_total_records(markets, team_dict, canonical_games, fetch_time, sport_c
         )
 
         close_time = event_markets[0].get("close_time", "")
-        game_date, game_time_str = _parse_datetime(close_time)
+        game_start_time = _parse_game_start_time(close_time)
 
         for m in event_markets:
             strike = m.get("floor_strike")
@@ -398,8 +397,7 @@ def parse_total_records(markets, team_dict, canonical_games, fetch_time, sport_c
                 "fetch_time": fetch_time,
                 "sport_key": sport_cfg["sport_key"],
                 "game_id": f"kalshi-{event_ticker}-{int(strike)}",
-                "game_date": game_date,
-                "game_time": game_time_str,
+                "game_start_time": game_start_time,
                 "away_team": away_resolved,
                 "home_team": home_resolved,
                 "market": sport_cfg["market_names"]["totals"],
@@ -464,7 +462,7 @@ def parse_moneyline_records(markets, team_dict, canonical_games, fetch_time, spo
         )
 
         close_time = event_markets[0].get("close_time", "")
-        game_date, game_time_str = _parse_datetime(close_time)
+        game_start_time = _parse_game_start_time(close_time)
 
         # Match contracts to home/away
         # The yes_sub_title contains the team name
@@ -517,8 +515,7 @@ def parse_moneyline_records(markets, team_dict, canonical_games, fetch_time, spo
             "fetch_time": fetch_time,
             "sport_key": sport_cfg["sport_key"],
             "game_id": f"kalshi-{event_ticker}",
-            "game_date": game_date,
-            "game_time": game_time_str,
+            "game_start_time": game_start_time,
             "away_team": away_resolved,
             "home_team": home_resolved,
             "market": sport_cfg["market_names"]["moneyline"],
@@ -579,7 +576,7 @@ def parse_race_to_10_records(markets, team_dict, canonical_games, fetch_time, sp
         )
 
         close_time = event_markets[0].get("close_time", "")
-        game_date, game_time_str = _parse_datetime(close_time)
+        game_start_time = _parse_game_start_time(close_time)
 
         # Match contracts to home/away using resolved names
         home_contract = away_contract = None
@@ -609,8 +606,7 @@ def parse_race_to_10_records(markets, team_dict, canonical_games, fetch_time, sp
             "fetch_time": fetch_time,
             "sport_key": sport_cfg["sport_key"],
             "game_id": f"kalshi-{event_ticker}",
-            "game_date": game_date,
-            "game_time": game_time_str,
+            "game_start_time": game_start_time,
             "away_team": away_resolved,
             "home_team": home_resolved,
             "market": sport_cfg["market_names"].get("race_to_10", "race_to_10"),
@@ -661,15 +657,19 @@ def _is_liquid(market, max_spread=20):
     return True
 
 
-def _parse_datetime(iso_str):
-    """Parse ISO datetime string to game_date (MM/DD) and game_time (HH:MM UTC)."""
-    if not iso_str:
-        return "", ""
+def _parse_game_start_time(close_time):
+    """Parse Kalshi's ISO 8601 close_time string into an aware UTC datetime.
+
+    Kalshi returns ISO 8601 UTC strings (e.g. "2026-05-22T23:05:00Z").
+    DuckDB stores the result as TIMESTAMPTZ — one canonical instant, no
+    split-VARCHAR ambiguity. Returns None for empty/None/unparseable input.
+    """
+    if not close_time:
+        return None
     try:
-        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-        return dt.strftime("%m/%d"), dt.strftime("%H:%M")
+        return datetime.fromisoformat(close_time.replace("Z", "+00:00"))
     except (ValueError, TypeError):
-        return "", ""
+        return None
 
 
 def _normalize_team_name(name):
@@ -700,18 +700,22 @@ def _fuzzy_team_match(name1, name2):
 
 
 def init_database(table_name="cbb_odds"):
-    """Initialize DuckDB with a sport-specific odds table."""
+    """Initialize DuckDB with a sport-specific odds table if missing.
+
+    Uses CREATE TABLE IF NOT EXISTS so the prior snapshot survives across
+    runs. The atomic stage-and-swap in `save_to_database` is responsible
+    for replacing the data each run. Schema migrations (e.g. drop
+    legacy `game_date/game_time` columns) are handled by
+    `tools/migrate_scraper_schemas.py`.
+    """
     conn = duckdb.connect(str(DB_PATH))
     try:
-        # Recreate table to pick up schema changes (data is ephemeral — cleared each run)
-        conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.execute(f"""
-            CREATE TABLE {table_name} (
-                fetch_time TIMESTAMP,
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                fetch_time TIMESTAMPTZ,
                 sport_key VARCHAR,
                 game_id VARCHAR,
-                game_date VARCHAR,
-                game_time VARCHAR,
+                game_start_time TIMESTAMPTZ,
                 away_team VARCHAR,
                 home_team VARCHAR,
                 market VARCHAR,
@@ -740,11 +744,18 @@ def init_database(table_name="cbb_odds"):
 
 
 def save_to_database(odds_data, table_name="cbb_odds"):
-    """Save scraped odds to DuckDB (clear + insert)."""
+    """Save scraped odds to DuckDB using an atomic stage-and-swap.
+
+    Stages rows into a TEMP table cloned from the live schema, then swaps
+    the live table with `CREATE OR REPLACE TABLE ... AS SELECT`. Readers
+    see either the entire old snapshot or the entire new one — never a
+    half-written state. Matches the DK/FD/BFA pattern (the old
+    DELETE+INSERT exposed a brief empty window to concurrent readers).
+    """
     conn = duckdb.connect(str(DB_PATH))
     try:
         columns = [
-            "fetch_time", "sport_key", "game_id", "game_date", "game_time",
+            "fetch_time", "sport_key", "game_id", "game_start_time",
             "away_team", "home_team", "market", "period",
             "away_spread", "away_spread_price", "away_spread_cents",
             "home_spread", "home_spread_price", "home_spread_cents",
@@ -753,18 +764,22 @@ def save_to_database(odds_data, table_name="cbb_odds"):
             "tie_ml", "tie_ml_cents"
         ]
 
-        placeholders = ", ".join(["?" for _ in columns])
-
-        conn.execute(f"DELETE FROM {table_name}")
-
         if odds_data:
-            conn.executemany(f"""
-                INSERT INTO {table_name} ({", ".join(columns)})
-                VALUES ({placeholders})
-            """, [
-                tuple(d[col] for col in columns)
-                for d in odds_data
-            ])
+            conn.execute(
+                f"CREATE OR REPLACE TEMP TABLE {table_name}_new AS "
+                f"SELECT * FROM {table_name} LIMIT 0"
+            )
+            placeholders = ", ".join(["?"] * len(columns))
+            tuples = [tuple(d.get(c) for c in columns) for d in odds_data]
+            conn.executemany(
+                f"INSERT INTO {table_name}_new VALUES ({placeholders})", tuples
+            )
+            conn.execute(
+                f"CREATE OR REPLACE TABLE {table_name} AS SELECT * FROM {table_name}_new"
+            )
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}_new")
+        else:
+            print(f"[kalshi] empty scrape — leaving prior snapshot in place", flush=True)
 
         result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
         print(f"Database now has {result[0]} total records in {table_name}")
