@@ -1289,7 +1289,8 @@ render_bet_card <- function(bet_title, market_label, matchup, tipoff, hero_html,
                              pickside_label, pickside_wide_row,
                              oppside_label, oppside_wide_row,
                              pick_book, side_word, is_totals,
-                             corr_badge_html = "") {
+                             corr_badge_html = "",
+                             card_data_attrs = "") {
   bet_line <- sprintf(
     '<div class="bet-line">
        <span class="primary">%s</span>
@@ -1367,7 +1368,12 @@ render_bet_card <- function(bet_title, market_label, matchup, tipoff, hero_html,
                        '<div class="price-grid show-fair">',
                        col_hdrs, pick_row, opp_row, '</div>')
 
-  paste0('<div class="bet-card-v8">', bet_line, matchup_line, hero_html, grid_html, '</div>')
+  card_open <- if (nzchar(card_data_attrs)) {
+    paste0('<div class="bet-card-v8" ', card_data_attrs, '>')
+  } else {
+    '<div class="bet-card-v8">'
+  }
+  paste0(card_open, bet_line, matchup_line, hero_html, grid_html, '</div>')
 }
 
 # -----------------------------------------------------------------------------
@@ -1748,6 +1754,28 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
       action_html    = action_html
     )
 
+    # Card-root data-* attrs used by JS addAnother / placeAnother to rebuild
+    # the editable hero without re-fetching bet metadata. NA-guarded so JS
+    # never sees the string "NA" (Number("NA") == NaN in JS).
+    card_pick_odds_str  <- ifelse(is.na(row$odds),      "",
+                                  ifelse(row$odds > 0,
+                                         sprintf("+%d", as.integer(row$odds)),
+                                         sprintf("%d",  as.integer(row$odds))))
+    card_fair_odds_str  <- ifelse(is.na(row$fair_odds), "",
+                                  ifelse(row$fair_odds > 0,
+                                         sprintf("+%d", as.integer(row$fair_odds)),
+                                         sprintf("%d",  as.integer(row$fair_odds))))
+    card_ev_pct_str     <- ifelse(is.na(row$ev_pct), "",
+                                  sprintf("+%.1f%%", row$ev_pct))
+    card_data_attrs <- sprintf(
+      'data-pick-book="%s" data-pick-odds="%s" data-pick-odds-raw="%s" data-fair-odds="%s" data-ev-pct="%s"',
+      htmltools::htmlEscape(row$bookmaker_key),
+      card_pick_odds_str,
+      ifelse(is.na(row$odds), "", as.integer(row$odds)),
+      card_fair_odds_str,
+      card_ev_pct_str
+    )
+
     render_bet_card(
       bet_title          = title_parts$bet_title,
       market_label       = title_parts$market_label,
@@ -1761,7 +1789,8 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
       pick_book          = row$bookmaker_key,
       side_word          = side_word,
       is_totals          = is_totals_market,
-      corr_badge_html    = corr_html
+      corr_badge_html    = corr_html,
+      card_data_attrs    = card_data_attrs
     )
   }, character(1))
 
@@ -4394,6 +4423,89 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           });
         }
 
+        // ============ ADD ANOTHER (multi-account re-place) ============
+        // Re-opens a placed card so the user can add a second placement
+        // on a different Wagerzon account without a full page reload.
+        function addAnother(btn) {
+          var card = btn.closest(\'.bet-card-v8\');
+          if (!card) return;
+
+          var betHash = btn.dataset.betHash;
+          var heroPlaced = card.querySelector(\'.hero-placed\');
+          if (!heroPlaced) return;
+
+          // Guard: already re-opened — don\'t inject a second editable strip.
+          if (card.querySelector(\'.hero.reopened\')) return;
+
+          // Default Risk from the last placed chip.
+          var chips = heroPlaced.querySelectorAll(\'.placement-chip\');
+          var lastRisk = chips.length
+            ? parseFloat(chips[chips.length - 1].dataset.risk) || 0
+            : 0;
+
+          // Read pick metadata from the card root data-* attrs (emitted by
+          // create_bets_table via render_bet_card card_data_attrs param).
+          var heroData = card.dataset;
+
+          var editable = document.createElement(\'div\');
+          editable.className = \'hero reopened\';
+          editable.dataset.betHash = betHash;
+          editable.innerHTML = \'\'
+            + \'<div class="pick">\'
+            +   \'<span class="book">\' + (heroData.pickBook || \'WZ\') + \'</span>\'
+            +   \'<span class="odds">\' + (heroData.pickOdds || \'\') + \'</span>\'
+            + \'</div>\'
+            + \'<div class="divider"></div>\'
+            + \'<div class="stat"><span class="lbl">Fair</span><span class="val">\' + (heroData.fairOdds || \'\') + \'</span></div>\'
+            + \'<div class="stat"><span class="lbl">EV</span><span class="val ev">\' + (heroData.evPct || \'\') + \'</span></div>\'
+            + \'<div class="stat risk-stat" data-model-risk="\' + lastRisk + \'" data-american-odds="\' + (heroData.pickOddsRaw || \'0\') + \'">\'
+            +   \'<span class="lbl">Risk</span>\'
+            +   \'<div class="risk-row">\'
+            +     \'<span class="val risk risk-value" tabindex="0" title="click to edit">$\' + lastRisk + \'</span>\'
+            +     \'<button type="button" class="risk-reset" title="reset">↻</button>\'
+            +     \'<span class="risk-error" hidden></span>\'
+            +   \'</div>\'
+            + \'</div>\'
+            + \'<div class="stat"><span class="lbl">To Win</span><div class="towin-row"><span class="val win towin-value"></span><span class="towin-status" hidden></span></div></div>\'
+            + \'<div class="actions">\'
+            +   \'<button class="btn-place reopened-place" data-bet-hash="\' + betHash + \'" onclick="placeAnother(this)">Place</button>\'
+            + \'</div>\';
+
+          heroPlaced.insertAdjacentElement(\'afterend\', editable);
+
+          // Set initial Place enable state based on current header pill.
+          window._refreshReopenedPlaceState(editable);
+
+          if (typeof showToast === \'function\') {
+            showToast(\'Switch the header pill to add another account.\', \'info\');
+          }
+        }
+        window.addAnother = addAnother;
+
+        function _refreshReopenedPlaceState(editable) {
+          if (!editable) return;
+          var card = editable.closest(\'.bet-card-v8\');
+          if (!card) return;
+          var placeBtn = editable.querySelector(\'.reopened-place\');
+          if (!placeBtn) return;
+
+          var currentAcct = window.WZ_SELECTED_ACCOUNT || \'\';
+          var chipAccounts = Array.prototype.map.call(
+            card.querySelectorAll(\'.hero-placed .placement-chip\'),
+            function(chip) { return chip.dataset.account; }
+          );
+          if (!currentAcct || chipAccounts.indexOf(currentAcct) !== -1) {
+            placeBtn.disabled = true;
+            placeBtn.title = \'Switch the header pill to a different account\';
+          } else {
+            placeBtn.disabled = false;
+            placeBtn.title = \'\';
+          }
+        }
+        // Expose on window so the header-pill script block (separate
+        // tags$script) can call it after switching WZ_SELECTED_ACCOUNT.
+        window._refreshReopenedPlaceState = _refreshReopenedPlaceState;
+
         function autoPlaceBet(autoBtn) {
           // Find the Place button (sibling) to get data attributes
           var btn = autoBtn.previousElementSibling;
@@ -5605,6 +5717,20 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         persistSelection(label).catch(function() {
           // Network blip on persist shouldn't block UI; selection still
           // applies for this session and will retry on next click.
+        });
+        // Sweep every card on the page when the active WZ account changes:
+        // - clear each card's data-expected-win (the next Risk edit re-verifies
+        //   the WZ quote under the new account)
+        // - re-evaluate Place button state on any re-opened editable hero
+        //   (Place is disabled when the active account matches an existing chip)
+        document.querySelectorAll('.bet-card-v8').forEach(function(card) {
+          card.querySelectorAll('[data-expected-win]').forEach(function(el) {
+            el.dataset.expectedWin = '';
+          });
+          var reopened = card.querySelector('.hero.reopened');
+          if (reopened && typeof window._refreshReopenedPlaceState === 'function') {
+            window._refreshReopenedPlaceState(reopened);
+          }
         });
         renderPills(orderedLabels);
         recomputeAllInsufficiencyWarnings();
