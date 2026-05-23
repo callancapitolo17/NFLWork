@@ -162,7 +162,9 @@ classify_market(name, home_team, away_team) -> (period, market_type) | None
      `away_team`, it's a per-team market (`<Team> Total Runs`,
      `<Team> Alt. Total Runs`) → exclude. (This is why the signature takes the
      teams — cleaner than DK's static prefix map since the client already has
-     them.)
+     them.) **Backward-compat:** `home_team`/`away_team` default to `None`; the
+     team-total check is skipped when absent, so existing single-arg callers
+     and the current `test_classify_market_*` tests keep working unchanged.
 2. **Period detection**: `first 7 innings`→F7, `first 5 innings`→F5,
    `first 3 innings`→F3, else FG. (FanDuel uses "First N Innings"; the
    single-inning regex already filtered singular "Inning".)
@@ -204,20 +206,60 @@ bets tab renders them on the existing F7/F3 cards. No R change.
 
 ## Testing & validation
 
-1. **Classifier validation gate (the safety net for decision #3).** A throwaway
-   script (job dir, not committed) runs the new `classify_market` against the
-   *full* live market list (both tabs) for ≥3 real games and prints
-   ACCEPTED (name → period/market_type) vs REJECTED. Manually confirm: every
-   FG/F5/F7/F3 line is accepted with correct period+type; zero junk
-   (parlay/bands/listed/team-total/per-inning/result) accepted. This is the
-   go/no-go for the classifier.
-2. **End-to-end:** run the scraper for real, then query `fd.duckdb::mlb_odds`
-   to confirm F7 and F3 rows now exist for the two games, with sane
-   prices, and that FG/F5 row counts did **not** drop (regression check).
-3. **Timezone parity gate (required by repo CLAUDE.md):** run
-   `tests/timezone_parity_test.py` after the scraper change — it cross-checks
-   each scraper's `game_start_time` against Odds API `commence_time`. Merging
-   tabs must not perturb `game_start_time`.
+Verification is layered from most-decisive (hard pass/fail) to confirmatory.
+
+**Test invocation (confirmed working):** the worktree has no venv; run with the
+main repo's venv pointed at the worktree code, with `mlb_sgp/` on the path:
+```
+PYTHONPATH=mlb_sgp /Users/callancapitolo/NFLWork/mlb_sgp/venv/bin/python \
+    -m pytest mlb_sgp/tests/test_fanduel_singles.py -q
+```
+Baseline is currently green (2 passed) — that's the regression floor.
+
+1. **Classifier unit test — gold standard, written TDD-first.** Extend
+   `mlb_sgp/tests/test_fanduel_singles.py` with a table-driven test:
+   a list of `(market_name, home, away) → expected (period, market_type) | None`
+   covering **every class** — one real line per period/type that must be
+   ACCEPTED, and one example per junk family that must be REJECTED
+   (`… Total Runs Parlay`→None, `Total Runs (Bands)`→None,
+   `Moneyline Away Listed`→None, `<away_team> Total Runs`→None,
+   `7th Inning Total Runs`→None, `First 7 Innings Result`→None,
+   `First 7 Innings Total Runs`→("F7","main"), `First 7 Innings Run Line`→
+   ("F7","main"), etc.). Write these assertions **before** implementing the
+   classifier; "done" = all green. This turns the old "eyeball it" into a hard
+   pass/fail and locks the behavior against future edits.
+2. **Full live-market audit (catches names the unit test didn't anticipate).**
+   A throwaway script (job dir, not committed) runs the finished classifier
+   against the *full* live market list (both tabs) for ≥3 real games and prints
+   ACCEPTED (name → period/market_type) vs REJECTED. Confirm the accept set is
+   exactly the regular FG/F5/F7/F3 lines and the reject set contains all junk.
+3. **End-to-end ground truth.** Re-pull a fresh FanDuel F7 quote at test time
+   (odds drift, so don't hardcode — during design the Giants F7 total read
+   Over −128 / Under +104, F7 run line WSX −134 / Giants +110). Run the scraper
+   for real, then query `fd.duckdb::mlb_odds` and confirm F7 + F3 rows now exist
+   for both games with prices matching the fresh quote.
+4. **Regression diff (no FG/F5 loss, no double-count).** Snapshot current
+   `fd.duckdb` coverage as a baseline *before* the change (row counts grouped by
+   `period × market`); re-snapshot after. FG/F5 counts must be ≥ baseline (we
+   only add), and there must be zero duplicate `(period, market, total/spread)`
+   rows (proves the both-tab dedup is correct).
+5. **FD-vs-DK parity (the actual goal).** For each game, list cards where DK has
+   a pill; FanDuel should now have one wherever FanDuel posts that market. The
+   only remaining gaps should be the known structural ones — F7/F3 alts and
+   F7/F3 2-way ML, which FanDuel genuinely does not post.
+6. **Timezone parity gate (required by repo CLAUDE.md):** run
+   `tests/timezone_parity_test.py` — it cross-checks each scraper's
+   `game_start_time` against Odds API `commence_time`. Merging tabs must not
+   perturb `game_start_time`.
+7. **Visual confirmation:** the two cards from the original screenshot
+   (Cardinals @ Reds Over 7.5, White Sox @ Giants Over 6.5) render FanDuel pills
+   in the dashboard.
+
+**Honest limits of this verification:** items 1–2 validate against *today's*
+market set, so a genuinely novel FanDuel market name in the future could still
+slip through the keyword classifier (this is the accepted risk in the Review
+Pack, mitigated by the team-total + junk exclusions and the fact that a wrong
+pill is a visible display/sizing input, not an auto-bet).
 
 ## Version control
 
