@@ -214,6 +214,59 @@ an account.
 - `dashboard_settings(key, value, updated_at)` — generic key/value
   preferences. Currently only `wagerzon_last_used`.
 
+### Multi-account re-place (v1, 2026-05)
+
+After a Wagerzon bet is placed, the card shows a green chip per
+placement plus a dashed "+ another" button. Clicking `+ another`
+re-opens an editable hero strip; the user switches the header pill
+to a different WZ account, edits Risk (re-verified via
+`/api/wz-quote-single`), and clicks Place to add a second placement
+on the same bet.
+
+- `placed_bets` PRIMARY KEY is now composite `(bet_hash, account)`
+  (migration 003). Same `bet_hash` with different `account` is allowed;
+  same `(bet_hash, account)` is rejected.
+- All server-side writers (`_insert_placement_breadcrumb`,
+  `_finalize_placement`, `/api/place-bet` 409 check, `/api/remove-bet`,
+  `/api/update-bet`, `/api/log-bet`) scope by composite key.
+- The header pill click handler clears `data-expected-win` on every
+  card so the next Risk edit re-verifies under the new account.
+- **v1 does NOT support stacking on the same account.** If WZ caps you
+  at $50/wager and you want $500 on Wagerzon alone, the composite PK
+  blocks the second placement (409). Future change.
+- Spec: `docs/superpowers/specs/2026-05-23-mlb-dashboard-multi-account-re-place-design.md`.
+- Plan: `docs/superpowers/plans/2026-05-23-mlb-dashboard-multi-account-re-place.md`.
+
+#### Known asymmetries (deferred)
+
+- `/api/nav-status/<bet_hash>` returns one arbitrary row's status when
+  multiple placements exist for a bet. Used only by the Playwright
+  polling loop for non-WZ books; non-WZ books don't have multi-account
+  today, so this is dormant. If a non-WZ book ever gains a multi-account
+  registry, scope the endpoint by `(bet_hash, account)`.
+- `/api/clv-details` JOIN against `placed_bets` (line ~2528 in
+  `mlb_dashboard_server.py`) fans out per chip for multi-account bets.
+  The CLV tab may show duplicate rows for bets placed on 2+ WZ accounts.
+  Per-chip CLV is arguably the right answer (each placement has its own
+  closing price diff), but the existing CLV pipeline assumes one row per
+  `bet_hash`. Future cleanup: either dedupe in the JOIN with
+  `QUALIFY ROW_NUMBER() OVER (PARTITION BY c.bet_hash ORDER BY p.placed_at DESC) = 1`,
+  or surface per-account CLV explicitly.
+
+### Migration 003 — composite PK
+
+Apply once per environment after pulling this branch and BEFORE
+restarting the dashboard:
+```
+python "Answer Keys/MLB Dashboard/migrations/003_placed_bets_composite_pk.py" \
+    "Answer Keys/MLB Dashboard/mlb_dashboard.duckdb"
+```
+Idempotent — second invocation is a no-op. The running dashboard's R
+process holds a connection to the old schema and will not see the new
+PK without a restart. Fresh installs also work without running 003 —
+`init_db()` now creates the table with the composite PK directly, so 003
+no-ops on fresh DBs.
+
 ## MLB Dashboard — Odds screen + WZ single-bet placer
 
 The MLB Dashboard's bets tab uses an odds-screen card layout that shows
