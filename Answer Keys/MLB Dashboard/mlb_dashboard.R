@@ -1777,12 +1777,28 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
                                          sprintf("+%.1f%%", row$ev_pct),
                                          sprintf("%.1f%%",  row$ev_pct)))
     card_data_attrs <- sprintf(
-      'data-pick-book="%s" data-pick-odds="%s" data-pick-odds-raw="%s" data-fair-odds="%s" data-ev-pct="%s"',
+      paste0(
+        'data-pick-book="%s" data-pick-odds="%s" data-pick-odds-raw="%s" data-fair-odds="%s" data-ev-pct="%s"',
+        ' data-bet-hash="%s" data-bet-on="%s" data-line="%s" data-market="%s"',
+        ' data-game-id="%s" data-home="%s" data-away="%s" data-time="%s"',
+        ' data-prob="%s" data-ev="%s" data-model-size="%s"'
+      ),
       htmltools::htmlEscape(row$bookmaker_key),
       card_pick_odds_str,
       ifelse(is.na(row$odds), "", as.integer(row$odds)),
       card_fair_odds_str,
-      card_ev_pct_str
+      card_ev_pct_str,
+      htmltools::htmlEscape(row$bet_hash),
+      htmltools::htmlEscape(row$bet_on),
+      ifelse(is.na(row$line), "", row$line),
+      htmltools::htmlEscape(row$market),
+      htmltools::htmlEscape(row$id),
+      htmltools::htmlEscape(row$home_team),
+      htmltools::htmlEscape(row$away_team),
+      htmltools::htmlEscape(as.character(row$pt_start_time)),
+      ifelse(is.na(row$prob), "", row$prob),
+      ifelse(is.na(row$ev), "", row$ev),
+      ifelse(is.na(row$bet_size), "", row$bet_size)
     )
 
     render_bet_card(
@@ -4477,7 +4493,23 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             + \'</div>\'
             + \'<div class="stat"><span class="lbl">To Win</span><div class="towin-row"><span class="val win towin-value"></span><span class="towin-status" hidden></span></div></div>\'
             + \'<div class="actions">\'
-            +   \'<button class="btn-place reopened-place" data-bet-hash="\' + betHash + \'" onclick="placeAnother(this)">Place</button>\'
+            +   \'<button class="btn-place reopened-place"\'
+            +     \' data-bet-hash="\' + betHash + \'"\'
+            +     \' data-hash="\' + betHash + \'"\'
+            +     \' data-book="wagerzon"\'
+            +     \' data-odds="\' + (heroData.pickOddsRaw || \'0\') + \'"\'
+            +     \' data-bet-on="\' + (heroData.betOn || \'\') + \'"\'
+            +     \' data-line="\' + (heroData.line || \'\') + \'"\'
+            +     \' data-market="\' + (heroData.market || \'\') + \'"\'
+            +     \' data-game-id="\' + (heroData.gameId || \'\') + \'"\'
+            +     \' data-home="\' + (heroData.home || \'\') + \'"\'
+            +     \' data-away="\' + (heroData.away || \'\') + \'"\'
+            +     \' data-time="\' + (heroData.time || \'\') + \'"\'
+            +     \' data-prob="\' + (heroData.prob || \'0\') + \'"\'
+            +     \' data-ev="\' + (heroData.ev || \'0\') + \'"\'
+            +     \' data-model-size="\' + (heroData.modelSize || lastRisk) + \'"\'
+            +     \' data-size="\' + lastRisk + \'"\'
+            +     \' onclick="placeAnother(this)">Place</button>\'
             + \'</div>\';
 
           heroPlaced.insertAdjacentElement(\'afterend\', editable);
@@ -4555,7 +4587,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             line:             (d.line === \'\' || d.line === undefined) ? null : parseFloat(d.line),
             market:           d.market,
             american_odds:    parseInt(d.pickOddsRaw, 10),
-            actual_size:      riskNum,
+            actual_size:      Math.round(riskNum),
             kelly_bet:        parseFloat(d.modelSize || d.kellyBet) || riskNum,
             wz_odds_at_place: parseInt(d.pickOddsRaw, 10),
             expected_win:     expectedWin,
