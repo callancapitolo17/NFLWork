@@ -6,7 +6,14 @@ helpers used by the MLB correlated parlay dashboard.
 ## Quick map
 
 - **Scraping odds:** `scraper_v2.py`, `scraper_specials.py` write to
-  `wagerzon_odds/wagerzon.duckdb`.
+  `wagerzon_odds/wagerzon.duckdb`. **League IDs are resolved at scrape
+  time via `ActiveLeaguesHelper.aspx`** — `config.py` declares wanted
+  markets by `Description` label (e.g. `"MLB - GAME LINES"`), not by
+  hardcoded `lg=` IDs. See `scraper_v2.resolve_leagues()` + the
+  "How league IDs get resolved" section of `README.md`. Defense-in-
+  depth: `validate_idgmtyp_shape()` warns (doesn't drop) when a
+  `GameChild`'s response shape drifts from what its `idgmtyp` is
+  documented to return, or when an unknown `idgmtyp` appears.
 - **Pricing parlays:** `parlay_pricer.py::get_parlay_price()` calls
   `ConfirmWagerHelper` with `RiskWin=2` (skips balance validation).
 - **Pricing singles:** `single_pricer.py::get_single_price()` calls

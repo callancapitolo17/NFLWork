@@ -908,14 +908,13 @@ print(all_bets_combined %>% head(20))
   select(id, home_team, away_team) %>%
   distinct()
 
-# Parse the prefetched_odds JSON cache into long format so DK/FD/Pinnacle
-# have F-period (F3/F5/F7) and alt-market coverage in book_odds_by_book.
-# Without this, the pill grid only shows DK/FD/Pinn odds for FG h2h + FG
-# totals (the only markets in game_odds) and is empty for the F-period bets
-# that dominate all_bets_combined.
+# Parse the prefetched_odds JSON cache into long format for Pinnacle pill
+# coverage. DK and FD come from their per-book DuckDBs via get_dk_odds /
+# get_fd_odds (see Tools.R); the Odds API path is used only for Pinnacle,
+# which has no public REST API.
 prefetched_long <- parse_prefetched_to_long(
   prefetched_odds,
-  bookmaker_keys = c("draftkings", "fanduel", "pinnacle")
+  bookmaker_keys = "pinnacle"
 )
 
 # Kalshi is intentionally excluded from book_odds_by_book — it's a
@@ -970,8 +969,30 @@ con_bets <- duckdb_connect_retry("mlb_mm.duckdb")
 on.exit(tryCatch(dbDisconnect(con_bets), error = function(e) NULL), add = TRUE)
 dbExecute(con_bets, "DROP TABLE IF EXISTS mlb_bets_combined")
 dbWriteTable(con_bets, "mlb_bets_combined", all_bets_combined)
+# Pre-declare schema so fetch_time keeps its UTC timezone (otherwise
+# dbWriteTable downgrades POSIXct to naive TIMESTAMP and breaks
+# downstream NOW()-fetch_time math).
 dbExecute(con_bets, "DROP TABLE IF EXISTS mlb_bets_book_prices")
-dbWriteTable(con_bets, "mlb_bets_book_prices", book_prices_long)
+dbExecute(con_bets, "
+  CREATE TABLE mlb_bets_book_prices (
+    bet_row_id      VARCHAR,
+    game_id         VARCHAR,
+    market          VARCHAR,
+    period          VARCHAR,
+    side            VARCHAR,
+    bookmaker       VARCHAR,
+    line            DOUBLE,
+    line_quoted     DOUBLE,
+    is_exact_line   BOOLEAN,
+    american_odds   INTEGER,
+    fetch_time      TIMESTAMPTZ,
+    game_start_time TIMESTAMPTZ
+  )
+")
+# Ensure POSIXct columns are in UTC so DuckDB sees TZ-aware values.
+book_prices_long$fetch_time      <- as.POSIXct(book_prices_long$fetch_time,      tz = "UTC")
+book_prices_long$game_start_time <- as.POSIXct(book_prices_long$game_start_time, tz = "UTC")
+dbAppendTable(con_bets, "mlb_bets_book_prices", book_prices_long)
 dbDisconnect(con_bets)
 on.exit(NULL)
 

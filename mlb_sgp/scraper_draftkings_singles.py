@@ -84,6 +84,14 @@ def classify_market(name: str) -> tuple[str, str] | None:
     # Out-of-scope categories first.
     if "team total" in n:
         return None
+    # Some DK per-team markets don't carry the "team total" substring
+    # (e.g. "Alternate HOU Astros Total Runs", "CHI Cubs Home Runs"). These
+    # used to slip through and collide with the real game-totals market in
+    # parse_selections_to_wide_rows's (period, market_type, line) bucket,
+    # silently overwriting game-total odds with one team's team-total odds.
+    # Filter any market name containing a DK team prefix as team-specific.
+    if any(team.lower() in n for team in DK_TEAM_MAP):
+        return None
     if any(k in n for k in (
         "player", "prop", "futures", "to record", "to score",
         "to hit", "first to", "race to", "correct score", "winning margin",
@@ -93,7 +101,7 @@ def classify_market(name: str) -> tuple[str, str] | None:
     )):
         return None
     # Single-inning markets (e.g. "Run Line - 5th Inning", "Total Runs - 6th
-    # Inning", "7th Inning (3 Way)") — exclude. Note "1st 5 Innings" stays
+    # Inning", "7th Inning (3 Way)") — exclude. Note "1st N Innings" stays
     # because it's plural "Innings", not singular "Inning".
     if _SINGLE_INNING_RE.search(n):
         return None
@@ -131,7 +139,7 @@ def parse_selections_to_wide_rows(
 ) -> list[dict[str, Any]]:
     """Group selections by (period, market_type, line); emit wide rows.
 
-    DK's F5/F7 run-line and total markets bundle the main line and all alt
+    DK's F3/F5/F7 run-line and total markets bundle the main line and all alt
     lines into ONE market (e.g. "Total Runs - 1st 7 Innings" carries Over/
     Under at 5.5, 6.5, AND 7.5 as 6 selections in one market id). Without
     detecting that, the parser would coalesce every selection into the same
@@ -185,7 +193,7 @@ def parse_selections_to_wide_rows(
         name_lower = sel.name.lower()
 
         # If this is a "main"-classified market whose selections bundle multiple
-        # distinct lines (DK F5/F7 quirk), reclassify per-selection as alt.
+        # distinct lines (DK F3/F5/F7 quirk), reclassify per-selection as alt.
         effective_market_type = market_type
         if market_type == "main":
             if name_lower.startswith(("over", "under")):
@@ -390,6 +398,17 @@ def write_to_duckdb(rows: list[dict]) -> None:
 
     con = duckdb.connect(str(db_path))
     try:
+        # Migrate naive-TIMESTAMP schema to TIMESTAMPTZ if needed.
+        # DuckDB does not support ALTER COLUMN TYPE between these, so drop+create.
+        existing = con.execute(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_name = 'mlb_odds' AND column_name = 'fetch_time'"
+        ).fetchone()
+        if existing is not None and "WITH TIME ZONE" not in (existing[1] or "").upper():
+            print(f"[dk] Migrating mlb_odds.fetch_time TIMESTAMP -> TIMESTAMPTZ "
+                  f"(existing snapshot will be re-populated this run)")
+            con.execute("DROP TABLE mlb_odds")
+
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS mlb_odds (

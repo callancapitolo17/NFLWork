@@ -549,13 +549,24 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
         class = "cell-books",
         cell = function(value, index) {
           row <- table_data[index, ]
+          # Agree k/n is computed over the 5 independent voices (DK / FD / PX /
+          # NV / model). Cons is excluded because it's a blended derivative of
+          # model+books. NA voices reduce the denominator rather than counting
+          # as "disagree" — see books_strip.R::compute_k_within.
+          agree <- compute_k_within(c(
+            row$dk_fair_prob, row$fd_fair_prob,
+            row$px_fair_prob, row$nv_fair_prob,
+            row$model_prob_raw
+          ))
           render_books_strip(
             model = row$model_prob_raw,
             dk    = row$dk_fair_prob,
             fd    = row$fd_fair_prob,
             px    = row$px_fair_prob,
             nv    = row$nv_fair_prob,
-            cons  = row$blended_prob_raw
+            cons  = row$blended_prob_raw,
+            k_agree = agree$k,
+            n_agree = agree$n
           )
         }
       ),
@@ -1175,15 +1186,22 @@ render_price_grid_row <- function(wide_row, side_label, is_pick_side,
     odds  <- if (!is.null(wide_row) && odds_col  %in% names(wide_row)) wide_row[[odds_col]]  else NA_integer_
     lq    <- if (!is.null(wide_row) && lq_col    %in% names(wide_row)) wide_row[[lq_col]]    else NA_real_
     exact <- if (!is.null(wide_row) && exact_col %in% names(wide_row)) wide_row[[exact_col]] else NA
-    # Other-side odds for THIS book — used for devig FAIR view.
+    # Other-side odds + line for THIS book — used for devig FAIR view.
+    # We pass the opposite line so render_book_cell can refuse to devig when
+    # the two slots landed on different alt markets at the same book.
     opp_odds <- if (!is.null(other_side_wide_row) &&
                     odds_col %in% names(other_side_wide_row)) {
       other_side_wide_row[[odds_col]]
     } else NA_integer_
+    opp_lq   <- if (!is.null(other_side_wide_row) &&
+                    lq_col %in% names(other_side_wide_row)) {
+      other_side_wide_row[[lq_col]]
+    } else NA_real_
     render_book_cell(
       american_odds          = if (is.na(odds))     NA_integer_ else as.integer(odds),
       opposite_american_odds = if (is.na(opp_odds)) NA_integer_ else as.integer(opp_odds),
       line_quoted            = lq,
+      opposite_line_quoted   = if (is.na(opp_lq))   NA_real_    else as.numeric(opp_lq),
       is_exact_line          = exact,
       is_pick                = is_pick_side && (b == pick_book),
       side_word              = side_word,
@@ -2463,6 +2481,12 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .pill.dim {
           opacity: 0.4;
         }
+        .pill.agree {
+          background: #1f6feb22;
+          color: #8ab4f8;
+          font-weight: 700;
+          margin-left: 2px;
+        }
         .pill.error {
           background: #3d1c1c;
           color: #f85149;
@@ -3011,7 +3035,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         /* Tight inline strip sized to content. Uniform 15px SF Mono;     */
         /* hierarchy from color + weight only. Same green-bar accent as   */
         /* the V8 bet-card hero strips. JS keys off seven element IDs     */
-        /* (kc-odds, kc-fair, kc-risk, kc-towin, kc-edge, kc-kelly, kc-be)*/
+        /* (kc-odds, kc-fair, kc-risk, kc-towin, kc-ev, kc-kelly, kc-be)  */
         /* and the .invalid / .risk.neg / .chip.pos / .chip.neg classes.  */
         .kelly-calc {
           display: inline-flex;
@@ -3216,8 +3240,8 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             ),
             tags$div(class = "metrics",
               tags$span(class = "grp",
-                tags$span(class = "k", "Edge"),
-                tags$span(id = "kc-edge", class = "chip", HTML("&mdash;"))
+                tags$span(class = "k", "EV"),
+                tags$span(id = "kc-ev", class = "chip", HTML("&mdash;"))
               ),
               tags$span(class = "grp",
                 tags$span(class = "k", "Kelly"),
@@ -4205,7 +4229,17 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             if (result.status === \'placed\') {
               var ticket = result.ticket_number ? \' #\' + result.ticket_number : \'\';
               showToast(\'Placed at \' + book + ticket, \'success\');
-              setTimeout(function() { location.reload(); }, 800);
+              // In-place DOM swap (no reload). Label matches what R would render
+              // for status=\'placed\' on the next dashboard regen.
+              var labelText = result.ticket_number
+                ? (\'placed \\u00b7 #\' + result.ticket_number)
+                : \'placed\';
+              var span = document.createElement(\'span\');
+              span.className = \'placed-bet-label\';
+              span.textContent = labelText;
+              for (var key in btn.dataset) { span.dataset[key] = btn.dataset[key]; }
+              span.dataset.fillStatus = \'placed\';
+              _replaceActionCell(btn, span);
               return;
             }
             if (result.status === \'playwright_launched\') {
@@ -4265,7 +4299,17 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           .then(function(r) { return r.json(); })
           .then(function(result) {
             if (result.success !== false) {
-              setTimeout(function() { location.reload(); }, 400);
+              // In-place DOM swap mirroring the parlay tab\'s logParlay.
+              // Build a placed-bet-label that R will render identically on
+              // the next dashboard regen — no visual discontinuity.
+              var span = document.createElement(\'span\');
+              span.className = \'placed-bet-label\';
+              span.textContent = \'placed\';
+              // Forward all data-* attrs so post-render filters keep classifying the row.
+              for (var key in btn.dataset) { span.dataset[key] = btn.dataset[key]; }
+              span.dataset.fillStatus = \'placed\';
+              _replaceActionCell(btn, span);
+              showToast(\'Logged $\' + Math.round(parseFloat(body.actual_size)), \'success\');
             } else {
               showToast(\'Log failed: \' + (result.error || \'unknown\'), \'error\');
               btn.disabled = false; btn.textContent = \'Log\';
@@ -5003,12 +5047,14 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             });
         }
 
-        // Replace the parlay row\'s entire Action cell content with `node`.
-        // Walk up from the clicked button to the reactable cell wrapper so
-        // both buttons ([Place] AND [Log]) get cleared together — preserves
-        // the cell\'s data attrs implicitly because the new node carries them.
+        // Replace a row\'s entire action area content with `node`.
+        // Serves both tabs:
+        //   - Bets tab V8 cards: action area is <div class="actions"> in the hero strip
+        //   - Parlay tab reactable: action area is the .rt-td cell wrapper
+        // Walks up to whichever ancestor exists so both buttons (Place + Log)
+        // get cleared together — the new node carries the row\'s data attrs.
         function _replaceActionCell(btn, node) {
-          var cell = btn.closest(\'.rt-td\') || btn.parentNode;
+          var cell = btn.closest(\'.actions\') || btn.closest(\'.rt-td\') || btn.parentNode;
           while (cell.firstChild) cell.removeChild(cell.firstChild);
           cell.appendChild(node);
         }
@@ -5374,7 +5420,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             var bankroll  = Number(($("bankroll-input") || {}).value) || 0;
             var kellyMult = Number(($("kelly-input")     || {}).value) || 0;
 
-            var risk = 0, towin = 0, edge = NaN, kellyPct = NaN, be = NaN;
+            var risk = 0, towin = 0, ev = NaN, kellyPct = NaN, be = NaN;
             if (american != null && fairProb != null && bankroll > 0 && kellyMult > 0) {
               var dec = american > 0 ? american / 100 + 1 : 100 / Math.abs(american) + 1;
               be = american > 0 ? 100 / (american + 100) : Math.abs(american) / (Math.abs(american) + 100);
@@ -5382,15 +5428,15 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               kellyPct = Math.max(0, (b * p - q) / b);
               risk = Math.min(bankroll, bankroll * kellyMult * kellyPct);
               towin = american > 0 ? risk * american / 100 : risk * 100 / Math.abs(american);
-              edge = p - be;
+              ev = b * p - q;   // expected return per dollar staked
             }
 
             $("kc-risk").textContent  = fmtMoney(risk);
             $("kc-risk").classList.toggle("neg", !(risk > 0));
             $("kc-towin").textContent = fmtMoney(towin);
-            var edgeEl = $("kc-edge");
-            edgeEl.textContent = isNaN(edge) ? "-" : fmtPct(edge, true);
-            edgeEl.className   = "chip" + (isFinite(edge) ? (edge > 0 ? " pos" : " neg") : "");
+            var evEl = $("kc-ev");
+            evEl.textContent = isNaN(ev) ? "-" : fmtPct(ev, true);
+            evEl.className   = "chip" + (isFinite(ev) ? (ev > 0 ? " pos" : " neg") : "");
             $("kc-kelly").textContent = isNaN(kellyPct) ? "-" : fmtPct(kellyPct, false);
             $("kc-be").textContent    = isNaN(be) ? "-" : fmtPct(be, false);
           }
@@ -5680,6 +5726,13 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       if (btn) {
         btn.dataset.size = String(riskValue);
         delete btn.dataset.expectedWin;
+      }
+      // Also sync the sibling Log button so manual logging uses the override.
+      // Without this, logBet reads its own stale data-size (the Kelly value
+      // from R-render time) and POSTs the wrong actual_size.
+      var logBtn = card.querySelector('.actions .btn-log');
+      if (logBtn) {
+        logBtn.dataset.size = String(riskValue);
       }
     }
 

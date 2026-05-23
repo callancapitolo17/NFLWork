@@ -131,11 +131,131 @@ def login(session: requests.Session):
 # API CLIENT
 # =============================================================================
 
+WAGERZON_LEAGUES_URL = f"{WAGERZON_BASE_URL}/wager/ActiveLeaguesHelper.aspx"
+
+
+def fetch_active_leagues(session: requests.Session) -> Optional[list[dict]]:
+    """Fetch WZ's full active-league catalog.
+
+    Returns the `result` list (one dict per active league) or None on HTTP
+    failure. Each row looks like:
+        {"IdLeague": 416, "Description": "MLB - GAME LINES",
+         "IdSport": "MLB", "IndexName": "MLB", "Active": True, ...}
+
+    Used by `resolve_leagues()` to map declared markets (by Description
+    pattern) to the live `lg=` IDs the scheduler endpoint expects. The
+    BKM scraper does the same trick against GetRoutingInfo; same idea here.
+    """
+    try:
+        resp = session.get(
+            f"{WAGERZON_LEAGUES_URL}?WT=0",
+            timeout=15,
+            headers={
+                "Accept": "application/json, text/plain, */*",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        result = data.get("result")
+        if not isinstance(result, list):
+            return None
+        return result
+    except Exception:
+        return None
+
+
+def resolve_leagues(catalog: Optional[list[dict]], index_name: str,
+                    markets: list[dict]) -> list[dict]:
+    """Resolve each declared market against WZ's live catalog.
+
+    For every entry in `markets`, find the catalog row where
+    `(IndexName, Description) == (index_name, market["description"])` and
+    attach its `IdLeague` so the scheduler endpoint knows which `lg=` to
+    request. Markets that don't match are dropped with a clear WARN that
+    lists what IS available at that IndexName — better to surface "no
+    such market here" loudly than to silently fetch the wrong data
+    (which is exactly the BKM-503 bug pattern we just fixed).
+
+    Returns a list of resolved configs:
+        [{"id": "416", "description": "MLB - GAME LINES",
+          "period": "fg", "kind": "lines"}, ...]
+    """
+    if not catalog:
+        print("WARNING: WZ ActiveLeaguesHelper unavailable — cannot resolve leagues.")
+        return []
+
+    # Index the catalog by (IndexName, Description) — the unique key. Also
+    # build patterns_by_scope so we can produce a "did you mean" hint when
+    # a pattern misses. Skip entries missing IdLeague (corrupt catalog rows
+    # would cause silent matches against phantom leagues).
+    catalog_by_key: dict[tuple[str, str], dict] = {}
+    patterns_by_scope: dict[str, list[str]] = {}
+    for row in catalog:
+        if not row.get("IdLeague"):
+            continue
+        idx = row.get("IndexName") or ""
+        desc = row.get("Description") or ""
+        catalog_by_key[(idx, desc)] = row
+        patterns_by_scope.setdefault(idx, []).append(desc)
+
+    resolved: list[dict] = []
+    for mkt in markets:
+        desc = mkt["description"]
+        row = catalog_by_key.get((index_name, desc))
+        if row is None:
+            available = patterns_by_scope.get(index_name, [])
+            if available:
+                # Cap at 20 to keep the log readable when IndexName has
+                # many leagues (MLB alone has 26+).
+                shown = available[:20]
+                hint = (f"available patterns under IndexName='{index_name}'"
+                        f"{' (first 20)' if len(available) > 20 else ''}: "
+                        f"{shown}")
+            else:
+                hint = (f"no WZ leagues under IndexName='{index_name}' "
+                        f"— off-season or wrong index_name?")
+            print(f"  WARNING: no WZ league matching "
+                  f"Description='{desc}' — skipping. {hint}")
+            continue
+        resolved.append({
+            "id": str(row["IdLeague"]),
+            "description": desc,
+            "period": mkt.get("period", "fg"),
+            "kind": mkt.get("kind", "lines"),
+        })
+    return resolved
+
 
 def fetch_odds_json(session: requests.Session, sport: str) -> dict:
-    """Fetch odds JSON from NewScheduleHelper.aspx."""
+    """Fetch odds JSON from NewScheduleHelper.aspx.
+
+    Resolves the sport's wanted markets against WZ's live catalog at call
+    time (so we never request a stale leagueId), then fetches all resolved
+    leagues in one combined `?lg=<csv>` request. Returns an empty-shape
+    response if no markets resolve — caller sees zero rows, which is the
+    correct behavior during off-season or if WZ has renamed everything.
+    """
     config = get_sport_config(sport)
-    url = f"{WAGERZON_HELPER_URL}?WT=0&{config['url_params']}"
+    catalog = fetch_active_leagues(session)
+    resolved = resolve_leagues(catalog, config["wz_index_name"], config["markets"])
+
+    if not resolved:
+        print(f"No {sport.upper()} markets resolved from WZ catalog — "
+              f"saving empty (off-season, all patterns renamed, or "
+              f"wrong wz_index_name).")
+        return {"result": {"listLeagues": [[]]}}
+
+    # One-line summary so the operator can eyeball what got wired up.
+    # Format: "MLB - GAME LINES→416, MLB - 1ST 5 FULL INNINGS→417, ..."
+    summary = ", ".join(f"{lg['description']}→{lg['id']}" for lg in resolved[:6])
+    suffix = f" (+{len(resolved) - 6} more)" if len(resolved) > 6 else ""
+    print(f"Resolved {len(resolved)} WZ {sport.upper()} market(s): "
+          f"{summary}{suffix}")
+
+    lg_csv = ",".join(lg["id"] for lg in resolved)
+    url = f"{WAGERZON_HELPER_URL}?WT=0&lg={lg_csv}"
 
     resp = session.get(url, timeout=30, headers={
         "Accept": "application/json, text/plain, */*",
@@ -284,6 +404,69 @@ def parse_3way_line(line: dict, game_id: str, period: str, market: str,
     }
 
 
+# Per-idgmtyp "probe fields": at least one of these must be non-None in
+# the child's GameLines[0] for the response to be considered a valid
+# instance of this market kind. Used by `validate_idgmtyp_shape()` for
+# warn-only shape validation — catches WZ silently changing what an
+# idgmtyp means OR introducing new idgmtyps the parser doesn't know
+# about. Doesn't drop records (the parser still tries to extract what
+# it can); the warning surfaces during scrape-log review.
+IDGMTYP_PROBE_FIELDS = {
+    10: ["vsprdt", "voddst", "ovt"],   # FG parent — any of spread/ML/total
+    15: ["vsprdt", "voddst", "ovt"],   # H1 line
+    19: ["ovt"],                       # Hits / H+R+E totals
+    25: ["vsprdt", "ovt"],             # Alt line OR period (F3/F7) line
+    29: ["voddst", "hoddst"],          # 3-way ML (draw is vspoddst, optional)
+    30: ["ovt"],                       # Pitcher prop (total only)
+    31: ["voddst", "hoddst"],          # Odd/even ML
+    35: ["ovt"],                       # FG team total
+    44: ["voddst", "hoddst"],          # Score-first ML
+    47: ["voddst", "hoddst"],          # Score in 1st inning Y/N ML
+    66: ["ovt"],                       # H1 team total
+}
+
+
+def validate_idgmtyp_shape(child: dict,
+                           warned_unknown: set | None = None) -> bool:
+    """Check that a `GameChild`'s response shape matches what its idgmtyp
+    is documented to return.
+
+    Returns True if the shape passes the probe (at least one expected
+    field is non-None). Returns False otherwise — and prints a one-line
+    warning. Unknown idgmtyps also warn (deduplicated per scrape via
+    `warned_unknown`) and return False.
+
+    Warn-only by design: the caller doesn't drop the record on False.
+    The goal is to surface drift during log review, not to gate
+    downstream consumers.
+    """
+    idgmtyp = child.get("idgmtyp")
+    lines = child.get("GameLines", [])
+    if not lines:
+        return False  # caller's existing `if not child_lines: continue` handles it
+
+    if idgmtyp not in IDGMTYP_PROBE_FIELDS:
+        if warned_unknown is not None and idgmtyp in warned_unknown:
+            return False  # already warned this scrape; stay quiet
+        if warned_unknown is not None:
+            warned_unknown.add(idgmtyp)
+        sample = (child.get("vtm") or "")[:50]
+        print(f"  WARNING: unknown WZ idgmtyp={idgmtyp} "
+              f"(sample child vtm: {sample!r}) — parser doesn't have a "
+              f"branch for this; row will be skipped or null")
+        return False
+
+    line = lines[0]
+    probes = IDGMTYP_PROBE_FIELDS[idgmtyp]
+    if not any(line.get(p) is not None for p in probes):
+        sample = (child.get("vtm") or "")[:50]
+        print(f"  WARNING: WZ idgmtyp={idgmtyp} child {sample!r} has all "
+              f"expected probe fields {probes} null — response shape may "
+              f"have drifted; parser may emit a null record")
+        return False
+    return True
+
+
 def parse_odds(data: dict, sport: str) -> list[dict]:
     """Parse NewScheduleHelper JSON response into DuckDB records.
 
@@ -308,6 +491,11 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
 
     team_dict = load_team_dict(sport) if sport != "nfl" else {}
     canonical_games = load_canonical_games(sport) if sport != "nfl" else []
+
+    # Scrape-scoped set so unknown-idgmtyp warnings deduplicate (otherwise
+    # a slate with 30 games × the same unknown child_type would spam 30
+    # identical lines). See validate_idgmtyp_shape() for details.
+    warned_unknown_idgmtyps: set = set()
 
     records = []
 
@@ -433,9 +621,30 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
             child_lines = child.get("GameLines", [])
             if not child_lines:
                 continue
+
+            # Warn (don't drop) if the child's shape doesn't match what
+            # we expect for its idgmtyp. Catches: WZ changing what an
+            # idgmtyp means, or introducing a new idgmtyp the parser
+            # doesn't handle. The parser still tries to extract what it
+            # can — bad data continues to flow but the warning surfaces
+            # during log review.
+            validate_idgmtyp_shape(child, warned_unknown_idgmtyps)
+
             child_line = child_lines[0]
             child_vtm = child.get("vtm", "")
             child_vtm_upper = child_vtm.upper()
+
+            # Every sub-market is keyed at WZ by the GameChild's OWN idgm,
+            # not the parent FG game's. Without this override (the historic
+            # behavior before 2026-05-22), every sub-market row inherited
+            # the parent idgm via `base`, and placement requests resolved
+            # to the main FG line at that shared idgm → WZ refused with
+            # GAMELINECHANGE on every F3/F7 single, every alt-spread,
+            # every alt-total, every team-total, every pitcher prop,
+            # every score-first, etc. Fall back to the parent idgm if WZ
+            # ever omits the child idgm. See recon_place_single_fperiod.json
+            # for the empirical proof (browser sel used the child idgm).
+            child_base = {**base, "idgm": child.get("idgm", base.get("idgm"))}
 
             # Helper: determine if a stripped child name belongs to the away
             # or home team.  Wagerzon child names drop the city abbreviation
@@ -449,9 +658,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
 
             if child_type == 15:
                 # First half line (F5 in baseball) — spread + total + ML
-                # Use child's own idgm (needed for ConfirmWagerHelper parlay pricing)
                 cid = f"{child['vnum']}-{child['hnum']}"
-                child_base = {**base, "idgm": child.get("idgm", base.get("idgm"))}
                 rec = parse_game_line(child_line, cid, "h1", "spreads_h1", child_base)
                 if rec:
                     records.append(rec)
@@ -462,14 +669,14 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 # "H+R+E (SF/SD)" → game-level hits+runs+errors total
                 if "H+R+E" in child_vtm_upper:
                     rec = parse_team_total(
-                        child_line, f"{game_id}-hre", "fg", "hre_total", base
+                        child_line, f"{game_id}-hre", "fg", "hre_total", child_base
                     )
                 elif "TOTAL HITS" in child_vtm_upper:
                     # Wagerzon labels this with the away team name but it's
                     # the game total hits (one per game, ~13-16 range)
                     rec = parse_team_total(
                         child_line, f"{game_id}-totalhits", "fg",
-                        "total_hits", base
+                        "total_hits", child_base
                     )
                 else:
                     rec = None
@@ -487,19 +694,21 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                     innings = period_match.group(1)
                     rec = parse_game_line(
                         child_line, f"{game_id}-{innings}inn", f"f{innings}",
-                        f"spreads_f{innings}", base
+                        f"spreads_f{innings}", child_base
                     )
                     if rec:
                         records.append(rec)
                 else:
-                    # Alt line — spread and total are paired in each entry
+                    # Alt line — spread and total are paired in each entry.
+                    # Each alt rung is its own GameChild at WZ with its own
+                    # idgm — child_base above already encodes that.
                     child_id = str(child.get("idgm", alt_counter))
 
                     # Alt spread
                     alt_away_spread = safe_float(child_line.get("vsprdt"))
                     if alt_away_spread is not None:
                         records.append({
-                            **base,
+                            **child_base,
                             "game_id": f"{game_id}-alts-{child_id}",
                             "market": "alternate_spreads_fg",
                             "period": "fg",
@@ -519,7 +728,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                     alt_total = safe_float(child_line.get("unt"))
                     if alt_total is not None:
                         records.append({
-                            **base,
+                            **child_base,
                             "game_id": f"{game_id}-altt-{child_id}",
                             "market": "alternate_totals_fg",
                             "period": "fg",
@@ -554,7 +763,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                         f"{game_id}-pp-{pitcher_slug}-{prop_type}",
                         "fg",
                         f"pitcher_{prop_type}",
-                        {**base, "away_team": pitcher_name, "home_team": f"{away_team} @ {home_team}"},
+                        {**child_base, "away_team": pitcher_name, "home_team": f"{away_team} @ {home_team}"},
                     )
                     if rec:
                         records.append(rec)
@@ -563,7 +772,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 # Odd/even total runs — ML only
                 # "TOTAL RUNS ODD(CLE/LAD)" vs "TOTAL RUNS EVEN(CLE/LAD)"
                 rec = parse_moneyline_only(
-                    child_line, f"{game_id}-oddeven", "fg", "odd_even_runs", base
+                    child_line, f"{game_id}-oddeven", "fg", "odd_even_runs", child_base
                 )
                 if rec:
                     records.append(rec)
@@ -574,7 +783,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 tt_side = _side(tt_name)
                 rec = parse_team_total(
                     child_line, f"{game_id}-tt-{tt_side}", "fg",
-                    f"team_totals_{tt_side}_fg", base
+                    f"team_totals_{tt_side}_fg", child_base
                 )
                 if rec:
                     records.append(rec)
@@ -585,12 +794,12 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 #   "YES TM SCR 1ST WIN G(CLE/LAD)" — does the team that scores first win?
                 if "SC 1ST" in child_vtm_upper and "WIN" not in child_vtm_upper:
                     rec = parse_moneyline_only(
-                        child_line, f"{game_id}-scorefirst", "fg", "score_first", base
+                        child_line, f"{game_id}-scorefirst", "fg", "score_first", child_base
                     )
                 else:
                     rec = parse_moneyline_only(
                         child_line, f"{game_id}-scorefirst-wins", "fg",
-                        "score_first_wins_game", base
+                        "score_first_wins_game", child_base
                     )
                 if rec:
                     records.append(rec)
@@ -599,7 +808,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 # Score in 1st inning — yes/no ML
                 rec = parse_moneyline_only(
                     child_line, f"{game_id}-score1stinn", "fg",
-                    "score_1st_inning", base
+                    "score_1st_inning", child_base
                 )
                 if rec:
                     records.append(rec)
@@ -611,7 +820,7 @@ def parse_odds(data: dict, sport: str) -> list[dict]:
                 tt_side = _side(tt_name)
                 rec = parse_team_total(
                     child_line, f"{game_id}-tt-{tt_side}-h1", "h1",
-                    f"team_totals_{tt_side}_h1", base
+                    f"team_totals_{tt_side}_h1", child_base
                 )
                 if rec:
                     records.append(rec)
@@ -700,6 +909,18 @@ def init_database(sport: str):
 
     conn = duckdb.connect(str(DB_PATH))
     try:
+        # Migrate naive-TIMESTAMP schema to TIMESTAMPTZ if needed.
+        # DuckDB does not support ALTER COLUMN TYPE between these, so drop+create.
+        existing = conn.execute(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_name = ? AND column_name = 'fetch_time'",
+            [table_name]
+        ).fetchone()
+        if existing is not None and "WITH TIME ZONE" not in (existing[1] or "").upper():
+            print(f"[wz] Migrating {table_name}.fetch_time TIMESTAMP -> TIMESTAMPTZ "
+                  f"(existing snapshot will be re-populated this run)")
+            conn.execute(f"DROP TABLE {table_name}")
+
         conn.execute(f"""
             CREATE TABLE IF NOT EXISTS {table_name} (
                 fetch_time TIMESTAMPTZ,

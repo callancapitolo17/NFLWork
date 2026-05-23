@@ -359,6 +359,17 @@ def write_to_duckdb(rows: list[dict]) -> None:
 
     con = duckdb.connect(str(db_path))
     try:
+        # Migrate naive-TIMESTAMP schema to TIMESTAMPTZ if needed.
+        # DuckDB does not support ALTER COLUMN TYPE between these, so drop+create.
+        existing = con.execute(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_name = 'mlb_odds' AND column_name = 'fetch_time'"
+        ).fetchone()
+        if existing is not None and "WITH TIME ZONE" not in (existing[1] or "").upper():
+            print(f"[fd] Migrating mlb_odds.fetch_time TIMESTAMP -> TIMESTAMPTZ "
+                  f"(existing snapshot will be re-populated this run)")
+            con.execute("DROP TABLE mlb_odds")
+
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS mlb_odds (

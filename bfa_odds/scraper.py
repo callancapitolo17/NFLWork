@@ -421,28 +421,49 @@ def init_database(sport: str):
     table_name = config["table_name"]
 
     conn = duckdb.connect(str(DB_PATH))
-    conn.execute(f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            fetch_time TIMESTAMPTZ,
-            sport_key VARCHAR,
-            game_id VARCHAR,
-            game_start_time TIMESTAMPTZ,
-            away_team VARCHAR,
-            home_team VARCHAR,
-            market VARCHAR,
-            period VARCHAR,
-            away_spread FLOAT,
-            away_spread_price INTEGER,
-            home_spread FLOAT,
-            home_spread_price INTEGER,
-            total FLOAT,
-            over_price INTEGER,
-            under_price INTEGER,
-            away_ml INTEGER,
-            home_ml INTEGER
-        )
-    """)
-    conn.close()
+    try:
+        # Self-healing migration: if the table predates the game_start_time
+        # migration (old schema had game_date/game_time VARCHARs), drop it so
+        # it's recreated with the new schema below. Ephemeral table — fully
+        # repopulated every cycle, so dropping loses at most one stale snapshot.
+        has_gst = conn.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = ? AND column_name = 'game_start_time'",
+            [table_name]
+        ).fetchone()
+        if has_gst is None:
+            tbl_exists = conn.execute(
+                "SELECT 1 FROM information_schema.tables WHERE table_name = ?",
+                [table_name]
+            ).fetchone()
+            if tbl_exists is not None:
+                print(f"[bfa] Migrating {table_name} to game_start_time schema "
+                      f"(existing snapshot re-populated this run)")
+                conn.execute(f"DROP TABLE {table_name}")
+
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                fetch_time TIMESTAMPTZ,
+                sport_key VARCHAR,
+                game_id VARCHAR,
+                game_start_time TIMESTAMPTZ,
+                away_team VARCHAR,
+                home_team VARCHAR,
+                market VARCHAR,
+                period VARCHAR,
+                away_spread FLOAT,
+                away_spread_price INTEGER,
+                home_spread FLOAT,
+                home_spread_price INTEGER,
+                total FLOAT,
+                over_price INTEGER,
+                under_price INTEGER,
+                away_ml INTEGER,
+                home_ml INTEGER
+            )
+        """)
+    finally:
+        conn.close()
 
 
 def save_to_database(sport: str, odds_data: list):
