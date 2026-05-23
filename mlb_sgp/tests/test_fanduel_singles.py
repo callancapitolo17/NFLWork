@@ -143,3 +143,30 @@ def test_fetch_merged_markets_and_runners_unions_and_dedups():
     assert {m.market_id for m in markets} == {"mF7", "mFG", "mF5"}  # union, deduped
     assert len(runners) == 3
     assert {r.runner_id for r in runners} == {"rO", "rRLh", "rF5o"}  # rRLh once
+
+
+def test_fetch_merged_keeps_runners_sharing_selectionid_across_markets():
+    """FD reuses selectionId across markets — every 'Over' across all total
+    markets shares one id (e.g. 7017905). Runner dedup must therefore key on
+    (market_id, runner_id), NOT runner_id alone, or entire markets get
+    silently dropped (this exact bug hid F7 totals on the bets tab)."""
+    from mlb_sgp.fd_client import Market, Runner
+    from mlb_sgp.scraper_fanduel_singles import fetch_merged_markets_and_runners
+
+    class _FakeClient:
+        def fetch_event_page(self, event_id, tab):
+            if tab == "":
+                # Two DIFFERENT markets whose 'Over' runners share selectionId.
+                return (
+                    [Market("mFG", "Total Runs"),
+                     Market("mF7", "First 7 Innings Total Runs")],
+                    [Runner("7017905", "mFG", "Over", 9.5, -110),
+                     Runner("7017905", "mF7", "Over", 7.5, -114)],
+                )
+            return ([], [])
+
+    _, runners = fetch_merged_markets_and_runners(
+        _FakeClient(), "1", tabs=("", "same-game-parlay-"))
+    # Both must survive — they belong to different markets.
+    assert len(runners) == 2
+    assert {(r.market_id, r.name) for r in runners} == {("mFG", "Over"), ("mF7", "Over")}

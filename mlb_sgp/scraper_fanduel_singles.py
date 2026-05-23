@@ -331,16 +331,24 @@ def fetch_merged_markets_and_runners(
     tabs: tuple[str, ...] = FD_TABS,
 ) -> tuple[list[Market], list[Runner]]:
     """Fetch each tab once, union markets (dedup by market_id) and runners
-    (dedup by runner_id). Returns (list[Market], list[Runner])."""
+    (dedup by (market_id, runner_id)). Returns (list[Market], list[Runner]).
+
+    Runners are keyed by (market_id, runner_id), NOT runner_id alone: FD
+    reuses selectionId across markets (every total market's 'Over' shares one
+    id, every team's run-line side shares one, etc.), so a global runner_id
+    dedup collapses hundreds of distinct runners down to a handful and silently
+    drops whole markets. The (market_id, runner_id) pair is unique per runner
+    and still dedups the genuine cross-tab duplicate (a market that appears in
+    both tabs has the same market_id + runner_id on each side)."""
     markets_by_id: dict[str, Market] = {}
-    runners_by_id: dict[str, Runner] = {}
+    runners_by_key: dict[tuple[str, str], Runner] = {}
     for tab in tabs:
         markets, runners = client.fetch_event_page(event_id, tab)
         for m in markets:
             markets_by_id.setdefault(m.market_id, m)
         for r in runners:
-            runners_by_id.setdefault(r.runner_id, r)
-    return list(markets_by_id.values()), list(runners_by_id.values())
+            runners_by_key.setdefault((r.market_id, r.runner_id), r)
+    return list(markets_by_id.values()), list(runners_by_key.values())
 
 
 def scrape_singles(verbose: bool = False) -> int:
