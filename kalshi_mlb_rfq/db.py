@@ -24,17 +24,23 @@ CREATE TABLE IF NOT EXISTS combo_cache (
 CREATE INDEX IF NOT EXISTS idx_combo_cache_game ON combo_cache(game_id);
 
 CREATE TABLE IF NOT EXISTS live_rfqs (
-    rfq_id                  VARCHAR PRIMARY KEY,
-    combo_market_ticker     VARCHAR NOT NULL,
-    leg_set_hash            VARCHAR NOT NULL,
-    game_id                 VARCHAR NOT NULL,
-    blended_fair_at_submit  DOUBLE,
-    kalshi_ref_at_submit    DOUBLE,
-    edge_at_submit          DOUBLE,
-    status                  VARCHAR NOT NULL,
-    submitted_at            TIMESTAMP NOT NULL,
-    closed_at               TIMESTAMP,
-    cancellation_reason     VARCHAR
+    rfq_id                          VARCHAR PRIMARY KEY,
+    combo_market_ticker             VARCHAR NOT NULL,
+    leg_set_hash                    VARCHAR NOT NULL,
+    game_id                         VARCHAR NOT NULL,
+    blended_fair_at_submit          DOUBLE,
+    kalshi_ref_at_submit            DOUBLE,
+    edge_at_submit                  DOUBLE,
+    intended_side                   VARCHAR,
+    kelly_yes_n_at_submit           INTEGER,
+    kelly_no_n_at_submit            INTEGER,
+    worst_yes_ask_at_submit         DOUBLE,
+    worst_no_ask_at_submit          DOUBLE,
+    target_cost_dollars_at_submit   DOUBLE,
+    status                          VARCHAR NOT NULL,
+    submitted_at                    TIMESTAMP NOT NULL,
+    closed_at                       TIMESTAMP,
+    cancellation_reason             VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS quote_log (
@@ -128,6 +134,14 @@ ALTER TABLE quote_log ADD COLUMN IF NOT EXISTS hedge_original_price DOUBLE;
 ALTER TABLE quote_log ADD COLUMN IF NOT EXISTS hedge_new_price      DOUBLE;
 ALTER TABLE quote_log ADD COLUMN IF NOT EXISTS hedge_current_fair   DOUBLE;
 ALTER TABLE quote_log ADD COLUMN IF NOT EXISTS hedge_projected_net  DOUBLE;
+
+-- create-time Kelly sizing audit (two-RFQ per-side via target_cost_dollars: 2026-05-23)
+ALTER TABLE live_rfqs ADD COLUMN IF NOT EXISTS intended_side                    VARCHAR;
+ALTER TABLE live_rfqs ADD COLUMN IF NOT EXISTS kelly_yes_n_at_submit            INTEGER;
+ALTER TABLE live_rfqs ADD COLUMN IF NOT EXISTS kelly_no_n_at_submit             INTEGER;
+ALTER TABLE live_rfqs ADD COLUMN IF NOT EXISTS worst_yes_ask_at_submit          DOUBLE;
+ALTER TABLE live_rfqs ADD COLUMN IF NOT EXISTS worst_no_ask_at_submit           DOUBLE;
+ALTER TABLE live_rfqs ADD COLUMN IF NOT EXISTS target_cost_dollars_at_submit    DOUBLE;
 """
 
 
