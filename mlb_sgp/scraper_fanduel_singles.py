@@ -28,7 +28,7 @@ Other FD specifics:
 from __future__ import annotations
 import argparse
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -278,7 +278,11 @@ def scrape_singles(verbose: bool = False) -> int:
     events = client.list_events()
     print(f"[fd_singles] {len(events)} events to scrape", flush=True)
 
-    fetch_time = datetime.utcnow()
+    # Use timezone-aware UTC so DuckDB's TIMESTAMPTZ column receives an
+    # explicit UTC instant. A naive datetime (datetime.utcnow()) would be
+    # interpreted as local time and silently shifted by the host TZ offset
+    # on insert — see TZ_AUDIT_FINDINGS for the class of bug this avoids.
+    fetch_time = datetime.now(timezone.utc)
     all_rows: list[dict] = []
     failed: list[str] = []
 
