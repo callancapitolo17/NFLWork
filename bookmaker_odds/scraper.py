@@ -18,6 +18,8 @@ import time
 import duckdb
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
+from zoneinfo import ZoneInfo
 
 from curl_cffi import requests as cffi_requests
 from dotenv import load_dotenv
@@ -25,6 +27,36 @@ from dotenv import load_dotenv
 # Add Answer Keys to path for shared team name resolution
 sys.path.insert(0, str(Path(__file__).parent.parent / "Answer Keys"))
 from canonical_match import load_team_dict, load_canonical_games, resolve_team_names
+
+# Bookmaker's API returns naive Pacific wall-clock in (gmdt, gmtm) — confirmed
+# by tools/TZ_AUDIT_FINDINGS.md (modal Δ vs sharp UTC was +7.02h = PDT). Prior
+# R-side code in Tools.R::.parse_wz_game_dt interpreted these strings as ET,
+# silently shifting every BKM game by 3 hours downstream and dropping ~half of
+# BKM's MLB rows via .drop_past_games(). We now parse as America/Los_Angeles
+# and store the UTC instant as game_start_time TIMESTAMPTZ so downstream code
+# never has to guess the TZ. Same fix shape as Hoop88 (commit 5d10d24).
+_BKM_TZ = ZoneInfo("America/Los_Angeles")
+
+
+def _bkm_game_start_time(gmdt: str, gmtm: str) -> Optional[datetime]:
+    """Parse BKM's naive PT (gmdt, gmtm) pair into a UTC-aware datetime.
+
+    gmdt: 8-digit YYYYMMDD string (e.g. "20260522")
+    gmtm: HH:MM or HH:MM:SS string (e.g. "18:30:00")
+    Returns: tz-aware UTC datetime, or None if either input is malformed.
+    """
+    if not gmdt or len(gmdt) != 8:
+        return None
+    if not gmtm or len(gmtm) < 5:
+        return None
+    try:
+        y, m, d = int(gmdt[0:4]), int(gmdt[4:6]), int(gmdt[6:8])
+        hh, mm = int(gmtm[0:2]), int(gmtm[3:5])
+    except (ValueError, IndexError):
+        return None
+    naive_pt = datetime(y, m, d, hh, mm, tzinfo=_BKM_TZ)
+    return naive_pt.astimezone(timezone.utc)
+
 
 # Load .env from bet_logger directory
 env_path = Path(__file__).parent.parent / "bet_logger" / ".env"
@@ -420,11 +452,11 @@ def _parse_game(game: dict, market: str, period: str, sport_key: str,
         if not matched:
             return None
 
-    # Game date (YYYYMMDD → MM/DD) and time (HH:MM:SS → HH:MM)
-    gmdt = game.get("gmdt", "")
-    gmtm = game.get("gmtm", "")
-    game_date = f"{gmdt[4:6]}/{gmdt[6:8]}" if len(gmdt) >= 8 else ""
-    game_time = gmtm[:5] if gmtm else ""
+    # Game start time — parse BKM's naive PT (gmdt, gmtm) into UTC instant.
+    # The previous split (gmdt → MM/DD VARCHAR, gmtm → HH:MM VARCHAR) leaked
+    # an implicit (and wrong) TZ assumption downstream; replaced with one
+    # tz-aware UTC datetime that DuckDB stores as TIMESTAMPTZ.
+    game_start_time = _bkm_game_start_time(game.get("gmdt", ""), game.get("gmtm", ""))
 
     game_id = str(game.get("idgm", ""))
 
@@ -477,8 +509,7 @@ def _parse_game(game: dict, market: str, period: str, sport_key: str,
         "fetch_time": fetch_time,
         "sport_key": sport_key,
         "game_id": game_id,
-        "game_date": game_date,
-        "game_time": game_time,
+        "game_start_time": game_start_time,
         "away_team": away_team,
         "home_team": home_team,
         "market": market,
@@ -508,11 +539,10 @@ def init_database(sport: str):
     conn = duckdb.connect(str(DB_PATH))
     conn.execute(f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
-            fetch_time TIMESTAMP,
+            fetch_time TIMESTAMPTZ,
             sport_key VARCHAR,
             game_id VARCHAR,
-            game_date VARCHAR,
-            game_time VARCHAR,
+            game_start_time TIMESTAMPTZ,
             away_team VARCHAR,
             home_team VARCHAR,
             market VARCHAR,
@@ -532,32 +562,41 @@ def init_database(sport: str):
 
 
 def save_to_database(sport: str, odds_data: list):
-    """Save scraped odds to DuckDB (replaces previous scrape)."""
+    """Save scraped odds to DuckDB atomically (stage-and-swap)."""
     config = SPORT_CONFIGS[sport]
     table_name = config["table_name"]
 
     conn = duckdb.connect(str(DB_PATH))
 
     columns = [
-        "fetch_time", "sport_key", "game_id", "game_date", "game_time",
+        "fetch_time", "sport_key", "game_id", "game_start_time",
         "away_team", "home_team", "market", "period",
         "away_spread", "away_spread_price", "home_spread", "home_spread_price",
         "total", "over_price", "under_price", "away_ml", "home_ml"
     ]
 
-    placeholders = ", ".join(["?" for _ in columns])
-
-    # Clear old data before inserting fresh scrape
-    conn.execute(f"DELETE FROM {table_name}")
-
+    # Stage into a TEMP table cloned from the live schema, then atomically
+    # swap. CREATE OR REPLACE TABLE ... AS SELECT is DuckDB's closest
+    # equivalent of an atomic rename — readers see either the entire old
+    # snapshot or the entire new one, never a half-written state. On an
+    # empty scrape, leave the prior snapshot in place so consumers don't
+    # see a momentarily empty table (matches BFA/DK/FD/WZ/Hoop88 pattern).
     if odds_data:
-        conn.executemany(f"""
-            INSERT INTO {table_name} ({", ".join(columns)})
-            VALUES ({placeholders})
-        """, [
-            tuple(d[col] for col in columns)
-            for d in odds_data
-        ])
+        conn.execute(
+            f"CREATE OR REPLACE TEMP TABLE {table_name}_new AS "
+            f"SELECT * FROM {table_name} LIMIT 0"
+        )
+        placeholders = ", ".join(["?" for _ in columns])
+        tuples = [tuple(d.get(c) for c in columns) for d in odds_data]
+        conn.executemany(
+            f"INSERT INTO {table_name}_new VALUES ({placeholders})", tuples
+        )
+        conn.execute(
+            f"CREATE OR REPLACE TABLE {table_name} AS SELECT * FROM {table_name}_new"
+        )
+        conn.execute(f"DROP TABLE IF EXISTS {table_name}_new")
+    else:
+        print(f"[bookmaker] empty scrape — leaving prior snapshot in place", flush=True)
 
     result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
     print(f"Database now has {result[0]} total records in {table_name}")
@@ -582,7 +621,10 @@ def scrape_bookmaker(sport: str):
     config = SPORT_CONFIGS[sport]
     init_database(sport)
 
-    fetch_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    # Aware UTC datetime — DuckDB stores it directly as TIMESTAMPTZ. A
+    # naive strftime string would be interpreted as local-TZ on insert
+    # and silently shift (same bug DK/FD hit pre-migration).
+    fetch_time = datetime.now(timezone.utc)
 
     # Load team name resolution
     team_dict = load_team_dict(sport)
