@@ -511,8 +511,8 @@ class Bet105Scraper:
         return self._build_records()
 
     def _build_records(self) -> list[dict]:
-        """Convert collected data into 18-column DuckDB records."""
-        fetch_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        """Convert collected data into 17-column DuckDB records."""
+        fetch_time = datetime.now(timezone.utc)
         sport_key = self.config["sport_key"]
 
         team_dict = load_team_dict(self.sport)
@@ -537,14 +537,16 @@ class Bet105Scraper:
             else:
                 away_team, home_team = away_raw, home_raw
 
-            # Game date/time from unix timestamp
+            # Game start time from unix timestamp. Bet105 already gives us
+            # a UTC epoch; keep it as an aware datetime so DuckDB stores it
+            # as TIMESTAMPTZ (one canonical instant — no MM/DD + HH:MM
+            # split-VARCHAR ambiguity). Confirmed UTC by Phase 1 audit
+            # (tools/TZ_AUDIT_FINDINGS.md, modal Δ +0.02h vs Odds API).
             start_ts = event.get("start_time")
-            if start_ts:
-                dt = datetime.fromtimestamp(start_ts, tz=timezone.utc)
-                game_date = dt.strftime("%m/%d")
-                game_time = dt.strftime("%H:%M")
-            else:
-                game_date = game_time = ""
+            game_start_time = (
+                datetime.fromtimestamp(start_ts, tz=timezone.utc)
+                if start_ts else None
+            )
 
             for period_label, odds in coeffs.items():
                 suffix_map = {"fg": "", "Half1": "_h1", "F5": "_f5"}
@@ -556,8 +558,7 @@ class Bet105Scraper:
                     "fetch_time": fetch_time,
                     "sport_key": sport_key,
                     "game_id": str(event_id),
-                    "game_date": game_date,
-                    "game_time": game_time,
+                    "game_start_time": game_start_time,
                     "away_team": away_team,
                     "home_team": home_team,
                     "period": period_label,
@@ -646,11 +647,10 @@ def init_database(sport: str):
     conn = duckdb.connect(str(DB_PATH))
     conn.execute(f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
-            fetch_time TIMESTAMP,
+            fetch_time TIMESTAMPTZ,
             sport_key VARCHAR,
             game_id VARCHAR,
-            game_date VARCHAR,
-            game_time VARCHAR,
+            game_start_time TIMESTAMPTZ,
             away_team VARCHAR,
             home_team VARCHAR,
             market VARCHAR,
@@ -677,24 +677,33 @@ def save_to_database(sport: str, odds_data: list):
     conn = duckdb.connect(str(DB_PATH))
 
     columns = [
-        "fetch_time", "sport_key", "game_id", "game_date", "game_time",
+        "fetch_time", "sport_key", "game_id", "game_start_time",
         "away_team", "home_team", "market", "period",
         "away_spread", "away_spread_price", "home_spread", "home_spread_price",
         "total", "over_price", "under_price", "away_ml", "home_ml"
     ]
 
-    placeholders = ", ".join(["?" for _ in columns])
-
-    conn.execute(f"DELETE FROM {table_name}")
-
+    # Stage into a TEMP table cloned from the live schema, then atomically
+    # swap. CREATE OR REPLACE TABLE ... AS SELECT is the closest DuckDB
+    # equivalent of an atomic rename — readers see either the entire old
+    # snapshot or the entire new one, never a half-written state. Replaces
+    # DELETE+INSERT, which exposed a brief empty window to concurrent readers.
     if odds_data:
-        conn.executemany(f"""
-            INSERT INTO {table_name} ({", ".join(columns)})
-            VALUES ({placeholders})
-        """, [
-            tuple(d[col] for col in columns)
-            for d in odds_data
-        ])
+        conn.execute(
+            f"CREATE OR REPLACE TEMP TABLE {table_name}_new AS "
+            f"SELECT * FROM {table_name} LIMIT 0"
+        )
+        placeholders = ", ".join(["?" for _ in columns])
+        tuples = [tuple(d.get(c) for c in columns) for d in odds_data]
+        conn.executemany(
+            f"INSERT INTO {table_name}_new VALUES ({placeholders})", tuples
+        )
+        conn.execute(
+            f"CREATE OR REPLACE TABLE {table_name} AS SELECT * FROM {table_name}_new"
+        )
+        conn.execute(f"DROP TABLE IF EXISTS {table_name}_new")
+    else:
+        print(f"[bet105] empty scrape — leaving prior snapshot in place", flush=True)
 
     result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
     print(f"Database now has {result[0]} total records in {table_name}")
@@ -747,7 +756,7 @@ def scrape_bet105(sport: str):
     records = scraper.scrape(timeout=30)
 
     if not records:
-        print(f"No records scraped for {sport.upper()}. Clearing stale data.")
+        print(f"No records scraped for {sport.upper()}. Leaving prior snapshot in place.")
         save_to_database(sport, [])
         return []
 
