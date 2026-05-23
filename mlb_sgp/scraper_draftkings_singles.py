@@ -10,7 +10,7 @@ function, DK team-name canonicalization, and DuckDB write.
 from __future__ import annotations
 import argparse
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -77,7 +77,7 @@ def classify_market(name: str) -> tuple[str, str] | None:
       - (period, "alternate_totals") for alt total markets
       - None for markets out of scope (props, team totals, single-inning, futures)
 
-    period is one of "FG", "F5", "F7".
+    period is one of "FG", "F3", "F5", "F7".
     """
     n = name.lower()
 
@@ -92,17 +92,16 @@ def classify_market(name: str) -> tuple[str, str] | None:
         "most innings", "last run", "both teams to score",
     )):
         return None
-    # Per plan: skip F3 markets entirely (DK posts them, but they're not in scope).
-    if "1st 3 innings" in n or "first 3 innings" in n:
-        return None
     # Single-inning markets (e.g. "Run Line - 5th Inning", "Total Runs - 6th
     # Inning", "7th Inning (3 Way)") — exclude. Note "1st 5 Innings" stays
     # because it's plural "Innings", not singular "Inning".
     if _SINGLE_INNING_RE.search(n):
         return None
 
-    # Period detection. Default FG; F5/F7 if matched explicitly.
-    if "1st 5 innings" in n or "first 5 innings" in n:
+    # Period detection. Default FG; F3/F5/F7 if matched explicitly.
+    if "1st 3 innings" in n or "first 3 innings" in n:
+        period = "F3"
+    elif "1st 5 innings" in n or "first 5 innings" in n:
         period = "F5"
     elif "1st 7 innings" in n or "first 7 innings" in n:
         period = "F7"
@@ -163,8 +162,11 @@ def parse_selections_to_wide_rows(
             "fetch_time": fetch_time,
             "sport_key": "baseball_mlb",
             "game_id": event.event_id,
-            "game_date": fetch_time.strftime("%Y-%m-%d"),
-            "game_time": event.start_time,
+            # event.start_time is an ISO 8601 UTC string straight from DK's
+            # startEventDate field (see dk_client.Event docstring). DuckDB
+            # coerces ISO 8601 strings to TIMESTAMPTZ on INSERT — the value
+            # is the absolute UTC instant; display tz is just rendering.
+            "game_start_time": event.start_time,
             "away_team": event.away_team,
             "home_team": event.home_team,
             "market": market_type,
@@ -215,25 +217,63 @@ def parse_selections_to_wide_rows(
         elif name_lower.startswith("under"):
             row["total"] = sel.line
             row["under_price"] = sel.american_odds
-        # Spread detection: line present AND name contains a team name
+        # Spread detection: line present AND name matches a team name. We
+        # use exact-prefix matching (with a separator space or full equality)
+        # rather than substring containment — DK names like "LA Angels" can
+        # appear inside "Los Angeles Angels" headers and substring tests
+        # silently mis-bucket. Prefix-with-space anchors to the team-name
+        # token, leaving the spread value to follow ("LA Angels +1.5").
         elif sel.line is not None:
-            if event.home_team in sel.name:
+            sel_name = sel.name.strip()
+            if (sel_name.startswith(event.home_team + " ")
+                    or sel_name == event.home_team):
                 row["home_spread"] = sel.line
                 row["home_spread_price"] = sel.american_odds
-            elif event.away_team in sel.name:
+            elif (sel_name.startswith(event.away_team + " ")
+                    or sel_name == event.away_team):
                 row["away_spread"] = sel.line
                 row["away_spread_price"] = sel.american_odds
             else:
-                # Spread-shaped selection but doesn't match either team — skip
+                # Unrecognized — skip, do not silently mis-bucket.
                 continue
-        # Moneyline detection: no line, just team name
+        # Moneyline detection: no line, just team name. Same prefix anchor.
         else:
-            if event.home_team in sel.name:
+            sel_name = sel.name.strip()
+            if (sel_name.startswith(event.home_team + " ")
+                    or sel_name == event.home_team):
                 row["home_ml"] = sel.american_odds
-            elif event.away_team in sel.name:
+            elif (sel_name.startswith(event.away_team + " ")
+                    or sel_name == event.away_team):
                 row["away_ml"] = sel.american_odds
 
-    return list(buckets.values())
+    # Finalization pass over spread rows:
+    #  (a) Paired-side guard — if a spread row has only one side resolved,
+    #      drop it. Tools.R::get_dk_odds reads home_spread as canonical and
+    #      derives away from -home_spread; a half-row would either silently
+    #      drop both sides downstream or pair a real line with a NULL price.
+    #  (b) Sign-symmetry guard — both sides must sum to ~0. An asymmetric
+    #      pair (e.g. home=-1.5 away=+2.5) indicates a parser misgrouping
+    #      or DK posting mismatched alt lines into the same market bucket.
+    out: list[dict[str, Any]] = []
+    for row in buckets.values():
+        is_spread_row = row["market"] in ("main", "alternate_spreads") and (
+            row.get("home_spread") is not None or row.get("away_spread") is not None
+        )
+        if is_spread_row:
+            if row.get("home_spread") is None or row.get("away_spread") is None:
+                # Half-row — drop silently. Asymmetric posting is common
+                # enough on F5/F7 alts that warning would be noise.
+                continue
+            if abs(row["home_spread"] + row["away_spread"]) > 1e-9:
+                print(
+                    f"[dk_singles] WARN: asymmetric spread "
+                    f"home={row['home_spread']} away={row['away_spread']} "
+                    f"on event={event.event_id}; skipping",
+                    flush=True,
+                )
+                continue
+        out.append(row)
+    return out
 
 
 def scrape_singles(verbose: bool = False) -> int:
@@ -246,7 +286,11 @@ def scrape_singles(verbose: bool = False) -> int:
     events = client.list_events()
     print(f"[dk_singles] {len(events)} events to scrape", flush=True)
 
-    fetch_time = datetime.utcnow()
+    # Use timezone-aware UTC so DuckDB's TIMESTAMPTZ column receives an
+    # explicit UTC instant. A naive datetime would be interpreted as local
+    # time and silently shifted on insert (see TZ_AUDIT_FINDINGS for the
+    # class of bug this avoids).
+    fetch_time = datetime.now(timezone.utc)
     all_rows: list[dict] = []
     failed: list[str] = []
     unmapped_teams: set[str] = set()
@@ -328,11 +372,18 @@ def scrape_singles(verbose: bool = False) -> int:
 
 
 def write_to_duckdb(rows: list[dict]) -> None:
-    """Atomic write: CREATE IF NOT EXISTS -> BEGIN -> DELETE -> INSERT -> COMMIT.
+    """Atomic write: stage to TEMP table, then CREATE OR REPLACE the live one.
 
     The dk_odds/mlb_odds table is fully rewritten each cycle (no history kept
     inside this DB — that's the offshore-style scraper convention; MLB.R is
     the consumer and snapshots into mlb.duckdb as needed).
+
+    Empty-scrape guard: if no rows were produced this cycle, we DO NOT touch
+    the existing table. An empty scrape is almost always a transient failure
+    (network blip, DK quiet period); blowing away the prior snapshot would
+    leave downstream MLB.R consumers with no DK pills until the next cycle.
+    Leaving the old snapshot in place is the safer default — staleness is
+    visible via fetch_time, but absence is invisible.
     """
     db_path = Path(__file__).resolve().parent.parent / "dk_odds" / "dk.duckdb"
     db_path.parent.mkdir(exist_ok=True)
@@ -342,11 +393,10 @@ def write_to_duckdb(rows: list[dict]) -> None:
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS mlb_odds (
-                fetch_time        TIMESTAMP,
+                fetch_time        TIMESTAMPTZ,
                 sport_key         VARCHAR,
                 game_id           VARCHAR,
-                game_date         VARCHAR,
-                game_time         VARCHAR,
+                game_start_time   TIMESTAMPTZ,
                 away_team         VARCHAR,
                 home_team         VARCHAR,
                 market            VARCHAR,
@@ -363,27 +413,38 @@ def write_to_duckdb(rows: list[dict]) -> None:
             )
             """
         )
-        con.execute("BEGIN TRANSACTION")
-        try:
-            con.execute("DELETE FROM mlb_odds")
-            if rows:
-                cols = [
-                    "fetch_time", "sport_key", "game_id", "game_date", "game_time",
-                    "away_team", "home_team", "market", "period",
-                    "away_spread", "away_spread_price",
-                    "home_spread", "home_spread_price",
-                    "total", "over_price", "under_price",
-                    "away_ml", "home_ml",
-                ]
-                tuples = [tuple(r.get(c) for c in cols) for r in rows]
-                placeholders = ", ".join(["?"] * len(cols))
-                con.executemany(
-                    f"INSERT INTO mlb_odds VALUES ({placeholders})", tuples
-                )
-            con.execute("COMMIT")
-        except Exception:
-            con.execute("ROLLBACK")
-            raise
+        if rows:
+            cols = [
+                "fetch_time", "sport_key", "game_id", "game_start_time",
+                "away_team", "home_team", "market", "period",
+                "away_spread", "away_spread_price",
+                "home_spread", "home_spread_price",
+                "total", "over_price", "under_price",
+                "away_ml", "home_ml",
+            ]
+            # Stage into a TEMP table cloned from the live schema, then
+            # atomically swap. The CREATE OR REPLACE TABLE ... AS SELECT step
+            # is the closest DuckDB equivalent of an atomic rename — readers
+            # see either the entire old snapshot or the entire new one,
+            # never a half-written state.
+            con.execute(
+                "CREATE OR REPLACE TEMP TABLE mlb_odds_new AS "
+                "SELECT * FROM mlb_odds LIMIT 0"
+            )
+            tuples = [tuple(r.get(c) for c in cols) for r in rows]
+            placeholders = ", ".join(["?"] * len(cols))
+            con.executemany(
+                f"INSERT INTO mlb_odds_new VALUES ({placeholders})", tuples
+            )
+            con.execute(
+                "CREATE OR REPLACE TABLE mlb_odds AS SELECT * FROM mlb_odds_new"
+            )
+            con.execute("DROP TABLE IF EXISTS mlb_odds_new")
+        else:
+            print(
+                "[dk_singles] empty scrape — leaving prior snapshot in place",
+                flush=True,
+            )
     finally:
         con.close()
 
