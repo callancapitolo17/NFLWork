@@ -52,21 +52,6 @@ MVE_COLLECTION_TICKER = _get("MVE_COLLECTION_TICKER", "KXMVECROSSCATEGORY-R")
 # Sizing
 BANKROLL = float(_get("BANKROLL", "1000.0"))
 KELLY_FRACTION = float(_get("KELLY_FRACTION", "0.25"))
-# Create-time Kelly sizing: we estimate the maker's yes_ask before any quote
-# arrives by solving for the worst price that would still pass MIN_EV_PCT
-# after fees (binary search in main._worst_acceptable_yes_ask). Kelly at
-# that worst price = the smallest count we'd ever defensibly take, locked
-# into the RFQ's `contracts` field. If the maker quotes better, we still get
-# that count at a better price (under-sized vs ideal but safe). If worse,
-# the accept-time MIN_EV_PCT gate declines.
-#
-# KELLY_CREATE_EV_FLOOR_PCT lets you target a different EV cliff for sizing
-# than for acceptance (e.g., MIN_EV_PCT=5% accept threshold, but size as if
-# the cliff were 8% → ~30% smaller Kelly count, more conservative).
-# Default = MIN_EV_PCT so sizing and acceptance share one cliff.
-KELLY_CREATE_EV_FLOOR_PCT = float(
-    _get("KELLY_CREATE_EV_FLOOR_PCT", _get("MIN_EV_PCT", "0.05"))
-)
 
 # Per-accept gates
 MIN_EV_PCT = float(_get("MIN_EV_PCT", "0.05"))

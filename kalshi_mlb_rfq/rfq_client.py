@@ -20,35 +20,19 @@ def mint_combo_ticker(collection_ticker: str, selected_markets: list[dict]) -> t
     return body["market_ticker"], body["event_ticker"]
 
 
-def create_rfq(market_ticker: str,
-               contracts: int | None = None,
-               target_cost_dollars: float | None = None,
+def create_rfq(market_ticker: str, target_cost_dollars: float,
                replace_existing: bool = False) -> str:
     """Create an RFQ. Returns rfq_id.
-
-    Size is specified via EXACTLY ONE of `contracts` (integer count) or
-    `target_cost_dollars` (dollar budget). Prefer `contracts` for Kelly-based
-    sizing — locks the contract count regardless of the maker's eventual
-    quote price. With `target_cost_dollars`, the maker's price determines how
-    many contracts you actually get, which makes Kelly sizing impossible
-    because REST accept is all-or-nothing on the maker's offered quantity.
 
     NOTE: replace_existing=True does NOT actually replace existing RFQs (recon-confirmed).
     The bot manages its own dedup via combo_cooldown and live_rfqs.
     """
-    if (contracts is None) == (target_cost_dollars is None):
-        raise ValueError(
-            "create_rfq: pass exactly one of contracts or target_cost_dollars"
-        )
-    body: dict = {
+    body = {
         "market_ticker": market_ticker,
         "rest_remainder": False,
+        "target_cost_dollars": f"{target_cost_dollars:.2f}",
         "replace_existing": replace_existing,
     }
-    if contracts is not None:
-        body["contracts"] = int(contracts)
-    else:
-        body["target_cost_dollars"] = f"{target_cost_dollars:.2f}"
     status, resp, _ = api("POST", "/communications/rfqs", body=body)
     if status not in (200, 201) or not isinstance(resp, dict) or "id" not in resp:
         raise KalshiAPIError(f"create_rfq failed: status={status} body={resp}")
