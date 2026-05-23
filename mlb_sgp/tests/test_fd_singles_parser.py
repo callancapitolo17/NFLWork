@@ -133,9 +133,13 @@ def test_classify_market_whitelist_excludes_parlay_markets():
     assert classify_market("Line / Total Parlay 9") is None
     assert classify_market("Money Line / Total Runs Parlay") is None
     assert classify_market("Home Run / Moneyline Parlay") is None
-    # Team totals and bands
-    assert classify_market("Athletics Total Runs") is None
-    assert classify_market("St. Louis Cardinals Alt. Total Runs") is None
+    # Team totals and bands. Team totals are now excluded by passing the
+    # event's team names (the keyword classifier recognizes "<Team> Total
+    # Runs" only with that context — exactly how scrape_singles calls it).
+    assert classify_market("Athletics Total Runs", "Seattle Mariners", "Athletics") is None
+    assert classify_market(
+        "St. Louis Cardinals Alt. Total Runs", "St. Louis Cardinals", "Cincinnati Reds"
+    ) is None
     assert classify_market("Total Runs (Bands)") is None
     # Moneyline-Listed variants (pitcher-conditional ML)
     assert classify_market("Moneyline Away Listed") is None
