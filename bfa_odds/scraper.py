@@ -206,10 +206,14 @@ def parse_game_odds(game: dict, config: dict, game_index: int,
     away_id = contestants[0]["id"]
     home_id = contestants[1]["id"]
 
-    # Parse game date/time from ISO format
+    # Parse game start time from ISO 8601 UTC string into an aware datetime.
+    # DuckDB will store this as TIMESTAMPTZ (one canonical instant, no
+    # split-VARCHAR ambiguity). BFA returns e.g. "2026-05-22T23:05:00Z".
     game_dt = fixture.get("date", "")
-    game_date = game_dt.split("T")[0] if game_dt else ""
-    game_time = game_dt.split("T")[1].replace("Z", "") if "T" in game_dt else ""
+    game_start_time = (
+        datetime.fromisoformat(game_dt.replace("Z", "+00:00"))
+        if game_dt else None
+    )
 
     # Build period name → number mapping from the game data
     period_name_to_num = {}
@@ -271,8 +275,7 @@ def parse_game_odds(game: dict, config: dict, game_index: int,
         game_base = {
             "fetch_time": fetch_time,
             "sport_key": config["sport_key"],
-            "game_date": game_date,
-            "game_time": game_time,
+            "game_start_time": game_start_time,
             "away_team": away_team,
             "home_team": home_team,
             "period": period_standard,
@@ -420,11 +423,10 @@ def init_database(sport: str):
     conn = duckdb.connect(str(DB_PATH))
     conn.execute(f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
-            fetch_time TIMESTAMP,
+            fetch_time TIMESTAMPTZ,
             sport_key VARCHAR,
             game_id VARCHAR,
-            game_date VARCHAR,
-            game_time VARCHAR,
+            game_start_time TIMESTAMPTZ,
             away_team VARCHAR,
             home_team VARCHAR,
             market VARCHAR,
@@ -451,25 +453,34 @@ def save_to_database(sport: str, odds_data: list):
     conn = duckdb.connect(str(DB_PATH))
 
     columns = [
-        "fetch_time", "sport_key", "game_id", "game_date", "game_time",
+        "fetch_time", "sport_key", "game_id", "game_start_time",
         "away_team", "home_team", "market", "period",
         "away_spread", "away_spread_price", "home_spread", "home_spread_price",
         "total", "over_price", "under_price", "away_ml", "home_ml"
     ]
 
-    placeholders = ", ".join(["?" for _ in columns])
-
-    # Clear old data before inserting fresh scrape
-    conn.execute(f"DELETE FROM {table_name}")
-
+    # Stage into a TEMP table cloned from the live schema, then atomically
+    # swap. CREATE OR REPLACE TABLE ... AS SELECT is the closest DuckDB
+    # equivalent of an atomic rename — readers see either the entire old
+    # snapshot or the entire new one, never a half-written state. Matches
+    # the DK/FD pattern (was DELETE+INSERT, which exposed a brief empty
+    # window to concurrent readers).
     if odds_data:
-        conn.executemany(f"""
-            INSERT INTO {table_name} ({", ".join(columns)})
-            VALUES ({placeholders})
-        """, [
-            tuple(d[col] for col in columns)
-            for d in odds_data
-        ])
+        conn.execute(
+            f"CREATE OR REPLACE TEMP TABLE {table_name}_new AS "
+            f"SELECT * FROM {table_name} LIMIT 0"
+        )
+        placeholders = ", ".join(["?" for _ in columns])
+        tuples = [tuple(d.get(c) for c in columns) for d in odds_data]
+        conn.executemany(
+            f"INSERT INTO {table_name}_new VALUES ({placeholders})", tuples
+        )
+        conn.execute(
+            f"CREATE OR REPLACE TABLE {table_name} AS SELECT * FROM {table_name}_new"
+        )
+        conn.execute(f"DROP TABLE IF EXISTS {table_name}_new")
+    else:
+        print(f"[bfa] empty scrape — leaving prior snapshot in place", flush=True)
 
     result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
     print(f"Database now has {result[0]} total records in {table_name}")
