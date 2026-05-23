@@ -5,8 +5,11 @@ DraftKings single-leg MLB odds DuckDB. Written by
 
 ## Tables
 
-- `mlb_odds` — single-leg odds in the offshore 18-column wide schema. One
-  row per `(game_id, period, market_tier, line)` group, where:
+- `mlb_odds` — single-leg odds in the offshore 17-column wide schema
+  (game timing is carried by a single `game_start_time TIMESTAMPTZ` (UTC)
+  column; the legacy `game_date VARCHAR` + `game_time VARCHAR` pair was
+  retired). One row per `(game_id, period, market_tier, line)` group,
+  where:
   - `period` is `FG`, `F5`, or `F7`
   - `market` (the row's market tier) is `main`, `alternate_spreads`, or
     `alternate_totals`

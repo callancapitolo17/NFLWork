@@ -55,7 +55,7 @@ Output schema matches the wagerzon offshore convention (18-column wide
 | F5 alternate spreads / totals        | ✅ | ✅ | |
 | F7 main (spread + total)             | ✅ | ✗ | FD doesn't post F7 |
 | F7 alternate totals                  | ✅ | ✗ | |
-| F3 (any market)                      | ✗ | ✗ | Neither book posts F3 spread/total/ML |
+| F3 main + alternate totals/spreads   | ✅ | ✗ | DK posts `Total Runs - 1st 3 Innings` and `Run Line - 1st 3 Innings`. FD only posts `First 3 Innings Result` (3-way ML), not 2-way total/spread. |
 
 ### Run timing
 

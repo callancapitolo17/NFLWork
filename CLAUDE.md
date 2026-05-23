@@ -171,6 +171,7 @@ architecture.
    - Bad: `ls /Users/callancapitolo/NFLWork/Answer\ Keys/Tools.R`
    - Good: `ls "/Users/callancapitolo/NFLWork/Answer Keys/Tools.R"`
 5. **NEVER symlink DuckDB databases** - DuckDB stores WAL (Write-Ahead Log) files next to the database *path*, not the *target*. Symlinking a `.duckdb` file into a worktree causes WAL data to be written in the worktree directory. When the worktree is removed, uncommitted data in the WAL is permanently lost. **Always copy `.duckdb` files instead**, or better yet, test from `main` after merging.
+6. **All new scrapers must write `game_start_time TIMESTAMPTZ` in UTC.** Do not introduce naive timestamp columns. The regression gate is `tests/timezone_parity_test.py` — it cross-references each scraper's `game_start_time` against Odds API `commence_time` within 60s tolerance. Run it after any scraper-touching change.
 
 ## Version Control Rules
 

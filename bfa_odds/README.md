@@ -33,4 +33,4 @@ None required (public API).
 
 ## Storage
 
-DuckDB: `bfa.duckdb` → tables: `nfl_odds`, `nba_odds`, `cbb_odds` (18-column standard schema)
+DuckDB: `bfa.duckdb` → tables: `nfl_odds`, `nba_odds`, `cbb_odds` (17-column standard schema — game timing is carried by `game_start_time TIMESTAMPTZ` (UTC); the legacy `game_date VARCHAR` + `game_time VARCHAR` pair was retired)

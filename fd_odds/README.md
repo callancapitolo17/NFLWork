@@ -5,9 +5,11 @@ FanDuel single-leg MLB odds DuckDB. Written by
 
 ## Tables
 
-- `mlb_odds` — single-leg odds in the offshore 18-column wide schema (same
-  as `dk_odds/mlb_odds`). One row per `(game_id, period, market_tier, line)`
-  group, where:
+- `mlb_odds` — single-leg odds in the offshore 17-column wide schema (same
+  as `dk_odds/mlb_odds`; game timing is a single `game_start_time
+  TIMESTAMPTZ` (UTC) column — the legacy `game_date VARCHAR` + `game_time
+  VARCHAR` pair was retired). One row per `(game_id, period, market_tier,
+  line)` group, where:
   - `period` is `FG` or `F5` (FD does not post F3 or F7 spread/total markets)
   - `market` (the row's market tier) is `main`, `alternate_spreads`, or
     `alternate_totals`

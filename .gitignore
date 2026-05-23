@@ -37,6 +37,7 @@ debug_*.png
 recon_*.html
 recon_*.json
 recon_*.png
+.placement_debug_*.json
 .playwright-mcp/
 
 # Data files

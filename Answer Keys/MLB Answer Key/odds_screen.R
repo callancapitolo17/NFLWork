@@ -54,6 +54,21 @@ LINE_MATCH_TOLERANCE <- 3.0  # max abs(line_quoted - model_line) we'll emit
     str_replace("_(fg|f3|f5|f7|h2)$", "")
 }
 
+# When matching a bet to per-book candidates, treat alt and main as the
+# same bucket. Different scrapers use different conventions:
+#   - WZ/BKM/Bet105 label alt rows "alternate_spreads"/"alternate_totals"
+#   - DK/FD (via get_dk_odds/get_fd_odds in Tools.R) collapse alt rows into
+#     "spreads"/"totals" with the alt line carried in the `line` column
+# The closest-line picker decides which row wins, so we just union the
+# possible labels here. Moneyline (h2h) has no alt variant.
+.related_market_types <- function(mt) {
+  if (mt == "spreads"           || mt == "alternate_spreads")
+    return(c("spreads", "alternate_spreads"))
+  if (mt == "totals"            || mt == "alternate_totals")
+    return(c("totals", "alternate_totals"))
+  mt
+}
+
 #' Normalize a raw scraper / Odds API frame to the canonical shape consumed
 #' by expand_bets_to_book_prices.
 normalize_book_odds_frame <- function(raw) {
@@ -110,9 +125,20 @@ normalize_book_odds_frame <- function(raw) {
   c3 <- c2 %>% filter(.dist == min_dist)
   if (nrow(c3) > 1) {
     # Equidistant tiebreaker: prefer the line worse for the bettor.
-    # Over side: pick higher line; Under side: pick lower line.
-    # Spread favorite (negative line): pick lower (more negative); dog: pick higher.
-    pick_high <- grepl("^Over", bet_on, ignore.case = TRUE) || (model_line < 0)
+    # Over total: pick_high = TRUE -> slice_max -> higher total (harder to go over).
+    # Under total: pick_high = FALSE -> slice_min -> lower total (harder to go under).
+    # Spread dog (model_line > 0): pick_high = TRUE -> slice_max -> larger +N
+    #   (less cushion = harder to cover).
+    # Spread favorite (model_line < 0): pick_high = FALSE -> slice_min -> more
+    #   negative line (must cover by more = harder).
+    if (grepl("^Over", bet_on, ignore.case = TRUE)) {
+      pick_high <- TRUE
+    } else if (grepl("^Under", bet_on, ignore.case = TRUE)) {
+      pick_high <- FALSE
+    } else {
+      # It's a spread; use line sign to determine dog vs favorite
+      pick_high <- model_line > 0
+    }
     if (pick_high) c3 <- c3 %>% slice_max(line, n = 1)
     else c3 <- c3 %>% slice_min(line, n = 1)
   }
@@ -168,7 +194,8 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
                   side = character(), bookmaker = character(),
                   line = numeric(), line_quoted = numeric(),
                   is_exact_line = logical(), american_odds = integer(),
-                  fetch_time = as.POSIXct(character())))
+                  fetch_time = as.POSIXct(character()),
+                  game_start_time = as.POSIXct(character(), tz = "UTC")))
   }
 
   # --- Defensive column renames for bets frame ---
@@ -216,6 +243,7 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
 
   for (i in seq_len(nrow(bets))) {
     bet <- bets[i, , drop = FALSE]
+    bet_game_start <- if ("pt_start_time" %in% names(bet)) bet$pt_start_time else as.POSIXct(NA, tz = "UTC")
     opposite_col_value <- if ("opposite_side" %in% names(bet)) bet$opposite_side else NA_character_
     home_team_value    <- if ("home_team"     %in% names(bet)) bet$home_team     else NA_character_
     away_team_value    <- if ("away_team"     %in% names(bet)) bet$away_team     else NA_character_
@@ -233,7 +261,7 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
 
         candidates <- book_frame %>%
           filter(game_id == bet$game_id,
-                 market  == bet$market_type,
+                 market  %in% .related_market_types(bet$market_type),
                  period  == bet$period,
                  side    == side_value)
 
@@ -264,17 +292,18 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
 
         k <- k + 1L
         out_rows[[k]] <- tibble(
-          bet_row_id    = bet$bet_row_id,
-          game_id       = bet$game_id,
-          market        = bet$market_type,
-          period        = bet$period,
-          side          = slot,
-          bookmaker     = book_name,
-          line          = bet$line,
-          line_quoted   = chosen$line_quoted,
-          is_exact_line = chosen$is_exact_line,
-          american_odds = as.integer(chosen$american_odds),
-          fetch_time    = ft
+          bet_row_id      = bet$bet_row_id,
+          game_id         = bet$game_id,
+          market          = bet$market_type,
+          period          = bet$period,
+          side            = slot,
+          bookmaker       = book_name,
+          line            = bet$line,
+          line_quoted     = chosen$line_quoted,
+          is_exact_line   = chosen$is_exact_line,
+          american_odds   = as.integer(chosen$american_odds),
+          fetch_time      = ft,
+          game_start_time = bet_game_start
         )
       }
     }
@@ -286,7 +315,8 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
                   side = character(), bookmaker = character(),
                   line = numeric(), line_quoted = numeric(),
                   is_exact_line = logical(), american_odds = integer(),
-                  fetch_time = as.POSIXct(character())))
+                  fetch_time = as.POSIXct(character()),
+                  game_start_time = as.POSIXct(character(), tz = "UTC")))
   }
   bind_rows(out_rows[1:k])
 }
@@ -381,8 +411,10 @@ parse_prefetched_to_long <- function(prefetched_odds, bookmaker_keys) {
 #' @param lookup tibble with columns id, home_team, away_team — used to join
 #'               scraper team names to Odds API game IDs. Typically derived
 #'               from mlb_odds in MLB.R.
+#' @param book_name Optional book label used in coverage-drop log messages
+#'               (e.g. "dk", "fd", "wagerzon"). Defaults to "<book>".
 #' @return normalized tibble (output of normalize_book_odds_frame), or NULL
-scraper_to_canonical <- function(raw, lookup) {
+scraper_to_canonical <- function(raw, lookup, book_name = NULL) {
   if (is.null(raw) || nrow(raw) == 0) return(NULL)
   if (!"fetch_time" %in% names(raw)) raw$fetch_time <- as.POSIXct(NA, tz = "UTC")
 
@@ -391,11 +423,43 @@ scraper_to_canonical <- function(raw, lookup) {
     raw$fetch_time[is.na(raw$fetch_time)] <- Sys.time()
   }
 
+  # Coverage diagnostic — surface rows that would be silently dropped by inner_join.
+  # The #1 invisible failure mode of the bets tab is unmapped team-name pairs.
+  dropped <- anti_join(raw, lookup, by = c("home_team", "away_team"))
+  if (nrow(dropped) > 0) {
+    dropped_pairs <- dropped %>%
+      distinct(home_team, away_team) %>%
+      mutate(pair = paste(home_team, "vs", away_team)) %>%
+      pull(pair)
+    message(sprintf(
+      "[scraper_to_canonical] %s: %d row(s) across %d game(s) dropped (no game_id match): %s",
+      book_name %||% "<book>",
+      nrow(dropped),
+      length(dropped_pairs),
+      paste(dropped_pairs, collapse = "; ")
+    ))
+  }
+
   # Join to Odds API game IDs. Scraper frames have home_team + away_team
   # already resolved to canonical names by resolve_offshore_teams().
   joined <- raw %>%
     inner_join(lookup, by = c("home_team", "away_team")) %>%
     rename(game_id = id)
+
+  # Surface silent drops: if any raw rows did not match the lookup, log the
+  # unmatched team pairs so a roster rename or scraper drift surfaces in the
+  # run output instead of silently producing fewer pills on the dashboard.
+  n_dropped <- nrow(raw) - nrow(joined)
+  if (n_dropped > 0) {
+    unmatched <- raw %>%
+      anti_join(lookup, by = c("home_team", "away_team")) %>%
+      distinct(home_team, away_team)
+    warning(sprintf(
+      "[scraper_to_canonical] dropped %d row(s) for %d unmatched team pair(s): %s",
+      n_dropped, nrow(unmatched),
+      paste(paste(unmatched$away_team, "@", unmatched$home_team), collapse = "; ")
+    ))
+  }
 
   if (nrow(joined) == 0) return(NULL)
 
@@ -470,9 +534,7 @@ scraper_to_canonical <- function(raw, lookup) {
 odds_api_to_canonical <- function(raw) {
   if (is.null(raw) || nrow(raw) == 0) return(NULL)
   ft <- if ("fetch_time" %in% names(raw)) raw$fetch_time else rep(Sys.time(), nrow(raw))
-  # Replace any NA fetch_times with now (NA breaks staleness chip rendering).
   ft <- as.POSIXct(ft, tz = "UTC")
-  ft[is.na(ft)] <- Sys.time()
 
   result <- raw %>%
     transmute(

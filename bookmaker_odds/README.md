@@ -85,7 +85,20 @@ cd bookmaker_odds
 ## Storage
 
 DuckDB: `bookmaker.duckdb` → tables: `mlb_odds`, `nba_odds`, `cbb_odds`
-(18-column standard schema).
+(17-column standard schema — game timing is carried by `game_start_time
+TIMESTAMPTZ` (UTC); the legacy `game_date VARCHAR` + `game_time VARCHAR`
+pair was retired).
+
+## Timezone handling
+
+Bookmaker's response timestamps (`gmdt` / `gmtm`) are Pacific Time. An
+earlier version of this scraper tagged them ET, which silently dropped
+~half of MLB rows via `drop_past_games()` — the headline bug surfaced
+by the 2026-05 TZ audit (see `tools/TZ_AUDIT_FINDINGS.md`; modal Δ
++7.02h confirmed PDT). The scraper now converts PT → UTC at write-time
+via `ZoneInfo("America/Los_Angeles")` before storing into
+`game_start_time TIMESTAMPTZ`, so downstream consumers see a correct
+UTC instant regardless of BKM's source TZ.
 
 ## Tests
 

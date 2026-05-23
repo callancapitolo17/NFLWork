@@ -79,7 +79,8 @@
 render_book_cell <- function(american_odds, line_quoted, is_exact_line,
                               is_pick = FALSE, side_word = "over",
                               is_totals = TRUE,
-                              opposite_american_odds = NA_integer_) {
+                              opposite_american_odds = NA_integer_,
+                              opposite_line_quoted = NA_real_) {
   # State 1: empty (no quote)
   if (is.na(american_odds)) {
     return('<div class="cell empty"><span class="raw">&mdash;</span><span class="fair">&mdash;</span></div>')
@@ -87,12 +88,25 @@ render_book_cell <- function(american_odds, line_quoted, is_exact_line,
 
   raw_str <- if (american_odds > 0) paste0("+", american_odds) else as.character(american_odds)
 
-  # Compute devigged American for the FAIR span (if we have both sides).
-  # Fallback to em-dash so every non-empty cell still emits <span class="fair">;
-  # otherwise the Task 5 CSS toggle (.show-fair hides .raw) would render this
-  # cell blank in FAIR view when the book quotes only one side.
+  # Compute devigged American for the FAIR span (if we have both sides AT THE
+  # SAME LINE). expand_bets_to_book_prices picks the closest line independently
+  # for pick and opposite slots, so the two sides can land on different alt
+  # markets at the same book — devigging those would yield nonsense fair odds.
+  # Match logic:
+  #   - totals: pick.line == opposite.line (both Over/Under at the same total)
+  #   - spreads: pick.line == -opposite.line (e.g. BOS -2.5 vs PHI +2.5)
+  #   - moneyline: both lines NA
   fair_html <- '<span class="fair">&mdash;</span>'  # fallback when no devig available
-  if (!is.na(opposite_american_odds)) {
+  lines_match <- if (is.na(line_quoted) && is.na(opposite_line_quoted)) {
+    TRUE   # moneyline
+  } else if (is.na(line_quoted) || is.na(opposite_line_quoted)) {
+    FALSE  # one side has a line, other doesn't — not a valid 2-way market
+  } else if (isTRUE(is_totals)) {
+    abs(line_quoted - opposite_line_quoted) < 1e-9
+  } else {
+    abs(line_quoted + opposite_line_quoted) < 1e-9
+  }
+  if (lines_match && !is.na(opposite_american_odds)) {
     pair <- .devig_american_pair(american_odds, opposite_american_odds)
     if (!is.na(pair$fair1)) {
       fair_str <- if (pair$fair1 > 0) paste0("+", as.integer(pair$fair1))

@@ -12,12 +12,41 @@ import requests
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
 # Add Answer Keys to path for shared team name resolution
 sys.path.insert(0, str(Path(__file__).parent.parent / "Answer Keys"))
 from canonical_match import load_team_dict, load_canonical_games, resolve_team_names
+
+# Hoop88's API returns naive Pacific wall-clock in GameDateTime (confirmed
+# by tools/TZ_AUDIT_FINDINGS.md — modal Δ vs sharp UTC was +7.02h = PDT).
+# Prior code assumed ET, which silently shifted every game by 3 hours.
+# We now parse as America/Los_Angeles and store the UTC instant as
+# game_start_time TIMESTAMPTZ so downstream code never has to guess the TZ.
+_HOOP88_TZ = ZoneInfo("America/Los_Angeles")
+
+
+def _hoop88_game_start_time(game_dt: str) -> Optional[datetime]:
+    """Parse H88's naive PT GameDateTime string into a UTC-aware datetime.
+
+    game_dt: "YYYY-MM-DD HH:MM" or "YYYY-MM-DD HH:MM:SS"
+    Returns: tz-aware UTC datetime, or None if malformed/empty.
+    """
+    if not game_dt or len(game_dt) < 10:
+        return None
+    try:
+        date_part, _, time_part = game_dt.partition(" ")
+        if not date_part or not time_part:
+            return None
+        y, m, d = map(int, date_part.split("-"))
+        time_part = time_part[:5]  # truncate seconds if present
+        hh, mm = map(int, time_part.split(":"))
+    except (ValueError, AttributeError):
+        return None
+    naive_pt = datetime(y, m, d, hh, mm, tzinfo=_HOOP88_TZ)
+    return naive_pt.astimezone(timezone.utc)
 
 # Load .env from bet_logger directory
 env_path = Path(__file__).parent.parent / "bet_logger" / ".env"
@@ -254,16 +283,8 @@ def parse_lines(lines: list, config: dict, period: dict,
             away_team = normalize_team_name(away_raw, sport)
             home_team = normalize_team_name(home_raw, sport)
 
-        # Game date/time
-        game_dt = game.get("GameDateTime", "")
-        game_date = ""
-        game_time = ""
-        if game_dt and len(game_dt) >= 10:
-            parts = game_dt.split(" ")[0].split("-")
-            if len(parts) == 3:
-                game_date = f"{parts[1]}/{parts[2]}"  # MM/DD
-            time_part = game_dt.split(" ")[1] if " " in game_dt else ""
-            game_time = time_part[:5] if time_part else ""  # HH:MM
+        # Game start time — parse H88's naive PT wall-clock into UTC instant.
+        game_start_time = _hoop88_game_start_time(game.get("GameDateTime", ""))
 
         away_rot = str(game.get("Team1RotNum", ""))
         home_rot = str(game.get("Team2RotNum", ""))
@@ -299,8 +320,7 @@ def parse_lines(lines: list, config: dict, period: dict,
         base = {
             "fetch_time": fetch_time,
             "sport_key": sport_key,
-            "game_date": game_date,
-            "game_time": game_time,
+            "game_start_time": game_start_time,
             "away_team": away_team,
             "home_team": home_team,
         }
@@ -375,58 +395,87 @@ def init_database(sport: str):
     table_name = config["table_name"]
 
     conn = duckdb.connect(str(DB_PATH))
-    conn.execute(f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            fetch_time TIMESTAMP,
-            sport_key VARCHAR,
-            game_id VARCHAR,
-            game_date VARCHAR,
-            game_time VARCHAR,
-            away_team VARCHAR,
-            home_team VARCHAR,
-            market VARCHAR,
-            period VARCHAR,
-            away_spread FLOAT,
-            away_spread_price INTEGER,
-            home_spread FLOAT,
-            home_spread_price INTEGER,
-            total FLOAT,
-            over_price INTEGER,
-            under_price INTEGER,
-            away_ml INTEGER,
-            home_ml INTEGER
-        )
-    """)
-    conn.close()
+    try:
+        # Self-healing migration: if the table predates the game_start_time
+        # migration (old schema had game_date/game_time VARCHARs), drop it so
+        # it's recreated with the new schema below. Ephemeral table — fully
+        # repopulated every cycle, so dropping loses at most one stale snapshot.
+        has_gst = conn.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = ? AND column_name = 'game_start_time'",
+            [table_name]
+        ).fetchone()
+        if has_gst is None:
+            tbl_exists = conn.execute(
+                "SELECT 1 FROM information_schema.tables WHERE table_name = ?",
+                [table_name]
+            ).fetchone()
+            if tbl_exists is not None:
+                print(f"[h88] Migrating {table_name} to game_start_time schema "
+                      f"(existing snapshot re-populated this run)")
+                conn.execute(f"DROP TABLE {table_name}")
+
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                fetch_time TIMESTAMPTZ,
+                sport_key VARCHAR,
+                game_id VARCHAR,
+                game_start_time TIMESTAMPTZ,
+                away_team VARCHAR,
+                home_team VARCHAR,
+                market VARCHAR,
+                period VARCHAR,
+                away_spread FLOAT,
+                away_spread_price INTEGER,
+                home_spread FLOAT,
+                home_spread_price INTEGER,
+                total FLOAT,
+                over_price INTEGER,
+                under_price INTEGER,
+                away_ml INTEGER,
+                home_ml INTEGER
+            )
+        """)
+    finally:
+        conn.close()
 
 
 def save_to_database(sport: str, odds_data: list):
-    """Save scraped odds to DuckDB (replaces previous scrape)."""
+    """Save scraped odds to DuckDB atomically (stage-and-swap)."""
     config = SPORT_CONFIGS[sport]
     table_name = config["table_name"]
 
     conn = duckdb.connect(str(DB_PATH))
 
     columns = [
-        "fetch_time", "sport_key", "game_id", "game_date", "game_time",
+        "fetch_time", "sport_key", "game_id", "game_start_time",
         "away_team", "home_team", "market", "period",
         "away_spread", "away_spread_price", "home_spread", "home_spread_price",
         "total", "over_price", "under_price", "away_ml", "home_ml"
     ]
 
-    placeholders = ", ".join(["?" for _ in columns])
-
-    # Clear old data before inserting fresh scrape
-    conn.execute(f"DELETE FROM {table_name}")
-
+    # Stage into a TEMP table cloned from the live schema, then atomically
+    # swap. CREATE OR REPLACE TABLE ... AS SELECT is DuckDB's closest
+    # equivalent of an atomic rename — readers see either the entire old
+    # snapshot or the entire new one, never a half-written state. On an
+    # empty scrape, leave the prior snapshot in place so consumers don't
+    # see a momentarily empty table (matches BFA/DK/FD/WZ pattern).
     if odds_data:
-        conn.executemany(f"""
-            INSERT INTO {table_name} ({", ".join(columns)})
-            VALUES ({placeholders})
-        """, [
-            tuple(d[col] for col in columns)
-            for d in odds_data
-        ])
+        conn.execute(
+            f"CREATE OR REPLACE TEMP TABLE {table_name}_new AS "
+            f"SELECT * FROM {table_name} LIMIT 0"
+        )
+        placeholders = ", ".join(["?" for _ in columns])
+        tuples = [tuple(d.get(c) for c in columns) for d in odds_data]
+        conn.executemany(
+            f"INSERT INTO {table_name}_new VALUES ({placeholders})", tuples
+        )
+        conn.execute(
+            f"CREATE OR REPLACE TABLE {table_name} AS SELECT * FROM {table_name}_new"
+        )
+        conn.execute(f"DROP TABLE IF EXISTS {table_name}_new")
+    else:
+        print(f"[hoop88] empty scrape — leaving prior snapshot in place", flush=True)
 
     result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
     print(f"Database now has {result[0]} total records in {table_name}")
@@ -454,7 +503,10 @@ def scrape_hoop88(sport: str, headless: bool = True):
     config = SPORT_CONFIGS[sport]
     init_database(sport)
 
-    fetch_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    # Aware UTC datetime — DuckDB stores it directly as TIMESTAMPTZ. A
+    # naive strftime string would be interpreted as local-TZ on insert
+    # and silently shift (same bug DK/FD hit pre-migration).
+    fetch_time = datetime.now(timezone.utc)
 
     # Load team name resolution
     team_dict = load_team_dict(sport) if sport != "nfl" else {}

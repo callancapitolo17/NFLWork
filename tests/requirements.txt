@@ -1,0 +1,7 @@
+# Runtime deps for the timezone parity regression gate (tests/timezone_parity_test.py).
+# pytz is mandatory: duckdb's Python client imports it to convert TIMESTAMPTZ
+# columns (e.g. game_start_time) into timezone-aware datetimes on read. Without
+# pytz, SELECTing game_start_time raises "Required module 'pytz' failed to import".
+# Writers (the scrapers) do NOT need pytz — only readers of TIMESTAMPTZ do.
+duckdb>=1.0
+pytz

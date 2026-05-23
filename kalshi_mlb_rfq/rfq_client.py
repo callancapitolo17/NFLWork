@@ -67,42 +67,75 @@ def poll_quotes(rfq_id: str, user_id: str) -> list[dict]:
     return body.get("quotes") or []
 
 
-def accept_quote(quote_id: str, contracts: int) -> dict | None:
-    """Accept a quote for the given contract count.
+def accept_quote(quote_id: str, accepted_side: str) -> tuple[dict | None, dict | str | None]:
+    """Accept a quote on the given side ("yes" or "no").
 
-    Returns the accept-response dict on success, or None if the quote walked /
-    expired before our accept landed.
+    The Kalshi REST accept endpoint takes only `accepted_side` — sizing happens
+    upstream when the RFQ is created via `target_cost_dollars`. Confirmed against
+    docs.kalshi.com/openapi.yaml (PUT /communications/quotes/{id}/accept). The
+    prior implementation sent `{"contracts": N}` which silently 400'd every
+    accept with `invalid_parameters` for the lifetime of the bot.
+
+    Returns (response, error_body):
+      - success: ({}, None) — Kalshi returns 204 with no body
+      - walked / expired race: (None, error_body) — error_body is whatever
+        Kalshi returned (dict on JSON, str otherwise). Lets the caller
+        distinguish 'quote_expired' / 'rfq_closed' / etc. in walk diagnostics.
+
+    Raises KalshiAPIError on any other (unexpected) status.
     """
-    body = {"contracts": contracts}
+    body = {"accepted_side": accepted_side}
     # Kalshi accept endpoint requires PUT, not POST. POST returns a router-level
-    # 404 ("404 page not found" plain text). Verified empirically 2026-05-02
-    # by probing both verbs against a fake quote_id: PUT returned a structured
-    # 400 invalid_parameters error from midland (the right service), POST hit
-    # the upstream router's catch-all 404. Recon never tested this codepath
-    # ("We never accept a quote" — recon_kalshi_mlb_rfq.py:6).
+    # 404 ("404 page not found" plain text). Verified empirically 2026-05-02.
     status, resp, _ = api("PUT", f"/communications/quotes/{quote_id}/accept", body=body)
-    # Kalshi proved on create_rfq they may return 201 even on action endpoints.
-    # Accept both — the alternative is a silent failure with a real position
-    # opened on Kalshi's side and no local tracking.
-    if status in (200, 201):
-        return resp if isinstance(resp, dict) else {}
+    # Success is 204 (empty body) per the OpenAPI spec. We also accept 200/201
+    # defensively — Kalshi has historically returned 201 on action endpoints
+    # (see create_rfq) and the cost of a silent missed-fill is higher than
+    # over-accepting status codes.
+    if status in (200, 201, 204):
+        return (resp if isinstance(resp, dict) else {}), None
     if status in (400, 404, 409):
-        # Common race: quote walked or expired. Not a hard error. Including 404
-        # in case Kalshi returns it for an already-accepted quote (defensive).
-        return None
+        # Common race: quote walked or expired. Also covers genuine bad
+        # quote_ids. The caller uses the error body to disambiguate.
+        return None, resp
     raise KalshiAPIError(f"accept_quote failed: status={status} body={resp}")
+
+
+def get_rfq_safe(rfq_id: str) -> dict | None:
+    """get_rfq variant that returns None on any failure. Used for post-walk
+    diagnostics — must never crash the bot on a follow-up inspection."""
+    try:
+        return get_rfq(rfq_id)
+    except Exception:
+        return None
 
 
 def get_position_contracts(market_ticker: str) -> int:
     """Authoritative current position count for a ticker via /portfolio/positions.
 
     Returns 0 if no position. Raises KalshiAPIError on API failure.
+
+    Field name: Kalshi returns positions as `position_fp` (fixed-point string,
+    e.g. "7.00" or "-1.00" for short). The legacy `position` (int) field is no
+    longer populated in the V2 portfolio response. Reading the wrong field
+    silently returned 0 for every fill — fixed 2026-05-21 after observing that
+    real on-Kalshi positions (`position_fp = "7.00"`) were being recorded as
+    `n=0` in our fills table.
+
+    Negative values mean a short YES position (i.e., effectively LONG NO). We
+    return the signed integer so callers can distinguish long YES from long NO
+    via the sign.
     """
     status, body, _ = api("GET", f"/portfolio/positions?ticker={market_ticker}&limit=10")
     if status != 200 or not isinstance(body, dict):
         raise KalshiAPIError(f"get_position_contracts failed: status={status} body={body}")
     for p in body.get("market_positions") or []:
         if p.get("ticker") == market_ticker:
+            # Prefer position_fp (V2 fixed-point); fall back to position for
+            # any legacy market still returning the int field.
+            fp = p.get("position_fp")
+            if fp is not None:
+                return int(float(fp))
             return int(p.get("position", 0))
     return 0
 
