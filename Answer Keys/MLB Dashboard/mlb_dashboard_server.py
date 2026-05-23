@@ -1057,6 +1057,14 @@ def place_bet():
         # Insert a breadcrumb so placer.py has a row to UPDATE on completion.
         # Use status='pending' so the WZ 60s 'placing'-sweep cleanup doesn't
         # touch it (Playwright runs are user-paced and routinely exceed 60s).
+        #
+        # The composite PK (bet_hash, account) enforces NOT NULL on both
+        # columns. Non-WZ books send account=None because they have no
+        # multi-account registry. Default to bookmaker_key so each book
+        # gets a stable per-book label that satisfies the PK and works with
+        # the v1 single-account-per-non-WZ-book model.
+        if not account:
+            account = bookmaker_key
         _insert_placement_breadcrumb(bet_hash, account, data, status="pending")
         try:
             if data.get("game_time") not in ("NA", "", None):

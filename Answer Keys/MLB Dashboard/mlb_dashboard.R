@@ -1672,14 +1672,23 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
     } else {
       placed_actual_lookup[row$bet_hash]
     }
+    # For updateBet (partial-fill): the server /api/update-bet requires account
+    # (composite PK). Source the first chip's account when placed; empty string
+    # for unplaced bets (no chip yet). JS updateBet sends || null as fallback so
+    # a missing data-account will 400 at the server rather than silently mutate
+    # the wrong row.
+    placed_account_value <- if (isTRUE(row$is_placed) && !is.null(chips_by_hash[[row$bet_hash]])) {
+      chips_by_hash[[row$bet_hash]]$account[1]
+    } else ""
     data_attrs <- sprintf(
-      'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-market="%s" data-bet-on="%s" data-line="%s" data-prob="%s" data-ev="%s" data-size="%s" data-model-size="%s" data-odds="%s" data-book="%s" data-actual="%s" data-fill-status="%s"',
+      'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-market="%s" data-bet-on="%s" data-line="%s" data-prob="%s" data-ev="%s" data-size="%s" data-model-size="%s" data-odds="%s" data-book="%s" data-actual="%s" data-fill-status="%s" data-account="%s"',
       row$bet_hash, row$id, row$home_team, row$away_team,
       as.character(row$pt_start_time), row$market, row$bet_on,
       ifelse(is.na(row$line), "", row$line),
       row$prob, row$ev, row$bet_size, row$bet_size, row$odds, row$bookmaker_key,
       ifelse(is.na(placed_actual), "", placed_actual),
-      row$fill_status
+      row$fill_status,
+      placed_account_value
     )
 
     action_html <- if (!is.na(row$fill_status) && row$fill_status == "partial") {
@@ -4898,7 +4907,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             fetch("/api/update-bet", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ bet_hash: btn.dataset.hash, actual_size: newAmount })
+              body: JSON.stringify({ bet_hash: btn.dataset.hash, account: btn.dataset.account || null, actual_size: newAmount })
             })
               .then(function(r) { return r.json(); })
               .then(function(result) {
