@@ -3101,8 +3101,17 @@ get_wagerzon_odds <- function(
       sport_key = row$sport_key,
       home_team = row$home_team,
       away_team = row$away_team,
-      game_date = row$game_date,
-      game_time = row$game_time,
+      # game_date/game_time derived from game_start_time (TIMESTAMPTZ); will be removed after downstream callers migrate to game_start_time directly.
+      # Defensive guard: a scraper DB that hasn't been re-built since the Phase 3 migration won't have a game_start_time column yet; emit NAs in that case.
+      game_date = if ("game_start_time" %in% names(row) && !is.na(row$game_start_time))
+                    format(row$game_start_time, "%Y-%m-%d", tz = "UTC")
+                  else NA_character_,
+      game_time = if ("game_start_time" %in% names(row) && !is.na(row$game_start_time))
+                    format(row$game_start_time, "%H:%M", tz = "UTC")
+                  else NA_character_,
+      game_start_time = if ("game_start_time" %in% names(row))
+                          row$game_start_time
+                        else as.POSIXct(NA_character_, tz = "UTC"),
       wagerzon_game_id = row$game_id,
       fetch_time = row$fetch_time,
       period = row$period,
@@ -3244,8 +3253,17 @@ get_hoop88_odds <- function(
       sport_key = row$sport_key,
       home_team = row$home_team,
       away_team = row$away_team,
-      game_date = row$game_date,
-      game_time = row$game_time,
+      # game_date/game_time derived from game_start_time (TIMESTAMPTZ); will be removed after downstream callers migrate to game_start_time directly.
+      # Defensive guard: a scraper DB that hasn't been re-built since the Phase 3 migration won't have a game_start_time column yet; emit NAs in that case.
+      game_date = if ("game_start_time" %in% names(row) && !is.na(row$game_start_time))
+                    format(row$game_start_time, "%Y-%m-%d", tz = "UTC")
+                  else NA_character_,
+      game_time = if ("game_start_time" %in% names(row) && !is.na(row$game_start_time))
+                    format(row$game_start_time, "%H:%M", tz = "UTC")
+                  else NA_character_,
+      game_start_time = if ("game_start_time" %in% names(row))
+                          row$game_start_time
+                        else as.POSIXct(NA_character_, tz = "UTC"),
       hoop88_game_id = row$game_id,
       fetch_time = row$fetch_time,
       period = row$period
@@ -3376,8 +3394,17 @@ get_bfa_odds <- function(
       sport_key = row$sport_key,
       home_team = row$home_team,
       away_team = row$away_team,
-      game_date = row$game_date,
-      game_time = row$game_time,
+      # game_date/game_time derived from game_start_time (TIMESTAMPTZ); will be removed after downstream callers migrate to game_start_time directly.
+      # Defensive guard: a scraper DB that hasn't been re-built since the Phase 3 migration won't have a game_start_time column yet; emit NAs in that case.
+      game_date = if ("game_start_time" %in% names(row) && !is.na(row$game_start_time))
+                    format(row$game_start_time, "%Y-%m-%d", tz = "UTC")
+                  else NA_character_,
+      game_time = if ("game_start_time" %in% names(row) && !is.na(row$game_start_time))
+                    format(row$game_start_time, "%H:%M", tz = "UTC")
+                  else NA_character_,
+      game_start_time = if ("game_start_time" %in% names(row))
+                          row$game_start_time
+                        else as.POSIXct(NA_character_, tz = "UTC"),
       bfa_game_id = row$game_id,
       fetch_time = row$fetch_time,
       period = row$period
@@ -3502,8 +3529,17 @@ get_bookmaker_odds <- function(
       sport_key = row$sport_key,
       home_team = row$home_team,
       away_team = row$away_team,
-      game_date = row$game_date,
-      game_time = row$game_time,
+      # game_date/game_time derived from game_start_time (TIMESTAMPTZ); will be removed after downstream callers migrate to game_start_time directly.
+      # Defensive guard: a scraper DB that hasn't been re-built since the Phase 3 migration won't have a game_start_time column yet; emit NAs in that case.
+      game_date = if ("game_start_time" %in% names(row) && !is.na(row$game_start_time))
+                    format(row$game_start_time, "%Y-%m-%d", tz = "UTC")
+                  else NA_character_,
+      game_time = if ("game_start_time" %in% names(row) && !is.na(row$game_start_time))
+                    format(row$game_start_time, "%H:%M", tz = "UTC")
+                  else NA_character_,
+      game_start_time = if ("game_start_time" %in% names(row))
+                          row$game_start_time
+                        else as.POSIXct(NA_character_, tz = "UTC"),
       bfa_game_id = row$game_id,
       fetch_time = row$fetch_time,
       period = row$period
@@ -3644,8 +3680,17 @@ get_dk_odds <- function(
       sport_key = row$sport_key,
       home_team = row$home_team,
       away_team = row$away_team,
-      game_date = row$game_date,
-      game_time = row$game_time,
+      # game_date/game_time derived from game_start_time (TIMESTAMPTZ); will be removed after downstream callers migrate to game_start_time directly.
+      # Defensive guard: a scraper DB that hasn't been re-built since the Phase 3 migration won't have a game_start_time column yet; emit NAs in that case.
+      game_date = if ("game_start_time" %in% names(row) && !is.na(row$game_start_time))
+                    format(row$game_start_time, "%Y-%m-%d", tz = "UTC")
+                  else NA_character_,
+      game_time = if ("game_start_time" %in% names(row) && !is.na(row$game_start_time))
+                    format(row$game_start_time, "%H:%M", tz = "UTC")
+                  else NA_character_,
+      game_start_time = if ("game_start_time" %in% names(row))
+                          row$game_start_time
+                        else as.POSIXct(NA_character_, tz = "UTC"),
       dk_game_id = row$game_id,
       fetch_time = row$fetch_time,
       period = row$period
@@ -3760,8 +3805,17 @@ get_fd_odds <- function(
       sport_key = row$sport_key,
       home_team = row$home_team,
       away_team = row$away_team,
-      game_date = row$game_date,
-      game_time = row$game_time,
+      # game_date/game_time derived from game_start_time (TIMESTAMPTZ); will be removed after downstream callers migrate to game_start_time directly.
+      # Defensive guard: a scraper DB that hasn't been re-built since the Phase 3 migration won't have a game_start_time column yet; emit NAs in that case.
+      game_date = if ("game_start_time" %in% names(row) && !is.na(row$game_start_time))
+                    format(row$game_start_time, "%Y-%m-%d", tz = "UTC")
+                  else NA_character_,
+      game_time = if ("game_start_time" %in% names(row) && !is.na(row$game_start_time))
+                    format(row$game_start_time, "%H:%M", tz = "UTC")
+                  else NA_character_,
+      game_start_time = if ("game_start_time" %in% names(row))
+                          row$game_start_time
+                        else as.POSIXct(NA_character_, tz = "UTC"),
       fd_game_id = row$game_id,
       fetch_time = row$fetch_time,
       period = row$period
@@ -3868,8 +3922,17 @@ get_bet105_odds <- function(
       sport_key = row$sport_key,
       home_team = row$home_team,
       away_team = row$away_team,
-      game_date = row$game_date,
-      game_time = row$game_time,
+      # game_date/game_time derived from game_start_time (TIMESTAMPTZ); will be removed after downstream callers migrate to game_start_time directly.
+      # Defensive guard: a scraper DB that hasn't been re-built since the Phase 3 migration won't have a game_start_time column yet; emit NAs in that case.
+      game_date = if ("game_start_time" %in% names(row) && !is.na(row$game_start_time))
+                    format(row$game_start_time, "%Y-%m-%d", tz = "UTC")
+                  else NA_character_,
+      game_time = if ("game_start_time" %in% names(row) && !is.na(row$game_start_time))
+                    format(row$game_start_time, "%H:%M", tz = "UTC")
+                  else NA_character_,
+      game_start_time = if ("game_start_time" %in% names(row))
+                          row$game_start_time
+                        else as.POSIXct(NA_character_, tz = "UTC"),
       bfa_game_id = row$game_id,
       fetch_time = row$fetch_time,
       period = row$period
@@ -3994,8 +4057,17 @@ get_kalshi_odds <- function(
       sport_key = row$sport_key,
       home_team = row$home_team,
       away_team = row$away_team,
-      game_date = row$game_date,
-      game_time = row$game_time,
+      # game_date/game_time derived from game_start_time (TIMESTAMPTZ); will be removed after downstream callers migrate to game_start_time directly.
+      # Defensive guard: a scraper DB that hasn't been re-built since the Phase 3 migration won't have a game_start_time column yet; emit NAs in that case.
+      game_date = if ("game_start_time" %in% names(row) && !is.na(row$game_start_time))
+                    format(row$game_start_time, "%Y-%m-%d", tz = "UTC")
+                  else NA_character_,
+      game_time = if ("game_start_time" %in% names(row) && !is.na(row$game_start_time))
+                    format(row$game_start_time, "%H:%M", tz = "UTC")
+                  else NA_character_,
+      game_start_time = if ("game_start_time" %in% names(row))
+                          row$game_start_time
+                        else as.POSIXct(NA_character_, tz = "UTC"),
       bfa_game_id = row$game_id,
       fetch_time = row$fetch_time,
       period = row$period
