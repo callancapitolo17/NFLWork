@@ -752,15 +752,15 @@ def _insert_placement_breadcrumb(bet_hash: str, account, bet_meta: dict,
                                   status: str = "placing"):
     """Insert (or upsert) a placed_bets row before invoking the placer.
 
-    Idempotent — a retry won't duplicate the row.  Uses INSERT when the row
-    doesn't exist yet, UPDATE when it does (e.g. a retry after a transient
-    failure).
+    Idempotent within a single (bet_hash, account) — a retry won't
+    duplicate the row. Different accounts for the same bet_hash are
+    independent rows under the composite PK introduced in migration 003.
     """
     con = duckdb.connect(str(DB_PATH))
     try:
         existing = con.execute(
-            "SELECT bet_hash FROM placed_bets WHERE bet_hash = ?",
-            [bet_hash]
+            "SELECT bet_hash FROM placed_bets WHERE bet_hash = ? AND account = ?",
+            [bet_hash, account]
         ).fetchone()
 
         if existing is None:
@@ -792,13 +792,13 @@ def _insert_placement_breadcrumb(bet_hash: str, account, bet_meta: dict,
         else:
             con.execute("""
                 UPDATE placed_bets
-                SET status = ?, account = ?, wz_odds_at_place = ?
-                WHERE bet_hash = ?
+                SET status = ?, wz_odds_at_place = ?
+                WHERE bet_hash = ? AND account = ?
             """, [
                 status,
-                account,
                 bet_meta.get("wz_odds_at_place"),
                 bet_hash,
+                account,
             ])
     finally:
         con.close()
@@ -951,21 +951,22 @@ def _resolve_wagerzon_play_idgm(bet: dict) -> dict | None:
     return None
 
 
-def _finalize_placement(bet_hash: str, result: dict):
-    """Upsert the final status from the placer's result onto the breadcrumb row."""
+def _finalize_placement(bet_hash: str, account, result: dict):
+    """Upsert the final status from the placer's result onto the (bet_hash, account) row."""
     con = duckdb.connect(str(DB_PATH))
     try:
         con.execute("""
             UPDATE placed_bets
             SET status = ?, ticket_number = ?,
                 error_msg = ?, error_msg_key = ?
-            WHERE bet_hash = ?
+            WHERE bet_hash = ? AND account = ?
         """, [
             result.get("status"),
             result.get("ticket_number"),
             result.get("error_msg"),
             result.get("error_msg_key"),
             bet_hash,
+            account,
         ])
     finally:
         con.close()
@@ -1001,8 +1002,8 @@ def place_bet():
         con = duckdb.connect(str(DB_PATH), read_only=True)
         try:
             existing = con.execute(
-                "SELECT status FROM placed_bets WHERE bet_hash = ?",
-                [bet_hash]).fetchone()
+                "SELECT status FROM placed_bets WHERE bet_hash = ? AND account = ?",
+                [bet_hash, account]).fetchone()
         finally:
             con.close()
         if existing is not None and existing[0] in ("placing", "placed"):
@@ -1039,7 +1040,7 @@ def place_bet():
                 "error_msg": f"placer exception: {e}",
                 "error_msg_key": "exception",
             }
-        _finalize_placement(bet_hash, result)
+        _finalize_placement(bet_hash, account, result)
         if result.get("status") == "placed":
             try:
                 if data.get("game_time") not in ("NA", "", None):
@@ -1169,16 +1170,20 @@ def remove_bet():
     """Remove a bet from placed status."""
     data = request.json
     bet_hash = data.get("bet_hash")
+    account  = data.get("account")
 
     if not bet_hash:
         return jsonify({"success": False, "error": "bet_hash required"}), 400
+    if not account:
+        return jsonify({"success": False,
+                        "error": "account required to remove a placement"}), 400
 
     try:
         con = duckdb.connect(str(DB_PATH))
         try:
             result = con.execute(
-                "DELETE FROM placed_bets WHERE bet_hash = ? RETURNING bet_hash",
-                [bet_hash]
+                "DELETE FROM placed_bets WHERE bet_hash = ? AND account = ? RETURNING bet_hash",
+                [bet_hash, account]
             ).fetchone()
         finally:
             con.close()
@@ -1291,11 +1296,14 @@ def remove_trifecta():
 def update_bet():
     """Update a placed bet's actual size."""
     data = request.json
-    bet_hash = data.get("bet_hash")
+    bet_hash   = data.get("bet_hash")
+    account    = data.get("account")
     actual_size = data.get("actual_size")
 
     if not bet_hash:
         return jsonify({"success": False, "error": "bet_hash required"}), 400
+    if not account:
+        return jsonify({"success": False, "error": "account required to update a placement"}), 400
     if actual_size is None:
         return jsonify({"success": False, "error": "actual_size required"}), 400
 
@@ -1303,8 +1311,8 @@ def update_bet():
         con = duckdb.connect(str(DB_PATH))
         try:
             result = con.execute(
-                "UPDATE placed_bets SET actual_size = ? WHERE bet_hash = ? RETURNING bet_hash",
-                [float(actual_size), bet_hash]
+                "UPDATE placed_bets SET actual_size = ? WHERE bet_hash = ? AND account = ? RETURNING bet_hash",
+                [float(actual_size), bet_hash, account]
             ).fetchone()
         finally:
             con.close()
