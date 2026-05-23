@@ -67,11 +67,52 @@ Four internal loops:
 - **Risk sweep @ 10s** — tipoff cancels, kill-switch check
 - **Pipeline refresh @ 600s** — re-run answer key
 
+## Sizing (two-RFQ per-side Kelly, 2026-05-23)
+
+The bot now sizes each combo with **two RFQs**, one per side (YES/NO), each
+sized via `target_cost_dollars` for that side's Kelly count at its
+worst-acceptable price. Replaces the prior hardcoded `target_cost_dollars=$1`.
+
+**Why two RFQs.** Kalshi's RFQ has one size knob per request, and REST
+accept is all-or-nothing. With a single RFQ you must either under-size
+the dominant side (min budget) or over-bet the opposite side on rare
+mispricings (max budget). Two RFQs let each side carry its own correctly
+Kelly-sized budget. The maker quotes each RFQ independently; the bot
+accepts the one whose +EV side matches the RFQ's `intended_side` and
+declines the mismatch.
+
+**How sizing is computed.** Per candidate, the bot computes:
+1. `worst_yes_ask`, `worst_no_ask` — binary search via `ev_calc` for the
+   highest price on each side that still meets `KELLY_CREATE_EV_FLOOR_PCT`
+   (defaults to `MIN_EV_PCT=0.05`) after fees.
+2. `kelly_yes_n`, `kelly_no_n` — Kelly's contract count at each worst
+   price, using the side-appropriate fair (`fair` for YES, `1-fair` for
+   NO) and existing-position correlation on the same game.
+3. `target_cost_dollars = kelly_n × worst_ask` per side. Skip the side if
+   either is zero (no acceptable price after fees, or Kelly says don't
+   bet).
+
+**Per-RFQ accept gate.** Each RFQ is stored in `live_rfqs` with an
+`intended_side` column. At quote-evaluation time, the bot computes
+`chosen_side` (the +EV side per math invariant) and declines if it
+doesn't match `intended_side` (`decision='declined_side_mismatch'`). NULL
+`intended_side` on legacy rows is treated as "no constraint" for
+backward compatibility.
+
+**Audit columns in `live_rfqs`:**
+- `intended_side` — "yes" or "no" (or NULL for legacy rows)
+- `kelly_yes_n_at_submit`, `kelly_no_n_at_submit`
+- `worst_yes_ask_at_submit`, `worst_no_ask_at_submit`
+- `target_cost_dollars_at_submit` — the actual budget sent to Kalshi
+
 ## Knobs
 
 See `.env.example`. Most relevant:
-- `BANKROLL`, `KELLY_FRACTION` — sizing
-- `MIN_EV_PCT` — accept threshold
+- `BANKROLL`, `KELLY_FRACTION` — sizing inputs
+- `MIN_EV_PCT` — accept threshold (also default for sizing's EV floor)
+- `KELLY_CREATE_EV_FLOOR_PCT` — EV floor used to find worst-acceptable
+  prices at create time. Defaults to `MIN_EV_PCT`. Raise to size more
+  conservatively, lower to be more aggressive
 - `MAX_GAME_EXPOSURE_PCT`, `DAILY_EXPOSURE_CAP_USD` — exposure caps
 - `MAX_PREDICTION_STALENESS_SEC` — accept-gate staleness threshold (10 min default)
 - `MIN_FILL_RATIO`, `FILL_RATIO_WINDOW` — adverse-selection halt
