@@ -109,14 +109,42 @@ if (!interactive() && sys.nframe() == 0L) {
   WZ_DB <- "~/NFLWork/wagerzon_odds/wagerzon.duckdb"
   wz_con <- dbConnect(duckdb(), dbdir = path.expand(WZ_DB), read_only = TRUE)
   on.exit(tryCatch(dbDisconnect(wz_con), error = function(e) NULL), add = TRUE)
-  specials <- dbGetQuery(wz_con, "
-    SELECT team, prop_type, description, odds AS book_odds
-    FROM wagerzon_specials
-    WHERE sport = 'mlb'
-      AND prop_type IN ('TRIPLE-PLAY', 'GRAND-SLAM')
-      AND scraped_at = (SELECT MAX(scraped_at) FROM wagerzon_specials WHERE sport = 'mlb')
-      AND game_start_time > NOW()
-  ")
+
+  # wagerzon_specials.game_start_time is added by scraper_specials.py's
+  # idempotent ALTER on its first post-migration run. The live table may
+  # still be on the OLD schema (no game_start_time) if specials hasn't
+  # scraped yet this cycle — and run.py logs scraper failures as non-fatal
+  # warnings, so the pricer can be invoked against an un-migrated table.
+  # This connection is read_only = TRUE, so we cannot self-heal the schema.
+  # Guard against the missing column so we degrade gracefully (stale-but-
+  # present) instead of throwing a DuckDB Binder Error and silently
+  # retaining the previous run's Trifecta rows.
+  #
+  # In the fallback branch we drop the game-time predicate entirely (rather
+  # than re-introduce the icu-dependent `AT TIME ZONE` workaround removed in
+  # dbb5965): game timing is re-enforced downstream by the inner_join to
+  # mlb_consensus_temp + its `commence_time > now & < now + 12h` window, so
+  # any genuinely stale specials rows still get filtered out before pricing.
+  ws_cols <- dbGetQuery(wz_con, "PRAGMA table_info('wagerzon_specials')")$name
+  if ("game_start_time" %in% ws_cols) {
+    specials <- dbGetQuery(wz_con, "
+      SELECT team, prop_type, description, odds AS book_odds
+      FROM wagerzon_specials
+      WHERE sport = 'mlb'
+        AND prop_type IN ('TRIPLE-PLAY', 'GRAND-SLAM')
+        AND scraped_at = (SELECT MAX(scraped_at) FROM wagerzon_specials WHERE sport = 'mlb')
+        AND game_start_time > NOW()
+    ")
+  } else {
+    message("[mlb_triple_play] wagerzon_specials missing game_start_time (un-migrated) — dropping game-time filter; all latest-snapshot specials included (consensus join enforces game timing downstream)")
+    specials <- dbGetQuery(wz_con, "
+      SELECT team, prop_type, description, odds AS book_odds
+      FROM wagerzon_specials
+      WHERE sport = 'mlb'
+        AND prop_type IN ('TRIPLE-PLAY', 'GRAND-SLAM')
+        AND scraped_at = (SELECT MAX(scraped_at) FROM wagerzon_specials WHERE sport = 'mlb')
+    ")
+  }
   dbDisconnect(wz_con)
 
   if (nrow(specials) == 0) {

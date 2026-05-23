@@ -6006,9 +6006,14 @@ if (!is.null(book_prices_long) && nrow(book_prices_long) > 0) {
     filter(.n > 1)
   if (nrow(dup_check) > 0) {
     warning(sprintf(
-      "[bets-tab] %d duplicate (bet_row_id, side, bookmaker) row(s) in book_prices_long — pivot will keep last only",
+      "[bets-tab] %d duplicate (bet_row_id, side, bookmaker) row(s) in book_prices_long — keeping freshest by fetch_time",
       nrow(dup_check)))
+    # arrange(desc(fetch_time)) before distinct() so distinct() (which keeps
+    # the FIRST row per group) deterministically retains the freshest quote.
+    # Without the arrange, "first" depends on DuckDB's SELECT * row order,
+    # which has no ORDER BY and is non-deterministic.
     book_prices_long <- book_prices_long %>%
+      arrange(desc(fetch_time)) %>%
       distinct(bet_row_id, side, bookmaker, .keep_all = TRUE)
   }
 }
