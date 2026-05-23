@@ -555,13 +555,8 @@ def _all_per_accept_gates_pass(quote: dict, fair: float,
     if not risk.kill_switch_ok():
         return False, "declined_killswitch"
 
-    # Cooldown
-    leg_set_hash = combo_meta["leg_set_hash"]
-    with db.connect(read_only=True) as con:
-        rows = con.execute("SELECT leg_set_hash, cooled_until FROM combo_cooldown").fetchall()
-    cd_map = {h: u for h, u in rows}
-    if not risk.cooldown_ok(leg_set_hash, cd_map):
-        return False, "declined_cooldown"
+    # Cooldown is now side-aware and is checked in _evaluate_quote AFTER side
+    # selection (we need the chosen side to look up the right cooldown row).
 
     # Inverse-combo
     legs = json.loads(combo_meta.get("legs_json") or "[]")
@@ -604,8 +599,14 @@ def _all_per_accept_gates_pass(quote: dict, fair: float,
     return True, "passed"
 
 
-def _kelly_size_for_quote(quote: dict, fair: float) -> int:
-    """Conditional Kelly sizing using mlb_game_samples + existing positions."""
+def _kelly_size_for_quote(quote: dict, fair: float, side: str = "yes") -> int:
+    """Conditional Kelly sizing using mlb_game_samples + existing positions.
+
+    `side` is the side we're considering BUYING ("yes" or "no"). For NO, the
+    outcome_vec inverts (we win when the combo misses) and effective_price
+    is no_ask + fee. Existing-positions loop respects each row's side: a
+    long-YES row uses the combo-hits mask; a long-NO row uses its complement.
+    """
     rfq_id = quote["rfq_id"]
     with db.connect(read_only=True) as con:
         meta = con.execute(
@@ -634,39 +635,47 @@ def _kelly_size_for_quote(quote: dict, fair: float) -> int:
     mask = pd.Series([True] * len(samples), index=samples.index)
     for leg in typed_legs:
         mask &= fair_value._hit_mask(samples, leg)
-    outcome_vec = mask.astype(int).values
+    hit_vec = mask.astype(int).values
+    # For "yes" we win when the combo hits; for "no" we win when it misses.
+    outcome_vec = hit_vec if side == "yes" else (1 - hit_vec)
 
-    # Existing positions on the same game.
+    # Existing positions on the same game — load side so the outcome_vec for
+    # each row is the combo-mask or its complement.
     with db.connect(read_only=True) as con:
         pos_rows = con.execute(
-            "SELECT cc.legs_json, p.net_contracts, p.weighted_price "
+            "SELECT cc.legs_json, p.net_contracts, p.weighted_price, p.side "
             "FROM positions p JOIN combo_cache cc "
             "ON cc.combo_market_ticker = p.combo_market_ticker "
             "WHERE p.game_id = ? AND p.net_contracts > 0",
             [game_id]
         ).fetchall()
     existing = []
-    for legs_json, n, price in pos_rows:
+    for legs_json, n, price, pos_side in pos_rows:
         leg_objs = [_leg_dict_to_typed(l, game_id) for l in json.loads(legs_json)]
         if any(l is None for l in leg_objs):
             continue
         sub_mask = pd.Series([True] * len(samples), index=samples.index)
         for leg in leg_objs:
             sub_mask &= fair_value._hit_mask(samples, leg)
+        sub_hit = sub_mask.astype(int).values
         existing.append({
-            "outcome_vec": sub_mask.astype(int).values,
+            "outcome_vec": sub_hit if pos_side == "yes" else (1 - sub_hit),
             "contracts": float(n),
             "effective_price": float(price),
         })
 
-    no_bid = float(quote.get("no_bid_dollars") or 0)
-    yes_ask = 1 - no_bid
-    fee = ev_calc.fee_per_contract(yes_ask)
-    effective_price = yes_ask + fee
+    no_bid  = float(quote.get("no_bid_dollars")  or 0)
+    yes_bid = float(quote.get("yes_bid_dollars") or 0)
+    if side == "yes":
+        ask = 1 - no_bid
+    else:
+        ask = 1 - yes_bid
+    fee = ev_calc.fee_per_contract(ask)
+    effective_price = ask + fee
 
     return kelly.kelly_size_combo(
         outcome_vec=np.asarray(outcome_vec),
-        blended_fair=fair,
+        blended_fair=fair if side == "yes" else (1 - fair),
         existing_positions=existing,
         effective_price=effective_price,
         bankroll=config.BANKROLL,
@@ -685,8 +694,11 @@ def _log_quote_decision(quote: dict, fair: float | None,
     """Write one quote evaluation outcome to quote_log.
 
     `diag` carries walk-diagnostic context (competitor state, latency timestamps,
-    accept-error body, rfq terminal status). All keys are optional; missing keys
-    are stored as NULL. See db.py SCHEMA_SQL for the column set.
+    accept-error body, rfq terminal status) plus side-selection context
+    (chosen_side, ev_yes_pct, ev_no_pct) and the hedge-formation tracker
+    (hedge_added, hedge_original_side/price, hedge_new_price, hedge_current_fair,
+    hedge_projected_net). All keys are optional; missing keys are stored as NULL.
+    See db.py SCHEMA_SQL + MIGRATE_SQL for the column set.
     """
     d = diag or {}
     with db.connect() as con:
@@ -696,8 +708,12 @@ def _log_quote_decision(quote: dict, fair: float | None,
             "post_fee_ev_pct, decision, reason_detail, observed_at, "
             "competitor_count, best_competitor_no_bid_dollars, "
             "accept_response_body, rfq_terminal_status, "
-            "quote_first_seen_at, accept_attempted_at, accept_response_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "quote_first_seen_at, accept_attempted_at, accept_response_at, "
+            "chosen_side, ev_yes_pct, ev_no_pct, "
+            "hedge_added, hedge_original_side, hedge_original_price, "
+            "hedge_new_price, hedge_current_fair, hedge_projected_net) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT DO NOTHING",
             [quote["id"], quote["rfq_id"], quote.get("market_ticker"),
              quote.get("creator_id"),
@@ -711,7 +727,16 @@ def _log_quote_decision(quote: dict, fair: float | None,
              d.get("rfq_terminal_status"),
              d.get("quote_first_seen_at"),
              d.get("accept_attempted_at"),
-             d.get("accept_response_at")],
+             d.get("accept_response_at"),
+             d.get("chosen_side"),
+             d.get("ev_yes_pct"),
+             d.get("ev_no_pct"),
+             d.get("hedge_added"),
+             d.get("hedge_original_side"),
+             d.get("hedge_original_price"),
+             d.get("hedge_new_price"),
+             d.get("hedge_current_fair"),
+             d.get("hedge_projected_net")],
         )
 
 
@@ -764,40 +789,109 @@ def _evaluate_quote(quote: dict, dry_run: bool,
             _log_quote_decision(quote, fair, decision, diag=diag)
             return
 
-        no_bid = float(quote.get("no_bid_dollars") or 0)
-        ev_dollars, ev_pct = ev_calc.post_fee_ev_buy_yes(fair, no_bid)
-        if ev_pct < config.MIN_EV_PCT:
-            _log_quote_decision(quote, fair, "declined_ev", post_fee_ev=ev_pct, diag=diag)
+        no_bid  = float(quote.get("no_bid_dollars")  or 0)
+        yes_bid = float(quote.get("yes_bid_dollars") or 0)
+
+        # Symmetric EV: evaluate both sides against current fair after fees.
+        ev_yes_dollars, ev_yes_pct = ev_calc.post_fee_ev_buy_yes(fair, no_bid)
+        ev_no_dollars,  ev_no_pct  = ev_calc.post_fee_ev_buy_no (fair, yes_bid)
+        yes_ok = ev_yes_pct >= config.MIN_EV_PCT and no_bid  > 0
+        no_ok  = ev_no_pct  >= config.MIN_EV_PCT and yes_bid > 0
+
+        diag["ev_yes_pct"] = ev_yes_pct
+        diag["ev_no_pct"]  = ev_no_pct
+
+        # Defensive math-invariant check. For any LP making money on the
+        # spread, yes_ask + no_ask + fees > 1, which means both gates can't
+        # pass simultaneously against the same fair. If this ever fires the
+        # fee model or fair-value pipeline has drifted — alert + decline.
+        if yes_ok and no_ok:
+            print(
+                f"[MATH_INVARIANT_BROKEN] both sides +EV from one LP: "
+                f"yes_ask={1-no_bid:.4f} no_ask={1-yes_bid:.4f} fair={fair:.4f} "
+                f"ev_yes_pct={ev_yes_pct:.4f} ev_no_pct={ev_no_pct:.4f}",
+                flush=True,
+            )
+            _log_quote_decision(quote, fair, "declined_math_invariant",
+                                 diag=diag)
             return
+
+        if not (yes_ok or no_ok):
+            # Log against the (better of the two) EV so historic queries that
+            # filter on post_fee_ev_pct still see meaningful numbers.
+            _log_quote_decision(quote, fair, "declined_ev",
+                                 post_fee_ev=max(ev_yes_pct, ev_no_pct),
+                                 diag=diag)
+            return
+
+        chosen = "yes" if yes_ok else "no"
+        chosen_ev_pct     = ev_yes_pct     if chosen == "yes" else ev_no_pct
+        chosen_ev_dollars = ev_yes_dollars if chosen == "yes" else ev_no_dollars
+        diag["chosen_side"] = chosen
+
+        # Side-aware cooldown — moved here from the pre-eval gate sweep so we
+        # can look up the right (leg_set_hash, side) row. The other side
+        # remains eligible for its own RFQ.
+        with db.connect(read_only=True) as con:
+            cd_rows = con.execute(
+                "SELECT leg_set_hash, side, cooled_until FROM combo_cooldown"
+            ).fetchall()
+        cd_map = {(h, s): u for h, s, u in cd_rows}
+        if not risk.cooldown_ok(leg_set_hash, chosen, cd_map):
+            _log_quote_decision(quote, fair, "declined_cooldown",
+                                 post_fee_ev=chosen_ev_pct, diag=diag)
+            return
+
+        # Hedge-formation diagnostic (non-blocking). If we already hold the
+        # opposite side on this combo, tag this fill so we can monitor whether
+        # across-time hedges net to a real loss pattern. Forward-looking +EV
+        # math already says taking this side is correct given the held side;
+        # we just want to *measure* the cumulative effect.
+        opposite = "no" if chosen == "yes" else "yes"
+        with db.connect(read_only=True) as con:
+            held = con.execute(
+                "SELECT net_contracts, weighted_price FROM positions "
+                "WHERE combo_market_ticker=? AND side=? "
+                "AND net_contracts > 0 LIMIT 1",
+                [combo_market_ticker, opposite]
+            ).fetchone()
+        if held:
+            held_n, held_price = held
+            new_ask = (1 - no_bid) if chosen == "yes" else (1 - yes_bid)
+            diag["hedge_added"]          = True
+            diag["hedge_original_side"]  = opposite
+            diag["hedge_original_price"] = float(held_price)
+            diag["hedge_new_price"]      = new_ask
+            diag["hedge_current_fair"]   = fair
+            # Combined net P&L at settlement on the matched contracts, before
+            # fees: $1 payout minus the sum of asks paid on the two sides.
+            diag["hedge_projected_net"]  = 1.0 - held_price - new_ask
 
         if dry_run:
-            _log_quote_decision(quote, fair, "declined_dry_run", post_fee_ev=ev_pct, diag=diag)
+            _log_quote_decision(quote, fair, "declined_dry_run",
+                                 post_fee_ev=chosen_ev_pct, diag=diag)
             return
 
-        # Kelly is now a go/no-go gate, not a sizing decision. Kalshi's REST
-        # accept endpoint is all-or-nothing — sizing happens upstream at RFQ
-        # creation via target_cost_dollars. We still skip if Kelly would say
-        # "don't bet" at this price even at the LP's offered size, but we
-        # don't send a contract count to the accept call anymore.
-        contracts = _kelly_size_for_quote(quote, fair)
+        # Kelly is a go/no-go gate at $1 RFQs (sizing happens upstream via
+        # target_cost_dollars). Pass `chosen` so we evaluate the right side.
+        contracts = _kelly_size_for_quote(quote, fair, side=chosen)
         if contracts <= 0:
             _log_quote_decision(quote, fair, "declined_kelly_zero",
-                                 post_fee_ev=ev_pct, diag=diag)
+                                 post_fee_ev=chosen_ev_pct, diag=diag)
             return
 
         # Side semantics (INVERTED FROM INTUITION — verified empirically
         # 2026-05-21 from a real fill):
         #   accepted_side="yes" → Kalshi makes us BUY NO at no_ask
         #   accepted_side="no"  → Kalshi makes us BUY YES at yes_ask
-        # The field names the side of the LP's two-sided quote we're accepting,
-        # which is the side the LP is bidding on (so by accepting it we SELL
-        # them that side, leaving us long the opposite). Our EV gate above is
-        # post_fee_ev_buy_yes — to open the position our math evaluated, we
-        # must accept "no". The first-ever fill landed at no_price=$0.969
-        # (1 NO contract) when we sent "yes", confirming the inversion. See
-        # README "Accept semantics" for the full trace.
+        # The field names the side of the LP's two-sided quote we're
+        # accepting (the side the LP is bidding on); by accepting it we SELL
+        # them that side, leaving us long the opposite. So to open a LONG
+        # YES position we send accepted_side="no"; for LONG NO we send
+        # accepted_side="yes". See README "Accept semantics".
+        accepted_side = "no" if chosen == "yes" else "yes"
         diag["accept_attempted_at"] = datetime.now(timezone.utc)
-        resp, err_body = rfq_client.accept_quote(quote["id"], accepted_side="no")
+        resp, err_body = rfq_client.accept_quote(quote["id"], accepted_side=accepted_side)
         diag["accept_response_at"] = datetime.now(timezone.utc)
         if resp is None:
             # Walked. Capture Kalshi's error body + a fresh look at the RFQ's
@@ -814,25 +908,36 @@ def _evaluate_quote(quote: dict, dry_run: bool,
                 rfq_obj.get("status") if rfq_obj else None
             )
             _log_quote_decision(quote, fair, "failed_quote_walked",
-                                 post_fee_ev=ev_pct, diag=diag)
+                                 post_fee_ev=chosen_ev_pct, diag=diag)
             return
 
-        # Post-accept fill reconciliation via /portfolio/positions. If that
-        # fails, fall back to the quote's offered size on the side we accepted.
-        # We send accepted_side="no" (per the inversion explained above), so
-        # the LP's NO-side offer is what we filled against — no_contracts_fp.
-        # contracts_fp is the documented-required total field as a final
-        # fallback when neither side is populated.
+        # Post-accept fill reconciliation via /portfolio/positions.
+        # `get_position_contracts` returns a SIGNED int: positive = long YES,
+        # negative = long NO (short YES). The absolute value is our actual
+        # position size; the sign is a sanity check against `chosen`.
+        # On API failure we fall back to the offered-size field on the side
+        # we filled against — for chosen="yes" we accepted="no" so the LP's
+        # NO-side offer is what filled (no_contracts_fp), and vice versa.
         try:
-            actual = rfq_client.get_position_contracts(combo_market_ticker)
+            signed = rfq_client.get_position_contracts(combo_market_ticker)
             _record_positions_api_result(True)
+            if (chosen == "yes" and signed < 0) or (chosen == "no" and signed > 0):
+                print(
+                    f"[position_direction_mismatch] chosen={chosen} but "
+                    f"signed_position={signed} on {combo_market_ticker}",
+                    flush=True,
+                )
+            actual = abs(signed)
         except Exception:
             _record_positions_api_result(False)
-            fallback_fp = quote.get("no_contracts_fp") or quote.get("contracts_fp")
+            if chosen == "yes":
+                fallback_fp = quote.get("no_contracts_fp") or quote.get("contracts_fp")
+            else:
+                fallback_fp = quote.get("yes_contracts_fp") or quote.get("contracts_fp")
             actual = int(float(fallback_fp)) if fallback_fp else 0
 
-        yes_ask = 1.0 - no_bid
-        fee = ev_calc.fee_per_contract(yes_ask)
+        ask = (1.0 - no_bid) if chosen == "yes" else (1.0 - yes_bid)
+        fee = ev_calc.fee_per_contract(ask)
         with db.connect() as con:
             con.execute(
                 "INSERT INTO fills (fill_id, quote_id, rfq_id, combo_market_ticker, "
@@ -840,31 +945,34 @@ def _evaluate_quote(quote: dict, dry_run: bool,
                 "blended_fair_at_fill, expected_ev_dollars, filled_at, raw_response) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [str(uuid.uuid4()), quote["id"], rfq_id, combo_market_ticker, game_id,
-                 "yes", actual, yes_ask, fee, fair, ev_dollars,
+                 chosen, actual, ask, fee, fair, chosen_ev_dollars,
                  datetime.now(timezone.utc), str(resp)],
             )
             con.execute(
-                "INSERT INTO positions (combo_market_ticker, game_id, "
+                "INSERT INTO positions (combo_market_ticker, side, game_id, "
                 "net_contracts, weighted_price, legs_json, updated_at) VALUES "
-                "(?, ?, ?, ?, ?, ?) ON CONFLICT (combo_market_ticker) DO UPDATE SET "
+                "(?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (combo_market_ticker, side) DO UPDATE SET "
                 "net_contracts = positions.net_contracts + EXCLUDED.net_contracts, "
                 "weighted_price = (positions.weighted_price * positions.net_contracts + "
                 "                  EXCLUDED.weighted_price * EXCLUDED.net_contracts) / "
                 "                 (positions.net_contracts + EXCLUDED.net_contracts), "
                 "updated_at = EXCLUDED.updated_at",
-                [combo_market_ticker, game_id, actual, yes_ask, legs_json,
+                [combo_market_ticker, chosen, game_id, actual, ask, legs_json,
                  datetime.now(timezone.utc)],
             )
             cooled_until = datetime.now(timezone.utc) + timedelta(seconds=config.COMBO_COOLDOWN_SEC)
             con.execute(
-                "INSERT INTO combo_cooldown (leg_set_hash, game_id, cooled_until, reason) "
-                "VALUES (?, ?, ?, ?) ON CONFLICT (leg_set_hash) DO UPDATE SET "
+                "INSERT INTO combo_cooldown (leg_set_hash, side, game_id, cooled_until, reason) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (leg_set_hash, side) DO UPDATE SET "
                 "cooled_until = EXCLUDED.cooled_until",
-                [leg_set_hash, game_id, cooled_until, "post_accept"],
+                [leg_set_hash, chosen, game_id, cooled_until, "post_accept"],
             )
-        _log_quote_decision(quote, fair, "accepted", post_fee_ev=ev_pct, diag=diag)
+        _log_quote_decision(quote, fair, "accepted",
+                             post_fee_ev=chosen_ev_pct, diag=diag)
         notify.fill(rfq_id=rfq_id, combo_market_ticker=combo_market_ticker,
-                    contracts=actual, price=yes_ask, ev_pct=ev_pct)
+                    contracts=actual, price=ask, ev_pct=chosen_ev_pct)
 
 
 # ------------------------------------------------------------------------ #

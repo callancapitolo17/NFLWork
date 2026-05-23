@@ -69,9 +69,16 @@ def test_daily_cap_blocks_at_threshold():
 
 def test_cooldown_gate():
     now = datetime.now(timezone.utc)
-    cooled = {"abc": now.replace(year=now.year + 1)}
-    assert not risk.cooldown_ok(leg_set_hash="abc", cooldown_map=cooled, now=now)
-    assert risk.cooldown_ok(leg_set_hash="other", cooldown_map=cooled, now=now)
+    cooled = {("abc", "yes"): now.replace(year=now.year + 1)}
+    # Same-side cooldown blocks
+    assert not risk.cooldown_ok(leg_set_hash="abc", side="yes",
+                                cooldown_map=cooled, now=now)
+    # Opposite side on the same hash is independent — not blocked
+    assert risk.cooldown_ok(leg_set_hash="abc", side="no",
+                            cooldown_map=cooled, now=now)
+    # Different hash entirely is not blocked
+    assert risk.cooldown_ok(leg_set_hash="other", side="yes",
+                            cooldown_map=cooled, now=now)
 
 
 def test_inverse_combo_guard():

@@ -93,28 +93,88 @@ Acceptance is serialized via `ACCEPT_LOCK` so concurrent quotes Kelly-size again
 - **Bot halted on `fill_ratio_collapse`:** investigate — makers are walking on accepts at a rate that suggests adverse selection. Check `quote_log` for the maker `creator_id`s causing it.
 - **`mint_combo_ticker` failing with 400:** the MVE collection ticker may have changed or one of the leg market_tickers doesn't exist. Re-run `mlb_sgp/recon_kalshi_mlb_rfq.py` for a fresh probe.
 
-## Accept semantics (corrected 2026-05-21)
+## Accept semantics (symmetric NO-side support, 2026-05-22)
 
 Kalshi's REST `PUT /communications/quotes/{id}/accept` is **all-or-nothing** — body is `{"accepted_side": "yes"|"no"}` and Kalshi returns 204 on success. There is no per-accept contract count parameter.
 
-Sizing happens **upstream at RFQ creation** via `target_cost_dollars`. With `rest_remainder: False`, the LP's quote is fill-or-kill at the requested size — accepting fills exactly what was requested.
+Sizing happens **upstream at RFQ creation** via `target_cost_dollars` (currently flat $1 diagnostic). With `rest_remainder: False`, the LP's quote is fill-or-kill at the requested size — accepting fills exactly what was requested. Real-size sizing per-contract awaits the FIX migration (separate plan).
 
-Historical bug: from first commit (2026-05-02) through 2026-05-21, this code sent body `{"contracts": N}`, which Kalshi rejected as `invalid_parameters` on every accept. The bug was masked because the failure looked identical to "lost the race." The walk-diagnostic columns added 2026-05-20 finally exposed it — every walked row showed `accept_response_body = "invalid_parameters"` AND `rfq_terminal_status = "open"` (no competitor had filled the RFQ; we just couldn't accept it).
+Historical bug fixed 2026-05-21: from first commit (2026-05-02) through 2026-05-21, this code sent body `{"contracts": N}`, which Kalshi rejected as `invalid_parameters` on every accept. The bug was masked because the failure looked identical to "lost the race." The walk-diagnostic columns added 2026-05-20 finally exposed it — every walked row showed `accept_response_body = "invalid_parameters"` AND `rfq_terminal_status = "open"` (no competitor had filled the RFQ; we just couldn't accept it).
 
 ### Side semantics — `accepted_side` is INVERTED from intuition
 
 The `accepted_side` field names the side of the LP's two-sided quote we're accepting — and accepting their bid on a side means *they buy that side from us*, leaving us LONG the OPPOSITE side. Verified empirically 2026-05-21 from the first real fill:
 
-| Field value | What Kalshi does | What we end up holding |
-|---|---|---|
-| `accepted_side="yes"` | LP buys YES from us at `yes_bid` | **LONG NO** at `1 − yes_bid` (≈ `no_ask`) |
-| `accepted_side="no"` | LP buys NO from us at `no_bid` | **LONG YES** at `1 − no_bid` (≈ `yes_ask`) |
+| Field value | What Kalshi does | What we end up holding | Bot sends this when |
+|---|---|---|---|
+| `accepted_side="yes"` | LP buys YES from us at `yes_bid` | **LONG NO** at `1 − yes_bid` (≈ `no_ask`) | `chosen_side="no"` (we want to buy NO) |
+| `accepted_side="no"` | LP buys NO from us at `no_bid` | **LONG YES** at `1 − no_bid` (≈ `yes_ask`) | `chosen_side="yes"` (we want to buy YES) |
 
-The bot's EV gate is `ev_calc.post_fee_ev_buy_yes(fair, no_bid)` — it's evaluating whether to BUY YES at `1 − no_bid`. To actually open that position, the bot must send `accepted_side="no"`. The first ever fill landed at `no_price=$0.969` (1 NO contract) when the bot sent `"yes"`, costing a small −EV position before the bot was stopped. Single-contract scope thanks to the $1 RFQ default.
+### Side selection — symmetric EV evaluation
 
-**Scope note — the bot only ever buys YES.** The whole code path computes BUY YES EV (`post_fee_ev_buy_yes`) and always sends `accepted_side="no"` to open LONG YES. There is no BUY NO code path. The combo enumerator generates all 4 (spread side × total side) combinations as separate tickers, but on each ticker the bot only considers BUY YES — it does *not* check whether BUY NO of that same ticker might have more edge. For long-shot combos (model probability <15%), this is a real EV blind spot worth revisiting.
+Per quote, the bot computes EV on both sides after fees:
 
-Partial accepts exist at the protocol level via the FIX interface (`OrderQty` on `35=UA`), but the REST endpoint doesn't expose it. If partial accepts become necessary, a FIX-protocol migration would be required.
+```
+ev_yes = post_fee_ev_buy_yes(fair, no_bid)   # pay yes_ask = 1 − no_bid, payout = fair
+ev_no  = post_fee_ev_buy_no (fair, yes_bid)  # pay no_ask  = 1 − yes_bid, payout = 1 − fair
+```
+
+It then routes the quote based on which side(s) clear `MIN_EV_PCT`:
+
+| Case | Action |
+|---|---|
+| Only YES eligible | `chosen_side="yes"` → accept with `accepted_side="no"` |
+| Only NO  eligible | `chosen_side="no"`  → accept with `accepted_side="yes"` |
+| Neither eligible  | `decline_ev` |
+| **Both eligible** | `decline_math_invariant` + alert (impossible after fees IRL; see below) |
+
+**Why both-sides-+EV is a guard, not a feature.** For any LP making money on a two-sided quote, `yes_bid + no_bid < 1`, which forces `yes_ask + no_ask > 1`. Adding fees: `yes_ask + no_ask + fees > 1`. The both-+EV condition requires `yes_ask + no_ask + fees < 1` — contradiction. If the guard ever fires it means the fee model or fair-value pipeline has drifted; the bot logs `MATH_INVARIANT_BROKEN` and refuses to trade against a broken model. See `tests/kalshi_mlb_rfq/test_ev_calc.py::test_math_invariant_both_sides_cannot_be_positive` for the parametric proof across realistic LP spreads.
+
+**Cross-LP arb falls out for free.** Different LPs are independent — nothing forces `yes_ask_A + no_ask_B > 1`. When LP_A's YES and LP_B's NO both clear our gate against the same fair, the math says `yes_ask_A + no_ask_B + fees < 1` — combined cost < $1 guaranteed payout = profitable hedge. Since `_evaluate_quote` runs per-quote, the bot picks both up naturally without any special-case code.
+
+### Hedge-formation diagnostic (non-blocking)
+
+When an accept creates a position on the side opposite a row we already hold on the same combo, the `quote_log` row is tagged:
+
+| Column | Meaning |
+|---|---|
+| `hedge_added` | TRUE when a same-combo opposite-side position exists at accept time |
+| `hedge_original_side` | `"yes"` or `"no"` — which side we already held |
+| `hedge_original_price` | The held row's `weighted_price` |
+| `hedge_new_price` | The ask we just paid on the new fill |
+| `hedge_current_fair` | Fair value at time of new fill (useful for fair-drift analysis) |
+| `hedge_projected_net` | `1 − held_price − new_price` (before fees), the net P&L on the matched contracts at settlement |
+
+The diagnostic does **not** block the accept. The forward-looking math says each individual +EV accept is correct even when it creates a hedge — the sunk YES is sunk, and adding NO when NO is +EV against current fair improves expected P&L from here. The risk we measure (not prevent) is the case where fair has drifted by less than `2 × fees` between the two fills, which makes the *cumulative* combined position a small loss. If after 1-2 weeks of data the hedge-pattern P&L is meaningfully negative, we'll revisit with a "block when projected_net < threshold" rule.
+
+Useful query:
+```sql
+-- Aggregate hedge P&L pattern (need >= 1-2 weeks of data)
+SELECT
+  COUNT(*) AS hedge_count,
+  AVG(hedge_projected_net) AS avg_projected_net,
+  SUM(hedge_projected_net) AS total_projected_net
+FROM quote_log
+WHERE decision = 'accepted' AND hedge_added = TRUE;
+```
+
+### Per-side cooldown
+
+`combo_cooldown` PK is `(leg_set_hash, side)` — after the bot accepts YES on combo X it cools down YES on that combo, but NO on the same combo remains eligible for its own RFQ. This is intentional: they're genuinely different positions in our book.
+
+### Schema v2 (2026-05-22)
+
+Three tables changed shape to support NO-side accepts:
+
+| Table | Change |
+|---|---|
+| `positions` | PK: `(combo_market_ticker, side)`. Existing rows backfill to `side='yes'`. Opposite-side fills no longer corrupt the upsert path. |
+| `combo_cooldown` | PK: `(leg_set_hash, side)`. Same migration. |
+| `quote_log` | New columns: `chosen_side`, `ev_yes_pct`, `ev_no_pct`, `hedge_added`, `hedge_original_side`, `hedge_original_price`, `hedge_new_price`, `hedge_current_fair`, `hedge_projected_net`. |
+
+The v2 migration in `db._migrate_v2_side_columns` is idempotent, transactional, and backs up the DB to `<DB_PATH>.bak.v2_side_columns.<timestamp>` before the destructive PK swap. Runs automatically on `db.init_database()` at bot startup.
+
+Partial accepts exist at the protocol level via the FIX interface (`OrderQty` on `35=UA`), but the REST endpoint doesn't expose it. If partial accepts become necessary, a FIX-protocol migration would be required (separate plan).
 
 ## Walk diagnostics
 
