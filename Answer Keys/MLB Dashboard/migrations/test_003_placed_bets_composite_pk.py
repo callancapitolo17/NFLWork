@@ -141,3 +141,72 @@ def test_idempotent(tmp_path):
     con.close()
     assert count == 1
     assert _pk_cols(db) == {"bet_hash", "account"}
+
+
+def test_preserves_status_default(tmp_path):
+    db = tmp_path / "test.duckdb"
+    _seed_old_db(db)
+    _load_migration().run(str(db))
+
+    con = duckdb.connect(str(db))
+    # Insert without specifying status — should fall back to the DEFAULT.
+    con.execute(
+        "INSERT INTO placed_bets (bet_hash, account) VALUES (?, ?)",
+        ["h1", "Wagerzon"],
+    )
+    status = con.execute(
+        "SELECT status FROM placed_bets WHERE bet_hash = 'h1'"
+    ).fetchone()[0]
+    con.close()
+    assert status == "placed"
+
+
+def test_rollback_leaves_original_table_intact(tmp_path, monkeypatch):
+    db = tmp_path / "test.duckdb"
+    _seed_old_db(db)
+    con = duckdb.connect(str(db))
+    con.execute(
+        "INSERT INTO placed_bets (bet_hash, account, status) VALUES (?, ?, ?)",
+        ["h1", "Wagerzon", "placed"],
+    )
+    con.close()
+
+    mod = _load_migration()
+
+    # DuckDB's C-extension connection is read-only — we can't monkey-patch
+    # `execute` directly.  Wrap it in a thin proxy instead so we can
+    # intercept specific SQL statements.
+    real_connect = duckdb.connect
+
+    class _CrashingProxy:
+        """Forwards every call to the real connection except DROP TABLE placed_bets."""
+
+        def __init__(self, real_con):
+            self._con = real_con
+
+        def execute(self, sql, *a, **kw):
+            if sql.strip().upper().startswith("DROP TABLE PLACED_BETS"):
+                raise RuntimeError("simulated crash")
+            return self._con.execute(sql, *a, **kw)
+
+        def close(self):
+            return self._con.close()
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+    def connect_with_crash(path, *args, **kwargs):
+        return _CrashingProxy(real_connect(path, *args, **kwargs))
+
+    monkeypatch.setattr(duckdb, "connect", connect_with_crash)
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        mod.run(str(db))
+
+    monkeypatch.undo()
+
+    # Original table must still exist with its row intact.
+    con = duckdb.connect(str(db))
+    rows = con.execute("SELECT bet_hash, account FROM placed_bets").fetchall()
+    con.close()
+    assert rows == [("h1", "Wagerzon")]

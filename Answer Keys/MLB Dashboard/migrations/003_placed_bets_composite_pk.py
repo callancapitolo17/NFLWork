@@ -28,6 +28,11 @@ def _pk_columns(con: duckdb.DuckDBPyConnection) -> set[str]:
     return {r[0] for r in rows}
 
 
+def _col_def(c) -> str:
+    defval = f" DEFAULT {c[4]}" if c[4] is not None else ""
+    return f'"{c[0]}" {c[1]}{defval}'
+
+
 def run(db_path: str) -> None:
     con = duckdb.connect(db_path)
     try:
@@ -41,17 +46,27 @@ def run(db_path: str) -> None:
         """)
 
         cols = con.execute("DESCRIBE placed_bets").fetchall()
-        # DESCRIBE returns (column_name, column_type, null, key, default, extra)
-        col_defs = ", ".join(f'"{c[0]}" {c[1]}' for c in cols)
+        col_defs = ", ".join(_col_def(c) for c in cols)
 
-        con.execute("DROP TABLE IF EXISTS placed_bets_new")
-        con.execute(
-            f"CREATE TABLE placed_bets_new ({col_defs}, "
-            f"PRIMARY KEY (bet_hash, account))"
-        )
-        con.execute("INSERT INTO placed_bets_new SELECT * FROM placed_bets")
-        con.execute("DROP TABLE placed_bets")
-        con.execute("ALTER TABLE placed_bets_new RENAME TO placed_bets")
+        before_count = con.execute("SELECT COUNT(*) FROM placed_bets").fetchone()[0]
+
+        con.execute("BEGIN")
+        try:
+            con.execute("DROP TABLE IF EXISTS placed_bets_new")
+            con.execute(
+                f"CREATE TABLE placed_bets_new ({col_defs}, "
+                f"PRIMARY KEY (bet_hash, account))"
+            )
+            con.execute("INSERT INTO placed_bets_new SELECT * FROM placed_bets")
+            con.execute("DROP TABLE placed_bets")
+            con.execute("ALTER TABLE placed_bets_new RENAME TO placed_bets")
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+
+        after_count = con.execute("SELECT COUNT(*) FROM placed_bets").fetchone()[0]
+        print(f"Migration 003: {before_count} rows before, {after_count} after.")
     finally:
         con.close()
 
