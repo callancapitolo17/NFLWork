@@ -34,7 +34,7 @@ from typing import Any
 
 import duckdb
 
-from fd_client import FanDuelClient, Event, Runner
+from fd_client import FanDuelClient, Event, Market, Runner
 
 
 # Regex helpers for FD's alt-market name formats.
@@ -244,6 +244,30 @@ def parse_runners_to_wide_rows(
     return list(buckets.values())
 
 
+# FD's event-page returns different market slices per tab; no single tab has
+# everything. The default tab carries F7/F3 + per-inning lines; the SGP tab
+# carries FG-alts + all F5. Coverage = union of both. Verified 2026-05-23.
+FD_TABS = ("", "same-game-parlay-")
+
+
+def fetch_merged_markets_and_runners(
+    client: FanDuelClient,
+    event_id: str,
+    tabs: tuple[str, ...] = FD_TABS,
+) -> tuple[list[Market], list[Runner]]:
+    """Fetch each tab once, union markets (dedup by market_id) and runners
+    (dedup by runner_id). Returns (list[Market], list[Runner])."""
+    markets_by_id = {}
+    runners_by_id = {}
+    for tab in tabs:
+        markets, runners = client.fetch_event_page(event_id, tab)
+        for m in markets:
+            markets_by_id.setdefault(m.market_id, m)
+        for r in runners:
+            runners_by_id.setdefault(r.runner_id, r)
+    return list(markets_by_id.values()), list(runners_by_id.values())
+
+
 def scrape_singles(verbose: bool = False) -> int:
     """Scrape all MLB events from FD and atomically write singles to DuckDB.
 
@@ -260,12 +284,13 @@ def scrape_singles(verbose: bool = False) -> int:
 
     for event in events:
         try:
-            markets = client.fetch_event_markets(event.event_id)
-            runners = client.fetch_event_runners(event.event_id)
+            markets, runners = fetch_merged_markets_and_runners(
+                client, event.event_id)
 
             market_meta: dict[str, tuple[str, str]] = {}
             for m in markets:
-                classified = classify_market(m.name, event.home_team, event.away_team)
+                classified = classify_market(
+                    m.name, event.home_team, event.away_team)
                 if classified is not None:
                     market_meta[m.market_id] = classified
 

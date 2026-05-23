@@ -111,3 +111,35 @@ _H, _A = "San Francisco Giants", "Chicago White Sox"
 def test_classify_market_keyword(name, home, away, expected):
     from mlb_sgp.scraper_fanduel_singles import classify_market
     assert classify_market(name, home, away) == expected
+
+
+def test_fetch_merged_markets_and_runners_unions_and_dedups():
+    """Two tabs return overlapping markets/runners; merge unions + dedups."""
+    from mlb_sgp.fd_client import Market, Runner
+    from mlb_sgp.scraper_fanduel_singles import fetch_merged_markets_and_runners
+
+    class _FakeClient:
+        def fetch_event_page(self, event_id, tab):
+            if tab == "":  # default tab: F7 total + shared FG run line
+                return (
+                    [Market("mF7", "First 7 Innings Total Runs"),
+                     Market("mFG", "Run Line")],
+                    [Runner("rO", "mF7", "Over", 7.5, -128),
+                     Runner("rRLh", "mFG", "Giants -1.5", -1.5, 120)],
+                )
+            # sgp tab: shared FG run line (dup) + F5 total
+            return (
+                [Market("mFG", "Run Line"),
+                 Market("mF5", "First 5 Innings Total Runs")],
+                [Runner("rRLh", "mFG", "Giants -1.5", -1.5, 120),
+                 Runner("rF5o", "mF5", "Over", 4.5, -110)],
+            )
+
+    markets, runners = fetch_merged_markets_and_runners(
+        _FakeClient(), "1", tabs=("", "same-game-parlay-"))
+    # len() guards catch a setdefault->__setitem__ regression that a set
+    # comparison alone would silently pass (mFG / rRLh appear in both tabs).
+    assert len(markets) == 3
+    assert {m.market_id for m in markets} == {"mF7", "mFG", "mF5"}  # union, deduped
+    assert len(runners) == 3
+    assert {r.runner_id for r in runners} == {"rO", "rRLh", "rF5o"}  # rRLh once
