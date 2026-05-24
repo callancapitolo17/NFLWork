@@ -33,8 +33,13 @@ def create_rfq(market_ticker: str,
     many contracts you actually get, which makes Kelly sizing impossible
     because REST accept is all-or-nothing on the maker's offered quantity.
 
-    NOTE: replace_existing=True does NOT actually replace existing RFQs (recon-confirmed).
-    The bot manages its own dedup via combo_cooldown and live_rfqs.
+    NOTE on `replace_existing`: misnamed in Kalshi's API. With `True` it
+    does NOT replace an existing RFQ on the same market_ticker — instead
+    it BYPASSES the user/market dedup check so both RFQs coexist with
+    status='open'. With `False`, a duplicate same-market_ticker RFQ from
+    the same user returns 409 already_exists. The two-RFQ-per-combo Kelly
+    design relies on this — see mint_and_create_rfq's intended_side path.
+    Probed empirically 2026-05-24 (see kalshi-rfq-one-per-market memory).
     """
     if (contracts is None) == (target_cost_dollars is None):
         raise ValueError(

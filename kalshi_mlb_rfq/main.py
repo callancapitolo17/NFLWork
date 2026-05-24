@@ -1099,7 +1099,8 @@ def _evaluate_quote(quote: dict, dry_run: bool,
 # ------------------------------------------------------------------------ #
 
 def mint_and_create_rfq(candidate: combo_enumerator.ComboCandidate,
-                         target_cost_dollars: float) -> tuple[str, str]:
+                         target_cost_dollars: float,
+                         replace_existing: bool = False) -> tuple[str, str]:
     """Mint combo ticker (or cache hit) + create RFQ with a dollar budget.
     Returns (rfq_id, combo_ticker).
 
@@ -1110,6 +1111,10 @@ def mint_and_create_rfq(candidate: combo_enumerator.ComboCandidate,
     gate still rejects quotes worse than the EV cliff, and the per-RFQ
     intended_side gate (in _evaluate_quote) declines quotes that favor
     the opposite side.
+
+    `replace_existing` bypasses Kalshi's per-(user, market_ticker) RFQ
+    dedup — required for the second-side RFQ on the same combo ticker.
+    See rfq_client.create_rfq for the (misnamed-flag) details.
     """
     legs = list(candidate.legs)
 
@@ -1134,7 +1139,10 @@ def mint_and_create_rfq(candidate: combo_enumerator.ComboCandidate,
             )
 
     rfq_id = rfq_client.create_rfq(
-        combo_ticker, target_cost_dollars=target_cost_dollars)
+        combo_ticker,
+        target_cost_dollars=target_cost_dollars,
+        replace_existing=replace_existing,
+    )
     return rfq_id, combo_ticker
 
 
@@ -1204,6 +1212,15 @@ def _refresh_rfqs(candidates: list[combo_enumerator.ComboCandidate],
             continue
         blended_fair, kalshi_ref = fair_scores[c.leg_set_hash]
         edge = combo_enumerator.edge_score(blended_fair, kalshi_ref)
+        # Track whether ANY side already has a live RFQ on this combo
+        # ticker — the second side we send must use replace_existing=True
+        # to bypass Kalshi's per-(user, market_ticker) RFQ dedup. Probed
+        # 2026-05-24: with replace_existing=True both RFQs coexist as
+        # status=open; with False the second 409s.
+        combo_has_live_rfq = any(
+            (c.leg_set_hash, _s) in live_pairs for _s in ("yes", "no")
+        )
+        sent_this_cycle_for_combo = combo_has_live_rfq
         for side, n, ask in sides:
             if (c.leg_set_hash, side) in live_pairs:
                 continue
@@ -1213,7 +1230,11 @@ def _refresh_rfqs(candidates: list[combo_enumerator.ComboCandidate],
                 continue
             try:
                 rid, combo_ticker = mint_and_create_rfq(
-                    c, target_cost_dollars=target_cost)
+                    c,
+                    target_cost_dollars=target_cost,
+                    replace_existing=sent_this_cycle_for_combo,
+                )
+                sent_this_cycle_for_combo = True
                 with db.connect() as con:
                     con.execute(
                         "INSERT INTO live_rfqs (rfq_id, combo_market_ticker, "
