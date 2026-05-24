@@ -283,7 +283,7 @@ join_spread_total <- function(wz_data, spread_filter, total_filter, label) {
     return(tibble())
   }
   combined <- spreads %>%
-    select(home_team, away_team, game_date, game_time, idgm,
+    select(home_team, away_team, game_date, game_time, game_start_time, idgm,
            home_spread, home_spread_price = odds_home,
            away_spread, away_spread_price = odds_away) %>%
     inner_join(
@@ -370,8 +370,20 @@ consensus_dated <- consensus %>%
 # Match both FG and F5 to consensus (same join logic)
 match_to_consensus <- function(wz_data, consensus_dated, label) {
   if (nrow(wz_data) == 0) return(tibble())
+  # Wagerzon's game_date/game_time are now ISO + UTC (post-2026-05-22 timezone
+  # standardization: scrapers write game_start_time TIMESTAMPTZ, and
+  # get_wagerzon_odds() derives game_date as "%Y-%m-%d" UTC, game_time as
+  # "%H:%M" UTC). consensus_dated, however, builds its keys as Eastern "%m/%d"
+  # + Eastern hour. Re-derive the WZ keys the same way from the canonical
+  # game_start_time so the hour-level match lines up; the old code joined an
+  # ISO/UTC date+hour against an MM/DD/Eastern key and matched 0 games.
   matched <- wz_data %>%
-    mutate(game_hour = substr(game_time, 1, 2)) %>%
+    mutate(
+      .gst      = with_tz(as.POSIXct(game_start_time, tz = "UTC"), "America/New_York"),
+      game_date = format(.gst, "%m/%d"),
+      game_hour = format(.gst, "%H")
+    ) %>%
+    select(-.gst) %>%
     inner_join(consensus_dated, by = c("home_team", "away_team", "game_date", "game_hour"))
   cat(sprintf("Matched %d %s games between Wagerzon and samples.\n", nrow(matched), label))
   matched
