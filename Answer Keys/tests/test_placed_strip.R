@@ -50,7 +50,9 @@ test_that("+ another is disabled once every WZ account has a chip", {
   expect_match(html, "disabled", fixed = TRUE)
 })
 
-test_that("+ another is omitted entirely for non-wagerzon books", {
+test_that("+ another is omitted when chips are on non-WZ accounts (gate is account-based, not book-based)", {
+  # Chip is on "Hoop88" account, which is not in all_wz_accounts → no "+ another".
+  # The book= arg is retained for signature compatibility but does NOT control this.
   chips <- list(list(account = "Hoop88", risk = 100, ticket = "H1"))
   html <- render_placed_strip(
     chips,
@@ -59,6 +61,19 @@ test_that("+ another is omitted entirely for non-wagerzon books", {
     book            = "hoop88"
   )
   expect_false(grepl("add-another", html, fixed = TRUE))
+})
+
+test_that("+ another appears when chip is on WZ account even if pick book drifted to a non-WZ book", {
+  # Simulates the drift scenario: pick book is now "draftkings" but the
+  # placement was on "Wagerzon". The gate keys off chip account, not book.
+  chips <- list(list(account = "Wagerzon", risk = 300, ticket = "W9999"))
+  html <- render_placed_strip(
+    chips,
+    all_wz_accounts = c("Wagerzon", "WagerzonJ"),
+    bet_hash        = "xyz",
+    book            = "draftkings"
+  )
+  expect_match(html, "add-another", fixed = TRUE)
 })
 
 test_that("chips carry data-account, data-risk, data-ticket for JS handlers", {

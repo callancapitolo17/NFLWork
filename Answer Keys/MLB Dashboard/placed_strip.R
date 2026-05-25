@@ -11,9 +11,11 @@
 #   bet_hash        character — the bet hash; emitted as data-bet-hash on
 #                   the strip and on each chip so JS handlers can route
 #                   per-bet (also doubles as the placeBet() routing key).
-#   book            character — the bookmaker key of the pick. The
-#                   "+ another" affordance only renders when book ==
-#                   "wagerzon"; non-WZ books just get the chips.
+#   book            character — the bookmaker key of the pick. Retained for
+#                   signature compatibility; NOT used to gate "+ another"
+#                   (the pick book drifts as odds change). The "+ another"
+#                   gate is account-based: it renders when any chip's account
+#                   is in all_wz_accounts (i.e. the placements are on WZ).
 #
 # Returns a single HTML string (the entire <div class="hero-placed"> block).
 
@@ -49,8 +51,11 @@ render_placed_strip <- function(chips, all_wz_accounts, bet_hash, book) {
                             bet_hash = bet_hash),
                      collapse = "")
 
-  is_wz <- identical(tolower(book), "wagerzon")
+  # Gate "+ another" on whether any chip is on a WZ account, not on the
+  # card's current pick book (book is retained for signature compatibility
+  # but is no longer used for the WZ gate; pick-book drifts as odds change).
   placed_accounts <- vapply(chips, function(c) c$account, character(1))
+  is_wz <- any(placed_accounts %in% all_wz_accounts)
   untouched <- setdiff(all_wz_accounts, placed_accounts)
 
   add_another_html <- ""
