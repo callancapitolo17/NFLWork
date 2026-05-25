@@ -95,48 +95,56 @@ if (!interactive() && sys.nframe() == 0L) {
   }
   migrate_sgp_table(MLB_DB)
 
-  # Ensure icu extension is installed for AT TIME ZONE named-tz support below.
-  # First call downloads ~1 MB to the duckdb extension cache; subsequent calls
-  # are no-ops. Without icu, `NOW() AT TIME ZONE 'America/New_York'` fails to
-  # autoload and the SQL filter crashes — see the timezone-aware filter below.
-  ext_con <- dbConnect(duckdb())
-  tryCatch({
-    dbExecute(ext_con, "INSTALL icu")
-    dbExecute(ext_con, "LOAD icu")
-  }, error = function(e) {
-    # Loud warning, no fallback: the SQL filter below requires icu for named-tz
-    # support. If install fails (offline, permissions), the filter query will
-    # error out — preferable to the silent 0-row regression this fix replaced.
-    cat(sprintf("Warning: icu extension install failed (%s)\n", e$message))
-  })
-  duckdb::dbDisconnect(ext_con, shutdown = TRUE)
-
   # Read today's posted specials from the wagerzon_specials scraper output.
-  # Uses the most recent snapshot AND filters to upcoming games. The game_time
-  # filter is the real safeguard against stale data: if WZ has no specials
-  # posted today, MAX(scraped_at) returns yesterday's snapshot, but every row
-  # in it has a past game_time and gets filtered out. Off-day → zero rows →
-  # empty Trifectas tab (correct behavior).
+  # Uses the most recent snapshot AND filters to upcoming games. The
+  # game_start_time filter is the real safeguard against stale data: if WZ has
+  # no specials posted today, MAX(scraped_at) returns yesterday's snapshot,
+  # but every row in it has a past game_start_time and gets filtered out.
+  # Off-day → zero rows → empty Trifectas tab (correct behavior).
   #
-  # Timezone gotcha: scraper_specials.py stores `game_time` as a NAIVE TIMESTAMP
-  # holding Eastern wall-clock (e.g. 18:35 means 6:35 PM ET, no tz attached).
-  # DuckDB's NOW() returns TIMESTAMPTZ. When comparing them, DuckDB casts the
-  # naive value using the session timezone — R's DuckDB defaults to UTC, so
-  # `game_time > NOW()` would interpret 18:35 as UTC and incorrectly drop the
-  # row once real UTC time passes 18:35 (≈4h before first pitch). Comparing
-  # against `(NOW() AT TIME ZONE 'America/New_York')::TIMESTAMP` puts both
-  # sides in naive Eastern wall-clock, which is what the scraper writes.
+  # As of Phase 3 of the TZ standardization, wagerzon_specials carries
+  # `game_start_time TIMESTAMPTZ` (UTC) alongside the legacy naive `game_time`.
+  # Comparing TIMESTAMPTZ to `NOW()` is unambiguous, so the prior icu-based
+  # `AT TIME ZONE 'America/New_York'` workaround is gone.
   WZ_DB <- "~/NFLWork/wagerzon_odds/wagerzon.duckdb"
   wz_con <- dbConnect(duckdb(), dbdir = path.expand(WZ_DB), read_only = TRUE)
   on.exit(tryCatch(dbDisconnect(wz_con), error = function(e) NULL), add = TRUE)
-  specials <- dbGetQuery(wz_con, "
-    SELECT team, prop_type, description, odds AS book_odds
-    FROM wagerzon_specials
-    WHERE sport = 'mlb'
-      AND prop_type IN ('TRIPLE-PLAY', 'GRAND-SLAM')
-      AND scraped_at = (SELECT MAX(scraped_at) FROM wagerzon_specials WHERE sport = 'mlb')
-      AND game_time > (NOW() AT TIME ZONE 'America/New_York')::TIMESTAMP
-  ")
+
+  # wagerzon_specials.game_start_time is added by scraper_specials.py's
+  # idempotent ALTER on its first post-migration run. The live table may
+  # still be on the OLD schema (no game_start_time) if specials hasn't
+  # scraped yet this cycle — and run.py logs scraper failures as non-fatal
+  # warnings, so the pricer can be invoked against an un-migrated table.
+  # This connection is read_only = TRUE, so we cannot self-heal the schema.
+  # Guard against the missing column so we degrade gracefully (stale-but-
+  # present) instead of throwing a DuckDB Binder Error and silently
+  # retaining the previous run's Trifecta rows.
+  #
+  # In the fallback branch we drop the game-time predicate entirely (rather
+  # than re-introduce the icu-dependent `AT TIME ZONE` workaround removed in
+  # dbb5965): game timing is re-enforced downstream by the inner_join to
+  # mlb_consensus_temp + its `commence_time > now & < now + 12h` window, so
+  # any genuinely stale specials rows still get filtered out before pricing.
+  ws_cols <- dbGetQuery(wz_con, "PRAGMA table_info('wagerzon_specials')")$name
+  if ("game_start_time" %in% ws_cols) {
+    specials <- dbGetQuery(wz_con, "
+      SELECT team, prop_type, description, odds AS book_odds
+      FROM wagerzon_specials
+      WHERE sport = 'mlb'
+        AND prop_type IN ('TRIPLE-PLAY', 'GRAND-SLAM')
+        AND scraped_at = (SELECT MAX(scraped_at) FROM wagerzon_specials WHERE sport = 'mlb')
+        AND game_start_time > NOW()
+    ")
+  } else {
+    message("[mlb_triple_play] wagerzon_specials missing game_start_time (un-migrated) — dropping game-time filter; all latest-snapshot specials included (consensus join enforces game timing downstream)")
+    specials <- dbGetQuery(wz_con, "
+      SELECT team, prop_type, description, odds AS book_odds
+      FROM wagerzon_specials
+      WHERE sport = 'mlb'
+        AND prop_type IN ('TRIPLE-PLAY', 'GRAND-SLAM')
+        AND scraped_at = (SELECT MAX(scraped_at) FROM wagerzon_specials WHERE sport = 'mlb')
+    ")
+  }
   dbDisconnect(wz_con)
 
   if (nrow(specials) == 0) {

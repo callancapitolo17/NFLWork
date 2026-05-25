@@ -36,4 +36,13 @@ Requires in `.env`:
 
 ## Storage
 
-DuckDB: `hoop88.duckdb` → tables: `nfl_odds`, `ncaaf_odds`, `cbb_odds`, `nba_odds` (18-column standard schema)
+DuckDB: `hoop88.duckdb` → tables: `nfl_odds`, `ncaaf_odds`, `cbb_odds`, `nba_odds` (17-column standard schema — game timing is carried by `game_start_time TIMESTAMPTZ` (UTC); the legacy `game_date VARCHAR` + `game_time VARCHAR` pair was retired).
+
+## Timezone handling
+
+Hoop88's response timestamps are Pacific Time (a 2026-05 audit found PT,
+NOT ET as the original code claimed — see
+`tools/TZ_AUDIT_FINDINGS.md`). The scraper now converts PT → UTC at
+write-time via `ZoneInfo("America/Los_Angeles")` before storing into
+`game_start_time TIMESTAMPTZ`, so all downstream consumers can compare
+game times directly without worrying about the source TZ.

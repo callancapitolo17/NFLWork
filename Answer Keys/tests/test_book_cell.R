@@ -63,6 +63,7 @@ test_that("render_book_cell with both odds emits raw + fair spans", {
     american_odds          = +120,
     opposite_american_odds = -140,
     line_quoted            = -0.5,
+    opposite_line_quoted   = +0.5,   # spread: arithmetic opposite -> devig valid
     is_exact_line          = TRUE,
     is_pick                = FALSE,
     side_word              = "over",
@@ -95,6 +96,7 @@ test_that("render_book_cell pick cell with both odds emits green pick class and 
     american_odds          = +120,
     opposite_american_odds = -140,
     line_quoted            = -0.5,
+    opposite_line_quoted   = +0.5,
     is_exact_line          = TRUE,
     is_pick                = TRUE,
     side_word              = "over",
@@ -114,6 +116,7 @@ test_that("render_book_cell formats negative fair odds without a + prefix", {
     american_odds          = -140,
     opposite_american_odds = +120,
     line_quoted            = -0.5,
+    opposite_line_quoted   = +0.5,
     is_exact_line          = TRUE,
     is_pick                = FALSE,
     side_word              = "under",
@@ -128,6 +131,7 @@ test_that("render_book_cell on alt line keeps amber tag in both views", {
     american_odds          = -117,
     opposite_american_odds = +102,
     line_quoted            = 0,
+    opposite_line_quoted   = 0,   # both sides at the same line -> devig valid
     is_exact_line          = FALSE,
     is_pick                = FALSE,
     side_word              = "over",
@@ -136,4 +140,51 @@ test_that("render_book_cell on alt line keeps amber tag in both views", {
   expect_match(html, 'alt-line', fixed = FALSE)
   expect_match(html, '<span class="raw">-117</span>',  fixed = FALSE)
   expect_match(html, '<span class="fair">', fixed = FALSE)  # devig present
+})
+
+test_that("render_book_cell skips devig when pick + opposite are on different spread lines", {
+  # Spread bet at -1.5 paired with the opposite slot at +2.0 — different markets
+  # at the same book. Devigging them would yield nonsense fair odds, so the
+  # FAIR span must show em-dash, not a computed value.
+  html <- render_book_cell(
+    american_odds          = -110,
+    opposite_american_odds = -120,
+    line_quoted            = -1.5,
+    opposite_line_quoted   = +2.0,   # NOT -line_quoted -> mismatch
+    is_exact_line          = TRUE,
+    is_pick                = FALSE,
+    side_word              = "over",
+    is_totals              = FALSE
+  )
+  expect_match(html, '<span class="fair">&mdash;</span>', fixed = TRUE)
+})
+
+test_that("render_book_cell skips devig when totals lines differ between sides", {
+  html <- render_book_cell(
+    american_odds          = -110,
+    opposite_american_odds = -110,
+    line_quoted            = 7.5,
+    opposite_line_quoted   = 8.5,    # different total lines -> mismatch
+    is_exact_line          = TRUE,
+    is_pick                = FALSE,
+    side_word              = "over",
+    is_totals              = TRUE
+  )
+  expect_match(html, '<span class="fair">&mdash;</span>', fixed = TRUE)
+})
+
+test_that("render_book_cell devigs spread when lines are arithmetic opposites", {
+  # BOS -1.5 paired with PHI +1.5 — these ARE the same 2-way market.
+  html <- render_book_cell(
+    american_odds          = -110,
+    opposite_american_odds = -110,
+    line_quoted            = -1.5,
+    opposite_line_quoted   = +1.5,   # -line_quoted -> matched 2-way
+    is_exact_line          = TRUE,
+    is_pick                = FALSE,
+    side_word              = "over",
+    is_totals              = FALSE
+  )
+  # Devig of -110/-110 -> -100/-100 (probit). Just confirm a fair value, not em-dash.
+  expect_no_match(html, '<span class="fair">&mdash;</span>', fixed = TRUE)
 })

@@ -6,6 +6,8 @@ KC -2.5/CHW +2.5 with KC +2.5/CHW -2.5 into the same row.
 """
 from datetime import datetime
 
+import pytest
+
 from mlb_sgp.fd_client import Event, Runner
 from mlb_sgp.scraper_fanduel_singles import classify_market, parse_runners_to_wide_rows
 
@@ -69,3 +71,102 @@ def test_classify_market_existing_whitelist_unchanged():
     assert classify_market("Alternate Run Lines") == ("FG", "alternate_spreads")
     assert classify_market("First 5 Innings Alternate Run Lines") == ("F5", "alternate_spreads")
     assert classify_market("Random Garbage Market") is None
+
+
+# (home, away) used for team-total exclusion cases
+_H, _A = "San Francisco Giants", "Chicago White Sox"
+
+@pytest.mark.parametrize("name,home,away,expected", [
+    # --- ACCEPTED: real game lines, every period x type FD posts ---
+    ("Run Line", None, None, ("FG", "main")),
+    ("Total Runs", None, None, ("FG", "main")),
+    ("Moneyline", None, None, ("FG", "main")),
+    ("Alternate Run Lines", None, None, ("FG", "alternate_spreads")),
+    ("Alternate Total Runs", None, None, ("FG", "alternate_totals")),
+    ("First 5 Innings Run Line", None, None, ("F5", "main")),
+    ("First 5 Innings Total Runs", None, None, ("F5", "main")),
+    ("First 5 Innings Money Line", None, None, ("F5", "main")),  # NOTE the space
+    ("First 5 Innings Alternate Run Lines", None, None, ("F5", "alternate_spreads")),
+    ("First 5 Innings Alternate Total Runs", None, None, ("F5", "alternate_totals")),
+    ("First 7 Innings Total Runs", None, None, ("F7", "main")),
+    ("First 7 Innings Run Line", None, None, ("F7", "main")),
+    ("First 3 Innings Total Runs", None, None, ("F3", "main")),
+    ("First 3 Innings Run Line", None, None, ("F3", "main")),
+    # --- REJECTED: one example per junk family ---
+    ("First 5 Innings Run Line / Total Runs Parlay", None, None, None),  # parlay
+    ("Line / Total Parlay 7", None, None, None),                         # parlay
+    ("Total Runs (Bands)", None, None, None),                            # bands
+    ("Moneyline Away Listed", None, None, None),                         # listed
+    ("First 7 Innings Result", None, None, None),                        # 3-way result
+    ("First 6 Innings Result", None, None, None),                        # 3-way result
+    ("7th Inning Total Runs", None, None, None),                         # single inning
+    ("7th Inning Run Line", None, None, None),                           # single inning
+    ("First 5 Innings Winning Margin (5-Way)", None, None, None),        # winning margin
+    ("Race To 7 Runs", None, None, None),                                # race to
+    ("Tri-Bet", None, None, None),                                       # no line keyword
+    ("Chicago White Sox Total Runs", _H, _A, None),                      # team total (away)
+    ("San Francisco Giants Alt. Total Runs", _H, _A, None),              # team total (home)
+    ("Random Garbage Market", None, None, None),
+])
+def test_classify_market_keyword(name, home, away, expected):
+    from mlb_sgp.scraper_fanduel_singles import classify_market
+    assert classify_market(name, home, away) == expected
+
+
+def test_fetch_merged_markets_and_runners_unions_and_dedups():
+    """Two tabs return overlapping markets/runners; merge unions + dedups."""
+    from mlb_sgp.fd_client import Market, Runner
+    from mlb_sgp.scraper_fanduel_singles import fetch_merged_markets_and_runners
+
+    class _FakeClient:
+        def fetch_event_page(self, event_id, tab):
+            if tab == "":  # default tab: F7 total + shared FG run line
+                return (
+                    [Market("mF7", "First 7 Innings Total Runs"),
+                     Market("mFG", "Run Line")],
+                    [Runner("rO", "mF7", "Over", 7.5, -128),
+                     Runner("rRLh", "mFG", "Giants -1.5", -1.5, 120)],
+                )
+            # sgp tab: shared FG run line (dup) + F5 total
+            return (
+                [Market("mFG", "Run Line"),
+                 Market("mF5", "First 5 Innings Total Runs")],
+                [Runner("rRLh", "mFG", "Giants -1.5", -1.5, 120),
+                 Runner("rF5o", "mF5", "Over", 4.5, -110)],
+            )
+
+    markets, runners = fetch_merged_markets_and_runners(
+        _FakeClient(), "1", tabs=("", "same-game-parlay-"))
+    # len() guards catch a setdefault->__setitem__ regression that a set
+    # comparison alone would silently pass (mFG / rRLh appear in both tabs).
+    assert len(markets) == 3
+    assert {m.market_id for m in markets} == {"mF7", "mFG", "mF5"}  # union, deduped
+    assert len(runners) == 3
+    assert {r.runner_id for r in runners} == {"rO", "rRLh", "rF5o"}  # rRLh once
+
+
+def test_fetch_merged_keeps_runners_sharing_selectionid_across_markets():
+    """FD reuses selectionId across markets — every 'Over' across all total
+    markets shares one id (e.g. 7017905). Runner dedup must therefore key on
+    (market_id, runner_id), NOT runner_id alone, or entire markets get
+    silently dropped (this exact bug hid F7 totals on the bets tab)."""
+    from mlb_sgp.fd_client import Market, Runner
+    from mlb_sgp.scraper_fanduel_singles import fetch_merged_markets_and_runners
+
+    class _FakeClient:
+        def fetch_event_page(self, event_id, tab):
+            if tab == "":
+                # Two DIFFERENT markets whose 'Over' runners share selectionId.
+                return (
+                    [Market("mFG", "Total Runs"),
+                     Market("mF7", "First 7 Innings Total Runs")],
+                    [Runner("7017905", "mFG", "Over", 9.5, -110),
+                     Runner("7017905", "mF7", "Over", 7.5, -114)],
+                )
+            return ([], [])
+
+    _, runners = fetch_merged_markets_and_runners(
+        _FakeClient(), "1", tabs=("", "same-game-parlay-"))
+    # Both must survive — they belong to different markets.
+    assert len(runners) == 2
+    assert {(r.market_id, r.name) for r in runners} == {("mFG", "Over"), ("mF7", "Over")}

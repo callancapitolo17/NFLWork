@@ -509,3 +509,158 @@ test_that("alt-total bet (e.g. Royals Under 6.5) joins to a book with un-suffixe
   expect_true(all(out$is_exact_line))
   expect_equal(out$american_odds[out$side == "pick"], -240)
 })
+
+test_that("alt-spread bet finds DK quote labeled 'spreads' (matcher-side union)", {
+  # Bet from compare_alts_to_samples: market_type = "alternate_spreads".
+  bets <- tibble(
+    bet_row_id  = "h1",
+    game_id     = "g1",
+    market      = "alternate_spreads_fg",
+    market_type = "alternate_spreads",
+    period      = "FG",
+    line        = -2.5,
+    bet_on      = "Boston Red Sox",
+    home_team   = "Boston Red Sox",
+    away_team   = "Philadelphia Phillies",
+    pick_side   = "pick"
+  )
+  # DK book frame as it appears after get_dk_odds + scraper_to_canonical
+  # under the CURRENT (collapsed) labeling: market = "spreads" even though
+  # the raw DK row was alternate_spreads at -2.5.
+  dk <- bind_rows(
+    book_row("g1", "spreads", "FG", "Boston Red Sox",        -2.5, +205),
+    book_row("g1", "spreads", "FG", "Philadelphia Phillies",  2.5, -280)
+  )
+  out <- expand_bets_to_book_prices(bets, list(draftkings = dk))
+  expect_equal(nrow(out), 2)
+  expect_true(all(out$is_exact_line))
+  expect_equal(out$american_odds[out$side == "pick"], 205L)
+  expect_equal(out$american_odds[out$side == "opposite"], -280L)
+})
+
+test_that("main spread bet still finds 'spreads' candidates (union does not break the common case)", {
+  bets <- make_bet_row(market = "spreads_1st_5_innings", line = 0.5,
+                        bet_on = "Boston Red Sox", market_type = "spreads")
+  bets$home_team <- "Boston Red Sox"
+  bets$away_team <- "Philadelphia Phillies"
+  book <- bind_rows(
+    book_row("g1", "spreads", "F5", "Boston Red Sox",         0.5, -115),
+    book_row("g1", "spreads", "F5", "Philadelphia Phillies", -0.5, -105)
+  )
+  out <- expand_bets_to_book_prices(bets, list(wagerzon = book))
+  expect_equal(nrow(out), 2)
+  expect_true(all(out$is_exact_line))
+})
+
+test_that("alt-total bet finds 'totals' and 'alternate_totals' candidates", {
+  bets <- tibble(
+    bet_row_id  = "h2", game_id = "g1",
+    market      = "alternate_totals_fg",
+    market_type = "alternate_totals",
+    period      = "FG", line = 10.0, bet_on = "Over",
+    pick_side   = "pick"
+  )
+  # One book labels its alt totals as "alternate_totals"; another labels them
+  # all as "totals" (e.g. DK after get_dk_odds). Union should match both.
+  wz <- bind_rows(
+    book_row("g1", "alternate_totals", "FG", "Over", 10.0, +135),
+    book_row("g1", "alternate_totals", "FG", "Under", 10.0, -160)
+  )
+  dk <- bind_rows(
+    book_row("g1", "totals", "FG", "Over", 10.0, +130),
+    book_row("g1", "totals", "FG", "Under", 10.0, -155)
+  )
+  out <- expand_bets_to_book_prices(bets, list(wagerzon = wz, draftkings = dk))
+  # Both books should appear on the pick side.
+  expect_setequal(out$bookmaker[out$side == "pick"], c("wagerzon", "draftkings"))
+})
+
+# =============================================================================
+# Past-game filter helpers (T5)
+# =============================================================================
+
+test_that(".parse_iso_game_dt parses DK/FD ISO strings", {
+  source("../Tools.R", local = TRUE)
+  out <- .parse_iso_game_dt(c("2026-05-19", "2026-05-19"),
+                            c("2026-05-19T20:10:00.0000000Z",
+                              "2026-05-19T23:46:00.000Z"))
+  expect_equal(format(out[1], "%Y-%m-%d %H:%M %Z", tz = "UTC"),
+               "2026-05-19 20:10 UTC")
+})
+
+test_that(".parse_wz_game_dt parses Eastern wall-clock with year inference", {
+  source("../Tools.R", local = TRUE)
+  # Use a date close to today to avoid year-rollover ambiguity
+  today_md <- format(Sys.time(), "%m/%d", tz = "America/New_York")
+  out <- .parse_wz_game_dt(today_md, "19:05")
+  expect_true(!is.na(out))
+  expect_equal(format(out, "%H:%M", tz = "America/New_York"), "19:05")
+})
+
+test_that(".drop_past_games filters by game start, not by fetch time", {
+  source("../Tools.R", local = TRUE)
+  # Use a relative future time so the test stays exercised regardless of when
+  # it runs (was previously hardcoded to 2026-05-19T20:10:00Z which expired).
+  future_iso <- format(Sys.time() + 86400, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+  raw <- tibble(
+    game_date = c("2026-05-19", "2020-01-01"),
+    game_time = c(future_iso, "2020-01-01T20:10:00Z"),
+    home_team = c("A", "B"), away_team = c("C", "D"),
+    fetch_time = Sys.time()   # both rows have a fresh fetch_time
+  )
+  out <- .drop_past_games(raw, .parse_iso_game_dt, source_label = "test")
+  expect_equal(nrow(out), 1)
+  expect_equal(out$home_team, "A")
+  expect_true("game_start_time" %in% names(out))
+})
+
+test_that("equidistant tiebreaker picks the worse line for the bettor (spread favorite)", {
+  bets <- make_bet_row(market = "spreads_1st_5_innings", line = -2.5,
+                        bet_on = "Boston Red Sox", market_type = "spreads")
+  bets$home_team <- "Boston Red Sox"
+  bets$away_team <- "Philadelphia Phillies"
+  # Book offers BOS at -2 and BOS at -3, both 0.5 away from model -2.5.
+  # The "worse for bettor" of a -2.5 favorite is -3 (must cover by more).
+  book <- bind_rows(
+    book_row("g1", "spreads", "F5", "Boston Red Sox",         -2,   -150),
+    book_row("g1", "spreads", "F5", "Boston Red Sox",         -3,   +110),
+    book_row("g1", "spreads", "F5", "Philadelphia Phillies",  +2,   +130),
+    book_row("g1", "spreads", "F5", "Philadelphia Phillies",  +3,   -130)
+  )
+  out <- expand_bets_to_book_prices(bets, list(wagerzon = book))
+  pick <- out[out$side == "pick", ]
+  expect_equal(pick$line_quoted, -3)         # worse line for -2.5 fav
+  expect_equal(pick$american_odds, 110L)
+})
+
+test_that("scraper_to_canonical preserves NA fetch_time (does not silently fill)", {
+  raw <- tibble(
+    home_team = "Boston Red Sox", away_team = "Philadelphia Phillies",
+    market = "totals", line = 5.5,
+    odds_over = -110L, odds_under = -110L,
+    odds_home = NA_integer_, odds_away = NA_integer_,
+    fetch_time = as.POSIXct(NA, tz = "UTC")
+  )
+  lookup <- tibble(id = "g1",
+                   home_team = "Boston Red Sox",
+                   away_team = "Philadelphia Phillies",
+                   commence_time = as.POSIXct("2030-01-01", tz = "UTC"))
+  out <- scraper_to_canonical(raw, lookup)
+  expect_true(!is.null(out))
+  expect_true(all(is.na(out$fetch_time)))
+})
+
+test_that("scraper_to_canonical warns when team names don't resolve", {
+  raw <- tibble(
+    home_team = "Atlanta Braves", away_team = "Mystery Team",
+    market = "h2h", line = NA_real_,
+    odds_home = -150L, odds_away = +130L,
+    odds_over = NA_integer_, odds_under = NA_integer_,
+    fetch_time = Sys.time()
+  )
+  lookup <- tibble(id = "g1",
+                   home_team = "Atlanta Braves",
+                   away_team = "Boston Red Sox",
+                   commence_time = as.POSIXct("2030-01-01", tz = "UTC"))
+  expect_warning(scraper_to_canonical(raw, lookup), "unmatched team pair")
+})

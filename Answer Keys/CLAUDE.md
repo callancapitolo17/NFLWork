@@ -154,7 +154,7 @@ mlb_triple_play.R (standalone pricer)
 4. **Sample staleness** — parlay.R and props.R auto-regenerate if >5 min old. Don't cache samples.
 5. **18-column schema** — All scrapers MUST write this exact schema. Kalshi is the exception (26 columns with probability fields).
 6. **`tol_error` auto-scales to 0.2% of N** — Per Feustel's spec ("+/-1 means you are within 0.2% of your target"), `run_answer_key_sample()` and `generate_all_samples()` default `tol_error = NULL` which computes `max(1L, round(0.002 * current_N))` inside the shrink loop. At N=500 this is 1 (Feustel's canonical value); at N=1272 it's 3. **Never hardcode `tol_error = 1` at the caller** — that silently tightens the rule by 2.5× at MLB's N and causes pathological shrinkage of sparse-region games.
-7. **Naive TIMESTAMP vs `NOW()` in DuckDB R sessions** — `NOW()` returns TIMESTAMPTZ; comparing it to a NAIVE TIMESTAMP forces a cast using the session timezone. R's DuckDB defaults to **UTC**; Python's defaults to local. So `wagerzon_specials.game_time` (naive Eastern, e.g. `18:35` ET written verbatim by `scraper_specials.py`) gets interpreted as `18:35 UTC` in R — silently dropping every row once UTC time passes the nominal Eastern start (~4h pre-game). Compare against `(NOW() AT TIME ZONE 'America/New_York')::TIMESTAMP` to put both sides in naive Eastern wall-clock. Requires the `icu` extension (`INSTALL icu; LOAD icu;` at script startup — first call downloads ~1MB to user cache, then no-op). Same trap applies to any other naive-Eastern timestamp from offshore scrapers.
+7. **All scraper timestamps are TIMESTAMPTZ UTC (2026-05-22)** — Per Phase 3 of the TZ standardization, every scraper now writes `game_start_time TIMESTAMPTZ` in UTC. R-side code can use `column > NOW()` directly with no `AT TIME ZONE` workaround. Legacy `game_date`/`game_time` columns are derived from `game_start_time` in `get_*_odds()` as a safety net during the transition; once all callers use `game_start_time` directly, those will be dropped. Historical PBP timestamps (`mlb_betting_pbp`, `cbb_betting_pbp`) follow their own internal convention and are not produced by the in-scope scrapers.
 8. **Parallel R scripts on `mlb.duckdb`** — `/refresh` launches `mlb_correlated_parlay.R` and `mlb_triple_play.R` in parallel (server line 2235-2244). Both want a writer connection on `mlb.duckdb` (parlay for working tables, trifecta only briefly to `CREATE TABLE IF NOT EXISTS mlb_trifecta_sgp_odds`). Whoever loses crashes with `errno 35` "Conflicting lock". Trifecta pricer now retries with exponential backoff and falls through non-fatally — the SGP table is created once per machine, so a transient miss on a follow-up run is safe. If you add a new short-lived `mlb.duckdb` writer in the parallel section, follow the same retry pattern.
 9. **Alt-market suffix conventions** — `compare_alts_to_samples` writes
    `alternate_totals_fg / alternate_spreads_f5` (suffixed). Some scrapers
@@ -169,6 +169,25 @@ mlb_triple_play.R (standalone pricer)
    `bind_rows` fills `period` with NA for alt rows (since
    `compare_alts_to_samples` doesn't set it). If you add a new scraper
    that uses a third suffix convention, extend those helpers.
+10. **Alt + main markets are unioned at match time, not the loader** —
+    `odds_screen.R::.related_market_types(mt)` treats
+    `{spreads, alternate_spreads}` and `{totals, alternate_totals}` as one
+    bucket inside `expand_bets_to_book_prices`. DO NOT rely on the bet's
+    `market_type` matching the book's row label exactly — different scrapers
+    use different conventions (WZ/BKM/Bet105 label alt rows `alternate_*`;
+    DK/FD via `get_dk_odds` collapse alt rows into `spreads`/`totals`). The
+    closest-line picker breaks ties. Moneyline (`h2h`) is intentionally
+    not unioned.
+11. **Per-book `game_time` formats vary** — DK/FD store ISO 8601 UTC strings
+    in `game_time` (`game_date` is also ISO); WZ/Hoop88/BKM use naive Eastern
+    wall-clock (`MM/DD` + `HH:MM`, year inferred at parse time); BFA uses
+    `YYYY-MM-DD` + `HH:MM:SS` UTC; Bet105 uses `MM/DD` + `HH:MM` UTC with date
+    rollover. `Tools.R::.drop_past_games()` is the canonical gate — it calls
+    the right parser per book (`.parse_iso_game_dt` / `.parse_wz_game_dt` /
+    `.parse_bfa_game_dt` / `.parse_bet105_game_dt`) and drops rows where the
+    game has already started (5-min grace). If you add a new scraper, write
+    a per-book parser and wire it into the matching `get_*_odds()` helper or
+    yesterday's snapshot will leak into today's pills via the team-name join.
 
 ## Known model biases
 
@@ -287,6 +306,21 @@ for the design spec.
    passes the wide frame to `create_bets_table()` which renders cards.
 4. Old `create_bets_table_legacy()` is preserved as a fallback if the
    new table is missing (first deploy after merge).
+5. Each `get_*_odds()` helper in `Tools.R` parses its scraper's
+   `(game_date, game_time)` and drops rows where the game has already
+   started (5-min grace, via `.drop_past_games()`). This prevents
+   yesterday's stale snapshot from being silently re-tagged with today's
+   `game_id` via the team-name join. Every row in `mlb_bets_book_prices`
+   also carries `game_start_time TIMESTAMPTZ` (copied from the bet's
+   `pt_start_time`, derived from Odds API `commence_time`) so the
+   dashboard can render the game start time on each card.
+6. `expand_bets_to_book_prices()` unions related market types: an
+   `alternate_spreads` bet sees both `spreads` and `alternate_spreads`
+   book rows; the closest-line picker (±3.0 units) decides which one
+   wins. See pitfall #10 above.
+7. `mlb_bets_book_prices.fetch_time` and the per-book scraper DBs all
+   store `fetch_time` as `TIMESTAMPTZ`, so dashboard staleness math
+   (`NOW() - fetch_time`) works directly without timezone tricks.
 
 ### Helpers
 
@@ -376,3 +410,37 @@ separate from `data-model-size` (immutable Kelly → `kelly_bet` /
 `recommended_size`). The two attributes are siblings on every Place
 button; legacy callers without `data-model-size` fall back to `data-size`
 as a default to keep `create_bets_table_legacy` working.
+
+## MLB Dashboard — Parlay tab "Agree" pill
+
+The parlay-tab Books cell ends with an `Agree k/n` pill (e.g. `Agree 4/5`)
+that summarizes how many of the five reference voices — DK, FD, ProphetX,
+Novig, and the model — sit within ±1pp of the median of the five. It is a
+display-only caution signal: high `k` means the market is in price-discovery
+consensus; low `k` means the books disagree and the edge against any single
+book is less trustworthy.
+
+- **Implementation:** `Answer Keys/books_strip.R::compute_k_within()` does the
+  count; `render_books_strip()` accepts optional `k_agree` / `n_agree` args
+  and appends the suffix pill. The caller (in `mlb_dashboard.R`'s
+  `create_parlays_table()`, around line 552) builds the 5-element voice
+  vector and passes the result through.
+- **Cons is intentionally excluded** from the count because it's a blended
+  derivative of model + books, not an independent voice.
+- **NA voices reduce the denominator** rather than counting as "disagree";
+  a row with only 4 quoting voices shows `Agree k/4`.
+- **No filter / no color / no auto-bet gate** in v1. Layer those on once
+  live values show what threshold actually feels right.
+- **Floating-point edge:** the consensus check is a strict `<=` comparison,
+  so values that sit *exactly* at the ±1pp boundary may flip in or out
+  depending on IEEE 754 representation. Real probit-devigged probabilities
+  are 4-decimal values that don't land on round boundaries, but if you
+  ever see an unexpected off-by-one and the inputs look right at exactly
+  0.01 from the median, that's the cause. Add an epsilon tolerance in
+  `compute_k_within` if it becomes annoying.
+- **Known blind spot:** when the model is the lone dissenter from a tight
+  book cluster, the metric reads identically to "a book is the lone dissenter"
+  — see scenario H in the design spec. Easy mitigation later: a separate
+  `model_in_cluster` boolean.
+- **Tests:** `Answer Keys/tests/test_books_strip.R` (both `compute_k_within`
+  and the `render_books_strip` extension).

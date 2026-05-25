@@ -1,13 +1,15 @@
 """FanDuel API client — extracted from scraper_fanduel_sgp.py.
 
-Owns the curl_cffi Chrome-TLS session and exposes the two operations both
+Owns the curl_cffi Chrome-TLS session and exposes the operations both
 the SGP scraper and the singles scraper need:
   - list_events()         — all MLB events today
-  - fetch_event_runners() — all runners with prices, flat list, in one call
+  - fetch_event_page()    — markets AND runners for one event tab, one GET
+  - fetch_event_markets() / fetch_event_runners() — thin wrappers over
+    fetch_event_page() that return just one half (back-compat)
 
-Mirrors DraftKingsClient with FD-specific naming (Runner instead of
-Selection — FD's term — and only two operations instead of three, because
-FD returns market metadata and prices in the same event-page payload).
+FD returns market metadata and prices in the same event-page payload, so a
+single GET yields both — fetch_event_page() is the primary entry point and
+takes a `tab` argument (FD returns a different market slice per tab).
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -62,24 +64,27 @@ class FanDuelClient:
             start_time=e.get("open_date", ""),
         ) for e in raw]
 
-    def fetch_event_runners(self, event_id: str) -> list[Runner]:
-        """Returns all runners (selections) with prices for one event.
+    def fetch_event_page(
+        self, event_id: str, tab: str = "same-game-parlay-"
+    ) -> tuple[list["Market"], list["Runner"]]:
+        """Fetch one FD event-page tab; return (markets, runners) from it.
 
-        Hits FD's event-page endpoint and walks the response to flatten every
-        market's runners into one list. The SGP scraper's helper of the same
-        name returns a nested SGP-filtered dict ({fg/f5: {spreads/totals: ...}})
-        which is the wrong shape for singles, so we deliberately do NOT wrap
-        it — we walk the raw payload directly.
+        FD's event-page payload carries both market metadata and runners in a
+        single response, so one HTTP GET yields both. The `tab` param selects
+        which server-side market slice FD returns — there is no single tab with
+        every market, so the singles scraper calls this once per tab and merges
+        (see fetch_merged_markets_and_runners in scraper_fanduel_singles).
 
-        FD price path: runner.winRunnerOdds.americanDisplayOdds.americanOdds
-        (already an int — no string parsing needed). Runners with
-        runnerStatus != "ACTIVE" are skipped.
+        Market dedup is by marketId (the recursive walk may visit a market
+        twice). Runners are read off each market dict; runnerStatus values
+        other than "ACTIVE" (when present) and runners with no american odds
+        or no selectionId are skipped.
         """
         from scraper_fanduel_sgp import FD_EVENT_PAGE_URL, FD_AK, FD_HEADERS
 
         url = (
             f"{FD_EVENT_PAGE_URL}?_ak={FD_AK}&eventId={event_id}"
-            f"&tab=same-game-parlay-"
+            f"&tab={tab}"
             f"&useCombinedTouchdownsVirtualMarket=true&useQuickBets=true"
         )
         try:
@@ -89,16 +94,15 @@ class FanDuelClient:
             resp = self.session.get(url)
 
         if getattr(resp, "status_code", 200) != 200:
-            return []
+            return [], []
         payload = resp.json()
 
-        markets: list[dict] = []
+        market_dicts: list[dict] = []
 
         def walk(o):
             if isinstance(o, dict):
-                # FD market dicts carry marketId + runners + marketName
-                if "marketId" in o and "runners" in o and "marketName" in o:
-                    markets.append(o)
+                if "marketId" in o and "marketName" in o:
+                    market_dicts.append(o)
                 for v in o.values():
                     walk(v)
             elif isinstance(o, list):
@@ -107,93 +111,54 @@ class FanDuelClient:
 
         walk(payload)
 
-        # Dedupe by marketId — the walk may visit the same market twice
+        # Dedup by marketId; first-seen wins (duplicates are identical).
         seen: dict[str, dict] = {}
-        for m in markets:
+        for m in market_dicts:
             mid = str(m.get("marketId", ""))
             if mid and mid not in seen:
                 seen[mid] = m
 
-        out: list[Runner] = []
+        markets = [
+            Market(market_id=mid, name=str(m.get("marketName", "") or ""))
+            for mid, m in seen.items()
+        ]
+
+        runners: list[Runner] = []
         for mid, m in seen.items():
             for run in m.get("runners", []) or []:
                 if not isinstance(run, dict):
                     continue
                 status = str(run.get("runnerStatus", "")).upper()
-                # Empty status is allowed; only filter known-disabled statuses
                 if status and status != "ACTIVE":
                     continue
                 american = _extract_american_odds(run)
                 if american is None:
                     continue
-                line = _extract_line(run)
                 sid = run.get("selectionId")
                 if sid is None:
                     continue
-                out.append(Runner(
+                runners.append(Runner(
                     runner_id=str(sid),
                     market_id=mid,
                     name=str(run.get("runnerName", "") or ""),
-                    line=line,
+                    line=_extract_line(run),
                     american_odds=american,
                 ))
-        return out
+        return markets, runners
 
-    def fetch_event_markets(self, event_id: str) -> list[Market]:
-        """Returns market metadata (id + name) for one event.
+    def fetch_event_runners(
+        self, event_id: str, tab: str = "same-game-parlay-"
+    ) -> list["Runner"]:
+        """Back-compat wrapper: runners from one tab."""
+        _, runners = self.fetch_event_page(event_id, tab)
+        return runners
 
-        FD's event-page endpoint returns markets + runners in one response,
-        but `fetch_event_runners` only emits Runner objects. To classify each
-        runner's market we also need the market NAME, which is on the same
-        payload — so this method re-walks the same response and emits Markets.
-
-        For the singles scraper we call both methods, then build a
-        `market_id -> (period, market_type)` map via classify_market.
-
-        We intentionally do NOT share state between the two calls (no caching)
-        because (a) the FD payload is small, (b) keeping the two methods
-        independent matches DraftKingsClient's separation, and (c) the singles
-        scraper is invoked once per event so doing two HTTP fetches doubles
-        traffic but stays well under FD's rate limits.
-        """
-        from scraper_fanduel_sgp import FD_EVENT_PAGE_URL, FD_AK, FD_HEADERS
-
-        url = (
-            f"{FD_EVENT_PAGE_URL}?_ak={FD_AK}&eventId={event_id}"
-            f"&tab=same-game-parlay-"
-            f"&useCombinedTouchdownsVirtualMarket=true&useQuickBets=true"
-        )
-        try:
-            resp = self.session.get(url, headers=FD_HEADERS, timeout=20)
-        except TypeError:
-            resp = self.session.get(url)
-
-        if getattr(resp, "status_code", 200) != 200:
-            return []
-        payload = resp.json()
-
-        markets: list[dict] = []
-
-        def walk(o):
-            if isinstance(o, dict):
-                if "marketId" in o and "marketName" in o:
-                    markets.append(o)
-                for v in o.values():
-                    walk(v)
-            elif isinstance(o, list):
-                for it in o:
-                    walk(it)
-
-        walk(payload)
-
-        seen: dict[str, str] = {}
-        for m in markets:
-            mid = str(m.get("marketId", ""))
-            name = str(m.get("marketName", "") or "")
-            if mid and mid not in seen:
-                seen[mid] = name
-
-        return [Market(market_id=mid, name=name) for mid, name in seen.items()]
+    def fetch_event_markets(
+        self, event_id: str, tab: str = "same-game-parlay-"
+    ) -> list["Market"]:
+        """Back-compat wrapper: market metadata from one tab."""
+        markets, _ = self.fetch_event_page(event_id, tab)
+        return markets
 
 
 def _extract_american_odds(run: dict) -> int | None:

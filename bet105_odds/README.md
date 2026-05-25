@@ -36,4 +36,4 @@ Prematch key rotates periodically. Run `recon_bet105.py` to capture fresh params
 
 ## Storage
 
-DuckDB: `bet105.duckdb` → tables: `cbb_odds`, `nba_odds` (18-column standard schema)
+DuckDB: `bet105.duckdb` → tables: `cbb_odds`, `nba_odds` (17-column standard schema — game timing is carried by `game_start_time TIMESTAMPTZ` (UTC); the legacy `game_date VARCHAR` + `game_time VARCHAR` pair was retired. Bet105's source timestamps are already UTC, so the scraper stores them verbatim — no TZ conversion needed.)

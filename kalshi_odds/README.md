@@ -30,7 +30,7 @@ None required (public API).
 
 ## Storage
 
-DuckDB: `kalshi.duckdb` → table: `cbb_odds` (26-column extended schema — includes `*_cents` fields for effective probability after fee)
+DuckDB: `kalshi.duckdb` → table: `cbb_odds` (25-column extended schema — includes `*_cents` fields for effective probability after fee; game timing is carried by `game_start_time TIMESTAMPTZ` (UTC), replacing the legacy `game_date VARCHAR` + `game_time VARCHAR` pair)
 
 ## Series Tickers
 

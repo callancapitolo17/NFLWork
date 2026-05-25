@@ -555,13 +555,8 @@ def _all_per_accept_gates_pass(quote: dict, fair: float,
     if not risk.kill_switch_ok():
         return False, "declined_killswitch"
 
-    # Cooldown
-    leg_set_hash = combo_meta["leg_set_hash"]
-    with db.connect(read_only=True) as con:
-        rows = con.execute("SELECT leg_set_hash, cooled_until FROM combo_cooldown").fetchall()
-    cd_map = {h: u for h, u in rows}
-    if not risk.cooldown_ok(leg_set_hash, cd_map):
-        return False, "declined_cooldown"
+    # Cooldown is now side-aware and is checked in _evaluate_quote AFTER side
+    # selection (we need the chosen side to look up the right cooldown row).
 
     # Inverse-combo
     legs = json.loads(combo_meta.get("legs_json") or "[]")
@@ -604,8 +599,61 @@ def _all_per_accept_gates_pass(quote: dict, fair: float,
     return True, "passed"
 
 
-def _kelly_size_for_quote(quote: dict, fair: float) -> int:
-    """Conditional Kelly sizing using mlb_game_samples + existing positions."""
+def _outcome_vec_for_legs(samples: pd.DataFrame, typed_legs: list,
+                           side: str = "yes") -> np.ndarray | None:
+    """AND the per-leg hit masks into one 0/1 outcome vector. For NO the
+    vector inverts (we win when the combo MISSES). Returns None on bad legs."""
+    if any(l is None for l in typed_legs):
+        return None
+    mask = pd.Series([True] * len(samples), index=samples.index)
+    for leg in typed_legs:
+        mask &= fair_value._hit_mask(samples, leg)
+    hit_vec = mask.astype(int).values
+    return hit_vec if side == "yes" else (1 - hit_vec)
+
+
+def _load_existing_positions_for_game(game_id: str,
+                                       samples: pd.DataFrame) -> list[dict]:
+    """Existing combo positions on this game, with outcome vectors for
+    conditional Kelly. Each row's outcome_vec is the combo-hit mask if
+    the held side is YES, or its complement if NO — so a long-NO position
+    correctly pays off when the combo misses. Filters out positions whose
+    legs no longer type-check against current samples."""
+    with db.connect(read_only=True) as con:
+        pos_rows = con.execute(
+            "SELECT cc.legs_json, p.net_contracts, p.weighted_price, p.side "
+            "FROM positions p JOIN combo_cache cc "
+            "ON cc.combo_market_ticker = p.combo_market_ticker "
+            "WHERE p.game_id = ? AND p.net_contracts > 0",
+            [game_id]
+        ).fetchall()
+    existing = []
+    for legs_json, n, price, pos_side in pos_rows:
+        leg_objs = [_leg_dict_to_typed(l, game_id) for l in json.loads(legs_json)]
+        vec = _outcome_vec_for_legs(samples, leg_objs, side=pos_side)
+        if vec is None:
+            continue
+        existing.append({
+            "outcome_vec": vec,
+            "contracts": float(n),
+            "effective_price": float(price),
+        })
+    return existing
+
+
+def _kelly_size_for_quote(quote: dict, fair: float, side: str = "yes") -> int:
+    """Conditional Kelly sizing at quote-evaluation time. The maker's
+    no_bid/yes_bid is known, so effective_price is exact (no estimation).
+
+    `side` is the side we're considering BUYING ("yes" or "no"). For NO,
+    the outcome_vec inverts (we win when the combo misses), effective_price
+    uses no_ask, and blended_fair flips to (1 - fair). Existing positions
+    inherit their stored side via _load_existing_positions_for_game.
+
+    Used as a go/no-go gate before accept — REST accept is all-or-nothing,
+    so this can't downsize the fill. A Kelly==0 result means even accepting
+    the maker's full quote would be -EV after correlation with held positions.
+    """
     rfq_id = quote["rfq_id"]
     with db.connect(read_only=True) as con:
         meta = con.execute(
@@ -629,49 +677,118 @@ def _kelly_size_for_quote(quote: dict, fair: float) -> int:
         return 0
     legs = json.loads(row[0])
     typed_legs = [_leg_dict_to_typed(l, game_id) for l in legs]
-    if any(l is None for l in typed_legs):
+    outcome_vec = _outcome_vec_for_legs(samples, typed_legs, side=side)
+    if outcome_vec is None:
         return 0
-    mask = pd.Series([True] * len(samples), index=samples.index)
-    for leg in typed_legs:
-        mask &= fair_value._hit_mask(samples, leg)
-    outcome_vec = mask.astype(int).values
 
-    # Existing positions on the same game.
-    with db.connect(read_only=True) as con:
-        pos_rows = con.execute(
-            "SELECT cc.legs_json, p.net_contracts, p.weighted_price "
-            "FROM positions p JOIN combo_cache cc "
-            "ON cc.combo_market_ticker = p.combo_market_ticker "
-            "WHERE p.game_id = ? AND p.net_contracts > 0",
-            [game_id]
-        ).fetchall()
-    existing = []
-    for legs_json, n, price in pos_rows:
-        leg_objs = [_leg_dict_to_typed(l, game_id) for l in json.loads(legs_json)]
-        if any(l is None for l in leg_objs):
-            continue
-        sub_mask = pd.Series([True] * len(samples), index=samples.index)
-        for leg in leg_objs:
-            sub_mask &= fair_value._hit_mask(samples, leg)
-        existing.append({
-            "outcome_vec": sub_mask.astype(int).values,
-            "contracts": float(n),
-            "effective_price": float(price),
-        })
+    existing = _load_existing_positions_for_game(game_id, samples)
 
-    no_bid = float(quote.get("no_bid_dollars") or 0)
-    yes_ask = 1 - no_bid
-    fee = ev_calc.fee_per_contract(yes_ask)
-    effective_price = yes_ask + fee
+    no_bid  = float(quote.get("no_bid_dollars")  or 0)
+    yes_bid = float(quote.get("yes_bid_dollars") or 0)
+    if side == "yes":
+        ask = 1 - no_bid
+    else:
+        ask = 1 - yes_bid
+    fee = ev_calc.fee_per_contract(ask)
+    effective_price = ask + fee
 
     return kelly.kelly_size_combo(
         outcome_vec=np.asarray(outcome_vec),
-        blended_fair=fair,
+        blended_fair=fair if side == "yes" else (1 - fair),
         existing_positions=existing,
         effective_price=effective_price,
         bankroll=config.BANKROLL,
         kelly_fraction=config.KELLY_FRACTION,
     )
+
+
+def _worst_acceptable_ask(blended_fair: float, side: str,
+                            ev_floor_pct: float) -> float:
+    """Highest ask on `side` whose post-fee EV % still meets ev_floor_pct.
+
+    Symmetric over both sides via ev_calc:
+      - side="yes": ev = post_fee_ev_buy_yes(blended_fair, no_bid),
+                    yes_ask = 1 - no_bid; max yes_ask is bounded by fair.
+      - side="no":  ev = post_fee_ev_buy_no(blended_fair, yes_bid),
+                    no_ask  = 1 - yes_bid; max no_ask is bounded by (1-fair).
+
+    Binary search because the fee is itself a function of price, so closed-
+    form inversion is messy. 30 iters → sub-cent precision.
+
+    Returns 0.0 if no acceptable price exists in the side's range (typically
+    when the fee floor exceeds the available edge for that side).
+    """
+    if side == "yes":
+        hi = max(0.0001, blended_fair - 1e-6)
+        def ev_at(ask: float) -> float:
+            _, ev_pct = ev_calc.post_fee_ev_buy_yes(blended_fair, 1.0 - ask)
+            return ev_pct
+    else:
+        hi = max(0.0001, (1.0 - blended_fair) - 1e-6)
+        def ev_at(ask: float) -> float:
+            _, ev_pct = ev_calc.post_fee_ev_buy_no(blended_fair, 1.0 - ask)
+            return ev_pct
+
+    lo = 0.0001
+    if hi <= lo:
+        return 0.0
+    for _ in range(30):
+        mid = (lo + hi) / 2
+        if ev_at(mid) >= ev_floor_pct:
+            lo = mid   # this ask is acceptable; try a higher one
+        else:
+            hi = mid
+    return lo if ev_at(lo) >= ev_floor_pct else 0.0
+
+
+def _kelly_size_for_candidate(game_id: str,
+                                typed_legs: list,
+                                samples: pd.DataFrame,
+                                blended_fair: float,
+                                ) -> tuple[int, int, float, float]:
+    """Kelly counts and worst-acceptable prices for BOTH sides at create time.
+
+    Returns (kelly_yes_n, kelly_no_n, worst_yes_ask, worst_no_ask). Any side
+    with no acceptable price returns (n=0, ask=0.0) for that side.
+
+    Sizing rationale per side:
+      - Compute worst-acceptable ask via binary search at MIN_EV_PCT floor.
+      - Build the side's outcome_vec (combo hits for YES, misses for NO).
+      - Kelly with the side's effective_price + (blended_fair for YES,
+        1-blended_fair for NO).
+    Existing positions on the same game are loaded once and reused; each
+    row's outcome_vec is inverted if its stored side is "no" (handled by
+    _load_existing_positions_for_game).
+    """
+    if samples is None or samples.empty:
+        return 0, 0, 0.0, 0.0
+
+    existing = _load_existing_positions_for_game(game_id, samples)
+
+    def kelly_for_side(side: str) -> tuple[int, float]:
+        outcome_vec = _outcome_vec_for_legs(samples, typed_legs, side=side)
+        if outcome_vec is None:
+            return 0, 0.0
+        ask = _worst_acceptable_ask(
+            blended_fair, side, config.KELLY_CREATE_EV_FLOOR_PCT)
+        if ask <= 0:
+            return 0, 0.0
+        fee = ev_calc.fee_per_contract(ask)
+        effective_price = ask + fee
+        p = blended_fair if side == "yes" else (1.0 - blended_fair)
+        n = kelly.kelly_size_combo(
+            outcome_vec=np.asarray(outcome_vec),
+            blended_fair=p,
+            existing_positions=existing,
+            effective_price=effective_price,
+            bankroll=config.BANKROLL,
+            kelly_fraction=config.KELLY_FRACTION,
+        )
+        return n, ask
+
+    yes_n, yes_ask = kelly_for_side("yes")
+    no_n,  no_ask  = kelly_for_side("no")
+    return yes_n, no_n, yes_ask, no_ask
 
 
 # ------------------------------------------------------------------------ #
@@ -680,33 +797,78 @@ def _kelly_size_for_quote(quote: dict, fair: float) -> int:
 
 def _log_quote_decision(quote: dict, fair: float | None,
                          decision: str, reason: str | None = None,
-                         post_fee_ev: float | None = None):
+                         post_fee_ev: float | None = None,
+                         diag: dict | None = None):
+    """Write one quote evaluation outcome to quote_log.
+
+    `diag` carries walk-diagnostic context (competitor state, latency timestamps,
+    accept-error body, rfq terminal status) plus side-selection context
+    (chosen_side, ev_yes_pct, ev_no_pct) and the hedge-formation tracker
+    (hedge_added, hedge_original_side/price, hedge_new_price, hedge_current_fair,
+    hedge_projected_net). All keys are optional; missing keys are stored as NULL.
+    See db.py SCHEMA_SQL + MIGRATE_SQL for the column set.
+    """
+    d = diag or {}
     with db.connect() as con:
         con.execute(
             "INSERT INTO quote_log (quote_id, rfq_id, combo_market_ticker, "
             "creator_id, yes_bid_dollars, no_bid_dollars, blended_fair_at_eval, "
-            "post_fee_ev_pct, decision, reason_detail, observed_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            "post_fee_ev_pct, decision, reason_detail, observed_at, "
+            "competitor_count, best_competitor_no_bid_dollars, "
+            "accept_response_body, rfq_terminal_status, "
+            "quote_first_seen_at, accept_attempted_at, accept_response_at, "
+            "chosen_side, ev_yes_pct, ev_no_pct, "
+            "hedge_added, hedge_original_side, hedge_original_price, "
+            "hedge_new_price, hedge_current_fair, hedge_projected_net) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT DO NOTHING",
             [quote["id"], quote["rfq_id"], quote.get("market_ticker"),
              quote.get("creator_id"),
              float(quote["yes_bid_dollars"]) if quote.get("yes_bid_dollars") else None,
              float(quote["no_bid_dollars"]) if quote.get("no_bid_dollars") else None,
              fair, post_fee_ev, decision, reason,
-             datetime.now(timezone.utc)],
+             datetime.now(timezone.utc),
+             d.get("competitor_count"),
+             d.get("best_competitor_no_bid_dollars"),
+             d.get("accept_response_body"),
+             d.get("rfq_terminal_status"),
+             d.get("quote_first_seen_at"),
+             d.get("accept_attempted_at"),
+             d.get("accept_response_at"),
+             d.get("chosen_side"),
+             d.get("ev_yes_pct"),
+             d.get("ev_no_pct"),
+             d.get("hedge_added"),
+             d.get("hedge_original_side"),
+             d.get("hedge_original_price"),
+             d.get("hedge_new_price"),
+             d.get("hedge_current_fair"),
+             d.get("hedge_projected_net")],
         )
 
 
-def _evaluate_quote(quote: dict, dry_run: bool):
-    """Per-quote: evaluate gates, accept if all pass, log decision."""
+def _evaluate_quote(quote: dict, dry_run: bool,
+                    *,
+                    competitor_count: int | None = None,
+                    best_competitor_no_bid_dollars: float | None = None,
+                    quote_first_seen_at: datetime | None = None):
+    """Per-quote: evaluate gates, accept if all pass, log decision.
+
+    The kwargs starting with `competitor_count` carry walk-diagnostic context
+    computed by the caller from the full quotes-on-RFQ list. They are stored on
+    every decision row (declined and walked alike) so we can later distinguish
+    'we were too slow' from 'we were too cheap' on walks. See _log_quote_decision.
+    """
     rfq_id = quote["rfq_id"]
     with db.connect(read_only=True) as con:
         row = con.execute(
-            "SELECT combo_market_ticker, leg_set_hash, game_id "
+            "SELECT combo_market_ticker, leg_set_hash, game_id, intended_side "
             "FROM live_rfqs WHERE rfq_id=?", [rfq_id]
         ).fetchone()
     if not row:
         return
-    combo_market_ticker, leg_set_hash, game_id = row
+    combo_market_ticker, leg_set_hash, game_id, intended_side = row
     quote = {**quote, "market_ticker": combo_market_ticker}
 
     with db.connect(read_only=True) as con:
@@ -716,51 +878,185 @@ def _evaluate_quote(quote: dict, dry_run: bool):
         ).fetchone()
     legs_json = cc_row[0] if cc_row else "[]"
 
+    diag: dict = {
+        "competitor_count": competitor_count,
+        "best_competitor_no_bid_dollars": best_competitor_no_bid_dollars,
+        "quote_first_seen_at": quote_first_seen_at,
+    }
+
     with ACCEPT_LOCK:
         fair = _fresh_blended_fair(combo_market_ticker)
         if fair is None:
-            _log_quote_decision(quote, None, "declined_ev", reason="no_fresh_fair")
+            _log_quote_decision(quote, None, "declined_ev", reason="no_fresh_fair", diag=diag)
             return
 
         passed, decision = _all_per_accept_gates_pass(
             quote, fair, {"leg_set_hash": leg_set_hash, "game_id": game_id,
                           "legs_json": legs_json})
         if not passed:
-            _log_quote_decision(quote, fair, decision)
+            _log_quote_decision(quote, fair, decision, diag=diag)
             return
 
-        no_bid = float(quote.get("no_bid_dollars") or 0)
-        ev_dollars, ev_pct = ev_calc.post_fee_ev_buy_yes(fair, no_bid)
-        if ev_pct < config.MIN_EV_PCT:
-            _log_quote_decision(quote, fair, "declined_ev", post_fee_ev=ev_pct)
+        no_bid  = float(quote.get("no_bid_dollars")  or 0)
+        yes_bid = float(quote.get("yes_bid_dollars") or 0)
+
+        # Symmetric EV: evaluate both sides against current fair after fees.
+        ev_yes_dollars, ev_yes_pct = ev_calc.post_fee_ev_buy_yes(fair, no_bid)
+        ev_no_dollars,  ev_no_pct  = ev_calc.post_fee_ev_buy_no (fair, yes_bid)
+        yes_ok = ev_yes_pct >= config.MIN_EV_PCT and no_bid  > 0
+        no_ok  = ev_no_pct  >= config.MIN_EV_PCT and yes_bid > 0
+
+        diag["ev_yes_pct"] = ev_yes_pct
+        diag["ev_no_pct"]  = ev_no_pct
+
+        # Defensive math-invariant check. For any LP making money on the
+        # spread, yes_ask + no_ask + fees > 1, which means both gates can't
+        # pass simultaneously against the same fair. If this ever fires the
+        # fee model or fair-value pipeline has drifted — alert + decline.
+        if yes_ok and no_ok:
+            print(
+                f"[MATH_INVARIANT_BROKEN] both sides +EV from one LP: "
+                f"yes_ask={1-no_bid:.4f} no_ask={1-yes_bid:.4f} fair={fair:.4f} "
+                f"ev_yes_pct={ev_yes_pct:.4f} ev_no_pct={ev_no_pct:.4f}",
+                flush=True,
+            )
+            _log_quote_decision(quote, fair, "declined_math_invariant",
+                                 diag=diag)
             return
+
+        if not (yes_ok or no_ok):
+            # Log against the (better of the two) EV so historic queries that
+            # filter on post_fee_ev_pct still see meaningful numbers.
+            _log_quote_decision(quote, fair, "declined_ev",
+                                 post_fee_ev=max(ev_yes_pct, ev_no_pct),
+                                 diag=diag)
+            return
+
+        chosen = "yes" if yes_ok else "no"
+        chosen_ev_pct     = ev_yes_pct     if chosen == "yes" else ev_no_pct
+        chosen_ev_dollars = ev_yes_dollars if chosen == "yes" else ev_no_dollars
+        diag["chosen_side"] = chosen
+
+        # Per-RFQ intended_side gate. Each RFQ is created sized for one
+        # specific side (via two-RFQ Kelly create-time sizing). If the
+        # maker's +EV side doesn't match this RFQ's intent, decline — the
+        # sibling RFQ on the other side will handle that scenario at its
+        # correct size. NULL intended_side = legacy pre-deploy RFQ; treat
+        # as "no constraint" for backward compatibility.
+        if intended_side is not None and intended_side != chosen:
+            _log_quote_decision(quote, fair, "declined_side_mismatch",
+                                 post_fee_ev=chosen_ev_pct, diag=diag)
+            return
+
+        # Side-aware cooldown — moved here from the pre-eval gate sweep so we
+        # can look up the right (leg_set_hash, side) row. The other side
+        # remains eligible for its own RFQ.
+        with db.connect(read_only=True) as con:
+            cd_rows = con.execute(
+                "SELECT leg_set_hash, side, cooled_until FROM combo_cooldown"
+            ).fetchall()
+        cd_map = {(h, s): u for h, s, u in cd_rows}
+        if not risk.cooldown_ok(leg_set_hash, chosen, cd_map):
+            _log_quote_decision(quote, fair, "declined_cooldown",
+                                 post_fee_ev=chosen_ev_pct, diag=diag)
+            return
+
+        # Hedge-formation diagnostic (non-blocking). If we already hold the
+        # opposite side on this combo, tag this fill so we can monitor whether
+        # across-time hedges net to a real loss pattern. Forward-looking +EV
+        # math already says taking this side is correct given the held side;
+        # we just want to *measure* the cumulative effect.
+        opposite = "no" if chosen == "yes" else "yes"
+        with db.connect(read_only=True) as con:
+            held = con.execute(
+                "SELECT net_contracts, weighted_price FROM positions "
+                "WHERE combo_market_ticker=? AND side=? "
+                "AND net_contracts > 0 LIMIT 1",
+                [combo_market_ticker, opposite]
+            ).fetchone()
+        if held:
+            held_n, held_price = held
+            new_ask = (1 - no_bid) if chosen == "yes" else (1 - yes_bid)
+            diag["hedge_added"]          = True
+            diag["hedge_original_side"]  = opposite
+            diag["hedge_original_price"] = float(held_price)
+            diag["hedge_new_price"]      = new_ask
+            diag["hedge_current_fair"]   = fair
+            # Combined net P&L at settlement on the matched contracts, before
+            # fees: $1 payout minus the sum of asks paid on the two sides.
+            diag["hedge_projected_net"]  = 1.0 - held_price - new_ask
 
         if dry_run:
-            _log_quote_decision(quote, fair, "declined_dry_run", post_fee_ev=ev_pct)
+            _log_quote_decision(quote, fair, "declined_dry_run",
+                                 post_fee_ev=chosen_ev_pct, diag=diag)
             return
 
-        contracts = _kelly_size_for_quote(quote, fair)
+        # Kelly is a go/no-go gate at $1 RFQs (sizing happens upstream via
+        # target_cost_dollars). Pass `chosen` so we evaluate the right side.
+        contracts = _kelly_size_for_quote(quote, fair, side=chosen)
         if contracts <= 0:
             _log_quote_decision(quote, fair, "declined_kelly_zero",
-                                 post_fee_ev=ev_pct)
+                                 post_fee_ev=chosen_ev_pct, diag=diag)
             return
 
-        resp = rfq_client.accept_quote(quote["id"], contracts=contracts)
+        # Side semantics (INVERTED FROM INTUITION — verified empirically
+        # 2026-05-21 from a real fill):
+        #   accepted_side="yes" → Kalshi makes us BUY NO at no_ask
+        #   accepted_side="no"  → Kalshi makes us BUY YES at yes_ask
+        # The field names the side of the LP's two-sided quote we're
+        # accepting (the side the LP is bidding on); by accepting it we SELL
+        # them that side, leaving us long the opposite. So to open a LONG
+        # YES position we send accepted_side="no"; for LONG NO we send
+        # accepted_side="yes". See README "Accept semantics".
+        accepted_side = "no" if chosen == "yes" else "yes"
+        diag["accept_attempted_at"] = datetime.now(timezone.utc)
+        resp, err_body = rfq_client.accept_quote(quote["id"], accepted_side=accepted_side)
+        diag["accept_response_at"] = datetime.now(timezone.utc)
         if resp is None:
+            # Walked. Capture Kalshi's error body + a fresh look at the RFQ's
+            # terminal state. get_rfq_safe swallows any errors so diagnostics
+            # never crash the bot.
+            try:
+                diag["accept_response_body"] = (
+                    json.dumps(err_body) if err_body is not None else None
+                )
+            except (TypeError, ValueError):
+                diag["accept_response_body"] = str(err_body)
+            rfq_obj = rfq_client.get_rfq_safe(rfq_id)
+            diag["rfq_terminal_status"] = (
+                rfq_obj.get("status") if rfq_obj else None
+            )
             _log_quote_decision(quote, fair, "failed_quote_walked",
-                                 post_fee_ev=ev_pct)
+                                 post_fee_ev=chosen_ev_pct, diag=diag)
             return
 
-        # Post-accept fill reconciliation via /portfolio/positions
+        # Post-accept fill reconciliation via /portfolio/positions.
+        # `get_position_contracts` returns a SIGNED int: positive = long YES,
+        # negative = long NO (short YES). The absolute value is our actual
+        # position size; the sign is a sanity check against `chosen`.
+        # On API failure we fall back to the offered-size field on the side
+        # we filled against — for chosen="yes" we accepted="no" so the LP's
+        # NO-side offer is what filled (no_contracts_fp), and vice versa.
         try:
-            actual = rfq_client.get_position_contracts(combo_market_ticker)
+            signed = rfq_client.get_position_contracts(combo_market_ticker)
             _record_positions_api_result(True)
+            if (chosen == "yes" and signed < 0) or (chosen == "no" and signed > 0):
+                print(
+                    f"[position_direction_mismatch] chosen={chosen} but "
+                    f"signed_position={signed} on {combo_market_ticker}",
+                    flush=True,
+                )
+            actual = abs(signed)
         except Exception:
             _record_positions_api_result(False)
-            actual = contracts
+            if chosen == "yes":
+                fallback_fp = quote.get("no_contracts_fp") or quote.get("contracts_fp")
+            else:
+                fallback_fp = quote.get("yes_contracts_fp") or quote.get("contracts_fp")
+            actual = int(float(fallback_fp)) if fallback_fp else 0
 
-        yes_ask = 1.0 - no_bid
-        fee = ev_calc.fee_per_contract(yes_ask)
+        ask = (1.0 - no_bid) if chosen == "yes" else (1.0 - yes_bid)
+        fee = ev_calc.fee_per_contract(ask)
         with db.connect() as con:
             con.execute(
                 "INSERT INTO fills (fill_id, quote_id, rfq_id, combo_market_ticker, "
@@ -768,31 +1064,34 @@ def _evaluate_quote(quote: dict, dry_run: bool):
                 "blended_fair_at_fill, expected_ev_dollars, filled_at, raw_response) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [str(uuid.uuid4()), quote["id"], rfq_id, combo_market_ticker, game_id,
-                 "yes", actual, yes_ask, fee, fair, ev_dollars,
+                 chosen, actual, ask, fee, fair, chosen_ev_dollars,
                  datetime.now(timezone.utc), str(resp)],
             )
             con.execute(
-                "INSERT INTO positions (combo_market_ticker, game_id, "
+                "INSERT INTO positions (combo_market_ticker, side, game_id, "
                 "net_contracts, weighted_price, legs_json, updated_at) VALUES "
-                "(?, ?, ?, ?, ?, ?) ON CONFLICT (combo_market_ticker) DO UPDATE SET "
+                "(?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (combo_market_ticker, side) DO UPDATE SET "
                 "net_contracts = positions.net_contracts + EXCLUDED.net_contracts, "
                 "weighted_price = (positions.weighted_price * positions.net_contracts + "
                 "                  EXCLUDED.weighted_price * EXCLUDED.net_contracts) / "
                 "                 (positions.net_contracts + EXCLUDED.net_contracts), "
                 "updated_at = EXCLUDED.updated_at",
-                [combo_market_ticker, game_id, actual, yes_ask, legs_json,
+                [combo_market_ticker, chosen, game_id, actual, ask, legs_json,
                  datetime.now(timezone.utc)],
             )
             cooled_until = datetime.now(timezone.utc) + timedelta(seconds=config.COMBO_COOLDOWN_SEC)
             con.execute(
-                "INSERT INTO combo_cooldown (leg_set_hash, game_id, cooled_until, reason) "
-                "VALUES (?, ?, ?, ?) ON CONFLICT (leg_set_hash) DO UPDATE SET "
+                "INSERT INTO combo_cooldown (leg_set_hash, side, game_id, cooled_until, reason) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (leg_set_hash, side) DO UPDATE SET "
                 "cooled_until = EXCLUDED.cooled_until",
-                [leg_set_hash, game_id, cooled_until, "post_accept"],
+                [leg_set_hash, chosen, game_id, cooled_until, "post_accept"],
             )
-        _log_quote_decision(quote, fair, "accepted", post_fee_ev=ev_pct)
+        _log_quote_decision(quote, fair, "accepted",
+                             post_fee_ev=chosen_ev_pct, diag=diag)
         notify.fill(rfq_id=rfq_id, combo_market_ticker=combo_market_ticker,
-                    contracts=actual, price=yes_ask, ev_pct=ev_pct)
+                    contracts=actual, price=ask, ev_pct=chosen_ev_pct)
 
 
 # ------------------------------------------------------------------------ #
@@ -800,8 +1099,23 @@ def _evaluate_quote(quote: dict, dry_run: bool):
 # ------------------------------------------------------------------------ #
 
 def mint_and_create_rfq(candidate: combo_enumerator.ComboCandidate,
-                         target_cost_dollars: float = 1.0) -> tuple[str, str]:
-    """Mint combo ticker (or cache hit) + create RFQ. Returns (rfq_id, combo_ticker)."""
+                         target_cost_dollars: float,
+                         replace_existing: bool = False) -> tuple[str, str]:
+    """Mint combo ticker (or cache hit) + create RFQ with a dollar budget.
+    Returns (rfq_id, combo_ticker).
+
+    Sizes via `target_cost_dollars` (= Kelly's contract count × worst-
+    acceptable price for the intended side). When the maker quotes better
+    than worst-case, the dollar budget naturally translates into more
+    contracts at the lower price, closer to ideal Kelly. The MIN_EV_PCT
+    gate still rejects quotes worse than the EV cliff, and the per-RFQ
+    intended_side gate (in _evaluate_quote) declines quotes that favor
+    the opposite side.
+
+    `replace_existing` bypasses Kalshi's per-(user, market_ticker) RFQ
+    dedup — required for the second-side RFQ on the same combo ticker.
+    See rfq_client.create_rfq for the (misnamed-flag) details.
+    """
     legs = list(candidate.legs)
 
     with db.connect(read_only=True) as con:
@@ -824,16 +1138,26 @@ def mint_and_create_rfq(candidate: combo_enumerator.ComboCandidate,
                  combo_ticker, combo_event, json.dumps(legs), candidate.game_id],
             )
 
-    rfq_id = rfq_client.create_rfq(combo_ticker, target_cost_dollars=target_cost_dollars)
+    rfq_id = rfq_client.create_rfq(
+        combo_ticker,
+        target_cost_dollars=target_cost_dollars,
+        replace_existing=replace_existing,
+    )
     return rfq_id, combo_ticker
 
 
 def _refresh_rfqs(candidates: list[combo_enumerator.ComboCandidate],
                    fair_scores: dict[str, tuple[float, float]],
+                   kelly_sizes: dict[str, tuple[int, int, float, float]],
                    dry_run: bool):
-    """Continuous priority-queue pipeline.
+    """Continuous priority-queue pipeline. Per candidate, up to TWO RFQs
+    are sent — one per side with positive Kelly — each tagged with its
+    intended_side.
 
-    fair_scores: leg_set_hash → (blended_fair, kalshi_ref).
+    Args:
+      fair_scores: leg_set_hash → (blended_fair, kalshi_ref).
+      kelly_sizes: leg_set_hash → (kelly_yes_n, kelly_no_n, worst_yes_ask,
+        worst_no_ask). Sides with 0 Kelly count or 0 worst-ask are skipped.
     """
     scored = [(c, *fair_scores[c.leg_set_hash])
               for c in candidates if c.leg_set_hash in fair_scores]
@@ -841,14 +1165,21 @@ def _refresh_rfqs(candidates: list[combo_enumerator.ComboCandidate],
     target = ranked[: _max_live_rfqs()]
     target_hashes = {c.leg_set_hash for c in target}
 
+    # Dedup is now keyed by (leg_set_hash, intended_side). NULL legacy rows
+    # (pre-deploy RFQs) are treated as having no constraint and are kept
+    # alive — we don't reissue against them.
     with db.connect(read_only=True) as con:
         live = con.execute(
-            "SELECT rfq_id, leg_set_hash FROM live_rfqs WHERE status='open'"
+            "SELECT rfq_id, leg_set_hash, intended_side FROM live_rfqs "
+            "WHERE status='open'"
         ).fetchall()
-    live_hashes = {h: rid for rid, h in live}
+    live_pairs: dict[tuple[str, str | None], str] = {
+        (h, s): rid for rid, h, s in live
+    }
 
-    # Drop: in DB but not in target.
-    for h, rid in list(live_hashes.items()):
+    # Drop: any live RFQ whose leg_set_hash isn't in the new target list.
+    # Iterate over a copy because we mutate the dict for retries.
+    for (h, _side), rid in list(live_pairs.items()):
         if h not in target_hashes:
             try:
                 rfq_client.delete_rfq(rid)
@@ -861,25 +1192,74 @@ def _refresh_rfqs(candidates: list[combo_enumerator.ComboCandidate],
             except Exception as e:
                 print(f"  drop {rid} failed: {e}", flush=True)
 
-    # Add: in target but not in DB.
+    # Add: for each target candidate, emit up to 2 RFQs (one per side with
+    # positive Kelly). Skip any (leg_set_hash, side) pair already live.
+    skipped_kelly_zero = 0
+    skipped_too_small = 0
+    added = 0
     for c in target:
-        if c.leg_set_hash in live_hashes:
+        ks = kelly_sizes.get(c.leg_set_hash)
+        if ks is None:
             continue
-        try:
-            rid, combo_ticker = mint_and_create_rfq(c)
-            blended_fair, kalshi_ref = fair_scores[c.leg_set_hash]
-            edge = combo_enumerator.edge_score(blended_fair, kalshi_ref)
-            with db.connect() as con:
-                con.execute(
-                    "INSERT INTO live_rfqs (rfq_id, combo_market_ticker, leg_set_hash, "
-                    "game_id, blended_fair_at_submit, kalshi_ref_at_submit, "
-                    "edge_at_submit, status, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    [rid, combo_ticker, c.leg_set_hash, c.game_id,
-                     blended_fair, kalshi_ref, edge, "open",
-                     datetime.now(timezone.utc)],
+        yes_n, no_n, yes_ask, no_ask = ks
+        sides: list[tuple[str, int, float]] = []
+        if yes_n > 0 and yes_ask > 0:
+            sides.append(("yes", yes_n, yes_ask))
+        if no_n > 0 and no_ask > 0:
+            sides.append(("no", no_n, no_ask))
+        if not sides:
+            skipped_kelly_zero += 1
+            continue
+        blended_fair, kalshi_ref = fair_scores[c.leg_set_hash]
+        edge = combo_enumerator.edge_score(blended_fair, kalshi_ref)
+        # Track whether ANY side already has a live RFQ on this combo
+        # ticker — the second side we send must use replace_existing=True
+        # to bypass Kalshi's per-(user, market_ticker) RFQ dedup. Probed
+        # 2026-05-24: with replace_existing=True both RFQs coexist as
+        # status=open; with False the second 409s.
+        combo_has_live_rfq = any(
+            (c.leg_set_hash, _s) in live_pairs for _s in ("yes", "no")
+        )
+        sent_this_cycle_for_combo = combo_has_live_rfq
+        for side, n, ask in sides:
+            if (c.leg_set_hash, side) in live_pairs:
+                continue
+            target_cost = round(n * ask, 2)
+            if target_cost < 0.01:
+                skipped_too_small += 1
+                continue
+            try:
+                rid, combo_ticker = mint_and_create_rfq(
+                    c,
+                    target_cost_dollars=target_cost,
+                    replace_existing=sent_this_cycle_for_combo,
                 )
-        except Exception as e:
-            print(f"  add {c.leg_set_hash[:8]} failed: {e}", flush=True)
+                sent_this_cycle_for_combo = True
+                with db.connect() as con:
+                    con.execute(
+                        "INSERT INTO live_rfqs (rfq_id, combo_market_ticker, "
+                        "leg_set_hash, game_id, blended_fair_at_submit, "
+                        "kalshi_ref_at_submit, edge_at_submit, intended_side, "
+                        "kelly_yes_n_at_submit, kelly_no_n_at_submit, "
+                        "worst_yes_ask_at_submit, worst_no_ask_at_submit, "
+                        "target_cost_dollars_at_submit, "
+                        "status, submitted_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        [rid, combo_ticker, c.leg_set_hash, c.game_id,
+                         blended_fair, kalshi_ref, edge, side,
+                         int(yes_n), int(no_n),
+                         float(yes_ask), float(no_ask),
+                         float(target_cost),
+                         "open", datetime.now(timezone.utc)],
+                    )
+                added += 1
+            except Exception as e:
+                print(f"  add {c.leg_set_hash[:8]}/{side} failed: {e}",
+                      flush=True)
+    if skipped_kelly_zero or skipped_too_small or added:
+        print(f"  rfq_refresh: add={added} "
+              f"skipped_kelly_zero={skipped_kelly_zero} "
+              f"skipped_too_small={skipped_too_small}", flush=True)
 
 
 # ------------------------------------------------------------------------ #
@@ -896,16 +1276,39 @@ def _poll_all_live_rfqs(dry_run: bool):
             quotes = rfq_client.poll_quotes(rid, user_id=config.KALSHI_USER_ID or "")
         except Exception:
             continue
-        for q in quotes:
-            if q.get("status") != "open":
-                continue
+        # Stamp "we first saw this batch" once per poll_quotes call. All quotes
+        # in `quotes` arrived in the same response, so they share the same
+        # observed-arrival time from the bot's perspective.
+        first_seen_at = datetime.now(timezone.utc)
+        open_quotes = [q for q in quotes if q.get("status") == "open"]
+        for q in open_quotes:
+            # Competitor stats relative to *this* quote: every OTHER open quote
+            # on the same RFQ. Used in walk diagnostics to tell whether a
+            # cheaper/better quote was sitting right there when we walked on
+            # this one.
+            others = [oq for oq in open_quotes if oq.get("id") != q.get("id")]
+            competitor_count = len(others)
+            other_no_bids = [
+                float(oq["no_bid_dollars"]) for oq in others
+                if oq.get("no_bid_dollars") is not None
+            ]
+            # Higher no_bid_dollars ⇒ lower yes_ask ⇒ better for the buyer
+            # (this bot is the RFQ creator buying YES). "Best" = max.
+            best_competitor_no_bid = max(other_no_bids) if other_no_bids else None
+
             with db.connect(read_only=True) as con:
                 already = con.execute(
                     "SELECT 1 FROM quote_log WHERE quote_id=?", [q["id"]]
                 ).fetchone()
             if already:
                 continue
-            _evaluate_quote(q, dry_run=dry_run)
+            _evaluate_quote(
+                q,
+                dry_run=dry_run,
+                competitor_count=competitor_count,
+                best_competitor_no_bid_dollars=best_competitor_no_bid,
+                quote_first_seen_at=first_seen_at,
+            )
 
 
 # ------------------------------------------------------------------------ #
@@ -1014,13 +1417,23 @@ def _resolve_game_id(home_code: str, away_code: str) -> str | None:
 
 
 def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandidate],
-                                                dict[str, tuple[float, float]]]:
+                                                dict[str, tuple[float, float]],
+                                                dict[str, tuple[int, int, float, float]]]:
+    """Returns (candidates, fair_scores, kelly_sizes) where:
+      - fair_scores[leg_set_hash] = (blended_fair, kalshi_ref) for ranking
+      - kelly_sizes[leg_set_hash] = (kelly_yes_n, kelly_no_n,
+        worst_yes_ask, worst_no_ask) — per-side Kelly state for two-RFQ
+        creation in _refresh_rfqs. Candidates with both sides zero are
+        still ranked (so the cycle counts what was considered), but
+        _refresh_rfqs will skip them at create time.
+    """
     status, body, _ = auth_client.api(
         "GET", "/events?series_ticker=KXMLBGAME&status=open&limit=50")
     events = body.get("events", []) if status == 200 and isinstance(body, dict) else []
 
     candidates_all: list[combo_enumerator.ComboCandidate] = []
     fair_scores: dict[str, tuple[float, float]] = {}
+    kelly_sizes: dict[str, tuple[int, int, float, float]] = {}
 
     for ev in events:
         event_ticker = ev.get("event_ticker", "")
@@ -1062,10 +1475,13 @@ def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandida
             if not (config.MIN_FAIR_PROB <= blended <= config.MAX_FAIR_PROB):
                 continue
             kalshi_ref = _kalshi_last_price(cand.legs[0]["market_ticker"])
+            yes_n, no_n, yes_ask, no_ask = _kelly_size_for_candidate(
+                game_id, typed, samples, blended)
             candidates_all.append(cand)
             fair_scores[cand.leg_set_hash] = (blended, kalshi_ref)
+            kelly_sizes[cand.leg_set_hash] = (yes_n, no_n, yes_ask, no_ask)
 
-    return candidates_all, fair_scores
+    return candidates_all, fair_scores, kelly_sizes
 
 
 # ------------------------------------------------------------------------ #
@@ -1120,8 +1536,8 @@ def main_loop(dry_run: bool):
             if now - last_rfq_refresh >= config.RFQ_REFRESH_SEC:
                 t_ref = time.time()
                 try:
-                    candidates, fair_scores = _enumerate_and_score_all_games()
-                    _refresh_rfqs(candidates, fair_scores, dry_run=dry_run)
+                    candidates, fair_scores, kelly_sizes = _enumerate_and_score_all_games()
+                    _refresh_rfqs(candidates, fair_scores, kelly_sizes, dry_run=dry_run)
                     print(f"  rfq_refresh: {len(candidates)} candidates "
                           f"({time.time()-t_ref:.1f}s)", flush=True)
                 except Exception as e:
