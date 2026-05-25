@@ -1474,18 +1474,42 @@ format_market_for_card <- function(market, bet_on, line, home_team, away_team) {
 
 # Returns character vector of WZ account labels in registry order:
 # primary (no suffix) first, then alphabetical by suffix. Mirrors
-# wagerzon_odds.wagerzon_accounts.list_accounts() — uses Sys.getenv()
-# rather than reading bet_logger/.env so the path-resolution issue is
-# avoided entirely. By the time the dashboard launches, the env file
-# is already loaded into the process environment. nzchar() guards
-# against env vars that are set but empty (e.g. commented-out in .env).
+# wagerzon_odds.wagerzon_accounts.list_accounts().
+#
+# SOURCE OF TRUTH IS bet_logger/.env, not Sys.getenv(). The R render
+# process is spawned without bet_logger/.env loaded — only
+# WAGERZON_USERNAME leaks in via ~/.Renviron, NOT WAGERZONJ/WAGERZONC.
+# Relying on Sys.getenv() alone silently returned just c("Wagerzon"),
+# which made every WagerzonJ/WagerzonC placement fail the is_wz_placed
+# check and hid the "+ another" affordance entirely. We read the .env
+# file directly and union in any matching process-env vars as a fallback.
 .wagerzon_account_labels <- function() {
+  suffixes <- character(0)
+
+  # Primary source: bet_logger/.env (repo_root/bet_logger/.env).
+  env_file <- file.path(dirname(dirname(DASHBOARD_DIR)), "bet_logger", ".env")
+  if (file.exists(env_file)) {
+    lines <- readLines(env_file, warn = FALSE)
+    fm <- regmatches(
+      lines,
+      regexec("^[[:space:]]*WAGERZON([A-Z]*)_USERNAME[[:space:]]*=[[:space:]]*(.*)$", lines))
+    for (x in fm) {
+      # x = c(full, suffix, value); keep only entries with a non-empty value
+      if (length(x) >= 3 && nzchar(trimws(gsub('["\']', "", x[[3]])))) {
+        suffixes <- c(suffixes, x[[2]])
+      }
+    }
+  }
+
+  # Fallback / supplement: process environment (covers setups where the
+  # env is exported but the file is absent).
   env_vars <- names(Sys.getenv())
-  m <- regmatches(env_vars, regexec("^WAGERZON([A-Z]*)_USERNAME$", env_vars))
-  suffixes <- vapply(m,
-    function(x) if (length(x) >= 2 && nzchar(Sys.getenv(x[[1]]))) x[[2]] else NA_character_,
-    character(1))
-  suffixes <- suffixes[!is.na(suffixes)]
+  em <- regmatches(env_vars, regexec("^WAGERZON([A-Z]*)_USERNAME$", env_vars))
+  for (x in em) {
+    if (length(x) >= 2 && nzchar(Sys.getenv(x[[1]]))) suffixes <- c(suffixes, x[[2]])
+  }
+
+  suffixes <- unique(suffixes)
   primary <- if ("" %in% suffixes) "Wagerzon" else character(0)
   rest    <- sort(setdiff(suffixes, ""))
   c(primary, paste0("Wagerzon", rest))
