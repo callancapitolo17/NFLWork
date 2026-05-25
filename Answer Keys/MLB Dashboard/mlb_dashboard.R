@@ -38,6 +38,8 @@ source(file.path(DASHBOARD_DIR, "..", "conditional_kelly.R"))
 # preserved inside book_cell.R as a deprecation shim so the legacy bets
 # table fallback still works during the V8 transition.
 source(file.path(DASHBOARD_DIR, "book_cell.R"))
+# Placed-bet strip renderer (multi-account chips + "+ another" affordance)
+source(file.path(DASHBOARD_DIR, "placed_strip.R"))
 OUTPUT_PATH <- file.path(DASHBOARD_DIR, "report.html")
 
 # =============================================================================
@@ -845,6 +847,10 @@ create_bets_table_legacy <- function(all_bets, placed_bets) {
     if (nrow(placed_bets) > 0) placed_bets$recommended_size else numeric(),
     if (nrow(placed_bets) > 0) placed_bets$bet_hash else character()
   )
+  placed_account <- setNames(
+    if (nrow(placed_bets) > 0 && "account" %in% names(placed_bets)) placed_bets$account else character(),
+    if (nrow(placed_bets) > 0 && "account" %in% names(placed_bets)) placed_bets$bet_hash else character()
+  )
 
   # Find same-game bets for each bet
   same_game_info <- lapply(seq_len(nrow(all_bets)), function(i) {
@@ -881,6 +887,7 @@ create_bets_table_legacy <- function(all_bets, placed_bets) {
       # Fill status: compare actual vs current bet_size (not stale placed_rec)
       placed_actual = ifelse(is_placed, placed_actual[bet_hash], NA_real_),
       placed_rec = ifelse(is_placed, placed_recommended[bet_hash], NA_real_),
+      placed_account_val = ifelse(is_placed, placed_account[bet_hash], NA_character_),
       fill_status = case_when(
         !is_placed ~ "not_placed",
         is.na(placed_actual) ~ "placed",
@@ -939,7 +946,7 @@ create_bets_table_legacy <- function(all_bets, placed_bets) {
     select(
       bet_hash, id, warning, game, game_time, market, market_display, bet_on, line, line_display,
       ev_pct, ev_display, odds, odds_display, bet_size, size_display,
-      bookmaker_key, is_placed, fill_status, fill_diff, placed_actual, placed_rec,
+      bookmaker_key, is_placed, fill_status, fill_diff, placed_actual, placed_rec, placed_account_val,
       home_team, away_team, pt_start_time, prob,
       has_correlation, correlation_level, correlation_tooltip
     )
@@ -971,6 +978,7 @@ create_bets_table_legacy <- function(all_bets, placed_bets) {
       fill_diff = colDef(show = FALSE),
       placed_actual = colDef(show = FALSE),
       placed_rec = colDef(show = FALSE),
+      placed_account_val = colDef(show = FALSE),
       has_correlation = colDef(show = FALSE),
       correlation_level = colDef(show = FALSE),
       correlation_tooltip = colDef(show = FALSE),
@@ -1074,13 +1082,14 @@ create_bets_table_legacy <- function(all_bets, placed_bets) {
         cell = function(value, index) {
           row <- table_data[index, ]
           data_attrs <- sprintf(
-            'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-market="%s" data-bet-on="%s" data-line="%s" data-prob="%s" data-ev="%s" data-size="%s" data-odds="%s" data-book="%s" data-actual="%s" data-fill-status="%s"',
+            'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-market="%s" data-bet-on="%s" data-line="%s" data-prob="%s" data-ev="%s" data-size="%s" data-odds="%s" data-book="%s" data-actual="%s" data-fill-status="%s" data-account="%s"',
             row$bet_hash, row$id, row$home_team, row$away_team,
             as.character(row$pt_start_time), row$market, row$bet_on,
             ifelse(is.na(row$line), "", row$line),
             row$prob, row$ev_pct / 100, row$bet_size, row$odds, row$bookmaker_key,
             ifelse(is.na(row$placed_actual), "", row$placed_actual),
-            row$fill_status
+            row$fill_status,
+            ifelse(is.na(row$placed_account_val), "", row$placed_account_val)
           )
 
           status <- row$fill_status
@@ -1305,7 +1314,8 @@ render_bet_card <- function(bet_title, market_label, matchup, tipoff, hero_html,
                              pickside_label, pickside_wide_row,
                              oppside_label, oppside_wide_row,
                              pick_book, side_word, is_totals,
-                             corr_badge_html = "") {
+                             corr_badge_html = "",
+                             card_data_attrs = "") {
   bet_line <- sprintf(
     '<div class="bet-line">
        <span class="primary">%s</span>
@@ -1383,7 +1393,12 @@ render_bet_card <- function(bet_title, market_label, matchup, tipoff, hero_html,
                        '<div class="price-grid show-fair">',
                        col_hdrs, pick_row, opp_row, '</div>')
 
-  paste0('<div class="bet-card-v8">', bet_line, matchup_line, hero_html, grid_html, '</div>')
+  card_open <- if (nzchar(card_data_attrs)) {
+    paste0('<div class="bet-card-v8" ', card_data_attrs, '>')
+  } else {
+    '<div class="bet-card-v8">'
+  }
+  paste0(card_open, bet_line, matchup_line, hero_html, grid_html, '</div>')
 }
 
 # -----------------------------------------------------------------------------
@@ -1457,6 +1472,25 @@ format_market_for_card <- function(market, bet_on, line, home_team, away_team) {
        market_label = paste(market_kind, period, sep = " · "))
 }
 
+# Returns character vector of WZ account labels in registry order:
+# primary (no suffix) first, then alphabetical by suffix. Mirrors
+# wagerzon_odds.wagerzon_accounts.list_accounts() — uses Sys.getenv()
+# rather than reading bet_logger/.env so the path-resolution issue is
+# avoided entirely. By the time the dashboard launches, the env file
+# is already loaded into the process environment. nzchar() guards
+# against env vars that are set but empty (e.g. commented-out in .env).
+.wagerzon_account_labels <- function() {
+  env_vars <- names(Sys.getenv())
+  m <- regmatches(env_vars, regexec("^WAGERZON([A-Z]*)_USERNAME$", env_vars))
+  suffixes <- vapply(m,
+    function(x) if (length(x) >= 2 && nzchar(Sys.getenv(x[[1]]))) x[[2]] else NA_character_,
+    character(1))
+  suffixes <- suffixes[!is.na(suffixes)]
+  primary <- if ("" %in% suffixes) "Wagerzon" else character(0)
+  rest    <- sort(setdiff(suffixes, ""))
+  c(primary, paste0("Wagerzon", rest))
+}
+
 # create_bets_table — card layout (Task 11 of odds-screen rebuild)
 # -----------------------------------------------------------------------------
 # Replaces the flat per-bet table with a card-per-bet layout that shows the
@@ -1475,23 +1509,49 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
     return(create_bets_table_legacy(all_bets, placed_bets))
   }
 
-  placed_hashes <- if (nrow(placed_bets) > 0) placed_bets$bet_hash else character()
+  # WZ account labels — captured once for the whole render pass.
+  wz_labels <- .wagerzon_account_labels()
 
-  placed_status_lookup <- if (nrow(placed_bets) > 0 && "status" %in% names(placed_bets)) {
-    setNames(placed_bets$status, placed_bets$bet_hash)
+  # --- chips_by_hash: one entry per successful placement (status == 'placed') ---
+  # Under the composite PK (bet_hash, account), multiple rows can share a
+  # bet_hash. Group them here so render_placed_strip gets all chips at once.
+  placed_only <- if (nrow(placed_bets) > 0 && "status" %in% names(placed_bets)) {
+    placed_bets[!is.na(placed_bets$status) & placed_bets$status == "placed", ]
+  } else placed_bets[FALSE, ]
+  chips_by_hash <- if (nrow(placed_only) > 0) {
+    split(placed_only, placed_only$bet_hash)
+  } else list()
+
+  # placed_hashes now reflects ANY successful placement (drives is_placed flag).
+  placed_hashes <- names(chips_by_hash)
+
+  # --- error/retry lookups: only look at non-placed rows so a successful chip
+  # on account A doesn't shadow a failed attempt on account B in the UI. ---
+  non_placed <- if (nrow(placed_bets) > 0 && "status" %in% names(placed_bets)) {
+    placed_bets[is.na(placed_bets$status) | placed_bets$status != "placed", ]
+  } else placed_bets[FALSE, ]
+
+  # NOTE: non_placed can contain multiple rows for the same bet_hash
+  # (one per account that hit a different error). setNames(..., bet_hash)
+  # silently keeps the last row's values. Acceptable for v1: the error
+  # chip shows one arbitrary status. If multi-account error display becomes
+  # important, replace with a per-account error list rendered alongside
+  # the chip strip.
+  placed_status_lookup <- if (nrow(non_placed) > 0 && "status" %in% names(non_placed)) {
+    setNames(non_placed$status, non_placed$bet_hash)
   } else setNames(character(), character())
-  placed_ticket_lookup <- if (nrow(placed_bets) > 0 && "ticket_number" %in% names(placed_bets)) {
-    setNames(placed_bets$ticket_number, placed_bets$bet_hash)
+  placed_ticket_lookup <- if (nrow(non_placed) > 0 && "ticket_number" %in% names(non_placed)) {
+    setNames(non_placed$ticket_number, non_placed$bet_hash)
   } else setNames(character(), character())
-  placed_error_lookup <- if (nrow(placed_bets) > 0 && "error_msg" %in% names(placed_bets)) {
-    setNames(placed_bets$error_msg, placed_bets$bet_hash)
+  placed_error_lookup <- if (nrow(non_placed) > 0 && "error_msg" %in% names(non_placed)) {
+    setNames(non_placed$error_msg, non_placed$bet_hash)
   } else setNames(character(), character())
-  placed_error_key_lookup <- if (nrow(placed_bets) > 0 && "error_msg_key" %in% names(placed_bets)) {
-    setNames(placed_bets$error_msg_key, placed_bets$bet_hash)
+  placed_error_key_lookup <- if (nrow(non_placed) > 0 && "error_msg_key" %in% names(non_placed)) {
+    setNames(non_placed$error_msg_key, non_placed$bet_hash)
   } else setNames(character(), character())
   placed_actual_lookup <- setNames(
-    if (nrow(placed_bets) > 0 && "actual_size" %in% names(placed_bets)) placed_bets$actual_size else numeric(),
-    if (nrow(placed_bets) > 0) placed_bets$bet_hash else character()
+    if (nrow(non_placed) > 0 && "actual_size" %in% names(non_placed)) non_placed$actual_size else numeric(),
+    if (nrow(non_placed) > 0) non_placed$bet_hash else character()
   )
 
   same_game_info <- lapply(seq_len(nrow(all_bets)), function(i) {
@@ -1531,13 +1591,22 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
     ) %>%
     arrange(desc(ev))
 
-  placed_actual <- if (nrow(placed_bets) > 0 && "actual_size" %in% names(placed_bets)) {
-    setNames(placed_bets$actual_size, placed_bets$bet_hash)
+  # Sum actual_size across all chips for this bet_hash. fill_status is
+  # then computed against bet_size (Kelly model recommendation). If summed
+  # actual > bet_size (e.g. user placed more than Kelly via multi-account),
+  # the card simply shows "placed" — no distinction between filled-exactly
+  # and over-filled in v1. Spec deliberately scopes out the stacking case.
+  placed_actual_by_hash <- if (length(chips_by_hash) > 0) {
+    vapply(chips_by_hash, function(df) {
+      vals <- df$actual_size
+      if (length(vals) == 0 || all(is.na(vals))) NA_real_
+      else sum(vals, na.rm = TRUE)
+    }, numeric(1))
   } else setNames(numeric(), character())
 
   table_data <- table_data %>%
     mutate(
-      placed_actual = ifelse(is_placed, placed_actual[bet_hash], NA_real_),
+      placed_actual = ifelse(is_placed, placed_actual_by_hash[bet_hash], NA_real_),
       fill_status = case_when(
         !is_placed                                   ~ "not_placed",
         is.na(placed_actual)                          ~ "placed",
@@ -1612,24 +1681,50 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
     # Action button HTML
     status        <- placed_status_lookup[row$bet_hash]
     ticket        <- placed_ticket_lookup[row$bet_hash]
-    placed_actual <- placed_actual_lookup[row$bet_hash]
+    # For placed cards, read actual from placed_actual_by_hash (summed across all
+    # chips for this hash). non_placed has no row for successfully placed bets, so
+    # placed_actual_lookup[hash] would always be NA for them — leaving data-actual
+    # blank and breaking the JS fill-status display.
+    placed_actual <- if (isTRUE(row$is_placed)) {
+      placed_actual_by_hash[[row$bet_hash]]
+    } else {
+      placed_actual_lookup[row$bet_hash]
+    }
+    # For updateBet (partial-fill): the server /api/update-bet requires account
+    # (composite PK). Source the first chip's account when placed; empty string
+    # for unplaced bets (no chip yet). JS updateBet sends || null as fallback so
+    # a missing data-account will 400 at the server rather than silently mutate
+    # the wrong row.
+    placed_account_value <- if (isTRUE(row$is_placed) && !is.null(chips_by_hash[[row$bet_hash]])) {
+      chips_by_hash[[row$bet_hash]]$account[1]
+    } else ""
     data_attrs <- sprintf(
-      'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-market="%s" data-bet-on="%s" data-line="%s" data-prob="%s" data-ev="%s" data-size="%s" data-model-size="%s" data-odds="%s" data-book="%s" data-actual="%s" data-fill-status="%s"',
+      'data-hash="%s" data-game-id="%s" data-home="%s" data-away="%s" data-time="%s" data-market="%s" data-bet-on="%s" data-line="%s" data-prob="%s" data-ev="%s" data-size="%s" data-model-size="%s" data-odds="%s" data-book="%s" data-actual="%s" data-fill-status="%s" data-account="%s"',
       row$bet_hash, row$id, row$home_team, row$away_team,
       as.character(row$pt_start_time), row$market, row$bet_on,
       ifelse(is.na(row$line), "", row$line),
       row$prob, row$ev, row$bet_size, row$bet_size, row$odds, row$bookmaker_key,
       ifelse(is.na(placed_actual), "", placed_actual),
-      row$fill_status
+      row$fill_status,
+      placed_account_value
     )
 
     action_html <- if (!is.na(row$fill_status) && row$fill_status == "partial") {
       sprintf('<button class="btn-partial" onclick="updateBet(this)" %s>Partial -$%.0f</button>',
               data_attrs, row$fill_diff)
-    } else if (!is.na(status) && status == "placed") {
-      label <- if (!is.na(ticket) && nchar(ticket) > 0)
-        sprintf("placed &middot; #%s", htmltools::htmlEscape(ticket)) else "placed"
-      sprintf('<span class="placed-bet-label" %s>%s</span>', data_attrs, label)
+    } else if (!is.null(chips_by_hash[[row$bet_hash]])) {
+      chips_df <- chips_by_hash[[row$bet_hash]]
+      chips_list <- lapply(seq_len(nrow(chips_df)), function(i) {
+        list(account = chips_df$account[i],
+             risk    = chips_df$actual_size[i],
+             ticket  = chips_df$ticket_number[i])
+      })
+      render_placed_strip(
+        chips           = chips_list,
+        all_wz_accounts = wz_labels,
+        bet_hash        = row$bet_hash,
+        book            = row$bookmaker_key
+      )
     } else if (!is.na(status) && status %in%
                c("price_moved","rejected","auth_error","network_error","orphaned")) {
       err_msg <- placed_error_lookup[row$bet_hash]
@@ -1693,6 +1788,46 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
       action_html    = action_html
     )
 
+    # Card-root data-* attrs used by JS addAnother / placeAnother to rebuild
+    # the editable hero without re-fetching bet metadata. NA-guarded so JS
+    # never sees the string "NA" (Number("NA") == NaN in JS).
+    card_pick_odds_str  <- ifelse(is.na(row$odds),      "",
+                                  ifelse(row$odds > 0,
+                                         sprintf("+%d", as.integer(row$odds)),
+                                         sprintf("%d",  as.integer(row$odds))))
+    card_fair_odds_str  <- ifelse(is.na(row$fair_odds), "",
+                                  ifelse(row$fair_odds > 0,
+                                         sprintf("+%d", as.integer(row$fair_odds)),
+                                         sprintf("%d",  as.integer(row$fair_odds))))
+    card_ev_pct_str     <- ifelse(is.na(row$ev_pct), "",
+                                  ifelse(row$ev_pct >= 0,
+                                         sprintf("+%.1f%%", row$ev_pct),
+                                         sprintf("%.1f%%",  row$ev_pct)))
+    card_data_attrs <- sprintf(
+      paste0(
+        'data-pick-book="%s" data-pick-odds="%s" data-pick-odds-raw="%s" data-fair-odds="%s" data-ev-pct="%s"',
+        ' data-bet-hash="%s" data-bet-on="%s" data-line="%s" data-market="%s"',
+        ' data-game-id="%s" data-home="%s" data-away="%s" data-time="%s"',
+        ' data-prob="%s" data-ev="%s" data-model-size="%s"'
+      ),
+      htmltools::htmlEscape(row$bookmaker_key),
+      card_pick_odds_str,
+      ifelse(is.na(row$odds), "", as.integer(row$odds)),
+      card_fair_odds_str,
+      card_ev_pct_str,
+      htmltools::htmlEscape(row$bet_hash),
+      htmltools::htmlEscape(row$bet_on),
+      ifelse(is.na(row$line), "", row$line),
+      htmltools::htmlEscape(row$market),
+      htmltools::htmlEscape(row$id),
+      htmltools::htmlEscape(row$home_team),
+      htmltools::htmlEscape(row$away_team),
+      htmltools::htmlEscape(as.character(row$pt_start_time)),
+      ifelse(is.na(row$prob), "", row$prob),
+      ifelse(is.na(row$ev), "", row$ev),
+      ifelse(is.na(row$bet_size), "", row$bet_size)
+    )
+
     render_bet_card(
       bet_title          = title_parts$bet_title,
       market_label       = title_parts$market_label,
@@ -1706,7 +1841,8 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
       pick_book          = row$bookmaker_key,
       side_word          = side_word,
       is_totals          = is_totals_market,
-      corr_badge_html    = corr_html
+      corr_badge_html    = corr_html,
+      card_data_attrs    = card_data_attrs
     )
   }, character(1))
 
@@ -2881,7 +3017,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .bet-card-v8 .hero .stat .val.risk  { color: #c9d1d9; }
         .bet-card-v8 .hero .stat .val.fair  { color: #c9d1d9; }
         .bet-card-v8 .hero .actions {
-          display: flex; gap: 8px; margin-left: 8px;
+          display: flex; gap: 8px; margin-left: 8px; flex-wrap: wrap;
         }
         .bet-card-v8 .hero .actions button {
           border: 1px solid #30363d; border-radius: 6px; padding: 9px 18px;
@@ -2954,6 +3090,50 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .bet-card-v8 .hero .risk-error[hidden] { display: none; }
         .bet-card-v8 .hero .risk-stat.has-error .risk-error { display: inline-block; }
 
+        /* --- Placed strip: multi-account chips + dashed "+ another" --- */
+        .bet-card-v8 .hero-placed {
+          display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+          background: #0d1f12;
+          border: 1px solid #1f4d2e;
+          border-radius: 8px;
+          padding: 8px 14px;
+          margin-top: 12px;
+        }
+        .bet-card-v8 .hero-placed .placed-label {
+          color: #56d364;
+          font-size: 11px;
+          text-transform: uppercase;
+          letter-spacing: .5px;
+          font-weight: 700;
+        }
+        .bet-card-v8 .placement-chip {
+          display: inline-flex; align-items: center; gap: 6px;
+          background: #15321f;
+          border: 1px solid #1f4d2e;
+          border-radius: 5px;
+          padding: 3px 8px;
+          color: #c9d1d9;
+          font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        .bet-card-v8 .placement-chip .acct  { color: #56d364; font-weight: 700; }
+        .bet-card-v8 .placement-chip .ticket { color: #8b949e; font-size: 11px; }
+
+        .bet-card-v8 .add-another {
+          background: transparent;
+          border: 1px dashed #1f4d2e;
+          color: #56d364;
+          border-radius: 5px;
+          padding: 3px 10px;
+          font-size: 12px;
+          cursor: pointer;
+          font-weight: 600;
+        }
+        .bet-card-v8 .add-another[disabled] {
+          color: #6e7681;
+          border-color: #30363d;
+          cursor: not-allowed;
+        }
+
         .bet-card-v8 .hero .towin-row {
           display: flex;
           align-items: center;
@@ -2963,6 +3143,16 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .bet-card-v8 .hero .towin-status.verified { color: #3fb950; }
         .bet-card-v8 .hero .towin-status.spinner  { color: #7d8590; }
         .bet-card-v8 .hero .towin-status[hidden]  { display: none; }
+
+        /* Reopened editable hero (injected by addAnother inside .hero .actions).
+           Force it onto its own row in the flex container and give it full width
+           so it renders as a standalone strip below the placed chip row. */
+        .bet-card-v8 .hero .actions .hero.reopened {
+          flex-basis: 100%;
+          width: 100%;
+          margin-top: 8px;
+          box-sizing: border-box;
+        }
 
         .bet-card-v8 .price-grid {
           display: grid;
@@ -4229,17 +4419,30 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             if (result.status === \'placed\') {
               var ticket = result.ticket_number ? \' #\' + result.ticket_number : \'\';
               showToast(\'Placed at \' + book + ticket, \'success\');
-              // In-place DOM swap (no reload). Label matches what R would render
-              // for status=\'placed\' on the next dashboard regen.
-              var labelText = result.ticket_number
-                ? (\'placed \\u00b7 #\' + result.ticket_number)
-                : \'placed\';
-              var span = document.createElement(\'span\');
-              span.className = \'placed-bet-label\';
-              span.textContent = labelText;
-              for (var key in btn.dataset) { span.dataset[key] = btn.dataset[key]; }
-              span.dataset.fillStatus = \'placed\';
-              _replaceActionCell(btn, span);
+              if (book === \'wagerzon\') {
+                // WZ path: build the multi-account chip strip so "+ another"
+                // appears immediately without a page reload. DOM shape matches
+                // render_placed_strip() in placed_strip.R exactly.
+                var wzTicket = result.ticket_number || \'\';
+                var wzRisk   = body.actual_size;
+                var wzHash   = body.bet_hash;
+                var wzAcct   = account || \'\';
+                var strip = _buildPlacedStrip(wzHash, [
+                  {account: wzAcct, risk: wzRisk, ticket: wzTicket}
+                ]);
+                _replaceActionCell(btn, strip);
+              } else {
+                // Non-WZ path: flat placed-bet-label span (unchanged).
+                var labelText = result.ticket_number
+                  ? (\'placed \\u00b7 #\' + result.ticket_number)
+                  : \'placed\';
+                var span = document.createElement(\'span\');
+                span.className = \'placed-bet-label\';
+                span.textContent = labelText;
+                for (var key in btn.dataset) { span.dataset[key] = btn.dataset[key]; }
+                span.dataset.fillStatus = \'placed\';
+                _replaceActionCell(btn, span);
+              }
               return;
             }
             if (result.status === \'playwright_launched\') {
@@ -4320,6 +4523,308 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             btn.disabled = false; btn.textContent = \'Log\';
           });
         }
+
+        // ============ CHIP STRIP HELPERS (shared by placeBet + placeAnother) ============
+
+        // Build one <span class="placement-chip"> DOM node.
+        // account : WZ account label (e.g. "Wagerzon", "WagerzonJ")
+        // risk    : numeric dollar amount (will be Math.round-ed)
+        // ticket  : ticket number string (may be empty)
+        // betHash : string — forwarded as data-bet-hash
+        function _buildChipNode(account, risk, ticket, betHash) {
+          var acctShort = account.replace(/^Wagerzon/, \'WZ\');
+          var chip = document.createElement(\'span\');
+          chip.className = \'placement-chip\';
+          chip.dataset.account = account;
+          chip.dataset.risk    = String(Math.round(risk));
+          chip.dataset.ticket  = ticket;
+          chip.dataset.betHash = betHash;
+          chip.innerHTML =
+            \'<span class="acct">\' + acctShort + \'</span>$\' + Math.round(risk) +
+            \' <span class="ticket">#\' + ticket + \'</span>\';
+          return chip;
+        }
+
+        // Build a complete <div class="hero-placed"> DOM node from scratch.
+        // chipDefs: array of {account, risk, ticket} objects (one per placement)
+        // betHash : string
+        //
+        // The "+ another" button is enabled iff at least one header pill account
+        // has NOT yet been placed. Disabled (all accounts covered) otherwise.
+        // DOM shape matches render_placed_strip() in placed_strip.R exactly.
+        function _buildPlacedStrip(betHash, chipDefs) {
+          var strip = document.createElement(\'div\');
+          strip.className = \'hero-placed\';
+          strip.dataset.betHash = betHash;
+
+          // placed label
+          var label = document.createElement(\'span\');
+          label.className = \'placed-label\';
+          label.textContent = \'placed\';
+          strip.appendChild(label);
+
+          // one chip per placement
+          chipDefs.forEach(function(def) {
+            strip.appendChild(_buildChipNode(def.account, def.risk, def.ticket, betHash));
+          });
+
+          // "+ another" button — enabled iff at least one header pill account
+          // not yet covered by a chip.
+          var headerLabels = Array.prototype.map.call(
+            document.querySelectorAll(\'.wz-pills .wz-pill[data-label]\'),
+            function(p) { return p.dataset.label; }
+          );
+          var placedAccts = chipDefs.map(function(d) { return d.account; });
+          var untouched = headerLabels.filter(function(a) {
+            return placedAccts.indexOf(a) === -1;
+          });
+
+          var addBtn = document.createElement(\'button\');
+          addBtn.type = \'button\';
+          addBtn.className = \'add-another\';
+          addBtn.dataset.betHash = betHash;
+          addBtn.setAttribute(\'onclick\', \'addAnother(this)\');
+          addBtn.textContent = \'+ another\';
+          if (untouched.length === 0) {
+            addBtn.disabled = true;
+            addBtn.title = \'All WZ accounts placed.\';
+          } else {
+            addBtn.title = \'Re-open the card to place on another WZ account\';
+          }
+          strip.appendChild(addBtn);
+
+          return strip;
+        }
+
+        // Expose both helpers so they are reachable across script blocks.
+        window._buildChipNode   = _buildChipNode;
+        window._buildPlacedStrip = _buildPlacedStrip;
+
+        // ============ ADD ANOTHER (multi-account re-place) ============
+        // Re-opens a placed card so the user can add a second placement
+        // on a different Wagerzon account without a full page reload.
+        function addAnother(btn) {
+          var card = btn.closest(\'.bet-card-v8\');
+          if (!card) return;
+
+          var betHash = btn.dataset.betHash;
+          var heroPlaced = card.querySelector(\'.hero-placed\');
+          if (!heroPlaced) return;
+
+          // Guard: already re-opened — don\'t inject a second editable strip.
+          if (card.querySelector(\'.hero.reopened\')) return;
+
+          // Default Risk from the last placed chip.
+          var chips = heroPlaced.querySelectorAll(\'.placement-chip\');
+          var lastRisk = chips.length
+            ? parseFloat(chips[chips.length - 1].dataset.risk) || 0
+            : 0;
+
+          // Read pick metadata from the card root data-* attrs (emitted by
+          // create_bets_table via render_bet_card card_data_attrs param).
+          var heroData = card.dataset;
+
+          var editable = document.createElement(\'div\');
+          editable.className = \'hero reopened\';
+          editable.dataset.betHash = betHash;
+          editable.innerHTML = \'\'
+            + \'<div class="pick">\'
+            +   \'<span class="book">\' + (heroData.pickBook || \'WZ\') + \'</span>\'
+            +   \'<span class="odds">\' + (heroData.pickOdds || \'\') + \'</span>\'
+            + \'</div>\'
+            + \'<div class="divider"></div>\'
+            + \'<div class="stat"><span class="lbl">Fair</span><span class="val">\' + (heroData.fairOdds || \'\') + \'</span></div>\'
+            + \'<div class="stat"><span class="lbl">EV</span><span class="val ev">\' + (heroData.evPct || \'\') + \'</span></div>\'
+            + \'<div class="stat risk-stat" data-model-risk="\' + lastRisk + \'" data-american-odds="\' + (heroData.pickOddsRaw || \'0\') + \'">\'
+            +   \'<span class="lbl">Risk</span>\'
+            +   \'<div class="risk-row">\'
+            +     \'<span class="val risk risk-value" tabindex="0" title="click to edit">$\' + lastRisk + \'</span>\'
+            +     \'<button type="button" class="risk-reset" title="reset">↻</button>\'
+            +     \'<span class="risk-error" hidden></span>\'
+            +   \'</div>\'
+            + \'</div>\'
+            + \'<div class="stat"><span class="lbl">To Win</span><div class="towin-row"><span class="val win towin-value"></span><span class="towin-status" hidden></span></div></div>\'
+            + \'<div class="actions">\'
+            +   \'<button class="btn-place reopened-place"\'
+            +     \' data-bet-hash="\' + betHash + \'"\'
+            +     \' data-hash="\' + betHash + \'"\'
+            +     \' data-book="wagerzon"\'
+            +     \' data-odds="\' + (heroData.pickOddsRaw || \'0\') + \'"\'
+            +     \' data-bet-on="\' + (heroData.betOn || \'\') + \'"\'
+            +     \' data-line="\' + (heroData.line || \'\') + \'"\'
+            +     \' data-market="\' + (heroData.market || \'\') + \'"\'
+            +     \' data-game-id="\' + (heroData.gameId || \'\') + \'"\'
+            +     \' data-home="\' + (heroData.home || \'\') + \'"\'
+            +     \' data-away="\' + (heroData.away || \'\') + \'"\'
+            +     \' data-time="\' + (heroData.time || \'\') + \'"\'
+            +     \' data-prob="\' + (heroData.prob || \'0\') + \'"\'
+            +     \' data-ev="\' + (heroData.ev || \'0\') + \'"\'
+            +     \' data-model-size="\' + (heroData.modelSize || lastRisk) + \'"\'
+            +     \' data-size="\' + lastRisk + \'"\'
+            +     \' onclick="placeAnother(this)">Place</button>\'
+            + \'</div>\';
+
+          heroPlaced.insertAdjacentElement(\'afterend\', editable);
+
+          // Set initial Place enable state based on current header pill.
+          window._refreshReopenedPlaceState(editable);
+
+          if (typeof showToast === \'function\') {
+            showToast(\'Switch the header pill to add another account.\', \'info\');
+          }
+        }
+        window.addAnother = addAnother;
+
+        function _refreshReopenedPlaceState(editable) {
+          if (!editable) return;
+          var card = editable.closest(\'.bet-card-v8\');
+          if (!card) return;
+          var placeBtn = editable.querySelector(\'.reopened-place\');
+          if (!placeBtn) return;
+
+          var currentAcct = window.WZ_SELECTED_ACCOUNT || \'\';
+          var chipAccounts = Array.prototype.map.call(
+            card.querySelectorAll(\'.hero-placed .placement-chip\'),
+            function(chip) { return chip.dataset.account; }
+          );
+          if (!currentAcct || chipAccounts.indexOf(currentAcct) !== -1) {
+            placeBtn.disabled = true;
+            placeBtn.title = \'Switch the header pill to a different account\';
+          } else {
+            placeBtn.disabled = false;
+            placeBtn.title = \'\';
+          }
+        }
+        // Expose on window so the header-pill script block (separate
+        // tags$script) can call it after switching WZ_SELECTED_ACCOUNT.
+        window._refreshReopenedPlaceState = _refreshReopenedPlaceState;
+
+        function placeAnother(btn) {
+          var card = btn.closest(\'.bet-card-v8\');
+          if (!card) return;
+          var editable = btn.closest(\'.hero.reopened\');
+          if (!editable) return;
+
+          var account = window.WZ_SELECTED_ACCOUNT;
+          if (!account) {
+            showToast(\'No Wagerzon account selected — pick one in the header pills\', \'error\');
+            return;
+          }
+          var chipAccounts = Array.prototype.map.call(
+            card.querySelectorAll(\'.hero-placed .placement-chip\'),
+            function (c) { return c.dataset.account; }
+          );
+          if (chipAccounts.indexOf(account) !== -1) {
+            showToast(\'Already placed on \' + account + \' for this bet\', \'warning\');
+            return;
+          }
+
+          var riskValueEl = editable.querySelector(\'.risk-value\');
+          var riskStr = (riskValueEl && riskValueEl.textContent) || \'\';
+          var riskNum = parseFloat(riskStr.replace(/[^0-9.\\-]/g, \'\')) || 0;
+          if (riskNum <= 0) {
+            showToast(\'Enter a Risk amount before placing\', \'warning\');
+            return;
+          }
+          var expectedWin = btn.dataset.expectedWin
+            ? parseFloat(btn.dataset.expectedWin)
+            : null;
+
+          var d = card.dataset;
+          var body = {
+            bet_hash:         d.betHash,
+            bookmaker_key:    d.pickBook ? d.pickBook.toLowerCase() : \'wagerzon\',
+            account:          account,
+            bet_on:           d.betOn,
+            line:             (d.line === \'\' || d.line === undefined) ? null : parseFloat(d.line),
+            market:           d.market,
+            american_odds:    parseInt(d.pickOddsRaw, 10),
+            actual_size:      Math.round(riskNum),
+            kelly_bet:        parseFloat(d.modelSize) || riskNum,
+            wz_odds_at_place: parseInt(d.pickOddsRaw, 10),
+            expected_win:     expectedWin,
+            game_id:          d.gameId,
+            home_team:        d.home,
+            away_team:        d.away,
+            game_time:        d.time,
+            model_prob:       d.prob ? parseFloat(d.prob) : 0.0,
+            model_ev:         d.ev   ? parseFloat(d.ev)   : 0.0
+          };
+
+          btn.disabled = true;
+          var originalLabel = btn.textContent;
+          btn.textContent = \'Placing...\';
+
+          fetch(\'/api/place-bet\', {
+            method: \'POST\',
+            headers: {\'Content-Type\': \'application/json\'},
+            body: JSON.stringify(body)
+          })
+            .then(function (r) {
+              return r.json().then(function (j) { return {ok: r.ok, status: r.status, body: j}; });
+            })
+            .then(function (resp) {
+              var result = resp.body;
+              if (resp.status === 409) {
+                showToast(\'Already in flight: \' + (result.error || result.status), \'warning\');
+                btn.disabled = false; btn.textContent = originalLabel;
+                return;
+              }
+              if (result.status === \'placed\') {
+                var ticket = result.ticket_number || \'\';
+                var heroPlaced = card.querySelector(\'.hero-placed\');
+                if (heroPlaced) {
+                  // Use shared helper for chip construction — consistent with
+                  // _buildPlacedStrip used by placeBet for the first WZ placement.
+                  var chip = _buildChipNode(account, riskNum, ticket, body.bet_hash);
+                  var addBtn = heroPlaced.querySelector(\'.add-another\');
+                  if (addBtn) {
+                    heroPlaced.insertBefore(chip, addBtn);
+                  } else {
+                    heroPlaced.appendChild(chip);
+                  }
+                  // Re-evaluate "+ another" enable state after appending.
+                  if (addBtn) {
+                    var headerLabels = Array.prototype.map.call(
+                      document.querySelectorAll(\'.wz-pills .wz-pill[data-label]\'),
+                      function (p) { return p.dataset.label; }
+                    );
+                    var allChips = heroPlaced.querySelectorAll(\'.placement-chip\');
+                    var placedAccts = Array.prototype.map.call(allChips,
+                      function (c) { return c.dataset.account; });
+                    var untouched = headerLabels.filter(function (a) {
+                      return placedAccts.indexOf(a) === -1;
+                    });
+                    if (untouched.length === 0) {
+                      addBtn.disabled = true;
+                      addBtn.title = \'All WZ accounts placed.\';
+                    }
+                  }
+                }
+                editable.remove();
+                showToast(\'Placed at \' + account + \' #\' + ticket, \'success\');
+                return;
+              }
+              if (result.status === \'price_moved\') {
+                showToast(\'Price moved — bet not placed\', \'warning\');
+                btn.disabled = false; btn.textContent = originalLabel;
+                return;
+              }
+              if (result.error) {
+                showToast(result.error, \'error\');
+              } else if (result.status) {
+                showToast(\'Status: \' + result.status + (result.error_msg ? \' — \' + result.error_msg : \'\'), \'error\');
+              } else {
+                showToast(\'Unknown response\', \'error\');
+              }
+              btn.disabled = false; btn.textContent = originalLabel;
+            })
+            .catch(function (e) {
+              showToast(\'Network error: \' + e.message, \'error\');
+              btn.disabled = false; btn.textContent = originalLabel;
+            });
+        }
+        window.placeAnother = placeAnother;
 
         function autoPlaceBet(autoBtn) {
           // Find the Place button (sibling) to get data attributes
@@ -4529,7 +5034,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             fetch("/api/update-bet", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ bet_hash: btn.dataset.hash, actual_size: newAmount })
+              body: JSON.stringify({ bet_hash: btn.dataset.hash, account: btn.dataset.account || null, actual_size: newAmount })
             })
               .then(function(r) { return r.json(); })
               .then(function(result) {
@@ -4576,7 +5081,10 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           fetch("/api/remove-bet", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ bet_hash: btn.dataset.hash })
+            body: JSON.stringify({
+              bet_hash: btn.dataset.hash,
+              account:  btn.dataset.account || null
+            })
           })
             .then(r => r.json())
             .then(result => {
@@ -5535,6 +6043,20 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           // Network blip on persist shouldn't block UI; selection still
           // applies for this session and will retry on next click.
         });
+        // Sweep every card on the page when the active WZ account changes:
+        // - clear each card's data-expected-win (the next Risk edit re-verifies
+        //   the WZ quote under the new account)
+        // - re-evaluate Place button state on any re-opened editable hero
+        //   (Place is disabled when the active account matches an existing chip)
+        document.querySelectorAll('.bet-card-v8').forEach(function(card) {
+          card.querySelectorAll('[data-expected-win]').forEach(function(el) {
+            delete el.dataset.expectedWin;
+          });
+          var reopened = card.querySelector('.hero.reopened');
+          if (reopened && typeof window._refreshReopenedPlaceState === 'function') {
+            window._refreshReopenedPlaceState(reopened);
+          }
+        });
         renderPills(orderedLabels);
         recomputeAllInsufficiencyWarnings();
       });
@@ -5694,8 +6216,14 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
     }
 
     function placeBtnFor(card) {
-      // Place button is in .actions; only one per card.
-      return card.querySelector('.actions .btn-place, .actions [onclick*="placeBet"]');
+      // Prefer the re-opened editable hero's Place button if it exists
+      // (multi-account re-place flow). Fall back to the original hero's
+      // Place button for the standard single-placement flow.
+      return card.querySelector(
+        '.hero.reopened .reopened-place'
+      ) || card.querySelector(
+        '.actions .btn-place, .actions [onclick*="placeBet"]'
+      );
     }
 
     function bookFor(card) {
@@ -5703,10 +6231,21 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       return btn ? (btn.dataset.book || '').toLowerCase() : '';
     }
 
-    function setOverride(card, riskValue, isOverride) {
-      var stat    = card.querySelector('.risk-stat');
+    // Return the .risk-stat scoped to a specific .hero element within the card.
+    // contextEl is any element inside the relevant hero (e.g. the .risk-value
+    // being edited, or the .risk-reset button that was clicked). This prevents
+    // card.querySelector('.risk-stat') from returning the FIRST .risk-stat in
+    // the original .hero when a .hero.reopened is also present in the card.
+    function riskStatFor(card, contextEl) {
+      var hero = contextEl && contextEl.closest('.hero');
+      return hero ? hero.querySelector('.risk-stat') : card.querySelector('.risk-stat');
+    }
+
+    function setOverride(card, riskValue, isOverride, contextEl) {
+      var stat    = riskStatFor(card, contextEl);
       var valueEl = stat.querySelector('.risk-value');
-      var towinEl = card.querySelector('.towin-value');
+      var towinEl = (contextEl && contextEl.closest('.hero').querySelector('.towin-value'))
+                    || card.querySelector('.towin-value');
       var amerOdds = parseInt(stat.dataset.americanOdds, 10);
 
       valueEl.textContent = fmtMoney(riskValue);
@@ -5736,24 +6275,28 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       }
     }
 
-    function clearError(card) {
-      var stat   = card.querySelector('.risk-stat');
+    function clearError(card, contextEl) {
+      var stat   = riskStatFor(card, contextEl);
       var errEl  = stat.querySelector('.risk-error');
       stat.classList.remove('has-error');
       errEl.hidden = true;
       errEl.textContent = '';
     }
-    function showError(card, msg) {
-      var stat  = card.querySelector('.risk-stat');
+    function showError(card, msg, contextEl) {
+      var stat  = riskStatFor(card, contextEl);
       var errEl = stat.querySelector('.risk-error');
       errEl.textContent = msg;
       errEl.hidden = false;
       stat.classList.add('has-error');
     }
 
-    function setTowinStatus(card, kind, text) {
+    function setTowinStatus(card, kind, text, contextEl) {
       // kind: 'verified' | 'spinner' | null (clear)
-      var status = card.querySelector('.towin-status');
+      // contextEl is optional — when supplied we scope the lookup to the same
+      // .hero as the triggering element (prevents updating the wrong .towin-status
+      // when both .hero and .hero.reopened coexist in the card).
+      var hero = contextEl && contextEl.closest('.hero');
+      var status = hero ? hero.querySelector('.towin-status') : card.querySelector('.towin-status');
       if (!status) return;
       status.classList.remove('verified', 'spinner');
       if (!kind) {
@@ -5782,7 +6325,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
     function commitEdit(valueEl) {
       if (!valueEl.classList.contains('editing')) return;
       var card = valueEl.closest('.bet-card-v8');
-      var stat = card.querySelector('.risk-stat');
+      var stat = riskStatFor(card, valueEl);
       var modelRisk = Number(stat.dataset.modelRisk);
       var raw = valueEl.textContent.replace(/[^0-9.]/g, '');
       var amount = Number(raw);
@@ -5790,28 +6333,31 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       valueEl.classList.remove('editing');
       valueEl.contentEditable = 'false';
       var isOverride = Math.abs(amount - modelRisk) > 0.005;
-      setOverride(card, amount, isOverride);
-      clearError(card);
+      setOverride(card, amount, isOverride, valueEl);
+      clearError(card, valueEl);
 
       if (bookFor(card) === WZ_BOOK) {
         verifyWithWz(card, amount);
       } else {
         // Non-WZ: local math is already shown; clear any verified badge.
-        setTowinStatus(card, null);
+        setTowinStatus(card, null, null, valueEl);
       }
     }
 
     function verifyWithWz(card, amount) {
       var btn = placeBtnFor(card);
       if (!btn) return;
+      // Use the place button as contextEl so error + towin updates hit the
+      // correct hero when both the original .hero and a .hero.reopened coexist.
+      var hero = btn.closest('.hero');
       var account = (window.WZ_SELECTED_ACCOUNT || null);
       if (!account) {
-        showError(card, 'pick a WZ account first');
+        showError(card, 'pick a WZ account first', btn);
         return;
       }
       var gen = (_verifyGen.get(card) || 0) + 1;
       _verifyGen.set(card, gen);
-      setTowinStatus(card, 'spinner', 'verifying...');
+      setTowinStatus(card, 'spinner', 'verifying...', btn);
       var body = {
         bet_hash:      btn.dataset.hash,
         amount:        amount,
@@ -5833,35 +6379,35 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .then(function(r) { return r.json(); })
         .then(function(j) {
           if (_verifyGen.get(card) !== gen) return;   // stale; discard
-          var towinEl = card.querySelector('.towin-value');
+          var towinEl = hero ? hero.querySelector('.towin-value') : card.querySelector('.towin-value');
           if (j.error_msg_key) {
-            showError(card, j.error_msg || j.error_msg_key);
-            setTowinStatus(card, null);
+            showError(card, j.error_msg || j.error_msg_key, btn);
+            setTowinStatus(card, null, null, btn);
             return;
           }
           var expectedOdds = parseInt(btn.dataset.odds, 10);
           if (j.current_wz_odds && j.current_wz_odds !== expectedOdds) {
             showError(card, 'WZ now ' + (j.current_wz_odds > 0 ? '+' : '') +
                             j.current_wz_odds + ' (was ' + (expectedOdds > 0 ? '+' : '') +
-                            expectedOdds + ')');
+                            expectedOdds + ')', btn);
           }
           if (j.win != null) {
             towinEl.textContent = fmtMoney(j.win);
-            setTowinStatus(card, 'verified', '✓ wz');
+            setTowinStatus(card, 'verified', '✓ wz', btn);
             // Round-trip the WZ-verified Win onto the place button so
             // /api/place-bet can send it as expected_win — the placer's
             // Win-on-Win drift check then compares WZ-said-X (now) vs
             // WZ-said-X (then) instead of having to recompute from odds.
             btn.dataset.expectedWin = String(j.win);
           } else {
-            setTowinStatus(card, null);
+            setTowinStatus(card, null, null, btn);
             delete btn.dataset.expectedWin;
           }
         })
         .catch(function(e) {
           if (_verifyGen.get(card) !== gen) return;   // stale; discard
-          showError(card, 'verify failed: ' + e.message);
-          setTowinStatus(card, null);
+          showError(card, 'verify failed: ' + e.message, btn);
+          setTowinStatus(card, null, null, btn);
         });
     }
 
@@ -5874,12 +6420,12 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       var resetBtn = ev.target.closest && ev.target.closest('.risk-reset');
       if (resetBtn) {
         var card = resetBtn.closest('.bet-card-v8');
-        var stat = card.querySelector('.risk-stat');
+        var stat = riskStatFor(card, resetBtn);
         var modelRisk = Number(stat.dataset.modelRisk);
         _verifyGen.set(card, (_verifyGen.get(card) || 0) + 1);
-        setOverride(card, modelRisk, false);
-        clearError(card);
-        setTowinStatus(card, null);
+        setOverride(card, modelRisk, false, resetBtn);
+        clearError(card, resetBtn);
+        setTowinStatus(card, null, null, resetBtn);
       }
     });
     document.addEventListener('focusout', function(ev) {
@@ -5901,14 +6447,14 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
       if (ev.key === 'Escape')  {
         ev.preventDefault();
         var card = valueEl.closest('.bet-card-v8');
-        var stat = card.querySelector('.risk-stat');
+        var stat = riskStatFor(card, valueEl);
         var modelRisk = Number(stat.dataset.modelRisk);
         _verifyGen.set(card, (_verifyGen.get(card) || 0) + 1);
         valueEl.classList.remove('editing');
         valueEl.contentEditable = 'false';
-        setOverride(card, modelRisk, false);
-        clearError(card);
-        setTowinStatus(card, null);
+        setOverride(card, modelRisk, false, valueEl);
+        clearError(card, valueEl);
+        setTowinStatus(card, null, null, valueEl);
       }
     });
   })();
