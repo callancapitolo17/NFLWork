@@ -1709,16 +1709,31 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
       placed_account_value
     )
 
-    action_html <- if (!is.na(row$fill_status) && row$fill_status == "partial") {
+    chips_df <- chips_by_hash[[row$bet_hash]]
+    has_chips <- !is.null(chips_df)
+    chip_accounts <- if (has_chips) chips_df$account else character(0)
+    is_wz_placed <- has_chips && any(chip_accounts %in% wz_labels)
+
+    chips_list <- if (has_chips) lapply(seq_len(nrow(chips_df)), function(i) {
+      list(account = chips_df$account[i],
+           risk    = chips_df$actual_size[i],
+           ticket  = chips_df$ticket_number[i])
+    }) else list()
+
+    action_html <- if (is_wz_placed) {
+      # WZ placement → chip strip + "+ another", even when under full Kelly (partial).
+      # "+ another" is how the user completes the fill on another account.
+      render_placed_strip(
+        chips           = chips_list,
+        all_wz_accounts = wz_labels,
+        bet_hash        = row$bet_hash,
+        book            = row$bookmaker_key
+      )
+    } else if (!is.na(row$fill_status) && row$fill_status == "partial") {
       sprintf('<button class="btn-partial" onclick="updateBet(this)" %s>Partial -$%.0f</button>',
               data_attrs, row$fill_diff)
-    } else if (!is.null(chips_by_hash[[row$bet_hash]])) {
-      chips_df <- chips_by_hash[[row$bet_hash]]
-      chips_list <- lapply(seq_len(nrow(chips_df)), function(i) {
-        list(account = chips_df$account[i],
-             risk    = chips_df$actual_size[i],
-             ticket  = chips_df$ticket_number[i])
-      })
+    } else if (has_chips) {
+      # non-WZ fully-placed (book without multi-account) → chips only
       render_placed_strip(
         chips           = chips_list,
         all_wz_accounts = wz_labels,
@@ -1808,7 +1823,7 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
         'data-pick-book="%s" data-pick-odds="%s" data-pick-odds-raw="%s" data-fair-odds="%s" data-ev-pct="%s"',
         ' data-bet-hash="%s" data-bet-on="%s" data-line="%s" data-market="%s"',
         ' data-game-id="%s" data-home="%s" data-away="%s" data-time="%s"',
-        ' data-prob="%s" data-ev="%s" data-model-size="%s"'
+        ' data-prob="%s" data-ev="%s" data-model-size="%s" data-fill-status="%s"'
       ),
       htmltools::htmlEscape(row$bookmaker_key),
       card_pick_odds_str,
@@ -1825,7 +1840,8 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
       htmltools::htmlEscape(as.character(row$pt_start_time)),
       ifelse(is.na(row$prob), "", row$prob),
       ifelse(is.na(row$ev), "", row$ev),
-      ifelse(is.na(row$bet_size), "", row$bet_size)
+      ifelse(is.na(row$bet_size), "", row$bet_size),
+      ifelse(is.na(row$fill_status), "not_placed", row$fill_status)
     )
 
     render_bet_card(
@@ -3739,29 +3755,45 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           var gameRows = [];
 
           allRows.forEach(function(row) {
+            // Prefer stable card root (survives placement); fall back to button
+            // for create_bets_table_legacy rows (no .bet-card-v8).
+            var cardRoot = row.querySelector(".bet-card-v8[data-game-id]");
             var btn = row.querySelector("button[data-game-id]");
-            if (!btn || btn.dataset.gameId !== gameId) return;
-            gameRows.push({ row: row, btn: btn });
+            var el = cardRoot || btn;
+            if (!el || el.dataset.gameId !== gameId) return;
+            gameRows.push({ row: row, el: el, btn: btn });
           });
 
           gameRows.forEach(function(item) {
-            var btn = item.btn;
+            var el = item.el;   // card root or button — has game-id and bet-hash
+            var btn = item.btn; // may be null for placed cards (button replaced)
             var row = item.row;
-            var myHash = btn.dataset.hash;
+            // bet-hash lives on card root as data-bet-hash; button uses data-hash
+            var myHash = el.dataset.betHash || (btn && btn.dataset.hash) || "";
             var span = row.querySelector("[data-corr-level]");
             if (!span) return;
 
             var others = [];
             gameRows.forEach(function(other) {
-              if (other.btn.dataset.hash === myHash) return;
-              var ob = other.btn;
-              var fs = ob.getAttribute("data-fill-status");
+              var oEl = other.el;
+              var oBt = other.btn;
+              var oHash = oEl.dataset.betHash || (oBt && oBt.dataset.hash) || "";
+              if (oHash === myHash) return;
+              // Read fields from card root first, then button fallback.
+              // fill-status: card root has data-fill-status; button has data-fill-status too
+              var fs = oEl.dataset.fillStatus || (oBt && oBt.getAttribute("data-fill-status")) || null;
               var isPlaced = (fs === "placed" || fs === "partial");
               others.push({
-                market: ob.dataset.market, betOn: ob.dataset.betOn,
-                line: ob.dataset.line, odds: ob.dataset.odds,
-                size: ob.dataset.size, actual: ob.dataset.actual,
-                book: ob.dataset.book, isPlaced: isPlaced
+                market: oEl.dataset.market || (oBt && oBt.dataset.market) || "",
+                betOn:  oEl.dataset.betOn  || (oBt && oBt.dataset.betOn)  || "",
+                line:   oEl.dataset.line   || (oBt && oBt.dataset.line)   || "",
+                // pick-odds-raw on card root (integer string); button uses data-odds
+                odds:   oEl.dataset.pickOddsRaw || (oBt && oBt.dataset.odds) || "",
+                // model-size on card root; button uses data-size (editable)
+                size:   oEl.dataset.modelSize || (oBt && oBt.dataset.size) || "",
+                actual: (oBt && oBt.dataset.actual) || "",
+                book:   oEl.dataset.pickBook || (oBt && oBt.dataset.book) || "",
+                isPlaced: isPlaced
               });
             });
 
@@ -3823,7 +3855,10 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               var table = document.getElementById("bets-table-container");
               if (table) {
                 var ids = new Set();
-                table.querySelectorAll("button[data-game-id]").forEach(function(btn) { ids.add(btn.dataset.gameId); });
+                // Use [data-game-id] to catch both card roots (.bet-card-v8) and
+                // legacy buttons — placed cards no longer have an action button
+                // but the card root carries data-game-id and survives placement.
+                table.querySelectorAll("[data-game-id]").forEach(function(el) { ids.add(el.dataset.gameId); });
                 ids.forEach(function(gid) { recalcSameGame(gid); });
               }
             }, 100);
@@ -4115,13 +4150,19 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               }
             });
 
-            // In the new card layout the second-to-last cell is pickside_html
-            // (the full pill row), not a single book name as in the legacy
-            // table layout. Read the pick book from the Place/Log button
-            // data-book attribute, which carries the bet bookmaker_key
-            // (e.g. wagerzon, draftkings).
-            const bookBtn = row.querySelector("button[data-book]");
-            if (bookBtn) bookText = bookBtn.getAttribute("data-book").trim();
+            // Prefer the stable card root (.bet-card-v8) for book/size/status —
+            // the action button is swapped out on placement, so reading from
+            // the button breaks filters for just-placed bets. Fall back to the
+            // button for create_bets_table_legacy rows (no .bet-card-v8).
+            var card = row.querySelector(".bet-card-v8");
+
+            // book
+            if (card && card.dataset.pickBook) {
+              bookText = card.dataset.pickBook.trim();
+            } else {
+              var bookBtn = row.querySelector("button[data-book]");
+              if (bookBtn) bookText = bookBtn.getAttribute("data-book").trim();
+            }
 
             let marketType = "Other";
             if (marketText.includes("ML")) {
@@ -4143,19 +4184,26 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               corrLevel = "Same Game";
             }
 
-            // Size from data attribute (numeric)
+            // size — prefer card root data-model-size, fall back to [data-bet-size] span
             var betSize = 0;
-            var sizeSpan = row.querySelector("[data-bet-size]");
-            if (sizeSpan) betSize = parseFloat(sizeSpan.getAttribute("data-bet-size")) || 0;
-
-            // Status from Action button data-fill-status
-            var statusLabel = "Not Placed";
-            var statusBtn = row.querySelector("button[data-fill-status]");
-            if (statusBtn) {
-              var fs = statusBtn.getAttribute("data-fill-status");
-              if (fs === "placed") statusLabel = "Placed";
-              else if (fs === "partial") statusLabel = "Partial Fill";
+            if (card && card.dataset.modelSize) {
+              betSize = parseFloat(card.dataset.modelSize) || 0;
+            } else {
+              var sizeSpan = row.querySelector("[data-bet-size]");
+              if (sizeSpan) betSize = parseFloat(sizeSpan.getAttribute("data-bet-size")) || 0;
             }
+
+            // status — prefer card root data-fill-status, fall back to button
+            var statusLabel = "Not Placed";
+            var fsRaw = null;
+            if (card && card.dataset.fillStatus) {
+              fsRaw = card.dataset.fillStatus;
+            } else {
+              var statusBtn = row.querySelector("button[data-fill-status]");
+              if (statusBtn) fsRaw = statusBtn.getAttribute("data-fill-status");
+            }
+            if (fsRaw === "placed") statusLabel = "Placed";
+            else if (fsRaw === "partial") statusLabel = "Partial Fill";
 
             var gameMatch = activeFilters.game.size === 0 || activeFilters.game.has(gameText);
             var bookMatch = activeFilters.book.size === 0 || activeFilters.book.has(bookText);
