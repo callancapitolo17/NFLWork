@@ -4419,17 +4419,30 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             if (result.status === \'placed\') {
               var ticket = result.ticket_number ? \' #\' + result.ticket_number : \'\';
               showToast(\'Placed at \' + book + ticket, \'success\');
-              // In-place DOM swap (no reload). Label matches what R would render
-              // for status=\'placed\' on the next dashboard regen.
-              var labelText = result.ticket_number
-                ? (\'placed \\u00b7 #\' + result.ticket_number)
-                : \'placed\';
-              var span = document.createElement(\'span\');
-              span.className = \'placed-bet-label\';
-              span.textContent = labelText;
-              for (var key in btn.dataset) { span.dataset[key] = btn.dataset[key]; }
-              span.dataset.fillStatus = \'placed\';
-              _replaceActionCell(btn, span);
+              if (book === \'wagerzon\') {
+                // WZ path: build the multi-account chip strip so "+ another"
+                // appears immediately without a page reload. DOM shape matches
+                // render_placed_strip() in placed_strip.R exactly.
+                var wzTicket = result.ticket_number || \'\';
+                var wzRisk   = body.actual_size;
+                var wzHash   = body.bet_hash;
+                var wzAcct   = account || \'\';
+                var strip = _buildPlacedStrip(wzHash, [
+                  {account: wzAcct, risk: wzRisk, ticket: wzTicket}
+                ]);
+                _replaceActionCell(btn, strip);
+              } else {
+                // Non-WZ path: flat placed-bet-label span (unchanged).
+                var labelText = result.ticket_number
+                  ? (\'placed \\u00b7 #\' + result.ticket_number)
+                  : \'placed\';
+                var span = document.createElement(\'span\');
+                span.className = \'placed-bet-label\';
+                span.textContent = labelText;
+                for (var key in btn.dataset) { span.dataset[key] = btn.dataset[key]; }
+                span.dataset.fillStatus = \'placed\';
+                _replaceActionCell(btn, span);
+              }
               return;
             }
             if (result.status === \'playwright_launched\') {
@@ -4510,6 +4523,82 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
             btn.disabled = false; btn.textContent = \'Log\';
           });
         }
+
+        // ============ CHIP STRIP HELPERS (shared by placeBet + placeAnother) ============
+
+        // Build one <span class="placement-chip"> DOM node.
+        // account : WZ account label (e.g. "Wagerzon", "WagerzonJ")
+        // risk    : numeric dollar amount (will be Math.round-ed)
+        // ticket  : ticket number string (may be empty)
+        // betHash : string — forwarded as data-bet-hash
+        function _buildChipNode(account, risk, ticket, betHash) {
+          var acctShort = account.replace(/^Wagerzon/, \'WZ\');
+          var chip = document.createElement(\'span\');
+          chip.className = \'placement-chip\';
+          chip.dataset.account = account;
+          chip.dataset.risk    = String(Math.round(risk));
+          chip.dataset.ticket  = ticket;
+          chip.dataset.betHash = betHash;
+          chip.innerHTML =
+            \'<span class="acct">\' + acctShort + \'</span>$\' + Math.round(risk) +
+            \' <span class="ticket">#\' + ticket + \'</span>\';
+          return chip;
+        }
+
+        // Build a complete <div class="hero-placed"> DOM node from scratch.
+        // chipDefs: array of {account, risk, ticket} objects (one per placement)
+        // betHash : string
+        //
+        // The "+ another" button is enabled iff at least one header pill account
+        // has NOT yet been placed. Disabled (all accounts covered) otherwise.
+        // DOM shape matches render_placed_strip() in placed_strip.R exactly.
+        function _buildPlacedStrip(betHash, chipDefs) {
+          var strip = document.createElement(\'div\');
+          strip.className = \'hero-placed\';
+          strip.dataset.betHash = betHash;
+
+          // placed label
+          var label = document.createElement(\'span\');
+          label.className = \'placed-label\';
+          label.textContent = \'placed\';
+          strip.appendChild(label);
+
+          // one chip per placement
+          chipDefs.forEach(function(def) {
+            strip.appendChild(_buildChipNode(def.account, def.risk, def.ticket, betHash));
+          });
+
+          // "+ another" button — enabled iff at least one header pill account
+          // not yet covered by a chip.
+          var headerLabels = Array.prototype.map.call(
+            document.querySelectorAll(\'.wz-pills .wz-pill[data-label]\'),
+            function(p) { return p.dataset.label; }
+          );
+          var placedAccts = chipDefs.map(function(d) { return d.account; });
+          var untouched = headerLabels.filter(function(a) {
+            return placedAccts.indexOf(a) === -1;
+          });
+
+          var addBtn = document.createElement(\'button\');
+          addBtn.type = \'button\';
+          addBtn.className = \'add-another\';
+          addBtn.dataset.betHash = betHash;
+          addBtn.setAttribute(\'onclick\', \'addAnother(this)\');
+          addBtn.textContent = \'+ another\';
+          if (untouched.length === 0) {
+            addBtn.disabled = true;
+            addBtn.title = \'All WZ accounts placed.\';
+          } else {
+            addBtn.title = \'Re-open the card to place on another WZ account\';
+          }
+          strip.appendChild(addBtn);
+
+          return strip;
+        }
+
+        // Expose both helpers so they are reachable across script blocks.
+        window._buildChipNode   = _buildChipNode;
+        window._buildPlacedStrip = _buildPlacedStrip;
 
         // ============ ADD ANOTHER (multi-account re-place) ============
         // Re-opens a placed card so the user can add a second placement
@@ -4685,22 +4774,16 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 var ticket = result.ticket_number || \'\';
                 var heroPlaced = card.querySelector(\'.hero-placed\');
                 if (heroPlaced) {
-                  var chip = document.createElement(\'span\');
-                  chip.className = \'placement-chip\';
-                  chip.dataset.account = account;
-                  chip.dataset.risk    = String(Math.round(riskNum));
-                  chip.dataset.ticket  = ticket;
-                  chip.dataset.betHash = body.bet_hash;
-                  var acctShort = account.replace(/^Wagerzon/, \'WZ\');
-                  chip.innerHTML =
-                    \'<span class="acct">\' + acctShort + \'</span>$\' + Math.round(riskNum) +
-                    \' <span class="ticket">#\' + ticket + \'</span>\';
+                  // Use shared helper for chip construction — consistent with
+                  // _buildPlacedStrip used by placeBet for the first WZ placement.
+                  var chip = _buildChipNode(account, riskNum, ticket, body.bet_hash);
                   var addBtn = heroPlaced.querySelector(\'.add-another\');
                   if (addBtn) {
                     heroPlaced.insertBefore(chip, addBtn);
                   } else {
                     heroPlaced.appendChild(chip);
                   }
+                  // Re-evaluate "+ another" enable state after appending.
                   if (addBtn) {
                     var headerLabels = Array.prototype.map.call(
                       document.querySelectorAll(\'.wz-pills .wz-pill[data-label]\'),
