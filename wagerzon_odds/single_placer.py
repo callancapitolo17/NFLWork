@@ -93,12 +93,27 @@ def build_sel_for_single(bet: dict) -> str:
     Points are printed without trailing .0 for integer values (e.g. -3 not -3.0),
     and with the decimal for non-integers (e.g. -1.5).
 
-    This matches encode_sel() in parlay_placer.py exactly for 1-leg use.
+    Totals points-sign convention (recon-confirmed; mirrors
+    parlay_pricer._combo_to_legs): WZ encodes OVER with NEGATIVE points and
+    UNDER with positive. The dashboard always sends `line` as a positive
+    total, so we apply the sign here from play (2=over, 3=under). Sending
+    +6.5 for an over makes WZ's PostWagerMultipleHelper reject with
+    GAMELINECHANGE even when the line hasn't moved, because its stored line
+    is -6.5. Spreads (play 0/1) keep their already-signed line; ML (4/5)
+    has no points. Verified 2026-05-24 via a GAMELINECHANGE on an F7 Over
+    6.5 where WZ's response showed Points=-6.5 with PreviousLineDescription
+    identical to the current line.
+
+    This matches encode_sel() in parlay_placer.py for 1-leg use.
     """
     play = bet["play"]
     idgm = bet["idgm"]
     pts  = bet["line"]
     odds = bet["american_odds"]
+    if play == 2:      # over → negative points
+        pts = -abs(pts)
+    elif play == 3:    # under → positive points
+        pts = abs(pts)
     # Drop trailing .0 for integer lines (e.g. -3.0 → -3); keep decimal for fractions
     pts_fmt = int(pts) if pts == int(pts) else pts
     return f"{play}_{idgm}_{pts_fmt}_{odds}"
