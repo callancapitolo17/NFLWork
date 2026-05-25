@@ -49,8 +49,40 @@ def _make_json_response(payload):
 def test_sel_encoding_single_leg():
     bet = make_bet()
     sel = single_placer.build_sel_for_single(bet)
-    # Same shape as the parlay placer's per-leg encoding: play_idgm_pts_odds
+    # Same shape as the parlay placer's per-leg encoding: play_idgm_pts_odds.
+    # make_bet() is play=1 (home spread), line=-1.5 → spread keeps signed line.
     assert sel == "1_100001_-1.5_110"
+
+
+def test_sel_over_total_uses_negative_points():
+    """WZ encodes OVER totals with NEGATIVE points. The dashboard sends a
+    positive `line`; build_sel must negate it for play=2 (over). Sending
+    positive points for an over makes PostWagerMultipleHelper reject with
+    GAMELINECHANGE even when the line hasn't moved (verified 2026-05-24,
+    F7 Over 6.5: WZ's stored Points was -6.5)."""
+    bet = make_bet(play=2, line=6.5, idgm=5705150, american_odds=-110)
+    assert single_placer.build_sel_for_single(bet) == "2_5705150_-6.5_-110"
+
+
+def test_sel_under_total_uses_positive_points():
+    """UNDER totals keep positive points (play=3)."""
+    bet = make_bet(play=3, line=6.5, idgm=5705150, american_odds=-110)
+    assert single_placer.build_sel_for_single(bet) == "3_5705150_6.5_-110"
+
+
+def test_sel_over_integer_total_drops_trailing_zero():
+    """Over at a whole-number total: -7.0 prints as -7, not -7.0."""
+    bet = make_bet(play=2, line=7.0, idgm=5705150, american_odds=-110)
+    assert single_placer.build_sel_for_single(bet) == "2_5705150_-7_-110"
+
+
+def test_sel_spread_line_sign_unchanged():
+    """Spreads (play 0/1) keep their already-signed line — NOT touched by
+    the over/under sign logic."""
+    away = make_bet(play=0, line=-2.5, idgm=42, american_odds=240)
+    home = make_bet(play=1, line=1.5, idgm=42, american_odds=-180)
+    assert single_placer.build_sel_for_single(away) == "0_42_-2.5_240"
+    assert single_placer.build_sel_for_single(home) == "1_42_1.5_-180"
 
 
 def test_preflight_drift_returns_price_moved():
