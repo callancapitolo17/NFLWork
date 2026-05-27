@@ -154,8 +154,8 @@ assert 0 < yes_bid, 0 < no_bid, yes_bid + no_bid < 1   # sum ≈ 0.94, always va
 |---|---|
 | `seen_rfqs` | RFQ id, market_ticker, in-scope verdict, decoded legs, game_id, first_seen_at — dedup + scope cache |
 | `live_quotes` | quote_id, rfq_id, combo_market_ticker, game_id, yes_bid, no_bid, fair_at_quote, status, submitted_at, closed_at |
-| `quote_decisions` | Every decision (quoted / skipped / voided-at-last-look) + reason + diagnostics (fair drift, competitor count) — maker analog of the taker's `quote_log` |
-| `fills` | fill_id, quote_id, rfq_id, combo_market_ticker, game_id, side_held, contracts, price, fee, fair_at_quote, fair_at_confirm, realized_pnl (post-settlement) — **the validation dataset** |
+| `quote_decisions` | Every decision (quoted / skipped / voided-at-last-look) + reason + diagnostics (fair drift, competitor count). Logs `model_fair`, `book_fair`, `blended_fair` *separately* (not just the blend) so we can test whether model↔book divergence predicts pickoffs — maker analog of the taker's `quote_log` |
+| `fills` | fill_id, quote_id, rfq_id, combo_market_ticker, game_id, side_held, contracts, price, fee, `model_fair_at_quote`, `book_fair_at_quote`, `blended_fair_at_quote`, `fair_at_confirm`, realized_pnl (post-settlement) — **the validation dataset; supports computing fill-vs-fair error to test whether the 5% margin clears the selection tail (risk #2)** |
 | `positions` | Net per (combo_market_ticker, side), reused pattern |
 | `settlements` | Sweep reconciling fills against market results → populates `realized_pnl` |
 | `sessions` | Run bookkeeping (reuse) |
@@ -200,3 +200,20 @@ Resting quotes are priced off inputs that lag reality (books ≤60s, model sampl
 - **Commits, roughly:** (1) extract `kalshi_common/` + repoint taker imports + re-test; (2) `kalshi_mlb_mm/` skeleton + schema + config; (3) `RestRFQSource` + `scope`; (4) `pricing` + `RestQuoteGateway`; (5) main loop + last-look confirm; (6) risk caps + safety; (7) tests + README.
 - **Docs:** new `kalshi_mlb_mm/README.md`; update root `CLAUDE.md` project-structure list; note the `kalshi_common/` extraction in the taker's README.
 - **Detailed task breakdown:** produced next via the writing-plans skill.
+
+## 12. Accepted adversarial risks (red-team 2026-05-27)
+
+Reviewed through a sharp-bettor lens. The following are knowingly **accepted** for v1 — measured, not prevented. Each has a "ready lever" to enable if the validation data shows it biting. (The maker's core inversion: the *taker* hunts model↔book disagreement as edge; the *maker* should fear it as model risk — most of these reduce to "we quoted where our fair was least reliable.")
+
+| # | Vector | Why it bites us | Ready lever (if data demands) |
+|---|---|---|---|
+| 1 | Model read off our quotes | two-sided quotes leak our fair surface; sharps map our errors and hit only the >5% ones | wider margin; quote fewer / high-confidence combos |
+| 2 | **We fill our estimation-noise tail** | counterparty selects the combos we *underpriced* → fills are the left tail of our fair error | **margin must exceed fair error** — widen if measured pickoff > margin |
+| 3 | Known model-bias mining (fav −1.5 + over) | documented systematic overstatement → repeatable pickoff | model↔book divergence gate; exclude/widen the bad families |
+| 4 | Correlation mispricing | simulator's spread↔total correlation may be off; naive book anchors (WZ) reintroduce zero-corr | anchor to correlation-aware books only; widen high-corr combos |
+| 5 | Latency-timed RFQs | fired in the gap between a book move and our next scrape | faster scrape / WS feed (speed lever, §2) |
+| 6 | Partial-coverage devig fallback | crude `(1/decimal)/(1+vig)` heuristic on thin-coverage lines | require full 4-side probit devig before quoting |
+| 7 | One-sided inventory bleed | no skew in v1 → repeated same-side pickoff at the same wrong price | per-combo-side post-fill cooldown; v2 inventory skew |
+| 8 | Soft/stale book in the blend | one lagging book corrupts the 2-source fair | per-book freshness gate |
+
+**#2 is the one that can quietly kill the strategy:** if per-combo fair error exceeds the margin, a patient sharp grinds us down regardless of the other gates. v1 logs model/book/blend fair per quote and fill + `realized_pnl` at settlement specifically to **measure fill-vs-fair error** — answering "is 5% enough?" is the primary deliverable of the validation phase.
