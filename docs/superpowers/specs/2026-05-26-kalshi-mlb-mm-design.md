@@ -20,7 +20,7 @@
 
 **Risks / push back here.**
 - **Daily cap = 75% of bankroll** is high for an *unproven* edge; mitigated by a small ($500) bankroll, the ~5% gross spread filling rarely, and per-game/per-fill caps. The residual is a *correlated burst* (one counterparty sweeping many quotes, or many same-direction combos hitting at once) — the validation logging is built to surface this early. **Push back if you want a lower starting cap.**
-- **The edge is unproven and structurally adverse-selected.** Unlike the taker (which only trades when *it* sees +EV), the maker quotes continuously and the counterparty chooses when/which side to hit — preferentially when our fair is wrong. The whole v1 is a measurement of whether 5% quoted margin nets positive *realized* edge. It might not.
+- **The edge is unproven and structurally adverse-selected.** Unlike the taker (which only trades when *it* sees +EV), the maker quotes continuously and the counterparty chooses when/which side to hit — preferentially when our fair is wrong. The sharpest form is **stale-quote pickoff**: resting quotes lag our data (books ≤60s, samples ≤600s), so faster-informed flow crosses us on discrete events (scratch / postponement / steam) that margin can't cover. Defended by a freshness gate + book-move circuit breaker (§8) — margin handles only continuous drift; residual pickoff cost is measured, and data **speed** is the explicit future lever (§2). The whole v1 measures whether 5% quoted margin nets positive *realized* edge. It might not.
 - **Maker-fee assumption.** We assume RFQ quote fills are charged the **maker** fee (25% of taker). Strongly implied by the fee schedule but **must be verified on the first real fill**.
 - **Soft dependency on the R pipeline** for fresh samples (shared, read-only). If samples go stale the bot declines — safe, but it means the maker isn't *fully* self-contained.
 
@@ -51,6 +51,8 @@
 - WebSocket transport — swap behind `RFQSource` when logs justify it.
 - Edge-scaled (Kelly) max-fill sizing — turn on once realized edge is calibrated.
 - A shared SGP producer service (one scraper feeding both bots + dashboard) — extract when double-scrape load justifies it.
+- **Data-latency / speed improvements** (WebSocket book feeds, faster scrape cadence, faster model refresh) — the lever that shrinks stale-quote pickoff risk and lets us quote tighter. Prioritized by the measured pickoff cost from v1.
+- Inventory-skewed quoting — lean prices against accumulated position (mitigates one-sided pickoff bleed).
 
 ## 3. Architecture
 
@@ -98,7 +100,7 @@
 
 **Confirm (~2s):**
 1. Poll status of each open quote.
-2. On `accepted`: **last-look** — recompute fair *now*; confirm only if the filled side is still ≥ `(price + fee)`, not stale, not past tipoff, and fair hasn't drifted past `FAIR_DRIFT_TOLERANCE`. Otherwise **let it void** (no confirm). This is the core adverse-selection defense the 30s window buys us.
+2. On `accepted`: **last-look** — recompute fair *now*; confirm only if the filled side is still ≥ `(price + fee)`, not stale, not past tipoff, and fair hasn't drifted past `FAIR_DRIFT_TOLERANCE`. Otherwise **let it void** (no confirm). NOTE: this is a *backstop only* (see §8 hierarchy) — it catches info our pipeline already absorbed but not yet re-quoted on; it is blind to faster-than-our-data pickoffs and must not be over-used.
 3. `QuoteGateway.confirm(quote_id)` → `PUT /communications/quotes/{id}/confirm`, well inside 30s.
 4. Reconcile real fill via `/portfolio/positions` (reuse `get_position_contracts`); write `fills` + `positions` + exposure.
 
@@ -138,7 +140,9 @@ assert 0 < yes_bid, 0 < no_bid, yes_bid + no_bid < 1   # sum ≈ 0.94, always va
 | `MAX_OPEN_QUOTES` | 25 | Bounds outstanding risk surface + polling load; well under Kalshi's 100 |
 | `TARGET_ROI` | 0.05 | The margin |
 | `FAIR_DRIFT_TOLERANCE` | 0.02 | Last-look voids confirm if fair drifted >2¢ against filled side |
-| `MAX_PREDICTION_STALENESS_SEC` | 600 | Decline if samples stale (reuse) |
+| `MAX_PREDICTION_STALENESS_SEC` | 600 | Withhold/pull quotes if samples stale (freshness gate) |
+| `MAX_BOOK_STALENESS_SEC` | 60 | Withhold/pull quotes if book odds stale (freshness gate) |
+| `BOOK_MOVE_CB_THRESHOLD` | 0.03 | Circuit breaker: cancel a game's quotes if its book fair jumps > this between scrapes |
 | `TIPOFF_CANCEL_MIN` | 5 | Pull quotes near first pitch (reuse) |
 | `QUOTE_HYSTERESIS` | 0.005 | Don't replace a resting quote unless fair moved >½¢ |
 
@@ -156,8 +160,19 @@ assert 0 < yes_bid, 0 < no_bid, yes_bid + no_bid < 1   # sum ≈ 0.94, always va
 | `settlements` | Sweep reconciling fills against market results → populates `realized_pnl` |
 | `sessions` | Run bookkeeping (reuse) |
 
-## 8. Error handling & safety
+## 8. Defenses & error handling
 
+### Adverse-selection defense hierarchy (stale-quote risk)
+Resting quotes are priced off inputs that lag reality (books ≤60s, model samples ≤600s), so an informed counterparty can cross a stale quote before our data reacts. Defenses, in order of importance:
+
+1. **Margin (primary)** — the 5%-ROI / ~2.5–3¢-per-side cushion absorbs *continuous* drift (fair moving a cent or two between scrapes). It does **not** cover *discrete* events.
+2. **Freshness-to-quote gate + auto-pull** — only rest a quote while *both* samples and books are fresh (`MAX_PREDICTION_STALENESS_SEC`, `MAX_BOOK_STALENESS_SEC`). The instant an input goes stale or a scrape fails, cancel resting quotes. Blind → no live quotes.
+3. **Book-move circuit breaker** — if a scrape shows a book-fair jump > `BOOK_MOVE_CB_THRESHOLD` for a game vs the prior scrape, immediately cancel our quotes on that game (don't wait for the 2s re-quote). A sudden move is the signal that unmodeled news just landed — the scratch / postponement / steam case that margin cannot cover.
+4. **Event-window blackout** — `TIPOFF_CANCEL_MIN` pulls quotes near first pitch; lineup/news-driven moves are caught indirectly by the circuit breaker (#3) once they hit the books.
+5. **Last-look (backstop only)** — on accept, recompute fair and void if drifted/stale. Explicitly limited: it only catches information our pipeline has *already* absorbed but not yet re-quoted on; it is blind to faster-than-our-data pickoffs and must not be leaned on (excessive non-confirms are abusive behavior Kalshi can throttle).
+6. **Measure** — `fills`/`settlements` quantify the realized pickoff cost. If pickoffs swamp the margin, the honest conclusion is *making is not viable at this data latency* → improve speed (§2 future) before scaling.
+
+### Operational safety
 - **Crash = safe:** a quote unconfirmed at crash time voids automatically — no surprise position.
 - **Clean shutdown:** SIGTERM cancels all open quotes (free). Loops use short sleeps + frequent `_running` checks so shutdown isn't starved — directly addresses the taker's known SIGTERM-starvation pain.
 - **Kill switch** (`.kill` file): stop quoting, stay alive.
