@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+import random as _random
 import signal
 import subprocess
 import threading
@@ -59,6 +60,13 @@ def _signal_handler(_sig, _frame):
 
 def _max_live_rfqs() -> int:
     return MAX_LIVE_RFQS_OVERRIDE if MAX_LIVE_RFQS_OVERRIDE is not None else config.MAX_LIVE_RFQS
+
+
+def _research_sample() -> bool:
+    """True if this candidate event should be logged, per the sampling knob.
+    Caller-gated (config knob is RESEARCH_CANDIDATE_SAMPLING; 1.0 = full movie)."""
+    s = config.RESEARCH_CANDIDATE_SAMPLING
+    return s >= 1.0 or _random.random() < s
 
 
 def _record_positions_api_result(success: bool):
@@ -1461,20 +1469,46 @@ def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandida
                 available_spreads=avail_spreads,
                 available_totals=avail_totals):
             typed = [_leg_dict_to_typed(dict(l), game_id) for l in cand.legs]
-            if any(l is None for l in typed):
-                continue
-            model = fair_value.model_fair(samples, typed)
             spread_line = _spread_line_from_legs([dict(l) for l in cand.legs])
             total_line = _total_line_from_legs([dict(l) for l in cand.legs])
+
+            def _emit_cand(outcome, *, model=None, books=None,
+                           blended=None, kalshi_ref=None, kelly=None):
+                if not _research_sample():
+                    return
+                research.emit(
+                    "candidate_evaluated",
+                    game_id=game_id, combo_ticker=cand.legs[0]["market_ticker"],
+                    leg_set_hash=cand.leg_set_hash,
+                    spread_line=spread_line, total_line=total_line,
+                    outcome=outcome, model_fair=model, book_fairs=books,
+                    n_books=(len(books) if books else 0),
+                    blended_fair=blended, kalshi_ref=kalshi_ref,
+                    kelly_yes_n=(kelly[0] if kelly else None),
+                    kelly_no_n=(kelly[1] if kelly else None),
+                    worst_yes_ask=(kelly[2] if kelly else None),
+                    worst_no_ask=(kelly[3] if kelly else None),
+                )
+
+            if any(l is None for l in typed):
+                _emit_cand("rejected_no_mapping")
+                continue
+            model = fair_value.model_fair(samples, typed)
             books = _load_book_fairs(game_id, spread_line, total_line)
             blended = fair_value.blend(model, books)
             if blended is None:
+                _emit_cand("rejected_no_book_data", model=model, books=books)
                 continue
             if not (config.MIN_FAIR_PROB <= blended <= config.MAX_FAIR_PROB):
+                _emit_cand("rejected_fair_oob", model=model, books=books,
+                           blended=blended)
                 continue
             kalshi_ref = _kalshi_last_price(cand.legs[0]["market_ticker"])
             yes_n, no_n, yes_ask, no_ask = _kelly_size_for_candidate(
                 game_id, typed, samples, blended)
+            _emit_cand("submitted", model=model, books=books, blended=blended,
+                       kalshi_ref=kalshi_ref,
+                       kelly=(yes_n, no_n, yes_ask, no_ask))
             candidates_all.append(cand)
             fair_scores[cand.leg_set_hash] = (blended, kalshi_ref)
             kelly_sizes[cand.leg_set_hash] = (yes_n, no_n, yes_ask, no_ask)
