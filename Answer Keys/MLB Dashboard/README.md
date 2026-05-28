@@ -44,6 +44,19 @@ run.py mlb (pipeline)  →  mlb_mm.duckdb/mlb_bets_combined          (dashboard 
 - CLV (Closing Line Value) computation post-game via `MLB Answer Key/clv_compute.py`
 - Auto-place integration via Playwright for supported books (wagerzon, hoop88, bfa, betonlineag)
 
+### Pinned scoring strip
+
+While scrolling the bet-card list, two controls stay frozen at the top:
+- the **`Placing on` account pills** — frozen on every tab (Bets/Parlays/Trifectas).
+- the **Kelly Calculator** — frozen directly below the pills, on the Bets tab only.
+
+Always-on (no toggle). Implemented with CSS `position: sticky`: the account row
+is a direct child of `.container` (a `.pinned-account-bar`), and the Kelly
+Calculator is wrapped in `.kelly-calc-pin`. A small `syncPinOffset()` helper
+measures the account bar's height into the `--pin-top` CSS variable so the calc
+pins flush even when the pills wrap. The page title/Refresh row and the tab bar
+are intentionally not pinned (scroll up to reach them).
+
 ## Devigging method
 
 The MLB dashboard's "Books (devigged fair %)" column uses probit (additive z-shift) devigging via `Tools.R::devig_american`. See `docs/superpowers/specs/2026-05-11-probit-devig-design.md`. Historical samples in `mlb_betting_pbp` are also probit-devigged (sharp-weighted across Pinnacle, Bookmaker, LowVig, Circa, Bet105).
