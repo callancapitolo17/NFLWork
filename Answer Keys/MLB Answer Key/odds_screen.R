@@ -196,6 +196,7 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
                   side = character(), bookmaker = character(),
                   line = numeric(), line_quoted = numeric(),
                   is_exact_line = logical(), american_odds = integer(),
+                  derived_fair_odds = numeric(),
                   fetch_time = as.POSIXct(character()),
                   game_start_time = as.POSIXct(character(), tz = "UTC")))
   }
@@ -257,6 +258,79 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
       book_frame <- book_odds_by_book[[book_name]]
       if (is.null(book_frame) || nrow(book_frame) == 0) next
 
+      # Pick'em (line-0 spread): derive draw-no-bet from the book's period
+      # winner instead of falling back to its nearest run line. Priority:
+      # 2-way h2h > 3-way h2h_3way > true 0-handicap spread.
+      is_pickem <- bet$market_type %in% c("spreads", "alternate_spreads") &&
+                   !is.na(bet$line) && bet$line == 0
+      if (is_pickem) {
+        winners <- book_frame %>%
+          filter(game_id == bet$game_id, period == bet$period,
+                 market %in% c("h2h", "h2h_3way", "spreads", "alternate_spreads"))
+        winners <- winners %>% filter(
+          market %in% c("h2h", "h2h_3way") |
+          (market %in% c("spreads", "alternate_spreads") & !is.na(line) & abs(line) < 1e-9)
+        )
+        if (nrow(winners) == 0) next   # cell -> "—"
+
+        h2h_rows <- winners %>% filter(market == "h2h")
+        h3w_rows <- winners %>% filter(market == "h2h_3way")
+        sp0_rows <- winners %>% filter(market %in% c("spreads", "alternate_spreads"))
+        use_3way <- nrow(h2h_rows) < 2 && nrow(h3w_rows) >= 3
+        use_sp0  <- nrow(h2h_rows) < 2 && nrow(h3w_rows) < 3 && nrow(sp0_rows) >= 2
+
+        if (use_3way) {
+          home_row <- h3w_rows %>% filter(side == home_team_value) %>% slice_head(n = 1)
+          away_row <- h3w_rows %>% filter(side == away_team_value) %>% slice_head(n = 1)
+          tie_row  <- h3w_rows %>% filter(side == "Tie")           %>% slice_head(n = 1)
+          if (nrow(home_row) == 0 || nrow(away_row) == 0 || nrow(tie_row) == 0) next
+          dnb <- derive_pickem_american(home_row$american_odds, away_row$american_odds, tie_row$american_odds)
+          ft  <- home_row$fetch_time
+        } else if (use_sp0) {
+          home_row <- sp0_rows %>% filter(side == home_team_value) %>% slice_head(n = 1)
+          away_row <- sp0_rows %>% filter(side == away_team_value) %>% slice_head(n = 1)
+          if (nrow(home_row) == 0 || nrow(away_row) == 0) next
+          dnb <- derive_pickem_american(home_row$american_odds, away_row$american_odds, NA)
+          ft  <- home_row$fetch_time
+        } else {
+          home_row <- h2h_rows %>% filter(side == home_team_value) %>% slice_head(n = 1)
+          away_row <- h2h_rows %>% filter(side == away_team_value) %>% slice_head(n = 1)
+          if (nrow(home_row) == 0 || nrow(away_row) == 0) next
+          dnb <- derive_pickem_american(home_row$american_odds, away_row$american_odds, NA)
+          ft  <- home_row$fetch_time
+        }
+        if (is.na(dnb$home_raw_dnb) || is.na(dnb$away_raw_dnb)) next
+
+        bet_is_home <- identical(bet$bet_on, home_team_value)
+        pick_raw  <- if (bet_is_home) dnb$home_raw_dnb  else dnb$away_raw_dnb
+        opp_raw   <- if (bet_is_home) dnb$away_raw_dnb  else dnb$home_raw_dnb
+        pick_fair <- if (bet_is_home) dnb$home_fair_dnb else dnb$away_fair_dnb
+        opp_fair  <- if (bet_is_home) dnb$away_fair_dnb else dnb$home_fair_dnb
+
+        for (slot in c("pick", "opposite")) {
+          american <- if (slot == "pick") pick_raw  else opp_raw
+          fair_odd <- if (slot == "pick") pick_fair else opp_fair
+          if (is.na(american)) next
+          k <- k + 1L
+          out_rows[[k]] <- tibble(
+            bet_row_id      = bet$bet_row_id,
+            game_id         = bet$game_id,
+            market          = bet$market_type,
+            period          = bet$period,
+            side            = slot,
+            bookmaker       = book_name,
+            line            = bet$line,
+            line_quoted     = 0,
+            is_exact_line   = TRUE,
+            american_odds   = as.integer(round(american)),
+            derived_fair_odds = as.numeric(fair_odd),
+            fetch_time      = ft,
+            game_start_time = bet_game_start
+          )
+        }
+        next   # skip the run-line slot loop for pick'em bets
+      }
+
       for (slot in names(side_labels)) {
         side_value <- side_labels[[slot]]
         if (is.na(side_value)) next
@@ -294,18 +368,19 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
 
         k <- k + 1L
         out_rows[[k]] <- tibble(
-          bet_row_id      = bet$bet_row_id,
-          game_id         = bet$game_id,
-          market          = bet$market_type,
-          period          = bet$period,
-          side            = slot,
-          bookmaker       = book_name,
-          line            = bet$line,
-          line_quoted     = chosen$line_quoted,
-          is_exact_line   = chosen$is_exact_line,
-          american_odds   = as.integer(chosen$american_odds),
-          fetch_time      = ft,
-          game_start_time = bet_game_start
+          bet_row_id        = bet$bet_row_id,
+          game_id           = bet$game_id,
+          market            = bet$market_type,
+          period            = bet$period,
+          side              = slot,
+          bookmaker         = book_name,
+          line              = bet$line,
+          line_quoted       = chosen$line_quoted,
+          is_exact_line     = chosen$is_exact_line,
+          american_odds     = as.integer(chosen$american_odds),
+          derived_fair_odds = NA_real_,
+          fetch_time        = ft,
+          game_start_time   = bet_game_start
         )
       }
     }
@@ -317,6 +392,7 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
                   side = character(), bookmaker = character(),
                   line = numeric(), line_quoted = numeric(),
                   is_exact_line = logical(), american_odds = integer(),
+                  derived_fair_odds = numeric(),
                   fetch_time = as.POSIXct(character()),
                   game_start_time = as.POSIXct(character(), tz = "UTC")))
   }

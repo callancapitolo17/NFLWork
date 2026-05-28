@@ -54,3 +54,56 @@ stopifnot(all(canon$market == "h2h_3way"))
 stopifnot(all(canon$period == "F5"))
 stopifnot(setequal(canon$side, c("LA Dodgers", "COL Rockies", "Tie")))
 cat("OK 3-way canonicalization\n")
+
+# === Task 6: matcher line-0 pick'em branch ===
+# Bet: PHI 0 spread, period F3. Book DK: 2-way h2h_1st_3_innings winner.
+bets <- tibble(
+  bet_row_id = "b1", id = "g1", home_team = "SD Padres", away_team = "PHI Phillies",
+  market = "spreads_1st_3_innings", market_type = "spreads", period = "F3",
+  line = 0, bet_on = "PHI Phillies", opposite_side = "SD Padres",
+  pt_start_time = as.POSIXct(NA, tz = "UTC")
+)
+dk_canonical <- normalize_book_odds_frame(tibble(
+  game_id = "g1", market_name = "h2h_1st_3_innings",
+  bet_on = c("SD Padres", "PHI Phillies"),
+  line = c(NA_real_, NA_real_), american_odds = c(-180L, 140L),
+  fetch_time = Sys.time()
+))
+out <- expand_bets_to_book_prices(bets, list(dk = dk_canonical))
+stopifnot(nrow(out) == 2)
+stopifnot(all(out$line == 0))
+stopifnot(all(out$is_exact_line))
+stopifnot(all(!is.na(out$derived_fair_odds)))
+pick <- out[out$side == "pick", ]; opp <- out[out$side == "opposite", ]
+stopifnot(pick$american_odds == 140)   # PHI (away) raw
+stopifnot(opp$american_odds == -180)   # SD (home) raw
+cat("OK matcher 2-way pick'em\n")
+
+# Same bet, book only has a 3-way h2h_3way winner.
+wz_canonical <- normalize_book_odds_frame(tibble(
+  game_id = "g1", market_name = "h2h_3way_1st_3_innings",
+  bet_on = c("SD Padres", "PHI Phillies", "Tie"),
+  line = c(NA_real_, NA_real_, NA_real_), american_odds = c(-150L, 180L, 400L),
+  fetch_time = Sys.time()
+))
+out2 <- expand_bets_to_book_prices(bets, list(wz = wz_canonical))
+stopifnot(nrow(out2) == 2)
+stopifnot(all(out2$is_exact_line))
+stopifnot(all(!is.na(out2$derived_fair_odds)))
+cat("OK matcher 3-way pick'em\n")
+
+# A NON-zero spread bet must NOT enter the pick'em branch (regression).
+bets_alt <- tibble(
+  bet_row_id = "b2", id = "g1", home_team = "SD Padres", away_team = "PHI Phillies",
+  market = "alternate_spreads_fg", market_type = "alternate_spreads", period = "FG",
+  line = -2.5, bet_on = "PHI Phillies", opposite_side = "SD Padres",
+  pt_start_time = as.POSIXct(NA, tz = "UTC")
+)
+fake_book <- normalize_book_odds_frame(tibble(
+  game_id = "g1", market_name = "alternate_spreads_fg",
+  bet_on = "PHI Phillies", line = -2.5, american_odds = 240L, fetch_time = Sys.time()
+))
+out3 <- expand_bets_to_book_prices(bets_alt, list(test = fake_book))
+stopifnot(nrow(out3) >= 1)
+stopifnot(all(is.na(out3$derived_fair_odds)))
+cat("OK non-zero spread unaffected\n")
