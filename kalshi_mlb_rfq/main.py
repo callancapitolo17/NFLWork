@@ -545,30 +545,36 @@ def _total_line_from_legs(legs: list[dict]) -> float:
 # Fair-value provider + gate aggregator + Kelly sizing                     #
 # ------------------------------------------------------------------------ #
 
-def _fresh_blended_fair(combo_market_ticker: str) -> float | None:
+def _fresh_blended_fair(combo_market_ticker: str) -> tuple[float | None, dict]:
+    """Return (blended_fair, book_fairs).
+
+    blended_fair is None when no fresh fair can be formed; book_fairs is the
+    per-book devigged dict (empty when none). Returning book_fairs lets the
+    caller log the pricing components without a second _load_book_fairs pass.
+    """
     with db.connect(read_only=True) as con:
         row = con.execute(
             "SELECT legs_json, game_id FROM combo_cache WHERE combo_market_ticker=?",
             [combo_market_ticker]
         ).fetchone()
     if not row:
-        return None
+        return None, {}
     legs_json, game_id = row
     legs = json.loads(legs_json)
 
     samples = _load_samples_for_game(game_id)
     if samples is None:
-        return None
+        return None, {}
 
     typed = [_leg_dict_to_typed(l, game_id) for l in legs]
     if any(l is None for l in typed):
-        return None
+        return None, {}
 
     model = fair_value.model_fair(samples, typed)
     spread_line = _spread_line_from_legs(legs)
     total_line = _total_line_from_legs(legs)
     book_fairs = _load_book_fairs(game_id, spread_line, total_line)
-    return fair_value.blend(model, book_fairs)
+    return fair_value.blend(model, book_fairs), book_fairs
 
 
 def _all_per_accept_gates_pass(quote: dict, fair: float,
@@ -790,6 +796,7 @@ def _kelly_size_for_candidate(game_id: str,
                                 typed_legs: list,
                                 samples: pd.DataFrame,
                                 blended_fair: float,
+                                leg_set_hash: str | None = None,
                                 ) -> tuple[int, int, float, float]:
     """Kelly counts and worst-acceptable prices for BOTH sides at create time.
 
@@ -834,6 +841,7 @@ def _kelly_size_for_candidate(game_id: str,
     yes_n, yes_ask = kelly_for_side("yes")
     no_n,  no_ask  = kelly_for_side("no")
     research.emit("kelly_sized", game_id=game_id,
+                  leg_set_hash=leg_set_hash,
                   blended_fair=blended_fair,
                   kelly_yes_n=yes_n, kelly_no_n=no_n,
                   worst_yes_ask=yes_ask, worst_no_ask=no_ask,
@@ -937,21 +945,16 @@ def _evaluate_quote(quote: dict, dry_run: bool,
     }
 
     with ACCEPT_LOCK:
-        fair = _fresh_blended_fair(combo_market_ticker)
+        fair, book_fairs = _fresh_blended_fair(combo_market_ticker)
         if fair is None:
             _log_quote_decision(quote, None, "declined_ev", reason="no_fresh_fair", diag=diag)
             return
-        # quote_priced: re-derive pricing components for the research log
-        try:
-            _qp_legs = json.loads(legs_json)
-            _qp_sl = _spread_line_from_legs(_qp_legs)
-            _qp_tl = _total_line_from_legs(_qp_legs)
-            research.emit("quote_priced", game_id=game_id,
-                          combo_ticker=combo_market_ticker, rfq_id=rfq_id,
-                          quote_id=quote.get("id"), blended_fair=fair,
-                          book_fairs=_load_book_fairs(game_id, _qp_sl, _qp_tl))
-        except Exception:
-            pass
+        # quote_priced: reuse the per-book fairs already computed by
+        # _fresh_blended_fair — no redundant pandas recompute per quote eval.
+        research.emit("quote_priced", game_id=game_id,
+                      combo_ticker=combo_market_ticker, rfq_id=rfq_id,
+                      quote_id=quote.get("id"), blended_fair=fair,
+                      book_fairs=book_fairs)
 
         passed, decision = _all_per_accept_gates_pass(
             quote, fair, {"leg_set_hash": leg_set_hash, "game_id": game_id,
@@ -1161,11 +1164,16 @@ def _evaluate_quote(quote: dict, dry_run: bool,
             )
         # Persist post-fill position snapshot to the research firehose
         # (positions row is mutated in place, so this captures the history).
-        with db.connect(read_only=True) as con:
-            after = con.execute(
-                "SELECT net_contracts, weighted_price FROM positions "
-                "WHERE combo_market_ticker=? AND side=?",
-                [combo_market_ticker, diag["chosen_side"]]).fetchone()
+        # Wrapped: the fill is already committed — a read-back error must not
+        # bubble past the accept and skip _log_quote_decision / notify.fill.
+        try:
+            with db.connect(read_only=True) as con:
+                after = con.execute(
+                    "SELECT net_contracts, weighted_price FROM positions "
+                    "WHERE combo_market_ticker=? AND side=?",
+                    [combo_market_ticker, diag["chosen_side"]]).fetchone()
+        except Exception:
+            after = None
         research.emit("position_snapshot", game_id=game_id,
                       combo_ticker=combo_market_ticker, rfq_id=rfq_id,
                       quote_id=quote.get("id"),
@@ -1574,7 +1582,8 @@ def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandida
                 continue
             kalshi_ref = _kalshi_last_price(cand.legs[0]["market_ticker"])
             yes_n, no_n, yes_ask, no_ask = _kelly_size_for_candidate(
-                game_id, typed, samples, blended)
+                game_id, typed, samples, blended,
+                leg_set_hash=cand.leg_set_hash)
             _emit_candidate_event("submitted", game_id=game_id, cand=cand,
                                   spread_line=spread_line, total_line=total_line,
                                   model=model, books=books, blended=blended,
