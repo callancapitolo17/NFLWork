@@ -355,6 +355,27 @@ Visual reference: `docs/superpowers/specs/2026-05-13-mlb-bets-tab-improvements-d
   recommended Risk and To Win. Reuses the existing JS Kelly math and
   reads the dashboard's bankroll/kelly_mult inputs live.
 
+### Pinned scoring strip (sticky account bar + Kelly Calc)
+
+- The `Placing on` account row (`#wz-account-row`) was **relocated out of
+  `.header`** to be a direct child of `.container` (class `pinned-account-bar`)
+  so its `position: sticky; top: 0` freeze holds through the whole card list on
+  every tab. Do not move it back inside `.header` — sticky only holds while its
+  parent is on screen, and `.header` is too short.
+- The Kelly Calculator is wrapped in `.kelly-calc-pin` (full-width opaque sticky
+  surface) because `.kelly-calc` itself is `inline-flex; fit-content` and would
+  let cards peek through beside it.
+- `.kelly-calc-pin`'s `top` is `var(--pin-top)`, set by `syncPinOffset()` (called
+  on load, on resize, and at the end of `renderPills`) to the account bar's
+  measured height. If you change the account bar's height/padding, the offset
+  self-corrects; no constant to update.
+- **CSS lives in a single-quoted R string** (`tags$style(HTML('...'))` ~`:1944`),
+  so any apostrophe in a CSS comment closes the string and breaks the render.
+  Keep `.pinned-account-bar` / `.kelly-calc-pin` comments apostrophe-free. (The
+  JS is in a raw string `r"(...)"`, so it's not affected.)
+- z-index: account bar 40, Kelly wrapper 30 — above cards, below filter menu
+  (100) / modal (999) / toast (1000/9999).
+
 ### WZ single-bet auto-placer
 
 `wagerzon_odds/single_placer.py` exposes `place_single(account, bet)`
