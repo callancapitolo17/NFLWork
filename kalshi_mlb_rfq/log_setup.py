@@ -34,8 +34,11 @@ def setup_logging(log_path: Path | None = None,
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
 
     # Idempotency: drop our previously-installed handlers before re-adding.
+    # close() before removeHandler() so the rotating file's fd is released
+    # (removeHandler alone leaks the descriptor until GC).
     for h in list(root.handlers):
         if getattr(h, "_rfq_managed", False):
+            h.close()
             root.removeHandler(h)
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
