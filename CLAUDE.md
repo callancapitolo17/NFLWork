@@ -126,6 +126,13 @@ This repo contains tools for:
     schedule from `mlb.duckdb::mlb_odds_temp` (read-only). Line surface
     is now driven by Kalshi MVE enumeration, not Wagerzon-derived
     `mlb_parlay_lines`. See `kalshi_mlb_rfq/README.md` for cadence loop.
+  - Bot also owns a **research firehose DB** `kalshi_mlb_rfq/kalshi_mlb_rfq_research.duckdb`
+    (third sibling, separate write lock) capturing the full RFQ lifecycle
+    (candidate pricing/rejections, per-book fairs, gates, Kelly, fills) the
+    trading path otherwise discards — `research.py` buffers + batch-flushes
+    per tick; can never raise into the trading loop. Operational logging is
+    `print()`-free (Python `logging` + rotating `bot.log`). Retention is
+    unbounded (no scheduled prune). See README "Observability" section.
 
 ### MLB Dashboard — Odds screen
 

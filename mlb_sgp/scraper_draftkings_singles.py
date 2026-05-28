@@ -209,14 +209,31 @@ def parse_selections_to_wide_rows(
                 if len(spread_lines_by_market.get(sel.market_id, ())) > 1:
                     effective_market_type = "alternate_spreads"
 
-        # Bucket key: main rows coalesce by period only; alt rows split by line.
-        # For alt-spreads, both sides (e.g. Yankees -2.5 and Red Sox +2.5) share
-        # the same row, so bucket by absolute line. For alt-totals, Over/Under
-        # already share the same line value.
+        # Bucket key: main rows coalesce by period only; alt-spread rows split
+        # by the SIGNED home-equivalent line. DK posts the two opposite
+        # directions at one magnitude as separate two-way markets — e.g.
+        # ARI -2.5/SFG +2.5 AND ARI +2.5/SFG -2.5. Bucketing by abs(line)
+        # collapsed both into one row, so last-write-wins silently dropped a
+        # whole direction (the favorite-laying-runs ladder vanished, leaving
+        # only a lone deep line whose mirror DK didn't post). Keying on the
+        # signed home line keeps each side of one market together while
+        # separating the two directions. Alt-totals: Over/Under already share
+        # one line value, so key on it directly.
         if effective_market_type == "main":
             bucket_line: float | None = None
         elif effective_market_type == "alternate_spreads" and sel.line is not None:
-            bucket_line = abs(sel.line)
+            sel_name = sel.name.strip()
+            if (sel_name.startswith(event.home_team + " ")
+                    or sel_name == event.home_team):
+                bucket_line = sel.line           # home line IS the key
+            elif (sel_name.startswith(event.away_team + " ")
+                    or sel_name == event.away_team):
+                bucket_line = -sel.line          # away line -> implied home line
+            else:
+                # Unrecognized team on a spread selection — skip rather than
+                # create a malformed half-row (the finalization guard would
+                # drop it anyway).
+                continue
         else:
             bucket_line = sel.line
         key = (period, effective_market_type, bucket_line)

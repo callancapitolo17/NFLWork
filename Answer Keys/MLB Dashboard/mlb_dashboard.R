@@ -2571,6 +2571,16 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           gap: 8px;
           padding: 10px 0 4px 0;
         }
+        /* Pinned scoring strip — account bar frozen at the top on every tab.
+           Parent is the page-spanning .container, so the freeze holds through
+           the whole card list. */
+        .pinned-account-bar {
+          position: sticky;
+          top: 0;
+          z-index: 40;              /* above cards; below filter-menu(100)/modal(999)/toast */
+          background: #0d1117;       /* opaque so cards scroll cleanly underneath */
+          border-bottom: 1px solid #21262d;
+        }
         .wz-pills {
           display: flex;
           gap: 6px;
@@ -3291,6 +3301,17 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           line-height: 1.2;
           margin: 0 0 14px 0;
         }
+        /* Full-width opaque sticky surface that carries the Kelly Calculator.
+           Pins just below the account bar; --pin-top is set by syncPinOffset()
+           to the measured account-bar height so it sits flush even when the
+           pills wrap on narrow widths. Fallback 48px covers first paint. */
+        .kelly-calc-pin {
+          position: sticky;
+          top: var(--pin-top, 48px);
+          z-index: 30;              /* below the account bar, above cards */
+          background: #0d1117;
+          padding: 8px 0 2px 0;
+        }
         .kelly-calc * {
           font-family: inherit;
           font-size: inherit;
@@ -3382,15 +3403,19 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               tags$div(class = "subtitle", paste("Updated", timestamp))
             ),
             tags$button(class = "refresh-btn", onclick = "refreshData()", "Refresh")
-          ),
-          tags$div(class = "header-row-accounts", id = "wz-account-row",
-            tags$span(class = "header-label", "Placing on"),
-            tags$div(id = "wz-account-pills", class = "wz-pills"),
-            tags$button(
-              id = "wz-refresh-btn", type = "button", class = "wz-icon-btn",
-              title = "Refresh balances",
-              HTML("&#x21bb;")
-            )
+          )
+        ),
+
+        # Pinned account bar — relocated out of .header so its sticky parent is
+        # the page-spanning .container; stays frozen through the whole card list
+        # on every tab. Ids/inner structure preserved so the pill JS is untouched.
+        tags$div(class = "header-row-accounts pinned-account-bar", id = "wz-account-row",
+          tags$span(class = "header-label", "Placing on"),
+          tags$div(id = "wz-account-pills", class = "wz-pills"),
+          tags$button(
+            id = "wz-refresh-btn", type = "button", class = "wz-icon-btn",
+            title = "Refresh balances",
+            HTML("&#x21bb;")
           )
         ),
 
@@ -3454,6 +3479,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           # / breakeven from two text inputs. Element IDs and class
           # operations (.invalid / .neg / .pos) preserved so the
           # setupKellyCalc() JS handler below runs unchanged.
+          tags$div(class = "kelly-calc-pin",
           tags$div(class = "kelly-calc",
             tags$span(class = "title", "Kelly Calculator"),
             tags$div(class = "pair",
@@ -3485,6 +3511,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 tags$span(id = "kc-be", class = "val", HTML("&mdash;"))
               )
             )
+          )
           ),
 
           # Filter Bar
@@ -6138,7 +6165,19 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
       bar.appendChild(pill);
     });
+    syncPinOffset();   // pills just changed height; refresh the sticky offset
   }
+
+  // Keep the Kelly Calc pinned flush below the account bar by measuring the
+  // bar's real height into --pin-top. Recomputed on load, on resize, and after
+  // pills (re)render (they are JS-populated, so height is only known then).
+  function syncPinOffset() {
+    var barEl = document.getElementById('wz-account-row');
+    if (!barEl) return;
+    document.documentElement.style.setProperty('--pin-top', barEl.offsetHeight + 'px');
+  }
+  window.addEventListener('load', syncPinOffset);
+  window.addEventListener('resize', syncPinOffset);
 
   function refreshBalances() {
     return fetch('/api/wagerzon/balances')

@@ -2,7 +2,9 @@
 
 import argparse
 import json
+import logging
 import os
+import random as _random
 import signal
 import subprocess
 import threading
@@ -17,11 +19,14 @@ import pandas as pd
 
 from kalshi_mlb_rfq import (
     auth_client, combo_enumerator, config, db, ev_calc,
-    fair_value, kelly, notify, rfq_client, risk, sgp_runner,
+    fair_value, kelly, notify, research, rfq_client, risk, sgp_runner,
 )
 from kalshi_mlb_rfq.config import (
     ANSWER_KEY_DB, KILL_FILE, MAX_BOOK_STALENESS_SEC,
 )
+from kalshi_mlb_rfq.log_setup import setup_logging
+
+log = logging.getLogger("kalshi_mlb_rfq")
 
 VERSION = "0.1.0"
 
@@ -57,6 +62,48 @@ def _max_live_rfqs() -> int:
     return MAX_LIVE_RFQS_OVERRIDE if MAX_LIVE_RFQS_OVERRIDE is not None else config.MAX_LIVE_RFQS
 
 
+def _research_sample() -> bool:
+    """Return True if the next candidate event should be logged.
+    Driven by RESEARCH_CANDIDATE_SAMPLING (default 1.0 = log all). Always
+    safe to call; short-circuits with zero RNG cost when the knob is 1.0.
+    """
+    s = config.RESEARCH_CANDIDATE_SAMPLING
+    return s >= 1.0 or _random.random() < s
+
+
+def _emit_candidate_event(outcome: str, *, game_id: str, cand,
+                          spread_line: float, total_line: float,
+                          model: float | None = None,
+                          books: dict | None = None,
+                          blended: float | None = None,
+                          kalshi_ref: float | None = None,
+                          kelly: tuple | None = None) -> None:
+    """Emit one candidate_evaluated event (gated by _research_sample).
+
+    Defined at module level (NOT as a per-iter closure in the enumeration
+    loop) so we don't allocate a new closure per candidate per tick — and
+    so a future deferred-emit refactor can't trip the closure-capture
+    footgun. The combo's own market_ticker is intentionally omitted
+    (it doesn't exist until RFQ minting); leg_set_hash is the join key
+    for analysis against live_rfqs / quote_log.
+    """
+    if not _research_sample():
+        return
+    research.emit(
+        "candidate_evaluated",
+        game_id=game_id,
+        leg_set_hash=cand.leg_set_hash,
+        spread_line=spread_line, total_line=total_line,
+        outcome=outcome, model_fair=model, book_fairs=books,
+        n_books=(len(books) if books else 0),
+        blended_fair=blended, kalshi_ref=kalshi_ref,
+        kelly_yes_n=(kelly[0] if kelly else None),
+        kelly_no_n=(kelly[1] if kelly else None),
+        worst_yes_ask=(kelly[2] if kelly else None),
+        worst_no_ask=(kelly[3] if kelly else None),
+    )
+
+
 def _record_positions_api_result(success: bool):
     global _POSITIONS_API_FAIL_COUNT
     if success:
@@ -83,7 +130,7 @@ def _refresh_caches(retries: int = 5) -> bool:
     global _SAMPLES_META_GENERATED_AT, _CACHE_LOADED_AT
 
     if not ANSWER_KEY_DB.exists():
-        print(f"  cache_refresh: {ANSWER_KEY_DB} does not exist", flush=True)
+        log.warning("cache_refresh: %s does not exist", ANSWER_KEY_DB)
         return False
 
     last_err = None
@@ -93,8 +140,8 @@ def _refresh_caches(retries: int = 5) -> bool:
         except duckdb.IOException as e:
             last_err = e
             wait = 1.0 * (2 ** attempt)
-            print(f"  cache_refresh: lock conflict (attempt {attempt+1}/{retries}); "
-                  f"retrying in {wait:.1f}s", flush=True)
+            log.warning("cache_refresh: lock conflict (attempt %d/%d); retrying in %.1fs",
+                        attempt + 1, retries, wait)
             time.sleep(wait)
             continue
 
@@ -138,8 +185,8 @@ def _refresh_caches(retries: int = 5) -> bool:
             except Exception:
                 pass
             wait = 1.0 * (2 ** attempt)
-            print(f"  cache_refresh: schema mismatch (attempt {attempt+1}/{retries}); "
-                  f"retrying in {wait:.1f}s — {e}", flush=True)
+            log.warning("cache_refresh: schema mismatch (attempt %d/%d); retrying in %.1fs — %s",
+                        attempt + 1, retries, wait, e)
             time.sleep(wait)
             continue
         finally:
@@ -158,13 +205,11 @@ def _refresh_caches(retries: int = 5) -> bool:
             _CACHE_LOADED_AT = datetime.now(timezone.utc)
 
         elapsed = time.time() - t0
-        print(f"  cache_refresh: {len(samples_by_game)} games, "
-              f"{len(parlay_lines)} parlay_lines, "
-              f"samples gen_at={generated_at} ({elapsed:.1f}s)", flush=True)
+        log.info("cache_refresh: %d games, %d parlay_lines, samples gen_at=%s (%.1fs)",
+                 len(samples_by_game), len(parlay_lines), generated_at, elapsed)
         return True
 
-    print(f"  cache_refresh: gave up after {retries} attempts; last error: {last_err}",
-          flush=True)
+    log.warning("cache_refresh: gave up after %d attempts; last error: %s", retries, last_err)
     return False
 
 
@@ -202,10 +247,10 @@ def _refresh_sgp_cache(retries: int = 3) -> bool:
 
         with _CACHE_LOCK:
             _SGP_ODDS_CACHE = sgp_df
-        print(f"  sgp_cache_refresh: {len(sgp_df)} rows from bot_market_db", flush=True)
+        log.info("sgp_cache_refresh: %d rows from bot_market_db", len(sgp_df))
         return True
 
-    print(f"  sgp_cache_refresh: gave up after {retries} attempts; {last_err}", flush=True)
+    log.warning("sgp_cache_refresh: gave up after %d attempts; %s", retries, last_err)
     return False
 
 
@@ -281,17 +326,17 @@ def _phantom_rfq_cleanup():
     touching).
     """
     if not config.KALSHI_USER_ID:
-        print("  startup: KALSHI_USER_ID not set — skipping phantom cleanup "
-              "(safety: would otherwise fetch RFQs from all users)", flush=True)
+        log.warning("startup: KALSHI_USER_ID not set — skipping phantom cleanup "
+                    "(safety: would otherwise fetch RFQs from all users)")
         return
     try:
         kalshi_open = rfq_client.list_open_rfqs(config.KALSHI_USER_ID)
     except Exception as e:
-        print(f"  startup: list_open_rfqs failed: {e}", flush=True)
+        log.warning("startup: list_open_rfqs failed: %s", e)
         return
 
     if not kalshi_open:
-        print("  startup: no open RFQs on Kalshi", flush=True)
+        log.info("startup: no open RFQs on Kalshi")
         return
 
     with db.connect(read_only=True) as con:
@@ -320,13 +365,13 @@ def _phantom_rfq_cleanup():
         try:
             rfq_client.delete_rfq(rid)
             cancelled += 1
-            print(f"  startup: cancelled phantom rfq {rid}", flush=True)
+            log.info("startup: cancelled phantom rfq %s", rid)
         except Exception as e:
             failed += 1
-            print(f"  startup: failed to cancel phantom {rid}: {e}", flush=True)
+            log.warning("startup: failed to cancel phantom %s: %s", rid, e)
 
-    print(f"  startup: phantom cleanup — cancelled={cancelled} failed={failed} "
-          f"skipped_other_bot={skipped_other_bot}", flush=True)
+    log.info("startup: phantom cleanup — cancelled=%d failed=%d skipped_other_bot=%d",
+             cancelled, failed, skipped_other_bot)
 
 
 # ------------------------------------------------------------------------ #
@@ -500,30 +545,36 @@ def _total_line_from_legs(legs: list[dict]) -> float:
 # Fair-value provider + gate aggregator + Kelly sizing                     #
 # ------------------------------------------------------------------------ #
 
-def _fresh_blended_fair(combo_market_ticker: str) -> float | None:
+def _fresh_blended_fair(combo_market_ticker: str) -> tuple[float | None, dict]:
+    """Return (blended_fair, book_fairs).
+
+    blended_fair is None when no fresh fair can be formed; book_fairs is the
+    per-book devigged dict (empty when none). Returning book_fairs lets the
+    caller log the pricing components without a second _load_book_fairs pass.
+    """
     with db.connect(read_only=True) as con:
         row = con.execute(
             "SELECT legs_json, game_id FROM combo_cache WHERE combo_market_ticker=?",
             [combo_market_ticker]
         ).fetchone()
     if not row:
-        return None
+        return None, {}
     legs_json, game_id = row
     legs = json.loads(legs_json)
 
     samples = _load_samples_for_game(game_id)
     if samples is None:
-        return None
+        return None, {}
 
     typed = [_leg_dict_to_typed(l, game_id) for l in legs]
     if any(l is None for l in typed):
-        return None
+        return None, {}
 
     model = fair_value.model_fair(samples, typed)
     spread_line = _spread_line_from_legs(legs)
     total_line = _total_line_from_legs(legs)
     book_fairs = _load_book_fairs(game_id, spread_line, total_line)
-    return fair_value.blend(model, book_fairs)
+    return fair_value.blend(model, book_fairs), book_fairs
 
 
 def _all_per_accept_gates_pass(quote: dict, fair: float,
@@ -745,6 +796,7 @@ def _kelly_size_for_candidate(game_id: str,
                                 typed_legs: list,
                                 samples: pd.DataFrame,
                                 blended_fair: float,
+                                leg_set_hash: str | None = None,
                                 ) -> tuple[int, int, float, float]:
     """Kelly counts and worst-acceptable prices for BOTH sides at create time.
 
@@ -788,6 +840,14 @@ def _kelly_size_for_candidate(game_id: str,
 
     yes_n, yes_ask = kelly_for_side("yes")
     no_n,  no_ask  = kelly_for_side("no")
+    research.emit("kelly_sized", game_id=game_id,
+                  leg_set_hash=leg_set_hash,
+                  blended_fair=blended_fair,
+                  kelly_yes_n=yes_n, kelly_no_n=no_n,
+                  worst_yes_ask=yes_ask, worst_no_ask=no_ask,
+                  n_existing_positions=len(existing),
+                  bankroll=config.BANKROLL,
+                  kelly_fraction=config.KELLY_FRACTION)
     return yes_n, no_n, yes_ask, no_ask
 
 
@@ -885,14 +945,25 @@ def _evaluate_quote(quote: dict, dry_run: bool,
     }
 
     with ACCEPT_LOCK:
-        fair = _fresh_blended_fair(combo_market_ticker)
+        fair, book_fairs = _fresh_blended_fair(combo_market_ticker)
         if fair is None:
             _log_quote_decision(quote, None, "declined_ev", reason="no_fresh_fair", diag=diag)
             return
+        # quote_priced: reuse the per-book fairs already computed by
+        # _fresh_blended_fair — no redundant pandas recompute per quote eval.
+        research.emit("quote_priced", game_id=game_id,
+                      combo_ticker=combo_market_ticker, rfq_id=rfq_id,
+                      quote_id=quote.get("id"), blended_fair=fair,
+                      book_fairs=book_fairs)
 
         passed, decision = _all_per_accept_gates_pass(
             quote, fair, {"leg_set_hash": leg_set_hash, "game_id": game_id,
                           "legs_json": legs_json})
+        research.emit("gate_evaluated", game_id=game_id,
+                      combo_ticker=combo_market_ticker, rfq_id=rfq_id,
+                      quote_id=quote.get("id"),
+                      decision=decision, passed=passed,
+                      blended_fair=fair)
         if not passed:
             _log_quote_decision(quote, fair, decision, diag=diag)
             return
@@ -914,11 +985,10 @@ def _evaluate_quote(quote: dict, dry_run: bool,
         # pass simultaneously against the same fair. If this ever fires the
         # fee model or fair-value pipeline has drifted — alert + decline.
         if yes_ok and no_ok:
-            print(
-                f"[MATH_INVARIANT_BROKEN] both sides +EV from one LP: "
-                f"yes_ask={1-no_bid:.4f} no_ask={1-yes_bid:.4f} fair={fair:.4f} "
-                f"ev_yes_pct={ev_yes_pct:.4f} ev_no_pct={ev_no_pct:.4f}",
-                flush=True,
+            log.warning(
+                "[MATH_INVARIANT_BROKEN] both sides +EV from one LP: "
+                "yes_ask=%.4f no_ask=%.4f fair=%.4f ev_yes_pct=%.4f ev_no_pct=%.4f",
+                1 - no_bid, 1 - yes_bid, fair, ev_yes_pct, ev_no_pct,
             )
             _log_quote_decision(quote, fair, "declined_math_invariant",
                                  diag=diag)
@@ -1026,6 +1096,11 @@ def _evaluate_quote(quote: dict, dry_run: bool,
             diag["rfq_terminal_status"] = (
                 rfq_obj.get("status") if rfq_obj else None
             )
+            research.emit("walk_diagnosed", game_id=game_id,
+                          combo_ticker=combo_market_ticker, rfq_id=rfq_id,
+                          quote_id=quote.get("id"),
+                          accept_response_body=diag.get("accept_response_body"),
+                          rfq_terminal_status=diag.get("rfq_terminal_status"))
             _log_quote_decision(quote, fair, "failed_quote_walked",
                                  post_fee_ev=chosen_ev_pct, diag=diag)
             return
@@ -1041,10 +1116,9 @@ def _evaluate_quote(quote: dict, dry_run: bool,
             signed = rfq_client.get_position_contracts(combo_market_ticker)
             _record_positions_api_result(True)
             if (chosen == "yes" and signed < 0) or (chosen == "no" and signed > 0):
-                print(
-                    f"[position_direction_mismatch] chosen={chosen} but "
-                    f"signed_position={signed} on {combo_market_ticker}",
-                    flush=True,
+                log.warning(
+                    "[position_direction_mismatch] chosen=%s but signed_position=%s on %s",
+                    chosen, signed, combo_market_ticker,
                 )
             actual = abs(signed)
         except Exception:
@@ -1088,6 +1162,24 @@ def _evaluate_quote(quote: dict, dry_run: bool,
                 "cooled_until = EXCLUDED.cooled_until",
                 [leg_set_hash, chosen, game_id, cooled_until, "post_accept"],
             )
+        # Persist post-fill position snapshot to the research firehose
+        # (positions row is mutated in place, so this captures the history).
+        # Wrapped: the fill is already committed — a read-back error must not
+        # bubble past the accept and skip _log_quote_decision / notify.fill.
+        try:
+            with db.connect(read_only=True) as con:
+                after = con.execute(
+                    "SELECT net_contracts, weighted_price FROM positions "
+                    "WHERE combo_market_ticker=? AND side=?",
+                    [combo_market_ticker, diag["chosen_side"]]).fetchone()
+        except Exception:
+            after = None
+        research.emit("position_snapshot", game_id=game_id,
+                      combo_ticker=combo_market_ticker, rfq_id=rfq_id,
+                      quote_id=quote.get("id"),
+                      side=diag["chosen_side"], contracts_added=actual,
+                      net_contracts_after=(after[0] if after else None),
+                      weighted_price_after=(after[1] if after else None))
         _log_quote_decision(quote, fair, "accepted",
                              post_fee_ev=chosen_ev_pct, diag=diag)
         notify.fill(rfq_id=rfq_id, combo_market_ticker=combo_market_ticker,
@@ -1190,7 +1282,7 @@ def _refresh_rfqs(candidates: list[combo_enumerator.ComboCandidate],
                         [datetime.now(timezone.utc), rid],
                     )
             except Exception as e:
-                print(f"  drop {rid} failed: {e}", flush=True)
+                log.warning("drop %s failed: %s", rid, e)
 
     # Add: for each target candidate, emit up to 2 RFQs (one per side with
     # positive Kelly). Skip any (leg_set_hash, side) pair already live.
@@ -1254,12 +1346,14 @@ def _refresh_rfqs(candidates: list[combo_enumerator.ComboCandidate],
                     )
                 added += 1
             except Exception as e:
-                print(f"  add {c.leg_set_hash[:8]}/{side} failed: {e}",
-                      flush=True)
+                log.warning("add %s/%s failed: %s", c.leg_set_hash[:8], side, e)
+                research.emit("rfq_submit_failed",
+                              game_id=getattr(c, "game_id", None),
+                              leg_set_hash=c.leg_set_hash,
+                              side=side, error=str(e))
     if skipped_kelly_zero or skipped_too_small or added:
-        print(f"  rfq_refresh: add={added} "
-              f"skipped_kelly_zero={skipped_kelly_zero} "
-              f"skipped_too_small={skipped_too_small}", flush=True)
+        log.info("rfq_refresh: add=%d skipped_kelly_zero=%d skipped_too_small=%d",
+                 added, skipped_kelly_zero, skipped_too_small)
 
 
 # ------------------------------------------------------------------------ #
@@ -1463,20 +1557,38 @@ def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandida
                 available_spreads=avail_spreads,
                 available_totals=avail_totals):
             typed = [_leg_dict_to_typed(dict(l), game_id) for l in cand.legs]
-            if any(l is None for l in typed):
-                continue
-            model = fair_value.model_fair(samples, typed)
             spread_line = _spread_line_from_legs([dict(l) for l in cand.legs])
             total_line = _total_line_from_legs([dict(l) for l in cand.legs])
+
+            if any(l is None for l in typed):
+                _emit_candidate_event("rejected_no_mapping", game_id=game_id,
+                                      cand=cand, spread_line=spread_line,
+                                      total_line=total_line)
+                continue
+            model = fair_value.model_fair(samples, typed)
             books = _load_book_fairs(game_id, spread_line, total_line)
             blended = fair_value.blend(model, books)
             if blended is None:
+                _emit_candidate_event("rejected_no_book_data", game_id=game_id,
+                                      cand=cand, spread_line=spread_line,
+                                      total_line=total_line,
+                                      model=model, books=books)
                 continue
             if not (config.MIN_FAIR_PROB <= blended <= config.MAX_FAIR_PROB):
+                _emit_candidate_event("rejected_fair_oob", game_id=game_id,
+                                      cand=cand, spread_line=spread_line,
+                                      total_line=total_line,
+                                      model=model, books=books, blended=blended)
                 continue
             kalshi_ref = _kalshi_last_price(cand.legs[0]["market_ticker"])
             yes_n, no_n, yes_ask, no_ask = _kelly_size_for_candidate(
-                game_id, typed, samples, blended)
+                game_id, typed, samples, blended,
+                leg_set_hash=cand.leg_set_hash)
+            _emit_candidate_event("submitted", game_id=game_id, cand=cand,
+                                  spread_line=spread_line, total_line=total_line,
+                                  model=model, books=books, blended=blended,
+                                  kalshi_ref=kalshi_ref,
+                                  kelly=(yes_n, no_n, yes_ask, no_ask))
             candidates_all.append(cand)
             fair_scores[cand.leg_set_hash] = (blended, kalshi_ref)
             kelly_sizes[cand.leg_set_hash] = (yes_n, no_n, yes_ask, no_ask)
@@ -1489,12 +1601,15 @@ def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandida
 # ------------------------------------------------------------------------ #
 
 def main_loop(dry_run: bool):
+    setup_logging()
     db.init_database()
     sid = db.start_session(pid=os.getpid(), dry_run=dry_run, version=VERSION)
-    print(f"=== Kalshi MLB RFQ Bot — session {sid} (dry_run={dry_run}) ===", flush=True)
+    research.init_research_db()
+    research.set_session(sid)
+    log.info("=== Kalshi MLB RFQ Bot — session %s (dry_run=%s) ===", sid, dry_run)
     # Initial cache load — bot is useless until this succeeds.
     if not _refresh_caches():
-        print("  startup: cache_refresh failed; bot will retry on pipeline-refresh tick", flush=True)
+        log.warning("startup: cache_refresh failed; bot will retry on pipeline-refresh tick")
     _phantom_rfq_cleanup()
 
     # Synchronous SGP warm-up: run one full SGP cycle before entering the
@@ -1502,7 +1617,7 @@ def main_loop(dry_run: bool):
     # Blocks ~60-90s; without this the first RFQ refresh would have zero
     # book fairs and burn Kalshi quota on candidates that can't pass the
     # N>=2 books gate.
-    print("  startup: warming SGP cache (one synchronous scrape tick)...", flush=True)
+    log.info("startup: warming SGP cache (one synchronous scrape tick)...")
     try:
         rcs = sgp_runner.sgp_cycle(
             bot_market_db=str(config.BOT_MARKET_DB),
@@ -1510,9 +1625,9 @@ def main_loop(dry_run: bool):
             venv_python=str(config.MLB_SGP_DIR / "venv" / "bin" / "python"),
             timeout_sec=config.SGP_SCRAPER_TIMEOUT_SEC,
         )
-        print(f"  startup: SGP warm-up done — return codes {rcs}", flush=True)
+        log.info("startup: SGP warm-up done — return codes %s", rcs)
     except Exception as e:
-        print(f"  startup: SGP warm-up failed ({e}); bot will retry on first cadence tick", flush=True)
+        log.warning("startup: SGP warm-up failed (%s); bot will retry on first cadence tick", e)
     _refresh_sgp_cache()
     # Rebuild parlay_lines cache now that target_lines has rows
     _refresh_caches()
@@ -1538,24 +1653,24 @@ def main_loop(dry_run: bool):
                 try:
                     candidates, fair_scores, kelly_sizes = _enumerate_and_score_all_games()
                     _refresh_rfqs(candidates, fair_scores, kelly_sizes, dry_run=dry_run)
-                    print(f"  rfq_refresh: {len(candidates)} candidates "
-                          f"({time.time()-t_ref:.1f}s)", flush=True)
+                    log.info("rfq_refresh: %d candidates (%.1fs)",
+                             len(candidates), time.time() - t_ref)
                 except Exception as e:
-                    print(f"  rfq_refresh error: {e}", flush=True)
+                    log.warning("rfq_refresh error: %s", e)
                 last_rfq_refresh = now
 
             if now - last_quote_poll >= config.QUOTE_POLL_SEC:
                 try:
                     _poll_all_live_rfqs(dry_run=dry_run)
                 except Exception as e:
-                    print(f"  quote_poll error: {e}", flush=True)
+                    log.warning("quote_poll error: %s", e)
                 last_quote_poll = now
 
             if now - last_risk_sweep >= config.RISK_SWEEP_SEC:
                 try:
                     _risk_sweep()
                 except Exception as e:
-                    print(f"  risk_sweep error: {e}", flush=True)
+                    log.warning("risk_sweep error: %s", e)
                 last_risk_sweep = now
 
             if now - last_sgp_cycle >= config.SGP_REFRESH_SEC:
@@ -1569,9 +1684,9 @@ def main_loop(dry_run: bool):
                     )
                     _refresh_sgp_cache()
                     _refresh_caches()  # parlay_lines_cache may have new (spread, total) tuples
-                    print(f"  sgp_cycle: rcs={rcs} ({time.time()-t_sgp:.1f}s)", flush=True)
+                    log.info("sgp_cycle: rcs=%s (%.1fs)", rcs, time.time() - t_sgp)
                 except Exception as e:
-                    print(f"  sgp_cycle error: {e}", flush=True)
+                    log.warning("sgp_cycle error: %s", e)
                 last_sgp_cycle = now
 
             if now - last_pipeline >= config.PIPELINE_REFRESH_SEC:
@@ -1582,9 +1697,10 @@ def main_loop(dry_run: bool):
                 last_pipeline = now
 
             if now - last_heartbeat >= 60:
-                print(f"  [HB] {datetime.now(timezone.utc).isoformat()} alive", flush=True)
+                log.info("[HB] %s alive", datetime.now(timezone.utc).isoformat())
                 last_heartbeat = now
 
+            research.flush()   # persist this tick's buffered research events
             time.sleep(0.5)
     finally:
         with db.connect(read_only=True) as con:
@@ -1605,12 +1721,13 @@ def main_loop(dry_run: bool):
                 cancelled += 1
             except Exception as e:
                 failed += 1
-                print(f"  shutdown: cancel {rid} failed: {e}", flush=True)
+                log.warning("shutdown: cancel %s failed: %s", rid, e)
         if live:
-            print(f"  shutdown: drained live RFQs — cancelled={cancelled} "
-                  f"failed={failed}", flush=True)
+            log.info("shutdown: drained live RFQs — cancelled=%d failed=%d",
+                     cancelled, failed)
+        research.flush()   # persist the final tick's buffered research events
         db.end_session(sid)
-        print("=== shutdown complete ===", flush=True)
+        log.info("=== shutdown complete ===")
 
 
 def cli():

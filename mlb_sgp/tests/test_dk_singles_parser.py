@@ -57,6 +57,41 @@ def test_alternate_spreads_emit_separate_rows():
     assert all(r["period"] == "FG" for r in rows)
 
 
+def test_opposite_direction_alt_spreads_same_magnitude_emit_separate_rows():
+    """Regression: DK posts the two opposite directions of an alt run line at
+    the same magnitude as SEPARATE two-way markets — e.g. Yankees -2.5/Red Sox
+    +2.5 AND Yankees +2.5/Red Sox -2.5. Bucketing by abs(line) collapsed both
+    into one row, so last-write-wins silently dropped a whole direction (the
+    favorite-laying-runs ladder vanished from the dashboard). Both directions
+    must survive as distinct rows."""
+    event = Event("e1", "Yankees", "Red Sox", "2026-05-12T22:00:00Z")
+    selections = [
+        # Direction 1 (own market): Yankees (home) LAYS 2.5
+        Selection("s1", "m_altA", "Yankees -2.5", -2.5, 130),
+        Selection("s2", "m_altA", "Red Sox +2.5", 2.5, -160),
+        # Direction 2 (own market): Yankees (home) GETS 2.5
+        Selection("s3", "m_altB", "Yankees +2.5", 2.5, -180),
+        Selection("s4", "m_altB", "Red Sox -2.5", -2.5, 150),
+    ]
+    market_meta = {
+        "m_altA": ("FG", "alternate_spreads"),
+        "m_altB": ("FG", "alternate_spreads"),
+    }
+    rows = parse_selections_to_wide_rows(event, selections, market_meta,
+                                          fetch_time=datetime(2026, 5, 12, 14, 0))
+    assert len(rows) == 2
+    by_home = {r["home_spread"]: r for r in rows}
+    assert set(by_home) == {-2.5, 2.5}
+    # Yankees -2.5 row: home lays 2.5, away gets 2.5
+    assert by_home[-2.5]["home_spread_price"] == 130
+    assert by_home[-2.5]["away_spread"] == 2.5
+    assert by_home[-2.5]["away_spread_price"] == -160
+    # Yankees +2.5 row: home gets 2.5, away lays 2.5
+    assert by_home[2.5]["home_spread_price"] == -180
+    assert by_home[2.5]["away_spread"] == -2.5
+    assert by_home[2.5]["away_spread_price"] == 150
+
+
 def test_alternate_totals_emit_separate_rows():
     """Each alt-total line gets its own row marked 'alternate_totals'."""
     event = Event("e1", "Yankees", "Red Sox", "2026-05-12T22:00:00Z")

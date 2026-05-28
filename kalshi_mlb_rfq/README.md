@@ -51,6 +51,32 @@ rm .kill
 
 See spec §3. TL;DR: standalone daemon, reads `Answer Keys/mlb_mm.duckdb` (samples + sgp_odds) read-only, writes `kalshi_mlb_rfq.duckdb`. Continuous priority-queue pipeline of up to 80 in-flight RFQs.
 
+## Observability / research logging
+
+Two layers, both kept off the trading path's critical sections.
+
+**Operational logging.** The bot logs through Python's `logging` (configured once by `log_setup.setup_logging()` at startup). Levels are filterable; `bot.log` uses a `RotatingFileHandler` capped at 50 MB × 5 backups (~300 MB ceiling) so it can't grow unbounded. Normal beats are `INFO`, recoverable errors `WARNING`. `notify.py` fill/halt lines route through the same logger (the webhook is unchanged).
+
+**Research firehose.** A third sibling DuckDB — `kalshi_mlb_rfq_research.duckdb` (separate from the state and market DBs → its own write lock, zero contention with trading) — captures the full RFQ lifecycle the trading path otherwise computes and discards. `research.py` buffers events in-process and `flush()`es them in one batched transaction at the end of each main-loop tick (and on shutdown). Research logging can never break trading: `emit()` only appends to a list, `flush()` swallows every error (warning rate-limited to once/60s), its writes are fail-fast (`_connect(retries=1)`), and the buffer is capped (`RESEARCH_BUFFER_MAX`, drops oldest).
+
+One wide `events` table (`event_id, session_id, event_type, ts, game_id, combo_ticker, rfq_id, quote_id, payload JSON`). Event types by lifecycle stage:
+
+| event_type | when | key payload |
+|---|---|---|
+| `candidate_evaluated` | every candidate per enumeration tick (sampled by `RESEARCH_CANDIDATE_SAMPLING`) | leg_set_hash, outcome (`submitted` / `rejected_no_mapping` / `rejected_no_book_data` / `rejected_fair_oob`), model_fair, per-book `book_fairs`, blended_fair, kalshi_ref, kelly counts |
+| `quote_priced` | each quote eval (success path) | model + per-book `book_fairs`, blended_fair |
+| `gate_evaluated` | each quote eval | decision label, passed, blended_fair |
+| `kelly_sized` | per candidate at create-time sizing | leg_set_hash, kelly counts, worst-acceptable asks, n_existing_positions, bankroll, kelly_fraction |
+| `position_snapshot` | on each fill | side, contracts_added, net/weighted price after |
+| `walk_diagnosed` | on a walked accept | accept_response_body, rfq_terminal_status |
+| `rfq_submit_failed` | RFQ create exception | leg_set_hash, side, error |
+
+These **complement** the state DB (`quote_log`, `fills`, `live_rfqs`) — they don't duplicate it. Join via `leg_set_hash` → `rfq_id` → `combo_ticker`.
+
+**Querying.** Plain DuckDB SQL — `ATTACH` both DBs read-only and join. See `research_queries.sql` for the RFQ-journey, missed-edges, and gate-breakdown examples. Read payload fields with `json_extract_string(payload, 'key')` (not `->>`, which can misbehave in mixed-type queries on DuckDB 1.4.x).
+
+**Retention.** None automatic — `research.prune_research(days=90)` exists but is **not scheduled**. The research DB grows unbounded (slowly, ~2.5 GB/month at full sampling); point a cron line at `prune_research` when it gets chunky.
+
 ## Devigging
 
 `fair_value.devig_book` uses probit (additive z-shift) devigging on the 4-cell SGP joint distribution (Home/Away Spread × Over/Under). When fewer than 4 sides are visible (interpolated combos with partial coverage), falls back to `(1/decimal) / (1 + vig_fallback)` heuristic. See `docs/superpowers/specs/2026-05-11-probit-devig-design.md`.
@@ -116,6 +142,9 @@ See `.env.example`. Most relevant:
 - `MAX_GAME_EXPOSURE_PCT`, `DAILY_EXPOSURE_CAP_USD` — exposure caps
 - `MAX_PREDICTION_STALENESS_SEC` — accept-gate staleness threshold (10 min default)
 - `MIN_FILL_RATIO`, `FILL_RATIO_WINDOW` — adverse-selection halt
+- `RESEARCH_CANDIDATE_SAMPLING` — fraction of `candidate_evaluated` events to log (1.0 = full movie)
+- `RESEARCH_BUFFER_MAX` — research event buffer cap (drops oldest beyond this)
+- `LOG_LEVEL`, `LOG_MAX_BYTES`, `LOG_BACKUP_COUNT` — operational log level + rotation (default 50 MB × 5)
 
 ## Safety scaffold (per-accept gates)
 
