@@ -547,3 +547,43 @@ odds_api_to_canonical <- function(raw) {
     )
   normalize_book_odds_frame(result)
 }
+
+#' Derive the draw-no-bet (pick'em) American odds for a book's period winner.
+#'
+#' Two source shapes:
+#'  - 2-way winner (no tie outcome): the market already excludes ties, so the
+#'    devigged probabilities ARE the DNB probabilities. Raw = input unchanged.
+#'  - 3-way winner: probit-devig home/away/tie, drop the tie, renormalize.
+#'
+#' Depends on Tools.R (devig_american, devig_american_3way, prob_to_american).
+#'
+#' @param home_raw American odds, home side (numeric, e.g. -180)
+#' @param away_raw American odds, away side
+#' @param tie_raw  American odds for the tie outcome, or NA for 2-way
+#' @return list with home_raw_dnb, away_raw_dnb, home_fair_dnb, away_fair_dnb
+derive_pickem_american <- function(home_raw, away_raw, tie_raw = NA) {
+  na_result <- list(home_raw_dnb = NA_real_, away_raw_dnb = NA_real_,
+                    home_fair_dnb = NA_real_, away_fair_dnb = NA_real_)
+  if (is.na(home_raw) || is.na(away_raw)) return(na_result)
+
+  # Guarded prob -> American: reuse Tools.R::prob_to_american for valid probs.
+  to_amer <- function(p) if (is.na(p) || p <= 0 || p >= 1) NA_real_ else prob_to_american(p)
+
+  if (is.na(tie_raw)) {
+    # 2-way: raw_dnb = input; fair_dnb = probit 2-way devig.
+    # devig_american(odd1, odd2) -> df with $p1 (corresponds to odd1), $p2 (odd2).
+    devig <- devig_american(away_raw, home_raw)   # p1 = away, p2 = home
+    if (is.null(devig) || any(is.na(c(devig$p1, devig$p2)))) {
+      return(list(home_raw_dnb = home_raw, away_raw_dnb = away_raw,
+                  home_fair_dnb = NA_real_, away_fair_dnb = NA_real_))
+    }
+    return(list(
+      home_raw_dnb  = home_raw,
+      away_raw_dnb  = away_raw,
+      home_fair_dnb = to_amer(devig$p2),
+      away_fair_dnb = to_amer(devig$p1)
+    ))
+  }
+  # 3-way path implemented in a later task (replaces this stop()).
+  stop("derive_pickem_american 3-way path not implemented yet")
+}
