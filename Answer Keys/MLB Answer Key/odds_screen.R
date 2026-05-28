@@ -66,6 +66,8 @@ LINE_MATCH_TOLERANCE <- 3.0  # max abs(line_quoted - model_line) we'll emit
     return(c("spreads", "alternate_spreads"))
   if (mt == "totals"            || mt == "alternate_totals")
     return(c("totals", "alternate_totals"))
+  if (mt == "h2h" || mt == "h2h_3way")
+    return(c("h2h", "h2h_3way"))
   mt
 }
 
@@ -194,6 +196,7 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
                   side = character(), bookmaker = character(),
                   line = numeric(), line_quoted = numeric(),
                   is_exact_line = logical(), american_odds = integer(),
+                  derived_fair_odds = numeric(),
                   fetch_time = as.POSIXct(character()),
                   game_start_time = as.POSIXct(character(), tz = "UTC")))
   }
@@ -255,6 +258,79 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
       book_frame <- book_odds_by_book[[book_name]]
       if (is.null(book_frame) || nrow(book_frame) == 0) next
 
+      # Pick'em (line-0 spread): derive draw-no-bet from the book's period
+      # winner instead of falling back to its nearest run line. Priority:
+      # 2-way h2h > 3-way h2h_3way > true 0-handicap spread.
+      is_pickem <- bet$market_type %in% c("spreads", "alternate_spreads") &&
+                   !is.na(bet$line) && bet$line == 0
+      if (is_pickem) {
+        winners <- book_frame %>%
+          filter(game_id == bet$game_id, period == bet$period,
+                 market %in% c("h2h", "h2h_3way", "spreads", "alternate_spreads"))
+        winners <- winners %>% filter(
+          market %in% c("h2h", "h2h_3way") |
+          (market %in% c("spreads", "alternate_spreads") & !is.na(line) & abs(line) < 1e-9)
+        )
+        if (nrow(winners) == 0) next   # cell -> "—"
+
+        h2h_rows <- winners %>% filter(market == "h2h")
+        h3w_rows <- winners %>% filter(market == "h2h_3way")
+        sp0_rows <- winners %>% filter(market %in% c("spreads", "alternate_spreads"))
+        use_3way <- nrow(h2h_rows) < 2 && nrow(h3w_rows) >= 3
+        use_sp0  <- nrow(h2h_rows) < 2 && nrow(h3w_rows) < 3 && nrow(sp0_rows) >= 2
+
+        if (use_3way) {
+          home_row <- h3w_rows %>% filter(side == home_team_value) %>% slice_head(n = 1)
+          away_row <- h3w_rows %>% filter(side == away_team_value) %>% slice_head(n = 1)
+          tie_row  <- h3w_rows %>% filter(side == "Tie")           %>% slice_head(n = 1)
+          if (nrow(home_row) == 0 || nrow(away_row) == 0 || nrow(tie_row) == 0) next
+          dnb <- derive_pickem_american(home_row$american_odds, away_row$american_odds, tie_row$american_odds)
+          ft  <- home_row$fetch_time
+        } else if (use_sp0) {
+          home_row <- sp0_rows %>% filter(side == home_team_value) %>% slice_head(n = 1)
+          away_row <- sp0_rows %>% filter(side == away_team_value) %>% slice_head(n = 1)
+          if (nrow(home_row) == 0 || nrow(away_row) == 0) next
+          dnb <- derive_pickem_american(home_row$american_odds, away_row$american_odds, NA)
+          ft  <- home_row$fetch_time
+        } else {
+          home_row <- h2h_rows %>% filter(side == home_team_value) %>% slice_head(n = 1)
+          away_row <- h2h_rows %>% filter(side == away_team_value) %>% slice_head(n = 1)
+          if (nrow(home_row) == 0 || nrow(away_row) == 0) next
+          dnb <- derive_pickem_american(home_row$american_odds, away_row$american_odds, NA)
+          ft  <- home_row$fetch_time
+        }
+        if (is.na(dnb$home_raw_dnb) || is.na(dnb$away_raw_dnb)) next
+
+        bet_is_home <- identical(bet$bet_on, home_team_value)
+        pick_raw  <- if (bet_is_home) dnb$home_raw_dnb  else dnb$away_raw_dnb
+        opp_raw   <- if (bet_is_home) dnb$away_raw_dnb  else dnb$home_raw_dnb
+        pick_fair <- if (bet_is_home) dnb$home_fair_dnb else dnb$away_fair_dnb
+        opp_fair  <- if (bet_is_home) dnb$away_fair_dnb else dnb$home_fair_dnb
+
+        for (slot in c("pick", "opposite")) {
+          american <- if (slot == "pick") pick_raw  else opp_raw
+          fair_odd <- if (slot == "pick") pick_fair else opp_fair
+          if (is.na(american)) next
+          k <- k + 1L
+          out_rows[[k]] <- tibble(
+            bet_row_id      = bet$bet_row_id,
+            game_id         = bet$game_id,
+            market          = bet$market_type,
+            period          = bet$period,
+            side            = slot,
+            bookmaker       = book_name,
+            line            = bet$line,
+            line_quoted     = 0,
+            is_exact_line   = TRUE,
+            american_odds   = as.integer(round(american)),
+            derived_fair_odds = as.numeric(fair_odd),
+            fetch_time      = ft,
+            game_start_time = bet_game_start
+          )
+        }
+        next   # skip the run-line slot loop for pick'em bets
+      }
+
       for (slot in names(side_labels)) {
         side_value <- side_labels[[slot]]
         if (is.na(side_value)) next
@@ -292,18 +368,19 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
 
         k <- k + 1L
         out_rows[[k]] <- tibble(
-          bet_row_id      = bet$bet_row_id,
-          game_id         = bet$game_id,
-          market          = bet$market_type,
-          period          = bet$period,
-          side            = slot,
-          bookmaker       = book_name,
-          line            = bet$line,
-          line_quoted     = chosen$line_quoted,
-          is_exact_line   = chosen$is_exact_line,
-          american_odds   = as.integer(chosen$american_odds),
-          fetch_time      = ft,
-          game_start_time = bet_game_start
+          bet_row_id        = bet$bet_row_id,
+          game_id           = bet$game_id,
+          market            = bet$market_type,
+          period            = bet$period,
+          side              = slot,
+          bookmaker         = book_name,
+          line              = bet$line,
+          line_quoted       = chosen$line_quoted,
+          is_exact_line     = chosen$is_exact_line,
+          american_odds     = as.integer(chosen$american_odds),
+          derived_fair_odds = NA_real_,
+          fetch_time        = ft,
+          game_start_time   = bet_game_start
         )
       }
     }
@@ -315,6 +392,7 @@ expand_bets_to_book_prices <- function(bets, book_odds_by_book) {
                   side = character(), bookmaker = character(),
                   line = numeric(), line_quoted = numeric(),
                   is_exact_line = logical(), american_odds = integer(),
+                  derived_fair_odds = numeric(),
                   fetch_time = as.POSIXct(character()),
                   game_start_time = as.POSIXct(character(), tz = "UTC")))
   }
@@ -517,6 +595,15 @@ scraper_to_canonical <- function(raw, lookup, book_name = NULL) {
         american_odds = as.integer(row$odds_away), fetch_time = ft
       )
     }
+    # 3-way moneyline (h2h_3way_*): emit a "Tie" row alongside home/away.
+    if (!is.na(row$odds_home) && is.na(row$line) &&
+        "odds_tie" %in% names(row) && !is.na(row$odds_tie)) {
+      rows[[length(rows) + 1]] <- tibble(
+        game_id = gid, market_name = mkt,
+        bet_on = "Tie", line = NA_real_,
+        american_odds = as.integer(row$odds_tie), fetch_time = ft
+      )
+    }
   }
 
   if (length(rows) == 0) return(NULL)
@@ -546,4 +633,59 @@ odds_api_to_canonical <- function(raw) {
       fetch_time   = ft
     )
   normalize_book_odds_frame(result)
+}
+
+#' Derive the draw-no-bet (pick'em) American odds for a book's period winner.
+#'
+#' Two source shapes:
+#'  - 2-way winner (no tie outcome): the market already excludes ties, so the
+#'    devigged probabilities ARE the DNB probabilities. Raw = input unchanged.
+#'  - 3-way winner: probit-devig home/away/tie, drop the tie, renormalize.
+#'
+#' Depends on Tools.R (devig_american, devig_american_3way, prob_to_american).
+#'
+#' @param home_raw American odds, home side (numeric, e.g. -180)
+#' @param away_raw American odds, away side
+#' @param tie_raw  American odds for the tie outcome, or NA for 2-way
+#' @return list with home_raw_dnb, away_raw_dnb, home_fair_dnb, away_fair_dnb
+derive_pickem_american <- function(home_raw, away_raw, tie_raw = NA) {
+  na_result <- list(home_raw_dnb = NA_real_, away_raw_dnb = NA_real_,
+                    home_fair_dnb = NA_real_, away_fair_dnb = NA_real_)
+  if (is.na(home_raw) || is.na(away_raw)) return(na_result)
+
+  # Guarded prob -> American: reuse Tools.R::prob_to_american for valid probs.
+  to_amer <- function(p) if (is.na(p) || p <= 0 || p >= 1) NA_real_ else prob_to_american(p)
+
+  if (is.na(tie_raw)) {
+    # 2-way: raw_dnb = input; fair_dnb = probit 2-way devig.
+    # devig_american(odd1, odd2) -> df with $p1 (corresponds to odd1), $p2 (odd2).
+    devig <- devig_american(away_raw, home_raw)   # p1 = away, p2 = home
+    if (is.null(devig) || any(is.na(c(devig$p1, devig$p2)))) {
+      return(list(home_raw_dnb = home_raw, away_raw_dnb = away_raw,
+                  home_fair_dnb = NA_real_, away_fair_dnb = NA_real_))
+    }
+    return(list(
+      home_raw_dnb  = home_raw,
+      away_raw_dnb  = away_raw,
+      home_fair_dnb = to_amer(devig$p2),
+      away_fair_dnb = to_amer(devig$p1)
+    ))
+  }
+  # 3-way: devig home/away/tie -> drop the tie -> renormalize home/away.
+  devig3 <- devig_american_3way(home_raw, away_raw, tie_raw)
+  if (is.null(devig3) || any(is.na(c(devig3$p_home, devig3$p_away)))) return(na_result)
+  denom_f <- devig3$p_home + devig3$p_away
+  if (!is.finite(denom_f) || denom_f <= 0) return(na_result)
+  # Raw DNB: same drop-tie-renormalize on RAW implied probs (no devig).
+  implied <- function(american) {
+    if (is.na(american)) return(NA_real_)
+    if (american < 0) -american / (-american + 100) else 100 / (american + 100)
+  }
+  q_h <- implied(home_raw); q_a <- implied(away_raw); denom_r <- q_h + q_a
+  list(
+    home_raw_dnb  = to_amer(q_h / denom_r),
+    away_raw_dnb  = to_amer(q_a / denom_r),
+    home_fair_dnb = to_amer(devig3$p_home / denom_f),
+    away_fair_dnb = to_amer(devig3$p_away / denom_f)
+  )
 }

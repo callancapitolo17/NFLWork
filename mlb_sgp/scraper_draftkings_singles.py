@@ -128,6 +128,12 @@ def classify_market(name: str) -> tuple[str, str] | None:
         return (period, "main")
     if "total" in n:
         return (period, "main")
+    # Bare period name "1st 3 Innings" / "1st 5 Innings" / "1st 7 Innings" is
+    # DK's 2-way period winner (no tie on first-N-innings). Its selections have
+    # no line, so they flow through the moneyline branch as home_ml/away_ml.
+    if n in ("1st 3 innings", "1st 5 innings", "1st 7 innings",
+             "first 3 innings", "first 5 innings", "first 7 innings"):
+        return (period, "main")
     return None
 
 

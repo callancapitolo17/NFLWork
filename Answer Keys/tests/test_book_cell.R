@@ -188,3 +188,58 @@ test_that("render_book_cell devigs spread when lines are arithmetic opposites", 
   # Devig of -110/-110 -> -100/-100 (probit). Just confirm a fair value, not em-dash.
   expect_no_match(html, '<span class="fair">&mdash;</span>', fixed = TRUE)
 })
+
+# ----------------------------------------------------------------------------
+# derived_fair_odds tests (Task 11 — pick'em / draw-no-bet FAIR)
+# ----------------------------------------------------------------------------
+# When the matcher pre-computes the draw-no-bet FAIR (e.g. from a 3-way
+# devig that drops the tie leg), it stores it in derived_fair_odds. The
+# renderer must display THAT value, not re-devig the raw pick/opposite pair.
+
+test_that("render_book_cell with derived_fair_odds shows precomputed FAIR, not re-devigged pair", {
+  # The pair (-110/-110) devigs to -100/-100. We supply derived_fair_odds = 125
+  # (simulating a 3-way devig that dropped the tie leg) and confirm the FAIR span
+  # shows +125 (the precomputed value), NOT the pair-devig result of -100.
+  html <- render_book_cell(
+    american_odds          = -110,
+    line_quoted            = 0,
+    is_exact_line          = TRUE,
+    opposite_american_odds = -110,
+    opposite_line_quoted   = 0,
+    is_totals              = FALSE,
+    derived_fair_odds      = 125
+  )
+  # FAIR span must show the derived value (+125), not the pair-devig (-100)
+  expect_match(html, '<span class="fair">\\+125</span>', fixed = FALSE)
+  expect_false(grepl('-100', html))
+})
+
+test_that("render_book_cell with derived_fair_odds = NA falls back to normal pair devig", {
+  # When derived_fair_odds is NA, the existing devig path must still run.
+  # -110/-110 pair devigs to -100/-100 (probit).
+  html <- render_book_cell(
+    american_odds          = -110,
+    line_quoted            = 0,
+    is_exact_line          = TRUE,
+    opposite_american_odds = -110,
+    opposite_line_quoted   = 0,
+    is_totals              = FALSE,
+    derived_fair_odds      = NA_real_
+  )
+  # Should NOT show the em-dash fallback — pair devig is valid here
+  expect_no_match(html, '<span class="fair">&mdash;</span>', fixed = TRUE)
+  # Should show the devigged -100
+  expect_match(html, '<span class="fair">-100</span>', fixed = TRUE)
+})
+
+test_that("render_book_cell with negative derived_fair_odds formats without leading +", {
+  html <- render_book_cell(
+    american_odds          = -130,
+    line_quoted            = 0,
+    is_exact_line          = TRUE,
+    derived_fair_odds      = -115
+  )
+  expect_match(html, '<span class="fair">-115</span>', fixed = TRUE)
+  # Must NOT emit "+-115"
+  expect_false(grepl('\\+-115', html))
+})

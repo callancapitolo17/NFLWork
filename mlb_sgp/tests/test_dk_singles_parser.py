@@ -1,7 +1,7 @@
 """Tests parse_selections_to_wide_rows — converts DK selections to mlb_odds rows."""
 from datetime import datetime
 from mlb_sgp.dk_client import Event, Selection
-from mlb_sgp.scraper_draftkings_singles import parse_selections_to_wide_rows
+from mlb_sgp.scraper_draftkings_singles import parse_selections_to_wide_rows, classify_market
 
 
 def test_main_game_lines_produce_one_row():
@@ -141,3 +141,28 @@ def test_selection_with_unknown_market_skipped():
     rows = parse_selections_to_wide_rows(event, selections, market_meta,
                                           fetch_time=datetime(2026, 5, 12, 14, 0))
     assert len(rows) == 1  # only the main row, no row from the unknown market
+
+
+def test_bare_period_name_classifies_as_two_way_winner():
+    """DK's period winner is named exactly '1st 3 Innings' / '1st 5 Innings'
+    / '1st 7 Innings'. classify_market must return (period, 'main')."""
+    assert classify_market("1st 3 Innings") == ("F3", "main")
+    assert classify_market("1st 5 Innings") == ("F5", "main")
+    assert classify_market("1st 7 Innings") == ("F7", "main")
+
+
+def test_period_winner_selections_yield_moneyline_row():
+    event = Event("e1", "Yankees", "Red Sox", "2026-05-12T22:00:00Z")
+    selections = [
+        Selection("s1", "m_pw", "Yankees", None, -180),
+        Selection("s2", "m_pw", "Red Sox", None, 140),
+    ]
+    market_meta = {"m_pw": ("F3", "main")}
+    rows = parse_selections_to_wide_rows(event, selections, market_meta,
+                                          fetch_time=datetime(2026, 5, 12, 14, 0))
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["period"] == "F3"
+    assert r["market"] == "main"
+    assert r["home_ml"] == -180
+    assert r["away_ml"] == 140

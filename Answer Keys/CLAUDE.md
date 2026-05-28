@@ -177,7 +177,11 @@ mlb_triple_play.R (standalone pricer)
     use different conventions (WZ/BKM/Bet105 label alt rows `alternate_*`;
     DK/FD via `get_dk_odds` collapse alt rows into `spreads`/`totals`). The
     closest-line picker breaks ties. Moneyline (`h2h`) is intentionally
-    not unioned.
+    not unioned **for non-zero lines**. EXCEPTION — pick'em: a spread/
+    alt-spread bet at `line == 0` is a draw-no-bet, so the matcher routes it
+    to the book's period WINNER market (`h2h` 2-way, or `h2h_3way` collapsed
+    to DNB) instead of a run line. `h2h` and `h2h_3way` ARE unioned in
+    `.related_market_types`. See "Pick'em → moneyline" below.
 11. **Per-book `game_time` formats vary** — DK/FD store ISO 8601 UTC strings
     in `game_time` (`game_date` is also ISO); WZ/Hoop88/BKM use naive Eastern
     wall-clock (`MM/DD` + `HH:MM`, year inferred at parse time); BFA uses
@@ -321,6 +325,37 @@ for the design spec.
 7. `mlb_bets_book_prices.fetch_time` and the per-book scraper DBs all
    store `fetch_time` as `TIMESTAMPTZ`, so dashboard staleness math
    (`NOW() - fetch_time`) works directly without timezone tricks.
+
+### Pick'em → moneyline (line-0 spreads, 2026-05-27)
+
+A spread/alt-spread bet at **`line == 0`** is a pick'em (draw-no-bet): back
+a team to lead, a tie refunds. The model already prices it correctly as a
+DNB (`compare_alts_to_samples` excludes ties when `home_spread == 0`). On the
+odds screen, such a bet is matched to each book's period **winner** market —
+NOT its ±0.5 run line (a different bet, no push). Source priority per book:
+2-way `h2h` winner → 3-way `h2h_3way` winner (devig, drop tie, renormalize)
+→ true 0-handicap spread → "—".
+
+- Helper: `odds_screen.R::derive_pickem_american(home_raw, away_raw, tie_raw)`
+  returns raw + fair DNB American for both sides (2-way = devig directly;
+  3-way = `devig_american_3way` then drop tie + renormalize). Reuses
+  `Tools.R::prob_to_american`.
+- Matcher: `expand_bets_to_book_prices` has a `line == 0` branch that emits
+  `is_exact_line = TRUE` cells carrying `american_odds` (raw DNB) and the new
+  **`derived_fair_odds`** column (precomputed FAIR DNB). NULL on all other
+  rows.
+- Canonical 3-way: `scraper_to_canonical` emits a third `"Tie"` row when a
+  scraper wide-frame has `odds_tie` (line `NA`); `market_type` is `h2h_3way`.
+- Render: `book_cell.R::render_book_cell` shows `derived_fair_odds` directly
+  on the FAIR toggle (skips the pair-devig) and `american_odds` on RAW, when
+  `derived_fair_odds` is non-NULL. `mlb_dashboard.R` carries the column
+  through the load + long→wide pivot, parallel to `american_odds`.
+- v1 coverage: **DraftKings** posts a 2-way "1st 3 Innings" winner (now
+  captured — see `mlb_sgp/README.md`); **FanDuel** posts a First-5-Innings
+  "Money Line" (already captured) but **no** first-3 money line, so FD shows
+  "—" on F3 pick'em cards (book reality, not a gap). Other books show "—"
+  until their winner market is wired.
+- Spec: `docs/superpowers/specs/2026-05-27-mlb-pickem-moneyline-match-design.md`.
 
 ### Helpers
 

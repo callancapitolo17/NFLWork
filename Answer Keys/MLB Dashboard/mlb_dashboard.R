@@ -1192,9 +1192,11 @@ render_price_grid_row <- function(wide_row, side_label, is_pick_side,
     odds_col  <- paste0(b, "_american_odds")
     lq_col    <- paste0(b, "_line_quoted")
     exact_col <- paste0(b, "_is_exact_line")
+    dfo_col   <- paste0(b, "_derived_fair_odds")
     odds  <- if (!is.null(wide_row) && odds_col  %in% names(wide_row)) wide_row[[odds_col]]  else NA_integer_
     lq    <- if (!is.null(wide_row) && lq_col    %in% names(wide_row)) wide_row[[lq_col]]    else NA_real_
     exact <- if (!is.null(wide_row) && exact_col %in% names(wide_row)) wide_row[[exact_col]] else NA
+    dfo   <- if (!is.null(wide_row) && dfo_col   %in% names(wide_row)) wide_row[[dfo_col]]   else NA_real_
     # Other-side odds + line for THIS book — used for devig FAIR view.
     # We pass the opposite line so render_book_cell can refuse to devig when
     # the two slots landed on different alt markets at the same book.
@@ -1214,7 +1216,8 @@ render_price_grid_row <- function(wide_row, side_label, is_pick_side,
       is_exact_line          = exact,
       is_pick                = is_pick_side && (b == pick_book),
       side_word              = side_word,
-      is_totals              = is_totals
+      is_totals              = is_totals,
+      derived_fair_odds      = if (is.na(dfo))       NA_real_    else as.numeric(dfo)
     )
   }, character(1))
 
@@ -6697,14 +6700,17 @@ pivot_book_prices_wide <- function(long_frame) {
   if (is.null(long_frame) || nrow(long_frame) == 0) return(NULL)
   long_frame %>%
     select(bet_row_id, side, bookmaker,
-           line_quoted, american_odds, is_exact_line) %>%
+           line_quoted, american_odds, is_exact_line,
+           derived_fair_odds) %>%
     tidyr::pivot_wider(
       names_from  = bookmaker,
-      values_from = c(line_quoted, american_odds, is_exact_line),
+      values_from = c(line_quoted, american_odds, is_exact_line,
+                      derived_fair_odds),
       names_glue  = "{bookmaker}_{.value}",
       values_fill = list(line_quoted = NA_real_,
                          american_odds = NA_integer_,
-                         is_exact_line = NA)
+                         is_exact_line = NA,
+                         derived_fair_odds = NA_real_)
     )
 }
 
