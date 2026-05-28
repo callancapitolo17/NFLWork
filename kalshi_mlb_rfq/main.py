@@ -833,6 +833,13 @@ def _kelly_size_for_candidate(game_id: str,
 
     yes_n, yes_ask = kelly_for_side("yes")
     no_n,  no_ask  = kelly_for_side("no")
+    research.emit("kelly_sized", game_id=game_id,
+                  blended_fair=blended_fair,
+                  kelly_yes_n=yes_n, kelly_no_n=no_n,
+                  worst_yes_ask=yes_ask, worst_no_ask=no_ask,
+                  n_existing_positions=len(existing),
+                  bankroll=config.BANKROLL,
+                  kelly_fraction=config.KELLY_FRACTION)
     return yes_n, no_n, yes_ask, no_ask
 
 
