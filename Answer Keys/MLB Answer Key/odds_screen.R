@@ -584,6 +584,21 @@ derive_pickem_american <- function(home_raw, away_raw, tie_raw = NA) {
       away_fair_dnb = to_amer(devig$p1)
     ))
   }
-  # 3-way path implemented in a later task (replaces this stop()).
-  stop("derive_pickem_american 3-way path not implemented yet")
+  # 3-way: devig home/away/tie -> drop the tie -> renormalize home/away.
+  devig3 <- devig_american_3way(home_raw, away_raw, tie_raw)
+  if (is.null(devig3) || any(is.na(c(devig3$p_home, devig3$p_away)))) return(na_result)
+  denom_f <- devig3$p_home + devig3$p_away
+  if (!is.finite(denom_f) || denom_f <= 0) return(na_result)
+  # Raw DNB: same drop-tie-renormalize on RAW implied probs (no devig).
+  implied <- function(american) {
+    if (is.na(american)) return(NA_real_)
+    if (american < 0) -american / (-american + 100) else 100 / (american + 100)
+  }
+  q_h <- implied(home_raw); q_a <- implied(away_raw); denom_r <- q_h + q_a
+  list(
+    home_raw_dnb  = to_amer(q_h / denom_r),
+    away_raw_dnb  = to_amer(q_a / denom_r),
+    home_fair_dnb = to_amer(devig3$p_home / denom_f),
+    away_fair_dnb = to_amer(devig3$p_away / denom_f)
+  )
 }
