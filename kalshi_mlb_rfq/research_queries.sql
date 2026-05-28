@@ -11,6 +11,9 @@
 -- payload to a number when the same query both extracts a field in SELECT and
 -- compares one in WHERE over rows whose JSON holds numeric values.
 -- json_extract_string always returns VARCHAR and sidesteps that.
+-- NOTE: it returns VARCHAR even for numeric payload fields (blended_fair,
+-- n_books, ...). To FILTER or compare them numerically, cast explicitly:
+--   WHERE CAST(json_extract_string(payload,'n_books') AS INTEGER) > 1
 --
 -- Join keys:
 --   * candidate_evaluated / kelly_sized / rfq_submit_failed are pre-RFQ, so
