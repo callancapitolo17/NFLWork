@@ -2568,6 +2568,16 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           gap: 8px;
           padding: 10px 0 4px 0;
         }
+        /* Pinned scoring strip — account bar frozen at the top on every tab.
+           Parent is the page-spanning .container, so the freeze holds through
+           the whole card list. */
+        .pinned-account-bar {
+          position: sticky;
+          top: 0;
+          z-index: 40;              /* above cards; below filter-menu(100)/modal(999)/toast */
+          background: #0d1117;       /* opaque so cards scroll cleanly underneath */
+          border-bottom: 1px solid #21262d;
+        }
         .wz-pills {
           display: flex;
           gap: 6px;
@@ -3287,6 +3297,17 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           font-variant-numeric: tabular-nums;
           line-height: 1.2;
           margin: 0 0 14px 0;
+        }
+        /* Full-width opaque sticky surface that carries the Kelly Calculator.
+           Pins just below the account bar; --pin-top is set by syncPinOffset()
+           to the measured account-bar height so it sits flush even when the
+           pills wrap on narrow widths. Fallback 48px covers first paint. */
+        .kelly-calc-pin {
+          position: sticky;
+          top: var(--pin-top, 48px);
+          z-index: 30;              /* below the account bar, above cards */
+          background: #0d1117;
+          padding: 8px 0 2px 0;
         }
         .kelly-calc * {
           font-family: inherit;
@@ -6141,7 +6162,19 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 
       bar.appendChild(pill);
     });
+    syncPinOffset();   // pills just changed height; refresh the sticky offset
   }
+
+  // Keep the Kelly Calc pinned flush below the account bar by measuring the
+  // bar's real height into --pin-top. Recomputed on load, on resize, and after
+  // pills (re)render (they are JS-populated, so height is only known then).
+  function syncPinOffset() {
+    var barEl = document.getElementById('wz-account-row');
+    if (!barEl) return;
+    document.documentElement.style.setProperty('--pin-top', barEl.offsetHeight + 'px');
+  }
+  window.addEventListener('load', syncPinOffset);
+  window.addEventListener('resize', syncPinOffset);
 
   function refreshBalances() {
     return fetch('/api/wagerzon/balances')
