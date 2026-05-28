@@ -207,10 +207,18 @@ def _log_decision(decision, *, rfq_id=None, quote_id=None, ticker=None, game_id=
 
 
 def _discovery_tick(source, gateway, dry_run):
+    # FIX M2: kill-switch — stop quoting immediately if the kill file exists
+    if config.KILL_FILE.exists():
+        return
+    # FIX I4: samples-staleness gate — don't quote anything when model is stale
+    if not risk.staleness_ok(_SAMPLES_GEN_AT, config.MAX_PREDICTION_STALENESS_SEC):
+        return
     rfqs = source.poll()
     with db.connect(read_only=True) as con:
         open_count = con.execute(
             "SELECT COUNT(*) FROM live_quotes WHERE status='open'").fetchone()[0]
+    # FIX I3: load today's fills once before the loop for cap checks
+    fills_today = _today_fills()
     for rfq in rfqs:
         if open_count >= config.MAX_OPEN_QUOTES:
             break
@@ -245,6 +253,16 @@ def _discovery_tick(source, gateway, dry_run):
         if game_id is None:
             _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="no_game")
             continue
+        # FIX I3: exposure cap gates (wired — were defined but never called)
+        if not risk.daily_cap_ok(fills_today, config.daily_exposure_cap_usd()):
+            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                          reason="daily_cap")
+            continue
+        if not risk.per_game_cap_ok(game_id, fills_today, config.BANKROLL,
+                                    config.MAX_GAME_EXPOSURE_PCT):
+            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                          reason="per_game_cap")
+            continue
         samples = _SAMPLES.get(game_id)
         # tipoff gate
         ct = _commence_time(game_id)
@@ -274,6 +292,23 @@ def _discovery_tick(source, gateway, dry_run):
             _log_decision("dry_run_quote", rfq_id=rid, ticker=ticker, game_id=game_id,
                           model=model, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
             continue
+        # FIX I1 + M1: dedup + hysteresis — skip re-quote if price unchanged, else
+        # mark the old row 'replaced' so we never leave ghost-open rows.
+        with db.connect(read_only=True) as con:
+            existing = con.execute(
+                "SELECT quote_id, yes_bid, no_bid FROM live_quotes "
+                "WHERE rfq_id=? AND status='open'",
+                [rid]).fetchone()
+        if existing:
+            eqid, eyb, enb = existing
+            if (abs(q.yes_bid - eyb) < config.QUOTE_HYSTERESIS
+                    and abs(q.no_bid - enb) < config.QUOTE_HYSTERESIS):
+                continue  # price essentially unchanged — leave the resting quote in place
+            # price moved beyond hysteresis → replace: mark old row closed, then submit new
+            with db.connect() as con:
+                con.execute(
+                    "UPDATE live_quotes SET status='replaced', closed_at=? WHERE quote_id=?",
+                    [datetime.now(timezone.utc), eqid])
         qid = gateway.submit_quote(rid, q.yes_bid, q.no_bid)
         if qid:
             with db.connect() as con:
@@ -290,10 +325,12 @@ def _discovery_tick(source, gateway, dry_run):
 
 def _confirm_tick(gateway, dry_run):
     with db.connect(read_only=True) as con:
+        # FIX I2: also select model_fair and book_fair so we can carry them into fills
         live = con.execute(
-            "SELECT quote_id, rfq_id, combo_market_ticker, game_id, yes_bid, no_bid, blended_fair "
+            "SELECT quote_id, rfq_id, combo_market_ticker, game_id, yes_bid, no_bid, "
+            "blended_fair, model_fair, book_fair "
             "FROM live_quotes WHERE status='open'").fetchall()
-    for qid, rid, ticker, game_id, yb, nb, prev_fair in live:
+    for qid, rid, ticker, game_id, yb, nb, prev_fair, model_fair_at_q, book_fair_at_q in live:
         status, body, _ = auth_client.api("GET", f"/communications/quotes/{qid}")
         q = body.get("quote") if isinstance(body, dict) else None
         st = (q or {}).get("status")
@@ -310,8 +347,13 @@ def _confirm_tick(gateway, dry_run):
                 legs_row = con.execute(
                     "SELECT legs_json FROM seen_rfqs WHERE rfq_id=?", [rid]).fetchone()
             legs = json.loads(legs_row[0]) if legs_row and legs_row[0] else []
+            # FIX M3: recompute book_fairs at confirm time so cur_fair is real
+            # (previously called with {} → blend returned None → drift was always 0)
             if legs:
-                _, _, cur_fair = fairs.blended_fair(legs, game_id, samples, {})
+                spread_line = _spread_line_from_legs(legs)
+                total_line = _total_line_from_legs(legs)
+                book_fairs_now = _book_fairs(game_id, spread_line, total_line)
+                _, _, cur_fair = fairs.blended_fair(legs, game_id, samples, book_fairs_now)
             else:
                 cur_fair = prev_fair
             cur_fair = cur_fair if cur_fair is not None else prev_fair
@@ -325,8 +367,10 @@ def _confirm_tick(gateway, dry_run):
                             "game_id, side_held, contracts, price, fee, model_fair_at_quote, "
                             "book_fair_at_quote, blended_fair_at_quote, fair_at_confirm, "
                             "realized_pnl, filled_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            # FIX I2: carry model_fair_at_q / book_fair_at_q from the live_quotes row
                             [str(uuid.uuid4()), qid, rid, ticker, game_id, side_held,
-                             contracts, price, fee, None, None, prev_fair, cur_fair, None,
+                             contracts, price, fee, model_fair_at_q, book_fair_at_q,
+                             prev_fair, cur_fair, None,
                              datetime.now(timezone.utc)])
                         con.execute(
                             "UPDATE live_quotes SET status='filled', closed_at=? WHERE quote_id=?",
