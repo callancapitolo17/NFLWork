@@ -18,7 +18,7 @@ import pandas as pd
 
 from kalshi_mlb_rfq import (
     auth_client, combo_enumerator, config, db, ev_calc,
-    fair_value, kelly, notify, rfq_client, risk, sgp_runner,
+    fair_value, kelly, notify, research, rfq_client, risk, sgp_runner,
 )
 from kalshi_mlb_rfq.config import (
     ANSWER_KEY_DB, KILL_FILE, MAX_BOOK_STALENESS_SEC,
@@ -1490,6 +1490,8 @@ def main_loop(dry_run: bool):
     setup_logging()
     db.init_database()
     sid = db.start_session(pid=os.getpid(), dry_run=dry_run, version=VERSION)
+    research.init_research_db()
+    research.set_session(sid)
     log.info("=== Kalshi MLB RFQ Bot — session %s (dry_run=%s) ===", sid, dry_run)
     # Initial cache load — bot is useless until this succeeds.
     if not _refresh_caches():
@@ -1584,6 +1586,7 @@ def main_loop(dry_run: bool):
                 log.info("[HB] %s alive", datetime.now(timezone.utc).isoformat())
                 last_heartbeat = now
 
+            research.flush()   # persist this tick's buffered research events
             time.sleep(0.5)
     finally:
         with db.connect(read_only=True) as con:
@@ -1608,6 +1611,7 @@ def main_loop(dry_run: bool):
         if live:
             log.info("shutdown: drained live RFQs — cancelled=%d failed=%d",
                      cancelled, failed)
+        research.flush()   # persist the final tick's buffered research events
         db.end_session(sid)
         log.info("=== shutdown complete ===")
 
