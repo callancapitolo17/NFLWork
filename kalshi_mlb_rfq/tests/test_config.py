@@ -27,3 +27,9 @@ def test_new_env_knobs_have_defaults():
 def test_mlb_sgp_dir_resolves_to_main_repo():
     assert config_mod.MLB_SGP_DIR.name == "mlb_sgp"
     assert ".worktrees" not in str(config_mod.MLB_SGP_DIR)
+
+
+def test_logging_knobs_have_defaults():
+    assert config_mod.LOG_MAX_BYTES == 50 * 1024 * 1024
+    assert config_mod.LOG_BACKUP_COUNT == 5
+    assert config_mod.LOG_LEVEL == "INFO"

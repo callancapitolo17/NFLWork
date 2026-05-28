@@ -116,3 +116,8 @@ MLB_SGP_DIR = Path(_get("MLB_SGP_DIR", str(PROJECT_ROOT / "mlb_sgp")))
 
 # Cross-book book-count gate (drop candidate if fewer than N books priced).
 MIN_BOOK_COUNT_FOR_BLEND = int(_get("MIN_BOOK_COUNT_FOR_BLEND", "2"))
+
+# Logging (operational log rotation)
+LOG_LEVEL = _get("LOG_LEVEL", "INFO")
+LOG_MAX_BYTES = int(_get("LOG_MAX_BYTES", str(50 * 1024 * 1024)))  # 50 MB
+LOG_BACKUP_COUNT = int(_get("LOG_BACKUP_COUNT", "5"))
