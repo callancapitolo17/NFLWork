@@ -114,16 +114,19 @@ def flush() -> None:
     """
     if not _BUFFER:
         return
-    batch = list(_BUFFER)
-    rows = []
-    for e in batch:
-        rows.append([
-            e["event_id"], e["session_id"], e["event_type"], e["ts"],
-            e["game_id"], e["combo_ticker"], e["rfq_id"], e["quote_id"],
-            json.dumps(e["payload"], default=_json_default),
-        ])
+    # Everything that can raise (row-building incl. json.dumps, connect, write)
+    # is inside the try — a payload object with a broken __repr__ must not
+    # escape into the trading loop. retries=1 fails fast: a locked research DB
+    # can't stall the trading tick (the loop sleeps 0.5s); next tick retries.
     try:
-        con = _connect()
+        batch = list(_BUFFER)
+        rows = [
+            [e["event_id"], e["session_id"], e["event_type"], e["ts"],
+             e["game_id"], e["combo_ticker"], e["rfq_id"], e["quote_id"],
+             json.dumps(e["payload"], default=_json_default)]
+            for e in batch
+        ]
+        con = _connect(retries=1)
         try:
             con.executemany(
                 "INSERT INTO events (event_id, session_id, event_type, ts, "
@@ -139,7 +142,7 @@ def flush() -> None:
         now = time.time()
         if now - _LAST_FLUSH_WARN >= FLUSH_WARN_INTERVAL_SEC:
             log.warning("research flush failed (%d events retained): %s",
-                        len(batch), exc)
+                        len(_BUFFER), exc)
             _LAST_FLUSH_WARN = now
 
 

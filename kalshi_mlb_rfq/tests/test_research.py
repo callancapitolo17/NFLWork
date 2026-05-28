@@ -87,6 +87,21 @@ def test_flush_swallows_db_error_and_keeps_running(isolated_research_db,
     monkeypatch.setattr(research, "_connect", boom)
     research.flush()   # MUST NOT raise
     assert "research flush failed" in caplog.text.lower()
+    assert len(research._BUFFER) == 1   # retained for retry on next tick
+
+
+def test_flush_never_raises_on_unserializable_payload(isolated_research_db):
+    """A payload object whose __repr__ raises must not escape flush() into
+    the trading loop (row-building incl. json.dumps is inside the try)."""
+    research.init_research_db()
+    research.set_session("sess-1")
+
+    class BrokenRepr:
+        def __repr__(self):
+            raise RuntimeError("boom")
+
+    research.emit("candidate_evaluated", game_id="g1", obj=BrokenRepr())
+    research.flush()   # MUST NOT raise despite the broken repr
 
 
 def test_flush_on_empty_buffer_is_noop(isolated_research_db):
