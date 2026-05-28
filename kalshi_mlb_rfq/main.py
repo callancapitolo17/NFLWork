@@ -1143,6 +1143,19 @@ def _evaluate_quote(quote: dict, dry_run: bool,
                 "cooled_until = EXCLUDED.cooled_until",
                 [leg_set_hash, chosen, game_id, cooled_until, "post_accept"],
             )
+        # Persist post-fill position snapshot to the research firehose
+        # (positions row is mutated in place, so this captures the history).
+        with db.connect(read_only=True) as con:
+            after = con.execute(
+                "SELECT net_contracts, weighted_price FROM positions "
+                "WHERE combo_market_ticker=? AND side=?",
+                [combo_market_ticker, diag["chosen_side"]]).fetchone()
+        research.emit("position_snapshot", game_id=game_id,
+                      combo_ticker=combo_market_ticker, rfq_id=rfq_id,
+                      quote_id=quote.get("id"),
+                      side=diag["chosen_side"], contracts_added=actual,
+                      net_contracts_after=(after[0] if after else None),
+                      weighted_price_after=(after[1] if after else None))
         _log_quote_decision(quote, fair, "accepted",
                              post_fee_ev=chosen_ev_pct, diag=diag)
         notify.fill(rfq_id=rfq_id, combo_market_ticker=combo_market_ticker,
