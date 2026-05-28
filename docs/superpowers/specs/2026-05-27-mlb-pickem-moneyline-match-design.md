@@ -28,20 +28,26 @@ Display-only — the model's bet generation is untouched.
    draw-no-bet (verified in `compare_alts_to_samples`); we do not add
    per-book bet generation/sizing. The derived prices populate comparison
    cells only.
-5. **Coverage rolls out incrementally.** v1 wires DraftKings (2-way "1st N
-   Innings") end-to-end and ships the 3-way path ready, exercised against
-   Wagerzon's F5 3-way *if* its scraper output already carries home/away/tie
-   (to confirm in planning); other books show "—" on pick'em cards until
-   their winner-market capture is added. The matcher/helper are book-agnostic,
-   so adding a book is just scraper capture.
+5. **v1 coverage: DraftKings + FanDuel.** Both books get period-winner
+   capture wired end-to-end so the F3 (and F5/F7) pick'em cards show real
+   numbers for the two books most likely to be acted on. The 3-way path
+   ships ready and is exercised against Wagerzon's F5 3-way *if* its
+   scraper output already carries home/away/tie (to confirm in planning).
+   Other books (Pinnacle/Bet105/BKM/Hoop88) show "—" on pick'em cards until
+   wired — the matcher/helper are book-agnostic, so each addition is just
+   scraper capture.
 
 **Risks / push back here**
-- **Coverage is the value lever, and it's incremental.** v1 fixes DK (the
-  card you flagged); the 3-way path ships but is only exercised in v1 if
-  WZ's F5 3-way scraper output is already consumable. FD/Pinnacle/Bet105/
-  BKM/Hoop88 cells stay "—" on pick'em cards until each book's winner market
-  is wired. Is shipping DK-first (others as fast-follow) the right call — or
-  do you want a specific other book guaranteed in v1?
+- **Coverage is the value lever, and it's incremental.** v1 wires DK + FD;
+  the 3-way path ships but is only exercised in v1 if WZ's F5 3-way scraper
+  output is already consumable. Pinnacle/Bet105/BKM/Hoop88 cells stay "—" on
+  pick'em cards until each book's winner market is wired (fast-follow).
+- **FD winner-market availability is a planning verification.** FD currently
+  flows a run line to the F3 PK card; whether FD also posts a capturable F3
+  2-way winner (vs. only the run line) is unconfirmed. If FD posts no F3/F5/
+  F7 winner at all, FD will stay "—" in v1 despite being in scope, and we'd
+  decide in planning whether to defer FD or surface their main-game ML
+  another way.
 - **Schema add.** `mlb_bets_book_prices` gains a `derived_fair_odds` column.
   It's additive and NULL for all non-pick'em rows, but it's still a schema
   change the dashboard loader must tolerate on first deploy.
@@ -209,6 +215,7 @@ Dashboard: create_bets_table → render_book_cell shows raw/fair DNB per toggle
 ## Out of scope (v1)
 
 - Per-book bet generation/sizing on derived pick'em prices (display-only).
-- Wiring books beyond DraftKings + Wagerzon (incremental fast-follow).
+- Wiring books beyond DraftKings + FanDuel (and opportunistically Wagerzon's
+  existing F5 3-way). Pinnacle/Bet105/BKM/Hoop88 are incremental fast-follow.
 - The separate DK FG alt-spread `abs(line)` bucket fix (its own branch,
   already implemented and verified).
