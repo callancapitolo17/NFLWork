@@ -2,28 +2,41 @@
 from datetime import datetime, timedelta, timezone
 
 
-def _utc(dt: datetime, now: datetime | None) -> tuple[datetime, datetime]:
-    now = now or datetime.now(timezone.utc)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    if now.tzinfo is None:
+def _now_matching(dt: datetime, now: datetime | None) -> datetime:
+    """Return a `now` comparable to `dt`.
+
+    CRITICAL: a NAIVE `dt` is treated as LOCAL time — the R answer-key pipeline
+    writes naive local time into `mlb_samples_meta.generated_at`, and the Kalshi
+    line tables likewise. Forcing naive→UTC (the old bug) made every sample look
+    ~offset hours old and the bot never quoted. Aware `dt` is compared in UTC.
+    An injected `now` (tests) is aligned to `dt`'s awareness. Mirrors the taker's
+    `kalshi_mlb_rfq.risk.staleness_ok`.
+    """
+    if now is None:
+        return datetime.now(timezone.utc) if dt.tzinfo is not None else datetime.now()
+    if dt.tzinfo is not None and now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
-    return dt, now
+    elif dt.tzinfo is None and now.tzinfo is not None:
+        now = now.astimezone().replace(tzinfo=None)
+    return now
 
 
 def staleness_ok(generated_at: datetime | None, max_age_sec: int,
                  now: datetime | None = None) -> bool:
     if generated_at is None:
         return False
-    generated_at, now = _utc(generated_at, now)
-    return (now - generated_at).total_seconds() <= max_age_sec
+    now = _now_matching(generated_at, now)
+    age = (now - generated_at).total_seconds()
+    if age < 0:
+        return False  # clock skew — fail safe
+    return age <= max_age_sec
 
 
 def tipoff_ok(commence_time: datetime | None, cancel_min: int,
               now: datetime | None = None) -> bool:
     if commence_time is None:
         return False
-    commence_time, now = _utc(commence_time, now)
+    now = _now_matching(commence_time, now)
     return now < commence_time - timedelta(minutes=cancel_min)
 
 

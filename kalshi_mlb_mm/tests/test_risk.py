@@ -12,6 +12,16 @@ def test_staleness_ok_false_when_stale():
 def test_staleness_ok_false_when_none():
     assert risk.staleness_ok(None, 600, now=NOW) is False
 
+def test_staleness_ok_handles_naive_local_timestamp():
+    # Regression: R writes naive LOCAL time into mlb_samples_meta.generated_at.
+    # A fresh naive timestamp must read as FRESH, not be off by the UTC offset
+    # (the old code forced naive->UTC, which made every sample look hours stale
+    # in any non-UTC timezone and the bot never quoted).
+    naive_recent = datetime.now() - timedelta(seconds=60)  # naive local, no tzinfo
+    assert risk.staleness_ok(naive_recent, 600) is True
+    naive_old = datetime.now() - timedelta(seconds=900)
+    assert risk.staleness_ok(naive_old, 600) is False
+
 def test_size_gate():
     assert risk.size_ok(5, max_contracts=5) is True
     assert risk.size_ok(6, max_contracts=5) is False
