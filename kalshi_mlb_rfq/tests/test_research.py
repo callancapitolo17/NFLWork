@@ -91,3 +91,19 @@ def test_flush_swallows_db_error_and_keeps_running(isolated_research_db,
 
 def test_flush_on_empty_buffer_is_noop(isolated_research_db):
     research.flush()   # must not raise, must not create rows
+
+
+def test_prune_deletes_only_old_rows(isolated_research_db):
+    research.init_research_db()
+    con = duckdb.connect(str(isolated_research_db))
+    con.execute(
+        "INSERT INTO events (event_id, event_type, ts, payload) VALUES "
+        "('old', 't', now() - INTERVAL 100 DAY, '{}'), "
+        "('new', 't', now() - INTERVAL 1 DAY, '{}')")
+    con.close()
+    deleted = research.prune_research(days=90)
+    assert deleted == 1
+    con = duckdb.connect(str(isolated_research_db), read_only=True)
+    ids = {r[0] for r in con.execute("SELECT event_id FROM events").fetchall()}
+    con.close()
+    assert ids == {"new"}
