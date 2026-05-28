@@ -59,3 +59,35 @@ def test_emit_respects_buffer_cap(isolated_research_db, monkeypatch):
         research.emit("candidate_evaluated", i=i)
     assert len(research._BUFFER) == 3
     assert [e["payload"]["i"] for e in research._BUFFER] == [2, 3, 4]
+
+
+def test_flush_writes_batch_and_clears(isolated_research_db):
+    research.init_research_db()
+    research.set_session("sess-1")
+    research.emit("candidate_evaluated", game_id="g1", model_fair=0.4)
+    research.emit("gate_evaluated", game_id="g1", gate="tipoff")
+    research.flush()
+    assert research._BUFFER == []
+    con = duckdb.connect(str(isolated_research_db), read_only=True)
+    n = con.execute("SELECT count(*) FROM events").fetchone()[0]
+    fair = con.execute(
+        "SELECT payload->>'model_fair' FROM events "
+        "WHERE event_type='candidate_evaluated'").fetchone()[0]
+    con.close()
+    assert n == 2
+    assert float(fair) == 0.4
+
+
+def test_flush_swallows_db_error_and_keeps_running(isolated_research_db,
+                                                   monkeypatch, caplog):
+    research.set_session("sess-1")
+    research.emit("candidate_evaluated", game_id="g1")
+    def boom(*a, **k):
+        raise duckdb.IOException("locked")
+    monkeypatch.setattr(research, "_connect", boom)
+    research.flush()   # MUST NOT raise
+    assert "research flush failed" in caplog.text.lower()
+
+
+def test_flush_on_empty_buffer_is_noop(isolated_research_db):
+    research.flush()   # must not raise, must not create rows
