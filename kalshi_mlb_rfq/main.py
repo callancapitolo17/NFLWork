@@ -941,6 +941,17 @@ def _evaluate_quote(quote: dict, dry_run: bool,
         if fair is None:
             _log_quote_decision(quote, None, "declined_ev", reason="no_fresh_fair", diag=diag)
             return
+        # quote_priced: re-derive pricing components for the research log
+        try:
+            _qp_legs = json.loads(legs_json)
+            _qp_sl = _spread_line_from_legs(_qp_legs)
+            _qp_tl = _total_line_from_legs(_qp_legs)
+            research.emit("quote_priced", game_id=game_id,
+                          combo_ticker=combo_market_ticker, rfq_id=rfq_id,
+                          quote_id=quote.get("id"), blended_fair=fair,
+                          book_fairs=_load_book_fairs(game_id, _qp_sl, _qp_tl))
+        except Exception:
+            pass
 
         passed, decision = _all_per_accept_gates_pass(
             quote, fair, {"leg_set_hash": leg_set_hash, "game_id": game_id,
@@ -1082,6 +1093,11 @@ def _evaluate_quote(quote: dict, dry_run: bool,
             diag["rfq_terminal_status"] = (
                 rfq_obj.get("status") if rfq_obj else None
             )
+            research.emit("walk_diagnosed", game_id=game_id,
+                          combo_ticker=combo_market_ticker, rfq_id=rfq_id,
+                          quote_id=quote.get("id"),
+                          accept_response_body=diag.get("accept_response_body"),
+                          rfq_terminal_status=diag.get("rfq_terminal_status"))
             _log_quote_decision(quote, fair, "failed_quote_walked",
                                  post_fee_ev=chosen_ev_pct, diag=diag)
             return
@@ -1323,6 +1339,10 @@ def _refresh_rfqs(candidates: list[combo_enumerator.ComboCandidate],
                 added += 1
             except Exception as e:
                 log.warning("add %s/%s failed: %s", c.leg_set_hash[:8], side, e)
+                research.emit("rfq_submit_failed",
+                              game_id=getattr(c, "game_id", None),
+                              leg_set_hash=c.leg_set_hash,
+                              side=side, error=str(e))
     if skipped_kelly_zero or skipped_too_small or added:
         log.info("rfq_refresh: add=%d skipped_kelly_zero=%d skipped_too_small=%d",
                  added, skipped_kelly_zero, skipped_too_small)
