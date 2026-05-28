@@ -938,6 +938,11 @@ def _evaluate_quote(quote: dict, dry_run: bool,
         passed, decision = _all_per_accept_gates_pass(
             quote, fair, {"leg_set_hash": leg_set_hash, "game_id": game_id,
                           "legs_json": legs_json})
+        research.emit("gate_evaluated", game_id=game_id,
+                      combo_ticker=combo_market_ticker, rfq_id=rfq_id,
+                      quote_id=quote.get("id"),
+                      decision=decision, passed=passed,
+                      blended_fair=fair)
         if not passed:
             _log_quote_decision(quote, fair, decision, diag=diag)
             return
