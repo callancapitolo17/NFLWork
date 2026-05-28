@@ -1,0 +1,26 @@
+"""Minimal alerting: print + optional webhook (mirrors taker notify)."""
+import json
+import urllib.request
+
+from kalshi_mlb_mm.config import NOTIFY_WEBHOOK_URL
+
+
+def _post(text: str):
+    print(text, flush=True)
+    if not NOTIFY_WEBHOOK_URL:
+        return
+    try:
+        req = urllib.request.Request(
+            NOTIFY_WEBHOOK_URL, data=json.dumps({"text": text}).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        urllib.request.urlopen(req, timeout=5)
+    except Exception:
+        pass
+
+
+def halt(reason: str, detail: str = ""):
+    _post(f"[MM HALT] {reason} {detail}")
+
+
+def fill(combo_market_ticker: str, side: str, contracts: int, price: float):
+    _post(f"[MM FILL] {combo_market_ticker} {side} x{contracts} @ {price:.3f}")
