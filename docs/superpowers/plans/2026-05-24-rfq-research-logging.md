@@ -343,6 +343,7 @@ def isolated_research_db(tmp_path, monkeypatch):
     monkeypatch.setattr(research.config, "RESEARCH_DB_PATH", db)
     research._BUFFER.clear()
     research._SESSION_ID = None
+    research._LAST_FLUSH_WARN = 0.0
     yield db
 
 
@@ -596,6 +597,10 @@ Expected: FAIL — `AttributeError: ... 'flush'`
 - [ ] **Step 3: Implement `flush`** — append to `research.py`:
 
 ```python
+_LAST_FLUSH_WARN = 0.0
+FLUSH_WARN_INTERVAL_SEC = 60.0   # rate-limit failure warnings (flush runs ~2x/sec)
+
+
 def _json_default(o):
     return repr(o)
 
@@ -629,9 +634,15 @@ def flush() -> None:
             con.close()
         del _BUFFER[:len(batch)]   # only clear what we successfully wrote
     except Exception as exc:
-        log.warning("research flush failed (%d events retained): %s",
-                    len(batch), exc)
+        global _LAST_FLUSH_WARN
+        now = time.time()
+        if now - _LAST_FLUSH_WARN >= FLUSH_WARN_INTERVAL_SEC:
+            log.warning("research flush failed (%d events retained): %s",
+                        len(batch), exc)
+            _LAST_FLUSH_WARN = now
 ```
+
+(`flush()` runs every ~0.5s loop iteration, so a *persistent* failure would otherwise emit a warning twice a second. The rate-limit caps that at one per 60s; the first failure still logs immediately because `_LAST_FLUSH_WARN` starts at 0.0. The `test_flush_swallows_db_error_and_keeps_running` test still passes — its single forced failure logs on the first call.)
 
 - [ ] **Step 4: Run test, verify it passes**
 
