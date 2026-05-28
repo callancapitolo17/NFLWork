@@ -143,27 +143,40 @@ Expected: error `could not find function "derive_pickem_american"`.
 
 - [ ] **Step 2.3: Implement 2-way path**
 
-Append to `Answer Keys/MLB Answer Key/odds_screen.R`:
+Append to `Answer Keys/MLB Answer Key/odds_screen.R`. **Dependency note:** this
+helper calls `devig_american`, `devig_american_3way`, and `prob_to_american`
+— all defined in `Tools.R` (already loaded alongside `odds_screen.R` in both
+the pipeline and the test). Do NOT redefine `prob_to_american`; it exists at
+`Tools.R:937`. Verified return shapes (controller pre-checked):
+`devig_american(odd1, odd2)` → 1-row df with `$p1` (↔odd1), `$p2` (↔odd2);
+`prob_to_american(p)` → rounded American (uses `%>%`, fine once dplyr is
+attached, which `odds_screen.R` does).
 ```r
 #' Derive the draw-no-bet (pick'em) American odds for a book's period winner.
 #'
 #' Two source shapes:
 #'  - 2-way winner (no tie outcome): the market already excludes ties, so the
 #'    devigged probabilities ARE the DNB probabilities. Raw = input unchanged.
-#'  - 3-way winner: probit-devig home/tie/away, drop the tie, renormalize.
+#'  - 3-way winner: probit-devig home/away/tie, drop the tie, renormalize.
+#'
+#' Depends on Tools.R (devig_american, devig_american_3way, prob_to_american).
 #'
 #' @param home_raw American odds, home side (numeric, e.g. -180)
 #' @param away_raw American odds, away side
 #' @param tie_raw  American odds for the tie outcome, or NA for 2-way
 #' @return list with home_raw_dnb, away_raw_dnb, home_fair_dnb, away_fair_dnb
 derive_pickem_american <- function(home_raw, away_raw, tie_raw = NA) {
-  if (is.na(home_raw) || is.na(away_raw)) {
-    return(list(home_raw_dnb = NA_real_, away_raw_dnb = NA_real_,
-                home_fair_dnb = NA_real_, away_fair_dnb = NA_real_))
-  }
+  na_result <- list(home_raw_dnb = NA_real_, away_raw_dnb = NA_real_,
+                    home_fair_dnb = NA_real_, away_fair_dnb = NA_real_)
+  if (is.na(home_raw) || is.na(away_raw)) return(na_result)
+
+  # Guarded prob -> American: reuse Tools.R::prob_to_american for valid probs.
+  to_amer <- function(p) if (is.na(p) || p <= 0 || p >= 1) NA_real_ else prob_to_american(p)
+
   if (is.na(tie_raw)) {
     # 2-way: raw_dnb = input; fair_dnb = probit 2-way devig.
-    devig <- devig_american(away_raw, home_raw)   # returns list(p1=away, p2=home)
+    # devig_american(odd1, odd2) -> df with $p1 (↔odd1), $p2 (↔odd2).
+    devig <- devig_american(away_raw, home_raw)   # p1 = away, p2 = home
     if (is.null(devig) || any(is.na(c(devig$p1, devig$p2)))) {
       return(list(home_raw_dnb = home_raw, away_raw_dnb = away_raw,
                   home_fair_dnb = NA_real_, away_fair_dnb = NA_real_))
@@ -171,19 +184,12 @@ derive_pickem_american <- function(home_raw, away_raw, tie_raw = NA) {
     return(list(
       home_raw_dnb  = home_raw,
       away_raw_dnb  = away_raw,
-      home_fair_dnb = prob_to_american(devig$p2),
-      away_fair_dnb = prob_to_american(devig$p1)
+      home_fair_dnb = to_amer(devig$p2),
+      away_fair_dnb = to_amer(devig$p1)
     ))
   }
-  # 3-way path implemented in Task 3.
+  # 3-way path implemented in Task 3 (replaces this stop()).
   stop("derive_pickem_american 3-way path not implemented yet")
-}
-
-# Local convenience — moves to Tools.R if used elsewhere.
-prob_to_american <- function(p) {
-  if (is.na(p) || p <= 0 || p >= 1) return(NA_real_)
-  if (p >= 0.5) round(-p / (1 - p) * 100)
-  else          round((1 - p) / p * 100)
 }
 ```
 
@@ -261,45 +267,39 @@ Expected: error from the `stop("...3-way path not implemented yet")` in the help
 
 - [ ] **Step 3.3: Implement 3-way path**
 
-Replace the `stop(...)` line in `derive_pickem_american()` with:
+Replace the `stop(...)` line in `derive_pickem_american()` with (note:
+`devig_american_3way(odd_home, odd_away, odd_tie)` returns a 1-row df with
+`$p_home`, `$p_away`, `$p_tie` — controller-verified signature):
 ```r
-  # 3-way: devig (probit additive z-shift on prob01) -> p_away, p_home, p_tie.
-  # devig_american_3way expects c(away, home, tie) in that order (matches the
-  # 3-way pricing convention used in compare_alts_to_samples).
-  devig3 <- devig_american_3way(c(away_raw, home_raw, tie_raw))
-  if (is.null(devig3) || any(is.na(devig3))) {
-    return(list(home_raw_dnb = NA_real_, away_raw_dnb = NA_real_,
-                home_fair_dnb = NA_real_, away_fair_dnb = NA_real_))
-  }
-  p_away_f <- devig3[1]; p_home_f <- devig3[2]   # p_tie discarded (drop)
-  denom_f  <- p_home_f + p_away_f
-  if (!is.finite(denom_f) || denom_f <= 0) {
-    return(list(home_raw_dnb = NA_real_, away_raw_dnb = NA_real_,
-                home_fair_dnb = NA_real_, away_fair_dnb = NA_real_))
-  }
+  # 3-way: devig home/away/tie -> drop the tie -> renormalize home/away.
+  devig3 <- devig_american_3way(home_raw, away_raw, tie_raw)
+  if (is.null(devig3) || any(is.na(c(devig3$p_home, devig3$p_away)))) return(na_result)
+  denom_f <- devig3$p_home + devig3$p_away
+  if (!is.finite(denom_f) || denom_f <= 0) return(na_result)
   # Raw DNB: same drop-tie-renormalize on RAW implied probs (no devig).
   implied <- function(american) {
     if (is.na(american)) return(NA_real_)
     if (american < 0) -american / (-american + 100) else 100 / (american + 100)
   }
-  q_h <- implied(home_raw); q_a <- implied(away_raw)
-  denom_r <- q_h + q_a
+  q_h <- implied(home_raw); q_a <- implied(away_raw); denom_r <- q_h + q_a
   list(
-    home_raw_dnb  = prob_to_american(q_h / denom_r),
-    away_raw_dnb  = prob_to_american(q_a / denom_r),
-    home_fair_dnb = prob_to_american(p_home_f / denom_f),
-    away_fair_dnb = prob_to_american(p_away_f / denom_f)
+    home_raw_dnb  = to_amer(q_h / denom_r),
+    away_raw_dnb  = to_amer(q_a / denom_r),
+    home_fair_dnb = to_amer(devig3$p_home / denom_f),
+    away_fair_dnb = to_amer(devig3$p_away / denom_f)
   )
 ```
+(`to_amer` and `na_result` are in scope — both defined at the top of
+`derive_pickem_american` in Task 2.3.)
 
 - [ ] **Step 3.4: Verify `devig_american_3way` return shape**
 
 ```bash
-cd /Users/callancapitolo/NFLWork && Rscript -e 'source("Answer Keys/Tools.R"); print(devig_american_3way(c(180, -150, 400)))'
+cd /Users/callancapitolo/NFLWork && Rscript -e 'suppressWarnings(suppressMessages(source("Answer Keys/MLB Answer Key/odds_screen.R"))); source("Answer Keys/Tools.R"); print(devig_american_3way(-150, 180, 400))'
 ```
-Expected: numeric vector length 3 (away, home, tie) summing to 1.
-
-If the shape differs (e.g. named list), adjust the helper accordingly.
+Expected: 1-row data frame with columns `p_home`, `p_away`, `p_tie` summing
+to 1 (controller already confirmed this shape; sourcing odds_screen.R first
+attaches dplyr so `prob_to_american`'s `%>%` resolves).
 
 - [ ] **Step 3.5: Run test to verify all assertions pass**
 
