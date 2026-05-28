@@ -35,3 +35,22 @@ cat("OK 3-way path\n")
 # Degenerate inputs.
 stopifnot(is.na(derive_pickem_american(NA, 140, NA)$home_fair_dnb))
 cat("OK degenerate inputs\n")
+
+# 3-way canonicalization: a wide row with odds_tie (line == NA) -> three
+# h2h_3way rows (home, away, Tie) with the right period.
+library(tibble)
+raw3 <- tibble(
+  market = "h2h_3way_1st_5_innings",
+  home_team = "LA Dodgers", away_team = "COL Rockies",
+  line = NA_real_,
+  odds_home = -150, odds_away = 180, odds_tie = 400,
+  odds_over = NA_real_, odds_under = NA_real_,
+  fetch_time = Sys.time()
+)
+lookup3 <- tibble(id = "g1", home_team = "LA Dodgers", away_team = "COL Rockies")
+canon <- scraper_to_canonical(raw3, lookup3, book_name = "test")
+stopifnot(nrow(canon) == 3)
+stopifnot(all(canon$market == "h2h_3way"))
+stopifnot(all(canon$period == "F5"))
+stopifnot(setequal(canon$side, c("LA Dodgers", "COL Rockies", "Tie")))
+cat("OK 3-way canonicalization\n")

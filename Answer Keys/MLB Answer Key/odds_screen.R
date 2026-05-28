@@ -66,6 +66,8 @@ LINE_MATCH_TOLERANCE <- 3.0  # max abs(line_quoted - model_line) we'll emit
     return(c("spreads", "alternate_spreads"))
   if (mt == "totals"            || mt == "alternate_totals")
     return(c("totals", "alternate_totals"))
+  if (mt == "h2h" || mt == "h2h_3way")
+    return(c("h2h", "h2h_3way"))
   mt
 }
 
@@ -515,6 +517,15 @@ scraper_to_canonical <- function(raw, lookup, book_name = NULL) {
         game_id = gid, market_name = mkt,
         bet_on = row$away_team, line = NA_real_,
         american_odds = as.integer(row$odds_away), fetch_time = ft
+      )
+    }
+    # 3-way moneyline (h2h_3way_*): emit a "Tie" row alongside home/away.
+    if (!is.na(row$odds_home) && is.na(row$line) &&
+        "odds_tie" %in% names(row) && !is.na(row$odds_tie)) {
+      rows[[length(rows) + 1]] <- tibble(
+        game_id = gid, market_name = mkt,
+        bet_on = "Tie", line = NA_real_,
+        american_odds = as.integer(row$odds_tie), fetch_time = ft
       )
     }
   }
