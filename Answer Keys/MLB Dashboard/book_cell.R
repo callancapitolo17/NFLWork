@@ -80,7 +80,8 @@ render_book_cell <- function(american_odds, line_quoted, is_exact_line,
                               is_pick = FALSE, side_word = "over",
                               is_totals = TRUE,
                               opposite_american_odds = NA_integer_,
-                              opposite_line_quoted = NA_real_) {
+                              opposite_line_quoted = NA_real_,
+                              derived_fair_odds = NA_real_) {
   # State 1: empty (no quote)
   if (is.na(american_odds)) {
     return('<div class="cell empty"><span class="raw">&mdash;</span><span class="fair">&mdash;</span></div>')
@@ -88,30 +89,37 @@ render_book_cell <- function(american_odds, line_quoted, is_exact_line,
 
   raw_str <- if (american_odds > 0) paste0("+", american_odds) else as.character(american_odds)
 
-  # Compute devigged American for the FAIR span (if we have both sides AT THE
-  # SAME LINE). expand_bets_to_book_prices picks the closest line independently
-  # for pick and opposite slots, so the two sides can land on different alt
-  # markets at the same book — devigging those would yield nonsense fair odds.
-  # Match logic:
-  #   - totals: pick.line == opposite.line (both Over/Under at the same total)
-  #   - spreads: pick.line == -opposite.line (e.g. BOS -2.5 vs PHI +2.5)
-  #   - moneyline: both lines NA
+  # Compute the FAIR span.
+  # Derived pick'em path: when derived_fair_odds is non-NA, the matcher has
+  # already computed the draw-no-bet fair (2-way or 3-way devig with the tie
+  # dropped). Display it directly — do NOT re-devig the raw pair.
+  # Normal path: devig the book's own pick + opposite odds when both sides
+  # land on the same line (same logic as before this change).
   fair_html <- '<span class="fair">&mdash;</span>'  # fallback when no devig available
-  lines_match <- if (is.na(line_quoted) && is.na(opposite_line_quoted)) {
-    TRUE   # moneyline
-  } else if (is.na(line_quoted) || is.na(opposite_line_quoted)) {
-    FALSE  # one side has a line, other doesn't — not a valid 2-way market
-  } else if (isTRUE(is_totals)) {
-    abs(line_quoted - opposite_line_quoted) < 1e-9
+  if (!is.na(derived_fair_odds)) {
+    # Derived pick'em cell: the matcher already computed the draw-no-bet FAIR
+    # (2-way devig, or 3-way devig with the tie dropped). Display it directly;
+    # do NOT re-devig. raw_str (american_odds) already holds the raw DNB.
+    df_int <- as.integer(round(derived_fair_odds))
+    fair_str <- if (df_int > 0) paste0("+", df_int) else as.character(df_int)
+    fair_html <- sprintf('<span class="fair">%s</span>', fair_str)
   } else {
-    abs(line_quoted + opposite_line_quoted) < 1e-9
-  }
-  if (lines_match && !is.na(opposite_american_odds)) {
-    pair <- .devig_american_pair(american_odds, opposite_american_odds)
-    if (!is.na(pair$fair1)) {
-      fair_str <- if (pair$fair1 > 0) paste0("+", as.integer(pair$fair1))
-                  else as.character(as.integer(pair$fair1))
-      fair_html <- sprintf('<span class="fair">%s</span>', fair_str)
+    lines_match <- if (is.na(line_quoted) && is.na(opposite_line_quoted)) {
+      TRUE
+    } else if (is.na(line_quoted) || is.na(opposite_line_quoted)) {
+      FALSE
+    } else if (isTRUE(is_totals)) {
+      abs(line_quoted - opposite_line_quoted) < 1e-9
+    } else {
+      abs(line_quoted + opposite_line_quoted) < 1e-9
+    }
+    if (lines_match && !is.na(opposite_american_odds)) {
+      pair <- .devig_american_pair(american_odds, opposite_american_odds)
+      if (!is.na(pair$fair1)) {
+        fair_str <- if (pair$fair1 > 0) paste0("+", as.integer(pair$fair1))
+                    else as.character(as.integer(pair$fair1))
+        fair_html <- sprintf('<span class="fair">%s</span>', fair_str)
+      }
     }
   }
 
