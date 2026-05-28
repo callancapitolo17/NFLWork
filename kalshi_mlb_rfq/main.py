@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -22,6 +23,9 @@ from kalshi_mlb_rfq import (
 from kalshi_mlb_rfq.config import (
     ANSWER_KEY_DB, KILL_FILE, MAX_BOOK_STALENESS_SEC,
 )
+from kalshi_mlb_rfq.log_setup import setup_logging
+
+log = logging.getLogger("kalshi_mlb_rfq")
 
 VERSION = "0.1.0"
 
@@ -83,7 +87,7 @@ def _refresh_caches(retries: int = 5) -> bool:
     global _SAMPLES_META_GENERATED_AT, _CACHE_LOADED_AT
 
     if not ANSWER_KEY_DB.exists():
-        print(f"  cache_refresh: {ANSWER_KEY_DB} does not exist", flush=True)
+        log.warning("cache_refresh: %s does not exist", ANSWER_KEY_DB)
         return False
 
     last_err = None
@@ -93,8 +97,8 @@ def _refresh_caches(retries: int = 5) -> bool:
         except duckdb.IOException as e:
             last_err = e
             wait = 1.0 * (2 ** attempt)
-            print(f"  cache_refresh: lock conflict (attempt {attempt+1}/{retries}); "
-                  f"retrying in {wait:.1f}s", flush=True)
+            log.warning("cache_refresh: lock conflict (attempt %d/%d); retrying in %.1fs",
+                        attempt + 1, retries, wait)
             time.sleep(wait)
             continue
 
@@ -138,8 +142,8 @@ def _refresh_caches(retries: int = 5) -> bool:
             except Exception:
                 pass
             wait = 1.0 * (2 ** attempt)
-            print(f"  cache_refresh: schema mismatch (attempt {attempt+1}/{retries}); "
-                  f"retrying in {wait:.1f}s — {e}", flush=True)
+            log.warning("cache_refresh: schema mismatch (attempt %d/%d); retrying in %.1fs — %s",
+                        attempt + 1, retries, wait, e)
             time.sleep(wait)
             continue
         finally:
@@ -158,13 +162,11 @@ def _refresh_caches(retries: int = 5) -> bool:
             _CACHE_LOADED_AT = datetime.now(timezone.utc)
 
         elapsed = time.time() - t0
-        print(f"  cache_refresh: {len(samples_by_game)} games, "
-              f"{len(parlay_lines)} parlay_lines, "
-              f"samples gen_at={generated_at} ({elapsed:.1f}s)", flush=True)
+        log.info("cache_refresh: %d games, %d parlay_lines, samples gen_at=%s (%.1fs)",
+                 len(samples_by_game), len(parlay_lines), generated_at, elapsed)
         return True
 
-    print(f"  cache_refresh: gave up after {retries} attempts; last error: {last_err}",
-          flush=True)
+    log.warning("cache_refresh: gave up after %d attempts; last error: %s", retries, last_err)
     return False
 
 
@@ -202,10 +204,10 @@ def _refresh_sgp_cache(retries: int = 3) -> bool:
 
         with _CACHE_LOCK:
             _SGP_ODDS_CACHE = sgp_df
-        print(f"  sgp_cache_refresh: {len(sgp_df)} rows from bot_market_db", flush=True)
+        log.info("sgp_cache_refresh: %d rows from bot_market_db", len(sgp_df))
         return True
 
-    print(f"  sgp_cache_refresh: gave up after {retries} attempts; {last_err}", flush=True)
+    log.warning("sgp_cache_refresh: gave up after %d attempts; %s", retries, last_err)
     return False
 
 
@@ -281,17 +283,17 @@ def _phantom_rfq_cleanup():
     touching).
     """
     if not config.KALSHI_USER_ID:
-        print("  startup: KALSHI_USER_ID not set — skipping phantom cleanup "
-              "(safety: would otherwise fetch RFQs from all users)", flush=True)
+        log.warning("startup: KALSHI_USER_ID not set — skipping phantom cleanup "
+                    "(safety: would otherwise fetch RFQs from all users)")
         return
     try:
         kalshi_open = rfq_client.list_open_rfqs(config.KALSHI_USER_ID)
     except Exception as e:
-        print(f"  startup: list_open_rfqs failed: {e}", flush=True)
+        log.warning("startup: list_open_rfqs failed: %s", e)
         return
 
     if not kalshi_open:
-        print("  startup: no open RFQs on Kalshi", flush=True)
+        log.info("startup: no open RFQs on Kalshi")
         return
 
     with db.connect(read_only=True) as con:
@@ -320,13 +322,13 @@ def _phantom_rfq_cleanup():
         try:
             rfq_client.delete_rfq(rid)
             cancelled += 1
-            print(f"  startup: cancelled phantom rfq {rid}", flush=True)
+            log.info("startup: cancelled phantom rfq %s", rid)
         except Exception as e:
             failed += 1
-            print(f"  startup: failed to cancel phantom {rid}: {e}", flush=True)
+            log.warning("startup: failed to cancel phantom %s: %s", rid, e)
 
-    print(f"  startup: phantom cleanup — cancelled={cancelled} failed={failed} "
-          f"skipped_other_bot={skipped_other_bot}", flush=True)
+    log.info("startup: phantom cleanup — cancelled=%d failed=%d skipped_other_bot=%d",
+             cancelled, failed, skipped_other_bot)
 
 
 # ------------------------------------------------------------------------ #
@@ -914,11 +916,10 @@ def _evaluate_quote(quote: dict, dry_run: bool,
         # pass simultaneously against the same fair. If this ever fires the
         # fee model or fair-value pipeline has drifted — alert + decline.
         if yes_ok and no_ok:
-            print(
-                f"[MATH_INVARIANT_BROKEN] both sides +EV from one LP: "
-                f"yes_ask={1-no_bid:.4f} no_ask={1-yes_bid:.4f} fair={fair:.4f} "
-                f"ev_yes_pct={ev_yes_pct:.4f} ev_no_pct={ev_no_pct:.4f}",
-                flush=True,
+            log.warning(
+                "[MATH_INVARIANT_BROKEN] both sides +EV from one LP: "
+                "yes_ask=%.4f no_ask=%.4f fair=%.4f ev_yes_pct=%.4f ev_no_pct=%.4f",
+                1 - no_bid, 1 - yes_bid, fair, ev_yes_pct, ev_no_pct,
             )
             _log_quote_decision(quote, fair, "declined_math_invariant",
                                  diag=diag)
@@ -1041,10 +1042,9 @@ def _evaluate_quote(quote: dict, dry_run: bool,
             signed = rfq_client.get_position_contracts(combo_market_ticker)
             _record_positions_api_result(True)
             if (chosen == "yes" and signed < 0) or (chosen == "no" and signed > 0):
-                print(
-                    f"[position_direction_mismatch] chosen={chosen} but "
-                    f"signed_position={signed} on {combo_market_ticker}",
-                    flush=True,
+                log.warning(
+                    "[position_direction_mismatch] chosen=%s but signed_position=%s on %s",
+                    chosen, signed, combo_market_ticker,
                 )
             actual = abs(signed)
         except Exception:
@@ -1190,7 +1190,7 @@ def _refresh_rfqs(candidates: list[combo_enumerator.ComboCandidate],
                         [datetime.now(timezone.utc), rid],
                     )
             except Exception as e:
-                print(f"  drop {rid} failed: {e}", flush=True)
+                log.warning("drop %s failed: %s", rid, e)
 
     # Add: for each target candidate, emit up to 2 RFQs (one per side with
     # positive Kelly). Skip any (leg_set_hash, side) pair already live.
@@ -1254,12 +1254,10 @@ def _refresh_rfqs(candidates: list[combo_enumerator.ComboCandidate],
                     )
                 added += 1
             except Exception as e:
-                print(f"  add {c.leg_set_hash[:8]}/{side} failed: {e}",
-                      flush=True)
+                log.warning("add %s/%s failed: %s", c.leg_set_hash[:8], side, e)
     if skipped_kelly_zero or skipped_too_small or added:
-        print(f"  rfq_refresh: add={added} "
-              f"skipped_kelly_zero={skipped_kelly_zero} "
-              f"skipped_too_small={skipped_too_small}", flush=True)
+        log.info("rfq_refresh: add=%d skipped_kelly_zero=%d skipped_too_small=%d",
+                 added, skipped_kelly_zero, skipped_too_small)
 
 
 # ------------------------------------------------------------------------ #
@@ -1489,12 +1487,13 @@ def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandida
 # ------------------------------------------------------------------------ #
 
 def main_loop(dry_run: bool):
+    setup_logging()
     db.init_database()
     sid = db.start_session(pid=os.getpid(), dry_run=dry_run, version=VERSION)
-    print(f"=== Kalshi MLB RFQ Bot — session {sid} (dry_run={dry_run}) ===", flush=True)
+    log.info("=== Kalshi MLB RFQ Bot — session %s (dry_run=%s) ===", sid, dry_run)
     # Initial cache load — bot is useless until this succeeds.
     if not _refresh_caches():
-        print("  startup: cache_refresh failed; bot will retry on pipeline-refresh tick", flush=True)
+        log.warning("startup: cache_refresh failed; bot will retry on pipeline-refresh tick")
     _phantom_rfq_cleanup()
 
     # Synchronous SGP warm-up: run one full SGP cycle before entering the
@@ -1502,7 +1501,7 @@ def main_loop(dry_run: bool):
     # Blocks ~60-90s; without this the first RFQ refresh would have zero
     # book fairs and burn Kalshi quota on candidates that can't pass the
     # N>=2 books gate.
-    print("  startup: warming SGP cache (one synchronous scrape tick)...", flush=True)
+    log.info("startup: warming SGP cache (one synchronous scrape tick)...")
     try:
         rcs = sgp_runner.sgp_cycle(
             bot_market_db=str(config.BOT_MARKET_DB),
@@ -1510,9 +1509,9 @@ def main_loop(dry_run: bool):
             venv_python=str(config.MLB_SGP_DIR / "venv" / "bin" / "python"),
             timeout_sec=config.SGP_SCRAPER_TIMEOUT_SEC,
         )
-        print(f"  startup: SGP warm-up done — return codes {rcs}", flush=True)
+        log.info("startup: SGP warm-up done — return codes %s", rcs)
     except Exception as e:
-        print(f"  startup: SGP warm-up failed ({e}); bot will retry on first cadence tick", flush=True)
+        log.warning("startup: SGP warm-up failed (%s); bot will retry on first cadence tick", e)
     _refresh_sgp_cache()
     # Rebuild parlay_lines cache now that target_lines has rows
     _refresh_caches()
@@ -1538,24 +1537,24 @@ def main_loop(dry_run: bool):
                 try:
                     candidates, fair_scores, kelly_sizes = _enumerate_and_score_all_games()
                     _refresh_rfqs(candidates, fair_scores, kelly_sizes, dry_run=dry_run)
-                    print(f"  rfq_refresh: {len(candidates)} candidates "
-                          f"({time.time()-t_ref:.1f}s)", flush=True)
+                    log.info("rfq_refresh: %d candidates (%.1fs)",
+                             len(candidates), time.time() - t_ref)
                 except Exception as e:
-                    print(f"  rfq_refresh error: {e}", flush=True)
+                    log.warning("rfq_refresh error: %s", e)
                 last_rfq_refresh = now
 
             if now - last_quote_poll >= config.QUOTE_POLL_SEC:
                 try:
                     _poll_all_live_rfqs(dry_run=dry_run)
                 except Exception as e:
-                    print(f"  quote_poll error: {e}", flush=True)
+                    log.warning("quote_poll error: %s", e)
                 last_quote_poll = now
 
             if now - last_risk_sweep >= config.RISK_SWEEP_SEC:
                 try:
                     _risk_sweep()
                 except Exception as e:
-                    print(f"  risk_sweep error: {e}", flush=True)
+                    log.warning("risk_sweep error: %s", e)
                 last_risk_sweep = now
 
             if now - last_sgp_cycle >= config.SGP_REFRESH_SEC:
@@ -1569,9 +1568,9 @@ def main_loop(dry_run: bool):
                     )
                     _refresh_sgp_cache()
                     _refresh_caches()  # parlay_lines_cache may have new (spread, total) tuples
-                    print(f"  sgp_cycle: rcs={rcs} ({time.time()-t_sgp:.1f}s)", flush=True)
+                    log.info("sgp_cycle: rcs=%s (%.1fs)", rcs, time.time() - t_sgp)
                 except Exception as e:
-                    print(f"  sgp_cycle error: {e}", flush=True)
+                    log.warning("sgp_cycle error: %s", e)
                 last_sgp_cycle = now
 
             if now - last_pipeline >= config.PIPELINE_REFRESH_SEC:
@@ -1582,7 +1581,7 @@ def main_loop(dry_run: bool):
                 last_pipeline = now
 
             if now - last_heartbeat >= 60:
-                print(f"  [HB] {datetime.now(timezone.utc).isoformat()} alive", flush=True)
+                log.info("[HB] %s alive", datetime.now(timezone.utc).isoformat())
                 last_heartbeat = now
 
             time.sleep(0.5)
@@ -1605,12 +1604,12 @@ def main_loop(dry_run: bool):
                 cancelled += 1
             except Exception as e:
                 failed += 1
-                print(f"  shutdown: cancel {rid} failed: {e}", flush=True)
+                log.warning("shutdown: cancel %s failed: %s", rid, e)
         if live:
-            print(f"  shutdown: drained live RFQs — cancelled={cancelled} "
-                  f"failed={failed}", flush=True)
+            log.info("shutdown: drained live RFQs — cancelled=%d failed=%d",
+                     cancelled, failed)
         db.end_session(sid)
-        print("=== shutdown complete ===", flush=True)
+        log.info("=== shutdown complete ===")
 
 
 def cli():

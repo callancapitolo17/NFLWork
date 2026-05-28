@@ -1,17 +1,18 @@
-"""Fill / halt notifications: bot.log + optional webhook."""
+"""Fill / halt notifications: logging module + optional webhook."""
 
 import json
+import logging
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-from kalshi_mlb_rfq.config import LOG_PATH, NOTIFY_WEBHOOK_URL
+from kalshi_mlb_rfq.config import NOTIFY_WEBHOOK_URL
+
+log = logging.getLogger("kalshi_mlb_rfq.notify")
 
 
 def _append_log(line: str):
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with LOG_PATH.open("a") as f:
-        f.write(line + "\n")
+    log.info(line)
 
 
 def _post_webhook(payload: dict):
