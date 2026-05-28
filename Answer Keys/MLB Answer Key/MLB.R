@@ -985,6 +985,7 @@ dbExecute(con_bets, "
     line_quoted     DOUBLE,
     is_exact_line   BOOLEAN,
     american_odds   INTEGER,
+    derived_fair_odds DOUBLE,
     fetch_time      TIMESTAMPTZ,
     game_start_time TIMESTAMPTZ
   )
