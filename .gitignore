@@ -135,4 +135,5 @@ kalshi_mlb_rfq/.env
 kalshi_mlb_rfq/*.duckdb
 kalshi_mlb_rfq/*.duckdb.wal
 kalshi_mlb_rfq/*.log
+kalshi_mlb_rfq/bot.log.*
 kalshi_mlb_rfq/.kill
