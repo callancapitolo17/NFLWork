@@ -3379,15 +3379,19 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
               tags$div(class = "subtitle", paste("Updated", timestamp))
             ),
             tags$button(class = "refresh-btn", onclick = "refreshData()", "Refresh")
-          ),
-          tags$div(class = "header-row-accounts", id = "wz-account-row",
-            tags$span(class = "header-label", "Placing on"),
-            tags$div(id = "wz-account-pills", class = "wz-pills"),
-            tags$button(
-              id = "wz-refresh-btn", type = "button", class = "wz-icon-btn",
-              title = "Refresh balances",
-              HTML("&#x21bb;")
-            )
+          )
+        ),
+
+        # Pinned account bar — relocated out of .header so its sticky parent is
+        # the page-spanning .container; stays frozen through the whole card list
+        # on every tab. Ids/inner structure preserved so the pill JS is untouched.
+        tags$div(class = "header-row-accounts pinned-account-bar", id = "wz-account-row",
+          tags$span(class = "header-label", "Placing on"),
+          tags$div(id = "wz-account-pills", class = "wz-pills"),
+          tags$button(
+            id = "wz-refresh-btn", type = "button", class = "wz-icon-btn",
+            title = "Refresh balances",
+            HTML("&#x21bb;")
           )
         ),
 
@@ -3451,6 +3455,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
           # / breakeven from two text inputs. Element IDs and class
           # operations (.invalid / .neg / .pos) preserved so the
           # setupKellyCalc() JS handler below runs unchanged.
+          tags$div(class = "kelly-calc-pin",
           tags$div(class = "kelly-calc",
             tags$span(class = "title", "Kelly Calculator"),
             tags$div(class = "pair",
@@ -3482,6 +3487,7 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
                 tags$span(id = "kc-be", class = "val", HTML("&mdash;"))
               )
             )
+          )
           ),
 
           # Filter Bar
