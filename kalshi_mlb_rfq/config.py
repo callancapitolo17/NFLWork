@@ -121,3 +121,11 @@ MIN_BOOK_COUNT_FOR_BLEND = int(_get("MIN_BOOK_COUNT_FOR_BLEND", "2"))
 LOG_LEVEL = _get("LOG_LEVEL", "INFO")
 LOG_MAX_BYTES = int(_get("LOG_MAX_BYTES", str(50 * 1024 * 1024)))  # 50 MB
 LOG_BACKUP_COUNT = int(_get("LOG_BACKUP_COUNT", "5"))
+
+# Research firehose (separate sibling DB, off the trading write lock)
+RESEARCH_DB_PATH = Path(_get("RESEARCH_DB_PATH",
+                             str(PKG_DIR / "kalshi_mlb_rfq_research.duckdb")))
+# Fraction of candidate_evaluated events to keep per tick (1.0 = full movie).
+RESEARCH_CANDIDATE_SAMPLING = float(_get("RESEARCH_CANDIDATE_SAMPLING", "1.0"))
+# Buffer cap: if flush keeps failing, drop oldest beyond this to bound memory.
+RESEARCH_BUFFER_MAX = int(_get("RESEARCH_BUFFER_MAX", "50000"))
