@@ -350,11 +350,13 @@ NOT its ±0.5 run line (a different bet, no push). Source priority per book:
   on the FAIR toggle (skips the pair-devig) and `american_odds` on RAW, when
   `derived_fair_odds` is non-NULL. `mlb_dashboard.R` carries the column
   through the load + long→wide pivot, parallel to `american_odds`.
-- v1 coverage: **DraftKings** posts a 2-way "1st 3 Innings" winner (now
-  captured — see `mlb_sgp/README.md`); **FanDuel** posts a First-5-Innings
-  "Money Line" (already captured) but **no** first-3 money line, so FD shows
-  "—" on F3 pick'em cards (book reality, not a gap). Other books show "—"
-  until their winner market is wired.
+- Coverage: **DraftKings** posts bare-period 2-way winners ("1st 3/5/7
+  Innings"), captured via `classify_market`. **FanDuel** posts a 2-way
+  "First 5 Innings Money Line" AND a 3-way "First N Innings Result"
+  (Home/Tie/Away) for F3/F5/F7 — both now captured: the FD scraper emits the
+  Result as an `h2h_3way` row (with `tie_ml`), and `get_fd_odds` flows it to
+  `h2h_3way_1st_N_innings` so the 3-way DNB collapse fills FD's F3/F5/F7
+  pick'em cells. Other books show "—" until their winner market is wired.
 - Spec: `docs/superpowers/specs/2026-05-27-mlb-pickem-moneyline-match-design.md`.
 
 ### Helpers
