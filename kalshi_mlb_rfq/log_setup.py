@@ -6,6 +6,7 @@ never grow unbounded). Call setup_logging() once at process start.
 """
 
 import logging
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -17,18 +18,29 @@ _FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 def setup_logging(log_path: Path | None = None,
                   max_bytes: int | None = None,
                   backup_count: int | None = None,
-                  level: str | None = None) -> logging.Logger:
-    """Configure the root logger with a stdout handler + a rotating file
-    handler. Idempotent: repeated calls do not stack handlers.
+                  level: str | None = None,
+                  console: bool | None = None) -> logging.Logger:
+    """Configure the root logger with a rotating file handler and, when
+    appropriate, a console (stderr) handler. Idempotent: repeated calls do
+    not stack handlers.
 
     Defaults come from config (LOG_PATH, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
     LOG_LEVEL); args override for tests.
+
+    `console` controls the stderr StreamHandler. When None (default) it is
+    added only if stderr is a TTY — so an interactive / dry-run session gets
+    console output, but a backgrounded daemon launched with `>> bot.log 2>&1`
+    does NOT double-log: the RotatingFileHandler already writes bot.log, and
+    the stderr redirect would otherwise write every line into bot.log a second
+    time. Pass True/False to force it.
     """
     log_path = Path(log_path) if log_path else config.LOG_PATH
     max_bytes = max_bytes if max_bytes is not None else config.LOG_MAX_BYTES
     backup_count = (backup_count if backup_count is not None
                     else config.LOG_BACKUP_COUNT)
     level = level or config.LOG_LEVEL
+    if console is None:
+        console = sys.stderr.isatty()
 
     root = logging.getLogger()
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
@@ -50,9 +62,10 @@ def setup_logging(log_path: Path | None = None,
     file_handler._rfq_managed = True
     root.addHandler(file_handler)
 
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(fmt)
-    stream_handler._rfq_managed = True
-    root.addHandler(stream_handler)
+    if console:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(fmt)
+        stream_handler._rfq_managed = True
+        root.addHandler(stream_handler)
 
     return root
