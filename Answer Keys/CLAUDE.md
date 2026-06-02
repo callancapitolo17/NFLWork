@@ -30,7 +30,12 @@ run.py mlb (orchestrator)
 - F5 (first 5 innings) markets matched via Odds API: h2h, totals, spreads, alternate_totals
 - Derivative markets matched via `compare_alts_to_samples` against scraped offshore odds:
   - F3 / F7 spreads + totals + h2h (Wagerzon, Bookmaker for F3 only). Note: Wagerzon currently posts spread+total at F3/F7 but rarely posts moneyline — h2h_1st_*_innings branch is built but typically idle until a book posts F-period MLs.
-  - FG alt spreads + alt totals (Wagerzon, Bet105)
+  - FG alt spreads + alt totals (Wagerzon, Bet105, Bookmaker). Bookmaker's
+    alt ladder lives in each game's `Derivatives.line` array (index 0 = main,
+    non-zero = alternates, with paired spread + total per index); the parser
+    emits `alternate_spreads` / `alternate_totals` rows from non-zero indices
+    (2026-05-29). Coverage is intermittent — BKM populates the multi-index
+    grid for some games near start time and not for early openers.
   - FG odd/even total runs (Wagerzon — single-game prop, away_ml side = ODD, home_ml side = EVEN per scraper convention)
   - F5 3-way moneyline `h2h_3way_1st_5_innings` (Wagerzon only — `idgmtyp=29` league `lg=1280`). Tie is a real outcome, not push refund. Coexists with the existing 2-way F5 ML matched via `compare_moneylines_to_wagerzon`.
 - Team totals (`team_totals_*_fg`, `team_totals_*_h1`) are scraped but NOT yet matched — MLB samples lack per-team score columns. Tracked as gap #2 in the broader matching plan.

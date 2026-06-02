@@ -411,27 +411,37 @@ def parse_schedule(schedule_data: dict, league_config: dict, sport_key: str,
     for league in leagues:
         for date_group in league.get("dateGroup", []):
             for game in date_group.get("game", []):
-                record = _parse_game(
+                # _parse_game now returns a list (main + alt-line indices).
+                records.extend(_parse_game(
                     game, market, period, sport_key,
                     team_dict, canonical_games, fetch_time
-                )
-                if record:
-                    records.append(record)
+                ))
 
     return records
 
 
 def _parse_game(game: dict, market: str, period: str, sport_key: str,
                 team_dict: dict, canonical_games: list,
-                fetch_time: str) -> dict | None:
-    """Parse a single game object into a DuckDB record."""
+                fetch_time: str) -> list[dict]:
+    """Parse a single game's `Derivatives.line` list into DuckDB records.
+
+    BKM packs the main and ALL alt lines into one `Derivatives.line` array
+    keyed by `index` (0 = main, ± non-zero = alternates). Previously this
+    extracted only index 0 and discarded everything else; we now emit one
+    record per usable index so the alt run-line / alt-total ladder reaches
+    the dashboard. The main index keeps `market` and the ML; non-zero
+    indices use `market = market.replace("spreads", "alternate_spreads")`
+    and carry only spread + total (no ML — that's per-game, not per-line).
+    Downstream `get_bookmaker_odds()` derives an `alternate_totals` canonical
+    row from the same alt record via its existing `gsub("spreads","totals")`.
+    """
     if game.get("Stat") != "O":
-        return None
+        return []
 
     away_raw = (game.get("vtm") or "").strip()
     home_raw = (game.get("htm") or "").strip()
     if not away_raw or not home_raw:
-        return None
+        return []
 
     # Resolve team names via shared canonical_match
     if team_dict or canonical_games:
@@ -450,80 +460,81 @@ def _parse_game(game: dict, market: str, period: str, sport_key: str,
             for cg in canonical_games
         )
         if not matched:
-            return None
+            return []
 
     # Game start time — parse BKM's naive PT (gmdt, gmtm) into UTC instant.
-    # The previous split (gmdt → MM/DD VARCHAR, gmtm → HH:MM VARCHAR) leaked
-    # an implicit (and wrong) TZ assumption downstream; replaced with one
-    # tz-aware UTC datetime that DuckDB stores as TIMESTAMPTZ.
     game_start_time = _bkm_game_start_time(game.get("gmdt", ""), game.get("gmtm", ""))
 
     game_id = str(game.get("idgm", ""))
 
-    # Get main line (index == "0")
     lines = game.get("Derivatives", {}).get("line", [])
-    main_line = None
+    if not lines:
+        return []
+
+    # market label for alternate rows: "spreads" -> "alternate_spreads",
+    # "spreads_f5" -> "alternate_spreads_f5", "spreads_h2" -> "alternate_spreads_h2".
+    alt_market = market.replace("spreads", "alternate_spreads")
+
+    records: list[dict] = []
     for line in lines:
-        if str(line.get("index")) == "0":
-            main_line = line
-            break
+        is_main = str(line.get("index")) == "0"
+        rec_market = market if is_main else alt_market
 
-    if not main_line:
-        return None
+        away_spread = away_spread_price = home_spread = home_spread_price = None
+        if line.get("s_sp") == 1:
+            try:
+                away_spread = float(line["vsprdt"])
+                home_spread = float(line["hsprdt"])
+                away_spread_price = int(line["vsprdoddst"])
+                home_spread_price = int(line["hsprdoddst"])
+            except (KeyError, ValueError, TypeError):
+                pass
 
-    # Parse spread (check s_sp status flag)
-    away_spread = away_spread_price = home_spread = home_spread_price = None
-    if main_line.get("s_sp") == 1:
-        try:
-            away_spread = float(main_line["vsprdt"])
-            home_spread = float(main_line["hsprdt"])
-            away_spread_price = int(main_line["vsprdoddst"])
-            home_spread_price = int(main_line["hsprdoddst"])
-        except (KeyError, ValueError, TypeError):
-            pass
+        total = over_price = under_price = None
+        if line.get("s_tot") == 1:
+            try:
+                total = float(line["ovt"])
+                over_price = int(line["ovoddst"])
+                under_price = int(line["unoddst"])
+            except (KeyError, ValueError, TypeError):
+                pass
 
-    # Parse total (check s_tot status flag)
-    total = over_price = under_price = None
-    if main_line.get("s_tot") == 1:
-        try:
-            total = float(main_line["ovt"])
-            over_price = int(main_line["ovoddst"])
-            under_price = int(main_line["unoddst"])
-        except (KeyError, ValueError, TypeError):
-            pass
+        # Moneyline is per-game (not per-line), so only the main index carries it.
+        away_ml = home_ml = None
+        if is_main and line.get("s_ml") == 1:
+            try:
+                away_ml = int(line["voddst"])
+                home_ml = int(line["hoddst"])
+            except (KeyError, ValueError, TypeError):
+                pass
 
-    # Parse moneyline (check s_ml status flag)
-    away_ml = home_ml = None
-    if main_line.get("s_ml") == 1:
-        try:
-            away_ml = int(main_line["voddst"])
-            home_ml = int(main_line["hoddst"])
-        except (KeyError, ValueError, TypeError):
-            pass
+        # Skip lines with no usable odds. For the main line this preserves the
+        # original behavior (game is dropped if main has nothing); for alts we
+        # just drop that specific index.
+        if away_spread is None and total is None and away_ml is None:
+            continue
 
-    # Skip if no odds available at all
-    if away_spread is None and total is None and away_ml is None:
-        return None
+        records.append({
+            "fetch_time": fetch_time,
+            "sport_key": sport_key,
+            "game_id": game_id,
+            "game_start_time": game_start_time,
+            "away_team": away_team,
+            "home_team": home_team,
+            "market": rec_market,
+            "period": period,
+            "away_spread": away_spread,
+            "away_spread_price": away_spread_price,
+            "home_spread": home_spread,
+            "home_spread_price": home_spread_price,
+            "total": total,
+            "over_price": over_price,
+            "under_price": under_price,
+            "away_ml": away_ml,
+            "home_ml": home_ml,
+        })
 
-    return {
-        "fetch_time": fetch_time,
-        "sport_key": sport_key,
-        "game_id": game_id,
-        "game_start_time": game_start_time,
-        "away_team": away_team,
-        "home_team": home_team,
-        "market": market,
-        "period": period,
-        "away_spread": away_spread,
-        "away_spread_price": away_spread_price,
-        "home_spread": home_spread,
-        "home_spread_price": home_spread_price,
-        "total": total,
-        "over_price": over_price,
-        "under_price": under_price,
-        "away_ml": away_ml,
-        "home_ml": home_ml,
-    }
+    return records
 
 
 # =============================================================================
