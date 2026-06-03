@@ -1,6 +1,6 @@
 # Kalshi MLB MM (Maker) Bot
 
-Independent maker daemon that listens for others' RFQs on the Kalshi cross-category MVE collection, prices 2-leg spread×total MLB combos using the same model+book blended fair value as the taker, and provides two-sided quotes at a fixed 5% ROI margin. Coexists with the taker (`kalshi_mlb_rfq/`) as a separate OS process with no runtime dependency on it.
+Independent maker daemon that listens for others' RFQs on the Kalshi cross-category MVE collection, prices 2-leg spread×total MLB combos against a book-consensus fair value, and provides two-sided quotes at a fixed 5% ROI margin. Coexists with the taker (`kalshi_mlb_rfq/`) as a separate OS process with no runtime dependency on it.
 
 **Spec:** `docs/superpowers/specs/2026-05-26-kalshi-mlb-mm-design.md`
 **Plan:** `docs/superpowers/plans/2026-05-27-kalshi-mlb-mm-maker-bot.md`
@@ -46,23 +46,33 @@ rm kalshi_mlb_mm/.kill
 
 ## Architecture
 
-REST-polling daemon, single process. Five timed sub-loops:
+REST-polling daemon, single process. Four timed sub-loops:
 
 | Loop | Cadence | Job |
 |---|---|---|
 | Discovery + quote | 2s | Poll open RFQs → scope filter → price → submit or refresh quote |
 | Confirm | 2s | Poll open quotes → on `accepted`, last-look gate → confirm or void |
-| Risk sweep | 10s | Kill-switch, samples-staleness auto-pull, tipoff cancel |
+| Risk sweep | 10s | Kill-switch, book-staleness auto-pull, tipoff cancel, drift-since-quote cancel |
 | SGP scrape | 60s | Own scraper cadence → `kalshi_mlb_mm_market.duckdb` (sibling market DB) |
-| Samples refresh | 600s | Reload `Answer Keys/mlb_mm.duckdb::mlb_game_samples` read-only |
 
 **Transport seam.** All exchange I/O goes through two interfaces: `RFQSource.poll()` / `RFQSource.get_market()` (v1: `RestRFQSource`, REST poll of `GET /communications/rfqs?status=open`) and `QuoteGateway.submit_quote()` / `.confirm()` / `.cancel()` (v1: `RestQuoteGateway`). A WebSocket adapter is a drop-in replacement behind these interfaces — no pricing or risk code changes.
 
 **Shared math.** Fair value, EV calc (including `maker_fee_per_contract`), authenticated HTTP, SGP orchestration, and leg-typing helpers all live in `kalshi_common/`. Both bots import from there; the taker's original files are now one-line re-export shims (behavior unchanged).
 
-**State DB.** The bot writes `kalshi_mlb_mm/kalshi_mlb_mm.duckdb` (quotes, fills, positions, decisions). The sibling `kalshi_mlb_mm/kalshi_mlb_mm_market.duckdb` holds SGP-line and SGP-odds data (same pattern as the taker's `kalshi_mlb_rfq_market.duckdb`). The answer-key DB (`Answer Keys/mlb_mm.duckdb`) is read-only.
+**State DB.** The bot writes `kalshi_mlb_mm/kalshi_mlb_mm.duckdb` (quotes, fills, positions, decisions). The sibling `kalshi_mlb_mm/kalshi_mlb_mm_market.duckdb` holds SGP-line and SGP-odds data (same pattern as the taker's `kalshi_mlb_rfq_market.duckdb`). The v1-hardening pass removed the model component of the blend, so there is no longer a read-only dependency on `Answer Keys/mlb_mm.duckdb`.
 
 ## Pricing
+
+Fair value is the median of *book-consensus-agreeing* devigged book fairs. For each combo (game × spread_line × total_line) we:
+
+1. Pull every book's 4-side row from `mlb_sgp_odds` (require all 4 sides — no fallback).
+2. Devig each book's 4-way grid to a single combo fair (`devig_book` in `kalshi_common.fair_value`).
+3. Compute the median across books, then keep only books within `±BOOK_CONSENSUS_BAND` of that median.
+4. If `>= MIN_AGREEING_BOOKS` survive, the fair is the median of the survivors. Otherwise we do not quote.
+
+This is the v1 correlation defense (mirrors the MLB answer-key dashboard's consensus-band pattern). The v1.1 explicit correlation-premium gate is deferred — see spec section 13.
+
+The model (a fraction-of-sample-paths estimate driven by `mlb_game_samples` from the R answer-key pipeline) was removed in the v1 hardening pass: it was being medianed out of the blend, carried documented bias on certain combo families ([[mlb_parlay_edge_overestimation]]), and added a soft dependency on the R pipeline.
 
 For each side of a two-sided quote:
 
@@ -90,34 +100,37 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `MAX_OPEN_QUOTES` | `25` | Cap on simultaneously resting quotes (well under Kalshi's 100 limit) |
 | `TARGET_ROI` | `0.05` | Quoted margin — the `p / (1 + TARGET_ROI)` divisor in pricing |
 | `FAIR_DRIFT_TOLERANCE` | `0.02` | Last-look: void confirm if fair drifted >2¢ against filled side since quote time |
-| `MAX_PREDICTION_STALENESS_SEC` | `600` | Withhold and pull all quotes if model samples older than this |
 | `MAX_BOOK_STALENESS_SEC` | `60` | Withhold and pull quotes if book odds older than this |
-| `BOOK_MOVE_CB_THRESHOLD` | `0.03` | Circuit breaker: cancel a game's quotes if book fair jumps >3¢ between scrapes |
+| `BOOK_MOVE_CB_THRESHOLD` | `0.03` | Circuit breaker: cancel a combo's quotes if book fair jumps >3¢ between scrapes (per-tick) or if drift since quote exceeds this (per-quote risk sweep) |
 | `TIPOFF_CANCEL_MIN` | `5` | Pull quotes this many minutes before first pitch |
 | `QUOTE_HYSTERESIS` | `0.005` | Don't replace a resting quote unless fair moved more than ½¢ |
+| `BOOK_CONSENSUS_BAND` | `0.02` | v1 correlation defense: max distance from per-combo book median (fair-prob units) for a book to count as "agreeing"; outliers are discarded |
+| `MIN_AGREEING_BOOKS` | `3` | v1 correlation defense: minimum number of books that must agree before we quote |
 | `DISCOVERY_SEC` | `2` | Discovery + quote loop cadence (seconds) |
 | `CONFIRM_SEC` | `2` | Confirm loop cadence (seconds) |
 | `RISK_SWEEP_SEC` | `10` | Risk sweep cadence (seconds) |
 | `SGP_REFRESH_SEC` | `60` | SGP scrape cadence (seconds) |
 | `SGP_SCRAPER_TIMEOUT_SEC` | `90` | Per-scraper kill deadline (seconds) |
-| `SAMPLES_REFRESH_SEC` | `600` | Model samples reload cadence (seconds) |
-| `MIN_BOOK_COUNT_FOR_BLEND` | `2` | Minimum number of books required to produce a blended fair |
 
 ## Defense hierarchy (stale-quote / adverse-selection risk)
 
-Resting quotes are priced off inputs that lag reality — books refresh every 60s, model samples every 600s. An informed counterparty can cross a stale quote before our data reacts. Defenses, in decreasing priority:
+Resting quotes are priced off books that lag reality (books refresh every 60s). An informed counterparty can cross a stale quote before our data reacts. Defenses, in decreasing priority:
 
 1. **Margin (primary, continuous coverage).** The ~2.5–3¢ per-side cushion at 5% ROI absorbs *continuous* fair drift — a cent or two of movement between scrapes. This is the primary defense and fires on every fill. It does NOT cover discrete events (scratch / postponement / steam move).
 
-2. **Freshness gate + auto-pull (discrete events).** Before submitting any quote and inside the risk sweep, the bot checks that both model samples and book odds are within their staleness thresholds. The instant either goes stale or a scrape fails, all open quotes are cancelled. Blind → no live quotes.
+2. **Book-consensus gate (correlation defense).** Before quoting, we require `>= MIN_AGREEING_BOOKS` books within `±BOOK_CONSENSUS_BAND` of the per-combo book median; outliers are discarded and the fair is the median of survivors. A single rogue book cannot anchor our quote. This is v1's only correlation defense — the v1.1 explicit correlation-premium gate (where Kalshi singles serve as the marginal anchor) is documented in spec section 13 and deferred.
 
-3. **Book-move circuit breaker (discrete events).** If a scrape shows a book-fair jump greater than `BOOK_MOVE_CB_THRESHOLD` for a game vs the prior scrape, the bot immediately cancels that game's quotes — it does not wait for the next 2s discovery tick. A sudden move is the signal that unmodeled news (scratch, postponement, sharp steam) just landed.
+3. **Freshness gate + auto-pull (discrete events).** Before submitting any quote and inside the risk sweep, the bot checks that fresh book odds exist (`_SGP_ODDS` non-empty within `MAX_BOOK_STALENESS_SEC`). The instant books go stale or a scrape fails, all open quotes are cancelled. Blind → no live quotes.
 
-4. **Tipoff blackout.** `TIPOFF_CANCEL_MIN` pulls all quotes for a game before first pitch. Lineup- and weather-driven moves are caught indirectly by the circuit breaker once they hit the books.
+4. **Book-move circuit breaker (discrete events).** Two layers: (a) per-tick — if a scrape shows a book-fair jump greater than `BOOK_MOVE_CB_THRESHOLD` for a combo vs the prior scrape, the bot immediately cancels that combo's resting quotes (does not wait for the next discovery tick). (b) per-quote in the risk sweep — if current book consensus has drifted more than `BOOK_MOVE_CB_THRESHOLD` from the `book_fair_at_quote` stored when the quote was placed, the quote is cancelled. The per-quote sweep catches gradual drift the per-tick threshold misses (e.g., five 1¢ moves across ticks).
 
-5. **Last-look backstop (discrete, but limited scope).** On accept, the bot recomputes fair and voids the confirm if the filled side is no longer +EV (`price + fee >= current_fair`) or fair drifted past `FAIR_DRIFT_TOLERANCE`. This is an explicit backstop, not the first line of defense: it only catches information the pipeline already absorbed but hadn't yet caused a re-quote. It is blind to faster-than-our-data pickoffs. Non-confirms are abusive behavior Kalshi can throttle — do not lean on this gate.
+5. **Tipoff blackout.** `TIPOFF_CANCEL_MIN` pulls all quotes for a game before first pitch.
 
-6. **Measure.** The `fills` + `settlements` tables record `model_fair_at_quote`, `book_fair_at_quote`, `blended_fair_at_quote`, `fair_at_confirm`, and `realized_pnl` per fill. The primary deliverable of v1 is computing whether the 5% margin survives the adverse-selection tail. If pickoffs swamp the margin, the honest conclusion is that making is not viable at this data latency → improve data speed (WebSocket feeds, faster scrape cadence) before scaling.
+6. **Last-look backstop (discrete, but limited scope).** On accept, the bot recomputes fair from a fresh book pull and voids the confirm if (a) we cannot re-price (no fresh books, blend fails), (b) the filled side is no longer +EV (`price + fee >= current_fair`), or (c) fair drifted past `FAIR_DRIFT_TOLERANCE`. The "can't re-price ⇒ don't confirm" rule is intentional: silently falling back to the stored fair would neuter the drift check. Non-confirms are abusive behavior Kalshi can throttle — do not lean on this gate.
+
+7. **Position reconciliation.** After every confirm we call `/portfolio/positions` for the combo ticker and trust Kalshi as the source of truth; if the confirm response's side or size disagrees, the `fills` row is written with the reconciled values and a `[position_mismatch]` warning is printed.
+
+8. **Measure.** The `fills` table records `book_fair_at_quote`, `blended_fair_at_quote`, `fair_at_confirm`, and (at settlement) `realized_pnl` per fill. The primary deliverable of v1 is computing whether the 5% margin survives the adverse-selection tail. If pickoffs swamp the margin, the honest conclusion is that making is not viable at this data latency → improve data speed (WebSocket feeds, faster scrape cadence) before scaling.
 
 **Crash safety.** An unconfirmed quote that the process never confirms voids automatically — no surprise open position on crash. Graceful SIGTERM cancels all open quotes before exit. The main loop uses a 250ms sleep between sub-loop checks so SIGTERM is never starved (directly addresses the taker's known SIGTERM-starvation issue with its 640s RFQ refresh block).
 

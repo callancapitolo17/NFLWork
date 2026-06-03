@@ -3,16 +3,19 @@
 Composes the prior modules into three timed loops:
   - discovery: poll open RFQs, scope/price/quote in-scope spread×total combos
   - confirm:   last-look gate on accepted quotes before confirming the fill
-  - risk:      kill-switch, samples-staleness auto-pull, tipoff-cancel
+  - risk:      kill-switch, book-freshness auto-pull, tipoff-cancel, drift sweep
 
-Fair value reuses the taker's exact math via kalshi_common: model samples come
-from mlb_mm.duckdb::mlb_game_samples (read-only), book fairs from the maker's
-own market DB (its own sgp_runner cadence), blended via fair_value.blend.
+Fair value is now pure book-consensus median — the model was removed in the v1
+hardening pass (`fairs.py` docstring explains why). Book fairs come from the
+maker's own market DB (its own sgp_runner cadence) and are filtered through
+`_consensus_filter` (median + ±BOOK_CONSENSUS_BAND outlier rejection) so a
+single rogue book can't anchor the quote.
 """
 import argparse
 import json
 import os
 import signal
+import statistics
 import threading
 import time
 import uuid
@@ -35,8 +38,6 @@ from kalshi_mlb_mm.quote_gateway import RestQuoteGateway
 
 _running = threading.Event()
 _running.set()
-_SAMPLES = {}            # game_id -> df
-_SAMPLES_GEN_AT = None   # datetime | None — mlb_samples_meta.generated_at (freshness gate)
 _SGP_ODDS = None         # pd.DataFrame
 _PREV_BOOK_FAIR = {}     # combo_market_ticker -> last blended book fair (circuit breaker)
 _SCOPE_CACHE = {}        # market_ticker -> (in_scope, game_id, legs)
@@ -49,40 +50,6 @@ def _signal_handler(_s, _f):
 def _configure_auth():
     auth_client.configure(config.KALSHI_API_KEY_ID, config.KALSHI_PRIVATE_KEY_PATH,
                           config.KALSHI_BASE_URL, config.PROJECT_ROOT)
-
-
-def _refresh_samples():
-    """Load model samples + their generation timestamp from the answer-key DB.
-
-    Reads mlb_game_samples (keyed into _SAMPLES by game_id) and the latest
-    mlb_samples_meta.generated_at (into _SAMPLES_GEN_AT, used by the freshness
-    gate). Missing DB / tables leave the prior caches untouched; _SAMPLES_GEN_AT
-    is set to None only when the meta row is genuinely unavailable.
-    """
-    global _SAMPLES, _SAMPLES_GEN_AT
-    if not config.ANSWER_KEY_DB.exists():
-        return
-    try:
-        con = duckdb.connect(str(config.ANSWER_KEY_DB), read_only=True)
-    except duckdb.IOException:
-        return
-    try:
-        sdf = con.execute(
-            "SELECT game_id, sim_idx, home_margin, total_final_score, "
-            "home_margin_f5, total_f5 FROM mlb_game_samples").fetchdf()
-        _SAMPLES = {g: d.reset_index(drop=True) for g, d in sdf.groupby("game_id")}
-        try:
-            row = con.execute(
-                "SELECT generated_at FROM mlb_samples_meta "
-                "ORDER BY generated_at DESC LIMIT 1").fetchone()
-            _SAMPLES_GEN_AT = row[0] if row else None
-        except duckdb.CatalogException:
-            _SAMPLES_GEN_AT = None
-    except duckdb.CatalogException:
-        # mlb_game_samples mid-replace or missing — keep prior caches.
-        return
-    finally:
-        con.close()
 
 
 def _refresh_sgp():
@@ -106,8 +73,32 @@ def _refresh_sgp():
         con.close()
 
 
+def _consensus_filter(book_fairs: dict[str, float]) -> dict[str, float]:
+    """Book-consensus-band gate (v1 correlation defense).
+
+    Algorithm:
+      1. If fewer than MIN_AGREEING_BOOKS supplied → return {} (no quote).
+      2. Compute median of all supplied book devigged fairs.
+      3. Keep only books within ±BOOK_CONSENSUS_BAND of that median.
+      4. If fewer than MIN_AGREEING_BOOKS survive → return {} (no quote).
+      5. Otherwise return the surviving (agreeing) books.
+
+    Mirrors the MLB answer-key dashboard's consensus-band logic. The caller
+    then medians the surviving books to get the fair (see `fairs.blended_fair`).
+    """
+    if len(book_fairs) < config.MIN_AGREEING_BOOKS:
+        return {}
+    med = statistics.median(book_fairs.values())
+    agreeing = {b: f for b, f in book_fairs.items()
+                if abs(f - med) <= config.BOOK_CONSENSUS_BAND}
+    if len(agreeing) < config.MIN_AGREEING_BOOKS:
+        return {}
+    return agreeing
+
+
 # book fairs per (game, spread_line, total_line) — mirrors taker _load_book_fairs,
-# but REQUIRES full 4-side devig (no fallback) per accepted-risk #6.
+# but REQUIRES full 4-side devig (no fallback) per accepted-risk #6, then runs
+# through _consensus_filter (v1 correlation defense, replaces MIN_BOOK_COUNT_FOR_BLEND).
 def _book_fairs(game_id, spread_line, total_line):
     if _SGP_ODDS is None or _SGP_ODDS.empty:
         return {}
@@ -124,7 +115,7 @@ def _book_fairs(game_id, spread_line, total_line):
         f = devig_book(sub, combo="Home Spread + Over", vig_fallback=0.0)
         if f is not None:
             out[book] = f
-    return out if len(out) >= config.MIN_BOOK_COUNT_FOR_BLEND else {}
+    return _consensus_filter(out)
 
 
 def _commence_time(game_id):
@@ -195,6 +186,26 @@ def _resolve_game_and_lines(market_ticker, legs):
     return (row[0] if row else None), spread_line, total_line
 
 
+def _get_position_contracts(market_ticker: str) -> int | None:
+    """Authoritative current position via /portfolio/positions. Returns a SIGNED
+    int (positive = long YES, negative = long NO). None on API failure.
+    Mirrors kalshi_mlb_rfq.rfq_client.get_position_contracts."""
+    try:
+        status, body, _ = auth_client.api(
+            "GET", f"/portfolio/positions?ticker={market_ticker}&limit=10")
+    except Exception:
+        return None
+    if status != 200 or not isinstance(body, dict):
+        return None
+    for p in body.get("market_positions") or []:
+        if p.get("ticker") == market_ticker:
+            fp = p.get("position_fp")
+            if fp is not None:
+                return int(float(fp))
+            return int(p.get("position", 0))
+    return 0
+
+
 def _log_decision(decision, *, rfq_id=None, quote_id=None, ticker=None, game_id=None,
                   reason=None, model=None, book=None, blended=None, yb=None, nb=None):
     with db.connect() as con:
@@ -210,8 +221,9 @@ def _discovery_tick(source, gateway, dry_run):
     # FIX M2: kill-switch — stop quoting immediately if the kill file exists
     if config.KILL_FILE.exists():
         return
-    # FIX I4: samples-staleness gate — don't quote anything when model is stale
-    if not risk.staleness_ok(_SAMPLES_GEN_AT, config.MAX_PREDICTION_STALENESS_SEC):
+    # Book-freshness gate: if our books are stale/missing we cannot price anything.
+    # Replaces the old samples-staleness gate (model was removed in v1 hardening).
+    if _SGP_ODDS is None or _SGP_ODDS.empty:
         return
     rfqs = source.poll()
     with db.connect(read_only=True) as con:
@@ -263,25 +275,39 @@ def _discovery_tick(source, gateway, dry_run):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="per_game_cap")
             continue
-        samples = _SAMPLES.get(game_id)
         # tipoff gate
         ct = _commence_time(game_id)
         if not risk.tipoff_ok(ct, config.TIPOFF_CANCEL_MIN):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id, reason="tipoff")
             continue
         book_fairs = _book_fairs(game_id, spread_line, total_line)
-        model, book_med, blended = fairs.blended_fair(legs, game_id, samples, book_fairs)
+        book_med, blended = fairs.blended_fair(legs, game_id, book_fairs)
         if blended is None or not (config.MIN_FAIR_PROB <= blended <= config.MAX_FAIR_PROB):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
-                          reason="no_fair", model=model, book=book_med, blended=blended)
+                          reason="no_fair", model=None, book=book_med, blended=blended)
             continue
         # circuit breaker bookkeeping
         prev = _PREV_BOOK_FAIR.get(ticker)
         _PREV_BOOK_FAIR[ticker] = book_med
         if (prev is not None and book_med is not None
                 and risk.book_move_triggered(prev, book_med, config.BOOK_MOVE_CB_THRESHOLD)):
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
-                          reason="circuit_breaker")
+            # H1: circuit breaker now actually CANCELS open quotes on this combo
+            # (previously it only blocked re-quotes — resting quotes were exposed).
+            with db.connect(read_only=True) as con:
+                opens = con.execute(
+                    "SELECT quote_id FROM live_quotes WHERE combo_market_ticker=? AND status='open'",
+                    [ticker]).fetchall()
+            for (open_qid,) in opens:
+                try:
+                    gateway.cancel(open_qid)
+                except Exception:
+                    pass
+                with db.connect() as con:
+                    con.execute(
+                        "UPDATE live_quotes SET status='cancelled', closed_at=? WHERE quote_id=?",
+                        [datetime.now(timezone.utc), open_qid])
+            _log_decision("circuit_breaker", rfq_id=rid, ticker=ticker, game_id=game_id,
+                          reason=f"book_move_pulled_{len(opens)}_quotes")
             continue
         q = pricing.quote(blended, config.TARGET_ROI)
         if q is None:
@@ -290,7 +316,7 @@ def _discovery_tick(source, gateway, dry_run):
             continue
         if dry_run:
             _log_decision("dry_run_quote", rfq_id=rid, ticker=ticker, game_id=game_id,
-                          model=model, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
+                          model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
             continue
         # FIX I1 + M1: dedup + hysteresis — skip re-quote if price unchanged, else
         # mark the old row 'replaced' so we never leave ghost-open rows.
@@ -313,13 +339,13 @@ def _discovery_tick(source, gateway, dry_run):
         if qid:
             with db.connect() as con:
                 con.execute("INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                            [qid, rid, ticker, game_id, q.yes_bid, q.no_bid, model, book_med,
+                            [qid, rid, ticker, game_id, q.yes_bid, q.no_bid, None, book_med,
                              blended, "open", datetime.now(timezone.utc), None])
                 con.execute("INSERT OR REPLACE INTO seen_rfqs VALUES (?,?,?,?,?,?,?)",
                             [rid, ticker, True, game_id, json.dumps(legs),
                              datetime.now(timezone.utc), "quoted"])
             _log_decision("quoted", rfq_id=rid, quote_id=qid, ticker=ticker, game_id=game_id,
-                          model=model, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
+                          model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
             open_count += 1
 
 
@@ -342,25 +368,59 @@ def _confirm_tick(gateway, dry_run):
             side_held = "no" if accepted_side == "yes" else "yes"
             price = (1 - nb) if side_held == "yes" else (1 - yb)  # ask we transact at
             fee = maker_fee_per_contract(price)
-            samples = _SAMPLES.get(game_id)
             with db.connect(read_only=True) as con:
                 legs_row = con.execute(
                     "SELECT legs_json FROM seen_rfqs WHERE rfq_id=?", [rid]).fetchone()
             legs = json.loads(legs_row[0]) if legs_row and legs_row[0] else []
-            # FIX M3: recompute book_fairs at confirm time so cur_fair is real
-            # (previously called with {} → blend returned None → drift was always 0)
-            if legs:
-                spread_line = _spread_line_from_legs(legs)
-                total_line = _total_line_from_legs(legs)
-                book_fairs_now = _book_fairs(game_id, spread_line, total_line)
-                _, _, cur_fair = fairs.blended_fair(legs, game_id, samples, book_fairs_now)
-            else:
-                cur_fair = prev_fair
-            cur_fair = cur_fair if cur_fair is not None else prev_fair
+            # H2: last-look HARD-FAIL when we can't re-price.
+            # Principle: "can't re-price ⇒ don't confirm." Previously a missing
+            # legs row or empty book_fairs silently fell back to prev_fair, which
+            # made the drift check a no-op for exactly the cases that matter most.
+            if not legs:
+                _log_decision("voided_no_legs", rfq_id=rid, quote_id=qid, ticker=ticker,
+                              game_id=game_id)
+                with db.connect() as con:
+                    con.execute(
+                        "UPDATE live_quotes SET status='voided', closed_at=? WHERE quote_id=?",
+                        [datetime.now(timezone.utc), qid])
+                continue
+            spread_line = _spread_line_from_legs(legs)
+            total_line = _total_line_from_legs(legs)
+            book_fairs_now = _book_fairs(game_id, spread_line, total_line)
+            if not book_fairs_now:
+                _log_decision("voided_no_fresh_books", rfq_id=rid, quote_id=qid, ticker=ticker,
+                              game_id=game_id)
+                with db.connect() as con:
+                    con.execute(
+                        "UPDATE live_quotes SET status='voided', closed_at=? WHERE quote_id=?",
+                        [datetime.now(timezone.utc), qid])
+                continue
+            _, cur_fair = fairs.blended_fair(legs, game_id, book_fairs_now)
+            if cur_fair is None:
+                _log_decision("voided_blend_failed", rfq_id=rid, quote_id=qid, ticker=ticker,
+                              game_id=game_id)
+                with db.connect() as con:
+                    con.execute(
+                        "UPDATE live_quotes SET status='voided', closed_at=? WHERE quote_id=?",
+                        [datetime.now(timezone.utc), qid])
+                continue
             if risk.last_look_ok(side_held, price, fee, cur_fair, prev_fair,
                                  config.FAIR_DRIFT_TOLERANCE):
                 if not dry_run and gateway.confirm(qid):
                     contracts = int(float((q or {}).get("contracts", 1) or 1))
+                    # H6: reconcile against /portfolio/positions before recording the
+                    # fill so a confirm-response shape mismatch can't silently
+                    # mis-record side or size. Kalshi positions are the source of truth.
+                    actual = _get_position_contracts(ticker)
+                    if actual is not None:
+                        expected_signed = contracts if side_held == "yes" else -contracts
+                        if actual != expected_signed:
+                            print(f"[position_mismatch] ticker={ticker} "
+                                  f"expected={expected_signed} actual={actual} "
+                                  f"— trusting Kalshi", flush=True)
+                            side_held = "yes" if actual > 0 else "no"
+                            contracts = abs(actual)
+                    # If actual is None (API failure), fall back to expected values.
                     with db.connect() as con:
                         con.execute(
                             "INSERT INTO fills (fill_id, quote_id, rfq_id, combo_market_ticker, "
@@ -395,15 +455,42 @@ def _risk_sweep_tick(gateway):
     if config.KILL_FILE.exists():
         notify.halt("kill_switch")
         return
-    # Freshness / auto-pull: if model samples have gone stale, pull EVERY open
+    # Freshness / auto-pull: if our book odds are stale/missing, pull EVERY open
     # quote — we can no longer trust our fair value, so we must stop resting risk.
-    samples_stale = not risk.staleness_ok(_SAMPLES_GEN_AT, config.MAX_PREDICTION_STALENESS_SEC)
+    # Replaces the old samples-staleness gate (model was removed in v1 hardening).
+    books_stale = _SGP_ODDS is None or _SGP_ODDS.empty
     with db.connect(read_only=True) as con:
+        # Pull the per-quote fields we need for the drift-since-quote check too.
         live = con.execute(
-            "SELECT quote_id, game_id FROM live_quotes WHERE status='open'").fetchall()
-    for qid, game_id in live:
+            "SELECT lq.quote_id, lq.game_id, lq.combo_market_ticker, lq.book_fair, "
+            "       lq.rfq_id, sr.legs_json "
+            "FROM live_quotes lq LEFT JOIN seen_rfqs sr ON lq.rfq_id = sr.rfq_id "
+            "WHERE lq.status='open'").fetchall()
+    for qid, game_id, ticker, book_fair_at_q, rid, legs_json in live:
         ct = _commence_time(game_id)
-        if samples_stale or not risk.tipoff_ok(ct, config.TIPOFF_CANCEL_MIN):
+        cancel = False
+        if books_stale or not risk.tipoff_ok(ct, config.TIPOFF_CANCEL_MIN):
+            cancel = True
+        else:
+            # H1 (part 2): per-open-quote drift-since-quote sweep.
+            # Recompute current book consensus for this combo; if it has drifted
+            # more than BOOK_MOVE_CB_THRESHOLD from book_fair-at-quote, cancel.
+            # Catches gradual drift that the per-tick (last vs current) circuit
+            # breaker misses (e.g., 1¢ moves over several ticks adding to 4¢).
+            if book_fair_at_q is not None and legs_json:
+                try:
+                    legs = json.loads(legs_json)
+                    sl = _spread_line_from_legs(legs)
+                    tl = _total_line_from_legs(legs)
+                    bf_now = _book_fairs(game_id, sl, tl)
+                    if bf_now:
+                        cur_med = statistics.median(bf_now.values())
+                        if risk.book_move_triggered(book_fair_at_q, cur_med,
+                                                    config.BOOK_MOVE_CB_THRESHOLD):
+                            cancel = True
+                except Exception:
+                    pass
+        if cancel:
             try:
                 gateway.cancel(qid)
             except Exception:
@@ -420,7 +507,7 @@ def main_loop(dry_run: bool):
     sid = db.start_session(pid=os.getpid(), dry_run=dry_run)
     print(f"=== MM bot session {sid} dry_run={dry_run} ===", flush=True)
     source, gateway = RestRFQSource(), RestQuoteGateway()
-    # synchronous warm-up: one SGP cycle + sample load
+    # synchronous warm-up: one SGP cycle
     try:
         sgp_runner.sgp_cycle(bot_market_db=str(config.MARKET_DB),
                              scraper_dir=str(config.MLB_SGP_DIR),
@@ -429,8 +516,7 @@ def main_loop(dry_run: bool):
     except Exception as e:
         print(f"  warmup sgp failed: {e}", flush=True)
     _refresh_sgp()
-    _refresh_samples()
-    last = {"disc": 0.0, "conf": 0.0, "risk": 0.0, "sgp": time.time(), "samp": time.time()}
+    last = {"disc": 0.0, "conf": 0.0, "risk": 0.0, "sgp": time.time()}
     try:
         while _running.is_set():
             now = time.time()
@@ -463,9 +549,6 @@ def main_loop(dry_run: bool):
                 except Exception as e:
                     print(f"  sgp err: {e}", flush=True)
                 last["sgp"] = now
-            if now - last["samp"] >= config.SAMPLES_REFRESH_SEC:
-                _refresh_samples()
-                last["samp"] = now
             time.sleep(0.25)   # short sleep → responsive SIGTERM
     finally:
         with db.connect(read_only=True) as con:

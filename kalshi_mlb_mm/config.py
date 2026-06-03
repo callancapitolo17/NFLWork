@@ -53,11 +53,15 @@ MIN_FAIR_PROB = float(_get("MIN_FAIR_PROB", "0.05"))
 MAX_FAIR_PROB = float(_get("MAX_FAIR_PROB", "0.95"))
 
 # Freshness / circuit breaker
-MAX_PREDICTION_STALENESS_SEC = int(_get("MAX_PREDICTION_STALENESS_SEC", "600"))
 MAX_BOOK_STALENESS_SEC = int(_get("MAX_BOOK_STALENESS_SEC", "60"))
 BOOK_MOVE_CB_THRESHOLD = float(_get("BOOK_MOVE_CB_THRESHOLD", "0.03"))
 TIPOFF_CANCEL_MIN = int(_get("TIPOFF_CANCEL_MIN", "5"))
-MIN_BOOK_COUNT_FOR_BLEND = int(_get("MIN_BOOK_COUNT_FOR_BLEND", "2"))
+
+# Book consensus gate (v1 correlation defense — mirrors MLB answer-key dashboard
+# pattern). v1.1: see docs/superpowers/specs/2026-05-26-kalshi-mlb-mm-design.md §13
+# for the explicit correlation-premium gate (deferred enhancement).
+BOOK_CONSENSUS_BAND = float(_get("BOOK_CONSENSUS_BAND", "0.02"))
+MIN_AGREEING_BOOKS = int(_get("MIN_AGREEING_BOOKS", "3"))
 
 # Loops (seconds)
 DISCOVERY_SEC = int(_get("DISCOVERY_SEC", "2"))
@@ -65,7 +69,6 @@ CONFIRM_SEC = int(_get("CONFIRM_SEC", "2"))
 RISK_SWEEP_SEC = int(_get("RISK_SWEEP_SEC", "10"))
 SGP_REFRESH_SEC = int(_get("SGP_REFRESH_SEC", "60"))
 SGP_SCRAPER_TIMEOUT_SEC = int(_get("SGP_SCRAPER_TIMEOUT_SEC", "90"))
-SAMPLES_REFRESH_SEC = int(_get("SAMPLES_REFRESH_SEC", "600"))
 
 # Vig fallbacks (only used if a combo lacks full 4-side devig)
 DK_VIG_FALLBACK = float(_get("DK_VIG_FALLBACK", "0.125"))
@@ -74,7 +77,6 @@ PX_VIG_FALLBACK = float(_get("PX_VIG_FALLBACK", "0.05"))
 NOVIG_VIG_FALLBACK = float(_get("NOVIG_VIG_FALLBACK", "0.05"))
 
 # Paths
-ANSWER_KEY_DB = PROJECT_ROOT / "Answer Keys" / "mlb_mm.duckdb"
 MLB_SGP_DIR = Path(_get("MLB_SGP_DIR", str(PROJECT_ROOT / "mlb_sgp")))
 NOTIFY_WEBHOOK_URL = _get("NOTIFY_WEBHOOK_URL")
 
