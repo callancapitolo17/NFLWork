@@ -165,22 +165,44 @@ This split is the heart of the refactor and where the regression risk lives.
 1. **`MLB.R`** — replace the hardcoded `setwd` with a script-relative `setwd` for
    sourcing; wrap every `dbConnect(dbdir = ...)` for `pbp.duckdb`, `mlb.duckdb`,
    `mlb_mm.duckdb`, `mlb_dashboard.duckdb` in `data_path()`.
-2. **`Tools.R`** — `get_dk_odds()` / `get_fd_odds()` (and any sibling
-   `get_*_odds()` with an absolute default) default to `data_path("dk_odds/dk.duckdb")` etc.
+2. **`Tools.R` — ALL nine odds readers, not just DK/FD.** `get_wagerzon_odds`,
+   `get_hoop88_odds`, `get_bfa_odds`, `get_bookmaker_odds`, `get_dk_odds`,
+   `get_fd_odds`, `get_bet105_odds`, `get_kalshi_odds`, and the team-dict
+   reader (`dict_db`, ~line 4266) each have an absolute `~/NFLWork/<book>/<db>`
+   default. **Every one** must default to `data_path("<book>/<db>.duckdb")`, or
+   `MLB.R` silently reads main's scraper DBs even in the minimal `--mlb` case.
+   (Found in review — the original spec named only two.)
 3. **`mlb_dashboard.R`** — delete the `.claude/worktrees` strip hack; route its DB
    paths (`mlb_mm.duckdb`, `DB_PATH` → `mlb_dashboard.duckdb`) through
    `data_path()`.
-4. **Python scrapers** (`scraper_draftkings_singles.py`,
-   `scraper_fanduel_singles.py`, and any other MLB scraper writing a per-book DB)
-   — output path = `data_root() / "dk_odds" / "dk.duckdb"` (falling back to the
-   current script-relative default when the var is unset).
-5. **`mlb_correlated_parlay.R` / `mlb_triple_play.R`** — same `data_path()`
+4. **`mlb_dashboard_server.py` — MANDATORY, the largest write surface.** (Missed
+   in the original spec; caught in review.) The harness runs the server so you
+   can interact with the test dashboard, and the server has **30+
+   `duckdb.connect()` calls, many read-write** (`/api/place-bet`,
+   `/api/place-parlay`, `/refresh`, `/api/update-bet`, `/api/remove-bet`). It
+   also carries its **own copy of the strip-hack** (`_REPO_ROOT`, lines 138-140)
+   plus `BASE_DIR` (line 28) and `REPO_ROOT` (line 123) feeding `DB_PATH`,
+   `MLB_MM_DB`, `DASHBOARD_DB`, and the per-book DBs. Delete the strip-hack and
+   route every connection through a Python `data_root()`. Without this, clicking
+   Place/Refresh in a branch test writes to **main's** `mlb_dashboard.duckdb` —
+   defeating the entire feature.
+5. **Python scrapers** (`scraper_draftkings_singles.py`,
+   `scraper_fanduel_singles.py`) — output path = `data_root() / "dk_odds" /
+   "dk.duckdb"` etc. (falling back to the current script-relative default when
+   the var is unset). v1 routes only the DK/FD writers (see Scope below); the
+   other books' DBs are cloned into the snapshot, not re-scraped.
+6. **`mlb_correlated_parlay.R` / `mlb_triple_play.R`** — same `data_path()`
    routing for any `mlb.duckdb` / `mlb_mm.duckdb` connections (they run in
    `run.sh` between the pipeline and the render).
-6. **Audit gate (mandatory):** grep every `.duckdb` / `dbConnect` / `dbdir` /
+7. **`run.py`** — no direct DB opens (only code-relative script/sentinel paths);
+   the env var propagates to its scraper/R children automatically. No change
+   needed, confirmed in review.
+8. **Audit gate (mandatory):** grep every `.duckdb` / `dbConnect` / `dbdir` /
    `duckdb.connect` reference in the MLB code paths and confirm each is routed.
    A missed site silently escapes to main. The audit list doubles as the
-   pre-merge review checklist.
+   pre-merge review checklist. The review above already expanded the list twice
+   (Tools.R readers, the server) — treat the audit as authoritative over this
+   prose.
 
 ### The harness: `test_dashboard.sh`
 
@@ -198,12 +220,15 @@ Lives in `Answer Keys/MLB Dashboard/`. Steps:
      them (`MLB.R` rebuilds from scratch).
 3. `export NFLWORK_DATA_ROOT="$SNAP"`.
 4. Run the requested slice via a flag:
-   - `--render-only` — just `Rscript mlb_dashboard.R`.
-   - `--scraper <name>` — run one scraper, then render.
-   - `--mlb` — run `MLB.R` (+ parlay/trifecta), then render.
-   - `--pipeline` — full `run.py mlb`, then render.
+   - `--render-only` — just `Rscript mlb_dashboard.R` (render-layer changes).
+   - `--scraper dk|fd` — re-run a routed scraper into the snapshot, then render
+     (the alt-spread case).
+   - `--mlb` — run `MLB.R` (+ parlay/trifecta) against the cloned scraper DBs,
+     then render (pricing / `odds_screen.R` changes). This is the realistic
+     "full refresh" for most data-layer work.
 5. Serve on a **non-8083 port** (e.g. 8093) so it never collides with the live
-   dashboard, and `open` it.
+   dashboard, and `open` it. The harness must pass this port to
+   `mlb_dashboard_server.py` (which currently assumes 8083).
 
 **Cleanup.** Copied data never lingers: `$SNAP` is wiped and re-seeded at the
 start of each run (step 1), `--keep` opts out when you want to inspect a snapshot
@@ -217,6 +242,25 @@ locks), and because the only long-write-locked DB (`mlb.duckdb`) is never cloned
 **no live process — dashboard or RFQ bot — ever needs to pause.** The RFQ bot is
 categorically unaffected: it writes only its own `kalshi_mlb_rfq*.duckdb` and
 reads main's `mlb.duckdb`, which a branch test never writes.
+
+### Scope: why no full `--pipeline` flag in v1 (review finding)
+
+A true full `run.py mlb` re-scrapes **all seven books** live. For that to stay
+isolated, every scraper writer (`wagerzon`, `hoop88`, `bfa`, `bookmaker`,
+`bet105`, `kalshi`, in addition to `dk`/`fd`) would also need `data_root()`
+routing — roughly tripling the Python surface and the regression risk, against a
+case you rarely actually test (you're testing *your* change, not a 7-book live
+refresh).
+
+**v1 covers the three realistic test shapes** — render-layer (`--render-only`),
+a single changed scraper (`--scraper dk|fd`, the alt-spread case), and re-pricing
+against the latest cloned book data (`--mlb`). All nine *readers* are routed
+(cheap, mechanical) so `--mlb` sees the snapshot; only the DK/FD *writers* are
+routed. The other books' DBs are CoW-cloned into the snapshot and not re-run.
+
+**Deferred to v2:** route the remaining scraper writers and add `--pipeline` for a
+fully-live multi-book refresh. Flagged here so the limitation is explicit, not a
+silent gap. **This is the main scope call to confirm.**
 
 ### Safety / isolation argument (why main is never at risk)
 
@@ -248,9 +292,13 @@ test:
 - **Files created:** `Answer Keys/MLB Dashboard/test_dashboard.sh`,
   `mlb_sgp/paths.py` (Python resolver), the guard test, this spec, and an
   implementation plan.
-- **Files modified:** `MLB.R`, `Tools.R`, `mlb_dashboard.R`,
-  `mlb_correlated_parlay.R`, `mlb_triple_play.R`, the MLB Python scrapers,
-  `.gitignore` (add `.test_data/`).
+- **Files modified:** `MLB.R`, `Tools.R` (all nine odds readers),
+  `mlb_dashboard.R`, `mlb_dashboard_server.py` (delete its strip-hack + route all
+  connections), `mlb_correlated_parlay.R`, `mlb_triple_play.R`, the DK/FD Python
+  scrapers, `.gitignore` (add `.test_data/`). The Python `data_root()` resolver
+  must live somewhere both the scrapers (`mlb_sgp/`) and the server
+  (`Answer Keys/MLB Dashboard/`) can import — decide the shared location during
+  planning.
 - **Commit structure:** (1) R + Python resolvers + `.gitignore`; (2) route all
   path sites through the resolvers (the audit); (3) `test_dashboard.sh` harness;
   (4) guard test; (5) docs. Each commit independently runnable on main with the
