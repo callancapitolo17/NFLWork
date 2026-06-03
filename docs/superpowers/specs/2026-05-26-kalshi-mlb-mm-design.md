@@ -220,7 +220,7 @@ Reviewed through a sharp-bettor lens. The following are knowingly **accepted** f
 
 ## 13. v1.1 backlog — explicit correlation-premium gate (deferred)
 
-v1's correlation defense is **book-vs-book SGP-price divergence as a proxy** (`MAX_BOOK_DIVERGENCE`): books all agree on single-leg marginals, so disagreement on the joint SGP price is essentially disagreement about correlation. Defensible but indirect — it can't tell us *which* correlation premium the books are agreeing on, or whether they're all wrong in the same direction.
+v1's correlation defense is a **book-consensus-band gate** (mirrors the MLB answer-key dashboard's pattern): compute the median of all book devigged fairs, count books within ±`BOOK_CONSENSUS_BAND` (0.02) of that median, accept the combo if `MIN_AGREEING_BOOKS` (3) are in band and use the median of the agreeing books (outliers discarded). Since books all agree on single-leg marginals, agreement on the *combo* joint price is essentially agreement on correlation. Defensible but indirect — it can't tell us *which* correlation premium the books are agreeing on, or whether they're all wrong in the same direction.
 
 **v1.1 enhancement:** compute correlation premium per book directly, using Kalshi single-leg markets as the marginal anchor:
 ```
