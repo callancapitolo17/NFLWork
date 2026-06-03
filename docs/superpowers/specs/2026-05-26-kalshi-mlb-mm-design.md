@@ -217,3 +217,25 @@ Reviewed through a sharp-bettor lens. The following are knowingly **accepted** f
 | 8 | Soft/stale book in the blend | one lagging book corrupts the 2-source fair | per-book freshness gate |
 
 **#2 is the one that can quietly kill the strategy:** if per-combo fair error exceeds the margin, a patient sharp grinds us down regardless of the other gates. v1 logs model/book/blend fair per quote and fill + `realized_pnl` at settlement specifically to **measure fill-vs-fair error** — answering "is 5% enough?" is the primary deliverable of the validation phase.
+
+## 13. v1.1 backlog — explicit correlation-premium gate (deferred)
+
+v1's correlation defense is **book-vs-book SGP-price divergence as a proxy** (`MAX_BOOK_DIVERGENCE`): books all agree on single-leg marginals, so disagreement on the joint SGP price is essentially disagreement about correlation. Defensible but indirect — it can't tell us *which* correlation premium the books are agreeing on, or whether they're all wrong in the same direction.
+
+**v1.1 enhancement:** compute correlation premium per book directly, using Kalshi single-leg markets as the marginal anchor:
+```
+p_spread = devig(Kalshi KXMLBSPREAD-… yes_ask/no_bid)
+p_total  = devig(Kalshi KXMLBTOTAL-…  yes_ask/no_bid)
+baseline_independent = p_spread × p_total
+
+for each book that prices the SGP:
+    correlation_premium[book] = book_p_joint / baseline_independent
+    # >1 = positive correlation;  <1 = negative;  ≈1 = independent
+
+gate 1: spread of correlation_premium across books
+        → measures consensus on correlation specifically
+gate 2: absolute level of correlation_premium
+        → "high-correlation regime" combos get widened/skipped, because
+          that's where being wrong on correlation costs the most
+```
+Cost: ~2 cached Kalshi singles fetches per (event, line) per SGP cycle. Prioritized once v1 fill data shows where the book-divergence proxy is letting picks through.
