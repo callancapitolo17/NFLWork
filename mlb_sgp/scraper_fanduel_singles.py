@@ -43,9 +43,14 @@ from fd_client import FanDuelClient, Event, Market, Runner
 
 # Regex helpers for FD's alt-market name formats.
 # - Spread: 'St. Louis Cardinals +3.5' or 'Athletics -1.5'
-# - Total:  'Over (8.5)' or 'Under (7.5)'
+# - Total:  FD uses TWO formats depending on period. The F5 ladder
+#   parenthesizes the line ('Over (8.5)'); the full-game "Alternate Total
+#   Runs" ladder does NOT ('Over 7.5'). The parens are therefore optional —
+#   without this, every FG alt-total runner failed to parse and FG alt-totals
+#   silently dropped to 0 rows (the F5 ladder masked the bug). Verified live
+#   2026-06-03.
 _FD_ALT_SPREAD_RE = re.compile(r"^(?P<team>.+?)\s+(?P<line>[+-]\d+(?:\.\d+)?)\s*$")
-_FD_ALT_TOTAL_RE  = re.compile(r"^(?P<side>Over|Under)\s*\((?P<line>\d+(?:\.\d+)?)\)\s*$", re.IGNORECASE)
+_FD_ALT_TOTAL_RE  = re.compile(r"^(?P<side>Over|Under)\s*\(?(?P<line>\d+(?:\.\d+)?)\)?\s*$", re.IGNORECASE)
 
 
 # Unicode-minus variants FD has been observed using interchangeably with the

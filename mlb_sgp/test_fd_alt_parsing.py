@@ -52,6 +52,28 @@ def test_extra_whitespace_alt_total():
     assert m.group("line") == "8.5"
 
 
+def test_no_parens_alt_total_over():
+    # FD's full-game "Alternate Total Runs" runners are named WITHOUT parens
+    # ("Over 7.5"), unlike the F5 ladder which uses "Over (7.5)". Both must
+    # parse or FG alt-totals silently drop (every runner fails -> 0 rows).
+    m = _FD_ALT_TOTAL_RE.match(_normalize_alt_name("Over 7.5"))
+    assert m is not None
+    assert m.group("line") == "7.5"
+
+
+def test_no_parens_alt_total_under():
+    m = _FD_ALT_TOTAL_RE.match(_normalize_alt_name("Under 10.5"))
+    assert m is not None
+    assert m.group("line") == "10.5"
+
+
+def test_parens_alt_total_still_parses():
+    # Regression guard: the F5 paren format must keep working after the fix.
+    m = _FD_ALT_TOTAL_RE.match(_normalize_alt_name("Over (2.5)"))
+    assert m is not None
+    assert m.group("line") == "2.5"
+
+
 def test_garbage_returns_none():
     m = _FD_ALT_SPREAD_RE.match(_normalize_alt_name("garbage input"))
     assert m is None
