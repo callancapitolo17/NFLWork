@@ -156,6 +156,22 @@ find_market_edges(book_odds_by_book,
    `devig_fn` → that book's fair prob for `side`.
 4. `consensus_fair = median(per-book fair probs)`; `n_books = count`. Require
    `n_books >= min_books`, else skip this (line, side).
+
+**Like-for-like is the integrity rule of the whole signal.** The consensus median may
+only pool fair probabilities from books that match on **every** identity field:
+`game_id`, `market` (totals vs spreads vs moneyline), `period` (F5 vs Full Game vs
+F3/F7), `line`, and `side`. A book at a *different* line (Over 8.5 vs Over 9.5), a
+*different* period (F5 vs FG), or only quoting *one* side never enters that median.
+Consequences baked in:
+
+- The check runs **independently at every distinct line** the books offer — so alt
+  lines are covered — but lines are **never blended** (8.5 is never used as evidence
+  about 9.5).
+- Lines are matched on a **normalized** value (`8.5 == 8.50`) so float/format
+  differences don't split a true match.
+- A book quoting only one side contributes to *neither* the devig nor `n_books`.
+- This is stricter than the display grid's ±3-unit "closest line" tolerance, which is
+  display-only and never feeds the edge math.
 5. For each book's price on `side`, `ev_b = compute_ev(consensus_fair, price_b)`.
    Take the best (max-EV) book. If `best_ev >= threshold`, emit a row with that book
    as `bookmaker_key`, its price as `odds`.
