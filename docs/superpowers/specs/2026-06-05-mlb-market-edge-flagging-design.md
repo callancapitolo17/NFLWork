@@ -156,6 +156,10 @@ find_market_edges(book_odds_by_book,
    `devig_fn` → that book's fair prob for `side`.
 4. `consensus_fair = median(per-book fair probs)`; `n_books = count`. Require
    `n_books >= min_books`, else skip this (line, side).
+5. For each book's price on `side`, `ev_b = compute_ev(consensus_fair, price_b)`.
+   Take the best (max-EV) book. If `best_ev >= threshold`, emit a row with that book
+   as `bookmaker_key`, its price as `odds`.
+6. Compute `bet_row_id` with the identical hash recipe used in `MLB.R` so ids align.
 
 **Like-for-like is the integrity rule of the whole signal.** The consensus median may
 only pool fair probabilities from books that match on **every** identity field:
@@ -172,10 +176,6 @@ Consequences baked in:
 - A book quoting only one side contributes to *neither* the devig nor `n_books`.
 - This is stricter than the display grid's ±3-unit "closest line" tolerance, which is
   display-only and never feeds the edge math.
-5. For each book's price on `side`, `ev_b = compute_ev(consensus_fair, price_b)`.
-   Take the best (max-EV) book. If `best_ev >= threshold`, emit a row with that book
-   as `bookmaker_key`, its price as `odds`.
-6. Compute `bet_row_id` with the identical hash recipe used in `MLB.R` so ids align.
 
 **Why isolated:** the function has one job (find out-of-line books), one input
 (canonical odds), one output (a long frame). It can be unit-tested with a hand-built
