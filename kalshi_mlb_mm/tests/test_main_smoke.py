@@ -470,3 +470,170 @@ def test_confirm_reconciles_position_mismatch(monkeypatch, capsys, tmp_path):
     assert side == "no", f"expected reconciled side='no', got '{side}'"
     assert int(contracts) == 3, f"expected reconciled contracts=3, got {contracts}"
 
+
+# ---------------------------------------------------------------------------
+# N1/N2 fix — delta computation: with prior fills seeded, the new fill must
+# record the PER-FILL delta (Kalshi_total - prior_total), not the raw aggregate.
+# ---------------------------------------------------------------------------
+def test_reconcile_uses_delta_not_aggregate(monkeypatch, tmp_path):
+    """Pre-seed fills with 5 YES contracts. Kalshi reports aggregate=8 (5+3 new).
+    The new fill must be recorded as contracts=3 (delta = 8-5), not 8.
+    """
+    from datetime import datetime, timezone
+    import json
+    import kalshi_mlb_mm.config as cfg
+    import kalshi_mlb_mm.db as db
+    from kalshi_mlb_mm import main
+    from kalshi_common import auth_client
+
+    monkeypatch.setattr(cfg, "DB_PATH", tmp_path / "delta.duckdb")
+    import importlib
+    importlib.reload(db)
+    db.init_database()
+
+    ticker = "COMBO-DELTA"
+    legs = [{"market_ticker": "KXMLBSPREAD-DL", "event_ticker": "EVT-DL",
+             "side": "yes", "count": 1, "no_sub_title": "-1.5"},
+            {"market_ticker": "KXMLBTOTAL-DL", "event_ticker": "EVT-DL",
+             "side": "yes", "count": 1, "no_sub_title": "Over 8.5"}]
+
+    with db.connect() as con:
+        # Pre-seed a prior fills row: 5 YES contracts on this ticker.
+        con.execute(
+            "INSERT INTO fills (fill_id, quote_id, rfq_id, combo_market_ticker, game_id, "
+            "side_held, contracts, price, fee, model_fair_at_quote, book_fair_at_quote, "
+            "blended_fair_at_quote, fair_at_confirm, realized_pnl, filled_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ["fill-prior", "qid-prior", "r-prior", ticker, "gDL",
+             "yes", 5, 0.55, 0.01, None, 0.55, 0.55, 0.55, None,
+             datetime.now(timezone.utc)])
+        # The live quote for the incoming fill.
+        con.execute(
+            "INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ["qid-delta", "r-delta", ticker, "gDL",
+             0.45, 0.45, None, 0.55, 0.55, "open",
+             datetime.now(timezone.utc), None])
+        con.execute(
+            "INSERT OR REPLACE INTO seen_rfqs VALUES (?,?,?,?,?,?,?)",
+            ["r-delta", ticker, True, "gDL", json.dumps(legs),
+             datetime.now(timezone.utc), "quoted"])
+
+    # Books fresh → last-look passes.
+    monkeypatch.setattr(main, "_book_fairs",
+                        lambda gid, sl, tl: {"dk": 0.56, "fd": 0.56, "px": 0.56})
+
+    def fake_api(method, path, *a, **kw):
+        if path.startswith("/communications/quotes/"):
+            # accepted_side='no' → side_held='yes', contracts=3
+            return 200, {"quote": {"status": "accepted", "accepted_side": "no",
+                                   "contracts": 3}}, None
+        raise AssertionError(f"unexpected api call: {method} {path}")
+    monkeypatch.setattr(auth_client, "api", fake_api)
+
+    # Kalshi returns AGGREGATE = 8 (5 prior + 3 new) immediately on first call.
+    monkeypatch.setattr(main, "_get_position_contracts", lambda ticker, **kw: 8)
+
+    class GW:
+        def confirm(self, qid):
+            return True
+
+        def cancel(self, qid):
+            return True
+
+    main._confirm_tick(GW(), dry_run=False)
+
+    with db.connect(read_only=True) as con:
+        row = con.execute(
+            "SELECT side_held, contracts FROM fills WHERE quote_id='qid-delta'"
+        ).fetchone()
+    assert row is not None, "expected a fills row for the new fill"
+    side, contracts = row
+    assert side == "yes", f"expected side='yes', got '{side}'"
+    assert int(contracts) == 3, (
+        f"expected contracts=3 (delta, not aggregate 8), got {contracts}")
+
+
+# ---------------------------------------------------------------------------
+# N1 fix — API-down fallback: if Kalshi positions is persistently unreachable
+# (returns None every call), fall back to expected values and log warning.
+# ---------------------------------------------------------------------------
+def test_reconcile_retries_past_lag_then_uses_expected_on_persistent_zero(
+        monkeypatch, capsys, tmp_path):
+    """No prior fills. Kalshi positions always returns None (API down on all retries).
+    After exhausting retries the bot must fall back to expected (contracts=5,
+    side='yes') and log [position_reconcile_unavailable].
+
+    Note: returning 0 (same as prior_total=0) does NOT trigger the unavailable
+    fallback — the retry loop sees actual==prior_total and keeps retrying, then
+    the else branch computes delta=0 and logs position_mismatch. The unavailable
+    path requires actual=None (the API is genuinely unreachable).
+    """
+    from datetime import datetime, timezone
+    import json
+    import kalshi_mlb_mm.config as cfg
+    import kalshi_mlb_mm.db as db
+    from kalshi_mlb_mm import main
+    from kalshi_common import auth_client
+
+    monkeypatch.setattr(cfg, "DB_PATH", tmp_path / "lag.duckdb")
+    import importlib
+    importlib.reload(db)
+    db.init_database()
+
+    ticker = "COMBO-LAG"
+    legs = [{"market_ticker": "KXMLBSPREAD-LG", "event_ticker": "EVT-LG",
+             "side": "yes", "count": 1, "no_sub_title": "-1.5"},
+            {"market_ticker": "KXMLBTOTAL-LG", "event_ticker": "EVT-LG",
+             "side": "yes", "count": 1, "no_sub_title": "Over 8.5"}]
+
+    with db.connect() as con:
+        # No prior fills for this ticker (prior_total = 0).
+        con.execute(
+            "INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ["qid-lag", "r-lag", ticker, "gLG",
+             0.45, 0.45, None, 0.55, 0.55, "open",
+             datetime.now(timezone.utc), None])
+        con.execute(
+            "INSERT OR REPLACE INTO seen_rfqs VALUES (?,?,?,?,?,?,?)",
+            ["r-lag", ticker, True, "gLG", json.dumps(legs),
+             datetime.now(timezone.utc), "quoted"])
+
+    monkeypatch.setattr(main, "_book_fairs",
+                        lambda gid, sl, tl: {"dk": 0.56, "fd": 0.56, "px": 0.56})
+
+    def fake_api(method, path, *a, **kw):
+        if path.startswith("/communications/quotes/"):
+            # accepted_side='no' → side_held='yes', contracts=5 expected
+            return 200, {"quote": {"status": "accepted", "accepted_side": "no",
+                                   "contracts": 5}}, None
+        raise AssertionError(f"unexpected api call: {method} {path}")
+    monkeypatch.setattr(auth_client, "api", fake_api)
+
+    # Kalshi positions is down on every attempt → returns None.
+    # Patch time.sleep so the retries don't slow the test down.
+    monkeypatch.setattr(main, "_get_position_contracts", lambda ticker, **kw: None)
+    monkeypatch.setattr(main.time, "sleep", lambda _: None)
+
+    class GW:
+        def confirm(self, qid):
+            return True
+
+        def cancel(self, qid):
+            return True
+
+    main._confirm_tick(GW(), dry_run=False)
+
+    captured = capsys.readouterr().out
+    assert "position_reconcile_unavailable" in captured, (
+        f"expected [position_reconcile_unavailable] log, got: {captured!r}")
+
+    with db.connect(read_only=True) as con:
+        row = con.execute(
+            "SELECT side_held, contracts FROM fills WHERE quote_id='qid-lag'"
+        ).fetchone()
+    assert row is not None, "expected a fills row written after API-down fallback"
+    side, contracts = row
+    assert side == "yes", f"expected side='yes' (fallback to expected), got '{side}'"
+    assert int(contracts) == 5, (
+        f"expected contracts=5 (expected fallback), got {contracts}")
+

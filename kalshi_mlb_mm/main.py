@@ -186,13 +186,15 @@ def _resolve_game_and_lines(market_ticker, legs):
     return (row[0] if row else None), spread_line, total_line
 
 
-def _get_position_contracts(market_ticker: str) -> int | None:
+def _get_position_contracts(market_ticker: str, timeout: int = 5) -> int | None:
     """Authoritative current position via /portfolio/positions. Returns a SIGNED
-    int (positive = long YES, negative = long NO). None on API failure.
+    int (positive = long YES, negative = long NO). None on API failure or timeout.
+    Short default timeout so a stuck positions call can't block the confirm loop.
     Mirrors kalshi_mlb_rfq.rfq_client.get_position_contracts."""
     try:
         status, body, _ = auth_client.api(
-            "GET", f"/portfolio/positions?ticker={market_ticker}&limit=10")
+            "GET", f"/portfolio/positions?ticker={market_ticker}&limit=10",
+            timeout=timeout)
     except Exception:
         return None
     if status != 200 or not isinstance(body, dict):
@@ -408,19 +410,45 @@ def _confirm_tick(gateway, dry_run):
                                  config.FAIR_DRIFT_TOLERANCE):
                 if not dry_run and gateway.confirm(qid):
                     contracts = int(float((q or {}).get("contracts", 1) or 1))
-                    # H6: reconcile against /portfolio/positions before recording the
-                    # fill so a confirm-response shape mismatch can't silently
-                    # mis-record side or size. Kalshi positions are the source of truth.
-                    actual = _get_position_contracts(ticker)
-                    if actual is not None:
-                        expected_signed = contracts if side_held == "yes" else -contracts
-                        if actual != expected_signed:
+                    # H6 (refined for N1/N2): reconcile against Kalshi positions as
+                    # ground truth, but compute THIS fill's delta from our prior
+                    # recorded total — Kalshi reports AGGREGATE per ticker, not
+                    # per-fill. Retry briefly to wait out eventual consistency
+                    # (positions read right after confirm can return the pre-fill total).
+                    with db.connect(read_only=True) as con:
+                        prior_total = con.execute(
+                            "SELECT COALESCE(SUM(CASE WHEN side_held='yes' THEN contracts "
+                            "ELSE -contracts END), 0) FROM fills WHERE combo_market_ticker=?",
+                            [ticker]).fetchone()[0]
+                    expected_signed = contracts if side_held == "yes" else -contracts
+
+                    actual = None
+                    for attempt in range(3):
+                        actual = _get_position_contracts(ticker)
+                        if actual is not None and actual != prior_total:
+                            break  # Kalshi has caught up
+                        time.sleep(0.2 * (2 ** attempt))  # 200ms, 400ms, 800ms
+
+                    if actual is None:
+                        # API down or persistently lagging → trust expected as fallback
+                        print(f"[position_reconcile_unavailable] ticker={ticker} "
+                              f"using expected={expected_signed}", flush=True)
+                        delta = expected_signed
+                    else:
+                        delta = actual - int(prior_total)  # Kalshi total - prior = this fill
+                        if delta != expected_signed:
                             print(f"[position_mismatch] ticker={ticker} "
-                                  f"expected={expected_signed} actual={actual} "
+                                  f"expected={expected_signed} actual_delta={delta} "
+                                  f"(kalshi_total={actual} prior={prior_total}) "
                                   f"— trusting Kalshi", flush=True)
-                            side_held = "yes" if actual > 0 else "no"
-                            contracts = abs(actual)
-                    # If actual is None (API failure), fall back to expected values.
+
+                    # Apply the trusted delta to this fill's recorded side/size
+                    if delta > 0:
+                        side_held, contracts = "yes", delta
+                    elif delta < 0:
+                        side_held, contracts = "no", abs(delta)
+                    # delta == 0: only reachable when API is down AND expected was 0;
+                    # keep side_held/contracts as-is.
                     with db.connect() as con:
                         con.execute(
                             "INSERT INTO fills (fill_id, quote_id, rfq_id, combo_market_ticker, "
