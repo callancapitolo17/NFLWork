@@ -30,10 +30,14 @@ which signal (or both) fired.
    model and its 2% filter are not modified. Rejected reworking the model's internal
    `prediction_set` filter because it's riskier and entangles two concerns.
 
-4. **≥ 3 books required to form a consensus.** A median of 1–2 books isn't a market,
-   and a lone weird book shouldn't become its own yardstick. Lines with < 3 books
-   quoting both sides get no market flag (conservative — we'd rather miss a thin-market
-   edge than print a false one).
+4. **Leave-one-out consensus; only 1 other book required.** Each book's price is judged
+   against the median devigged fair of the **other** books at that line — never against
+   a yardstick that includes itself. This is essential because Wagerzon is the softest
+   book: if Wagerzon were included in its own consensus, its good price would drag the
+   median toward itself and hide its own edge (worst exactly when few books quote the
+   line). With leave-one-out we only need the edge book **+ 1 other** (total 2). Rejected
+   the original "≥ 3 books, plain median" rule — it suppressed the soft-book edges this
+   feature exists to find.
 
 5. **Same 2% threshold for both signals.** Keeps the bar consistent and the mental
    model simple; trivially raised later if market flags prove noisy.
@@ -45,12 +49,14 @@ which signal (or both) fired.
   same way (e.g. toward popular teams), the consensus median inherits that bias and
   the "edge" is illusory. The model is our defense — when MODEL and MARKET disagree,
   trust the model. The BOTH badge marks the cases where they agree (highest conviction).
-- **Volume.** Expanding the universe could noticeably lengthen the bets list. The
-  ≥3-book guard + 2% threshold should contain it, but you may want to raise the
-  market threshold to 3% after seeing real volume.
-- **No leave-one-out.** The book showing the edge is still included in the median it's
-  judged against. With ≥3 books and a *median* (not mean) this is a minor self-reference;
-  flagged as a future refinement, not fixed in v1.
+- **Volume.** Expanding the universe could noticeably lengthen the bets list. The 2%
+  threshold should contain it, but you may want to raise the market threshold to 3%
+  after seeing real volume.
+- **Single-other-book false positives.** With the floor at 1 other book, a Wagerzon
+  price can flag against just one comparison book. If *that* book is also mispriced,
+  the "edge" is illusory. Accepted for v1 because Wagerzon edges are the point and
+  thin-line coverage matters more than the occasional false flag; the model EV shown
+  alongside is the sanity check. Raise the floor to 2 others if false flags become noise.
 
 **Worth understanding** (opt-in)
 
@@ -91,7 +97,6 @@ card which signal fired (MODEL / MARKET / BOTH) and the underlying numbers.
 ### Non-goals
 
 - Changing the model, its probabilities, or its 2% filter.
-- Leave-one-out consensus (future refinement).
 - Surfacing market edges on lines no book quotes on both sides (can't devig).
 - Any change to `expand_bets_to_book_prices()` internals.
 
@@ -125,7 +130,7 @@ card which signal fired (MODEL / MARKET / BOTH) and the underlying numbers.
 ```r
 find_market_edges(book_odds_by_book,
                   threshold   = 0.02,
-                  min_books   = 3,
+                  min_others  = 1,          # leave-one-out: ≥1 OTHER book to compare against
                   devig_fn    = devig_american)
 ```
 
@@ -142,9 +147,9 @@ find_market_edges(book_odds_by_book,
   | `market`, `period`, `line`, `bet_on` | bet identity |
   | `bookmaker_key` | the book offering the edge price (best price beating consensus) |
   | `odds` | that book's American price |
-  | `prob` | consensus fair probability (treated as "true" prob) |
-  | `ev` | market EV = `compute_ev(consensus_fair, best_price)` |
-  | `n_books` | how many books formed the consensus |
+  | `prob` | the edge book's leave-one-out consensus fair (treated as "true" prob) |
+  | `ev` | market EV = `compute_ev(loo_consensus_fair, edge_book_price)` |
+  | `n_books` | how many books quote both sides at this line (yardstick uses `n_books − 1`) |
   | `edge_source` | `"market"` |
 
 **Algorithm**
@@ -153,12 +158,14 @@ find_market_edges(book_odds_by_book,
 2. Drop rows older than the staleness cutoff (reuse `BOOK_STALENESS_CUTOFF_MIN`).
 3. Group by `(game_id, market, period, line, side)` and its opposite side. For each
    **book** that quotes **both** sides at that exact line, devig the pair with
-   `devig_fn` → that book's fair prob for `side`.
-4. `consensus_fair = median(per-book fair probs)`; `n_books = count`. Require
-   `n_books >= min_books`, else skip this (line, side).
-5. For each book's price on `side`, `ev_b = compute_ev(consensus_fair, price_b)`.
-   Take the best (max-EV) book. If `best_ev >= threshold`, emit a row with that book
-   as `bookmaker_key`, its price as `odds`.
+   `devig_fn` → that book's fair prob for `side`. Let `n_books` = how many books produced
+   a fair here.
+4. **Leave-one-out, per book:** for each book `b`, build its yardstick from the *other*
+   books only — `loo_fair_b = median(fair of all books except b)`. Require at least
+   `min_others` other books (i.e. `n_books − 1 >= min_others`), else `b` can't be judged.
+5. For each book `b`, `ev_b = compute_ev(loo_fair_b, price_b)`. Take the best (max-EV)
+   book. If `best_ev >= threshold`, emit a row with that book as `bookmaker_key`, its
+   price as `odds`, and `prob = its loo_fair`.
 6. Compute `bet_row_id` with the identical hash recipe used in `MLB.R` so ids align.
 
 **Like-for-like is the integrity rule of the whole signal.** The consensus median may
@@ -174,6 +181,8 @@ Consequences baked in:
 - Lines are matched on a **normalized** value (`8.5 == 8.50`) so float/format
   differences don't split a true match.
 - A book quoting only one side contributes to *neither* the devig nor `n_books`.
+- The edge book is **never** in its own yardstick (leave-one-out), so a soft book can't
+  hide its own edge by dragging the consensus toward itself.
 - This is stricter than the display grid's ±3-unit "closest line" tolerance, which is
   display-only and never feeds the edge math.
 
@@ -222,7 +231,8 @@ After `all_bets_combined` is assembled and `book_odds_by_book` is built (current
 
 ### Error handling & edge cases
 
-- **< 3 books / one-sided quotes:** skip silently (no market flag) — conservative.
+- **Only the edge book quotes the line / one-sided quotes:** can't build a leave-one-out
+  yardstick (no other book), so skip silently — no market flag.
 - **Stale quotes:** dropped by the existing 30-min cutoff before devig.
 - **Devig failure** (`NA`/zero odds): `devig_american()` already returns `NA`; those
   books are excluded from the consensus, count toward neither `n_books` nor the median.
@@ -236,9 +246,11 @@ After `all_bets_combined` is assembled and `book_odds_by_book` is built (current
 ### Testing
 
 - **Unit (`market_edge` test):** hand-built `book_odds_by_book` fixture with known
-  American odds → assert the devigged consensus, `n_books`, the flagged book, and EV.
-  Include: a clear edge, a sub-threshold near-miss, a 2-book line (must be skipped),
-  a one-sided book (excluded from consensus), and a stale row (dropped).
+  American odds → assert the leave-one-out fair, `n_books`, the flagged book, and EV.
+  Include: a clear edge, a sub-threshold near-miss, a **2-book line (edge book + 1 other)
+  that MUST flag** (validates the floor and that leave-one-out excludes the edge book),
+  a **1-book line that must be skipped** (no other book to compare against), a one-sided
+  book (excluded from consensus), and a stale row (dropped).
 - **Integration:** run the `MLB.R` pipeline on copied live DBs; confirm
   `mlb_bets_combined` gains the new columns, market-only bets appear, BOTH bets are
   labeled, and `mlb_bets_book_prices` still populates for the new rows.
