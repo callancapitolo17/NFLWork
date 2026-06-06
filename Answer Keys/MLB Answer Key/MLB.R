@@ -21,6 +21,7 @@ suppressPackageStartupMessages({
 source("Tools.R")
 source("triple_play_helpers.R")
 source("MLB Answer Key/odds_screen.R")
+source("MLB Answer Key/market_edge.R")
 timer <- pipeline_timer()
 startup_secs <- as.numeric(difftime(Sys.time(), .t_script_start, units = "secs"))
 timer$mark(sprintf("r_startup (%.1fs total)", startup_secs))
@@ -843,20 +844,107 @@ all_bets_combined <- bind_rows(
 ) %>%
   { if (!is.null(enabled_books)) filter(., bookmaker_key %in% enabled_books) else . } %>%
   filter(is.na(pt_start_time) | pt_start_time > Sys.time()) %>%
-  # bet_row_id: stable hash of (game_id, market, line, bet_on) — shared key
-  # across mlb_bets_combined and mlb_bets_book_prices. Excludes bookmaker so
-  # all books for the same bet line/side share an id.
-  mutate(bet_row_id = vapply(
-    paste(id, market, ifelse(is.na(line), "", as.character(line)), bet_on, sep = "|"),
-    function(s) digest::digest(s, algo = "md5"),
-    character(1)
+  # bet_row_id: canonical identity hash shared with the market-edge path so
+  # find_market_edges() output joins to model bets for the same wager. Recipe:
+  # (id, base_market_type, period, normalized_line, bet_on) — see
+  # odds_screen.R::compute_bet_row_id. Book-agnostic (all books for the same
+  # line/side share an id) AND market-string-agnostic (the canonical identity
+  # is reproducible from canonical per-book odds, unlike the verbose market).
+  mutate(bet_row_id = compute_bet_row_id(
+    id, .derive_market_type(market), .derive_period(market), line, bet_on
   )) %>%
+  mutate(edge_source = "model", model_ev = ev, market_ev = NA_real_) %>%
   mutate(base_market = gsub("^alternate_", "", market)) %>%
   group_by(id, base_market, bet_on) %>%
   filter(ev == max(ev)) %>%
   slice_head(n = 1) %>%
   ungroup() %>%
   select(-base_market) %>%
+  arrange(desc(ev))
+
+# Game id lookup: join scraper wide frames to Odds API game IDs via home/away team.
+# Passed as `lookup` argument to scraper_to_canonical() (defined in odds_screen.R).
+.game_id_lookup <- mlb_odds %>%
+  select(id, home_team, away_team) %>%
+  distinct()
+
+# Parse the prefetched_odds JSON cache into long format for Pinnacle pill
+# coverage. DK and FD come from their per-book DuckDBs via get_dk_odds /
+# get_fd_odds (see Tools.R); the Odds API path is used only for Pinnacle,
+# which has no public REST API.
+prefetched_long <- parse_prefetched_to_long(
+  prefetched_odds,
+  bookmaker_keys = "pinnacle"
+)
+
+# Kalshi is intentionally excluded from book_odds_by_book — it's a
+# peer-to-peer venue with its own dashboard tab/flow, not a sportsbook
+# to compare against for the odds-screen view.
+book_odds_by_book <- list(
+  wagerzon  = scraper_to_canonical(wagerzon_odds,  .game_id_lookup, book_name = "wagerzon"),
+  hoop88    = scraper_to_canonical(hoop88_odds,    .game_id_lookup, book_name = "hoop88"),
+  bfa       = scraper_to_canonical(bfa_odds,       .game_id_lookup, book_name = "bfa"),
+  bookmaker = scraper_to_canonical(bookmaker_odds, .game_id_lookup, book_name = "bookmaker"),
+  bet105    = scraper_to_canonical(bet105_odds,    .game_id_lookup, book_name = "bet105"),
+  draftkings = scraper_to_canonical(dk_odds, .game_id_lookup, book_name = "dk"),
+  fanduel    = scraper_to_canonical(fd_odds, .game_id_lookup, book_name = "fd"),
+  pinnacle  = odds_api_to_canonical(
+                 prefetched_long %>% filter(bookmaker_key == "pinnacle"))
+)
+
+# Strip NULL entries so expand_bets_to_book_prices doesn't iterate empty lists.
+book_odds_by_book <- Filter(Negate(is.null), book_odds_by_book)
+
+# ---- Market-consensus edges (model OR market flagging) ----
+# Second, independent edge signal: flag a bet when a book's price is out of line
+# with the leave-one-out devigged consensus of the OTHER books (>= EV_THRESHOLD),
+# even when the model is neutral. See market_edge.R::find_market_edges.
+# game_info gives market-only cards their teams + tipoff and the future-game gate.
+.market_game_info <- mlb_odds %>%
+  transmute(game_id = id, home_team, away_team, pt_start_time) %>%
+  distinct(game_id, .keep_all = TRUE)
+
+market_bets <- find_market_edges(
+  book_odds_by_book,
+  game_info     = .market_game_info,
+  threshold     = EV_THRESHOLD,
+  min_others    = 1,
+  staleness_min = BOOK_STALENESS_CUTOFF_MIN,
+  now           = Sys.time(),
+  bankroll      = bankroll,
+  kelly_mult    = kelly_mult
+) %>%
+  filter(is.na(pt_start_time) | pt_start_time > Sys.time())
+
+cat(sprintf("find_market_edges: %d market-edge candidate(s).\n", nrow(market_bets)))
+
+# Merge model + market on the shared canonical bet_row_id.
+.model_cols <- names(all_bets_combined)
+market_new  <- market_bets %>% filter(!(bet_row_id %in% all_bets_combined$bet_row_id))
+market_both <- market_bets %>% filter(bet_row_id %in% all_bets_combined$bet_row_id) %>%
+  select(bet_row_id, market_ev_join = market_ev)
+
+# (a) Promote model rows that ALSO have a market edge to "both".
+all_bets_combined <- all_bets_combined %>%
+  left_join(market_both, by = "bet_row_id") %>%
+  mutate(
+    edge_source = ifelse(!is.na(market_ev_join), "both", edge_source),
+    market_ev   = ifelse(!is.na(market_ev_join), market_ev_join, market_ev)
+  ) %>%
+  select(-market_ev_join)
+
+# (b) Append market-only rows, aligning columns to the model schema.
+if (nrow(market_new) > 0) {
+  miss <- setdiff(.model_cols, names(market_new))
+  for (cc in miss) market_new[[cc]] <- NA
+  market_new <- market_new %>% select(all_of(.model_cols))
+  all_bets_combined <- bind_rows(all_bets_combined, market_new)
+}
+
+# Rank by the better of the two signals; drop any exact-id duplicate.
+all_bets_combined <- all_bets_combined %>%
+  mutate(ev = pmax(model_ev, market_ev, na.rm = TRUE)) %>%
+  distinct(bet_row_id, .keep_all = TRUE) %>%
   arrange(desc(ev))
 
 # Load placed bets for correlation awareness
@@ -902,38 +990,9 @@ print(all_bets_combined %>% head(20))
 # PHASE 7b: BUILD mlb_bets_book_prices (per-book pill odds)
 # =============================================================================
 
-# Game id lookup: join scraper wide frames to Odds API game IDs via home/away team.
-# Passed as `lookup` argument to scraper_to_canonical() (defined in odds_screen.R).
-.game_id_lookup <- mlb_odds %>%
-  select(id, home_team, away_team) %>%
-  distinct()
-
-# Parse the prefetched_odds JSON cache into long format for Pinnacle pill
-# coverage. DK and FD come from their per-book DuckDBs via get_dk_odds /
-# get_fd_odds (see Tools.R); the Odds API path is used only for Pinnacle,
-# which has no public REST API.
-prefetched_long <- parse_prefetched_to_long(
-  prefetched_odds,
-  bookmaker_keys = "pinnacle"
-)
-
-# Kalshi is intentionally excluded from book_odds_by_book — it's a
-# peer-to-peer venue with its own dashboard tab/flow, not a sportsbook
-# to compare against for the odds-screen view.
-book_odds_by_book <- list(
-  wagerzon  = scraper_to_canonical(wagerzon_odds,  .game_id_lookup, book_name = "wagerzon"),
-  hoop88    = scraper_to_canonical(hoop88_odds,    .game_id_lookup, book_name = "hoop88"),
-  bfa       = scraper_to_canonical(bfa_odds,       .game_id_lookup, book_name = "bfa"),
-  bookmaker = scraper_to_canonical(bookmaker_odds, .game_id_lookup, book_name = "bookmaker"),
-  bet105    = scraper_to_canonical(bet105_odds,    .game_id_lookup, book_name = "bet105"),
-  draftkings = scraper_to_canonical(dk_odds, .game_id_lookup, book_name = "dk"),
-  fanduel    = scraper_to_canonical(fd_odds, .game_id_lookup, book_name = "fd"),
-  pinnacle  = odds_api_to_canonical(
-                 prefetched_long %>% filter(bookmaker_key == "pinnacle"))
-)
-
-# Strip NULL entries so expand_bets_to_book_prices doesn't iterate empty lists.
-book_odds_by_book <- Filter(Negate(is.null), book_odds_by_book)
+# NOTE: book_odds_by_book (and .game_id_lookup / prefetched_long) are now built
+# earlier, at the end of PHASE 7, so the market-consensus merge can run before
+# correlation-adjusted Kelly. The expand call below reuses that same object.
 
 book_prices_long <- expand_bets_to_book_prices(all_bets_combined,
                                                book_odds_by_book)
