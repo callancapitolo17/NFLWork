@@ -65,11 +65,16 @@ which signal (or both) fired.
   books gives a meaningless number. In R terms: think of it like you can't `merge()`
   two data frames on a key that doesn't actually align — the devig "key" is
   (book, market, line), and both sides must share it.
-- **`bet_row_id` is a book-agnostic join key.** It's an md5 hash of
-  `(game, market, line, bet_on)` — deliberately *excluding* the book — so the same
-  logical bet across every book shares one id. That's what lets us full-join the model
-  bets and market bets, and what lets the existing book-prices expansion attach every
-  book's pills to a single card. (Like a primary key in R that you join two tables on.)
+- **`bet_row_id` is a canonical, book-agnostic join key.** It's an md5 hash of the
+  *bet identity* — `(id, base_market_type, period, normalized_line, bet_on)` — where
+  `base_market_type` strips the `alternate_` prefix (so `"totals"` and `"alternate_totals"`
+  collapse) and `period` is F5/FG/etc. It deliberately excludes the book *and* the raw
+  market string, because the model uses verbose strings (`"totals_1st_5_innings"`) while
+  the canonical book odds only carry the stripped form (`"totals"` + `period="F5"`) — the
+  model→canonical mapping is lossy, so only the canonical identity is reproducible by
+  *both* paths. Hashing the identity (not the raw string) is what lets us full-join the
+  model and market frames and lets the book-prices expansion attach every book's pills to
+  one card. (Like a primary key in R you join two tables on.)
 
 ---
 
@@ -142,15 +147,21 @@ find_market_edges(book_odds_by_book,
 
   | column | meaning |
   |---|---|
-  | `bet_row_id` | md5(game, market, line, bet_on) — same hash recipe as model path |
+  | `bet_row_id` | `compute_bet_row_id(id, market_type, period, line, bet_on)` — the shared helper, identical to the model path |
   | `id` / `game_id` | game id |
-  | `market`, `period`, `line`, `bet_on` | bet identity |
-  | `bookmaker_key` | the book offering the edge price (best price beating consensus) |
+  | `market_type` (`"totals"`/`"spreads"`/`"h2h"`), `period`, `line`, `bet_on` | canonical bet identity |
+  | `market` | set to `market_type` so downstream `expand_bets_to_book_prices()` (which calls `.derive_market_type(market)`) resolves correctly; `period` is carried explicitly |
+  | `home_team`, `away_team`, `pt_start_time` | joined from `.game_id_lookup` / `mlb_odds` so the card header + future-game filter work |
+  | `bookmaker_key` | the book offering the edge price (best LOO-EV book) |
   | `odds` | that book's American price |
   | `prob` | the edge book's leave-one-out consensus fair (treated as "true" prob) |
   | `ev` | market EV = `compute_ev(loo_consensus_fair, edge_book_price)` |
   | `n_books` | how many books quote both sides at this line (yardstick uses `n_books − 1`) |
   | `edge_source` | `"market"` |
+
+  After flagging, market rows are collapsed to the **single best-EV line** per
+  `(id, market_type, period, side)` (mirrors the model's one-rec-per-side dedup, keeps
+  volume sane).
 
 **Algorithm**
 
@@ -193,23 +204,42 @@ or DuckDB.
 
 #### Component 2 — merge in `MLB.R`
 
-After `all_bets_combined` is assembled and `book_odds_by_book` is built (currently
-~line 923), and *before* `expand_bets_to_book_prices()` (line 938):
+**Ordering change.** `book_odds_by_book` is currently built at ~line 923, *after* the
+correlation-Kelly call (line 881). To let market bets get the same correlation
+adjustment and to merge before that call, the `.game_id_lookup` / `prefetched_long` /
+`book_odds_by_book` construction block (currently lines ~905–936) **moves up** to
+immediately after the model `all_bets_combined` is finalized (after line 860) and the
+old block is deleted from its current spot. The merge then sits between that block and
+the existing `adjust_kelly_for_correlation()` call.
 
-1. `market_bets <- find_market_edges(book_odds_by_book)`.
-2. Add `edge_source = "model"`, `model_ev = ev`, `market_ev = NA` to the model set;
-   `edge_source = "market"`, `market_ev = ev`, `model_ev = NA` to the market set.
-3. `full_join` the two on `bet_row_id`. For rows present in both: `edge_source = "both"`,
-   carry both `model_ev` and `market_ev`. Coalesce identity columns
-   (`game_id, market, line, bet_on`) and pick the display book = the higher-EV side's
-   book. Set `ev = pmax(model_ev, market_ev, na.rm = TRUE)` for ranking.
-4. Re-apply the existing dedup (`group_by(id, base_market, bet_on) %>% filter(ev == max(ev))`)
-   and `arrange(desc(ev))`. The merged frame is the new `mlb_bets_combined`.
-5. `expand_bets_to_book_prices()` runs unchanged — it keys on `bet_row_id`, which both
-   paths share, so every card gets its full per-book pill row automatically.
+Sequence after the move:
 
-**Kelly sizing for market bets:** `bet_size = kelly_stake(prob = consensus_fair, odds)`
-— identical helper, treating consensus fair as the true probability. No new sizing code.
+1. Model `all_bets_combined` finalized (lines 831–860), now tagged
+   `edge_source = "model"`, `model_ev = ev`, `market_ev = NA_real_`. Its `bet_row_id`
+   comes from the shared `compute_bet_row_id()` (canonical recipe — see Component 1).
+2. Build `book_odds_by_book` (moved block).
+3. `market_bets <- find_market_edges(book_odds_by_book)`, tagged
+   `edge_source = "market"`, `market_ev = ev`, `model_ev = NA_real_`, with `bet_size`
+   computed via `kelly_stake()` (see below). `bet_row_id` from the same shared helper.
+4. **`full_join(model, market, by = "bet_row_id")`** — now valid because both sides use
+   the canonical recipe. Resolve each row:
+   - **model only** → keep as is (`edge_source = "model"`).
+   - **market only** → keep the market row (`edge_source = "market"`).
+   - **both** → `edge_source = "both"`; keep the **model's** book, `odds`, `prob`,
+     `bet_size` (model is the primary pricer); attach `market_ev`. Set
+     `ev = pmax(model_ev, market_ev, na.rm = TRUE)` for ranking only.
+5. Drop any exact duplicate `bet_row_id` (defensive), `arrange(desc(ev))`. **Do not**
+   re-run the line-collapsing model dedup — it already ran on the model set, and
+   re-running it would drop legitimately distinct market-only lines.
+6. `adjust_kelly_for_correlation()` (existing call) now runs on the merged frame.
+7. `expand_bets_to_book_prices()` runs unchanged — it keys on `bet_row_id`, shared by
+   both paths, so every card (model, market, or both) gets its full per-book pill row.
+
+**Kelly sizing for market bets:** `bet_size = kelly_stake(ev = market_ev,
+book_prob = implied_prob(edge_book_price), bankroll, kelly_mult)` — the existing helper
+(`kelly_stake(ev, book_prob, bankroll, kelly_mult)`), treating the LOO consensus as the
+true probability via `market_ev`. `bankroll` and `kelly_mult` are already in scope at
+the merge point. No new sizing code.
 
 #### Component 3 — dashboard badge (`mlb_dashboard.R`)
 
@@ -268,12 +298,16 @@ After `all_bets_combined` is assembled and `book_odds_by_book` is built (current
 - **DuckDB caution:** do **not** symlink any `.duckdb` into the worktree (WAL-loss
   hazard per CLAUDE.md). Test by *copying* live DBs into the worktree, or test from
   `main` after merge.
-- **Files created:** `Answer Keys/MLB Answer Key/market_edge.R`; a unit test file.
-- **Files modified:** `Answer Keys/MLB Answer Key/MLB.R` (merge step + shared hash
-  helper); `Answer Keys/MLB Dashboard/mlb_dashboard.R` (badge + dual-EV); the
-  `mlb_bets_combined` write (new columns).
-- **Commits:** (1) module + unit tests; (2) MLB.R merge + shared hash helper;
-  (3) dashboard badge; (4) docs.
+- **Files created:** `Answer Keys/MLB Answer Key/market_edge.R`; `Answer Keys/tests/test_market_edge.R`.
+- **Files modified:**
+  - `Answer Keys/MLB Answer Key/odds_screen.R` — add the shared `compute_bet_row_id()`
+    helper (sits beside `.derive_market_type` / `.derive_period`, which it uses).
+  - `Answer Keys/MLB Answer Key/MLB.R` — replace the inline `bet_row_id` hash with the
+    shared helper; move the `book_odds_by_book` block up; insert the market merge.
+  - `Answer Keys/MLB Dashboard/mlb_dashboard.R` — badge + dual-EV + `.edge-badge` CSS.
+- **Commits:** (1) `compute_bet_row_id()` helper + test; (2) `market_edge.R` module +
+  unit tests; (3) MLB.R merge (move block + full_join); (4) dashboard badge + CSS;
+  (5) docs.
 
 ### Documentation
 
