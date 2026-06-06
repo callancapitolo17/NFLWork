@@ -9,9 +9,9 @@ test_that("nflwork_root falls back to ~/NFLWork when unset", {
 
 test_that("set_nflwork_root overrides the root", {
   tmp <- tempfile("root_"); dir.create(tmp)
+  on.exit(set_nflwork_root(NULL))
   set_nflwork_root(tmp)
   expect_equal(nflwork_root(), normalizePath(tmp, mustWork = FALSE))
-  set_nflwork_root(NULL)  # reset for other tests
 })
 
 test_that("derive_repo_root walks up to the dir containing 'Answer Keys'", {
@@ -30,6 +30,16 @@ test_that("derive_repo_root falls back to ~/NFLWork when no marker found", {
   dir.create(orphan, recursive = TRUE)
   expect_equal(
     derive_repo_root(script_path = file.path(orphan, "x.R")),
+    normalizePath(path.expand("~/NFLWork"), mustWork = FALSE)
+  )
+})
+
+test_that("derive_repo_root falls back when no --file= in commandArgs", {
+  # Called with no script_path under testthat, there is no --file= arg, so it
+  # must hit the length(fa) == 0 fallback. (The ~+~ space-decode path is verified
+  # manually via a real Rscript launch; it cannot be unit-tested without a subprocess.)
+  expect_equal(
+    derive_repo_root(),
     normalizePath(path.expand("~/NFLWork"), mustWork = FALSE)
   )
 })
