@@ -141,6 +141,9 @@ find_market_edges <- function(book_odds_by_book,
       bet_size      = kelly_stake(market_ev, .implied_prob(american_odds),
                                   bankroll, kelly_mult)
     ) %>%
+    # NOTE: this bet_row_id only joins against mlb_bets_combined AFTER MLB.R is
+    # migrated to compute_bet_row_id() (Task 3). The legacy inline hash in MLB.R
+    # uses a different recipe; until Task 3, a join would silently match zero rows.
     mutate(bet_row_id = compute_bet_row_id(id, market_type, period, line, bet_on))
 
   # Attach game header info if provided.

@@ -27,6 +27,23 @@ tot <- function(game_id, book_side_odds, line = 8.5, ft = FT) {
   )
 }
 
+# A spread market at one book = the two teams at +L / -L (signed per team).
+spr <- function(game_id, home_team, away_team, home_odds, away_odds,
+                home_line = -1.5, ft = FT) {
+  bind_rows(
+    crow(game_id, "spreads", "F5", home_team,  home_line, home_odds, ft),
+    crow(game_id, "spreads", "F5", away_team, -home_line, away_odds, ft)
+  )
+}
+
+# A moneyline (h2h) market at one book = the two teams, line NA.
+ml <- function(game_id, home_team, away_team, home_odds, away_odds, ft = FT) {
+  bind_rows(
+    crow(game_id, "h2h", "F5", home_team, NA_real_, home_odds, ft),
+    crow(game_id, "h2h", "F5", away_team, NA_real_, away_odds, ft)
+  )
+}
+
 test_that("a soft book beating the others flags as a market edge", {
   books <- list(
     pinnacle = tot("g1", c(-110, -110)),
@@ -98,4 +115,30 @@ test_that("bet_row_id matches the shared helper for the same wager", {
   out <- find_market_edges(books, now = NOW) %>% filter(bet_on == "Over")
   expected <- compute_bet_row_id("g1", "totals", "F5", 8.5, "Over")
   expect_equal(out$bet_row_id, expected)
+})
+
+test_that("a soft book flags on a SPREAD (signed-line pairing)", {
+  books <- list(
+    pinnacle = spr("g1", "NYY", "BOS", -110, -110),
+    wagerzon = spr("g1", "NYY", "BOS", +110, -130)
+  )
+  out <- find_market_edges(books, now = NOW)
+  hit <- out %>% filter(market_type == "spreads", bet_on == "NYY")
+  expect_equal(nrow(hit), 1)
+  expect_equal(hit$bookmaker_key, "wagerzon")
+  expect_equal(hit$line, -1.5)
+  expect_true(hit$ev >= 0.02)
+})
+
+test_that("a soft book flags on a MONEYLINE (NA-line grouping)", {
+  books <- list(
+    pinnacle = ml("g1", "NYY", "BOS", -110, -110),
+    wagerzon = ml("g1", "NYY", "BOS", +110, -130)
+  )
+  out <- find_market_edges(books, now = NOW)
+  hit <- out %>% filter(market_type == "h2h", bet_on == "NYY")
+  expect_equal(nrow(hit), 1)
+  expect_equal(hit$bookmaker_key, "wagerzon")
+  expect_true(is.na(hit$line))
+  expect_true(hit$ev >= 0.02)
 })
