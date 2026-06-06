@@ -142,3 +142,32 @@ test_that("a soft book flags on a MONEYLINE (NA-line grouping)", {
   expect_true(is.na(hit$line))
   expect_true(hit$ev >= 0.02)
 })
+
+test_that("market column is the verbose period-suffixed string (matches model convention)", {
+  # bet_to_leg (correlation Kelly) infers period from the market suffix, so an
+  # F5 market edge must carry 'totals_1st_5_innings', not the bare 'totals'.
+  books <- list(
+    pinnacle = tot("g1", c(-110, -110)),
+    wagerzon = tot("g1", c(+110, -130))
+  )
+  out <- find_market_edges(books, now = NOW) %>% filter(bet_on == "Over")
+  expect_equal(out$market, "totals_1st_5_innings")
+  expect_equal(out$market_type, "totals")
+})
+
+test_that("unsupported market types (e.g. team_totals) are excluded", {
+  # team_totals would otherwise reach bet_to_leg's unknown-market stop() and
+  # silently void a game's correlation adjustment.
+  books <- list(
+    pinnacle = bind_rows(
+      crow("g1", "team_totals", "FG", "NYY Over",  4.5, -110),
+      crow("g1", "team_totals", "FG", "NYY Under", 4.5, -110)
+    ),
+    wagerzon = bind_rows(
+      crow("g1", "team_totals", "FG", "NYY Over",  4.5, +130),
+      crow("g1", "team_totals", "FG", "NYY Under", 4.5, -150)
+    )
+  )
+  out <- find_market_edges(books, now = NOW)
+  expect_equal(nrow(out), 0)
+})

@@ -21,6 +21,23 @@ library(tibble)
   c(d$p1, d$p2)
 }
 
+# Reconstruct the verbose, period-suffixed market string the MODEL pipeline uses
+# (e.g. "totals_1st_5_innings") from the canonical base type + period. Market
+# rows must carry this so every downstream consumer that parses the period from
+# the market string behaves identically for model and market rows — most
+# importantly Tools.R::bet_to_leg (correlation Kelly), which derives the period
+# from the market suffix, NOT from a period column. FG/H2 keep the bare base
+# (Full-game treatment), matching the model's Odds-API naming.
+.verbose_market <- function(base_mt, period) {
+  suffix <- dplyr::case_when(
+    period == "F3" ~ "_1st_3_innings",
+    period == "F5" ~ "_1st_5_innings",
+    period == "F7" ~ "_1st_7_innings",
+    TRUE           ~ ""
+  )
+  paste0(base_mt, suffix)
+}
+
 .empty_market_edges <- function() {
   tibble(
     bet_row_id = character(), id = character(), game_id = character(),
@@ -75,6 +92,15 @@ find_market_edges <- function(book_odds_by_book,
            line_key = ifelse(is.na(line), NA_real_, round(as.numeric(line), 1)),
            absline  = ifelse(is.na(line_key), -1, abs(line_key)))
 
+  # Restrict to the three market types the full pipeline supports end-to-end
+  # (model pricing, correlation Kelly via bet_to_leg, dashboard render). This
+  # drops exotic canonical types (e.g. team_totals) that would otherwise reach
+  # bet_to_leg's unknown-market stop() and silently void a whole game's
+  # correlation adjustment. h2h_3way is already excluded by the n()==2 pair
+  # check below (3 outcomes never form a 2-way pair).
+  long <- long %>% filter(base_mt %in% c("totals", "spreads", "h2h"))
+  if (nrow(long) == 0) return(.empty_market_edges())
+
   # 3. Validate each book quotes BOTH sides (a proper 2-outcome pair):
   #    Over+Under for totals, the two teams for spreads / h2h, etc.
   #    Books that quote only one side are dropped (no pair → excluded from
@@ -125,7 +151,7 @@ find_market_edges <- function(book_odds_by_book,
     transmute(
       id            = game_id,
       game_id       = game_id,
-      market        = base_mt,
+      market        = .verbose_market(base_mt, period),
       market_type   = base_mt,
       period        = period,
       line          = line_key,
@@ -141,9 +167,9 @@ find_market_edges <- function(book_odds_by_book,
       bet_size      = kelly_stake(market_ev, .implied_prob(american_odds),
                                   bankroll, kelly_mult)
     ) %>%
-    # NOTE: this bet_row_id only joins against mlb_bets_combined AFTER MLB.R is
-    # migrated to compute_bet_row_id() (Task 3). The legacy inline hash in MLB.R
-    # uses a different recipe; until Task 3, a join would silently match zero rows.
+    # bet_row_id uses the SAME shared recipe MLB.R now uses for model bets
+    # (compute_bet_row_id over the canonical identity), so the model+market
+    # full-join in MLB.R matches the same wager across both paths.
     mutate(bet_row_id = compute_bet_row_id(id, market_type, period, line, bet_on))
 
   # Attach game header info if provided.
