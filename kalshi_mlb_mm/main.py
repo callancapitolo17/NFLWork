@@ -19,7 +19,7 @@ import statistics
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import duckdb
 
@@ -219,6 +219,41 @@ def _log_decision(decision, *, rfq_id=None, quote_id=None, ticker=None, game_id=
              model, book, blended, yb, nb, datetime.now(timezone.utc)])
 
 
+def _void_rate_halt_triggered() -> bool:
+    """H4 (global): if voided/(voided+confirmed) > threshold over the recent
+    window, halt new quotes. A high void rate means we're either getting picked
+    off (book moves we cancel on) or chronically can't re-price — both are
+    signals to step back instead of farming volume."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=config.VOID_RATE_WINDOW_HOURS)
+    with db.connect(read_only=True) as con:
+        row = con.execute(
+            "SELECT "
+            "  SUM(CASE WHEN decision LIKE 'voided_%' THEN 1 ELSE 0 END), "
+            "  SUM(CASE WHEN decision='confirmed' THEN 1 ELSE 0 END) "
+            "FROM quote_decisions WHERE observed_at >= ?",
+            [cutoff]).fetchone()
+    voided = int(row[0] or 0)
+    confirmed = int(row[1] or 0)
+    denom = voided + confirmed
+    if denom == 0:
+        return False
+    return (voided / denom) > config.VOID_RATE_HALT_THRESHOLD
+
+
+def _creator_halt_active(creator_id: str) -> bool:
+    """H4 (per-creator): if this counterparty has already farmed us for >=N
+    fills in the recent window, refuse to quote them again."""
+    if not creator_id:
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=config.PER_CREATOR_WINDOW_HOURS)
+    with db.connect(read_only=True) as con:
+        count = con.execute(
+            "SELECT COUNT(*) FROM fills f JOIN seen_rfqs s ON f.rfq_id = s.rfq_id "
+            "WHERE s.creator_id = ? AND f.filled_at >= ?",
+            [creator_id, cutoff]).fetchone()[0]
+    return int(count or 0) >= config.PER_CREATOR_FILL_HALT
+
+
 def _discovery_tick(source, gateway, dry_run):
     # FIX M2: kill-switch — stop quoting immediately if the kill file exists
     if config.KILL_FILE.exists():
@@ -227,12 +262,18 @@ def _discovery_tick(source, gateway, dry_run):
     # Replaces the old samples-staleness gate (model was removed in v1 hardening).
     if _SGP_ODDS is None or _SGP_ODDS.empty:
         return
+    # H4: global void-rate halt — step back if we're voiding too often (we're
+    # either chronically getting picked off or chronically can't re-price).
+    if _void_rate_halt_triggered():
+        _log_decision("halted_high_void_rate")
+        return
     rfqs = source.poll()
     with db.connect(read_only=True) as con:
         open_count = con.execute(
             "SELECT COUNT(*) FROM live_quotes WHERE status='open'").fetchone()[0]
     # FIX I3: load today's fills once before the loop for cap checks
     fills_today = _today_fills()
+    now_utc = datetime.now(timezone.utc)
     for rfq in rfqs:
         if open_count >= config.MAX_OPEN_QUOTES:
             break
@@ -240,6 +281,9 @@ def _discovery_tick(source, gateway, dry_run):
         ticker = rfq.get("market_ticker")
         if not rid or not ticker:
             continue
+        # Kalshi RFQ poll responses tag the creator as creator_user_id; fall
+        # back to creator_id for forward-compatibility if the API name changes.
+        creator_id = rfq.get("creator_user_id") or rfq.get("creator_id") or ""
         with db.connect(read_only=True) as con:
             seen = con.execute("SELECT in_scope FROM seen_rfqs WHERE rfq_id=?", [rid]).fetchone()
         # scope (cache the market lookup verdict)
@@ -255,9 +299,18 @@ def _discovery_tick(source, gateway, dry_run):
             if not seen:
                 _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="out_of_scope")
                 with db.connect() as con:
-                    con.execute("INSERT OR REPLACE INTO seen_rfqs VALUES (?,?,?,?,?,?,?)",
-                                [rid, ticker, False, None, None,
-                                 datetime.now(timezone.utc), "out_of_scope"])
+                    con.execute(
+                        "INSERT OR REPLACE INTO seen_rfqs "
+                        "(rfq_id, market_ticker, in_scope, game_id, legs_json, "
+                        "first_seen_at, last_decision, creator_id) "
+                        "VALUES (?,?,?,?,?,?,?,?)",
+                        [rid, ticker, False, None, None, now_utc,
+                         "out_of_scope", creator_id])
+            continue
+        # H4 (per-creator): refuse to quote a counterparty that's already
+        # farmed us this window. Check BEFORE size gate so we don't waste cycles.
+        if _creator_halt_active(creator_id):
+            _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="skipped_creator_halt")
             continue
         # size gate
         if not risk.size_ok(int(rfq.get("contracts", 0) or 0), config.MAX_RFQ_CONTRACTS):
@@ -276,6 +329,29 @@ def _discovery_tick(source, gateway, dry_run):
                                     config.MAX_GAME_EXPOSURE_PCT):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="per_game_cap")
+            continue
+        # H8: per-combo exposure cap — block multi-RFQ concentration on one combo.
+        with db.connect(read_only=True) as con:
+            combo_exp = con.execute(
+                "SELECT COALESCE(SUM(price * contracts), 0) "
+                "FROM fills WHERE combo_market_ticker=?",
+                [ticker]).fetchone()[0]
+        if float(combo_exp or 0) >= config.MAX_COMBO_EXPOSURE_USD:
+            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                          reason="per_combo_cap")
+            continue
+        # H9: per-combo cooldown — refuse new quotes for COMBO_COOLDOWN_SEC
+        # after a recent fill on this combo (same-price re-pickoff defense).
+        # Compare in SQL: DuckDB normalizes the AWARE bind param into the
+        # stored naive-local frame for us, so this is tz-consistent end-to-end.
+        with db.connect(read_only=True) as con:
+            cd_row = con.execute(
+                "SELECT 1 FROM combo_cooldown "
+                "WHERE combo_market_ticker=? AND cooled_until > ?",
+                [ticker, now_utc]).fetchone()
+        if cd_row is not None:
+            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                          reason="in_cooldown")
             continue
         # tipoff gate
         ct = _commence_time(game_id)
@@ -343,9 +419,13 @@ def _discovery_tick(source, gateway, dry_run):
                 con.execute("INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                             [qid, rid, ticker, game_id, q.yes_bid, q.no_bid, None, book_med,
                              blended, "open", datetime.now(timezone.utc), None])
-                con.execute("INSERT OR REPLACE INTO seen_rfqs VALUES (?,?,?,?,?,?,?)",
-                            [rid, ticker, True, game_id, json.dumps(legs),
-                             datetime.now(timezone.utc), "quoted"])
+                con.execute(
+                    "INSERT OR REPLACE INTO seen_rfqs "
+                    "(rfq_id, market_ticker, in_scope, game_id, legs_json, "
+                    "first_seen_at, last_decision, creator_id) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    [rid, ticker, True, game_id, json.dumps(legs),
+                     datetime.now(timezone.utc), "quoted", creator_id])
             _log_decision("quoted", rfq_id=rid, quote_id=qid, ticker=ticker, game_id=game_id,
                           model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
             open_count += 1
@@ -410,59 +490,33 @@ def _confirm_tick(gateway, dry_run):
                                  config.FAIR_DRIFT_TOLERANCE):
                 if not dry_run and gateway.confirm(qid):
                     contracts = int(float((q or {}).get("contracts", 1) or 1))
-                    # H6 (refined for N1/N2): reconcile against Kalshi positions as
-                    # ground truth, but compute THIS fill's delta from our prior
-                    # recorded total — Kalshi reports AGGREGATE per ticker, not
-                    # per-fill. Retry briefly to wait out eventual consistency
-                    # (positions read right after confirm can return the pre-fill total).
-                    with db.connect(read_only=True) as con:
-                        prior_total = con.execute(
-                            "SELECT COALESCE(SUM(CASE WHEN side_held='yes' THEN contracts "
-                            "ELSE -contracts END), 0) FROM fills WHERE combo_market_ticker=?",
-                            [ticker]).fetchone()[0]
-                    expected_signed = contracts if side_held == "yes" else -contracts
-
-                    actual = None
-                    for attempt in range(3):
-                        actual = _get_position_contracts(ticker)
-                        if actual is not None and actual != prior_total:
-                            break  # Kalshi has caught up
-                        time.sleep(0.2 * (2 ** attempt))  # 200ms, 400ms, 800ms
-
-                    if actual is None:
-                        # API down or persistently lagging → trust expected as fallback
-                        print(f"[position_reconcile_unavailable] ticker={ticker} "
-                              f"using expected={expected_signed}", flush=True)
-                        delta = expected_signed
-                    else:
-                        delta = actual - int(prior_total)  # Kalshi total - prior = this fill
-                        if delta != expected_signed:
-                            print(f"[position_mismatch] ticker={ticker} "
-                                  f"expected={expected_signed} actual_delta={delta} "
-                                  f"(kalshi_total={actual} prior={prior_total}) "
-                                  f"— trusting Kalshi", flush=True)
-
-                    # Apply the trusted delta to this fill's recorded side/size
-                    if delta > 0:
-                        side_held, contracts = "yes", delta
-                    elif delta < 0:
-                        side_held, contracts = "no", abs(delta)
-                    # delta == 0: only reachable when API is down AND expected was 0;
-                    # keep side_held/contracts as-is.
+                    # N5: record the fill IMMEDIATELY with EXPECTED side/size
+                    # (no positions retry in the hot path — that lived here
+                    # before and could spend up to 15s/fill, blowing the 30s
+                    # confirm window during accept bursts). reconciled=FALSE
+                    # marks the row for the background sweep to verify against
+                    # Kalshi positions and correct side/size if needed.
+                    now_ts = datetime.now(timezone.utc)
                     with db.connect() as con:
                         con.execute(
                             "INSERT INTO fills (fill_id, quote_id, rfq_id, combo_market_ticker, "
                             "game_id, side_held, contracts, price, fee, model_fair_at_quote, "
                             "book_fair_at_quote, blended_fair_at_quote, fair_at_confirm, "
-                            "realized_pnl, filled_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            "realized_pnl, filled_at, reconciled) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                             # FIX I2: carry model_fair_at_q / book_fair_at_q from the live_quotes row
                             [str(uuid.uuid4()), qid, rid, ticker, game_id, side_held,
                              contracts, price, fee, model_fair_at_q, book_fair_at_q,
-                             prev_fair, cur_fair, None,
-                             datetime.now(timezone.utc)])
+                             prev_fair, cur_fair, None, now_ts, False])
                         con.execute(
                             "UPDATE live_quotes SET status='filled', closed_at=? WHERE quote_id=?",
-                            [datetime.now(timezone.utc), qid])
+                            [now_ts, qid])
+                        # H9: arm the per-combo cooldown — block fresh quotes
+                        # on the same combo for COMBO_COOLDOWN_SEC.
+                        con.execute(
+                            "INSERT OR REPLACE INTO combo_cooldown "
+                            "(combo_market_ticker, cooled_until) VALUES (?, ?)",
+                            [ticker, now_ts + timedelta(seconds=config.COMBO_COOLDOWN_SEC)])
                     notify.fill(ticker, side_held, contracts, price)
                     _log_decision("confirmed", rfq_id=rid, quote_id=qid, ticker=ticker,
                                   game_id=game_id)
@@ -477,6 +531,66 @@ def _confirm_tick(gateway, dry_run):
             with db.connect() as con:
                 con.execute("UPDATE live_quotes SET status=?, closed_at=? WHERE quote_id=?",
                             [st, datetime.now(timezone.utc), qid])
+
+
+def _reconcile_sweep_tick():
+    """N5: background reconciliation sweep. Picks up fills written with
+    reconciled=FALSE and verifies side/size against Kalshi `/portfolio/positions`.
+
+    For each unreconciled fill on ticker T:
+      - prior_total = signed sum of OTHER fills on T (excluding this one)
+      - actual      = current Kalshi position on T (signed)
+      - delta       = actual - prior_total  → THIS fill's true side/size
+    If delta disagrees with what we recorded, UPDATE the fill row. Either way,
+    set reconciled=TRUE so we don't re-check it.
+
+    Lifted out of the confirm hot path (was up to 15s/fill via retries on
+    eventual consistency). Sweep runs every RECONCILE_SWEEP_SEC.
+    """
+    with db.connect(read_only=True) as con:
+        rows = con.execute(
+            "SELECT fill_id, combo_market_ticker, side_held, contracts "
+            "FROM fills WHERE reconciled = FALSE").fetchall()
+    if not rows:
+        return
+    for fill_id, ticker, recorded_side, recorded_ct in rows:
+        actual = _get_position_contracts(ticker)
+        if actual is None:
+            # API down — leave reconciled=FALSE; next sweep will retry.
+            print(f"[position_reconcile_unavailable] ticker={ticker} "
+                  f"fill_id={fill_id} — will retry next sweep", flush=True)
+            continue
+        # prior_total = signed sum of all OTHER fills on this ticker.
+        with db.connect(read_only=True) as con:
+            prior_total = con.execute(
+                "SELECT COALESCE(SUM(CASE WHEN side_held='yes' THEN contracts "
+                "ELSE -contracts END), 0) FROM fills "
+                "WHERE combo_market_ticker=? AND fill_id<>?",
+                [ticker, fill_id]).fetchone()[0]
+        delta = int(actual) - int(prior_total)
+        recorded_signed = (int(recorded_ct) if recorded_side == "yes"
+                           else -int(recorded_ct))
+        if delta != recorded_signed:
+            print(f"[position_mismatch] ticker={ticker} fill_id={fill_id} "
+                  f"recorded={recorded_signed} actual_delta={delta} "
+                  f"(kalshi_total={actual} prior={prior_total}) "
+                  f"— trusting Kalshi", flush=True)
+            if delta > 0:
+                new_side, new_ct = "yes", delta
+            elif delta < 0:
+                new_side, new_ct = "no", abs(delta)
+            else:
+                # delta == 0: keep recorded side, set contracts=0 (no real fill).
+                new_side, new_ct = recorded_side, 0
+            with db.connect() as con:
+                con.execute(
+                    "UPDATE fills SET side_held=?, contracts=?, reconciled=TRUE "
+                    "WHERE fill_id=?",
+                    [new_side, new_ct, fill_id])
+        else:
+            with db.connect() as con:
+                con.execute("UPDATE fills SET reconciled=TRUE WHERE fill_id=?",
+                            [fill_id])
 
 
 def _risk_sweep_tick(gateway):
@@ -544,7 +658,8 @@ def main_loop(dry_run: bool):
     except Exception as e:
         print(f"  warmup sgp failed: {e}", flush=True)
     _refresh_sgp()
-    last = {"disc": 0.0, "conf": 0.0, "risk": 0.0, "sgp": time.time()}
+    last = {"disc": 0.0, "conf": 0.0, "risk": 0.0, "reconcile": 0.0,
+            "sgp": time.time()}
     try:
         while _running.is_set():
             now = time.time()
@@ -566,6 +681,13 @@ def main_loop(dry_run: bool):
                 except Exception as e:
                     print(f"  risk err: {e}", flush=True)
                 last["risk"] = now
+            if (not dry_run
+                    and now - last["reconcile"] >= config.RECONCILE_SWEEP_SEC):
+                try:
+                    _reconcile_sweep_tick()
+                except Exception as e:
+                    print(f"  reconcile err: {e}", flush=True)
+                last["reconcile"] = now
             if now - last["sgp"] >= config.SGP_REFRESH_SEC:
                 try:
                     sgp_runner.sgp_cycle(

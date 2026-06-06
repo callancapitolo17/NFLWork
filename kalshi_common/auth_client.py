@@ -5,7 +5,9 @@ env so ad-hoc scripts work without a configure() call.
 """
 import json
 import os
+import random
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -50,20 +52,13 @@ def _sign(method: str, path_no_query: str) -> tuple[str, str]:
     return sig, ts
 
 
-def api(method: str, path: str, body: dict | None = None,
-        timeout: int = 30) -> tuple[int, dict | str, dict]:
-    """Make an authenticated request.
+_RETRY_STATUSES = (429, 503)
+_MAX_RETRIES = 3  # 4 total attempts max
 
-    Args:
-        method: HTTP verb.
-        path: Path under /trade-api/v2 (e.g., "/exchange/status"). Query string allowed;
-              only the path portion is signed.
-        body: Optional JSON body.
-        timeout: Seconds.
 
-    Returns:
-        (status_code, parsed_body_or_text, response_headers_dict)
-    """
+def _attempt(method: str, path: str, body: dict | None,
+             timeout: int) -> tuple[int, dict | str, dict]:
+    """Single signed request; returns (status, body_or_text, headers)."""
     path_no_query = path.split("?", 1)[0]
     sig, ts = _sign(method, path_no_query)
     url = f"{_BASE_URL}{path}"
@@ -90,3 +85,32 @@ def api(method: str, path: str, body: dict | None = None,
             return e.code, json.loads(text), headers
         except (json.JSONDecodeError, ValueError):
             return e.code, text, headers
+
+
+def api(method: str, path: str, body: dict | None = None,
+        timeout: int = 30) -> tuple[int, dict | str, dict]:
+    """Make an authenticated request.
+
+    Args:
+        method: HTTP verb.
+        path: Path under /trade-api/v2 (e.g., "/exchange/status"). Query string allowed;
+              only the path portion is signed.
+        body: Optional JSON body.
+        timeout: Seconds.
+
+    Returns:
+        (status_code, parsed_body_or_text, response_headers_dict)
+
+    N6: transient 429/503 errors are retried up to 3 times with exponential
+    backoff + jitter (200/400/800ms + uniform(0, 100ms)). Each retry re-signs
+    with a fresh timestamp. All other status codes return on the first attempt.
+    """
+    last = _attempt(method, path, body, timeout)
+    for attempt in range(_MAX_RETRIES):
+        status = last[0]
+        if status not in _RETRY_STATUSES:
+            return last
+        # Backoff before next attempt: 200ms * 2^attempt + uniform(0, 100ms).
+        time.sleep(0.2 * (2 ** attempt) + random.uniform(0, 0.1))
+        last = _attempt(method, path, body, timeout)
+    return last
