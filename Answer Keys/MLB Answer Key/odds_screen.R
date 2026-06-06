@@ -14,6 +14,7 @@ library(tibble)
 library(stringr)
 library(lubridate)
 library(jsonlite)
+library(digest)
 
 LINE_MATCH_TOLERANCE <- 3.0  # max abs(line_quoted - model_line) we'll emit
 # Raised from 1.0 -> 3.0 on 2026-05-13. With 1.0, F7 totals where the

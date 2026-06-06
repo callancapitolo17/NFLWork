@@ -20,6 +20,7 @@ test_that("line is normalized (8.5 == 8.50) and NA -> empty", {
   id_na <- compute_bet_row_id("g1", "h2h", "F5", NA, "NYY")
   expect_type(id_na, "character")
   expect_false(is.na(id_na))
+  expect_false(id_na == compute_bet_row_id("g1", "h2h", "F5", 0, "NYY"))
 })
 
 test_that("different identity fields produce different ids", {
