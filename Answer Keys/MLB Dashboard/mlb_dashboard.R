@@ -1272,7 +1272,7 @@ render_hero_strip <- function(pick_book, pick_odds, fair_odds,
     sprintf('<div class="stat"><span class="lbl">Market EV</span><span class="val evm">+%.1f%%</span></div>',
             market_ev_pct)
   } else {
-    sprintf('<div class="stat"><span class="lbl">EV</span><span class="val ev">%s</span></div>',
+    sprintf('<div class="stat"><span class="lbl">Model EV</span><span class="val ev">%s</span></div>',
             ev_str)
   }
 
@@ -1818,7 +1818,7 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
     # Edge source badge (MODEL / MARKET / BOTH)
     edge_src <- if (is.na(row$edge_source)) "model" else row$edge_source
     badge_label <- switch(edge_src, model = "Model", market = "Market",
-                          both = "Both", "Model")
+                          both = "★ Both", "Model")
     edge_badge_html <- sprintf('<span class="edge-badge %s">%s</span>',
                                edge_src, badge_label)
 
