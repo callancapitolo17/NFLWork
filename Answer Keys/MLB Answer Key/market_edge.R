@@ -79,21 +79,23 @@ find_market_edges <- function(book_odds_by_book,
   #    Over+Under for totals, the two teams for spreads / h2h, etc.
   #    Books that quote only one side are dropped (no pair → excluded from
   #    both the consensus AND the candidate set).
-  #    After pair validation, store the raw implied probability per row —
-  #    this is what enters the LOO consensus (the "price" each book is
-  #    offering for that side, vig-inclusive).
+  #    After pair validation, store the DEVIGGED fair probability per row —
+  #    this is the vig-removed true probability, which is the correct
+  #    yardstick for measuring edge against consensus.
   paired <- long %>%
     group_by(game_id, base_mt, period, bookmaker_key, absline) %>%
     filter(n() == 2) %>%
+    mutate(fair = .pair_fairs(american_odds[1], american_odds[2])) %>%
     ungroup() %>%
-    mutate(fair = .implied_prob(american_odds))
+    filter(!is.na(fair))
   if (nrow(paired) == 0) return(.empty_market_edges())
 
-  # 4. Leave-one-out consensus: each book judged vs the median implied
+  # 4. Leave-one-out consensus: each book judged vs the median DEVIGGED fair
   #    probability of the OTHER books at the same (game, base_mt, period, side, line).
-  #    Using raw implied (not devigged) means the LOO yardstick captures the
-  #    actual market price; a soft book beating -110/-110 consensus at +104 reads
-  #    as ~6.4% EV, consistent with "paying 52% on a side others offer at 52% implied."
+  #    Using devigged fairs removes bookmaker margin from the yardstick so that
+  #    edge is measured against the true market probability, not the vig-inflated
+  #    implied price. A soft book offering +110 vs a consensus of -110/-110 reads
+  #    as +5.0% EV (fair=50%, book implied=47.6%, EV=50%-47.6%=+5.0%).
   judged <- paired %>%
     group_by(game_id, base_mt, period, side, line_key) %>%
     mutate(

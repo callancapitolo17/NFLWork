@@ -30,8 +30,8 @@ tot <- function(game_id, book_side_odds, line = 8.5, ft = FT) {
 test_that("a soft book beating the others flags as a market edge", {
   books <- list(
     pinnacle = tot("g1", c(-110, -110)),
-    bfa      = tot("g1", c(-108, -112)),
-    wagerzon = tot("g1", c(+104, -124))
+    bfa      = tot("g1", c(-110, -110)),
+    wagerzon = tot("g1", c(+110, -130))
   )
   out <- find_market_edges(books, now = NOW)
   over <- out %>% filter(bet_on == "Over")
@@ -58,7 +58,7 @@ test_that("prices in line with the market produce no flag", {
 test_that("two books (edge + 1 other) is enough to flag", {
   books <- list(
     pinnacle = tot("g1", c(-110, -110)),
-    wagerzon = tot("g1", c(+104, -124))
+    wagerzon = tot("g1", c(+110, -130))
   )
   out <- find_market_edges(books, now = NOW)
   expect_true(any(out$bet_on == "Over" & out$bookmaker_key == "wagerzon"))
@@ -93,7 +93,7 @@ test_that("stale quotes are dropped before devigging", {
 test_that("bet_row_id matches the shared helper for the same wager", {
   books <- list(
     pinnacle = tot("g1", c(-110, -110)),
-    wagerzon = tot("g1", c(+104, -124))
+    wagerzon = tot("g1", c(+110, -130))
   )
   out <- find_market_edges(books, now = NOW) %>% filter(bet_on == "Over")
   expected <- compute_bet_row_id("g1", "totals", "F5", 8.5, "Over")
