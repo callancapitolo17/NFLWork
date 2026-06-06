@@ -48,7 +48,8 @@ test_that("get_*_odds defaults route through nflwork_root()", {
   # Inspect each function's db_path DEFAULT source — deterministic, no dependency
   # on DB existence or warning text. (nflwork_root() correctness is proven above.)
   book_dirs <- list(
-    get_wagerzon_odds  = "wagerzon_odds",
+    get_wagerzon_odds          = "wagerzon_odds",
+    get_wagerzon_betting_odds  = "wagerzon_odds",
     get_hoop88_odds    = "hoop88_odds",
     get_bfa_odds       = "bfa_odds",
     get_bookmaker_odds = "bookmaker_odds",
@@ -62,4 +63,10 @@ test_that("get_*_odds defaults route through nflwork_root()", {
     expect_match(default_src, "nflwork_root()", fixed = TRUE, info = fn)
     expect_match(default_src, book_dirs[[fn]], fixed = TRUE, info = fn)
   }
+})
+
+test_that("resolve_offshore_teams dict_db routes through nflwork_root()", {
+  src <- deparse(body(resolve_offshore_teams))
+  expect_true(any(grepl("nflwork_root()", src, fixed = TRUE)),
+              info = "dict_db should resolve via nflwork_root()")
 })
