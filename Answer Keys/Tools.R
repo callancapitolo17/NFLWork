@@ -23,6 +23,50 @@
   FALSE
 })
 
+# ---------------------------------------------------------------------------
+# Repo-root resolution
+# Lets worktree-resident code point at the worktree instead of the main repo.
+# Entry scripts call set_nflwork_root(derive_repo_root()); any caller that does
+# NOT opt in falls back to ~/NFLWork, so CBB/NFL behaviour is unchanged and
+# `main` stays byte-identical.
+# ---------------------------------------------------------------------------
+.NFLWORK_ROOT <- NULL
+
+set_nflwork_root <- function(root) {
+  if (is.null(root)) {
+    .NFLWORK_ROOT <<- NULL
+  } else {
+    .NFLWORK_ROOT <<- normalizePath(root, mustWork = FALSE)
+  }
+}
+
+nflwork_root <- function() {
+  if (!is.null(.NFLWORK_ROOT)) return(.NFLWORK_ROOT)
+  normalizePath(path.expand("~/NFLWork"), mustWork = FALSE)
+}
+
+# Derive the repo root from the running Rscript's --file= path (or an explicit
+# script_path for testing) by walking up until we find a dir that contains an
+# "Answer Keys" subdirectory. Falls back to ~/NFLWork if no marker is found.
+derive_repo_root <- function(script_path = NULL) {
+  if (is.null(script_path)) {
+    args <- commandArgs(trailingOnly = FALSE)
+    fa <- grep("^--file=", args, value = TRUE)
+    if (length(fa) == 0) {
+      return(normalizePath(path.expand("~/NFLWork"), mustWork = FALSE))
+    }
+    script_path <- gsub("~\\+~", " ", sub("^--file=", "", fa[1]))
+  }
+  d <- normalizePath(dirname(script_path), mustWork = FALSE)
+  while (d != dirname(d)) {
+    if (dir.exists(file.path(d, "Answer Keys"))) {
+      return(normalizePath(d, mustWork = FALSE))
+    }
+    d <- dirname(d)
+  }
+  normalizePath(path.expand("~/NFLWork"), mustWork = FALSE)
+}
+
 # --- Pipeline timing utility ---
 pipeline_timer <- function() {
   t0 <- Sys.time()
