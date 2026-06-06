@@ -6624,11 +6624,9 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 # MAIN
 # =============================================================================
 
-# Resolve NFLWork root — if running from a worktree, use main repo for mlb.duckdb
+# Resolve NFLWork root from the script location so a worktree render reads the
+# worktree's own DBs. On main this is identical to ~/NFLWork.
 NFLWORK_ROOT <- dirname(dirname(DASHBOARD_DIR))
-if (grepl(".claude/worktrees", NFLWORK_ROOT, fixed = TRUE)) {
-  NFLWORK_ROOT <- sub("/.claude/worktrees.*", "", NFLWORK_ROOT)
-}
 setwd(NFLWORK_ROOT)
 
 # Fragment-only mode: render JUST the source-parlays reactable (with combo
