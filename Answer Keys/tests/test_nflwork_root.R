@@ -43,3 +43,23 @@ test_that("derive_repo_root falls back when no --file= in commandArgs", {
     normalizePath(path.expand("~/NFLWork"), mustWork = FALSE)
   )
 })
+
+test_that("get_*_odds defaults route through nflwork_root()", {
+  # Inspect each function's db_path DEFAULT source — deterministic, no dependency
+  # on DB existence or warning text. (nflwork_root() correctness is proven above.)
+  book_dirs <- list(
+    get_wagerzon_odds  = "wagerzon_odds",
+    get_hoop88_odds    = "hoop88_odds",
+    get_bfa_odds       = "bfa_odds",
+    get_bookmaker_odds = "bookmaker_odds",
+    get_dk_odds        = "dk_odds",
+    get_fd_odds        = "fd_odds",
+    get_bet105_odds    = "bet105_odds",
+    get_kalshi_odds    = "kalshi_odds"
+  )
+  for (fn in names(book_dirs)) {
+    default_src <- paste(deparse(formals(get(fn))$db_path), collapse = " ")
+    expect_match(default_src, "nflwork_root()", fixed = TRUE, info = fn)
+    expect_match(default_src, book_dirs[[fn]], fixed = TRUE, info = fn)
+  }
+})
