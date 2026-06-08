@@ -54,6 +54,10 @@ def _sign(method: str, path_no_query: str) -> tuple[str, str]:
 
 _RETRY_STATUSES = (429, 503)
 _MAX_RETRIES = 3  # 4 total attempts max
+# N9: only retry on methods that are safe to repeat without side effects.
+# POST is excluded — the first 429/503 may have already reached Kalshi and
+# created a resource (e.g. a quote); retrying would produce a duplicate.
+_IDEMPOTENT_METHODS = ("GET", "PUT", "DELETE")
 
 
 def _attempt(method: str, path: str, body: dict | None,
@@ -104,8 +108,15 @@ def api(method: str, path: str, body: dict | None = None,
     N6: transient 429/503 errors are retried up to 3 times with exponential
     backoff + jitter (200/400/800ms + uniform(0, 100ms)). Each retry re-signs
     with a fresh timestamp. All other status codes return on the first attempt.
+
+    N9: retry is ONLY performed for idempotent methods (GET, PUT, DELETE).
+    POST returns on the first attempt regardless of status — a 429/503 on a
+    POST may have already reached Kalshi and created the resource (e.g. a
+    quote), so retrying would produce a duplicate.
     """
     last = _attempt(method, path, body, timeout)
+    if method.upper() not in _IDEMPOTENT_METHODS:
+        return last  # N9: non-idempotent — never retry
     for attempt in range(_MAX_RETRIES):
         status = last[0]
         if status not in _RETRY_STATUSES:

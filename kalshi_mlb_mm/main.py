@@ -41,6 +41,7 @@ _running.set()
 _SGP_ODDS = None         # pd.DataFrame
 _PREV_BOOK_FAIR = {}     # combo_market_ticker -> last blended book fair (circuit breaker)
 _SCOPE_CACHE = {}        # market_ticker -> (in_scope, game_id, legs)
+_VOID_HALT_ACTIVE = False  # N12: track prior void-rate halt state for edge-triggered notify
 
 
 def _signal_handler(_s, _f):
@@ -138,12 +139,19 @@ def _commence_time(game_id):
 
 
 def _today_fills():
+    # N8: treat unreconciled fills conservatively — use GREATEST(contracts,
+    # MAX_RFQ_CONTRACTS) so a fill whose confirm-response shape is still
+    # unverified can't under-count and let extra quotes through the cap gates
+    # during the 30s reconcile window.
     start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     with db.connect(read_only=True) as con:
-        return [{"game_id": g, "price": p * c}
-                for g, p, c in con.execute(
-                    "SELECT game_id, price, contracts FROM fills WHERE filled_at >= ?",
-                    [start]).fetchall()]
+        rows = con.execute(
+            "SELECT game_id, price, "
+            "CASE WHEN reconciled THEN contracts "
+            "     ELSE GREATEST(contracts, ?) END AS effective_contracts "
+            "FROM fills WHERE filled_at >= ?",
+            [config.MAX_RFQ_CONTRACTS, start]).fetchall()
+    return [{"game_id": g, "price": p * c} for g, p, c in rows]
 
 
 def _resolve_game_and_lines(market_ticker, legs):
@@ -255,6 +263,7 @@ def _creator_halt_active(creator_id: str) -> bool:
 
 
 def _discovery_tick(source, gateway, dry_run):
+    global _VOID_HALT_ACTIVE
     # FIX M2: kill-switch — stop quoting immediately if the kill file exists
     if config.KILL_FILE.exists():
         return
@@ -262,9 +271,31 @@ def _discovery_tick(source, gateway, dry_run):
     # Replaces the old samples-staleness gate (model was removed in v1 hardening).
     if _SGP_ODDS is None or _SGP_ODDS.empty:
         return
-    # H4: global void-rate halt — step back if we're voiding too often (we're
-    # either chronically getting picked off or chronically can't re-price).
-    if _void_rate_halt_triggered():
+    # H4 + N12: global void-rate halt — step back if we're voiding too often.
+    # N12: edge-triggered notification so operator gets a single ping on state
+    # transitions (False→True = halt; True→False = resume) rather than silence.
+    void_halt_now = _void_rate_halt_triggered()
+    if void_halt_now and not _VOID_HALT_ACTIVE:
+        # Transition False → True: halt started.
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=config.VOID_RATE_WINDOW_HOURS)
+        with db.connect(read_only=True) as con:
+            row = con.execute(
+                "SELECT "
+                "  SUM(CASE WHEN decision LIKE 'voided_%' THEN 1 ELSE 0 END), "
+                "  SUM(CASE WHEN decision='confirmed' THEN 1 ELSE 0 END) "
+                "FROM quote_decisions WHERE observed_at >= ?",
+                [cutoff]).fetchone()
+        voided = int(row[0] or 0)
+        confirmed = int(row[1] or 0)
+        denom = voided + confirmed
+        rate = voided / denom if denom else 0.0
+        notify.halt("void_rate",
+                    detail=f"void_rate={rate:.0%} in last {config.VOID_RATE_WINDOW_HOURS}h")
+    elif not void_halt_now and _VOID_HALT_ACTIVE:
+        # Transition True → False: halt lifted.
+        notify.resume("void_rate", detail="void_rate fell back below threshold")
+    _VOID_HALT_ACTIVE = void_halt_now
+    if void_halt_now:
         _log_decision("halted_high_void_rate")
         return
     rfqs = source.poll()
@@ -330,13 +361,25 @@ def _discovery_tick(source, gateway, dry_run):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="per_game_cap")
             continue
-        # H8: per-combo exposure cap — block multi-RFQ concentration on one combo.
+        # H8 + N7 + N8: per-combo exposure cap — block multi-RFQ concentration
+        # on one combo. N7: also count outstanding open live_quotes' worst-case
+        # exposure so a burst of RFQs on the same combo can't all be accepted
+        # before any fills register. N8: treat unreconciled fills conservatively
+        # (GREATEST(contracts, MAX_RFQ_CONTRACTS)) for the same reason.
         with db.connect(read_only=True) as con:
             combo_exp = con.execute(
-                "SELECT COALESCE(SUM(price * contracts), 0) "
+                "SELECT COALESCE(SUM(price * "
+                "CASE WHEN reconciled THEN contracts "
+                "     ELSE GREATEST(contracts, ?) END), 0) "
                 "FROM fills WHERE combo_market_ticker=?",
+                [config.MAX_RFQ_CONTRACTS, ticker]).fetchone()[0]
+            inflight_count = con.execute(
+                "SELECT COUNT(*) FROM live_quotes "
+                "WHERE combo_market_ticker=? AND status='open'",
                 [ticker]).fetchone()[0]
-        if float(combo_exp or 0) >= config.MAX_COMBO_EXPOSURE_USD:
+        worst_inflight = float(inflight_count) * config.MAX_RFQ_CONTRACTS * 1.0
+        this_quote_max = config.MAX_RFQ_CONTRACTS * 1.0
+        if float(combo_exp or 0) + worst_inflight + this_quote_max > config.MAX_COMBO_EXPOSURE_USD:
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="per_combo_cap")
             continue
@@ -544,21 +587,53 @@ def _reconcile_sweep_tick():
     If delta disagrees with what we recorded, UPDATE the fill row. Either way,
     set reconciled=TRUE so we don't re-check it.
 
+    N10: phantom-fill detection — if delta==0 but expected was non-zero, the
+    confirm succeeded but no position materialized (e.g. cancel race, internal
+    Kalshi mismatch). Mark contracts=0 + reconciled=TRUE + log [phantom_fill].
+    Caps are no longer inflated by confirms that didn't actually fill.
+
+    N11: max-age fallback — if positions API is persistently down, a fill older
+    than MAX_RECONCILE_AGE_SEC gets marked reconciled=TRUE with its recorded
+    values + [reconcile_max_age_fallback] warning. Prevents indefinite
+    cap-blocking on Kalshi outages.
+
     Lifted out of the confirm hot path (was up to 15s/fill via retries on
     eventual consistency). Sweep runs every RECONCILE_SWEEP_SEC.
     """
+    now = datetime.now(timezone.utc)
     with db.connect(read_only=True) as con:
         rows = con.execute(
-            "SELECT fill_id, combo_market_ticker, side_held, contracts "
+            "SELECT fill_id, combo_market_ticker, side_held, contracts, filled_at "
             "FROM fills WHERE reconciled = FALSE").fetchall()
     if not rows:
         return
-    for fill_id, ticker, recorded_side, recorded_ct in rows:
+    for fill_id, ticker, recorded_side, recorded_ct, filled_at in rows:
+        # N11: compute fill age before the API call so we can apply the max-age
+        # fallback if the positions API is persistently unreachable.
+        # DuckDB TIMESTAMP (not TIMESTAMPTZ) returns naive datetimes stored in
+        # local time. Use naive local `now` on both sides to stay consistent.
+        if filled_at is not None:
+            now_local = datetime.now()
+            filled_at_naive = (filled_at.replace(tzinfo=None)
+                               if filled_at.tzinfo is not None else filled_at)
+            fill_age = max(0.0, (now_local - filled_at_naive).total_seconds())
+        else:
+            fill_age = 0.0
         actual = _get_position_contracts(ticker)
         if actual is None:
-            # API down — leave reconciled=FALSE; next sweep will retry.
-            print(f"[position_reconcile_unavailable] ticker={ticker} "
-                  f"fill_id={fill_id} — will retry next sweep", flush=True)
+            if fill_age > config.MAX_RECONCILE_AGE_SEC:
+                # N11: API persistently down — fall back to recorded values so
+                # caps don't block new quotes indefinitely during an outage.
+                with db.connect() as con:
+                    con.execute("UPDATE fills SET reconciled=TRUE WHERE fill_id=?",
+                                [fill_id])
+                print(f"[reconcile_max_age_fallback] fill_id={fill_id} ticker={ticker} "
+                      f"age={fill_age:.0f}s — positions API unreachable, marking "
+                      f"reconciled with recorded values", flush=True)
+            else:
+                # API down — leave reconciled=FALSE; next sweep will retry.
+                print(f"[position_reconcile_unavailable] ticker={ticker} "
+                      f"fill_id={fill_id} — will retry next sweep", flush=True)
             continue
         # prior_total = signed sum of all OTHER fills on this ticker.
         with db.connect(read_only=True) as con:
@@ -570,6 +645,16 @@ def _reconcile_sweep_tick():
         delta = int(actual) - int(prior_total)
         recorded_signed = (int(recorded_ct) if recorded_side == "yes"
                            else -int(recorded_ct))
+        # N10: phantom-fill — confirm succeeded but no position materialized.
+        if delta == 0 and recorded_signed != 0:
+            with db.connect() as con:
+                con.execute(
+                    "UPDATE fills SET contracts=0, reconciled=TRUE WHERE fill_id=?",
+                    [fill_id])
+            print(f"[phantom_fill] fill_id={fill_id} ticker={ticker} "
+                  f"expected={recorded_signed} actual_delta=0 (kalshi_total={actual} "
+                  f"prior={prior_total}) — marking contracts=0", flush=True)
+            continue
         if delta != recorded_signed:
             print(f"[position_mismatch] ticker={ticker} fill_id={fill_id} "
                   f"recorded={recorded_signed} actual_delta={delta} "
@@ -580,7 +665,7 @@ def _reconcile_sweep_tick():
             elif delta < 0:
                 new_side, new_ct = "no", abs(delta)
             else:
-                # delta == 0: keep recorded side, set contracts=0 (no real fill).
+                # delta == 0 AND recorded_signed == 0: already correct, just mark done.
                 new_side, new_ct = recorded_side, 0
             with db.connect() as con:
                 con.execute(

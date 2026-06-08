@@ -87,6 +87,10 @@ CREATE TABLE IF NOT EXISTS combo_cooldown (
     combo_market_ticker VARCHAR PRIMARY KEY,
     cooled_until        TIMESTAMP NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_quote_decisions_observed_at
+    ON quote_decisions(observed_at);
+CREATE INDEX IF NOT EXISTS idx_fills_reconciled
+    ON fills(reconciled);
 """
 
 # Idempotent column-adds for DBs created before the H4/N5 hardening pass.

@@ -81,6 +81,10 @@ PER_CREATOR_WINDOW_HOURS = int(_get("PER_CREATOR_WINDOW_HOURS", "24"))
 MAX_COMBO_EXPOSURE_USD = float(_get("MAX_COMBO_EXPOSURE_USD", "10.0"))
 COMBO_COOLDOWN_SEC = int(_get("COMBO_COOLDOWN_SEC", "60"))
 
+# Reconcile max-age fallback (N11): fills older than this with positions API
+# persistently down get marked reconciled=TRUE with recorded values.
+MAX_RECONCILE_AGE_SEC = int(_get("MAX_RECONCILE_AGE_SEC", "300"))
+
 # Vig fallbacks (only used if a combo lacks full 4-side devig)
 DK_VIG_FALLBACK = float(_get("DK_VIG_FALLBACK", "0.125"))
 FD_VIG_FALLBACK = float(_get("FD_VIG_FALLBACK", "0.18"))

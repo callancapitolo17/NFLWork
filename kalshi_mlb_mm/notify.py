@@ -24,3 +24,7 @@ def halt(reason: str, detail: str = ""):
 
 def fill(combo_market_ticker: str, side: str, contracts: int, price: float):
     _post(f"[MM FILL] {combo_market_ticker} {side} x{contracts} @ {price:.3f}")
+
+
+def resume(reason: str, detail: str = ""):
+    _post(f"[MM RESUME] {reason} {detail}")
