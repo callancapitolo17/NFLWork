@@ -95,6 +95,17 @@ NOVIG_VIG_FALLBACK = float(_get("NOVIG_VIG_FALLBACK", "0.05"))
 MLB_SGP_DIR = Path(_get("MLB_SGP_DIR", str(PROJECT_ROOT / "mlb_sgp")))
 NOTIFY_WEBHOOK_URL = _get("NOTIFY_WEBHOOK_URL")
 
+# Logging
+LOG_PATH = PKG_DIR / "bot.log"
+LOG_LEVEL = _get("LOG_LEVEL", "INFO")
+LOG_ROTATE_MAX_BYTES = int(_get("LOG_ROTATE_MAX_BYTES", str(50 * 1024 * 1024)))
+LOG_ROTATE_BACKUPS = int(_get("LOG_ROTATE_BACKUPS", "5"))
+
+# Research firehose
+RESEARCH_DB_PATH = PKG_DIR / "kalshi_mlb_mm_research.duckdb"
+RESEARCH_BUFFER_MAX = int(_get("RESEARCH_BUFFER_MAX", "5000"))
+RESEARCH_FLUSH_WARN_RATE_LIMIT_SEC = int(_get("RESEARCH_FLUSH_WARN_RATE_LIMIT_SEC", "60"))
+
 
 def daily_exposure_cap_usd() -> float:
     return BANKROLL * DAILY_EXPOSURE_CAP_PCT

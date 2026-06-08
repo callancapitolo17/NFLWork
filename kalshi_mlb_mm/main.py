@@ -13,6 +13,7 @@ single rogue book can't anchor the quote.
 """
 import argparse
 import json
+import logging
 import os
 import signal
 import statistics
@@ -32,9 +33,11 @@ from kalshi_common.leg_types import (
     _total_line_from_legs,
     _MLB_CODE_TO_TEAM,
 )
-from kalshi_mlb_mm import config, db, notify, pricing, risk, scope, fairs
+from kalshi_mlb_mm import config, db, notify, pricing, research, risk, scope, fairs
 from kalshi_mlb_mm.rfq_source import RestRFQSource
 from kalshi_mlb_mm.quote_gateway import RestQuoteGateway
+
+log = logging.getLogger("kalshi_mlb_mm")
 
 _running = threading.Event()
 _running.set()
@@ -225,6 +228,10 @@ def _log_decision(decision, *, rfq_id=None, quote_id=None, ticker=None, game_id=
             "blended_fair, yes_bid, no_bid, observed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [str(uuid.uuid4()), rfq_id, quote_id, ticker, game_id, decision, reason,
              model, book, blended, yb, nb, datetime.now(timezone.utc)])
+    # Event 3: decision — research mirror of every quote_decisions row.
+    research.emit("decision", rfq_id=rfq_id, quote_id=quote_id, ticker=ticker,
+                  payload=dict(decision=decision, game_id=game_id, reason=reason,
+                               model=model, book=book, blended=blended, yb=yb, nb=nb))
 
 
 def _void_rate_halt_triggered() -> bool:
@@ -291,9 +298,19 @@ def _discovery_tick(source, gateway, dry_run):
         rate = voided / denom if denom else 0.0
         notify.halt("void_rate",
                     detail=f"void_rate={rate:.0%} in last {config.VOID_RATE_WINDOW_HOURS}h")
+        # Event 7: halt_event (fire transition)
+        research.emit("halt_event",
+                      payload=dict(halt_type="void_rate", transition="fire",
+                                   current_rate=rate,
+                                   window_hours=config.VOID_RATE_WINDOW_HOURS))
     elif not void_halt_now and _VOID_HALT_ACTIVE:
         # Transition True → False: halt lifted.
         notify.resume("void_rate", detail="void_rate fell back below threshold")
+        # Event 7: halt_event (clear transition)
+        research.emit("halt_event",
+                      payload=dict(halt_type="void_rate", transition="clear",
+                                   current_rate=0.0,
+                                   window_hours=config.VOID_RATE_WINDOW_HOURS))
     _VOID_HALT_ACTIVE = void_halt_now
     if void_halt_now:
         _log_decision("halted_high_void_rate")
@@ -338,10 +355,26 @@ def _discovery_tick(source, gateway, dry_run):
                         [rid, ticker, False, None, None, now_utc,
                          "out_of_scope", creator_id])
             continue
+        # Event 1: rfq_received — in-scope candidate, first time we act on it.
+        if not seen:
+            research.emit("rfq_received", rfq_id=rid, ticker=ticker,
+                          payload=dict(rfq_keys=list(rfq.keys()), rfq_raw=rfq))
         # H4 (per-creator): refuse to quote a counterparty that's already
         # farmed us this window. Check BEFORE size gate so we don't waste cycles.
         if _creator_halt_active(creator_id):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="skipped_creator_halt")
+            # Event 10: creator_halt_skip
+            with db.connect(read_only=True) as _con:
+                fill_count = _con.execute(
+                    "SELECT COUNT(*) FROM fills f JOIN seen_rfqs s ON f.rfq_id = s.rfq_id "
+                    "WHERE s.creator_id = ? AND f.filled_at >= ?",
+                    [creator_id,
+                     datetime.now(timezone.utc) - timedelta(hours=config.PER_CREATOR_WINDOW_HOURS)]
+                ).fetchone()[0]
+            research.emit("creator_halt_skip", rfq_id=rid, ticker=ticker,
+                          payload=dict(creator_id=creator_id,
+                                       fill_count_window=int(fill_count or 0),
+                                       window_hours=config.PER_CREATOR_WINDOW_HOURS))
             continue
         # size gate
         if not risk.size_ok(int(rfq.get("contracts", 0) or 0), config.MAX_RFQ_CONTRACTS):
@@ -429,12 +462,24 @@ def _discovery_tick(source, gateway, dry_run):
                         [datetime.now(timezone.utc), open_qid])
             _log_decision("circuit_breaker", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason=f"book_move_pulled_{len(opens)}_quotes")
+            # Event 9: circuit_breaker
+            research.emit("circuit_breaker", rfq_id=rid, ticker=ticker,
+                          payload=dict(prev_book_med=prev, cur_book_med=book_med,
+                                       threshold=config.BOOK_MOVE_CB_THRESHOLD,
+                                       opens_cancelled=len(opens),
+                                       game_id=game_id))
             continue
         q = pricing.quote(blended, config.TARGET_ROI)
         if q is None:
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="unpriceable")
             continue
+        # Event 2: quote_priced — we have a valid quote from the pricer.
+        research.emit("quote_priced", rfq_id=rid, ticker=ticker,
+                      payload=dict(book_fairs=book_fairs, agreeing_count=len(book_fairs),
+                                   blended_fair=blended, yes_bid=q.yes_bid, no_bid=q.no_bid,
+                                   spread_line=spread_line, total_line=total_line,
+                                   game_id=game_id))
         if dry_run:
             _log_decision("dry_run_quote", rfq_id=rid, ticker=ticker, game_id=game_id,
                           model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
@@ -486,6 +531,11 @@ def _confirm_tick(gateway, dry_run):
         q = body.get("quote") if isinstance(body, dict) else None
         st = (q or {}).get("status")
         if st == "accepted":
+            # Event 4: accept_observed — BEFORE side-inference logic, to capture
+            # the raw Kalshi response shape for first-launch field verification.
+            research.emit("accept_observed", rfq_id=rid, quote_id=qid, ticker=ticker,
+                          payload=dict(response_keys=list((q or {}).keys()),
+                                       response_raw=q))
             # Which side do we end up HOLDING? The taker accepted one side of our
             # two-sided quote; we hold the opposite. If they took our yes_bid (they
             # sold us YES), we hold YES; the API marks the accepted_side as theirs.
@@ -560,6 +610,14 @@ def _confirm_tick(gateway, dry_run):
                             "INSERT OR REPLACE INTO combo_cooldown "
                             "(combo_market_ticker, cooled_until) VALUES (?, ?)",
                             [ticker, now_ts + timedelta(seconds=config.COMBO_COOLDOWN_SEC)])
+                    # Event 5: fill_recorded — after INSERT, before notify.
+                    research.emit("fill_recorded", rfq_id=rid, quote_id=qid, ticker=ticker,
+                                  payload=dict(side_held_expected=side_held,
+                                               contracts_expected=contracts,
+                                               price=price, fee=fee,
+                                               prev_fair=prev_fair, cur_fair=cur_fair,
+                                               model_fair_at_q=model_fair_at_q,
+                                               book_fair_at_q=book_fair_at_q))
                     notify.fill(ticker, side_held, contracts, price)
                     _log_decision("confirmed", rfq_id=rid, quote_id=qid, ticker=ticker,
                                   game_id=game_id)
@@ -627,13 +685,17 @@ def _reconcile_sweep_tick():
                 with db.connect() as con:
                     con.execute("UPDATE fills SET reconciled=TRUE WHERE fill_id=?",
                                 [fill_id])
-                print(f"[reconcile_max_age_fallback] fill_id={fill_id} ticker={ticker} "
-                      f"age={fill_age:.0f}s — positions API unreachable, marking "
-                      f"reconciled with recorded values", flush=True)
+                log.warning("[reconcile_max_age_fallback] fill_id=%s ticker=%s "
+                            "age=%.0fs — positions API unreachable, marking "
+                            "reconciled with recorded values", fill_id, ticker, fill_age)
+                research.emit("reconcile_done", ticker=ticker,
+                              payload=dict(actual_total=None, prior_total=None,
+                                           delta=None, recorded_signed=None,
+                                           outcome="max_age_fallback"))
             else:
                 # API down — leave reconciled=FALSE; next sweep will retry.
-                print(f"[position_reconcile_unavailable] ticker={ticker} "
-                      f"fill_id={fill_id} — will retry next sweep", flush=True)
+                log.warning("[position_reconcile_unavailable] ticker=%s fill_id=%s "
+                            "— will retry next sweep", ticker, fill_id)
             continue
         # prior_total = signed sum of all OTHER fills on this ticker.
         with db.connect(read_only=True) as con:
@@ -651,15 +713,22 @@ def _reconcile_sweep_tick():
                 con.execute(
                     "UPDATE fills SET contracts=0, reconciled=TRUE WHERE fill_id=?",
                     [fill_id])
-            print(f"[phantom_fill] fill_id={fill_id} ticker={ticker} "
-                  f"expected={recorded_signed} actual_delta=0 (kalshi_total={actual} "
-                  f"prior={prior_total}) — marking contracts=0", flush=True)
+            log.warning("[phantom_fill] fill_id=%s ticker=%s "
+                        "expected=%d actual_delta=0 (kalshi_total=%d "
+                        "prior=%d) — marking contracts=0",
+                        fill_id, ticker, recorded_signed, actual, prior_total)
+            research.emit("reconcile_done", ticker=ticker,
+                          payload=dict(actual_total=int(actual),
+                                       prior_total=int(prior_total),
+                                       delta=delta, recorded_signed=recorded_signed,
+                                       outcome="phantom"))
             continue
         if delta != recorded_signed:
-            print(f"[position_mismatch] ticker={ticker} fill_id={fill_id} "
-                  f"recorded={recorded_signed} actual_delta={delta} "
-                  f"(kalshi_total={actual} prior={prior_total}) "
-                  f"— trusting Kalshi", flush=True)
+            log.warning("[position_mismatch] ticker=%s fill_id=%s "
+                        "recorded=%d actual_delta=%d "
+                        "(kalshi_total=%d prior=%d) "
+                        "— trusting Kalshi",
+                        ticker, fill_id, recorded_signed, delta, actual, prior_total)
             if delta > 0:
                 new_side, new_ct = "yes", delta
             elif delta < 0:
@@ -672,10 +741,20 @@ def _reconcile_sweep_tick():
                     "UPDATE fills SET side_held=?, contracts=?, reconciled=TRUE "
                     "WHERE fill_id=?",
                     [new_side, new_ct, fill_id])
+            research.emit("reconcile_done", ticker=ticker,
+                          payload=dict(actual_total=int(actual),
+                                       prior_total=int(prior_total),
+                                       delta=delta, recorded_signed=recorded_signed,
+                                       outcome="mismatch_corrected"))
         else:
             with db.connect() as con:
                 con.execute("UPDATE fills SET reconciled=TRUE WHERE fill_id=?",
                             [fill_id])
+            research.emit("reconcile_done", ticker=ticker,
+                          payload=dict(actual_total=int(actual),
+                                       prior_total=int(prior_total),
+                                       delta=delta, recorded_signed=recorded_signed,
+                                       outcome="matched"))
 
 
 def _risk_sweep_tick(gateway):
@@ -729,20 +808,30 @@ def _risk_sweep_tick(gateway):
 
 
 def main_loop(dry_run: bool):
+    from kalshi_mlb_mm.log_setup import setup_logging
+    setup_logging()
+    research.init_research_db()
     _configure_auth()
     db.init_database()
     sid = db.start_session(pid=os.getpid(), dry_run=dry_run)
-    print(f"=== MM bot session {sid} dry_run={dry_run} ===", flush=True)
+    research.set_session_id(str(sid))
+    log.info("=== MM bot session %s dry_run=%s ===", sid, dry_run)
     source, gateway = RestRFQSource(), RestQuoteGateway()
     # synchronous warm-up: one SGP cycle
     try:
-        sgp_runner.sgp_cycle(bot_market_db=str(config.MARKET_DB),
-                             scraper_dir=str(config.MLB_SGP_DIR),
-                             venv_python=str(config.MLB_SGP_DIR / "venv" / "bin" / "python"),
-                             timeout_sec=config.SGP_SCRAPER_TIMEOUT_SEC)
+        rc = sgp_runner.sgp_cycle(bot_market_db=str(config.MARKET_DB),
+                                   scraper_dir=str(config.MLB_SGP_DIR),
+                                   venv_python=str(config.MLB_SGP_DIR / "venv" / "bin" / "python"),
+                                   timeout_sec=config.SGP_SCRAPER_TIMEOUT_SEC)
+        _refresh_sgp()
+        # Event 8: scrape_done — warmup cycle
+        book_counts = {}
+        if _SGP_ODDS is not None and not _SGP_ODDS.empty:
+            book_counts = {b: int((_SGP_ODDS.bookmaker == b).sum())
+                           for b in _SGP_ODDS.bookmaker.unique()}
+        research.emit("scrape_done", payload=dict(return_codes=rc, book_counts=book_counts))
     except Exception as e:
-        print(f"  warmup sgp failed: {e}", flush=True)
-    _refresh_sgp()
+        log.warning("warmup sgp failed: %s", e)
     last = {"disc": 0.0, "conf": 0.0, "risk": 0.0, "reconcile": 0.0,
             "sgp": time.time()}
     try:
@@ -752,38 +841,46 @@ def main_loop(dry_run: bool):
                 try:
                     _discovery_tick(source, gateway, dry_run)
                 except Exception as e:
-                    print(f"  disc err: {e}", flush=True)
+                    log.error("disc err: %s", e)
                 last["disc"] = now
             if now - last["conf"] >= config.CONFIRM_SEC:
                 try:
                     _confirm_tick(gateway, dry_run)
                 except Exception as e:
-                    print(f"  conf err: {e}", flush=True)
+                    log.error("conf err: %s", e)
                 last["conf"] = now
             if now - last["risk"] >= config.RISK_SWEEP_SEC:
                 try:
                     _risk_sweep_tick(gateway)
                 except Exception as e:
-                    print(f"  risk err: {e}", flush=True)
+                    log.error("risk err: %s", e)
                 last["risk"] = now
             if (not dry_run
                     and now - last["reconcile"] >= config.RECONCILE_SWEEP_SEC):
                 try:
                     _reconcile_sweep_tick()
                 except Exception as e:
-                    print(f"  reconcile err: {e}", flush=True)
+                    log.error("reconcile err: %s", e)
                 last["reconcile"] = now
             if now - last["sgp"] >= config.SGP_REFRESH_SEC:
                 try:
-                    sgp_runner.sgp_cycle(
+                    rc = sgp_runner.sgp_cycle(
                         bot_market_db=str(config.MARKET_DB),
                         scraper_dir=str(config.MLB_SGP_DIR),
                         venv_python=str(config.MLB_SGP_DIR / "venv" / "bin" / "python"),
                         timeout_sec=config.SGP_SCRAPER_TIMEOUT_SEC)
                     _refresh_sgp()
+                    # Event 8: scrape_done — periodic cycle
+                    book_counts = {}
+                    if _SGP_ODDS is not None and not _SGP_ODDS.empty:
+                        book_counts = {b: int((_SGP_ODDS.bookmaker == b).sum())
+                                       for b in _SGP_ODDS.bookmaker.unique()}
+                    research.emit("scrape_done",
+                                  payload=dict(return_codes=rc, book_counts=book_counts))
                 except Exception as e:
-                    print(f"  sgp err: {e}", flush=True)
+                    log.error("sgp err: %s", e)
                 last["sgp"] = now
+            research.flush()  # per-tick batched drain
             time.sleep(0.25)   # short sleep → responsive SIGTERM
     finally:
         with db.connect(read_only=True) as con:
@@ -798,8 +895,9 @@ def main_loop(dry_run: bool):
                         [datetime.now(timezone.utc), qid])
             except Exception:
                 pass
+        research.flush()  # final drain before shutdown
         db.end_session(sid)
-        print("=== shutdown complete ===", flush=True)
+        log.info("=== shutdown complete ===")
 
 
 def cli():

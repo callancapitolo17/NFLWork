@@ -1,12 +1,15 @@
-"""Minimal alerting: print + optional webhook (mirrors taker notify)."""
+"""Minimal alerting: logger + optional webhook (mirrors taker notify)."""
 import json
+import logging
 import urllib.request
 
 from kalshi_mlb_mm.config import NOTIFY_WEBHOOK_URL
 
+log = logging.getLogger("kalshi_mlb_mm.notify")
+
 
 def _post(text: str):
-    print(text, flush=True)
+    log.info(text)
     if not NOTIFY_WEBHOOK_URL:
         return
     try:
