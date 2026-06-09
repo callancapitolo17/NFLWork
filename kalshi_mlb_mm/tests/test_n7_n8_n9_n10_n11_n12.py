@@ -284,7 +284,7 @@ def test_n9_post_503_no_retry(monkeypatch):
 # N10 — phantom fill: delta=0 when expected was non-zero → mark contracts=0,
 # reconciled=TRUE, log [phantom_fill].
 # ---------------------------------------------------------------------------
-def test_n10_phantom_fill_marked_zero_contracts(monkeypatch, capsys, tmp_path):
+def test_n10_phantom_fill_marked_zero_contracts(monkeypatch, caplog, tmp_path):
     from datetime import datetime, timezone
     import kalshi_mlb_mm.config as cfg
     import kalshi_mlb_mm.db as db
@@ -313,8 +313,8 @@ def test_n10_phantom_fill_marked_zero_contracts(monkeypatch, capsys, tmp_path):
 
     main._reconcile_sweep_tick()
 
-    captured = capsys.readouterr().out
-    assert "[phantom_fill]" in captured, f"N10: expected [phantom_fill] in output: {captured!r}"
+    assert "[phantom_fill]" in caplog.text, (
+        f"N10: expected [phantom_fill] in log: {caplog.text!r}")
 
     with db.connect(read_only=True) as con:
         row = con.execute(
@@ -330,7 +330,7 @@ def test_n10_phantom_fill_marked_zero_contracts(monkeypatch, capsys, tmp_path):
 # API down → mark reconciled=TRUE with recorded values, log
 # [reconcile_max_age_fallback].
 # ---------------------------------------------------------------------------
-def test_n11_max_age_fallback_marks_reconciled(monkeypatch, capsys, tmp_path):
+def test_n11_max_age_fallback_marks_reconciled(monkeypatch, caplog, tmp_path):
     from datetime import datetime, timedelta, timezone
     import kalshi_mlb_mm.config as cfg
     import kalshi_mlb_mm.db as db
@@ -359,9 +359,8 @@ def test_n11_max_age_fallback_marks_reconciled(monkeypatch, capsys, tmp_path):
 
     main._reconcile_sweep_tick()
 
-    captured = capsys.readouterr().out
-    assert "[reconcile_max_age_fallback]" in captured, (
-        f"N11: expected [reconcile_max_age_fallback] in output: {captured!r}")
+    assert "[reconcile_max_age_fallback]" in caplog.text, (
+        f"N11: expected [reconcile_max_age_fallback] in log: {caplog.text!r}")
 
     with db.connect(read_only=True) as con:
         row = con.execute(
@@ -374,7 +373,7 @@ def test_n11_max_age_fallback_marks_reconciled(monkeypatch, capsys, tmp_path):
     assert reconciled is True, "N11: fill must be marked reconciled=TRUE after max-age fallback"
 
 
-def test_n11_young_fill_stays_unreconciled_when_api_down(monkeypatch, capsys, tmp_path):
+def test_n11_young_fill_stays_unreconciled_when_api_down(monkeypatch, caplog, tmp_path):
     """N11: A fill younger than MAX_RECONCILE_AGE_SEC stays reconciled=FALSE when API is down."""
     from datetime import datetime, timezone
     import kalshi_mlb_mm.config as cfg
@@ -402,10 +401,9 @@ def test_n11_young_fill_stays_unreconciled_when_api_down(monkeypatch, capsys, tm
 
     main._reconcile_sweep_tick()
 
-    captured = capsys.readouterr().out
     # Should see position_reconcile_unavailable (young fill, retry later).
-    assert "position_reconcile_unavailable" in captured, (
-        f"N11: young fill should log unavailable, got: {captured!r}")
+    assert "position_reconcile_unavailable" in caplog.text, (
+        f"N11: young fill should log unavailable, got: {caplog.text!r}")
     # Must NOT have been marked reconciled.
     with db.connect(read_only=True) as con:
         rec = con.execute(
