@@ -291,6 +291,10 @@ SELECT accept_response_body, COUNT(*) FROM quote_log
 WHERE decision = 'failed_quote_walked' GROUP BY 1 ORDER BY 2 DESC;
 ```
 
+## Shared math (kalshi_common extraction, 2026-05-27)
+
+`fair_value`, `ev_calc`, `auth_client`, `sgp_runner`, and the leg-typing helpers (`_leg_dict_to_typed`, `_parse_event_suffix`, etc.) have been extracted into a top-level `kalshi_common/` package shared with the new maker bot (`kalshi_mlb_mm/`). The taker's originals are now one-line re-export shims — all imports, tests, and runtime behavior are identical.
+
 ## SGP cadence loop (line-source pivot, 2026-05-13)
 
 The bot drives its own SGP scrape cadence independent of the MLB dashboard.
