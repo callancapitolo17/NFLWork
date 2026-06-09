@@ -479,7 +479,7 @@ def test_confirm_records_fill_fast_with_reconciled_false(monkeypatch, tmp_path):
 # N5 — _reconcile_sweep_tick: picks up unreconciled fills and UPDATEs them to
 # match Kalshi's reported position (delta logic). Sets reconciled=TRUE.
 # ---------------------------------------------------------------------------
-def test_reconcile_sweep_corrects_mismatched_fill(monkeypatch, capsys, tmp_path):
+def test_reconcile_sweep_corrects_mismatched_fill(monkeypatch, caplog, tmp_path):
     from datetime import datetime, timezone
     import kalshi_mlb_mm.config as cfg
     import kalshi_mlb_mm.db as db
@@ -517,8 +517,7 @@ def test_reconcile_sweep_corrects_mismatched_fill(monkeypatch, capsys, tmp_path)
 
     main._reconcile_sweep_tick()
 
-    captured = capsys.readouterr().out
-    assert "position_mismatch" in captured, f"expected mismatch log, got: {captured!r}"
+    assert "position_mismatch" in caplog.text, f"expected mismatch log, got: {caplog.text!r}"
 
     with db.connect(read_only=True) as con:
         row = con.execute(
@@ -542,7 +541,7 @@ def test_reconcile_sweep_corrects_mismatched_fill(monkeypatch, capsys, tmp_path)
 # N5 — sweep tolerates API outage: if positions API returns None, the fill
 # stays reconciled=FALSE for the next sweep to retry.
 # ---------------------------------------------------------------------------
-def test_reconcile_sweep_skips_when_api_down(monkeypatch, capsys, tmp_path):
+def test_reconcile_sweep_skips_when_api_down(monkeypatch, caplog, tmp_path):
     from datetime import datetime, timezone
     import kalshi_mlb_mm.config as cfg
     import kalshi_mlb_mm.db as db
@@ -567,8 +566,7 @@ def test_reconcile_sweep_skips_when_api_down(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(main, "_get_position_contracts", lambda ticker, **kw: None)
     main._reconcile_sweep_tick()
 
-    captured = capsys.readouterr().out
-    assert "position_reconcile_unavailable" in captured
+    assert "position_reconcile_unavailable" in caplog.text
 
     with db.connect(read_only=True) as con:
         rec = con.execute(
