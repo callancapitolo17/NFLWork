@@ -46,14 +46,23 @@ QUOTE_HYSTERESIS = float(_get("QUOTE_HYSTERESIS", "0.005"))
 BANKROLL = float(_get("BANKROLL", "500.0"))
 DAILY_EXPOSURE_CAP_PCT = float(_get("DAILY_EXPOSURE_CAP_PCT", "0.75"))
 MAX_GAME_EXPOSURE_PCT = float(_get("MAX_GAME_EXPOSURE_PCT", "0.10"))
-MAX_RFQ_CONTRACTS = int(_get("MAX_RFQ_CONTRACTS", "5"))
+# Raised 5 -> 20 (2026-06-10, user-approved): live data showed the modal RFQ
+# is $10 (~20 contracts at mid prices); cap 5 only passed $1-2 RFQs (~6% of
+# observed flow). COUPLED to MAX_COMBO_EXPOSURE_USD: the N7 worst-case math
+# uses MAX_RFQ_CONTRACTS * $1 per quote, so the combo cap must exceed it.
+MAX_RFQ_CONTRACTS = int(_get("MAX_RFQ_CONTRACTS", "20"))
 MAX_OPEN_QUOTES = int(_get("MAX_OPEN_QUOTES", "25"))
 FAIR_DRIFT_TOLERANCE = float(_get("FAIR_DRIFT_TOLERANCE", "0.02"))
 MIN_FAIR_PROB = float(_get("MIN_FAIR_PROB", "0.05"))
 MAX_FAIR_PROB = float(_get("MAX_FAIR_PROB", "0.95"))
 
 # Freshness / circuit breaker
-MAX_BOOK_STALENESS_SEC = int(_get("MAX_BOOK_STALENESS_SEC", "60"))
+# Observed live 2026-06-08: a full SGP cycle is ~150-165s end-to-end (60s tick
+# gap + ~90-105s scrape runtime), so a 60s staleness window left the bot
+# books-stale (idle) for most of every cycle. 180s covers the worst observed
+# inter-fetch gap; pickoff defense in the stale tail remains margin + circuit
+# breaker + last-look.
+MAX_BOOK_STALENESS_SEC = int(_get("MAX_BOOK_STALENESS_SEC", "180"))
 BOOK_MOVE_CB_THRESHOLD = float(_get("BOOK_MOVE_CB_THRESHOLD", "0.03"))
 TIPOFF_CANCEL_MIN = int(_get("TIPOFF_CANCEL_MIN", "5"))
 
@@ -74,11 +83,16 @@ SGP_SCRAPER_TIMEOUT_SEC = int(_get("SGP_SCRAPER_TIMEOUT_SEC", "90"))
 # Adverse-selection halts (H4)
 VOID_RATE_HALT_THRESHOLD = float(_get("VOID_RATE_HALT_THRESHOLD", "0.25"))
 VOID_RATE_WINDOW_HOURS = int(_get("VOID_RATE_WINDOW_HOURS", "1"))
+# NOTE (verified live 2026-06-08): Kalshi anonymizes creator_id to "" in the
+# market-wide RFQ poll, so the per-creator halt is currently INERT (empty id
+# short-circuits to no-halt). Kept wired in case Kalshi populates the field;
+# the research firehose captures rfq_raw so we'll see it if that changes.
 PER_CREATOR_FILL_HALT = int(_get("PER_CREATOR_FILL_HALT", "10"))
 PER_CREATOR_WINDOW_HOURS = int(_get("PER_CREATOR_WINDOW_HOURS", "24"))
 
 # Per-combo concentration controls (H8 / H9)
-MAX_COMBO_EXPOSURE_USD = float(_get("MAX_COMBO_EXPOSURE_USD", "10.0"))
+# Raised $10 -> $25 with MAX_RFQ_CONTRACTS (coupled — see note there).
+MAX_COMBO_EXPOSURE_USD = float(_get("MAX_COMBO_EXPOSURE_USD", "25.0"))
 COMBO_COOLDOWN_SEC = int(_get("COMBO_COOLDOWN_SEC", "60"))
 
 # Reconcile max-age fallback (N11): fills older than this with positions API
