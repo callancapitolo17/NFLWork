@@ -142,6 +142,8 @@ def test_tick_dollar_rfq_over_cap_blocked_post_pricing(monkeypatch, tmp_path):
     import kalshi_mlb_mm.db as db
     import kalshi_mlb_mm.risk as risk
     _scaffold(monkeypatch, tmp_path, db, cfg, risk)
+    # Pin the cap so this test is independent of the production default.
+    monkeypatch.setattr(cfg, "MAX_RFQ_CONTRACTS", 5)
     # 3 agreeing books so pricing runs on a real consensus.
     monkeypatch.setattr(main, "_book_fairs",
                         lambda g, s, t: {"dk": 0.55, "fd": 0.55, "px": 0.56})

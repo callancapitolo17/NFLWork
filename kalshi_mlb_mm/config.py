@@ -46,7 +46,11 @@ QUOTE_HYSTERESIS = float(_get("QUOTE_HYSTERESIS", "0.005"))
 BANKROLL = float(_get("BANKROLL", "500.0"))
 DAILY_EXPOSURE_CAP_PCT = float(_get("DAILY_EXPOSURE_CAP_PCT", "0.75"))
 MAX_GAME_EXPOSURE_PCT = float(_get("MAX_GAME_EXPOSURE_PCT", "0.10"))
-MAX_RFQ_CONTRACTS = int(_get("MAX_RFQ_CONTRACTS", "5"))
+# Raised 5 -> 20 (2026-06-10, user-approved): live data showed the modal RFQ
+# is $10 (~20 contracts at mid prices); cap 5 only passed $1-2 RFQs (~6% of
+# observed flow). COUPLED to MAX_COMBO_EXPOSURE_USD: the N7 worst-case math
+# uses MAX_RFQ_CONTRACTS * $1 per quote, so the combo cap must exceed it.
+MAX_RFQ_CONTRACTS = int(_get("MAX_RFQ_CONTRACTS", "20"))
 MAX_OPEN_QUOTES = int(_get("MAX_OPEN_QUOTES", "25"))
 FAIR_DRIFT_TOLERANCE = float(_get("FAIR_DRIFT_TOLERANCE", "0.02"))
 MIN_FAIR_PROB = float(_get("MIN_FAIR_PROB", "0.05"))
@@ -87,7 +91,8 @@ PER_CREATOR_FILL_HALT = int(_get("PER_CREATOR_FILL_HALT", "10"))
 PER_CREATOR_WINDOW_HOURS = int(_get("PER_CREATOR_WINDOW_HOURS", "24"))
 
 # Per-combo concentration controls (H8 / H9)
-MAX_COMBO_EXPOSURE_USD = float(_get("MAX_COMBO_EXPOSURE_USD", "10.0"))
+# Raised $10 -> $25 with MAX_RFQ_CONTRACTS (coupled — see note there).
+MAX_COMBO_EXPOSURE_USD = float(_get("MAX_COMBO_EXPOSURE_USD", "25.0"))
 COMBO_COOLDOWN_SEC = int(_get("COMBO_COOLDOWN_SEC", "60"))
 
 # Reconcile max-age fallback (N11): fills older than this with positions API
