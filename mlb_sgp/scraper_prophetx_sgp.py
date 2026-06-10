@@ -727,17 +727,37 @@ def main():
     periods = tuple(p.strip() for p in periods_raw if p.strip())
 
     from mlb_sgp import prophetx
-    print(f"  PX shim: {len(targets)} target lines, periods={periods}")
-    rows = prophetx.price_sgps(targets, periods=periods, verbose=False)
-    print(f"  PX shim: priced {len(rows)} rows")
+    print(f"  PX shim: {len(targets)} target lines, periods={periods}", flush=True)
 
-    # Wipe both source labels so stale rows from a previous run never linger.
+    # Incremental batched writes (2026-06-10). PX prices line-by-line over the
+    # RFQ endpoint (~250-350s for a full slate) and used to write ONCE at the
+    # end — so when an orchestrator's scrape deadline killed it, ZERO rows
+    # landed (FD/Novig write incrementally and survive the same kill). Batch
+    # the targets and upsert after each batch so a deadline kill keeps
+    # everything priced so far. One client is built up front and reused so
+    # batching adds no session overhead.
+    #
+    # Wipe both source labels ONCE up front so stale rows from a previous run
+    # never linger ("fresh prices only" invariant — partial fresh > stale).
     # The orchestrator currently emits only _direct rows; clearing
-    # _interpolated too preserves the "fresh prices only" invariant in case
-    # the legacy integer-fallback path is ever re-wired.
+    # _interpolated too preserves the invariant in case the legacy
+    # integer-fallback path is ever re-wired.
     db.clear_source("prophetx_direct", db_path=db_path)
     db.clear_source("prophetx_interpolated", db_path=db_path)
-    db.upsert_priced_rows(rows, db_path=db_path)
+
+    batch_size = int(os.environ.get("PX_WRITE_BATCH", "50"))
+    client = prophetx.ProphetXClient(verbose=False)
+    total = 0
+    for i in range(0, len(targets), batch_size):
+        batch = targets[i:i + batch_size]
+        rows = prophetx.price_sgps(batch, periods=periods, client=client,
+                                   verbose=False)
+        if rows:
+            db.upsert_priced_rows(rows, db_path=db_path)
+            total += len(rows)
+        print(f"  PX shim: batch {i // batch_size + 1} — {len(rows)} rows "
+              f"(total {total})", flush=True)
+    print(f"  PX shim: priced {total} rows", flush=True)
     return 0
 
 
