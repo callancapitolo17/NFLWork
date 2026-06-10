@@ -57,6 +57,15 @@ with FD-specific junk exclusions (`parlay`, `listed`, `bands`, `tri-bet`,
 under an unlisted name (that bug is why F7 totals were absent). It now covers
 FG/F5/F7/F3 main + alt wherever FD posts them and auto-picks-up new markets.
 
+**Parse-failure tripwire (2026-06-10).** Every scrape prints
+`[fd_singles] alt parse: alternate_spreads N/M, alternate_totals N/M`
+(parsed/seen). If FD hands us alt runners and **none** parse
+(`M > 0, N == 0`) the scrape prints a loud `ALERT` — that's the signature
+of an FD name-format change (the FG alt-total parens bug shipped silently
+in exactly this mode). A day where FD posts no alts at all stays quiet.
+Grep the runner log for `ALERT` when alt pills go missing from the
+dashboard.
+
 ### Coverage
 
 | Period | DK | FD | Notes |
