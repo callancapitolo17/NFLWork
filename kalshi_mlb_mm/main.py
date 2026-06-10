@@ -219,6 +219,38 @@ def _get_position_contracts(market_ticker: str, timeout: int = 5) -> int | None:
     return 0
 
 
+def _rfq_requested_contracts(rfq: dict) -> float:
+    """Requested size in contracts, from the live RFQ shape.
+
+    Kalshi returns `contracts_fp` as a fixed-point STRING (e.g. "21.00") —
+    verified from live rfq_received payloads 2026-06-08; the legacy int
+    `contracts` field is kept as a fallback. Returns 0.0 when absent or zero,
+    which means the RFQ is dollar-denominated (`target_cost_dollars`) and the
+    size gate must run post-pricing instead (see _implied_contracts)."""
+    fp = rfq.get("contracts_fp")
+    if fp is not None:
+        try:
+            return float(fp)
+        except (TypeError, ValueError):
+            pass
+    try:
+        return float(rfq.get("contracts") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _implied_contracts(target_cost: float, yes_bid: float, no_bid: float) -> float:
+    """Worst-case contract count for a dollar-denominated RFQ at our quote.
+
+    The creator spends `target_cost` buying ONE side at our ask:
+    buying YES costs (1 - no_bid)/contract, buying NO costs (1 - yes_bid).
+    Worst case (max contracts) is the cheaper ask. Floor at $0.01 guards
+    the division. Gated against MAX_RFQ_CONTRACTS so dollar RFQs map onto
+    the same per-fill cap (and the N7/N8 worst-case math) as contract RFQs."""
+    min_ask = max(min(1.0 - yes_bid, 1.0 - no_bid), 0.01)
+    return target_cost / min_ask
+
+
 def _log_decision(decision, *, rfq_id=None, quote_id=None, ticker=None, game_id=None,
                   reason=None, model=None, book=None, blended=None, yb=None, nb=None):
     with db.connect() as con:
@@ -376,8 +408,18 @@ def _discovery_tick(source, gateway, dry_run):
                                        fill_count_window=int(fill_count or 0),
                                        window_hours=config.PER_CREATOR_WINDOW_HOURS))
             continue
-        # size gate
-        if not risk.size_ok(int(rfq.get("contracts", 0) or 0), config.MAX_RFQ_CONTRACTS):
+        # Size gate. Kalshi RFQs are denominated EITHER in contracts
+        # (contracts_fp, fixed-point string) OR in dollars (target_cost_dollars,
+        # with contracts_fp == "0.00"). Live data 2026-06-08: ~85% of in-scope
+        # flow was dollar-denominated, so both paths matter. Contract-based
+        # gates here; dollar-based defers until after pricing (the contract
+        # count depends on our quote — see _implied_contracts below).
+        req_contracts = _rfq_requested_contracts(rfq)
+        target_cost = float(rfq.get("target_cost_dollars") or 0)
+        if req_contracts <= 0 and target_cost <= 0:
+            _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="size_unknown")
+            continue
+        if req_contracts > 0 and not risk.size_ok(int(req_contracts), config.MAX_RFQ_CONTRACTS):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="size_gate")
             continue
         game_id, spread_line, total_line = _resolve_game_and_lines(ticker, legs)
@@ -474,6 +516,13 @@ def _discovery_tick(source, gateway, dry_run):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="unpriceable")
             continue
+        # Dollar-denominated size gate (deferred from above — needs our quote).
+        if req_contracts <= 0 and target_cost > 0:
+            implied = _implied_contracts(target_cost, q.yes_bid, q.no_bid)
+            if implied > config.MAX_RFQ_CONTRACTS:
+                _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                              reason="size_gate_dollars")
+                continue
         # Event 2: quote_priced — we have a valid quote from the pricer.
         research.emit("quote_priced", rfq_id=rid, ticker=ticker,
                       payload=dict(book_fairs=book_fairs, agreeing_count=len(book_fairs),

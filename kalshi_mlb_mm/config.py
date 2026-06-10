@@ -53,7 +53,12 @@ MIN_FAIR_PROB = float(_get("MIN_FAIR_PROB", "0.05"))
 MAX_FAIR_PROB = float(_get("MAX_FAIR_PROB", "0.95"))
 
 # Freshness / circuit breaker
-MAX_BOOK_STALENESS_SEC = int(_get("MAX_BOOK_STALENESS_SEC", "60"))
+# Observed live 2026-06-08: a full SGP cycle is ~150-165s end-to-end (60s tick
+# gap + ~90-105s scrape runtime), so a 60s staleness window left the bot
+# books-stale (idle) for most of every cycle. 180s covers the worst observed
+# inter-fetch gap; pickoff defense in the stale tail remains margin + circuit
+# breaker + last-look.
+MAX_BOOK_STALENESS_SEC = int(_get("MAX_BOOK_STALENESS_SEC", "180"))
 BOOK_MOVE_CB_THRESHOLD = float(_get("BOOK_MOVE_CB_THRESHOLD", "0.03"))
 TIPOFF_CANCEL_MIN = int(_get("TIPOFF_CANCEL_MIN", "5"))
 
@@ -74,6 +79,10 @@ SGP_SCRAPER_TIMEOUT_SEC = int(_get("SGP_SCRAPER_TIMEOUT_SEC", "90"))
 # Adverse-selection halts (H4)
 VOID_RATE_HALT_THRESHOLD = float(_get("VOID_RATE_HALT_THRESHOLD", "0.25"))
 VOID_RATE_WINDOW_HOURS = int(_get("VOID_RATE_WINDOW_HOURS", "1"))
+# NOTE (verified live 2026-06-08): Kalshi anonymizes creator_id to "" in the
+# market-wide RFQ poll, so the per-creator halt is currently INERT (empty id
+# short-circuits to no-halt). Kept wired in case Kalshi populates the field;
+# the research firehose captures rfq_raw so we'll see it if that changes.
 PER_CREATOR_FILL_HALT = int(_get("PER_CREATOR_FILL_HALT", "10"))
 PER_CREATOR_WINDOW_HOURS = int(_get("PER_CREATOR_WINDOW_HOURS", "24"))
 
