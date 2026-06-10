@@ -63,7 +63,7 @@ def test_enumerate_kalshi_targets_returns_target_lines(monkeypatch):
     enumerate_kalshi_targets yields 4 TargetLine entries (one per combo).
     Schedule comes from the Odds API (mocked here)."""
     from datetime import datetime, timezone
-    from kalshi_mlb_rfq import sgp_runner
+    from kalshi_common import sgp_runner
 
     # Kalshi event ticker format: YYMMMDDHHMM{AwayCode}{HomeCode} (11-char date prefix).
     # Schedule below has home=NYY, away=BOS, so ticker tail must be BOSNYY.
@@ -100,14 +100,14 @@ def test_enumerate_kalshi_targets_returns_target_lines(monkeypatch):
 
 
 def test_enumerate_kalshi_targets_no_events_returns_empty(monkeypatch):
-    from kalshi_mlb_rfq import sgp_runner
+    from kalshi_common import sgp_runner
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events", lambda: [])
     assert sgp_runner.enumerate_kalshi_targets() == []
 
 
 def test_enumerate_kalshi_targets_skips_unknown_team_codes(monkeypatch):
     """If event_ticker has unknown team codes, skip the event."""
-    from kalshi_mlb_rfq import sgp_runner
+    from kalshi_common import sgp_runner
     fake_event = {"event_ticker": "KXMLBGAME-26MAY132300ZZZXXX"}
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events", lambda: [fake_event])
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_spread_lines",
@@ -119,7 +119,7 @@ def test_enumerate_kalshi_targets_skips_unknown_team_codes(monkeypatch):
 
 def test_fetch_schedule_from_odds_api_handles_missing_key(monkeypatch, tmp_path):
     """When ODDS_API_KEY is unset (env + ~/.Renviron absent), returns {}."""
-    from kalshi_mlb_rfq import sgp_runner
+    from kalshi_common import sgp_runner
     monkeypatch.delenv("ODDS_API_KEY", raising=False)
     # Point HOME to a tmp dir with no .Renviron so the fallback finds nothing.
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -241,7 +241,7 @@ def test_read_priced_rows_missing_db(tmp_path):
 def test_sgp_cycle_orchestrates_full_tick(monkeypatch, tmp_path):
     """sgp_cycle() composes enumerate → write → run_scrapers → return rc map.
     Stubs out the API + subprocess to verify orchestration ordering."""
-    from kalshi_mlb_rfq import sgp_runner
+    from kalshi_common import sgp_runner
 
     call_order = []
     def fake_enum():
@@ -269,7 +269,7 @@ def test_sgp_cycle_orchestrates_full_tick(monkeypatch, tmp_path):
 
 def test_sgp_cycle_passes_env_to_scrapers(monkeypatch, tmp_path):
     """sgp_cycle must set MLB_SGP_DB_PATH and MLB_SGP_PERIODS=FG in env."""
-    from kalshi_mlb_rfq import sgp_runner
+    from kalshi_common import sgp_runner
 
     captured_env = {}
     def fake_run(scraper_dir, scraper_names, venv_python, timeout_sec, env=None):

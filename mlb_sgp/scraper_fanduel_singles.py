@@ -120,8 +120,9 @@ def classify_market(
         if team and team.lower() in n:
             return None
 
-    if any(k in n for k in _FD_EXCLUDE_KEYWORDS):
-        return None
+    # Single-inning markets ("7th Inning Result", "1st Inning Run Line") are out
+    # of scope. Run BEFORE the Result capture below so "Nth Inning Result" is
+    # excluded while plural "First N Innings Result" survives.
     if _SINGLE_INNING_RE.search(n):
         return None
 
@@ -134,6 +135,18 @@ def classify_market(
         period = "F3"
     else:
         period = "FG"
+
+    # 3-way "First N Innings Result" (Home/Tie/Away winner) -> h2h_3way, but
+    # ONLY for the periods we model (F3/F5/F7). Captured BEFORE the "result"
+    # exclude keyword, which still blocks every other result-* market: FG and
+    # First 2/4/6 Innings Result all fall to period == "FG" here and get
+    # excluded below. The dashboard pick'em path devigs this 3-way and drops
+    # the tie to a draw-no-bet (see odds_screen.R::derive_pickem_american).
+    if "result" in n and period in ("F3", "F5", "F7"):
+        return (period, "h2h_3way")
+
+    if any(k in n for k in _FD_EXCLUDE_KEYWORDS):
+        return None
 
     # Market-type detection. Check "alternate" before main. Match both
     # "moneyline" (FD's FG name) and "money line" (FD's F-period name, e.g.
@@ -199,6 +212,7 @@ def parse_runners_to_wide_rows(
             "home_spread": None, "home_spread_price": None,
             "total": None, "over_price": None, "under_price": None,
             "away_ml": None, "home_ml": None,
+            "tie_ml": None,   # 3-way "First N Innings Result" tie price
         }
 
     for r in runners:
@@ -313,6 +327,9 @@ def parse_runners_to_wide_rows(
                 row["home_ml"] = r.american_odds
             elif event.away_team in r.name:
                 row["away_ml"] = r.american_odds
+            elif r.name.strip().lower() == "tie":
+                # 3-way Result tie outcome (h2h_3way markets only).
+                row["tie_ml"] = r.american_odds
 
     # Finalization pass — mirrors the DK scraper:
     #  (a) Paired-side guard: a spread row with only one side resolved is
@@ -476,6 +493,22 @@ def write_to_duckdb(rows: list[dict]) -> None:
                   f"(existing snapshot will be re-populated this run)")
             con.execute("DROP TABLE mlb_odds")
 
+        # Migrate pre-tie_ml schema: a table created before the 3-way Result
+        # feature lacks tie_ml. CREATE TABLE IF NOT EXISTS won't add a column,
+        # so drop it and let the CREATE below rebuild with tie_ml (the snapshot
+        # is fully re-populated this run anyway).
+        table_exists = con.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = 'mlb_odds'"
+        ).fetchone()
+        has_tie = con.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'mlb_odds' AND column_name = 'tie_ml'"
+        ).fetchone()
+        if table_exists is not None and has_tie is None:
+            print("[fd] Migrating mlb_odds: adding tie_ml column "
+                  "(snapshot re-populated this run)")
+            con.execute("DROP TABLE mlb_odds")
+
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS mlb_odds (
@@ -495,7 +528,8 @@ def write_to_duckdb(rows: list[dict]) -> None:
                 over_price        INTEGER,
                 under_price       INTEGER,
                 away_ml           INTEGER,
-                home_ml           INTEGER
+                home_ml           INTEGER,
+                tie_ml            INTEGER
             )
             """
         )
@@ -506,7 +540,7 @@ def write_to_duckdb(rows: list[dict]) -> None:
                 "away_spread", "away_spread_price",
                 "home_spread", "home_spread_price",
                 "total", "over_price", "under_price",
-                "away_ml", "home_ml",
+                "away_ml", "home_ml", "tie_ml",
             ]
             # Stage into a TEMP table cloned from the live schema, then
             # atomically swap. The CREATE OR REPLACE TABLE ... AS SELECT step

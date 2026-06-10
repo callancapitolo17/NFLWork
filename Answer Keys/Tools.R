@@ -3944,14 +3944,20 @@ get_fd_odds <- function(
       result_list[[length(result_list) + 1]] <- totals_rec
     }
 
-    # Moneyline record
+    # Moneyline record. A row carrying tie_ml is FD's 3-way "First N Innings
+    # Result" (Home/Tie/Away): emit it as h2h_3way with odds_tie so
+    # scraper_to_canonical builds the three-sided frame the dashboard pick'em
+    # path collapses to a draw-no-bet (odds_screen.R::derive_pickem_american).
+    # Otherwise it's an ordinary 2-way moneyline.
     if (!is.na(row$away_ml)) {
+      has_tie <- "tie_ml" %in% names(row) && !is.na(row$tie_ml)
       ml_rec <- c(base, list(
-        market = .singles_market_name("h2h", row$period),
-        market_type = "h2h",
+        market = .singles_market_name(if (has_tie) "h2h_3way" else "h2h", row$period),
+        market_type = if (has_tie) "h2h_3way" else "h2h",
         line = NA_real_,
         odds_away = row$away_ml,
         odds_home = row$home_ml,
+        odds_tie = if (has_tie) row$tie_ml else NA_integer_,
         odds_over = NA_integer_,
         odds_under = NA_integer_
       ))
