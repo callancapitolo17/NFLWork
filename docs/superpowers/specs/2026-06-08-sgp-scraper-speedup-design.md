@@ -49,18 +49,23 @@ are refetched every cycle.
    rejected: guessing ceilings and shipping — a wrong guess either leaves
    speed on the table or triggers a DK block during the season.
 
-**Risks / push back here**
+**Risks / push back here** *(both resolved 2026-06-08 — decisions below)*
 
-- **PX RFQ footprint.** Even "gentle" parallelism doubles/triples our RFQ
-  rate at PX. If you think the account-flagging risk outweighs the speed
-  win, we can cap PX at its current 2-wide and take the win from DK +
-  architecture only. The probe will give us data, but the risk tolerance
-  call is yours.
-- **DK probe could trigger a temporary Akamai block** during Phase 0
-  tuning. Recoverable (new session / waiting it out has worked before),
-  but if it happens on a game day the dashboard's DK pills go stale too,
-  since they share the Akamai bypass. We can schedule the probe for a
-  morning with no early games.
+- **PX RFQ footprint — RESOLVED: probe gently to 4–6, ship at ceiling;
+  per-book cadence is the real dial.** Parallelism does not change RFQ
+  *volume* per cycle (~1,100 RFQs either way — it only compresses the
+  window); the volume increase comes from faster cycles (~2.5× more
+  RFQs/day once cycles hit 60s), which happens regardless of PX's worker
+  count. Mitigation: `SGPService` supports per-book refresh intervals
+  from day one (cheap staleness check per book), so PX can be refreshed
+  every 2–3 cycles later without rearchitecting if footprint becomes a
+  concern. Not enabled by default in v1 — measure first.
+- **DK probe Akamai risk — RESOLVED: run ~7–8am PT (no games in
+  progress, hours of recovery buffer before first pitch), hard call
+  budget ~150 calls for the full DK ramp (noise vs ~6,000 calls in one
+  normal cycle), and a post-probe health check (one vanilla
+  `calculateBets`) so a tripped defense is detected immediately, not at
+  game time. If blocked at level N, ship the last clean level.
 - **Bot restart required.** Both bots must restart to pick up the
   in-process service (Phase 2). Restart gotchas are documented (SIGTERM
   starvation, must run from main repo cwd) but it's still an operational
@@ -188,6 +193,11 @@ rerun when books change defenses; it is a tool, not a temp file).
   `PX_TARGET_PARALLELISM` values. Run manually; never from the bots.
 - Cooldown pauses between levels so a triggered defense at level N
   doesn't contaminate the read at N+1.
+- **Run window:** ~7–8am PT (no MLB games in progress; hours of recovery
+  buffer before first pitch). **Hard budgets:** ≤150 total DK calls,
+  ≤40 total PX RFQs across the whole ramp. **Post-probe health check:**
+  one vanilla `calculateBets` (DK) and one minimum-stake RFQ (PX) after
+  the ramp completes, so a tripped defense is detected immediately.
 
 ### 3.3 Phase 1 — target-level parallelism in the orchestrators
 
@@ -238,6 +248,12 @@ class SGPService:
 - **Persistent clients.** Created lazily on first use, held across
   cycles. A book whose calls start failing (3 consecutive, matching the
   existing auto-reinit heuristic) gets its client rebuilt.
+- **Per-book refresh intervals.** `SGPService` carries an optional
+  `min_refresh_sec` per book (default 0 = every cycle). On `refresh()`,
+  a book whose last successful fetch is younger than its interval is
+  skipped and its previous rows are not re-emitted (callers already
+  treat `mlb_sgp_odds` freshness via `fetch_time`). This is the PX
+  footprint dial — present from day one, not enabled in v1.
 - **Bot integration.** `sgp_cycle()` keeps its signature but gains a
   service-backed implementation: enumerate targets → `service.refresh()`
   → write rows to the bot's market DB (same `mlb_sgp_odds` schema — the
