@@ -151,11 +151,26 @@ def classify_market(
     return None
 
 
+def new_alt_parse_stats() -> dict[str, dict[str, int]]:
+    """Fresh seen/ok counters for the alt-runner parse tripwire.
+
+    "seen" counts every alt-classified runner; "ok" counts the ones whose
+    line resolved (handicap or name regex). The signature of FD format
+    drift is seen > 0 with ok == 0 — data arrived but none of it parsed —
+    which must read differently from "FD posted no alts today" (seen == 0).
+    """
+    return {
+        "alternate_spreads": {"seen": 0, "ok": 0},
+        "alternate_totals": {"seen": 0, "ok": 0},
+    }
+
+
 def parse_runners_to_wide_rows(
     event: Event,
     runners: list[Runner],
     market_meta: dict[str, tuple[str, str]],   # market_id -> (period, market_type)
     fetch_time: datetime,
+    alt_parse_stats: dict[str, dict[str, int]] | None = None,
 ) -> list[dict[str, Any]]:
     """Group runners by (period, market_type, line); emit wide rows.
 
@@ -191,6 +206,9 @@ def parse_runners_to_wide_rows(
         if meta is None:
             continue
         period, market_type = meta
+
+        if alt_parse_stats is not None and market_type in alt_parse_stats:
+            alt_parse_stats[market_type]["seen"] += 1
 
         # FD-specific line extraction: for alt-spreads and alt-totals, FD often
         # encodes the line in the runner NAME instead of on `handicap`. We
@@ -231,6 +249,8 @@ def parse_runners_to_wide_rows(
                 flush=True,
             )
             continue
+        if alt_parse_stats is not None and market_type in alt_parse_stats:
+            alt_parse_stats[market_type]["ok"] += 1
 
         # Bucket key: main rows coalesce by period only; alt rows split by line.
         # For alt-spreads, both sides of a paired line (e.g. Yankees -2.5 and
@@ -373,6 +393,7 @@ def scrape_singles(verbose: bool = False) -> int:
     fetch_time = datetime.now(timezone.utc)
     all_rows: list[dict] = []
     failed: list[str] = []
+    alt_parse_stats = new_alt_parse_stats()
 
     for event in events:
         try:
@@ -386,7 +407,8 @@ def scrape_singles(verbose: bool = False) -> int:
                 if classified is not None:
                     market_meta[m.market_id] = classified
 
-            rows = parse_runners_to_wide_rows(event, runners, market_meta, fetch_time)
+            rows = parse_runners_to_wide_rows(event, runners, market_meta, fetch_time,
+                                              alt_parse_stats=alt_parse_stats)
             all_rows.extend(rows)
             if verbose:
                 print(
@@ -399,6 +421,21 @@ def scrape_singles(verbose: bool = False) -> int:
             print(f"  [{event.event_id}] FAILED: {e}", flush=True)
             failed.append(event.event_id)
             continue
+
+    # Aggregate parse-failure tripwire. "seen > 0, ok == 0" means FD handed us
+    # alt runners and we threw every one away — the signature of a format
+    # change (this exact mode shipped the FG alt-total regex bug). A scrape-day
+    # with no alts posted (seen == 0) stays quiet.
+    summary = ", ".join(
+        f"{mt} {s['ok']}/{s['seen']}" for mt, s in alt_parse_stats.items())
+    print(f"[fd_singles] alt parse: {summary}", flush=True)
+    for mt, s in alt_parse_stats.items():
+        if s["seen"] > 0 and s["ok"] == 0:
+            print(
+                f"[fd_singles] ALERT: {mt}: {s['seen']} runners seen, 0 parsed "
+                f"— FD format drift likely (every name failed the line regex)",
+                flush=True,
+            )
 
     write_to_duckdb(all_rows)
     print(

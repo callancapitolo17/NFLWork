@@ -77,3 +77,63 @@ def test_parens_alt_total_still_parses():
 def test_garbage_returns_none():
     m = _FD_ALT_SPREAD_RE.match(_normalize_alt_name("garbage input"))
     assert m is None
+
+
+# --- Aggregate parse-failure tripwire ("N seen, 0 parsed") -----------------
+# The FG alt-total bug shipped because every runner individually failed the
+# regex and the scraper still exited 0 with a normal-looking summary. The
+# tripwire counts, per alt market type, how many runners needed a name-parse
+# vs how many succeeded — "seen > 0, ok == 0" is the signature of FD format
+# drift and must be loudly distinguishable from "FD posted no alts today".
+
+from datetime import datetime, timezone
+
+from fd_client import Event, Runner
+from scraper_fanduel_singles import new_alt_parse_stats, parse_runners_to_wide_rows
+
+_EVENT = Event(
+    event_id="e1",
+    home_team="New York Yankees",
+    away_team="Boston Red Sox",
+    start_time="2026-06-10T23:05:00.000Z",
+)
+_FETCH = datetime.now(timezone.utc)
+
+
+def _alt_total_runner(name: str, rid: str) -> Runner:
+    return Runner(runner_id=rid, market_id="m1", name=name,
+                  line=None, american_odds=-110)
+
+
+def test_stats_all_alt_totals_fail_to_parse():
+    # Simulated format drift: FD renames runners so nothing matches the regex.
+    stats = new_alt_parse_stats()
+    runners = [_alt_total_runner("Total Runs Above 7.5", "r1"),
+               _alt_total_runner("Total Runs Below 7.5", "r2")]
+    rows = parse_runners_to_wide_rows(
+        _EVENT, runners, {"m1": ("FG", "alternate_totals")}, _FETCH,
+        alt_parse_stats=stats)
+    assert rows == []
+    assert stats["alternate_totals"]["seen"] == 2
+    assert stats["alternate_totals"]["ok"] == 0
+
+
+def test_stats_healthy_alt_totals_parse():
+    stats = new_alt_parse_stats()
+    runners = [_alt_total_runner("Over 7.5", "r1"),
+               _alt_total_runner("Under 7.5", "r2")]
+    rows = parse_runners_to_wide_rows(
+        _EVENT, runners, {"m1": ("FG", "alternate_totals")}, _FETCH,
+        alt_parse_stats=stats)
+    assert len(rows) == 1  # Over + Under collapse into one wide row
+    assert stats["alternate_totals"]["seen"] == 2
+    assert stats["alternate_totals"]["ok"] == 2
+
+
+def test_stats_param_is_optional():
+    # Existing callers that don't pass stats must keep working unchanged.
+    runners = [_alt_total_runner("Over 7.5", "r1"),
+               _alt_total_runner("Under 7.5", "r2")]
+    rows = parse_runners_to_wide_rows(
+        _EVENT, runners, {"m1": ("FG", "alternate_totals")}, _FETCH)
+    assert len(rows) == 1
