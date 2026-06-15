@@ -2,9 +2,10 @@
 
 # ---------------------------------------------------------------------------
 # N7 — per-combo cap counts in-flight live_quotes' worst-case exposure.
-# Pre-seed 4 open live_quotes on the ticker (each worth MAX_RFQ_CONTRACTS=$5
-# worst-case). With MAX_COMBO_EXPOSURE_USD=10, the cap check must fire even
-# though fills is empty (inflight + this-quote-max already exceeds cap).
+# The per-combo cap now runs AFTER pricing (needs the quote). In-flight worst-
+# case = inflight_count * max_fill_exposure_usd(). We pin BANKROLL=$500 and
+# MAX_FILL_EXPOSURE_PCT=0.10 (cap=$50) and set MAX_COMBO_EXPOSURE_USD=10 so
+# 4 in-flight quotes ($200 worst) + this-quote (~$1.71) >> $10 cap.
 # ---------------------------------------------------------------------------
 def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
     from datetime import datetime, timezone
@@ -15,14 +16,10 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cfg, "DB_PATH", tmp_path / "n7.duckdb")
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
-    # MAX_RFQ_CONTRACTS=2, MAX_COMBO_EXPOSURE_USD=10 → 4 open quotes × 2 = 8,
-    # plus this-quote-max=2 → 10 which is NOT > 10.  Use 5+1=6 > 10 via cap=5.
-    # Simpler: 4 open quotes × MAX_RFQ_CONTRACTS (5 default) = 20 >> cap=10.
-    monkeypatch.setattr(cfg, "MAX_COMBO_EXPOSURE_USD", 10.0)
-    monkeypatch.setattr(cfg, "MAX_RFQ_CONTRACTS", 2)
-    # With MAX_RFQ_CONTRACTS=2: 4 in-flight × $2 worst = $8, + this-quote $2 = $10.
-    # 10 > 10 is False, so change to MAX_RFQ_CONTRACTS=3 → 4×3+3=15>10=True.
-    monkeypatch.setattr(cfg, "MAX_RFQ_CONTRACTS", 3)
+    # Pin so per-fill cap = $50, per-combo cap = $10 (so inflight $200 >> $10).
+    monkeypatch.setattr(cfg, "BANKROLL", 500.0)
+    monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 0.10)   # per-fill cap = $50
+    monkeypatch.setattr(cfg, "MAX_COMBO_EXPOSURE_USD", 10.0)  # tight combo cap
 
     import importlib
     importlib.reload(db)
@@ -36,6 +33,11 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
                                       "total_line": [8.5]}))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m: True)
     monkeypatch.setattr(main, "_today_fills", lambda: [])
+    # Per-combo cap is now after pricing — need book_fairs stub so pricing runs.
+    monkeypatch.setattr(main, "_book_fairs",
+                        lambda g, s, t: {"dk": 0.55, "fd": 0.55, "px": 0.56})
+    monkeypatch.setattr(main, "_commence_time", lambda gid: None)
+    monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
 
     legs = [{"market_ticker": "KXMLBSPREAD-N7", "event_ticker": "EVT-N7",
              "side": "yes", "count": 1},
@@ -46,6 +48,8 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
                         lambda ticker, legs: ("g7", -1.5, 8.5))
 
     # Pre-seed 4 open live_quotes on COMBO-N7 — fills table is EMPTY.
+    # N7: inflight worst-case = 4 * max_fill_exposure_usd() = 4 * $50 = $200.
+    # $200 + this-quote >> $10 combo cap → per_combo_cap fires.
     now = datetime.now(timezone.utc)
     with db.connect() as con:
         for i in range(4):
@@ -63,7 +67,7 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
 
     class Src:
         def poll(self):
-            # 5th RFQ on the same combo
+            # 5th RFQ on the same combo; 3 contracts → exposure ~$1.71 < $50 (per-fill passes)
             return [{"id": "r-n7-new", "market_ticker": "COMBO-N7", "contracts": 3}]
 
         def get_market(self, t):
@@ -82,10 +86,13 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# N8 — unreconciled fills are counted conservatively (GREATEST(contracts,
-# MAX_RFQ_CONTRACTS)) in cap queries.  Pre-seed one unreconciled fill with
-# contracts=1 on a game; the daily/per-game cap is just above 1*price but
-# below MAX_RFQ_CONTRACTS*price, so only the conservative counting triggers.
+# N8 — unreconciled fills are counted conservatively in cap queries.
+# The conservative count is now the per-fill dollar cap (max_fill_exposure_usd)
+# rather than GREATEST(contracts, MAX_RFQ_CONTRACTS). An unreconciled fill
+# counts as max_fill_exposure_usd() dollars regardless of recorded contracts.
+# Pin: BANKROLL=$5, MAX_FILL_EXPOSURE_PCT=1.0 → max_fill_exposure_usd()=$5.
+# DAILY_EXPOSURE_CAP_PCT=1.0 → daily cap=$5. One unreconciled fill → $5 in
+# _today_fills → daily_cap fires even though real exposure might be $0.50.
 # ---------------------------------------------------------------------------
 def test_n8_unreconciled_fill_counted_conservatively_in_today_fills(monkeypatch, tmp_path):
     from datetime import datetime, timezone
@@ -97,16 +104,13 @@ def test_n8_unreconciled_fill_counted_conservatively_in_today_fills(monkeypatch,
     monkeypatch.setattr(cfg, "DB_PATH", tmp_path / "n8.duckdb")
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
 
-    # BANKROLL=100, DAILY_EXPOSURE_CAP_PCT=1.0 → daily cap = 100.
-    # MAX_RFQ_CONTRACTS=20. One unreconciled fill: contracts=1, price=0.50
-    # → real exposure = 0.50 but conservative = 20 * 0.50 = 10.0.
-    # Make BANKROLL=10 and DAILY_CAP_PCT=1.0 → cap=10.
-    # Conservative exposure = 10, new quote MAX = 20*1 = 20. Total > 10 → skip.
-    # But we test via _today_fills() indirectly — we need to confirm the
-    # per_game_cap or daily_cap fires due to conservative counting.
+    # Pin: per-fill cap = BANKROLL * MAX_FILL_EXPOSURE_PCT = $5*1.0 = $5.
+    # Daily cap = BANKROLL * DAILY_EXPOSURE_CAP_PCT = $5*1.0 = $5.
+    # One unreconciled fill → _today_fills returns price=$5 (conservative).
+    # $5 >= $5 → daily_cap fires.
     monkeypatch.setattr(cfg, "BANKROLL", 5.0)
-    monkeypatch.setattr(cfg, "DAILY_EXPOSURE_CAP_PCT", 1.0)  # cap = $5
-    monkeypatch.setattr(cfg, "MAX_RFQ_CONTRACTS", 10)        # conservative = 10 contracts
+    monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 1.0)   # per-fill cap = $5
+    monkeypatch.setattr(cfg, "DAILY_EXPOSURE_CAP_PCT", 1.0)  # daily cap = $5
 
     import importlib
     importlib.reload(db)
@@ -129,8 +133,8 @@ def test_n8_unreconciled_fill_counted_conservatively_in_today_fills(monkeypatch,
                         lambda ticker, legs: ("g8", -1.5, 8.5))
 
     # Pre-seed one UNRECONCILED fill with contracts=1, price=0.50.
-    # Real exposure = $0.50 (well under $5 cap).
-    # Conservative exposure = 10 × $0.50 = $5.00 (at cap → daily_cap fires).
+    # Real exposure = $0.50 (well under $5 daily cap).
+    # Conservative: unreconciled → counts as max_fill_exposure_usd() = $5.
     now = datetime.now(timezone.utc)
     with db.connect() as con:
         con.execute(
@@ -142,13 +146,13 @@ def test_n8_unreconciled_fill_counted_conservatively_in_today_fills(monkeypatch,
             ["fill-n8", "qid-n8", "r-n8-prior", "COMBO-N8", "g8",
              "yes", 1, 0.50, 0.0, None, 0.5, 0.5, 0.5, None, now, False])
 
-    # Verify _today_fills returns conservative amounts when reconciled=False.
+    # Verify _today_fills returns the conservative per-fill cap amount.
     fills = main._today_fills()
     assert len(fills) == 1, f"Expected 1 fill, got {len(fills)}"
     effective_price = fills[0]["price"]
-    # Conservative: GREATEST(1, 10) × 0.50 = 10 × 0.50 = 5.0
+    # Conservative: unreconciled → max_fill_exposure_usd() = $5 (not $0.50).
     assert effective_price == 5.0, (
-        f"N8: expected conservative price=5.0, got {effective_price}")
+        f"N8: expected conservative price=5.0 (per-fill cap), got {effective_price}")
 
     submit_calls = []
 

@@ -96,7 +96,7 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `BANKROLL` | `500.0` | Master risk dial — raise this one number to scale everything |
 | `DAILY_EXPOSURE_CAP_PCT` | `0.75` | Daily hard stop as a fraction of BANKROLL ($375 at default) |
 | `MAX_GAME_EXPOSURE_PCT` | `0.10` | Per-game exposure cap as fraction of BANKROLL ($50 at default) |
-| `MAX_RFQ_CONTRACTS` | `5` | Decline any RFQ requesting more contracts than this (~$5/fill max) |
+| `MAX_FILL_EXPOSURE_PCT` | `0.10` | Per-fill dollar cap as fraction of BANKROLL ($50 at default). Quote-or-skip only — the RFQ creator fixes fill size; this is the only lever. |
 | `MAX_OPEN_QUOTES` | `25` | Cap on simultaneously resting quotes (well under Kalshi's 100 limit) |
 | `TARGET_ROI` | `0.05` | Quoted margin — the `p / (1 + TARGET_ROI)` divisor in pricing |
 | `FAIR_DRIFT_TOLERANCE` | `0.02` | Last-look: void confirm if fair drifted >2¢ against filled side since quote time |
