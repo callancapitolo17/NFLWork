@@ -361,6 +361,7 @@ SCRAPER_NAMES = [
     "scraper_fanduel_sgp.py",
     "scraper_prophetx_sgp.py",
     "scraper_novig_sgp.py",
+    "scraper_betmgm_sgp.py",
 ]
 
 
