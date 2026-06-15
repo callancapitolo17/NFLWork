@@ -55,6 +55,7 @@ signatures. This orchestrator adapts:
 """
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
@@ -75,6 +76,19 @@ _FALLBACK_KEY_TO_COMBO = {
     "away_over":  "Away Spread + Over",
     "away_under": "Away Spread + Under",
 }
+
+
+# Target-level parallelism. FD is not the cycle's long pole (strict
+# line matching filters most targets), so the default is conservative;
+# env-overridable for ops tuning.
+FD_TARGET_PARALLELISM_DEFAULT = 4
+
+
+def _resolve_parallelism(parallelism: int | None) -> int:
+    if parallelism is not None:
+        return parallelism
+    return int(os.environ.get("MLB_SGP_FD_PARALLELISM",
+                              str(FD_TARGET_PARALLELISM_DEFAULT)))
 
 
 def _extract_offered_lines_fd(
@@ -108,6 +122,7 @@ def price_sgps(
     periods: tuple[str, ...] = ("FG",),
     client: FanDuelClient | None = None,
     verbose: bool = False,
+    parallelism: int | None = None,
 ) -> list[PricedRow]:
     """Price every target line against the FanDuel SGP API.
 
@@ -126,6 +141,10 @@ def price_sgps(
         useful for production, but tests should always pass a mock).
     verbose
         Forwarded to leg-level helpers for debug printing.
+    parallelism
+        Number of targets priced concurrently. ``None`` resolves to the
+        ``MLB_SGP_FD_PARALLELISM`` env var or ``FD_TARGET_PARALLELISM_DEFAULT``;
+        total in-flight FD requests is ``parallelism × 4`` (4 combos/target).
 
     Returns
     -------
@@ -250,24 +269,27 @@ def price_sgps(
             print(f"  game {game_id}: {pre} kalshi → {post} offered", flush=True)
 
     # ----- Phase 2: per target row, price 4 combos ----- #
-    for t in filtered_targets:
+    # Targets fan out on a thread pool (mirrors draftkings.py /
+    # novig.py). Runners are pre-fetched in the filter loop above, so
+    # workers only do implyBets calls — no shared-cache mutation races.
+    def _price_one_target(t: TargetLine) -> list[PricedRow]:
+        target_rows: list[PricedRow] = []
         game = matched_by_gid.get(t.game_id)
         if game is None:
-            continue
+            return target_rows
 
         period_key = t.period.lower()  # "FG" -> "fg"
 
-        # Runners cache is now guaranteed-populated by the filter loop
+        # Runners cache is guaranteed-populated by the filter loop
         # above (we only added a target if its game's runners were
         # fetched successfully).
         sel_ids_per_period = runners_cache[t.game_id]
         sel = sel_ids_per_period.get(period_key, {"spreads": {}, "totals": {}})
 
         # Sign convention: TargetLine.spread is the home-perspective
-        # signed line, so the away leg is keyed by -spread. This matches
-        # the legacy scraper's home_line/away_line construction.
+        # signed line, so the away leg is keyed by -spread.
         if not sel.get("spreads"):
-            continue
+            return target_rows
         home_line = t.spread
         away_line = -t.spread
 
@@ -277,16 +299,14 @@ def price_sgps(
         under = sel["totals"].get(("U", t.total))
 
         # If any of the four legs is missing, the requested (spread,
-        # total) is off-main / off-alt. Try the integer-line derivation
-        # fallback (only valid for integer totals).
+        # total) is off-main / off-alt. Try the integer-line fallback.
         if not (home_spread and away_spread and over and under):
             fallback = try_integer_fallback_fd(
                 client.session, sel, home_line, away_line, t.total,
                 verbose=verbose,
             )
             if fallback is None:
-                continue
-            # 4 derived combos at once, all tagged _interpolated
+                return target_rows
             prefix = "" if t.period == "FG" else "F5 "
             fair_probs = fallback["fair_probs"]
             for key, base_combo in _FALLBACK_KEY_TO_COMBO.items():
@@ -294,7 +314,7 @@ def price_sgps(
                 if not fair_p or fair_p <= 0:
                     continue
                 dec = 1.0 / fair_p
-                out.append(PricedRow(
+                target_rows.append(PricedRow(
                     game_id=t.game_id,
                     combo=prefix + base_combo,
                     period=t.period,
@@ -306,13 +326,9 @@ def price_sgps(
                     sgp_american=decimal_to_american(dec),
                     fetch_time=fetch_now,
                 ))
-            continue
+            return target_rows
 
         # ----- Main path: price the 4 canonical combos in parallel ----- #
-        # 4 independent implyBets calls on the same curl_cffi session.
-        # Mirrors the DK orchestrator pattern (commit fd9900e). Session
-        # is thread-safe for independent requests; no shared per-request
-        # state is mutated across threads.
         prefix = "" if t.period == "FG" else "F5 "
         combos = (
             ("Home Spread + Over",  home_spread, over),
@@ -325,14 +341,13 @@ def price_sgps(
             client.session, combos, price_combo, verbose,
         )
 
-        # Iterate combos (not the dict) to preserve deterministic order.
         for combo_name, _sp_pair, _tot_pair in combos:
             result = priced_by_combo.get(combo_name)
             if not result:
                 continue
             dec = float(result["decimal"])
             am = int(result["american"])
-            out.append(PricedRow(
+            target_rows.append(PricedRow(
                 game_id=t.game_id,
                 combo=prefix + combo_name,
                 period=t.period,
@@ -344,6 +359,17 @@ def price_sgps(
                 sgp_american=am,
                 fetch_time=fetch_now,
             ))
+        return target_rows
+
+    n_workers = max(1, _resolve_parallelism(parallelism))
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = [pool.submit(_price_one_target, t) for t in filtered_targets]
+        for f in as_completed(futures):
+            try:
+                out.extend(f.result())
+            except Exception as e:
+                if verbose:
+                    print(f"  fd target error: {e}", flush=True)
 
     return out
 
