@@ -142,19 +142,17 @@ def _commence_time(game_id):
 
 
 def _today_fills():
-    # N8: treat unreconciled fills conservatively — use GREATEST(contracts,
-    # MAX_RFQ_CONTRACTS) so a fill whose confirm-response shape is still
-    # unverified can't under-count and let extra quotes through the cap gates
-    # during the 30s reconcile window.
+    # N8: treat unreconciled fills conservatively — count as the per-fill cap
+    # so a fill whose confirm-response shape is still unverified during the 30s
+    # reconcile window can't under-count and let extra quotes through the cap gates.
     start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     with db.connect(read_only=True) as con:
         rows = con.execute(
-            "SELECT game_id, price, "
-            "CASE WHEN reconciled THEN contracts "
-            "     ELSE GREATEST(contracts, ?) END AS effective_contracts "
+            "SELECT game_id, "
+            "CASE WHEN reconciled THEN price * contracts ELSE ? END AS exposure "
             "FROM fills WHERE filled_at >= ?",
-            [config.MAX_RFQ_CONTRACTS, start]).fetchall()
-    return [{"game_id": g, "price": p * c} for g, p, c in rows]
+            [config.max_fill_exposure_usd(), start]).fetchall()
+    return [{"game_id": g, "price": exp} for g, exp in rows]
 
 
 def _resolve_game_and_lines(market_ticker, legs):
@@ -226,7 +224,7 @@ def _rfq_requested_contracts(rfq: dict) -> float:
     verified from live rfq_received payloads 2026-06-08; the legacy int
     `contracts` field is kept as a fallback. Returns 0.0 when absent or zero,
     which means the RFQ is dollar-denominated (`target_cost_dollars`) and the
-    size gate must run post-pricing instead (see _implied_contracts)."""
+    size gate must run post-pricing instead (see _worst_fill_exposure_usd)."""
     fp = rfq.get("contracts_fp")
     if fp is not None:
         try:
@@ -239,16 +237,29 @@ def _rfq_requested_contracts(rfq: dict) -> float:
         return 0.0
 
 
-def _implied_contracts(target_cost: float, yes_bid: float, no_bid: float) -> float:
-    """Worst-case contract count for a dollar-denominated RFQ at our quote.
-
-    The creator spends `target_cost` buying ONE side at our ask:
-    buying YES costs (1 - no_bid)/contract, buying NO costs (1 - yes_bid).
-    Worst case (max contracts) is the cheaper ask. Floor at $0.01 guards
-    the division. Gated against MAX_RFQ_CONTRACTS so dollar RFQs map onto
-    the same per-fill cap (and the N7/N8 worst-case math) as contract RFQs."""
-    min_ask = max(min(1.0 - yes_bid, 1.0 - no_bid), 0.01)
-    return target_cost / min_ask
+def _worst_fill_exposure_usd(rfq: dict, q) -> float:
+    """Worst-case DOLLARS at risk if this RFQ fills at quote q, maxed over both
+    sides the creator could take. Our cost basis on the side we'd hold IS our
+    max loss (a binary settles to 0/1). Mirrors the confirm-path side logic:
+      accepted_side=='no'  -> we hold YES at yes_ask = 1 - no_bid
+      accepted_side=='yes' -> we hold NO  at no_ask  = 1 - yes_bid
+    """
+    yes_ask = 1.0 - q.no_bid   # our cost if we end up holding YES
+    no_ask = 1.0 - q.yes_bid   # our cost if we end up holding NO
+    n = _rfq_requested_contracts(rfq)
+    if n > 0:
+        # contract-denominated: we hold n of whichever side; worst = pricier side
+        return n * max(yes_ask, no_ask)
+    target = float(rfq.get("target_cost_dollars") or 0)
+    if target > 0:
+        # dollar-denominated: creator spends `target` on their side at their ask;
+        # contracts = target / creator_ask; we hold the opposite at our_ask.
+        # creator buys YES (pays yes_ask) -> we hold NO  : (target/yes_ask)*no_ask
+        # creator buys NO  (pays no_ask)  -> we hold YES : (target/no_ask)*yes_ask
+        if yes_ask <= 0 or no_ask <= 0:
+            return float("inf")  # degenerate quote -> always skip
+        return max((target / yes_ask) * no_ask, (target / no_ask) * yes_ask)
+    return 0.0
 
 
 def _log_decision(decision, *, rfq_id=None, quote_id=None, ticker=None, game_id=None,
@@ -411,16 +422,12 @@ def _discovery_tick(source, gateway, dry_run):
         # Size gate. Kalshi RFQs are denominated EITHER in contracts
         # (contracts_fp, fixed-point string) OR in dollars (target_cost_dollars,
         # with contracts_fp == "0.00"). Live data 2026-06-08: ~85% of in-scope
-        # flow was dollar-denominated, so both paths matter. Contract-based
-        # gates here; dollar-based defers until after pricing (the contract
-        # count depends on our quote — see _implied_contracts below).
+        # flow was dollar-denominated, so both paths matter. The per-fill dollar
+        # cap runs post-pricing (needs the quote — see _worst_fill_exposure_usd).
         req_contracts = _rfq_requested_contracts(rfq)
         target_cost = float(rfq.get("target_cost_dollars") or 0)
         if req_contracts <= 0 and target_cost <= 0:
             _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="size_unknown")
-            continue
-        if req_contracts > 0 and not risk.size_ok(int(req_contracts), config.MAX_RFQ_CONTRACTS):
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="size_gate")
             continue
         game_id, spread_line, total_line = _resolve_game_and_lines(ticker, legs)
         if game_id is None:
@@ -435,28 +442,6 @@ def _discovery_tick(source, gateway, dry_run):
                                     config.MAX_GAME_EXPOSURE_PCT):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="per_game_cap")
-            continue
-        # H8 + N7 + N8: per-combo exposure cap — block multi-RFQ concentration
-        # on one combo. N7: also count outstanding open live_quotes' worst-case
-        # exposure so a burst of RFQs on the same combo can't all be accepted
-        # before any fills register. N8: treat unreconciled fills conservatively
-        # (GREATEST(contracts, MAX_RFQ_CONTRACTS)) for the same reason.
-        with db.connect(read_only=True) as con:
-            combo_exp = con.execute(
-                "SELECT COALESCE(SUM(price * "
-                "CASE WHEN reconciled THEN contracts "
-                "     ELSE GREATEST(contracts, ?) END), 0) "
-                "FROM fills WHERE combo_market_ticker=?",
-                [config.MAX_RFQ_CONTRACTS, ticker]).fetchone()[0]
-            inflight_count = con.execute(
-                "SELECT COUNT(*) FROM live_quotes "
-                "WHERE combo_market_ticker=? AND status='open'",
-                [ticker]).fetchone()[0]
-        worst_inflight = float(inflight_count) * config.MAX_RFQ_CONTRACTS * 1.0
-        this_quote_max = config.MAX_RFQ_CONTRACTS * 1.0
-        if float(combo_exp or 0) + worst_inflight + this_quote_max > config.MAX_COMBO_EXPOSURE_USD:
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
-                          reason="per_combo_cap")
             continue
         # H9: per-combo cooldown — refuse new quotes for COMBO_COOLDOWN_SEC
         # after a recent fill on this combo (same-price re-pickoff defense).
@@ -516,13 +501,34 @@ def _discovery_tick(source, gateway, dry_run):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="unpriceable")
             continue
-        # Dollar-denominated size gate (deferred from above — needs our quote).
-        if req_contracts <= 0 and target_cost > 0:
-            implied = _implied_contracts(target_cost, q.yes_bid, q.no_bid)
-            if implied > config.MAX_RFQ_CONTRACTS:
-                _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
-                              reason="size_gate_dollars")
-                continue
+        # Per-fill dollar cap (replaces the old contract cap). Worst-case over
+        # both sides the creator could take; our held-side cost basis = max loss.
+        fill_exposure = _worst_fill_exposure_usd(rfq, q)
+        if fill_exposure > config.max_fill_exposure_usd():
+            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                          reason="size_gate")
+            continue
+        # H8 + N7 + N8: per-combo exposure cap — block multi-RFQ concentration
+        # on one combo. N7: also count outstanding open live_quotes' worst-case
+        # exposure so a burst of RFQs on the same combo can't all be accepted
+        # before any fills register. N8: treat unreconciled fills conservatively
+        # (counted at the per-fill cap) for the same reason.
+        with db.connect(read_only=True) as con:
+            combo_exp = con.execute(
+                "SELECT COALESCE(SUM("
+                "CASE WHEN reconciled THEN price * contracts ELSE ? END), 0) "
+                "FROM fills WHERE combo_market_ticker=?",
+                [config.max_fill_exposure_usd(), ticker]).fetchone()[0]
+            inflight_count = con.execute(
+                "SELECT COUNT(*) FROM live_quotes "
+                "WHERE combo_market_ticker=? AND status='open'",
+                [ticker]).fetchone()[0]
+        worst_inflight = float(inflight_count) * config.max_fill_exposure_usd()
+        this_quote_max = _worst_fill_exposure_usd(rfq, q)
+        if float(combo_exp or 0) + worst_inflight + this_quote_max > config.MAX_COMBO_EXPOSURE_USD:
+            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                          reason="per_combo_cap")
+            continue
         # Event 2: quote_priced — we have a valid quote from the pricer.
         research.emit("quote_priced", rfq_id=rid, ticker=ticker,
                       payload=dict(book_fairs=book_fairs, agreeing_count=len(book_fairs),

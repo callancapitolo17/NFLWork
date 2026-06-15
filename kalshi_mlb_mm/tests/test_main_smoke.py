@@ -719,6 +719,9 @@ def test_discovery_skips_creator_with_too_many_fills(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 # H8 — per-combo exposure cap. Pre-seed fills totalling >= cap on one ticker;
 # discovery on that ticker is skipped with reason='per_combo_cap'.
+# The per-combo cap now runs AFTER pricing (needs the quote), so stubs for
+# _book_fairs / _commence_time are required to reach it.
+# Cap is $50 (MAX_COMBO_EXPOSURE_USD default). Pre-seed $51 in reconciled fills.
 # ---------------------------------------------------------------------------
 def test_discovery_skips_when_combo_exposure_capped(monkeypatch, tmp_path):
     from datetime import datetime, timezone
@@ -729,6 +732,9 @@ def test_discovery_skips_when_combo_exposure_capped(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cfg, "DB_PATH", tmp_path / "combo_cap.duckdb")
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
+    monkeypatch.setattr(cfg, "BANKROLL", 500.0)
+    monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 0.10)   # cap = $50
+    monkeypatch.setattr(cfg, "MAX_COMBO_EXPOSURE_USD", 50.0)
     import importlib
     importlib.reload(db)
     db.init_database()
@@ -741,6 +747,10 @@ def test_discovery_skips_when_combo_exposure_capped(monkeypatch, tmp_path):
                                       "total_line": [8.5]}))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m_: True)
     monkeypatch.setattr(main, "_today_fills", lambda: [])
+    # Per-combo cap now runs after pricing — need book_fairs stub so pricing runs.
+    monkeypatch.setattr(main, "_book_fairs",
+                        lambda g, s, t: {"dk": 0.55, "fd": 0.55, "px": 0.56})
+    monkeypatch.setattr(main, "_commence_time", lambda gid: None)
 
     legs = [{"market_ticker": "KXMLBSPREAD-CC", "event_ticker": "EVT-CC",
              "side": "yes", "count": 1},
@@ -749,8 +759,10 @@ def test_discovery_skips_when_combo_exposure_capped(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-CAP": (True, "gCAP", legs)})
     monkeypatch.setattr(main, "_resolve_game_and_lines",
                         lambda ticker, legs: ("gCAP", -1.5, 8.5))
+    monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
 
-    # Pre-seed fills totaling $10+ on this ticker (20 contracts × $0.50 = $10.00).
+    # Pre-seed fills totaling $51 on this ticker (102 contracts × $0.50 = $51.00).
+    # reconciled=True → counted as price*contracts = $51, which exceeds cap $50.
     now = datetime.now(timezone.utc)
     with db.connect() as con:
         con.execute(
@@ -760,7 +772,7 @@ def test_discovery_skips_when_combo_exposure_capped(monkeypatch, tmp_path):
             "realized_pnl, filled_at, reconciled) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             ["fill-cap", "qid-cap", "r-cap", "COMBO-CAP", "gCAP",
-             "yes", 20, 0.50, 0.0, None, 0.5, 0.5, 0.5, None, now, True])
+             "yes", 102, 0.50, 0.0, None, 0.5, 0.5, 0.5, None, now, True])
 
     class GW:
         def submit_quote(self, *a):
