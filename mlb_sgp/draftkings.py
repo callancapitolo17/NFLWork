@@ -52,8 +52,8 @@ adapts to the real signatures:
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from mlb_sgp._shared import PricedRow, TargetLine, decimal_to_american
@@ -150,6 +150,11 @@ def price_sgps(
         production, but tests should always pass a mock).
     verbose
         Forwarded to the leg-level helpers for debug printing.
+    parallelism
+        Number of target lines to price concurrently. ``None`` (default)
+        resolves to the ``MLB_SGP_DK_PARALLELISM`` env var, else
+        ``DK_TARGET_PARALLELISM_DEFAULT``. Total in-flight DK requests is
+        ``parallelism × 4`` (the per-target combo pool nests inside).
 
     Returns
     -------
