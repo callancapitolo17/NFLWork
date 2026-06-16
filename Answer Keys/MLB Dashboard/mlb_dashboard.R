@@ -540,9 +540,11 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
       fd_fair_prob = colDef(show = FALSE),
       px_fair_prob = colDef(show = FALSE),
       nv_fair_prob = colDef(show = FALSE),
-      # Combined Books cell: M / DK / FD / PX / NV / Cons pill row.
+      bmg_fair_prob = colDef(show = FALSE),
+      czr_fair_prob = colDef(show = FALSE),
+      # Combined Books cell: M / DK / FD / PX / NV / BMG / CZR / Cons pill row.
       # Reads model_prob_raw (always non-NA in real data — pricer skips no-sample
-      # games upstream) + the four per-book devigged probs + blended_prob_raw.
+      # games upstream) + the six per-book devigged probs + blended_prob_raw.
       books_strip = colDef(
         name = "Books (devigged fair %)",
         minWidth = 320,
@@ -551,13 +553,14 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
         class = "cell-books",
         cell = function(value, index) {
           row <- table_data[index, ]
-          # Agree k/n is computed over the 5 independent voices (DK / FD / PX /
-          # NV / model). Cons is excluded because it's a blended derivative of
-          # model+books. NA voices reduce the denominator rather than counting
-          # as "disagree" — see books_strip.R::compute_k_within.
+          # Agree k/n is computed over the independent voices (DK / FD / PX /
+          # NV / BMG / CZR / model). Cons is excluded because it's a blended
+          # derivative of model+books. NA voices reduce the denominator rather
+          # than counting as "disagree" — see books_strip.R::compute_k_within.
           agree <- compute_k_within(c(
             row$dk_fair_prob, row$fd_fair_prob,
             row$px_fair_prob, row$nv_fair_prob,
+            row$bmg_fair_prob, row$czr_fair_prob,
             row$model_prob_raw
           ))
           render_books_strip(
@@ -566,6 +569,8 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
             fd    = row$fd_fair_prob,
             px    = row$px_fair_prob,
             nv    = row$nv_fair_prob,
+            bmg   = row$bmg_fair_prob,
+            czr   = row$czr_fair_prob,
             cons  = row$blended_prob_raw,
             k_agree = agree$k,
             n_agree = agree$n

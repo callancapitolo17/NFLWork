@@ -7,6 +7,7 @@
 # All inputs are probabilities on [0, 1] or NA. Output is a character string.
 
 render_books_strip <- function(model, dk, fd, px, nv, cons,
+                               bmg = NA_real_, czr = NA_real_,
                                k_agree = NULL, n_agree = NULL) {
   fmt_pill <- function(label, prob, css_class) {
     if (is.na(prob)) {
@@ -35,6 +36,8 @@ render_books_strip <- function(model, dk, fd, px, nv, cons,
     fmt_pill("FD",   fd,    "book"),
     fmt_pill("PX",   px,    "book"),
     fmt_pill("NV",   nv,    "book"),
+    fmt_pill("BMG",  bmg,   "book"),
+    fmt_pill("CZR",  czr,   "book"),
     fmt_pill("Cons", cons,  "cons"),
     agree_pill,
     '</span>'
