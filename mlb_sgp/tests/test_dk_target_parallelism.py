@@ -129,3 +129,31 @@ def test_parallelism_default_reads_env(monkeypatch):
     assert draftkings._resolve_parallelism(7) == 7
     monkeypatch.delenv("MLB_SGP_DK_PARALLELISM")
     assert draftkings._resolve_parallelism(None) == 8  # shipped default
+
+
+def test_fetcher_hooks_override_structure_fetches(monkeypatch):
+    """When `fetchers` is passed, price_sgps uses it instead of the
+    legacy module functions — the seam SGPService caches through."""
+    targets = _wire_fixture(monkeypatch, n_targets=2)
+    # Sabotage the legacy fns: if the hooks are ignored, these blow up.
+    monkeypatch.setattr(legacy, "fetch_dk_events",
+                        lambda s: (_ for _ in ()).throw(AssertionError("hook bypassed")))
+    monkeypatch.setattr(legacy, "fetch_main_market_nums",
+                        lambda s, e: (_ for _ in ()).throw(AssertionError("hook bypassed")))
+    monkeypatch.setattr(legacy, "fetch_selection_ids",
+                        lambda s, e, n, v=False: (_ for _ in ()).throw(AssertionError("hook bypassed")))
+
+    spreads = {("N", 1.5, "1"): ["H0"], ("P", 1.5, "3"): ["A0"],
+               ("N", 2.5, "1"): ["H1"], ("P", 2.5, "3"): ["A1"]}
+    totals = {("O", 7.5): ["O0"], ("U", 7.5): ["U0"],
+              ("O", 8.5): ["O1"], ("U", 8.5): ["U1"]}
+    sel_ids_all = {"fg": {"spreads": spreads, "totals": totals, "canonical": {"M"}},
+                   "f5": {"spreads": {}, "totals": {}}}
+    fetchers = {
+        "fetch_dk_events": lambda session: [{"dk_event_id": "e1"}],
+        "fetch_main_market_nums": lambda session, eid: {},
+        "fetch_selection_ids": lambda session, eid, nums, verbose=False: sel_ids_all,
+    }
+    rows = draftkings.price_sgps(targets, periods=("FG",), client=MagicMock(),
+                                 parallelism=2, fetchers=fetchers)
+    assert len(rows) == 2 * 4

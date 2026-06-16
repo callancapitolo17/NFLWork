@@ -132,6 +132,7 @@ def price_sgps(
     client: DraftKingsClient | None = None,
     verbose: bool = False,
     parallelism: int | None = None,
+    fetchers: dict | None = None,
 ) -> list[PricedRow]:
     """Price every target line against the DraftKings SGP API.
 
@@ -155,6 +156,10 @@ def price_sgps(
         resolves to the ``MLB_SGP_DK_PARALLELISM`` env var, else
         ``DK_TARGET_PARALLELISM_DEFAULT``. Total in-flight DK requests is
         ``parallelism × 4`` (the per-target combo pool nests inside).
+    fetchers
+        Structure-fetch override hooks; default ``None`` uses the legacy
+        direct fetches (dashboard path); SGPService injects TTL-cached
+        versions; prices are never affected.
 
     Returns
     -------
@@ -191,6 +196,13 @@ def price_sgps(
         try_integer_fallback_dk,
     )
 
+    # Structure-fetch seam: SGPService injects TTL-cached wrappers here;
+    # the dashboard shims pass nothing and get the legacy direct fetches.
+    _f = fetchers or {}
+    fetch_events_fn = _f.get("fetch_dk_events", fetch_dk_events)
+    fetch_nums_fn = _f.get("fetch_main_market_nums", fetch_main_market_nums)
+    fetch_selids_fn = _f.get("fetch_selection_ids", fetch_selection_ids)
+
     # ----- Group target lines by game ----- #
     # match_events expects a dict shaped like the legacy mlb_parlay_lines
     # table: one entry per game_id with fg_/f5_ columns. We collapse the
@@ -215,7 +227,7 @@ def price_sgps(
             ent["f5_total_line"] = t.total
 
     # ----- Phase 1: list DK events and match to our game_ids ----- #
-    dk_events = fetch_dk_events(client.session)
+    dk_events = fetch_events_fn(client.session)
     matched = match_events(dk_events, target_dict)
     if not matched:
         return []
@@ -238,8 +250,8 @@ def price_sgps(
     # on sparse-line books.
     per_game_cache: dict[str, dict] = {}
     for game_id, game in matched_by_gid.items():
-        main_nums = fetch_main_market_nums(client.session, game["dk_event_id"])
-        sel_ids_all = fetch_selection_ids(
+        main_nums = fetch_nums_fn(client.session, game["dk_event_id"])
+        sel_ids_all = fetch_selids_fn(
             client.session, game["dk_event_id"], main_nums, verbose,
         )
         offered_per_period: dict[str, dict[str, set]] = {

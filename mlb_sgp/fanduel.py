@@ -123,6 +123,7 @@ def price_sgps(
     client: FanDuelClient | None = None,
     verbose: bool = False,
     parallelism: int | None = None,
+    fetchers: dict | None = None,
 ) -> list[PricedRow]:
     """Price every target line against the FanDuel SGP API.
 
@@ -145,6 +146,10 @@ def price_sgps(
         Number of targets priced concurrently. ``None`` resolves to the
         ``MLB_SGP_FD_PARALLELISM`` env var or ``FD_TARGET_PARALLELISM_DEFAULT``;
         total in-flight FD requests is ``parallelism × 4`` (4 combos/target).
+    fetchers
+        Structure-fetch override hooks; default ``None`` uses the legacy
+        direct fetches (dashboard path); SGPService injects TTL-cached
+        versions; prices are never affected.
 
     Returns
     -------
@@ -178,6 +183,10 @@ def price_sgps(
         try_integer_fallback_fd,
     )
 
+    _f = fetchers or {}
+    fetch_events_fn = _f.get("fetch_fd_events", fetch_fd_events)
+    fetch_runners_fn = _f.get("fetch_event_runners", fetch_event_runners)
+
     # ----- Group target lines by game ----- #
     # match_events expects the legacy parlay-lines dict shape: one
     # entry per game_id with fg_/f5_ columns. Collapse per-period
@@ -202,7 +211,7 @@ def price_sgps(
             ent["f5_total_line"] = t.total
 
     # ----- Phase 1: list FD events and match to our game_ids ----- #
-    fd_events = fetch_fd_events(client.session)
+    fd_events = fetch_events_fn(client.session)
     matched = match_events(fd_events, target_dict)
     if not matched:
         return []
@@ -233,7 +242,7 @@ def price_sgps(
         if game is None:
             continue
         if game_id not in runners_cache:
-            runners_cache[game_id] = fetch_event_runners(
+            runners_cache[game_id] = fetch_runners_fn(
                 client.session,
                 game["fd_event_id"],
                 game["fd_home"],

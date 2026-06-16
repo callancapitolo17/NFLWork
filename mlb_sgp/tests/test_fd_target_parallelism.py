@@ -76,3 +76,25 @@ def test_parallelism_default_reads_env(monkeypatch):
     assert fanduel._resolve_parallelism(9) == 9
     monkeypatch.delenv("MLB_SGP_FD_PARALLELISM")
     assert fanduel._resolve_parallelism(None) == 4  # conservative default
+
+
+def test_fetcher_hooks_override_structure_fetches(monkeypatch):
+    targets = _wire_fixture(monkeypatch, n_targets=2)
+    monkeypatch.setattr(legacy, "fetch_fd_events",
+                        lambda s: (_ for _ in ()).throw(AssertionError("hook bypassed")))
+    monkeypatch.setattr(legacy, "fetch_event_runners",
+                        lambda s, e, h, a: (_ for _ in ()).throw(AssertionError("hook bypassed")))
+
+    spreads = {("home", -1.5): ("SM0", "SH0"), ("away", 1.5): ("SM0", "SA0"),
+               ("home", -2.5): ("SM1", "SH1"), ("away", 2.5): ("SM1", "SA1")}
+    totals = {("O", 7.5): ("TM0", "TO0"), ("U", 7.5): ("TM0", "TU0"),
+              ("O", 8.5): ("TM1", "TO1"), ("U", 8.5): ("TM1", "TU1")}
+    runners = {"fg": {"spreads": spreads, "totals": totals},
+               "f5": {"spreads": {}, "totals": {}}}
+    fetchers = {
+        "fetch_fd_events": lambda session: [{"id": "e1"}],
+        "fetch_event_runners": lambda session, eid, h, a: runners,
+    }
+    rows = fanduel.price_sgps(targets, periods=("FG",), client=MagicMock(),
+                              parallelism=2, fetchers=fetchers)
+    assert len(rows) == 2 * 4
