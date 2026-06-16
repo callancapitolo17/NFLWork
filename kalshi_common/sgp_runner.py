@@ -17,6 +17,7 @@ import duckdb
 from kalshi_common import auth_client
 from kalshi_common.leg_types import _MLB_CODE_TO_TEAM, _parse_event_suffix
 from mlb_sgp._shared import TargetLine
+from kalshi_common.sgp_service import SGPService  # noqa: F401  (re-export)
 
 
 def should_scrape(last_fetch_time: datetime | None,
