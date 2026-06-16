@@ -75,10 +75,12 @@ SOURCE_LABEL_FALLBACK = "prophetx_interpolated"
 # F5-Over systematic-bug defense. See module docstring.
 SANITY_MULT_RATIO = 1.5
 
-# PX RFQs are a real market footprint — keep the default at 2 until the
-# Phase-0 probe (mlb_sgp/probe_concurrency.py) justifies more. Env-
-# overridable so tuning needs no code edit.
-PX_TARGET_PARALLELISM_DEFAULT = 2
+# PX RFQs are a real market footprint, but width does NOT change RFQs
+# *per cycle* (same targets priced) — only how bursty they are. 4-wide is
+# needed for the cycle to hit the ≤60s target (PX is the long pole at 2);
+# measured clean live 2026-06-16. Env-overridable so tuning needs no code
+# edit; raise further only if probe_concurrency.py shows headroom.
+PX_TARGET_PARALLELISM_DEFAULT = 4
 
 
 def _resolve_parallelism(parallelism: int | None) -> int:
