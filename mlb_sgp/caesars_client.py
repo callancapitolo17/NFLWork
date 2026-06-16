@@ -148,34 +148,39 @@ class CaesarsClient:
         dev = {"v": ""}
         for attempt in range(3):
             try:
+                tok = ""
+                cookies: dict = {}
                 with sync_playwright() as pw:
                     ctx = pw.chromium.launch_persistent_context(
                         user_data_dir=str(PROFILE_DIR), channel="chrome", headless=True,
                         viewport={"width": 1400, "height": 900}, user_agent=REAL_UA,
                         args=["--disable-blink-features=AutomationControlled",
                               f"--user-agent={REAL_UA}"])
-                    page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                    page.add_init_script(
-                        "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
+                    # Always close the persistent context (releases the profile
+                    # lock + browser) even if navigation/polling throws mid-mint.
+                    try:
+                        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                        page.add_init_script(
+                            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
 
-                    def on_req(req):
-                        d = req.headers.get("x-unique-device-id")
-                        if d:
-                            dev["v"] = d
-                    page.on("request", on_req)
-                    page.goto(f"https://sportsbook.caesars.com/us/{self.state}/{MLB_LANDING}",
-                              wait_until="commit", timeout=90000)
-                    tok = ""
-                    for _ in range(16):
-                        page.wait_for_timeout(2500)
-                        c = next((c for c in ctx.cookies() if c["name"] == "aws-waf-token"), None)
-                        if c:
-                            tok = c["value"]
-                        if tok and dev["v"]:
-                            break
-                    cookies = {c["name"]: c["value"] for c in ctx.cookies()
-                               if "americanwagering" in c["domain"] or c["name"] == "aws-waf-token"}
-                    ctx.close()
+                        def on_req(req):
+                            d = req.headers.get("x-unique-device-id")
+                            if d:
+                                dev["v"] = d
+                        page.on("request", on_req)
+                        page.goto(f"https://sportsbook.caesars.com/us/{self.state}/{MLB_LANDING}",
+                                  wait_until="commit", timeout=90000)
+                        for _ in range(16):
+                            page.wait_for_timeout(2500)
+                            c = next((c for c in ctx.cookies() if c["name"] == "aws-waf-token"), None)
+                            if c:
+                                tok = c["value"]
+                            if tok and dev["v"]:
+                                break
+                        cookies = {c["name"]: c["value"] for c in ctx.cookies()
+                                   if "americanwagering" in c["domain"] or c["name"] == "aws-waf-token"}
+                    finally:
+                        ctx.close()
                 if tok:
                     self._token, self._device, self._cookies = tok, dev["v"], cookies
                     self._minted_at = time.time()

@@ -43,7 +43,14 @@ def main():
 
     from mlb_sgp import caesars
     print(f"  CZR shim: {len(targets)} target lines, periods={periods}")
-    rows = caesars.price_sgps(targets, periods=periods, verbose=False)
+    try:
+        rows = caesars.price_sgps(targets, periods=periods, verbose=False)
+    except Exception as e:
+        # Hard failure (e.g. event/market fetch or parse blew up): leave the
+        # previous cycle's rows in place rather than wiping the source. The
+        # downstream fetch_time freshness gate filters anything stale.
+        print(f"  CZR shim: price_sgps failed ({e}) — preserving last cycle's rows")
+        return 1
     print(f"  CZR shim: priced {len(rows)} rows")
 
     db.clear_source("caesars_direct", db_path=db_path)
