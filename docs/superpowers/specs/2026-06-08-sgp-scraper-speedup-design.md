@@ -230,7 +230,11 @@ Notes:
 
 ### 3.4 Phase 2 — `SGPService` (in-process, both bots)
 
-New class in `kalshi_common/sgp_runner.py`:
+New class.
+
+> **Implementation note (as shipped):** `SGPService` lives in its own
+> module `kalshi_common/sgp_service.py` (re-exported via
+> `sgp_runner.py`), not inside `sgp_runner.py` as sketched below.
 
 ```python
 class SGPService:
@@ -277,6 +281,11 @@ class SGPService:
 
 Inside `SGPService` (not inside the orchestrators — the dashboard path
 must stay stateless):
+
+> **Implementation note (as shipped):** structure caching is implemented
+> for **DK and FD only** in v1. PX and NV get the persistent-client win
+> but not structure caching — their per-cycle structure fetches are only
+> 1–2 cheap calls, so the PX/NV row in the table below is deferred.
 
 | Cached value | Fetch today | TTL | Rationale |
 |---|---|---|---|
