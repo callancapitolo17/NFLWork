@@ -426,6 +426,10 @@ def sgp_cycle(
             continue
         mod = importlib.import_module(_BOOK_MODULES[book])
         sgp_db.clear_source(mod.SOURCE_LABEL, db_path=bot_market_db)
+        # Keep the getattr guard: DK/FD/NV emit interpolated rows under a
+        # SOURCE_LABEL_FALLBACK that must also be cleared so stale ones
+        # don't linger; PX defines the label but never emits them. Do not
+        # hardcode per-book — getattr handles "has a fallback or not".
         fallback_label = getattr(mod, "SOURCE_LABEL_FALLBACK", None)
         if fallback_label:
             sgp_db.clear_source(fallback_label, db_path=bot_market_db)
