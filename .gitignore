@@ -137,3 +137,11 @@ kalshi_mlb_rfq/*.duckdb.wal
 kalshi_mlb_rfq/*.log
 kalshi_mlb_rfq/bot.log.*
 kalshi_mlb_rfq/.kill
+
+# Caesars SGP scraper runtime artifacts + recon data dumps (token has short TTL
+# but should never be committed; browser profile + JSON captures are data).
+mlb_sgp/.caesars_token.json
+mlb_sgp/.caesars_profile/
+mlb_sgp/_czr_*.json
+mlb_sgp/recon_caesars_*.json
+mlb_sgp/recon_bet365_*.json
