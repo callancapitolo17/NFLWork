@@ -1817,8 +1817,10 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
 
     # Edge source badge (MODEL / MARKET / BOTH)
     edge_src <- if (is.na(row$edge_source)) "model" else row$edge_source
+    # Use the HTML star entity (not a raw ★) — a literal non-ASCII char here
+    # writes invalid bytes under a non-UTF-8 R locale and corrupts report.html.
     badge_label <- switch(edge_src, model = "Model", market = "Market",
-                          both = "★ Both", "Model")
+                          both = "&#9733; Both", "Model")
     edge_badge_html <- sprintf('<span class="edge-badge %s">%s</span>',
                                edge_src, badge_label)
 
