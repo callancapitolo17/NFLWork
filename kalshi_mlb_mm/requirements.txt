@@ -1,0 +1,5 @@
+duckdb>=0.10
+pandas>=2.0
+scipy>=1.10
+numpy>=1.24
+cryptography>=41.0

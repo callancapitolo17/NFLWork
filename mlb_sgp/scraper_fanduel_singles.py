@@ -43,9 +43,14 @@ from fd_client import FanDuelClient, Event, Market, Runner
 
 # Regex helpers for FD's alt-market name formats.
 # - Spread: 'St. Louis Cardinals +3.5' or 'Athletics -1.5'
-# - Total:  'Over (8.5)' or 'Under (7.5)'
+# - Total:  FD uses TWO formats depending on period. The F5 ladder
+#   parenthesizes the line ('Over (8.5)'); the full-game "Alternate Total
+#   Runs" ladder does NOT ('Over 7.5'). The parens are therefore optional —
+#   without this, every FG alt-total runner failed to parse and FG alt-totals
+#   silently dropped to 0 rows (the F5 ladder masked the bug). Verified live
+#   2026-06-03.
 _FD_ALT_SPREAD_RE = re.compile(r"^(?P<team>.+?)\s+(?P<line>[+-]\d+(?:\.\d+)?)\s*$")
-_FD_ALT_TOTAL_RE  = re.compile(r"^(?P<side>Over|Under)\s*\((?P<line>\d+(?:\.\d+)?)\)\s*$", re.IGNORECASE)
+_FD_ALT_TOTAL_RE  = re.compile(r"^(?P<side>Over|Under)\s*\(?(?P<line>\d+(?:\.\d+)?)\)?\s*$", re.IGNORECASE)
 
 
 # Unicode-minus variants FD has been observed using interchangeably with the
@@ -115,8 +120,9 @@ def classify_market(
         if team and team.lower() in n:
             return None
 
-    if any(k in n for k in _FD_EXCLUDE_KEYWORDS):
-        return None
+    # Single-inning markets ("7th Inning Result", "1st Inning Run Line") are out
+    # of scope. Run BEFORE the Result capture below so "Nth Inning Result" is
+    # excluded while plural "First N Innings Result" survives.
     if _SINGLE_INNING_RE.search(n):
         return None
 
@@ -129,6 +135,18 @@ def classify_market(
         period = "F3"
     else:
         period = "FG"
+
+    # 3-way "First N Innings Result" (Home/Tie/Away winner) -> h2h_3way, but
+    # ONLY for the periods we model (F3/F5/F7). Captured BEFORE the "result"
+    # exclude keyword, which still blocks every other result-* market: FG and
+    # First 2/4/6 Innings Result all fall to period == "FG" here and get
+    # excluded below. The dashboard pick'em path devigs this 3-way and drops
+    # the tie to a draw-no-bet (see odds_screen.R::derive_pickem_american).
+    if "result" in n and period in ("F3", "F5", "F7"):
+        return (period, "h2h_3way")
+
+    if any(k in n for k in _FD_EXCLUDE_KEYWORDS):
+        return None
 
     # Market-type detection. Check "alternate" before main. Match both
     # "moneyline" (FD's FG name) and "money line" (FD's F-period name, e.g.
@@ -146,11 +164,26 @@ def classify_market(
     return None
 
 
+def new_alt_parse_stats() -> dict[str, dict[str, int]]:
+    """Fresh seen/ok counters for the alt-runner parse tripwire.
+
+    "seen" counts every alt-classified runner; "ok" counts the ones whose
+    line resolved (handicap or name regex). The signature of FD format
+    drift is seen > 0 with ok == 0 — data arrived but none of it parsed —
+    which must read differently from "FD posted no alts today" (seen == 0).
+    """
+    return {
+        "alternate_spreads": {"seen": 0, "ok": 0},
+        "alternate_totals": {"seen": 0, "ok": 0},
+    }
+
+
 def parse_runners_to_wide_rows(
     event: Event,
     runners: list[Runner],
     market_meta: dict[str, tuple[str, str]],   # market_id -> (period, market_type)
     fetch_time: datetime,
+    alt_parse_stats: dict[str, dict[str, int]] | None = None,
 ) -> list[dict[str, Any]]:
     """Group runners by (period, market_type, line); emit wide rows.
 
@@ -179,6 +212,7 @@ def parse_runners_to_wide_rows(
             "home_spread": None, "home_spread_price": None,
             "total": None, "over_price": None, "under_price": None,
             "away_ml": None, "home_ml": None,
+            "tie_ml": None,   # 3-way "First N Innings Result" tie price
         }
 
     for r in runners:
@@ -186,6 +220,9 @@ def parse_runners_to_wide_rows(
         if meta is None:
             continue
         period, market_type = meta
+
+        if alt_parse_stats is not None and market_type in alt_parse_stats:
+            alt_parse_stats[market_type]["seen"] += 1
 
         # FD-specific line extraction: for alt-spreads and alt-totals, FD often
         # encodes the line in the runner NAME instead of on `handicap`. We
@@ -226,6 +263,8 @@ def parse_runners_to_wide_rows(
                 flush=True,
             )
             continue
+        if alt_parse_stats is not None and market_type in alt_parse_stats:
+            alt_parse_stats[market_type]["ok"] += 1
 
         # Bucket key: main rows coalesce by period only; alt rows split by line.
         # For alt-spreads, both sides of a paired line (e.g. Yankees -2.5 and
@@ -288,6 +327,9 @@ def parse_runners_to_wide_rows(
                 row["home_ml"] = r.american_odds
             elif event.away_team in r.name:
                 row["away_ml"] = r.american_odds
+            elif r.name.strip().lower() == "tie":
+                # 3-way Result tie outcome (h2h_3way markets only).
+                row["tie_ml"] = r.american_odds
 
     # Finalization pass — mirrors the DK scraper:
     #  (a) Paired-side guard: a spread row with only one side resolved is
@@ -368,6 +410,7 @@ def scrape_singles(verbose: bool = False) -> int:
     fetch_time = datetime.now(timezone.utc)
     all_rows: list[dict] = []
     failed: list[str] = []
+    alt_parse_stats = new_alt_parse_stats()
 
     for event in events:
         try:
@@ -381,7 +424,8 @@ def scrape_singles(verbose: bool = False) -> int:
                 if classified is not None:
                     market_meta[m.market_id] = classified
 
-            rows = parse_runners_to_wide_rows(event, runners, market_meta, fetch_time)
+            rows = parse_runners_to_wide_rows(event, runners, market_meta, fetch_time,
+                                              alt_parse_stats=alt_parse_stats)
             all_rows.extend(rows)
             if verbose:
                 print(
@@ -394,6 +438,21 @@ def scrape_singles(verbose: bool = False) -> int:
             print(f"  [{event.event_id}] FAILED: {e}", flush=True)
             failed.append(event.event_id)
             continue
+
+    # Aggregate parse-failure tripwire. "seen > 0, ok == 0" means FD handed us
+    # alt runners and we threw every one away — the signature of a format
+    # change (this exact mode shipped the FG alt-total regex bug). A scrape-day
+    # with no alts posted (seen == 0) stays quiet.
+    summary = ", ".join(
+        f"{mt} {s['ok']}/{s['seen']}" for mt, s in alt_parse_stats.items())
+    print(f"[fd_singles] alt parse: {summary}", flush=True)
+    for mt, s in alt_parse_stats.items():
+        if s["seen"] > 0 and s["ok"] == 0:
+            print(
+                f"[fd_singles] ALERT: {mt}: {s['seen']} runners seen, 0 parsed "
+                f"— FD format drift likely (every name failed the line regex)",
+                flush=True,
+            )
 
     write_to_duckdb(all_rows)
     print(
@@ -434,6 +493,22 @@ def write_to_duckdb(rows: list[dict]) -> None:
                   f"(existing snapshot will be re-populated this run)")
             con.execute("DROP TABLE mlb_odds")
 
+        # Migrate pre-tie_ml schema: a table created before the 3-way Result
+        # feature lacks tie_ml. CREATE TABLE IF NOT EXISTS won't add a column,
+        # so drop it and let the CREATE below rebuild with tie_ml (the snapshot
+        # is fully re-populated this run anyway).
+        table_exists = con.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = 'mlb_odds'"
+        ).fetchone()
+        has_tie = con.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'mlb_odds' AND column_name = 'tie_ml'"
+        ).fetchone()
+        if table_exists is not None and has_tie is None:
+            print("[fd] Migrating mlb_odds: adding tie_ml column "
+                  "(snapshot re-populated this run)")
+            con.execute("DROP TABLE mlb_odds")
+
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS mlb_odds (
@@ -453,7 +528,8 @@ def write_to_duckdb(rows: list[dict]) -> None:
                 over_price        INTEGER,
                 under_price       INTEGER,
                 away_ml           INTEGER,
-                home_ml           INTEGER
+                home_ml           INTEGER,
+                tie_ml            INTEGER
             )
             """
         )
@@ -464,7 +540,7 @@ def write_to_duckdb(rows: list[dict]) -> None:
                 "away_spread", "away_spread_price",
                 "home_spread", "home_spread_price",
                 "total", "over_price", "under_price",
-                "away_ml", "home_ml",
+                "away_ml", "home_ml", "tie_ml",
             ]
             # Stage into a TEMP table cloned from the live schema, then
             # atomically swap. The CREATE OR REPLACE TABLE ... AS SELECT step
