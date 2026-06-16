@@ -107,3 +107,22 @@ def test_min_refresh_skips_book_until_due():
     clock["t"] += 200                     # well past 120s: due again
     out3 = svc.refresh(TARGETS)
     assert "prophetx" in out3 and calls["n"] == 2
+
+
+def test_timeout_tears_down_client_immediately():
+    """A single timeout must drop the book's client right away — the
+    worker thread is still running and still holds the (non-thread-safe)
+    curl_cffi session, so the next cycle must NOT reuse it."""
+    import time as _t
+
+    def slow(t):
+        _t.sleep(2.0)
+        return []
+    svc = SGPService(books=("draftkings",), per_book_deadline_sec=0.2,
+                     runners={"draftkings": slow})
+    svc._state["draftkings"].client = object()
+    out = svc.refresh(TARGETS)
+    assert out["draftkings"] is None
+    # Torn down after ONE timeout, not after 3 failures.
+    assert svc._state["draftkings"].client is None
+    assert svc._state["draftkings"].caches == {}

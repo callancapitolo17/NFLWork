@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path
 
 from mlb_sgp._shared import PricedRow, TargetLine, TTLCache
@@ -93,14 +93,26 @@ class SGPService:
                                   thread_name_prefix="sgp-book")
         try:
             futs = {b: pool.submit(self._run_book_safe, b, targets) for b in due}
+            # All futures are already running concurrently (one worker per
+            # due book), so per-book `remaining` is wall-bounded by the
+            # deadline, not summed across books.
             wall_deadline = time.monotonic() + self.per_book_deadline_sec
             for b, fut in futs.items():
                 remaining = max(0.0, wall_deadline - time.monotonic())
+                timed_out = False
                 try:
                     rows = fut.result(timeout=remaining)
-                except Exception:          # TimeoutError or runner crash
+                except FutureTimeout:
+                    # The worker thread is still running and still holds
+                    # this book's curl_cffi session (not thread-safe).
+                    # Drop the client NOW so the next cycle builds a fresh
+                    # session the lingering thread no longer shares —
+                    # don't wait for the 3-strike teardown.
                     rows = None
-                self._book_done(b, rows)
+                    timed_out = True
+                except Exception:
+                    rows = None
+                self._book_done(b, rows, timed_out=timed_out)
                 results[b] = rows
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
@@ -110,6 +122,7 @@ class SGPService:
         """Drop all persistent clients (sessions close on GC)."""
         for st in self._state.values():
             st.client = None
+            st.caches = {}
 
     # ------------------------------------------------------------------ #
     # Internals                                                           #
@@ -122,15 +135,17 @@ class SGPService:
             return True
         return (self._now() - st.last_success) >= min_s
 
-    def _book_done(self, book: str, rows) -> None:
+    def _book_done(self, book: str, rows, timed_out: bool = False) -> None:
         st = self._state[book]
         if rows is None:
             st.failures += 1
-            log.warning("sgp_service: %s failed (consecutive=%d)",
-                        book, st.failures)
-            if st.failures >= self.MAX_FAILURES_BEFORE_REINIT:
-                log.warning("sgp_service: %s client torn down for reinit", book)
+            log.warning("sgp_service: %s failed (consecutive=%d, timeout=%s)",
+                        book, st.failures, timed_out)
+            if timed_out or st.failures >= self.MAX_FAILURES_BEFORE_REINIT:
+                log.warning("sgp_service: %s client torn down for reinit "
+                            "(timeout=%s)", book, timed_out)
                 st.client = None
+                st.caches = {}
                 st.failures = 0
         else:
             st.failures = 0
