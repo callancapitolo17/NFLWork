@@ -57,6 +57,15 @@ with FD-specific junk exclusions (`parlay`, `listed`, `bands`, `tri-bet`,
 under an unlisted name (that bug is why F7 totals were absent). It now covers
 FG/F5/F7/F3 main + alt wherever FD posts them and auto-picks-up new markets.
 
+**Parse-failure tripwire (2026-06-10).** Every scrape prints
+`[fd_singles] alt parse: alternate_spreads N/M, alternate_totals N/M`
+(parsed/seen). If FD hands us alt runners and **none** parse
+(`M > 0, N == 0`) the scrape prints a loud `ALERT` — that's the signature
+of an FD name-format change (the FG alt-total parens bug shipped silently
+in exactly this mode). A day where FD posts no alts at all stays quiet.
+Grep the runner log for `ALERT` when alt pills go missing from the
+dashboard.
+
 ### Coverage
 
 | Period | DK | FD | Notes |
@@ -70,7 +79,7 @@ FG/F5/F7/F3 main + alt wherever FD posts them and auto-picks-up new markets.
 | F7 alternate totals/spreads          | ✅ | ✗ | FD posts no F7 alts (vendor gap). |
 | F3 main (spread + total)             | ✅ | ✅ | FD posts `First 3 Innings Run Line` + `Total Runs` (default tab). FD also posts `First 3 Innings Result` (3-way ML) which we skip. |
 | F3 alternate totals/spreads          | ✅ | ✗ | FD posts no F3 alts (vendor gap). |
-| F7 / F3 two-way moneyline            | ✅ | ✗ | DK names it as the **bare period** ("1st 3 Innings" / "1st 5 Innings" / "1st 7 Innings"); `classify_market` captures these as `(period, "main")` ML rows (2026-05-27). FD only posts the 3-way `Result` at F6/F7/F3 — no 2-way ML. |
+| F3/F5/F7 winner (for pick'em)        | ✅ | ✅ | DK: **bare period** name ("1st 3/5/7 Innings"), captured as `(period, "main")` ML rows. FD: 2-way "First 5 Innings Money Line" + 3-way "First N Innings Result" (F3/F5/F7) captured as `h2h_3way` with `tie_ml`. Both feed the dashboard pick'em DNB path (2026-05-27). |
 
 ### Pick'em (line-0 spread) → period winner (2026-05-27)
 
@@ -80,13 +89,17 @@ period ML captured here. DK's bare-period winner ("1st N Innings") is now
 captured (row above) and flows via `get_dk_odds` → `h2h_1st_N_innings`. FD's
 First-5 "Money Line" was already captured (matched by the `"money line"`
 keyword in `classify_market`), so FD lights up on F5 pick'em cards but shows
-"—" on F3/F7 (no 2-way ML there).
+a DNB-collapsible winner on F3/F7 too (below).
 
-**Fast-follow for FD F3/F7 pick'em:** FD *does* post a 3-way "First N Innings
-Result". Capturing it (classify as a 3-way winner, parse home/tie/away into an
-`odds_tie` column) would let the dashboard's existing 3-way path
-(`derive_pickem_american` + `scraper_to_canonical`'s `h2h_3way` shape) collapse
-it to a DNB and fill FD's F3/F7 pick'em cells. Not in v1.
+**FD 3-way "First N Innings Result" capture (2026-05-27).** FD posts a 3-way
+"First N Innings Result" (Home/Tie/Away) for F3/F5/F7. `classify_market` now
+maps it to `(period, "h2h_3way")` (single-inning and F2/4/6 Results stay
+excluded), the parser writes the tie price to a new `tie_ml` column, and
+`get_fd_odds` emits an `h2h_3way_1st_N_innings` row with `odds_tie`. The
+dashboard's existing 3-way path (`scraper_to_canonical`'s `h2h_3way` shape +
+`derive_pickem_american`) devigs it, drops the tie, and fills FD's F3/F5/F7
+pick'em cells. So FD now shows on pick'em cards for all of F3/F5/F7 (F5 also
+has its own 2-way Money Line).
 
 ### Run timing
 

@@ -133,6 +133,8 @@ This repo contains tools for:
     per tick; can never raise into the trading loop. Operational logging is
     `print()`-free (Python `logging` + rotating `bot.log`). Retention is
     unbounded (no scheduled prune). See README "Observability" section.
+- **Autonomous Kalshi MLB MM (maker) bot** (`kalshi_mlb_mm/`) — independent maker daemon that quotes 2-leg spread×total combos at a fixed 5% ROI margin by listening for others' RFQs. REST polling behind `RFQSource`/`QuoteGateway` interfaces (WebSocket swap is a one-adapter change); own market DB `kalshi_mlb_mm/kalshi_mlb_mm_market.duckdb` for SGP-line and SGP-odds data; reads `Answer Keys/mlb_mm.duckdb` read-only; shares pricing math with the taker via `kalshi_common/`. Standalone process; writes `kalshi_mlb_mm/kalshi_mlb_mm.duckdb`. v1 is a measurement phase (5% quoted margin vs. realized adverse-selection cost). See `kalshi_mlb_mm/README.md`.
+- **Shared Kalshi math package** (`kalshi_common/`) — pure-function modules imported by both the taker and the maker: `fair_value` (bivariate model + probit devig + blend), `ev_calc` (fee math including `maker_fee_per_contract`), `auth_client` (config-injected via `configure()`), `sgp_runner` (SGP scrape orchestration), `leg_types` (MLB code/leg-typing helpers). The taker's original files are one-line re-export shims; behavior is unchanged.
 
 ### MLB Dashboard — Odds screen
 

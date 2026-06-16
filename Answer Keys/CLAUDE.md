@@ -30,7 +30,12 @@ run.py mlb (orchestrator)
 - F5 (first 5 innings) markets matched via Odds API: h2h, totals, spreads, alternate_totals
 - Derivative markets matched via `compare_alts_to_samples` against scraped offshore odds:
   - F3 / F7 spreads + totals + h2h (Wagerzon, Bookmaker for F3 only). Note: Wagerzon currently posts spread+total at F3/F7 but rarely posts moneyline — h2h_1st_*_innings branch is built but typically idle until a book posts F-period MLs.
-  - FG alt spreads + alt totals (Wagerzon, Bet105)
+  - FG alt spreads + alt totals (Wagerzon, Bet105, Bookmaker). Bookmaker's
+    alt ladder lives in each game's `Derivatives.line` array (index 0 = main,
+    non-zero = alternates, with paired spread + total per index); the parser
+    emits `alternate_spreads` / `alternate_totals` rows from non-zero indices
+    (2026-05-29). Coverage is intermittent — BKM populates the multi-index
+    grid for some games near start time and not for early openers.
   - FG odd/even total runs (Wagerzon — single-game prop, away_ml side = ODD, home_ml side = EVEN per scraper convention)
   - F5 3-way moneyline `h2h_3way_1st_5_innings` (Wagerzon only — `idgmtyp=29` league `lg=1280`). Tie is a real outcome, not push refund. Coexists with the existing 2-way F5 ML matched via `compare_moneylines_to_wagerzon`.
 - Team totals (`team_totals_*_fg`, `team_totals_*_h1`) are scraped but NOT yet matched — MLB samples lack per-team score columns. Tracked as gap #2 in the broader matching plan.
@@ -399,11 +404,13 @@ NOT its ±0.5 run line (a different bet, no push). Source priority per book:
   on the FAIR toggle (skips the pair-devig) and `american_odds` on RAW, when
   `derived_fair_odds` is non-NULL. `mlb_dashboard.R` carries the column
   through the load + long→wide pivot, parallel to `american_odds`.
-- v1 coverage: **DraftKings** posts a 2-way "1st 3 Innings" winner (now
-  captured — see `mlb_sgp/README.md`); **FanDuel** posts a First-5-Innings
-  "Money Line" (already captured) but **no** first-3 money line, so FD shows
-  "—" on F3 pick'em cards (book reality, not a gap). Other books show "—"
-  until their winner market is wired.
+- Coverage: **DraftKings** posts bare-period 2-way winners ("1st 3/5/7
+  Innings"), captured via `classify_market`. **FanDuel** posts a 2-way
+  "First 5 Innings Money Line" AND a 3-way "First N Innings Result"
+  (Home/Tie/Away) for F3/F5/F7 — both now captured: the FD scraper emits the
+  Result as an `h2h_3way` row (with `tie_ml`), and `get_fd_odds` flows it to
+  `h2h_3way_1st_N_innings` so the 3-way DNB collapse fills FD's F3/F5/F7
+  pick'em cells. Other books show "—" until their winner market is wired.
 - Spec: `docs/superpowers/specs/2026-05-27-mlb-pickem-moneyline-match-design.md`.
 
 ### Helpers

@@ -1,8 +1,10 @@
-"""Central logging configuration for the Kalshi MLB RFQ bot.
+"""Central logging configuration for the Kalshi MLB MM (maker) bot.
 
 Replaces ad-hoc print() with the stdlib logging module: levels (filterable
 without code changes) + a size-capped RotatingFileHandler (so bot.log can
 never grow unbounded). Call setup_logging() once at process start.
+
+Mirrors kalshi_mlb_rfq/log_setup.py exactly in structure and contract.
 """
 
 import logging
@@ -10,9 +12,9 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from kalshi_mlb_rfq import config
+from kalshi_mlb_mm import config
 
-_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+_FORMAT = "%(asctime)s %(levelname)s %(name)s — %(message)s"
 
 
 def setup_logging(log_path: Path | None = None,
@@ -24,8 +26,8 @@ def setup_logging(log_path: Path | None = None,
     appropriate, a console (stderr) handler. Idempotent: repeated calls do
     not stack handlers.
 
-    Defaults come from config (LOG_PATH, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
-    LOG_LEVEL); args override for tests.
+    Defaults come from config (LOG_PATH, LOG_ROTATE_MAX_BYTES,
+    LOG_ROTATE_BACKUPS, LOG_LEVEL); args override for tests.
 
     `console` controls the stderr StreamHandler. When None (default) it is
     added only if stderr is a TTY — so an interactive / dry-run session gets
@@ -35,9 +37,9 @@ def setup_logging(log_path: Path | None = None,
     time. Pass True/False to force it.
     """
     log_path = Path(log_path) if log_path else config.LOG_PATH
-    max_bytes = max_bytes if max_bytes is not None else config.LOG_MAX_BYTES
+    max_bytes = max_bytes if max_bytes is not None else config.LOG_ROTATE_MAX_BYTES
     backup_count = (backup_count if backup_count is not None
-                    else config.LOG_BACKUP_COUNT)
+                    else config.LOG_ROTATE_BACKUPS)
     level = level or config.LOG_LEVEL
     if console is None:
         console = sys.stderr.isatty()
@@ -49,7 +51,7 @@ def setup_logging(log_path: Path | None = None,
     # close() before removeHandler() so the rotating file's fd is released
     # (removeHandler alone leaks the descriptor until GC).
     for h in list(root.handlers):
-        if getattr(h, "_rfq_managed", False):
+        if getattr(h, "_mm_managed", False):
             h.close()
             root.removeHandler(h)
 
@@ -59,13 +61,13 @@ def setup_logging(log_path: Path | None = None,
     file_handler = RotatingFileHandler(
         log_path, maxBytes=max_bytes, backupCount=backup_count)
     file_handler.setFormatter(fmt)
-    file_handler._rfq_managed = True
+    file_handler._mm_managed = True
     root.addHandler(file_handler)
 
     if console:
         stream_handler = logging.StreamHandler()
         stream_handler.setFormatter(fmt)
-        stream_handler._rfq_managed = True
+        stream_handler._mm_managed = True
         root.addHandler(stream_handler)
 
     return root

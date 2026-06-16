@@ -6,7 +6,10 @@ alts, abs(line) coalesces both sides of an alt spread) and period isolation.
 """
 from datetime import datetime
 from mlb_sgp.fd_client import Event, Runner
-from mlb_sgp.scraper_fanduel_singles import parse_runners_to_wide_rows
+from mlb_sgp.scraper_fanduel_singles import (
+    parse_runners_to_wide_rows,
+    classify_market,
+)
 
 
 def test_main_game_lines_produce_one_row():
@@ -147,8 +150,11 @@ def test_classify_market_whitelist_excludes_parlay_markets():
     # Single-inning markets and Race-To
     assert classify_market("5th Inning Run Line") is None
     assert classify_market("Race To 5 Runs") is None
-    # First X Innings Result (3-way ML)
-    assert classify_market("First 7 Innings Result") is None
+    # First N Innings Result (3-way ML): F3/F5/F7 are now captured as h2h_3way
+    # (collapsed to a draw-no-bet downstream for pick'em cards); single-inning
+    # and out-of-scope-period Results stay excluded.
+    assert classify_market("First 7 Innings Result") == ("F7", "h2h_3way")
+    assert classify_market("First 2 Innings Result") is None
     # Core in-scope names DO match
     assert classify_market("Run Line") == ("FG", "main")
     assert classify_market("Total Runs") == ("FG", "main")
@@ -178,3 +184,45 @@ def test_f5_period_isolated_from_fg():
                                        fetch_time=datetime(2026, 5, 12, 14, 0))
     periods = sorted([r["period"] for r in rows])
     assert periods == ["F5", "FG"]
+
+
+# === 3-way "First N Innings Result" -> h2h_3way ===
+
+def test_first_n_innings_result_classifies_as_3way():
+    """FD posts a 3-way 'First N Innings Result' (Home/Tie/Away). For the
+    modeled periods F3/F5/F7 it classifies as h2h_3way."""
+    assert classify_market("First 3 Innings Result") == ("F3", "h2h_3way")
+    assert classify_market("First 5 Innings Result") == ("F5", "h2h_3way")
+    assert classify_market("First 7 Innings Result") == ("F7", "h2h_3way")
+
+
+def test_out_of_scope_result_markets_excluded():
+    """Single-inning and non-modeled-period Result markets are dropped."""
+    assert classify_market("7th Inning Result") is None        # single inning
+    assert classify_market("First 2 Innings Result") is None   # FG period -> excluded
+    assert classify_market("First 4 Innings Result") is None
+    assert classify_market("First 6 Innings Result") is None
+    # 2-way money lines still classify as main (not h2h_3way).
+    assert classify_market("First 5 Innings Money Line") == ("F5", "main")
+
+
+def test_3way_result_runners_yield_one_row_with_tie():
+    """The away/Tie/home runners of a Result market collapse to one h2h_3way
+    row carrying away_ml, home_ml, and tie_ml."""
+    event = Event("e1", "Texas Rangers", "Kansas City Royals",
+                  "2026-05-12T22:00:00Z")
+    runners = [
+        Runner("r1", "m_result", "Kansas City Royals", None, 140),
+        Runner("r2", "m_result", "Tie", None, 610),
+        Runner("r3", "m_result", "Texas Rangers", None, -102),
+    ]
+    market_meta = {"m_result": ("F7", "h2h_3way")}
+    rows = parse_runners_to_wide_rows(event, runners, market_meta,
+                                       fetch_time=datetime(2026, 5, 12, 14, 0))
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["period"] == "F7"
+    assert r["market"] == "h2h_3way"
+    assert r["away_ml"] == 140    # Kansas City Royals (away)
+    assert r["home_ml"] == -102   # Texas Rangers (home)
+    assert r["tie_ml"] == 610
