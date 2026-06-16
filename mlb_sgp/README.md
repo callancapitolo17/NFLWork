@@ -1,6 +1,6 @@
 # MLB SGP Odds Scrapers
 
-Fetch Same Game Parlay (SGP) odds from DraftKings and FanDuel for MLB correlated parlay edge finding. Both write to the same `mlb_sgp_odds` table so the scanner can shop combos across books.
+Fetch Same Game Parlay (SGP) odds from multiple books (DraftKings, FanDuel, ProphetX, Novig, BetMGM, Caesars) for MLB correlated parlay edge finding. All write to the same `mlb_sgp_odds` table so the scanner can shop combos across books. See "Additional SGP books" below for BetMGM/Caesars/bet365.
 
 ## Quick Start
 
@@ -123,6 +123,33 @@ DK returns abbreviated city prefixes (`"CLE Guardians"`, `"LA Angels"`,
 30-entry `DK_TEAM_MAP` that translates DK names → canonical (Odds API
 format) before writing rows. FD names already match canonical — no
 mapping needed.
+
+## Additional SGP books (2026-06)
+
+Three more books were added to widen the SGP consensus (a "top-down SGP
+fair-odds" calculator). All follow the same shim/orchestrator/client trio as
+Novig and write to `mlb_sgp_odds`; both bots pick them up via the shared
+`kalshi_common/sgp_runner.py::SCRAPER_NAMES`, and the dashboard blends them in
+`mlb_correlated_parlay.R`.
+
+- **BetMGM** (`scraper_betmgm_sgp.py` + `betmgm.py` + `betmgm_client.py`) —
+  ✅ GREEN, pure `curl_cffi`. Entain CDS API: harvest a static per-state
+  `x-bwin-accessid` from `clientconfig` (unlock = the `x-bwin-sports-api: prod`
+  header; use state `pa`), then `POST /cds-api/bettingoffer/picks` with legs
+  sharing a `pickGroupId` returns the Angstrom correlated price. Source
+  `betmgm_direct`. Verified live (4-corner overround ~1.12–1.18). No browser.
+- **Caesars** (`scraper_caesars_sgp.py` + `caesars.py` + `caesars_client.py`) —
+  token-broker + REST. `POST /sb/v2/bets/details` with `combinationSelections:
+  []` returns the ZeroFlucs correlated price (`parlays[0].price.decimal`),
+  logged-out. Needs a one-time `aws-waf-token` minted by headless Playwright
+  (cached ~4 min; broker validates before use and emits no rows on a cold
+  WAF, so it never feeds bad data). Source `caesars_direct`. Mechanism verified
+  on 3 live games; the headless token mint degrades under burst load — run at
+  gentle cadence.
+- **bet365** — DEFERRED. Recon (`recon_bet365_*.py`) proved no fast path: odds
+  live only on the `zap` WebSocket, which is Cloudflare-fingerprint-blocked for
+  any non-browser client. Only a persistent live browser works; revisit if that
+  tradeoff becomes acceptable.
 
 ## DraftKings API Endpoints
 
