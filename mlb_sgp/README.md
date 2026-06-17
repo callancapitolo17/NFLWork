@@ -140,14 +140,20 @@ dashboard spawns the shims + blends them in `mlb_correlated_parlay.R`.
   header; use state `pa`), then `POST /cds-api/bettingoffer/picks` with legs
   sharing a `pickGroupId` returns the Angstrom correlated price. Source
   `betmgm_direct`. Verified live (4-corner overround ~1.12–1.18). No browser.
-- **Caesars** (`scraper_caesars_sgp.py` + `caesars.py` + `caesars_client.py`) —
-  token-broker + REST. `POST /sb/v2/bets/details` with `combinationSelections:
-  []` returns the ZeroFlucs correlated price (`parlays[0].price.decimal`),
-  logged-out. Needs a one-time `aws-waf-token` minted by headless Playwright
-  (cached ~4 min; broker validates before use and emits no rows on a cold
-  WAF, so it never feeds bad data). Source `caesars_direct`. Mechanism verified
-  on 3 live games; the headless token mint degrades under burst load — run at
-  gentle cadence.
+- **Caesars** (`scraper_caesars_sgp.py` + `caesars.py` + `caesars_client.py`
+  + `caesars_waf.py` + `caesars_waf_node.js`) — token-broker + REST, **browser
+  free**. `POST /sb/v2/bets/details` with `combinationSelections: []` returns
+  the ZeroFlucs correlated price (`parlays[0].price.decimal`), logged-out.
+  Every call needs an `aws-waf-token`, minted **without a browser** by running
+  AWS WAF's real `challenge.js` under `node` (the `NetworkBandwidth` challenge —
+  see `caesars_waf.py`; ~1.5s, cached ~4 min, validated before use, emits no
+  rows on failure → never bad data). Requires `node` on PATH (no Playwright/
+  Chromium). Parsing is **exact-name** (`Run Line`/`Total Runs` + Alternate/F5
+  variants) to exclude player props, team totals, and in-play (`... Live`)
+  markets; events filtered to the **MLB** competition and **pregame** only;
+  the away run-line leg carries its own (negated) line so all 4 corners price.
+  Source `caesars_direct`. Verified: browser-free mint validated live; 4/4
+  corners price with sane overround.
 - **bet365** — DEFERRED. Recon (`recon_bet365_*.py`) proved no fast path: odds
   live only on the `zap` WebSocket, which is Cloudflare-fingerprint-blocked for
   any non-browser client. Only a persistent live browser works; revisit if that

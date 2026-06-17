@@ -9,9 +9,9 @@ Caesars prices arbitrary same-game combos via a plain REST call:
 same-event legs. Works LOGGED OUT. (The be-push socket.io is a login-only
 bet-referral channel, NOT the quote path.)
 
-Every request to api.americanwagering.com needs an AWS-WAF token. The token
-is minted only in a real browser by the AWS WAF SDK, so this client runs a
-one-time headless Playwright mint and CACHES the token (it has a short TTL,
+Every request to api.americanwagering.com needs an AWS-WAF token. The token is
+minted BROWSER-FREE by running AWS WAF's real challenge.js under `node` (see
+caesars_waf.py — no Chromium/Playwright, ~1.5s) and CACHED to disk (short TTL,
 ~5 min). The token-broker validates the token (a tabs GET must return JSON)
 before handing it out — an unverified WAF token 403s — so a cold cycle simply
 yields no rows rather than garbage.
@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import time
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,15 +37,12 @@ API = "https://api.americanwagering.com"
 REAL_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
            "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36")
 APP_VERSION = "7.49.0"
-# MLB competition landing page that reliably boots the WAF SDK during mint.
-MLB_LANDING = "bet/baseball/competition/mlb-04f8d"
 # Tabs feed (URL-encoded "SCHEDULE|Games ⚾") used both to list events and to
 # validate a freshly-minted token.
 TABS_PATH = "v4/sports/baseball/tabs/SCHEDULE%7CGames%20%E2%9A%BE"
 
 _THIS_DIR = Path(__file__).resolve().parent
 TOKEN_CACHE = _THIS_DIR / ".caesars_token.json"
-PROFILE_DIR = _THIS_DIR / ".caesars_profile"
 TOKEN_TTL_SEC = 240          # refresh comfortably inside the ~5 min WAF TTL
 
 
@@ -138,63 +134,39 @@ class CaesarsClient:
             return False
 
     def _mint(self) -> bool:
-        """One-time headless Playwright mint of the aws-waf-token + device id."""
+        """Browser-free mint of the aws-waf-token + device id.
+
+        Runs AWS WAF's real challenge.js under `node` (no Chromium/Playwright)
+        via caesars_waf.mint_token_browser_free, then validates the token.
+        ~1.5s and works in the bot venvs (node on PATH + curl_cffi only).
+        """
         try:
-            from playwright.sync_api import sync_playwright
-        except Exception as e:
-            if self.verbose:
-                print(f"  [czr] playwright unavailable: {e!r}")
-            return False
-        dev = {"v": ""}
+            from mlb_sgp.caesars_waf import mint_token_browser_free
+        except ImportError:
+            from caesars_waf import mint_token_browser_free  # cwd=mlb_sgp path
         for attempt in range(3):
             try:
-                tok = ""
-                cookies: dict = {}
-                with sync_playwright() as pw:
-                    ctx = pw.chromium.launch_persistent_context(
-                        user_data_dir=str(PROFILE_DIR), channel="chrome", headless=True,
-                        viewport={"width": 1400, "height": 900}, user_agent=REAL_UA,
-                        args=["--disable-blink-features=AutomationControlled",
-                              f"--user-agent={REAL_UA}"])
-                    # Always close the persistent context (releases the profile
-                    # lock + browser) even if navigation/polling throws mid-mint.
-                    try:
-                        page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                        page.add_init_script(
-                            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
-
-                        def on_req(req):
-                            d = req.headers.get("x-unique-device-id")
-                            if d:
-                                dev["v"] = d
-                        page.on("request", on_req)
-                        page.goto(f"https://sportsbook.caesars.com/us/{self.state}/{MLB_LANDING}",
-                                  wait_until="commit", timeout=90000)
-                        for _ in range(16):
-                            page.wait_for_timeout(2500)
-                            c = next((c for c in ctx.cookies() if c["name"] == "aws-waf-token"), None)
-                            if c:
-                                tok = c["value"]
-                            if tok and dev["v"]:
-                                break
-                        cookies = {c["name"]: c["value"] for c in ctx.cookies()
-                                   if "americanwagering" in c["domain"] or c["name"] == "aws-waf-token"}
-                    finally:
-                        ctx.close()
-                if tok:
-                    self._token, self._device, self._cookies = tok, dev["v"], cookies
-                    self._minted_at = time.time()
-                    if self._validate():
-                        self._save_cache()
-                        if self.verbose:
-                            print(f"  [czr] token minted+validated (attempt {attempt+1})")
-                        return True
-                    if self.verbose:
-                        print(f"  [czr] token minted but NOT validated (attempt {attempt+1}) "
-                              f"— WAF challenge unresolved")
+                tok, dev = mint_token_browser_free(state=self.state, verbose=self.verbose)
             except Exception as e:
                 if self.verbose:
                     print(f"  [czr] mint error (attempt {attempt+1}): {e!r}")
+                continue
+            if not tok:
+                if self.verbose:
+                    print(f"  [czr] node mint returned no token (attempt {attempt+1})")
+                continue
+            self._token = tok
+            self._device = dev
+            self._cookies = {"aws-waf-token": tok}
+            self._minted_at = time.time()
+            if self._validate():
+                self._save_cache()
+                if self.verbose:
+                    print(f"  [czr] token minted+validated browser-free (attempt {attempt+1})")
+                return True
+            if self.verbose:
+                print(f"  [czr] token minted but NOT validated (attempt {attempt+1}) "
+                      f"— WAF reject or IP throttle")
         return False
 
     # --- REST --------------------------------------------------------------- #
@@ -220,7 +192,14 @@ class CaesarsClient:
         for comp in tj.get("competitions", []):
             cid = comp.get("id")
             cname = (comp.get("name") or "")
+            # baseball tabs also carry KBO/NPB/CPBL/college/MiLB — keep MLB only.
+            if cname.strip().upper() != "MLB":
+                continue
             for ev in comp.get("events", []):
+                # Skip in-play games: their markets are renamed "... Live" and
+                # the lines move mid-game. The bots/dashboard price pregame only.
+                if ev.get("started") or ev.get("tradedInPlay"):
+                    continue
                 md = ev.get("metadata", {}) or {}
                 home = md.get("homeTeamName")
                 away = md.get("awayTeamName")

@@ -39,8 +39,16 @@ SANITY_MULT_RATIO = 1.5
 CZR_TARGET_PARALLELISM = 3   # gentle — the WAF rate-limits aggressive hits
 
 
-def _leg(sel: dict, market: dict, event_id: str, competition_id: str) -> dict:
-    """Build a /bets/details leg from a selection + its market (blueprint shape)."""
+def _leg(sel: dict, market: dict, event_id: str, competition_id: str,
+         line: float | None = None) -> dict:
+    """Build a /bets/details leg from a selection + its market (blueprint shape).
+
+    `line` is the selection's own requested line. Caesars run-line markets carry
+    a single home-perspective `market.line`; the AWAY selection's line is its
+    negation. Totals share the same line for over/under. Passing the wrong sign
+    for the away side makes Caesars decline the combo (drops the away corners),
+    so the caller supplies the correct per-selection line.
+    """
     price = sel.get("price") or {}
     return {
         "selectionId": sel.get("id"),
@@ -51,7 +59,7 @@ def _leg(sel: dict, market: dict, event_id: str, competition_id: str) -> dict:
         "related": True,
         "eachWay": False,
         "stakePerLine": 0,
-        "line": market.get("line"),
+        "line": market.get("line") if line is None else line,
         "selectionType": sel.get("type"),
         "name": sel.get("name"),
         "price": price,
@@ -60,19 +68,32 @@ def _leg(sel: dict, market: dict, event_id: str, competition_id: str) -> dict:
 
 
 def _classify(name: str) -> tuple[str, str] | None:
-    """(period, kind) for a run-line/total market name, else None."""
-    low = (name or "").strip("|").lower()
-    is_f5 = "1st 5 innings" in low or "first 5 innings" in low
-    period = "F5" if is_f5 else "FG"
-    # reject other derivative periods (1st 3 / 1st 7 innings, etc.)
-    if "innings" in low and not is_f5:
-        return None
-    if "run line" in low or "handicap" in low:
-        if "team" in low:
-            return None
-        return (period, "spread")
-    if "total" in low and "team" not in low:
-        return (period, "total")
+    """(period, kind) for the game run-line / total-runs market, else None.
+
+    EXACT-name match (not substring) — Caesars' event-detail tree is full of
+    markets whose names contain "total"/"run line" but are NOT the game line:
+    player props ("Jacob Wilson - Total Bases"), team totals ("Home Total
+    Runs", "Colorado Rockies Total Runs"), other periods ("1st 7 Innings Total
+    Runs"), and in-play variants ("Total Runs Live"). Only the canonical
+    full-game and 1st-5-innings run-line/total-runs markets (main + alternate)
+    qualify. Names are matched after stripping pipes/whitespace, lowercased.
+    """
+    low = (name or "").replace("|", " ").strip().lower()
+    low = " ".join(low.split())  # collapse internal whitespace
+    fg_spread = {"run line", "alternate run line"}
+    fg_total = {"total runs", "alternate total runs"}
+    f5_spread = {"1st 5 innings run line", "alternate 1st 5 innings run line",
+                 "1st 5 innings - run line"}
+    f5_total = {"1st 5 innings total runs", "alternate 1st 5 innings total runs",
+                "1st 5 innings - total runs"}
+    if low in fg_spread:
+        return ("FG", "spread")
+    if low in fg_total:
+        return ("FG", "total")
+    if low in f5_spread:
+        return ("F5", "spread")
+    if low in f5_total:
+        return ("F5", "total")
     return None
 
 
@@ -111,9 +132,12 @@ def parse_markets(event: dict) -> dict:
                 home = next((s for s in sels if s.get("type") == "home"), None)
                 away = next((s for s in sels if s.get("type") == "away"), None)
                 if home and away:
-                    out[period]["spreads"][float(line)] = {
-                        "home": _leg(home, m, eid, cid),
-                        "away": _leg(away, m, eid, cid),
+                    ml = float(line)
+                    out[period]["spreads"][ml] = {
+                        # home line is the market line (home perspective);
+                        # away selection's line is its negation.
+                        "home": _leg(home, m, eid, cid, line=ml),
+                        "away": _leg(away, m, eid, cid, line=-ml),
                     }
             else:  # total — line is the total value
                 over = next((s for s in sels if s.get("type") == "over"), None)
