@@ -5,12 +5,52 @@ Uploads scraped bet data to the specified Google Sheet.
 """
 
 import os
+import time
+import httplib2
 from google.oauth2.service_account import Credentials
+from google.auth.exceptions import TransportError
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Transient network failures worth retrying instead of crashing the scraper.
+# A 5 AM DNS blip used to raise an *uncaught* error here (httplib2.ServerNotFoundError
+# is not an HttpError), silently killing a run and dropping a week of bets.
+# socket.gaierror / ConnectionError / TimeoutError are all subclasses of OSError.
+# TransportError covers the OAuth token-refresh path (oauth2.googleapis.com) — it is
+# NOT an OSError, so it must be listed explicitly or a refresh-time blip slips through.
+_RETRYABLE_NETWORK_ERRORS = (OSError, httplib2.ServerNotFoundError, TransportError)
+# HTTP statuses that are transient (server-side or rate-limit) and worth a retry.
+_RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}
+
+
+def _execute_with_retry(request, max_attempts: int = 4, base_delay: int = 5):
+    """
+    Execute a Google Sheets API request, retrying on transient failures.
+
+    Retries on DNS/connection errors and on 429/5xx HTTP responses, backing off
+    linearly (5s, 10s, 15s). Re-raises immediately on non-transient errors
+    (e.g. 403 permission denied) and after the final attempt — so a genuine
+    outage still fails loudly (non-zero exit) for the FAILED notification.
+    """
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return request.execute()
+        except HttpError as e:
+            status = getattr(e.resp, 'status', None)
+            if status not in _RETRYABLE_HTTP_STATUSES or attempt == max_attempts:
+                raise
+            wait = base_delay * attempt
+            print(f"  Sheets API {status} (attempt {attempt}/{max_attempts}), retrying in {wait}s...")
+            time.sleep(wait)
+        except _RETRYABLE_NETWORK_ERRORS as e:
+            if attempt == max_attempts:
+                raise
+            wait = base_delay * attempt
+            print(f"  Network error: {type(e).__name__} (attempt {attempt}/{max_attempts}), retrying in {wait}s...")
+            time.sleep(wait)
 
 # Google Sheets configuration
 SPREADSHEET_ID = os.getenv("GOOGLE_SHEET_ID", "1t9_7HmsrQAu34HI_gMIDPErC2kThz2MHBwwzZIYU6H4")
@@ -44,10 +84,10 @@ def get_next_empty_row(service, sheet_name: str = None) -> int:
     tab = sheet_name or SHEET_NAME
     try:
         # Get all values in column A to find last row with data
-        result = service.spreadsheets().values().get(
+        result = _execute_with_retry(service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
             range=f"{tab}!A:A"
-        ).execute()
+        ))
 
         values = result.get('values', [])
         return len(values) + 1
@@ -87,10 +127,10 @@ def get_existing_bets(service, sheet_name: str = None) -> dict:
     """
     tab = sheet_name or SHEET_NAME
     try:
-        result = service.spreadsheets().values().get(
+        result = _execute_with_retry(service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
             range=f"{tab}!A:H"
-        ).execute()
+        ))
 
         values = result.get('values', [])
         existing = {}
@@ -170,14 +210,14 @@ def format_bet_row(bet: dict) -> list:
 def ensure_sheet_exists(service, sheet_name: str):
     """Create a sheet tab if it doesn't already exist."""
     try:
-        meta = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+        meta = _execute_with_retry(service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID))
         existing = [s['properties']['title'] for s in meta.get('sheets', [])]
         if sheet_name in existing:
             return
-        service.spreadsheets().batchUpdate(
+        _execute_with_retry(service.spreadsheets().batchUpdate(
             spreadsheetId=SPREADSHEET_ID,
             body={'requests': [{'addSheet': {'properties': {'title': sheet_name}}}]}
-        ).execute()
+        ))
         print(f"Created new sheet tab: {sheet_name}")
     except HttpError as e:
         print(f"Warning: could not ensure sheet '{sheet_name}' exists: {e}")
@@ -235,12 +275,12 @@ def append_bets_to_sheet(bets: list, start_row: int = None, sheet_name: str = No
 
         # Upload to sheet
         body = {'values': rows}
-        result = service.spreadsheets().values().update(
+        result = _execute_with_retry(service.spreadsheets().values().update(
             spreadsheetId=SPREADSHEET_ID,
             range=range_str,
             valueInputOption='USER_ENTERED',  # This allows formulas and formatting
             body=body
-        ).execute()
+        ))
 
         updated_cells = result.get('updatedCells', 0)
         print(f"Successfully updated {updated_cells} cells!")
