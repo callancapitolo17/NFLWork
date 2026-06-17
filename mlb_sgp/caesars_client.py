@@ -198,7 +198,10 @@ class CaesarsClient:
             for ev in comp.get("events", []):
                 # Skip in-play games: their markets are renamed "... Live" and
                 # the lines move mid-game. The bots/dashboard price pregame only.
-                if ev.get("started") or ev.get("tradedInPlay"):
+                # NOTE: `started` is the in-play signal; `tradedInPlay` is a
+                # capability flag (True for ALL games that support live betting,
+                # including pregame) — do NOT filter on it or you drop everything.
+                if ev.get("started"):
                     continue
                 md = ev.get("metadata", {}) or {}
                 home = md.get("homeTeamName")
