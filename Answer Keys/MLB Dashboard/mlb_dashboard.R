@@ -1606,12 +1606,24 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
     find_same_game_bets(i, all_bets, placed_bets)
   })
 
-  # Re-compute bet_row_id to match the join key in mlb_bets_book_prices
-  all_bets <- all_bets %>%
-    mutate(bet_row_id = vapply(
-      paste(id, market, ifelse(is.na(line), "", as.character(line)), bet_on, sep = "|"),
-      function(s) digest::digest(s, algo = "md5"), character(1)
-    ))
+  # bet_row_id is the join key into mlb_bets_book_prices. MLB.R writes BOTH
+  # mlb_bets_combined and mlb_bets_book_prices with the canonical hash
+  # odds_screen.R::compute_bet_row_id(id, base_market_type, period, line,
+  # bet_on) — a 5-field recipe (market_type + period), NOT the verbose
+  # `market` string. So when all_bets already carries bet_row_id (loaded from
+  # mlb_bets_combined), we MUST trust it verbatim; recomputing here from the
+  # verbose `market` string produces a different hash and matches zero book
+  # rows, blanking every pill (esp. derivative markets like totals_1st_7_innings,
+  # where market != market_type). Only fall back to the legacy verbose recipe
+  # for stale DBs that predate the bet_row_id column — those DBs also wrote
+  # mlb_bets_book_prices with the same legacy recipe, so the two still agree.
+  if (!"bet_row_id" %in% names(all_bets)) {
+    all_bets <- all_bets %>%
+      mutate(bet_row_id = vapply(
+        paste(id, market, ifelse(is.na(line), "", as.character(line)), bet_on, sep = "|"),
+        function(s) digest::digest(s, algo = "md5"), character(1)
+      ))
+  }
 
   # Defensive defaults: allow stale DBs without the new edge-source columns
   # to still render. These are no-ops once MLB.R writes the columns.
@@ -6706,8 +6718,9 @@ all_bets <- tryCatch({
 
 cat(sprintf("Loaded %d bets\n", nrow(all_bets)))
 
-# bet_row_id is derived from digest(id|market|line|bet_on). If two bets collapse to
-# the same hash we'd render two cards as one — surface it.
+# bet_row_id is the canonical identity hash written by MLB.R via
+# odds_screen.R::compute_bet_row_id (digest of id|base_market_type|period|line|bet_on).
+# If two bets collapse to the same hash we'd render two cards as one — surface it.
 if (nrow(all_bets) > 0 && "bet_row_id" %in% names(all_bets)) {
   bet_id_dups <- all_bets %>% count(bet_row_id, name = ".n") %>% filter(.n > 1)
   if (nrow(bet_id_dups) > 0) {
