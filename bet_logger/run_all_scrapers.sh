@@ -21,7 +21,8 @@ echo "----------------------------------------"
 if ./venv/bin/python3 scraper_wagerzon.py; then
     echo "[$(date '+%H:%M:%S')] Wagerzon: done"
 else
-    echo "[$(date '+%H:%M:%S')] Wagerzon: FAILED (exit $?)"
+    rc=$?
+    echo "[$(date '+%H:%M:%S')] Wagerzon: FAILED (exit $rc)"
     FAILED=$((FAILED + 1))
     FAILED_NAMES="${FAILED_NAMES}Wagerzon, "
 fi
@@ -33,7 +34,8 @@ echo "----------------------------------------"
 if ./venv/bin/python3 scraper_wagerzon.py --account j; then
     echo "[$(date '+%H:%M:%S')] WagerzonJ: done"
 else
-    echo "[$(date '+%H:%M:%S')] WagerzonJ: FAILED (exit $?)"
+    rc=$?
+    echo "[$(date '+%H:%M:%S')] WagerzonJ: FAILED (exit $rc)"
     FAILED=$((FAILED + 1))
     FAILED_NAMES="${FAILED_NAMES}WagerzonJ, "
 fi
@@ -45,7 +47,8 @@ echo "----------------------------------------"
 if ./venv/bin/python3 scraper_wagerzon.py --account c; then
     echo "[$(date '+%H:%M:%S')] WagerzonC: done"
 else
-    echo "[$(date '+%H:%M:%S')] WagerzonC: FAILED (exit $?)"
+    rc=$?
+    echo "[$(date '+%H:%M:%S')] WagerzonC: FAILED (exit $rc)"
     FAILED=$((FAILED + 1))
     FAILED_NAMES="${FAILED_NAMES}WagerzonC, "
 fi
@@ -57,7 +60,8 @@ echo "----------------------------------------"
 if ./venv/bin/python3 scraper_hoop88.py; then
     echo "[$(date '+%H:%M:%S')] Hoop88: done"
 else
-    echo "[$(date '+%H:%M:%S')] Hoop88: FAILED (exit $?)"
+    rc=$?
+    echo "[$(date '+%H:%M:%S')] Hoop88: FAILED (exit $rc)"
     FAILED=$((FAILED + 1))
     FAILED_NAMES="${FAILED_NAMES}Hoop88, "
 fi
@@ -70,7 +74,8 @@ echo "----------------------------------------"
 if ./venv/bin/python3 scraper_bfa.py; then
     echo "[$(date '+%H:%M:%S')] BFA primary: done"
 else
-    echo "[$(date '+%H:%M:%S')] BFA primary: FAILED (exit $?)"
+    rc=$?
+    echo "[$(date '+%H:%M:%S')] BFA primary: FAILED (exit $rc)"
     FAILED=$((FAILED + 1))
     FAILED_NAMES="${FAILED_NAMES}BFA, "
 fi
@@ -83,7 +88,8 @@ echo "----------------------------------------"
 if ./venv/bin/python3 scraper_bfa.py --account j; then
     echo "[$(date '+%H:%M:%S')] BFAJ: done"
 else
-    echo "[$(date '+%H:%M:%S')] BFAJ: FAILED (exit $?)"
+    rc=$?
+    echo "[$(date '+%H:%M:%S')] BFAJ: FAILED (exit $rc)"
     FAILED=$((FAILED + 1))
     FAILED_NAMES="${FAILED_NAMES}BFAJ, "
 fi
@@ -101,12 +107,14 @@ else
         if ./venv/bin/python3 scraper_betonline.py --since-last; then
             echo "[$(date '+%H:%M:%S')] BetOnline: done (after recon)"
         else
-            echo "[$(date '+%H:%M:%S')] BetOnline: FAILED after recon (exit $?)"
+            rc=$?
+            echo "[$(date '+%H:%M:%S')] BetOnline: FAILED after recon (exit $rc)"
             FAILED=$((FAILED + 1))
             FAILED_NAMES="${FAILED_NAMES}BetOnline, "
         fi
     else
-        echo "[$(date '+%H:%M:%S')] BetOnline: FAILED — recon also failed (exit $?)"
+        rc=$?
+        echo "[$(date '+%H:%M:%S')] BetOnline: FAILED — recon also failed (exit $rc)"
         FAILED=$((FAILED + 1))
         FAILED_NAMES="${FAILED_NAMES}BetOnline, "
     fi
