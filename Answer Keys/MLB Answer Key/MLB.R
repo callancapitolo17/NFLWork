@@ -913,7 +913,7 @@ book_odds_by_book <- Filter(Negate(is.null), book_odds_by_book)
 # even when the model is neutral. See market_edge.R::find_market_edges.
 # game_info gives market-only cards their teams + tipoff and the future-game gate.
 .market_game_info <- mlb_odds %>%
-  transmute(game_id = id, home_team, away_team, pt_start_time) %>%
+  transmute(game_id = id, home_team, away_team, pt_start_time = commence_time) %>%
   distinct(game_id, .keep_all = TRUE)
 
 market_bets <- find_market_edges(
