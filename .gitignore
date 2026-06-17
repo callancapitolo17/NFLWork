@@ -43,6 +43,7 @@ recon_*.png
 # Data files
 *.duckdb
 *.duckdb-journal
+*.duckdb.wal
 *.rds
 *.csv
 # Test fixtures (golden baselines) are tracked despite the *.csv rule above

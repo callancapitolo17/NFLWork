@@ -3,7 +3,18 @@
 # Runs in parallel with scrapers via run.py; waits for sentinel before loading scraper data
 
 .t_script_start <- Sys.time()
-setwd("~/NFLWork/Answer Keys")
+# Resolve cwd from the script location so a worktree copy stays self-contained.
+# MLB.R lives at <root>/Answer Keys/MLB Answer Key/MLB.R, so its Answer Keys dir
+# is the parent of the script dir. On main this is identical to ~/NFLWork/Answer Keys.
+.args <- commandArgs(trailingOnly = FALSE)
+.file_arg <- grep("^--file=", .args, value = TRUE)
+.script_dir <- if (length(.file_arg) > 0) {
+  .raw <- gsub("~\\+~", " ", sub("^--file=", "", .file_arg[1]))
+  normalizePath(dirname(.raw), mustWork = FALSE)
+} else {
+  normalizePath("~/NFLWork/Answer Keys/MLB Answer Key", mustWork = FALSE)
+}
+setwd(dirname(.script_dir))  # <root>/Answer Keys
 suppressPackageStartupMessages({
   library(data.table)
   library(oddsapiR)
@@ -19,6 +30,7 @@ suppressPackageStartupMessages({
   library(digest)
 })
 source("Tools.R")
+set_nflwork_root(derive_repo_root())  # so get_*_odds read this repo's DBs
 source("triple_play_helpers.R")
 source("MLB Answer Key/odds_screen.R")
 source("MLB Answer Key/market_edge.R")

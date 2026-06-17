@@ -20,6 +20,27 @@ run.py mlb (pipeline)  →  mlb_mm.duckdb/mlb_bets_combined          (dashboard 
 - **mlb_dashboard_server.py**: Flask server + REST API for placement/CLV state
 - **run.sh**: Full pipeline launcher (scrapers → R model → parlay pricer → correlated parlay finder → dashboard → Flask)
 
+## Testing changes from a worktree
+
+The worktree is self-contained: every MLB DB path derives from where the code
+lives (`Tools.R::nflwork_root()` / `derive_repo_root()`, and the dashboard +
+server use their own script-relative roots), so a worktree reads/writes its own
+seeded copies and **never touches main's live data**. On `main` every path
+resolves to `~/NFLWork` exactly as before (the resolver falls back to
+`~/NFLWork` when no root is set, so production is byte-identical).
+
+1. `./seed_test_data.sh` — CoW-clone main's live DBs into this worktree (instant
+   on APFS, ~zero disk; safe to run while the live dashboard / RFQ bot are up,
+   since `cp` is a byte-level read of main's files). Pass `--refresh` to re-clone.
+2. `./test_dashboard.sh` — render against the seeded data and serve on **:8093**
+   (so it never collides with the live dashboard on :8083).
+   - `--mlb` re-runs `MLB.R` (re-price) against the seeded DBs first.
+   - `--pipeline` runs the full `run.py mlb` (live re-scrape) first.
+3. Seeded `*.duckdb` files (and any `report.html`) are gitignored and are deleted
+   when the worktree is removed.
+
+`MLB_DASHBOARD_PORT` overrides the server port (default 8083 live / 8093 test).
+
 ## Features
 
 - **Bets tab odds screen** — card-based layout (mirrors the parlays-tab style) showing every recommended single bet at every tracked sportsbook. The card body renders a strict **2×8 price grid** (2 sides × 8 books) — books in fixed order: WZ, H88, BFA, BKM, B105, DK, FD, Pinn. Spreads, alt-spreads, and moneyline bets now render **both sides** (e.g. `BOS -2.5` and `PHI +2.5`), mirroring how totals already showed Over + Under. Each grid cell is in one of three states:
