@@ -374,6 +374,8 @@ _BOOK_MODULES = {
     "fanduel": "mlb_sgp.fanduel",
     "prophetx": "mlb_sgp.prophetx",
     "novig": "mlb_sgp.novig",
+    "betmgm": "mlb_sgp.betmgm",
+    "caesars": "mlb_sgp.caesars",
 }
 
 
