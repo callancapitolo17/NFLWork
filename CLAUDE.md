@@ -216,6 +216,7 @@ architecture.
 - Delete the branch after merging: `git branch -d feature/description`
 - **Use worktrees** (`/worktree`) for feature work to avoid conflicts with simultaneous sessions
 - **If using a worktree**, clean it up immediately after merging: `git worktree remove <path>` + `git branch -d <branch>`. Never leave stale worktrees behind.
+- **Testing the MLB dashboard/pipeline from a worktree:** run `"Answer Keys/MLB Dashboard/seed_test_data.sh"` (CoW-clones live DBs into the worktree — instant on APFS) then `"Answer Keys/MLB Dashboard/test_dashboard.sh"` (renders + serves on :8093; `--mlb` re-prices, `--pipeline` full re-scrape). The worktree is self-contained — every MLB DB path derives from the running code's location (`Tools.R::nflwork_root()` / `derive_repo_root()`), so it reads/writes its own seeded DBs and never touches main's live data. On `main` paths fall back to `~/NFLWork` byte-identically. Seeded `*.duckdb` files are gitignored and removed with the worktree.
 - For quick, isolated fixes (typo, one-liner) committing directly to `main` is fine
 
 **Branch hygiene (CRITICAL):**
