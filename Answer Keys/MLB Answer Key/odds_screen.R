@@ -14,6 +14,7 @@ library(tibble)
 library(stringr)
 library(lubridate)
 library(jsonlite)
+library(digest)
 
 LINE_MATCH_TOLERANCE <- 3.0  # max abs(line_quoted - model_line) we'll emit
 # Raised from 1.0 -> 3.0 on 2026-05-13. With 1.0, F7 totals where the
@@ -52,6 +53,21 @@ LINE_MATCH_TOLERANCE <- 3.0  # max abs(line_quoted - model_line) we'll emit
   market_name %>%
     str_replace("_1st_[357]_innings$", "") %>%
     str_replace("_(fg|f3|f5|f7|h2)$", "")
+}
+
+#' Canonical, book-agnostic bet identity hash shared by the model path
+#' (MLB.R) and the market-edge path (market_edge.R). Hashes
+#' (id, base_market_type, period, normalized_line, bet_on) so that the same
+#' wager always maps to the same id regardless of the verbose market string
+#' or the alternate_/main labeling. `market_type` may be the verbose model
+#' string OR a canonical type; callers should pass the canonical type, but the
+#' alternate_ prefix is stripped here defensively.
+compute_bet_row_id <- function(id, market_type, period, line, bet_on) {
+  base_mt   <- gsub("^alternate_", "", market_type)
+  line_norm <- ifelse(is.na(line), "", as.character(round(as.numeric(line), 1)))
+  key <- paste(id, base_mt, period, line_norm, bet_on, sep = "|")
+  vapply(key, function(s) digest::digest(s, algo = "md5"), character(1),
+         USE.NAMES = FALSE)
 }
 
 # When matching a bet to per-book candidates, treat alt and main as the
