@@ -940,8 +940,12 @@ market_both <- market_bets %>% filter(bet_row_id %in% all_bets_combined$bet_row_
 all_bets_combined <- all_bets_combined %>%
   left_join(market_both, by = "bet_row_id") %>%
   mutate(
-    edge_source = ifelse(!is.na(market_ev_join), "both", edge_source),
-    market_ev   = ifelse(!is.na(market_ev_join), market_ev_join, market_ev)
+    # as.character() guards the empty-frame case: base ifelse() seeds its
+    # result from the logical condition, so on 0 rows (no model bets today)
+    # it returns logical(0), which then can't bind_rows() with the character
+    # market-only rows below. Coercing keeps edge_source character-stable.
+    edge_source = as.character(ifelse(!is.na(market_ev_join), "both", edge_source)),
+    market_ev   = as.numeric(ifelse(!is.na(market_ev_join), market_ev_join, market_ev))
   ) %>%
   select(-market_ev_join)
 
