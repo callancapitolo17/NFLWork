@@ -3066,7 +3066,7 @@ join_pbp_odds <- function(
 #' @return TRUE if successful, FALSE otherwise
 run_wagerzon_scraper <- function(
     sport = "nfl",
-    scraper_dir = "~/NFLWork/wagerzon_odds",
+    scraper_dir = file.path(nflwork_root(), "wagerzon_odds"),
     venv_path = "venv"
 ) {
   scraper_dir <- normalizePath(path.expand(scraper_dir), mustWork = TRUE)
