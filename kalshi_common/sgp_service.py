@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _MLB_SGP_DIR = _REPO_ROOT / "mlb_sgp"
 
-DEFAULT_BOOKS = ("draftkings", "fanduel", "prophetx", "novig")
+DEFAULT_BOOKS = ("draftkings", "fanduel", "prophetx", "novig", "betmgm", "caesars")
 
 # TTLs for structure fetches (market *structure*, never prices).
 EVENTS_TTL_SEC = 300       # game list churns ~daily
@@ -194,6 +194,18 @@ class SGPService:
             if st.client is None:
                 from mlb_sgp.novig_client import NovigClient
                 st.client = NovigClient()
+            return mod.price_sgps(targets, periods=("FG",), client=st.client)
+        if book == "betmgm":
+            from mlb_sgp import betmgm as mod
+            if st.client is None:
+                from mlb_sgp.betmgm_client import BetMGMClient
+                st.client = BetMGMClient()
+            return mod.price_sgps(targets, periods=("FG",), client=st.client)
+        if book == "caesars":
+            from mlb_sgp import caesars as mod
+            if st.client is None:
+                from mlb_sgp.caesars_client import CaesarsClient
+                st.client = CaesarsClient()
             return mod.price_sgps(targets, periods=("FG",), client=st.client)
         raise ValueError(f"unknown book {book!r}")
 

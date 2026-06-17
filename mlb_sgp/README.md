@@ -128,9 +128,11 @@ mapping needed.
 
 Three more books were added to widen the SGP consensus (a "top-down SGP
 fair-odds" calculator). All follow the same shim/orchestrator/client trio as
-Novig and write to `mlb_sgp_odds`; both bots pick them up via the shared
-`kalshi_common/sgp_runner.py::SCRAPER_NAMES`, and the dashboard blends them in
-`mlb_correlated_parlay.R`.
+Novig and write to `mlb_sgp_odds`. Both bots price them in-process via
+`kalshi_common/sgp_service.py::SGPService` (registered in `DEFAULT_BOOKS` with
+a `_run_book` dispatch branch, mirroring ProphetX/Novig); the legacy subprocess
+path (`sgp_runner.py::SCRAPER_NAMES`) also lists them for rollback, and the
+dashboard spawns the shims + blends them in `mlb_correlated_parlay.R`.
 
 - **BetMGM** (`scraper_betmgm_sgp.py` + `betmgm.py` + `betmgm_client.py`) —
   ✅ GREEN, pure `curl_cffi`. Entain CDS API: harvest a static per-state
