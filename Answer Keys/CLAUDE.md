@@ -63,7 +63,14 @@ run.py mlb (orchestrator)
 - `mlb_dashboard.duckdb` — MLB dashboard state (placed_bets, settings, CLV)
 - `pbp.duckdb` — Historical play-by-play data (shared: MLB + others)
 - `cbb_dashboard.duckdb` — CBB dashboard state (placed_bets, settings, CLV)
-- Never symlink DuckDB files. Always copy if needed in worktrees.
+- Never symlink DuckDB files. To test the MLB dashboard from a worktree, run
+  `"Answer Keys/MLB Dashboard/seed_test_data.sh"` to CoW-clone the live DBs into
+  the worktree, then `"Answer Keys/MLB Dashboard/test_dashboard.sh"` to render on
+  port 8093. All MLB DB paths now derive from the running code's location
+  (`Tools.R::nflwork_root()` / `derive_repo_root()`; `mlb_dashboard.R` /
+  `mlb_dashboard_server.py` use their own script-relative roots), so worktree code
+  reads/writes the worktree's own DBs and `main` is unaffected. Production behavior
+  is byte-identical (the resolver falls back to `~/NFLWork` when no root is set).
 
 ### Race-to-X Data Flow
 All race-to-X props are **full game** — "which team reaches X points first" at any point.

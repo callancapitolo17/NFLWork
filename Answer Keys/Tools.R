@@ -23,6 +23,50 @@
   FALSE
 })
 
+# ---------------------------------------------------------------------------
+# Repo-root resolution
+# Lets worktree-resident code point at the worktree instead of the main repo.
+# Entry scripts call set_nflwork_root(derive_repo_root()); any caller that does
+# NOT opt in falls back to ~/NFLWork, so CBB/NFL behaviour is unchanged and
+# `main` stays byte-identical.
+# ---------------------------------------------------------------------------
+.NFLWORK_ROOT <- NULL
+
+set_nflwork_root <- function(root) {
+  if (is.null(root)) {
+    .NFLWORK_ROOT <<- NULL
+  } else {
+    .NFLWORK_ROOT <<- normalizePath(root, mustWork = FALSE)
+  }
+}
+
+nflwork_root <- function() {
+  if (!is.null(.NFLWORK_ROOT)) return(.NFLWORK_ROOT)
+  normalizePath(path.expand("~/NFLWork"), mustWork = FALSE)
+}
+
+# Derive the repo root from the running Rscript's --file= path (or an explicit
+# script_path for testing) by walking up until we find a dir that contains an
+# "Answer Keys" subdirectory. Falls back to ~/NFLWork if no marker is found.
+derive_repo_root <- function(script_path = NULL) {
+  if (is.null(script_path)) {
+    args <- commandArgs(trailingOnly = FALSE)
+    fa <- grep("^--file=", args, value = TRUE)
+    if (length(fa) == 0) {
+      return(normalizePath(path.expand("~/NFLWork"), mustWork = FALSE))
+    }
+    script_path <- gsub("~\\+~", " ", sub("^--file=", "", fa[1]))
+  }
+  d <- normalizePath(dirname(script_path), mustWork = FALSE)
+  while (d != dirname(d)) {
+    if (dir.exists(file.path(d, "Answer Keys"))) {
+      return(normalizePath(d, mustWork = FALSE))
+    }
+    d <- dirname(d)
+  }
+  normalizePath(path.expand("~/NFLWork"), mustWork = FALSE)
+}
+
 # --- Pipeline timing utility ---
 pipeline_timer <- function() {
   t0 <- Sys.time()
@@ -3022,7 +3066,7 @@ join_pbp_odds <- function(
 #' @return TRUE if successful, FALSE otherwise
 run_wagerzon_scraper <- function(
     sport = "nfl",
-    scraper_dir = "~/NFLWork/wagerzon_odds",
+    scraper_dir = file.path(nflwork_root(), "wagerzon_odds"),
     venv_path = "venv"
 ) {
   scraper_dir <- normalizePath(path.expand(scraper_dir), mustWork = TRUE)
@@ -3063,7 +3107,7 @@ run_wagerzon_scraper <- function(
 #' @return data.frame of odds in standardized format
 get_wagerzon_odds <- function(
     sport = "nfl",
-    db_path = "~/NFLWork/wagerzon_odds/wagerzon.duckdb"
+    db_path = file.path(nflwork_root(), "wagerzon_odds", "wagerzon.duckdb")
 ) {
   db_path <- normalizePath(path.expand(db_path), mustWork = TRUE)
 
@@ -3217,7 +3261,7 @@ get_wagerzon_odds <- function(
 #' @return Data frame with Hoop88 odds in standardized format
 get_hoop88_odds <- function(
     sport = "nfl",
-    db_path = "~/NFLWork/hoop88_odds/hoop88.duckdb"
+    db_path = file.path(nflwork_root(), "hoop88_odds", "hoop88.duckdb")
 ) {
   db_path <- normalizePath(path.expand(db_path), mustWork = FALSE)
 
@@ -3359,7 +3403,7 @@ get_hoop88_odds <- function(
 #' @return Data frame with BFA odds in standardized format
 get_bfa_odds <- function(
     sport = "nfl",
-    db_path = "~/NFLWork/bfa_odds/bfa.duckdb"
+    db_path = file.path(nflwork_root(), "bfa_odds", "bfa.duckdb")
 ) {
   db_path <- normalizePath(path.expand(db_path), mustWork = FALSE)
 
@@ -3495,7 +3539,7 @@ get_bfa_odds <- function(
 
 get_bookmaker_odds <- function(
     sport = "cbb",
-    db_path = "~/NFLWork/bookmaker_odds/bookmaker.duckdb"
+    db_path = file.path(nflwork_root(), "bookmaker_odds", "bookmaker.duckdb")
 ) {
   db_path <- normalizePath(path.expand(db_path), mustWork = FALSE)
 
@@ -3733,7 +3777,7 @@ get_bookmaker_odds <- function(
 
 get_dk_odds <- function(
     sport = "mlb",
-    db_path = "~/NFLWork/dk_odds/dk.duckdb"
+    db_path = file.path(nflwork_root(), "dk_odds", "dk.duckdb")
 ) {
   db_path <- normalizePath(path.expand(db_path), mustWork = FALSE)
 
@@ -3859,7 +3903,7 @@ get_dk_odds <- function(
 #' @return Data frame in long format, or empty data.frame() if DB missing.
 get_fd_odds <- function(
     sport = "mlb",
-    db_path = "~/NFLWork/fd_odds/fd.duckdb"
+    db_path = file.path(nflwork_root(), "fd_odds", "fd.duckdb")
 ) {
   db_path <- normalizePath(path.expand(db_path), mustWork = FALSE)
 
@@ -3983,7 +4027,7 @@ get_fd_odds <- function(
 
 get_bet105_odds <- function(
     sport = "cbb",
-    db_path = "~/NFLWork/bet105_odds/bet105.duckdb"
+    db_path = file.path(nflwork_root(), "bet105_odds", "bet105.duckdb")
 ) {
   db_path <- normalizePath(path.expand(db_path), mustWork = FALSE)
 
@@ -4119,7 +4163,7 @@ get_bet105_odds <- function(
 
 get_kalshi_odds <- function(
     sport = "cbb",
-    db_path = "~/NFLWork/kalshi_odds/kalshi.duckdb"
+    db_path = file.path(nflwork_root(), "kalshi_odds", "kalshi.duckdb")
 ) {
   db_path <- normalizePath(path.expand(db_path), mustWork = FALSE)
 
@@ -4259,7 +4303,7 @@ get_kalshi_odds <- function(
 resolve_offshore_teams <- function(odds_df, sport = "cbb") {
   if (nrow(odds_df) == 0) return(odds_df)
 
-  dict_db <- sprintf("~/NFLWork/Answer Keys/%s.duckdb", sport)
+  dict_db <- file.path(nflwork_root(), "Answer Keys", sprintf("%s.duckdb", sport))
   dict_db <- normalizePath(path.expand(dict_db), mustWork = FALSE)
   if (!file.exists(dict_db)) return(odds_df)
 
@@ -4508,7 +4552,7 @@ get_wagerzon_betting_odds <- function(
     sport = "nfl",
     markets = c("spreads", "totals"),
     periods = c("fg", "h1", "q1", "q2", "q3", "q4"),
-    db_path = "~/NFLWork/wagerzon_odds/wagerzon.duckdb"
+    db_path = file.path(nflwork_root(), "wagerzon_odds", "wagerzon.duckdb")
 ) {
   odds <- get_wagerzon_odds(sport = sport, db_path = db_path)
 

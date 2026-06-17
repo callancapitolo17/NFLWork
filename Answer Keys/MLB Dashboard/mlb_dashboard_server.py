@@ -11,6 +11,7 @@ Run with: python mlb_dashboard_server.py
 Then open: http://localhost:8083
 """
 
+import os
 import subprocess
 import sys
 import json
@@ -134,10 +135,9 @@ log = logging.getLogger("clv")
 # Books with working navigators for auto-queue
 SUPPORTED_AUTO_BOOKS = ("wagerzon", "hoop88", "bfa", "betonlineag")
 
-# DuckDB with pipeline bets — always in main repo (not worktree)
+# Repo root for closing-odds capture — script-relative so a worktree test reads
+# the worktree's own scraper DBs. On main this is identical to ~/NFLWork.
 _REPO_ROOT = PROJECT_ROOT
-if ".claude/worktrees" in str(_REPO_ROOT):
-    _REPO_ROOT = Path(str(_REPO_ROOT).split(".claude/worktrees")[0])
 # Scraper configs for closing-odds capture (paths relative to PROJECT_ROOT)
 OFFSHORE_SCRAPERS = {
     "wagerzon": {
@@ -2725,6 +2725,7 @@ if __name__ == "__main__":
     print("\n" + "=" * 50)
     print("MLB +EV Betting Dashboard")
     print("=" * 50)
-    print(f"\nOpen in browser: http://localhost:8083")
+    _port = int(os.environ.get("MLB_DASHBOARD_PORT", "8083"))
+    print(f"\nOpen in browser: http://localhost:{_port}")
     print("Press Ctrl+C to stop\n")
-    app.run(host="0.0.0.0", port=8083, debug=False)
+    app.run(host="0.0.0.0", port=_port, debug=False)
