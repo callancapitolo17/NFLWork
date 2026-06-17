@@ -182,13 +182,13 @@ def test_filter_a_extracts_signed_home_spreads_px():
 
 
 def test_px_parallelism_resolution(monkeypatch):
-    """PX pool width: explicit arg > env > module default (4)."""
+    """PX pool width: explicit arg > env > module default (6)."""
     from mlb_sgp import prophetx
     monkeypatch.setenv("MLB_SGP_PX_PARALLELISM", "5")
     assert prophetx._resolve_parallelism(None) == 5
     assert prophetx._resolve_parallelism(3) == 3
     monkeypatch.delenv("MLB_SGP_PX_PARALLELISM")
-    assert prophetx._resolve_parallelism(None) == 4
+    assert prophetx._resolve_parallelism(None) == 6
 
 
 def test_px_price_sgps_accepts_parallelism_kwarg():

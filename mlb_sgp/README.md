@@ -363,12 +363,18 @@ unlimited concurrent readers). Note: the trifecta scraper (`scraper_draftkings_t
 Each orchestrator fans target lines out on a thread pool; the 4-combo
 pool nests inside (total in-flight requests = parallelism × 4):
 
-| Book | Default | Env override | Probed ceiling |
+| Book | Default | Env override | Probed ceiling (2026-06-16) |
 |---|---|---|---|
-| DraftKings | 8 | `MLB_SGP_DK_PARALLELISM` | (fill from probe) |
+| DraftKings | 8 | `MLB_SGP_DK_PARALLELISM` | no backoff to 32; throughput plateaus ~16 (sel-id fetch floor), so >16 is pointless |
 | FanDuel | 4 | `MLB_SGP_FD_PARALLELISM` | not probed (not the long pole) |
-| ProphetX | 2 | `MLB_SGP_PX_PARALLELISM` | (fill from probe) |
+| ProphetX | 6 | `MLB_SGP_PX_PARALLELISM` | no backoff (429/403) to 12; default 6 for ≤60s margin + modest RFQ burst |
 | Novig | 4 | n/a (module constant) | not probed |
+
+Live ramp (2026-06-16) found **zero** rate-limit / bot-detection signals at
+any tested width — DK to 32, PX to 12. DK's constant "422 ×40" is its
+legitimate cross-market combinability rule, not backoff. The practical
+limits are diminishing returns (DK's fixed sel-id-fetch floor) and
+RFQ-burst prudence (PX), not the books rejecting us.
 
 `price_sgps(..., parallelism=N)` overrides both env and default. Ceilings
 come from `probe_concurrency.py` — a **manual-only** ramp harness
