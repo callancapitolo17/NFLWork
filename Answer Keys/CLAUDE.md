@@ -331,6 +331,55 @@ for the design spec.
    store `fetch_time` as `TIMESTAMPTZ`, so dashboard staleness math
    (`NOW() - fetch_time`) works directly without timezone tricks.
 
+### Dual-source edge flagging — model OR market (2026-06-06)
+
+A bet reaches the bets tab if **either** signal clears `EV_THRESHOLD` (2%):
+- **Model edge** — model probability vs the book's price (the original signal).
+- **Market edge** — a book's price beats the **leave-one-out** devigged
+  consensus of the *other* books at the same wager by ≥ 2% EV. Surfaces
+  soft-line edges even when the model is neutral (Wagerzon is the softest book,
+  so it's usually the one flagged).
+
+Implementation:
+- `MLB Answer Key/market_edge.R::find_market_edges(book_odds_by_book, ...)` —
+  pure function. Stacks the canonical per-book odds MLB.R already builds, drops
+  stale quotes (`BOOK_STALENESS_CUTOFF_MIN`), devigs each book's 2-outcome pair
+  (`Tools.R::devig_american`), and for each (game, base-market, period, side,
+  line) judges every book against `median(devigged fair of the OTHER books)`
+  — **leave-one-out**, so a soft book never sits in its own yardstick. Floor is
+  **1 other book** (`min_others = 1`). EV via `compute_ev(loo_fair,
+  implied(price))`; sizing via `kelly_stake`. Keeps the best book per side, then
+  the best line per side. Restricted to `totals`/`spreads`/`h2h` (alt collapses
+  to its base; `team_totals`/`h2h_3way` excluded). Emits the **verbose**
+  market string (e.g. `totals_1st_5_innings`) so correlation Kelly
+  (`bet_to_leg`, which parses period from the market suffix) treats market rows
+  like model rows. Unit tests: `tests/test_market_edge.R`.
+- **Shared identity hash** `odds_screen.R::compute_bet_row_id(id, market_type,
+  period, line, bet_on)` — md5 of the *canonical* identity (alt collapsed,
+  line normalized). Both MLB.R (model bets) and `find_market_edges` use it, so
+  the merge join matches the same wager across paths. Replaced MLB.R's old
+  verbose-`market`-string inline hash (which the market path couldn't
+  reproduce — the model→canonical mapping is lossy). Tests:
+  `tests/test_compute_bet_row_id.R`.
+- **Merge in MLB.R** (PHASE 7) — `book_odds_by_book` is now built right after
+  the model `all_bets_combined` (moved up from PHASE 7b) so the merge runs
+  *before* `adjust_kelly_for_correlation` (correlation sizing covers market
+  rows too). Model bets tagged `edge_source="model"`; market bets full-joined
+  on `bet_row_id`: matches → `edge_source="both"` (+ `market_ev`), misses →
+  appended as `edge_source="market"`. Ranking `ev = pmax(model_ev, market_ev)`.
+- **New `mlb_bets_combined` columns:** `edge_source` (model/market/both),
+  `model_ev`, `market_ev` (decimals). `expand_bets_to_book_prices` is unchanged
+  — it keys on the shared `bet_row_id`, so every card (model/market/both) gets
+  its per-book pill row.
+- **Dashboard** (`mlb_dashboard.R`) — `create_bets_table()` defaults the three
+  columns when a stale DB lacks them, renders a `MODEL`/`MARKET`/`★ Both` badge
+  in the card `.bet-line`, and `render_hero_strip()` shows both EVs (Model EV +
+  Market EV) on BOTH cards. Badge colors: model=green, market=blue, both=gold
+  (`.edge-badge` CSS).
+
+Spec/plan: `docs/superpowers/specs/2026-06-05-mlb-market-edge-flagging-design.md`,
+`docs/superpowers/plans/2026-06-05-mlb-market-edge-flagging.md`.
+
 ### Pick'em → moneyline (line-0 spreads, 2026-05-27)
 
 A spread/alt-spread bet at **`line == 0`** is a pick'em (draw-no-bet): back

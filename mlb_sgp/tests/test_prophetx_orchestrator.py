@@ -179,3 +179,19 @@ def test_filter_a_extracts_signed_home_spreads_px():
         total_market_name="1st-5th Inning Total Runs",
     )
     assert empty == {"spreads": set(), "totals": set()}
+
+
+def test_px_parallelism_resolution(monkeypatch):
+    """PX pool width: explicit arg > env > module default (6)."""
+    from mlb_sgp import prophetx
+    monkeypatch.setenv("MLB_SGP_PX_PARALLELISM", "5")
+    assert prophetx._resolve_parallelism(None) == 5
+    assert prophetx._resolve_parallelism(3) == 3
+    monkeypatch.delenv("MLB_SGP_PX_PARALLELISM")
+    assert prophetx._resolve_parallelism(None) == 6
+
+
+def test_px_price_sgps_accepts_parallelism_kwarg():
+    """Contract: the kwarg exists and the empty-input early-exit honors it."""
+    from mlb_sgp import prophetx
+    assert prophetx.price_sgps([], parallelism=4) == []

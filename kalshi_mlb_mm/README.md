@@ -59,6 +59,8 @@ REST-polling daemon, single process. Four timed sub-loops:
 
 **Shared math.** Fair value, EV calc (including `maker_fee_per_contract`), authenticated HTTP, SGP orchestration, and leg-typing helpers all live in `kalshi_common/`. Both bots import from there; the taker's original files are now one-line re-export shims (behavior unchanged).
 
+**SGP pricing (2026-06).** The bot prices SGPs **in-process** via `kalshi_common/sgp_service.py::SGPService` — no subprocess per cycle. The service holds persistent per-book HTTP clients reused across cycles (no per-cycle TLS handshake) and prices the four books concurrently under a per-book deadline (`SGP_SCRAPER_TIMEOUT_SEC`). DK/FD structure fetches (event lists, selection-id dicts) are TTL-cached; prices are never cached, and a failed or timed-out book keeps its prior rows. The old subprocess-per-cycle model is retained as a rollback hatch — calling `sgp_cycle` without `service=`.
+
 **State DB.** The bot writes `kalshi_mlb_mm/kalshi_mlb_mm.duckdb` (quotes, fills, positions, decisions). The sibling `kalshi_mlb_mm/kalshi_mlb_mm_market.duckdb` holds SGP-line and SGP-odds data (same pattern as the taker's `kalshi_mlb_rfq_market.duckdb`). The v1-hardening pass removed the model component of the blend, so there is no longer a read-only dependency on `Answer Keys/mlb_mm.duckdb`.
 
 ## Pricing
@@ -110,7 +112,7 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `CONFIRM_SEC` | `2` | Confirm loop cadence (seconds) |
 | `RISK_SWEEP_SEC` | `10` | Risk sweep cadence (seconds) |
 | `SGP_REFRESH_SEC` | `60` | SGP scrape cadence (seconds) |
-| `SGP_SCRAPER_TIMEOUT_SEC` | `90` | Per-scraper kill deadline (seconds) |
+| `SGP_SCRAPER_TIMEOUT_SEC` | `90` | Per-book deadline passed to `SGPService` (seconds) — a book exceeding it contributes nothing that cycle and its client is rebuilt |
 
 ## Defense hierarchy (stale-quote / adverse-selection risk)
 

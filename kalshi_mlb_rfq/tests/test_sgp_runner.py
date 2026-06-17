@@ -288,3 +288,96 @@ def test_sgp_cycle_passes_env_to_scrapers(monkeypatch, tmp_path):
     )
     assert captured_env.get("MLB_SGP_DB_PATH") == "/tmp/bot.duckdb"
     assert captured_env.get("MLB_SGP_PERIODS") == "FG"
+
+
+def test_sgp_cycle_service_path_writes_rows_and_preserves_failed_books(
+        tmp_path, monkeypatch):
+    """Service path: success -> stale source rows replaced; failure ->
+    old rows preserved (mirrors today's subprocess-crash behavior)."""
+    import duckdb
+    from datetime import datetime, timezone
+    from kalshi_common import sgp_runner
+    from mlb_sgp import db as sgp_db
+    from mlb_sgp._shared import PricedRow, TargetLine
+
+    db_path = str(tmp_path / "market.duckdb")
+    ct = datetime(2026, 6, 8, 23, 0, tzinfo=timezone.utc)
+    target = TargetLine(game_id="g1", home_team="H", away_team="A",
+                        commence_time=ct, period="FG", spread=-1.5, total=8.5)
+    monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets", lambda: [target])
+
+    # Pre-seed: one stale DK row (must be replaced) + one FD row (must
+    # survive, because FD "fails" this cycle).
+    stale_dk = PricedRow(game_id="gOLD", combo="Home Spread + Over",
+                         period="FG", spread_line=-1.5, total_line=9.5,
+                         bookmaker="draftkings", source="draftkings_direct",
+                         sgp_decimal=9.99, sgp_american=899, fetch_time=ct)
+    old_fd = PricedRow(game_id="gOLD", combo="Home Spread + Over",
+                       period="FG", spread_line=-1.5, total_line=9.5,
+                       bookmaker="fanduel", source="fanduel_direct",
+                       sgp_decimal=8.88, sgp_american=788, fetch_time=ct)
+    sgp_db.upsert_priced_rows([stale_dk, old_fd], db_path=db_path)
+
+    fresh_dk = PricedRow(game_id="g1", combo="Home Spread + Over",
+                         period="FG", spread_line=-1.5, total_line=8.5,
+                         bookmaker="draftkings", source="draftkings_direct",
+                         sgp_decimal=3.5, sgp_american=250, fetch_time=ct)
+
+    class FakeService:
+        def refresh(self, targets):
+            assert targets == [target]
+            return {"draftkings": [fresh_dk], "fanduel": None}
+
+    counts = sgp_runner.sgp_cycle(bot_market_db=db_path, service=FakeService())
+    assert counts == {"draftkings": 1, "fanduel": -1}
+
+    con = duckdb.connect(db_path, read_only=True)
+    try:
+        rows = con.execute(
+            "SELECT bookmaker, game_id, sgp_decimal FROM mlb_sgp_odds "
+            "ORDER BY bookmaker").fetchall()
+    finally:
+        con.close()
+    assert rows == [("draftkings", "g1", 3.5), ("fanduel", "gOLD", 8.88)]
+
+    # Target lines were still written (tipoff gating reads them).
+    con = duckdb.connect(db_path, read_only=True)
+    try:
+        n = con.execute("SELECT COUNT(*) FROM mlb_target_lines").fetchone()[0]
+    finally:
+        con.close()
+    assert n == 1
+
+
+def test_sgp_cycle_service_path_skipped_book_rows_untouched(tmp_path, monkeypatch):
+    """A book absent from refresh() results (min_refresh skip) keeps its
+    rows AND is absent from the returned counts."""
+    from datetime import datetime, timezone
+    from kalshi_common import sgp_runner
+    from mlb_sgp import db as sgp_db
+    from mlb_sgp._shared import PricedRow, TargetLine
+    import duckdb
+
+    db_path = str(tmp_path / "market.duckdb")
+    ct = datetime(2026, 6, 8, 23, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets", lambda: [
+        TargetLine(game_id="g1", home_team="H", away_team="A",
+                   commence_time=ct, period="FG", spread=-1.5, total=8.5)])
+    px_row = PricedRow(game_id="g1", combo="Home Spread + Over", period="FG",
+                       spread_line=-1.5, total_line=8.5, bookmaker="prophetx",
+                       source="prophetx_direct", sgp_decimal=3.3,
+                       sgp_american=230, fetch_time=ct)
+    sgp_db.upsert_priced_rows([px_row], db_path=db_path)
+
+    class FakeService:
+        def refresh(self, targets):
+            return {}   # everything skipped
+
+    counts = sgp_runner.sgp_cycle(bot_market_db=db_path, service=FakeService())
+    assert counts == {}
+    con = duckdb.connect(db_path, read_only=True)
+    try:
+        n = con.execute("SELECT COUNT(*) FROM mlb_sgp_odds").fetchone()[0]
+    finally:
+        con.close()
+    assert n == 1

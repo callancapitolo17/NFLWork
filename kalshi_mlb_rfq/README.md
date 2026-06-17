@@ -299,13 +299,22 @@ WHERE decision = 'failed_quote_walked' GROUP BY 1 ORDER BY 2 DESC;
 
 The bot drives its own SGP scrape cadence independent of the MLB dashboard.
 
+**In-process pricing (2026-06).** The bot now prices SGPs **in-process**
+via `kalshi_common/sgp_service.py::SGPService` — no more subprocess per
+cycle. The service holds persistent per-book HTTP clients reused across
+cycles (no per-cycle TLS handshake) and prices the four books
+concurrently under a per-book deadline (`SGP_SCRAPER_TIMEOUT_SEC`).
+DK/FD structure fetches (event lists, selection-id dicts) are TTL-cached;
+prices are never cached. A failed or timed-out book contributes nothing
+that cycle and keeps its prior rows. The old subprocess-per-cycle model
+is retained as a rollback hatch — calling `sgp_cycle` without `service=`.
+
 **Data flow on each SGP tick (every `SGP_REFRESH_SEC`, default 60s):**
 
 1. Bot enumerates open Kalshi MVE markets per MLB game (every `(spread, total)` tuple Kalshi lists).
 2. Bot rewrites `mlb_target_lines` in `kalshi_mlb_rfq_market.duckdb` (sibling to state DB).
-3. Bot spawns the four scrapers (`mlb_sgp/scraper_{draftkings,fanduel,prophetx,novig}_sgp.py`) with `MLB_SGP_DB_PATH=<market DB>` and `MLB_SGP_PERIODS=FG` env overrides.
-4. Scrapers read `mlb_target_lines`, price every tuple at their respective book, write back to `mlb_sgp_odds` in the bot's market DB with new `spread_line`/`total_line` columns.
-5. Bot reloads `_SGP_ODDS_CACHE` from the bot market DB.
+3. `SGPService.refresh()` prices every tuple at all four books concurrently (persistent clients), writing back to `mlb_sgp_odds` in the bot's market DB with `spread_line`/`total_line` columns. Each succeeded book's prior source labels are cleared first; failed/absent books keep their prior rows.
+4. Bot reloads `_SGP_ODDS_CACHE` from the bot market DB.
 
 **Edge surface:** any Kalshi MVE combo with ≥2 books priced at the matching (spread, total). Off-line combos (only 1 book) are dropped — the bot does not bet model-only or single-book candidates.
 
@@ -315,6 +324,6 @@ The bot drives its own SGP scrape cadence independent of the MLB dashboard.
 
 **Config:**
 - `SGP_REFRESH_SEC` (default 60) — SGP cadence interval
-- `SGP_SCRAPER_TIMEOUT_SEC` (default 90) — per-scraper kill deadline
+- `SGP_SCRAPER_TIMEOUT_SEC` (default 90) — per-book deadline passed to `SGPService` (a book exceeding it contributes nothing that cycle and its client is rebuilt)
 - `BOT_MARKET_DB` (default `kalshi_mlb_rfq_market.duckdb` in this package) — sibling market DB
 - `MIN_BOOK_COUNT_FOR_BLEND` (default 2) — drop-candidate threshold

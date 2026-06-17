@@ -31,6 +31,11 @@ The BetOnline API returns 0 results if EndDate is "tomorrow" in BetOnline's time
 ### Google Sheets
 - `credentials.json` — Service account key (gitignored)
 - Sheets are append-only; deduplication happens in the scraper before writing
+- All Sheets API calls go through `_execute_with_retry()` in `sheets.py`, which
+  retries transient DNS/connection errors and 429/5xx responses (4 attempts,
+  linear backoff). This guards the 5 AM cron run against network blips — a DNS
+  failure used to crash uncaught mid-upload and silently drop a scraper's bets.
+  Genuine outages still fail loudly (non-zero exit → FAILED notification).
 
 ### Recon Scripts
 `recon_*.py` and `recon_*.json` files capture API endpoints and auth tokens from browser sessions. Run these when a scraper breaks due to expired tokens.

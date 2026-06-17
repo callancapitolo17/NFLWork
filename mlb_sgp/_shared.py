@@ -6,6 +6,8 @@ Module-private (`_` prefix) but stable API consumed by per-book modules
 """
 from __future__ import annotations
 import logging
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -178,3 +180,34 @@ def _load_from_parlay_lines(con: duckdb.DuckDBPyConnection) -> list[TargetLine]:
                 commence_time=ct, period="F5", spread=f5_s, total=f5_t,
             ))
     return out
+
+
+class TTLCache:
+    """Tiny per-key TTL cache for structure fetches (event lists,
+    selection-id dictionaries). NEVER cache prices with this.
+
+    Thread-safe for the lock around store access; concurrent misses on
+    the same key may both fetch (last write wins) — acceptable for
+    idempotent GETs, and in practice each book's structure fetches run
+    single-threaded (the hoisting phase of price_sgps).
+    """
+
+    def __init__(self, ttl_sec: float, now_fn=time.monotonic):
+        self.ttl_sec = ttl_sec
+        self._now = now_fn
+        self._lock = threading.Lock()
+        self._store: dict = {}
+
+    def get_or_fetch(self, key, fetch_fn):
+        with self._lock:
+            ent = self._store.get(key)
+            if ent is not None and (self._now() - ent[0]) < self.ttl_sec:
+                return ent[1]
+        val = fetch_fn()
+        with self._lock:
+            self._store[key] = (self._now(), val)
+        return val
+
+    def clear(self):
+        with self._lock:
+            self._store.clear()

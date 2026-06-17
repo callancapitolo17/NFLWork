@@ -17,6 +17,7 @@ import duckdb
 from kalshi_common import auth_client
 from kalshi_common.leg_types import _MLB_CODE_TO_TEAM, _parse_event_suffix
 from mlb_sgp._shared import TargetLine
+from kalshi_common.sgp_service import SGPService  # noqa: F401  (re-export)
 
 
 def should_scrape(last_fetch_time: datetime | None,
@@ -366,29 +367,74 @@ SCRAPER_NAMES = [
 ]
 
 
+# Book name -> orchestrator module (source-label owner). Used by the
+# service path to clear exactly the labels each book writes.
+_BOOK_MODULES = {
+    "draftkings": "mlb_sgp.draftkings",
+    "fanduel": "mlb_sgp.fanduel",
+    "prophetx": "mlb_sgp.prophetx",
+    "novig": "mlb_sgp.novig",
+}
+
+
 def sgp_cycle(
     bot_market_db: str,
-    scraper_dir: str,
-    venv_python: str,
-    timeout_sec: int,
+    scraper_dir: str | None = None,
+    venv_python: str | None = None,
+    timeout_sec: int | None = None,
+    service=None,
 ) -> dict[str, int]:
-    """One full SGP scrape tick (atomic, serial):
-      1. Enumerate Kalshi MVE → list[TargetLine] (schedule from Odds API)
-      2. Write to mlb_target_lines in bot_market_db
-      3. Spawn the 4 scrapers with MLB_SGP_DB_PATH=bot_market_db, MLB_SGP_PERIODS=FG
+    """One full SGP scrape tick.
 
-    Returns {scraper_name: return_code}.
+    With `service` (an SGPService): in-process path —
+      1. Enumerate Kalshi MVE -> list[TargetLine]
+      2. Write mlb_target_lines (tipoff gating + debugging read it)
+      3. service.refresh(targets); per successful book, clear that
+         book's source labels and upsert its fresh rows. Failed books
+         (None) keep their old rows — same outcome as a crashed
+         subprocess today. Returns {book: row_count, failed: -1}.
+
+    Without `service`: legacy subprocess path, unchanged. Returns
+    {scraper_name: return_code}. Kept as the rollback hatch
+    (scraper_dir / venv_python / timeout_sec are required then).
     """
     targets = enumerate_kalshi_targets()
     write_target_lines(targets, db_path=bot_market_db)
-    rcs = run_scrapers(
-        scraper_dir=scraper_dir,
-        scraper_names=SCRAPER_NAMES,
-        venv_python=venv_python,
-        timeout_sec=timeout_sec,
-        env={
-            "MLB_SGP_DB_PATH": bot_market_db,
-            "MLB_SGP_PERIODS": "FG",
-        },
-    )
-    return rcs
+
+    if service is None:
+        if not (scraper_dir and venv_python and timeout_sec):
+            raise ValueError(
+                "sgp_cycle: legacy subprocess path needs scraper_dir, "
+                "venv_python and timeout_sec")
+        return run_scrapers(
+            scraper_dir=scraper_dir,
+            scraper_names=SCRAPER_NAMES,
+            venv_python=venv_python,
+            timeout_sec=timeout_sec,
+            env={
+                "MLB_SGP_DB_PATH": bot_market_db,
+                "MLB_SGP_PERIODS": "FG",
+            },
+        )
+
+    import importlib
+    from mlb_sgp import db as sgp_db
+
+    results = service.refresh(targets)
+    counts: dict[str, int] = {}
+    for book, rows in results.items():
+        if rows is None:
+            counts[book] = -1
+            continue
+        mod = importlib.import_module(_BOOK_MODULES[book])
+        sgp_db.clear_source(mod.SOURCE_LABEL, db_path=bot_market_db)
+        # Keep the getattr guard: DK/FD/NV emit interpolated rows under a
+        # SOURCE_LABEL_FALLBACK that must also be cleared so stale ones
+        # don't linger; PX defines the label but never emits them. Do not
+        # hardcode per-book — getattr handles "has a fallback or not".
+        fallback_label = getattr(mod, "SOURCE_LABEL_FALLBACK", None)
+        if fallback_label:
+            sgp_db.clear_source(fallback_label, db_path=bot_market_db)
+        sgp_db.upsert_priced_rows(rows, db_path=bot_market_db)
+        counts[book] = len(rows)
+    return counts

@@ -872,12 +872,12 @@ def main_loop(dry_run: bool):
     research.set_session_id(str(sid))
     log.info("=== MM bot session %s dry_run=%s ===", sid, dry_run)
     source, gateway = RestRFQSource(), RestQuoteGateway()
+    from kalshi_common.sgp_service import SGPService
+    sgp_service = SGPService(per_book_deadline_sec=config.SGP_SCRAPER_TIMEOUT_SEC)
     # synchronous warm-up: one SGP cycle
     try:
         rc = sgp_runner.sgp_cycle(bot_market_db=str(config.MARKET_DB),
-                                   scraper_dir=str(config.MLB_SGP_DIR),
-                                   venv_python=str(config.MLB_SGP_DIR / "venv" / "bin" / "python"),
-                                   timeout_sec=config.SGP_SCRAPER_TIMEOUT_SEC)
+                                   service=sgp_service)
         _refresh_sgp()
         # Event 8: scrape_done — warmup cycle
         book_counts = {}
@@ -921,9 +921,7 @@ def main_loop(dry_run: bool):
                 try:
                     rc = sgp_runner.sgp_cycle(
                         bot_market_db=str(config.MARKET_DB),
-                        scraper_dir=str(config.MLB_SGP_DIR),
-                        venv_python=str(config.MLB_SGP_DIR / "venv" / "bin" / "python"),
-                        timeout_sec=config.SGP_SCRAPER_TIMEOUT_SEC)
+                        service=sgp_service)
                     _refresh_sgp()
                     # Event 8: scrape_done — periodic cycle
                     book_counts = {}

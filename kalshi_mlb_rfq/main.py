@@ -1519,13 +1519,13 @@ def main_loop(dry_run: bool):
     # Blocks ~60-90s; without this the first RFQ refresh would have zero
     # book fairs and burn Kalshi quota on candidates that can't pass the
     # N>=2 books gate.
+    from kalshi_common.sgp_service import SGPService
+    sgp_service = SGPService(per_book_deadline_sec=config.SGP_SCRAPER_TIMEOUT_SEC)
     log.info("startup: warming SGP cache (one synchronous scrape tick)...")
     try:
         rcs = sgp_runner.sgp_cycle(
             bot_market_db=str(config.BOT_MARKET_DB),
-            scraper_dir=str(config.MLB_SGP_DIR),
-            venv_python=str(config.MLB_SGP_DIR / "venv" / "bin" / "python"),
-            timeout_sec=config.SGP_SCRAPER_TIMEOUT_SEC,
+            service=sgp_service,
         )
         log.info("startup: SGP warm-up done — return codes %s", rcs)
     except Exception as e:
@@ -1580,9 +1580,7 @@ def main_loop(dry_run: bool):
                 try:
                     rcs = sgp_runner.sgp_cycle(
                         bot_market_db=str(config.BOT_MARKET_DB),
-                        scraper_dir=str(config.MLB_SGP_DIR),
-                        venv_python=str(config.MLB_SGP_DIR / "venv" / "bin" / "python"),
-                        timeout_sec=config.SGP_SCRAPER_TIMEOUT_SEC,
+                        service=sgp_service,
                     )
                     _refresh_sgp_cache()
                     _refresh_caches()  # parlay_lines_cache may have new (spread, total) tuples

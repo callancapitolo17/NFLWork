@@ -60,6 +60,7 @@ The plan-spec didn't match the actual helper signatures shipped in
 """
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
@@ -74,11 +75,20 @@ SOURCE_LABEL_FALLBACK = "prophetx_interpolated"
 # F5-Over systematic-bug defense. See module docstring.
 SANITY_MULT_RATIO = 1.5
 
-# Cross-target parallelism. PX's RFQ endpoint is rate-limited, so we
-# keep this conservative: 2 concurrent targets × 4 concurrent combos =
-# 8 in-flight RFQs per book. If we see 429s or connection refused in
-# production, drop to 1 (effectively disables target-level concurrency).
-PX_TARGET_PARALLELISM = 2
+# PX RFQs are a real market footprint, but width does NOT change RFQs
+# *per cycle* (same targets priced) — only how bursty they are. PX is the
+# cycle's long pole at low width; 6-wide gives comfortable ≤60s margin at
+# production scale. Live ramp 2026-06-16 found ZERO backoff (429/403) up
+# to 12-wide, so 6 is well within the safe range. Env-overridable; raise
+# toward the (untriggered, >12) ceiling only if a future probe confirms.
+PX_TARGET_PARALLELISM_DEFAULT = 6
+
+
+def _resolve_parallelism(parallelism: int | None) -> int:
+    if parallelism is not None:
+        return parallelism
+    return int(os.environ.get("MLB_SGP_PX_PARALLELISM",
+                              str(PX_TARGET_PARALLELISM_DEFAULT)))
 
 # Combo names — byte-identical to scraper_prophetx_sgp.py so the
 # dashboard / kalshi_mlb_rfq leg lookups keep matching. The "F5 "
@@ -164,6 +174,7 @@ def price_sgps(
     periods: tuple[str, ...] = ("FG",),
     client: ProphetXClient | None = None,
     verbose: bool = False,
+    parallelism: int | None = None,
 ) -> list[PricedRow]:
     """Price every target line against the ProphetX RFQ pricer.
 
@@ -182,6 +193,11 @@ def price_sgps(
         should always pass a mock.
     verbose
         Forwarded to leg-level helpers for debug printing.
+    parallelism
+        Target-pool width. When ``None``, resolves to the
+        ``MLB_SGP_PX_PARALLELISM`` env var, else
+        ``PX_TARGET_PARALLELISM_DEFAULT``. Default kept at 2 because PX
+        RFQs are a real market footprint — do not widen without a probe.
 
     Returns
     -------
@@ -418,7 +434,7 @@ def price_sgps(
             ))
         return target_rows
 
-    with ThreadPoolExecutor(max_workers=PX_TARGET_PARALLELISM) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, _resolve_parallelism(parallelism))) as pool:
         futures = [pool.submit(_price_one_target, t) for t in filtered_targets]
         for f in as_completed(futures):
             try:

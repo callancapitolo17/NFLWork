@@ -52,6 +52,7 @@ adapts to the real signatures:
 """
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
@@ -62,6 +63,19 @@ from mlb_sgp.dk_client import DraftKingsClient
 BOOK_NAME = "draftkings"
 SOURCE_LABEL = "draftkings_direct"
 SOURCE_LABEL_FALLBACK = "draftkings_interpolated"
+
+# Target-level parallelism. Env-overridable for ops tuning without a
+# code edit; the shipped default comes from the Phase-0 probe
+# (mlb_sgp/probe_concurrency.py). Total in-flight DK requests is
+# parallelism x 4 (the per-target combo pool nests inside).
+DK_TARGET_PARALLELISM_DEFAULT = 8
+
+
+def _resolve_parallelism(parallelism: int | None) -> int:
+    if parallelism is not None:
+        return parallelism
+    return int(os.environ.get("MLB_SGP_DK_PARALLELISM",
+                              str(DK_TARGET_PARALLELISM_DEFAULT)))
 
 # Combo names (must stay byte-identical to scraper_draftkings_sgp.py so
 # the dashboard / kalshi_mlb_rfq leg lookups keep matching). The "F5 "
@@ -117,6 +131,8 @@ def price_sgps(
     periods: tuple[str, ...] = ("FG",),
     client: DraftKingsClient | None = None,
     verbose: bool = False,
+    parallelism: int | None = None,
+    fetchers: dict | None = None,
 ) -> list[PricedRow]:
     """Price every target line against the DraftKings SGP API.
 
@@ -135,6 +151,15 @@ def price_sgps(
         production, but tests should always pass a mock).
     verbose
         Forwarded to the leg-level helpers for debug printing.
+    parallelism
+        Number of target lines to price concurrently. ``None`` (default)
+        resolves to the ``MLB_SGP_DK_PARALLELISM`` env var, else
+        ``DK_TARGET_PARALLELISM_DEFAULT``. Total in-flight DK requests is
+        ``parallelism × 4`` (the per-target combo pool nests inside).
+    fetchers
+        Structure-fetch override hooks; default ``None`` uses the legacy
+        direct fetches (dashboard path); SGPService injects TTL-cached
+        versions; prices are never affected.
 
     Returns
     -------
@@ -171,6 +196,13 @@ def price_sgps(
         try_integer_fallback_dk,
     )
 
+    # Structure-fetch seam: SGPService injects TTL-cached wrappers here;
+    # the dashboard shims pass nothing and get the legacy direct fetches.
+    _f = fetchers or {}
+    fetch_events_fn = _f.get("fetch_dk_events", fetch_dk_events)
+    fetch_nums_fn = _f.get("fetch_main_market_nums", fetch_main_market_nums)
+    fetch_selids_fn = _f.get("fetch_selection_ids", fetch_selection_ids)
+
     # ----- Group target lines by game ----- #
     # match_events expects a dict shaped like the legacy mlb_parlay_lines
     # table: one entry per game_id with fg_/f5_ columns. We collapse the
@@ -195,7 +227,7 @@ def price_sgps(
             ent["f5_total_line"] = t.total
 
     # ----- Phase 1: list DK events and match to our game_ids ----- #
-    dk_events = fetch_dk_events(client.session)
+    dk_events = fetch_events_fn(client.session)
     matched = match_events(dk_events, target_dict)
     if not matched:
         return []
@@ -218,8 +250,8 @@ def price_sgps(
     # on sparse-line books.
     per_game_cache: dict[str, dict] = {}
     for game_id, game in matched_by_gid.items():
-        main_nums = fetch_main_market_nums(client.session, game["dk_event_id"])
-        sel_ids_all = fetch_selection_ids(
+        main_nums = fetch_nums_fn(client.session, game["dk_event_id"])
+        sel_ids_all = fetch_selids_fn(
             client.session, game["dk_event_id"], main_nums, verbose,
         )
         offered_per_period: dict[str, dict[str, set]] = {
@@ -276,13 +308,17 @@ def price_sgps(
             print(f"  game {gid}: {pre} kalshi → {post} offered", flush=True)
 
     # ----- Phase 2: per target row, build and price 4 combos ----- #
-    # Iterate target rows directly so each TargetLine produces exactly
-    # one (period, spread, total) priced call. This mirrors the bot
-    # use-case where each Kalshi MVE enumeration becomes one target row.
-    for t in filtered_targets:
+    # Each TargetLine is priced independently (its own sel-id lookups +
+    # 4 calculateBets calls), so targets fan out on a thread pool. The
+    # per-target combo pool (4-wide) nests inside, giving parallelism x 4
+    # in-flight requests — the granularity the Phase-0 probe validates.
+    # Pattern mirrors novig.py / prophetx.py (in production since the
+    # PX/NV integration shipped).
+    def _price_one_target(t: TargetLine) -> list[PricedRow]:
+        target_rows: list[PricedRow] = []
         cache = per_game_cache.get(t.game_id)
         if cache is None:
-            continue
+            return target_rows
 
         period_key = t.period.lower()  # "FG" -> "fg" for legacy dict keys
         sel_ids_all = cache["sel_ids_all"]
@@ -314,7 +350,7 @@ def price_sgps(
                 verbose=verbose,
             )
             if fallback is None:
-                continue
+                return target_rows
             # 4 derived combos at once, all tagged _interpolated
             prefix = "" if t.period == "FG" else "F5 "
             fair_probs = fallback["fair_probs"]
@@ -323,7 +359,7 @@ def price_sgps(
                 if not fair_p or fair_p <= 0:
                     continue
                 dec = 1.0 / fair_p
-                out.append(PricedRow(
+                target_rows.append(PricedRow(
                     game_id=t.game_id,
                     combo=prefix + base_combo,
                     period=t.period,
@@ -335,14 +371,9 @@ def price_sgps(
                     sgp_american=decimal_to_american(dec),
                     fetch_time=fetch_now,
                 ))
-            continue
+            return target_rows
 
         # ----- Main path: price the 4 canonical combos in parallel ----- #
-        # The 4 combos make independent calculateBets calls on the same
-        # curl_cffi session. Precedent: scraper_prophetx_sgp.py:577 does
-        # this on shared cffi session (known-safe). Each combo is a few
-        # 100ms of network latency, so 4-way parallelism is ~3-4x speedup
-        # on this loop.
         prefix = "" if t.period == "FG" else "F5 "
         combos = (
             ("Home Spread + Over",  home_spread_sels, over_sels),
@@ -361,7 +392,7 @@ def price_sgps(
             if not sgp:
                 continue
             dec = sgp["trueOdds"]
-            out.append(PricedRow(
+            target_rows.append(PricedRow(
                 game_id=t.game_id,
                 combo=prefix + combo_name,
                 period=t.period,
@@ -373,6 +404,17 @@ def price_sgps(
                 sgp_american=decimal_to_american(dec),
                 fetch_time=fetch_now,
             ))
+        return target_rows
+
+    n_workers = max(1, _resolve_parallelism(parallelism))
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = [pool.submit(_price_one_target, t) for t in filtered_targets]
+        for f in as_completed(futures):
+            try:
+                out.extend(f.result())
+            except Exception as e:
+                if verbose:
+                    print(f"  dk target error: {e}", flush=True)
 
     return out
 

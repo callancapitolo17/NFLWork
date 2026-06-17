@@ -385,6 +385,36 @@ jitter, up to 10 attempts) so transient lock collisions between scrapers are
 invisible to callers. Read connections are not retried (DuckDB allows
 unlimited concurrent readers). Note: the trifecta scraper (`scraper_draftkings_trifecta.py`) is separate — it writes `mlb_trifecta_sgp_odds` to `Answer Keys/mlb.duckdb`.
 
+### Target-level parallelism (2026-06)
+
+Each orchestrator fans target lines out on a thread pool; the 4-combo
+pool nests inside (total in-flight requests = parallelism × 4):
+
+| Book | Default | Env override | Probed ceiling (2026-06-16) |
+|---|---|---|---|
+| DraftKings | 8 | `MLB_SGP_DK_PARALLELISM` | no backoff to 32; throughput plateaus ~16 (sel-id fetch floor), so >16 is pointless |
+| FanDuel | 4 | `MLB_SGP_FD_PARALLELISM` | not probed (not the long pole) |
+| ProphetX | 6 | `MLB_SGP_PX_PARALLELISM` | no backoff (429/403) to 12; default 6 for ≤60s margin + modest RFQ burst |
+| Novig | 4 | n/a (module constant) | not probed |
+
+Live ramp (2026-06-16) found **zero** rate-limit / bot-detection signals at
+any tested width — DK to 32, PX to 12. DK's constant "422 ×40" is its
+legitimate cross-market combinability rule, not backoff. The practical
+limits are diminishing returns (DK's fixed sel-id-fetch floor) and
+RFQ-burst prudence (PX), not the books rejecting us.
+
+`price_sgps(..., parallelism=N)` overrides both env and default. Ceilings
+come from `probe_concurrency.py` — a **manual-only** ramp harness
+(budgeted: ≤150 DK calls, ≤40 PX RFQs, cooldowns, post-run health
+check). Run it in the morning (~7–8am PT, no games live):
+
+    mlb_sgp/venv/bin/python -m mlb_sgp.probe_concurrency --book dk
+
+**The Kalshi bots no longer spawn these scrapers as subprocesses** — they
+price in-process via `kalshi_common/sgp_service.py::SGPService`
+(persistent sessions + TTL-cached structure fetches). The dashboard still
+uses the CLI shims (`scraper_*_sgp.py`), which behave exactly as before.
+
 ---
 
 ## FanDuel Scraper
