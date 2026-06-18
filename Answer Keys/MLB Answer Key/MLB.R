@@ -912,7 +912,15 @@ book_odds_by_book <- Filter(Negate(is.null), book_odds_by_book)
 # with the leave-one-out devigged consensus of the OTHER books (>= EV_THRESHOLD),
 # even when the model is neutral. See market_edge.R::find_market_edges.
 # game_info gives market-only cards their teams + tipoff and the future-game gate.
+# ungroup() is REQUIRED: mlb_odds arrives grouped (by id) from the consensus
+# pipeline, and dplyr transmute() silently RETAINS grouping columns. Without
+# ungroup, game_info keeps an `id` column alongside game_id; that `id` then
+# collides with find_market_edges()'s own `id` in its left_join(by="game_id"),
+# renaming it `id.x`. The market rows lose their `id`, MLB.R's merge NA-fills it,
+# and expand_bets_to_book_prices() (which joins books on the game id) matches
+# nothing — so every MARKET-edge card renders all em-dashes.
 .market_game_info <- mlb_odds %>%
+  ungroup() %>%
   transmute(game_id = id, home_team, away_team, pt_start_time = commence_time) %>%
   distinct(game_id, .keep_all = TRUE)
 
