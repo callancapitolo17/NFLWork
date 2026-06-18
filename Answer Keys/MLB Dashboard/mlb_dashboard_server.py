@@ -870,6 +870,18 @@ def _resolve_wagerzon_play_idgm(bet: dict) -> dict | None:
     elif market in ("spreads", "totals", "h2h"):
         # FG game-line markets all live on the 'spreads' row.
         market_candidates = [("spreads", None), ("spreads", "fg")]
+        # A non-main line (e.g. Under 8.5 when WZ's main total is 10) is a WZ
+        # ALTERNATE line, which lives on its own alternate_*_fg row — the main
+        # 'spreads' row only carries the main line. Fall back to the alt rows
+        # (after the main row, so main-line bets still resolve to the main row)
+        # so off-main market-edge bets resolve for quoting/placement. Mirrors
+        # the pill grid, where expand_bets_to_book_prices unions the alt rows.
+        if kind == "total":
+            market_candidates += [("alternate_totals_fg", None),
+                                  ("alternate_totals_fg", "fg")]
+        elif kind == "spread":
+            market_candidates += [("alternate_spreads_fg", None),
+                                  ("alternate_spreads_fg", "fg")]
     elif market in ("alternate_spreads_fg", "alternate_totals_fg"):
         market_candidates = [(market, None), (market, "fg")]
     else:
