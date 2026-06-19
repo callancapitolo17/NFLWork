@@ -39,7 +39,11 @@ KALSHI_BASE_URL = _get("KALSHI_BASE_URL", "https://api.elections.kalshi.com/trad
 MVE_COLLECTION_TICKER = _get("MVE_COLLECTION_TICKER", "KXMVECROSSCATEGORY-R")
 
 # Pricing
-TARGET_ROI = float(_get("TARGET_ROI", "0.05"))
+# Tightened 5%→3% (2026-06-18) to test competitiveness: 13 quotes floated over
+# ~8 days got 0 accepts. Competitor quotes are invisible on Kalshi (403 to
+# non-creators), so the only way to learn whether we're being outbid is to
+# quote tighter and watch for fills. 3% per side = ~6% gross spread.
+TARGET_ROI = float(_get("TARGET_ROI", "0.03"))
 QUOTE_HYSTERESIS = float(_get("QUOTE_HYSTERESIS", "0.005"))
 
 # Risk (master dial = BANKROLL)
