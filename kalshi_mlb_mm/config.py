@@ -74,7 +74,13 @@ TIPOFF_CANCEL_MIN = int(_get("TIPOFF_CANCEL_MIN", "5"))
 # pattern). v1.1: see docs/superpowers/specs/2026-05-26-kalshi-mlb-mm-design.md §13
 # for the explicit correlation-premium gate (deferred enhancement).
 BOOK_CONSENSUS_BAND = float(_get("BOOK_CONSENSUS_BAND", "0.02"))
-MIN_AGREEING_BOOKS = int(_get("MIN_AGREEING_BOOKS", "3"))
+# Lowered 3→2 (2026-06-18, user-approved): at 3 books we quoted ~13 times in
+# 8 days (0 fills) — too few to test competitiveness or gather data. Measured
+# ~5 quotable tuples @3 vs ~40-47 @2 books (~8×). Trade-off: 2-book consensus
+# is weaker (more model risk); caveat: a DK+Novig pair is effectively ONE
+# independent source since Novig mirrors DK (see [[novig_sgp_scraping]]) — a
+# DK/Novig-independence guard is a noted follow-up if those pairs dominate fills.
+MIN_AGREEING_BOOKS = int(_get("MIN_AGREEING_BOOKS", "2"))
 
 # Loops (seconds)
 DISCOVERY_SEC = int(_get("DISCOVERY_SEC", "2"))
