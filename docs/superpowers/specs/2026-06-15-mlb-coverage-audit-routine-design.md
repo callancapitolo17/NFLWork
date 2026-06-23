@@ -158,8 +158,14 @@ menu-crawler for 9 books.
 
 ### 5. Scheduling, storage, alerts
 
-- **Mechanism:** Desktop scheduled task — local, unattended, survives reboot, no
-  open session required.
+- **Mechanism:** Desktop scheduled task — local, runs on your Mac with local
+  file + network access, no active Claude *session* required. Created via the
+  Claude Code **Desktop app → Routines → New routine → Local** (or by describing
+  it in a Desktop session), **not** the `/schedule` CLI command (that makes a
+  cloud routine, which can't reach your data). **Caveat:** the Desktop *app* must
+  be running for the task to fire — unlike launchd, which needs nothing open. If
+  the detection half ever needs to be bulletproof with the app closed, run
+  `coverage_audit.py` alone on launchd and keep only the wiring as a Desktop task.
 - **Timing:** ~9 AM Pacific (noon ET) — late enough that the day's slate is
   posted, before first pitch. One run/day. (See risk: late-posting markets.)
 - **Storage:** a dedicated `coverage/coverage.duckdb` with its own write lock
