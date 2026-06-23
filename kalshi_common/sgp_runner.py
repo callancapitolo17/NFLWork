@@ -359,6 +359,145 @@ def write_singles_odds(rows: list[dict], db_path: str):
         con.close()
 
 
+# Odds API player-prop market key -> our normalized market_type. The Kalshi
+# leg prefixes map to these: KXMLBHR->home_runs, KXMLBHIT->hits,
+# KXMLBTB->total_bases, KXMLBKS->strikeouts, KXMLBHRR->hits_runs_rbis.
+_PROP_MARKET_MAP = {
+    "batter_home_runs": "home_runs",
+    "batter_hits": "hits",
+    "batter_total_bases": "total_bases",
+    "pitcher_strikeouts": "strikeouts",
+    "batter_hits_runs_rbis": "hits_runs_rbis",
+}
+_PLAYER_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+
+
+def _norm_player(name: str) -> str:
+    """Normalize a player name so Kalshi market titles and Odds API descriptions
+    map to the same key: strip accents, lowercase, drop punctuation and generation
+    suffixes (Jr/Sr/II...), collapse whitespace. Kalshi drops accented letters in
+    ticker codes inconsistently, so we match on the clean title name, not the code.
+    """
+    import unicodedata
+    decomposed = unicodedata.normalize("NFKD", name)
+    ascii_only = "".join(c for c in decomposed if not unicodedata.combining(c))
+    # Drop punctuation outright (so "J.D." -> "jd", "O'Neill" -> "oneill") while
+    # keeping spaces as token boundaries. Both Kalshi titles and Odds API
+    # descriptions go through this same function, so the key matches as long as
+    # the rule is consistent.
+    cleaned = "".join(c for c in ascii_only if c.isalnum() or c.isspace())
+    tokens = [t for t in cleaned.lower().split() if t not in _PLAYER_SUFFIXES]
+    return " ".join(tokens)
+
+
+def _parse_props_event(ev: dict, fetch_time: datetime) -> list[dict]:
+    """Parse one Odds API event-odds payload (player-prop markets) into flat
+    mlb_player_props rows. Pure function. Each row: {game_id, market_type, player,
+    line, outcome ('over'/'under'), decimal, bookmaker, fetch_time}. Only complete
+    over+under pairs (per player/line/book) are emitted — an unpaired side can't
+    be devigged. `player` is normalized via _norm_player."""
+    gid = ev.get("id")
+    if not gid:
+        return []
+    rows: list[dict] = []
+    for bk in ev.get("bookmakers", []):
+        book = bk.get("key")
+        if not book:
+            continue
+        for m in bk.get("markets", []):
+            mtype = _PROP_MARKET_MAP.get(m.get("key"))
+            if not mtype:
+                continue
+            # group outcomes by (player, line) so we pair over/under
+            by_key: dict[tuple, dict] = {}
+            for o in m.get("outcomes", []) or []:
+                player = o.get("description")
+                point = o.get("point")
+                side = str(o.get("name", "")).lower()
+                if not player or point is None or side not in ("over", "under"):
+                    continue
+                by_key.setdefault((player, float(point)), {})[side] = o
+            for (player, line), sides in by_key.items():
+                if "over" not in sides or "under" not in sides:
+                    continue
+                pn = _norm_player(player)
+                for outcome in ("over", "under"):
+                    rows.append(dict(
+                        game_id=gid, market_type=mtype, player=pn, line=line,
+                        outcome=outcome, decimal=float(sides[outcome]["price"]),
+                        bookmaker=book, fetch_time=fetch_time))
+    return rows
+
+
+def fetch_mlb_player_props_from_odds_api(game_ids: list[str]) -> list[dict]:
+    """Fetch player props for the given Odds API event ids (one request per
+    event — the props endpoint is per-event). Returns flat rows. Best-effort: a
+    failed event is skipped; a missing key returns []."""
+    import json
+    import urllib.request
+
+    key = _odds_api_key()
+    if not key or not game_ids:
+        return []
+    markets = ",".join(_PROP_MARKET_MAP.keys())
+    now = datetime.now(timezone.utc)
+    out: list[dict] = []
+    # The props endpoint is per-event, so this is one call per game and runs
+    # synchronously inside the cycle. Use a short per-call timeout so a single
+    # hung game can't stall the loop (and therefore quoting) for long.
+    for gid in game_ids:
+        url = (f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{gid}"
+               f"/odds?apiKey={key}&regions=us&markets={markets}&oddsFormat=decimal")
+        try:
+            with urllib.request.urlopen(url, timeout=6) as resp:
+                ev = json.loads(resp.read().decode())
+        except Exception:
+            continue
+        out.extend(_parse_props_event(ev, now))
+    return out
+
+
+def write_player_props(rows: list[dict], db_path: str):
+    """Atomic DELETE+INSERT of mlb_player_props. Empty rows -> keep prior (early
+    return), same as write_singles_odds."""
+    con = duckdb.connect(db_path)
+    try:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS mlb_player_props (
+                game_id     VARCHAR,
+                market_type VARCHAR,
+                player      VARCHAR,
+                line        DOUBLE,
+                outcome     VARCHAR,
+                decimal     DOUBLE,
+                bookmaker   VARCHAR,
+                fetch_time  TIMESTAMP
+            )
+        """)
+        if not rows:
+            return
+        con.execute("BEGIN TRANSACTION")
+        con.execute("DELETE FROM mlb_player_props")
+        values = []
+        for r in rows:
+            ft = r["fetch_time"]
+            if ft is not None and ft.tzinfo is not None:
+                ft = ft.astimezone(timezone.utc).replace(tzinfo=None)
+            values.extend([r["game_id"], r["market_type"], r["player"], r["line"],
+                           r["outcome"], r["decimal"], r["bookmaker"], ft])
+        placeholders = ",".join(["(?,?,?,?,?,?,?,?)"] * len(rows))
+        con.execute(f"INSERT INTO mlb_player_props VALUES {placeholders}", values)
+        con.execute("COMMIT")
+    except Exception:
+        try:
+            con.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+    finally:
+        con.close()
+
+
 def write_target_lines(target_lines: list[TargetLine], db_path: str):
     """Atomic DELETE+INSERT of mlb_target_lines in bot market DB.
     Creates the table if missing."""
@@ -554,7 +693,22 @@ def sgp_cycle(
             print(f"  singles: {len(singles)} odds-api rows "
                   f"({len({r['game_id'] for r in singles})} games)", flush=True)
     except Exception as e:
+        singles = []
         print(f"  singles: write failed — {e}", flush=True)
+
+    # Player props (HR / hits / total bases / strikeouts / hits+runs+RBIs) —
+    # one Odds API request PER game (the props endpoint is per-event). Reuse the
+    # game ids the singles fetch surfaced. Best-effort, never breaks the cycle.
+    try:
+        prop_game_ids = sorted({r["game_id"] for r in singles}) if singles else []
+        props = fetch_mlb_player_props_from_odds_api(prop_game_ids)
+        write_player_props(props, db_path=bot_market_db)
+        if props:
+            print(f"  props: {len(props)} odds-api rows "
+                  f"({len({(r['game_id'], r['player']) for r in props})} player-games)",
+                  flush=True)
+    except Exception as e:
+        print(f"  props: write failed — {e}", flush=True)
 
     if service is None:
         if not (scraper_dir and venv_python and timeout_sec):

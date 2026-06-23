@@ -26,11 +26,13 @@ def test_mixed_spread_total_moneyline_in_scope():
     ]) is True
 
 
-def test_prop_leg_out_of_scope():
+def test_prop_legs_in_scope():
+    # Props are now supported (priced off Odds API per-event prop markets).
     assert scope.is_in_scope([
         _leg("KXMLBGAME-26MAY232205TEXLAA-LAA"),
-        _leg("KXMLBHR-26MAY232205TEXLAA-SOMEONE"),
-    ]) is False
+        _leg("KXMLBHR-26MAY232205TEXLAA-LAASOMEONE1"),
+    ]) is True
+    assert scope.is_in_scope([_leg("KXMLBKS-26MAY232205TEXLAA-TEXPITCHER5")]) is True
 
 
 def test_non_mlb_leg_out_of_scope():
