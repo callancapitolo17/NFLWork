@@ -121,9 +121,9 @@ def _scaffold(monkeypatch, tmp_path, db, cfg, risk):
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
     legs = [{"market_ticker": "KXMLBSPREAD-XYZ", "event_ticker": "EVT", "side": "yes"},
             {"market_ticker": "KXMLBTOTAL-XYZ", "event_ticker": "EVT", "side": "yes"}]
-    monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-SZ": (True, "g1", legs)})
-    monkeypatch.setattr(main, "_resolve_game_and_lines",
-                        lambda ticker, legs: ("g1", -1.5, 8.5))
+    monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-SZ": (True, legs)})
+    monkeypatch.setattr(main, "_combo_games", lambda legs: ["g1"])
+    monkeypatch.setattr(main, "_price_combo", lambda legs: (0.55, 3))
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
 
 
@@ -151,8 +151,6 @@ def test_tick_contracts_fp_string_over_cap_blocked(monkeypatch, tmp_path):
     _scaffold(monkeypatch, tmp_path, db, cfg, risk)
     monkeypatch.setattr(cfg, "BANKROLL", 500.0)
     monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 0.10)
-    monkeypatch.setattr(main, "_book_fairs",
-                        lambda g, s, t: {"dk": 0.55, "fd": 0.55, "px": 0.56})
 
     class Src:
         def poll(self):
@@ -176,8 +174,6 @@ def test_tick_contracts_fp_string_small_passes(monkeypatch, tmp_path):
     _scaffold(monkeypatch, tmp_path, db, cfg, risk)
     monkeypatch.setattr(cfg, "BANKROLL", 500.0)
     monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 0.10)
-    monkeypatch.setattr(main, "_book_fairs",
-                        lambda g, s, t: {"dk": 0.55, "fd": 0.55, "px": 0.56})
 
     class Src:
         def poll(self):
@@ -221,8 +217,6 @@ def test_tick_dollar_rfq_over_cap_blocked_post_pricing(monkeypatch, tmp_path):
     _scaffold(monkeypatch, tmp_path, db, cfg, risk)
     monkeypatch.setattr(cfg, "BANKROLL", 500.0)
     monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 0.10)
-    monkeypatch.setattr(main, "_book_fairs",
-                        lambda g, s, t: {"dk": 0.55, "fd": 0.55, "px": 0.56})
 
     class Src:
         def poll(self):
@@ -246,8 +240,6 @@ def test_tick_small_dollar_rfq_passes_and_quotes(monkeypatch, tmp_path):
     _scaffold(monkeypatch, tmp_path, db, cfg, risk)
     monkeypatch.setattr(cfg, "BANKROLL", 500.0)
     monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 0.10)
-    monkeypatch.setattr(main, "_book_fairs",
-                        lambda g, s, t: {"dk": 0.55, "fd": 0.55, "px": 0.56})
 
     class Src:
         def poll(self):

@@ -1,22 +1,22 @@
 """Kalshi MLB MM (maker) bot — REST-polling daemon.
 
 Composes the prior modules into three timed loops:
-  - discovery: poll open RFQs, scope/price/quote in-scope spread×total combos
+  - discovery: poll open RFQs, scope/price/quote in-scope MLB combos
   - confirm:   last-look gate on accepted quotes before confirming the fill
   - risk:      kill-switch, book-freshness auto-pull, tipoff-cancel, drift sweep
 
-Fair value is now pure book-consensus median — the model was removed in the v1
-hardening pass (`fairs.py` docstring explains why). Book fairs come from the
-maker's own market DB (its own sgp_runner cadence) and are filtered through
-`_consensus_filter` (median + ±BOOK_CONSENSUS_BAND outlier rejection) so a
-single rogue book can't anchor the quote.
+Pricing now covers arbitrary MLB combos (moneyline / spread / total, single- or
+cross-game, N legs) via `combo_pricer.combo_fair`, which groups legs by game,
+prices each game's sub-combo to a consensus fair (4-cell SGP grid for same-game
+spread+total; 2-way singles devig for single legs), and multiplies the
+independent games. The book-consensus gate (median + ±BOOK_CONSENSUS_BAND) is
+applied per game group — a single rogue book can't anchor a quote.
 """
 import argparse
 import json
 import logging
 import os
 import signal
-import statistics
 import threading
 import time
 import uuid
@@ -26,14 +26,12 @@ import duckdb
 
 from kalshi_common import auth_client, sgp_runner
 from kalshi_common.ev_calc import maker_fee_per_contract
-from kalshi_common.fair_value import devig_book
 from kalshi_common.leg_types import (
     _parse_event_suffix,
-    _spread_line_from_legs,
-    _total_line_from_legs,
     _MLB_CODE_TO_TEAM,
 )
-from kalshi_mlb_mm import config, db, notify, pricing, research, risk, scope, fairs
+from kalshi_mlb_mm import (config, db, notify, pricing, research, risk, scope,
+                           combo_pricer)
 from kalshi_mlb_mm.rfq_source import RestRFQSource
 from kalshi_mlb_mm.quote_gateway import RestQuoteGateway
 
@@ -41,9 +39,11 @@ log = logging.getLogger("kalshi_mlb_mm")
 
 _running = threading.Event()
 _running.set()
-_SGP_ODDS = None         # pd.DataFrame
-_PREV_BOOK_FAIR = {}     # combo_market_ticker -> last blended book fair (circuit breaker)
-_SCOPE_CACHE = {}        # market_ticker -> (in_scope, game_id, legs)
+_SGP_ODDS = None         # pd.DataFrame — spread+total SGP grid (own scrapers)
+_SINGLES = None          # pd.DataFrame — moneyline/spread/total singles (Odds API)
+_TEAM_TO_GAME = {}       # (home_team, away_team) -> game_id (leg→game resolution)
+_PREV_BOOK_FAIR = {}     # combo_market_ticker -> last combo consensus fair (circuit breaker)
+_SCOPE_CACHE = {}        # market_ticker -> (in_scope, legs)
 _VOID_HALT_ACTIVE = False  # N12: track prior void-rate halt state for edge-triggered notify
 
 
@@ -57,7 +57,10 @@ def _configure_auth():
 
 
 def _refresh_sgp():
-    global _SGP_ODDS
+    """Reload both book caches (spread+total SGP grid and singles) from the
+    market DB and rebuild the (home_team, away_team) -> game_id map used to
+    resolve which game each leg belongs to."""
+    global _SGP_ODDS, _SINGLES, _TEAM_TO_GAME
     if not config.MARKET_DB.exists():
         return
     try:
@@ -66,60 +69,75 @@ def _refresh_sgp():
         return
     try:
         tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
-        if "mlb_sgp_odds" not in tables:
-            return
-        _SGP_ODDS = con.execute(
-            "SELECT game_id, combo, period, bookmaker, sgp_decimal, fetch_time, "
-            "spread_line, total_line FROM mlb_sgp_odds WHERE period='FG' "
-            "AND fetch_time > NOW() - INTERVAL (CAST(? AS BIGINT)) SECOND",
-            [config.MAX_BOOK_STALENESS_SEC]).fetchdf()
+        if "mlb_sgp_odds" in tables:
+            _SGP_ODDS = con.execute(
+                "SELECT game_id, combo, period, bookmaker, sgp_decimal, fetch_time, "
+                "spread_line, total_line FROM mlb_sgp_odds WHERE period='FG' "
+                "AND fetch_time > NOW() - INTERVAL (CAST(? AS BIGINT)) SECOND",
+                [config.MAX_BOOK_STALENESS_SEC]).fetchdf()
+        if "mlb_singles_odds" in tables:
+            _SINGLES = con.execute(
+                "SELECT game_id, home_team, away_team, market, line, outcome, "
+                "decimal, bookmaker, fetch_time FROM mlb_singles_odds "
+                "WHERE fetch_time > NOW() - INTERVAL (CAST(? AS BIGINT)) SECOND",
+                [config.MAX_BOOK_STALENESS_SEC]).fetchdf()
+        # Build team->game map from BOTH sources so any game with either kind of
+        # odds is resolvable (singles cover all games; target lines cover games
+        # with Kalshi spread+total markets).
+        team_map: dict[tuple, str] = {}
+        if _SINGLES is not None and not _SINGLES.empty:
+            for gid, h, a in _SINGLES[["game_id", "home_team", "away_team"]].drop_duplicates().itertuples(index=False):
+                team_map[(h, a)] = gid
+        if "mlb_target_lines" in tables:
+            for gid, h, a in con.execute(
+                    "SELECT DISTINCT game_id, home_team, away_team "
+                    "FROM mlb_target_lines").fetchall():
+                team_map.setdefault((h, a), gid)
+        _TEAM_TO_GAME = team_map
     finally:
         con.close()
 
 
 def _consensus_filter(book_fairs: dict[str, float]) -> dict[str, float]:
-    """Book-consensus-band gate (v1 correlation defense).
-
-    Algorithm:
-      1. If fewer than MIN_AGREEING_BOOKS supplied → return {} (no quote).
-      2. Compute median of all supplied book devigged fairs.
-      3. Keep only books within ±BOOK_CONSENSUS_BAND of that median.
-      4. If fewer than MIN_AGREEING_BOOKS survive → return {} (no quote).
-      5. Otherwise return the surviving (agreeing) books.
-
-    Mirrors the MLB answer-key dashboard's consensus-band logic. The caller
-    then medians the surviving books to get the fair (see `fairs.blended_fair`).
-    """
-    if len(book_fairs) < config.MIN_AGREEING_BOOKS:
-        return {}
-    med = statistics.median(book_fairs.values())
-    agreeing = {b: f for b, f in book_fairs.items()
-                if abs(f - med) <= config.BOOK_CONSENSUS_BAND}
-    if len(agreeing) < config.MIN_AGREEING_BOOKS:
-        return {}
-    return agreeing
+    """Book-consensus-band gate (v1 correlation defense). Thin wrapper over
+    `combo_pricer.consensus_filter` bound to the configured knobs; retained as a
+    stable seam for tests and any external callers."""
+    return combo_pricer.consensus_filter(
+        book_fairs, config.MIN_AGREEING_BOOKS, config.BOOK_CONSENSUS_BAND)
 
 
-# book fairs per (game, spread_line, total_line) — mirrors taker _load_book_fairs,
-# but REQUIRES full 4-side devig (no fallback) per accepted-risk #6, then runs
-# through _consensus_filter (v1 correlation defense, replaces MIN_BOOK_COUNT_FOR_BLEND).
-def _book_fairs(game_id, spread_line, total_line):
-    if _SGP_ODDS is None or _SGP_ODDS.empty:
-        return {}
-    rows = _SGP_ODDS[(_SGP_ODDS.game_id == game_id)
-                     & (_SGP_ODDS.spread_line.astype(float).round(2) == round(spread_line, 2))
-                     & (_SGP_ODDS.total_line.astype(float).round(2) == round(total_line, 2))]
-    if rows.empty:
-        return {}
-    out = {}
-    for book in rows.bookmaker.unique():
-        sub = rows[rows.bookmaker == book]
-        if len(sub) < 4:        # require full 4-side coverage (no crude fallback)
-            continue
-        f = devig_book(sub, combo="Home Spread + Over", vig_fallback=0.0)
-        if f is not None:
-            out[book] = f
-    return _consensus_filter(out)
+def _resolve_game_id(suffix: str) -> str | None:
+    """Map an event-ticker suffix (YYMMMDDHHMM + away+home codes) to a game_id
+    via the (home_team, away_team) -> game_id map built in _refresh_sgp."""
+    away, home = _parse_event_suffix(suffix)
+    if not away or not home:
+        return None
+    home_name = _MLB_CODE_TO_TEAM.get(home)
+    away_name = _MLB_CODE_TO_TEAM.get(away)
+    if not home_name or not away_name:
+        return None
+    return _TEAM_TO_GAME.get((home_name, away_name))
+
+
+def _combo_games(legs) -> list[str] | None:
+    """Resolve the distinct game_ids a combo spans, or None if any game is
+    unresolvable (we can't price a combo whose game we can't identify)."""
+    games = []
+    for suffix in combo_pricer.group_legs_by_game(legs):
+        gid = _resolve_game_id(suffix)
+        if gid is None:
+            return None
+        if gid not in games:
+            games.append(gid)
+    return games
+
+
+def _price_combo(legs):
+    """Combo consensus fair (YES side) via the general pricer, or None if any
+    game group is unpriceable. Returns (fair, agreeing_books)."""
+    return combo_pricer.combo_fair(
+        legs, _resolve_game_id, _SGP_ODDS, _SINGLES,
+        min_agreeing=config.MIN_AGREEING_BOOKS, band=config.BOOK_CONSENSUS_BAND)
 
 
 def _commence_time(game_id):
@@ -153,46 +171,6 @@ def _today_fills():
             "FROM fills WHERE filled_at >= ?",
             [config.max_fill_exposure_usd(), start]).fetchall()
     return [{"game_id": g, "price": exp} for g, exp in rows]
-
-
-def _resolve_game_and_lines(market_ticker, legs):
-    """Resolve game_id + (spread_line, total_line) from decoded legs.
-
-    - Parse the spread leg's event-ticker suffix -> (away_code, home_code).
-    - Compute spread_line / total_line directly from the legs.
-    - Map team codes -> canonical names, then look up game_id in
-      MARKET_DB::mlb_target_lines by (home_team, away_team).
-
-    Returns (game_id | None, spread_line, total_line).
-    """
-    spread_leg = next(
-        (l for l in legs if str(l.get("market_ticker", "")).startswith("KXMLBSPREAD-")), None)
-    if not spread_leg:
-        return None, None, None
-    # Event ticker self-encodes away/home: ...-{YYMMMDDHHMM}{Away}{Home}.
-    suffix = str(spread_leg.get("event_ticker", "")).rsplit("-", 1)[-1]
-    away, home = _parse_event_suffix(suffix)
-    if not away or not home:
-        return None, None, None
-    spread_line = _spread_line_from_legs(legs)
-    total_line = _total_line_from_legs(legs)
-    home_name = _MLB_CODE_TO_TEAM.get(home)
-    away_name = _MLB_CODE_TO_TEAM.get(away)
-    if not home_name or not away_name or not config.MARKET_DB.exists():
-        return None, spread_line, total_line
-    try:
-        con = duckdb.connect(str(config.MARKET_DB), read_only=True)
-    except duckdb.IOException:
-        return None, spread_line, total_line
-    try:
-        row = con.execute(
-            "SELECT game_id FROM mlb_target_lines WHERE home_team=? AND away_team=? LIMIT 1",
-            [home_name, away_name]).fetchone()
-    except duckdb.CatalogException:
-        row = None
-    finally:
-        con.close()
-    return (row[0] if row else None), spread_line, total_line
 
 
 def _get_position_contracts(market_ticker: str, timeout: int = 5) -> int | None:
@@ -317,9 +295,12 @@ def _discovery_tick(source, gateway, dry_run):
     # FIX M2: kill-switch — stop quoting immediately if the kill file exists
     if config.KILL_FILE.exists():
         return
-    # Book-freshness gate: if our books are stale/missing we cannot price anything.
-    # Replaces the old samples-staleness gate (model was removed in v1 hardening).
-    if _SGP_ODDS is None or _SGP_ODDS.empty:
+    # Book-freshness gate: if BOTH book sources are stale/missing we can't price
+    # anything. (Moneyline / cross-game combos price off the singles feed; the
+    # spread+total grid powers same-game pairs. Either being fresh is enough to
+    # quote *some* combos — per-combo pricing skips the ones it can't cover.)
+    if ((_SGP_ODDS is None or _SGP_ODDS.empty)
+            and (_SINGLES is None or _SINGLES.empty)):
         return
     # H4 + N12: global void-rate halt — step back if we're voiding too often.
     # N12: edge-triggered notification so operator gets a single ping on state
@@ -377,15 +358,19 @@ def _discovery_tick(source, gateway, dry_run):
         creator_id = rfq.get("creator_user_id") or rfq.get("creator_id") or ""
         with db.connect(read_only=True) as con:
             seen = con.execute("SELECT in_scope FROM seen_rfqs WHERE rfq_id=?", [rid]).fetchone()
-        # scope (cache the market lookup verdict)
+        # scope. The RFQ poll response already carries mve_selected_legs, so we
+        # avoid a per-ticker GET /markets call (which on a network blip used to
+        # misclassify in-scope RFQs as out_of_scope and cache that verdict).
+        # Fall back to GET /markets only if the poll row lacks legs.
         if ticker in _SCOPE_CACHE:
-            in_scope, game_id, legs = _SCOPE_CACHE[ticker]
+            in_scope, legs = _SCOPE_CACHE[ticker]
         else:
-            market = source.get_market(ticker)
-            legs = scope.decode_legs(market) if market else None
-            in_scope = bool(legs and scope.is_spread_total_2leg(legs))
-            game_id = None
-            _SCOPE_CACHE[ticker] = (in_scope, game_id, legs)
+            legs = rfq.get("mve_selected_legs")
+            if not legs:
+                market = source.get_market(ticker)
+                legs = scope.decode_legs(market) if market else None
+            in_scope = bool(legs and scope.is_in_scope(legs))
+            _SCOPE_CACHE[ticker] = (in_scope, legs)
         if not in_scope:
             if not seen:
                 _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="out_of_scope")
@@ -429,17 +414,25 @@ def _discovery_tick(source, gateway, dry_run):
         if req_contracts <= 0 and target_cost <= 0:
             _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="size_unknown")
             continue
-        game_id, spread_line, total_line = _resolve_game_and_lines(ticker, legs)
-        if game_id is None:
+        # Resolve which game(s) this combo spans. A combo can be cross-game
+        # (e.g. a 6-leg moneyline parlay across 6 games); we need all game_ids
+        # for the per-game / tipoff gates and to attribute exposure.
+        game_ids = _combo_games(legs)
+        if not game_ids:
             _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="no_game")
             continue
+        # Primary game_id used for storage/attribution (per-game cap is checked
+        # across ALL games below; multi-game fills attribute to the first game —
+        # a documented v1 simplification for the measurement phase).
+        game_id = game_ids[0]
         # FIX I3: exposure cap gates (wired — were defined but never called)
         if not risk.daily_cap_ok(fills_today, config.daily_exposure_cap_usd()):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="daily_cap")
             continue
-        if not risk.per_game_cap_ok(game_id, fills_today, config.BANKROLL,
-                                    config.MAX_GAME_EXPOSURE_PCT):
+        if not all(risk.per_game_cap_ok(g, fills_today, config.BANKROLL,
+                                        config.MAX_GAME_EXPOSURE_PCT)
+                   for g in game_ids):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="per_game_cap")
             continue
@@ -456,13 +449,16 @@ def _discovery_tick(source, gateway, dry_run):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="in_cooldown")
             continue
-        # tipoff gate
-        ct = _commence_time(game_id)
-        if not risk.tipoff_ok(ct, config.TIPOFF_CANCEL_MIN):
+        # tipoff gate — pull if ANY game in the combo is within the blackout
+        # window (the combo can't settle until every game finishes).
+        if not all(risk.tipoff_ok(_commence_time(g), config.TIPOFF_CANCEL_MIN)
+                   for g in game_ids):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id, reason="tipoff")
             continue
-        book_fairs = _book_fairs(game_id, spread_line, total_line)
-        book_med, blended = fairs.blended_fair(legs, game_id, book_fairs)
+        priced = _price_combo(legs)
+        blended = priced[0] if priced else None
+        agreeing = priced[1] if priced else 0
+        book_med = blended
         if blended is None or not (config.MIN_FAIR_PROB <= blended <= config.MAX_FAIR_PROB):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="no_fair", model=None, book=book_med, blended=blended)
@@ -531,10 +527,10 @@ def _discovery_tick(source, gateway, dry_run):
             continue
         # Event 2: quote_priced — we have a valid quote from the pricer.
         research.emit("quote_priced", rfq_id=rid, ticker=ticker,
-                      payload=dict(book_fairs=book_fairs, agreeing_count=len(book_fairs),
+                      payload=dict(agreeing_count=agreeing,
                                    blended_fair=blended, yes_bid=q.yes_bid, no_bid=q.no_bid,
-                                   spread_line=spread_line, total_line=total_line,
-                                   game_id=game_id))
+                                   game_ids=game_ids, game_id=game_id,
+                                   n_legs=len(legs)))
         if dry_run:
             _log_decision("dry_run_quote", rfq_id=rid, ticker=ticker, game_id=game_id,
                           model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
@@ -614,18 +610,13 @@ def _confirm_tick(gateway, dry_run):
                         "UPDATE live_quotes SET status='voided', closed_at=? WHERE quote_id=?",
                         [datetime.now(timezone.utc), qid])
                 continue
-            spread_line = _spread_line_from_legs(legs)
-            total_line = _total_line_from_legs(legs)
-            book_fairs_now = _book_fairs(game_id, spread_line, total_line)
-            if not book_fairs_now:
-                _log_decision("voided_no_fresh_books", rfq_id=rid, quote_id=qid, ticker=ticker,
-                              game_id=game_id)
-                with db.connect() as con:
-                    con.execute(
-                        "UPDATE live_quotes SET status='voided', closed_at=? WHERE quote_id=?",
-                        [datetime.now(timezone.utc), qid])
-                continue
-            _, cur_fair = fairs.blended_fair(legs, game_id, book_fairs_now)
+            # Re-price the full combo from fresh book data (general pricer). If
+            # it can't re-price (no fresh books, failed consensus, unknown game),
+            # we VOID — "can't re-price ⇒ don't confirm". Both failure modes
+            # collapse to the same void reason; the prior split (no_fresh_books
+            # vs blend_failed) doesn't apply to the unified pricer.
+            priced_now = _price_combo(legs)
+            cur_fair = priced_now[0] if priced_now else None
             if cur_fair is None:
                 _log_decision("voided_blend_failed", rfq_id=rid, quote_id=qid, ticker=ticker,
                               game_id=game_id)
@@ -816,10 +807,12 @@ def _risk_sweep_tick(gateway):
     if config.KILL_FILE.exists():
         notify.halt("kill_switch")
         return
-    # Freshness / auto-pull: if our book odds are stale/missing, pull EVERY open
-    # quote — we can no longer trust our fair value, so we must stop resting risk.
-    # Replaces the old samples-staleness gate (model was removed in v1 hardening).
-    books_stale = _SGP_ODDS is None or _SGP_ODDS.empty
+    # Freshness / auto-pull: if BOTH book sources are stale/missing we're fully
+    # blind — pull EVERY open quote. (A combo prices off the SGP grid and/or the
+    # singles feed; per-quote re-pricing below catches the case where only one
+    # source went stale.)
+    books_stale = ((_SGP_ODDS is None or _SGP_ODDS.empty)
+                   and (_SINGLES is None or _SINGLES.empty))
     with db.connect(read_only=True) as con:
         # Pull the per-quote fields we need for the drift-since-quote check too.
         live = con.execute(
@@ -828,29 +821,29 @@ def _risk_sweep_tick(gateway):
             "FROM live_quotes lq LEFT JOIN seen_rfqs sr ON lq.rfq_id = sr.rfq_id "
             "WHERE lq.status='open'").fetchall()
     for qid, game_id, ticker, book_fair_at_q, rid, legs_json in live:
-        ct = _commence_time(game_id)
         cancel = False
-        if books_stale or not risk.tipoff_ok(ct, config.TIPOFF_CANCEL_MIN):
+        legs = json.loads(legs_json) if legs_json else None
+        # tipoff: pull if ANY game in the combo is within the blackout window.
+        game_ids = (_combo_games(legs) if legs else None) or [game_id]
+        tipoff_breached = not all(
+            risk.tipoff_ok(_commence_time(g), config.TIPOFF_CANCEL_MIN)
+            for g in game_ids)
+        if books_stale or tipoff_breached:
             cancel = True
-        else:
-            # H1 (part 2): per-open-quote drift-since-quote sweep.
-            # Recompute current book consensus for this combo; if it has drifted
-            # more than BOOK_MOVE_CB_THRESHOLD from book_fair-at-quote, cancel.
-            # Catches gradual drift that the per-tick (last vs current) circuit
-            # breaker misses (e.g., 1¢ moves over several ticks adding to 4¢).
-            if book_fair_at_q is not None and legs_json:
-                try:
-                    legs = json.loads(legs_json)
-                    sl = _spread_line_from_legs(legs)
-                    tl = _total_line_from_legs(legs)
-                    bf_now = _book_fairs(game_id, sl, tl)
-                    if bf_now:
-                        cur_med = statistics.median(bf_now.values())
-                        if risk.book_move_triggered(book_fair_at_q, cur_med,
-                                                    config.BOOK_MOVE_CB_THRESHOLD):
-                            cancel = True
-                except Exception:
-                    pass
+        elif book_fair_at_q is not None and legs:
+            # H1 (part 2): per-open-quote drift-since-quote sweep. Re-price the
+            # full combo; cancel if we can't re-price (blind on this combo) or if
+            # the fair drifted more than BOOK_MOVE_CB_THRESHOLD since the quote.
+            # Catches gradual drift the per-tick circuit breaker misses.
+            try:
+                priced = _price_combo(legs)
+                if priced is None:
+                    cancel = True
+                elif risk.book_move_triggered(book_fair_at_q, priced[0],
+                                              config.BOOK_MOVE_CB_THRESHOLD):
+                    cancel = True
+            except Exception:
+                pass
         if cancel:
             try:
                 gateway.cancel(qid)
