@@ -147,7 +147,13 @@ def price_single_leg_group(typed_leg, game_id, singles_df, min_agreeing, band):
             out[book] = p_over if typed_leg.side == "yes" else (1.0 - p_over)
 
     elif isinstance(typed_leg, fv.SpreadLeg):
-        line = -(typed_leg.line_n - 0.5)   # home-perspective handicap
+        # Home-perspective handicap. A home leg at magnitude N is home -(N-0.5);
+        # an away leg at magnitude N is away -(N-0.5) == home +(N-0.5). Singles
+        # store the line home-perspective, so the sign must flip for away legs —
+        # otherwise an away alt line could collide with the home main line and
+        # price the wrong side. Mismatched (alt) lines simply find no rows → drop.
+        mag = typed_leg.line_n - 0.5
+        line = -mag if typed_leg.team_is_home else mag
         m = g[(g.market == "spread") & (g.line.astype(float).round(2) == round(line, 2))]
         for book in m.bookmaker.unique():
             b = m[m.bookmaker == book]

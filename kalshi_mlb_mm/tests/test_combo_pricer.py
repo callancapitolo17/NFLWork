@@ -132,6 +132,49 @@ def test_spread_total_same_game_uses_sgp_grid():
     assert abs(fair - 0.25) < 1e-6
 
 
+def _spread_rows(game_id, home_line, p_home_cover, books):
+    rows = []
+    dh = 1.0 / p_home_cover
+    da = 1.0 / (1.0 - p_home_cover)
+    for b in books:
+        rows.append([game_id, "spread", home_line, "home", dh, b])
+        rows.append([game_id, "spread", home_line, "away", da, b])
+    return rows
+
+
+def test_home_spread_single_main_line():
+    # Home -1.5 (line_n=2), home favored: singles home-perspective line = -1.5.
+    singles = _singles_df(_spread_rows("gA", -1.5, 0.55, _BOOKS))
+    legs = [{"event_ticker": f"KXMLBSPREAD-{SUF_A}",
+             "market_ticker": f"KXMLBSPREAD-{SUF_A}-LAA2", "side": "yes"}]
+    fair, _ = cp.combo_fair(legs, _resolver({SUF_A: "gA"}), pd.DataFrame(),
+                            singles, min_agreeing=3, band=0.05)
+    assert abs(fair - 0.55) < 1e-6
+
+
+def test_away_spread_single_uses_positive_home_line():
+    # Away -1.5 (line_n=2) == home +1.5: singles home-perspective line = +1.5.
+    # p_home_cover(+1.5)=0.40 -> P(away -1.5)=0.60.
+    singles = _singles_df(_spread_rows("gA", 1.5, 0.40, _BOOKS))
+    legs = [{"event_ticker": f"KXMLBSPREAD-{SUF_A}",
+             "market_ticker": f"KXMLBSPREAD-{SUF_A}-TEX2", "side": "yes"}]
+    fair, _ = cp.combo_fair(legs, _resolver({SUF_A: "gA"}), pd.DataFrame(),
+                            singles, min_agreeing=3, band=0.05)
+    assert abs(fair - 0.60) < 1e-6
+
+
+def test_away_spread_alt_line_drops_not_misprices():
+    # Away -1.5 leg but the singles only carry the home-favorite main line -1.5.
+    # The away leg looks up +1.5 -> no rows -> combo dropped (NOT mis-priced
+    # against the -1.5 main rows).
+    singles = _singles_df(_spread_rows("gA", -1.5, 0.55, _BOOKS))
+    legs = [{"event_ticker": f"KXMLBSPREAD-{SUF_A}",
+             "market_ticker": f"KXMLBSPREAD-{SUF_A}-TEX2", "side": "yes"}]
+    res = cp.combo_fair(legs, _resolver({SUF_A: "gA"}), pd.DataFrame(),
+                        singles, min_agreeing=3, band=0.05)
+    assert res is None
+
+
 def test_skips_threeway_same_game():
     # 3 legs same game that aren't a clean priceable shape -> skip whole combo.
     legs = [
