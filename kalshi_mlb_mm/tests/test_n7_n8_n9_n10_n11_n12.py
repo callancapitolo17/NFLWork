@@ -33,9 +33,9 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
                                       "total_line": [8.5]}))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m: True)
     monkeypatch.setattr(main, "_today_fills", lambda: [])
-    # Per-combo cap is now after pricing — need book_fairs stub so pricing runs.
-    monkeypatch.setattr(main, "_book_fairs",
-                        lambda g, s, t: {"dk": 0.55, "fd": 0.55, "px": 0.56})
+    # Per-combo cap is now after pricing — need a price stub so pricing runs.
+    monkeypatch.setattr(main, "_price_combo", lambda legs: (0.55, 3))
+    monkeypatch.setattr(main, "_combo_games", lambda legs: ["g7"])
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
 
@@ -43,9 +43,7 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
              "side": "yes", "count": 1},
             {"market_ticker": "KXMLBTOTAL-N7", "event_ticker": "EVT-N7",
              "side": "yes", "count": 1}]
-    monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-N7": (True, "g7", legs)})
-    monkeypatch.setattr(main, "_resolve_game_and_lines",
-                        lambda ticker, legs: ("g7", -1.5, 8.5))
+    monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-N7": (True, legs)})
 
     # Pre-seed 4 open live_quotes on COMBO-N7 — fills table is EMPTY.
     # N7: inflight worst-case = 4 * max_fill_exposure_usd() = 4 * $50 = $200.
@@ -128,9 +126,9 @@ def test_n8_unreconciled_fill_counted_conservatively_in_today_fills(monkeypatch,
              "side": "yes", "count": 1},
             {"market_ticker": "KXMLBTOTAL-N8", "event_ticker": "EVT-N8",
              "side": "yes", "count": 1}]
-    monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-N8": (True, "g8", legs)})
-    monkeypatch.setattr(main, "_resolve_game_and_lines",
-                        lambda ticker, legs: ("g8", -1.5, 8.5))
+    monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-N8": (True, legs)})
+    monkeypatch.setattr(main, "_combo_games", lambda legs: ["g8"])
+    monkeypatch.setattr(main, "_price_combo", lambda legs: (0.55, 3))
 
     # Pre-seed one UNRECONCILED fill with contracts=1, price=0.50.
     # Real exposure = $0.50 (well under $5 daily cap).

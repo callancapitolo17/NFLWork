@@ -80,6 +80,15 @@ def _leg_dict_to_typed(leg: dict, game_id: str):
         except ValueError:
             return None
         return fair_value.TotalLeg(line_n=n, side=side)
+    if mt.startswith("KXMLBGAME-"):
+        # KXMLBGAME-{event_suffix}-{TEAMCODE}: YES = that team wins. The team
+        # is home iff its code matches the home code parsed from the event ticker.
+        team_code = mt.rsplit("-", 1)[-1]
+        home_code = _home_code_from_event_ticker(et)
+        if not team_code or home_code is None:
+            return None
+        team_is_home = (team_code == home_code)
+        return fair_value.MoneylineLeg(team_is_home=team_is_home, side=side)
     return None
 
 
