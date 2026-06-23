@@ -2,7 +2,9 @@
 
 Independent maker daemon that listens for others' RFQs on the Kalshi cross-category MVE collection, prices **arbitrary MLB combos** (moneyline / spread / total, single- or cross-game, N legs) against a book-consensus fair value, and provides two-sided quotes at a fixed 5% ROI margin. Coexists with the taker (`kalshi_mlb_rfq/`) as a separate OS process with no runtime dependency on it.
 
-**Coverage (2026-06 expansion).** The maker originally quoted only single-game 2-leg spread×total combos — which, when the live RFQ flow was measured, turned out to be ~6 of every ~75 all-MLB combos (most flow is cross-game moneyline parlays). Coverage now includes **moneyline (`KXMLBGAME`)**, single legs, and **cross-game / N-leg parlays** of any mix of spread/total/moneyline. Player props (`KXMLBHR` / `KXMLBHIT` / `KXMLBTB` / `KXMLBKS` / `KXMLBHRR`) are the remaining un-covered MLB leg type — they are correctly classified **out of scope** (a prop leg drops the whole combo, so we never mis-price one) pending a player-name matching layer. See "Pricing" below.
+**Coverage (2026-06 expansion).** The maker originally quoted only single-game 2-leg spread×total combos — which, when the live RFQ flow was measured, turned out to be ~6 of every ~75 all-MLB combos (most flow is cross-game moneyline parlays). Coverage now includes **moneyline (`KXMLBGAME`)**, single legs, **cross-game / N-leg parlays** of any mix of spread/total/moneyline, and **player props** (`KXMLBHIT` hits, `KXMLBTB` total bases, `KXMLBKS` strikeouts, `KXMLBHRR` hits+runs+RBIs). See "Pricing" and "Player props" below.
+
+**Home-run props (`KXMLBHR`) are NOT priced**: the Odds API offers HR props one-sided (`Over 0.5` only, no `Under`), so there is no second side to devig — pricing off a single vigged price would overstate the YES fair. HR legs therefore find no book rows and the combo is dropped (safe, no mis-price) until a HR-specific de-vig/model is added. All non-MLB legs are out of scope (one unsupported leg drops the combo).
 
 **Spec:** `docs/superpowers/specs/2026-05-26-kalshi-mlb-mm-design.md`
 **Plan:** `docs/superpowers/plans/2026-05-27-kalshi-mlb-mm-maker-bot.md`
@@ -82,6 +84,16 @@ REST-polling daemon, single process. Four timed sub-loops:
 This is the v1 correlation defense (mirrors the MLB answer-key dashboard's consensus-band pattern). The v1.1 explicit correlation-premium gate is deferred — see spec section 13.
 
 **Multi-game caps (v1 simplification).** Per-game exposure and tipoff gates are checked across *all* games a combo spans (a cross-game combo is pulled if *any* of its games is within the tipoff blackout). Fill exposure attributes to the combo's first game — a documented measurement-phase simplification.
+
+## Player props
+
+A player-prop leg (`KXMLBHIT`/`KXMLBTB`/`KXMLBKS`/`KXMLBHRR`) is priced as a single leg in its game group, off `mlb_player_props` — Odds API per-event prop markets (`batter_hits`, `batter_total_bases`, `pitcher_strikeouts`, `batter_hits_runs_rbis`), fetched one request per game each cycle. Kalshi `N+` maps to `Over (N-0.5)`; we 2-way devig over/under and apply the same `MIN_AGREEING_BOOKS` consensus gate (prop books are thinner than game markets, so low-coverage props are dropped, not quoted).
+
+**Player-name matching.** The reliable match key is the player's full name from the Kalshi market **title** (e.g. "Julio Rodríguez: 1+ hits?") — the ticker player code drops accents inconsistently. `main._resolve_prop` reads the title via `GET /markets` (cached per ticker), normalizes it (`sgp_runner._norm_player`: strip accents, lowercase, drop punctuation and Jr/Sr suffixes) to match the normalized Odds API `description`. A player we can't resolve or match → leg unpriceable → combo dropped (safe).
+
+**Correlation.** A prop combined with any other leg of the **same game** (e.g. a HR prop + that team's moneyline) is correlated and we have no joint price, so the whole combo is dropped. A single prop, or a cross-game parlay of one prop per game (independent), prices fine.
+
+**Adverse-selection note.** Props are softer and more informed-flow-prone than game markets (lineup/weather news). v1 runs them under the same caps as a measurement phase; the `fills` dataset will show whether the 5% margin survives on props specifically.
 
 The model (a fraction-of-sample-paths estimate driven by `mlb_game_samples` from the R answer-key pipeline) was removed in the v1 hardening pass: it was being medianed out of the blend, carried documented bias on certain combo families ([[mlb_parlay_edge_overestimation]]), and added a soft dependency on the R pipeline.
 
