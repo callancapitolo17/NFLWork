@@ -1,8 +1,6 @@
 # Kalshi MLB MM (Maker) Bot
 
-Independent maker daemon that listens for others' RFQs on the Kalshi cross-category MVE collection, prices **arbitrary MLB combos** (moneyline / spread / total, single- or cross-game, N legs) against a book-consensus fair value, and provides two-sided quotes at a fixed 5% ROI margin. Coexists with the taker (`kalshi_mlb_rfq/`) as a separate OS process with no runtime dependency on it.
-
-**Coverage (2026-06 expansion).** The maker originally quoted only single-game 2-leg spread×total combos — which, when the live RFQ flow was measured, turned out to be ~6 of every ~75 all-MLB combos (most flow is cross-game moneyline parlays). Coverage now includes **moneyline (`KXMLBGAME`)**, single legs, and **cross-game / N-leg parlays** of any mix of spread/total/moneyline. Player props (`KXMLBHR` / `KXMLBHIT` / `KXMLBTB` / `KXMLBKS` / `KXMLBHRR`) are the remaining un-covered MLB leg type — they are correctly classified **out of scope** (a prop leg drops the whole combo, so we never mis-price one) pending a player-name matching layer. See "Pricing" below.
+Independent maker daemon that listens for others' RFQs on the Kalshi cross-category MVE collection, prices 2-leg spread×total MLB combos against a book-consensus fair value, and provides two-sided quotes at a fixed 5% ROI margin. Coexists with the taker (`kalshi_mlb_rfq/`) as a separate OS process with no runtime dependency on it.
 
 **Spec:** `docs/superpowers/specs/2026-05-26-kalshi-mlb-mm-design.md`
 **Plan:** `docs/superpowers/plans/2026-05-27-kalshi-mlb-mm-maker-bot.md`
@@ -55,7 +53,7 @@ REST-polling daemon, single process. Four timed sub-loops:
 | Discovery + quote | 2s | Poll open RFQs → scope filter → price → submit or refresh quote |
 | Confirm | 2s | Poll open quotes → on `accepted`, last-look gate → confirm or void |
 | Risk sweep | 10s | Kill-switch, book-staleness auto-pull, tipoff cancel, drift-since-quote cancel |
-| SGP scrape | 60s | Own scraper cadence → `kalshi_mlb_mm_market.duckdb`: SGP spread×total grid (`mlb_sgp_odds`) **plus** moneyline/spread/total singles (`mlb_singles_odds`, one Odds API request, all books) |
+| SGP scrape | 60s | Own scraper cadence → `kalshi_mlb_mm_market.duckdb` (sibling market DB) |
 
 **Transport seam.** All exchange I/O goes through two interfaces: `RFQSource.poll()` / `RFQSource.get_market()` (v1: `RestRFQSource`, REST poll of `GET /communications/rfqs?status=open`) and `QuoteGateway.submit_quote()` / `.confirm()` / `.cancel()` (v1: `RestQuoteGateway`). A WebSocket adapter is a drop-in replacement behind these interfaces — no pricing or risk code changes.
 
@@ -67,21 +65,14 @@ REST-polling daemon, single process. Four timed sub-loops:
 
 ## Pricing
 
-`combo_pricer.combo_fair` prices an arbitrary MLB combo by **grouping legs by game**, pricing each game's sub-combo to ONE consensus fair, then **multiplying the independent games together** (games are statistically independent, so the parlay fair is the product of the per-game fairs):
+Fair value is the median of *book-consensus-agreeing* devigged book fairs. For each combo (game × spread_line × total_line) we:
 
-1. **Group legs by game** (legs of the same game share an event-ticker suffix).
-2. **Price each game group** to a single consensus fair:
-   - **Single leg** (one moneyline / spread / total) → 2-way singles devig (`devig_two_way`) across the Odds API book universe in `mlb_singles_odds`.
-   - **Same-game spread+total pair** → the 4-cell SGP-grid devig (`devig_book` over `mlb_sgp_odds`), which captures within-game correlation. The grid label is now derived from the *actual* leg sides (e.g. `Away Spread + Under`) — the previous code hardcoded `Home Spread + Over`, mis-pricing every other side combination.
-   - **Any other same-game shape** (3-leg, spread+moneyline, …) → unpriceable → the whole combo is dropped. We never assume independence between correlated same-game legs.
-3. **Per-group consensus gate** (v1 correlation defense): within each game's book universe, take the median, keep books within `±BOOK_CONSENSUS_BAND`, and require `>= MIN_AGREEING_BOOKS` survivors — else the group (and the combo) is not quoted.
-4. **Combo fair = product of the per-group consensus fairs.** A combo is quotable only if *every* game group reached consensus. The combo's agreeing-book count is the minimum across groups (weakest link).
-
-**Book data sources.** Same-game spread+total correlation comes from the maker's own SGP scrapers (`mlb_sgp_odds`, 4 books). Moneyline and single-leg spread/total fairs come from the Odds API h2h/spreads/totals markets (`mlb_singles_odds`, ~7–11 books per game), fetched once per SGP cycle. A cross-game moneyline parlay therefore prices entirely off the singles universe; a same-game spread+total off the SGP grid; mixes use whichever source each group needs.
+1. Pull every book's 4-side row from `mlb_sgp_odds` (require all 4 sides — no fallback).
+2. Devig each book's 4-way grid to a single combo fair (`devig_book` in `kalshi_common.fair_value`).
+3. Compute the median across books, then keep only books within `±BOOK_CONSENSUS_BAND` of that median.
+4. If `>= MIN_AGREEING_BOOKS` survive, the fair is the median of the survivors. Otherwise we do not quote.
 
 This is the v1 correlation defense (mirrors the MLB answer-key dashboard's consensus-band pattern). The v1.1 explicit correlation-premium gate is deferred — see spec section 13.
-
-**Multi-game caps (v1 simplification).** Per-game exposure and tipoff gates are checked across *all* games a combo spans (a cross-game combo is pulled if *any* of its games is within the tipoff blackout). Fill exposure attributes to the combo's first game — a documented measurement-phase simplification.
 
 The model (a fraction-of-sample-paths estimate driven by `mlb_game_samples` from the R answer-key pipeline) was removed in the v1 hardening pass: it was being medianed out of the blend, carried documented bias on certain combo families ([[mlb_parlay_edge_overestimation]]), and added a soft dependency on the R pipeline.
 

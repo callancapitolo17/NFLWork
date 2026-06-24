@@ -110,23 +110,6 @@ def _fetch_kalshi_total_lines(suffix: str) -> list[float]:
     return out
 
 
-def _odds_api_key() -> str | None:
-    """ODDS_API_KEY from env, falling back to ~/.Renviron (R's env file) per the
-    run.py pattern (commit 75e02e9). Python doesn't read ~/.Renviron the way
-    Rscript does, so we parse it ourselves."""
-    key = os.environ.get("ODDS_API_KEY")
-    if key:
-        return key
-    renviron = Path.home() / ".Renviron"
-    if renviron.exists():
-        for raw_line in renviron.read_text().splitlines():
-            line = raw_line.strip()
-            if line.startswith("ODDS_API_KEY"):
-                _, _, val = line.partition("=")
-                return val.strip().strip('"').strip("'")
-    return None
-
-
 def _fetch_schedule_from_odds_api() -> dict[tuple, dict]:
     """Fetch today's MLB events from the Odds API.
 
@@ -134,14 +117,26 @@ def _fetch_schedule_from_odds_api() -> dict[tuple, dict]:
     {game_id, home_team, away_team, commence_time}.
 
     Decouples bot from the dashboard's mlb.duckdb (R-locked) for schedule.
-    Returns {} if the key is missing or the Odds API call fails — caller
-    drops the cycle.
+    ODDS_API_KEY is read from env first, falling back to ~/.Renviron (R's
+    env file) per the run.py pattern (commit 75e02e9). Returns {} if the
+    key is missing or the Odds API call fails — caller drops the cycle.
     """
     from datetime import datetime as _dt
     import json
     import urllib.request
 
-    key = _odds_api_key()
+    key = os.environ.get("ODDS_API_KEY")
+    if not key:
+        # Fallback: parse ~/.Renviron (R-side env file). Python doesn't read
+        # it automatically the way Rscript does.
+        renviron = Path.home() / ".Renviron"
+        if renviron.exists():
+            for raw_line in renviron.read_text().splitlines():
+                line = raw_line.strip()
+                if line.startswith("ODDS_API_KEY"):
+                    _, _, val = line.partition("=")
+                    key = val.strip().strip('"').strip("'")
+                    break
     if not key:
         print("  _fetch_schedule: ODDS_API_KEY not set (env or ~/.Renviron)",
               flush=True)
@@ -221,142 +216,6 @@ def enumerate_kalshi_targets() -> list[TargetLine]:
     print(f"  enumerate: matched_games={matched_games} → {len(targets)} target lines",
           flush=True)
     return targets
-
-
-def _parse_singles_payload(events: list[dict], fetch_time: datetime) -> list[dict]:
-    """Parse an Odds API /odds payload (markets=h2h,spreads,totals) into flat
-    mlb_singles_odds rows. Pure function — no network — so it is unit-testable.
-
-    Each row: {game_id, home_team, away_team, market, line, outcome, decimal,
-    bookmaker, fetch_time, source}. market is 'moneyline'|'spread'|'total';
-    outcome is 'home'|'away' (ml/spread) or 'over'|'under' (total). `line` is
-    None for moneyline and the HOME-perspective points for spread/total (both
-    sides of a market store the same line so the pricer can pair them).
-
-    A market is emitted only if BOTH of its two sides are present and resolvable
-    — an incomplete pair can't be devigged, so it is dropped silently.
-    """
-    rows: list[dict] = []
-    for ev in events:
-        gid = ev.get("id")
-        home = ev.get("home_team")
-        away = ev.get("away_team")
-        if not (gid and home and away):
-            continue
-        for bk in ev.get("bookmakers", []):
-            book = bk.get("key")
-            if not book:
-                continue
-            for m in bk.get("markets", []):
-                mkey = m.get("key")
-                outs = m.get("outcomes", []) or []
-                if mkey == "h2h":
-                    by_team = {o.get("name"): o for o in outs}
-                    if home not in by_team or away not in by_team:
-                        continue
-                    for outcome, team in (("home", home), ("away", away)):
-                        rows.append(dict(
-                            game_id=gid, home_team=home, away_team=away,
-                            market="moneyline", line=None, outcome=outcome,
-                            decimal=float(by_team[team]["price"]),
-                            bookmaker=book, fetch_time=fetch_time, source="odds_api"))
-                elif mkey == "spreads":
-                    by_team = {o.get("name"): o for o in outs}
-                    if home not in by_team or away not in by_team:
-                        continue
-                    home_point = by_team[home].get("point")
-                    if home_point is None:
-                        continue
-                    line = float(home_point)  # home-perspective handicap
-                    for outcome, team in (("home", home), ("away", away)):
-                        rows.append(dict(
-                            game_id=gid, home_team=home, away_team=away,
-                            market="spread", line=line, outcome=outcome,
-                            decimal=float(by_team[team]["price"]),
-                            bookmaker=book, fetch_time=fetch_time, source="odds_api"))
-                elif mkey == "totals":
-                    by_side = {str(o.get("name", "")).lower(): o for o in outs}
-                    if "over" not in by_side or "under" not in by_side:
-                        continue
-                    point = by_side["over"].get("point")
-                    if point is None:
-                        continue
-                    line = float(point)
-                    for outcome in ("over", "under"):
-                        rows.append(dict(
-                            game_id=gid, home_team=home, away_team=away,
-                            market="total", line=line, outcome=outcome,
-                            decimal=float(by_side[outcome]["price"]),
-                            bookmaker=book, fetch_time=fetch_time, source="odds_api"))
-    return rows
-
-
-def fetch_mlb_singles_from_odds_api() -> list[dict]:
-    """Fetch per-book moneyline / spread / total singles for all MLB games from
-    the Odds API in one request. Returns flat rows (see _parse_singles_payload).
-    Returns [] if the key is missing or the call fails — callers keep prior rows.
-    """
-    import json
-    import urllib.request
-
-    key = _odds_api_key()
-    if not key:
-        return []
-    url = (f"https://api.the-odds-api.com/v4/sports/baseball_mlb/odds?apiKey={key}"
-           "&regions=us&markets=h2h,spreads,totals&oddsFormat=decimal")
-    try:
-        with urllib.request.urlopen(url, timeout=15) as resp:
-            events = json.loads(resp.read().decode())
-    except Exception as e:
-        print(f"  fetch_singles: Odds API call failed — {e}", flush=True)
-        return []
-    return _parse_singles_payload(events, datetime.now(timezone.utc))
-
-
-def write_singles_odds(rows: list[dict], db_path: str):
-    """Atomic DELETE+INSERT of mlb_singles_odds in the bot market DB. Creates
-    the table if missing. No-op DELETE-only when rows is empty would wipe a good
-    prior snapshot, so an empty `rows` is treated as 'keep prior' (early return).
-    """
-    con = duckdb.connect(db_path)
-    try:
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS mlb_singles_odds (
-                game_id     VARCHAR,
-                home_team   VARCHAR,
-                away_team   VARCHAR,
-                market      VARCHAR,
-                line        DOUBLE,
-                outcome     VARCHAR,
-                decimal     DOUBLE,
-                bookmaker   VARCHAR,
-                fetch_time  TIMESTAMP,
-                source      VARCHAR
-            )
-        """)
-        if not rows:
-            return
-        con.execute("BEGIN TRANSACTION")
-        con.execute("DELETE FROM mlb_singles_odds")
-        values = []
-        for r in rows:
-            ft = r["fetch_time"]
-            if ft is not None and ft.tzinfo is not None:
-                ft = ft.astimezone(timezone.utc).replace(tzinfo=None)
-            values.extend([r["game_id"], r["home_team"], r["away_team"],
-                           r["market"], r["line"], r["outcome"], r["decimal"],
-                           r["bookmaker"], ft, r["source"]])
-        placeholders = ",".join(["(?,?,?,?,?,?,?,?,?,?)"] * len(rows))
-        con.execute(f"INSERT INTO mlb_singles_odds VALUES {placeholders}", values)
-        con.execute("COMMIT")
-    except Exception:
-        try:
-            con.execute("ROLLBACK")
-        except Exception:
-            pass
-        raise
-    finally:
-        con.close()
 
 
 def write_target_lines(target_lines: list[TargetLine], db_path: str):
@@ -543,18 +402,6 @@ def sgp_cycle(
     """
     targets = enumerate_kalshi_targets()
     write_target_lines(targets, db_path=bot_market_db)
-
-    # Singles odds (moneyline / spread / total) from the Odds API — one request,
-    # all books. Powers the general cross-game pricer (moneyline parlays etc.).
-    # Best-effort: a failed fetch keeps the prior snapshot, never breaks the cycle.
-    try:
-        singles = fetch_mlb_singles_from_odds_api()
-        write_singles_odds(singles, db_path=bot_market_db)
-        if singles:
-            print(f"  singles: {len(singles)} odds-api rows "
-                  f"({len({r['game_id'] for r in singles})} games)", flush=True)
-    except Exception as e:
-        print(f"  singles: write failed — {e}", flush=True)
 
     if service is None:
         if not (scraper_dir and venv_python and timeout_sec):

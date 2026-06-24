@@ -22,17 +22,7 @@ class TotalLeg:
     side: Literal["yes", "no"]
 
 
-@dataclass(frozen=True)
-class MoneylineLeg:
-    """Game winner (KXMLBGAME). YES = `team` wins; there is no line.
-    team_is_home flags whether the referenced team is the home team, so the
-    model hit-mask knows which sign of home_margin counts as a win.
-    """
-    team_is_home: bool
-    side: Literal["yes", "no"]
-
-
-Leg = SpreadLeg | TotalLeg | MoneylineLeg
+Leg = SpreadLeg | TotalLeg
 
 
 def _hit_mask(samples: pd.DataFrame, leg: Leg) -> pd.Series:
@@ -44,12 +34,6 @@ def _hit_mask(samples: pd.DataFrame, leg: Leg) -> pd.Series:
         return base if leg.side == "yes" else ~base
     if isinstance(leg, TotalLeg):
         base = samples["total_final_score"] >= leg.line_n
-        return base if leg.side == "yes" else ~base
-    if isinstance(leg, MoneylineLeg):
-        # MLB cannot end tied, so home_margin is never 0 in real games; use a
-        # strict sign test so a stray 0 sample never counts as a win for either.
-        base = (samples["home_margin"] > 0 if leg.team_is_home
-                else samples["home_margin"] < 0)
         return base if leg.side == "yes" else ~base
     raise TypeError(f"unknown leg type: {type(leg)}")
 
@@ -79,18 +63,6 @@ def _probit_devig_n(p_raw, eps=1e-9):
         f = lambda c: sum(norm.cdf(zi + c) for zi in z) - 1
         c_star = brentq(f, -5, 5, xtol=1e-9)
     return [float(norm.cdf(zi + c_star)) for zi in z]
-
-
-def devig_two_way(decimal_yes: float, decimal_no: float) -> tuple[float, float]:
-    """Devig a single two-outcome market (moneyline / spread side / total side)
-    given both sides' decimal odds. Returns (p_yes, p_no) summing to 1.
-
-    Uses the same probit (additive z-shift) devig as the SGP grid so singles and
-    joint combos are devigged on one consistent basis. This is the per-leg fair
-    used by the cross-game product pricer, where games are independent.
-    """
-    p = _probit_devig_n([1.0 / decimal_yes, 1.0 / decimal_no])
-    return float(p[0]), float(p[1])
 
 
 def devig_book(book_rows: pd.DataFrame, combo: str,

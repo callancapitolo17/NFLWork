@@ -81,12 +81,18 @@ def test_discovery_dedup_no_resubmit_when_price_unchanged(monkeypatch, tmp_path)
 
     # Monkeypatch the helpers that require real DBs / network.
     monkeypatch.setattr(main, "_today_fills", lambda: [])
-    monkeypatch.setattr(main, "_combo_games", lambda legs: ["game1"])
+    monkeypatch.setattr(main, "_resolve_game_and_lines",
+                        lambda ticker, legs: ("game1", -1.5, 8.5))
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
     # Make tipoff_ok pass (commence_time is None → normally fails; override).
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
-    # General pricer returns (fair, agreeing_books).
-    monkeypatch.setattr(main, "_price_combo", lambda legs: (0.55, 3))
+    monkeypatch.setattr(main, "_book_fairs", lambda gid, sl, tl: {"DK": 0.55, "FD": 0.55, "PX": 0.55})
+
+    # Patch blended_fair to return a stable value in range (signature now
+    # (legs, gid, bf) → (book_med, blended), model removed in v1 hardening).
+    import kalshi_mlb_mm.fairs as fairs_mod
+    monkeypatch.setattr(fairs_mod, "blended_fair",
+                        lambda legs, gid, bf: (0.55, 0.55))
 
     # Scope cache: make the ticker appear in-scope with a minimal legs list.
     legs = [{"market_ticker": "KXMLBSPREAD-ABC", "event_ticker": "EVT-ABC",
@@ -94,7 +100,7 @@ def test_discovery_dedup_no_resubmit_when_price_unchanged(monkeypatch, tmp_path)
             {"market_ticker": "KXMLBTOTAL-ABC", "event_ticker": "EVT-ABC",
              "side": "yes", "count": 1}]
     monkeypatch.setattr(main, "_SCOPE_CACHE",
-                        {"COMBO-1": (True, legs)})
+                        {"COMBO-1": (True, "game1", legs)})
 
     # Pre-insert the open live_quote at exactly the fixed bid prices.
     with db.connect() as con:
@@ -168,11 +174,11 @@ def test_discovery_skips_when_daily_cap_exhausted(monkeypatch, tmp_path):
             {"market_ticker": "KXMLBTOTAL-XYZ", "event_ticker": "EVT-XYZ",
              "side": "yes", "count": 1}]
     monkeypatch.setattr(main, "_SCOPE_CACHE",
-                        {"COMBO-2": (True, legs)})
+                        {"COMBO-2": (True, "game2", legs)})
 
-    # _combo_games must return a valid game_id so we reach the cap check.
-    monkeypatch.setattr(main, "_combo_games", lambda legs: ["game2"])
-    monkeypatch.setattr(main, "_price_combo", lambda legs: (0.55, 3))
+    # _resolve_game_and_lines must return a valid game_id so we reach the cap check.
+    monkeypatch.setattr(main, "_resolve_game_and_lines",
+                        lambda ticker, legs: ("game2", -1.5, 8.5))
 
     # Make daily cap exhausted: return fills totalling far above cap.
     big_fill = [{"game_id": "game2", "price": 99999.0}]
@@ -281,9 +287,9 @@ def test_risk_sweep_cancels_on_drift_since_quote(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
 
-    # Book_fair_at_q was 0.40; now combo consensus is 0.45 (drift 0.05 > 0.03).
-    monkeypatch.setattr(main, "_combo_games", lambda legs: ["g1"])
-    monkeypatch.setattr(main, "_price_combo", lambda legs: (0.45, 3))
+    # Book_fair_at_q was 0.40; now consensus median is 0.45 (drift 0.05 > 0.03).
+    monkeypatch.setattr(main, "_book_fairs",
+                        lambda gid, sl, tl: {"DK": 0.44, "FD": 0.45, "PX": 0.46})
 
     # Pre-seed an open live_quote referencing rfq r-drift, and a seen_rfqs row
     # with legs_json so the sweep can compute spread/total lines.
@@ -361,8 +367,8 @@ def test_confirm_voids_when_no_fresh_books(monkeypatch, tmp_path):
         raise AssertionError(f"unexpected api call: {method} {path}")
     monkeypatch.setattr(auth_client, "api", fake_api)
 
-    # Can't re-price (no fresh books / failed consensus) — _price_combo None.
-    monkeypatch.setattr(main, "_price_combo", lambda legs: None)
+    # No fresh books available — _book_fairs returns {}.
+    monkeypatch.setattr(main, "_book_fairs", lambda gid, sl, tl: {})
 
     confirm_calls = []
 
@@ -376,7 +382,7 @@ def test_confirm_voids_when_no_fresh_books(monkeypatch, tmp_path):
 
     main._confirm_tick(GW(), dry_run=False)
 
-    assert confirm_calls == [], "confirm must NOT be called when it can't re-price"
+    assert confirm_calls == [], "confirm must NOT be called when no fresh books"
     with db.connect(read_only=True) as con:
         st = con.execute(
             "SELECT status FROM live_quotes WHERE quote_id='qid-nofresh'").fetchone()[0]
@@ -386,7 +392,7 @@ def test_confirm_voids_when_no_fresh_books(monkeypatch, tmp_path):
             "ORDER BY observed_at DESC LIMIT 1").fetchone()
     assert st == "voided", f"expected 'voided', got '{st}'"
     assert n_fills == 0, "no fills row should be written when voided"
-    assert decision is not None and decision[0] == "voided_blend_failed"
+    assert decision is not None and decision[0] == "voided_no_fresh_books"
 
 
 # ---------------------------------------------------------------------------
@@ -425,8 +431,8 @@ def test_confirm_records_fill_fast_with_reconciled_false(monkeypatch, tmp_path):
             ["r-fast", "COMBO-G3", True, "g3", json.dumps(legs),
              datetime.now(timezone.utc), "quoted"])
 
-    monkeypatch.setattr(main, "_price_combo", lambda legs: (0.56, 3))
-    monkeypatch.setattr(main, "_combo_games", lambda legs: ["g3"])
+    monkeypatch.setattr(main, "_book_fairs",
+                        lambda gid, sl, tl: {"dk": 0.56, "fd": 0.56, "px": 0.56})
 
     # Track API calls; if confirm path ever hits /portfolio/positions, we fail.
     api_paths = []
@@ -681,8 +687,7 @@ def test_discovery_skips_creator_with_too_many_fills(monkeypatch, tmp_path):
              "side": "yes", "count": 1},
             {"market_ticker": "KXMLBTOTAL-XX", "event_ticker": "EVT-XX",
              "side": "yes", "count": 1}]
-    monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-NEW": (True, legs)})
-    monkeypatch.setattr(main, "_combo_games", lambda legs: ["gNEW"])
+    monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-NEW": (True, "gNEW", legs)})
 
     submit_calls = []
 
@@ -742,16 +747,18 @@ def test_discovery_skips_when_combo_exposure_capped(monkeypatch, tmp_path):
                                       "total_line": [8.5]}))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m_: True)
     monkeypatch.setattr(main, "_today_fills", lambda: [])
-    # Per-combo cap now runs after pricing — need a price stub so pricing runs.
-    monkeypatch.setattr(main, "_price_combo", lambda legs: (0.55, 3))
+    # Per-combo cap now runs after pricing — need book_fairs stub so pricing runs.
+    monkeypatch.setattr(main, "_book_fairs",
+                        lambda g, s, t: {"dk": 0.55, "fd": 0.55, "px": 0.56})
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
 
     legs = [{"market_ticker": "KXMLBSPREAD-CC", "event_ticker": "EVT-CC",
              "side": "yes", "count": 1},
             {"market_ticker": "KXMLBTOTAL-CC", "event_ticker": "EVT-CC",
              "side": "yes", "count": 1}]
-    monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-CAP": (True, legs)})
-    monkeypatch.setattr(main, "_combo_games", lambda legs: ["gCAP"])
+    monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-CAP": (True, "gCAP", legs)})
+    monkeypatch.setattr(main, "_resolve_game_and_lines",
+                        lambda ticker, legs: ("gCAP", -1.5, 8.5))
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
 
     # Pre-seed fills totaling $51 on this ticker (102 contracts × $0.50 = $51.00).
@@ -818,9 +825,9 @@ def test_discovery_skips_when_combo_in_cooldown(monkeypatch, tmp_path):
              "side": "yes", "count": 1},
             {"market_ticker": "KXMLBTOTAL-CD", "event_ticker": "EVT-CD",
              "side": "yes", "count": 1}]
-    monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-CD": (True, legs)})
-    monkeypatch.setattr(main, "_combo_games", lambda legs: ["gCD"])
-    monkeypatch.setattr(main, "_price_combo", lambda legs: (0.55, 3))
+    monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-CD": (True, "gCD", legs)})
+    monkeypatch.setattr(main, "_resolve_game_and_lines",
+                        lambda ticker, legs: ("gCD", -1.5, 8.5))
 
     now = datetime.now(timezone.utc)
     with db.connect() as con:
@@ -883,8 +890,8 @@ def test_confirm_arms_combo_cooldown(monkeypatch, tmp_path):
             ["r-arm", "COMBO-ARM", True, "gAR", json.dumps(legs),
              datetime.now(timezone.utc), "quoted"])
 
-    monkeypatch.setattr(main, "_price_combo", lambda legs: (0.56, 3))
-    monkeypatch.setattr(main, "_combo_games", lambda legs: ["g3"])
+    monkeypatch.setattr(main, "_book_fairs",
+                        lambda gid, sl, tl: {"dk": 0.56, "fd": 0.56, "px": 0.56})
 
     def fake_api(method, path, *a, **kw):
         if path.startswith("/communications/quotes/"):
