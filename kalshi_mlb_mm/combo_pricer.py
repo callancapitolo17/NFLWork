@@ -29,16 +29,6 @@ from kalshi_common.leg_types import (
 )
 
 
-# Kalshi player-prop leg prefixes. These price off mlb_player_props (Odds API),
-# resolved per-leg via an injected resolve_prop callable (which supplies the
-# player name + stat + threshold the ticker alone can't reliably give).
-PROP_PREFIXES = ("KXMLBHR-", "KXMLBHIT-", "KXMLBTB-", "KXMLBKS-", "KXMLBHRR-")
-
-
-def _is_prop_leg(leg: dict) -> bool:
-    return str(leg.get("market_ticker", "")).startswith(PROP_PREFIXES)
-
-
 def group_legs_by_game(legs: list[dict]) -> dict[str, list[dict]]:
     """Group legs by their game (event-ticker suffix). KXMLBSPREAD-26.. ,
     KXMLBTOTAL-26.. and KXMLBGAME-26.. for the same physical game all share the
@@ -180,33 +170,8 @@ def price_single_leg_group(typed_leg, game_id, singles_df, min_agreeing, band):
     return _consensus_point(out, min_agreeing, band)
 
 
-def price_prop_leg(side, prop_info, game_id, props_df, min_agreeing, band):
-    """Consensus fair for one player-prop leg via 2-way over/under devig across
-    the prop book universe. `prop_info` = {market_type, player, line_n}; Kalshi
-    'N+' == Over (N-0.5). YES = over."""
-    if props_df is None or props_df.empty or not prop_info:
-        return None
-    line = prop_info["line_n"] - 0.5
-    m = props_df[(props_df.game_id == game_id)
-                 & (props_df.market_type == prop_info["market_type"])
-                 & (props_df.player == prop_info["player"])
-                 & (props_df.line.astype(float).round(2) == round(line, 2))]
-    if m.empty:
-        return None
-    out: dict[str, float] = {}
-    for book in m.bookmaker.unique():
-        b = m[m.bookmaker == book]
-        over = b[b.outcome == "over"]
-        under = b[b.outcome == "under"]
-        if over.empty or under.empty:
-            continue
-        p_over = _two_way_leg_fair(over.decimal.iloc[0], under.decimal.iloc[0], True)
-        out[book] = p_over if side == "yes" else (1.0 - p_over)
-    return _consensus_point(out, min_agreeing, band)
-
-
 def combo_fair(legs, resolve_game_id, sgp_df, singles_df, *,
-               min_agreeing, band, props_df=None, resolve_prop=None):
+               min_agreeing, band):
     """Top-level: combo fair probability (YES side) for an arbitrary MLB combo.
 
     `resolve_game_id(suffix)` maps an event-ticker suffix to a game_id (the same
@@ -224,30 +189,19 @@ def combo_fair(legs, resolve_game_id, sgp_df, singles_df, *,
         game_id = resolve_game_id(suffix)
         if game_id is None:
             return None
-        # A single player-prop leg prices off the prop book universe. A prop in
-        # a multi-leg same-game group is correlated with the other legs and we
-        # have no joint price -> the whole combo is dropped (return None).
-        has_prop = any(_is_prop_leg(l) for l in glegs)
-        if len(glegs) == 1 and has_prop:
-            res = price_prop_leg(glegs[0].get("side"),
-                                 resolve_prop(glegs[0]["market_ticker"]) if resolve_prop else None,
-                                 game_id, props_df, min_agreeing, band)
-        elif has_prop:
-            return None        # prop mixed with same-game legs -> unpriceable
+        typed = [_leg_dict_to_typed(l, game_id) for l in glegs]
+        if any(t is None for t in typed):
+            return None
+        if len(typed) == 1:
+            res = price_single_leg_group(typed[0], game_id, singles_df,
+                                         min_agreeing, band)
+        elif (len(typed) == 2
+              and sum(isinstance(t, fv.SpreadLeg) for t in typed) == 1
+              and sum(isinstance(t, fv.TotalLeg) for t in typed) == 1):
+            res = price_spread_total_group(glegs, typed, game_id, sgp_df,
+                                           min_agreeing, band)
         else:
-            typed = [_leg_dict_to_typed(l, game_id) for l in glegs]
-            if any(t is None for t in typed):
-                return None
-            if len(typed) == 1:
-                res = price_single_leg_group(typed[0], game_id, singles_df,
-                                             min_agreeing, band)
-            elif (len(typed) == 2
-                  and sum(isinstance(t, fv.SpreadLeg) for t in typed) == 1
-                  and sum(isinstance(t, fv.TotalLeg) for t in typed) == 1):
-                res = price_spread_total_group(glegs, typed, game_id, sgp_df,
-                                               min_agreeing, band)
-            else:
-                return None
+            return None
         if res is None:
             return None
         fair, cnt = res

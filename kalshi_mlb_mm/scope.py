@@ -6,22 +6,14 @@ type (spread / total / moneyline). It does NOT require a specific shape or count
 actually priceable (enough agreeing books, a known same-game shape) is decided
 later by `combo_pricer.combo_fair`, which returns no_fair when it can't price.
 
-Player props (KXMLBHR / KXMLBHIT / KXMLBTB / KXMLBKS / KXMLBHRR) are in scope:
-they price off the Odds API per-event prop markets. A prop leg shares a game
-group with no other leg it can be jointly priced against, so a prop combined
-with another same-game leg is dropped at pricing time (correlated, no joint
-price) — but a single prop, or a cross-game parlay of one-prop-per-game, prices.
-All non-MLB legs remain out of scope — one unsupported leg drops the combo,
+Player props (KXMLBHR / KXMLBHIT / KXMLBTB / KXMLBKS / KXMLBHRR) and all
+non-MLB legs are out of scope here — a single unsupported leg drops the combo,
 since the maker can only quote a combo whose EVERY leg it can price.
 """
 
-# Market-ticker prefixes the maker can price. Game markets (spread/total/
-# moneyline) price off the SGP grid + singles; player props price off the
-# Odds API per-event prop markets.
-SUPPORTED_PREFIXES = (
-    "KXMLBSPREAD-", "KXMLBTOTAL-", "KXMLBGAME-",
-    "KXMLBHR-", "KXMLBHIT-", "KXMLBTB-", "KXMLBKS-", "KXMLBHRR-",
-)
+# Market-ticker prefixes the maker can price (Phase 0-3). Props are added in a
+# later phase; until then a prop leg makes the whole combo out-of-scope.
+SUPPORTED_PREFIXES = ("KXMLBSPREAD-", "KXMLBTOTAL-", "KXMLBGAME-")
 
 
 def decode_legs(market: dict) -> list[dict] | None:

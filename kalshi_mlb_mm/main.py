@@ -41,9 +41,7 @@ _running = threading.Event()
 _running.set()
 _SGP_ODDS = None         # pd.DataFrame — spread+total SGP grid (own scrapers)
 _SINGLES = None          # pd.DataFrame — moneyline/spread/total singles (Odds API)
-_PROPS = None            # pd.DataFrame — player props (Odds API per-event)
 _TEAM_TO_GAME = {}       # (home_team, away_team) -> game_id (leg→game resolution)
-_PROP_CACHE = {}         # prop market_ticker -> {market_type, player, line_n} | None
 _PREV_BOOK_FAIR = {}     # combo_market_ticker -> last combo consensus fair (circuit breaker)
 _SCOPE_CACHE = {}        # market_ticker -> (in_scope, legs)
 _VOID_HALT_ACTIVE = False  # N12: track prior void-rate halt state for edge-triggered notify
@@ -62,7 +60,7 @@ def _refresh_sgp():
     """Reload both book caches (spread+total SGP grid and singles) from the
     market DB and rebuild the (home_team, away_team) -> game_id map used to
     resolve which game each leg belongs to."""
-    global _SGP_ODDS, _SINGLES, _PROPS, _TEAM_TO_GAME
+    global _SGP_ODDS, _SINGLES, _TEAM_TO_GAME
     if not config.MARKET_DB.exists():
         return
     try:
@@ -71,12 +69,6 @@ def _refresh_sgp():
         return
     try:
         tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
-        if "mlb_player_props" in tables:
-            _PROPS = con.execute(
-                "SELECT game_id, market_type, player, line, outcome, decimal, "
-                "bookmaker, fetch_time FROM mlb_player_props "
-                "WHERE fetch_time > NOW() - INTERVAL (CAST(? AS BIGINT)) SECOND",
-                [config.MAX_BOOK_STALENESS_SEC]).fetchdf()
         if "mlb_sgp_odds" in tables:
             _SGP_ODDS = con.execute(
                 "SELECT game_id, combo, period, bookmaker, sgp_decimal, fetch_time, "
@@ -140,49 +132,12 @@ def _combo_games(legs) -> list[str] | None:
     return games
 
 
-# Kalshi prop prefix -> our normalized market_type (mirrors sgp_runner._PROP_MARKET_MAP).
-_PROP_PREFIX_TYPE = {
-    "KXMLBHR-": "home_runs", "KXMLBHIT-": "hits", "KXMLBTB-": "total_bases",
-    "KXMLBKS-": "strikeouts", "KXMLBHRR-": "hits_runs_rbis",
-}
-
-
-def _resolve_prop(market_ticker: str):
-    """Resolve a prop market_ticker to {market_type, player, line_n} for pricing.
-
-    market_type comes from the ticker prefix; line_n is the trailing threshold
-    ('N+' == Over N-0.5); the player NAME is read from the market title via
-    GET /markets (the ticker code drops accents inconsistently, so the clean
-    title name is the reliable match key). Cached per ticker (stable). Returns
-    None if anything can't be resolved → the combo is dropped (safe)."""
-    if market_ticker in _PROP_CACHE:
-        return _PROP_CACHE[market_ticker]
-    info = None
-    try:
-        mtype = next((t for p, t in _PROP_PREFIX_TYPE.items()
-                      if market_ticker.startswith(p)), None)
-        line_n = int(market_ticker.rsplit("-", 1)[-1])
-        status, body, _ = auth_client.api("GET", f"/markets/{market_ticker}")
-        market = body.get("market") if isinstance(body, dict) else None
-        # title like "Yordan Alvarez: 1+ home runs?" -> player before the colon.
-        title = (market or {}).get("title") or (market or {}).get("yes_sub_title") or ""
-        player_raw = title.split(":", 1)[0].strip()
-        if mtype and player_raw:
-            info = dict(market_type=mtype,
-                        player=sgp_runner._norm_player(player_raw), line_n=line_n)
-    except Exception:
-        info = None
-    _PROP_CACHE[market_ticker] = info
-    return info
-
-
 def _price_combo(legs):
     """Combo consensus fair (YES side) via the general pricer, or None if any
     game group is unpriceable. Returns (fair, agreeing_books)."""
     return combo_pricer.combo_fair(
         legs, _resolve_game_id, _SGP_ODDS, _SINGLES,
-        min_agreeing=config.MIN_AGREEING_BOOKS, band=config.BOOK_CONSENSUS_BAND,
-        props_df=_PROPS, resolve_prop=_resolve_prop)
+        min_agreeing=config.MIN_AGREEING_BOOKS, band=config.BOOK_CONSENSUS_BAND)
 
 
 def _commence_time(game_id):
