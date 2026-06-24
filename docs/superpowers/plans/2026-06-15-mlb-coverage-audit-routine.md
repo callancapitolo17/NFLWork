@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a deterministic, network-free Python script (`coverage/coverage_audit.py`) that reads every MLB book's local DuckDB and flags coverage regressions, staleness, row-count drops, and books missing from the odds screen — plus the agent playbook + docs that turn it into a daily Desktop scheduled task that wires fixes on worktrees.
+**Goal:** Build a deterministic, network-free Python script (`coverage_audit/coverage_audit.py`) that reads every MLB book's local DuckDB and flags coverage regressions, staleness, row-count drops, and books missing from the odds screen — plus the agent playbook + docs that turn it into a daily Desktop scheduled task that wires fixes on worktrees.
 
-**Architecture:** A single CLI script reads each book's `mlb_odds` table read-only, compares the latest run against the book's own trailing baseline (no cross-book normalization → no false positives), writes findings to `coverage/coverage.duckdb::coverage_gaps`, fires a macOS notification only when the gap set changes, and prints a JSON summary. A separate markdown playbook tells the daily agent how to consume that table and wire fixes (fuzzy scraped-vs-screen matching and live menu discovery live in the agent, not the script).
+**Architecture:** A single CLI script reads each book's `mlb_odds` table read-only, compares the latest run against the book's own trailing baseline (no cross-book normalization → no false positives), writes findings to `coverage_audit/coverage.duckdb::coverage_gaps`, fires a macOS notification only when the gap set changes, and prints a JSON summary. A separate markdown playbook tells the daily agent how to consume that table and wire fixes (fuzzy scraped-vs-screen matching and live menu discovery live in the agent, not the script).
 
 **Tech Stack:** Python 3, `duckdb` (1.4.x, already installed), `pytest` for tests, macOS `osascript` for notifications.
 
@@ -12,8 +12,8 @@
 
 - All timestamp columns are `TIMESTAMP WITH TIME ZONE` (UTC). Never introduce naive timestamps. (CLAUDE.md rule #6)
 - Never symlink `.duckdb` files; copy if needed. WAL lives next to the path. (CLAUDE.md rule #5)
-- All DuckDB connections from the audit are **read-only** against book DBs; only `coverage/coverage.duckdb` is opened for writing. Every connection must be closed in a `finally`.
-- No new data/CSV/temp files on disk — state lives in `coverage/coverage.duckdb`. (CLAUDE.md housekeeping)
+- All DuckDB connections from the audit are **read-only** against book DBs; only `coverage_audit/coverage.duckdb` is opened for writing. Every connection must be closed in a `finally`.
+- No new data/CSV/temp files on disk — state lives in `coverage_audit/coverage.duckdb`. (CLAUDE.md housekeeping)
 - The script must never raise on a single book's failure (missing/locked DB, empty table) — it degrades to a reported gap and continues.
 - Work happens on worktree branch `worktree-mlb-coverage-audit-routine`; merge to `main` only after review + tests.
 
@@ -28,15 +28,15 @@
 
 ## File Structure
 
-- `coverage/__init__.py` — marks package (empty).
-- `coverage/registry.py` — `BOOK_REGISTRY` (per-book DB path, table, screen name, expected-on-screen flag, recon hint) + path resolution rooted at repo root.
-- `coverage/db.py` — `connect_readonly(path)` and `connect_coverage()` helpers; graceful failure.
-- `coverage/detectors.py` — pure functions: latest-run extraction, trailing baseline, regression/freshness/rowcount/screen-presence detectors. All take a DuckDB connection or plain data; no I/O orchestration.
-- `coverage/audit.py` — orchestrator: loops books, runs detectors, writes `coverage_gaps`, diffs vs previous, notifies, prints JSON. Has `main()` + CLI.
-- `coverage/coverage.duckdb` — output DB (gitignored, created at runtime).
-- `coverage/AGENT_PLAYBOOK.md` — the daily agent's instructions.
-- `coverage/README.md` — setup, tiers, schema, Desktop-task registration.
-- `coverage/tests/` — pytest tests with synthetic DuckDB fixtures.
+- `coverage_audit/__init__.py` — marks package (empty).
+- `coverage_audit/registry.py` — `BOOK_REGISTRY` (per-book DB path, table, screen name, expected-on-screen flag, recon hint) + path resolution rooted at repo root.
+- `coverage_audit/db.py` — `connect_readonly(path)` and `connect_coverage()` helpers; graceful failure.
+- `coverage_audit/detectors.py` — pure functions: latest-run extraction, trailing baseline, regression/freshness/rowcount/screen-presence detectors. All take a DuckDB connection or plain data; no I/O orchestration.
+- `coverage_audit/audit.py` — orchestrator: loops books, runs detectors, writes `coverage_gaps`, diffs vs previous, notifies, prints JSON. Has `main()` + CLI.
+- `coverage_audit/coverage.duckdb` — output DB (gitignored, created at runtime).
+- `coverage_audit/AGENT_PLAYBOOK.md` — the daily agent's instructions.
+- `coverage_audit/README.md` — setup, tiers, schema, Desktop-task registration.
+- `coverage_audit/tests/` — pytest tests with synthetic DuckDB fixtures.
 
 Detectors are split from orchestration so each detector is unit-testable against a tiny in-memory fixture without touching real DBs or the notification side effect.
 
@@ -45,9 +45,9 @@ Detectors are split from orchestration so each detector is unit-testable against
 ### Task 1: Package scaffold + book registry
 
 **Files:**
-- Create: `coverage/__init__.py`
-- Create: `coverage/registry.py`
-- Test: `coverage/tests/test_registry.py`
+- Create: `coverage_audit/__init__.py`
+- Create: `coverage_audit/registry.py`
+- Test: `coverage_audit/tests/test_registry.py`
 
 **Interfaces:**
 - Produces: `REPO_ROOT: Path`; `BOOK_REGISTRY: list[Book]` where `Book` is a dataclass with fields `name: str`, `db_path: Path` (absolute), `table: str`, `screen_name: str | None`, `expected_on_screen: bool`, `recon_hint: str | None`; `get_books() -> list[Book]`.
@@ -55,8 +55,8 @@ Detectors are split from orchestration so each detector is unit-testable against
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# coverage/tests/test_registry.py
-from coverage.registry import get_books, BOOK_REGISTRY
+# coverage_audit/tests/test_registry.py
+from coverage_audit.registry import get_books, BOOK_REGISTRY
 
 def test_registry_has_nine_books():
     names = {b.name for b in get_books()}
@@ -81,22 +81,23 @@ def test_db_paths_are_absolute_and_named_correctly():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/callancapitolo/NFLWork/.claude/worktrees/mlb-coverage-audit-routine && python -m pytest coverage/tests/test_registry.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'coverage.registry'`
+Run: `cd /Users/callancapitolo/NFLWork/.claude/worktrees/mlb-coverage-audit-routine && python -m pytest coverage_audit/tests/test_registry.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'coverage_audit.registry'`
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
-# coverage/__init__.py
+# coverage_audit/__init__.py
 # (empty — marks the package)
 ```
 
 ```python
-# coverage/registry.py
+# coverage_audit/registry.py
 from dataclasses import dataclass
 from pathlib import Path
 
-# repo root = three levels up from this file: coverage/registry.py -> coverage -> repo root
+# repo root = parent of the coverage_audit/ package dir
+# (coverage_audit/registry.py -> coverage_audit/ -> repo root)
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 @dataclass(frozen=True)
@@ -129,13 +130,13 @@ def get_books() -> list[Book]:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest coverage/tests/test_registry.py -v`
+Run: `python -m pytest coverage_audit/tests/test_registry.py -v`
 Expected: PASS (3 tests)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add coverage/__init__.py coverage/registry.py coverage/tests/test_registry.py
+git add coverage_audit/__init__.py coverage_audit/registry.py coverage_audit/tests/test_registry.py
 git commit -m "feat(coverage): book registry with per-book DB paths + screen flags"
 ```
 
@@ -144,20 +145,20 @@ git commit -m "feat(coverage): book registry with per-book DB paths + screen fla
 ### Task 2: Read-only DB helpers
 
 **Files:**
-- Create: `coverage/db.py`
-- Test: `coverage/tests/test_db.py`
+- Create: `coverage_audit/db.py`
+- Test: `coverage_audit/tests/test_db.py`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `connect_readonly(path: Path) -> duckdb.DuckDBPyConnection | None` (returns `None` if the file is missing or the connection fails — e.g. locked/corrupt); `connect_coverage() -> duckdb.DuckDBPyConnection` (read-write, creating `coverage/coverage.duckdb` if absent).
+- Produces: `connect_readonly(path: Path) -> duckdb.DuckDBPyConnection | None` (returns `None` if the file is missing or the connection fails — e.g. locked/corrupt); `connect_coverage() -> duckdb.DuckDBPyConnection` (read-write, creating `coverage_audit/coverage.duckdb` if absent).
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# coverage/tests/test_db.py
+# coverage_audit/tests/test_db.py
 from pathlib import Path
 import duckdb
-from coverage.db import connect_readonly, connect_coverage
+from coverage_audit.db import connect_readonly, connect_coverage
 
 def test_connect_readonly_missing_file_returns_none(tmp_path):
     assert connect_readonly(tmp_path / "nope.duckdb") is None
@@ -171,7 +172,7 @@ def test_connect_readonly_opens_existing(tmp_path):
     con.close()
 
 def test_connect_coverage_creates_db(tmp_path, monkeypatch):
-    import coverage.db as dbmod
+    import coverage_audit.db as dbmod
     monkeypatch.setattr(dbmod, "COVERAGE_DB_PATH", tmp_path / "coverage.duckdb")
     con = connect_coverage()
     assert (tmp_path / "coverage.duckdb").exists()
@@ -180,18 +181,18 @@ def test_connect_coverage_creates_db(tmp_path, monkeypatch):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest coverage/tests/test_db.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'coverage.db'`
+Run: `python -m pytest coverage_audit/tests/test_db.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'coverage_audit.db'`
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
-# coverage/db.py
+# coverage_audit/db.py
 from pathlib import Path
 import duckdb
-from coverage.registry import REPO_ROOT
+from coverage_audit.registry import REPO_ROOT
 
-COVERAGE_DB_PATH = (REPO_ROOT / "coverage" / "coverage.duckdb").resolve()
+COVERAGE_DB_PATH = (REPO_ROOT / "coverage_audit" / "coverage.duckdb").resolve()
 
 def connect_readonly(path: Path):
     """Open a book DB read-only. Returns None on any failure (missing, locked, corrupt)."""
@@ -210,13 +211,13 @@ def connect_coverage():
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest coverage/tests/test_db.py -v`
+Run: `python -m pytest coverage_audit/tests/test_db.py -v`
 Expected: PASS (3 tests)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add coverage/db.py coverage/tests/test_db.py
+git add coverage_audit/db.py coverage_audit/tests/test_db.py
 git commit -m "feat(coverage): read-only book DB + coverage DB connection helpers"
 ```
 
@@ -225,9 +226,9 @@ git commit -m "feat(coverage): read-only book DB + coverage DB connection helper
 ### Task 3: Latest-run + trailing-baseline extractors
 
 **Files:**
-- Create: `coverage/detectors.py`
-- Test: `coverage/tests/test_extractors.py`
-- Create: `coverage/tests/conftest.py` (fixture builder)
+- Create: `coverage_audit/detectors.py`
+- Test: `coverage_audit/tests/test_extractors.py`
+- Create: `coverage_audit/tests/conftest.py` (fixture builder)
 
 **Interfaces:**
 - Consumes: a `duckdb` connection, a `table` name, a `days` int.
@@ -238,7 +239,7 @@ git commit -m "feat(coverage): read-only book DB + coverage DB connection helper
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# coverage/tests/conftest.py
+# coverage_audit/tests/conftest.py
 import duckdb, pytest
 from datetime import datetime, timezone, timedelta
 
@@ -261,9 +262,9 @@ def days_ago(n):
 ```
 
 ```python
-# coverage/tests/test_extractors.py
-from coverage.detectors import latest_run, trailing_baseline
-from coverage.tests.conftest import days_ago
+# coverage_audit/tests/test_extractors.py
+from coverage_audit.detectors import latest_run, trailing_baseline
+from coverage_audit.tests.conftest import days_ago
 
 def test_latest_run_picks_max_fetch_time(book_db):
     con = book_db([
@@ -292,13 +293,13 @@ def test_trailing_baseline_fractions(book_db):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest coverage/tests/test_extractors.py -v`
+Run: `python -m pytest coverage_audit/tests/test_extractors.py -v`
 Expected: FAIL with `ImportError: cannot import name 'latest_run'`
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
-# coverage/detectors.py
+# coverage_audit/detectors.py
 def latest_run(con, table):
     row = con.execute(f"SELECT MAX(fetch_time) FROM {table}").fetchone()
     if row is None or row[0] is None:
@@ -336,13 +337,13 @@ def trailing_baseline(con, table, days):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest coverage/tests/test_extractors.py -v`
+Run: `python -m pytest coverage_audit/tests/test_extractors.py -v`
 Expected: PASS (3 tests)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add coverage/detectors.py coverage/tests/test_extractors.py coverage/tests/conftest.py
+git add coverage_audit/detectors.py coverage_audit/tests/test_extractors.py coverage_audit/tests/conftest.py
 git commit -m "feat(coverage): latest-run + trailing-baseline extractors"
 ```
 
@@ -351,8 +352,8 @@ git commit -m "feat(coverage): latest-run + trailing-baseline extractors"
 ### Task 4: Regression / freshness / row-count detectors
 
 **Files:**
-- Modify: `coverage/detectors.py`
-- Test: `coverage/tests/test_detectors.py`
+- Modify: `coverage_audit/detectors.py`
+- Test: `coverage_audit/tests/test_detectors.py`
 
 **Interfaces:**
 - Consumes: `latest_run`/`trailing_baseline` outputs from Task 3.
@@ -364,9 +365,9 @@ git commit -m "feat(coverage): latest-run + trailing-baseline extractors"
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# coverage/tests/test_detectors.py
+# coverage_audit/tests/test_detectors.py
 from datetime import datetime, timezone, timedelta
-from coverage.detectors import Gap, detect_regressions, detect_freshness, detect_rowcount
+from coverage_audit.detectors import Gap, detect_regressions, detect_freshness, detect_rowcount
 
 NOW = datetime.now(timezone.utc)
 
@@ -399,10 +400,10 @@ def test_rowcount_flags_drop():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest coverage/tests/test_detectors.py -v`
+Run: `python -m pytest coverage_audit/tests/test_detectors.py -v`
 Expected: FAIL with `ImportError: cannot import name 'Gap'`
 
-- [ ] **Step 3: Write minimal implementation** (append to `coverage/detectors.py`)
+- [ ] **Step 3: Write minimal implementation** (append to `coverage_audit/detectors.py`)
 
 ```python
 from dataclasses import dataclass
@@ -457,13 +458,13 @@ def detect_rowcount(book_name, latest, baseline, min_ratio=0.5):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest coverage/tests/test_detectors.py -v`
+Run: `python -m pytest coverage_audit/tests/test_detectors.py -v`
 Expected: PASS (4 tests)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add coverage/detectors.py coverage/tests/test_detectors.py
+git add coverage_audit/detectors.py coverage_audit/tests/test_detectors.py
 git commit -m "feat(coverage): regression/freshness/rowcount detectors"
 ```
 
@@ -472,8 +473,8 @@ git commit -m "feat(coverage): regression/freshness/rowcount detectors"
 ### Task 5: Screen-presence detector
 
 **Files:**
-- Modify: `coverage/detectors.py`
-- Test: `coverage/tests/test_screen_presence.py`
+- Modify: `coverage_audit/detectors.py`
+- Test: `coverage_audit/tests/test_screen_presence.py`
 
 **Interfaces:**
 - Consumes: a set of `bookmaker` labels present in the latest screen run; `BOOK_REGISTRY`.
@@ -482,11 +483,11 @@ git commit -m "feat(coverage): regression/freshness/rowcount detectors"
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# coverage/tests/test_screen_presence.py
+# coverage_audit/tests/test_screen_presence.py
 import duckdb
 from datetime import datetime, timezone, timedelta
-from coverage.detectors import screen_bookmakers, detect_screen_absence
-from coverage.registry import get_books
+from coverage_audit.detectors import screen_bookmakers, detect_screen_absence
+from coverage_audit.registry import get_books
 
 def test_screen_bookmakers_at_latest_only(tmp_path):
     p = tmp_path / "mm.duckdb"; c = duckdb.connect(str(p))
@@ -509,10 +510,10 @@ def test_detect_screen_absence_flags_expected_missing():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest coverage/tests/test_screen_presence.py -v`
+Run: `python -m pytest coverage_audit/tests/test_screen_presence.py -v`
 Expected: FAIL with `ImportError: cannot import name 'screen_bookmakers'`
 
-- [ ] **Step 3: Write minimal implementation** (append to `coverage/detectors.py`)
+- [ ] **Step 3: Write minimal implementation** (append to `coverage_audit/detectors.py`)
 
 ```python
 def screen_bookmakers(con, table="mlb_bets_book_prices"):
@@ -537,13 +538,13 @@ def detect_screen_absence(books, screen_labels):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest coverage/tests/test_screen_presence.py -v`
+Run: `python -m pytest coverage_audit/tests/test_screen_presence.py -v`
 Expected: PASS (2 tests)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add coverage/detectors.py coverage/tests/test_screen_presence.py
+git add coverage_audit/detectors.py coverage_audit/tests/test_screen_presence.py
 git commit -m "feat(coverage): odds-screen presence detector"
 ```
 
@@ -552,8 +553,8 @@ git commit -m "feat(coverage): odds-screen presence detector"
 ### Task 6: Coverage-gaps storage + gap-set change diff
 
 **Files:**
-- Create: `coverage/store.py`
-- Test: `coverage/tests/test_store.py`
+- Create: `coverage_audit/store.py`
+- Test: `coverage_audit/tests/test_store.py`
 
 **Interfaces:**
 - Consumes: `connect_coverage` (Task 2), `Gap` (Task 4).
@@ -567,11 +568,11 @@ git commit -m "feat(coverage): odds-screen presence detector"
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# coverage/tests/test_store.py
+# coverage_audit/tests/test_store.py
 import duckdb
 from datetime import datetime, timezone, timedelta
-from coverage.detectors import Gap
-from coverage.store import ensure_schema, write_gaps, previous_gap_keys, new_gap_keys, gap_key
+from coverage_audit.detectors import Gap
+from coverage_audit.store import ensure_schema, write_gaps, previous_gap_keys, new_gap_keys, gap_key
 
 def _con(tmp_path):
     return duckdb.connect(str(tmp_path / "cov.duckdb"))
@@ -598,13 +599,13 @@ def test_new_gap_keys_detects_only_fresh():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest coverage/tests/test_store.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'coverage.store'`
+Run: `python -m pytest coverage_audit/tests/test_store.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'coverage_audit.store'`
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
-# coverage/store.py
+# coverage_audit/store.py
 def ensure_schema(con):
     con.execute("""
         CREATE TABLE IF NOT EXISTS coverage_gaps(
@@ -638,13 +639,13 @@ def new_gap_keys(prev_keys, gaps):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest coverage/tests/test_store.py -v`
+Run: `python -m pytest coverage_audit/tests/test_store.py -v`
 Expected: PASS (3 tests)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add coverage/store.py coverage/tests/test_store.py
+git add coverage_audit/store.py coverage_audit/tests/test_store.py
 git commit -m "feat(coverage): coverage_gaps storage + new-gap diff"
 ```
 
@@ -653,8 +654,8 @@ git commit -m "feat(coverage): coverage_gaps storage + new-gap diff"
 ### Task 7: Orchestrator, notification, JSON summary, CLI
 
 **Files:**
-- Create: `coverage/audit.py`
-- Test: `coverage/tests/test_audit.py`
+- Create: `coverage_audit/audit.py`
+- Test: `coverage_audit/tests/test_audit.py`
 
 **Interfaces:**
 - Consumes: everything above.
@@ -666,10 +667,10 @@ git commit -m "feat(coverage): coverage_gaps storage + new-gap diff"
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# coverage/tests/test_audit.py
+# coverage_audit/tests/test_audit.py
 import json, subprocess
 from datetime import datetime, timezone
-import coverage.audit as audit
+import coverage_audit.audit as audit
 
 def test_notify_disabled_is_noop(monkeypatch):
     called = {"n": 0}
@@ -684,9 +685,9 @@ def test_notify_swallows_errors(monkeypatch):
 
 def test_run_audit_returns_summary_and_writes(monkeypatch, tmp_path):
     # Point coverage DB at tmp and stub the per-book + screen scans to fixed gaps.
-    import coverage.db as dbmod
+    import coverage_audit.db as dbmod
     monkeypatch.setattr(dbmod, "COVERAGE_DB_PATH", tmp_path / "cov.duckdb")
-    from coverage.detectors import Gap
+    from coverage_audit.detectors import Gap
     monkeypatch.setattr(audit, "scan_books", lambda: [Gap("bfa","freshness","alert","stale")])
     monkeypatch.setattr(audit, "scan_screen", lambda: [])
     monkeypatch.setattr(audit, "notify", lambda *a, **k: None)
@@ -699,20 +700,20 @@ def test_run_audit_returns_summary_and_writes(monkeypatch, tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest coverage/tests/test_audit.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'coverage.audit'`
+Run: `python -m pytest coverage_audit/tests/test_audit.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'coverage_audit.audit'`
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
-# coverage/audit.py
+# coverage_audit/audit.py
 import argparse, json, subprocess, sys
 from dataclasses import asdict
 from datetime import datetime, timezone
-from coverage.registry import get_books, REPO_ROOT
-from coverage.db import connect_readonly, connect_coverage
-from coverage import detectors as D
-from coverage.store import ensure_schema, previous_gap_keys, write_gaps, new_gap_keys
+from coverage_audit.registry import get_books, REPO_ROOT
+from coverage_audit.db import connect_readonly, connect_coverage
+from coverage_audit import detectors as D
+from coverage_audit.store import ensure_schema, previous_gap_keys, write_gaps, new_gap_keys
 
 SCREEN_DB = (REPO_ROOT / "Answer Keys" / "mlb_mm.duckdb").resolve()
 BASELINE_DAYS = 7
@@ -797,20 +798,20 @@ if __name__ == "__main__":
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest coverage/tests/test_audit.py -v`
+Run: `python -m pytest coverage_audit/tests/test_audit.py -v`
 Expected: PASS (3 tests)
 
 - [ ] **Step 5: Full suite + live smoke run**
 
-Run: `python -m pytest coverage/ -v`
+Run: `python -m pytest coverage_audit/ -v`
 Expected: PASS (all tasks' tests)
-Run: `python -m coverage.audit --no-notify`
-Expected: prints a JSON summary against the REAL book DBs; exits 0. Eyeball that book names appear and no traceback is raised. (This is a real read-only run; it writes one audit row to `coverage/coverage.duckdb`.)
+Run: `python -m coverage_audit.audit --no-notify`
+Expected: prints a JSON summary against the REAL book DBs; exits 0. Eyeball that book names appear and no traceback is raised. (This is a real read-only run; it writes one audit row to `coverage_audit/coverage.duckdb`.)
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add coverage/audit.py coverage/tests/test_audit.py
+git add coverage_audit/audit.py coverage_audit/tests/test_audit.py
 git commit -m "feat(coverage): orchestrator + notification + JSON summary + CLI"
 ```
 
@@ -819,7 +820,7 @@ git commit -m "feat(coverage): orchestrator + notification + JSON summary + CLI"
 ### Task 8: Agent playbook
 
 **Files:**
-- Create: `coverage/AGENT_PLAYBOOK.md`
+- Create: `coverage_audit/AGENT_PLAYBOOK.md`
 
 This is the instruction set the daily Desktop scheduled task points at. No tests (it's a prompt document), but it must be concrete.
 
@@ -834,15 +835,15 @@ audit, then fix what it found — safely, on worktrees, never touching `main`.
 ## 1. Run detection (deterministic, do not skip)
 From the repo root:
 ```
-python -m coverage.audit
+python -m coverage_audit.audit
 ```
 Read the JSON summary it prints. The authoritative gap list is the latest
-`audit_ts` in `coverage/coverage.duckdb::coverage_gaps`. If `total_gaps == 0`,
+`audit_ts` in `coverage_audit/coverage.duckdb::coverage_gaps`. If `total_gaps == 0`,
 STOP — reply "no gaps" and end. Do not spend tokens hunting.
 
 ## 2. Triage each gap
 - `gap_type=freshness` or DB-unreadable → likely auth expiry or a dead scraper.
-  Run the book's recon (see `coverage/registry.py` `recon_hint`) or `/check-auth`.
+  Run the book's recon (see `coverage_audit/registry.py` `recon_hint`) or `/check-auth`.
   If auth is the cause and needs a manual browser login, you CANNOT fix it
   unattended — leave it for the human (see step 5).
 - `gap_type=regression` → a market the book used to post stopped appearing.
@@ -885,7 +886,7 @@ wakes up to.
 - [ ] **Step 2: Commit**
 
 ```bash
-git add coverage/AGENT_PLAYBOOK.md
+git add coverage_audit/AGENT_PLAYBOOK.md
 git commit -m "docs(coverage): daily agent playbook for wiring gaps on worktrees"
 ```
 
@@ -894,12 +895,12 @@ git commit -m "docs(coverage): daily agent playbook for wiring gaps on worktrees
 ### Task 9: README, Desktop-task registration, repo docs, memory
 
 **Files:**
-- Create: `coverage/README.md`
+- Create: `coverage_audit/README.md`
 - Modify: `CLAUDE.md` (root — Project Structure bullet)
-- Modify: `.gitignore` (ensure `coverage/coverage.duckdb` ignored)
+- Modify: `.gitignore` (ensure `coverage_audit/coverage.duckdb` ignored)
 - Create: a memory entry (see step 4)
 
-- [ ] **Step 1: Write `coverage/README.md`**
+- [ ] **Step 1: Write `coverage_audit/README.md`**
 
 ````markdown
 # MLB Scraper Coverage Audit
@@ -922,10 +923,10 @@ are intentionally the agent's job at runtime — see `AGENT_PLAYBOOK.md`.
 
 ## Run it manually
 ```
-python -m coverage.audit            # writes a row, notifies on new gaps, prints JSON
-python -m coverage.audit --no-notify --json-only
+python -m coverage_audit.audit            # writes a row, notifies on new gaps, prints JSON
+python -m coverage_audit.audit --no-notify --json-only
 ```
-Output table: `coverage/coverage.duckdb::coverage_gaps` (one row per gap per run).
+Output table: `coverage_audit/coverage.duckdb::coverage_gaps` (one row per gap per run).
 
 ## Register the daily Desktop scheduled task
 This runs locally on your Mac (NOT a `/schedule` cloud routine — that can't
@@ -933,15 +934,15 @@ reach your DBs/auth/IP). In the **Claude Code Desktop app**:
 1. Sidebar → **Routines** → **New routine** → choose **Local**.
 2. Working folder: the repo root.
 3. Schedule: daily ~9:00 AM Pacific.
-4. Instructions: "Follow `coverage/AGENT_PLAYBOOK.md`."
+4. Instructions: "Follow `coverage_audit/AGENT_PLAYBOOK.md`."
 
 Caveat: the Desktop app must be running for the task to fire (it does not need
 an open chat session). If you ever want detection to run even with the app
-closed, schedule `python -m coverage.audit` alone via launchd and keep only the
+closed, schedule `python -m coverage_audit.audit` alone via launchd and keep only the
 wiring as a Desktop task.
 
 ## Add a book or change thresholds
-- New book → add a `Book(...)` row to `coverage/registry.py`.
+- New book → add a `Book(...)` row to `coverage_audit/registry.py`.
 - Thresholds (`BASELINE_DAYS`, `presence_threshold`, `max_age_hours`,
   `min_ratio`) are arguments/constants in `audit.py` / `detectors.py`.
 ````
@@ -949,16 +950,16 @@ wiring as a Desktop task.
 - [ ] **Step 2: Update root `CLAUDE.md`** — add under "Project Structure":
 
 ```markdown
-- **Scraper coverage audit** (`coverage/`) — daily deterministic check that each
+- **Scraper coverage audit** (`coverage_audit/`) — daily deterministic check that each
   MLB book still posts the markets it used to (regression), is fresh, and reaches
-  the odds screen. Read-only over per-book DuckDBs; writes `coverage/coverage.duckdb`.
-  A Claude Desktop scheduled task follows `coverage/AGENT_PLAYBOOK.md` to wire
-  fixes on worktrees (never auto-merges). See `coverage/README.md`.
+  the odds screen. Read-only over per-book DuckDBs; writes `coverage_audit/coverage.duckdb`.
+  A Claude Desktop scheduled task follows `coverage_audit/AGENT_PLAYBOOK.md` to wire
+  fixes on worktrees (never auto-merges). See `coverage_audit/README.md`.
 ```
 
 - [ ] **Step 3: Ensure `.gitignore` covers the output DB**
 
-Run: `grep -q "coverage/coverage.duckdb" .gitignore || echo "coverage/coverage.duckdb" >> .gitignore`
+Run: `grep -q "coverage_audit/coverage.duckdb" .gitignore || echo "coverage_audit/coverage.duckdb" >> .gitignore`
 (The repo already ignores `*.duckdb`, but add the explicit path for clarity.)
 
 - [ ] **Step 4: Write the memory entry**
@@ -973,13 +974,13 @@ metadata:
   type: project
 ---
 
-Built 2026-06-15 (branch `worktree-mlb-coverage-audit-routine`). `coverage/`
-holds a deterministic, read-only Python audit (`python -m coverage.audit`) that
+Built 2026-06-15 (branch `worktree-mlb-coverage-audit-routine`). `coverage_audit/`
+holds a deterministic, read-only Python audit (`python -m coverage_audit.audit`) that
 flags per-book regression / freshness / rowcount / screen-absence into
-`coverage/coverage.duckdb::coverage_gaps`, notifying via osascript only on NEW
+`coverage_audit/coverage.duckdb::coverage_gaps`, notifying via osascript only on NEW
 gaps. A Claude **Desktop scheduled task** (NOT a `/schedule` cloud routine —
 those run in Anthropic cloud with only a git clone, no local DB/auth/IP) follows
-`coverage/AGENT_PLAYBOOK.md` to wire fixes on worktrees, never auto-merging.
+`coverage_audit/AGENT_PLAYBOOK.md` to wire fixes on worktrees, never auto-merging.
 
 Key facts: only 5 books render on the odds screen (wagerzon, bet105, bookmaker,
 draftkings, fanduel); hoop88/bfa/kalshi feed pricing only. Cross-source
@@ -991,13 +992,13 @@ self-baseline so it never false-alarms. Related: [[timezone_standardization]],
 
 Then add to `MEMORY.md` under "Active Work":
 ```markdown
-- [MLB coverage audit](mlb_coverage_audit.md) — daily deterministic scraper coverage check (`coverage/`) + Desktop-task agent wiring on worktrees; cloud routines can't reach local scrapers
+- [MLB coverage audit](mlb_coverage_audit.md) — daily deterministic scraper coverage check (`coverage_audit/`) + Desktop-task agent wiring on worktrees; cloud routines can't reach local scrapers
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add coverage/README.md CLAUDE.md .gitignore
+git add coverage_audit/README.md CLAUDE.md .gitignore
 git commit -m "docs(coverage): README, Desktop-task registration, CLAUDE.md + memory"
 ```
 
@@ -1006,15 +1007,15 @@ git commit -m "docs(coverage): README, Desktop-task registration, CLAUDE.md + me
 ## Worktree / Version Control
 
 - All work on `worktree-mlb-coverage-audit-routine` (already active).
-- New dir `coverage/` is additive; the only existing file modified is root
+- New dir `coverage_audit/` is additive; the only existing file modified is root
   `CLAUDE.md` and `.gitignore` — low merge-conflict risk.
-- After all tasks: run `python -m pytest coverage/ -v` + one live
-  `python -m coverage.audit --no-notify`, then request review before merge.
+- After all tasks: run `python -m pytest coverage_audit/ -v` + one live
+  `python -m coverage_audit.audit --no-notify`, then request review before merge.
   Never merge to `main` without explicit approval.
 
 ## Documentation (in this branch)
 
-- `coverage/README.md` (new), `coverage/AGENT_PLAYBOOK.md` (new), root
+- `coverage_audit/README.md` (new), `coverage_audit/AGENT_PLAYBOOK.md` (new), root
   `CLAUDE.md` bullet, memory entry. All in the same branch as the code.
 
 ## Self-Review Notes

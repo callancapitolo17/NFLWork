@@ -83,7 +83,7 @@ Desktop scheduled task fires daily (~9 AM Pacific)
         ▼
 [1] run  coverage_audit.py   ← plain Python, deterministic, no LLM
         │   • computes the gap report (three-stage diff, per book)
-        │   • writes it to coverage/coverage.duckdb::coverage_gaps
+        │   • writes it to coverage_audit/coverage.duckdb::coverage_gaps
         │   • fires a macOS notification ONLY if the gap set changed
         │   • exits 0 with a machine-readable summary the agent reads
         ▼
@@ -182,7 +182,7 @@ menu-crawler for 9 books.
   `coverage_audit.py` alone on launchd and keep only the wiring as a Desktop task.
 - **Timing:** ~9 AM Pacific (noon ET) — late enough that the day's slate is
   posted, before first pitch. One run/day. (See risk: late-posting markets.)
-- **Storage:** a dedicated `coverage/coverage.duckdb` with its own write lock
+- **Storage:** a dedicated `coverage_audit/coverage.duckdb` with its own write lock
   (mirrors the one-DB-per-concern pattern; never shares a lock with the pipeline).
   Tables: `coverage_gaps` (current + history), and the trailing baselines the
   detection needs.
@@ -203,8 +203,8 @@ menu-crawler for 9 books.
 - **Branch / worktree:** `worktree-mlb-coverage-audit-routine` (already created).
   Implementation proceeds here; merge to `main` only after review + tests.
 - **New files (anticipated):**
-  - `coverage/coverage_audit.py` — deterministic detection script.
-  - `coverage/README.md` — setup, the detection tiers, how to read the report.
+  - `coverage_audit/coverage_audit.py` — deterministic detection script.
+  - `coverage_audit/README.md` — setup, the detection tiers, how to read the report.
   - A Desktop-scheduled-task definition (registered via Claude Code, documented
     in the README; mirrors the launchd pattern in spirit but is the local-agent
     mechanism).
@@ -214,7 +214,7 @@ menu-crawler for 9 books.
 
 ## Documentation
 
-- New `coverage/README.md` (setup, tiers, report schema, how the scheduled task
+- New `coverage_audit/README.md` (setup, tiers, report schema, how the scheduled task
   is registered, how to add a book/market to the audit).
 - Update root `CLAUDE.md` Project Structure with a bullet for the coverage audit.
 - Update `Answer Keys/CLAUDE.md` if the audit reads any pipeline tables not yet
