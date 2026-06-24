@@ -118,6 +118,20 @@ A: book POSTS it   →   B: scraper CAPTURES it   →   C: screen SHOWS it
 `B − C` is the FD-paren-bug class (scraped, regex dropped it). `A − B` is the
 FD-event-page-tab class (book posts on a tab the scraper never fetched).
 
+**Planning-time refinement (verified against live DBs 2026-06-15):** the
+*deterministic script* does NOT compute the cross-source `B − C` / `A − B` diff,
+because real data showed it is false-positive-prone — only 5 of 9 books render on
+the screen at all (hoop88/bfa/kalshi feed pricing, not pills), and books pack
+markets under different labels (FD's `main` row carries spread+total+ML; period
+case and `_fg/_f3/_f7` suffixes differ per book). Instead the script does the
+*reliable, network-free* work — per-book regression (Tier 1, same-book
+self-baseline, no normalization needed), freshness, row-count, and
+**screen-presence** (an `expected_on_screen` book missing from the screen). The
+fuzzy cross-source label matching (`B − C`) and live Tier-2/3 discovery move to
+the agent at runtime, where judgment lives. This still catches the historical
+bugs: the FD paren break shows up as "FD stopped emitting `alternate_totals` it
+posted all last week" via Tier 1.
+
 #### Detection tiers (all 9 books covered from v1)
 
 | Tier | "What the book posts" (Stage A) | Catches | Cost |
