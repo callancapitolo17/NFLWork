@@ -2,40 +2,61 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 
-def latest_run(con, table):
-    """Extract the latest run: fetch_time, markets, row_count."""
-    row = con.execute(f"SELECT MAX(fetch_time) FROM {table}").fetchone()
+def _table_columns(con, table):
+    """Set of column names in a table (lowercased), via PRAGMA table_info."""
+    return {r[1].lower() for r in con.execute(f"PRAGMA table_info('{table}')").fetchall()}
+
+
+def latest_run(con, table, ts_col="fetch_time"):
+    """Extract the latest run: fetch_time, markets, row_count.
+
+    `ts_col` is the per-book timestamp column. If the table lacks market/period
+    columns (e.g. wagerzon_specials), `markets` is an empty set and only
+    freshness/row-count are meaningful — market-regression simply finds nothing.
+    """
+    row = con.execute(f"SELECT MAX({ts_col}) FROM {table}").fetchone()
     if row is None or row[0] is None:
         return None
     max_ft = row[0]
-    pairs = con.execute(
-        f"SELECT DISTINCT market, period FROM {table} WHERE fetch_time = ?", [max_ft]
-    ).fetchall()
+    cols = _table_columns(con, table)
+    if "market" in cols and "period" in cols:
+        pairs = con.execute(
+            f"SELECT DISTINCT market, period FROM {table} WHERE {ts_col} = ?", [max_ft]
+        ).fetchall()
+        markets = {(m, p) for m, p in pairs}
+    else:
+        markets = set()
     count = con.execute(
-        f"SELECT COUNT(*) FROM {table} WHERE fetch_time = ?", [max_ft]
+        f"SELECT COUNT(*) FROM {table} WHERE {ts_col} = ?", [max_ft]
     ).fetchone()[0]
-    return {"fetch_time": max_ft, "markets": {(m, p) for m, p in pairs}, "row_count": count}
+    return {"fetch_time": max_ft, "markets": markets, "row_count": count}
 
 
-def trailing_baseline(con, table, days):
-    """Compute baseline metrics over the last N days: run_count, market_run_fraction, median_row_count."""
+def trailing_baseline(con, table, days, ts_col="fetch_time"):
+    """Compute baseline metrics over the last N days: run_count, market_run_fraction, median_row_count.
+
+    `market_run_fraction` is empty when the table has no market/period columns.
+    """
     runs = con.execute(
-        f"SELECT DISTINCT fetch_time FROM {table} "
-        f"WHERE fetch_time > now() - INTERVAL '{int(days)} days'"
+        f"SELECT DISTINCT {ts_col} FROM {table} "
+        f"WHERE {ts_col} > now() - INTERVAL '{int(days)} days'"
     ).fetchall()
-    run_times = [r[0] for r in runs]
-    run_count = len(run_times)
+    run_count = len(runs)
     if run_count == 0:
         return {"run_count": 0, "market_run_fraction": {}, "median_row_count": None}
-    # fraction of runs each (market,period) appears in
-    rows = con.execute(
-        f"SELECT market, period, COUNT(DISTINCT fetch_time) AS runs_present FROM {table} "
-        f"WHERE fetch_time > now() - INTERVAL '{int(days)} days' GROUP BY 1,2"
-    ).fetchall()
-    fraction = {(m, p): present / run_count for m, p, present in rows}
+    cols = _table_columns(con, table)
+    if "market" in cols and "period" in cols:
+        # fraction of runs each (market,period) appears in
+        rows = con.execute(
+            f"SELECT market, period, COUNT(DISTINCT {ts_col}) AS runs_present FROM {table} "
+            f"WHERE {ts_col} > now() - INTERVAL '{int(days)} days' GROUP BY 1,2"
+        ).fetchall()
+        fraction = {(m, p): present / run_count for m, p, present in rows}
+    else:
+        fraction = {}
     median_rc = con.execute(
-        f"SELECT median(rc) FROM (SELECT fetch_time, COUNT(*) AS rc FROM {table} "
-        f"WHERE fetch_time > now() - INTERVAL '{int(days)} days' GROUP BY fetch_time)"
+        f"SELECT median(rc) FROM (SELECT {ts_col}, COUNT(*) AS rc FROM {table} "
+        f"WHERE {ts_col} > now() - INTERVAL '{int(days)} days' GROUP BY {ts_col})"
     ).fetchone()[0]
     return {"run_count": run_count, "market_run_fraction": fraction, "median_row_count": median_rc}
 
@@ -70,7 +91,11 @@ def detect_freshness(book_name, latest, max_age_hours=26.0):
     if latest is None:
         return [Gap(book=book_name, gap_type="freshness", severity="alert",
                     detail="no rows at all in book DB (scraper never wrote / DB unreadable)")]
-    age_h = (datetime.now(timezone.utc) - latest["fetch_time"]).total_seconds() / 3600.0
+    ft = latest["fetch_time"]
+    if ft.tzinfo is None:
+        # Naive timestamps (e.g. wagerzon_specials.scraped_at is plain TIMESTAMP) → assume UTC.
+        ft = ft.replace(tzinfo=timezone.utc)
+    age_h = (datetime.now(timezone.utc) - ft).total_seconds() / 3600.0
     if age_h > max_age_hours:
         return [Gap(book=book_name, gap_type="freshness", severity="alert",
                     metric_value=round(age_h, 1), baseline_value=max_age_hours,
@@ -90,12 +115,17 @@ def detect_rowcount(book_name, latest, baseline, min_ratio=0.5):
     return []
 
 
-def screen_bookmakers(con, table="mlb_bets_book_prices"):
-    row = con.execute(f"SELECT MAX(fetch_time) FROM {table}").fetchone()
-    if row is None or row[0] is None:
-        return set()
+def screen_bookmakers(con, table="mlb_bets_book_prices", within_hours=26.0):
+    """Bookmakers present on the odds screen within the recent window.
+
+    Each book's rows carry their OWN scraper fetch_time (they are not written at
+    one shared instant), so a single MAX(fetch_time) filter would return only the
+    one book with the newest row. A window-based check is the correct "is this
+    book currently on the screen" test.
+    """
     labels = con.execute(
-        f"SELECT DISTINCT bookmaker FROM {table} WHERE fetch_time = ?", [row[0]]
+        f"SELECT DISTINCT bookmaker FROM {table} "
+        f"WHERE fetch_time > now() - INTERVAL '{int(within_hours)} hours'"
     ).fetchall()
     return {l[0] for l in labels}
 

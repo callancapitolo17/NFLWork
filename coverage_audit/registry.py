@@ -13,13 +13,16 @@ class Book:
     screen_name: str | None      # bookmaker label in mlb_bets_book_prices, or None
     expected_on_screen: bool
     recon_hint: str | None       # how the agent refreshes auth for this book
+    ts_col: str = "fetch_time"   # timestamp column for "latest run" (specials uses scraped_at)
 
 def _db(rel: str) -> Path:
     return (REPO_ROOT / rel).resolve()
 
 BOOK_REGISTRY: list[Book] = [
     Book("wagerzon", _db("wagerzon_odds/wagerzon.duckdb"), "mlb_odds", "wagerzon", True, "wagerzon_odds/recon_wagerzon.py"),
-    Book("wagerzon_specials", _db("wagerzon_odds/wagerzon.duckdb"), "wagerzon_specials", None, False, "wagerzon_odds/recon_wagerzon.py"),
+    # wagerzon_specials is a different schema: timestamped by scraped_at, no market/period
+    # columns (description-based props). Audit does freshness + rowcount only — no market regression.
+    Book("wagerzon_specials", _db("wagerzon_odds/wagerzon.duckdb"), "wagerzon_specials", None, False, "wagerzon_odds/recon_wagerzon.py", ts_col="scraped_at"),
     Book("hoop88", _db("hoop88_odds/hoop88.duckdb"), "mlb_odds", None, False, "hoop88_odds/recon_hoop88.py"),
     Book("bfa", _db("bfa_odds/bfa.duckdb"), "mlb_odds", None, False, "bfa_odds (single API call)"),
     Book("bookmaker", _db("bookmaker_odds/bookmaker.duckdb"), "mlb_odds", "bookmaker", True, "bookmaker_odds/recon_bookmaker.py"),
