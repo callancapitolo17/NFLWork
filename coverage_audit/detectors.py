@@ -88,3 +88,24 @@ def detect_rowcount(book_name, latest, baseline, min_ratio=0.5):
                     detail=f"row count {latest['row_count']} < {min_ratio:.0%} of trailing "
                            f"median {med:.0f} (possible partial parse break)")]
     return []
+
+
+def screen_bookmakers(con, table="mlb_bets_book_prices"):
+    row = con.execute(f"SELECT MAX(fetch_time) FROM {table}").fetchone()
+    if row is None or row[0] is None:
+        return set()
+    labels = con.execute(
+        f"SELECT DISTINCT bookmaker FROM {table} WHERE fetch_time = ?", [row[0]]
+    ).fetchall()
+    return {l[0] for l in labels}
+
+
+def detect_screen_absence(books, screen_labels):
+    gaps = []
+    for b in books:
+        if b.expected_on_screen and b.screen_name not in screen_labels:
+            gaps.append(Gap(
+                book=b.name, gap_type="book_absent", severity="alert",
+                detail=f"book '{b.screen_name}' expected on odds screen but absent "
+                       f"from latest mlb_bets_book_prices run"))
+    return gaps
