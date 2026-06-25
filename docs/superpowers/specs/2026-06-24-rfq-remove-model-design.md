@@ -182,6 +182,13 @@ def cov_returns(p_a, p_b, p_joint, price_a, price_b) -> float:
 `grid_lookup(spread_line, total_line, quadrant) -> float | None` wraps the
 existing `_SGP_ODDS_CACHE` median-across-books read.
 
+**Validity clamp (Fréchet bounds).** Book grids are scraped per-cell and can be
+mutually inconsistent (different books, fetch times), so a grid-derived joint can
+fall outside the range a valid joint distribution allows. `joint_prob` clamps its
+result to `[max(0, P_a + P_b − 1), min(P_a, P_b)]` (the Fréchet–Hoeffding
+bounds). This guarantees the implied correlation stays in `[−1, 1]` and the
+covariance fed to Kelly is always valid, regardless of grid noise.
+
 **Kelly refactor.** `kelly.kelly_size_combo`'s existing-positions branch
 currently derives covariance from model sample paths (`outcome_vec`). Replace
 that inner computation with `cov_returns(...)` built from book-implied joints;
@@ -198,31 +205,94 @@ aggregate exposure is bounded.
 
 ### Testing
 
-`correlation.py` (pure unit tests — no DB):
-- Same-direction joint = tighter-cell lookup (mocked grid).
-- Crossing joint via inclusion-exclusion; incompatible regions → 0.
-- Missing grid cell or non-grid leg → ρ=1 fallback `min(P(A),P(B))`.
-- `cov_returns` sign/magnitude on hand-computed cases.
+Plain `pytest`, matching existing `tests/` conventions (module-level functions,
+`tmp_path` for DuckDB fixtures, direct imports of the unit under test). Note:
+`kelly.py` and the per-accept gates have **no existing tests** — this work adds
+their first coverage. Target: each new/changed function has at least one happy
+path, one boundary, and one failure/fallback test.
 
-Kelly:
-- Two perfectly-correlated held + new combos size like ~one bet (not double).
-- Uncorrelated (independent grid joint = P(A)·P(B)) reproduces independent Kelly.
-- `existing_positions=[]` → single-bet Kelly off `blended_fair`.
+**1. `correlation.py` — pure unit tests (no DB, mocked `grid_lookup`)**
 
-Pricing / gates:
-- `USE_MODEL=false`: `_all_per_accept_gates_pass` never returns
-  `declined_stale_predictions` even with `_SAMPLES_META_GENERATED_AT=None`.
-- `USE_MODEL=false`: `_fresh_blended_fair` = `median(books)` without samples.
-- Regression: `USE_MODEL=true` path + existing tests still pass (audit tests
-  that assume the staleness gate runs by default, since the runtime default
-  flips to `false`).
+*`joint_prob`:*
+- Same-direction, nested totals (Over 8.5 ∩ Over 9.5 → Over 9.5): returns the
+  tighter-cell lookup value.
+- Same-direction, nested spreads (−1.5 ∩ −2.5 → −2.5): tighter-cell value.
+- Crossing totals (Over 8.5 ∩ Under 9.5 → band 8.5<T<9.5): inclusion-exclusion
+  `P(M>s,T>8.5) − P(M>s,T>9.5)`, asserted against hand-computed grid values.
+- Incompatible regions (Over 9.5 ∩ Under 8.5; opposing spread sides): returns 0.
+- Identical combo (A ∩ A): returns `P(A)`.
+- Missing grid cell → returns `None` (signals fallback).
+- Leg outside the spread×total grid (player-prop leg) → returns `None`.
+- **Fréchet clamp:** when mocked grid yields a joint above `min(P_a,P_b)` or
+  below `max(0,P_a+P_b−1)`, result is clamped into range; implied ρ ∈ [−1, 1].
+- **Invariant (property test):** over a sweep of `P_a, P_b, raw_joint`, the
+  returned joint always satisfies the Fréchet bounds.
 
-Pre-go-live verification (no live trading): full `tests/` suite green, then a
-single-cycle / dry-run smoke from the worktree confirming the bot enumerates
-candidates, prices book-only, computes correlation without raising, reaches the
-accept path, and shows no `declined_stale_predictions` in `quote_log`. **User
-approval required before turning live**, with small-stake validation of the
-newly-activated correlation sizing before any ramp.
+*`cov_returns`:*
+- Independent (`p_joint = p_a·p_b`) → covariance 0.
+- Comonotonic (`p_joint = min(p_a,p_b)`) → maximal positive covariance,
+  hand-checked.
+- Sign: negatively-associated joint (`p_joint < p_a·p_b`) → negative covariance.
+- Price scaling: covariance scales as `1/(price_a·price_b)`.
+
+*Fallback wiring:* when `joint_prob` returns `None`, the caller substitutes
+`min(P_a,P_b)` (ρ=1) before `cov_returns`.
+
+**2. `kelly.kelly_size_combo` — sizing behavior**
+- `existing_positions=[]` → single-bet Kelly off `blended_fair` (unchanged).
+- One held, **perfectly correlated** new (cov from `p_joint=min`): combined
+  stake ≈ one combo's Kelly, **not** ~2× (the core anti-overbet assertion).
+- One held, **independent** new (`p_joint=p_a·p_b`): size ≈ the independent-Kelly
+  result (correlation term ≈ 0).
+- One held, **negatively correlated** new: size ≥ independent (hedge gets a small
+  uplift), still bounded.
+- ρ=1 fallback path produces the same down-sizing as an explicit comonotonic
+  joint.
+- Degenerate guards: `effective_price ≤ 0 or ≥ 1` → 0; `p ≤ effective_price`
+  (-EV) → 0; result never negative.
+
+**3. Pricing & gates (`main.py`, `tmp_path` DBs + monkeypatched caches)**
+- `_book_only_fair`: median of 2/3/N book fairs; filters `None` values; empty
+  dict → `None`.
+- `USE_MODEL=false`: `_all_per_accept_gates_pass` does **not** return
+  `declined_stale_predictions` with `_SAMPLES_META_GENERATED_AT = None`, nor with
+  a timestamp hours old.
+- `USE_MODEL=true`: the staleness gate **does** still fire on a stale timestamp
+  (guards the flag wiring, not just the happy path).
+- `USE_MODEL=false`: `_fresh_blended_fair` returns `median(books)` with an empty
+  `_SAMPLES_CACHE`; returns `None` when `<2` books price the tuple.
+- `USE_MODEL=false`: candidate loop prices a game whose `_SAMPLES_CACHE` entry is
+  absent (does not `continue`/skip it).
+- `USE_MODEL=false`: `_refresh_caches` populates without querying
+  `mlb_game_samples`/`mlb_samples_meta` (succeeds against a `tmp_path` DB that
+  lacks those tables — proves the model-DB decoupling).
+- `config.USE_MODEL` parsing: `"false"/"0"/""` → False; `"true"/"1"/"yes"` →
+  True; default (unset) → False.
+
+**4. Integration (seeded end-to-end, `tmp_path`)**
+- Seed a game with a small spread×total grid + ≥2 books; hold one combo in
+  `positions`; size a correlated second combo via the quote-eval path and assert
+  the contract count is **strictly less** than the independent-Kelly count for
+  the same quote.
+- `USE_MODEL=false` quote-eval on a +EV book quote with no positions → positive
+  size; on a -EV quote → 0.
+
+**5. Regression**
+- Full `tests/` suite green under **both** `USE_MODEL=false` (new default) and
+  `USE_MODEL=true`. Audit existing tests that implicitly assumed the staleness
+  gate runs by default and pin the flag explicitly where needed. Run via a
+  parametrized sweep / two CI invocations.
+
+**6. Pre-go-live verification (no live trading)**
+- Full `pytest tests/` green (both flag values).
+- Single-cycle / dry-run smoke from the worktree: bot enumerates candidates,
+  prices book-only, computes correlation without raising, reaches the accept
+  path; `quote_log` shows **no** `declined_stale_predictions`.
+- Spot-check one real held-position scenario in the dry run: log the
+  independent-vs-correlated size delta to confirm the engine is actually
+  down-sizing live, not silently falling through to independent.
+- **User approval required before turning live**, with small-stake validation of
+  the newly-activated correlation sizing before any ramp.
 
 ### Version control
 
