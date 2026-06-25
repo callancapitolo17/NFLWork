@@ -19,6 +19,25 @@ logger = logging.getLogger(__name__)
 
 Period = Literal["FG", "F5"]
 
+# Sentinel for an absent spread/total leg in a moneyline (or, later, player-prop)
+# combo row in mlb_sgp_odds. The dedup key in db.upsert_priced_rows is a DuckDB
+# tuple-IN over (..., spread_line, total_line, ...); NULL never matches NULL
+# there, so an absent line MUST be a real out-of-range value, not NULL, or
+# duplicate rows accumulate. No MLB spread/total is ever 999.
+NO_LINE = 999.0
+
+# Moneyline × total is a 4-cell grid exactly like spread × total: the four cells
+# partition the outcome space (exactly one of home/away wins, exactly one of
+# over/under), so they sum to 1 before vig and the existing devig_book n-way
+# probit devig works on them unchanged. Stored with total_line set and
+# spread_line = NO_LINE.
+ML_TOTAL_COMBO_NAMES = (
+    "Home ML + Over",
+    "Home ML + Under",
+    "Away ML + Over",
+    "Away ML + Under",
+)
+
 
 @dataclass(frozen=True)
 class TargetLine:
