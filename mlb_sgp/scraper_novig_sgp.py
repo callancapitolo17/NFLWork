@@ -105,6 +105,11 @@ _LEGACY_CACHE_PATH = _THIS_DIR / ".novig_event_markets_query.json"
 # Market type names (Novig uses SPREAD_1H / TOTAL_1H for F5)
 SPREAD_TYPE = {"fg": "SPREAD",    "f5": "SPREAD_1H"}
 TOTAL_TYPE  = {"fg": "TOTAL",     "f5": "TOTAL_1H"}
+# Moneyline market type (for ML×total combos). Novig names it MONEY / MONEY_1H;
+# its outcomes carry competitor.symbol exactly like SPREAD, so the same
+# symbol-matcher (_find_outcome_in_spread) resolves home/away. We only price
+# the FG moneyline (ML_TOTAL_FAMILY is FG-only, matching DK/FD/PX).
+MONEY_TYPE  = {"fg": "MONEY",     "f5": "MONEY_1H"}
 
 PARALLEL_MARKETS = 4
 PARALLEL_PRICING = 4
@@ -426,6 +431,17 @@ def fetch_event_legs(session, game: dict, verbose: bool = False) -> tuple[dict, 
                 out[period]["over"]  = over_leg
                 out[period]["under"] = under_leg
 
+        # --- Moneyline market (type = MONEY or MONEY_1H) for ML×total combos.
+        # One per period, line-independent — outcomes carry competitor.symbol,
+        # so the spread symbol-matcher resolves home/away. Both legs carry
+        # `available` (implied prob), so the naive-multiply sanity check works.
+        money_mkt = next((m for m in markets if m.get("type") == MONEY_TYPE[period]), None)
+        if money_mkt:
+            home_ml, away_ml = _find_outcome_in_spread(money_mkt, home_sym, away_sym)
+            if home_ml and away_ml:
+                out[period]["home_ml"] = home_ml
+                out[period]["away_ml"] = away_ml
+
         if verbose:
             missing = [k for k, v in out[period].items() if v is None]
             if missing:
@@ -437,8 +453,10 @@ def fetch_event_legs(session, game: dict, verbose: bool = False) -> tuple[dict, 
 
 def _empty_legs():
     return {
-        "fg": {"home_spread": None, "away_spread": None, "over": None, "under": None},
-        "f5": {"home_spread": None, "away_spread": None, "over": None, "under": None},
+        "fg": {"home_spread": None, "away_spread": None, "over": None, "under": None,
+               "home_ml": None, "away_ml": None},
+        "f5": {"home_spread": None, "away_spread": None, "over": None, "under": None,
+               "home_ml": None, "away_ml": None},
     }
 
 

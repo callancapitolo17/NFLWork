@@ -372,6 +372,40 @@ def price_sgps(
                 sgp_american=priced["american"],
                 fetch_time=fetch_now,
             ))
+
+        # ----- Phase 3: moneyline × total combos (FG only; spread_line=None) ----- #
+        # ML_TOTAL_FAMILY is FG-only, matching DK/FD/PX. Reuses the same over/under
+        # legs already resolved for this target; the DB upsert dedups any repeats
+        # across targets that share a total. spread_line=None marks "no spread leg".
+        home_ml = p.get("home_ml")
+        away_ml = p.get("away_ml")
+        if t.period == "FG" and home_ml and away_ml and over and under:
+            ml_combos = (
+                ("Home ML + Over",  home_ml, over),
+                ("Home ML + Under", home_ml, under),
+                ("Away ML + Over",  away_ml, over),
+                ("Away ML + Under", away_ml, under),
+            )
+            ml_priced = _price_combos_parallel(
+                client.session, ml_combos, submit_parlay, verbose,
+            )
+            for combo_name, _ml, _to in ml_combos:
+                priced = ml_priced.get(combo_name)
+                if priced is None:
+                    continue
+                dec = priced["decimal"]
+                target_rows.append(PricedRow(
+                    game_id=t.game_id,
+                    combo=combo_name,
+                    period=t.period,
+                    spread_line=None,
+                    total_line=t.total,
+                    bookmaker=BOOK_NAME,
+                    source=SOURCE_LABEL,
+                    sgp_decimal=round(dec, 4),
+                    sgp_american=priced["american"],
+                    fetch_time=fetch_now,
+                ))
         return target_rows
 
     with ThreadPoolExecutor(max_workers=NV_TARGET_PARALLELISM) as pool:
