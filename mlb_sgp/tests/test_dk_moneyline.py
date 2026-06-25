@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mlb_sgp._shared import TargetLine, NO_LINE  # noqa: E402
+from mlb_sgp._shared import TargetLine  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +91,7 @@ def test_ml_total_emits_four_cell_grid():
     assert combos == {"Home ML + Over", "Home ML + Under",
                       "Away ML + Over", "Away ML + Under"}
     for r in rows:
-        assert r.spread_line == NO_LINE      # no spread leg
+        assert r.spread_line is None         # no spread leg (NULL, not a sentinel)
         assert r.total_line == 8.5
         assert r.bookmaker == "draftkings"
         assert r.source == "draftkings_direct"

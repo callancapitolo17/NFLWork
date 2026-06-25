@@ -433,15 +433,14 @@ def _price_ml_total_for_games(
     calculate_sgp_fn, market_num_fn, fetch_now, verbose, n_workers,
 ) -> list[PricedRow]:
     """Price the 4 moneyline×total combos (Home/Away ML × Over/Under) for each
-    (game, distinct FG total line). Returns PricedRows with spread_line=NO_LINE.
+    (game, distinct FG total line). Returns PricedRows with spread_line=None
+    (there is no spread leg; db dedups NULL-safely).
 
     The ML leg's market is not in the spread/total `canonical` set, so we only
     gate the TOTAL leg on canonical; DK's calculateBets itself rejects a
     non-combinable ML+total pair (the combinabilityRestrictions / 422 path in
     calculate_sgp), so an unsupported pair simply yields no row.
     """
-    from mlb_sgp._shared import NO_LINE
-
     # distinct FG totals per game from the already-offered (filtered) targets.
     totals_by_game: dict[str, set] = {}
     for t in filtered_targets:
@@ -486,7 +485,7 @@ def _price_ml_total_for_games(
                 dec = sgp["trueOdds"]
                 rows.append(PricedRow(
                     game_id=game_id, combo=combo_name, period="FG",
-                    spread_line=NO_LINE, total_line=total,
+                    spread_line=None, total_line=total,
                     bookmaker=BOOK_NAME, source=SOURCE_LABEL,
                     sgp_decimal=round(dec, 4),
                     sgp_american=decimal_to_american(dec),
