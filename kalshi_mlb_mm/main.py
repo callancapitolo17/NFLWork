@@ -29,9 +29,8 @@ from kalshi_common.ev_calc import maker_fee_per_contract
 from kalshi_common.fair_value import devig_book
 from kalshi_common.leg_types import (
     _parse_event_suffix,
-    _spread_line_from_legs,
-    _total_line_from_legs,
     _MLB_CODE_TO_TEAM,
+    combo_descriptor,
 )
 from kalshi_mlb_mm import config, db, notify, pricing, research, risk, scope, fairs
 from kalshi_mlb_mm.rfq_source import RestRFQSource
@@ -100,23 +99,32 @@ def _consensus_filter(book_fairs: dict[str, float]) -> dict[str, float]:
     return agreeing
 
 
-# book fairs per (game, spread_line, total_line) — mirrors taker _load_book_fairs,
-# but REQUIRES full 4-side devig (no fallback) per accepted-risk #6, then runs
-# through _consensus_filter (v1 correlation defense, replaces MIN_BOOK_COUNT_FOR_BLEND).
-def _book_fairs(game_id, spread_line, total_line):
-    if _SGP_ODDS is None or _SGP_ODDS.empty:
+# book fairs for a combo, keyed by its ComboDescriptor. Looks up the descriptor's
+# 4-cell family in the grid (spread×total OR ml×total), REQUIRES the full 4-side
+# devig (no fallback) per accepted-risk #6, devigs for the cell matching the
+# STATED leg sides (desc.target_combo — fixes the old hardcoded "Home Spread +
+# Over"), then runs the survivors through _consensus_filter.
+def _book_fairs(game_id, desc):
+    if _SGP_ODDS is None or _SGP_ODDS.empty or desc is None:
         return {}
-    rows = _SGP_ODDS[(_SGP_ODDS.game_id == game_id)
-                     & (_SGP_ODDS.spread_line.astype(float).round(2) == round(spread_line, 2))
-                     & (_SGP_ODDS.total_line.astype(float).round(2) == round(total_line, 2))]
+    df = _SGP_ODDS
+    mask = ((df.game_id == game_id)
+            & df.combo.isin(desc.combo_family)
+            & (df.total_line.astype(float).round(2) == round(desc.total_line, 2)))
+    if desc.spread_line is None:
+        # ml×total rows store spread_line = NULL (NaN in pandas).
+        mask &= df.spread_line.isna()
+    else:
+        mask &= (df.spread_line.astype(float).round(2) == round(desc.spread_line, 2))
+    rows = df[mask]
     if rows.empty:
         return {}
     out = {}
     for book in rows.bookmaker.unique():
         sub = rows[rows.bookmaker == book]
-        if len(sub) < 4:        # require full 4-side coverage (no crude fallback)
+        if len(sub) < 4:        # require the full 4-cell grid (no crude fallback)
             continue
-        f = devig_book(sub, combo="Home Spread + Over", vig_fallback=0.0)
+        f = devig_book(sub, combo=desc.target_combo, vig_fallback=0.0)
         if f is not None:
             out[book] = f
     return _consensus_filter(out)
@@ -155,35 +163,24 @@ def _today_fills():
     return [{"game_id": g, "price": exp} for g, exp in rows]
 
 
-def _resolve_game_and_lines(market_ticker, legs):
-    """Resolve game_id + (spread_line, total_line) from decoded legs.
+def _resolve_game(legs):
+    """Classify the combo and resolve its game_id. Returns (game_id|None, desc|None).
 
-    - Parse the spread leg's event-ticker suffix -> (away_code, home_code).
-    - Compute spread_line / total_line directly from the legs.
-    - Map team codes -> canonical names, then look up game_id in
-      MARKET_DB::mlb_target_lines by (home_team, away_team).
-
-    Returns (game_id | None, spread_line, total_line).
+    `desc` (a ComboDescriptor) is returned even when the game can't be resolved,
+    so callers can still log/diagnose; `game_id` is None when the combo isn't a
+    supported shape OR the (home, away) teams aren't in mlb_target_lines yet.
     """
-    spread_leg = next(
-        (l for l in legs if str(l.get("market_ticker", "")).startswith("KXMLBSPREAD-")), None)
-    if not spread_leg:
-        return None, None, None
-    # Event ticker self-encodes away/home: ...-{YYMMMDDHHMM}{Away}{Home}.
-    suffix = str(spread_leg.get("event_ticker", "")).rsplit("-", 1)[-1]
-    away, home = _parse_event_suffix(suffix)
-    if not away or not home:
-        return None, None, None
-    spread_line = _spread_line_from_legs(legs)
-    total_line = _total_line_from_legs(legs)
-    home_name = _MLB_CODE_TO_TEAM.get(home)
-    away_name = _MLB_CODE_TO_TEAM.get(away)
+    desc = combo_descriptor(legs)
+    if desc is None:
+        return None, None
+    home_name = _MLB_CODE_TO_TEAM.get(desc.home_code)
+    away_name = _MLB_CODE_TO_TEAM.get(desc.away_code)
     if not home_name or not away_name or not config.MARKET_DB.exists():
-        return None, spread_line, total_line
+        return None, desc
     try:
         con = duckdb.connect(str(config.MARKET_DB), read_only=True)
     except duckdb.IOException:
-        return None, spread_line, total_line
+        return None, desc
     try:
         row = con.execute(
             "SELECT game_id FROM mlb_target_lines WHERE home_team=? AND away_team=? LIMIT 1",
@@ -192,7 +189,7 @@ def _resolve_game_and_lines(market_ticker, legs):
         row = None
     finally:
         con.close()
-    return (row[0] if row else None), spread_line, total_line
+    return (row[0] if row else None), desc
 
 
 def _get_position_contracts(market_ticker: str, timeout: int = 5) -> int | None:
@@ -383,7 +380,7 @@ def _discovery_tick(source, gateway, dry_run):
         else:
             market = source.get_market(ticker)
             legs = scope.decode_legs(market) if market else None
-            in_scope = bool(legs and scope.is_spread_total_2leg(legs))
+            in_scope = bool(legs and combo_descriptor(legs) is not None)
             game_id = None
             _SCOPE_CACHE[ticker] = (in_scope, game_id, legs)
         if not in_scope:
@@ -429,7 +426,7 @@ def _discovery_tick(source, gateway, dry_run):
         if req_contracts <= 0 and target_cost <= 0:
             _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="size_unknown")
             continue
-        game_id, spread_line, total_line = _resolve_game_and_lines(ticker, legs)
+        game_id, desc = _resolve_game(legs)
         if game_id is None:
             _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="no_game")
             continue
@@ -461,7 +458,7 @@ def _discovery_tick(source, gateway, dry_run):
         if not risk.tipoff_ok(ct, config.TIPOFF_CANCEL_MIN):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id, reason="tipoff")
             continue
-        book_fairs = _book_fairs(game_id, spread_line, total_line)
+        book_fairs = _book_fairs(game_id, desc)
         book_med, blended = fairs.blended_fair(legs, game_id, book_fairs)
         if blended is None or not (config.MIN_FAIR_PROB <= blended <= config.MAX_FAIR_PROB):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
@@ -533,8 +530,8 @@ def _discovery_tick(source, gateway, dry_run):
         research.emit("quote_priced", rfq_id=rid, ticker=ticker,
                       payload=dict(book_fairs=book_fairs, agreeing_count=len(book_fairs),
                                    blended_fair=blended, yes_bid=q.yes_bid, no_bid=q.no_bid,
-                                   spread_line=spread_line, total_line=total_line,
-                                   game_id=game_id))
+                                   combo=desc.target_combo, spread_line=desc.spread_line,
+                                   total_line=desc.total_line, game_id=game_id))
         if dry_run:
             _log_decision("dry_run_quote", rfq_id=rid, ticker=ticker, game_id=game_id,
                           model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
@@ -614,9 +611,8 @@ def _confirm_tick(gateway, dry_run):
                         "UPDATE live_quotes SET status='voided', closed_at=? WHERE quote_id=?",
                         [datetime.now(timezone.utc), qid])
                 continue
-            spread_line = _spread_line_from_legs(legs)
-            total_line = _total_line_from_legs(legs)
-            book_fairs_now = _book_fairs(game_id, spread_line, total_line)
+            desc = combo_descriptor(legs)
+            book_fairs_now = _book_fairs(game_id, desc)
             if not book_fairs_now:
                 _log_decision("voided_no_fresh_books", rfq_id=rid, quote_id=qid, ticker=ticker,
                               game_id=game_id)
@@ -841,9 +837,7 @@ def _risk_sweep_tick(gateway):
             if book_fair_at_q is not None and legs_json:
                 try:
                     legs = json.loads(legs_json)
-                    sl = _spread_line_from_legs(legs)
-                    tl = _total_line_from_legs(legs)
-                    bf_now = _book_fairs(game_id, sl, tl)
+                    bf_now = _book_fairs(game_id, combo_descriptor(legs))
                     if bf_now:
                         cur_med = statistics.median(bf_now.values())
                         if risk.book_move_triggered(book_fair_at_q, cur_med,
