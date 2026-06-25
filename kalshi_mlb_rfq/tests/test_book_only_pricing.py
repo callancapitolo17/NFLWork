@@ -44,3 +44,20 @@ def test_book_implied_cov_fallback_is_rho_one(monkeypatch):
     cov = m._book_implied_cov("g1", a, 0.20, b, 0.20)
     # fallback joint = min(0.30, 0.25) = 0.25; cov = (0.25 - 0.30*0.25) / (0.2*0.2)
     assert cov == pytest.approx((0.25 - 0.30 * 0.25) / 0.04)
+
+
+def test_book_implied_cov_degenerate_price_returns_zero(monkeypatch):
+    import kalshi_mlb_rfq.main as m
+    from kalshi_mlb_rfq.correlation import ComboRegion
+    # Patch fairs so the None-price guard doesn't short-circuit first
+    monkeypatch.setattr(m, "_combo_fair_for_region",
+                        lambda gid, r: 0.30)
+    monkeypatch.setattr(m, "_grid_lookup", lambda gid: (lambda *a: None))
+    a = ComboRegion("home", -1.5, "over", 8.5)
+    b = ComboRegion("home", -1.5, "under", 8.5)
+    # pos_price=0 would ZeroDivisionError in cov_returns — guard must catch it
+    assert m._book_implied_cov("g1", a, 0.20, b, 0) == 0.0
+    # Also guard new_price degenerate cases
+    assert m._book_implied_cov("g1", a, 0, b, 0.20) == 0.0
+    assert m._book_implied_cov("g1", a, 1.0, b, 0.20) == 0.0
+    assert m._book_implied_cov("g1", a, 0.20, b, 1.0) == 0.0

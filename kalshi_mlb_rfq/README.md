@@ -117,6 +117,8 @@ For two legs on the same game where both are spread+total direction pairs (e.g. 
 
 The fallback is strictly safe. Exact inclusion-exclusion for opposite-direction pairs is a planned v2 improvement.
 
+**v1 limitation — bet side not considered.** The v1 engine derives combo regions from leg definitions only (spread line, total line, spread side, total side) and does NOT yet account for whether a position was taken as YES or NO. For mixed yes/no same-game positions the correlation sign is treated conservatively: a hedge is sized as additive risk (down-sized), never as a risk reducer (over-sized). This means the engine is safe — it can only reduce position size relative to independent Kelly, never inflate it — but leaves some hedge efficiency unused when the position is genuinely opposite-direction. Side-aware region lookup and inclusion-exclusion for NO-side positions are planned v2 enhancements, alongside opposite-direction exact joint pricing.
+
 ## Data Sources
 
 The bot reads `Answer Keys/mlb_mm.duckdb` (read-only). This file holds the six consumer-facing tables and is written by `MLB.R`, `mlb_correlated_parlay.R`, `mlb_triple_play.R`, and the SGP scrapers — separate from `mlb.duckdb` (the pipeline's main write target) so lock contention can't block the bot's cache refreshes.

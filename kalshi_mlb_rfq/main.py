@@ -579,6 +579,8 @@ def _book_implied_cov(game_id: str,
     p_b = _combo_fair_for_region(game_id, pos_region)
     if p_a is None or p_b is None:
         return 0.0  # cannot price one leg book-only → no correlation term
+    if not (0 < new_price < 1) or not (0 < pos_price < 1):
+        return 0.0  # degenerate price would cause ZeroDivisionError in cov_returns
     j = correlation.joint_prob(new_region, pos_region, p_a, p_b, _grid_lookup(game_id))
     if j is None:
         j = min(p_a, p_b)  # ρ=1 conservative fallback
