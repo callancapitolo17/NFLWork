@@ -74,7 +74,6 @@ def kelly_size_combo(
         contracts = math.floor(kelly_fraction * base_frac * bankroll / effective_price)
         return max(0, contracts)
 
-    import numpy as np  # local import preserved for parity with existing module
     f_full_new = max(0.0, (mu_new - float(np.dot(np.array(np_cov), np.array(f_placed)))) / var_new)
     contracts = math.floor(kelly_fraction * f_full_new * bankroll / effective_price)
     return max(0, contracts)

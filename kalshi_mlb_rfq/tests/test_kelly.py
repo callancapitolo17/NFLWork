@@ -1,5 +1,3 @@
-import numpy as np
-import pytest
 from kalshi_mlb_rfq import kelly
 
 
@@ -57,7 +55,7 @@ def test_independent_position_matches_base():
     assert same == base
 
 
-def test_negative_correlation_upsizes_but_bounded():
+def test_negative_correlation_upsizes():
     base = kelly.kelly_size_combo(
         outcome_vec=None, blended_fair=0.30, existing_positions=[],
         effective_price=0.20, bankroll=BANK, kelly_fraction=KF)
