@@ -407,12 +407,20 @@ def _load_samples_for_game(game_id: str) -> pd.DataFrame | None:
     return df if df is not None and not df.empty else None
 
 
-def _load_book_fairs(game_id: str, spread_line: float, total_line: float) -> dict[str, float]:
+def _load_book_fairs(game_id: str, spread_line: float, total_line: float,
+                     spread_side: str = "home", total_side: str = "over") -> dict[str, float]:
     """Per-line book lookup with N>=2 gate.
 
     Returns {book -> devigged_fair} only if at least MIN_BOOK_COUNT_FOR_BLEND
     books priced the matching (game, spread, total) tuple. Empty dict
     otherwise — caller treats as 'no book signal, drop candidate'.
+
+    spread_side/total_side select WHICH of the four SGP quadrants to devig
+    ("Home Spread + Over" etc.). The cache stores one home-perspective
+    spread_line per (game, total) with all four quadrant rows, so the row
+    filter is the same for every quadrant — only the devig target differs.
+    Defaults preserve the legacy "Home Spread + Over" behaviour for callers
+    that don't specify a quadrant.
     """
     if _SGP_ODDS_CACHE is None or _SGP_ODDS_CACHE.empty:
         return {}
@@ -427,11 +435,12 @@ def _load_book_fairs(game_id: str, spread_line: float, total_line: float) -> dic
     ]
     if rows.empty:
         return {}
+    label = f"{spread_side.title()} Spread + {total_side.title()}"
     out: dict[str, float] = {}
     for book in rows["bookmaker"].unique():
         sub = rows[rows["bookmaker"] == book].copy()
         fair_per_book = fair_value.devig_book(
-            sub, combo="Home Spread + Over",
+            sub, combo=label,
             vig_fallback=_vig_fallback(book),
         )
         if fair_per_book is not None:
@@ -606,16 +615,20 @@ def _fresh_blended_fair(combo_market_ticker: str) -> tuple[float | None, dict]:
 
     spread_line = _spread_line_from_legs(legs)
     total_line = _total_line_from_legs(legs)
-    book_fairs = _load_book_fairs(game_id, spread_line, total_line)
+    typed = [_leg_dict_to_typed(l, game_id) for l in legs]
+    if any(l is None for l in typed):
+        return None, {}
+    region = _combo_region_from_legs(typed)
+    if region is None:
+        return None, {}
+    book_fairs = _load_book_fairs(game_id, spread_line, total_line,
+                                  region.spread_side, region.total_side)
 
     if not config.USE_MODEL:
         return _book_only_fair(book_fairs), book_fairs
 
     samples = _load_samples_for_game(game_id)
     if samples is None:
-        return None, {}
-    typed = [_leg_dict_to_typed(l, game_id) for l in legs]
-    if any(l is None for l in typed):
         return None, {}
     model = fair_value.model_fair(samples, typed)
     return fair_value.blend(model, book_fairs), book_fairs
@@ -1672,7 +1685,14 @@ def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandida
                                       cand=cand, spread_line=spread_line,
                                       total_line=total_line)
                 continue
-            books = _load_book_fairs(game_id, spread_line, total_line)
+            region = _combo_region_from_legs(typed)
+            if region is None:
+                _emit_candidate_event("rejected_no_mapping", game_id=game_id,
+                                      cand=cand, spread_line=spread_line,
+                                      total_line=total_line)
+                continue
+            books = _load_book_fairs(game_id, spread_line, total_line,
+                                     region.spread_side, region.total_side)
             if config.USE_MODEL:
                 model = fair_value.model_fair(samples, typed)
                 blended = fair_value.blend(model, books)
