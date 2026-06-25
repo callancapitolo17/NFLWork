@@ -82,6 +82,9 @@ def _classify(name: str) -> tuple[str, str] | None:
     low = " ".join(low.split())  # collapse internal whitespace
     fg_spread = {"run line", "alternate run line"}
     fg_total = {"total runs", "alternate total runs"}
+    # Moneyline (for ML×total combos). ML_TOTAL_FAMILY is FG-only, so only the
+    # full-game moneyline is classified. Accept the common name variants.
+    fg_ml = {"moneyline", "money line"}
     f5_spread = {"1st 5 innings run line", "alternate 1st 5 innings run line",
                  "1st 5 innings - run line"}
     f5_total = {"1st 5 innings total runs", "alternate 1st 5 innings total runs",
@@ -90,6 +93,8 @@ def _classify(name: str) -> tuple[str, str] | None:
         return ("FG", "spread")
     if low in fg_total:
         return ("FG", "total")
+    if low in fg_ml:
+        return ("FG", "moneyline")
     if low in f5_spread:
         return ("F5", "spread")
     if low in f5_total:
@@ -113,7 +118,8 @@ def parse_markets(event: dict) -> dict:
                     "totals":  {line: {"over": leg, "under": leg}}},
              "F5": {...}}  where each leg is a /bets/details leg dict.
     """
-    out = {"FG": {"spreads": {}, "totals": {}}, "F5": {"spreads": {}, "totals": {}}}
+    out = {"FG": {"spreads": {}, "totals": {}, "moneyline": None},
+           "F5": {"spreads": {}, "totals": {}, "moneyline": None}}
     eid = event.get("id")
     cid = event.get("competitionId")
     for grp in event.get("keyMarketGroups", []) or []:
@@ -124,6 +130,18 @@ def parse_markets(event: dict) -> dict:
             period, kind = cls
             sels = m.get("selections") or []
             if not sels:
+                continue
+            if kind == "moneyline":
+                # Moneyline markets carry no `line`; selections are typed
+                # home/away exactly like the run-line market, so the leg builder
+                # works unchanged with line=None (the /bets/details default).
+                home = next((s for s in sels if s.get("type") == "home"), None)
+                away = next((s for s in sels if s.get("type") == "away"), None)
+                if home and away:
+                    out[period]["moneyline"] = {
+                        "home": _leg(home, m, eid, cid),
+                        "away": _leg(away, m, eid, cid),
+                    }
                 continue
             line = m.get("line")
             if line is None:
@@ -284,6 +302,41 @@ def price_sgps(
                     sgp_american=am if am is not None else decimal_to_american(dec),
                     fetch_time=fetch_now,
                 ))
+
+        # ----- Phase 3: moneyline × total combos (FG only; spread_line=None) --- #
+        # ML_TOTAL_FAMILY is FG-only, matching the other books. Reuses the
+        # over/under legs already resolved for this target; the DB upsert dedups
+        # any repeats across targets that share a total.
+        ml = per.get("moneyline")
+        if t.period == "FG" and ml:
+            ml_combos = (
+                ("Home ML + Over", ml["home"], to["over"]),
+                ("Home ML + Under", ml["home"], to["under"]),
+                ("Away ML + Over", ml["away"], to["over"]),
+                ("Away ML + Under", ml["away"], to["under"]),
+            )
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                futs = [pool.submit(_price_combo, c, s, o) for c, s, o in ml_combos]
+                for f in as_completed(futs):
+                    try:
+                        combo_name, res = f.result()
+                    except Exception:
+                        continue
+                    if res is None:
+                        continue
+                    dec, am = res
+                    rows.append(PricedRow(
+                        game_id=t.game_id,
+                        combo=combo_name,
+                        period=t.period,
+                        spread_line=None,
+                        total_line=t.total,
+                        bookmaker=BOOK_NAME,
+                        source=SOURCE_LABEL,
+                        sgp_decimal=round(dec, 4),
+                        sgp_american=am if am is not None else decimal_to_american(dec),
+                        fetch_time=fetch_now,
+                    ))
         return rows
 
     out: list[PricedRow] = []
