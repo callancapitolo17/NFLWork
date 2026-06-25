@@ -85,6 +85,7 @@ class TestCorrelatedAddIsDownsized:
         region = correlation.ComboRegion("home", -1.5, "over", 8.5)
         price = 0.30
 
+        # all 4 cells symmetric at 3.3 → devigged ~0.25 each → cov_return ≈ 0.19 > 0
         cov = m._book_implied_cov("g1", region, price, region, price)
         assert cov > 0, (
             f"Same-direction combos must have positive cov_return, got {cov}"
@@ -139,6 +140,7 @@ class TestCorrelatedAddIsDownsized:
     def test_independent_position_does_not_downsize(self, monkeypatch):
         """A held position with zero covariance (cov_return=0) must not reduce sizing."""
         monkeypatch.setattr(cfg, "USE_MODEL", False)
+        monkeypatch.setattr(cfg, "MIN_BOOK_COUNT_FOR_BLEND", 2)
         monkeypatch.setattr(m, "_SGP_ODDS_CACHE", _seed_grid())
 
         price = 0.30
@@ -173,6 +175,7 @@ class TestCorrelatedAddIsDownsized:
     def test_load_existing_positions_book_empty_when_no_held(self, monkeypatch, tmp_path):
         """Smoke: `_load_existing_positions_book` returns [] when positions table is empty."""
         monkeypatch.setattr(cfg, "USE_MODEL", False)
+        monkeypatch.setattr(cfg, "MIN_BOOK_COUNT_FOR_BLEND", 2)
         monkeypatch.setattr(m, "_SGP_ODDS_CACHE", _seed_grid())
 
         # Build a minimal DuckDB with the required tables but no held positions.

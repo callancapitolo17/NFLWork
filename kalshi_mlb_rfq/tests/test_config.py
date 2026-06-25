@@ -42,8 +42,10 @@ def test_research_knobs_have_defaults():
     assert config_mod.RESEARCH_BUFFER_MAX == 50000
 
 
-def test_use_model_defaults_off():
+def test_use_model_defaults_off(monkeypatch):
     import importlib
+    # Unset any ambient USE_MODEL env var so we test the true default (False).
+    monkeypatch.delenv("USE_MODEL", raising=False)
     import kalshi_mlb_rfq.config as c
     importlib.reload(c)
     assert c.USE_MODEL is False
