@@ -40,3 +40,15 @@ def test_scan_books_does_not_crash_on_query_error(monkeypatch, tmp_path):
     assert len(gaps) == 1
     assert gaps[0].book == "bookbad" and gaps[0].gap_type == "freshness"
     assert "detection failed" in gaps[0].detail
+
+
+def test_scan_screen_does_not_crash_on_bad_schema(monkeypatch, tmp_path):
+    # Screen DB opens but the expected table is missing → gap, not a raised exception.
+    import duckdb
+    bad = tmp_path / "mm_bad.duckdb"
+    c = duckdb.connect(str(bad)); c.execute("CREATE TABLE unrelated(x INT)"); c.close()
+    monkeypatch.setattr(audit, "SCREEN_DB", bad)
+    gaps = audit.scan_screen()  # must not raise
+    assert len(gaps) == 1
+    assert gaps[0].book == "(screen)" and gaps[0].gap_type == "book_absent"
+    assert "unreadable" in gaps[0].detail

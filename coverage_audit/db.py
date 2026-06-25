@@ -15,5 +15,7 @@ def connect_readonly(path: Path):
 
 def connect_coverage():
     """Open (creating if needed) the coverage output DB read-write."""
+    # Read the module attribute at call time (not a local import) so tests can
+    # monkeypatch coverage_audit.db.COVERAGE_DB_PATH to redirect to a temp DB.
     COVERAGE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     return duckdb.connect(str(COVERAGE_DB_PATH))

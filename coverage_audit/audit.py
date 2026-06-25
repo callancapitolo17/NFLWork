@@ -48,6 +48,10 @@ def scan_screen():
                       detail=f"screen DB unreadable at {SCREEN_DB}")]
     try:
         labels = D.screen_bookmakers(con)
+    except Exception as e:
+        # Readable DB but missing/renamed table → degrade to a gap, never abort the audit.
+        return [D.Gap(book="(screen)", gap_type="book_absent", severity="alert",
+                      detail=f"screen table unreadable in {SCREEN_DB}: {e}")]
     finally:
         con.close()
     return D.detect_screen_absence(get_books(), labels)
