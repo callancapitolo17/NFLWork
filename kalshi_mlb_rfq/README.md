@@ -1,6 +1,6 @@
 # Kalshi MLB RFQ Bot
 
-Autonomous taker daemon that auto-RFQs MLB game-line same-game-parlays on Kalshi (cross-category MVE collection), evaluates maker quotes against a model + sportsbook blended fair value, and auto-accepts +EV quotes within a complete safety scaffold.
+Autonomous taker daemon that auto-RFQs MLB game-line same-game-parlays on Kalshi (cross-category MVE collection), evaluates maker quotes against a sportsbook-consensus fair value (book-only by default; Monte-Carlo model optional), and auto-accepts +EV quotes within a complete safety scaffold.
 
 **Spec:** `docs/superpowers/specs/2026-04-27-kalshi-mlb-rfq-bot-design.md`
 **Plan:** `docs/superpowers/plans/2026-04-29-kalshi-mlb-rfq-bot.md`
@@ -83,6 +83,40 @@ These **complement** the state DB (`quote_log`, `fills`, `live_rfqs`) — they d
 
 Requires `scipy>=1.10` (added to `requirements.txt`). Run `pip install -r requirements.txt` after pulling this change.
 
+## Pricing & correlation
+
+### Fair-value mode (`USE_MODEL`)
+
+| `USE_MODEL` | Fair-value formula | Staleness gate |
+|---|---|---|
+| `false` (default) | `median(devigged book prices)` across ≥2 books | **Skipped** |
+| `true` | `blend(model, median(books))` — weighted average | Enforced (`MAX_PREDICTION_STALENESS_SEC`) |
+
+**Why book-only is the default.** The Monte-Carlo model's external refresh cadence can degrade, causing the 600s staleness gate to reject up to 95% of quotes as `declined_stale_predictions`. Book-only pricing eliminates that dependency while keeping the ≥2-book consensus floor for quality control.
+
+The ≥2-book floor (`MIN_BOOK_COUNT_FOR_BLEND`) is enforced in both modes — single-book candidates are dropped regardless.
+
+### Book-implied correlation engine (`correlation.py`)
+
+Kelly sizing accounts for correlation between same-game combo legs so correlated bets can't be overbet relative to independent sizing.
+
+**How it works (v1):**
+
+For two legs on the same game where both are spread+total direction pairs (e.g. Home Spread + Over):
+
+1. The **joint probability P(A∩B)** is read directly from the 4-cell SGP spread×total grid at the matching grid cell. This is exact — it uses the book's own correlated market price, not an approximation.
+2. **Covariance** `Cov(A,B) = P(A∩B) − P(A)×P(B)` feeds into the Kelly variance term, sizing down when the legs move together.
+3. A **Fréchet–Hoeffding clamp** enforces `|ρ| ≤ 1` — the implied correlation can't violate probability bounds regardless of book noise.
+
+**Fallback (ρ=1).** When the exact grid joint is unavailable — same-game opposite-direction pairs (e.g. Home Spread + Under, which share a grid diagonal), or any cross-category leg (player props, cross-game combos) — the engine uses `P(A∩B) = min(P_a, P_b)` (the Fréchet upper bound). This is the most conservative possible assumption: it sizes the bet as if the legs are perfectly positively correlated. It can only down-size relative to independent Kelly; it can never over-bet.
+
+**v1 scope summary:**
+- Same-game spread+total, same direction → exact grid joint (tight sizing)
+- Same-game spread+total, opposite direction → ρ=1 fallback (conservative)
+- Cross-category / player props / cross-game → ρ=1 fallback (conservative)
+
+The fallback is strictly safe. Exact inclusion-exclusion for opposite-direction pairs is a planned v2 improvement.
+
 ## Data Sources
 
 The bot reads `Answer Keys/mlb_mm.duckdb` (read-only). This file holds the six consumer-facing tables and is written by `MLB.R`, `mlb_correlated_parlay.R`, `mlb_triple_play.R`, and the SGP scrapers — separate from `mlb.duckdb` (the pipeline's main write target) so lock contention can't block the bot's cache refreshes.
@@ -140,7 +174,8 @@ See `.env.example`. Most relevant:
   prices at create time. Defaults to `MIN_EV_PCT`. Raise to size more
   conservatively, lower to be more aggressive
 - `MAX_GAME_EXPOSURE_PCT`, `DAILY_EXPOSURE_CAP_USD` — exposure caps
-- `MAX_PREDICTION_STALENESS_SEC` — accept-gate staleness threshold (10 min default)
+- `USE_MODEL` — `false` (default): price fair value as `median(books)`, skip prediction-staleness gate. `true`: blend Monte-Carlo model with books (legacy mode; requires fresh model predictions).
+- `MAX_PREDICTION_STALENESS_SEC` — staleness threshold for model predictions (10 min default); **only enforced when `USE_MODEL=true`**
 - `MIN_FILL_RATIO`, `FILL_RATIO_WINDOW` — adverse-selection halt
 - `RESEARCH_CANDIDATE_SAMPLING` — fraction of `candidate_evaluated` events to log (1.0 = full movie)
 - `RESEARCH_BUFFER_MAX` — research event buffer cap (drops oldest beyond this)
@@ -149,9 +184,9 @@ See `.env.example`. Most relevant:
 ## Safety scaffold (per-accept gates)
 
 Every quote acceptance must pass ALL of:
-- Min EV after fee · Fair-value bounds · Prediction staleness
+- Min EV after fee · Fair-value bounds · Prediction staleness (**model-only**, skipped when `USE_MODEL=false`)
 - Tipoff window (5 min before first pitch) · Line-move check · Per-game exposure cap (% of bankroll)
-- Daily exposure cap · Kill-switch off · Inverse-combo not held · 2-source gate (model + ≥1 book)
+- Daily exposure cap · Kill-switch off · Inverse-combo not held · ≥2-book floor (`MIN_BOOK_COUNT_FOR_BLEND`)
 - Per-combo cooldown (30s post-fill) · Positions API health · Fill-ratio halt (rolling 50 attempts)
 
 Acceptance is serialized via `ACCEPT_LOCK` so concurrent quotes Kelly-size against fresh DB state.
@@ -159,7 +194,7 @@ Acceptance is serialized via `ACCEPT_LOCK` so concurrent quotes Kelly-size again
 ## Troubleshooting
 
 - **No combos surfacing:** check that `mlb_game_samples` and `mlb_sgp_odds` are populated. Run the MLB pipeline first.
-- **All quotes declining `declined_stale_predictions`:** rerun the pipeline; samples are over 10 minutes old.
+- **All quotes declining `declined_stale_predictions`:** this gate only runs when `USE_MODEL=true`. If you're seeing it with `USE_MODEL=false`, check your `.env`. If intentionally running with the model, rerun the pipeline — samples are over 10 minutes old.
 - **Bot halted on `fill_ratio_collapse`:** investigate — makers are walking on accepts at a rate that suggests adverse selection. Check `quote_log` for the maker `creator_id`s causing it.
 - **`mint_combo_ticker` failing with 400:** the MVE collection ticker may have changed or one of the leg market_tickers doesn't exist. Re-run `mlb_sgp/recon_kalshi_mlb_rfq.py` for a fresh probe.
 
