@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from kalshi_mlb_rfq import (
-    auth_client, combo_enumerator, config, db, ev_calc,
+    auth_client, combo_enumerator, config, correlation, db, ev_calc,
     fair_value, kelly, notify, research, rfq_client, risk, sgp_runner,
 )
 from kalshi_mlb_rfq.config import (
@@ -151,14 +151,27 @@ def _refresh_caches(retries: int = 5) -> bool:
             continue
 
         try:
-            # mlb_game_samples
             t0 = time.time()
-            samples_df = con.execute(
-                "SELECT game_id, sim_idx, home_margin, total_final_score, "
-                "home_margin_f5, total_f5 FROM mlb_game_samples"
-            ).fetchdf()
-            samples_by_game = {gid: g.reset_index(drop=True)
-                                for gid, g in samples_df.groupby("game_id")}
+
+            # mlb_game_samples and mlb_samples_meta are only loaded when the model
+            # is active. In book-only mode (USE_MODEL=False) these tables may not
+            # exist or be up to date; skipping them avoids DuckDB catalog errors
+            # and removes the dependency on the R pipeline entirely.
+            if config.USE_MODEL:
+                samples_df = con.execute(
+                    "SELECT game_id, sim_idx, home_margin, total_final_score, "
+                    "home_margin_f5, total_f5 FROM mlb_game_samples"
+                ).fetchdf()
+                samples_by_game = {gid: g.reset_index(drop=True)
+                                    for gid, g in samples_df.groupby("game_id")}
+                meta_row = con.execute(
+                    "SELECT generated_at FROM mlb_samples_meta "
+                    "ORDER BY generated_at DESC LIMIT 1"
+                ).fetchone()
+                generated_at = meta_row[0] if meta_row else None
+            else:
+                samples_by_game = {}
+                generated_at = None
 
             # mlb_sgp_odds is owned exclusively by _refresh_sgp_cache (reads
             # the bot market DB on its own 60s cadence). Do NOT touch
@@ -172,13 +185,6 @@ def _refresh_caches(retries: int = 5) -> bool:
             parlay_lines = _build_parlay_lines_cache(
                 bot_db=str(config.BOT_MARKET_DB),
             )
-
-            # samples meta — generated_at
-            meta_row = con.execute(
-                "SELECT generated_at FROM mlb_samples_meta "
-                "ORDER BY generated_at DESC LIMIT 1"
-            ).fetchone()
-            generated_at = meta_row[0] if meta_row else None
         except duckdb.CatalogException as e:
             # Schema mismatch / table missing — typically the R pipeline is
             # mid-atomic-replace (DROP + CREATE). Retry with backoff parallel
@@ -454,6 +460,131 @@ def _book_only_fair(book_fairs: dict) -> float | None:
     return statistics.median(vals) if vals else None
 
 
+def _staleness_gate_ok() -> tuple[bool, str]:
+    """Model-prediction staleness — only meaningful when the model prices.
+
+    When USE_MODEL is False the bot never loads mlb_game_samples / mlb_samples_meta,
+    so _SAMPLES_META_GENERATED_AT will always be None. Gating on it would decline
+    every quote; skip the check entirely in book-only mode.
+    """
+    if not config.USE_MODEL:
+        return True, "passed"
+    gen_at = _samples_generated_at()
+    if gen_at is None or not risk.staleness_ok(gen_at, config.MAX_PREDICTION_STALENESS_SEC):
+        return False, "declined_stale_predictions"
+    return True, "passed"
+
+
+def _grid_lookup(game_id: str):
+    """Return a closure: (spread_line, total_line, spread_side, total_side) -> median
+    book probability for that SGP quadrant, or None if <MIN_BOOK_COUNT_FOR_BLEND
+    books priced it.
+
+    The closure devigged each book's row the same way _load_book_fairs does,
+    but accepts the quadrant label dynamically so all four combos are priceable.
+    """
+    def lookup(spread_line, total_line, spread_side, total_side):
+        if _SGP_ODDS_CACHE is None or _SGP_ODDS_CACHE.empty:
+            return None
+        label = f"{spread_side.title()} Spread + {total_side.title()}"
+        rows = _SGP_ODDS_CACHE[
+            (_SGP_ODDS_CACHE["game_id"] == game_id)
+            & (_SGP_ODDS_CACHE["spread_line"].astype(float).round(2) == round(float(spread_line), 2))
+            & (_SGP_ODDS_CACHE["total_line"].astype(float).round(2) == round(float(total_line), 2))
+        ]
+        if rows.empty:
+            return None
+        out = []
+        for book in rows["bookmaker"].unique():
+            sub = rows[rows["bookmaker"] == book]
+            f = fair_value.devig_book(sub, combo=label, vig_fallback=_vig_fallback(book))
+            if f is not None:
+                out.append(f)
+        if len(out) < config.MIN_BOOK_COUNT_FOR_BLEND:
+            return None
+        return statistics.median(out)
+    return lookup
+
+
+def _combo_region_from_legs(typed_legs: list) -> "correlation.ComboRegion | None":
+    """Map a list of typed legs (SpreadLeg / TotalLeg) to a ComboRegion.
+
+    Returns None if the combo lacks exactly one spread and one total leg
+    (e.g. player-prop cross-category legs that can't be priced on the grid).
+
+    Spread-side convention: ComboRegion.spread_side is the COVERING team
+    ("home" when the home team covers, "away" when the away team covers),
+    independent of which Kalshi side (yes/no) the bet is on.
+
+    SpreadLeg mapping:
+      team_is_home=True,  side="yes"  → home covers    → "home"
+      team_is_home=True,  side="no"   → away covers    → "away"
+      team_is_home=False, side="yes"  → away covers    → "away"
+      team_is_home=False, side="no"   → home covers    → "home"
+    ⟹ spread_side = "home" if (team_is_home == (side == "yes")) else "away"
+
+    spread_line is stored home-perspective in _SGP_ODDS_CACHE (e.g. -1.5
+    for home -1.5), matching _spread_line_from_legs: -(line_n - 0.5).
+
+    TotalLeg mapping:
+      side="yes" → over;  side="no" → under
+      total_line = line_n - 0.5  (same formula as _total_line_from_legs)
+    """
+    spread_leg = None
+    total_leg = None
+    for leg in typed_legs:
+        if isinstance(leg, fair_value.SpreadLeg):
+            if spread_leg is not None:
+                return None  # multiple spread legs → not a grid combo
+            spread_leg = leg
+        elif isinstance(leg, fair_value.TotalLeg):
+            if total_leg is not None:
+                return None  # multiple total legs → not a grid combo
+            total_leg = leg
+    if spread_leg is None or total_leg is None:
+        return None  # missing one of the two legs
+
+    spread_side = "home" if (spread_leg.team_is_home == (spread_leg.side == "yes")) else "away"
+    spread_line = -(spread_leg.line_n - 0.5)   # home-perspective, e.g. n=2 → -1.5
+    total_side = "over" if total_leg.side == "yes" else "under"
+    total_line = total_leg.line_n - 0.5         # e.g. n=8 → 7.5
+
+    return correlation.ComboRegion(
+        spread_side=spread_side,
+        spread_line=spread_line,
+        total_side=total_side,
+        total_line=total_line,
+    )
+
+
+def _combo_fair_for_region(game_id: str, r: "correlation.ComboRegion") -> "float | None":
+    """Book-implied probability for a ComboRegion on a specific game."""
+    return _grid_lookup(game_id)(r.spread_line, r.total_line, r.spread_side, r.total_side)
+
+
+def _book_implied_cov(game_id: str,
+                       new_region: "correlation.ComboRegion",
+                       new_price: float,
+                       pos_region: "correlation.ComboRegion",
+                       pos_price: float) -> float:
+    """Return-space covariance between a new bet and an existing position,
+    using book-implied joint probability from the SGP grid.
+
+    Falls back to ρ=1 (joint = min(P_a, P_b)) when the grid cannot price the
+    joint — conservative because it maximally penalises correlated positions.
+    Returns 0.0 if either single-leg probability is missing (can't price one
+    side at all → skip the correlation term rather than guess).
+    """
+    p_a = _combo_fair_for_region(game_id, new_region)
+    p_b = _combo_fair_for_region(game_id, pos_region)
+    if p_a is None or p_b is None:
+        return 0.0  # cannot price one leg book-only → no correlation term
+    j = correlation.joint_prob(new_region, pos_region, p_a, p_b, _grid_lookup(game_id))
+    if j is None:
+        j = min(p_a, p_b)  # ρ=1 conservative fallback
+    return correlation.cov_returns(p_a, p_b, j, new_price, pos_price)
+
+
 def _fresh_blended_fair(combo_market_ticker: str) -> tuple[float | None, dict]:
     """Return (blended_fair, book_fairs).
 
@@ -491,10 +622,10 @@ def _fresh_blended_fair(combo_market_ticker: str) -> tuple[float | None, dict]:
 def _all_per_accept_gates_pass(quote: dict, fair: float,
                                 combo_meta: dict) -> tuple[bool, str]:
     """Run every per-accept gate. Returns (pass, decision_label)."""
-    # Prediction staleness
-    gen_at = _samples_generated_at()
-    if gen_at is None or not risk.staleness_ok(gen_at, config.MAX_PREDICTION_STALENESS_SEC):
-        return False, "declined_stale_predictions"
+    # Prediction staleness (skipped when USE_MODEL is False)
+    ok, decision = _staleness_gate_ok()
+    if not ok:
+        return False, decision
 
     # Tipoff window
     ct = _commence_time_for_game(combo_meta["game_id"])
@@ -603,6 +734,50 @@ def _load_existing_positions_for_game(game_id: str,
     return existing
 
 
+def _load_existing_positions_book(game_id: str,
+                                   new_region: "correlation.ComboRegion | None",
+                                   new_price: float,
+                                   side: str) -> list[dict]:
+    """Book-only equivalent of _load_existing_positions_for_game.
+
+    Reads held same-game positions from the positions table (leg-sets via
+    combo_cache), types each position's legs, derives its ComboRegion, and
+    builds the cov_return via the book-implied correlation engine.
+
+    Positions whose legs can't be mapped to a ComboRegion (non-grid combos,
+    e.g. player-prop cross-category legs) are skipped — they contribute 0
+    covariance by omission, which is equivalent to assuming independence.
+
+    If new_region is None (the new bet itself is non-grid), we can't compute
+    any covariance, so return an empty list (no correlation adjustment).
+    """
+    if new_region is None:
+        return []
+    with db.connect(read_only=True) as con:
+        pos_rows = con.execute(
+            "SELECT cc.legs_json, p.net_contracts, p.weighted_price, p.side "
+            "FROM positions p JOIN combo_cache cc "
+            "ON cc.combo_market_ticker = p.combo_market_ticker "
+            "WHERE p.game_id = ? AND p.net_contracts > 0",
+            [game_id]
+        ).fetchall()
+    existing = []
+    for legs_json, n, price, pos_side in pos_rows:
+        typed_pos = [_leg_dict_to_typed(l, game_id) for l in json.loads(legs_json)]
+        if any(t is None for t in typed_pos):
+            continue
+        pos_region = _combo_region_from_legs(typed_pos)
+        if pos_region is None:
+            continue  # non-grid position; skip correlation term
+        cov = _book_implied_cov(game_id, new_region, new_price, pos_region, float(price))
+        existing.append({
+            "cov_return": cov,
+            "contracts": float(n),
+            "effective_price": float(price),
+        })
+    return existing
+
+
 def _kelly_size_for_quote(quote: dict, fair: float, side: str = "yes") -> int:
     """Conditional Kelly sizing at quote-evaluation time. The maker's
     no_bid/yes_bid is known, so effective_price is exact (no estimation).
@@ -626,10 +801,6 @@ def _kelly_size_for_quote(quote: dict, fair: float, side: str = "yes") -> int:
         return 0
     game_id, combo_market_ticker = meta
 
-    samples = _load_samples_for_game(game_id)
-    if samples is None or samples.empty:
-        return 0
-
     with db.connect(read_only=True) as con:
         row = con.execute(
             "SELECT legs_json FROM combo_cache WHERE combo_market_ticker=?",
@@ -639,11 +810,6 @@ def _kelly_size_for_quote(quote: dict, fair: float, side: str = "yes") -> int:
         return 0
     legs = json.loads(row[0])
     typed_legs = [_leg_dict_to_typed(l, game_id) for l in legs]
-    outcome_vec = _outcome_vec_for_legs(samples, typed_legs, side=side)
-    if outcome_vec is None:
-        return 0
-
-    existing = _load_existing_positions_for_game(game_id, samples)
 
     no_bid  = float(quote.get("no_bid_dollars")  or 0)
     yes_bid = float(quote.get("yes_bid_dollars") or 0)
@@ -654,8 +820,21 @@ def _kelly_size_for_quote(quote: dict, fair: float, side: str = "yes") -> int:
     fee = ev_calc.fee_per_contract(ask)
     effective_price = ask + fee
 
+    if config.USE_MODEL:
+        samples = _load_samples_for_game(game_id)
+        if samples is None or samples.empty:
+            return 0
+        outcome_vec = _outcome_vec_for_legs(samples, typed_legs, side=side)
+        if outcome_vec is None:
+            return 0
+        existing = _load_existing_positions_for_game(game_id, samples)
+    else:
+        outcome_vec = None
+        new_region = _combo_region_from_legs(typed_legs)
+        existing = _load_existing_positions_book(game_id, new_region, effective_price, side)
+
     return kelly.kelly_size_combo(
-        outcome_vec=np.asarray(outcome_vec),
+        outcome_vec=outcome_vec,
         blended_fair=fair if side == "yes" else (1 - fair),
         existing_positions=existing,
         effective_price=effective_price,
@@ -705,7 +884,7 @@ def _worst_acceptable_ask(blended_fair: float, side: str,
 
 def _kelly_size_for_candidate(game_id: str,
                                 typed_legs: list,
-                                samples: pd.DataFrame,
+                                samples: "pd.DataFrame | None",
                                 blended_fair: float,
                                 leg_set_hash: str | None = None,
                                 ) -> tuple[int, int, float, float]:
@@ -714,24 +893,23 @@ def _kelly_size_for_candidate(game_id: str,
     Returns (kelly_yes_n, kelly_no_n, worst_yes_ask, worst_no_ask). Any side
     with no acceptable price returns (n=0, ask=0.0) for that side.
 
-    Sizing rationale per side:
-      - Compute worst-acceptable ask via binary search at MIN_EV_PCT floor.
-      - Build the side's outcome_vec (combo hits for YES, misses for NO).
-      - Kelly with the side's effective_price + (blended_fair for YES,
-        1-blended_fair for NO).
-    Existing positions on the same game are loaded once and reused; each
-    row's outcome_vec is inverted if its stored side is "no" (handled by
-    _load_existing_positions_for_game).
-    """
-    if samples is None or samples.empty:
-        return 0, 0, 0.0, 0.0
+    When USE_MODEL is True: loads game samples + builds outcome_vec per side.
+    When USE_MODEL is False: uses book-implied correlation for existing positions;
+      samples is expected to be None and is not consulted.
 
-    existing = _load_existing_positions_for_game(game_id, samples)
+    Existing positions on the same game are loaded once and reused:
+      - model path: via _load_existing_positions_for_game (outcome_vec based)
+      - book path:  via _load_existing_positions_book (cov_return based)
+    """
+    if config.USE_MODEL:
+        if samples is None or samples.empty:
+            return 0, 0, 0.0, 0.0
+        existing = _load_existing_positions_for_game(game_id, samples)
+    else:
+        # Pre-compute the new combo's region once; reused for both sides.
+        new_region = _combo_region_from_legs(typed_legs)
 
     def kelly_for_side(side: str) -> tuple[int, float]:
-        outcome_vec = _outcome_vec_for_legs(samples, typed_legs, side=side)
-        if outcome_vec is None:
-            return 0, 0.0
         ask = _worst_acceptable_ask(
             blended_fair, side, config.KELLY_CREATE_EV_FLOOR_PCT)
         if ask <= 0:
@@ -739,10 +917,21 @@ def _kelly_size_for_candidate(game_id: str,
         fee = ev_calc.fee_per_contract(ask)
         effective_price = ask + fee
         p = blended_fair if side == "yes" else (1.0 - blended_fair)
+
+        if config.USE_MODEL:
+            outcome_vec = _outcome_vec_for_legs(samples, typed_legs, side=side)
+            if outcome_vec is None:
+                return 0, 0.0
+            existing_for_side = existing
+        else:
+            outcome_vec = None
+            existing_for_side = _load_existing_positions_book(
+                game_id, new_region, effective_price, side)
+
         n = kelly.kelly_size_combo(
-            outcome_vec=np.asarray(outcome_vec),
+            outcome_vec=outcome_vec,
             blended_fair=p,
-            existing_positions=existing,
+            existing_positions=existing_for_side,
             effective_price=effective_price,
             bankroll=config.BANKROLL,
             kelly_fraction=config.KELLY_FRACTION,
@@ -751,12 +940,13 @@ def _kelly_size_for_candidate(game_id: str,
 
     yes_n, yes_ask = kelly_for_side("yes")
     no_n,  no_ask  = kelly_for_side("no")
+    existing_for_log = existing if config.USE_MODEL else []
     research.emit("kelly_sized", game_id=game_id,
                   leg_set_hash=leg_set_hash,
                   blended_fair=blended_fair,
                   kelly_yes_n=yes_n, kelly_no_n=no_n,
                   worst_yes_ask=yes_ask, worst_no_ask=no_ask,
-                  n_existing_positions=len(existing),
+                  n_existing_positions=len(existing_for_log),
                   bankroll=config.BANKROLL,
                   kelly_fraction=config.KELLY_FRACTION)
     return yes_n, no_n, yes_ask, no_ask
