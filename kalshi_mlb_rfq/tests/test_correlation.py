@@ -1,4 +1,3 @@
-import math
 import pytest
 from kalshi_mlb_rfq.correlation import (
     ComboRegion, frechet_clamp, joint_prob, cov_returns,
@@ -52,6 +51,12 @@ def test_joint_opposite_direction_returns_none():
     assert joint_prob(a, b, 0.3, 0.3, _grid({})) is None
 
 
+def test_joint_opposite_spread_returns_none():
+    a = ComboRegion("home", -1.5, "over", 8.5)
+    b = ComboRegion("away", -1.5, "over", 8.5)
+    assert joint_prob(a, b, 0.3, 0.3, _grid({})) is None
+
+
 def test_joint_missing_cell_returns_none():
     a = ComboRegion("home", -1.5, "over", 8.5)
     b = ComboRegion("home", -2.5, "over", 8.5)
@@ -80,6 +85,10 @@ def test_cov_returns_independent_is_zero():
 def test_cov_returns_positive_when_joint_exceeds_product():
     cov = cov_returns(0.3, 0.4, 0.20, 0.3, 0.4)
     assert cov > 0
+
+
+def test_cov_returns_negative_when_joint_below_product():
+    assert cov_returns(0.3, 0.4, 0.10, 0.3, 0.4) < 0
 
 
 def test_cov_returns_scales_inverse_with_prices():
