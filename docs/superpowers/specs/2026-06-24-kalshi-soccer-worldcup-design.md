@@ -248,11 +248,17 @@ Later    Tournament futures (worse edge; revisit)
 
 ---
 
-## Open questions for the user
+## Decisions (resolved with user)
 
-1. **Token capture path** — grab from your normal logged-in browser, or retry the automation
-   login later? (Determines the exact Phase 0 step.)
-2. **Bankroll / caps** for live Phase 2 (e.g. the $500-style start you used for the MLB MM)?
-3. **Draw fallback** — if Phase 0 finds no clean draw price, OK to derive it from a Poisson
-   goals model, or would you rather restrict v1 to 2-way markets (totals/spreads + draw-no-bet)
-   and skip 3-way until a clean draw source exists?
+1. **Token capture path — from the user's normal logged-in browser.** Phase 0 grabs the
+   Unabated session token by manual copy from the browser tab the user is already logged into
+   (no password). Note: the chrome-devtools automation profile is separate from the user's
+   normal Chrome, so the token is copied out, not read from the automation browser.
+2. **Bankroll = $1,000.** Drives Phase 2 exposure caps and Kelly sizing (fractional Kelly,
+   per-match and global caps scaled to $1k).
+
+## Still open (resolved at Phase 0 by what the feed yields)
+
+- **Draw fallback** — if Phase 0 finds no clean draw price in the authenticated feed, derive
+  P(home/draw/away) from a Poisson goals model on Circa's total+spread (spec default). If the
+  feed *does* expose the draw, devig 3-way directly and skip the model.
