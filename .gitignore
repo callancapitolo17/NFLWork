@@ -136,4 +136,8 @@ kalshi_mlb_rfq/*.duckdb
 kalshi_mlb_rfq/*.duckdb.wal
 kalshi_mlb_rfq/*.log
 kalshi_mlb_rfq/bot.log.*
+
+# coverage audit (output DB created at runtime; covered by *.duckdb but explicit)
+coverage_audit/coverage.duckdb
+coverage_audit/coverage.duckdb.wal
 kalshi_mlb_rfq/.kill

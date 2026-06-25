@@ -133,6 +133,15 @@ This repo contains tools for:
     per tick; can never raise into the trading loop. Operational logging is
     `print()`-free (Python `logging` + rotating `bot.log`). Retention is
     unbounded (no scheduled prune). See README "Observability" section.
+- **MLB scraper coverage audit** (`coverage_audit/`) — daily deterministic,
+  read-only check that each MLB book still posts the markets it used to
+  (regression), is fresh, has a sane row count, and (for the 5 pill-rendered
+  books) reaches the odds screen. Reads each per-book DuckDB + `mlb_mm.duckdb`
+  read-only; writes `coverage_audit/coverage.duckdb::coverage_gaps` and fires a
+  macOS notification only on NEW gaps. A Claude **Desktop scheduled task**
+  (local, NOT a `/schedule` cloud routine) follows `coverage_audit/AGENT_PLAYBOOK.md`
+  to wire fixes on per-gap worktrees — never auto-merges. See
+  `coverage_audit/README.md`.
 
 ### MLB Dashboard — Odds screen
 
