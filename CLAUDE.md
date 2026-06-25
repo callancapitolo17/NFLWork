@@ -136,6 +136,15 @@ This repo contains tools for:
 - **Autonomous Kalshi MLB MM (maker) bot** (`kalshi_mlb_mm/`) — independent maker daemon that quotes 2-leg spread×total combos at a fixed 5% ROI margin by listening for others' RFQs. REST polling behind `RFQSource`/`QuoteGateway` interfaces (WebSocket swap is a one-adapter change); own market DB `kalshi_mlb_mm/kalshi_mlb_mm_market.duckdb` for SGP-line and SGP-odds data; reads `Answer Keys/mlb_mm.duckdb` read-only; shares pricing math with the taker via `kalshi_common/`. Standalone process; writes `kalshi_mlb_mm/kalshi_mlb_mm.duckdb`. v1 is a measurement phase (5% quoted margin vs. realized adverse-selection cost). See `kalshi_mlb_mm/README.md`.
 - **Kalshi MLB Bots Monitor** (`kalshi_mlb_monitor/`) — read-only Dash dashboard (port 8092, `kalshi_mlb_monitor/run.sh`) that monitors BOTH the maker (`kalshi_mlb_mm`) and taker (`kalshi_mlb_rfq`) on one screen: RFQ→fill funnel, "why not filled" decision/reason breakdown, fills & P&L, positions/exposure, adverse-selection. Reads the live bot DuckDBs read-only (no writes, imports no bot code; lock-safe with retry + poll guard so the live maker's write lock never surfaces as empty data). Per-bot adapter in `bots.py` abstracts schema differences; reason vocabularies are read from data, not hardcoded. See `kalshi_mlb_monitor/README.md`.
 - **Shared Kalshi math package** (`kalshi_common/`) — pure-function modules imported by both the taker and the maker: `fair_value` (bivariate model + probit devig + blend), `ev_calc` (fee math including `maker_fee_per_contract`), `auth_client` (config-injected via `configure()`), `sgp_runner` (SGP scrape orchestration + in-process `SGPService` — persistent per-book clients; both bots price in-process, dashboard still uses CLI shims), `leg_types` (MLB code/leg-typing helpers). The taker's original files are one-line re-export shims; behavior is unchanged.
+- **MLB scraper coverage audit** (`coverage_audit/`) — daily deterministic,
+  read-only check that each MLB book still posts the markets it used to
+  (regression), is fresh, has a sane row count, and (for the 5 pill-rendered
+  books) reaches the odds screen. Reads each per-book DuckDB + `mlb_mm.duckdb`
+  read-only; writes `coverage_audit/coverage.duckdb::coverage_gaps` and fires a
+  macOS notification only on NEW gaps. A Claude **Desktop scheduled task**
+  (local, NOT a `/schedule` cloud routine) follows `coverage_audit/AGENT_PLAYBOOK.md`
+  to wire fixes on per-gap worktrees — never auto-merges. See
+  `coverage_audit/README.md`.
 
 ### MLB Dashboard — Odds screen
 
