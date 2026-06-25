@@ -6,6 +6,7 @@ import logging
 import os
 import random as _random
 import signal
+import statistics
 import subprocess
 import threading
 import time
@@ -447,6 +448,12 @@ def _vig_fallback(book: str) -> float:
 # Fair-value provider + gate aggregator + Kelly sizing                     #
 # ------------------------------------------------------------------------ #
 
+def _book_only_fair(book_fairs: dict) -> float | None:
+    """Median of book fairs (>=2-book floor enforced upstream). None if empty."""
+    vals = [v for v in book_fairs.values() if v is not None]
+    return statistics.median(vals) if vals else None
+
+
 def _fresh_blended_fair(combo_market_ticker: str) -> tuple[float | None, dict]:
     """Return (blended_fair, book_fairs).
 
@@ -464,18 +471,20 @@ def _fresh_blended_fair(combo_market_ticker: str) -> tuple[float | None, dict]:
     legs_json, game_id = row
     legs = json.loads(legs_json)
 
-    samples = _load_samples_for_game(game_id)
-    if samples is None:
-        return None, {}
-
-    typed = [_leg_dict_to_typed(l, game_id) for l in legs]
-    if any(l is None for l in typed):
-        return None, {}
-
-    model = fair_value.model_fair(samples, typed)
     spread_line = _spread_line_from_legs(legs)
     total_line = _total_line_from_legs(legs)
     book_fairs = _load_book_fairs(game_id, spread_line, total_line)
+
+    if not config.USE_MODEL:
+        return _book_only_fair(book_fairs), book_fairs
+
+    samples = _load_samples_for_game(game_id)
+    if samples is None:
+        return None, {}
+    typed = [_leg_dict_to_typed(l, game_id) for l in legs]
+    if any(l is None for l in typed):
+        return None, {}
+    model = fair_value.model_fair(samples, typed)
     return fair_value.blend(model, book_fairs), book_fairs
 
 
@@ -1449,9 +1458,13 @@ def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandida
         if game_id is None:
             continue
 
-        samples = _load_samples_for_game(game_id)
-        if samples is None:
-            continue
+        # (book-only) do not skip games without samples
+        if config.USE_MODEL:
+            samples = _load_samples_for_game(game_id)
+            if samples is None:
+                continue
+        else:
+            samples = None
 
         for cand in combo_enumerator.enumerate_2leg(
                 game_id=game_id, event_suffix=suffix,
@@ -1467,9 +1480,13 @@ def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandida
                                       cand=cand, spread_line=spread_line,
                                       total_line=total_line)
                 continue
-            model = fair_value.model_fair(samples, typed)
             books = _load_book_fairs(game_id, spread_line, total_line)
-            blended = fair_value.blend(model, books)
+            if config.USE_MODEL:
+                model = fair_value.model_fair(samples, typed)
+                blended = fair_value.blend(model, books)
+            else:
+                model = None
+                blended = _book_only_fair(books)
             if blended is None:
                 _emit_candidate_event("rejected_no_book_data", game_id=game_id,
                                       cand=cand, spread_line=spread_line,
