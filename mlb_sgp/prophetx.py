@@ -443,6 +443,148 @@ def price_sgps(
                 if verbose:
                     print(f"  px target error: {e}", flush=True)
 
+    # ----- Phase 3: moneyline × total combos (FG) ----- #
+    out.extend(_price_ml_total_for_games(
+        client, markets_cache, matched_by_gid, filtered_targets,
+        fetch_now, parallelism, verbose,
+    ))
+
+    return out
+
+
+def _price_ml_combos_parallel(client, px_event_id, ml_mid, total_mid,
+                              combos, verbose) -> dict:
+    """Price the 4 ML×total combos via RFQ and return {combo_name: sgp_decimal}.
+
+    Distinct from _price_combos_parallel: PX's moneyline OUTCOMES carry no
+    standalone odds in the markets endpoint (odds come from the RFQ offer), so
+    the SANITY_MULT_RATIO multiplicative-ratio defense (which needs both leg
+    decimals) cannot be computed and does not apply here — that defense targets
+    the F5-Over total bug, not FG ML+total. We instead apply a basic validity
+    bound (decimal in (1.0, 1000]) on the returned parlay price.
+    """
+    results: dict = {}
+
+    def _price_one(combo_name, ml_sel, tot_sel):
+        try:
+            legs = [
+                _selection_to_leg(px_event_id, ml_mid, ml_sel),
+                _selection_to_leg(px_event_id, total_mid, tot_sel),
+            ]
+            offer, _used_fallback = client.submit_parlay_rfq(legs)
+            if offer is None:
+                return combo_name, None
+            am = offer.get("odds")
+            if am is None:
+                return combo_name, None
+            dec = american_to_decimal(int(am))
+            if dec <= 1.0 or dec > 1000.0:
+                return combo_name, None
+            return combo_name, dec
+        except Exception:
+            return combo_name, None
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(_price_one, name, ml_sel, tot_sel)
+                   for name, ml_sel, tot_sel in combos]
+        for fut in as_completed(futures):
+            try:
+                combo_name, dec = fut.result()
+            except Exception:
+                continue
+            if dec is not None:
+                results[combo_name] = dec
+    return results
+
+
+def _price_ml_total_for_games(
+    client, markets_cache, matched_by_gid, filtered_targets,
+    fetch_now, parallelism, verbose,
+) -> list[PricedRow]:
+    """Price the 4 moneyline×total combos per (game, distinct FG total) on PX.
+
+    ML outcomes live in the market's top-level `outcomes` (flat, with
+    competitorId), which `_pick_selection` doesn't scan, so we match competitorId
+    directly. Pricing goes through _price_ml_combos_parallel (RFQ submit + basic
+    validity bound; the ML leg has no standalone odds for the SANITY_MULT_RATIO
+    multiply). spread_line=None.
+    """
+    from scraper_prophetx_sgp import _find_market, _pick_selection, MARKET_NAMES
+
+    totals_by_game: dict[str, set] = {}
+    for t in filtered_targets:
+        if t.period == "FG":
+            totals_by_game.setdefault(t.game_id, set()).add(t.total)
+
+    def _pick_ml_outcome(ml_market: dict, competitor_id):
+        for o in ml_market.get("outcomes") or []:
+            if o and o.get("competitorId") == competitor_id:
+                return o
+        return None
+
+    def _price_one_game(game_id: str, totals: set) -> list[PricedRow]:
+        rows: list[PricedRow] = []
+        game = matched_by_gid.get(game_id)
+        markets = markets_cache.get(game_id)
+        if not game or not markets:
+            return rows
+        ml_mkt = _find_market(markets, MARKET_NAMES["fg"]["moneyline"])
+        total_mkt = _find_market(markets, MARKET_NAMES["fg"]["total"])
+        if not ml_mkt or not total_mkt:
+            return rows
+        home_sel = _pick_ml_outcome(ml_mkt, game["px_home_competitor_id"])
+        away_sel = _pick_ml_outcome(ml_mkt, game["px_away_competitor_id"])
+        if not (home_sel and away_sel):
+            return rows
+        ml_mid = ml_mkt.get("id")
+        total_mid = total_mkt.get("id")
+        event_id = game["px_event_id"]
+        for total in totals:
+            over_sel = _pick_selection(
+                total_mkt,
+                lambda s, lv=total: (
+                    (s.get("name") or "").lower().startswith("over")
+                    and _line_eq(s.get("line"), lv)))
+            under_sel = _pick_selection(
+                total_mkt,
+                lambda s, lv=total: (
+                    (s.get("name") or "").lower().startswith("under")
+                    and _line_eq(s.get("line"), lv)))
+            if not (over_sel and under_sel):
+                continue
+            ml_combos = (
+                ("Home ML + Over", home_sel, over_sel),
+                ("Home ML + Under", home_sel, under_sel),
+                ("Away ML + Over", away_sel, over_sel),
+                ("Away ML + Under", away_sel, under_sel),
+            )
+            priced = _price_ml_combos_parallel(
+                client, event_id, ml_mid, total_mid, ml_combos, verbose)
+            for combo_name, _ml, _tot in ml_combos:
+                dec = priced.get(combo_name)
+                if dec is None:
+                    continue
+                rows.append(PricedRow(
+                    game_id=game_id, combo=combo_name, period="FG",
+                    spread_line=None, total_line=total,
+                    bookmaker=BOOK_NAME, source=SOURCE_LABEL,
+                    sgp_decimal=round(dec, 4),
+                    sgp_american=decimal_to_american(dec),
+                    fetch_time=fetch_now))
+        return rows
+
+    out: list[PricedRow] = []
+    if not totals_by_game:
+        return out
+    with ThreadPoolExecutor(max_workers=max(1, _resolve_parallelism(parallelism))) as pool:
+        futures = [pool.submit(_price_one_game, gid, totals)
+                   for gid, totals in totals_by_game.items()]
+        for f in as_completed(futures):
+            try:
+                out.extend(f.result())
+            except Exception as e:
+                if verbose:
+                    print(f"  px ML target error: {e}", flush=True)
     return out
 
 
