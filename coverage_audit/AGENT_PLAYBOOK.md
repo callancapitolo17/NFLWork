@@ -57,7 +57,17 @@ For each fixable gap:
 4. Commit to the branch. **Do NOT merge to `main`.**
 5. Leave a one-line summary of the branch + what it fixes.
 
-## 6. Report
+## 6. Report + notify
 End with: how many gaps, how many fixed (with branch names), how many need the
 human (auth / ambiguous / Tier-3 findings). That summary is what the human
 wakes up to.
+
+**If you created ANY branch for review, ping the human — don't make them
+discover it.** Fire a desktop notification listing the branch name(s), e.g.:
+```
+osascript -e 'display notification "2 fix branch(es) ready: coverage-fix-fd-alttotal, coverage-fix-wz-stale" with title "MLB Coverage Audit — review needed"'
+```
+Send one notification summarizing all branches (not one per branch). If you also
+have access to a push/notification tool that reaches the human's phone, use it
+too. If nothing was fixed and nothing needs the human, do NOT notify — silence
+means all-clear.
