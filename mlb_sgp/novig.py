@@ -372,40 +372,6 @@ def price_sgps(
                 sgp_american=priced["american"],
                 fetch_time=fetch_now,
             ))
-
-        # ----- Phase 3: moneyline × total combos (FG only; spread_line=None) ----- #
-        # ML_TOTAL_FAMILY is FG-only, matching DK/FD/PX. Reuses the same over/under
-        # legs already resolved for this target; the DB upsert dedups any repeats
-        # across targets that share a total. spread_line=None marks "no spread leg".
-        home_ml = p.get("home_ml")
-        away_ml = p.get("away_ml")
-        if t.period == "FG" and home_ml and away_ml and over and under:
-            ml_combos = (
-                ("Home ML + Over",  home_ml, over),
-                ("Home ML + Under", home_ml, under),
-                ("Away ML + Over",  away_ml, over),
-                ("Away ML + Under", away_ml, under),
-            )
-            ml_priced = _price_combos_parallel(
-                client.session, ml_combos, submit_parlay, verbose,
-            )
-            for combo_name, _ml, _to in ml_combos:
-                priced = ml_priced.get(combo_name)
-                if priced is None:
-                    continue
-                dec = priced["decimal"]
-                target_rows.append(PricedRow(
-                    game_id=t.game_id,
-                    combo=combo_name,
-                    period=t.period,
-                    spread_line=None,
-                    total_line=t.total,
-                    bookmaker=BOOK_NAME,
-                    source=SOURCE_LABEL,
-                    sgp_decimal=round(dec, 4),
-                    sgp_american=priced["american"],
-                    fetch_time=fetch_now,
-                ))
         return target_rows
 
     with ThreadPoolExecutor(max_workers=NV_TARGET_PARALLELISM) as pool:
@@ -416,6 +382,54 @@ def price_sgps(
             except Exception as e:
                 if verbose:
                     print(f"  nv target error: {e}", flush=True)
+
+    # ----- Phase 3: moneyline × total combos (FG only) ----- #
+    # Priced ONCE per game (not per spread target) so a game with several
+    # alt-spread targets doesn't re-issue identical ML parlay RFQs. Novig
+    # resolves over/under at the game's single fg_total_line, so the ML×total
+    # is labelled with THAT total (matched_by_gid[gid]["fg_total_line"]) — the
+    # one the cached over/under legs actually belong to. spread_line=None.
+    fg_games = {t.game_id for t in filtered_targets if t.period == "FG"}
+
+    def _price_ml_game(gid: str) -> list[PricedRow]:
+        cached = legs_cache.get(gid)
+        if not cached:
+            return []
+        fg = (cached[0] or {}).get("fg", {})
+        home_ml, away_ml = fg.get("home_ml"), fg.get("away_ml")
+        over, under = fg.get("over"), fg.get("under")
+        total = (matched_by_gid.get(gid) or {}).get("fg_total_line")
+        if not (home_ml and away_ml and over and under) or total is None:
+            return []
+        ml_combos = (
+            ("Home ML + Over",  home_ml, over),
+            ("Home ML + Under", home_ml, under),
+            ("Away ML + Over",  away_ml, over),
+            ("Away ML + Under", away_ml, under),
+        )
+        ml_priced = _price_combos_parallel(
+            client.session, ml_combos, submit_parlay, verbose)
+        rows: list[PricedRow] = []
+        for combo_name, _ml, _to in ml_combos:
+            priced = ml_priced.get(combo_name)
+            if priced is None:
+                continue
+            rows.append(PricedRow(
+                game_id=gid, combo=combo_name, period="FG",
+                spread_line=None, total_line=float(total),
+                bookmaker=BOOK_NAME, source=SOURCE_LABEL,
+                sgp_decimal=round(priced["decimal"], 4),
+                sgp_american=priced["american"], fetch_time=fetch_now))
+        return rows
+
+    with ThreadPoolExecutor(max_workers=NV_TARGET_PARALLELISM) as pool:
+        futs = [pool.submit(_price_ml_game, gid) for gid in fg_games]
+        for f in as_completed(futs):
+            try:
+                out.extend(f.result())
+            except Exception as e:
+                if verbose:
+                    print(f"  nv ML target error: {e}", flush=True)
 
     return out
 

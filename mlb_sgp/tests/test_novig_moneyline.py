@@ -82,6 +82,8 @@ def test_price_sgps_emits_ml_rows(monkeypatch):
     monkeypatch.setattr(nv, "match_events", lambda nv_events, parlay_lines: [{
         "game_id": "g1", "nv_event_id": "e1",
         "nv_home_sym": "DET", "nv_away_sym": "HOU",
+        "fg_spread_line": -1.5, "fg_total_line": 8.5,
+        "f5_spread_line": None, "f5_total_line": None,
     }])
     monkeypatch.setattr(nv, "fetch_event_legs", lambda *_a, **_k: (legs, markets))
     monkeypatch.setattr(nv, "submit_parlay",

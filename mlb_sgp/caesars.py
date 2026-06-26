@@ -302,41 +302,6 @@ def price_sgps(
                     sgp_american=am if am is not None else decimal_to_american(dec),
                     fetch_time=fetch_now,
                 ))
-
-        # ----- Phase 3: moneyline × total combos (FG only; spread_line=None) --- #
-        # ML_TOTAL_FAMILY is FG-only, matching the other books. Reuses the
-        # over/under legs already resolved for this target; the DB upsert dedups
-        # any repeats across targets that share a total.
-        ml = per.get("moneyline")
-        if t.period == "FG" and ml:
-            ml_combos = (
-                ("Home ML + Over", ml["home"], to["over"]),
-                ("Home ML + Under", ml["home"], to["under"]),
-                ("Away ML + Over", ml["away"], to["over"]),
-                ("Away ML + Under", ml["away"], to["under"]),
-            )
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                futs = [pool.submit(_price_combo, c, s, o) for c, s, o in ml_combos]
-                for f in as_completed(futs):
-                    try:
-                        combo_name, res = f.result()
-                    except Exception:
-                        continue
-                    if res is None:
-                        continue
-                    dec, am = res
-                    rows.append(PricedRow(
-                        game_id=t.game_id,
-                        combo=combo_name,
-                        period=t.period,
-                        spread_line=None,
-                        total_line=t.total,
-                        bookmaker=BOOK_NAME,
-                        source=SOURCE_LABEL,
-                        sgp_decimal=round(dec, 4),
-                        sgp_american=am if am is not None else decimal_to_american(dec),
-                        fetch_time=fetch_now,
-                    ))
         return rows
 
     out: list[PricedRow] = []
@@ -348,4 +313,91 @@ def price_sgps(
             except Exception as e:
                 if verbose:
                     print(f"  [czr] target error: {e}")
+
+    # ----- Phase 3: moneyline × total combos (FG only) ----- #
+    out.extend(_price_ml_total_for_games(
+        client, parsed_cache, filtered, fetch_now, verbose))
+    return out
+
+
+def _price_ml_total_for_games(client, parsed_cache, filtered, fetch_now,
+                              verbose) -> list[PricedRow]:
+    """Price the 4 FG ML×total combos per (game, distinct FG total) — ONCE.
+
+    Priced per distinct (game, total) rather than per spread target so a game
+    with several alt-spread targets at the same total doesn't re-issue identical
+    /bets/details calls (footprint + WAF rate limits). spread_line=None.
+    """
+    totals_by_game: dict[str, set] = {}
+    for t in filtered:
+        if t.period == "FG":
+            totals_by_game.setdefault(t.game_id, set()).add(float(t.total))
+
+    def _price_one_game(gid: str, totals: set) -> list[PricedRow]:
+        parsed = parsed_cache.get(gid)
+        if not parsed:
+            return []
+        ml = parsed["FG"].get("moneyline")
+        if not ml:
+            return []
+        jobs = []  # (combo_name, total, ml_leg, to_leg)
+        for total in totals:
+            tl = parsed["FG"]["totals"].get(total)
+            if not tl:
+                continue
+            jobs += [
+                ("Home ML + Over", total, ml["home"], tl["over"]),
+                ("Home ML + Under", total, ml["home"], tl["under"]),
+                ("Away ML + Over", total, ml["away"], tl["over"]),
+                ("Away ML + Under", total, ml["away"], tl["under"]),
+            ]
+        if not jobs:
+            return []
+
+        def _price(combo_name, total, ml_leg, to_leg):
+            priced = client.price_combo([ml_leg, to_leg])
+            if priced is None:
+                return None
+            dec = priced["decimal"]
+            md, td = _price_d(ml_leg), _price_d(to_leg)
+            if md and td:
+                naive = md * td
+                if naive > 0 and dec > naive * SANITY_MULT_RATIO:
+                    if verbose:
+                        print(f"      [czr] SANITY-DROP {combo_name} dec={dec:.2f} naive={naive:.2f}")
+                    return None
+            return (combo_name, total, dec, priced.get("american"))
+
+        rows: list[PricedRow] = []
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futs = [pool.submit(_price, c, tot, ml_leg, to) for c, tot, ml_leg, to in jobs]
+            for f in as_completed(futs):
+                try:
+                    res = f.result()
+                except Exception:
+                    continue
+                if res is None:
+                    continue
+                combo_name, total, dec, am = res
+                rows.append(PricedRow(
+                    game_id=gid, combo=combo_name, period="FG",
+                    spread_line=None, total_line=total,
+                    bookmaker=BOOK_NAME, source=SOURCE_LABEL,
+                    sgp_decimal=round(dec, 4),
+                    sgp_american=am if am is not None else decimal_to_american(dec),
+                    fetch_time=fetch_now))
+        return rows
+
+    out: list[PricedRow] = []
+    if not totals_by_game:
+        return out
+    with ThreadPoolExecutor(max_workers=CZR_TARGET_PARALLELISM) as pool:
+        futs = [pool.submit(_price_one_game, gid, tots)
+                for gid, tots in totals_by_game.items()]
+        for f in as_completed(futs):
+            try:
+                out.extend(f.result())
+            except Exception as e:
+                if verbose:
+                    print(f"  [czr] ML target error: {e}")
     return out
