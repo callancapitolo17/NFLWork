@@ -303,6 +303,9 @@ def price_sgps(
                     "name": m.name,
                     "marketLines": m.selections,
                     "outcomes": m.outcomes,
+                    # Moneyline order book (top-level `selections`), for the ML
+                    # standalone price used by the SANITY_MULT_RATIO check.
+                    "selections": m.ml_selections,
                 }
                 for m in market_objs
             ]
@@ -452,62 +455,18 @@ def price_sgps(
     return out
 
 
-def _price_ml_combos_parallel(client, px_event_id, ml_mid, total_mid,
-                              combos, verbose) -> dict:
-    """Price the 4 ML×total combos via RFQ and return {combo_name: sgp_decimal}.
-
-    Distinct from _price_combos_parallel: PX's moneyline OUTCOMES carry no
-    standalone odds in the markets endpoint (odds come from the RFQ offer), so
-    the SANITY_MULT_RATIO multiplicative-ratio defense (which needs both leg
-    decimals) cannot be computed and does not apply here — that defense targets
-    the F5-Over total bug, not FG ML+total. We instead apply a basic validity
-    bound (decimal in (1.0, 1000]) on the returned parlay price.
-    """
-    results: dict = {}
-
-    def _price_one(combo_name, ml_sel, tot_sel):
-        try:
-            legs = [
-                _selection_to_leg(px_event_id, ml_mid, ml_sel),
-                _selection_to_leg(px_event_id, total_mid, tot_sel),
-            ]
-            offer, _used_fallback = client.submit_parlay_rfq(legs)
-            if offer is None:
-                return combo_name, None
-            am = offer.get("odds")
-            if am is None:
-                return combo_name, None
-            dec = american_to_decimal(int(am))
-            if dec <= 1.0 or dec > 1000.0:
-                return combo_name, None
-            return combo_name, dec
-        except Exception:
-            return combo_name, None
-
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = [pool.submit(_price_one, name, ml_sel, tot_sel)
-                   for name, ml_sel, tot_sel in combos]
-        for fut in as_completed(futures):
-            try:
-                combo_name, dec = fut.result()
-            except Exception:
-                continue
-            if dec is not None:
-                results[combo_name] = dec
-    return results
-
-
 def _price_ml_total_for_games(
     client, markets_cache, matched_by_gid, filtered_targets,
     fetch_now, parallelism, verbose,
 ) -> list[PricedRow]:
     """Price the 4 moneyline×total combos per (game, distinct FG total) on PX.
 
-    ML outcomes live in the market's top-level `outcomes` (flat, with
-    competitorId), which `_pick_selection` doesn't scan, so we match competitorId
-    directly. Pricing goes through _price_ml_combos_parallel (RFQ submit + basic
-    validity bound; the ML leg has no standalone odds for the SANITY_MULT_RATIO
-    multiply). spread_line=None.
+    PX nests the moneyline ORDER BOOK under the market's `selections` key (one
+    best-first ladder per outcome), NOT under `marketLines` like spread/total.
+    The top ladder entry carries the best standalone odds plus id/lineID/line —
+    so the ML leg is a normal priced selection, and ML×total flows through the
+    SAME _price_combos_parallel + SANITY_MULT_RATIO path as spread×total (full
+    F5-Over-style defense, no special-casing). spread_line=None.
     """
     from scraper_prophetx_sgp import _find_market, _pick_selection, MARKET_NAMES
 
@@ -516,10 +475,16 @@ def _price_ml_total_for_games(
         if t.period == "FG":
             totals_by_game.setdefault(t.game_id, set()).add(t.total)
 
-    def _pick_ml_outcome(ml_market: dict, competitor_id):
-        for o in ml_market.get("outcomes") or []:
-            if o and o.get("competitorId") == competitor_id:
-                return o
+    def _pick_ml_selection(ml_market: dict, competitor_id):
+        """Best (first) order-book entry for a competitor from the ML book.
+
+        The entry carries odds + id + lineID, so it serves as both the RFQ leg
+        and the single-leg sanity price. A side with no resting orders (empty
+        book) returns None → that game's ML is skipped (can't sanity-check)."""
+        for ladder in ml_market.get("selections") or []:
+            if (ladder and isinstance(ladder, list) and isinstance(ladder[0], dict)
+                    and ladder[0].get("competitorId") == competitor_id):
+                return ladder[0]
         return None
 
     def _price_one_game(game_id: str, totals: set) -> list[PricedRow]:
@@ -532,8 +497,8 @@ def _price_ml_total_for_games(
         total_mkt = _find_market(markets, MARKET_NAMES["fg"]["total"])
         if not ml_mkt or not total_mkt:
             return rows
-        home_sel = _pick_ml_outcome(ml_mkt, game["px_home_competitor_id"])
-        away_sel = _pick_ml_outcome(ml_mkt, game["px_away_competitor_id"])
+        home_sel = _pick_ml_selection(ml_mkt, game["px_home_competitor_id"])
+        away_sel = _pick_ml_selection(ml_mkt, game["px_away_competitor_id"])
         if not (home_sel and away_sel):
             return rows
         ml_mid = ml_mkt.get("id")
@@ -558,7 +523,7 @@ def _price_ml_total_for_games(
                 ("Away ML + Over", away_sel, over_sel),
                 ("Away ML + Under", away_sel, under_sel),
             )
-            priced = _price_ml_combos_parallel(
+            priced = _price_combos_parallel(
                 client, event_id, ml_mid, total_mid, ml_combos, verbose)
             for combo_name, _ml, _tot in ml_combos:
                 dec = priced.get(combo_name)
