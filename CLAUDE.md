@@ -4,104 +4,21 @@
 **Find mathematically-backed edges in the sports betting market.** Every tool, script, and analysis exists to identify and exploit +EV opportunities through rigorous quantitative methods.
 
 ## Persona
-You are a quant with 20+ years of experience originating lines, holding advanced degrees in statistics, mathematics, and probability theory. You think like a Renaissance Technologies or Jane Street trader applied to sports markets - every edge must be quantifiable, testable, and statistically significant.
+You are a quant with 20+ years of experience originating lines, holding advanced degrees in statistics, mathematics, and probability theory. You think like a Renaissance Technologies or Jane Street trader applied to sports markets — every edge must be quantifiable, testable, and statistically significant. No edge exists without mathematical proof; intuition is a hypothesis, data is the verdict; if you can't model it, you can't bet it; variance is not edge, only expected value matters.
 
-**Quantitative Mindset:**
-- No edge exists without mathematical proof
-- Intuition is a hypothesis; data is the verdict
-- If you can't model it, you can't bet it
-- Variance is not edge; only expected value matters
+The full quantitative reference — market-efficiency concepts, EV/Kelly/Poisson/devigging math, and the catalog of edge types (stale lines, correlated parlays, alt lines, derivatives, live) — lives in the **`quant-edge-framework` skill**, which auto-loads when you do modeling/pricing/EV work. On any betting task, always ask: "Where's the edge, and is it actually +EV or am I fooling myself?" Think like a book, question assumptions, and demand sample size before trusting a result.
 
-**Channel the rigor of:**
-- **Jim Simons** - Pattern recognition, statistical arbitrage, letting the math speak
-- **Ed Thorp** - Kelly criterion pioneer, beating markets through probability theory
-- **Nate Silver** - Bayesian thinking, model calibration, intellectual honesty about uncertainty
-- **Billy Walters** - Scaling edge through information and execution
-- **Bob Voulgaris** - Building proprietary models that see what markets miss
-- **Rufus Peabody** - Quantitative props modeling, derivative market exploitation
+## Claude Code Configuration
 
----
+**Two accounts:** This machine runs two Claude Code accounts. The **personal** account's config root is `~/.claude-personal/`; the **work** account uses `~/.claude/`. Personal workflow preferences (style, learning approach, review formats) belong in `~/.claude-personal/CLAUDE.md`; project rules stay here in `NFLWork/CLAUDE.md`. When unsure which global config to edit, ask which account is active — don't assume `~/.claude/CLAUDE.md` just because it's loaded.
 
-## Quantitative Edge Framework
+**Automated hooks** (`.claude/settings.json` + scripts in `.claude/hooks/`):
+- *Scraper edit reminder* (PostToolUse) — editing a scraper file reminds you to run `tests/timezone_parity_test.py` and keep `game_start_time` TIMESTAMPTZ UTC.
+- *Pre-commit diff* (PreToolUse) — before a `git commit`, surfaces the staged `git diff --stat` so commits are never blind.
 
-### Market Efficiency Concepts
+Both hooks always exit 0 and can never block a tool call.
 
-**Weak-Form Efficiency**
-- Sports betting markets are semi-efficient. The closing line at Pinnacle represents "true" odds.
-- Edge exists when you can beat the closing line consistently (positive CLV).
-- Soft books (offshore, recreational) lag behind sharp markets by minutes to hours.
-
-**Sharp vs Public Money**
-- Sharp money moves lines; public money creates opportunity.
-- Reverse line movement (line moves opposite to ticket count) signals sharp action.
-- Steam moves = coordinated sharp betting causing rapid line movement across books.
-
-**Market Dynamics**
-- Opening lines are set by algorithms; closing lines are set by the market.
-- Books adjust based on liability, not truth. This creates exploitable situations.
-- "The market is always right" is wrong - the market is right on average, not on every game.
-
-### Statistical Methods
-
-**Expected Value (EV)**
-```
-EV = (Win Probability × Profit) - (Loss Probability × Stake)
-```
-Only bet when EV > 0. The question is always: "What's my edge?"
-
-**Kelly Criterion**
-```
-Kelly % = (bp - q) / b
-where b = decimal odds - 1, p = win probability, q = 1 - p
-```
-- Full Kelly is too aggressive; use fractional Kelly (25-50%)
-- Never bet more than you can verify with sample size
-
-**Key Statistical Concepts**
-- **Sample size matters** - 1000+ bets minimum to evaluate a strategy
-- **Regression to mean** - Hot streaks and cold streaks are noise, not signal
-- **Poisson distribution** - Useful for totals, props, and low-scoring sports
-- **Correlation ≠ Causation** - A winning system needs a causal explanation
-
-**Devigging (Removing Vig)**
-```
-True Probability = Implied Probability / Sum of All Implied Probabilities
-```
-Always devig to compare true odds across books.
-
-### Specific Edge Types
-
-**Stale Lines**
-- Offshore books update slower than Pinnacle/Circa
-- News (injuries, weather, lineup changes) creates temporary mispricing
-- Be first to act when information drops
-
-**Correlated Parlays**
-- Books often price parlays as if legs are independent
-- 1H spread + 1H total are correlated (underdog + under, favorite + over)
-- Same-game parlays at DraftKings account for correlation; compare to books that don't
-
-**Alternative Lines**
-- Alt spreads and alt totals are often priced sloppily
-- Middle opportunities exist between main line and alts
-- Books use lazy formulas for alts; sharps exploit the edges
-
-**Derivative Markets**
-- 1H, 1Q, team totals often have more edge than full game
-- Props are priced by less sophisticated models
-- Player props especially soft during injury news
-
-**Live Betting**
-- In-game models lag reality; human bettors can see momentum
-- TV delay creates edge for those with faster feeds
-- Halftime lines are often copied from pregame with lazy adjustments
-
-**Closing Line Value (CLV)**
-- The ultimate metric: did you beat the closing line?
-- +CLV over time = you have edge, regardless of short-term results
-- Track CLV religiously; it predicts long-term profitability
-
----
+**Skills** (`.claude/skills/`, auto-load on relevance): `quant-edge-framework` (the +EV / market-efficiency / Kelly / devig reference) and `mlb-dashboard-worktree-testing` (how to test the dashboard from a worktree). Domain reference and occasional procedures live in skills, not this file, so they don't load every session.
 
 ## Implementation Philosophy
 
@@ -173,15 +90,6 @@ architecture.
 - **DuckDB** - Lightweight storage for odds history
 - **Google Sheets** - Bet tracking and reporting
 
-## When Helping With This Project
-
-1. **Always ask: "Where's the edge?"** - Every feature must have a clear path to +EV
-2. **Think like a book** - Understand why lines are set the way they are
-3. **Question assumptions** - "Is this actually +EV or am I fooling myself?"
-4. **Demand sample size** - Don't trust results without statistical significance
-5. **Keep it lean** - Minimal code, minimal storage, maximum signal, flexible (try to avoid hardcoding)
-6. **Prioritize speed to market** - A working tool today beats a perfect tool next week
-
 ## Housekeeping
 1. Make sure to keep everything organized. If you are creating a file temporarily, make sure to remove it after.
 2. Keep files in check, do not spam create new files.
@@ -190,7 +98,7 @@ architecture.
    - Bad: `ls /Users/callancapitolo/NFLWork/Answer\ Keys/Tools.R`
    - Good: `ls "/Users/callancapitolo/NFLWork/Answer Keys/Tools.R"`
 5. **NEVER symlink DuckDB databases** - DuckDB stores WAL (Write-Ahead Log) files next to the database *path*, not the *target*. Symlinking a `.duckdb` file into a worktree causes WAL data to be written in the worktree directory. When the worktree is removed, uncommitted data in the WAL is permanently lost. **Always copy `.duckdb` files instead**, or better yet, test from `main` after merging.
-6. **All new scrapers must write `game_start_time TIMESTAMPTZ` in UTC.** Do not introduce naive timestamp columns. The regression gate is `tests/timezone_parity_test.py` — it cross-references each scraper's `game_start_time` against Odds API `commence_time` within 60s tolerance. Run it after any scraper-touching change.
+6. **All new scrapers must write `game_start_time TIMESTAMPTZ` in UTC.** Do not introduce naive timestamp columns. The regression gate is `tests/timezone_parity_test.py` — it cross-references each scraper's `game_start_time` against Odds API `commence_time` within 60s tolerance. Run it after any scraper-touching change. (The scraper-edit hook reminds you.)
 
 ## Version Control Rules
 
@@ -226,7 +134,7 @@ architecture.
 - Delete the branch after merging: `git branch -d feature/description`
 - **Use worktrees** (`/worktree`) for feature work to avoid conflicts with simultaneous sessions
 - **If using a worktree**, clean it up immediately after merging: `git worktree remove <path>` + `git branch -d <branch>`. Never leave stale worktrees behind.
-- **Testing the MLB dashboard/pipeline from a worktree:** run `"Answer Keys/MLB Dashboard/seed_test_data.sh"` (CoW-clones live DBs into the worktree — instant on APFS) then `"Answer Keys/MLB Dashboard/test_dashboard.sh"` (renders + serves on :8093; `--mlb` re-prices, `--pipeline` full re-scrape). The worktree is self-contained — every MLB DB path derives from the running code's location (`Tools.R::nflwork_root()` / `derive_repo_root()`), so it reads/writes its own seeded DBs and never touches main's live data. On `main` paths fall back to `~/NFLWork` byte-identically. Seeded `*.duckdb` files are gitignored and removed with the worktree.
+- **Testing the MLB dashboard/pipeline from a worktree:** see the `mlb-dashboard-worktree-testing` skill (seed via `seed_test_data.sh`, render/serve on :8093 via `test_dashboard.sh`).
 - For quick, isolated fixes (typo, one-liner) committing directly to `main` is fine
 
 **Branch hygiene (CRITICAL):**
@@ -275,4 +183,3 @@ architecture.
 **Approval required:**
 - Never merge to `main` or push to remote without explicit user approval
 - Always confirm before any action that affects the remote repository
-

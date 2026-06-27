@@ -1,0 +1,27 @@
+{
+  "$comment": "Project-shared hooks (committed). Permissions + secrets live in settings.local.json (gitignored). Both hook scripts always exit 0 and can never block a tool call.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/scraper_edit_reminder.py\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_commit_diff.py\""
+          }
+        ]
+      }
+    ]
+  }
+}
