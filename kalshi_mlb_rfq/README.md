@@ -132,7 +132,7 @@ A leg routes to its grid by the `team_is_home` flag on the typed leg: home-margi
 
 **Enumeration.** `sgp_cycle(both_teams=True)` emits both the home-favorite and away-favorite spread grids for each game. The shared maker bot (`kalshi_mlb_mm`) keeps `both_teams=False` (its default) — this change is opt-in and the MM path is byte-identical.
 
-**Coverage.** Away-margin grid coverage depends on book dog-side alt SGP availability. Books that don't publish away-team alt lines contribute nothing to that grid. Thin grids drop via the ≥2-book / 4-cell floor, so no single-book candidate can slip through. Run `tools/coverage_report.py` to measure per-book both-grid coverage across current targets.
+**Coverage.** Away-margin grid coverage depends on book dog-side alt SGP availability. Books that don't publish away-team alt lines contribute nothing to that grid. A combo drops only when fewer than 2 books (`MIN_BOOK_COUNT_FOR_BLEND`) price its target cell; when a book has fewer than 4 cells in the grid, that book's fair comes from a single-cell vig-fallback heuristic (`(1/decimal)/(1+vig)`, conservative — understates the YES fair) rather than being dropped. Run `tools/coverage_report.py` to measure per-book both-grid coverage across current targets.
 
 **Priced book set.** betmgm and caesars are now wired into `_BOOK_MODULES` alongside DraftKings, FanDuel, ProphetX, and Novig (six books total). Both have vig-fallback entries so partial-cell combos degrade gracefully instead of raising a `KeyError`.
 

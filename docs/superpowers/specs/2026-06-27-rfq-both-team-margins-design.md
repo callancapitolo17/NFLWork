@@ -52,8 +52,11 @@ alone — no model.
   prefer to trade only the lines with solid coverage.
 - **Devig validity on the away-favorite grid.** Probit devig assumes a clean
   complementary 4-cell grid. Dog-side alt grids can have wider books / missing
-  cells; we keep the existing "need all 4 cells, ≥2 books" floor, which means
-  sparse grids self-exclude (safe, but reduces coverage further).
+  cells. A combo drops only when fewer than 2 books price the target cell
+  (`MIN_BOOK_COUNT_FOR_BLEND`). When a book has fewer than 4 cells, it
+  contributes a single-cell vig-fallback fair (`(1/decimal)/(1+vig)`) that
+  conservatively understates the YES probability — so sparse grids self-exclude
+  via the 2-book floor or degrade gracefully, never over-bet.
 - **This is the last correctness blocker before book-only go-live**, but the
   separate *strategic* risk (book-only makes our fair a public function →
   adverse selection) is unchanged by this fix and still warrants a small,
@@ -175,10 +178,13 @@ Two rules:
 
 ### Coverage semantics
 
-A combo is priced iff ≥2 books return a full 4-cell grid for its
-`(spread_line, total_line)`. Thin-tail grids (sparse dog-side alts) self-exclude
-via the existing floor and are **skipped, not guessed**. Emit a research/log
-event (`rejected_no_book_data` / a new `rejected_thin_grid`) so drops are visible.
+A combo is priced iff ≥2 books (`MIN_BOOK_COUNT_FOR_BLEND`) price its target
+`(spread_line, total_line, spread_side, total_side)` cell. When a book returns
+fewer than 4 cells for a grid, it contributes a single-cell vig-fallback fair
+(`(1/decimal)/(1+vig)`) — conservative and never dropped in isolation. Thin-tail
+grids (sparse dog-side alts) self-exclude only via the 2-book floor and are
+**skipped, not guessed**. Emit a research/log event (`rejected_no_book_data`)
+so drops are visible.
 
 ---
 
