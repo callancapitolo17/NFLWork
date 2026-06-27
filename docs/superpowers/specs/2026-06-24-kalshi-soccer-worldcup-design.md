@@ -133,16 +133,39 @@ anonymous feed with placeholder `-110 / -1.0` values — useless. Soft books (Fa
 etc.) are unblurred and real. **Your subscription unblurs the anchors** — this is the entire
 value of the subscription and the precondition for the edge.
 
-**Auth:** Auth0 flow (`/api/auth/login`). Anonymous `/api/users/permissions` → 401. The bot
-must send the authenticated session token with feed requests.
+**Auth (PROVEN 2026-06-27):** Auth0 flow (`/api/auth/login`). The unblur key is the
+**`unabated_at_prod` access-token cookie** set on `.unabated.com`, sent automatically to
+`api-k.unabated.com` (credentialed CORS). It is a JWT with `permissions: ["role:premium"]`,
+**valid 30 days** (`iat`→`exp`), refreshed from the longer-lived `unabated` session cookie.
 
-### Phase 0 open items (resolved via one authenticated inspection)
+**Unblur — PROVEN.** Replaying an authenticated `changes/query` returned **real** sharp-anchor
+values vs. the anonymous placeholder:
 
-1. **Unblur mechanism** — confirm the authenticated `changes/query` (or a sibling endpoint)
-   returns *real* Sharp Book Price / Circa values, and capture the exact token/header.
-2. **Draw price** — locate the 3-way "Moneyline With Draw" data (only si0/si1 seen anonymously).
-3. **Token lifecycle** — capture format, expiry, refresh path. Store in gitignored `.env`.
-4. **`eventStart` timezone** — confirm and convert to `TIMESTAMPTZ` UTC per repo rule.
+| Book | Anonymous | Authenticated |
+|---|---|---|
+| Sharp Book Price (7) | `-110 / -1.0` | real, varied (`-353,-251,-127…`) ✓ |
+| Circa (6) | `-110 / -1.0` | real (`-250,150,215…`, ±1.5) ✓ |
+| Circa Sports (68) | `-110 / -1.0` | real ✓ |
+
+**Authenticated feed mechanism (confirmed):** `GET api-k.unabated.com/api/markets/changes/query/<cursor>`
+returns `{ latestTimestamp, resultCode, results:[ { marketLineChanges:[ { gameOdds:{ gameOddsEvents:
+{ "lgNN:ptN:pregame|live": [ events ] } } } ] } ] }`. Cursor = `latestTimestamp`. `eventStart`
+is **TZ-aware UTC** (`+00:00`). Bet types: `bt1`=moneyline (price only), `bt2`=spread/Asian
+handicap, `bt3`=total, `bt4`=present on soccer (encoding TBD — see below).
+
+### Phase 0 status
+
+1. **Unblur mechanism — ✓ PROVEN** (token = `unabated_at_prod` cookie; real anchor values).
+2. **Token lifecycle — ✓** 30-day `role:premium` JWT; refresh via `unabated` session cookie.
+   Store in gitignored `.env`; build a refresh step (don't hardcode a static token).
+3. **`eventStart` timezone — ✓** TZ-aware UTC in the authenticated feed.
+4. **Draw price — OPEN** (the one remaining item). World Cup uses only si0/si1 (no draw side);
+   the 3-way "Moneyline With Draw" the UI shows must live in a bet type (`bt4`?) — confirm via
+   one capture against a *live* WC 3-way market. Fallback remains the Poisson derivation.
+
+**Token capture method (implemented in spike):** decrypt Chrome cookies via Keychain *or*
+copy one `changes/query` request as cURL from the logged-in browser (used here). The bot will
+read the token from `.env` and refresh it.
 
 ---
 
