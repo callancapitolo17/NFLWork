@@ -81,12 +81,14 @@ _MARKET_MAP = {
     # FG main
     "Run Line":                              ("fg", "spreads", "main"),
     "Total Runs":                            ("fg", "totals",  "main"),
+    "Moneyline":                             ("fg", "moneyline", "main"),
     # FG alt
     "Alternate Run Lines":                   ("fg", "spreads", "alt"),
     "Alternate Total Runs":                  ("fg", "totals",  "alt"),
     # F5 main
     "First 5 Innings Run Line":              ("f5", "spreads", "main"),
     "First 5 Innings Total Runs":            ("f5", "totals",  "main"),
+    "First 5 Innings Money Line":            ("f5", "moneyline", "main"),
     # F5 alt
     "First 5 Innings Alternate Run Lines":   ("f5", "spreads", "alt"),
     "First 5 Innings Alternate Total Runs":  ("f5", "totals",  "alt"),
@@ -319,8 +321,8 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
            f"&useCombinedTouchdownsVirtualMarket=true&useQuickBets=true")
     resp = session.get(url, headers=FD_HEADERS, timeout=20)
 
-    empty = {"fg": {"spreads": {}, "totals": {}},
-             "f5": {"spreads": {}, "totals": {}}}
+    empty = {"fg": {"spreads": {}, "totals": {}, "moneyline": {}},
+             "f5": {"spreads": {}, "totals": {}, "moneyline": {}}}
     if resp.status_code != 200:
         return empty
 
@@ -340,8 +342,8 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
     walk(data)
     seen = {m["marketId"]: m for m in markets}
 
-    out = {"fg": {"spreads": {}, "totals": {}},
-           "f5": {"spreads": {}, "totals": {}}}
+    out = {"fg": {"spreads": {}, "totals": {}, "moneyline": {}},
+           "f5": {"spreads": {}, "totals": {}, "moneyline": {}}}
 
     for mid, m in seen.items():
         name = m.get("marketName", "")
@@ -375,6 +377,15 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
                 key = (ou, line)
                 if key not in bucket or main_or_alt == "main":
                     bucket[key] = (mid, sid)
+
+            elif mtype == "moneyline":
+                # Moneyline runners carry the team name and no handicap; key by
+                # home/away matched against the event's team names.
+                side = ("home" if rn == fd_home
+                        else "away" if rn == fd_away else None)
+                if side is None:
+                    continue
+                bucket[side] = (mid, sid)
 
     return out
 

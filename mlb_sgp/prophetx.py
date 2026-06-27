@@ -303,6 +303,9 @@ def price_sgps(
                     "name": m.name,
                     "marketLines": m.selections,
                     "outcomes": m.outcomes,
+                    # Moneyline order book (top-level `selections`), for the ML
+                    # standalone price used by the SANITY_MULT_RATIO check.
+                    "selections": m.ml_selections,
                 }
                 for m in market_objs
             ]
@@ -443,6 +446,110 @@ def price_sgps(
                 if verbose:
                     print(f"  px target error: {e}", flush=True)
 
+    # ----- Phase 3: moneyline × total combos (FG) ----- #
+    out.extend(_price_ml_total_for_games(
+        client, markets_cache, matched_by_gid, filtered_targets,
+        fetch_now, parallelism, verbose,
+    ))
+
+    return out
+
+
+def _price_ml_total_for_games(
+    client, markets_cache, matched_by_gid, filtered_targets,
+    fetch_now, parallelism, verbose,
+) -> list[PricedRow]:
+    """Price the 4 moneyline×total combos per (game, distinct FG total) on PX.
+
+    PX nests the moneyline ORDER BOOK under the market's `selections` key (one
+    best-first ladder per outcome), NOT under `marketLines` like spread/total.
+    The top ladder entry carries the best standalone odds plus id/lineID/line —
+    so the ML leg is a normal priced selection, and ML×total flows through the
+    SAME _price_combos_parallel + SANITY_MULT_RATIO path as spread×total (full
+    F5-Over-style defense, no special-casing). spread_line=None.
+    """
+    from scraper_prophetx_sgp import _find_market, _pick_selection, MARKET_NAMES
+
+    totals_by_game: dict[str, set] = {}
+    for t in filtered_targets:
+        if t.period == "FG":
+            totals_by_game.setdefault(t.game_id, set()).add(t.total)
+
+    def _pick_ml_selection(ml_market: dict, competitor_id):
+        """Best (first) order-book entry for a competitor from the ML book.
+
+        The entry carries odds + id + lineID, so it serves as both the RFQ leg
+        and the single-leg sanity price. A side with no resting orders (empty
+        book) returns None → that game's ML is skipped (can't sanity-check)."""
+        for ladder in ml_market.get("selections") or []:
+            if (ladder and isinstance(ladder, list) and isinstance(ladder[0], dict)
+                    and ladder[0].get("competitorId") == competitor_id):
+                return ladder[0]
+        return None
+
+    def _price_one_game(game_id: str, totals: set) -> list[PricedRow]:
+        rows: list[PricedRow] = []
+        game = matched_by_gid.get(game_id)
+        markets = markets_cache.get(game_id)
+        if not game or not markets:
+            return rows
+        ml_mkt = _find_market(markets, MARKET_NAMES["fg"]["moneyline"])
+        total_mkt = _find_market(markets, MARKET_NAMES["fg"]["total"])
+        if not ml_mkt or not total_mkt:
+            return rows
+        home_sel = _pick_ml_selection(ml_mkt, game["px_home_competitor_id"])
+        away_sel = _pick_ml_selection(ml_mkt, game["px_away_competitor_id"])
+        if not (home_sel and away_sel):
+            return rows
+        ml_mid = ml_mkt.get("id")
+        total_mid = total_mkt.get("id")
+        event_id = game["px_event_id"]
+        for total in totals:
+            over_sel = _pick_selection(
+                total_mkt,
+                lambda s, lv=total: (
+                    (s.get("name") or "").lower().startswith("over")
+                    and _line_eq(s.get("line"), lv)))
+            under_sel = _pick_selection(
+                total_mkt,
+                lambda s, lv=total: (
+                    (s.get("name") or "").lower().startswith("under")
+                    and _line_eq(s.get("line"), lv)))
+            if not (over_sel and under_sel):
+                continue
+            ml_combos = (
+                ("Home ML + Over", home_sel, over_sel),
+                ("Home ML + Under", home_sel, under_sel),
+                ("Away ML + Over", away_sel, over_sel),
+                ("Away ML + Under", away_sel, under_sel),
+            )
+            priced = _price_combos_parallel(
+                client, event_id, ml_mid, total_mid, ml_combos, verbose)
+            for combo_name, _ml, _tot in ml_combos:
+                dec = priced.get(combo_name)
+                if dec is None:
+                    continue
+                rows.append(PricedRow(
+                    game_id=game_id, combo=combo_name, period="FG",
+                    spread_line=None, total_line=total,
+                    bookmaker=BOOK_NAME, source=SOURCE_LABEL,
+                    sgp_decimal=round(dec, 4),
+                    sgp_american=decimal_to_american(dec),
+                    fetch_time=fetch_now))
+        return rows
+
+    out: list[PricedRow] = []
+    if not totals_by_game:
+        return out
+    with ThreadPoolExecutor(max_workers=max(1, _resolve_parallelism(parallelism))) as pool:
+        futures = [pool.submit(_price_one_game, gid, totals)
+                   for gid, totals in totals_by_game.items()]
+        for f in as_completed(futures):
+            try:
+                out.extend(f.result())
+            except Exception as e:
+                if verbose:
+                    print(f"  px ML target error: {e}", flush=True)
     return out
 
 
@@ -461,6 +568,11 @@ def _price_combos_parallel(
     defense) runs *inside* the worker so a combo that fails sanity is
     omitted from the result dict — same behavior as the sequential path,
     just executed concurrently.
+
+    ``spread_mid`` is the first leg's market id — a spread market for
+    spread×total combos, or the moneyline market for ML×total combos (the
+    ML pricer reuses this same path now that the ML leg carries odds). The
+    ``combos`` tuples are ``(name, leg1_sel, total_sel)`` either way.
     """
     results: dict = {}
 

@@ -175,21 +175,36 @@ def upsert_priced_rows(rows: list["PricedRow"], db_path: str = None) -> None:
     try:
         ensure_table(db_path)
 
-        # Batch delete by composite key. Note: DuckDB's tuple IN matches NULLs
-        # as NULL, so this only deletes when all 7 cols match exactly. For
-        # PricedRow we always have line cols set (enumeration writes them),
-        # so the simple equality form is correct.
+        # Batch delete by composite key, NULL-SAFELY. spread_line/total_line are
+        # NULL for combos lacking that leg (e.g. moneyline×total has spread_line
+        # NULL). A plain tuple-IN treats NULL as never-equal-to-NULL, so it would
+        # fail to clear prior NULL-line rows and duplicates would accumulate every
+        # cycle. We compare the line cols with IS NOT DISTINCT FROM (NULL-safe
+        # equality) — identical to `=` for the non-NULL spread+total rows, so no
+        # behavior change for the existing books. The CAST(? AS DOUBLE) on the
+        # line placeholders keeps the VALUES column typed even when a whole batch
+        # is NULL (e.g. all-moneyline rows), so the comparison stays well-typed.
         keys = [
             (r.game_id, r.combo, r.period, r.spread_line, r.total_line,
              r.bookmaker, r.source)
             for r in rows
         ]
-        placeholders = ",".join(["(?, ?, ?, ?, ?, ?, ?)"] * len(keys))
+        row_ph = "(?, ?, ?, CAST(? AS DOUBLE), CAST(? AS DOUBLE), ?, ?)"
+        placeholders = ",".join([row_ph] * len(keys))
         flat = [v for k in keys for v in k]
         con.execute(f"""
-            DELETE FROM mlb_sgp_odds
-            WHERE (game_id, combo, period, spread_line, total_line, bookmaker, source) IN (
-                SELECT * FROM (VALUES {placeholders})
+            DELETE FROM mlb_sgp_odds AS t
+            WHERE EXISTS (
+                SELECT 1 FROM (VALUES {placeholders})
+                    AS v(game_id, combo, period, spread_line, total_line,
+                         bookmaker, source)
+                WHERE t.game_id = v.game_id
+                  AND t.combo = v.combo
+                  AND t.period = v.period
+                  AND t.spread_line IS NOT DISTINCT FROM v.spread_line
+                  AND t.total_line IS NOT DISTINCT FROM v.total_line
+                  AND t.bookmaker = v.bookmaker
+                  AND t.source = v.source
             )
         """, flat)
 

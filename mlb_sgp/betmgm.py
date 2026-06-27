@@ -51,6 +51,10 @@ _FG_SPREAD = "run line spread"
 _FG_TOTAL = "totals"
 _F5_SPREAD = "1st 5 innings - run line spread"
 _F5_TOTAL = "1st 5 innings - totals"
+# Moneyline (for ML×total combos). BetMGM names it "Money Line" (FG) and
+# "1st 5 innings - Money Line" (F5); both are isBetBuilder-eligible.
+_FG_ML = "money line"
+_F5_ML = "1st 5 innings - money line"
 
 
 def _to_float(s) -> float | None:
@@ -74,6 +78,8 @@ def _classify_market(name: str) -> tuple[str, str] | None:
         return ("F5", "spread")
     if _F5_TOTAL in low:
         return ("F5", "total")
+    if _F5_ML in low:
+        return ("F5", "moneyline")
     # Guard against other-period markets (1st 3 / 1st 7 innings, 1X2, etc.)
     if "innings" in low and "1st 5" not in low:
         return None
@@ -81,6 +87,8 @@ def _classify_market(name: str) -> tuple[str, str] | None:
         return ("FG", "spread")
     if low == _FG_TOTAL:
         return ("FG", "total")
+    if low == _FG_ML:
+        return ("FG", "moneyline")
     return None
 
 
@@ -102,8 +110,8 @@ def parse_markets(markets: list[dict], home_team: str, away_team: str) -> dict:
     Only markets flagged SGP-eligible (``isBetBuilder`` not False) contribute.
     """
     out = {
-        "FG": {"spreads": {}, "totals": {}},
-        "F5": {"spreads": {}, "totals": {}},
+        "FG": {"spreads": {}, "totals": {}, "moneyline": None},
+        "F5": {"spreads": {}, "totals": {}, "moneyline": None},
     }
     home_low = home_team.lower()
     away_low = away_team.lower()
@@ -161,6 +169,28 @@ def parse_markets(markets: list[dict], home_team: str, away_team: str) -> dict:
                     under_leg = (mid, oid, float(odds))
             if over_leg and under_leg and line_val is not None:
                 out[period]["totals"][line_val] = {"over": over_leg, "under": under_leg}
+
+        elif kind == "moneyline":
+            # ML option names use SHORT team names ("Giants") while home_team is
+            # the full canonical name ("San Francisco Giants"), so match
+            # bidirectionally (either string contained in the other). Both
+            # options carry decimal `odds`, so the naive-multiply sanity check
+            # downstream works unchanged.
+            home_leg = away_leg = None
+            for o in options:
+                onm = ((o.get("name") or {}).get("value", "")
+                       if isinstance(o.get("name"), dict) else "")
+                odds = ((o.get("price") or {}).get("odds"))
+                oid = o.get("id")
+                if odds is None or oid is None:
+                    continue
+                onm_low = onm.lower()
+                if home_low and onm_low and (home_low in onm_low or onm_low in home_low):
+                    home_leg = (mid, oid, float(odds))
+                elif away_low and onm_low and (away_low in onm_low or onm_low in away_low):
+                    away_leg = (mid, oid, float(odds))
+            if home_leg and away_leg:
+                out[period]["moneyline"] = {"home": home_leg, "away": away_leg}
 
     return out
 
@@ -341,4 +371,95 @@ def price_sgps(
             except Exception as e:
                 if verbose:
                     print(f"  [mgm] target error: {e}")
+
+    # ----- Phase 3: moneyline × total combos (FG only) ----- #
+    out.extend(_price_ml_total_for_games(
+        client, matched_by_gid, parsed_cache, filtered, fetch_now, verbose))
+    return out
+
+
+def _price_ml_total_for_games(client, matched_by_gid, parsed_cache, filtered,
+                              fetch_now, verbose) -> list[PricedRow]:
+    """Price the 4 FG ML×total combos per (game, distinct FG total) — ONCE.
+
+    ML_TOTAL_FAMILY is FG-only. Priced per distinct (game, total) rather than
+    per spread target so a game with several alt-spread targets at the same
+    total doesn't re-issue identical ML price_picks calls (footprint + rate
+    limits). spread_line=None marks "no spread leg".
+    """
+    # Distinct FG totals to price per game (from the targets BetMGM offered).
+    totals_by_game: dict[str, set] = {}
+    for t in filtered:
+        if t.period == "FG":
+            totals_by_game.setdefault(t.game_id, set()).add(float(t.total))
+
+    def _price_one_game(gid: str, totals: set) -> list[PricedRow]:
+        ev = matched_by_gid.get(gid)
+        parsed = parsed_cache.get(gid)
+        if ev is None or parsed is None:
+            return []
+        ml_legs = parsed["FG"].get("moneyline")
+        if not ml_legs:
+            return []
+        ml_home, ml_away = ml_legs["home"], ml_legs["away"]
+        rows: list[PricedRow] = []
+        jobs = []  # (combo_name, total, ml_leg, to_leg)
+        for total in totals:
+            tl = parsed["FG"]["totals"].get(total)
+            if not tl:
+                continue
+            over, under = tl["over"], tl["under"]
+            jobs += [
+                ("Home ML + Over", total, ml_home, over),
+                ("Home ML + Under", total, ml_home, under),
+                ("Away ML + Over", total, ml_away, over),
+                ("Away ML + Under", total, ml_away, under),
+            ]
+        if not jobs:
+            return rows
+
+        def _price(combo_name, total, ml_leg, to_leg):
+            priced = client.price_picks(
+                ev.event_id, [(ml_leg[0], ml_leg[1]), (to_leg[0], to_leg[1])])
+            if priced is None:
+                return None
+            dec = priced["decimal"]
+            naive = ml_leg[2] * to_leg[2]
+            if naive > 0 and dec > naive * SANITY_MULT_RATIO:
+                if verbose:
+                    print(f"      [mgm] SANITY-DROP {combo_name} dec={dec:.2f} naive={naive:.2f}")
+                return None
+            return (combo_name, total, dec)
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futs = [pool.submit(_price, c, tot, ml, to) for c, tot, ml, to in jobs]
+            for f in as_completed(futs):
+                try:
+                    res = f.result()
+                except Exception:
+                    continue
+                if res is None:
+                    continue
+                combo_name, total, dec = res
+                rows.append(PricedRow(
+                    game_id=gid, combo=combo_name, period="FG",
+                    spread_line=None, total_line=total,
+                    bookmaker=BOOK_NAME, source=SOURCE_LABEL,
+                    sgp_decimal=round(dec, 4),
+                    sgp_american=decimal_to_american(dec),
+                    fetch_time=fetch_now))
+        return rows
+
+    out: list[PricedRow] = []
+    if not totals_by_game:
+        return out
+    with ThreadPoolExecutor(max_workers=MGM_TARGET_PARALLELISM) as pool:
+        futs = [pool.submit(_price_one_game, gid, tots)
+                for gid, tots in totals_by_game.items()]
+        for f in as_completed(futs):
+            try:
+                out.extend(f.result())
+            except Exception as e:
+                if verbose:
+                    print(f"  [mgm] ML target error: {e}")
     return out

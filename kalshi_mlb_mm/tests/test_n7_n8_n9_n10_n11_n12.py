@@ -1,4 +1,8 @@
 """Tests for the pre-launch hardening bundle: N7/N8/N9/N10/N11/N12."""
+from kalshi_common.leg_types import ComboDescriptor, SPREAD_TOTAL_FAMILY
+
+_TEST_DESC = ComboDescriptor('spread_total', -1.5, 8.5, 'Home Spread + Over',
+                             SPREAD_TOTAL_FAMILY, 'TEX', 'LAA')
 
 # ---------------------------------------------------------------------------
 # N7 — per-combo cap counts in-flight live_quotes' worst-case exposure.
@@ -13,7 +17,6 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
     import kalshi_mlb_mm.db as db
     import kalshi_mlb_mm.risk as risk
     from kalshi_mlb_mm import main
-
     monkeypatch.setattr(cfg, "DB_PATH", tmp_path / "n7.duckdb")
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
     # Pin so per-fill cap = $50, per-combo cap = $10 (so inflight $200 >> $10).
@@ -35,7 +38,7 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     # Per-combo cap is now after pricing — need book_fairs stub so pricing runs.
     monkeypatch.setattr(main, "_book_fairs",
-                        lambda g, s, t: {"dk": 0.55, "fd": 0.55, "px": 0.56})
+                        lambda g, desc: {"dk": 0.55, "fd": 0.55, "px": 0.56})
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
 
@@ -44,8 +47,7 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
             {"market_ticker": "KXMLBTOTAL-N7", "event_ticker": "EVT-N7",
              "side": "yes", "count": 1}]
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-N7": (True, "g7", legs)})
-    monkeypatch.setattr(main, "_resolve_game_and_lines",
-                        lambda ticker, legs: ("g7", -1.5, 8.5))
+    monkeypatch.setattr(main, "_resolve_game", lambda legs: ("g7", _TEST_DESC))
 
     # Pre-seed 4 open live_quotes on COMBO-N7 — fills table is EMPTY.
     # N7: inflight worst-case = 4 * max_fill_exposure_usd() = 4 * $50 = $200.
@@ -129,8 +131,7 @@ def test_n8_unreconciled_fill_counted_conservatively_in_today_fills(monkeypatch,
             {"market_ticker": "KXMLBTOTAL-N8", "event_ticker": "EVT-N8",
              "side": "yes", "count": 1}]
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-N8": (True, "g8", legs)})
-    monkeypatch.setattr(main, "_resolve_game_and_lines",
-                        lambda ticker, legs: ("g8", -1.5, 8.5))
+    monkeypatch.setattr(main, "_resolve_game", lambda legs: ("g8", _TEST_DESC))
 
     # Pre-seed one UNRECONCILED fill with contracts=1, price=0.50.
     # Real exposure = $0.50 (well under $5 daily cap).

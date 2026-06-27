@@ -380,6 +380,77 @@ def price_sgps(
                 if verbose:
                     print(f"  fd target error: {e}", flush=True)
 
+    # ----- Phase 3: moneyline × total combos (FG) ----- #
+    # ML+total is a 4-cell devig-able grid keyed by total line only. implyBets
+    # prices any two (marketId, selectionId) legs, so ML+total is the same call
+    # as spread+total. Additive; existing rows untouched. spread_line=None.
+    out.extend(_price_ml_total_for_games(
+        client, runners_cache, filtered_targets, price_combo,
+        fetch_now, n_workers, verbose,
+    ))
+
+    return out
+
+
+def _price_ml_total_for_games(
+    client, runners_cache, filtered_targets, price_combo_fn,
+    fetch_now, n_workers, verbose,
+) -> list[PricedRow]:
+    """Price the 4 moneyline×total combos (Home/Away ML × Over/Under) for each
+    (game, distinct FG total). Stored with spread_line=None (no spread leg;
+    db dedups NULL-safely). Mirrors the DraftKings ML phase."""
+    totals_by_game: dict[str, set] = {}
+    for t in filtered_targets:
+        if t.period == "FG":
+            totals_by_game.setdefault(t.game_id, set()).add(t.total)
+
+    def _price_one_game(game_id: str, totals: set) -> list[PricedRow]:
+        rows: list[PricedRow] = []
+        sel = (runners_cache.get(game_id) or {}).get("fg", {})
+        ml = sel.get("moneyline", {})
+        home_ml = ml.get("home")
+        away_ml = ml.get("away")
+        if not (home_ml and away_ml):
+            return rows
+        totals_map = sel.get("totals", {})
+        for total in totals:
+            over = totals_map.get(("O", total))
+            under = totals_map.get(("U", total))
+            if not (over and under):
+                continue
+            combos = (
+                ("Home ML + Over", home_ml, over),
+                ("Home ML + Under", home_ml, under),
+                ("Away ML + Over", away_ml, over),
+                ("Away ML + Under", away_ml, under),
+            )
+            for combo_name, ml_pair, tot_pair in combos:
+                result = price_combo_fn(
+                    client.session, ml_pair[0], ml_pair[1],
+                    tot_pair[0], tot_pair[1], verbose=verbose)
+                if not result:
+                    continue
+                dec = float(result["decimal"])
+                rows.append(PricedRow(
+                    game_id=game_id, combo=combo_name, period="FG",
+                    spread_line=None, total_line=total,
+                    bookmaker=BOOK_NAME, source=SOURCE_LABEL,
+                    sgp_decimal=round(dec, 4), sgp_american=int(result["american"]),
+                    fetch_time=fetch_now))
+        return rows
+
+    out: list[PricedRow] = []
+    if not totals_by_game:
+        return out
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = [pool.submit(_price_one_game, gid, totals)
+                   for gid, totals in totals_by_game.items()]
+        for f in as_completed(futures):
+            try:
+                out.extend(f.result())
+            except Exception as e:
+                if verbose:
+                    print(f"  fd ML target error: {e}", flush=True)
     return out
 
 

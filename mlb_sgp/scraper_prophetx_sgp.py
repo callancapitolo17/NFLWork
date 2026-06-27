@@ -65,6 +65,7 @@ MARKET_NAMES = {
     "fg": {
         "spread": "Run Line",
         "total":  "Total Runs",
+        "moneyline": "Moneyline",
     },
     "f5": {
         # F5 market names discovered via recon (may vary; see NAME_ALIASES)

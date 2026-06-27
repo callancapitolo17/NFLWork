@@ -82,6 +82,13 @@ class Market:
     # reads this list to confirm home/away IDs match the tournaments endpoint.
     # Often empty for non-moneyline markets; the helper is permissive.
     outcomes: list[dict] = field(default_factory=list)
+    # Raw top-level `selections` passthrough — the MONEYLINE ORDER BOOK.
+    # ProphetX nests spread/total order books under `marketLines`, but the
+    # moneyline market puts its book here: one best-first ladder per outcome,
+    # each entry carrying odds + id + lineID. Empty for spread/total markets
+    # (which have no top-level `selections`). Used to read the standalone ML
+    # price for the SANITY_MULT_RATIO leg-multiply check.
+    ml_selections: list = field(default_factory=list)
 
 
 @dataclass
@@ -274,6 +281,8 @@ def _parse_event_markets(raw: dict) -> list[Market]:
             strike=m.get("strike"),
             selections=list(m.get("marketLines") or []),
             outcomes=list(m.get("outcomes") or []),
+            # Moneyline order book lives under top-level `selections`.
+            ml_selections=list(m.get("selections") or []),
         ))
     return out
 

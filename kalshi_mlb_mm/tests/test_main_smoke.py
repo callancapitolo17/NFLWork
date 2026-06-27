@@ -1,3 +1,9 @@
+from kalshi_common.leg_types import ComboDescriptor, SPREAD_TOTAL_FAMILY
+
+_TEST_DESC = ComboDescriptor('spread_total', -1.5, 8.5, 'Home Spread + Over',
+                             SPREAD_TOTAL_FAMILY, 'TEX', 'LAA')
+
+
 def test_main_imports():
     from kalshi_mlb_mm import main          # must import without error
     assert hasattr(main, "main_loop")
@@ -81,12 +87,11 @@ def test_discovery_dedup_no_resubmit_when_price_unchanged(monkeypatch, tmp_path)
 
     # Monkeypatch the helpers that require real DBs / network.
     monkeypatch.setattr(main, "_today_fills", lambda: [])
-    monkeypatch.setattr(main, "_resolve_game_and_lines",
-                        lambda ticker, legs: ("game1", -1.5, 8.5))
+    monkeypatch.setattr(main, "_resolve_game", lambda legs: ("game1", _TEST_DESC))
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
     # Make tipoff_ok pass (commence_time is None → normally fails; override).
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
-    monkeypatch.setattr(main, "_book_fairs", lambda gid, sl, tl: {"DK": 0.55, "FD": 0.55, "PX": 0.55})
+    monkeypatch.setattr(main, "_book_fairs", lambda gid, desc: {"DK": 0.55, "FD": 0.55, "PX": 0.55})
 
     # Patch blended_fair to return a stable value in range (signature now
     # (legs, gid, bf) → (book_med, blended), model removed in v1 hardening).
@@ -177,8 +182,7 @@ def test_discovery_skips_when_daily_cap_exhausted(monkeypatch, tmp_path):
                         {"COMBO-2": (True, "game2", legs)})
 
     # _resolve_game_and_lines must return a valid game_id so we reach the cap check.
-    monkeypatch.setattr(main, "_resolve_game_and_lines",
-                        lambda ticker, legs: ("game2", -1.5, 8.5))
+    monkeypatch.setattr(main, "_resolve_game", lambda legs: ("game2", _TEST_DESC))
 
     # Make daily cap exhausted: return fills totalling far above cap.
     big_fill = [{"game_id": "game2", "price": 99999.0}]
@@ -289,7 +293,7 @@ def test_risk_sweep_cancels_on_drift_since_quote(monkeypatch, tmp_path):
 
     # Book_fair_at_q was 0.40; now consensus median is 0.45 (drift 0.05 > 0.03).
     monkeypatch.setattr(main, "_book_fairs",
-                        lambda gid, sl, tl: {"DK": 0.44, "FD": 0.45, "PX": 0.46})
+                        lambda gid, desc: {"DK": 0.44, "FD": 0.45, "PX": 0.46})
 
     # Pre-seed an open live_quote referencing rfq r-drift, and a seen_rfqs row
     # with legs_json so the sweep can compute spread/total lines.
@@ -368,7 +372,7 @@ def test_confirm_voids_when_no_fresh_books(monkeypatch, tmp_path):
     monkeypatch.setattr(auth_client, "api", fake_api)
 
     # No fresh books available — _book_fairs returns {}.
-    monkeypatch.setattr(main, "_book_fairs", lambda gid, sl, tl: {})
+    monkeypatch.setattr(main, "_book_fairs", lambda gid, desc: {})
 
     confirm_calls = []
 
@@ -432,7 +436,7 @@ def test_confirm_records_fill_fast_with_reconciled_false(monkeypatch, tmp_path):
              datetime.now(timezone.utc), "quoted"])
 
     monkeypatch.setattr(main, "_book_fairs",
-                        lambda gid, sl, tl: {"dk": 0.56, "fd": 0.56, "px": 0.56})
+                        lambda gid, desc: {"dk": 0.56, "fd": 0.56, "px": 0.56})
 
     # Track API calls; if confirm path ever hits /portfolio/positions, we fail.
     api_paths = []
@@ -749,7 +753,7 @@ def test_discovery_skips_when_combo_exposure_capped(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     # Per-combo cap now runs after pricing — need book_fairs stub so pricing runs.
     monkeypatch.setattr(main, "_book_fairs",
-                        lambda g, s, t: {"dk": 0.55, "fd": 0.55, "px": 0.56})
+                        lambda g, desc: {"dk": 0.55, "fd": 0.55, "px": 0.56})
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
 
     legs = [{"market_ticker": "KXMLBSPREAD-CC", "event_ticker": "EVT-CC",
@@ -757,8 +761,7 @@ def test_discovery_skips_when_combo_exposure_capped(monkeypatch, tmp_path):
             {"market_ticker": "KXMLBTOTAL-CC", "event_ticker": "EVT-CC",
              "side": "yes", "count": 1}]
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-CAP": (True, "gCAP", legs)})
-    monkeypatch.setattr(main, "_resolve_game_and_lines",
-                        lambda ticker, legs: ("gCAP", -1.5, 8.5))
+    monkeypatch.setattr(main, "_resolve_game", lambda legs: ("gCAP", _TEST_DESC))
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
 
     # Pre-seed fills totaling $51 on this ticker (102 contracts × $0.50 = $51.00).
@@ -826,8 +829,7 @@ def test_discovery_skips_when_combo_in_cooldown(monkeypatch, tmp_path):
             {"market_ticker": "KXMLBTOTAL-CD", "event_ticker": "EVT-CD",
              "side": "yes", "count": 1}]
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-CD": (True, "gCD", legs)})
-    monkeypatch.setattr(main, "_resolve_game_and_lines",
-                        lambda ticker, legs: ("gCD", -1.5, 8.5))
+    monkeypatch.setattr(main, "_resolve_game", lambda legs: ("gCD", _TEST_DESC))
 
     now = datetime.now(timezone.utc)
     with db.connect() as con:
@@ -891,7 +893,7 @@ def test_confirm_arms_combo_cooldown(monkeypatch, tmp_path):
              datetime.now(timezone.utc), "quoted"])
 
     monkeypatch.setattr(main, "_book_fairs",
-                        lambda gid, sl, tl: {"dk": 0.56, "fd": 0.56, "px": 0.56})
+                        lambda gid, desc: {"dk": 0.56, "fd": 0.56, "px": 0.56})
 
     def fake_api(method, path, *a, **kw):
         if path.startswith("/communications/quotes/"):

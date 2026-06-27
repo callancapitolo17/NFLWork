@@ -416,6 +416,95 @@ def price_sgps(
                 if verbose:
                     print(f"  dk target error: {e}", flush=True)
 
+    # ----- Phase 3: moneyline × total combos (FG) ----- #
+    # ML+total is a 4-cell devig-able grid keyed by total line only (no spread),
+    # so it's priced once per (game, distinct FG total) rather than per
+    # spread×total target. Additive: existing spread×total rows are untouched.
+    out.extend(_price_ml_total_for_games(
+        client, per_game_cache, filtered_targets,
+        calculate_sgp, _market_num, fetch_now, verbose, n_workers,
+    ))
+
+    return out
+
+
+def _price_ml_total_for_games(
+    client, per_game_cache, filtered_targets,
+    calculate_sgp_fn, market_num_fn, fetch_now, verbose, n_workers,
+) -> list[PricedRow]:
+    """Price the 4 moneyline×total combos (Home/Away ML × Over/Under) for each
+    (game, distinct FG total line). Returns PricedRows with spread_line=None
+    (there is no spread leg; db dedups NULL-safely).
+
+    The ML leg's market is not in the spread/total `canonical` set, so we only
+    gate the TOTAL leg on canonical; DK's calculateBets itself rejects a
+    non-combinable ML+total pair (the combinabilityRestrictions / 422 path in
+    calculate_sgp), so an unsupported pair simply yields no row.
+    """
+    # distinct FG totals per game from the already-offered (filtered) targets.
+    totals_by_game: dict[str, set] = {}
+    for t in filtered_targets:
+        if t.period == "FG":
+            totals_by_game.setdefault(t.game_id, set()).add(t.total)
+
+    def _price_one_game(game_id: str, totals: set) -> list[PricedRow]:
+        rows: list[PricedRow] = []
+        cache = per_game_cache.get(game_id)
+        if not cache:
+            return rows
+        sel_ids = cache["sel_ids_all"].get("fg", {})
+        ml = sel_ids.get("moneyline", {"1": [], "3": []})
+        home_ml = ml.get("1") or []
+        away_ml = ml.get("3") or []
+        if not (home_ml and away_ml):
+            return rows
+        ml_home, ml_away = home_ml[0], away_ml[0]
+        canonical = sel_ids.get("canonical", set())
+        totals_map = sel_ids.get("totals", {})
+        for total in totals:
+            over_sels = totals_map.get(("O", total)) or []
+            under_sels = totals_map.get(("U", total)) or []
+            if not (over_sels and under_sels):
+                continue
+            combos = (
+                ("Home ML + Over", ml_home, over_sels),
+                ("Home ML + Under", ml_home, under_sels),
+                ("Away ML + Over", ml_away, over_sels),
+                ("Away ML + Under", ml_away, under_sels),
+            )
+            for combo_name, ml_sel, tot_sels in combos:
+                sgp = None
+                for to in tot_sels:
+                    if market_num_fn(to) not in canonical:
+                        continue
+                    sgp = calculate_sgp_fn(client.session, ml_sel, to, verbose=verbose)
+                    if sgp:
+                        break
+                if not sgp:
+                    continue
+                dec = sgp["trueOdds"]
+                rows.append(PricedRow(
+                    game_id=game_id, combo=combo_name, period="FG",
+                    spread_line=None, total_line=total,
+                    bookmaker=BOOK_NAME, source=SOURCE_LABEL,
+                    sgp_decimal=round(dec, 4),
+                    sgp_american=decimal_to_american(dec),
+                    fetch_time=fetch_now,
+                ))
+        return rows
+
+    out: list[PricedRow] = []
+    if not totals_by_game:
+        return out
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = [pool.submit(_price_one_game, gid, totals)
+                   for gid, totals in totals_by_game.items()]
+        for f in as_completed(futures):
+            try:
+                out.extend(f.result())
+            except Exception as e:
+                if verbose:
+                    print(f"  dk ML target error: {e}", flush=True)
     return out
 
 
