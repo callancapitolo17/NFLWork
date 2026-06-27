@@ -12,13 +12,29 @@ Scrapes bet history from 4 sportsbooks and logs them to Google Sheets for P&L tr
 
 ## Multi-account scrapers
 
-Both `scraper_bfa.py` and `scraper_wagerzon.py` support a second account via `--account j`:
+`scraper_bfa.py` supports a second account via `--account j`. `scraper_wagerzon.py`
+still defines `--account j` / `--account c` entries, but as of 2026-06-26 only the
+primary Wagerzon login is active — see "Wagerzon account consolidation" below.
 
 - **BFAJ** (BFA second account) — flat `bet_adjustment: -15` (subtract $15 per bet). Uploads adjusted to Sheet1 and raw to `Shared` tab.
-- **WagerzonJ** (Wagerzon second account) — multiplicative `bet_multiplier: 0.875` (user holds 87.5% of risk). Uploads adjusted to Sheet1 and raw to `Shared` tab.
-- **WagerzonC** (Wagerzon third account) — `bet_multiplier: 1.0` (full risk to user, no adjustment). Uploads adjusted to Sheet1 only; no Shared tab.
+- **WagerzonJ** (Wagerzon second account) — multiplicative `bet_multiplier: 0.875` (user holds 87.5% of risk). Uploads adjusted to Sheet1 and raw to `Shared` tab. **Inactive: login lost 2026-06-26 (`WAGERZONJ_*` env vars unset).**
+- **WagerzonC** (Wagerzon third account) — `bet_multiplier: 1.0` (full risk to user, no adjustment). Uploads adjusted to Sheet1 only; no Shared tab. **This is now the only live Wagerzon account; its credentials moved to the primary `WAGERZON_*` slot (see below).**
 
 The two scrapers each define their own `ACCOUNTS` dict; they're not yet sharing a generic helper (intentional — see spec `docs/superpowers/specs/2026-04-29-wagerzon-second-account-design.md`, Approaches 1 vs 2).
+
+### Wagerzon account consolidation (2026-06-26)
+
+The original primary Wagerzon login and WagerzonJ were lost. The surviving
+account (formerly **WagerzonC**) was promoted into the primary
+`WAGERZON_USERNAME` / `WAGERZON_PASSWORD` slot in `.env`. To keep its P&L under
+the existing **WagerzonC** spreadsheet column, `ACCOUNTS['default']` now carries
+`platform: 'WagerzonC'` while still reading the primary env slot, and
+`run_all_scrapers.sh` runs a single Wagerzon scrape (no `--account` flag). The
+`j` and `c` `ACCOUNTS` entries are retained for reference but are inert — their
+`WAGERZONJ_*` / `WAGERZONC_*` env vars are unset, so the cron no longer invokes
+them. Note the odds/placement side (`wagerzon_odds/`, dashboard registry) still
+labels this single login **"Wagerzon"** internally; only the bet-history sheet
+calls it "WagerzonC".
 
 ## Critical Details
 

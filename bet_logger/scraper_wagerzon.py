@@ -28,16 +28,21 @@ load_dotenv()
 WAGERZON_BASE_URL = "https://backend.wagerzon.com"
 WAGERZON_HISTORY_URL = f"{WAGERZON_BASE_URL}/wager/HistoryHelper.aspx"
 # Account configurations.
-# Wagerzon supports two accounts using the same credentials flow but
-# different sheet labels and stake adjustments. The primary uses a
-# multiplier of 1.0 (full risk attributed to user). WagerzonJ is a
-# partner account where the user holds 87.5% of the risk; raw bets
-# also land on the Shared tab for week-over-week reconciliation.
+# As of 2026-06-26 only one Wagerzon login remains — the former WagerzonC
+# account, whose credentials now live in the primary WAGERZON_USERNAME /
+# WAGERZON_PASSWORD slot (the original primary + WagerzonJ logins were lost).
+# The 'default' entry therefore reads that slot but is labelled 'WagerzonC'
+# in the spreadsheet so its P&L stays under the existing WagerzonC column
+# (multiplier 1.0, Sheet1 only — identical to how WagerzonC was handled).
+# The 'j' and 'c' entries are retained but inert: their env vars
+# (WAGERZONJ_* / WAGERZONC_*) are unset, so run_all_scrapers.sh no longer
+# invokes them. They document the prior stake adjustments (WagerzonJ x0.875
+# + Shared tab; WagerzonC x1.0).
 ACCOUNTS = {
     'default': {
         'username_env': 'WAGERZON_USERNAME',
         'password_env': 'WAGERZON_PASSWORD',
-        'platform': 'Wagerzon',
+        'platform': 'WagerzonC',
         'bet_multiplier': 1.0,
         'shared_sheet': None,
     },
