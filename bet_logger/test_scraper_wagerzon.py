@@ -17,7 +17,9 @@ def test_accounts_default_fields():
     acct = ACCOUNTS['default']
     assert acct['username_env'] == 'WAGERZON_USERNAME'
     assert acct['password_env'] == 'WAGERZON_PASSWORD'
-    assert acct['platform'] == 'Wagerzon'
+    # The sole surviving Wagerzon login (formerly WagerzonC) lives in the
+    # primary WAGERZON_* slot but is logged to the sheet as 'WagerzonC'.
+    assert acct['platform'] == 'WagerzonC'
     assert acct['bet_multiplier'] == 1.0
     assert acct['shared_sheet'] is None
 
