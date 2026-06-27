@@ -1706,13 +1706,13 @@ def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandida
                 blended = _book_only_fair(books)
             if blended is None:
                 _emit_candidate_event("rejected_no_book_data", game_id=game_id,
-                                      cand=cand, spread_line=spread_line,
+                                      cand=cand, spread_line=region.spread_line,
                                       total_line=total_line,
                                       model=model, books=books)
                 continue
             if not (config.MIN_FAIR_PROB <= blended <= config.MAX_FAIR_PROB):
                 _emit_candidate_event("rejected_fair_oob", game_id=game_id,
-                                      cand=cand, spread_line=spread_line,
+                                      cand=cand, spread_line=region.spread_line,
                                       total_line=total_line,
                                       model=model, books=books, blended=blended)
                 continue
