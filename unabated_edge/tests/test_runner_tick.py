@@ -43,5 +43,4 @@ def test_tick_flags_positive_edge(tmp_path, monkeypatch):
         dry_run=True,
         ask_fn=lambda t: 0.30,
     )
-    storage.flush()  # drain research buffer so it doesn't leak into subsequent tests
     assert any(r["ev_pct"] > 0 for r in rows)

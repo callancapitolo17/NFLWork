@@ -18,7 +18,7 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, ask_fn) -> lis
     snap = [
         {
             "ts": now,
-            "event_id": k.split("|")[0],
+            "event_id": int(k.split("|")[0]),
             "market_source_id": int(k.split("|")[2]),
             "bet_type": k.split("|")[3],
             "side": k.split("|")[1],
