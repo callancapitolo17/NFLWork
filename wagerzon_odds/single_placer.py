@@ -110,6 +110,8 @@ def build_sel_for_single(bet: dict) -> str:
     idgm = bet["idgm"]
     pts  = bet["line"]
     odds = bet["american_odds"]
+    if pts is None:    # moneyline (play 4/5) has no points line; WZ encodes 0
+        pts = 0
     if play == 2:      # over → negative points
         pts = -abs(pts)
     elif play == 3:    # under → positive points

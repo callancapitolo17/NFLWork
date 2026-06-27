@@ -184,9 +184,17 @@ def test_refresh_caches_retries_on_catalog_exception(monkeypatch, tmp_path):
       (a) does not raise,
       (b) honored `retries` (gave up after N attempts), and
       (c) returned False cleanly.
+
+    USE_MODEL=True is required here because the sample/meta load is gated on
+    that flag — in book-only mode _refresh_caches skips those queries entirely
+    so no CatalogException would occur.
     """
     import time as time_mod
-    from kalshi_mlb_rfq import main
+    from kalshi_mlb_rfq import main, config
+
+    # Force model mode so that mlb_game_samples is queried and can trigger
+    # the CatalogException we want to test the retry logic for.
+    monkeypatch.setattr(config, "USE_MODEL", True)
 
     # Build a DB that exists but is missing mlb_game_samples — simulates the
     # window between R's DROP and CREATE.

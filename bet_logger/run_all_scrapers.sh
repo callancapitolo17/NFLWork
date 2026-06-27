@@ -15,36 +15,10 @@ echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================"
 echo ""
 
-# Run Wagerzon scraper
-echo "[$(date '+%H:%M:%S')] Running Wagerzon scraper..."
-echo "----------------------------------------"
-if ./venv/bin/python3 scraper_wagerzon.py; then
-    echo "[$(date '+%H:%M:%S')] Wagerzon: done"
-else
-    rc=$?
-    echo "[$(date '+%H:%M:%S')] Wagerzon: FAILED (exit $rc)"
-    FAILED=$((FAILED + 1))
-    FAILED_NAMES="${FAILED_NAMES}Wagerzon, "
-fi
-echo ""
-
-# Run Wagerzon scraper — WagerzonJ account
-echo "[$(date '+%H:%M:%S')] Running Wagerzon scraper (WagerzonJ)..."
-echo "----------------------------------------"
-if ./venv/bin/python3 scraper_wagerzon.py --account j; then
-    echo "[$(date '+%H:%M:%S')] WagerzonJ: done"
-else
-    rc=$?
-    echo "[$(date '+%H:%M:%S')] WagerzonJ: FAILED (exit $rc)"
-    FAILED=$((FAILED + 1))
-    FAILED_NAMES="${FAILED_NAMES}WagerzonJ, "
-fi
-echo ""
-
-# Run Wagerzon scraper — WagerzonC account
+# Run Wagerzon scraper (single surviving account; logged to the sheet as WagerzonC)
 echo "[$(date '+%H:%M:%S')] Running Wagerzon scraper (WagerzonC)..."
 echo "----------------------------------------"
-if ./venv/bin/python3 scraper_wagerzon.py --account c; then
+if ./venv/bin/python3 scraper_wagerzon.py; then
     echo "[$(date '+%H:%M:%S')] WagerzonC: done"
 else
     rc=$?
@@ -123,7 +97,7 @@ echo ""
 
 echo "========================================"
 if [ $FAILED -eq 0 ]; then
-    MSG="All 7 scrapers completed successfully."
+    MSG="All 5 scrapers completed successfully."
     echo "$MSG"
     /usr/local/bin/terminal-notifier -title "Bet Logger ✓" -message "$MSG" -sound Glass -group betlogger
 else
