@@ -184,3 +184,88 @@ def test_routing_table_signs_line_by_team():
     assert _region(False, "yes").spread_side == "away"
     assert _region(False, "no").spread_line == 1.5
     assert _region(False, "no").spread_side == "home"
+
+
+# ---------------------------------------------------------------------------
+# Task 4: Both-grids integration regression
+# ---------------------------------------------------------------------------
+
+def _seed_both_grids() -> pd.DataFrame:
+    """Seed BOTH grids (neg + pos) for game 'G' across 2 books with
+    DELIBERATELY asymmetric odds so a mis-route is detectable.
+
+    NEG grid (spread_line=-1.5, home-favorite):
+        "Away Spread + *" cells are cheap (decimal ~1.6, high-prob ~0.55).
+
+    POS grid (spread_line=+1.5, away-favorite):
+        "Away Spread + *" cells are expensive (decimal ~5.0, low-prob ~0.18).
+
+    A correct away-margin YES routing selects the POS grid → fair < 0.35.
+    A mis-route to the NEG grid's "Away Spread + Over" → fair > 0.50,
+    which fails the assertion.
+    """
+    NEG = {
+        "Home Spread + Over":  5.0,
+        "Home Spread + Under": 5.0,
+        "Away Spread + Over":  1.6,
+        "Away Spread + Under": 1.6,
+    }
+    POS = {
+        "Home Spread + Over":  1.6,
+        "Home Spread + Under": 1.6,
+        "Away Spread + Over":  5.0,
+        "Away Spread + Under": 5.0,
+    }
+    rows = []
+    for book in ("draftkings", "fanduel"):
+        for label, dec in NEG.items():
+            rows.append({
+                "game_id": "G", "combo": label, "bookmaker": book,
+                "sgp_decimal": dec, "spread_line": -1.5,
+                "total_line": 7.5, "period": "FG",
+            })
+        for label, dec in POS.items():
+            rows.append({
+                "game_id": "G", "combo": label, "bookmaker": book,
+                "sgp_decimal": dec, "spread_line": 1.5,
+                "total_line": 7.5, "period": "FG",
+            })
+    return pd.DataFrame(rows)
+
+
+def test_away_margin_prices_to_positive_grid_not_complement(monkeypatch):
+    """Away-margin YES leg must price against the +1.5 grid's 'Away Spread + Over'
+    cell (~5.0 decimal → devigged ~0.18), NOT the −1.5 grid's same-label cell
+    (~1.6 decimal → devigged ~0.55). Regression for Task-2 sign fix.
+
+    With the correct sign (team_is_home=False → +1.5 grid):
+        fair ≈ 0.18  → passes (< 0.35)
+
+    If the Task-2 sign fix is reverted (always negated → −1.5 grid):
+        fair ≈ 0.55  → fails (> 0.35)
+    """
+    import statistics
+    import kalshi_mlb_rfq.config as cfg
+
+    monkeypatch.setattr(cfg, "MIN_BOOK_COUNT_FOR_BLEND", 2)
+    monkeypatch.setattr(m, "_SGP_ODDS_CACHE", _seed_both_grids())
+
+    # away-margin YES leg: _region(team_is_home=False, side="yes") uses
+    # line_n=2 → spread_line=+1.5, spread_side="away", total_side="over",
+    # total_line=7.5 (total_n=8 → 8−0.5).
+    region = _region(team_is_home=False, side="yes")
+    assert region.spread_line == 1.5, (
+        f"region.spread_line should be +1.5 (away-favorite grid), got {region.spread_line}"
+    )
+
+    books = m._load_book_fairs(
+        "G", region.spread_line, region.total_line,
+        region.spread_side, region.total_side,
+    )
+    assert books, "expected ≥1 book fair, got empty dict"
+    fair = statistics.median(books.values())
+    # POS grid "Away Spread + Over" deviggs to ~0.18 — well below 0.35.
+    # If mis-routed to NEG grid, fair ≈ 0.55 and this assertion fails.
+    assert fair < 0.35, (
+        f"away-margin mis-routed to complement cell on −1.5 grid: fair={fair:.3f} (expected < 0.35)"
+    )
