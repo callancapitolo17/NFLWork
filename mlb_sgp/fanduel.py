@@ -55,6 +55,7 @@ signatures. This orchestrator adapts:
 """
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
@@ -75,6 +76,19 @@ _FALLBACK_KEY_TO_COMBO = {
     "away_over":  "Away Spread + Over",
     "away_under": "Away Spread + Under",
 }
+
+
+# Target-level parallelism. FD is not the cycle's long pole (strict
+# line matching filters most targets), so the default is conservative;
+# env-overridable for ops tuning.
+FD_TARGET_PARALLELISM_DEFAULT = 4
+
+
+def _resolve_parallelism(parallelism: int | None) -> int:
+    if parallelism is not None:
+        return parallelism
+    return int(os.environ.get("MLB_SGP_FD_PARALLELISM",
+                              str(FD_TARGET_PARALLELISM_DEFAULT)))
 
 
 def _extract_offered_lines_fd(
@@ -108,6 +122,8 @@ def price_sgps(
     periods: tuple[str, ...] = ("FG",),
     client: FanDuelClient | None = None,
     verbose: bool = False,
+    parallelism: int | None = None,
+    fetchers: dict | None = None,
 ) -> list[PricedRow]:
     """Price every target line against the FanDuel SGP API.
 
@@ -126,6 +142,14 @@ def price_sgps(
         useful for production, but tests should always pass a mock).
     verbose
         Forwarded to leg-level helpers for debug printing.
+    parallelism
+        Number of targets priced concurrently. ``None`` resolves to the
+        ``MLB_SGP_FD_PARALLELISM`` env var or ``FD_TARGET_PARALLELISM_DEFAULT``;
+        total in-flight FD requests is ``parallelism × 4`` (4 combos/target).
+    fetchers
+        Structure-fetch override hooks; default ``None`` uses the legacy
+        direct fetches (dashboard path); SGPService injects TTL-cached
+        versions; prices are never affected.
 
     Returns
     -------
@@ -159,6 +183,10 @@ def price_sgps(
         try_integer_fallback_fd,
     )
 
+    _f = fetchers or {}
+    fetch_events_fn = _f.get("fetch_fd_events", fetch_fd_events)
+    fetch_runners_fn = _f.get("fetch_event_runners", fetch_event_runners)
+
     # ----- Group target lines by game ----- #
     # match_events expects the legacy parlay-lines dict shape: one
     # entry per game_id with fg_/f5_ columns. Collapse per-period
@@ -183,7 +211,7 @@ def price_sgps(
             ent["f5_total_line"] = t.total
 
     # ----- Phase 1: list FD events and match to our game_ids ----- #
-    fd_events = fetch_fd_events(client.session)
+    fd_events = fetch_events_fn(client.session)
     matched = match_events(fd_events, target_dict)
     if not matched:
         return []
@@ -214,7 +242,7 @@ def price_sgps(
         if game is None:
             continue
         if game_id not in runners_cache:
-            runners_cache[game_id] = fetch_event_runners(
+            runners_cache[game_id] = fetch_runners_fn(
                 client.session,
                 game["fd_event_id"],
                 game["fd_home"],
@@ -250,24 +278,27 @@ def price_sgps(
             print(f"  game {game_id}: {pre} kalshi → {post} offered", flush=True)
 
     # ----- Phase 2: per target row, price 4 combos ----- #
-    for t in filtered_targets:
+    # Targets fan out on a thread pool (mirrors draftkings.py /
+    # novig.py). Runners are pre-fetched in the filter loop above, so
+    # workers only do implyBets calls — no shared-cache mutation races.
+    def _price_one_target(t: TargetLine) -> list[PricedRow]:
+        target_rows: list[PricedRow] = []
         game = matched_by_gid.get(t.game_id)
         if game is None:
-            continue
+            return target_rows
 
         period_key = t.period.lower()  # "FG" -> "fg"
 
-        # Runners cache is now guaranteed-populated by the filter loop
+        # Runners cache is guaranteed-populated by the filter loop
         # above (we only added a target if its game's runners were
         # fetched successfully).
         sel_ids_per_period = runners_cache[t.game_id]
         sel = sel_ids_per_period.get(period_key, {"spreads": {}, "totals": {}})
 
         # Sign convention: TargetLine.spread is the home-perspective
-        # signed line, so the away leg is keyed by -spread. This matches
-        # the legacy scraper's home_line/away_line construction.
+        # signed line, so the away leg is keyed by -spread.
         if not sel.get("spreads"):
-            continue
+            return target_rows
         home_line = t.spread
         away_line = -t.spread
 
@@ -277,16 +308,14 @@ def price_sgps(
         under = sel["totals"].get(("U", t.total))
 
         # If any of the four legs is missing, the requested (spread,
-        # total) is off-main / off-alt. Try the integer-line derivation
-        # fallback (only valid for integer totals).
+        # total) is off-main / off-alt. Try the integer-line fallback.
         if not (home_spread and away_spread and over and under):
             fallback = try_integer_fallback_fd(
                 client.session, sel, home_line, away_line, t.total,
                 verbose=verbose,
             )
             if fallback is None:
-                continue
-            # 4 derived combos at once, all tagged _interpolated
+                return target_rows
             prefix = "" if t.period == "FG" else "F5 "
             fair_probs = fallback["fair_probs"]
             for key, base_combo in _FALLBACK_KEY_TO_COMBO.items():
@@ -294,7 +323,7 @@ def price_sgps(
                 if not fair_p or fair_p <= 0:
                     continue
                 dec = 1.0 / fair_p
-                out.append(PricedRow(
+                target_rows.append(PricedRow(
                     game_id=t.game_id,
                     combo=prefix + base_combo,
                     period=t.period,
@@ -306,13 +335,9 @@ def price_sgps(
                     sgp_american=decimal_to_american(dec),
                     fetch_time=fetch_now,
                 ))
-            continue
+            return target_rows
 
         # ----- Main path: price the 4 canonical combos in parallel ----- #
-        # 4 independent implyBets calls on the same curl_cffi session.
-        # Mirrors the DK orchestrator pattern (commit fd9900e). Session
-        # is thread-safe for independent requests; no shared per-request
-        # state is mutated across threads.
         prefix = "" if t.period == "FG" else "F5 "
         combos = (
             ("Home Spread + Over",  home_spread, over),
@@ -325,14 +350,13 @@ def price_sgps(
             client.session, combos, price_combo, verbose,
         )
 
-        # Iterate combos (not the dict) to preserve deterministic order.
         for combo_name, _sp_pair, _tot_pair in combos:
             result = priced_by_combo.get(combo_name)
             if not result:
                 continue
             dec = float(result["decimal"])
             am = int(result["american"])
-            out.append(PricedRow(
+            target_rows.append(PricedRow(
                 game_id=t.game_id,
                 combo=prefix + combo_name,
                 period=t.period,
@@ -344,7 +368,89 @@ def price_sgps(
                 sgp_american=am,
                 fetch_time=fetch_now,
             ))
+        return target_rows
 
+    n_workers = max(1, _resolve_parallelism(parallelism))
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = [pool.submit(_price_one_target, t) for t in filtered_targets]
+        for f in as_completed(futures):
+            try:
+                out.extend(f.result())
+            except Exception as e:
+                if verbose:
+                    print(f"  fd target error: {e}", flush=True)
+
+    # ----- Phase 3: moneyline × total combos (FG) ----- #
+    # ML+total is a 4-cell devig-able grid keyed by total line only. implyBets
+    # prices any two (marketId, selectionId) legs, so ML+total is the same call
+    # as spread+total. Additive; existing rows untouched. spread_line=None.
+    out.extend(_price_ml_total_for_games(
+        client, runners_cache, filtered_targets, price_combo,
+        fetch_now, n_workers, verbose,
+    ))
+
+    return out
+
+
+def _price_ml_total_for_games(
+    client, runners_cache, filtered_targets, price_combo_fn,
+    fetch_now, n_workers, verbose,
+) -> list[PricedRow]:
+    """Price the 4 moneyline×total combos (Home/Away ML × Over/Under) for each
+    (game, distinct FG total). Stored with spread_line=None (no spread leg;
+    db dedups NULL-safely). Mirrors the DraftKings ML phase."""
+    totals_by_game: dict[str, set] = {}
+    for t in filtered_targets:
+        if t.period == "FG":
+            totals_by_game.setdefault(t.game_id, set()).add(t.total)
+
+    def _price_one_game(game_id: str, totals: set) -> list[PricedRow]:
+        rows: list[PricedRow] = []
+        sel = (runners_cache.get(game_id) or {}).get("fg", {})
+        ml = sel.get("moneyline", {})
+        home_ml = ml.get("home")
+        away_ml = ml.get("away")
+        if not (home_ml and away_ml):
+            return rows
+        totals_map = sel.get("totals", {})
+        for total in totals:
+            over = totals_map.get(("O", total))
+            under = totals_map.get(("U", total))
+            if not (over and under):
+                continue
+            combos = (
+                ("Home ML + Over", home_ml, over),
+                ("Home ML + Under", home_ml, under),
+                ("Away ML + Over", away_ml, over),
+                ("Away ML + Under", away_ml, under),
+            )
+            for combo_name, ml_pair, tot_pair in combos:
+                result = price_combo_fn(
+                    client.session, ml_pair[0], ml_pair[1],
+                    tot_pair[0], tot_pair[1], verbose=verbose)
+                if not result:
+                    continue
+                dec = float(result["decimal"])
+                rows.append(PricedRow(
+                    game_id=game_id, combo=combo_name, period="FG",
+                    spread_line=None, total_line=total,
+                    bookmaker=BOOK_NAME, source=SOURCE_LABEL,
+                    sgp_decimal=round(dec, 4), sgp_american=int(result["american"]),
+                    fetch_time=fetch_now))
+        return rows
+
+    out: list[PricedRow] = []
+    if not totals_by_game:
+        return out
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = [pool.submit(_price_one_game, gid, totals)
+                   for gid, totals in totals_by_game.items()]
+        for f in as_completed(futures):
+            try:
+                out.extend(f.result())
+            except Exception as e:
+                if verbose:
+                    print(f"  fd ML target error: {e}", flush=True)
     return out
 
 

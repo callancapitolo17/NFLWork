@@ -11,6 +11,7 @@ Run with: python mlb_dashboard_server.py
 Then open: http://localhost:8083
 """
 
+import os
 import subprocess
 import sys
 import json
@@ -134,10 +135,9 @@ log = logging.getLogger("clv")
 # Books with working navigators for auto-queue
 SUPPORTED_AUTO_BOOKS = ("wagerzon", "hoop88", "bfa", "betonlineag")
 
-# DuckDB with pipeline bets — always in main repo (not worktree)
+# Repo root for closing-odds capture — script-relative so a worktree test reads
+# the worktree's own scraper DBs. On main this is identical to ~/NFLWork.
 _REPO_ROOT = PROJECT_ROOT
-if ".claude/worktrees" in str(_REPO_ROOT):
-    _REPO_ROOT = Path(str(_REPO_ROOT).split(".claude/worktrees")[0])
 # Scraper configs for closing-odds capture (paths relative to PROJECT_ROOT)
 OFFSHORE_SCRAPERS = {
     "wagerzon": {
@@ -870,6 +870,18 @@ def _resolve_wagerzon_play_idgm(bet: dict) -> dict | None:
     elif market in ("spreads", "totals", "h2h"):
         # FG game-line markets all live on the 'spreads' row.
         market_candidates = [("spreads", None), ("spreads", "fg")]
+        # A non-main line (e.g. Under 8.5 when WZ's main total is 10) is a WZ
+        # ALTERNATE line, which lives on its own alternate_*_fg row — the main
+        # 'spreads' row only carries the main line. Fall back to the alt rows
+        # (after the main row, so main-line bets still resolve to the main row)
+        # so off-main market-edge bets resolve for quoting/placement. Mirrors
+        # the pill grid, where expand_bets_to_book_prices unions the alt rows.
+        if kind == "total":
+            market_candidates += [("alternate_totals_fg", None),
+                                  ("alternate_totals_fg", "fg")]
+        elif kind == "spread":
+            market_candidates += [("alternate_spreads_fg", None),
+                                  ("alternate_spreads_fg", "fg")]
     elif market in ("alternate_spreads_fg", "alternate_totals_fg"):
         market_candidates = [(market, None), (market, "fg")]
     else:
@@ -2725,6 +2737,7 @@ if __name__ == "__main__":
     print("\n" + "=" * 50)
     print("MLB +EV Betting Dashboard")
     print("=" * 50)
-    print(f"\nOpen in browser: http://localhost:8083")
+    _port = int(os.environ.get("MLB_DASHBOARD_PORT", "8083"))
+    print(f"\nOpen in browser: http://localhost:{_port}")
     print("Press Ctrl+C to stop\n")
-    app.run(host="0.0.0.0", port=8083, debug=False)
+    app.run(host="0.0.0.0", port=_port, debug=False)

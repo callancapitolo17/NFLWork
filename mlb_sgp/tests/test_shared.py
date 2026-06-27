@@ -226,3 +226,32 @@ def test_load_target_lines_empty_target_table_does_not_fallthrough(tmp_path):
     con.close()
     rows = load_target_lines(db_path=db)
     assert rows == [], "Empty mlb_target_lines is the source of truth — no fallthrough"
+
+
+def test_ttl_cache_caches_within_ttl_and_expires():
+    from mlb_sgp._shared import TTLCache
+    clock = {"t": 100.0}
+    calls = {"n": 0}
+
+    def fetch():
+        calls["n"] += 1
+        return f"v{calls['n']}"
+
+    cache = TTLCache(ttl_sec=60, now_fn=lambda: clock["t"])
+    assert cache.get_or_fetch("k", fetch) == "v1"
+    clock["t"] = 130.0                      # 30s later: cached
+    assert cache.get_or_fetch("k", fetch) == "v1"
+    assert calls["n"] == 1
+    clock["t"] = 161.0                      # 61s after store: expired
+    assert cache.get_or_fetch("k", fetch) == "v2"
+    assert calls["n"] == 2
+
+
+def test_ttl_cache_keys_are_independent_and_clear_works():
+    from mlb_sgp._shared import TTLCache
+    cache = TTLCache(ttl_sec=60, now_fn=lambda: 0.0)
+    assert cache.get_or_fetch("a", lambda: 1) == 1
+    assert cache.get_or_fetch("b", lambda: 2) == 2
+    assert cache.get_or_fetch("a", lambda: 99) == 1   # still cached
+    cache.clear()
+    assert cache.get_or_fetch("a", lambda: 99) == 99

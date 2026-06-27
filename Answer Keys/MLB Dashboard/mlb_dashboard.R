@@ -540,9 +540,11 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
       fd_fair_prob = colDef(show = FALSE),
       px_fair_prob = colDef(show = FALSE),
       nv_fair_prob = colDef(show = FALSE),
-      # Combined Books cell: M / DK / FD / PX / NV / Cons pill row.
+      bmg_fair_prob = colDef(show = FALSE),
+      czr_fair_prob = colDef(show = FALSE),
+      # Combined Books cell: M / DK / FD / PX / NV / BMG / CZR / Cons pill row.
       # Reads model_prob_raw (always non-NA in real data — pricer skips no-sample
-      # games upstream) + the four per-book devigged probs + blended_prob_raw.
+      # games upstream) + the six per-book devigged probs + blended_prob_raw.
       books_strip = colDef(
         name = "Books (devigged fair %)",
         minWidth = 320,
@@ -551,13 +553,14 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
         class = "cell-books",
         cell = function(value, index) {
           row <- table_data[index, ]
-          # Agree k/n is computed over the 5 independent voices (DK / FD / PX /
-          # NV / model). Cons is excluded because it's a blended derivative of
-          # model+books. NA voices reduce the denominator rather than counting
-          # as "disagree" — see books_strip.R::compute_k_within.
+          # Agree k/n is computed over the independent voices (DK / FD / PX /
+          # NV / BMG / CZR / model). Cons is excluded because it's a blended
+          # derivative of model+books. NA voices reduce the denominator rather
+          # than counting as "disagree" — see books_strip.R::compute_k_within.
           agree <- compute_k_within(c(
             row$dk_fair_prob, row$fd_fair_prob,
             row$px_fair_prob, row$nv_fair_prob,
+            row$bmg_fair_prob, row$czr_fair_prob,
             row$model_prob_raw
           ))
           render_books_strip(
@@ -566,6 +569,8 @@ create_parlays_table <- function(parlay_opps, placed_parlays, parlay_bankroll = 
             fd    = row$fd_fair_prob,
             px    = row$px_fair_prob,
             nv    = row$nv_fair_prob,
+            bmg   = row$bmg_fair_prob,
+            czr   = row$czr_fair_prob,
             cons  = row$blended_prob_raw,
             k_agree = agree$k,
             n_agree = agree$n
@@ -1248,7 +1253,8 @@ render_price_grid_row <- function(wide_row, side_label, is_pick_side,
 #' @return HTML string for the entire <div class="hero">.
 render_hero_strip <- function(pick_book, pick_odds, fair_odds,
                                ev_pct, risk_dollars, towin_dollars,
-                               action_html) {
+                               action_html,
+                               model_ev_pct = NA_real_, market_ev_pct = NA_real_) {
   ev_str   <- sprintf("+%.1f%%", ev_pct)
   risk_str <- sprintf("$%.0f", risk_dollars)
   win_str  <- sprintf("$%.0f", towin_dollars)
@@ -1259,6 +1265,21 @@ render_hero_strip <- function(pick_book, pick_odds, fair_odds,
   # is NaN and silently breaks the snap-back / verify-quote coordinator.
   risk_raw <- if (is.na(risk_dollars)) 0 else risk_dollars
   odds_raw <- if (is.na(pick_odds)) 0L else as.integer(pick_odds)
+
+  # Build EV display block: dual-stat when both model and market EVs exist,
+  # market-only stat when only market_ev is available, else the single EV stat.
+  ev_block <- if (!is.na(model_ev_pct) && !is.na(market_ev_pct)) {
+    sprintf(
+      '<div class="stat"><span class="lbl">Model EV</span><span class="val ev">+%.1f%%</span></div>
+       <div class="stat"><span class="lbl">Market EV</span><span class="val evm">+%.1f%%</span></div>',
+      model_ev_pct, market_ev_pct)
+  } else if (!is.na(market_ev_pct)) {
+    sprintf('<div class="stat"><span class="lbl">Market EV</span><span class="val evm">+%.1f%%</span></div>',
+            market_ev_pct)
+  } else {
+    sprintf('<div class="stat"><span class="lbl">Model EV</span><span class="val ev">%s</span></div>',
+            ev_str)
+  }
 
   # Risk and To Win get extra wrappers so the bets-tab JS coordinator
   # can attach click-to-edit + the WZ-verified-quote swap. data-model-risk
@@ -1274,7 +1295,7 @@ render_hero_strip <- function(pick_book, pick_odds, fair_odds,
        </div>
        <div class="divider"></div>
        <div class="stat"><span class="lbl">Fair</span><span class="val fair">%s</span></div>
-       <div class="stat"><span class="lbl">EV</span><span class="val ev">%s</span></div>
+       %s
        <div class="stat risk-stat" data-model-risk="%.0f" data-american-odds="%d">
          <span class="lbl">Risk</span>
          <div class="risk-row">
@@ -1287,7 +1308,7 @@ render_hero_strip <- function(pick_book, pick_odds, fair_odds,
        <div class="actions">%s</div>
      </div>',
     htmltools::htmlEscape(pick_book),
-    odds_str, fair_str, ev_str,
+    odds_str, fair_str, ev_block,
     risk_raw, odds_raw,
     risk_str, win_str, action_html
   )
@@ -1585,12 +1606,30 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
     find_same_game_bets(i, all_bets, placed_bets)
   })
 
-  # Re-compute bet_row_id to match the join key in mlb_bets_book_prices
-  all_bets <- all_bets %>%
-    mutate(bet_row_id = vapply(
-      paste(id, market, ifelse(is.na(line), "", as.character(line)), bet_on, sep = "|"),
-      function(s) digest::digest(s, algo = "md5"), character(1)
-    ))
+  # bet_row_id is the join key into mlb_bets_book_prices. MLB.R writes BOTH
+  # mlb_bets_combined and mlb_bets_book_prices with the canonical hash
+  # odds_screen.R::compute_bet_row_id(id, base_market_type, period, line,
+  # bet_on) — a 5-field recipe (market_type + period), NOT the verbose
+  # `market` string. So when all_bets already carries bet_row_id (loaded from
+  # mlb_bets_combined), we MUST trust it verbatim; recomputing here from the
+  # verbose `market` string produces a different hash and matches zero book
+  # rows, blanking every pill (esp. derivative markets like totals_1st_7_innings,
+  # where market != market_type). Only fall back to the legacy verbose recipe
+  # for stale DBs that predate the bet_row_id column — those DBs also wrote
+  # mlb_bets_book_prices with the same legacy recipe, so the two still agree.
+  if (!"bet_row_id" %in% names(all_bets)) {
+    all_bets <- all_bets %>%
+      mutate(bet_row_id = vapply(
+        paste(id, market, ifelse(is.na(line), "", as.character(line)), bet_on, sep = "|"),
+        function(s) digest::digest(s, algo = "md5"), character(1)
+      ))
+  }
+
+  # Defensive defaults: allow stale DBs without the new edge-source columns
+  # to still render. These are no-ops once MLB.R writes the columns.
+  if (!"edge_source" %in% names(all_bets)) all_bets$edge_source <- "model"
+  if (!"model_ev"   %in% names(all_bets)) all_bets$model_ev   <- all_bets$ev
+  if (!"market_ev"  %in% names(all_bets)) all_bets$market_ev  <- NA_real_
 
   table_data <- all_bets %>%
     mutate(
@@ -1607,6 +1646,9 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
                               format(lubridate::with_tz(pt_start_time, "UTC"),
                                      "%Y-%m-%dT%H:%M:%SZ")),
       ev_pct         = ev * 100,
+      model_ev_pct  = ifelse(is.na(model_ev),  NA_real_, model_ev  * 100),
+      market_ev_pct = ifelse(is.na(market_ev), NA_real_, market_ev * 100),
+      edge_source   = ifelse(is.na(edge_source), "model", edge_source),
       risk_amt       = bet_size,
       towin_amt      = ifelse(odds > 0, bet_size * odds / 100,
                                         bet_size * 100 / abs(odds)),
@@ -1790,6 +1832,15 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
       paste0(place_btn, " ", log_btn)
     }
 
+    # Edge source badge (MODEL / MARKET / BOTH)
+    edge_src <- if (is.na(row$edge_source)) "model" else row$edge_source
+    # Use the HTML star entity (not a raw ★) — a literal non-ASCII char here
+    # writes invalid bytes under a non-UTF-8 R locale and corrupts report.html.
+    badge_label <- switch(edge_src, model = "Model", market = "Market",
+                          both = "&#9733; Both", "Model")
+    edge_badge_html <- sprintf('<span class="edge-badge %s">%s</span>',
+                               edge_src, badge_label)
+
     # Same-game-corr badge (re-uses the existing tooltip builder)
     info <- same_game_info[[i]]
     corr_html <- if (info$has_same_game) {
@@ -1827,7 +1878,9 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
       ev_pct         = row$ev_pct,
       risk_dollars   = row$risk_amt,
       towin_dollars  = row$towin_amt,
-      action_html    = action_html
+      action_html    = action_html,
+      model_ev_pct   = row$model_ev_pct,
+      market_ev_pct  = row$market_ev_pct
     )
 
     # Card-root data-* attrs used by JS addAnother / placeAnother to rebuild
@@ -1884,7 +1937,7 @@ create_bets_table <- function(all_bets, placed_bets, book_prices_wide = NULL) {
       pick_book          = row$bookmaker_key,
       side_word          = side_word,
       is_totals          = is_totals_market,
-      corr_badge_html    = corr_html,
+      corr_badge_html    = paste0(edge_badge_html, corr_html),
       card_data_attrs    = card_data_attrs
     )
   }, character(1))
@@ -3069,6 +3122,11 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
         .bet-card-v8 .hero .stat .val.win   { color: #3fb950; }
         .bet-card-v8 .hero .stat .val.risk  { color: #c9d1d9; }
         .bet-card-v8 .hero .stat .val.fair  { color: #c9d1d9; }
+        .bet-card-v8 .hero .stat .val.evm { color: #58a6ff; }
+        .bet-card-v8 .edge-badge { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; padding: 3px 10px; border-radius: 999px; text-transform: uppercase; margin-left: 8px; }
+        .bet-card-v8 .edge-badge.model { color: #3fb950; background: rgba(63,185,80,0.15); border: 1px solid rgba(63,185,80,0.45); }
+        .bet-card-v8 .edge-badge.market { color: #58a6ff; background: rgba(56,139,253,0.15); border: 1px solid rgba(56,139,253,0.45); }
+        .bet-card-v8 .edge-badge.both { color: #e3b341; background: rgba(227,179,65,0.15); border: 1px solid rgba(227,179,65,0.5); }
         .bet-card-v8 .hero .actions {
           display: flex; gap: 8px; margin-left: 8px; flex-wrap: wrap;
         }
@@ -6583,11 +6641,9 @@ create_report <- function(bets_table, placed_table, stats, timestamp, filter_opt
 # MAIN
 # =============================================================================
 
-# Resolve NFLWork root — if running from a worktree, use main repo for mlb.duckdb
+# Resolve NFLWork root from the script location so a worktree render reads the
+# worktree's own DBs. On main this is identical to ~/NFLWork.
 NFLWORK_ROOT <- dirname(dirname(DASHBOARD_DIR))
-if (grepl(".claude/worktrees", NFLWORK_ROOT, fixed = TRUE)) {
-  NFLWORK_ROOT <- sub("/.claude/worktrees.*", "", NFLWORK_ROOT)
-}
 setwd(NFLWORK_ROOT)
 
 # Fragment-only mode: render JUST the source-parlays reactable (with combo
@@ -6662,8 +6718,9 @@ all_bets <- tryCatch({
 
 cat(sprintf("Loaded %d bets\n", nrow(all_bets)))
 
-# bet_row_id is derived from digest(id|market|line|bet_on). If two bets collapse to
-# the same hash we'd render two cards as one — surface it.
+# bet_row_id is the canonical identity hash written by MLB.R via
+# odds_screen.R::compute_bet_row_id (digest of id|base_market_type|period|line|bet_on).
+# If two bets collapse to the same hash we'd render two cards as one — surface it.
 if (nrow(all_bets) > 0 && "bet_row_id" %in% names(all_bets)) {
   bet_id_dups <- all_bets %>% count(bet_row_id, name = ".n") %>% filter(.n > 1)
   if (nrow(bet_id_dups) > 0) {

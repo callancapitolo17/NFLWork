@@ -1,6 +1,6 @@
 # Kalshi MLB RFQ Bot
 
-Autonomous taker daemon that auto-RFQs MLB game-line same-game-parlays on Kalshi (cross-category MVE collection), evaluates maker quotes against a model + sportsbook blended fair value, and auto-accepts +EV quotes within a complete safety scaffold.
+Autonomous taker daemon that auto-RFQs MLB game-line same-game-parlays on Kalshi (cross-category MVE collection), evaluates maker quotes against a sportsbook-consensus fair value (book-only by default; Monte-Carlo model optional), and auto-accepts +EV quotes within a complete safety scaffold.
 
 **Spec:** `docs/superpowers/specs/2026-04-27-kalshi-mlb-rfq-bot-design.md`
 **Plan:** `docs/superpowers/plans/2026-04-29-kalshi-mlb-rfq-bot.md`
@@ -83,6 +83,59 @@ These **complement** the state DB (`quote_log`, `fills`, `live_rfqs`) — they d
 
 Requires `scipy>=1.10` (added to `requirements.txt`). Run `pip install -r requirements.txt` after pulling this change.
 
+## Pricing & correlation
+
+### Fair-value mode (`USE_MODEL`)
+
+| `USE_MODEL` | Fair-value formula | Staleness gate |
+|---|---|---|
+| `false` (default) | `median(devigged book prices)` across ≥2 books | **Skipped** |
+| `true` | `blend(model, median(books))` — weighted average | Enforced (`MAX_PREDICTION_STALENESS_SEC`) |
+
+**Why book-only is the default.** The Monte-Carlo model's external refresh cadence can degrade, causing the 600s staleness gate to reject up to 95% of quotes as `declined_stale_predictions`. Book-only pricing eliminates that dependency while keeping the ≥2-book consensus floor for quality control.
+
+The ≥2-book floor (`MIN_BOOK_COUNT_FOR_BLEND`) is enforced in both modes — single-book candidates are dropped regardless.
+
+### Book-implied correlation engine (`correlation.py`)
+
+Kelly sizing accounts for correlation between same-game combo legs so correlated bets can't be overbet relative to independent sizing.
+
+**How it works (v1):**
+
+For two legs on the same game where both are spread+total direction pairs (e.g. Home Spread + Over):
+
+1. The **joint probability P(A∩B)** is read directly from the 4-cell SGP spread×total grid at the matching grid cell. This is exact — it uses the book's own correlated market price, not an approximation.
+2. **Covariance** `Cov(A,B) = P(A∩B) − P(A)×P(B)` feeds into the Kelly variance term, sizing down when the legs move together.
+3. A **Fréchet–Hoeffding clamp** enforces `|ρ| ≤ 1` — the implied correlation can't violate probability bounds regardless of book noise.
+
+**Fallback (ρ=1).** When the exact grid joint is unavailable — same-game opposite-direction pairs (e.g. Home Spread + Under, which share a grid diagonal), or any cross-category leg (player props, cross-game combos) — the engine uses `P(A∩B) = min(P_a, P_b)` (the Fréchet upper bound). This is the most conservative possible assumption: it sizes the bet as if the legs are perfectly positively correlated. It can only down-size relative to independent Kelly; it can never over-bet.
+
+**v1 scope summary:**
+- Same-game spread+total, same direction → exact grid joint (tight sizing)
+- Same-game spread+total, opposite direction → ρ=1 fallback (conservative)
+- Cross-category / player props / cross-game → ρ=1 fallback (conservative)
+
+The fallback is strictly safe. Exact inclusion-exclusion for opposite-direction pairs is a planned v2 improvement.
+
+**v1 limitation — bet side not considered.** The v1 engine derives combo regions from leg definitions only (spread line, total line, spread side, total side) and does NOT yet account for whether a position was taken as YES or NO. For mixed yes/no same-game positions the correlation sign is treated conservatively: a hedge is sized as additive risk (down-sized), never as a risk reducer (over-sized). This means the engine is safe — it can only reduce position size relative to independent Kelly, never inflate it — but leaves some hedge efficiency unused when the position is genuinely opposite-direction. Side-aware region lookup and inclusion-exclusion for NO-side positions are planned v2 enhancements, alongside opposite-direction exact joint pricing.
+
+### Both-team margin pricing
+
+Book-only mode prices **both teams'** Kalshi margin markets, not just the home team's. The cache `spread_line` column is home-perspective signed:
+
+| `spread_line` sign | Grid | Example |
+|---|---|---|
+| Negative | Home-favorite grid | `−1.5` = home −1.5 |
+| Positive | Away-favorite grid | `+1.5` = away −1.5 |
+
+A leg routes to its grid by the `team_is_home` flag on the typed leg: home-margin legs produce a negative `spread_line`; away-margin legs produce a positive one. The cell within the grid is selected by `spread_side` (home covers / away covers).
+
+**Enumeration.** `sgp_cycle(both_teams=True)` emits both the home-favorite and away-favorite spread grids for each game. The shared maker bot (`kalshi_mlb_mm`) keeps `both_teams=False` (its default) — this change is opt-in and the MM path is byte-identical.
+
+**Coverage.** Away-margin grid coverage depends on book dog-side alt SGP availability. Books that don't publish away-team alt lines contribute nothing to that grid. A combo drops only when fewer than 2 books (`MIN_BOOK_COUNT_FOR_BLEND`) price its target cell; when a book has fewer than 4 cells in the grid, that book's fair comes from a single-cell vig-fallback heuristic (`(1/decimal)/(1+vig)`, conservative — understates the YES fair) rather than being dropped. Run `tools/coverage_report.py` to measure per-book both-grid coverage across current targets.
+
+**Priced book set.** betmgm and caesars are now wired into `_BOOK_MODULES` alongside DraftKings, FanDuel, ProphetX, and Novig (six books total). Both have vig-fallback entries so partial-cell combos degrade gracefully instead of raising a `KeyError`.
+
 ## Data Sources
 
 The bot reads `Answer Keys/mlb_mm.duckdb` (read-only). This file holds the six consumer-facing tables and is written by `MLB.R`, `mlb_correlated_parlay.R`, `mlb_triple_play.R`, and the SGP scrapers — separate from `mlb.duckdb` (the pipeline's main write target) so lock contention can't block the bot's cache refreshes.
@@ -140,7 +193,8 @@ See `.env.example`. Most relevant:
   prices at create time. Defaults to `MIN_EV_PCT`. Raise to size more
   conservatively, lower to be more aggressive
 - `MAX_GAME_EXPOSURE_PCT`, `DAILY_EXPOSURE_CAP_USD` — exposure caps
-- `MAX_PREDICTION_STALENESS_SEC` — accept-gate staleness threshold (10 min default)
+- `USE_MODEL` — `false` (default): price fair value as `median(books)`, skip prediction-staleness gate. `true`: blend Monte-Carlo model with books (legacy mode; requires fresh model predictions).
+- `MAX_PREDICTION_STALENESS_SEC` — staleness threshold for model predictions (10 min default); **only enforced when `USE_MODEL=true`**
 - `MIN_FILL_RATIO`, `FILL_RATIO_WINDOW` — adverse-selection halt
 - `RESEARCH_CANDIDATE_SAMPLING` — fraction of `candidate_evaluated` events to log (1.0 = full movie)
 - `RESEARCH_BUFFER_MAX` — research event buffer cap (drops oldest beyond this)
@@ -149,9 +203,9 @@ See `.env.example`. Most relevant:
 ## Safety scaffold (per-accept gates)
 
 Every quote acceptance must pass ALL of:
-- Min EV after fee · Fair-value bounds · Prediction staleness
+- Min EV after fee · Fair-value bounds · Prediction staleness (**model-only**, skipped when `USE_MODEL=false`)
 - Tipoff window (5 min before first pitch) · Line-move check · Per-game exposure cap (% of bankroll)
-- Daily exposure cap · Kill-switch off · Inverse-combo not held · 2-source gate (model + ≥1 book)
+- Daily exposure cap · Kill-switch off · Inverse-combo not held · ≥2-book floor (`MIN_BOOK_COUNT_FOR_BLEND`)
 - Per-combo cooldown (30s post-fill) · Positions API health · Fill-ratio halt (rolling 50 attempts)
 
 Acceptance is serialized via `ACCEPT_LOCK` so concurrent quotes Kelly-size against fresh DB state.
@@ -159,7 +213,7 @@ Acceptance is serialized via `ACCEPT_LOCK` so concurrent quotes Kelly-size again
 ## Troubleshooting
 
 - **No combos surfacing:** check that `mlb_game_samples` and `mlb_sgp_odds` are populated. Run the MLB pipeline first.
-- **All quotes declining `declined_stale_predictions`:** rerun the pipeline; samples are over 10 minutes old.
+- **All quotes declining `declined_stale_predictions`:** this gate only runs when `USE_MODEL=true`. If you're seeing it with `USE_MODEL=false`, check your `.env`. If intentionally running with the model, rerun the pipeline — samples are over 10 minutes old.
 - **Bot halted on `fill_ratio_collapse`:** investigate — makers are walking on accepts at a rate that suggests adverse selection. Check `quote_log` for the maker `creator_id`s causing it.
 - **`mint_combo_ticker` failing with 400:** the MVE collection ticker may have changed or one of the leg market_tickers doesn't exist. Re-run `mlb_sgp/recon_kalshi_mlb_rfq.py` for a fresh probe.
 
@@ -291,17 +345,30 @@ SELECT accept_response_body, COUNT(*) FROM quote_log
 WHERE decision = 'failed_quote_walked' GROUP BY 1 ORDER BY 2 DESC;
 ```
 
+## Shared math (kalshi_common extraction, 2026-05-27)
+
+`fair_value`, `ev_calc`, `auth_client`, `sgp_runner`, and the leg-typing helpers (`_leg_dict_to_typed`, `_parse_event_suffix`, etc.) have been extracted into a top-level `kalshi_common/` package shared with the new maker bot (`kalshi_mlb_mm/`). The taker's originals are now one-line re-export shims — all imports, tests, and runtime behavior are identical.
+
 ## SGP cadence loop (line-source pivot, 2026-05-13)
 
 The bot drives its own SGP scrape cadence independent of the MLB dashboard.
+
+**In-process pricing (2026-06).** The bot now prices SGPs **in-process**
+via `kalshi_common/sgp_service.py::SGPService` — no more subprocess per
+cycle. The service holds persistent per-book HTTP clients reused across
+cycles (no per-cycle TLS handshake) and prices the four books
+concurrently under a per-book deadline (`SGP_SCRAPER_TIMEOUT_SEC`).
+DK/FD structure fetches (event lists, selection-id dicts) are TTL-cached;
+prices are never cached. A failed or timed-out book contributes nothing
+that cycle and keeps its prior rows. The old subprocess-per-cycle model
+is retained as a rollback hatch — calling `sgp_cycle` without `service=`.
 
 **Data flow on each SGP tick (every `SGP_REFRESH_SEC`, default 60s):**
 
 1. Bot enumerates open Kalshi MVE markets per MLB game (every `(spread, total)` tuple Kalshi lists).
 2. Bot rewrites `mlb_target_lines` in `kalshi_mlb_rfq_market.duckdb` (sibling to state DB).
-3. Bot spawns the four scrapers (`mlb_sgp/scraper_{draftkings,fanduel,prophetx,novig}_sgp.py`) with `MLB_SGP_DB_PATH=<market DB>` and `MLB_SGP_PERIODS=FG` env overrides.
-4. Scrapers read `mlb_target_lines`, price every tuple at their respective book, write back to `mlb_sgp_odds` in the bot's market DB with new `spread_line`/`total_line` columns.
-5. Bot reloads `_SGP_ODDS_CACHE` from the bot market DB.
+3. `SGPService.refresh()` prices every tuple at all four books concurrently (persistent clients), writing back to `mlb_sgp_odds` in the bot's market DB with `spread_line`/`total_line` columns. Each succeeded book's prior source labels are cleared first; failed/absent books keep their prior rows.
+4. Bot reloads `_SGP_ODDS_CACHE` from the bot market DB.
 
 **Edge surface:** any Kalshi MVE combo with ≥2 books priced at the matching (spread, total). Off-line combos (only 1 book) are dropped — the bot does not bet model-only or single-book candidates.
 
@@ -311,6 +378,6 @@ The bot drives its own SGP scrape cadence independent of the MLB dashboard.
 
 **Config:**
 - `SGP_REFRESH_SEC` (default 60) — SGP cadence interval
-- `SGP_SCRAPER_TIMEOUT_SEC` (default 90) — per-scraper kill deadline
+- `SGP_SCRAPER_TIMEOUT_SEC` (default 90) — per-book deadline passed to `SGPService` (a book exceeding it contributes nothing that cycle and its client is rebuilt)
 - `BOT_MARKET_DB` (default `kalshi_mlb_rfq_market.duckdb` in this package) — sibling market DB
 - `MIN_BOOK_COUNT_FOR_BLEND` (default 2) — drop-candidate threshold

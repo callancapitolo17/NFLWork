@@ -1,0 +1,7 @@
+duckdb>=0.10
+pandas>=2.0
+scipy>=1.10
+numpy>=1.24
+cryptography>=41.0
+
+curl_cffi>=0.6      # in-process SGP scraping (SGPService) — matches mlb_sgp/venv

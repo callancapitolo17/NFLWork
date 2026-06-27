@@ -44,6 +44,9 @@ NOVIG_SGP_VIG_DEFAULT <- 1.10      # Novig: leg prices sourced from DK, correlat
                                     # applied on top. Start at 1.10 (same as DK) — measured
                                     # parlay/naive ratio ~1.09-1.12 in probes suggests similar
                                     # vig magnitude to DK. Re-tune from logged per-game vig.
+BETMGM_SGP_VIG_DEFAULT <- 1.13     # BetMGM Angstrom: measured 4-corner overround 1.12-1.18
+                                    # in live probes. Start at 1.13; re-tune from logged vig.
+CAESARS_SGP_VIG_DEFAULT <- 1.10    # Caesars ZeroFlucs. Start at 1.10; re-tune from logged vig.
 MLB_DB <- "mlb.duckdb"
 # Bot- and dashboard-facing tables live in a separate DB to avoid lock contention
 # with the long write window on mlb.duckdb. Mirrors the CBB pattern.
@@ -457,7 +460,7 @@ tryCatch({
 # Now that mlb_parlay_lines exists, the scrapers can look up which games/lines
 # to price on DraftKings and FanDuel.
 
-cat("Refreshing SGP odds (DK + FD + PX + NV) in parallel...\n")
+cat("Refreshing SGP odds (DK + FD + PX + NV + BetMGM + Caesars) in parallel...\n")
 sgp_scraper_dir <- file.path(path.expand("~"), "NFLWork", "mlb_sgp")
 sgp_venv_python <- file.path(sgp_scraper_dir, "venv", "bin", "python")
 sgp_log_dir     <- file.path(sgp_scraper_dir, "logs")
@@ -468,12 +471,14 @@ if (file.exists(sgp_venv_python)) {
     "scraper_draftkings_sgp.py",
     "scraper_fanduel_sgp.py",
     "scraper_prophetx_sgp.py",
-    "scraper_novig_sgp.py"
+    "scraper_novig_sgp.py",
+    "scraper_betmgm_sgp.py",
+    "scraper_caesars_sgp.py"
   )
 
   sgp_t0 <- Sys.time()
-  # mclapply forks 4 R workers; each one runs system2(wait=TRUE) on one
-  # scraper, so wall-clock = max(per-scraper time) instead of the sum.
+  # mclapply forks one R worker per scraper; each runs system2(wait=TRUE) on
+  # one scraper, so wall-clock = max(per-scraper time) instead of the sum.
   # mc.preschedule = FALSE: each scraper is its own job (no batching).
   sgp_results <- parallel::mclapply(sgp_scrapers, function(scr) {
     log_file <- file.path(sgp_log_dir,
@@ -497,7 +502,7 @@ if (file.exists(sgp_venv_python)) {
            log_file = log_file)
     })
     result
-  }, mc.cores = 4, mc.preschedule = FALSE)
+  }, mc.cores = length(sgp_scrapers), mc.preschedule = FALSE)
   sgp_wall <- as.numeric(difftime(Sys.time(), sgp_t0, units = "secs"))
 
   # Per-scraper summary: elapsed seconds + non-zero exit codes are loud.
@@ -539,21 +544,28 @@ sgp_odds <- tryCatch({
        OR source LIKE 'fanduel_%'
        OR source LIKE 'prophetx_%'
        OR source LIKE 'novig_%'
+       OR source LIKE 'betmgm_%'
+       OR source LIKE 'caesars_%'
   ")
 }, error = function(e) data.frame())
 
 dbDisconnect(sgp_con)
 
-dk_sgp <- sgp_odds[startsWith(sgp_odds$source, "draftkings_"), ]
-fd_sgp <- sgp_odds[startsWith(sgp_odds$source, "fanduel_"), ]
-px_sgp <- sgp_odds[startsWith(sgp_odds$source, "prophetx_"), ]
-nv_sgp <- sgp_odds[startsWith(sgp_odds$source, "novig_"), ]
+dk_sgp  <- sgp_odds[startsWith(sgp_odds$source, "draftkings_"), ]
+fd_sgp  <- sgp_odds[startsWith(sgp_odds$source, "fanduel_"), ]
+px_sgp  <- sgp_odds[startsWith(sgp_odds$source, "prophetx_"), ]
+nv_sgp  <- sgp_odds[startsWith(sgp_odds$source, "novig_"), ]
+bmg_sgp <- sgp_odds[startsWith(sgp_odds$source, "betmgm_"), ]
+czr_sgp <- sgp_odds[startsWith(sgp_odds$source, "caesars_"), ]
 
 if (nrow(dk_sgp) > 0) cat(sprintf("  Loaded %d DK SGP odds for blending\n", nrow(dk_sgp)))
 if (nrow(fd_sgp) > 0) cat(sprintf("  Loaded %d FD SGP odds for blending\n", nrow(fd_sgp)))
 if (nrow(px_sgp) > 0) cat(sprintf("  Loaded %d PX SGP odds for blending\n", nrow(px_sgp)))
 if (nrow(nv_sgp) > 0) cat(sprintf("  Loaded %d NV SGP odds for blending\n", nrow(nv_sgp)))
-if (nrow(dk_sgp) == 0 && nrow(fd_sgp) == 0 && nrow(px_sgp) == 0 && nrow(nv_sgp) == 0) cat("  No fresh SGP odds — using model-only fair values\n")
+if (nrow(bmg_sgp) > 0) cat(sprintf("  Loaded %d BetMGM SGP odds for blending\n", nrow(bmg_sgp)))
+if (nrow(czr_sgp) > 0) cat(sprintf("  Loaded %d Caesars SGP odds for blending\n", nrow(czr_sgp)))
+if (nrow(dk_sgp) == 0 && nrow(fd_sgp) == 0 && nrow(px_sgp) == 0 && nrow(nv_sgp) == 0 &&
+    nrow(bmg_sgp) == 0 && nrow(czr_sgp) == 0) cat("  No fresh SGP odds — using model-only fair values\n")
 
 # Per-game vig lookup: sum of implied probs across all 4 combos for each game.
 # When a game has all 4 combos, we use the measured vig (more accurate than a
@@ -598,6 +610,26 @@ nv_vig_lookup <- if (nrow(nv_sgp) > 0) {
     group_by(game_id, period) %>%
     summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
     mutate(vig = ifelse(n >= 4, vig, NOVIG_SGP_VIG_DEFAULT))
+} else {
+  tibble(game_id = character(), period = character(), n = integer(), vig = double())
+}
+
+bmg_vig_lookup <- if (nrow(bmg_sgp) > 0) {
+  bmg_sgp %>%
+    mutate(period = ifelse(grepl("^F5 ", combo), "F5", "FG")) %>%
+    group_by(game_id, period) %>%
+    summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
+    mutate(vig = ifelse(n >= 4, vig, BETMGM_SGP_VIG_DEFAULT))
+} else {
+  tibble(game_id = character(), period = character(), n = integer(), vig = double())
+}
+
+czr_vig_lookup <- if (nrow(czr_sgp) > 0) {
+  czr_sgp %>%
+    mutate(period = ifelse(grepl("^F5 ", combo), "F5", "FG")) %>%
+    group_by(game_id, period) %>%
+    summarise(n = n(), vig = sum(1 / sgp_decimal), .groups = "drop") %>%
+    mutate(vig = ifelse(n >= 4, vig, CAESARS_SGP_VIG_DEFAULT))
 } else {
   tibble(game_id = character(), period = character(), n = integer(), vig = double())
 }
@@ -744,6 +776,28 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         nv_fair_prob <- NA_real_
       }
 
+      # BMG (BetMGM) — Angstrom correlated bet-builder price
+      bmg_row <- bmg_sgp[bmg_sgp$game_id == game_id & bmg_sgp$combo == combo_name, ]
+      bmg_vig_row <- bmg_vig_lookup[bmg_vig_lookup$game_id == game_id & bmg_vig_lookup$period == combo_period, ]
+      bmg_vig_used <- if (nrow(bmg_vig_row) > 0) bmg_vig_row$vig[1] else BETMGM_SGP_VIG_DEFAULT
+      if (nrow(bmg_row) > 0 && !is.na(bmg_row$sgp_decimal[1]) && bmg_row$sgp_decimal[1] > 0) {
+        bmg_fair_prob <- (1 / bmg_row$sgp_decimal[1]) / bmg_vig_used
+        probs_to_blend <- c(probs_to_blend, bmg_fair_prob)
+      } else {
+        bmg_fair_prob <- NA_real_
+      }
+
+      # CZR (Caesars) — ZeroFlucs correlated SGP price
+      czr_row <- czr_sgp[czr_sgp$game_id == game_id & czr_sgp$combo == combo_name, ]
+      czr_vig_row <- czr_vig_lookup[czr_vig_lookup$game_id == game_id & czr_vig_lookup$period == combo_period, ]
+      czr_vig_used <- if (nrow(czr_vig_row) > 0) czr_vig_row$vig[1] else CAESARS_SGP_VIG_DEFAULT
+      if (nrow(czr_row) > 0 && !is.na(czr_row$sgp_decimal[1]) && czr_row$sgp_decimal[1] > 0) {
+        czr_fair_prob <- (1 / czr_row$sgp_decimal[1]) / czr_vig_used
+        probs_to_blend <- c(probs_to_blend, czr_fair_prob)
+      } else {
+        czr_fair_prob <- NA_real_
+      }
+
       n_books_blended <- length(probs_to_blend) - 1  # subtract model itself
       blended_prob    <- median(probs_to_blend)
       fair_dec        <- 1 / blended_prob
@@ -785,6 +839,8 @@ process_period <- function(wz_matched, period_label, combo_prefix, shave) {
         fd_fair_prob = round(fd_fair_prob, 3),
         px_fair_prob = round(px_fair_prob, 3),
         nv_fair_prob = round(nv_fair_prob, 3),
+        bmg_fair_prob = round(bmg_fair_prob, 3),
+        czr_fair_prob = round(czr_fair_prob, 3),
         blended_prob = round(blended_prob, 3),
         n_books_blended = n_books_blended
       )

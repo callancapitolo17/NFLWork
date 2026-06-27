@@ -40,3 +40,23 @@ def test_research_knobs_have_defaults():
         "kalshi_mlb_rfq_research.duckdb")
     assert config_mod.RESEARCH_CANDIDATE_SAMPLING == 1.0
     assert config_mod.RESEARCH_BUFFER_MAX == 50000
+
+
+def test_use_model_defaults_off(monkeypatch):
+    import importlib
+    # Unset any ambient USE_MODEL env var so we test the true default (False).
+    monkeypatch.delenv("USE_MODEL", raising=False)
+    import kalshi_mlb_rfq.config as c
+    importlib.reload(c)
+    assert c.USE_MODEL is False
+
+
+def test_use_model_parses_truthy(monkeypatch):
+    import importlib
+    monkeypatch.setenv("USE_MODEL", "true")
+    import kalshi_mlb_rfq.config as c
+    importlib.reload(c)
+    assert c.USE_MODEL is True
+    monkeypatch.setenv("USE_MODEL", "0")
+    importlib.reload(c)
+    assert c.USE_MODEL is False

@@ -1,6 +1,12 @@
 # MLB SGP Odds Scrapers
 
-Fetch Same Game Parlay (SGP) odds from DraftKings and FanDuel for MLB correlated parlay edge finding. Both write to the same `mlb_sgp_odds` table so the scanner can shop combos across books.
+Fetch Same Game Parlay (SGP) odds from multiple books (DraftKings, FanDuel, ProphetX, Novig, BetMGM, Caesars) for MLB correlated parlay edge finding. All write to the same `mlb_sgp_odds` table so the scanner can shop combos across books. See "Additional SGP books" below for BetMGM/Caesars/bet365.
+
+Each book prices two FG combo families, both stored as 4-cell devig-able grids:
+**spread × total** (`"Home Spread + Over"` …, `spread_line` set) and
+**moneyline × total** (`"Home ML + Over"` …, `spread_line` = **NULL** — there is
+no spread leg). Both are correlation-priced by the book and devigged the same way
+(`devig_book`, n-way probit). Moneyline is FG-only across all 6 books.
 
 ## Quick Start
 
@@ -57,6 +63,15 @@ with FD-specific junk exclusions (`parlay`, `listed`, `bands`, `tri-bet`,
 under an unlisted name (that bug is why F7 totals were absent). It now covers
 FG/F5/F7/F3 main + alt wherever FD posts them and auto-picks-up new markets.
 
+**Parse-failure tripwire (2026-06-10).** Every scrape prints
+`[fd_singles] alt parse: alternate_spreads N/M, alternate_totals N/M`
+(parsed/seen). If FD hands us alt runners and **none** parse
+(`M > 0, N == 0`) the scrape prints a loud `ALERT` — that's the signature
+of an FD name-format change (the FG alt-total parens bug shipped silently
+in exactly this mode). A day where FD posts no alts at all stays quiet.
+Grep the runner log for `ALERT` when alt pills go missing from the
+dashboard.
+
 ### Coverage
 
 | Period | DK | FD | Notes |
@@ -70,7 +85,7 @@ FG/F5/F7/F3 main + alt wherever FD posts them and auto-picks-up new markets.
 | F7 alternate totals/spreads          | ✅ | ✗ | FD posts no F7 alts (vendor gap). |
 | F3 main (spread + total)             | ✅ | ✅ | FD posts `First 3 Innings Run Line` + `Total Runs` (default tab). FD also posts `First 3 Innings Result` (3-way ML) which we skip. |
 | F3 alternate totals/spreads          | ✅ | ✗ | FD posts no F3 alts (vendor gap). |
-| F7 / F3 two-way moneyline            | ✅ | ✗ | DK names it as the **bare period** ("1st 3 Innings" / "1st 5 Innings" / "1st 7 Innings"); `classify_market` captures these as `(period, "main")` ML rows (2026-05-27). FD only posts the 3-way `Result` at F6/F7/F3 — no 2-way ML. |
+| F3/F5/F7 winner (for pick'em)        | ✅ | ✅ | DK: **bare period** name ("1st 3/5/7 Innings"), captured as `(period, "main")` ML rows. FD: 2-way "First 5 Innings Money Line" + 3-way "First N Innings Result" (F3/F5/F7) captured as `h2h_3way` with `tie_ml`. Both feed the dashboard pick'em DNB path (2026-05-27). |
 
 ### Pick'em (line-0 spread) → period winner (2026-05-27)
 
@@ -80,13 +95,17 @@ period ML captured here. DK's bare-period winner ("1st N Innings") is now
 captured (row above) and flows via `get_dk_odds` → `h2h_1st_N_innings`. FD's
 First-5 "Money Line" was already captured (matched by the `"money line"`
 keyword in `classify_market`), so FD lights up on F5 pick'em cards but shows
-"—" on F3/F7 (no 2-way ML there).
+a DNB-collapsible winner on F3/F7 too (below).
 
-**Fast-follow for FD F3/F7 pick'em:** FD *does* post a 3-way "First N Innings
-Result". Capturing it (classify as a 3-way winner, parse home/tie/away into an
-`odds_tie` column) would let the dashboard's existing 3-way path
-(`derive_pickem_american` + `scraper_to_canonical`'s `h2h_3way` shape) collapse
-it to a DNB and fill FD's F3/F7 pick'em cells. Not in v1.
+**FD 3-way "First N Innings Result" capture (2026-05-27).** FD posts a 3-way
+"First N Innings Result" (Home/Tie/Away) for F3/F5/F7. `classify_market` now
+maps it to `(period, "h2h_3way")` (single-inning and F2/4/6 Results stay
+excluded), the parser writes the tie price to a new `tie_ml` column, and
+`get_fd_odds` emits an `h2h_3way_1st_N_innings` row with `odds_tie`. The
+dashboard's existing 3-way path (`scraper_to_canonical`'s `h2h_3way` shape +
+`derive_pickem_american`) devigs it, drops the tie, and fills FD's F3/F5/F7
+pick'em cells. So FD now shows on pick'em cards for all of F3/F5/F7 (F5 also
+has its own 2-way Money Line).
 
 ### Run timing
 
@@ -110,6 +129,41 @@ DK returns abbreviated city prefixes (`"CLE Guardians"`, `"LA Angels"`,
 30-entry `DK_TEAM_MAP` that translates DK names → canonical (Odds API
 format) before writing rows. FD names already match canonical — no
 mapping needed.
+
+## Additional SGP books (2026-06)
+
+Three more books were added to widen the SGP consensus (a "top-down SGP
+fair-odds" calculator). All follow the same shim/orchestrator/client trio as
+Novig and write to `mlb_sgp_odds`. Both bots price them in-process via
+`kalshi_common/sgp_service.py::SGPService` (registered in `DEFAULT_BOOKS` with
+a `_run_book` dispatch branch, mirroring ProphetX/Novig); the legacy subprocess
+path (`sgp_runner.py::SCRAPER_NAMES`) also lists them for rollback, and the
+dashboard spawns the shims + blends them in `mlb_correlated_parlay.R`.
+
+- **BetMGM** (`scraper_betmgm_sgp.py` + `betmgm.py` + `betmgm_client.py`) —
+  ✅ GREEN, pure `curl_cffi`. Entain CDS API: harvest a static per-state
+  `x-bwin-accessid` from `clientconfig` (unlock = the `x-bwin-sports-api: prod`
+  header; use state `pa`), then `POST /cds-api/bettingoffer/picks` with legs
+  sharing a `pickGroupId` returns the Angstrom correlated price. Source
+  `betmgm_direct`. Verified live (4-corner overround ~1.12–1.18). No browser.
+- **Caesars** (`scraper_caesars_sgp.py` + `caesars.py` + `caesars_client.py`
+  + `caesars_waf.py` + `caesars_waf_node.js`) — token-broker + REST, **browser
+  free**. `POST /sb/v2/bets/details` with `combinationSelections: []` returns
+  the ZeroFlucs correlated price (`parlays[0].price.decimal`), logged-out.
+  Every call needs an `aws-waf-token`, minted **without a browser** by running
+  AWS WAF's real `challenge.js` under `node` (the `NetworkBandwidth` challenge —
+  see `caesars_waf.py`; ~1.5s, cached ~4 min, validated before use, emits no
+  rows on failure → never bad data). Requires `node` on PATH (no Playwright/
+  Chromium). Parsing is **exact-name** (`Run Line`/`Total Runs` + Alternate/F5
+  variants) to exclude player props, team totals, and in-play (`... Live`)
+  markets; events filtered to the **MLB** competition and **pregame** only;
+  the away run-line leg carries its own (negated) line so all 4 corners price.
+  Source `caesars_direct`. Verified: browser-free mint validated live; 4/4
+  corners price with sane overround.
+- **bet365** — DEFERRED. Recon (`recon_bet365_*.py`) proved no fast path: odds
+  live only on the `zap` WebSocket, which is Cloudflare-fingerprint-blocked for
+  any non-browser client. Only a persistent live browser works; revisit if that
+  tradeoff becomes acceptable.
 
 ## DraftKings API Endpoints
 
@@ -209,13 +263,20 @@ Writes to `mlb_sgp_odds` table in `Answer Keys/mlb_mm.duckdb`:
 | Column | Type | Description |
 |--------|------|-------------|
 | game_id | VARCHAR | Odds API event ID (joins to mlb_parlay_opportunities) |
-| combo | VARCHAR | e.g., "Home Spread + Over" |
+| combo | VARCHAR | `"Home Spread + Over"` … or `"Home ML + Over"` … (moneyline family) |
 | period | VARCHAR | "FG" |
 | bookmaker | VARCHAR | "draftkings" |
+| spread_line | DOUBLE | home-perspective spread; **NULL** for moneyline×total combos (no spread leg) |
+| total_line | DOUBLE | the Over/Under line |
 | sgp_decimal | DOUBLE | Decimal odds |
 | sgp_american | INTEGER | American odds |
 | fetch_time | TIMESTAMP | When scraped |
 | source | VARCHAR | "draftkings_direct" |
+
+> **NULL-safe dedup:** because `spread_line` is NULL for moneyline combos,
+> `db.upsert_priced_rows` matches the composite key with `IS NOT DISTINCT FROM`
+> (NULL-safe equality), not a plain tuple-IN. Never use a numeric sentinel for
+> the absent leg — NULL keeps the grid/dashboard clean.
 
 ## SGP Scraping Playbook (for adding new books)
 
@@ -344,6 +405,36 @@ write `connect()` call in `_connect_with_retry()` (exponential backoff +
 jitter, up to 10 attempts) so transient lock collisions between scrapers are
 invisible to callers. Read connections are not retried (DuckDB allows
 unlimited concurrent readers). Note: the trifecta scraper (`scraper_draftkings_trifecta.py`) is separate — it writes `mlb_trifecta_sgp_odds` to `Answer Keys/mlb.duckdb`.
+
+### Target-level parallelism (2026-06)
+
+Each orchestrator fans target lines out on a thread pool; the 4-combo
+pool nests inside (total in-flight requests = parallelism × 4):
+
+| Book | Default | Env override | Probed ceiling (2026-06-16) |
+|---|---|---|---|
+| DraftKings | 8 | `MLB_SGP_DK_PARALLELISM` | no backoff to 32; throughput plateaus ~16 (sel-id fetch floor), so >16 is pointless |
+| FanDuel | 4 | `MLB_SGP_FD_PARALLELISM` | not probed (not the long pole) |
+| ProphetX | 6 | `MLB_SGP_PX_PARALLELISM` | no backoff (429/403) to 12; default 6 for ≤60s margin + modest RFQ burst |
+| Novig | 4 | n/a (module constant) | not probed |
+
+Live ramp (2026-06-16) found **zero** rate-limit / bot-detection signals at
+any tested width — DK to 32, PX to 12. DK's constant "422 ×40" is its
+legitimate cross-market combinability rule, not backoff. The practical
+limits are diminishing returns (DK's fixed sel-id-fetch floor) and
+RFQ-burst prudence (PX), not the books rejecting us.
+
+`price_sgps(..., parallelism=N)` overrides both env and default. Ceilings
+come from `probe_concurrency.py` — a **manual-only** ramp harness
+(budgeted: ≤150 DK calls, ≤40 PX RFQs, cooldowns, post-run health
+check). Run it in the morning (~7–8am PT, no games live):
+
+    mlb_sgp/venv/bin/python -m mlb_sgp.probe_concurrency --book dk
+
+**The Kalshi bots no longer spawn these scrapers as subprocesses** — they
+price in-process via `kalshi_common/sgp_service.py::SGPService`
+(persistent sessions + TTL-cached structure fetches). The dashboard still
+uses the CLI shims (`scraper_*_sgp.py`), which behave exactly as before.
 
 ---
 

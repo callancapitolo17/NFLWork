@@ -43,6 +43,7 @@ recon_*.png
 # Data files
 *.duckdb
 *.duckdb-journal
+*.duckdb.wal
 *.rds
 *.csv
 # Test fixtures (golden baselines) are tracked despite the *.csv rule above
@@ -136,4 +137,16 @@ kalshi_mlb_rfq/*.duckdb
 kalshi_mlb_rfq/*.duckdb.wal
 kalshi_mlb_rfq/*.log
 kalshi_mlb_rfq/bot.log.*
+
+# coverage audit (output DB created at runtime; covered by *.duckdb but explicit)
+coverage_audit/coverage.duckdb
+coverage_audit/coverage.duckdb.wal
 kalshi_mlb_rfq/.kill
+
+# Caesars SGP scraper runtime artifacts + recon data dumps (token has short TTL
+# but should never be committed; browser profile + JSON captures are data).
+mlb_sgp/.caesars_token.json
+mlb_sgp/.caesars_profile/
+mlb_sgp/_czr_*.json
+mlb_sgp/recon_caesars_*.json
+mlb_sgp/recon_bet365_*.json

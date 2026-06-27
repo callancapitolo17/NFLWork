@@ -361,29 +361,59 @@ def _market_num(sel_id: str) -> str:
     return m.group(1) if m else ""
 
 
+# Moneyline selection ids look like 0ML85265198_1 (home, participant 1) or
+# 0ML85265198_3 (away, participant 3) — same shape as spreads/totals but no
+# line. The 8+ digits after 0ML are the DK market_num.
+_ML_RE = re.compile(r"0ML(\d+)(_\d+)")
+
+
+def _extract_moneyline_selections(text: str, ml_mnum: str | None) -> dict:
+    """Pull home/away moneyline selection ids for one market_num out of the raw
+    parlays response text. Returns ``{"1": [home_sels], "3": [away_sels]}``
+    (participant "1" = home, "3" = away). Empty lists when ml_mnum is falsy or
+    no selections match — keeps the per-book sign/participant convention
+    independently testable, mirroring _extract_offered_lines_dk.
+    """
+    out = {"1": [], "3": []}
+    if not ml_mnum:
+        return out
+    for mnum, suf in _ML_RE.findall(text):
+        if mnum != ml_mnum:
+            continue
+        participant = suf[1:]          # "_1" -> "1"
+        sel_id = f"0ML{mnum}{suf}"
+        if participant in out and sel_id not in out[participant]:
+            out[participant].append(sel_id)
+    return out
+
+
 def fetch_main_market_nums(session: cffi_requests.Session, dk_event_id: str) -> dict:
-    """Fetch main Run Line + Total market numbers for both FG and F5.
+    """Fetch main Run Line + Total + Moneyline market numbers for both FG and F5.
 
     Returns {
-        "fg": {"run_line": "...", "total": "..."},
-        "f5": {"run_line": "...", "total": "..."},
+        "fg": {"run_line": "...", "total": "...", "moneyline": "..."},
+        "f5": {"run_line": "...", "total": "...", "moneyline": "..."},
     }
     Any field may be None if the market is unavailable.
     """
     out = {
-        "fg": {"run_line": None, "total": None},
-        "f5": {"run_line": None, "total": None},
+        "fg": {"run_line": None, "total": None, "moneyline": None},
+        "f5": {"run_line": None, "total": None, "moneyline": None},
     }
     for m_id, name in _fetch_subcat_markets(session, dk_event_id, "4519"):
         if name == "Run Line":
             out["fg"]["run_line"] = _strip_prefix(m_id)
         elif name == "Total":
             out["fg"]["total"] = _strip_prefix(m_id)
+        elif name == "Moneyline":
+            out["fg"]["moneyline"] = _strip_prefix(m_id)
     for m_id, name in _fetch_subcat_markets(session, dk_event_id, "15628"):
         if name == "Run Line - 1st 5 Innings":
             out["f5"]["run_line"] = _strip_prefix(m_id)
         elif name == "Total Runs - 1st 5 Innings":
             out["f5"]["total"] = _strip_prefix(m_id)
+        elif name == "Moneyline - 1st 5 Innings":
+            out["f5"]["moneyline"] = _strip_prefix(m_id)
     return out
 
 
@@ -418,8 +448,8 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
         timeout=60,
     )
 
-    empty = {"fg": {"spreads": {}, "totals": {}},
-             "f5": {"spreads": {}, "totals": {}}}
+    empty = {"fg": {"spreads": {}, "totals": {}, "moneyline": {"1": [], "3": []}},
+             "f5": {"spreads": {}, "totals": {}, "moneyline": {"1": [], "3": []}}}
     if resp.status_code != 200:
         return empty
 
@@ -542,6 +572,14 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
     out["f5"]["canonical"] = {m for m in (f5_rl, f5_tot) if m} | (
         f5_spread_mnums & f5_total_mnums
     )
+
+    # Moneyline selections (home/away) per period, keyed off the main-market
+    # moneyline market_num. ML has no line, so it lives in its own bucket rather
+    # than the (sign, line, participant) spread map.
+    fg_ml = main_market_nums["fg"].get("moneyline")
+    f5_ml = main_market_nums["f5"].get("moneyline")
+    out["fg"]["moneyline"] = _extract_moneyline_selections(text, fg_ml)
+    out["f5"]["moneyline"] = _extract_moneyline_selections(text, f5_ml)
 
     if verbose:
         for per in ("fg", "f5"):

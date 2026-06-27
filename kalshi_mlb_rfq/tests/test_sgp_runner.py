@@ -63,7 +63,7 @@ def test_enumerate_kalshi_targets_returns_target_lines(monkeypatch):
     enumerate_kalshi_targets yields 4 TargetLine entries (one per combo).
     Schedule comes from the Odds API (mocked here)."""
     from datetime import datetime, timezone
-    from kalshi_mlb_rfq import sgp_runner
+    from kalshi_common import sgp_runner
 
     # Kalshi event ticker format: YYMMMDDHHMM{AwayCode}{HomeCode} (11-char date prefix).
     # Schedule below has home=NYY, away=BOS, so ticker tail must be BOSNYY.
@@ -74,7 +74,7 @@ def test_enumerate_kalshi_targets_returns_target_lines(monkeypatch):
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events",
                          lambda: [fake_event])
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_spread_lines",
-                         lambda suffix: [(-1.5, "home"), (-2.5, "home")])
+                         lambda suffix, **kw: [(-1.5, "home"), (-2.5, "home")])
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_total_lines",
                          lambda suffix: [8.5, 9.5])
     ct = datetime(2026, 5, 13, 23, 0, tzinfo=timezone.utc)
@@ -100,14 +100,14 @@ def test_enumerate_kalshi_targets_returns_target_lines(monkeypatch):
 
 
 def test_enumerate_kalshi_targets_no_events_returns_empty(monkeypatch):
-    from kalshi_mlb_rfq import sgp_runner
+    from kalshi_common import sgp_runner
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events", lambda: [])
     assert sgp_runner.enumerate_kalshi_targets() == []
 
 
 def test_enumerate_kalshi_targets_skips_unknown_team_codes(monkeypatch):
     """If event_ticker has unknown team codes, skip the event."""
-    from kalshi_mlb_rfq import sgp_runner
+    from kalshi_common import sgp_runner
     fake_event = {"event_ticker": "KXMLBGAME-26MAY132300ZZZXXX"}
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events", lambda: [fake_event])
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_spread_lines",
@@ -119,7 +119,7 @@ def test_enumerate_kalshi_targets_skips_unknown_team_codes(monkeypatch):
 
 def test_fetch_schedule_from_odds_api_handles_missing_key(monkeypatch, tmp_path):
     """When ODDS_API_KEY is unset (env + ~/.Renviron absent), returns {}."""
-    from kalshi_mlb_rfq import sgp_runner
+    from kalshi_common import sgp_runner
     monkeypatch.delenv("ODDS_API_KEY", raising=False)
     # Point HOME to a tmp dir with no .Renviron so the fallback finds nothing.
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -241,10 +241,10 @@ def test_read_priced_rows_missing_db(tmp_path):
 def test_sgp_cycle_orchestrates_full_tick(monkeypatch, tmp_path):
     """sgp_cycle() composes enumerate → write → run_scrapers → return rc map.
     Stubs out the API + subprocess to verify orchestration ordering."""
-    from kalshi_mlb_rfq import sgp_runner
+    from kalshi_common import sgp_runner
 
     call_order = []
-    def fake_enum():
+    def fake_enum(**kw):
         call_order.append("enum")
         return []
     def fake_write(targets, db_path):
@@ -269,14 +269,14 @@ def test_sgp_cycle_orchestrates_full_tick(monkeypatch, tmp_path):
 
 def test_sgp_cycle_passes_env_to_scrapers(monkeypatch, tmp_path):
     """sgp_cycle must set MLB_SGP_DB_PATH and MLB_SGP_PERIODS=FG in env."""
-    from kalshi_mlb_rfq import sgp_runner
+    from kalshi_common import sgp_runner
 
     captured_env = {}
     def fake_run(scraper_dir, scraper_names, venv_python, timeout_sec, env=None):
         captured_env.update(env or {})
         return {}
 
-    monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets", lambda: [])
+    monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets", lambda **kw: [])
     monkeypatch.setattr(sgp_runner, "write_target_lines", lambda targets, db_path: None)
     monkeypatch.setattr(sgp_runner, "run_scrapers", fake_run)
 
@@ -288,3 +288,135 @@ def test_sgp_cycle_passes_env_to_scrapers(monkeypatch, tmp_path):
     )
     assert captured_env.get("MLB_SGP_DB_PATH") == "/tmp/bot.duckdb"
     assert captured_env.get("MLB_SGP_PERIODS") == "FG"
+
+
+def test_sgp_cycle_service_path_writes_rows_and_preserves_failed_books(
+        tmp_path, monkeypatch):
+    """Service path: success -> stale source rows replaced; failure ->
+    old rows preserved (mirrors today's subprocess-crash behavior)."""
+    import duckdb
+    from datetime import datetime, timezone
+    from kalshi_common import sgp_runner
+    from mlb_sgp import db as sgp_db
+    from mlb_sgp._shared import PricedRow, TargetLine
+
+    db_path = str(tmp_path / "market.duckdb")
+    ct = datetime(2026, 6, 8, 23, 0, tzinfo=timezone.utc)
+    target = TargetLine(game_id="g1", home_team="H", away_team="A",
+                        commence_time=ct, period="FG", spread=-1.5, total=8.5)
+    monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets", lambda **kw: [target])
+
+    # Pre-seed: one stale DK row (must be replaced) + one FD row (must
+    # survive, because FD "fails" this cycle).
+    stale_dk = PricedRow(game_id="gOLD", combo="Home Spread + Over",
+                         period="FG", spread_line=-1.5, total_line=9.5,
+                         bookmaker="draftkings", source="draftkings_direct",
+                         sgp_decimal=9.99, sgp_american=899, fetch_time=ct)
+    old_fd = PricedRow(game_id="gOLD", combo="Home Spread + Over",
+                       period="FG", spread_line=-1.5, total_line=9.5,
+                       bookmaker="fanduel", source="fanduel_direct",
+                       sgp_decimal=8.88, sgp_american=788, fetch_time=ct)
+    sgp_db.upsert_priced_rows([stale_dk, old_fd], db_path=db_path)
+
+    fresh_dk = PricedRow(game_id="g1", combo="Home Spread + Over",
+                         period="FG", spread_line=-1.5, total_line=8.5,
+                         bookmaker="draftkings", source="draftkings_direct",
+                         sgp_decimal=3.5, sgp_american=250, fetch_time=ct)
+
+    class FakeService:
+        def refresh(self, targets):
+            assert targets == [target]
+            return {"draftkings": [fresh_dk], "fanduel": None}
+
+    counts = sgp_runner.sgp_cycle(bot_market_db=db_path, service=FakeService())
+    assert counts == {"draftkings": 1, "fanduel": -1}
+
+    con = duckdb.connect(db_path, read_only=True)
+    try:
+        rows = con.execute(
+            "SELECT bookmaker, game_id, sgp_decimal FROM mlb_sgp_odds "
+            "ORDER BY bookmaker").fetchall()
+    finally:
+        con.close()
+    assert rows == [("draftkings", "g1", 3.5), ("fanduel", "gOLD", 8.88)]
+
+    # Target lines were still written (tipoff gating reads them).
+    con = duckdb.connect(db_path, read_only=True)
+    try:
+        n = con.execute("SELECT COUNT(*) FROM mlb_target_lines").fetchone()[0]
+    finally:
+        con.close()
+    assert n == 1
+
+
+def test_sgp_cycle_service_path_skipped_book_rows_untouched(tmp_path, monkeypatch):
+    """A book absent from refresh() results (min_refresh skip) keeps its
+    rows AND is absent from the returned counts."""
+    from datetime import datetime, timezone
+    from kalshi_common import sgp_runner
+    from mlb_sgp import db as sgp_db
+    from mlb_sgp._shared import PricedRow, TargetLine
+    import duckdb
+
+    db_path = str(tmp_path / "market.duckdb")
+    ct = datetime(2026, 6, 8, 23, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets", lambda **kw: [
+        TargetLine(game_id="g1", home_team="H", away_team="A",
+                   commence_time=ct, period="FG", spread=-1.5, total=8.5)])
+    px_row = PricedRow(game_id="g1", combo="Home Spread + Over", period="FG",
+                       spread_line=-1.5, total_line=8.5, bookmaker="prophetx",
+                       source="prophetx_direct", sgp_decimal=3.3,
+                       sgp_american=230, fetch_time=ct)
+    sgp_db.upsert_priced_rows([px_row], db_path=db_path)
+
+    class FakeService:
+        def refresh(self, targets):
+            return {}   # everything skipped
+
+    counts = sgp_runner.sgp_cycle(bot_market_db=db_path, service=FakeService())
+    assert counts == {}
+    con = duckdb.connect(db_path, read_only=True)
+    try:
+        n = con.execute("SELECT COUNT(*) FROM mlb_sgp_odds").fetchone()[0]
+    finally:
+        con.close()
+    assert n == 1
+
+
+def test_fetch_spread_lines_default_is_home_favorite_deduped(monkeypatch):
+    """Default (both_teams=False) preserves legacy MM behavior: one
+    home-favorite -(n-0.5) line per |line|, deduped, who='home'."""
+    from kalshi_common import sgp_runner
+    markets = {"markets": [
+        {"ticker": "KXMLBSPREAD-GAME-HOU2"},  # home n=2
+        {"ticker": "KXMLBSPREAD-GAME-PIT2"},  # away n=2 (same |line|)
+        {"ticker": "KXMLBSPREAD-GAME-HOU3"},
+    ]}
+    monkeypatch.setattr(sgp_runner.auth_client, "api",
+                        lambda *a, **k: (200, markets, {}))
+    out = sgp_runner._fetch_kalshi_spread_lines("GAME", home_code="HOU")
+    assert sorted(out) == [(-2.5, "home"), (-1.5, "home")]  # deduped, home only
+
+
+def test_fetch_spread_lines_both_teams_emits_signed_per_team(monkeypatch):
+    """both_teams=True: home margin → negative, away margin → positive,
+    no dedup."""
+    from kalshi_common import sgp_runner
+    markets = {"markets": [
+        {"ticker": "KXMLBSPREAD-GAME-HOU2"},  # home favorite by 1.5
+        {"ticker": "KXMLBSPREAD-GAME-PIT2"},  # away favorite by 1.5
+    ]}
+    monkeypatch.setattr(sgp_runner.auth_client, "api",
+                        lambda *a, **k: (200, markets, {}))
+    out = sgp_runner._fetch_kalshi_spread_lines(
+        "GAME", home_code="HOU", both_teams=True)
+    assert sorted(out) == [(-1.5, "home"), (1.5, "away")]
+
+
+def test_book_modules_covers_all_default_service_books():
+    """_BOOK_MODULES must cover every book SGPService can return, else
+    sgp_cycle KeyErrors when that book produces rows (the betmgm blocker)."""
+    from kalshi_common import sgp_runner
+    from kalshi_common.sgp_service import DEFAULT_BOOKS
+    missing = [b for b in DEFAULT_BOOKS if b not in sgp_runner._BOOK_MODULES]
+    assert not missing, f"_BOOK_MODULES missing default books: {missing}"
