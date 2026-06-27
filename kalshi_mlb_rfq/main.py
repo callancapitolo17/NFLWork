@@ -1755,6 +1755,7 @@ def main_loop(dry_run: bool):
         rcs = sgp_runner.sgp_cycle(
             bot_market_db=str(config.BOT_MARKET_DB),
             service=sgp_service,
+            both_teams=True,
         )
         log.info("startup: SGP warm-up done — return codes %s", rcs)
     except Exception as e:
@@ -1810,6 +1811,7 @@ def main_loop(dry_run: bool):
                     rcs = sgp_runner.sgp_cycle(
                         bot_market_db=str(config.BOT_MARKET_DB),
                         service=sgp_service,
+                        both_teams=True,
                     )
                     _refresh_sgp_cache()
                     _refresh_caches()  # parlay_lines_cache may have new (spread, total) tuples
