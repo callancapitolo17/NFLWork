@@ -137,3 +137,60 @@ def test_upsert_priced_rows_empty_is_noop(tmp_path):
     db = str(tmp_path / "e.duckdb")
     ensure_table(db_path=db)
     upsert_priced_rows([], db_path=db)  # must not error
+
+
+def test_upsert_dedups_null_spread_line(tmp_path):
+    """Moneyline×total rows carry spread_line=None. Re-upserting the same key
+    must REPLACE (NULL-safe dedup), not accumulate a duplicate every cycle."""
+    from datetime import datetime, timezone
+    from mlb_sgp._shared import PricedRow
+    from mlb_sgp.db import upsert_priced_rows
+
+    db = str(tmp_path / "ml.duckdb")
+
+    def row(dec):
+        return PricedRow(
+            game_id="g1", combo="Home ML + Over", period="FG",
+            spread_line=None, total_line=8.5, bookmaker="draftkings",
+            source="draftkings_direct", sgp_decimal=dec, sgp_american=100,
+            fetch_time=datetime(2026, 6, 23, tzinfo=timezone.utc))
+
+    upsert_priced_rows([row(2.4)], db_path=db)
+    upsert_priced_rows([row(2.7)], db_path=db)   # same key, fresher price
+    con = duckdb.connect(db, read_only=True)
+    n = con.execute(
+        "SELECT COUNT(*) FROM mlb_sgp_odds WHERE combo='Home ML + Over'").fetchone()[0]
+    price = con.execute(
+        "SELECT sgp_decimal FROM mlb_sgp_odds WHERE combo='Home ML + Over'").fetchone()[0]
+    sl = con.execute(
+        "SELECT spread_line FROM mlb_sgp_odds WHERE combo='Home ML + Over'").fetchone()[0]
+    con.close()
+    assert n == 1            # deduped, not duplicated
+    assert price == 2.7      # replaced with the newer price
+    assert sl is None        # stored as NULL, no sentinel leak
+
+
+def test_upsert_mixed_null_and_nonnull_batch(tmp_path):
+    """A single batch mixing spread+total rows (non-NULL lines) and ML×total rows
+    (NULL spread) must dedup each independently."""
+    from datetime import datetime, timezone
+    from mlb_sgp._shared import PricedRow
+    from mlb_sgp.db import upsert_priced_rows
+
+    db = str(tmp_path / "mix.duckdb")
+    ft = datetime(2026, 6, 23, tzinfo=timezone.utc)
+
+    def batch(dec):
+        return [
+            PricedRow("g1", "Home Spread + Over", "FG", -1.5, 8.5,
+                      "draftkings", "draftkings_direct", dec, 100, ft),
+            PricedRow("g1", "Home ML + Over", "FG", None, 8.5,
+                      "draftkings", "draftkings_direct", dec, 100, ft),
+        ]
+
+    upsert_priced_rows(batch(2.0), db_path=db)
+    upsert_priced_rows(batch(2.5), db_path=db)
+    con = duckdb.connect(db, read_only=True)
+    total = con.execute("SELECT COUNT(*) FROM mlb_sgp_odds").fetchone()[0]
+    con.close()
+    assert total == 2        # both keys deduped, one row each
