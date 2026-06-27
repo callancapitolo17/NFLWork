@@ -103,3 +103,35 @@ def test_cov_returns_scales_inverse_with_prices():
 def test_frechet_invariant(pa, pb, raw):
     j = frechet_clamp(raw, pa, pb)
     assert max(0.0, pa + pb - 1.0) - 1e-12 <= j <= min(pa, pb) + 1e-12
+
+
+# ---------------------------------------------------------------------------
+# Characterization tests: signed-grid correctness
+# ---------------------------------------------------------------------------
+
+from kalshi_mlb_rfq import correlation  # noqa: E402  (imported at module level already, alias for clarity)
+
+
+def test_joint_two_away_margin_combos_reads_positive_grid():
+    """Two away-margin combos (spread_line +1.5 and +2.5, both away cover,
+    both over) → tighter = +2.5 away cell. grid_lookup must be called with
+    the POSITIVE signed line."""
+    calls = []
+    def fake_lookup(spread, total, sside, tside):
+        calls.append((spread, total, sside, tside))
+        return 0.10
+    a = ComboRegion("away", 1.5, "over", 7.5)
+    b = ComboRegion("away", 2.5, "over", 8.5)
+    j = correlation.joint_prob(a, b, p_a=0.30, p_b=0.12, grid_lookup=fake_lookup)
+    assert calls == [(2.5, 8.5, "away", "over")]   # tighter: max line, max total
+    assert j is not None
+
+
+def test_joint_opposite_grid_pair_is_none_fallback():
+    """A home-margin combo (−1.5) and an away-margin combo (+1.5) have
+    different spread_side → None (caller uses ρ=1, conservative)."""
+    a = ComboRegion("home", -1.5, "over", 7.5)   # home wins by 2+
+    b = ComboRegion("away", 1.5, "over", 7.5)    # away wins by 2+
+    j = correlation.joint_prob(a, b, p_a=0.30, p_b=0.15,
+                               grid_lookup=lambda *x: 0.5)
+    assert j is None

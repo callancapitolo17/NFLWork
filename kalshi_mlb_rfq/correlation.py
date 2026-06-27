@@ -34,7 +34,18 @@ def frechet_clamp(joint: float, p_a: float, p_b: float) -> float:
 
 def joint_prob(a: ComboRegion, b: ComboRegion,
                p_a: float, p_b: float, grid_lookup) -> float | None:
-    """P(A ∩ B) from the grid, or None if not resolvable (caller → ρ=1)."""
+    """P(A ∩ B) from the grid, or None if not resolvable (caller → ρ=1).
+
+    Same spread_side + same total_side → the joint is the tighter quadrant,
+    one grid cell, read at the signed `spread_line` (negative = home-favorite
+    grid, positive = away-favorite grid).
+
+    Opposite spread_side (e.g. a home-margin combo vs an away-margin combo,
+    which live in opposite signed grids and are near-disjoint) returns None.
+    The caller's ρ=1 fallback then treats them as max positively correlated —
+    conservative: it down-sizes rather than crediting a diversification
+    benefit we cannot verify from the grid. (v1 limitation, intentional.)
+    """
     if a.spread_side != b.spread_side or a.total_side != b.total_side:
         return None
     # Tighter spread quadrant:
