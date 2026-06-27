@@ -764,6 +764,18 @@ all_bets_combined <- bind_rows(
   select(-base_market) %>%
   arrange(desc(ev))
 
+# Extreme-samples correction (2026-06-15): support guard (abstain when the
+# matched sample collapsed, final_N < 0.5*N) + Baker-McHale variance-discounted
+# Kelly. Only removes bets / trims stakes, so re-filtering at EV_THRESHOLD here
+# yields the correct final set. See
+# docs/superpowers/analysis/2026-06-15-extreme-samples-shrinkage/findings.md
+sample_meta <- build_sample_meta(samples)
+all_bets_combined <- apply_extreme_samples_correction(
+  all_bets_combined, sample_meta, bankroll, kelly_mult
+) %>%
+  filter(ev >= EV_THRESHOLD) %>%
+  arrange(desc(ev))
+
 # =============================================================================
 # PHASE 7.5: CORRELATION-ADJUSTED KELLY SIZING
 # =============================================================================

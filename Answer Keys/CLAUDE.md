@@ -201,6 +201,31 @@ mlb_triple_play.R (standalone pricer)
 - Mitigation: filter Home Spread + Over and Away Spread + Over combos in `mlb_correlated_parlay.R` when `row$total_line <= 7.0` for FG slice.
 - Details: `docs/superpowers/analysis/2026-05-11-fg-fav-leak/findings.md`. Memory: `memory/mlb_parlay_edge_overestimation.md`.
 
+## Extreme-samples correction (2026-06-15)
+
+Guards against the failure mode where `mean_match` collapses the sample in a
+sparse (extreme-line) region and the empirical frequency becomes an
+overconfident phantom edge → oversized Kelly bet. Two pieces (a shrink-toward-
+market step was evaluated and dropped — barely helped, overlaps the SGP
+`blend_dk_with_model`):
+
+- **Config** (top of `Tools.R`): `EXTREME_GUARD_ENABLE` (master kill switch),
+  `EXTREME_GUARD_FLOOR=0.5` (abstain when `final_N < 0.5*target_N`). Baker-McHale
+  Kelly is always applied. `run_answer_key_sample` now also returns `target_N` +
+  `low_confidence`.
+- **Where**: `apply_extreme_samples_correction(bets, build_sample_meta(samples))`
+  runs once per sport on `all_bets_combined` just before the EV-threshold filter
+  (CBB.R, MLB.R, NFLAnswerKey2.0.R).
+- **What it does per bet**: (1) abstain (bet_size 0, ev NA → filtered) if the
+  game's sample collapsed; (2) else multiply the Kelly stake by Baker-McHale
+  `alpha = edge²/(edge² + p(1-p)/n_eff)` — noisier estimates size down. Both key
+  off `n_eff` = matched-sample size. Only removes bets / trims stakes, never adds.
+- **Not covered**: the Kalshi bots (`kalshi_mlb_rfq` reads raw `mlb_game_samples`;
+  `kalshi_mlb_mm` is book-consensus-only) — they price independently of the
+  corrected bet list. Backtest + rationale:
+  `docs/superpowers/analysis/2026-06-15-extreme-samples-shrinkage/findings.md`.
+- To disable, set `EXTREME_GUARD_ENABLE <- FALSE` (restores exact legacy behavior).
+
 ## When Making Changes
 
 - **Adding a new scraper**: Add to `run.py` scraper config, create DuckDB table with 18-column schema, add team name mappings
