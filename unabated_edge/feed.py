@@ -3,6 +3,13 @@ from dataclasses import dataclass, field
 import requests
 from unabated_edge import config
 
+
+def line_american_price(ln: dict):
+    """American moneyline price from a raw Unabated line dict.
+    Field name is americanPrice in the authed feed; some captures show
+    'price'. Tolerant of both until Task 0 live recon pins it down."""
+    return ln.get("americanPrice", ln.get("price"))
+
 @dataclass(frozen=True)
 class EventMeta:
     event_id: int; league_key: str; start_utc: datetime.datetime
@@ -43,6 +50,8 @@ def _ingest(st, ev, lk):
         si, ms, an = (p[2:] for p in key.split(":"))
         if an != "0": continue
         for bt, line in btmap.items():
+            if line.get("isBlurred") is True:
+                continue
             st.lines[f"{eid}|{si}|{ms}|{bt}"] = line
 
 def events_for_league(st, league_prefix):

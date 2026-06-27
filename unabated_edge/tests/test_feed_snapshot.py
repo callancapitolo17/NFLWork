@@ -21,3 +21,35 @@ def test_parse_filters_to_registered_leagues():
     assert e.home == "Argentina" and e.away == "Austria"
     assert e.start_utc == datetime.datetime(2026,6,22,17,0,tzinfo=datetime.timezone.utc)
     assert st.lines["126539|1|7|bt1"]["price"] == -150
+
+
+# FIX 1: tolerant american price key
+def test_line_american_price_prefers_americanPrice_falls_back_to_price():
+    assert feed.line_american_price({"americanPrice": -150}) == -150
+    assert feed.line_american_price({"price": 130}) == 130
+    assert feed.line_american_price({"americanPrice": -110, "price": 999}) == -110
+    assert feed.line_american_price({}) is None
+
+
+# FIX 2: blurred lines must not enter state.lines
+def test_blurred_lines_excluded_from_state():
+    raw = {
+        "marketSources": [{"id": 7, "name": "S"}],
+        "teams": {"1": {"name": "A"}, "2": {"name": "B"}},
+        "gameOddsEvents": {
+            "lg21:pt1:pregame": [{
+                "eventId": 99,
+                "eventStart": "2026-06-22T17:00:00+00:00",
+                "eventTeams": {"1": {"id": 1}, "0": {"id": 2}},
+                "gameOddsMarketSourcesLines": {
+                    "si1:ms7:an0": {
+                        "bt1": {"price": -110, "isBlurred": True},   # blurred — must be dropped
+                        "bt4": {"price": 250},                        # not blurred — must be kept
+                    }
+                },
+            }]
+        },
+    }
+    st = feed.parse_snapshot(raw, {"lg21"})
+    assert "99|1|7|bt1" not in st.lines   # blurred line excluded
+    assert "99|1|7|bt4" in st.lines       # non-blurred line present

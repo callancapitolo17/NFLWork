@@ -3,7 +3,7 @@ from unabated_edge import config, feed, ev, sizing, mapping, storage
 from unabated_edge.venues import kalshi
 from unabated_edge.sports import registry
 from unabated_edge.log_setup import setup_logging
-from unabated_edge.risk import staleness_ok, tipoff_ok, kill_switch_ok
+from unabated_edge.risk import tipoff_ok, kill_switch_ok
 
 log = setup_logging()
 _running = threading.Event(); _running.set()
@@ -22,7 +22,7 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, ask_fn) -> lis
             "market_source_id": int(k.split("|")[2]),
             "bet_type": k.split("|")[3],
             "side": k.split("|")[1],
-            "price": v.get("price"),
+            "price": feed.line_american_price(v),
             "points": v.get("points"),
         }
         for k, v in state.lines.items()
@@ -78,6 +78,11 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, ask_fn) -> lis
 
 def main_loop(dry_run: bool):
     storage.init()
+    if not config.UNABATED_TOKEN:
+        log.warning(
+            "UNABATED_AT_PROD is not set — feed will return blurred/anonymous lines "
+            "and no real edges will be found until a token is set in .env"
+        )
     kalshi.init()
     prefixes = registry.league_prefixes()
     state = feed.fetch_snapshot(prefixes)

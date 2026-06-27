@@ -31,7 +31,7 @@ ANCHOR_SOURCE_IDS = [7, 6, 68]
 BANKROLL = float(_get("BANKROLL", "1000.0"))
 KELLY_FRACTION = float(_get("KELLY_FRACTION", "0.25"))
 MIN_EV_PCT = float(_get("MIN_EV_PCT", "0.03"))
-MAX_STALENESS_SEC = int(_get("MAX_STALENESS_SEC", "20"))
+MAX_STALENESS_SEC = int(_get("MAX_STALENESS_SEC", "20"))  # RESERVED — Plan 2 live-execution staleness gate (not yet enforced)
 KICKOFF_CUTOFF_MIN = int(_get("KICKOFF_CUTOFF_MIN", "3"))
 PER_MATCH_CAP_PCT = float(_get("PER_MATCH_CAP_PCT", "0.03"))
 

@@ -86,7 +86,7 @@ All tuneable constants live in `config.py` and can be overridden via `.env` or e
 | `BANKROLL` | `1000.0` | Total bankroll in USD |
 | `KELLY_FRACTION` | `0.25` | Fractional Kelly multiplier |
 | `MIN_EV_PCT` | `0.03` | Minimum net EV % to flag (3 %) |
-| `MAX_STALENESS_SEC` | `20` | Max allowed feed age before skipping tick |
+| `MAX_STALENESS_SEC` | `20` | Reserved for Plan 2 live-execution staleness gate — not yet enforced |
 | `KICKOFF_CUTOFF_MIN` | `3` | Stop flagging this many minutes before kickoff |
 | `PER_MATCH_CAP_PCT` | `0.03` | Max fraction of bankroll per match (3 %) |
 
