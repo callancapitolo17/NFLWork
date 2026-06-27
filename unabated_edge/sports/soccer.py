@@ -38,9 +38,9 @@ class Soccer(SportAdapter):
     def map_outcome_tickers(self, kalshi_event: dict) -> dict:
         out = {}
         for mk in kalshi_event.get("markets", []):
-            sub = (mk.get("yes_sub_title") or "").lower()
-            if "draw" in sub or "tie" in sub:
+            raw = (mk.get("yes_sub_title") or "").strip()
+            if "draw" in raw.lower() or "tie" in raw.lower():
                 out["draw"] = mk["ticker"]
             else:
-                out.setdefault("_named", []).append((sub, mk["ticker"]))
+                out.setdefault("_named", []).append((raw, mk["ticker"]))
         return out   # home/away resolved against canon team names in mapping (Task 7)
