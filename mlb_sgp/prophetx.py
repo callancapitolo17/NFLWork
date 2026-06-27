@@ -568,6 +568,11 @@ def _price_combos_parallel(
     defense) runs *inside* the worker so a combo that fails sanity is
     omitted from the result dict — same behavior as the sequential path,
     just executed concurrently.
+
+    ``spread_mid`` is the first leg's market id — a spread market for
+    spread×total combos, or the moneyline market for ML×total combos (the
+    ML pricer reuses this same path now that the ML leg carries odds). The
+    ``combos`` tuples are ``(name, leg1_sel, total_sel)`` either way.
     """
     results: dict = {}
 

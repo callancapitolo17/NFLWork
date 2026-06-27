@@ -1,6 +1,12 @@
 # Kalshi MLB MM (Maker) Bot
 
-Independent maker daemon that listens for others' RFQs on the Kalshi cross-category MVE collection, prices 2-leg spread×total MLB combos against a book-consensus fair value, and provides two-sided quotes at a fixed 5% ROI margin. Coexists with the taker (`kalshi_mlb_rfq/`) as a separate OS process with no runtime dependency on it.
+Independent maker daemon that listens for others' RFQs on the Kalshi cross-category MVE collection, prices 2-leg MLB combos — **spread×total and moneyline×total** (both FG) — against a book-consensus fair value, and provides two-sided quotes at a fixed 5% ROI margin. Coexists with the taker (`kalshi_mlb_rfq/`) as a separate OS process with no runtime dependency on it.
+
+Combo classification is shared via `kalshi_common.leg_types.combo_descriptor`, which
+maps a 2-leg combo to its grid family (`spread_total` or `ml_total`) and derives the
+devig cell from the legs' actual sides. The read side is **book-agnostic**: it consumes
+whatever the SGP scrapers write to `mlb_sgp_odds`, so all 6 books' moneyline rows are
+priced with no maker-side change.
 
 **Spec:** `docs/superpowers/specs/2026-05-26-kalshi-mlb-mm-design.md`
 **Plan:** `docs/superpowers/plans/2026-05-27-kalshi-mlb-mm-maker-bot.md`
@@ -65,9 +71,9 @@ REST-polling daemon, single process. Four timed sub-loops:
 
 ## Pricing
 
-Fair value is the median of *book-consensus-agreeing* devigged book fairs. For each combo (game × spread_line × total_line) we:
+Fair value is the median of *book-consensus-agreeing* devigged book fairs. For each combo (`combo_descriptor` resolves its family + cell — spread×total keyed by game × spread_line × total_line, moneyline×total keyed by game × total_line with `spread_line` NULL) we:
 
-1. Pull every book's 4-side row from `mlb_sgp_odds` (require all 4 sides — no fallback).
+1. Pull every book's 4-cell grid from `mlb_sgp_odds` (filtered by combo family, require all 4 cells — no fallback).
 2. Devig each book's 4-way grid to a single combo fair (`devig_book` in `kalshi_common.fair_value`).
 3. Compute the median across books, then keep only books within `±BOOK_CONSENSUS_BAND` of that median.
 4. If `>= MIN_AGREEING_BOOKS` survive, the fair is the median of the survivors. Otherwise we do not quote.

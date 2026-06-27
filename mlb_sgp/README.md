@@ -2,6 +2,12 @@
 
 Fetch Same Game Parlay (SGP) odds from multiple books (DraftKings, FanDuel, ProphetX, Novig, BetMGM, Caesars) for MLB correlated parlay edge finding. All write to the same `mlb_sgp_odds` table so the scanner can shop combos across books. See "Additional SGP books" below for BetMGM/Caesars/bet365.
 
+Each book prices two FG combo families, both stored as 4-cell devig-able grids:
+**spread × total** (`"Home Spread + Over"` …, `spread_line` set) and
+**moneyline × total** (`"Home ML + Over"` …, `spread_line` = **NULL** — there is
+no spread leg). Both are correlation-priced by the book and devigged the same way
+(`devig_book`, n-way probit). Moneyline is FG-only across all 6 books.
+
 ## Quick Start
 
 ```bash
@@ -257,13 +263,20 @@ Writes to `mlb_sgp_odds` table in `Answer Keys/mlb_mm.duckdb`:
 | Column | Type | Description |
 |--------|------|-------------|
 | game_id | VARCHAR | Odds API event ID (joins to mlb_parlay_opportunities) |
-| combo | VARCHAR | e.g., "Home Spread + Over" |
+| combo | VARCHAR | `"Home Spread + Over"` … or `"Home ML + Over"` … (moneyline family) |
 | period | VARCHAR | "FG" |
 | bookmaker | VARCHAR | "draftkings" |
+| spread_line | DOUBLE | home-perspective spread; **NULL** for moneyline×total combos (no spread leg) |
+| total_line | DOUBLE | the Over/Under line |
 | sgp_decimal | DOUBLE | Decimal odds |
 | sgp_american | INTEGER | American odds |
 | fetch_time | TIMESTAMP | When scraped |
 | source | VARCHAR | "draftkings_direct" |
+
+> **NULL-safe dedup:** because `spread_line` is NULL for moneyline combos,
+> `db.upsert_priced_rows` matches the composite key with `IS NOT DISTINCT FROM`
+> (NULL-safe equality), not a plain tuple-IN. Never use a numeric sentinel for
+> the absent leg — NULL keeps the grid/dashboard clean.
 
 ## SGP Scraping Playbook (for adding new books)
 
