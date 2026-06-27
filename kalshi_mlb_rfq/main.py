@@ -532,8 +532,9 @@ def _combo_region_from_legs(typed_legs: list) -> "correlation.ComboRegion | None
       team_is_home=False, side="no"   → home covers    → "home"
     ⟹ spread_side = "home" if (team_is_home == (side == "yes")) else "away"
 
-    spread_line is stored home-perspective in _SGP_ODDS_CACHE (e.g. -1.5
-    for home -1.5), matching _spread_line_from_legs: -(line_n - 0.5).
+    spread_line sign depends on team_is_home: home-margin leg → -(line_n-0.5)
+    (negative grid); away-margin leg → +(line_n-0.5) (positive grid).
+    spread_side selects the cell within the grid (which team covers).
 
     TotalLeg mapping:
       side="yes" → over;  side="no" → under
@@ -554,7 +555,11 @@ def _combo_region_from_legs(typed_legs: list) -> "correlation.ComboRegion | None
         return None  # missing one of the two legs
 
     spread_side = "home" if (spread_leg.team_is_home == (spread_leg.side == "yes")) else "away"
-    spread_line = -(spread_leg.line_n - 0.5)   # home-perspective, e.g. n=2 → -1.5
+    # Home-perspective signed line: home margin → -(n-0.5); away margin → +(n-0.5).
+    # The sign selects the grid (home-favorite vs away-favorite); spread_side
+    # selects the cell within it.
+    spread_line = (-(spread_leg.line_n - 0.5) if spread_leg.team_is_home
+                   else (spread_leg.line_n - 0.5))
     total_side = "over" if total_leg.side == "yes" else "under"
     total_line = total_leg.line_n - 0.5         # e.g. n=8 → 7.5
 
@@ -613,7 +618,6 @@ def _fresh_blended_fair(combo_market_ticker: str) -> tuple[float | None, dict]:
     legs_json, game_id = row
     legs = json.loads(legs_json)
 
-    spread_line = _spread_line_from_legs(legs)
     total_line = _total_line_from_legs(legs)
     typed = [_leg_dict_to_typed(l, game_id) for l in legs]
     if any(l is None for l in typed):
@@ -621,7 +625,7 @@ def _fresh_blended_fair(combo_market_ticker: str) -> tuple[float | None, dict]:
     region = _combo_region_from_legs(typed)
     if region is None:
         return None, {}
-    book_fairs = _load_book_fairs(game_id, spread_line, total_line,
+    book_fairs = _load_book_fairs(game_id, region.spread_line, region.total_line,
                                   region.spread_side, region.total_side)
 
     if not config.USE_MODEL:
@@ -1691,7 +1695,7 @@ def _enumerate_and_score_all_games() -> tuple[list[combo_enumerator.ComboCandida
                                       cand=cand, spread_line=spread_line,
                                       total_line=total_line)
                 continue
-            books = _load_book_fairs(game_id, spread_line, total_line,
+            books = _load_book_fairs(game_id, region.spread_line, region.total_line,
                                      region.spread_side, region.total_side)
             if config.USE_MODEL:
                 model = fair_value.model_fair(samples, typed)

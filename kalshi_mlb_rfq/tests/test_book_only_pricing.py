@@ -153,3 +153,34 @@ def test_book_implied_cov_degenerate_price_returns_zero(monkeypatch):
     assert m._book_implied_cov("g1", a, 0, b, 0.20) == 0.0
     assert m._book_implied_cov("g1", a, 1.0, b, 0.20) == 0.0
     assert m._book_implied_cov("g1", a, 0.20, b, 1.0) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Task 2: team-signed leg routing
+# ---------------------------------------------------------------------------
+
+import kalshi_mlb_rfq.main as m
+from kalshi_common import fair_value
+
+
+def _region(team_is_home, side, line_n=2, total_n=8, total_side="yes"):
+    typed = [
+        fair_value.SpreadLeg(team_is_home=team_is_home, line_n=line_n, side=side),
+        fair_value.TotalLeg(line_n=total_n, side=total_side),
+    ]
+    return m._combo_region_from_legs(typed)
+
+
+def test_routing_table_signs_line_by_team():
+    """The 4-row routing table: grid sign by whose margin market it is,
+    cell by yes/no. n=2 ⇒ |line|=1.5."""
+    # home margin → negative grid
+    assert _region(True, "yes").spread_line == -1.5
+    assert _region(True, "yes").spread_side == "home"
+    assert _region(True, "no").spread_line == -1.5
+    assert _region(True, "no").spread_side == "away"
+    # away margin → positive grid
+    assert _region(False, "yes").spread_line == 1.5
+    assert _region(False, "yes").spread_side == "away"
+    assert _region(False, "no").spread_line == 1.5
+    assert _region(False, "no").spread_side == "home"
