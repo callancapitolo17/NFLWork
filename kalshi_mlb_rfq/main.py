@@ -620,7 +620,6 @@ def _fresh_blended_fair(combo_market_ticker: str) -> tuple[float | None, dict]:
     legs_json, game_id = row
     legs = json.loads(legs_json)
 
-    total_line = _total_line_from_legs(legs)
     typed = [_leg_dict_to_typed(l, game_id) for l in legs]
     if any(l is None for l in typed):
         return None, {}
