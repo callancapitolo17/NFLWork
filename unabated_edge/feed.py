@@ -1,5 +1,7 @@
 import datetime
 from dataclasses import dataclass, field
+import requests
+from unabated_edge import config
 
 @dataclass(frozen=True)
 class EventMeta:
@@ -45,3 +47,33 @@ def _ingest(st, ev, lk):
 
 def events_for_league(st, league_prefix):
     return [e for e in st.events.values() if e.league_key == league_prefix]
+
+_HEADERS = {"accept":"application/json, text/plain, */*","origin":"https://unabated.com",
+    "referer":"https://unabated.com/","user-agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"}
+
+def fetch_snapshot(league_prefixes, session=None) -> FeedState:
+    r = (session or requests).get(config.UNABATED_SNAPSHOT_URL, headers=_HEADERS, timeout=30)
+    r.raise_for_status()
+    return parse_snapshot(r.json(), set(league_prefixes))
+
+def fetch_deltas(token, cursor, session=None):
+    s = session or requests
+    if cursor is None:
+        now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z")
+        url = f"{config.UNABATED_CHANGES_URL}?full_refresh_ISO={now}"
+    else:
+        url = f"{config.UNABATED_CHANGES_URL}/{cursor}"
+    r = s.get(url, headers=_HEADERS, cookies={"unabated_at_prod": token}, timeout=30)
+    r.raise_for_status(); body = r.json()
+    ev = [mlc["gameOdds"]["gameOddsEvents"]
+          for batch in body.get("results", []) for mlc in batch.get("marketLineChanges", [])
+          if "gameOddsEvents" in mlc.get("gameOdds", {})]
+    return ev, body.get("latestTimestamp")
+
+def apply_deltas(st, event_dicts, league_prefixes):
+    pref = set(league_prefixes)
+    for evmap in event_dicts:
+        for lk, events in evmap.items():
+            if _league_prefix(lk) not in pref: continue
+            for ev in events: _ingest(st, ev, lk)
