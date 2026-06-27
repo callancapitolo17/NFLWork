@@ -98,6 +98,8 @@ DK_VIG_FALLBACK = float(_get("DK_VIG_FALLBACK", "0.125"))
 FD_VIG_FALLBACK = float(_get("FD_VIG_FALLBACK", "0.18"))
 PX_VIG_FALLBACK = float(_get("PX_VIG_FALLBACK", "0.05"))
 NOVIG_VIG_FALLBACK = float(_get("NOVIG_VIG_FALLBACK", "0.05"))
+BETMGM_VIG_FALLBACK = float(_get("BETMGM_VIG_FALLBACK", "0.12"))
+CAESARS_VIG_FALLBACK = float(_get("CAESARS_VIG_FALLBACK", "0.12"))
 
 # Source path for the answer-key DB
 ANSWER_KEY_DB = PROJECT_ROOT / "Answer Keys" / "mlb_mm.duckdb"

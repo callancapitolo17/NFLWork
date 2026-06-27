@@ -269,3 +269,12 @@ def test_away_margin_prices_to_positive_grid_not_complement(monkeypatch):
     assert fair < 0.35, (
         f"away-margin mis-routed to complement cell on −1.5 grid: fair={fair:.3f} (expected < 0.35)"
     )
+
+
+def test_vig_fallback_covers_betmgm_and_caesars():
+    import kalshi_mlb_rfq.main as m
+    import kalshi_mlb_rfq.config as cfg
+    assert m._vig_fallback("betmgm") == cfg.BETMGM_VIG_FALLBACK
+    assert m._vig_fallback("caesars") == cfg.CAESARS_VIG_FALLBACK
+    # unknown still falls back to the generic default
+    assert m._vig_fallback("nosuchbook") == 0.10

@@ -411,3 +411,12 @@ def test_fetch_spread_lines_both_teams_emits_signed_per_team(monkeypatch):
     out = sgp_runner._fetch_kalshi_spread_lines(
         "GAME", home_code="HOU", both_teams=True)
     assert sorted(out) == [(-1.5, "home"), (1.5, "away")]
+
+
+def test_book_modules_covers_all_default_service_books():
+    """_BOOK_MODULES must cover every book SGPService can return, else
+    sgp_cycle KeyErrors when that book produces rows (the betmgm blocker)."""
+    from kalshi_common import sgp_runner
+    from kalshi_common.sgp_service import DEFAULT_BOOKS
+    missing = [b for b in DEFAULT_BOOKS if b not in sgp_runner._BOOK_MODULES]
+    assert not missing, f"_BOOK_MODULES missing default books: {missing}"

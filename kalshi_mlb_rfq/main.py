@@ -456,6 +456,8 @@ def _vig_fallback(book: str) -> float:
         "fanduel": config.FD_VIG_FALLBACK,
         "prophetx": config.PX_VIG_FALLBACK,
         "novig": config.NOVIG_VIG_FALLBACK,
+        "betmgm": config.BETMGM_VIG_FALLBACK,
+        "caesars": config.CAESARS_VIG_FALLBACK,
     }.get(book, 0.10)
 
 
