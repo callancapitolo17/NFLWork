@@ -1,4 +1,4 @@
-# Kalshi World Cup Soccer Taker — Design Spec
+# Unabated-Anchored Kalshi Edge Engine — Design Spec (soccer first)
 
 **Date:** 2026-06-24
 **Status:** Draft for review
@@ -8,15 +8,26 @@
 
 ## Review Pack
 
-**What we're building** — An autonomous Kalshi taker bot (`kalshi_soccer/`) that finds
-+EV World Cup soccer bets by pricing fair probabilities from Unabated's *sharp* odds
-(unblurred via your subscription) and hitting underpriced contracts on Kalshi's order
-book. Same shape as your MLB RFQ taker, but truth comes from a sharp-book consensus
-instead of a model, and it takes resting order-book offers instead of sending RFQs.
+**What we're building** — A **sport-agnostic** engine (`unabated_edge/`) that turns your
+Unabated subscription into +EV bets on Kalshi: it pulls Unabated's *sharp* odds (unblurred
+via your subscription), devigs them into fair probabilities, compares to Kalshi contracts
+net of fees, and takes the underpriced ones. Each sport is a small **adapter**
+(`sports/<sport>.py`); we **build the core once and ship/validate soccer (World Cup) first**,
+then add sports by writing adapters — no rewrite. Truth comes from a sharp-book consensus,
+not a model; it takes resting order-book offers, not RFQs.
 
 **Key decisions**
 
-1. **Truth = Unabated `Sharp Book Price` + Circa, not Pinnacle.** Pinnacle is absent from
+1. **Generic core + per-sport adapters; prioritize sports by edge *quality*, not count.**
+   The edge differs by sport: for **soccer Unabated computes no line**, so devigging the raw
+   board is *unique information* nobody else on Unabated has → durable edge; for **US sports
+   Unabated hands every subscriber the same "Unabated Line"/EV** (Kalshi is even a book in the
+   feed, id 105) → the edge there is execution *speed*, thin and fast-decaying. So the
+   uncomputed boards (soccer) are the flagship; US sports come later and only if dry-run/CLV
+   data proves a real speed edge. *Rejected:* a soccer-only silo (painful retrofit) and a
+   build-all-8-sports-now platform (over-builds an unproven thesis while the Cup is live).
+
+2. **Truth = Unabated `Sharp Book Price` + Circa, not Pinnacle.** Pinnacle is absent from
    Unabated's feed entirely; the sharp anchors that *are* there (Sharp Book Price id 7,
    Circa id 6/68) are blurred to placeholder `-110/-1.0` for anonymous users and unblur
    with your subscription. *Rejected:* scraping Pinnacle directly (geo/Cloudflare, weeks of
@@ -72,8 +83,9 @@ instead of a model, and it takes resting order-book offers instead of sending RF
 
 ## 1. Architecture
 
-A new standalone process **`kalshi_soccer/`**, mirroring `kalshi_mlb_rfq/`, reusing
-`kalshi_common/` (auth, fee-aware `ev_calc`, probit devig, leg typing helpers).
+A **sport-agnostic core** `unabated_edge/` plus thin per-sport adapters under
+`unabated_edge/sports/`, reusing `kalshi_common/` (auth, fee-aware `ev_calc`, probit devig).
+Soccer ships first; adding a sport = adding one adapter file.
 
 ```
 Unabated authenticated JSON feed ──► fair P(outcome)  ──┐
@@ -81,24 +93,46 @@ Unabated authenticated JSON feed ──► fair P(outcome)  ──┐
                                                            ├─► EV net of Kalshi fees
 Kalshi order book (live asks) ─────────────────────────────┘        │
                                                                      ▼
-                                          net EV > threshold → take resting offer → log
+                            net EV > threshold → take resting offer → log + PERSIST
 ```
 
 It's an **order-book taker**, not an RFQ bot: Kalshi single-match markets are standard
 central limit order books, so we hit resting YES/NO offers when our fair says they're
 underpriced. (RFQ exists for MLB only because SGP combos have no standing book.)
 
-### Components (each independently testable)
+### The core/adapter split
 
-| Module | Responsibility | Depends on |
-|---|---|---|
-| `feed.py` | Poll Unabated snapshot + cursor deltas; maintain in-memory line book; auth token mgmt | requests, token |
-| `mapping.py` | Reconcile Unabated events/lines ↔ Kalshi contracts (team dict, line match, validation gate) | feed, kalshi market list |
-| `pricing.py` | Devig sharp anchor → fair P per outcome (3-way via draw price or Poisson fallback) | `kalshi_common.fair_value` |
-| `ev.py` | Net EV vs Kalshi ask, incl. fees | `kalshi_common.ev_calc` |
-| `execution.py` | Gates, Kelly sizing, order placement, dry-run switch | `kalshi_common.auth_client` |
-| `state.py` | DuckDB state/market/research writes | duckdb |
-| `main.py` | Orchestration loop | all |
+The **core** is everything sport-independent. A **sport adapter** supplies only what varies:
+its Unabated league key (e.g. `lg21`), its market types and devig arity (3-way ML+draw for
+soccer vs 2-way ML/runline/total for US sports), its team/name dictionary, and its mapping to
+the venue's per-sport ticker structure. Adapters implement a small interface; the core never
+hardcodes a sport.
+
+| Layer | Module | Responsibility | Depends on |
+|---|---|---|---|
+| core | `feed.py` | Poll Unabated snapshot + cursor deltas; in-memory line book; **token mgmt + refresh** | requests, token |
+| core | `pricing.py` | Devig sharp anchor → fair P (2-way & n-way; arity from adapter) | `kalshi_common.fair_value` |
+| core | `ev.py` | Net EV vs Kalshi ask, incl. fees | `kalshi_common.ev_calc` |
+| core | `mapping.py` | Generic Unabated↔venue reconciliation + fail-closed validation gate | adapter hooks |
+| core | `storage.py` | **DuckDB: line history + research firehose + flagged edges + CLV capture** | duckdb |
+| core | `execution.py` | Gates, Kelly sizing, order placement, dry-run switch (Plan 2) | `kalshi_common.auth_client` |
+| core | `venues/kalshi.py` | Kalshi market discovery, order book, order placement | `kalshi_common.auth_client` |
+| core | `runner.py` | Orchestration loop; iterates the registered sport adapters | all |
+| adapter | `sports/soccer.py` | `lg21`, 3-way ML+draw, team dict, Kalshi WC tickers | core interfaces |
+| adapter | `sports/base.py` | The `SportAdapter` interface every sport implements | — |
+
+### Storage (the validation backbone — required from day one)
+
+Operating the bot needs only the *current* lines in memory, but **proving** the edge needs the
+*history* — and the closing line is gone the instant a match starts. So the core persists from
+the first dry-run tick (mirrors `kalshi_mlb_rfq`'s 3-DB pattern):
+
+1. **`line_snapshots`** — anchor + book odds per event over time, with a guaranteed snapshot at
+   kickoff → enables **CLV** (did we beat the close?) and backtests.
+2. **research firehose** — *every* candidate priced: fair, Kalshi ask, EV, gate decision,
+   Kelly. Buffered + batch-flushed; never raises into the trading loop. Answers "is the edge
+   real and persistent?" per sport — the data that gates each sport's go-live decision.
+3. **`flagged_edges`** — the actionable +EV subset.
 
 ---
 
@@ -219,11 +253,14 @@ Per `(match, market_type)`, reconcile Unabated ↔ Kalshi:
 
 ## 6. Data model
 
-Three sibling DuckDBs (separate write locks), mirroring `kalshi_mlb_rfq`:
+Three sibling DuckDBs (separate write locks), mirroring `kalshi_mlb_rfq`, owned by the core
+and **shared across sports** — every table carries a `sport` column so one engine serves all
+adapters without per-sport DB proliferation:
 
-- **State** `kalshi_soccer.duckdb` — positions, orders, cooldowns.
-- **Market** `kalshi_soccer_market.duckdb` — Unabated line snapshots + Kalshi book snapshots.
-- **Research** `kalshi_soccer_research.duckdb` — every candidate, per-anchor fair, gate
+- **State** `unabated_edge.duckdb` — positions, orders, cooldowns. (Plan 2.)
+- **Market** `unabated_edge_market.duckdb` — `line_snapshots` (Unabated anchor+book history,
+  guaranteed kickoff snapshot) + Kalshi book snapshots + `flagged_edges`.
+- **Research** `unabated_edge_research.duckdb` — every candidate, per-anchor fair, gate
   decision, Kelly, fill. Buffered/batch-flushed; can never raise into the trading loop.
 
 All timestamps `TIMESTAMPTZ` UTC (repo rule).
@@ -241,14 +278,23 @@ All timestamps `TIMESTAMPTZ` UTC (repo rule).
 
 ## 8. Phasing
 
+Two dimensions: **depth** (dry-run → live → more market types) on the flagship sport, and
+**breadth** (add sports as adapters). Breadth is gated by per-sport CLV evidence — we don't
+turn on a sport until its dry-run data shows real edge.
+
 ```
-Phase 0  Auth token capture + confirm unblur + draw price + eventStart TZ   ← GATES EVERYTHING
-Phase 1  Match moneyline, --dry-run: validate mapping + measure edge/CLV on live matches
-Phase 2  Flip live execution, small per-match caps
-Phase 3  Totals adapter → spreads adapter
-Decision Maker/"quoting" mode — ONLY if Phase 1–2 CLV shows fat, persistent edge
-Later    Tournament futures (worse edge; revisit)
+Phase 0  Auth token + unblur + draw price + eventStart TZ            ← GATES EVERYTHING  [✓ unblur proven]
+Phase 1  CORE + soccer adapter, --dry-run: validate mapping + persist line history + CLV
+Phase 2  Flip live execution on soccer, small per-match caps
+Phase 3  Soccer totals/spreads adapters; tournament futures (worse edge; revisit)
+Breadth  Add the next sport as an adapter — prioritize UNCOMPUTED boards (best edge) over
+         US sports (where Unabated hands everyone the EV). Each sport: dry-run → measure CLV
+         → go live only if edge is real.
+Decision Maker/"quoting" mode — ONLY if CLV shows fat, persistent edge.
 ```
+
+This plan (Plan 1) delivers **Phase 1**: the generic core + soccer adapter running in dry-run
+with full persistence. Live execution (Phase 2) and adapters/breadth are later plans.
 
 ---
 
