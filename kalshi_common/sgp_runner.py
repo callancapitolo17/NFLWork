@@ -61,7 +61,8 @@ def _fetch_kalshi_mlb_events() -> list[dict]:
     return body.get("events", [])
 
 
-def _fetch_kalshi_spread_lines(suffix: str) -> list[tuple[float, str]]:
+def _fetch_kalshi_spread_lines(suffix: str, home_code: str | None = None,
+                               both_teams: bool = False) -> list[tuple[float, str]]:
     status, body, _ = auth_client.api(
         "GET", f"/markets?event_ticker=KXMLBSPREAD-{suffix}&limit=50")
     if status != 200 or not isinstance(body, dict):
@@ -79,12 +80,21 @@ def _fetch_kalshi_spread_lines(suffix: str) -> list[tuple[float, str]]:
         if not digits or not team_chars:
             continue
         n = int(digits)
-        line = -(n - 0.5)
-        key = round(line, 1)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append((line, "home"))
+        if both_teams:
+            # Home-perspective signed line per covering team:
+            #   home margin market → -(n-0.5);  away margin market → +(n-0.5).
+            # No dedup — the two teams are distinct grids (one per sign).
+            who = "home" if (home_code is not None and team_chars == home_code) else "away"
+            line = -(n - 0.5) if who == "home" else (n - 0.5)
+            out.append((line, who))
+        else:
+            # Legacy/MM behavior: one home-favorite grid per |line|, deduped.
+            line = -(n - 0.5)
+            key = round(line, 1)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((line, "home"))
     return out
 
 
@@ -171,7 +181,7 @@ def _fetch_schedule_from_odds_api() -> dict[tuple, dict]:
     return out
 
 
-def enumerate_kalshi_targets() -> list[TargetLine]:
+def enumerate_kalshi_targets(both_teams: bool = False) -> list[TargetLine]:
     """Enumerate all open Kalshi MVE (spread, total) tuples per MLB game.
     Returns a TargetLine per (game x spread x total) combination, FG only.
 
@@ -201,7 +211,8 @@ def enumerate_kalshi_targets() -> list[TargetLine]:
         if not sched:
             continue
         matched_games += 1
-        spreads = _fetch_kalshi_spread_lines(suffix)
+        spreads = _fetch_kalshi_spread_lines(
+            suffix, home_code=home_code, both_teams=both_teams)
         totals = _fetch_kalshi_total_lines(suffix)
         if not spreads or not totals:
             continue
@@ -385,6 +396,7 @@ def sgp_cycle(
     venv_python: str | None = None,
     timeout_sec: int | None = None,
     service=None,
+    both_teams: bool = False,
 ) -> dict[str, int]:
     """One full SGP scrape tick.
 
@@ -400,7 +412,7 @@ def sgp_cycle(
     {scraper_name: return_code}. Kept as the rollback hatch
     (scraper_dir / venv_python / timeout_sec are required then).
     """
-    targets = enumerate_kalshi_targets()
+    targets = enumerate_kalshi_targets(both_teams=both_teams)
     write_target_lines(targets, db_path=bot_market_db)
 
     if service is None:

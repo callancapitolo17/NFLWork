@@ -74,7 +74,7 @@ def test_enumerate_kalshi_targets_returns_target_lines(monkeypatch):
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_mlb_events",
                          lambda: [fake_event])
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_spread_lines",
-                         lambda suffix: [(-1.5, "home"), (-2.5, "home")])
+                         lambda suffix, **kw: [(-1.5, "home"), (-2.5, "home")])
     monkeypatch.setattr(sgp_runner, "_fetch_kalshi_total_lines",
                          lambda suffix: [8.5, 9.5])
     ct = datetime(2026, 5, 13, 23, 0, tzinfo=timezone.utc)
@@ -244,7 +244,7 @@ def test_sgp_cycle_orchestrates_full_tick(monkeypatch, tmp_path):
     from kalshi_common import sgp_runner
 
     call_order = []
-    def fake_enum():
+    def fake_enum(**kw):
         call_order.append("enum")
         return []
     def fake_write(targets, db_path):
@@ -276,7 +276,7 @@ def test_sgp_cycle_passes_env_to_scrapers(monkeypatch, tmp_path):
         captured_env.update(env or {})
         return {}
 
-    monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets", lambda: [])
+    monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets", lambda **kw: [])
     monkeypatch.setattr(sgp_runner, "write_target_lines", lambda targets, db_path: None)
     monkeypatch.setattr(sgp_runner, "run_scrapers", fake_run)
 
@@ -304,7 +304,7 @@ def test_sgp_cycle_service_path_writes_rows_and_preserves_failed_books(
     ct = datetime(2026, 6, 8, 23, 0, tzinfo=timezone.utc)
     target = TargetLine(game_id="g1", home_team="H", away_team="A",
                         commence_time=ct, period="FG", spread=-1.5, total=8.5)
-    monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets", lambda: [target])
+    monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets", lambda **kw: [target])
 
     # Pre-seed: one stale DK row (must be replaced) + one FD row (must
     # survive, because FD "fails" this cycle).
@@ -360,7 +360,7 @@ def test_sgp_cycle_service_path_skipped_book_rows_untouched(tmp_path, monkeypatc
 
     db_path = str(tmp_path / "market.duckdb")
     ct = datetime(2026, 6, 8, 23, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets", lambda: [
+    monkeypatch.setattr(sgp_runner, "enumerate_kalshi_targets", lambda **kw: [
         TargetLine(game_id="g1", home_team="H", away_team="A",
                    commence_time=ct, period="FG", spread=-1.5, total=8.5)])
     px_row = PricedRow(game_id="g1", combo="Home Spread + Over", period="FG",
@@ -381,3 +381,42 @@ def test_sgp_cycle_service_path_skipped_book_rows_untouched(tmp_path, monkeypatc
     finally:
         con.close()
     assert n == 1
+
+
+def test_fetch_spread_lines_default_is_home_favorite_deduped(monkeypatch):
+    """Default (both_teams=False) preserves legacy MM behavior: one
+    home-favorite -(n-0.5) line per |line|, deduped, who='home'."""
+    from kalshi_common import sgp_runner
+    markets = {"markets": [
+        {"ticker": "KXMLBSPREAD-GAME-HOU2"},  # home n=2
+        {"ticker": "KXMLBSPREAD-GAME-PIT2"},  # away n=2 (same |line|)
+        {"ticker": "KXMLBSPREAD-GAME-HOU3"},
+    ]}
+    monkeypatch.setattr(sgp_runner.auth_client, "api",
+                        lambda *a, **k: (200, markets, {}))
+    out = sgp_runner._fetch_kalshi_spread_lines("GAME", home_code="HOU")
+    assert sorted(out) == [(-2.5, "home"), (-1.5, "home")]  # deduped, home only
+
+
+def test_fetch_spread_lines_both_teams_emits_signed_per_team(monkeypatch):
+    """both_teams=True: home margin → negative, away margin → positive,
+    no dedup."""
+    from kalshi_common import sgp_runner
+    markets = {"markets": [
+        {"ticker": "KXMLBSPREAD-GAME-HOU2"},  # home favorite by 1.5
+        {"ticker": "KXMLBSPREAD-GAME-PIT2"},  # away favorite by 1.5
+    ]}
+    monkeypatch.setattr(sgp_runner.auth_client, "api",
+                        lambda *a, **k: (200, markets, {}))
+    out = sgp_runner._fetch_kalshi_spread_lines(
+        "GAME", home_code="HOU", both_teams=True)
+    assert sorted(out) == [(-1.5, "home"), (1.5, "away")]
+
+
+def test_book_modules_covers_all_default_service_books():
+    """_BOOK_MODULES must cover every book SGPService can return, else
+    sgp_cycle KeyErrors when that book produces rows (the betmgm blocker)."""
+    from kalshi_common import sgp_runner
+    from kalshi_common.sgp_service import DEFAULT_BOOKS
+    missing = [b for b in DEFAULT_BOOKS if b not in sgp_runner._BOOK_MODULES]
+    assert not missing, f"_BOOK_MODULES missing default books: {missing}"
