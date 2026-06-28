@@ -14,6 +14,15 @@ def _state_with_event():
 def test_canon_alias():
     assert Soccer().canon_team("Korea Republic") == "South Korea"
 
+
+def test_canon_alias_expanded_collapses_both_spellings():
+    """A divergent spelling and its plain-English form must collapse to one string."""
+    s = Soccer()
+    assert s.canon_team("Côte d'Ivoire") == "Ivory Coast"
+    assert s.canon_team("Ivory Coast") == "Ivory Coast"      # plain form falls through to itself
+    assert s.canon_team("Czechia") == s.canon_team("Czech Republic")
+    assert s.canon_team("Türkiye") == "Turkey"
+
 def test_fair_three_way_sums_to_one():
     s = Soccer(); st = _state_with_event()
     fair = s.fair(st, st.events[9])

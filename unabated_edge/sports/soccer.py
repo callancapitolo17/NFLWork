@@ -2,7 +2,24 @@ from unabated_edge.sports.base import SportAdapter
 from unabated_edge import pricing, config
 from unabated_edge.feed import line_american_price
 
-_ALIASES = {"korea republic":"South Korea","usa":"United States","ir iran":"Iran"}
+# Maps known divergent spellings -> a single plain-English canonical so that
+# Unabated and Kalshi names collapse to the same string. Each entry is a genuine
+# synonym (no two distinct nations collide). Expand/verify against live data in
+# Task 0 — silent unmatched events are now logged in mapping.pair_events to surface gaps.
+_ALIASES = {
+    "korea republic": "South Korea", "republic of korea": "South Korea",
+    "korea dpr": "North Korea", "dpr korea": "North Korea",
+    "usa": "United States", "united states of america": "United States",
+    "ir iran": "Iran", "iran islamic republic": "Iran",
+    "china pr": "China",
+    "côte d'ivoire": "Ivory Coast", "cote d'ivoire": "Ivory Coast",
+    "czechia": "Czech Republic",
+    "türkiye": "Turkey", "turkiye": "Turkey",
+    "bosnia and herzegovina": "Bosnia", "bosnia & herzegovina": "Bosnia",
+    "republic of ireland": "Ireland",
+    "cabo verde": "Cape Verde",
+    "curaçao": "Curacao",
+}
 WC_MATCH_SERIES = "KXWCMATCH"          # REPLACE from Task 0 FINDINGS
 
 class Soccer(SportAdapter):

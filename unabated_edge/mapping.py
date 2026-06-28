@@ -1,4 +1,10 @@
+import logging
 from dataclasses import dataclass
+
+log = logging.getLogger("unabated_edge")
+# Remember which (sport, event_id) we've already warned about so an unmatched
+# event in a 2s tick loop is logged once, not thousands of times.
+_warned_unmatched: set = set()
 
 
 @dataclass(frozen=True)
@@ -20,6 +26,15 @@ def pair_events(adapter, events_meta, kalshi_events) -> list[Pairing]:
         key = frozenset({adapter.canon_team(ev.home), adapter.canon_team(ev.away)})
         hit = idx.get(key)
         if not hit:
+            warn_key = (adapter.sport, getattr(ev, "event_id", None))
+            if warn_key not in _warned_unmatched:
+                _warned_unmatched.add(warn_key)
+                log.info(
+                    "unmatched %s event %s: %s vs %s (canon key %s) — no Kalshi market; "
+                    "available Kalshi team-pair keys: %s",
+                    adapter.sport, warn_key[1], ev.home, ev.away, sorted(key),
+                    [sorted(k) for k in idx],
+                )
             continue
         _, named, extra = hit
         ot = dict(extra)
