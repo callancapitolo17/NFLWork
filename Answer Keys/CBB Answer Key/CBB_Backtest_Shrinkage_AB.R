@@ -173,7 +173,10 @@ process_single_game <- function(test_id) {
   add_row <- function(market, line, side, x, n, p_mkt, book_odds, actual) {
     out[[length(out)+1]] <<- data.frame(game_id=test_id, game_date=gdate, market=market, line=line,
       side=side, x=x, n=n, algo_prob=x/n, book_prob=p_mkt, book_odds=book_odds, actual=actual,
-      final_N=final_N, is_extreme=is_extreme, stringsAsFactors=FALSE)
+      final_N=final_N, is_extreme=is_extreme,
+      # production guard signal: matched-sample COLLAPSE only (final_N<0.5*N),
+      # NOT the p99-line terms in is_extreme. Mirrors Tools.R low_confidence.
+      low_conf=(final_N < 0.5*N), stringsAsFactors=FALSE)
   }
 
   # H1 SPREADS

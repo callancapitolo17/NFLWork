@@ -1110,6 +1110,8 @@ EXTREME_GUARD_FLOOR  <- 0.50   # abstain when final_N < FLOOR * target_N
 
 #' Baker & McHale (2013) Kelly fraction multiplier from estimation variance:
 #' alpha = edge^2 / (edge^2 + var). Big edge / low var -> ~1; phantom edge -> ~0.
+#' edge and var MUST be in the same units (see apply_extreme_samples_correction:
+#' we work in probability space — edge = prob - breakeven, var = Var(prob_hat)).
 bakermchale_alpha <- function(edge, var_p) {
   a <- edge^2 / (edge^2 + var_p)
   ifelse(is.finite(a), a, 1)
@@ -1124,7 +1126,11 @@ build_sample_meta <- function(samples) {
     id = names(samples),
     n_eff = vapply(samples, function(s) if (is.null(s$sample)) NA_real_ else nrow(s$sample), numeric(1)),
     low_confidence = vapply(samples, function(s) isTRUE(s$low_confidence), logical(1))
-  )
+  ) %>%
+    # Defensive: samples is keyed by game id, which is unique today, but a named
+    # list CAN hold dup names. Guarantee one row per id so the downstream
+    # left_join can never fan out a real-money bet row into duplicates.
+    distinct(id, .keep_all = TRUE)
 }
 
 #' Apply the extreme-samples correction to a formatted long bets table, ONCE per
@@ -1132,7 +1138,9 @@ build_sample_meta <- function(samples) {
 #'   1. abstains (bet_size 0, ev NA -> filtered out) when the game's sample
 #'      collapsed (low_confidence);
 #'   2. otherwise multiplies the existing Kelly stake by the Baker-McHale factor
-#'      alpha = edge^2/(edge^2 + p(1-p)/n_eff), sizing noisier estimates down.
+#'      alpha = pedge^2/(pedge^2 + p(1-p)/n_eff), where pedge = prob - breakeven
+#'      is the probability edge (same units as the variance), sizing noisier
+#'      estimates down.
 #' Both key off n_eff (the matched-sample size) — the honest "how much data do
 #' I have" signal. Only ever shrinks stakes / removes bets, never adds one, so
 #' re-filtering downstream at the sport's EV threshold is exact.
@@ -1160,13 +1168,24 @@ apply_extreme_samples_correction <- function(bets, sample_meta, bankroll = NULL,
       # Only pure-model bets are correctable; market/both pass through untouched.
       .corr  = if (has_es) (is.na(edge_source) | edge_source == "model") else TRUE,
       .low   = .corr & ifelse(is.na(low_confidence), FALSE, low_confidence),
-      .canbm = .corr & is.finite(prob) & is.finite(ev) & is.finite(n_eff) & n_eff > 0,
+      .canbm = .corr & is.finite(prob) & is.finite(ev) & is.finite(n_eff) &
+               n_eff > 0 & prob > 0 & prob < 1,
+      # Baker-McHale in PROBABILITY space so edge and variance share units. The
+      # edge is prob minus the break-even (market-implied) prob; the noise is the
+      # matched-sample variance of that prob estimate, p(1-p)/n_eff. Recover the
+      # break-even prob from the Kelly/EV identity ev = prob*dec_odds - 1  =>
+      # dec_odds = (ev+1)/prob, so break-even = 1/dec_odds = prob/(ev+1). (Feeding
+      # the EV-edge with a prob-variance, as a first cut did, under-shrinks by a
+      # factor dec_odds^2 — same direction, milder than Baker-McHale intends.)
+      .pbe   = ifelse(.canbm, prob / (ev + 1), NA_real_),
+      .pedge = ifelse(.canbm, prob - .pbe, 0),
       .var   = ifelse(.canbm, prob * (1 - prob) / n_eff, 0),
-      .alpha = ifelse(.canbm, bakermchale_alpha(ev, .var), 1),
+      .alpha = ifelse(.canbm, bakermchale_alpha(.pedge, .var), 1),
       bet_size = ifelse(.low, 0, bet_size * .alpha),  # guard: abstain; else BM trim
       ev       = ifelse(.low, NA_real_, ev)           # NA ev -> dropped by EV filter
     ) %>%
-    select(-any_of(c("n_eff", "low_confidence", ".corr", ".low", ".canbm", ".var", ".alpha")))
+    select(-any_of(c("n_eff", "low_confidence", ".corr", ".low", ".canbm",
+                     ".pbe", ".pedge", ".var", ".alpha")))
 }
 
 compute_ev <- function(pred_prob, book_prob) {

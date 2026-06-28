@@ -116,7 +116,7 @@ cat(sprintf("\n  ECE raw=%.4f  shrunk=%.4f  book=%.4f  (lower=better)\n\n", ece(
 grade <- function(df, pcol, use_bm) {
   d <- df %>% mutate(ev=calc_ev(.data[[pcol]], book_odds)) %>% filter(ev > EV_THRESHOLD)
   if (nrow(d)==0) return(data.frame(arm=pcol, n_bets=0, staked=0, pnl=0, roi=NA, win=NA, n_extreme=0))
-  al <- if (use_bm) bm_alpha(d[[pcol]]*ifelse(d$book_odds>0,1+d$book_odds/100,1+100/abs(d$book_odds))-1, shrink_var(d[[pcol]], d$n, N0)) else 1
+  al <- if (use_bm) bm_alpha(d[[pcol]] - 1/ifelse(d$book_odds>0,1+d$book_odds/100,1+100/abs(d$book_odds)), shrink_var(d[[pcol]], d$n, N0)) else 1  # prob-space edge (dim-consistent Baker-McHale)
   d <- d %>% mutate(alpha=al,
     stake=kelly_stake_p(.data[[pcol]], book_odds, BANKROLL, KELLY_MULT, alpha),
     dec=ifelse(book_odds>0,1+book_odds/100,1+100/abs(book_odds)),
@@ -154,7 +154,7 @@ roi_for_n0 <- function(n0, use_bm=TRUE) {
   if (sum(sel)==0) return(data.frame(n0=n0, n_bets=0, roi=NA, pnl=0, win=NA))
   d <- test[sel,]; pp <- p[sel]
   dec <- ifelse(d$book_odds>0,1+d$book_odds/100,1+100/abs(d$book_odds))
-  al <- if (use_bm) bm_alpha(pp*dec-1, shrink_var(pp,d$n,n0)) else 1
+  al <- if (use_bm) bm_alpha(pp - 1/dec, shrink_var(pp,d$n,n0)) else 1  # prob-space edge
   stake <- kelly_stake_p(pp, d$book_odds, BANKROLL, KELLY_MULT, al)
   pnl <- ifelse(d$actual==1, stake*(dec-1), -stake)
   data.frame(n0=n0, n_bets=sum(sel), roi=sum(pnl)/sum(stake)*100, pnl=round(sum(pnl)), win=round(mean(d$actual)*100,1))

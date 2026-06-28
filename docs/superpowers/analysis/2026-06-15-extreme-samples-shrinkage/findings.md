@@ -68,21 +68,29 @@ already returned by `run_answer_key_sample`; threshold is not ROI-tuned.
 
 ## Ablation — which piece earns its keep (TEST holdout, settled at real odds)
 
-| Version | Bets | ROI | Profit |
-|---|---:|---:|---:|
-| RAW (today) | 15,577 | 0.09% | +$311 |
-| **#1 Guard** (skip collapsed samples) | 14,971 | 0.84% | +$2,668 |
-| #1 + #2 shrink-to-market | 13,182 | 0.94% | +$2,486 |
-| **#1 + #3 Kelly brake (SHIPPED)** | 14,971 | **0.93%** | **+$2,720** |
-| #1 + #2 + #3 | 13,182 | 1.04% | +$2,546 |
+Reproducible block: `CBB_Backtest_Shrinkage_NoOverfit.R` "PRODUCTION-MIRROR
+ABLATION" (160,064 preds / 11,724 games; bets = +EV>5% at CBB H1 closing odds;
+guard = collapse-only `final_N<0.5N`, matching production exactly).
 
-- **#1 (guard) is ~all the value** (+$311 → +$2,668). The collapsed-sample bets
-  it drops ran ~−19% ROI.
+| Version | Bets | Staked | ROI | Profit |
+|---|---:|---:|---:|---:|
+| RAW (today) | 4,770 | $95,978 | 2.18% | +$2,092 |
+| **#1 Guard** (skip collapsed samples) | 4,445 | $88,577 | 3.94% | +$3,493 |
+| **#1 + #3 Baker-McHale (SHIPPED)** | 4,445 | $65,733 | **4.11%** | +$2,703 |
+
+- **#1 (guard) is the dominant win** (+$2,092 → +$3,493 PnL; ROI 2.18→3.94%). It
+  drops exactly **325 bets** — *precisely* the collapsed-sample population the
+  decomposition flagged at −18.9% ROI. Surgical.
 - **#2 (shrink) was DROPPED**: it *lowers* total profit (trims good bets too),
   barely moves ROI, and overlaps the existing SGP `blend_dk_with_model` (a fixed
   50/50 model↔DK blend). Not worth the complexity.
-- **#3 (Baker-McHale Kelly)** trims stake on noisy bets — small clean win
-  (+$2,668 → +$2,720). Kept.
+- **#3 (Baker-McHale Kelly), dimensionally corrected** trims stake on noisy
+  edges (a 2.6pp edge on n=200 matched games is within 1 SE). It **raises ROI
+  (3.94→4.11%) but lowers PnL ~23% ($3,493→$2,703)** by shrinking total stake
+  26%. User chose to ship it (2026-06-28): max ROI / lowest variance over max
+  PnL. (An earlier first-cut fed the *EV-edge* against a *probability* variance,
+  under-shrinking by ~decimal_odds² — same direction, far milder; corrected to
+  probability-space edge `prob − breakeven` so edge and variance share units.)
 
 ## Implementation (worktree `extreme-samples-shrinkage`) — shipped = #1 + #3
 
@@ -90,11 +98,15 @@ Centralized, one kill switch. In `Tools.R`:
 - Config: `EXTREME_GUARD_ENABLE` (master kill switch), `EXTREME_GUARD_FLOOR=0.5`.
 - `run_answer_key_sample()` also returns `target_N` + `low_confidence`
   (`final_N < FLOOR*N`) — additive, backward compatible.
-- `bakermchale_alpha(edge, var)`; `build_sample_meta(samples)`.
+- `bakermchale_alpha(edge, var)`; `build_sample_meta(samples)` (ends with
+  `distinct(id)` so the downstream join can never fan a bet row into dups).
 - `apply_extreme_samples_correction(bets, sample_meta)`: per bet, abstain
   (bet_size 0, ev NA → filtered) on sample collapse; else scale the existing
-  Kelly stake by `alpha = edge²/(edge² + p(1-p)/n_eff)`. Only removes/shrinks,
-  never adds. Rows with no sample meta pass through unchanged.
+  Kelly stake by the dimensionally-correct Baker-McHale factor
+  `alpha = pedge²/(pedge² + p(1-p)/n_eff)`, where `pedge = prob − breakeven` is
+  the probability edge (breakeven recovered self-contained as `prob/(ev+1)`).
+  Only removes/shrinks, never adds. On MLB, touches only `edge_source=="model"`
+  rows (market/both pass through). Rows with no sample meta pass through.
 
 `CBB.R`, `MLB.R`, `NFLAnswerKey2.0.R`: call it on `all_bets_combined` then
 re-filter `ev >= EV_THRESHOLD`, before `adjust_kelly_for_correlation`.
@@ -102,8 +114,11 @@ re-filter `ev >= EV_THRESHOLD`, before `adjust_kelly_for_correlation`.
 ### Verification (offline)
 - Unit/integration: collapsed→abstain (size 0, ev NA), BM trims dense bets,
   no-meta passthrough, **schema preserved** (dashboards safe), no temp leak.
-- TEST holdout via the real production function: RAW ROI **0.09%** / +$311 →
-  **0.93%** / **+$2,720**. All four scripts parse clean.
+  `edge_source` gate verified (market/both unchanged). Corrected alpha unit-test:
+  ≤ old alpha everywhere (strictly more conservative), in [0,1], breakeven
+  recovery `prob/(ev+1)` == `1/decimal_odds` exact.
+- TEST holdout (re-priced 2026-06-28, 160,064 preds): RAW ROI **2.18%** / +$2,092
+  → guard **3.94%** / +$3,493 → **#1+#3 4.11%** / **+$2,703**. All scripts parse.
 
 ### Limitations / not covered
 - **Live pipeline run + dashboard render not done offline** (needs Odds API +
@@ -115,4 +130,5 @@ re-filter `ev >= EV_THRESHOLD`, before `adjust_kelly_for_correlation`.
 ## Harness (worktree only — measurement instruments, not production)
 - `Answer Keys/CBB Answer Key/CBB_Backtest_Shrinkage_AB.R` — prices games, saves preds.
 - `..._Analysis.R` — temporal split, n₀ fit, scores/calibration/DM/ROI sweep.
-- `..._NoOverfit.R` — train-chosen-n₀ confirmation + EV-bucket/extreme breakdowns.
+- `..._NoOverfit.R` — train-chosen-n₀ confirmation + EV-bucket/extreme breakdowns
+  + the reproducible PRODUCTION-MIRROR ABLATION (the headline table above).

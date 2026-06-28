@@ -17,12 +17,42 @@ kstake     <-function(p,bo,al){d<-ifelse(bo>0,1+bo/100,1+100/abs(bo));b<-d-1;BAN
 cut_date <- as.Date(quantile(unclass(res$game_date),0.5,type=1), origin="1970-01-01")
 train <- res %>% filter(game_date<=cut_date); test <- res %>% filter(game_date>cut_date)
 
+# ============================================================================
+# PRODUCTION-MIRROR ABLATION (TEST holdout, graded at real closing odds)
+# Reproduces exactly what apply_extreme_samples_correction() does in Tools.R:
+#   RAW    = today's behavior (full fractional Kelly on every +EV bet)
+#   #1     = abstain when the matched sample COLLAPSED (low_conf = final_N<0.5N)
+#   #1+#3  = on the survivors, scale Kelly by the dimensionally-correct
+#            Baker-McHale alpha = pedge^2/(pedge^2 + p(1-p)/n), pedge = p - 1/dec.
+# This is the headline table; it keys off low_conf (collapse-only), NOT the
+# broader is_extreme, so it matches the shipped guard one-to-one.
+# ============================================================================
+abl <- function(df, guard, use_bm) {
+  d <- df %>% mutate(ev=calc_ev(algo_prob, book_odds)) %>% filter(ev > EV_THRESHOLD)
+  if (guard && "low_conf" %in% names(d)) d <- d %>% filter(!low_conf)
+  if (nrow(d)==0) return(data.frame(n_bets=0, staked=0, pnl=0, roi=NA))
+  dec   <- ifelse(d$book_odds>0,1+d$book_odds/100,1+100/abs(d$book_odds))
+  pedge <- d$algo_prob - 1/dec                       # prob-space edge (dim-correct)
+  v     <- d$algo_prob*(1-d$algo_prob)/d$n           # matched-sample est. variance
+  al    <- if (use_bm) bm_alpha(pedge, v) else 1
+  st    <- kstake(d$algo_prob, d$book_odds, al)
+  pnl   <- ifelse(d$actual==1, st*(dec-1), -st)
+  data.frame(n_bets=nrow(d), staked=round(sum(st)), pnl=round(sum(pnl)),
+             roi=round(sum(pnl)/sum(st)*100,2))
+}
+cat("=== PRODUCTION-MIRROR ABLATION (TEST holdout, real odds) ===\n")
+print(bind_rows(
+  cbind(arm="RAW (production today)",      abl(test, FALSE, FALSE)),
+  cbind(arm="#1 guard (collapse abstain)", abl(test, TRUE,  FALSE)),
+  cbind(arm="#1 guard + #3 BM (SHIPPED)",  abl(test, TRUE,  TRUE))))
+cat("\n")
+
 roi_at <- function(df, n0, use_bm=TRUE) {
   p <- shrink_prob(df$x, df$n, df$book_prob, n0)
   ev <- calc_ev(p, df$book_odds); s <- ev>EV_THRESHOLD
   if (sum(s)==0) return(data.frame(n0=n0,n_bets=0,roi=NA,pnl=0))
   d<-df[s,]; pp<-p[s]; dec<-ifelse(d$book_odds>0,1+d$book_odds/100,1+100/abs(d$book_odds))
-  al<- if(use_bm) bm_alpha(pp*dec-1, shrink_var(pp,d$n,n0)) else 1
+  al<- if(use_bm) bm_alpha(pp - 1/dec, shrink_var(pp,d$n,n0)) else 1  # prob-space edge
   st<-kstake(pp,d$book_odds,al); pnl<-ifelse(d$actual==1,st*(dec-1),-st)
   data.frame(n0=n0,n_bets=sum(s),roi=round(sum(pnl)/sum(st)*100,2),pnl=round(sum(pnl)))
 }
@@ -46,7 +76,7 @@ for (N0 in c(30, 50)) {
     d<-df %>% mutate(ev=calc_ev(.data[[pcol]],book_odds)) %>% filter(ev>EV_THRESHOLD)
     if(nrow(d)==0) return(NULL)
     dec<-ifelse(d$book_odds>0,1+d$book_odds/100,1+100/abs(d$book_odds))
-    al<- if(use_bm) bm_alpha(d[[pcol]]*dec-1, shrink_var(d[[pcol]],d$n,N0)) else 1
+    al<- if(use_bm) bm_alpha(d[[pcol]] - 1/dec, shrink_var(d[[pcol]],d$n,N0)) else 1  # prob-space edge
     d$stake<-kstake(d[[pcol]],d$book_odds,al); d$pnl<-ifelse(d$actual==1,d$stake*(dec-1),-d$stake)
     d %>% mutate(evb=cut(ev*100,c(5,10,20,Inf),labels=c("5-10%","10-20%","20%+"))) %>%
       group_by(evb) %>% summarize(n=n(),roi=round(sum(pnl)/sum(stake)*100,1),pnl=round(sum(pnl)),.groups="drop")

@@ -229,9 +229,13 @@ market step was evaluated and dropped — barely helped, overlaps the SGP
   runs once per sport on `all_bets_combined` just before the EV-threshold filter
   (CBB.R, MLB.R, NFLAnswerKey2.0.R).
 - **What it does per bet**: (1) abstain (bet_size 0, ev NA → filtered) if the
-  game's sample collapsed; (2) else multiply the Kelly stake by Baker-McHale
-  `alpha = edge²/(edge² + p(1-p)/n_eff)` — noisier estimates size down. Both key
-  off `n_eff` = matched-sample size. Only removes bets / trims stakes, never adds.
+  game's sample collapsed; (2) else multiply the Kelly stake by the
+  dimensionally-correct Baker-McHale `alpha = pedge²/(pedge² + p(1-p)/n_eff)`,
+  where `pedge = prob − breakeven` is the probability edge (breakeven recovered
+  as `prob/(ev+1)`) — noisier estimates size down. Both key off `n_eff` =
+  matched-sample size. On MLB, only `edge_source=="model"` rows are touched
+  (market/both pass through unchanged). Only removes bets / trims stakes, never
+  adds. Holdout (CBB, 160k preds): RAW 2.18% → guard 3.94% → #1+#3 4.11% ROI.
 - **Not covered**: the Kalshi bots (`kalshi_mlb_rfq` reads raw `mlb_game_samples`;
   `kalshi_mlb_mm` is book-consensus-only) — they price independently of the
   corrected bet list. Backtest + rationale:
