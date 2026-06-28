@@ -722,9 +722,17 @@ run_answer_key_sample <- function(
   }
 
   # Return the balanced sample with metadata
+  final_N_val <- sum(bal$dt$included)
+  # Support guard: flag when the sample collapsed in a sparse region. The
+  # empirical estimate off a collapsed sample is overconfident/biased — see
+  # 2026-06-15 extreme-samples findings. confidence_floor defaults to the
+  # global EXTREME_GUARD_FLOOR but falls back if Tools.R config not yet loaded.
+  conf_floor <- if (exists("EXTREME_GUARD_FLOOR")) EXTREME_GUARD_FLOOR else 0.5
   list(
     sample = bal$dt[bal$dt$included == TRUE, ],
-    final_N = sum(bal$dt$included),
+    final_N = final_N_val,
+    target_N = N,
+    low_confidence = isTRUE(final_N_val < conf_floor * N),
     cover_error = bal$cover_error,
     over_error = bal$over_error,
     converged = bal$converged,
@@ -1078,6 +1086,106 @@ flatten_event_odds <- function(raw_odds) {
       outcome_name    = bookmakers_markets_outcomes_name,
       closing_odds    = bookmakers_markets_outcomes_price
     )
+}
+
+# =============================================================================
+# EXTREME-SAMPLES CORRECTION (2026-06-15) — see
+# docs/superpowers/analysis/2026-06-15-extreme-samples-shrinkage/findings.md
+#
+# Two corrections for the failure mode where the matched sample collapses in a
+# sparse (extreme-line) region and the empirical frequency becomes an
+# overconfident phantom edge -> oversized Kelly bet:
+#   1. SUPPORT GUARD — abstain when the sample collapsed (final_N < FLOOR*N).
+#                      (validated: these bets ran ~-19% ROI on the holdout.)
+#   2. KELLY (Baker-McHale 2013) — discount the bet fraction by the estimation
+#                      variance p(1-p)/n, so noisier estimates size down.
+# (An earlier shrink-toward-market step was evaluated and dropped: it barely
+#  moved holdout results and overlaps the existing SGP blend_dk_with_model.)
+#
+# EXTREME_GUARD_ENABLE is a live-money kill switch: FALSE restores exact legacy
+# behavior. EXTREME_GUARD_FLOOR is the only tunable (the "half the sample" line).
+# =============================================================================
+EXTREME_GUARD_ENABLE <- TRUE   # master switch (kill switch for live money)
+EXTREME_GUARD_FLOOR  <- 0.50   # abstain when final_N < FLOOR * target_N
+
+#' Baker & McHale (2013) Kelly fraction multiplier from estimation variance:
+#' alpha = edge^2 / (edge^2 + var). Big edge / low var -> ~1; phantom edge -> ~0.
+#' edge and var MUST be in the same units (see apply_extreme_samples_correction:
+#' we work in probability space — edge = prob - breakeven, var = Var(prob_hat)).
+bakermchale_alpha <- function(edge, var_p) {
+  a <- edge^2 / (edge^2 + var_p)
+  ifelse(is.finite(a), a, 1)
+}
+
+#' Per-game sample metadata for the extreme-samples correction.
+#' samples: named list from generate_all_samples(); returns one row per game
+#' with the effective sample size and the sample-collapse (low-confidence) flag.
+build_sample_meta <- function(samples) {
+  if (length(samples) == 0) return(tibble(id = character(), n_eff = numeric(), low_confidence = logical()))
+  tibble(
+    id = names(samples),
+    n_eff = vapply(samples, function(s) if (is.null(s$sample)) NA_real_ else nrow(s$sample), numeric(1)),
+    low_confidence = vapply(samples, function(s) isTRUE(s$low_confidence), logical(1))
+  ) %>%
+    # Defensive: samples is keyed by game id, which is unique today, but a named
+    # list CAN hold dup names. Guarantee one row per id so the downstream
+    # left_join can never fan out a real-money bet row into duplicates.
+    distinct(id, .keep_all = TRUE)
+}
+
+#' Apply the extreme-samples correction to a formatted long bets table, ONCE per
+#' sport, just before the EV-threshold filter. For every PURE-MODEL bet row it:
+#'   1. abstains (bet_size 0, ev NA -> filtered out) when the game's sample
+#'      collapsed (low_confidence);
+#'   2. otherwise multiplies the existing Kelly stake by the Baker-McHale factor
+#'      alpha = pedge^2/(pedge^2 + p(1-p)/n_eff), where pedge = prob - breakeven
+#'      is the probability edge (same units as the variance), sizing noisier
+#'      estimates down.
+#' Both key off n_eff (the matched-sample size) — the honest "how much data do
+#' I have" signal. Only ever shrinks stakes / removes bets, never adds one, so
+#' re-filtering downstream at the sport's EV threshold is exact.
+#'
+#' Scope: the failure mode is a *model* phantom edge, so the correction touches
+#' ONLY model-derived bets. If the table has an `edge_source` column (MLB
+#' dual-source flagging), rows with edge_source "market"/"both" pass through
+#' UNCHANGED — a market edge (a soft book vs the other books' consensus) is
+#' independent of the model sample and must not be suppressed by a model-sample
+#' collapse. Tables without `edge_source` (CBB/NFL) are all model bets.
+#'
+#' Rows with no matching sample meta pass through unchanged. Expects columns
+#' prob, ev, bet_size, id (output of format_bets_table). bankroll/kelly_mult are
+#' unused (the stake is scaled, not recomputed) but kept for call-site stability.
+apply_extreme_samples_correction <- function(bets, sample_meta, bankroll = NULL, kelly_mult = NULL) {
+  if (!isTRUE(EXTREME_GUARD_ENABLE) || nrow(bets) == 0) return(bets)
+  if (!all(c("prob", "ev", "bet_size", "id") %in% names(bets))) {
+    warning("apply_extreme_samples_correction: missing prob/ev/bet_size/id; skipping")
+    return(bets)
+  }
+  has_es <- "edge_source" %in% names(bets)
+  bets %>%
+    left_join(sample_meta, by = "id") %>%
+    mutate(
+      # Only pure-model bets are correctable; market/both pass through untouched.
+      .corr  = if (has_es) (is.na(edge_source) | edge_source == "model") else TRUE,
+      .low   = .corr & ifelse(is.na(low_confidence), FALSE, low_confidence),
+      .canbm = .corr & is.finite(prob) & is.finite(ev) & is.finite(n_eff) &
+               n_eff > 0 & prob > 0 & prob < 1,
+      # Baker-McHale in PROBABILITY space so edge and variance share units. The
+      # edge is prob minus the break-even (market-implied) prob; the noise is the
+      # matched-sample variance of that prob estimate, p(1-p)/n_eff. Recover the
+      # break-even prob from the Kelly/EV identity ev = prob*dec_odds - 1  =>
+      # dec_odds = (ev+1)/prob, so break-even = 1/dec_odds = prob/(ev+1). (Feeding
+      # the EV-edge with a prob-variance, as a first cut did, under-shrinks by a
+      # factor dec_odds^2 — same direction, milder than Baker-McHale intends.)
+      .pbe   = ifelse(.canbm, prob / (ev + 1), NA_real_),
+      .pedge = ifelse(.canbm, prob - .pbe, 0),
+      .var   = ifelse(.canbm, prob * (1 - prob) / n_eff, 0),
+      .alpha = ifelse(.canbm, bakermchale_alpha(.pedge, .var), 1),
+      bet_size = ifelse(.low, 0, bet_size * .alpha),  # guard: abstain; else BM trim
+      ev       = ifelse(.low, NA_real_, ev)           # NA ev -> dropped by EV filter
+    ) %>%
+    select(-any_of(c("n_eff", "low_confidence", ".corr", ".low", ".canbm",
+                     ".pbe", ".pedge", ".var", ".alpha")))
 }
 
 compute_ev <- function(pred_prob, book_prob) {

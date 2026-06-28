@@ -335,6 +335,15 @@ all_bets_combined <- bind_rows(
 ) %>%
   arrange(desc(ev))
 
+# Extreme-samples correction (2026-06-15): support guard (sample-collapse) +
+# Baker-McHale variance-discounted Kelly. See
+# docs/superpowers/analysis/2026-06-15-extreme-samples-shrinkage/findings.md
+all_bets_combined <- apply_extreme_samples_correction(
+  all_bets_combined, build_sample_meta(samples), bankroll, kelly_mult
+) %>%
+  filter(ev >= 0.05) %>%
+  arrange(desc(ev))
+
 # Final summary
 cat("\n=== FINAL BETTING SUMMARY ===\n")
 all_bets_combined %>%

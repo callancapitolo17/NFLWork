@@ -971,6 +971,18 @@ all_bets_combined <- all_bets_combined %>%
   distinct(bet_row_id, .keep_all = TRUE) %>%
   arrange(desc(ev))
 
+# Extreme-samples correction (2026-06-15): support guard (abstain when the
+# matched sample collapsed, final_N < 0.5*N) + Baker-McHale variance-discounted
+# Kelly. Applied AFTER the market-edge merge and gated to PURE-MODEL bets only —
+# market/both edges are independent of the model sample and pass through. Only
+# removes bets / trims stakes, so re-filtering at EV_THRESHOLD is exact. See
+# docs/superpowers/analysis/2026-06-15-extreme-samples-shrinkage/findings.md
+all_bets_combined <- apply_extreme_samples_correction(
+  all_bets_combined, build_sample_meta(samples)
+) %>%
+  filter(ev >= EV_THRESHOLD) %>%
+  arrange(desc(ev))
+
 # Load placed bets for correlation awareness
 placed_bets <- NULL
 if (file.exists(dash_db)) {
