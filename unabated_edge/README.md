@@ -86,6 +86,7 @@ All tuneable constants live in `config.py` and can be overridden via `.env` or e
 | `BANKROLL` | `1000.0` | Total bankroll in USD |
 | `KELLY_FRACTION` | `0.25` | Fractional Kelly multiplier |
 | `MIN_EV_PCT` | `0.03` | Minimum net EV % to flag (3 %) |
+| `MIN_EV_DOLLARS` | `0.02` | Minimum absolute per-contract EV (gates with `MIN_EV_PCT` so cheap longshots can't clear on % alone) |
 | `MAX_STALENESS_SEC` | `20` | Reserved for Plan 2 live-execution staleness gate — not yet enforced |
 | `KICKOFF_CUTOFF_MIN` | `3` | Stop flagging this many minutes before kickoff |
 | `PER_MATCH_CAP_PCT` | `0.03` | Max fraction of bankroll per match (3 %) |
@@ -186,12 +187,12 @@ The `feed.py` snapshot filters by `league_prefixes()`, so only the relevant leag
 Token expired. Recapture `unabated_at_prod` from a logged-in browser session and update `unabated_edge/.env`.
 
 **`fair()` returns `None` / no edges flagged**
-Sharp-book prices may not be published for this sport or event yet. Check `state.lines` keys and verify the `league_prefix` matches the Unabated feed (e.g. `"lg21"` for World Cup). If all three anchor source IDs (7, 6, 68) return `None` for every event, the token is likely blurred (logged-out) — re-authenticate.
+Sharp-book prices may not be published for this sport or event yet, or no single anchor book carries all three legs (home, away, draw must come from the *same* book — cross-book 3-ways are rejected to avoid mixing vig). Check `state.lines` keys and verify the `league_prefix` matches the Unabated feed (e.g. `"lg21"` for World Cup). If every event returns `None`, the token is likely blurred (logged-out) — re-authenticate. Watch the log: a `heartbeat` line shows `events`/`lines`/`kalshi_events` counts so you can tell "broken" (zeros) from "healthy, no edges today".
 
 **Soccer draw bt4 location / `WC_MATCH_SERIES` value**
-`sports/soccer.py` has two constants marked `# REPLACE from Task 0 FINDINGS`:
+`sports/soccer.py` has two spots marked `# FROM TASK 0 FINDINGS` / `# REPLACE from Task 0 FINDINGS`:
 - `WC_MATCH_SERIES = "KXWCMATCH"` — Kalshi series ticker for WC match markets. Verify against `GET /series` or live Kalshi event listings.
-- `_draw()` — reads `bt4` on side `"1"` from the sharp-book source. Confirm by live recon against the Unabated feed during a World Cup match.
+- `_book_three_way()` reads the draw from `bt4` on side `"1"` of the anchor book. Confirm the `bt4` draw location by live recon against the Unabated feed during a World Cup match.
 
 Until these are verified against live data, the soccer adapter may produce no pairings.
 

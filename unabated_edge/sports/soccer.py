@@ -33,22 +33,45 @@ class Soccer(SportAdapter):
     def kalshi_series(self) -> str:
         return WC_MATCH_SERIES
 
-    def _anchor_ml(self, st, eid, side):
-        for ms in config.ANCHOR_SOURCE_IDS:
-            ln = st.lines.get(f"{eid}|{side}|{ms}|bt1")
-            if ln and line_american_price(ln) is not None and ln.get("points") is None:
-                return line_american_price(ln)
-        return None
+    @staticmethod
+    def _ml_price(st, key):
+        """Moneyline price at a line key, or None. Rejects spread lines
+        (a true moneyline carries no `points`)."""
+        ln = st.lines.get(key)
+        if not ln:
+            return None
+        p = line_american_price(ln)
+        if p is None or ln.get("points") is not None:
+            return None
+        return p
 
-    def _draw(self, st, eid):
-        # FROM TASK 0 FINDINGS — e.g. draw lives in bt4 on side "1":
-        ln = st.lines.get(f"{eid}|1|{config.SHARP_BOOK_PRICE_ID}|bt4")
-        return line_american_price(ln) if ln and line_american_price(ln) is not None else None
+    @staticmethod
+    def _draw_price(st, key):
+        ln = st.lines.get(key)
+        if not ln:
+            return None
+        return line_american_price(ln)
 
-    def fair(self, st, ev) -> dict | None:
-        h, a, d = self._anchor_ml(st, ev.event_id, "1"), self._anchor_ml(st, ev.event_id, "0"), self._draw(st, ev.event_id)
+    def _book_three_way(self, st, eid, ms):
+        """home/away/draw prices from a SINGLE book `ms`, or None if that book
+        lacks any leg. Anchoring all three legs to one book avoids devigging a
+        Frankenstein 3-way stitched from books with different vig/staleness."""
+        h = self._ml_price(st, f"{eid}|1|{ms}|bt1")
+        a = self._ml_price(st, f"{eid}|0|{ms}|bt1")
+        d = self._draw_price(st, f"{eid}|1|{ms}|bt4")   # draw: bt4 (FROM TASK 0 FINDINGS)
         if h is None or a is None or d is None:
             return None
+        return h, a, d
+
+    def fair(self, st, ev) -> dict | None:
+        triple = None
+        for ms in config.ANCHOR_SOURCE_IDS:          # first book with a complete 3-way wins
+            triple = self._book_three_way(st, ev.event_id, ms)
+            if triple is not None:
+                break
+        if triple is None:
+            return None
+        h, a, d = triple
         ph, pd, pa = (pricing.american_to_prob(x) for x in (h, d, a))
         dh, dd, da = pricing.devig([ph, pd, pa])
         return {"home": dh, "draw": dd, "away": da}

@@ -53,3 +53,25 @@ def test_blurred_lines_excluded_from_state():
     st = feed.parse_snapshot(raw, {"lg21"})
     assert "99|1|7|bt1" not in st.lines   # blurred line excluded
     assert "99|1|7|bt4" in st.lines       # non-blurred line present
+
+
+# HARDENING: one malformed event must not drop the rest of its batch
+def test_safe_ingest_isolates_malformed_event():
+    raw = {
+        "marketSources": [{"id": 7, "name": "S"}],
+        "teams": {"1": {"name": "A"}, "2": {"name": "B"}},
+        "gameOddsEvents": {
+            "lg21:pt1:pregame": [
+                {"eventId": 5},  # malformed: missing eventStart/eventTeams -> KeyError in _ingest
+                {
+                    "eventId": 6,
+                    "eventStart": "2026-06-22T17:00:00+00:00",
+                    "eventTeams": {"1": {"id": 1}, "0": {"id": 2}},
+                    "gameOddsMarketSourcesLines": {},
+                },
+            ]
+        },
+    }
+    st = feed.parse_snapshot(raw, {"lg21"})   # must not raise
+    assert 6 in st.events       # good event survived
+    assert 5 not in st.events   # malformed event isolated

@@ -1,7 +1,10 @@
 import datetime
+import logging
 from dataclasses import dataclass, field
 import requests
 from unabated_edge import config
+
+log = logging.getLogger("unabated_edge")
 
 
 def line_american_price(ln: dict):
@@ -37,8 +40,18 @@ def parse_snapshot(raw: dict, league_prefixes: set[str]) -> FeedState:
         st.teams[tid] = t.get("name") if isinstance(t, dict) else None
     for lk, events in raw.get("gameOddsEvents", {}).items():
         if _league_prefix(lk) not in league_prefixes: continue
-        for ev in events: _ingest(st, ev, lk)
+        for ev in events: _safe_ingest(st, ev, lk)
     return st
+
+
+def _safe_ingest(st, ev, lk):
+    """Ingest one event, isolating malformed events so a single bad event
+    (schema drift, missing key) can't drop the rest of its batch."""
+    try:
+        _ingest(st, ev, lk)
+    except Exception:
+        log.warning("skipped malformed event in %s (eventId=%s)", lk,
+                    ev.get("eventId") if isinstance(ev, dict) else "?")
 
 def _ingest(st, ev, lk):
     eid = ev["eventId"]
@@ -85,4 +98,4 @@ def apply_deltas(st, event_dicts, league_prefixes):
     for evmap in event_dicts:
         for lk, events in evmap.items():
             if _league_prefix(lk) not in pref: continue
-            for ev in events: _ingest(st, ev, lk)
+            for ev in events: _safe_ingest(st, ev, lk)

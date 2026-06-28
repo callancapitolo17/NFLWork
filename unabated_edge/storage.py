@@ -1,12 +1,14 @@
 import time
 import random
 import json
+import logging
 import datetime
 import duckdb
 from contextlib import contextmanager
 
 from unabated_edge import config
 
+log = logging.getLogger("unabated_edge")
 _BUFFER = []
 
 
@@ -84,4 +86,6 @@ def flush():
         with connect(config.RESEARCH_DB_PATH) as c:
             c.executemany("INSERT INTO research_events VALUES (?,?,?,?)", batch)
     except Exception:
-        pass
+        # Never raise into the trading loop, but don't drop silently — the
+        # firehose is the dry-run's analytical record; losing it must be visible.
+        log.warning("research flush failed, dropped %d rows", len(batch))
