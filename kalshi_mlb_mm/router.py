@@ -52,6 +52,7 @@ def grid_cell_fairs(game_id, family, spread_line, total_line, target_cell,
     out = {}
     for book in rows.bookmaker.unique():
         sub = rows[rows.bookmaker == book]
+        sub = sub.drop_duplicates(subset=["combo"])
         if len(sub) < 4:                 # require the full 4-cell grid, no fallback
             continue
         f = devig_book(sub, combo=target_cell, vig_fallback=0.0)
