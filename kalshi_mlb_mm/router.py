@@ -59,3 +59,58 @@ def grid_cell_fairs(game_id, family, spread_line, total_line, target_cell,
         if f is not None:
             out[book] = f
     return out
+
+
+def _single_marginal_spec(leg: legset.CanonicalLeg):
+    """(family, fixed_axis, fixed_value, free_axis, cells) for marginalizing a
+    single leg, or (None, ...) if not a supported market_type."""
+    if leg.market_type == "spread":
+        part = "Home" if leg.side == "home" else "Away"
+        return (SPREAD_TOTAL_FAMILY, "spread_line", leg.line, "total_line",
+                [f"{part} Spread + Over", f"{part} Spread + Under"])
+    if leg.market_type == "total":
+        ou = "Over" if leg.side == "over" else "Under"
+        return (SPREAD_TOTAL_FAMILY, "total_line", leg.line, "spread_line",
+                [f"Home Spread + {ou}", f"Away Spread + {ou}"])
+    if leg.market_type == "ml":
+        part = "Home" if leg.side == "home" else "Away"
+        # ml family rows carry spread_line = NULL; marginalize over total
+        return (ML_TOTAL_FAMILY, "spread_line", None, "total_line",
+                [f"{part} ML + Over", f"{part} ML + Under"])
+    return (None, None, None, None, None)
+
+
+def _marginal_for_group(group_rows, cells) -> float | None:
+    """One book's 4-cell grid group -> sum of the two devigged target cells."""
+    if len(group_rows) < 4:
+        return None
+    total = 0.0
+    for c in cells:
+        f = devig_book(group_rows, combo=c, vig_fallback=0.0)
+        if f is None:
+            return None
+        total += f
+    return total
+
+
+def single_marginal_fairs(game_id, leg: legset.CanonicalLeg, sgp_df) -> dict[str, float]:
+    family, fixed_axis, fixed_value, free_axis, cells = _single_marginal_spec(leg)
+    if family is None or sgp_df is None or sgp_df.empty:
+        return {}
+    df = sgp_df
+    mask = (df.game_id == game_id) & df.combo.isin(family)
+    if fixed_value is None:
+        mask &= df[fixed_axis].isna()
+    else:
+        mask &= (df[fixed_axis].astype(float).round(2) == round(fixed_value, 2))
+    rows = df[mask]
+    out = {}
+    for book in rows.bookmaker.unique():
+        sub = rows[rows.bookmaker == book]
+        # pick the first full 4-cell grid group along the free axis
+        for _, grp in sub.groupby(free_axis, dropna=False):
+            fair = _marginal_for_group(grp, cells)
+            if fair is not None:
+                out[book] = fair
+                break
+    return out

@@ -71,3 +71,26 @@ def test_grid_cell_fairs_ml_total_null_spread():
                                  "Home ML + Over", df)
     assert set(out) == {"dk", "fd"}
     assert 0.0 < out["dk"] < 1.0
+
+def test_single_marginal_total_over():
+    # Over fair = Home Spread+Over + Away Spread+Over, devigged
+    rows = (_grid_rows("dk", EVT, -1.5, 8.5, ST_CELLS)
+            + _grid_rows("fd", EVT, -1.5, 8.5, ST_CELLS))
+    df = pd.DataFrame(rows)
+    leg = legset.CanonicalLeg(EVT, "total", 8.5, "over")
+    out = router.single_marginal_fairs(EVT, leg, df)
+    assert set(out) == {"dk", "fd"}
+    assert 0.40 < out["dk"] < 0.60     # ~0.5 for this balanced grid
+
+def test_single_marginal_ml_home():
+    rows = _grid_rows("dk", EVT, None, 8.5, ML_CELLS)  # ml family => spread NULL
+    df = pd.DataFrame(rows)
+    leg = legset.CanonicalLeg(EVT, "ml", None, "home")
+    out = router.single_marginal_fairs(EVT, leg, df)
+    # Home ML = Home ML+Over + Home ML+Under, devigged; >0.5 (3.6 & 4.0 are short)
+    assert out["dk"] > 0.45
+
+def test_single_marginal_missing_grid_returns_empty():
+    df = pd.DataFrame(_grid_rows("dk", EVT, -1.5, 8.5, ST_CELLS))
+    leg = legset.CanonicalLeg(EVT, "spread", -2.5, "home")  # no -2.5 grid
+    assert router.single_marginal_fairs(EVT, leg, df) == {}
