@@ -64,6 +64,25 @@ def test_pair_events_matches_across_divergent_spellings():
     assert result[0].outcome_tickers["away"] == "WC-CZE"
 
 
+def test_pair_events_strips_reg_time_prefix():
+    """Live KXWCGAME markets are titled 'Reg Time: <Team>' / 'Reg Time: Tie'
+    (verified 2026-06-28) — the prefix must be stripped to pair with Unabated."""
+    ev = _ev("Colombia", "Ghana")
+    kalshi_event = {
+        "markets": [
+            {"ticker": "KXWCGAME-X-COL", "yes_sub_title": "Reg Time: Colombia"},
+            {"ticker": "KXWCGAME-X-GHA", "yes_sub_title": "Reg Time: Ghana"},
+            {"ticker": "KXWCGAME-X-TIE", "yes_sub_title": "Reg Time: Tie"},
+        ]
+    }
+    result = mapping.pair_events(Soccer(), [ev], [kalshi_event])
+    assert len(result) == 1
+    ot = result[0].outcome_tickers
+    assert ot["home"] == "KXWCGAME-X-COL"
+    assert ot["away"] == "KXWCGAME-X-GHA"
+    assert ot["draw"] == "KXWCGAME-X-TIE"
+
+
 def test_pair_events_logs_unmatched_once(caplog):
     """An unmatched event is logged once, not re-logged on the next tick (dedup)."""
     mapping._warned_unmatched.clear()

@@ -20,7 +20,7 @@ _ALIASES = {
     "cabo verde": "Cape Verde",
     "curaçao": "Curacao",
 }
-WC_MATCH_SERIES = "KXWCMATCH"          # REPLACE from Task 0 FINDINGS
+WC_MATCH_SERIES = "KXWCGAME"           # verified live 2026-06-28: "Regulation Time Moneyline"
 
 class Soccer(SportAdapter):
     sport = "soccer"
@@ -79,7 +79,10 @@ class Soccer(SportAdapter):
     def map_outcome_tickers(self, kalshi_event: dict) -> dict:
         out = {}
         for mk in kalshi_event.get("markets", []):
-            raw = (mk.get("yes_sub_title") or "").strip()
+            # Kalshi yes_sub_title is "Reg Time: <Team>" / "Reg Time: Tie"
+            # (verified live 2026-06-28, series KXWCGAME) — strip the prefix so the
+            # team name matches Unabated's. split(":")[-1] is a no-op if no prefix.
+            raw = (mk.get("yes_sub_title") or "").split(":")[-1].strip()
             if "draw" in raw.lower() or "tie" in raw.lower():
                 out["draw"] = mk["ticker"]
             else:

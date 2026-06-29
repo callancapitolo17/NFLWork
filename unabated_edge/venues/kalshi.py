@@ -23,7 +23,15 @@ def list_events(series_ticker: str) -> list[dict]:
 
 def best_yes_ask(market_ticker: str) -> float | None:
     status, body, _ = auth_client.api("GET", f"/markets/{market_ticker}/orderbook")
-    if status != 200 or not isinstance(body, dict): return None
+    if status != 200 or not isinstance(body, dict):
+        return None
+    # Live API returns fractional levels under orderbook_fp.no_dollars as STRING
+    # dollars, e.g. [["0.3500","73972.6"], ...] (verified 2026-06-28). yes_ask =
+    # 1 - best (highest) no bid. Fall back to legacy integer-cent orderbook.no.
+    fp = (body.get("orderbook_fp") or {}).get("no_dollars")
+    if fp:
+        return round(1 - max(float(p) for p, _sz in fp), 2)
     no = (body.get("orderbook") or {}).get("no") or []
-    if not no: return None
-    return round((100 - max(l[0] for l in no)) / 100.0, 2)
+    if no:
+        return round((100 - max(l[0] for l in no)) / 100.0, 2)
+    return None
