@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 
 import duckdb
 
-from kalshi_common import auth_client, sgp_runner
+from kalshi_common import auth_client, legset, sgp_runner
 from kalshi_common.ev_calc import maker_fee_per_contract
 from kalshi_common.fair_value import devig_book
 from kalshi_common.leg_types import (
@@ -32,7 +32,7 @@ from kalshi_common.leg_types import (
     _MLB_CODE_TO_TEAM,
     combo_descriptor,
 )
-from kalshi_mlb_mm import config, db, notify, pricing, research, risk, scope, fairs
+from kalshi_mlb_mm import config, db, notify, pricing, research, risk, scope, fairs, router
 from kalshi_mlb_mm.rfq_source import RestRFQSource
 from kalshi_mlb_mm.quote_gateway import RestQuoteGateway
 
@@ -190,6 +190,61 @@ def _resolve_game(legs):
     finally:
         con.close()
     return (row[0] if row else None), desc
+
+
+def _resolve_game_for_legs(game_legs: list) -> str | None:
+    """Resolve ONE game's CanonicalLegs to the mlb_target_lines game_id, or None.
+
+    game_legs[0].game_id is the Kalshi event_ticker shared by all legs of that
+    game. Parses the event suffix with the same _parse_event_suffix +
+    _MLB_CODE_TO_TEAM + mlb_target_lines lookup used by _resolve_game.
+    Fail-safe: returns None on any error — never raises.
+    """
+    try:
+        if not game_legs:
+            return None
+        event_ticker = game_legs[0].game_id
+        if "-" not in event_ticker:
+            return None
+        suffix = event_ticker.rsplit("-", 1)[-1]
+        away_code, home_code = _parse_event_suffix(suffix)
+        if not away_code or not home_code:
+            return None
+        home_name = _MLB_CODE_TO_TEAM.get(home_code)
+        away_name = _MLB_CODE_TO_TEAM.get(away_code)
+        if not home_name or not away_name or not config.MARKET_DB.exists():
+            return None
+        try:
+            con = duckdb.connect(str(config.MARKET_DB), read_only=True)
+        except (duckdb.IOException, duckdb.CatalogException):
+            return None
+        try:
+            row = con.execute(
+                "SELECT game_id FROM mlb_target_lines "
+                "WHERE home_team=? AND away_team=? LIMIT 1",
+                [home_name, away_name]).fetchone()
+            return row[0] if row else None
+        except (duckdb.IOException, duckdb.CatalogException):
+            return None
+        finally:
+            con.close()
+    except Exception:
+        return None
+
+
+def _priceable_in_phase1(canon: list) -> bool:
+    """True iff every game's sub-combo is priceable via Phase-1 grid routes.
+
+    Phase 1 = single-leg marginals OR 2-leg spread×total / ml×total grid cells.
+    on_demand (3+ legs same game) and unpriceable (0 legs) are not yet supported.
+    """
+    by_game = legset.partition_by_game(canon)
+    if not by_game:
+        return False
+    return all(
+        legset.classify_subcombo(gl) in {"single", "grid_spread_total", "grid_ml_total"}
+        for gl in by_game.values()
+    )
 
 
 def _get_position_contracts(market_ticker: str, timeout: int = 5) -> int | None:
@@ -377,10 +432,12 @@ def _discovery_tick(source, gateway, dry_run):
         # scope (cache the market lookup verdict)
         if ticker in _SCOPE_CACHE:
             in_scope, game_id, legs = _SCOPE_CACHE[ticker]
+            canon = legset.parse_legs(legs) if legs else None
         else:
             market = source.get_market(ticker)
             legs = scope.decode_legs(market) if market else None
-            in_scope = bool(legs and combo_descriptor(legs) is not None)
+            canon = legset.parse_legs(legs) if legs else None
+            in_scope = bool(canon and _priceable_in_phase1(canon))
             game_id = None
             _SCOPE_CACHE[ticker] = (in_scope, game_id, legs)
         if not in_scope:
@@ -426,17 +483,25 @@ def _discovery_tick(source, gateway, dry_run):
         if req_contracts <= 0 and target_cost <= 0:
             _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="size_unknown")
             continue
-        game_id, desc = _resolve_game(legs)
-        if game_id is None:
+        # Multi-game resolution: canon must be parseable and all games resolvable.
+        if canon is None:
             _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="no_game")
             continue
+        by_game = legset.partition_by_game(canon)
+        game_ids_list = [_resolve_game_for_legs(gl) for gl in by_game.values()]
+        if any(gid is None for gid in game_ids_list):
+            _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="no_game")
+            continue
+        game_id = game_ids_list[0]  # primary id stored in schema (single column)
         # FIX I3: exposure cap gates (wired — were defined but never called)
         if not risk.daily_cap_ok(fills_today, config.daily_exposure_cap_usd()):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="daily_cap")
             continue
-        if not risk.per_game_cap_ok(game_id, fills_today, config.BANKROLL,
-                                    config.MAX_GAME_EXPOSURE_PCT):
+        # Per-game cap: all games must pass (cross-game combos checked per-game).
+        if any(not risk.per_game_cap_ok(gid, fills_today, config.BANKROLL,
+                                        config.MAX_GAME_EXPOSURE_PCT)
+               for gid in game_ids_list):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="per_game_cap")
             continue
@@ -453,13 +518,16 @@ def _discovery_tick(source, gateway, dry_run):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="in_cooldown")
             continue
-        # tipoff gate
-        ct = _commence_time(game_id)
-        if not risk.tipoff_ok(ct, config.TIPOFF_CANCEL_MIN):
+        # Tipoff gate: earliest commence across all games.
+        commence_times = [_commence_time(gid) for gid in game_ids_list]
+        earliest_ct = min((ct for ct in commence_times if ct is not None), default=None)
+        if not risk.tipoff_ok(earliest_ct, config.TIPOFF_CANCEL_MIN):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id, reason="tipoff")
             continue
-        book_fairs = _book_fairs(game_id, desc)
-        book_med, blended = fairs.blended_fair(legs, game_id, book_fairs)
+        # Fair value: router prices via legset/grid across all games.
+        blended = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
+                                    config.MIN_AGREEING_BOOKS, config.BOOK_CONSENSUS_BAND)
+        book_med = blended  # single consensus fair; book_med == blended
         if blended is None or not (config.MIN_FAIR_PROB <= blended <= config.MAX_FAIR_PROB):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="no_fair", model=None, book=book_med, blended=blended)
@@ -528,10 +596,10 @@ def _discovery_tick(source, gateway, dry_run):
             continue
         # Event 2: quote_priced — we have a valid quote from the pricer.
         research.emit("quote_priced", rfq_id=rid, ticker=ticker,
-                      payload=dict(book_fairs=book_fairs, agreeing_count=len(book_fairs),
+                      payload=dict(leg_set_hash=legset.leg_set_hash(canon),
+                                   n_games=len(by_game),
                                    blended_fair=blended, yes_bid=q.yes_bid, no_bid=q.no_bid,
-                                   combo=desc.target_combo, spread_line=desc.spread_line,
-                                   total_line=desc.total_line, game_id=game_id))
+                                   game_id=game_id))
         if dry_run:
             _log_decision("dry_run_quote", rfq_id=rid, ticker=ticker, game_id=game_id,
                           model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
@@ -611,19 +679,10 @@ def _confirm_tick(gateway, dry_run):
                         "UPDATE live_quotes SET status='voided', closed_at=? WHERE quote_id=?",
                         [datetime.now(timezone.utc), qid])
                 continue
-            desc = combo_descriptor(legs)
-            book_fairs_now = _book_fairs(game_id, desc)
-            if not book_fairs_now:
-                _log_decision("voided_no_fresh_books", rfq_id=rid, quote_id=qid, ticker=ticker,
-                              game_id=game_id)
-                with db.connect() as con:
-                    con.execute(
-                        "UPDATE live_quotes SET status='voided', closed_at=? WHERE quote_id=?",
-                        [datetime.now(timezone.utc), qid])
-                continue
-            _, cur_fair = fairs.blended_fair(legs, game_id, book_fairs_now)
+            cur_fair = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
+                                         config.MIN_AGREEING_BOOKS, config.BOOK_CONSENSUS_BAND)
             if cur_fair is None:
-                _log_decision("voided_blend_failed", rfq_id=rid, quote_id=qid, ticker=ticker,
+                _log_decision("voided_no_fresh_books", rfq_id=rid, quote_id=qid, ticker=ticker,
                               game_id=game_id)
                 with db.connect() as con:
                     con.execute(
@@ -837,12 +896,12 @@ def _risk_sweep_tick(gateway):
             if book_fair_at_q is not None and legs_json:
                 try:
                     legs = json.loads(legs_json)
-                    bf_now = _book_fairs(game_id, combo_descriptor(legs))
-                    if bf_now:
-                        cur_med = statistics.median(bf_now.values())
-                        if risk.book_move_triggered(book_fair_at_q, cur_med,
-                                                    config.BOOK_MOVE_CB_THRESHOLD):
-                            cancel = True
+                    cur_med = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
+                                               config.MIN_AGREEING_BOOKS,
+                                               config.BOOK_CONSENSUS_BAND)
+                    if cur_med is not None and risk.book_move_triggered(
+                            book_fair_at_q, cur_med, config.BOOK_MOVE_CB_THRESHOLD):
+                        cancel = True
                 except Exception:
                     pass
         if cancel:

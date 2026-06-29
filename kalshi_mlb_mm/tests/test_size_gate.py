@@ -125,10 +125,13 @@ def _scaffold(monkeypatch, tmp_path, db, cfg, risk):
                                       "total_line": [8.5]}))
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
-    legs = [{"market_ticker": "KXMLBSPREAD-XYZ", "event_ticker": "EVT", "side": "yes"},
-            {"market_ticker": "KXMLBTOTAL-XYZ", "event_ticker": "EVT", "side": "yes"}]
+    # Valid legs that parse through legset.parse_legs (TEXLAA fixture).
+    legs = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
+             "event_ticker": "KXMLBGAME-25JUN271905TEXLAA", "side": "yes"},
+            {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
+             "event_ticker": "KXMLBGAME-25JUN271905TEXLAA", "side": "yes"}]
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-SZ": (True, "g1", legs)})
-    monkeypatch.setattr(main, "_resolve_game", lambda legs: ("g1", _TEST_DESC))
+    monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "g1")
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
 
 
@@ -156,8 +159,7 @@ def test_tick_contracts_fp_string_over_cap_blocked(monkeypatch, tmp_path):
     _scaffold(monkeypatch, tmp_path, db, cfg, risk)
     monkeypatch.setattr(cfg, "BANKROLL", 500.0)
     monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 0.10)
-    monkeypatch.setattr(main, "_book_fairs",
-                        lambda g, desc: {"dk": 0.55, "fd": 0.55, "px": 0.56})
+    monkeypatch.setattr(main.router, "combo_fair", lambda *a, **kw: 0.55)
 
     class Src:
         def poll(self):
@@ -181,8 +183,7 @@ def test_tick_contracts_fp_string_small_passes(monkeypatch, tmp_path):
     _scaffold(monkeypatch, tmp_path, db, cfg, risk)
     monkeypatch.setattr(cfg, "BANKROLL", 500.0)
     monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 0.10)
-    monkeypatch.setattr(main, "_book_fairs",
-                        lambda g, desc: {"dk": 0.55, "fd": 0.55, "px": 0.56})
+    monkeypatch.setattr(main.router, "combo_fair", lambda *a, **kw: 0.55)
 
     class Src:
         def poll(self):
@@ -226,8 +227,7 @@ def test_tick_dollar_rfq_over_cap_blocked_post_pricing(monkeypatch, tmp_path):
     _scaffold(monkeypatch, tmp_path, db, cfg, risk)
     monkeypatch.setattr(cfg, "BANKROLL", 500.0)
     monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 0.10)
-    monkeypatch.setattr(main, "_book_fairs",
-                        lambda g, desc: {"dk": 0.55, "fd": 0.55, "px": 0.56})
+    monkeypatch.setattr(main.router, "combo_fair", lambda *a, **kw: 0.55)
 
     class Src:
         def poll(self):
@@ -251,8 +251,7 @@ def test_tick_small_dollar_rfq_passes_and_quotes(monkeypatch, tmp_path):
     _scaffold(monkeypatch, tmp_path, db, cfg, risk)
     monkeypatch.setattr(cfg, "BANKROLL", 500.0)
     monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 0.10)
-    monkeypatch.setattr(main, "_book_fairs",
-                        lambda g, desc: {"dk": 0.55, "fd": 0.55, "px": 0.56})
+    monkeypatch.setattr(main.router, "combo_fair", lambda *a, **kw: 0.55)
 
     class Src:
         def poll(self):

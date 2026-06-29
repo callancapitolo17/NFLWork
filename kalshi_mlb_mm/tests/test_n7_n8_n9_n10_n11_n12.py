@@ -36,18 +36,19 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
                                       "total_line": [8.5]}))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m: True)
     monkeypatch.setattr(main, "_today_fills", lambda: [])
-    # Per-combo cap is now after pricing — need book_fairs stub so pricing runs.
-    monkeypatch.setattr(main, "_book_fairs",
-                        lambda g, desc: {"dk": 0.55, "fd": 0.55, "px": 0.56})
+    # Per-combo cap is after pricing — mock router so pricing produces a valid fair.
+    import kalshi_mlb_mm.router as router_mod
+    monkeypatch.setattr(router_mod, "combo_fair", lambda *a: 0.55)
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
 
-    legs = [{"market_ticker": "KXMLBSPREAD-N7", "event_ticker": "EVT-N7",
-             "side": "yes", "count": 1},
-            {"market_ticker": "KXMLBTOTAL-N7", "event_ticker": "EVT-N7",
-             "side": "yes", "count": 1}]
+    _evt = "KXMLBGAME-25JUN271905TEXLAA"
+    legs = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
+             "event_ticker": _evt, "side": "yes"},
+            {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
+             "event_ticker": _evt, "side": "yes"}]
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-N7": (True, "g7", legs)})
-    monkeypatch.setattr(main, "_resolve_game", lambda legs: ("g7", _TEST_DESC))
+    monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "g7")
 
     # Pre-seed 4 open live_quotes on COMBO-N7 — fills table is EMPTY.
     # N7: inflight worst-case = 4 * max_fill_exposure_usd() = 4 * $50 = $200.
@@ -126,12 +127,13 @@ def test_n8_unreconciled_fill_counted_conservatively_in_today_fills(monkeypatch,
                                       "total_line": [8.5]}))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m: True)
 
-    legs = [{"market_ticker": "KXMLBSPREAD-N8", "event_ticker": "EVT-N8",
-             "side": "yes", "count": 1},
-            {"market_ticker": "KXMLBTOTAL-N8", "event_ticker": "EVT-N8",
-             "side": "yes", "count": 1}]
+    _evt = "KXMLBGAME-25JUN271905TEXLAA"
+    legs = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
+             "event_ticker": _evt, "side": "yes"},
+            {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
+             "event_ticker": _evt, "side": "yes"}]
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-N8": (True, "g8", legs)})
-    monkeypatch.setattr(main, "_resolve_game", lambda legs: ("g8", _TEST_DESC))
+    monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "g8")
 
     # Pre-seed one UNRECONCILED fill with contracts=1, price=0.50.
     # Real exposure = $0.50 (well under $5 daily cap).
