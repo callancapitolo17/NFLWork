@@ -115,3 +115,36 @@ def single_marginal_fairs(game_id, leg: legset.CanonicalLeg, sgp_df) -> dict[str
                 out[book] = fair
                 break
     return out
+
+
+def subcombo_fair(game_id, game_legs, sgp_df, min_books: int,
+                  band: float) -> float | None:
+    """Price one game's sub-combo: route via classify_subcombo -> grid/single book fairs -> consensus."""
+    route = legset.classify_subcombo(game_legs)
+    if route == "single":
+        book_fairs = single_marginal_fairs(game_id, game_legs[0], sgp_df)
+    elif route in ("grid_spread_total", "grid_ml_total"):
+        family, spread_line, total_line, target = grid_spec(game_legs)
+        book_fairs = grid_cell_fairs(game_id, family, spread_line, total_line,
+                                     target, sgp_df)
+    else:                       # "on_demand" (Phase 2) or "unpriceable"
+        return None
+    return consensus(book_fairs, min_books, band)
+
+
+def combo_fair(legs: list[dict], sgp_df, resolve_game, min_books: int,
+               band: float) -> float | None:
+    """Full RFQ: parse -> partition by game -> per-game subcombo_fair -> multiply."""
+    canon = legset.parse_legs(legs)
+    if canon is None:
+        return None
+    product = 1.0
+    for _game_key, game_legs in legset.partition_by_game(canon).items():
+        game_id = resolve_game(game_legs)
+        if game_id is None:
+            return None
+        f = subcombo_fair(game_id, game_legs, sgp_df, min_books, band)
+        if f is None:
+            return None
+        product *= f
+    return product

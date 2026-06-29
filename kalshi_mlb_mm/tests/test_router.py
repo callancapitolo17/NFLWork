@@ -46,8 +46,8 @@ def test_grid_cell_fairs_devigs_per_book():
     assert set(out) == {"dk", "fd"}
     assert 0.20 < out["dk"] < 0.30   # devigged ~0.25-ish
 
-ML_CELLS = {"Home ML + Over": 3.6, "Home ML + Under": 4.0,
-            "Away ML + Over": 4.4, "Away ML + Under": 4.0}
+ML_CELLS = {"Home ML + Over": 4.0, "Home ML + Under": 4.0,
+            "Away ML + Over": 4.0, "Away ML + Under": 4.0}
 
 def test_grid_spec_ml_total():
     legs = legset.parse_legs([
@@ -97,10 +97,68 @@ def test_single_marginal_ml_home():
     df = pd.DataFrame(rows)
     leg = legset.CanonicalLeg(EVT, "ml", None, "home")
     out = router.single_marginal_fairs(EVT, leg, df)
-    # Home ML = Home ML+Over + Home ML+Under, devigged; ~0.525 (3.6 & 4.0 are short)
-    assert 0.50 < out["dk"] < 0.55
+    # Home ML = Home ML+Over + Home ML+Under, devigged; = 0.5 (balanced 4.0 grid)
+    assert abs(out["dk"] - 0.5) < 1e-6
 
 def test_single_marginal_missing_grid_returns_empty():
     df = pd.DataFrame(_grid_rows("dk", EVT, -1.5, 8.5, ST_CELLS))
     leg = legset.CanonicalLeg(EVT, "spread", -2.5, "home")  # no -2.5 grid
     assert router.single_marginal_fairs(EVT, leg, df) == {}
+
+
+def test_subcombo_grid_spread_total():
+    legs = legset.parse_legs([
+        {"market_ticker": "KXMLBSPREAD-25JUN271905NYYBOS-BOS2",
+         "event_ticker": EVT, "side": "yes"},
+        {"market_ticker": "KXMLBTOTAL-25JUN271905NYYBOS-9",
+         "event_ticker": EVT, "side": "yes"}])
+    df = pd.DataFrame(_grid_rows("dk", EVT, -1.5, 8.5, ST_CELLS)
+                      + _grid_rows("fd", EVT, -1.5, 8.5, ST_CELLS))
+    out = router.subcombo_fair(EVT, legs, df, min_books=2, band=0.02)
+    assert out is not None and 0.20 < out < 0.30
+
+
+def test_subcombo_on_demand_returns_none_in_phase1():
+    legs = legset.parse_legs([
+        {"market_ticker": "KXMLBSPREAD-25JUN271905NYYBOS-BOS2",
+         "event_ticker": EVT, "side": "yes"},
+        {"market_ticker": "KXMLBTOTAL-25JUN271905NYYBOS-9",
+         "event_ticker": EVT, "side": "yes"},
+        {"market_ticker": "KXMLBGAME-25JUN271905NYYBOS-BOS",
+         "event_ticker": EVT, "side": "yes"}])
+    df = pd.DataFrame(_grid_rows("dk", EVT, -1.5, 8.5, ST_CELLS))
+    assert router.subcombo_fair(EVT, legs, df, 2, 0.02) is None
+
+
+def test_combo_fair_cross_game_multiplies():
+    EVT2 = "KXMLBGAME-25JUN271905LADSF"
+    legs_dicts = [
+        {"market_ticker": "KXMLBGAME-25JUN271905NYYBOS-BOS",
+         "event_ticker": EVT, "side": "yes"},                 # game1 home ML
+        {"market_ticker": "KXMLBGAME-25JUN271905LADSF-LAD",
+         "event_ticker": EVT2, "side": "yes"}]                # game2 away ML
+    df = pd.DataFrame(
+        _grid_rows("dk", EVT, None, 8.5, ML_CELLS)
+        + _grid_rows("fd", EVT, None, 8.5, ML_CELLS)
+        + _grid_rows("dk", EVT2, None, 8.5, ML_CELLS)
+        + _grid_rows("fd", EVT2, None, 8.5, ML_CELLS))  # EVT2 = LADSF
+    resolve = lambda game_legs: game_legs[0].game_id  # identity for the test
+    out = router.combo_fair(legs_dicts, df, resolve, 2, 0.02)
+    # both games priced & multiplied -> strictly less than either single fair
+    g1 = router.subcombo_fair(EVT, [l for l in legset.parse_legs(legs_dicts)
+                                    if l.game_id == EVT], df, 2, 0.02)
+    assert out is not None and abs(out - g1 * g1) < 1e-9  # symmetric grids
+
+
+def test_combo_fair_skips_when_a_game_unresolved():
+    legs_dicts = [{"market_ticker": "KXMLBGAME-25JUN271905NYYBOS-BOS",
+                   "event_ticker": EVT, "side": "yes"}]
+    df = pd.DataFrame(_grid_rows("dk", EVT, None, 8.5, ML_CELLS)
+                      + _grid_rows("fd", EVT, None, 8.5, ML_CELLS))
+    assert router.combo_fair(legs_dicts, df, lambda gl: None, 2, 0.02) is None
+
+
+def test_combo_fair_skips_untypeable():
+    legs_dicts = [{"market_ticker": "KXMLBPLAYER-foo",
+                   "event_ticker": EVT, "side": "yes"}]
+    assert router.combo_fair(legs_dicts, pd.DataFrame(), lambda gl: EVT, 2, 0.02) is None
