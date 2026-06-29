@@ -26,7 +26,10 @@ def parse_leg(leg: dict) -> CanonicalLeg | None:
     if not et or not mt:
         return None
     if mt.startswith("KXMLBSPREAD-"):
-        typed = leg_types._leg_dict_to_typed(leg, "")   # SpreadLeg or None
+        try:
+            typed = leg_types._leg_dict_to_typed(leg, "")   # SpreadLeg or None
+        except (KeyError, TypeError, ValueError):
+            return None
         if typed is None:
             return None
         home_covers = ((typed.team_is_home and typed.side == "yes")
@@ -34,7 +37,10 @@ def parse_leg(leg: dict) -> CanonicalLeg | None:
         return CanonicalLeg(et, "spread", -(typed.line_n - 0.5),
                             "home" if home_covers else "away")
     if mt.startswith("KXMLBTOTAL-"):
-        typed = leg_types._leg_dict_to_typed(leg, "")   # TotalLeg or None
+        try:
+            typed = leg_types._leg_dict_to_typed(leg, "")   # TotalLeg or None
+        except (KeyError, TypeError, ValueError):
+            return None
         if typed is None:
             return None
         return CanonicalLeg(et, "total", typed.line_n - 0.5,

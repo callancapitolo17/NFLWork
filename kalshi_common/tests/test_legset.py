@@ -41,3 +41,21 @@ def test_parse_legs_all_or_nothing():
     assert len(legset.parse_legs(good)) == 2
     bad = good + [{"market_ticker": "KXMLBPLAYER-foo", "event_ticker": EVT, "side": "yes"}]
     assert legset.parse_legs(bad) is None
+
+def test_parse_leg_missing_side_returns_none():
+    """Fail-safe: malformed leg dict missing side key -> None"""
+    bad = {"market_ticker": "KXMLBSPREAD-25JUN271905NYYBOS-BOS2", "event_ticker": EVT}
+    assert legset.parse_leg(bad) is None
+
+def test_parse_total_under_8_5():
+    leg = legset.parse_leg(_total(9, "no"))            # Under 8.5
+    assert leg == legset.CanonicalLeg(EVT, "total", 8.5, "under")
+
+def test_parse_ml_no_flips_to_away():
+    leg = legset.parse_leg(_ml("BOS", "no"))           # home NO == away ML
+    assert leg == legset.CanonicalLeg(EVT, "ml", None, "away")
+
+def test_parse_spread_away_team_yes():
+    # NYY is away team in EVT; -1.5 YES on away = away covers
+    leg = legset.parse_leg(_spread("NYY", 2, "yes"))
+    assert leg == legset.CanonicalLeg(EVT, "spread", -1.5, "away")
