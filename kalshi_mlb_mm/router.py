@@ -82,6 +82,7 @@ def _single_marginal_spec(leg: legset.CanonicalLeg):
 
 def _marginal_for_group(group_rows, cells) -> float | None:
     """One book's 4-cell grid group -> sum of the two devigged target cells."""
+    group_rows = group_rows.drop_duplicates(subset=["combo"])
     if len(group_rows) < 4:
         return None
     total = 0.0
