@@ -75,3 +75,35 @@ def test_canonical_legs_sorts_with_none_line():
                               _spread("BOS", 2, "yes")])
     ordered = legset.canonical_legs(legs)
     assert [l.market_type for l in ordered] == sorted(l.market_type for l in legs)
+
+EVT2 = "KXMLBGAME-25JUN271905LADSFG"  # a different game
+
+def _spread2(team, n, side):
+    return {"market_ticker": f"KXMLBSPREAD-25JUN271905LADSFG-{team}{n}",
+            "event_ticker": EVT2, "side": side}
+
+def test_partition_groups_two_games():
+    legs = legset.parse_legs([_spread("BOS", 2, "yes"), _spread2("SF", 2, "yes")])
+    parts = legset.partition_by_game(legs)
+    assert set(parts) == {EVT, EVT2}
+    assert len(parts[EVT]) == 1 and len(parts[EVT2]) == 1
+
+def test_classify_single():
+    legs = legset.parse_legs([_ml("BOS", "yes")])
+    assert legset.classify_subcombo(legs) == "single"
+
+def test_classify_grid_spread_total():
+    legs = legset.parse_legs([_spread("BOS", 2, "yes"), _total(9, "yes")])
+    assert legset.classify_subcombo(legs) == "grid_spread_total"
+
+def test_classify_grid_ml_total():
+    legs = legset.parse_legs([_ml("BOS", "yes"), _total(9, "yes")])
+    assert legset.classify_subcombo(legs) == "grid_ml_total"
+
+def test_classify_three_leg_is_on_demand():
+    legs = legset.parse_legs([_spread("BOS", 2, "yes"), _total(9, "yes"),
+                              _ml("BOS", "yes")])
+    assert legset.classify_subcombo(legs) == "on_demand"
+
+def test_classify_empty_is_unpriceable():
+    assert legset.classify_subcombo([]) == "unpriceable"

@@ -83,3 +83,30 @@ def leg_set_hash(legs: list[CanonicalLeg]) -> str:
                for l in canonical_legs(legs)]
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(blob.encode()).hexdigest()
+
+
+def partition_by_game(legs: list[CanonicalLeg]) -> dict[str, list[CanonicalLeg]]:
+    """Partition legs by game_id (event_ticker)."""
+    out: dict[str, list[CanonicalLeg]] = {}
+    for l in legs:
+        out.setdefault(l.game_id, []).append(l)
+    return out
+
+
+def classify_subcombo(game_legs: list[CanonicalLeg]) -> str:
+    """Classify a single game's legs into a pricing route.
+
+    Returns one of: "single", "grid_spread_total", "grid_ml_total",
+    "on_demand", "unpriceable".
+    """
+    n = len(game_legs)
+    if n == 0:
+        return "unpriceable"
+    if n == 1:
+        return "single"
+    types = sorted(l.market_type for l in game_legs)
+    if n == 2 and types == ["spread", "total"]:
+        return "grid_spread_total"
+    if n == 2 and types == ["ml", "total"]:
+        return "grid_ml_total"
+    return "on_demand"
