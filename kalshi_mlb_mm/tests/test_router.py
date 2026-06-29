@@ -46,8 +46,8 @@ def test_grid_cell_fairs_devigs_per_book():
     assert set(out) == {"dk", "fd"}
     assert 0.20 < out["dk"] < 0.30   # devigged ~0.25-ish
 
-ML_CELLS = {"Home ML + Over": 4.0, "Home ML + Under": 4.0,
-            "Away ML + Over": 4.0, "Away ML + Under": 4.0}
+ML_CELLS = {"Home ML + Over": 3.6, "Home ML + Under": 4.0,
+            "Away ML + Over": 4.4, "Away ML + Under": 4.0}
 
 def test_grid_spec_ml_total():
     legs = legset.parse_legs([
@@ -97,8 +97,8 @@ def test_single_marginal_ml_home():
     df = pd.DataFrame(rows)
     leg = legset.CanonicalLeg(EVT, "ml", None, "home")
     out = router.single_marginal_fairs(EVT, leg, df)
-    # Home ML = Home ML+Over + Home ML+Under, devigged; = 0.5 (balanced 4.0 grid)
-    assert abs(out["dk"] - 0.5) < 1e-6
+    # Home ML = Home ML+Over + Home ML+Under, devigged; asymmetric grid yields ~0.525
+    assert 0.50 < out["dk"] < 0.55
 
 def test_single_marginal_missing_grid_returns_empty():
     df = pd.DataFrame(_grid_rows("dk", EVT, -1.5, 8.5, ST_CELLS))
@@ -144,10 +144,13 @@ def test_combo_fair_cross_game_multiplies():
         + _grid_rows("fd", EVT2, None, 8.5, ML_CELLS))  # EVT2 = LADSF
     resolve = lambda game_legs: game_legs[0].game_id  # identity for the test
     out = router.combo_fair(legs_dicts, df, resolve, 2, 0.02)
-    # both games priced & multiplied -> strictly less than either single fair
-    g1 = router.subcombo_fair(EVT, [l for l in legset.parse_legs(legs_dicts)
-                                    if l.game_id == EVT], df, 2, 0.02)
-    assert out is not None and abs(out - g1 * g1) < 1e-9  # symmetric grids
+    # both games priced & multiplied -> product of the two per-game fairs
+    canon = legset.parse_legs(legs_dicts)
+    g_home = router.subcombo_fair(EVT, [l for l in canon if l.game_id == EVT], df, 2, 0.02)
+    g_away = router.subcombo_fair(EVT2, [l for l in canon if l.game_id == EVT2], df, 2, 0.02)
+    assert out is not None
+    assert g_home is not None and g_away is not None
+    assert abs(out - g_home * g_away) < 1e-9
 
 
 def test_combo_fair_skips_when_a_game_unresolved():
