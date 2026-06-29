@@ -165,3 +165,22 @@ def test_combo_fair_skips_untypeable():
     legs_dicts = [{"market_ticker": "KXMLBPLAYER-foo",
                    "event_ticker": EVT, "side": "yes"}]
     assert router.combo_fair(legs_dicts, pd.DataFrame(), lambda gl: EVT, 2, 0.02) is None
+
+
+# FIX A: _priceable_in_phase1 must reject lone single-leg RFQs (< 2 legs).
+def test_priceable_in_phase1_rejects_lone_single():
+    from kalshi_mlb_mm import main
+    one_leg = legset.parse_legs([{"market_ticker": "KXMLBGAME-25JUN271905NYYBOS-BOS",
+                                  "event_ticker": EVT, "side": "yes"}])
+    assert one_leg is not None and len(one_leg) == 1
+    assert main._priceable_in_phase1(one_leg) is False
+
+
+def test_priceable_in_phase1_accepts_two_leg_combo():
+    from kalshi_mlb_mm import main
+    two_legs = legset.parse_legs([
+        {"market_ticker": "KXMLBSPREAD-25JUN271905NYYBOS-BOS2", "event_ticker": EVT, "side": "yes"},
+        {"market_ticker": "KXMLBTOTAL-25JUN271905NYYBOS-9",     "event_ticker": EVT, "side": "yes"},
+    ])
+    assert two_legs is not None and len(two_legs) == 2
+    assert main._priceable_in_phase1(two_legs) is True

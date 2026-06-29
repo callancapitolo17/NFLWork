@@ -105,5 +105,13 @@ def test_classify_three_leg_is_on_demand():
                               _ml("BOS", "yes")])
     assert legset.classify_subcombo(legs) == "on_demand"
 
+def test_classify_spread_ml_is_on_demand():
+    legs = legset.parse_legs([_spread("BOS", 2, "yes"), _ml("BOS", "yes")])
+    assert legset.classify_subcombo(legs) == "on_demand"
+
+def test_classify_two_totals_is_on_demand():
+    legs = legset.parse_legs([_total(9, "yes"), _total(11, "no")])
+    assert legset.classify_subcombo(legs) == "on_demand"
+
 def test_classify_empty_is_unpriceable():
     assert legset.classify_subcombo([]) == "unpriceable"

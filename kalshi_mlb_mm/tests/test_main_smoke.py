@@ -1,9 +1,3 @@
-from kalshi_common.leg_types import ComboDescriptor, SPREAD_TOTAL_FAMILY
-
-_TEST_DESC = ComboDescriptor('spread_total', -1.5, 8.5, 'Home Spread + Over',
-                             SPREAD_TOTAL_FAMILY, 'TEX', 'LAA')
-
-
 def test_main_imports():
     from kalshi_mlb_mm import main          # must import without error
     assert hasattr(main, "main_loop")

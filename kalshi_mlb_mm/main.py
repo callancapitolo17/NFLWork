@@ -32,7 +32,7 @@ from kalshi_common.leg_types import (
     _MLB_CODE_TO_TEAM,
     combo_descriptor,
 )
-from kalshi_mlb_mm import config, db, notify, pricing, research, risk, scope, fairs, router
+from kalshi_mlb_mm import config, db, notify, pricing, research, risk, scope, router
 from kalshi_mlb_mm.rfq_source import RestRFQSource
 from kalshi_mlb_mm.quote_gateway import RestQuoteGateway
 
@@ -99,6 +99,7 @@ def _consensus_filter(book_fairs: dict[str, float]) -> dict[str, float]:
     return agreeing
 
 
+# Retained as the regression-test oracle; the production pricing path is router.combo_fair.
 # book fairs for a combo, keyed by its ComboDescriptor. Looks up the descriptor's
 # 4-cell family in the grid (spread×total OR ml×total), REQUIRES the full 4-side
 # devig (no fallback) per accepted-risk #6, devigs for the cell matching the
@@ -163,42 +164,12 @@ def _today_fills():
     return [{"game_id": g, "price": exp} for g, exp in rows]
 
 
-def _resolve_game(legs):
-    """Classify the combo and resolve its game_id. Returns (game_id|None, desc|None).
-
-    `desc` (a ComboDescriptor) is returned even when the game can't be resolved,
-    so callers can still log/diagnose; `game_id` is None when the combo isn't a
-    supported shape OR the (home, away) teams aren't in mlb_target_lines yet.
-    """
-    desc = combo_descriptor(legs)
-    if desc is None:
-        return None, None
-    home_name = _MLB_CODE_TO_TEAM.get(desc.home_code)
-    away_name = _MLB_CODE_TO_TEAM.get(desc.away_code)
-    if not home_name or not away_name or not config.MARKET_DB.exists():
-        return None, desc
-    try:
-        con = duckdb.connect(str(config.MARKET_DB), read_only=True)
-    except duckdb.IOException:
-        return None, desc
-    try:
-        row = con.execute(
-            "SELECT game_id FROM mlb_target_lines WHERE home_team=? AND away_team=? LIMIT 1",
-            [home_name, away_name]).fetchone()
-    except duckdb.CatalogException:
-        row = None
-    finally:
-        con.close()
-    return (row[0] if row else None), desc
-
-
 def _resolve_game_for_legs(game_legs: list) -> str | None:
     """Resolve ONE game's CanonicalLegs to the mlb_target_lines game_id, or None.
 
     game_legs[0].game_id is the Kalshi event_ticker shared by all legs of that
-    game. Parses the event suffix with the same _parse_event_suffix +
-    _MLB_CODE_TO_TEAM + mlb_target_lines lookup used by _resolve_game.
-    Fail-safe: returns None on any error — never raises.
+    game. Parses the event suffix with _parse_event_suffix + _MLB_CODE_TO_TEAM
+    and looks up mlb_target_lines. Fail-safe: returns None on any error — never raises.
     """
     try:
         if not game_legs:
@@ -235,9 +206,13 @@ def _resolve_game_for_legs(game_legs: list) -> str | None:
 def _priceable_in_phase1(canon: list) -> bool:
     """True iff every game's sub-combo is priceable via Phase-1 grid routes.
 
-    Phase 1 = single-leg marginals OR 2-leg spread×total / ml×total grid cells.
+    Phase 1 = 2-leg spread×total / ml×total grid cells OR cross-game combos
+    (≥2 legs across games). Lone single-leg RFQs are explicitly excluded: a
+    correlated-combo maker quoting a straight single is unintended.
     on_demand (3+ legs same game) and unpriceable (0 legs) are not yet supported.
     """
+    if len(canon) < 2:
+        return False
     by_game = legset.partition_by_game(canon)
     if not by_game:
         return False
