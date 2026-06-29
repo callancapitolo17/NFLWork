@@ -44,14 +44,36 @@ def test_anchor_total_returns_line_and_prob():
     assert 0 < p_over < 1
 
 
-def test_anchor_total_prob_sums_to_one():
-    """Devigged over + under must sum to 1."""
+def test_anchor_total_devig_reflects_prices():
+    """Devig must produce a sane prob that reflects the input prices, not a tautology.
+    Under is favored (-140) vs Over (+115), so devigged P(over) < 0.5 and below the
+    raw vig-inflated over-implied (vig was removed)."""
     s = Soccer()
     st = _state_with_bt3(eid=9, ms=7, over_price=115, under_price=-140, line=2.5)
-    line_val, p_over = s._anchor_total(st, 9)
-    # devig returns [p_over, p_under]; they sum to 1
-    # p_over + (1 - p_over) is trivially 1; test via actual values
-    assert abs(p_over + (1 - p_over) - 1.0) < 1e-9
+    _line, p_over = s._anchor_total(st, 9)
+    raw_over_implied = 100 / 215            # american_to_prob(+115) ≈ 0.465 (still has vig)
+    assert p_over < 0.5                     # -140 under is favored
+    assert p_over < raw_over_implied        # devig shrank the inflated implied
+    assert 0.40 < p_over < 0.47             # sane devigged range
+
+
+def test_candidate_side_label_binding():
+    """Pin the money-critical binding: yes→over→P(over), no→under→P(under).
+    A yes↔under swap (or label/prob mix-up) must fail this."""
+    s = Soccer()
+    st = _state_with_bt3(eid=9, ms=7, over_price=115, under_price=-140, line=2.5)  # under favored
+    _line, p_over = s._anchor_total(st, 9)
+    kev = {
+        "title": "Colombia vs Ghana: Regulation Time Total Goals",
+        "markets": [{"ticker": "T-O25", "strike_type": "greater", "floor_strike": 2.5,
+                     "yes_sub_title": "Reg Time: Over 2.5 goals scored"}],
+    }
+    cands = s.price_event(st, st.events[9], kev)
+    yes = next(c for c in cands if c.side == "yes")
+    no = next(c for c in cands if c.side == "no")
+    assert yes.label == "over_2.5" and abs(yes.fair_prob - p_over) < 1e-9
+    assert no.label == "under_2.5" and abs(no.fair_prob - (1 - p_over)) < 1e-5  # code rounds to 6dp
+    assert yes.fair_prob < no.fair_prob     # over (underdog) < under (favored)
 
 
 def test_price_event_returns_yes_and_no_candidates():
