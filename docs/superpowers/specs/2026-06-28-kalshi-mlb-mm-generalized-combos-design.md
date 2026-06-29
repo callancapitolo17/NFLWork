@@ -26,7 +26,7 @@ Today the Kalshi MLB maker only prices *exactly* 2-leg full-game combos of one f
 - **DK ≡ Novig is ~one source, and we're keeping `MIN_AGREEING_BOOKS=2`** (your call). A flexible bot leans harder on consensus to validate correlated prices, so at 2 a DK+Novig "agreement" is false confidence. Documented as an accepted risk with an independence-aware-consensus ready-lever — but this is the top pricing-integrity exposure of the project. Flag if you'd rather raise the bar now.
 - **On-demand latency vs. an unknown RFQ window.** Kalshi exposes no RFQ TTL; we don't actually know how long we have to respond. The design fails safe (skip if too few books price in time) and *measures* the real window, but if it turns out to be very short, on-demand same-game coverage may be thin until we pre-warm popular leg-sets. Acceptable for a measurement phase?
 - **Footprint.** More combo shapes = more distinct quotes = a larger leaked fair surface and more book API calls per RFQ. Mitigated by a short-TTL leg-set cache and price-once-per-leg-set, but it is a real increase over the 2-leg bot.
-- **Corner cap is a coverage choice.** Capping at ≤4 same-game legs (≤16 corners) is a cost/coverage tradeoff, not a correctness one. If you want deeper same-game combos priced, the cap moves — at more book calls per RFQ.
+- **No same-game leg cap.** Any number of same-game legs is priceable. The box count grows with the number of distinct *lines* the combo touches, not as `2^legs`, so it stays small for real RFQs. The only backstop is the per-RFQ pricing *deadline*: if a very large combo can't get enough books priced in time, it fails safe and we skip — no arbitrary leg limit.
 
 **Worth understanding** (opt-in)
 
@@ -215,12 +215,23 @@ The redundant ML leg required zero handling from us.
 - *Consensus-only, no devig*: vig is one-sided overround; it does **not** cancel
   across books. We'd systematically overprice our fair and bleed.
 
-### 5.3 Corner cap + fail-safe
+### 5.3 Fail-safe (no leg cap)
 
-- Cap same-game legs at `MAX_SAME_GAME_LEGS` (default 4 → ≤16 corners). Beyond
-  the cap → skip (fail-safe). This is a cost knob, not a correctness limit.
-- If fewer than `MIN_AGREEING_BOOKS` books fully price all corners of a game's
-  partition within the deadline → that game sub-combo fails → skip the combo.
+- **No cap on same-game legs.** Any number of legs is priceable. Corners are
+  priced concurrently under `LEGSET_PRICE_DEADLINE_SEC`; the deadline — not an
+  arbitrary leg limit — bounds the fan-out. The corner count grows with the
+  number of distinct *lines* the combo touches (the redundant/impossible
+  side-combinations the book declines to price drop out), so it stays small for
+  real RFQs.
+- Impossible corners carry true probability 0 and fall out of the devig with no
+  special handling — this is how redundancy and contradictions are absorbed.
+- If fewer than `MIN_AGREEING_BOOKS` books fully price a game's partition within
+  the deadline → that game sub-combo fails → skip the whole combo. A pathological
+  giant combo simply won't price enough books in time and skips itself.
+- *Future optimization (not v1):* enumerate the outcome boxes directly from the
+  combo's distinct lines instead of the `2^k` side cross-product, to avoid firing
+  calls on impossible corners. Same result, fewer book calls; deferred because
+  the cross-product is simpler and the deadline already bounds runtime.
 
 ### 5.4 Per-game consensus
 
@@ -301,14 +312,14 @@ One spec, staged commits:
 
 - **Unit (network-free):** `legset.py` — parsing, canonicalization, hash
   stability across leg order, game partitioning, corner enumeration (corner
-  count = `2^k`), route classification, cap/skip behavior.
+  count = `2^k`, impossible corners drop), route classification, skip behavior.
 - **Devig math:** sided-cross-product devig on synthetic corner sets — sum-to-one
   invariant, target-corner extraction, probit parity with the existing
   `devig_book` on the 4-cell case (must reproduce today's grid number exactly).
 - **Sanity guard:** book price outside `[1/1.5, 1.5]` of naive multiply → quarantined.
 - **Cross-game:** two-game combo fair = product of per-game consensus fairs;
   any game failing consensus → skip.
-- **Fail-safe:** untypeable leg, over-cap legs, too-few books → `None`/skip.
+- **Fail-safe:** untypeable leg, too-few books in time → `None`/skip (no leg cap).
 - **Regression:** the existing 2-leg spread×total and ml×total RFQs still price
   through the cached fast path with byte-identical fairs (no behavior change for
   today's flow).
@@ -334,6 +345,5 @@ One spec, staged commits:
 ## 12. Open questions for review
 
 1. `MIN_AGREEING_BOOKS=2` confirmed despite DK≡Novig? (accepted-risk path assumed)
-2. `MAX_SAME_GAME_LEGS=4` an acceptable v1 coverage cap?
-3. `LEGSET_PRICE_DEADLINE_SEC` / `LEGSET_CACHE_TTL_SEC` starting values — propose
+2. `LEGSET_PRICE_DEADLINE_SEC` / `LEGSET_CACHE_TTL_SEC` starting values — propose
    `3s` deadline, `15s` cache TTL; refine once the RFQ window is measured.
