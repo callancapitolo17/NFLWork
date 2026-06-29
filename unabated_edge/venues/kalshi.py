@@ -21,9 +21,16 @@ def list_events(series_ticker: str) -> list[dict]:
         return []
     return body.get("events", [])
 
-def best_yes_ask(market_ticker: str) -> float | None:
+def _orderbook(market_ticker: str) -> dict | None:
     status, body, _ = auth_client.api("GET", f"/markets/{market_ticker}/orderbook")
     if status != 200 or not isinstance(body, dict):
+        return None
+    return body
+
+
+def best_yes_ask(market_ticker: str) -> float | None:
+    body = _orderbook(market_ticker)
+    if body is None:
         return None
     # Live API returns fractional levels under orderbook_fp.no_dollars as STRING
     # dollars, e.g. [["0.3500","73972.6"], ...] (verified 2026-06-28). yes_ask =
@@ -34,4 +41,19 @@ def best_yes_ask(market_ticker: str) -> float | None:
     no = (body.get("orderbook") or {}).get("no") or []
     if no:
         return round((100 - max(l[0] for l in no)) / 100.0, 2)
+    return None
+
+
+def best_no_ask(market_ticker: str) -> float | None:
+    """Cost to BUY one NO contract = 1 - best (highest) yes bid. Used to take the
+    'under' side of a total (Kalshi lists Over-only rungs, so under = NO on Over-L)."""
+    body = _orderbook(market_ticker)
+    if body is None:
+        return None
+    fp = (body.get("orderbook_fp") or {}).get("yes_dollars")
+    if fp:
+        return round(1 - max(float(p) for p, _sz in fp), 2)
+    yes = (body.get("orderbook") or {}).get("yes") or []
+    if yes:
+        return round((100 - max(l[0] for l in yes)) / 100.0, 2)
     return None

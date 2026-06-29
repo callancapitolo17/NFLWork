@@ -1,4 +1,4 @@
-from unabated_edge.sports.base import SportAdapter
+from unabated_edge.sports.base import SportAdapter, Candidate
 from unabated_edge import pricing, config
 from unabated_edge.feed import line_american_price
 
@@ -20,71 +20,74 @@ _ALIASES = {
     "cabo verde": "Cape Verde",
     "curaçao": "Curacao",
 }
-WC_MATCH_SERIES = "KXWCGAME"           # verified live 2026-06-28: "Regulation Time Moneyline"
+
+WC_TOTAL_SERIES = "KXWCTOTAL"   # verified live: Over-ladder markets for WC reg-time total goals
+
 
 class Soccer(SportAdapter):
     sport = "soccer"
     league_prefix = "lg21"
-    outcomes = ("home", "draw", "away")
 
     def canon_team(self, name: str) -> str:
         return _ALIASES.get((name or "").strip().lower(), (name or "").strip())
 
     def kalshi_series(self) -> str:
-        return WC_MATCH_SERIES
+        return WC_TOTAL_SERIES
 
-    @staticmethod
-    def _ml_price(st, key):
-        """Moneyline price at a line key, or None. Rejects spread lines
-        (a true moneyline carries no `points`)."""
-        ln = st.lines.get(key)
-        if not ln:
-            return None
-        p = line_american_price(ln)
-        if p is None or ln.get("points") is not None:
-            return None
-        return p
+    def event_teams(self, kalshi_event: dict) -> frozenset:
+        """Parse the two team names from the Kalshi event title.
 
-    @staticmethod
-    def _draw_price(st, key):
-        ln = st.lines.get(key)
-        if not ln:
-            return None
-        return line_american_price(ln)
+        Title format: "Colombia vs Ghana: Regulation Time Total Goals"
+        → take everything before the first ":", split on " vs ".
+        """
+        title = (kalshi_event.get("title") or "")
+        before_colon = title.split(":")[0]
+        parts = before_colon.split(" vs ")
+        if len(parts) != 2:
+            return frozenset()
+        return frozenset({self.canon_team(parts[0].strip()), self.canon_team(parts[1].strip())})
 
-    def _book_three_way(self, st, eid, ms):
-        """home/away/draw prices from a SINGLE book `ms`, or None if that book
-        lacks any leg. Anchoring all three legs to one book avoids devigging a
-        Frankenstein 3-way stitched from books with different vig/staleness."""
-        h = self._ml_price(st, f"{eid}|1|{ms}|bt1")
-        a = self._ml_price(st, f"{eid}|0|{ms}|bt1")
-        d = self._draw_price(st, f"{eid}|1|{ms}|bt4")   # draw: bt4 (FROM TASK 0 FINDINGS)
-        if h is None or a is None or d is None:
-            return None
-        return h, a, d
+    def _anchor_total(self, state, eid) -> tuple[float, float] | None:
+        """Find the first anchor book that quotes both Over and Under for bt3.
 
-    def fair(self, st, ev) -> dict | None:
-        triple = None
-        for ms in config.ANCHOR_SOURCE_IDS:          # first book with a complete 3-way wins
-            triple = self._book_three_way(st, ev.event_id, ms)
-            if triple is not None:
-                break
-        if triple is None:
-            return None
-        h, a, d = triple
-        ph, pd, pa = (pricing.american_to_prob(x) for x in (h, d, a))
-        dh, dd, da = pricing.devig([ph, pd, pa])
-        return {"home": dh, "draw": dd, "away": da}
+        Returns (line, p_over) where p_over is the devigged probability, or None
+        if no anchor book has a complete, consistent total quote.
+        """
+        for ms in config.ANCHOR_SOURCE_IDS:
+            over = state.lines.get(f"{eid}|0|{ms}|bt3")   # side 0 = Over
+            under = state.lines.get(f"{eid}|1|{ms}|bt3")  # side 1 = Under
+            if over is None or under is None:
+                continue
+            po = line_american_price(over)
+            pu = line_american_price(under)
+            if po is None or pu is None:
+                continue
+            line = over.get("points")
+            if line is None or under.get("points") != line:
+                continue
+            p_over, _ = pricing.devig([pricing.american_to_prob(po), pricing.american_to_prob(pu)])
+            return (float(line), p_over)
+        return None
 
-    def map_outcome_tickers(self, kalshi_event: dict) -> dict:
-        out = {}
-        for mk in kalshi_event.get("markets", []):
-            # Kalshi yes_sub_title is "Reg Time: <Team>" / "Reg Time: Tie"
-            # (verified live 2026-06-28, series KXWCGAME) — strip the prefix so the
-            # team name matches Unabated's. split(":")[-1] is a no-op if no prefix.
-            raw = (mk.get("yes_sub_title") or "").split(":")[-1].strip()
-            if "draw" in raw.lower() or "tie" in raw.lower():
-                out["draw"] = mk["ticker"]
-            else:
-                out.setdefault("_named", []).append((raw, mk["ticker"]))
-        return out   # home/away resolved against canon team names in mapping (Task 7)
+    def price_event(self, state, event_meta, kalshi_event) -> list[Candidate]:
+        """Price Over and Under candidates from the anchor total vs the Kalshi rung.
+
+        Fail closed: return [] when anchor is missing or no Kalshi market matches the line.
+        """
+        result = self._anchor_total(state, event_meta.event_id)
+        if result is None:
+            return []
+        line, p_over = result
+        markets = kalshi_event.get("markets", [])
+        mk = next(
+            (m for m in markets
+             if m.get("strike_type") == "greater" and float(m.get("floor_strike", -1)) == line),
+            None,
+        )
+        if mk is None:
+            return []
+        ticker = mk["ticker"]
+        return [
+            Candidate(ticker, "yes", p_over, f"over_{line}"),
+            Candidate(ticker, "no", round(1 - p_over, 6), f"under_{line}"),
+        ]

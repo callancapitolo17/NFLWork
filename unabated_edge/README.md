@@ -1,6 +1,25 @@
 # unabated_edge
 
-Sport-agnostic, Unabated-anchored Kalshi edge-detection engine. Runs dry only — no order placement. Soccer (World Cup moneylines) is the first adapter.
+Sport-agnostic, Unabated-anchored Kalshi edge-detection engine. Runs dry only — no order placement. Soccer (World Cup **totals**) is the first adapter.
+
+---
+
+## How soccer pricing works
+
+Soccer prices the **regulation-time total** (Over/Under goals), not the moneyline.
+
+**Why totals only:**
+- Unabated's sharp anchor books (IDs 7, 6, 68) quote `bt3` (total) directly for WC matches.
+- They do NOT quote a moneyline (`bt1`) for soccer in the authenticated feed.
+- We do **not** build a soccer model. The sharp anchor price IS truth; devig it and compare to Kalshi. If the anchor doesn't quote it, we don't price it.
+
+**Pricing flow:**
+1. For each Unabated event, find the first anchor book that has BOTH Over (`side=0|bt3`) and Under (`side=1|bt3`) at the same line value.
+2. Devig the two-way anchor quote (probit) → `p_over`.
+3. Match the Kalshi series `KXWCTOTAL` — each event lists Over-ladder markets with `strike_type="greater"`, `floor_strike=X.5`.
+4. Find the Kalshi market whose `floor_strike` equals the anchor line.
+5. Emit two candidates: **Over = buy YES** on that market, **Under = buy NO** on that market.
+6. Fail closed at every step: missing anchor side, mismatched line values, or no matching Kalshi rung → return `[]`, no flag.
 
 ---
 
@@ -13,29 +32,29 @@ unabated_edge/
   pricing.py         # american_to_prob, devig (probit, wraps kalshi_common)
   ev.py              # edge_for_yes — net of Kalshi taker fees
   sizing.py          # kelly_contracts — fractional Kelly with per-match cap
-  mapping.py         # pair_events, validate (fail-closed)
+  mapping.py         # pair_events — match Unabated↔Kalshi events by canon team pair
   storage.py         # DuckDB writes: line_snapshots, flagged_edges, research_events
-  risk.py            # staleness_ok, tipoff_ok, kill_switch_ok
+  risk.py            # tipoff_ok, kill_switch_ok
   runner.py          # run_tick, main_loop, cli() entry point
   log_setup.py       # rotating file log + stderr (when tty)
 
   sports/
-    base.py          # SportAdapter ABC
-    soccer.py        # Soccer adapter (lg21, home/draw/away, WC series)
+    base.py          # SportAdapter ABC + Candidate dataclass
+    soccer.py        # Soccer adapter (lg21, KXWCTOTAL, totals-only)
     registry.py      # ADAPTERS list + league_prefixes() / by_league()
 
   venues/
-    kalshi.py        # list_events, best_yes_ask (via kalshi_common.auth_client)
+    kalshi.py        # list_events, best_yes_ask, best_no_ask (via kalshi_common.auth_client)
 ```
 
-**Generic core, per-sport adapters.** Everything inside `feed.py`, `pricing.py`, `ev.py`, `sizing.py`, `mapping.py`, `storage.py`, and `runner.py` is sport-agnostic. All soccer-specific knowledge lives in `sports/soccer.py`. Adding a new sport is a single adapter file + one registry line (see below).
+**Generic core, per-sport adapters.** Everything inside `feed.py`, `pricing.py`, `ev.py`, `sizing.py`, `mapping.py`, `storage.py`, and `runner.py` is sport-agnostic. All soccer-specific knowledge lives in `sports/soccer.py`. Adding a sport = one adapter file + one registry line.
 
 **Data flow per tick:**
 1. `feed.py` polls the Unabated changes endpoint for sharp-book line updates.
-2. `runner.run_tick` calls `adapter.fair()` to devig the sharp anchor prices into true probabilities.
-3. `mapping.pair_events` matches Unabated events to open Kalshi markets by canon team name.
-4. `ev.edge_for_yes` computes net EV (after Kalshi taker fee) for each outcome's YES market.
-5. Candidates above `MIN_EV_PCT` are Kelly-sized and written to `flagged_edges` (MARKET_DB) and the research firehose (RESEARCH_DB). All line snapshots are written to `line_snapshots` every tick for CLV tracking.
+2. `mapping.pair_events` matches Unabated events to open Kalshi events by canonical team-pair (parsed from the Kalshi event title).
+3. `adapter.price_event()` calls `_anchor_total` to devig the bt3 over/under from the first complete anchor book, then finds the matching Kalshi rung by `floor_strike`.
+4. For each `Candidate` (Over=YES, Under=NO), `ev.edge_for_yes` computes net EV after Kalshi taker fee. `ask_fn(ticker, side)` fetches `best_yes_ask` for YES or `best_no_ask` for NO.
+5. Candidates above both `MIN_EV_PCT` and `MIN_EV_DOLLARS` are Kelly-sized and written to `flagged_edges`. All line snapshots are written every tick for CLV tracking.
 
 **Databases (both gitignored, pkg-local):**
 - `unabated_edge_market.duckdb` — `line_snapshots`, `flagged_edges`
@@ -100,7 +119,7 @@ All tuneable constants live in `config.py` and can be overridden via `.env` or e
 pip install -r unabated_edge/requirements.txt
 
 # run (always dry-run — no orders are placed)
-python -m unabated_edge.runner
+python3 -m unabated_edge.runner
 ```
 
 The bot polls the Unabated feed every ~2 seconds, refreshes Kalshi event listings every 30 seconds, and logs flagged edges to `unabated_edge/bot.log` and to the two DuckDB files.
@@ -141,28 +160,27 @@ Both DBs have a `sport` column so multi-sport rows never collide.
 1. **Write `sports/<sport>.py`** implementing `SportAdapter`:
 
 ```python
-from unabated_edge.sports.base import SportAdapter
-from unabated_edge import pricing
+from unabated_edge.sports.base import SportAdapter, Candidate
+from unabated_edge import pricing, config
+from unabated_edge.feed import line_american_price
 
 class MyNewSport(SportAdapter):
     sport = "my_sport"           # unique string key
-    league_prefix = "lgXX"       # Unabated league prefix (e.g. "lg21" = soccer WC)
-    outcomes = ("home", "away")  # tuple of outcome names
-
-    def fair(self, state, event_meta) -> dict | None:
-        # look up sharp anchor prices from state.lines, devig, return {outcome: prob}
-        ...
+    league_prefix = "lgXX"       # Unabated league prefix
 
     def canon_team(self, name: str) -> str:
-        # normalize team name (lowercase, strip aliases, etc.)
         return name.strip()
 
     def kalshi_series(self) -> str:
-        # Kalshi series_ticker for this sport's markets
         return "KXMYSERIES"
 
-    def map_outcome_tickers(self, kalshi_event: dict) -> dict:
-        # return {outcome_name: market_ticker} from Kalshi event dict
+    def event_teams(self, kalshi_event: dict) -> frozenset:
+        # parse two team names from kalshi_event["title"] (or markets)
+        ...
+
+    def price_event(self, state, event_meta, kalshi_event) -> list[Candidate]:
+        # anchor from state.lines, devig, find Kalshi market, return Candidates
+        # return [] to fail closed
         ...
 ```
 
@@ -177,7 +195,7 @@ ADAPTERS = [Soccer(), MyNewSport()]
 
 That is all. The engine picks up every adapter in `ADAPTERS` automatically each tick.
 
-The `feed.py` snapshot filters by `league_prefixes()`, so only the relevant leagues are ingested. The `storage.py` tables use the `sport` column to separate rows by adapter.
+**Rule:** only price markets that the sharp anchor quotes directly. Do not build a model to derive prices for markets the anchor doesn't quote.
 
 ---
 
@@ -186,15 +204,11 @@ The `feed.py` snapshot filters by `league_prefixes()`, so only the relevant leag
 **`401` from the deltas endpoint**
 Token expired. Recapture `unabated_at_prod` from a logged-in browser session and update `unabated_edge/.env`.
 
-**`fair()` returns `None` / no edges flagged**
-Sharp-book prices may not be published for this sport or event yet, or no single anchor book carries all three legs (home, away, draw must come from the *same* book — cross-book 3-ways are rejected to avoid mixing vig). Check `state.lines` keys and verify the `league_prefix` matches the Unabated feed (e.g. `"lg21"` for World Cup). If every event returns `None`, the token is likely blurred (logged-out) — re-authenticate. Watch the log: a `heartbeat` line shows `events`/`lines`/`kalshi_events` counts so you can tell "broken" (zeros) from "healthy, no edges today".
+**No edges flagged / `_anchor_total` returns None**
+Anchor books may not be quoting bt3 for these events yet, or both Over and Under must appear at the same line value. Check `state.lines` keys for `|bt3|` entries. If every event returns None, the token is likely blurred (logged-out) — re-authenticate. The heartbeat log line shows `events`/`lines`/`kalshi_events` counts so you can tell "broken" (zeros) from "healthy, no edges today".
 
-**Soccer draw bt4 location / `WC_MATCH_SERIES` value**
-`sports/soccer.py` has two spots marked `# FROM TASK 0 FINDINGS` / `# REPLACE from Task 0 FINDINGS`:
-- `WC_MATCH_SERIES = "KXWCMATCH"` — Kalshi series ticker for WC match markets. Verify against `GET /series` or live Kalshi event listings.
-- `_book_three_way()` reads the draw from `bt4` on side `"1"` of the anchor book. Confirm the `bt4` draw location by live recon against the Unabated feed during a World Cup match.
-
-Until these are verified against live data, the soccer adapter may produce no pairings.
+**No Kalshi market matched (fail closed)**
+The anchor quoted a line (e.g. 2.5) but `KXWCTOTAL` has no market with `floor_strike=2.5`. This is expected when Kalshi's rung ladder doesn't cover that line — nothing to trade against.
 
 **Import errors / missing `kalshi_common`**
 Run from the repo root so that `kalshi_common/` is on the path, or install in editable mode. The engine inserts the repo root into `sys.path` at import time.

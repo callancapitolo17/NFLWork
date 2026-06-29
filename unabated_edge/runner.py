@@ -36,23 +36,20 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, ask_fn) -> lis
     if dropped:
         log.warning("%s: dropped %d line-snapshot rows with NULL price", adapter.sport, dropped)
     storage.snapshot_lines(adapter.sport, snap)
-    for p in mapping.pair_events(adapter, events, kalshi_events):
-        fair = adapter.fair(state, p.event_meta)
-        if fair is None or not mapping.validate(adapter, p, fair):
+    for event_meta, kev in mapping.pair_events(adapter, events, kalshi_events):
+        if not tipoff_ok(event_meta.start_utc, config.KICKOFF_CUTOFF_MIN, now):
             continue
-        if not tipoff_ok(p.event_meta.start_utc, config.KICKOFF_CUTOFF_MIN, now):
-            continue
-        for outcome in adapter.outcomes:
-            ticker = p.outcome_tickers[outcome]
-            ask = ask_fn(ticker)
+        for c in adapter.price_event(state, event_meta, kev):
+            ask = ask_fn(c.market_ticker, c.side)
             if ask is None:
                 continue
-            ev_d, ev_pct = ev.edge_for_yes(fair[outcome], ask)
+            ev_d, ev_pct = ev.edge_for_yes(c.fair_prob, ask)
             storage.emit(
                 "candidate_priced", adapter.sport,
-                event_id=p.event_meta.event_id,
-                outcome=outcome,
-                fair=fair[outcome],
+                event_id=event_meta.event_id,
+                label=c.label,
+                side=c.side,
+                fair=c.fair_prob,
                 ask=ask,
                 ev_pct=ev_pct,
                 ev_dollars=ev_d,
@@ -62,16 +59,16 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, ask_fn) -> lis
             if ev_pct < config.MIN_EV_PCT or ev_d < config.MIN_EV_DOLLARS:
                 continue
             n = sizing.kelly_contracts(
-                fair[outcome], ask, config.BANKROLL,
+                c.fair_prob, ask, config.BANKROLL,
                 config.KELLY_FRACTION, config.BANKROLL * config.PER_MATCH_CAP_PCT,
             )
             row = {
                 "ts": now,
                 "sport": adapter.sport,
-                "event_id": p.event_meta.event_id,
-                "market_ticker": ticker,
-                "outcome": outcome,
-                "fair_prob": fair[outcome],
+                "event_id": event_meta.event_id,
+                "market_ticker": c.market_ticker,
+                "outcome": c.label,
+                "fair_prob": c.fair_prob,
                 "yes_ask": ask,
                 "ev_pct": ev_pct,
                 "kelly_contracts": n,
@@ -80,8 +77,8 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, ask_fn) -> lis
             storage.log_flagged(row)
             flagged.append(row)
             log.info(
-                "EDGE %s %s fair=%.3f ask=%.2f ev=%.1f%% n=%d [DRY]",
-                adapter.sport, outcome, fair[outcome], ask, ev_pct * 100, n,
+                "EDGE %s %s %s fair=%.3f ask=%.2f ev=%.1f%% n=%d [DRY]",
+                adapter.sport, c.label, c.side, c.fair_prob, ask, ev_pct * 100, n,
             )
     return flagged
 
@@ -102,6 +99,7 @@ def main_loop(dry_run: bool):
     kalshi_events = {}
     ticks = 0
     flagged_since_hb = 0
+    ask_fn = lambda t, side: kalshi.best_yes_ask(t) if side == "yes" else kalshi.best_no_ask(t)
     while _running.is_set():
         try:
             evs, cursor = feed.fetch_deltas(config.UNABATED_TOKEN, cursor)
@@ -119,7 +117,7 @@ def main_loop(dry_run: bool):
                 last_k = time.time()
             for a in registry.ADAPTERS:
                 flagged_since_hb += len(run_tick(a, state, kalshi_events.get(a.sport, []),
-                                                 now=now, dry_run=dry_run, ask_fn=kalshi.best_yes_ask))
+                                                 now=now, dry_run=dry_run, ask_fn=ask_fn))
             storage.flush()
             ticks += 1
             if ticks % 30 == 0:                  # ~60s heartbeat: distinguishes "broken" from "no edges"

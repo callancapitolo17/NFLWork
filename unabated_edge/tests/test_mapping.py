@@ -12,82 +12,57 @@ def _ev(home, away, event_id=1):
     )
 
 
-def test_validate_rejects_incomplete():
-    a = Soccer()
-    p = mapping.Pairing(None, {"home": "H", "draw": "D"})       # missing away
-    assert mapping.validate(a, p, {"home": .4, "draw": .3, "away": .3}) is False
-
-
-def test_validate_accepts_complete():
-    a = Soccer()
-    p = mapping.Pairing(None, {"home": "H", "draw": "D", "away": "A"})
-    assert mapping.validate(a, p, {"home": .4, "draw": .3, "away": .3}) is True
-
-
-def test_pair_events_non_aliased_teams():
-    """pair_events must match non-aliased teams regardless of case from Kalshi feed."""
-    # Unabated-side event: Argentina (home) vs Austria (away), title-cased
-    ev = feed.EventMeta(
-        event_id=1, league_key="lg21",
-        start_utc=datetime.datetime(2026, 6, 28, 18, 0, tzinfo=datetime.timezone.utc),
-        home_id=10, away_id=11, home="Argentina", away="Austria",
-    )
-    # Kalshi-side event: markets have title-cased yes_sub_title (as the API sends them)
-    kalshi_event = {
+def _total_kev(home, away, ticker="T-O25"):
+    """Minimal KXWCTOTAL-style Kalshi event with one Over market."""
+    return {
+        "title": f"{home} vs {away}: Regulation Time Total Goals",
         "markets": [
-            {"ticker": "WC-ARG", "yes_sub_title": "Argentina"},
-            {"ticker": "WC-AUT", "yes_sub_title": "Austria"},
-            {"ticker": "WC-DRW", "yes_sub_title": "Draw"},
+            {"ticker": ticker, "strike_type": "greater", "floor_strike": 2.5,
+             "yes_sub_title": "Reg Time: Over 2.5 goals scored"},
         ]
     }
-    result = mapping.pair_events(Soccer(), [ev], [kalshi_event])
-    assert len(result) == 1, f"Expected 1 Pairing, got {len(result)}"
-    ot = result[0].outcome_tickers
-    assert ot["home"] == "WC-ARG", f"home ticker wrong: {ot}"
-    assert ot["away"] == "WC-AUT", f"away ticker wrong: {ot}"
-    assert ot["draw"] == "WC-DRW", f"draw ticker wrong: {ot}"
+
+
+def test_pair_events_matches_by_team_pair():
+    """pair_events returns (event_meta, kalshi_event) tuple when team pairs agree."""
+    ev = _ev("Argentina", "Austria", event_id=1)
+    kev = _total_kev("Argentina", "Austria")
+    result = mapping.pair_events(Soccer(), [ev], [kev])
+    assert len(result) == 1
+    em, matched_kev = result[0]
+    assert em.home == "Argentina"
+    assert matched_kev is kev
 
 
 def test_pair_events_matches_across_divergent_spellings():
-    """Aliased Unabated names must pair with plain-English Kalshi names."""
+    """Aliased Unabated names must pair with plain-English Kalshi title names."""
     ev = _ev("Côte d'Ivoire", "Czechia")
-    kalshi_event = {
-        "markets": [
-            {"ticker": "WC-CIV", "yes_sub_title": "Ivory Coast"},
-            {"ticker": "WC-CZE", "yes_sub_title": "Czech Republic"},
-            {"ticker": "WC-DRW", "yes_sub_title": "Draw"},
-        ]
-    }
-    result = mapping.pair_events(Soccer(), [ev], [kalshi_event])
+    kev = _total_kev("Ivory Coast", "Czech Republic")
+    result = mapping.pair_events(Soccer(), [ev], [kev])
     assert len(result) == 1
-    assert result[0].outcome_tickers["home"] == "WC-CIV"
-    assert result[0].outcome_tickers["away"] == "WC-CZE"
 
 
-def test_pair_events_strips_reg_time_prefix():
-    """Live KXWCGAME markets are titled 'Reg Time: <Team>' / 'Reg Time: Tie'
-    (verified 2026-06-28) — the prefix must be stripped to pair with Unabated."""
-    ev = _ev("Colombia", "Ghana")
-    kalshi_event = {
-        "markets": [
-            {"ticker": "KXWCGAME-X-COL", "yes_sub_title": "Reg Time: Colombia"},
-            {"ticker": "KXWCGAME-X-GHA", "yes_sub_title": "Reg Time: Ghana"},
-            {"ticker": "KXWCGAME-X-TIE", "yes_sub_title": "Reg Time: Tie"},
-        ]
-    }
-    result = mapping.pair_events(Soccer(), [ev], [kalshi_event])
-    assert len(result) == 1
-    ot = result[0].outcome_tickers
-    assert ot["home"] == "KXWCGAME-X-COL"
-    assert ot["away"] == "KXWCGAME-X-GHA"
-    assert ot["draw"] == "KXWCGAME-X-TIE"
+def test_pair_events_no_match_returns_empty():
+    ev = _ev("Nowhere United", "Parts Unknown", event_id=99)
+    result = mapping.pair_events(Soccer(), [ev], [])
+    assert result == []
+
+
+def test_pair_events_multiple_events():
+    """Multiple events matched independently."""
+    ev1 = _ev("Argentina", "Austria", event_id=1)
+    ev2 = _ev("Colombia", "Ghana", event_id=2)
+    kev1 = _total_kev("Argentina", "Austria", "T-ARG")
+    kev2 = _total_kev("Colombia", "Ghana", "T-COL")
+    result = mapping.pair_events(Soccer(), [ev1, ev2], [kev1, kev2])
+    assert len(result) == 2
 
 
 def test_pair_events_logs_unmatched_once(caplog):
     """An unmatched event is logged once, not re-logged on the next tick (dedup)."""
     mapping._warned_unmatched.clear()
     ev = _ev("Nowhere United", "Parts Unknown", event_id=777)
-    kalshi_events = []                                   # nothing to match against
+    kalshi_events = []
     with caplog.at_level(logging.INFO, logger="unabated_edge"):
         mapping.pair_events(Soccer(), [ev], kalshi_events)
         mapping.pair_events(Soccer(), [ev], kalshi_events)   # second tick, same event
