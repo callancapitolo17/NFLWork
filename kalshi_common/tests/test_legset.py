@@ -59,3 +59,19 @@ def test_parse_spread_away_team_yes():
     # NYY is away team in EVT; -1.5 YES on away = away covers
     leg = legset.parse_leg(_spread("NYY", 2, "yes"))
     assert leg == legset.CanonicalLeg(EVT, "spread", -1.5, "away")
+
+def test_hash_is_order_independent():
+    a = legset.parse_legs([_spread("BOS", 2, "yes"), _total(9, "yes")])
+    b = legset.parse_legs([_total(9, "yes"), _spread("BOS", 2, "yes")])
+    assert legset.leg_set_hash(a) == legset.leg_set_hash(b)
+
+def test_hash_distinguishes_different_sets():
+    a = legset.parse_legs([_spread("BOS", 2, "yes"), _total(9, "yes")])
+    c = legset.parse_legs([_spread("BOS", 2, "yes"), _total(9, "no")])  # under
+    assert legset.leg_set_hash(a) != legset.leg_set_hash(c)
+
+def test_canonical_legs_sorts_with_none_line():
+    legs = legset.parse_legs([_total(9, "yes"), _ml("BOS", "yes"),
+                              _spread("BOS", 2, "yes")])
+    ordered = legset.canonical_legs(legs)
+    assert [l.market_type for l in ordered] == sorted(l.market_type for l in legs)

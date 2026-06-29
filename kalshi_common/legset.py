@@ -67,3 +67,19 @@ def parse_legs(legs: list[dict]) -> list[CanonicalLeg] | None:
             return None
         out.append(c)
     return out
+
+
+def _sort_key(l: CanonicalLeg):
+    # None-safe: ml legs (line=None) sort after numeric lines within a market_type
+    return (l.game_id, l.market_type, l.line is None, l.line or 0.0, l.side)
+
+
+def canonical_legs(legs: list[CanonicalLeg]) -> list[CanonicalLeg]:
+    return sorted(legs, key=_sort_key)
+
+
+def leg_set_hash(legs: list[CanonicalLeg]) -> str:
+    payload = [[l.game_id, l.market_type, l.line, l.side]
+               for l in canonical_legs(legs)]
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(blob.encode()).hexdigest()
