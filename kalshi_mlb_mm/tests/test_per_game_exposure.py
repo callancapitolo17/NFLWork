@@ -117,3 +117,38 @@ def test_fill_game_ids_skips_unresolvable_game_but_keeps_primary(tmp_path, monke
     monkeypatch.setattr(main, "_resolve_game_for_legs",
                         lambda gl: "GAME_A" if gl == ["legA"] else None)
     assert main._fill_game_ids([{"x": 1}], "GAME_A") == ["GAME_A"]
+
+
+def test_fill_game_ids_never_raises_degrades_to_primary(tmp_path, monkeypatch):
+    """Even if leg parsing throws unexpectedly, _fill_game_ids must NOT raise —
+    it degrades to primary-only so the fill is never lost from the per-game cap
+    and the exception can't escape into the fill-write path."""
+    _fresh_db(tmp_path, monkeypatch)
+    from kalshi_mlb_mm import main
+
+    def _boom(_legs):
+        raise ValueError("bad leg shape")
+
+    monkeypatch.setattr(main.legset, "parse_legs", _boom)
+    assert main._fill_game_ids([{"x": 1}], "PRIMARY") == ["PRIMARY"]
+
+
+def test_orphan_fill_invisible_to_per_game_but_caught_by_daily(tmp_path, monkeypatch):
+    """Defense-in-depth: a fills row with NO fill_games rows (should never happen
+    given the fail-safe) is invisible to the per-game cap (INNER JOIN) but is
+    STILL counted by the daily cap (which reads `fills` directly) — so a combo is
+    never fully lost from exposure control."""
+    db = _fresh_db(tmp_path, monkeypatch)
+    from kalshi_mlb_mm import main
+    with db.connect() as con:
+        # Deliberately insert a fills row WITHOUT any fill_games mapping.
+        con.execute(
+            "INSERT INTO fills (fill_id, quote_id, rfq_id, combo_market_ticker, "
+            "game_id, side_held, contracts, price, fee, filled_at, reconciled) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            ["orphan", "q", "r", "TICK", "GAME_A", "yes", 10, 0.40, 0.0,
+             datetime.now(timezone.utc), True])
+    per_game = main._today_fills_by_game()
+    daily = main._today_fills()
+    assert per_game == []                      # INNER JOIN drops the unmapped fill
+    assert sum(r["price"] for r in daily) == 4.0  # daily cap still sees it (0.40*10)

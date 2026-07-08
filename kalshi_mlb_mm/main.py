@@ -226,17 +226,22 @@ def _fill_game_ids(legs, primary_game_id):
     """All game_ids a filled combo touches, for per-game exposure attribution.
 
     Parses `legs`, partitions by game, resolves each. Fail-safe: ALWAYS includes
-    `primary_game_id`, so even if leg parsing/resolution fails at fill time the
-    per-game cap can never UNDER-count a recorded fill (it degrades to today's
-    primary-only behavior rather than losing the row entirely).
+    `primary_game_id`, and the whole derivation is wrapped so ANY unexpected error
+    degrades to primary-only rather than raising. A recorded fill must never be
+    lost from the per-game cap, and this function must never throw into the fill
+    path — so callers compute it BEFORE the DB write block (see `_confirm_tick`),
+    guaranteeing `fills` is never written without matching `fill_games` rows.
     """
     ids = set()
-    canon = legset.parse_legs(legs) if legs else None
-    if canon:
-        for gl in legset.partition_by_game(canon).values():
-            g = _resolve_game_for_legs(gl)
-            if g:
-                ids.add(g)
+    try:
+        canon = legset.parse_legs(legs) if legs else None
+        if canon:
+            for gl in legset.partition_by_game(canon).values():
+                g = _resolve_game_for_legs(gl)
+                if g:
+                    ids.add(g)
+    except Exception:  # fail-safe: degrade to primary-only, never raise
+        ids = set()
     if primary_game_id:
         ids.add(primary_game_id)
     return sorted(ids)
@@ -721,6 +726,12 @@ def _confirm_tick(gateway, dry_run):
                     # Kalshi positions and correct side/size if needed.
                     now_ts = datetime.now(timezone.utc)
                     fill_id = str(uuid.uuid4())
+                    # Derive game attribution BEFORE the write: _fill_game_ids is
+                    # fail-safe (never raises), so the fills + fill_games inserts
+                    # below stay consistent — a fills row is never committed
+                    # without its matching fill_games rows (which would let the
+                    # per-game cap fail open / under-count).
+                    fill_game_ids = _fill_game_ids(legs, game_id)
                     with db.connect() as con:
                         con.execute(
                             "INSERT INTO fills (fill_id, quote_id, rfq_id, combo_market_ticker, "
@@ -735,7 +746,7 @@ def _confirm_tick(gateway, dry_run):
                         # Per-game exposure ledger: one row per game the combo
                         # touches (cross-game combos land 2+). Powers the per-game
                         # cap without double-counting the daily cap / P&L.
-                        for g in _fill_game_ids(legs, game_id):
+                        for g in fill_game_ids:
                             con.execute(
                                 "INSERT OR REPLACE INTO fill_games (fill_id, game_id) "
                                 "VALUES (?, ?)", [fill_id, g])
