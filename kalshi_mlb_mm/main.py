@@ -164,6 +164,25 @@ def _today_fills():
     return [{"game_id": g, "price": exp} for g, exp in rows]
 
 
+def _today_fills_by_game():
+    """Today's exposure fanned out to one row per (fill × game), for the PER-GAME
+    cap. A cross-game combo counts its FULL exposure against EVERY game it touches
+    (correlated risk: a bust in any game loses the whole combo), via the
+    `fill_games` map. `_today_fills` stays one-row-per-combo so the DAILY cap and
+    P&L are never double-counted. Same reconciled/unreconciled exposure basis as
+    `_today_fills`, computed from `fills` so reconciliation still applies.
+    """
+    start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    with db.connect(read_only=True) as con:
+        rows = con.execute(
+            "SELECT fg.game_id, "
+            "CASE WHEN f.reconciled THEN f.price * f.contracts ELSE ? END AS exposure "
+            "FROM fills f JOIN fill_games fg ON f.fill_id = fg.fill_id "
+            "WHERE f.filled_at >= ?",
+            [config.max_fill_exposure_usd(), start]).fetchall()
+    return [{"game_id": g, "price": exp} for g, exp in rows]
+
+
 def _resolve_game_for_legs(game_legs: list) -> str | None:
     """Resolve ONE game's CanonicalLegs to the mlb_target_lines game_id, or None.
 
@@ -201,6 +220,26 @@ def _resolve_game_for_legs(game_legs: list) -> str | None:
             con.close()
     except Exception:
         return None
+
+
+def _fill_game_ids(legs, primary_game_id):
+    """All game_ids a filled combo touches, for per-game exposure attribution.
+
+    Parses `legs`, partitions by game, resolves each. Fail-safe: ALWAYS includes
+    `primary_game_id`, so even if leg parsing/resolution fails at fill time the
+    per-game cap can never UNDER-count a recorded fill (it degrades to today's
+    primary-only behavior rather than losing the row entirely).
+    """
+    ids = set()
+    canon = legset.parse_legs(legs) if legs else None
+    if canon:
+        for gl in legset.partition_by_game(canon).values():
+            g = _resolve_game_for_legs(gl)
+            if g:
+                ids.add(g)
+    if primary_game_id:
+        ids.add(primary_game_id)
+    return sorted(ids)
 
 
 def _priceable_in_phase1(canon: list) -> bool:
@@ -391,6 +430,10 @@ def _discovery_tick(source, gateway, dry_run):
             "SELECT COUNT(*) FROM live_quotes WHERE status='open'").fetchone()[0]
     # FIX I3: load today's fills once before the loop for cap checks
     fills_today = _today_fills()
+    # Per-game exposure fanned out across every game each combo touches (cross-game
+    # combos count against BOTH games). Daily cap keeps using fills_today (one row
+    # per combo) so it is never double-counted; only the per-game cap uses this.
+    game_exposure_rows = _today_fills_by_game()
     now_utc = datetime.now(timezone.utc)
     for rfq in rfqs:
         if open_count >= config.MAX_OPEN_QUOTES:
@@ -474,7 +517,9 @@ def _discovery_tick(source, gateway, dry_run):
                           reason="daily_cap")
             continue
         # Per-game cap: all games must pass (cross-game combos checked per-game).
-        if any(not risk.per_game_cap_ok(gid, fills_today, config.BANKROLL,
+        # game_exposure_rows attributes each combo's full stake to EVERY game it
+        # touches, so a game can't slip past its cap by only ever being a 2nd leg.
+        if any(not risk.per_game_cap_ok(gid, game_exposure_rows, config.BANKROLL,
                                         config.MAX_GAME_EXPOSURE_PCT)
                for gid in game_ids_list):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
@@ -675,6 +720,7 @@ def _confirm_tick(gateway, dry_run):
                     # marks the row for the background sweep to verify against
                     # Kalshi positions and correct side/size if needed.
                     now_ts = datetime.now(timezone.utc)
+                    fill_id = str(uuid.uuid4())
                     with db.connect() as con:
                         con.execute(
                             "INSERT INTO fills (fill_id, quote_id, rfq_id, combo_market_ticker, "
@@ -683,9 +729,16 @@ def _confirm_tick(gateway, dry_run):
                             "realized_pnl, filled_at, reconciled) "
                             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                             # FIX I2: carry model_fair_at_q / book_fair_at_q from the live_quotes row
-                            [str(uuid.uuid4()), qid, rid, ticker, game_id, side_held,
+                            [fill_id, qid, rid, ticker, game_id, side_held,
                              contracts, price, fee, model_fair_at_q, book_fair_at_q,
                              prev_fair, cur_fair, None, now_ts, False])
+                        # Per-game exposure ledger: one row per game the combo
+                        # touches (cross-game combos land 2+). Powers the per-game
+                        # cap without double-counting the daily cap / P&L.
+                        for g in _fill_game_ids(legs, game_id):
+                            con.execute(
+                                "INSERT OR REPLACE INTO fill_games (fill_id, game_id) "
+                                "VALUES (?, ?)", [fill_id, g])
                         con.execute(
                             "UPDATE live_quotes SET status='filled', closed_at=? WHERE quote_id=?",
                             [now_ts, qid])
