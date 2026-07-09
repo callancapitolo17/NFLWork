@@ -70,6 +70,70 @@ def _ingest(st, ev, lk):
 def events_for_league(st, league_prefix):
     return [e for e in st.events.values() if e.league_key == league_prefix]
 
+
+# ---------------------------------------------------------------------------
+# v2 per-league feed (current app path; supersedes snapshot+changes for soccer).
+# Shape: {odds: {"lg21:pt1:pregame": [row, ...], ...}, teams: {tid: {name}}, ...}
+# Each row = one event x betType: {eventId, eventStart, eventName ("Away @ Home"),
+# betTypeId, sides: {"si0:tid<away>": {"ms<book>": line}, "si1:tid<home>": {...}}}.
+# Line dicts carry points/americanPrice/isBlurred/modifiedOn + alternateLines.
+# ---------------------------------------------------------------------------
+
+_V2_BET_TYPES = {1, 2, 3, 4}   # moneyline/spread/total/soccer-extra; skip props/corners/etc.
+
+
+def parse_v2(raw: dict, league_prefix: str) -> FeedState:
+    st = FeedState()
+    for s in raw.get("marketSources", []) or []:
+        if isinstance(s, dict):
+            st.books[s["id"]] = s.get("name")
+    for tid, t in (raw.get("teams", {}) or {}).items():
+        st.teams[tid] = t.get("name") if isinstance(t, dict) else None
+    for lk, rows in (raw.get("odds", {}) or {}).items():
+        # full-game pregame only: "lg21:pt1:pregame"
+        if _league_prefix(lk) != league_prefix or not lk.endswith(":pt1:pregame"):
+            continue
+        for row in rows:
+            _ingest_v2_row(st, row, league_prefix)
+    return st
+
+
+def _ingest_v2_row(st, row, league_prefix):
+    try:
+        bt = row.get("betTypeId")
+        if bt not in _V2_BET_TYPES:
+            return
+        eid = row["eventId"]
+        sides = row.get("sides") or {}
+        if eid not in st.events:
+            hid = aid = None
+            for sk in sides:
+                si, _, tid = sk.partition(":")
+                tid = tid[3:] if tid.startswith("tid") else tid
+                if si == "si1": hid = tid
+                elif si == "si0": aid = tid
+            st.events[eid] = EventMeta(eid, league_prefix, _dt(row["eventStart"]),
+                                       hid, aid, st.teams.get(hid), st.teams.get(aid))
+        for sk, books in sides.items():
+            si = sk.split(":")[0][2:]                     # "si0:tid2058" -> "0"
+            for ms_key, line in (books or {}).items():
+                if not isinstance(line, dict) or line.get("isBlurred") is True:
+                    continue
+                ms = ms_key[2:]                           # "ms7" -> "7"
+                st.lines[f"{eid}|{si}|{ms}|bt{bt}"] = line
+    except Exception:
+        log.warning("skipped malformed v2 row (eventId=%s)",
+                    row.get("eventId") if isinstance(row, dict) else "?")
+
+
+def fetch_v2(league_id: int, league_prefix: str, session=None) -> FeedState:
+    url = config.UNABATED_V2_LEAGUE_URL.format(league_id=league_id)
+    r = (session or requests).get(url, headers=_HEADERS,
+                                  params={"v": str(int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000))},
+                                  timeout=30)
+    r.raise_for_status()
+    return parse_v2(r.json(), league_prefix)
+
 _HEADERS = {"accept":"application/json, text/plain, */*","origin":"https://unabated.com",
     "referer":"https://unabated.com/","user-agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"}

@@ -12,7 +12,12 @@ class Candidate:
 
 class SportAdapter(ABC):
     sport: str
-    league_prefix: str
+    league_prefix: str      # Unabated league key prefix, e.g. "lg21"
+
+    @property
+    def league_id(self) -> int:
+        """Numeric Unabated league id (drives the v2 odds URL), e.g. "lg21" -> 21."""
+        return int(self.league_prefix[2:])
 
     @abstractmethod
     def canon_team(self, name: str) -> str: ...

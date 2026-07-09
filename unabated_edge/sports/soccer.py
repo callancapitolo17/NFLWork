@@ -47,47 +47,56 @@ class Soccer(SportAdapter):
             return frozenset()
         return frozenset({self.canon_team(parts[0].strip()), self.canon_team(parts[1].strip())})
 
-    def _anchor_total(self, state, eid) -> tuple[float, float] | None:
-        """Find the first anchor book that quotes both Over and Under for bt3.
+    @staticmethod
+    def _side_prices(ln) -> dict[float, float]:
+        """{line: american_price} from one side's line dict: main quote + alternateLines."""
+        out = {}
+        if ln is None:
+            return out
+        px, pts = line_american_price(ln), ln.get("points")
+        if px is not None and pts is not None:
+            out[float(pts)] = px
+        for al in ln.get("alternateLines") or []:
+            apx, apts = line_american_price(al), al.get("points")
+            if apx is not None and apts is not None:
+                out[float(apts)] = apx
+        return out
 
-        Returns (line, p_over) where p_over is the devigged probability, or None
-        if no anchor book has a complete, consistent total quote.
-        """
+    def _anchor_totals(self, state, eid) -> dict[float, float]:
+        """Devigged total ladder {line: p_over} from the FIRST anchor book that has
+        at least one complete rung (over+under at the same line). Same-book only —
+        never mixes books' vig. Empty dict when no anchor book is complete."""
         for ms in config.ANCHOR_SOURCE_IDS:
-            over = state.lines.get(f"{eid}|0|{ms}|bt3")   # side 0 = Over
-            under = state.lines.get(f"{eid}|1|{ms}|bt3")  # side 1 = Under
-            if over is None or under is None:
-                continue
-            po = line_american_price(over)
-            pu = line_american_price(under)
-            if po is None or pu is None:
-                continue
-            line = over.get("points")
-            if line is None or under.get("points") != line:
-                continue
-            p_over, _ = pricing.devig([pricing.american_to_prob(po), pricing.american_to_prob(pu)])
-            return (float(line), p_over)
-        return None
+            overs = self._side_prices(state.lines.get(f"{eid}|0|{ms}|bt3"))   # side 0 = Over
+            unders = self._side_prices(state.lines.get(f"{eid}|1|{ms}|bt3"))  # side 1 = Under
+            ladder = {}
+            for line in sorted(set(overs) & set(unders)):
+                p_over, _ = pricing.devig([pricing.american_to_prob(overs[line]),
+                                           pricing.american_to_prob(unders[line])])
+                ladder[line] = p_over
+            if ladder:
+                return ladder
+        return {}
 
     def price_event(self, state, event_meta, kalshi_event) -> list[Candidate]:
-        """Price Over and Under candidates from the anchor total vs the Kalshi rung.
+        """Price Over/Under candidates at every Kalshi rung the anchor ladder quotes.
 
-        Fail closed: return [] when anchor is missing or no Kalshi market matches the line.
-        """
-        result = self._anchor_total(state, event_meta.event_id)
-        if result is None:
+        Fail closed: [] when the anchor is missing; rungs without an anchor line
+        are skipped silently (never interpolated)."""
+        ladder = self._anchor_totals(state, event_meta.event_id)
+        if not ladder:
             return []
-        line, p_over = result
-        markets = kalshi_event.get("markets", [])
-        mk = next(
-            (m for m in markets
-             if m.get("strike_type") == "greater" and float(m.get("floor_strike", -1)) == line),
-            None,
-        )
-        if mk is None:
-            return []
-        ticker = mk["ticker"]
-        return [
-            Candidate(ticker, "yes", p_over, f"over_{line}"),
-            Candidate(ticker, "no", round(1 - p_over, 6), f"under_{line}"),
-        ]
+        out = []
+        for mk in kalshi_event.get("markets", []):
+            if mk.get("strike_type") != "greater":
+                continue
+            try:
+                line = float(mk.get("floor_strike"))
+            except (TypeError, ValueError):
+                continue
+            p_over = ladder.get(line)
+            if p_over is None:
+                continue
+            out.append(Candidate(mk["ticker"], "yes", p_over, f"over_{line}"))
+            out.append(Candidate(mk["ticker"], "no", round(1 - p_over, 6), f"under_{line}"))
+        return out

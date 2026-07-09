@@ -14,12 +14,11 @@ Soccer prices the **regulation-time total** (Over/Under goals), not the moneylin
 - We do **not** build a soccer model. The sharp anchor price IS truth; devig it and compare to Kalshi. If the anchor doesn't quote it, we don't price it.
 
 **Pricing flow:**
-1. For each Unabated event, find the first anchor book that has BOTH Over (`side=0|bt3`) and Under (`side=1|bt3`) at the same line value.
-2. Devig the two-way anchor quote (probit) → `p_over`.
+1. For each Unabated event, find the first anchor book with at least one complete rung — Over (`side=0|bt3`) and Under (`side=1|bt3`) at the same line. Its main quote **plus its `alternateLines` ladder** (both sides) form the anchor ladder, e.g. `{1.5: p, 2.0: p, 2.5: p, …}`. Same-book only — never mixes books' vig.
+2. Devig each rung's two-way quote (probit) → `p_over` per line.
 3. Match the Kalshi series `KXWCTOTAL` — each event lists Over-ladder markets with `strike_type="greater"`, `floor_strike=X.5`.
-4. Find the Kalshi market whose `floor_strike` equals the anchor line.
-5. Emit two candidates: **Over = buy YES** on that market, **Under = buy NO** on that market.
-6. Fail closed at every step: missing anchor side, mismatched line values, or no matching Kalshi rung → return `[]`, no flag.
+4. For every Kalshi rung whose `floor_strike` appears in the anchor ladder, emit two candidates: **Over = buy YES**, **Under = buy NO** on that market.
+5. Fail closed at every step: missing anchor side, no common line, or no matching Kalshi rung → skip, no flag (never interpolate between lines).
 
 ---
 
@@ -28,7 +27,7 @@ Soccer prices the **regulation-time total** (Over/Under goals), not the moneylin
 ```
 unabated_edge/
   config.py          # constants + .env loader (BANKROLL, KELLY_FRACTION, paths …)
-  feed.py            # Unabated public feed: snapshot + cursor-delta polling
+  feed.py            # Unabated feeds: v2 per-league polling (current) + legacy snapshot/deltas
   pricing.py         # american_to_prob, devig (probit, wraps kalshi_common)
   ev.py              # edge_for_yes — net of Kalshi taker fees
   sizing.py          # kelly_contracts — fractional Kelly with per-match cap
@@ -49,10 +48,10 @@ unabated_edge/
 
 **Generic core, per-sport adapters.** Everything inside `feed.py`, `pricing.py`, `ev.py`, `sizing.py`, `mapping.py`, `storage.py`, and `runner.py` is sport-agnostic. All soccer-specific knowledge lives in `sports/soccer.py`. Adding a sport = one adapter file + one registry line.
 
-**Data flow per tick:**
-1. `feed.py` polls the Unabated changes endpoint for sharp-book line updates.
+**Data flow per tick (every `V2_POLL_SEC`, default 5s):**
+1. `feed.fetch_v2(league_id, league_prefix)` re-fetches Unabated's **v2 per-league odds file** (`content.unabated.com/markets/v2/league/<id>/odds.json`). Anchors are **unblurred anonymously** in this file — no token needed — and each line carries its full `alternateLines` ladder. (The legacy `changes/query` delta feed does not carry soccer at all; the legacy snapshot's anchors are blurred. Both legacy functions remain in `feed.py` for future US-league adapters.)
 2. `mapping.pair_events` matches Unabated events to open Kalshi events by canonical team-pair (parsed from the Kalshi event title).
-3. `adapter.price_event()` calls `_anchor_total` to devig the bt3 over/under from the first complete anchor book, then finds the matching Kalshi rung by `floor_strike`.
+3. `adapter.price_event()` calls `_anchor_totals` to devig the bt3 over/under ladder from the first complete anchor book, then emits candidates at every Kalshi rung matching a ladder line by `floor_strike`.
 4. For each `Candidate` (Over=YES, Under=NO), `ev.edge_for_yes` computes net EV after Kalshi taker fee. `ask_fn(ticker, side)` fetches `best_yes_ask` for YES or `best_no_ask` for NO.
 5. Candidates above both `MIN_EV_PCT` and `MIN_EV_DOLLARS` are Kelly-sized and written to `flagged_edges`. All line snapshots are written every tick for CLV tracking.
 
@@ -66,9 +65,11 @@ unabated_edge/
 
 ## Authentication
 
-### Unabated token
+### Unabated token (NOT needed for soccer)
 
-The Unabated changes endpoint (`/api/markets/changes/query`) requires a premium-account JWT passed as a cookie named `unabated_at_prod`. The token is valid for approximately 30 days.
+The v2 per-league odds file the engine polls is **anonymous — anchors are unblurred without any login**, so the soccer path runs with no Unabated credentials at all.
+
+The token below is only needed for the **legacy** changes endpoint (`/api/markets/changes/query`, used by future US-league adapters): a premium-account JWT passed as a cookie named `unabated_at_prod`, valid ~30 days.
 
 **Capture steps:**
 1. Log in to [unabated.com](https://unabated.com) in a browser.
@@ -106,6 +107,7 @@ All tuneable constants live in `config.py` and can be overridden via `.env` or e
 | `KELLY_FRACTION` | `0.25` | Fractional Kelly multiplier |
 | `MIN_EV_PCT` | `0.03` | Minimum net EV % to flag (3 %) |
 | `MIN_EV_DOLLARS` | `0.02` | Minimum absolute per-contract EV (gates with `MIN_EV_PCT` so cheap longshots can't clear on % alone) |
+| `UNABATED_V2_POLL_SEC` | `5` | Seconds between re-fetches of each league's v2 odds file (also the tick cadence) |
 | `MAX_STALENESS_SEC` | `20` | Reserved for Plan 2 live-execution staleness gate — not yet enforced |
 | `KICKOFF_CUTOFF_MIN` | `3` | Stop flagging this many minutes before kickoff |
 | `PER_MATCH_CAP_PCT` | `0.03` | Max fraction of bankroll per match (3 %) |
@@ -122,7 +124,7 @@ pip install -r unabated_edge/requirements.txt
 python3 -m unabated_edge.runner
 ```
 
-The bot polls the Unabated feed every ~2 seconds, refreshes Kalshi event listings every 30 seconds, and logs flagged edges to `unabated_edge/bot.log` and to the two DuckDB files.
+The bot re-fetches each adapter's v2 league odds file every `V2_POLL_SEC` (default 5s), refreshes Kalshi event listings every 30 seconds, and logs flagged edges to `unabated_edge/bot.log` and to the two DuckDB files. A heartbeat line (~every 60s) reports event/line/market counts so "broken" is distinguishable from "no edges".
 
 **Kill switch:** create `unabated_edge/.kill` to stop the loop gracefully. `SIGINT`/`SIGTERM` also stop it.
 

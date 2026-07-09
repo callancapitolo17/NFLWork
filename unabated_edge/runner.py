@@ -85,49 +85,39 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, ask_fn) -> lis
 
 def main_loop(dry_run: bool):
     storage.init()
-    if not config.UNABATED_TOKEN:
-        log.warning(
-            "UNABATED_AT_PROD is not set — feed will return blurred/anonymous lines "
-            "and no real edges will be found until a token is set in .env"
-        )
     kalshi.init()
-    prefixes = registry.league_prefixes()
-    state = feed.fetch_snapshot(prefixes)
-    cursor = None
-    cursor_none_warned = False
+    # v2 per-league polling: the v2 odds file carries UNBLURRED anchors anonymously
+    # (no token needed), and the legacy changes/query delta feed does not carry
+    # soccer at all — so each tick re-fetches the per-league file from the CDN.
     last_k = 0.0
     kalshi_events = {}
     ticks = 0
     flagged_since_hb = 0
+    hb_every = max(1, round(60 / config.V2_POLL_SEC))    # ~60s heartbeat
     ask_fn = lambda t, side: kalshi.best_yes_ask(t) if side == "yes" else kalshi.best_no_ask(t)
     while _running.is_set():
         try:
-            evs, cursor = feed.fetch_deltas(config.UNABATED_TOKEN, cursor)
-            if cursor is None:
-                if not cursor_none_warned:       # warn once per stall, not every 2s
-                    log.warning("feed returned no cursor (latestTimestamp=None) — "
-                                "re-bootstrapping; line history will stall if this persists")
-                    cursor_none_warned = True
-            else:
-                cursor_none_warned = False
-            feed.apply_deltas(state, evs, prefixes)
             now = datetime.datetime.now(datetime.timezone.utc)
             if time.time() - last_k > 30:
                 kalshi_events = {a.sport: kalshi.list_events(a.kalshi_series()) for a in registry.ADAPTERS}
                 last_k = time.time()
+            n_events = n_lines = 0
             for a in registry.ADAPTERS:
+                state = feed.fetch_v2(a.league_id, a.league_prefix)
+                n_events += len(state.events)
+                n_lines += len(state.lines)
                 flagged_since_hb += len(run_tick(a, state, kalshi_events.get(a.sport, []),
                                                  now=now, dry_run=dry_run, ask_fn=ask_fn))
             storage.flush()
             ticks += 1
-            if ticks % 30 == 0:                  # ~60s heartbeat: distinguishes "broken" from "no edges"
-                log.info("heartbeat tick=%d events=%d lines=%d kalshi_events=%d flagged_last_30=%d",
-                         ticks, len(state.events), len(state.lines),
+            if ticks % hb_every == 0:            # heartbeat: distinguishes "broken" from "no edges"
+                log.info("heartbeat tick=%d events=%d lines=%d kalshi_events=%d flagged_recent=%d",
+                         ticks, n_events, n_lines,
                          sum(len(v) for v in kalshi_events.values()), flagged_since_hb)
                 flagged_since_hb = 0
         except Exception:
             log.exception("tick failed")
-        time.sleep(2)
+        time.sleep(config.V2_POLL_SEC)
 
 
 def _stop(*_):
