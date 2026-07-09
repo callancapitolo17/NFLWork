@@ -87,6 +87,16 @@ CREATE TABLE IF NOT EXISTS combo_cooldown (
     combo_market_ticker VARCHAR PRIMARY KEY,
     cooled_until        TIMESTAMP NOT NULL
 );
+-- Per-game exposure ledger: maps each fill to EVERY game its combo touches
+-- (one row per game). A cross-game combo lands one row per game so the
+-- per-game exposure cap counts its full stake against each game (correlated
+-- risk). `fills` stays one-row-per-combo, so the daily cap and P&L never
+-- double-count. See main._today_fills_by_game / _fill_game_ids.
+CREATE TABLE IF NOT EXISTS fill_games (
+    fill_id  VARCHAR NOT NULL,
+    game_id  VARCHAR NOT NULL,
+    PRIMARY KEY (fill_id, game_id)
+);
 CREATE INDEX IF NOT EXISTS idx_quote_decisions_observed_at
     ON quote_decisions(observed_at);
 CREATE INDEX IF NOT EXISTS idx_fills_reconciled

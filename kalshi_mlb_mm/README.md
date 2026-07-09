@@ -1,12 +1,14 @@
 # Kalshi MLB MM (Maker) Bot
 
-Independent maker daemon that listens for others' RFQs on the Kalshi cross-category MVE collection, prices 2-leg MLB combos — **spread×total and moneyline×total** (both FG) — against a book-consensus fair value, and provides two-sided quotes at a fixed 5% ROI margin. Coexists with the taker (`kalshi_mlb_rfq/`) as a separate OS process with no runtime dependency on it.
+Independent maker daemon that listens for others' RFQs on the Kalshi cross-category MVE collection, prices MLB combos against a book-consensus fair value, and provides two-sided quotes at a fixed 5% ROI margin. Coexists with the taker (`kalshi_mlb_rfq/`) as a separate OS process with no runtime dependency on it.
 
-Combo classification is shared via `kalshi_common.leg_types.combo_descriptor`, which
-maps a 2-leg combo to its grid family (`spread_total` or `ml_total`) and derives the
-devig cell from the legs' actual sides. The read side is **book-agnostic**: it consumes
-whatever the SGP scrapers write to `mlb_sgp_odds`, so all 6 books' moneyline rows are
-priced with no maker-side change.
+**Combo scope (Phase 1).** Pricing flows through `kalshi_common.legset` + `kalshi_mlb_mm.router`, which generalize the original fixed 2-leg path:
+
+- **2-leg same-game grids** — spread×total and moneyline×total (both FG), priced from each book's 4-cell devig grid (unchanged math).
+- **Cross-game combos** — each game's sub-combo is priced independently and the per-game fairs are **multiplied** (independence assumption); a single leg within a game is marginalized out of that game's grid.
+- **Out of scope** (skipped fail-safe): lone single-leg RFQs, and novel same-game shapes (3-leg, spread+ml, total+total) which route to `on_demand` — Phase 2 will price those on-demand.
+
+The read side is **book-agnostic**: it consumes whatever the 6 SGP scrapers write to `mlb_sgp_odds`, so all books' moneyline rows are priced with no maker-side change.
 
 **Spec:** `docs/superpowers/specs/2026-05-26-kalshi-mlb-mm-design.md`
 **Plan:** `docs/superpowers/plans/2026-05-27-kalshi-mlb-mm-maker-bot.md`
@@ -67,18 +69,18 @@ REST-polling daemon, single process. Four timed sub-loops:
 
 **SGP pricing (2026-06).** The bot prices SGPs **in-process** via `kalshi_common/sgp_service.py::SGPService` — no subprocess per cycle. The service holds persistent per-book HTTP clients reused across cycles (no per-cycle TLS handshake) and prices the four books concurrently under a per-book deadline (`SGP_SCRAPER_TIMEOUT_SEC`). DK/FD structure fetches (event lists, selection-id dicts) are TTL-cached; prices are never cached, and a failed or timed-out book keeps its prior rows. The old subprocess-per-cycle model is retained as a rollback hatch — calling `sgp_cycle` without `service=`.
 
-**State DB.** The bot writes `kalshi_mlb_mm/kalshi_mlb_mm.duckdb` (quotes, fills, positions, decisions). The sibling `kalshi_mlb_mm/kalshi_mlb_mm_market.duckdb` holds SGP-line and SGP-odds data (same pattern as the taker's `kalshi_mlb_rfq_market.duckdb`). The v1-hardening pass removed the model component of the blend, so there is no longer a read-only dependency on `Answer Keys/mlb_mm.duckdb`.
+**State DB.** The bot writes `kalshi_mlb_mm/kalshi_mlb_mm.duckdb` (quotes, fills, positions, decisions, and `fill_games`). The `fill_games` table maps each fill to **every** game its combo touches (one row per game); the per-game exposure cap reads a fanned-out `fills⋈fill_games` join so a cross-game combo's full stake counts against each of its games, while the daily cap and P&L keep reading `fills` (one row per combo) and are never double-counted. The sibling `kalshi_mlb_mm/kalshi_mlb_mm_market.duckdb` holds SGP-line and SGP-odds data (same pattern as the taker's `kalshi_mlb_rfq_market.duckdb`). The v1-hardening pass removed the model component of the blend, so there is no longer a read-only dependency on `Answer Keys/mlb_mm.duckdb`.
 
 ## Pricing
 
-Fair value is the median of *book-consensus-agreeing* devigged book fairs. For each combo (`combo_descriptor` resolves its family + cell — spread×total keyed by game × spread_line × total_line, moneyline×total keyed by game × total_line with `spread_line` NULL) we:
+Fair value is the median of *book-consensus-agreeing* devigged book fairs. `router.combo_fair` parses the RFQ into canonical legs (`legset`), partitions them by game, prices each game's sub-combo, and **multiplies** the per-game fairs (cross-game independence). For each **2-leg same-game grid** (family + cell resolved from the legs — spread×total keyed by game × spread_line × total_line, moneyline×total keyed by game × total_line with `spread_line` NULL) we:
 
 1. Pull every book's 4-cell grid from `mlb_sgp_odds` (filtered by combo family, require all 4 cells — no fallback).
 2. Devig each book's 4-way grid to a single combo fair (`devig_book` in `kalshi_common.fair_value`).
 3. Compute the median across books, then keep only books within `±BOOK_CONSENSUS_BAND` of that median.
 4. If `>= MIN_AGREEING_BOOKS` survive, the fair is the median of the survivors. Otherwise we do not quote.
 
-This is the v1 correlation defense (mirrors the MLB answer-key dashboard's consensus-band pattern). The v1.1 explicit correlation-premium gate is deferred — see spec section 13.
+A **single leg** (within a cross-game combo) is priced by marginalizing that game's grid — summing the two devigged cells along the free axis. **Cross-game** fairs are the product of the per-game consensus fairs; if any game fails consensus or routes to `on_demand`/`unpriceable`, `combo_fair` returns `None` and we do not quote (fail-safe). This is the v1 correlation defense (mirrors the MLB answer-key dashboard's consensus-band pattern). The v1.1 explicit correlation-premium gate is deferred — see spec section 13.
 
 The model (a fraction-of-sample-paths estimate driven by `mlb_game_samples` from the R answer-key pipeline) was removed in the v1 hardening pass: it was being medianed out of the blend, carried documented bias on certain combo families ([[mlb_parlay_edge_overestimation]]), and added a soft dependency on the R pipeline.
 

@@ -1,9 +1,3 @@
-from kalshi_common.leg_types import ComboDescriptor, SPREAD_TOTAL_FAMILY
-
-_TEST_DESC = ComboDescriptor('spread_total', -1.5, 8.5, 'Home Spread + Over',
-                             SPREAD_TOTAL_FAMILY, 'TEX', 'LAA')
-
-
 def test_main_imports():
     from kalshi_mlb_mm import main          # must import without error
     assert hasattr(main, "main_loop")
@@ -59,8 +53,11 @@ def test_discovery_dedup_no_resubmit_when_price_unchanged(monkeypatch, tmp_path)
     import kalshi_mlb_mm.db as db
     import kalshi_mlb_mm.risk as risk
     from kalshi_mlb_mm import main
+    import kalshi_mlb_mm.router as router_mod
 
     monkeypatch.setattr(cfg, "DB_PATH", tmp_path / "dedup.duckdb")
+    # Raise combo cap so per-combo cap doesn't fire before the dedup check.
+    monkeypatch.setattr(cfg, "MAX_COMBO_EXPOSURE_USD", 200.0)
 
     import importlib
     importlib.reload(db)
@@ -87,23 +84,19 @@ def test_discovery_dedup_no_resubmit_when_price_unchanged(monkeypatch, tmp_path)
 
     # Monkeypatch the helpers that require real DBs / network.
     monkeypatch.setattr(main, "_today_fills", lambda: [])
-    monkeypatch.setattr(main, "_resolve_game", lambda legs: ("game1", _TEST_DESC))
+    # router.combo_fair replaces _book_fairs + blended_fair in the live path.
+    monkeypatch.setattr(router_mod, "combo_fair", lambda *a: 0.55)
+    monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
     # Make tipoff_ok pass (commence_time is None → normally fails; override).
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
-    monkeypatch.setattr(main, "_book_fairs", lambda gid, desc: {"DK": 0.55, "FD": 0.55, "PX": 0.55})
 
-    # Patch blended_fair to return a stable value in range (signature now
-    # (legs, gid, bf) → (book_med, blended), model removed in v1 hardening).
-    import kalshi_mlb_mm.fairs as fairs_mod
-    monkeypatch.setattr(fairs_mod, "blended_fair",
-                        lambda legs, gid, bf: (0.55, 0.55))
-
-    # Scope cache: make the ticker appear in-scope with a minimal legs list.
-    legs = [{"market_ticker": "KXMLBSPREAD-ABC", "event_ticker": "EVT-ABC",
-             "side": "yes", "count": 1},
-            {"market_ticker": "KXMLBTOTAL-ABC", "event_ticker": "EVT-ABC",
-             "side": "yes", "count": 1}]
+    # Scope cache: make the ticker appear in-scope with valid parseable legs.
+    _evt = "KXMLBGAME-25JUN271905TEXLAA"
+    legs = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
+             "event_ticker": _evt, "side": "yes"},
+            {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
+             "event_ticker": _evt, "side": "yes"}]
     monkeypatch.setattr(main, "_SCOPE_CACHE",
                         {"COMBO-1": (True, "game1", legs)})
 
@@ -173,16 +166,17 @@ def test_discovery_skips_when_daily_cap_exhausted(monkeypatch, tmp_path):
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
 
-    # Scope cache: in-scope combo.
-    legs = [{"market_ticker": "KXMLBSPREAD-XYZ", "event_ticker": "EVT-XYZ",
-             "side": "yes", "count": 1},
-            {"market_ticker": "KXMLBTOTAL-XYZ", "event_ticker": "EVT-XYZ",
-             "side": "yes", "count": 1}]
+    # Scope cache: in-scope combo with valid parseable legs.
+    _evt = "KXMLBGAME-25JUN271905TEXLAA"
+    legs = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
+             "event_ticker": _evt, "side": "yes"},
+            {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
+             "event_ticker": _evt, "side": "yes"}]
     monkeypatch.setattr(main, "_SCOPE_CACHE",
                         {"COMBO-2": (True, "game2", legs)})
 
-    # _resolve_game_and_lines must return a valid game_id so we reach the cap check.
-    monkeypatch.setattr(main, "_resolve_game", lambda legs: ("game2", _TEST_DESC))
+    # _resolve_game_for_legs replaces _resolve_game in the live path.
+    monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game2")
 
     # Make daily cap exhausted: return fills totalling far above cap.
     big_fill = [{"game_id": "game2", "price": 99999.0}]
@@ -291,16 +285,18 @@ def test_risk_sweep_cancels_on_drift_since_quote(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
 
-    # Book_fair_at_q was 0.40; now consensus median is 0.45 (drift 0.05 > 0.03).
-    monkeypatch.setattr(main, "_book_fairs",
-                        lambda gid, desc: {"DK": 0.44, "FD": 0.45, "PX": 0.46})
+    # Book_fair_at_q was 0.40; now consensus is 0.45 (drift 0.05 > 0.03 threshold).
+    # router.combo_fair replaces _book_fairs + statistics.median in the live path.
+    import kalshi_mlb_mm.router as router_mod
+    monkeypatch.setattr(router_mod, "combo_fair", lambda *a: 0.45)
 
     # Pre-seed an open live_quote referencing rfq r-drift, and a seen_rfqs row
     # with legs_json so the sweep can compute spread/total lines.
-    legs = [{"market_ticker": "KXMLBSPREAD-G1", "event_ticker": "EVT-G1",
-             "side": "yes", "count": 1, "no_sub_title": "-1.5"},
-            {"market_ticker": "KXMLBTOTAL-G1", "event_ticker": "EVT-G1",
-             "side": "yes", "count": 1, "no_sub_title": "Over 8.5"}]
+    _evt = "KXMLBGAME-25JUN271905TEXLAA"
+    legs = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
+             "event_ticker": _evt, "side": "yes"},
+            {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
+             "event_ticker": _evt, "side": "yes"}]
     with db.connect() as con:
         con.execute(
             "INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -346,10 +342,11 @@ def test_confirm_voids_when_no_fresh_books(monkeypatch, tmp_path):
     importlib.reload(db)
     db.init_database()
 
-    legs = [{"market_ticker": "KXMLBSPREAD-G2", "event_ticker": "EVT-G2",
-             "side": "yes", "count": 1, "no_sub_title": "-1.5"},
-            {"market_ticker": "KXMLBTOTAL-G2", "event_ticker": "EVT-G2",
-             "side": "yes", "count": 1, "no_sub_title": "Over 8.5"}]
+    _evt = "KXMLBGAME-25JUN271905TEXLAA"
+    legs = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
+             "event_ticker": _evt, "side": "yes"},
+            {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
+             "event_ticker": _evt, "side": "yes"}]
     with db.connect() as con:
         con.execute(
             "INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -371,8 +368,9 @@ def test_confirm_voids_when_no_fresh_books(monkeypatch, tmp_path):
         raise AssertionError(f"unexpected api call: {method} {path}")
     monkeypatch.setattr(auth_client, "api", fake_api)
 
-    # No fresh books available — _book_fairs returns {}.
-    monkeypatch.setattr(main, "_book_fairs", lambda gid, desc: {})
+    # No fresh books available — router.combo_fair returns None (replaces _book_fairs).
+    import kalshi_mlb_mm.router as router_mod
+    monkeypatch.setattr(router_mod, "combo_fair", lambda *a: None)
 
     confirm_calls = []
 
@@ -418,10 +416,11 @@ def test_confirm_records_fill_fast_with_reconciled_false(monkeypatch, tmp_path):
     importlib.reload(db)
     db.init_database()
 
-    legs = [{"market_ticker": "KXMLBSPREAD-G3", "event_ticker": "EVT-G3",
-             "side": "yes", "count": 1, "no_sub_title": "-1.5"},
-            {"market_ticker": "KXMLBTOTAL-G3", "event_ticker": "EVT-G3",
-             "side": "yes", "count": 1, "no_sub_title": "Over 8.5"}]
+    _evt = "KXMLBGAME-25JUN271905TEXLAA"
+    legs = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
+             "event_ticker": _evt, "side": "yes"},
+            {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
+             "event_ticker": _evt, "side": "yes"}]
     with db.connect() as con:
         con.execute(
             "INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -435,8 +434,9 @@ def test_confirm_records_fill_fast_with_reconciled_false(monkeypatch, tmp_path):
             ["r-fast", "COMBO-G3", True, "g3", json.dumps(legs),
              datetime.now(timezone.utc), "quoted"])
 
-    monkeypatch.setattr(main, "_book_fairs",
-                        lambda gid, desc: {"dk": 0.56, "fd": 0.56, "px": 0.56})
+    # router.combo_fair replaces _book_fairs + blended_fair in confirm path.
+    import kalshi_mlb_mm.router as router_mod
+    monkeypatch.setattr(router_mod, "combo_fair", lambda *a: 0.56)
 
     # Track API calls; if confirm path ever hits /portfolio/positions, we fail.
     api_paths = []
@@ -751,17 +751,18 @@ def test_discovery_skips_when_combo_exposure_capped(monkeypatch, tmp_path):
                                       "total_line": [8.5]}))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m_: True)
     monkeypatch.setattr(main, "_today_fills", lambda: [])
-    # Per-combo cap now runs after pricing — need book_fairs stub so pricing runs.
-    monkeypatch.setattr(main, "_book_fairs",
-                        lambda g, desc: {"dk": 0.55, "fd": 0.55, "px": 0.56})
+    # Per-combo cap runs after pricing — mock router so pricing produces a valid fair.
+    import kalshi_mlb_mm.router as router_mod
+    monkeypatch.setattr(router_mod, "combo_fair", lambda *a: 0.55)
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
 
-    legs = [{"market_ticker": "KXMLBSPREAD-CC", "event_ticker": "EVT-CC",
-             "side": "yes", "count": 1},
-            {"market_ticker": "KXMLBTOTAL-CC", "event_ticker": "EVT-CC",
-             "side": "yes", "count": 1}]
+    _evt = "KXMLBGAME-25JUN271905TEXLAA"
+    legs = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
+             "event_ticker": _evt, "side": "yes"},
+            {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
+             "event_ticker": _evt, "side": "yes"}]
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-CAP": (True, "gCAP", legs)})
-    monkeypatch.setattr(main, "_resolve_game", lambda legs: ("gCAP", _TEST_DESC))
+    monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "gCAP")
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
 
     # Pre-seed fills totaling $51 on this ticker (102 contracts × $0.50 = $51.00).
@@ -824,12 +825,13 @@ def test_discovery_skips_when_combo_in_cooldown(monkeypatch, tmp_path):
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m_: True)
     monkeypatch.setattr(main, "_today_fills", lambda: [])
 
-    legs = [{"market_ticker": "KXMLBSPREAD-CD", "event_ticker": "EVT-CD",
-             "side": "yes", "count": 1},
-            {"market_ticker": "KXMLBTOTAL-CD", "event_ticker": "EVT-CD",
-             "side": "yes", "count": 1}]
+    _evt = "KXMLBGAME-25JUN271905TEXLAA"
+    legs = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
+             "event_ticker": _evt, "side": "yes"},
+            {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
+             "event_ticker": _evt, "side": "yes"}]
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-CD": (True, "gCD", legs)})
-    monkeypatch.setattr(main, "_resolve_game", lambda legs: ("gCD", _TEST_DESC))
+    monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "gCD")
 
     now = datetime.now(timezone.utc)
     with db.connect() as con:
@@ -875,10 +877,11 @@ def test_confirm_arms_combo_cooldown(monkeypatch, tmp_path):
     importlib.reload(db)
     db.init_database()
 
-    legs = [{"market_ticker": "KXMLBSPREAD-AR", "event_ticker": "EVT-AR",
-             "side": "yes", "count": 1, "no_sub_title": "-1.5"},
-            {"market_ticker": "KXMLBTOTAL-AR", "event_ticker": "EVT-AR",
-             "side": "yes", "count": 1, "no_sub_title": "Over 8.5"}]
+    _evt = "KXMLBGAME-25JUN271905TEXLAA"
+    legs = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
+             "event_ticker": _evt, "side": "yes"},
+            {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
+             "event_ticker": _evt, "side": "yes"}]
     with db.connect() as con:
         con.execute(
             "INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -892,8 +895,9 @@ def test_confirm_arms_combo_cooldown(monkeypatch, tmp_path):
             ["r-arm", "COMBO-ARM", True, "gAR", json.dumps(legs),
              datetime.now(timezone.utc), "quoted"])
 
-    monkeypatch.setattr(main, "_book_fairs",
-                        lambda gid, desc: {"dk": 0.56, "fd": 0.56, "px": 0.56})
+    # router.combo_fair replaces _book_fairs + blended_fair in confirm path.
+    import kalshi_mlb_mm.router as router_mod
+    monkeypatch.setattr(router_mod, "combo_fair", lambda *a: 0.56)
 
     def fake_api(method, path, *a, **kw):
         if path.startswith("/communications/quotes/"):
