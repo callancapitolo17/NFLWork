@@ -1,7 +1,7 @@
 # Kalshi MLB MM — Phase 2: On-Demand Pricing of Arbitrary Leg Combos
 
-**Date:** 2026-07-08 (rev 2, 2026-07-09 — live-per-RFQ pricing, one-sided-leg
-route, limitation configs removed per user review)
+**Date:** 2026-07-08 (rev 3, 2026-07-09 — no quote maintenance loop, no
+on-demand configs; rev 2 added live-per-RFQ pricing + one-sided-leg route)
 **Status:** Draft — awaiting user review
 **Depends on:** Phase 1 generalized combos (merged to main 2026-07-08, `2e9a0e8`);
 spec at `docs/superpowers/specs/2026-06-28-kalshi-mlb-mm-generalized-combos-design.md`
@@ -16,10 +16,12 @@ Phase 2 makes the quoting engine fully general: when an RFQ contains a novel
 same-game shape (any leg count, any market mix), the bot live-queries the six
 sportsbooks' SGP endpoints for that exact leg set, devigs, builds consensus,
 and quotes — asynchronously, so the 2-second RFQ discovery loop never blocks
-on a book, and **every quote is backed by a fetch triggered by that specific
-RFQ** (no price reuse, no staleness window). Goal per user direction: "quote
-any combination of legs given we have access to it through our sportsbook
-scraping," with no artificial leg-count or rate limitations.
+on a book. Liveness principle: **prices are only ever acted on freshly
+fetched** — a new quote is backed by a fetch triggered by that RFQ, and a
+fill is confirmed only after a synchronous live re-fetch. Nothing in between
+is maintained or reused. Goal per user direction: "quote any combination of
+legs given we have access to it through our sportsbook scraping," with no
+artificial limitations or switches.
 
 **Key decisions**
 
@@ -28,25 +30,35 @@ scraping," with no artificial leg-count or rate limitations.
    within one tick of the price landing. Rejected: blocking the discovery tick
    on live HTTP. Evidence async works: the bot already first acts on RFQs at
    median age 15s (p90 29s) and those quotes succeed — RFQs rest minutes.
-2. **Live-per-RFQ pricing, no reuse** (user requirement, rev 2). A fetched
-   price may back a NEW quote only within ~15s of landing (one tick + jitter);
-   a later RFQ on the same combo triggers a fresh fetch. Resting quotes are
-   re-fetched every 60s and pulled immediately if a refresh fails; the
-   confirm-time last look is a synchronous live re-fetch (can't complete →
-   void). Rejected: the rev-1 TTL cache with 180s quote-eligibility — user:
-   "we can't quote stale prices."
-3. **Two devig routes, no leg cap** (rev 2). Route A (gold standard, ≤3
-   legs, all cells available): fetch the full 2^N side-combination partition,
+2. **Act-on-fresh-only; no maintenance loop** (rev 3). A fetched price backs a
+   NEW quote only within ~15s of landing; a later RFQ on the same combo
+   triggers a fresh fetch. Resting quotes are left untouched — the
+   confirm-time last look (a synchronous live re-fetch + drift check; can't
+   complete → void) is the gate where money changes hands, and Kalshi's RFQ
+   protocol gives the maker that last look natively. Rejected: rev 2's 60s
+   re-fetch maintenance loop — its only benefit was fewer voids, at the cost
+   of a standing per-quote fetch stream. Accepted trade-off: drifted resting
+   quotes get voided at confirm instead of pulled early (voids cost creator
+   goodwill and count toward the existing global void-rate halt, which caps
+   systemic damage).
+3. **Two devig routes, no leg cap** (rev 2). Route A (gold standard, ≤3 legs,
+   all cells offered): fetch the full 2^N side-combination partition,
    probit-devig, read the target cell — the exact generalization of Phase 1's
    4-cell rule. Route B (any N, and any leg one-sided at the book):
    book-implied correlation transfer — one SGP call/book; fair =
    ∏(devigged singles) × [SGP implied / ∏(vigged singles)], singles devigged
-   from the structure fetch we already cache. Rejected: partition-only with a
-   hard leg cap (rev 1) — it made one-sided lines and 4+ legs refusal paths.
-4. **All 6 books participate** (user decision, rev 1). Caesars (WAF fragility)
-   and ProphetX (an on-demand query is a real RFQ on their exchange) were
-   offered as exclusions and declined; both get failure isolation +
-   measurement, and `ON_DEMAND_BOOKS` remains the retreat lever.
+   from the structure fetch we already cache. A lone SGP price cannot be
+   devigged by itself (fair and margin are entangled in one number); the
+   partition and the singles are the only two margin references available —
+   hence exactly these two routes. Rejected: partition-only with a leg cap
+   (rev 1) — it made one-sided lines and 4+ legs refusal paths.
+4. **All 6 books, always on, zero new config** (user decisions, revs 1+3).
+   No `ON_DEMAND_ENABLED`, no `ON_DEMAND_BOOKS`: the on-demand path is a
+   permanent part of the pricing engine, books = the SGP service's book set.
+   The existing bot-wide kill file covers emergencies; dropping a misbehaving
+   book is a one-line code change. `QUOTE_FRESH_SEC=15` and
+   `PARTITION_OVERROUND_MAX=1.35` are module constants (correctness guards,
+   not knobs).
 5. **Plain 2-book consensus, same as grids** (user decision, rev 1). A
    DK+Novig pair counts even though Novig mirrors DK; fills carry a
    `consensus_books` research field so the risk is measured, not silent.
@@ -62,17 +74,21 @@ scraping," with no artificial leg-count or rate limitations.
   days + 1,500-market random sample; 95% upper bound ≈ 0.3% of out-of-scope
   flow). You chose to build the general engine anyway; instrumentation ships
   in the same merge so usage is visible from day one.
-- **Unbounded quoting needs bounded fetching.** With rate-limit configs
-  removed, the only pacing is per-book serialization (one request stream per
-  book — forced anyway by `curl_cffi` thread-unsafety). In a June-style RFQ
-  flood (~35k/day) the fetch queue would grow and prices would land after
-  RFQs expire — quotes forgone, never stale, and the books see at most one
-  serialized stream per book. That's the graceful-degradation story; if you'd
-  rather shed load explicitly under flood, say so and a backstop returns.
+- **Unmaintained resting quotes lean entirely on the confirm last look.**
+  Between quote and accept, an on-demand quote can drift off-market; the live
+  re-fetch at confirm voids the bad ones, but every void burns creator
+  goodwill and counts toward the GLOBAL void-rate halt (25%/1h) — a burst of
+  on-demand voids can halt grid quoting too. Accepted (rev 3, user
+  direction); monitored via void rate by combo class.
+- **No rate limiting anywhere.** Pacing is per-book serialization only (one
+  request stream per book — forced anyway by `curl_cffi` thread-unsafety).
+  In a June-style RFQ flood (~35k/day) the fetch queue grows and prices land
+  after RFQs expire — quotes forgone, never stale. If you'd rather shed load
+  explicitly under flood, say so and a backstop returns.
 - **Caesars blast radius.** On-demand shares Caesars' WAF-token session with
   the 60s grid sweep; tripping the WAF costs the grid pipeline Caesars too.
-  Mitigation: failure isolation + `ON_DEMAND_BOOKS` retreat lever. Residual
-  risk accepted by user (rev 1).
+  With the config lever removed (rev 3), retreat is a one-line code change
+  shipped on evidence. Residual risk accepted by user.
 - **Route B rests on a vig-cancellation assumption** (the book's SGP margin ≈
   compounded leg vig, so it divides out of the correlation ratio). Extra SGP
   margin beyond that inflates Route B fairs slightly. Defense: consensus band
@@ -88,14 +104,18 @@ scraping," with no artificial leg-count or rate limitations.
 
 **Worth understanding** (opt-in)
 
-1. *Joint-distribution partitions.* A 2-leg combo's 4-cell grid is a 2×2
-   contingency table whose cells sum to 1; N legs → `expand.grid` of sides =
-   2^N cells. Devigging over the full partition removes the book's margin
-   without assuming where it hides — that's why it's the preferred route.
-2. *Ratio estimators.* Route B is a classic ratio trick: a bias present in
-   both numerator (vigged SGP) and denominator (product of vigged singles)
-   approximately cancels, leaving the correlation multiplier. Like comparing
-   two measurements from the same miscalibrated scale.
+1. *One price can't be devigged alone.* A quoted price is fair probability ×
+   margin, entangled in one number. Separating them needs a reference that
+   reveals the margin's size: either a full partition (cells must sum to 1,
+   the excess IS the margin — Route A) or the book's own two-sided singles
+   (per-leg margin computed exactly, assumed to compound into the SGP's —
+   Route B). Like correcting an instrument's bias by measuring a known
+   standard on the same instrument.
+2. *Maker quotes are resting options.* In an RFQ protocol the responder posts
+   a quote and the creator chooses when to accept — a resting quote is a free
+   option granted to the counterparty. The two defenses are pulling it early
+   (maintenance) or checking at exercise time (last look). This design uses
+   only the last look, made live.
 3. *Producer/consumer worker.* The discovery tick *produces* fetch jobs onto a
    queue and moves on; a background thread *consumes* them and posts results.
    The two sides communicate only through the queue and the results store —
@@ -156,10 +176,10 @@ string; `mlb_sgp_odds` only has `spread_line`/`total_line` columns).
 
 **Goal.** Any RFQ where every game's sub-combo is either a Phase 1 route or an
 on-demand shape that ≥2 books will price gets a two-sided quote backed by
-prices fetched for that RFQ. No leg-count cap, no per-shape refusal rules —
-the only refusals are fail-safe ones (books won't price it / consensus fails /
-price can't be kept live). Cross-game multiplication, gates, sizing, and
-lifecycle are unchanged.
+prices fetched for that RFQ. No leg-count cap, no per-shape refusal rules, no
+switches — the only refusals are fail-safe ones (books won't price it /
+consensus fails / price isn't fresh at action time). Cross-game
+multiplication, gates, sizing, and lifecycle are unchanged.
 
 **Non-goals.**
 - No new market types: legs are still MLB FG spread / total / moneyline
@@ -196,9 +216,10 @@ lifecycle are unchanged.
      fetch 1 SGP price → × correlation transfer vs structure singles
    ▼
  ResultStore[hash] = {book: fair, route, landed_at}   (fresh ≤15s for NEW
-   ▲                                                   quotes; then dead)
-   │ open-quote maintenance: re-fetch every 60s; any failed
-   │ refresh → PULL the quote immediately
+                                                       quotes; then dead)
+ quote rests UNTOUCHED ──► accept ──► confirm tick: synchronous live
+                                      re-fetch (priority lane) + drift
+                                      check → confirm, else VOID
  router.subcombo_fair(..., on_demand_fairs)  ← pure lookup, injected by main
 ```
 
@@ -221,20 +242,22 @@ lifecycle are unchanged.
    **One-sided variant:** the book has pulled Away +1.5 → cells needing it are
    unpriceable → Route B instead: one SGP call for the target combo, singles
    devigged from the structure (e.g. SGP implied 16.7%; vigged singles 52% ×
-   51% × 60%; multiplier 16.7%/15.9% = 1.05; fair = 49%×48%×57% × 1.05 =
-   14.1%). If the *single* is one-sided too, its devig uses the book's
+   51% × 60% = 15.9%; multiplier 16.7/15.9 = 1.05; fair = 49%×48%×57% × 1.05
+   = 14.1%). If the *single* is one-sided too, its devig uses the book's
    existing vig-fallback haircut (`DK_VIG_FALLBACK` etc.); still
    consensus-gated downstream.
 3. Tick ≈ landing+≤2s (RFQ still open — median rest ≫ this): live result →
    `consensus()` over per-book fairs → all existing gates → quote.
-4. While the quote rests: the combo joins the maintenance set — full re-fetch
-   every `SGP_REFRESH_SEC` (60s); reprice through the normal hysteresis /
-   circuit-breaker path; **a failed refresh pulls the quote immediately** (no
-   stale resting exposure beyond one refresh interval).
+4. The quote rests untouched. Existing protections still apply (tipoff
+   cancel, global books-stale pull, operator kill file); the drift-since-quote
+   sweep simply has nothing to compare for on-demand combos (verified: it
+   no-ops when `combo_fair` returns None, `main.py:941`) — by design, there is
+   no background re-fetching of unaccepted quotes.
 5. On acceptance: confirm-tick last look triggers a **synchronous live
-   re-fetch** of this combo (worker priority lane); if it can't complete and
-   pass the drift check inside the confirm window → void. We never confirm on
-   a previously-fetched number.
+   re-fetch** of this combo (worker priority lane); drift check against the
+   fresh consensus; can't complete in the confirm window or consensus fails →
+   void (`voided_no_fresh_books`). We never confirm on a previously-fetched
+   number.
 
 ## 4. Components
 
@@ -301,29 +324,25 @@ serialization is also the system's natural fetch pacing.
 
 ### 4.5 `kalshi_mlb_mm/on_demand.py` — the stateful engine (new)
 
-- `OnDemandEngine(service, books)` owning:
+- `OnDemandEngine(service)` owning:
   - **Queue**: FIFO, unbounded, deduped on in-flight `leg_set_hash` (two RFQs
     on the same combo in the same window share one fetch — that's
     concurrency-dedup, not price reuse). No drop path: under load, fetches
     land later and RFQs that expired meanwhile simply go unquoted — degraded
     means *fewer quotes*, never *staler quotes*.
   - **Worker**: one background thread consuming the queue; per combo, fans out
-    to `ON_DEMAND_BOOKS` concurrently (thread per book, same deadline
+    to the service's books concurrently (thread per book, same deadline
     discipline as `SGPService.refresh`). A **priority lane** serves confirm-
     time last-look re-fetches ahead of discovery fetches.
   - **ResultStore**: `hash → {book: fair, route, landed_at}`. A result may
     back a NEW quote only while `age <= QUOTE_FRESH_SEC` (constant 15s — one
     discovery tick + landing jitter; the price is seconds old when quoted).
-    After that it is dead for quoting; it is kept briefly only for research
-    comparison. There is deliberately NO quote-eligibility TTL to tune.
-  - **Maintenance set**: hashes of combos with an open `live_quotes` row —
-    full re-fetch every `SGP_REFRESH_SEC` (60s). A refresh that fails (books
-    < consensus minimum) → the engine flags the hash and the risk sweep pulls
-    the quote on its next pass (≤10s later). Quote closed → hash drops out.
-  - `lookup(hash) -> {book: fair} | None` — returns per-book fairs only while
-    fresh (for new quotes) or maintained (for open-quote re-pricing); the pure
-    read handed to the router. Single lock around store mutations; lookups
-    copy.
+    After that it is dead for quoting; kept briefly only for research
+    comparison. No maintenance, no TTL knobs, no background re-fetching.
+  - `lookup(hash) -> {book: fair} | None` — fresh results only; the pure read
+    handed to the router. Single lock around store mutations; lookups copy.
+  - `refetch_now(hash, deadline) -> {book: fair} | None` — synchronous
+    priority re-fetch for the confirm-tick last look.
 - Crash-safety: worker exceptions caught and logged; dead worker restarts
   lazily on next enqueue; restart loses nothing durable (results are
   per-RFQ ephemeral by design).
@@ -349,8 +368,8 @@ band (user decision — no independence adjustment).
 
 ### 4.7 `kalshi_mlb_mm/main.py` — integration + instrumentation
 
-- `_priceable_in_phase1` → `_priceable(canon)`: `on_demand` routes are
-  in-scope whenever `ON_DEMAND_ENABLED` (no leg-count condition).
+- `_priceable_in_phase1` → `_priceable(canon)`: `on_demand` routes are always
+  in-scope (no switch, no leg-count condition).
 - Discovery tick: on-demand games with a live (≤15s) result price through the
   normal path (all existing gates unchanged); otherwise
   `engine.ensure_fetch()` + skip reason `on_demand_pending` (new reason value;
@@ -360,9 +379,11 @@ band (user decision — no independence adjustment).
   `engine.refetch_now(hash, deadline)` (priority lane, synchronous); on
   timeout or consensus failure → existing `voided_no_fresh_books` path. Grid
   combos keep today's behavior.
-- Risk sweep: unchanged code path via `combo_fair(...,
-  on_demand_fairs=engine.lookup)`; the maintenance set guarantees those
-  lookups are ≤60s old or the quote is being pulled.
+- Risk sweep: **zero changes.** Tipoff and global books-stale pulls apply to
+  all quotes; the drift-since-quote check no-ops for on-demand combos because
+  `combo_fair` returns None without fresh fairs (`main.py:941` requires
+  `cur_med is not None`) — resting on-demand quotes are deliberately
+  unmaintained.
 - Fill research event gains `consensus_books` and `route` per book.
 - **Instrumentation (measurement blind-spot fix):** out-of-scope MLB RFQs now
   store `legs_json` and a shape class in `seen_rfqs`, with distinct
@@ -371,18 +392,13 @@ band (user decision — no independence adjustment).
   (per-book route, cell coverage, fairs, latency, consensus outcome,
   `route_gap` when both routes computed).
 
-### 4.8 Config additions (`kalshi_mlb_mm/config.py`)
+### 4.8 Config
 
-```
-ON_DEMAND_ENABLED=true      # master kill switch (operational, not a limit)
-ON_DEMAND_BOOKS=<all 6>     # per-book retreat lever (user chose all 6)
-```
-
-Deliberately nothing else (user decision, rev 2): no leg cap, no queue cap,
-no rate budget, no tunable TTLs. `QUOTE_FRESH_SEC=15` and
+**None.** No new config keys (user decision, rev 3). `QUOTE_FRESH_SEC=15` and
 `PARTITION_OVERROUND_MAX=1.35` are module constants (correctness guards, not
-knobs); freshness cadence reuses `SGP_REFRESH_SEC`; pacing is per-book
-serialization.
+knobs); pacing is per-book serialization; the existing bot-wide kill file
+(`config.KILL_FILE`) remains the emergency stop; removing a misbehaving book
+from on-demand is a one-line code change shipped on evidence.
 
 ## 5. Failure modes (all fail toward "don't quote" / "fewer quotes", never "staler quotes")
 
@@ -397,10 +413,10 @@ serialization.
 | Fetch in flight when RFQ re-seen | shared fetch (dedup); still `on_demand_pending` |
 | Result older than 15s when RFQ (re-)seen | dead for quoting → fresh fetch enqueued |
 | RFQ flood (June-style) | queue grows; prices land late; expired RFQs go unquoted; books see one serialized stream each |
-| Open-quote refresh fails | quote pulled within one risk-sweep pass (≤10s) |
+| Fair drifts while quote rests | caught at confirm: live re-fetch + drift check → void (accepted trade-off, rev 3; void-rate halt caps systemic damage) |
 | Confirm-time re-fetch can't complete in window | `voided_no_fresh_books` — never confirm on an old number |
 | Worker thread dies | lazy restart on next enqueue; meanwhile all on_demand → skip |
-| Caesars WAF trips | book 3-strike reinit (shared with grid sweep — accepted risk; retreat lever = `ON_DEMAND_BOOKS`) |
+| Caesars WAF trips | book 3-strike reinit (shared with grid sweep — accepted risk; retreat = code change) |
 | Bot restart | engine state empty → everything re-fetches per RFQ (by design) |
 
 ## 6. Testing (TDD throughout)
@@ -415,14 +431,15 @@ serialization.
    fixtures (repo's existing fixture pattern); unresolvable-side → drives
    Route B; singles extraction both sides.
 3. **Engine**: fake `SGPService` (constructor-injected, mirrors the existing
-   `runners` test seam) — in-flight dedup, 15s freshness death, maintenance
-   refresh + pull-on-fail flag, priority lane, worker-death restart, flood
-   behavior (queue grows, no drops, no stale results served). No network.
+   `runners` test seam) — in-flight dedup, 15s freshness death, priority-lane
+   `refetch_now` (success/deadline), worker-death restart, flood behavior
+   (queue grows, no drops, no stale results served), no-background-refetch
+   invariant (a resting quote generates zero fetches until accept).
 4. **Router**: injected `on_demand_fairs` — consensus paths, None paths, and
    the untouched-grid regression suite (must pass unmodified, 1e-9 lock).
 5. **Integration**: discovery→pending→landed→quoted flow with everything
    faked; confirm-tick synchronous re-fetch success/timeout/void; risk-sweep
-   pull on failed maintenance.
+   no-op on resting on-demand quotes (and tipoff pull still firing).
 6. **Live verification (manual, before merge)**: one real exotic combo priced
    per book per route from a REPL, logged; then `--dry-run` soak with
    synthetic self-created RFQs (as the taker does) to exercise the full path
@@ -437,12 +454,15 @@ serialization.
    (finally measurable), per-book route mix (A vs B) and partition-completion
    rate, `route_gap` distribution (validates the Route B vig-cancellation
    assumption), fetch latency, `consensus_books` composition (DK+NV-only
-   share), Caesars WAF failure rate vs grid-sweep health, void rate and
-   quote-pull rate on on-demand quotes.
-3. Pre-registered retreat triggers: Caesars grid-sweep failures attributable
-   to on-demand → drop CZR from `ON_DEMAND_BOOKS`; `route_gap` shows Route B
-   systematically rich → haircut or disable Route B (that's a code decision,
-   surfaced with data, not a config).
+   share), Caesars WAF failure rate vs grid-sweep health, void rate on
+   on-demand quotes vs grid quotes (the rev-3 no-maintenance trade-off,
+   measured).
+3. Pre-registered retreat triggers (all code changes shipped on evidence, no
+   configs): Caesars grid-sweep failures attributable to on-demand → drop CZR
+   from the on-demand book set; `route_gap` shows Route B systematically rich
+   → haircut or disable Route B; on-demand void rate threatens the global
+   void-rate halt → reinstate a maintenance/pull loop for resting on-demand
+   quotes.
 
 ## 8. Version control & worktree
 
@@ -459,7 +479,8 @@ serialization.
 ## 9. Documentation (same merge as code)
 
 - `kalshi_mlb_mm/README.md`: on-demand architecture, the two devig routes,
-  liveness rules, failure modes, rollout/retreat playbook.
+  liveness rules (fresh-at-action-time, unmaintained resting quotes), failure
+  modes, rollout/retreat playbook.
 - `NFLWork/CLAUDE.md`: maker bullet — Phase 2 on-demand pricing summary.
 - `kalshi_mlb_monitor/README.md`: only if a monitor tweak is needed (reason
   vocabulary is data-driven, so likely none).
