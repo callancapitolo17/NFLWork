@@ -53,7 +53,7 @@ unabated_edge/
 2. `mapping.pair_events` matches Unabated events to open Kalshi events by canonical team-pair (parsed from the Kalshi event title).
 3. `adapter.price_event()` calls `_anchor_totals` to devig the bt3 over/under ladder from the first complete anchor book, then emits candidates at every Kalshi rung matching a ladder line by `floor_strike`.
 4. For each `Candidate` (Over=YES, Under=NO), `ev.edge_for_yes` computes net EV after Kalshi taker fee. `ask_fn(ticker, side)` fetches `best_yes_ask` for YES or `best_no_ask` for NO.
-5. Candidates above both `MIN_EV_PCT` and `MIN_EV_DOLLARS` are Kelly-sized and written to `flagged_edges`. All line snapshots are written every tick for CLV tracking.
+5. Candidates above both `MIN_EV_PCT` and `MIN_EV_DOLLARS` are Kelly-sized and written to `flagged_edges`. Line snapshots (with the feed's `modified_on`) are written every tick **until kickoff** — so the last snapshot per event is the closing line by construction. Every priced candidate goes to the research firehose with rung provenance (`book`, `alt`, `overround`) so alt-line trustworthiness stays auditable. If both sides of one rung flag at once, that's a crossed/stale book and is logged as a data error, not a double edge.
 
 **Databases (both gitignored, pkg-local):**
 - `unabated_edge_market.duckdb` — `line_snapshots`, `flagged_edges`
@@ -124,7 +124,7 @@ pip install -r unabated_edge/requirements.txt
 python3 -m unabated_edge.runner
 ```
 
-The bot re-fetches each adapter's v2 league odds file every `V2_POLL_SEC` (default 5s), refreshes Kalshi event listings every 30 seconds, and logs flagged edges to `unabated_edge/bot.log` and to the two DuckDB files. A heartbeat line (~every 60s) reports event/line/market counts so "broken" is distinguishable from "no edges".
+The bot re-fetches each adapter's v2 league odds file every `V2_POLL_SEC` (default 5s), refreshes Kalshi event listings every 30 seconds, and logs flagged edges to `unabated_edge/bot.log` and to the two DuckDB files. A heartbeat line (~every 60s) reports event/line/market counts **and candidates priced** — `candidates_recent=0` while `lines>0` means the pricing chain is broken (re-blurred anchors, feed shape drift, or no Kalshi pairings), which a raw line count alone would hide.
 
 **Kill switch:** create `unabated_edge/.kill` to stop the loop gracefully. `SIGINT`/`SIGTERM` also stop it.
 

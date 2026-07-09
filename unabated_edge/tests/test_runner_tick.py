@@ -62,6 +62,42 @@ def test_absolute_ev_floor_blocks_flag(tmp_path, monkeypatch):
     assert rows == []
 
 
+def test_no_snapshots_after_kickoff(tmp_path, monkeypatch):
+    """Once now >= kickoff, an event's lines are no longer snapshotted — the last
+    pre-kickoff snapshot IS the closing line by construction."""
+    _init_dbs(tmp_path, monkeypatch)
+    st = _state()                                # kickoff 2026-12-31T17:00
+    after_kickoff = datetime.datetime(2026, 12, 31, 18, 0, tzinfo=datetime.timezone.utc)
+    runner.run_tick(Soccer(), st, [_KEV], now=after_kickoff, dry_run=True,
+                    ask_fn=lambda t, side: 0.30)
+    with storage.connect(config.MARKET_DB_PATH, read_only=True) as c:
+        assert c.execute("SELECT count(*) FROM line_snapshots").fetchone()[0] == 0
+
+
+def test_snapshot_rows_carry_modified_on(tmp_path, monkeypatch):
+    """The feed-side modifiedOn timestamp is persisted (staleness gate + clean CLV need it)."""
+    _init_dbs(tmp_path, monkeypatch)
+    st = _state()
+    for k in list(st.lines):
+        st.lines[k]["modifiedOn"] = "2026-06-01T11:59:00"
+    runner.run_tick(Soccer(), st, [_KEV], now=_NOW, dry_run=True, ask_fn=lambda t, side: 0.30)
+    with storage.connect(config.MARKET_DB_PATH, read_only=True) as c:
+        vals = {r[0] for r in c.execute("SELECT DISTINCT modified_on FROM line_snapshots").fetchall()}
+    assert vals == {"2026-06-01T11:59:00"}
+
+
+def test_both_sides_flagged_logs_crossed_book_warning(tmp_path, monkeypatch, caplog):
+    """yes and no on the same rung both +EV = crossed/stale book: must WARN."""
+    import logging
+    _init_dbs(tmp_path, monkeypatch)
+    # ask 0.30 for yes AND 0.30 for no => yes_ask+no_ask=0.60 << 1: crossed book
+    with caplog.at_level(logging.WARNING, logger="unabated_edge"):
+        rows = runner.run_tick(Soccer(), _state(), [_KEV], now=_NOW, dry_run=True,
+                               ask_fn=lambda t, side: 0.30)
+    assert len(rows) == 2                        # both sides flagged (dry-run records them)
+    assert any("crossed/stale book" in r.getMessage() for r in caplog.records)
+
+
 def test_null_price_lines_not_snapshotted(tmp_path, monkeypatch):
     """A non-blurred line with no price must not be written as a NULL-price snapshot row."""
     _init_dbs(tmp_path, monkeypatch)

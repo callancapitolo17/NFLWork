@@ -7,6 +7,10 @@ from unabated_edge.risk import tipoff_ok, kill_switch_ok
 
 log = setup_logging()
 _running = threading.Event(); _running.set()
+# candidates priced since the last heartbeat: >0 proves the full chain works
+# (v2 parsed -> anchors unblurred -> ladder built -> Kalshi paired -> asks live);
+# 0 with lines>0 exposes the silent-zero failure modes the raw line count hides.
+_stats = {"candidates": 0}
 
 
 def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, ask_fn) -> list[dict]:
@@ -14,7 +18,11 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, ask_fn) -> lis
         return []
     flagged = []
     events = [e for e in state.events.values() if e.league_key == adapter.league_prefix]
-    event_ids = {e.event_id for e in events}
+    # snapshot only pre-kickoff events: the v2 pregame rows can freeze once a match
+    # goes live, and frozen rows with later ts would masquerade as the closing line.
+    # Stopping at kickoff makes "last snapshot = the close" true by construction.
+    event_ids = {e.event_id for e in events
+                 if e.start_utc is None or now < e.start_utc}
     # persist line snapshot for these events (CLV backbone)
     snap, dropped = [], 0
     for k, v in state.lines.items():
@@ -32,10 +40,12 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, ask_fn) -> lis
             "side": k.split("|")[1],
             "price": price,
             "points": v.get("points"),
+            "modified_on": v.get("modifiedOn"),   # feed-side timestamp: staleness gate + CLV need it
         })
     if dropped:
         log.warning("%s: dropped %d line-snapshot rows with NULL price", adapter.sport, dropped)
     storage.snapshot_lines(adapter.sport, snap)
+    flagged_sides = {}          # market_ticker -> set of flagged sides (crossed-book tripwire)
     for event_meta, kev in mapping.pair_events(adapter, events, kalshi_events):
         if not tipoff_ok(event_meta.start_utc, config.KICKOFF_CUTOFF_MIN, now):
             continue
@@ -43,6 +53,7 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, ask_fn) -> lis
             ask = ask_fn(c.market_ticker, c.side)
             if ask is None:
                 continue
+            _stats["candidates"] += 1
             ev_d, ev_pct = ev.edge_for_yes(c.fair_prob, ask)
             storage.emit(
                 "candidate_priced", adapter.sport,
@@ -53,6 +64,7 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, ask_fn) -> lis
                 ask=ask,
                 ev_pct=ev_pct,
                 ev_dollars=ev_d,
+                **(c.meta or {}),
             )
             # Gate on BOTH percentage and absolute EV: ev_pct=ev_d/ask inflates on
             # cheap longshots, so require a real per-contract edge too.
@@ -76,6 +88,13 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, ask_fn) -> lis
             }
             storage.log_flagged(row)
             flagged.append(row)
+            sides = flagged_sides.setdefault(c.market_ticker, set())
+            sides.add(c.side)
+            if sides == {"yes", "no"}:
+                # both sides of one rung "+EV" requires yes_ask+no_ask < 1-2*fee:
+                # a crossed/stale orderbook, i.e. a data error — never a real double edge.
+                log.warning("both sides of %s flagged in one tick — crossed/stale book, "
+                            "treat as data error not edge", c.market_ticker)
             log.info(
                 "EDGE %s %s %s fair=%.3f ask=%.2f ev=%.1f%% n=%d [DRY]",
                 adapter.sport, c.label, c.side, c.fair_prob, ask, ev_pct * 100, n,
@@ -111,9 +130,10 @@ def main_loop(dry_run: bool):
             storage.flush()
             ticks += 1
             if ticks % hb_every == 0:            # heartbeat: distinguishes "broken" from "no edges"
-                log.info("heartbeat tick=%d events=%d lines=%d kalshi_events=%d flagged_recent=%d",
+                log.info("heartbeat tick=%d events=%d lines=%d kalshi_events=%d candidates_recent=%d flagged_recent=%d",
                          ticks, n_events, n_lines,
-                         sum(len(v) for v in kalshi_events.values()), flagged_since_hb)
+                         sum(len(v) for v in kalshi_events.values()), _stats["candidates"], flagged_since_hb)
+                _stats["candidates"] = 0
                 flagged_since_hb = 0
         except Exception:
             log.exception("tick failed")

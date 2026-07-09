@@ -8,6 +8,7 @@ class Candidate:
     side: str           # "yes" | "no"
     fair_prob: float
     label: str          # e.g. "over_2.5", "under_2.5"
+    meta: dict | None = None   # provenance for the research firehose (book, alt, overround)
 
 
 class SportAdapter(ABC):

@@ -84,6 +84,31 @@ def test_anchor_totals_ladder_from_alternate_lines():
     assert {c.market_ticker for c in cands} == {"T-O25", "T-O35"}
 
 
+def test_side_prices_main_wins_over_alt_collision():
+    """An alternateLines entry at the SAME points as the main quote must not
+    overwrite the main (raw book) price."""
+    s = Soccer()
+    prices = s._side_prices({"price": -140, "points": 2.5,
+                             "alternateLines": [{"points": 2.5, "price": -999},
+                                                {"points": 3.5, "price": 254}]})
+    assert prices[2.5] == (-140, False)          # main survived, marked non-alt
+    assert prices[3.5] == (254, True)            # genuine alt marked alt
+
+
+def test_candidates_carry_provenance_meta():
+    """Every candidate carries book/alt/overround so the research firehose can
+    audit whether alt rungs behave like real quotes or derived numbers."""
+    s = Soccer()
+    st = _state_with_bt3(eid=9, ms=7, over_price=115, under_price=-140, line=2.5)
+    kev = {"title": "Colombia vs Ghana: Regulation Time Total Goals",
+           "markets": [{"ticker": "T-O25", "strike_type": "greater", "floor_strike": 2.5}]}
+    cands = s.price_event(st, st.events[9], kev)
+    for c in cands:
+        assert c.meta["book"] == 7
+        assert c.meta["alt"] is False            # built from the main quote
+        assert 1.0 < c.meta["overround"] < 1.2   # raw implied sum carries the vig
+
+
 def test_anchor_totals_same_book_only():
     """Book 7 incomplete (over side only) -> fall through to book 6's complete
     ladder; never mix book 7's over with book 6's under."""

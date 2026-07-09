@@ -34,7 +34,8 @@ def init():
     with connect(config.MARKET_DB_PATH) as c:
         c.execute("""CREATE TABLE IF NOT EXISTS line_snapshots(
             ts TIMESTAMPTZ, sport VARCHAR, event_id BIGINT, market_source_id INTEGER,
-            bet_type VARCHAR, side VARCHAR, price DOUBLE, points DOUBLE)""")
+            bet_type VARCHAR, side VARCHAR, price DOUBLE, points DOUBLE,
+            modified_on VARCHAR)""")
         c.execute("""CREATE TABLE IF NOT EXISTS flagged_edges(
             ts TIMESTAMPTZ, sport VARCHAR, event_id BIGINT, market_ticker VARCHAR, outcome VARCHAR,
             fair_prob DOUBLE, yes_ask DOUBLE, ev_pct DOUBLE, kelly_contracts INTEGER, dry_run BOOLEAN)""")
@@ -48,10 +49,10 @@ def snapshot_lines(sport, rows):
         return
     with connect(config.MARKET_DB_PATH) as c:
         c.executemany(
-            "INSERT INTO line_snapshots VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO line_snapshots VALUES (?,?,?,?,?,?,?,?,?)",
             [
                 [r["ts"], sport, r["event_id"], r["market_source_id"],
-                 r["bet_type"], r["side"], r["price"], r["points"]]
+                 r["bet_type"], r["side"], r["price"], r["points"], r.get("modified_on")]
                 for r in rows
             ],
         )
