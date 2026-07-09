@@ -143,6 +143,14 @@ coverage_audit/coverage.duckdb
 coverage_audit/coverage.duckdb.wal
 kalshi_mlb_rfq/.kill
 
+# unabated_edge engine
+unabated_edge/.env
+unabated_edge/*.duckdb
+unabated_edge/*.duckdb.wal
+unabated_edge/bot.log
+unabated_edge/bot.log.*
+unabated_edge/.kill
+
 # Caesars SGP scraper runtime artifacts + recon data dumps (token has short TTL
 # but should never be committed; browser profile + JSON captures are data).
 mlb_sgp/.caesars_token.json

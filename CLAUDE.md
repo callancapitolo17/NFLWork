@@ -62,6 +62,7 @@ This repo contains tools for:
   (local, NOT a `/schedule` cloud routine) follows `coverage_audit/AGENT_PLAYBOOK.md`
   to wire fixes on per-gap worktrees — never auto-merges. See
   `coverage_audit/README.md`.
+- **Unabated-anchored Kalshi edge engine** (`unabated_edge/`) — sport-agnostic dry-run engine that anchors fair value on Unabated sharp-book prices (v2 per-league feed, anchors unblurred anonymously), deviggs via probit, and flags +EV opportunities on Kalshi using fractional Kelly sizing. Dry-run only — no order placement. Soccer (World Cup **regulation-time totals**, adapter `sports/soccer.py`) ships first: the anchor's total ladder (main + alternate lines, same-book only) is devigged and matched to Kalshi `KXWCTOTAL` rungs by line (over = buy YES, under = buy NO); adding a sport is one adapter file + one registry line. Writes `line_snapshots` (pre-kickoff only, so last snapshot = close) + `flagged_edges` to `unabated_edge_market.duckdb` and a research firehose (with rung provenance) to `unabated_edge_research.duckdb`. Reuses `kalshi_common/` for fee math and the Kalshi REST client. Entry point: `python -m unabated_edge.runner`. See `unabated_edge/README.md`.
 
 ### MLB Dashboard — Odds screen
 
