@@ -10,7 +10,8 @@ _running = threading.Event(); _running.set()
 # candidates priced since the last heartbeat: >0 proves the full chain works
 # (v2 parsed -> anchors unblurred -> ladder built -> Kalshi paired -> asks live);
 # 0 with lines>0 exposes the silent-zero failure modes the raw line count hides.
-_stats = {"candidates": 0}
+# null_dropped: priceless snapshot rows skipped since the last heartbeat.
+_stats = {"candidates": 0, "null_dropped": 0}
 
 
 def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, ask_fn) -> list[dict]:
@@ -42,8 +43,9 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, ask_fn) -> lis
             "points": v.get("points"),
             "modified_on": v.get("modifiedOn"),   # feed-side timestamp: staleness gate + CLV need it
         })
-    if dropped:
-        log.warning("%s: dropped %d line-snapshot rows with NULL price", adapter.sport, dropped)
+    # priceless lines (books listed but not quoting) are permanent in the v2 file —
+    # report the drop count in the heartbeat, not per tick (would spam every 5s)
+    _stats["null_dropped"] += dropped
     storage.snapshot_lines(adapter.sport, snap)
     flagged_sides = {}          # market_ticker -> set of flagged sides (crossed-book tripwire)
     for event_meta, kev in mapping.pair_events(adapter, events, kalshi_events):
@@ -130,10 +132,12 @@ def main_loop(dry_run: bool):
             storage.flush()
             ticks += 1
             if ticks % hb_every == 0:            # heartbeat: distinguishes "broken" from "no edges"
-                log.info("heartbeat tick=%d events=%d lines=%d kalshi_events=%d candidates_recent=%d flagged_recent=%d",
+                log.info("heartbeat tick=%d events=%d lines=%d kalshi_events=%d candidates_recent=%d flagged_recent=%d null_dropped_recent=%d",
                          ticks, n_events, n_lines,
-                         sum(len(v) for v in kalshi_events.values()), _stats["candidates"], flagged_since_hb)
+                         sum(len(v) for v in kalshi_events.values()), _stats["candidates"],
+                         flagged_since_hb, _stats["null_dropped"])
                 _stats["candidates"] = 0
+                _stats["null_dropped"] = 0
                 flagged_since_hb = 0
         except Exception:
             log.exception("tick failed")
