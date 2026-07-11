@@ -228,3 +228,42 @@ class TTLCache:
     def clear(self):
         with self._lock:
             self._store.clear()
+
+
+# ------------------------------------------------------------------ #
+# Phase 2 on-demand pricing types (kalshi_mlb_mm on-demand engine).  #
+# ------------------------------------------------------------------ #
+
+@dataclass(frozen=True)
+class ResolvedLeg:
+    """One canonical leg resolved at one book.
+
+    ref / opposite_ref are book-specific selection descriptors (opaque to
+    callers). opposite_ref=None means the book one-sides this line — that
+    routes the book to Route B (correlation transfer). single/opposite
+    decimals are the leg's two-sided single odds where the book's structure
+    carries them (PX/NV/MGM/CZR, FD after odds capture); None at DK.
+    """
+    ref: object
+    opposite_ref: object | None = None
+    single_decimal: float | None = None
+    opposite_decimal: float | None = None
+
+
+@dataclass(frozen=True)
+class OnDemandBookResult:
+    """One book's on-demand fair for one same-game leg set."""
+    book: str
+    fair: float
+    route: str              # "partition" | "transfer"
+    n_cells_priced: int
+    latency_sec: float
+
+
+@dataclass(frozen=True)
+class GameRef:
+    """Game identity handed to per-book event matching."""
+    game_id: str
+    home_team: str
+    away_team: str
+    commence_time: object   # datetime | None
