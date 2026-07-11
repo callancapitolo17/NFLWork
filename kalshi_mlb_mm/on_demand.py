@@ -50,18 +50,28 @@ class OnDemandEngine:
     # Feed side (discovery tick)                                     #
     # ------------------------------------------------------------- #
 
-    def ensure_fetch(self, hash_: str, game, legs) -> None:
+    def ensure_fetch(self, hash_: str, game, legs) -> bool:
         """Queue a fetch for this sub-combo unless one is already in flight.
-        Idempotent per flight — the poll calls this every tick while pending."""
+        Idempotent per flight — the poll calls this every tick while pending.
+        Returns True iff this call newly enqueued (lets the caller emit the
+        on_demand_requested research event once per flight, not per tick)."""
         with self._lock:
             if hash_ in self._inflight:
-                return
+                return False
             self._inflight.add(hash_)
             self._landed[hash_] = threading.Event()
             self._queue.append((hash_, game, legs))
         self._wake.set()
         if self._autostart:
             self._ensure_worker()
+        return True
+
+    def landed_at(self, hash_: str) -> float | None:
+        """Monotonic landing time of the stored result (fresh or not), or
+        None. Research-event dedup only — quoting freshness lives in lookup."""
+        with self._lock:
+            ent = self._store.get(hash_)
+        return ent[0] if ent else None
 
     def lookup(self, hash_: str):
         """{book: fair} if landed within QUOTE_FRESH_SEC, else None."""

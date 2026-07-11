@@ -45,6 +45,14 @@ _PREV_BOOK_FAIR = {}     # combo_market_ticker -> last blended book fair (circui
 _SCOPE_CACHE = {}        # market_ticker -> (in_scope, game_id, legs)
 _VOID_HALT_ACTIVE = False  # N12: track prior void-rate halt state for edge-triggered notify
 
+# Phase 2 on-demand pricing: engine constructed in main_loop (None in tests /
+# before startup — every use is None-guarded, failing safe to "don't quote").
+_ENGINE = None
+_OD_RESULT_EMITTED = {}  # leg_set_hash -> landed_at of last on_demand_result emit
+# Confirm-window budget for the confirm-tick live re-fetch: the ~30s Kalshi
+# confirm window minus the poll gap and a buffer for the confirm API call.
+CONFIRM_REFETCH_BUDGET_SEC = 20.0
+
 
 def _signal_handler(_s, _f):
     _running.clear()
@@ -222,6 +230,94 @@ def _resolve_game_for_legs(game_legs: list) -> str | None:
         return None
 
 
+def _game_ref(game_id):
+    """GameRef (id + team names + commence) from mlb_target_lines, or None.
+
+    The per-book on-demand fetch needs team names to match the book's own
+    event list. Fail-safe: None on any error — the RFQ then just stays
+    on_demand_pending (never raises into the tick)."""
+    try:
+        from mlb_sgp._shared import GameRef
+        if not game_id or not config.MARKET_DB.exists():
+            return None
+        try:
+            con = duckdb.connect(str(config.MARKET_DB), read_only=True)
+        except (duckdb.IOException, duckdb.CatalogException):
+            return None
+        try:
+            row = con.execute(
+                "SELECT home_team, away_team, commence_time "
+                "FROM mlb_target_lines WHERE game_id=? LIMIT 1",
+                [game_id]).fetchone()
+        except (duckdb.IOException, duckdb.CatalogException):
+            return None
+        finally:
+            con.close()
+        if not row:
+            return None
+        return GameRef(game_id=game_id, home_team=row[0], away_team=row[1],
+                       commence_time=row[2])
+    except Exception:
+        return None
+
+
+def _out_of_scope_reason(legs, canon) -> str:
+    """Granular out-of-scope classification (measurement blind-spot fix)."""
+    if not legs:
+        return "out_of_scope_unparseable"
+    if canon is None:
+        return "out_of_scope_non_mlb"      # some leg untypeable (other sport etc.)
+    if len(canon) < 2:
+        return "out_of_scope_lone_single"
+    return "out_of_scope"
+
+
+def _maybe_emit_on_demand_result(rfq_id, ticker, hash_):
+    """Emit on_demand_result once per landing (not per tick it gets read)."""
+    try:
+        if _ENGINE is None:
+            return
+        landed = _ENGINE.landed_at(hash_)
+        if landed is None or _OD_RESULT_EMITTED.get(hash_) == landed:
+            return
+        _OD_RESULT_EMITTED[hash_] = landed
+        res = _ENGINE.lookup_results(hash_) or {}
+        research.emit("on_demand_result", rfq_id=rfq_id, ticker=ticker,
+                      payload=dict(
+                          leg_set_hash=hash_,
+                          books={b: dict(fair=r.fair, route=r.route,
+                                         n_cells=r.n_cells_priced,
+                                         latency_sec=r.latency_sec)
+                                 for b, r in res.items()}))
+    except Exception:                      # research must never break the tick
+        pass
+
+
+def _on_demand_fill_info(canon):
+    """Per-on-demand-game route/consensus detail for the fill research event."""
+    try:
+        if _ENGINE is None or not canon:
+            return None
+        out = {}
+        for gl in legset.partition_by_game(canon).values():
+            if legset.classify_subcombo(gl) != "on_demand":
+                continue
+            h = legset.leg_set_hash(gl)
+            res = _ENGINE.lookup_results(h)
+            if not res:
+                out[h] = None
+                continue
+            fairs = {b: r.fair for b, r in res.items()}
+            det = router.consensus_detail(fairs, config.MIN_AGREEING_BOOKS,
+                                          config.BOOK_CONSENSUS_BAND)
+            out[h] = dict(
+                books={b: dict(fair=r.fair, route=r.route) for b, r in res.items()},
+                consensus_books=det[1] if det else [])
+        return out or None
+    except Exception:
+        return None
+
+
 def _fill_game_ids(legs, primary_game_id):
     """All game_ids a filled combo touches, for per-game exposure attribution.
 
@@ -262,6 +358,26 @@ def _priceable_in_phase1(canon: list) -> bool:
         return False
     return all(
         legset.classify_subcombo(gl) in {"single", "grid_spread_total", "grid_ml_total"}
+        for gl in by_game.values()
+    )
+
+
+def _priceable(canon: list) -> bool:
+    """Phase 2 scope: every game's sub-combo has SOME pricing route.
+
+    Adds "on_demand" to the Phase 1 routes (live book queries via the
+    OnDemandEngine). The RFQ-level >=2-legs rule stays — lone singles remain
+    excluded (unchanged Phase 1 decision). _priceable_in_phase1 above is kept
+    verbatim as the Phase 1 regression oracle (test_router_integration.py).
+    """
+    if len(canon) < 2:
+        return False
+    by_game = legset.partition_by_game(canon)
+    if not by_game:
+        return False
+    return all(
+        legset.classify_subcombo(gl) in
+        {"single", "grid_spread_total", "grid_ml_total", "on_demand"}
         for gl in by_game.values()
     )
 
@@ -460,20 +576,26 @@ def _discovery_tick(source, gateway, dry_run):
             market = source.get_market(ticker)
             legs = scope.decode_legs(market) if market else None
             canon = legset.parse_legs(legs) if legs else None
-            in_scope = bool(canon and _priceable_in_phase1(canon))
+            in_scope = bool(canon and _priceable(canon))
             game_id = None
             _SCOPE_CACHE[ticker] = (in_scope, game_id, legs)
         if not in_scope:
             if not seen:
-                _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="out_of_scope")
+                # Phase 2 instrumentation: granular reason + the legs
+                # themselves, so out-of-scope flow is finally measurable
+                # (previously legs_json was NULL and every reason was the
+                # single opaque "out_of_scope").
+                oos_reason = _out_of_scope_reason(legs, canon)
+                _log_decision("skipped", rfq_id=rid, ticker=ticker, reason=oos_reason)
                 with db.connect() as con:
                     con.execute(
                         "INSERT OR REPLACE INTO seen_rfqs "
                         "(rfq_id, market_ticker, in_scope, game_id, legs_json, "
                         "first_seen_at, last_decision, creator_id) "
                         "VALUES (?,?,?,?,?,?,?,?)",
-                        [rid, ticker, False, None, None, now_utc,
-                         "out_of_scope", creator_id])
+                        [rid, ticker, False, None,
+                         json.dumps(legs) if legs else None, now_utc,
+                         oos_reason, creator_id])
             continue
         # Event 1: rfq_received — in-scope candidate, first time we act on it.
         if not seen:
@@ -549,9 +671,40 @@ def _discovery_tick(source, gateway, dry_run):
         if not risk.tipoff_ok(earliest_ct, config.TIPOFF_CANCEL_MIN):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id, reason="tipoff")
             continue
-        # Fair value: router prices via legset/grid across all games.
+        # Phase 2: on-demand same-game shapes ride a live feed keyed off this
+        # very poll — a fresh (<=QUOTE_FRESH_SEC) result prices this tick;
+        # otherwise ensure a fetch is queued and skip. The tick re-enters
+        # every open RFQ every 2s, so this single rule IS the feed: re-fetch
+        # fires each time the result ages out, and stops the moment the RFQ
+        # leaves the poll. Placed after the caps/cooldown/tipoff gates so
+        # gated RFQs never generate book traffic.
+        od_pending = False
+        for gl, od_gid in zip(by_game.values(), game_ids_list):
+            if legset.classify_subcombo(gl) != "on_demand":
+                continue
+            if _ENGINE is None:
+                od_pending = True          # engine absent -> fail-safe skip
+                continue
+            od_hash = legset.leg_set_hash(gl)
+            if _ENGINE.lookup(od_hash) is not None:
+                _maybe_emit_on_demand_result(rid, ticker, od_hash)
+                continue
+            gref = _game_ref(od_gid)
+            if gref is not None and _ENGINE.ensure_fetch(od_hash, gref, gl):
+                research.emit("on_demand_requested", rfq_id=rid, ticker=ticker,
+                              payload=dict(leg_set_hash=od_hash, game_id=od_gid,
+                                           n_legs=len(gl)))
+            od_pending = True
+        if od_pending:
+            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                          reason="on_demand_pending")
+            continue
+        # Fair value: router prices via legset/grid across all games; fresh
+        # on-demand fairs are injected via the engine's pure lookup.
+        od_lookup = _ENGINE.lookup if _ENGINE is not None else None
         blended = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
-                                    config.MIN_AGREEING_BOOKS, config.BOOK_CONSENSUS_BAND)
+                                    config.MIN_AGREEING_BOOKS, config.BOOK_CONSENSUS_BAND,
+                                    on_demand_fairs=od_lookup)
         book_med = blended  # single consensus fair; book_med == blended
         if blended is None or not (config.MIN_FAIR_PROB <= blended <= config.MAX_FAIR_PROB):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
@@ -704,8 +857,29 @@ def _confirm_tick(gateway, dry_run):
                         "UPDATE live_quotes SET status='voided', closed_at=? WHERE quote_id=?",
                         [datetime.now(timezone.utc), qid])
                 continue
+            # Phase 2 live last look: for combos with on-demand games, trigger
+            # a synchronous priority re-fetch budgeted against the confirm
+            # window. We never confirm on a previously-fetched number — a
+            # failed/late re-fetch leaves lookup() stale, so cur_fair below
+            # comes back None and the existing void path fires.
+            canon_c = legset.parse_legs(legs)
+            if _ENGINE is not None and canon_c:
+                od_jobs = []
+                for gl in legset.partition_by_game(canon_c).values():
+                    if legset.classify_subcombo(gl) != "on_demand":
+                        continue
+                    gid_c = _resolve_game_for_legs(gl)
+                    gref = _game_ref(gid_c) if gid_c else None
+                    if gref is None:
+                        od_jobs = None      # unresolvable -> stale -> void path
+                        break
+                    od_jobs.append((legset.leg_set_hash(gl), gref, gl))
+                if od_jobs:
+                    _ENGINE.refetch_now(od_jobs, CONFIRM_REFETCH_BUDGET_SEC)
+            od_lookup = _ENGINE.lookup if _ENGINE is not None else None
             cur_fair = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
-                                         config.MIN_AGREEING_BOOKS, config.BOOK_CONSENSUS_BAND)
+                                         config.MIN_AGREEING_BOOKS, config.BOOK_CONSENSUS_BAND,
+                                         on_demand_fairs=od_lookup)
             if cur_fair is None:
                 _log_decision("voided_no_fresh_books", rfq_id=rid, quote_id=qid, ticker=ticker,
                               game_id=game_id)
@@ -766,7 +940,11 @@ def _confirm_tick(gateway, dry_run):
                                                price=price, fee=fee,
                                                prev_fair=prev_fair, cur_fair=cur_fair,
                                                model_fair_at_q=model_fair_at_q,
-                                               book_fair_at_q=book_fair_at_q))
+                                               book_fair_at_q=book_fair_at_q,
+                                               # Phase 2: per-book route + which
+                                               # books agreed (DK+NV-only fills
+                                               # are a named risk metric).
+                                               on_demand=_on_demand_fill_info(canon_c)))
                     notify.fill(ticker, side_held, contracts, price)
                     _log_decision("confirmed", rfq_id=rid, quote_id=qid, ticker=ticker,
                                   game_id=game_id)
@@ -937,7 +1115,10 @@ def _risk_sweep_tick(gateway):
                     legs = json.loads(legs_json)
                     cur_med = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
                                                config.MIN_AGREEING_BOOKS,
-                                               config.BOOK_CONSENSUS_BAND)
+                                               config.BOOK_CONSENSUS_BAND,
+                                               on_demand_fairs=(_ENGINE.lookup
+                                                                if _ENGINE is not None
+                                                                else None))
                     if cur_med is not None and risk.book_move_triggered(
                             book_fair_at_q, cur_med, config.BOOK_MOVE_CB_THRESHOLD):
                         cancel = True
@@ -966,6 +1147,12 @@ def main_loop(dry_run: bool):
     source, gateway = RestRFQSource(), RestQuoteGateway()
     from kalshi_common.sgp_service import SGPService
     sgp_service = SGPService(per_book_deadline_sec=config.SGP_SCRAPER_TIMEOUT_SEC)
+    # Phase 2: on-demand pricing engine shares the service's persistent
+    # clients + structure caches. Always on — no switch (user decision);
+    # the bot-wide kill file remains the emergency stop.
+    global _ENGINE
+    from kalshi_mlb_mm.on_demand import OnDemandEngine
+    _ENGINE = OnDemandEngine(sgp_service)
     # synchronous warm-up: one SGP cycle
     try:
         rc = sgp_runner.sgp_cycle(bot_market_db=str(config.MARKET_DB),
