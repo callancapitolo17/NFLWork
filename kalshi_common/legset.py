@@ -110,3 +110,26 @@ def classify_subcombo(game_legs: list[CanonicalLeg]) -> str:
     if n == 2 and types == ["ml", "total"]:
         return "grid_ml_total"
     return "on_demand"
+
+
+_FLIP = {"home": "away", "away": "home", "over": "under", "under": "over"}
+
+
+def flip_leg(leg: CanonicalLeg) -> CanonicalLeg:
+    """The same leg on its opposite side (line unchanged)."""
+    return CanonicalLeg(leg.game_id, leg.market_type, leg.line, _FLIP[leg.side])
+
+
+def enumerate_partition(game_legs: list[CanonicalLeg]) -> list[list[CanonicalLeg]]:
+    """All 2^N side-combinations of a leg set (the joint-outcome partition).
+
+    Cell ordering contract (shared with fair_value.devig_partition and
+    SGPService.price_on_demand): cell index i in range(2^N); bit j of i
+    (LSB = leg 0) means leg j is FLIPPED to its opposite side. Cell 0 is
+    therefore the target (all chosen sides). Lines never change — only
+    sides — so per-book leg->selection resolution is shared across cells.
+    """
+    n = len(game_legs)
+    return [[flip_leg(l) if (i >> j) & 1 else l
+             for j, l in enumerate(game_legs)]
+            for i in range(2 ** n)]
