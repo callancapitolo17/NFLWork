@@ -34,9 +34,14 @@ _KEV = {
     "title": "Argentina vs Austria: Regulation Time Total Goals",
     "markets": [
         {"ticker": "T-O25", "strike_type": "greater", "floor_strike": 2.5,
-         "yes_sub_title": "Reg Time: Over 2.5 goals scored"},
+         "yes_sub_title": "Reg Time: Over 2.5 goals scored",
+         "volume_fp": "1234.00", "open_interest_fp": "567.00"},   # live shape: STRING fp
     ],
 }
+
+# yes_ask = 1 - best no bid = 0.30; no_ask = 1 - best yes bid = 0.30 (both cheap,
+# same semantics as the old `ask_fn=lambda t, side: 0.30` fixtures)
+_BOOK = {"yes_bids": [(0.70, 5.0)], "no_bids": [(0.70, 8.0)]}
 
 
 def _init_dbs(tmp_path, monkeypatch):
@@ -47,9 +52,9 @@ def _init_dbs(tmp_path, monkeypatch):
 
 def test_tick_flags_positive_edge(tmp_path, monkeypatch):
     _init_dbs(tmp_path, monkeypatch)
-    # ask_fn now takes (ticker, side); 0.30 is well below a ~42% fair Over → positive EV
+    # 0.30 ask is well below a ~42% fair Over → positive EV
     rows = runner.run_tick(Soccer(), _state(), [_KEV], now=_NOW, dry_run=True,
-                           ask_fn=lambda t, side: 0.30)
+                           book_fn=lambda t: _BOOK)
     assert any(r["ev_pct"] > 0 for r in rows)
 
 
@@ -58,20 +63,21 @@ def test_absolute_ev_floor_blocks_flag(tmp_path, monkeypatch):
     _init_dbs(tmp_path, monkeypatch)
     monkeypatch.setattr(config, "MIN_EV_DOLLARS", 1.0)   # no real contract clears $1 EV
     rows = runner.run_tick(Soccer(), _state(), [_KEV], now=_NOW, dry_run=True,
-                           ask_fn=lambda t, side: 0.30)
+                           book_fn=lambda t: _BOOK)
     assert rows == []
 
 
 def test_no_snapshots_after_kickoff(tmp_path, monkeypatch):
-    """Once now >= kickoff, an event's lines are no longer snapshotted — the last
-    pre-kickoff snapshot IS the closing line by construction."""
+    """Once now >= kickoff, neither Unabated lines nor Kalshi books are snapshotted —
+    the last pre-kickoff snapshot IS the close by construction for both tables."""
     _init_dbs(tmp_path, monkeypatch)
     st = _state()                                # kickoff 2026-12-31T17:00
     after_kickoff = datetime.datetime(2026, 12, 31, 18, 0, tzinfo=datetime.timezone.utc)
     runner.run_tick(Soccer(), st, [_KEV], now=after_kickoff, dry_run=True,
-                    ask_fn=lambda t, side: 0.30)
+                    book_fn=lambda t: _BOOK)
     with storage.connect(config.MARKET_DB_PATH, read_only=True) as c:
         assert c.execute("SELECT count(*) FROM line_snapshots").fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM book_snapshots").fetchone()[0] == 0
 
 
 def test_snapshot_rows_carry_modified_on(tmp_path, monkeypatch):
@@ -80,7 +86,7 @@ def test_snapshot_rows_carry_modified_on(tmp_path, monkeypatch):
     st = _state()
     for k in list(st.lines):
         st.lines[k]["modifiedOn"] = "2026-06-01T11:59:00"
-    runner.run_tick(Soccer(), st, [_KEV], now=_NOW, dry_run=True, ask_fn=lambda t, side: 0.30)
+    runner.run_tick(Soccer(), st, [_KEV], now=_NOW, dry_run=True, book_fn=lambda t: _BOOK)
     with storage.connect(config.MARKET_DB_PATH, read_only=True) as c:
         vals = {r[0] for r in c.execute("SELECT DISTINCT modified_on FROM line_snapshots").fetchall()}
     assert vals == {"2026-06-01T11:59:00"}
@@ -90,10 +96,10 @@ def test_both_sides_flagged_logs_crossed_book_warning(tmp_path, monkeypatch, cap
     """yes and no on the same rung both +EV = crossed/stale book: must WARN."""
     import logging
     _init_dbs(tmp_path, monkeypatch)
-    # ask 0.30 for yes AND 0.30 for no => yes_ask+no_ask=0.60 << 1: crossed book
+    # 0.30 ask for yes AND no => yes_ask+no_ask=0.60 << 1: crossed book
     with caplog.at_level(logging.WARNING, logger="unabated_edge"):
         rows = runner.run_tick(Soccer(), _state(), [_KEV], now=_NOW, dry_run=True,
-                               ask_fn=lambda t, side: 0.30)
+                               book_fn=lambda t: _BOOK)
     assert len(rows) == 2                        # both sides flagged (dry-run records them)
     assert any("crossed/stale book" in r.getMessage() for r in caplog.records)
 
@@ -105,9 +111,50 @@ def test_null_price_lines_not_snapshotted(tmp_path, monkeypatch):
     # inject a priceless (but non-blurred) line directly into state.lines
     st.lines["1|0|68|bt3"] = {"marketSourceId": 68}   # no americanPrice/price key
     runner.run_tick(Soccer(), st, [_KEV], now=_NOW, dry_run=True,
-                    ask_fn=lambda t, side: 0.30)
+                    book_fn=lambda t: _BOOK)
     with storage.connect(config.MARKET_DB_PATH, read_only=True) as c:
         n_null = c.execute("SELECT count(*) FROM line_snapshots WHERE price IS NULL").fetchone()[0]
         n_total = c.execute("SELECT count(*) FROM line_snapshots").fetchone()[0]
     assert n_null == 0          # the priceless line was skipped, not stored as NULL
     assert n_total >= 1         # real lines still snapshotted
+
+
+def test_book_snapshot_written_per_market(tmp_path, monkeypatch):
+    """Every paired pre-kickoff market gets one book_snapshots row per tick with
+    top-of-book columns, market volume/OI, and the full depth ladder."""
+    _init_dbs(tmp_path, monkeypatch)
+    runner.run_tick(Soccer(), _state(), [_KEV], now=_NOW, dry_run=True,
+                    book_fn=lambda t: _BOOK)
+    with storage.connect(config.MARKET_DB_PATH, read_only=True) as c:
+        row = c.execute("""SELECT market_ticker, floor_strike, yes_bid, yes_bid_qty,
+                                  yes_ask, no_ask, volume, open_interest,
+                                  json_extract(depth, '$.no_bids[0][1]')
+                           FROM book_snapshots""").fetchone()
+    assert row[0] == "T-O25" and row[1] == 2.5
+    assert row[2] == 0.70 and row[3] == 5.0
+    assert row[4] == 0.30 and row[5] == 0.30
+    assert row[6] == 1234.0 and row[7] == 567.0
+    assert float(row[8]) == 8.0
+
+
+def test_failed_book_fetch_skips_market_not_tick(tmp_path, monkeypatch):
+    """book_fn=None for a market → no snapshot row, no candidates for it, no crash."""
+    _init_dbs(tmp_path, monkeypatch)
+    rows = runner.run_tick(Soccer(), _state(), [_KEV], now=_NOW, dry_run=True,
+                           book_fn=lambda t: None)
+    assert rows == []
+    with storage.connect(config.MARKET_DB_PATH, read_only=True) as c:
+        assert c.execute("SELECT count(*) FROM book_snapshots").fetchone()[0] == 0
+
+
+def test_trades_fn_rows_inserted(tmp_path, monkeypatch):
+    """When the trades poll rides a tick, tape rows land in kalshi_trades."""
+    _init_dbs(tmp_path, monkeypatch)
+    trades = [{"trade_id": "t1", "market_ticker": "T-O25",
+               "created_time": "2026-06-01T11:59:59Z", "yes_price": 0.31,
+               "count": 4.0, "taker_side": "yes"}]
+    runner.run_tick(Soccer(), _state(), [_KEV], now=_NOW, dry_run=True,
+                    book_fn=lambda t: _BOOK, trades_fn=lambda t: trades)
+    with storage.connect(config.MARKET_DB_PATH, read_only=True) as c:
+        got = c.execute("SELECT trade_id, taker_side FROM kalshi_trades").fetchall()
+    assert got == [("t1", "yes")]

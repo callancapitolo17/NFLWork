@@ -29,6 +29,8 @@ UNABATED_CHANGES_URL = "https://api-k.unabated.com/api/markets/changes/query"
 # changes/query delta feed does NOT carry soccer (lg21) at all — v2 polling replaces it.
 UNABATED_V2_LEAGUE_URL = "https://content.unabated.com/markets/v2/league/{league_id}/odds.json"
 V2_POLL_SEC = float(_get("UNABATED_V2_POLL_SEC", "5"))
+# Kalshi executed-trades tape poll cadence (rides every Nth main tick)
+TRADES_POLL_SEC = float(_get("KALSHI_TRADES_POLL_SEC", "30"))
 UNABATED_TOKEN = _get("UNABATED_AT_PROD")
 SHARP_BOOK_PRICE_ID = 7
 ANCHOR_SOURCE_IDS = [7, 6, 68]

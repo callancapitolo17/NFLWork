@@ -52,11 +52,12 @@ unabated_edge/
 1. `feed.fetch_v2(league_id, league_prefix)` re-fetches Unabated's **v2 per-league odds file** (`content.unabated.com/markets/v2/league/<id>/odds.json`). Anchors are **unblurred anonymously** in this file — no token needed — and each line carries its full `alternateLines` ladder. (The legacy `changes/query` delta feed does not carry soccer at all; the legacy snapshot's anchors are blurred. Both legacy functions remain in `feed.py` for future US-league adapters.)
 2. `mapping.pair_events` matches Unabated events to open Kalshi events by canonical team-pair (parsed from the Kalshi event title).
 3. `adapter.price_event()` calls `_anchor_totals` to devig the bt3 over/under ladder from the first complete anchor book, then emits candidates at every Kalshi rung matching a ladder line by `floor_strike`.
-4. For each `Candidate` (Over=YES, Under=NO), `ev.edge_for_yes` computes net EV after Kalshi taker fee. `ask_fn(ticker, side)` fetches `best_yes_ask` for YES or `best_no_ask` for NO.
-5. Candidates above both `MIN_EV_PCT` and `MIN_EV_DOLLARS` are Kelly-sized and written to `flagged_edges`. Line snapshots (with the feed's `modified_on`) are written every tick **until kickoff** — so the last snapshot per event is the closing line by construction. Every priced candidate goes to the research firehose with rung provenance (`book`, `alt`, `overround`) so alt-line trustworthiness stays auditable. If both sides of one rung flag at once, that's a crossed/stale book and is logged as a data error, not a double edge.
+4. **Kalshi microstructure capture:** for every paired pre-kickoff event, each market's full orderbook is fetched **once** per tick (`venues.kalshi.get_book`) and written to `book_snapshots` — top-of-book bid/ask/size columns plus the full depth ladder as JSON, and the market's `volume_fp`/`open_interest_fp`. Every `TRADES_POLL_SEC` (default 30s) the executed-trades tape is polled per market into `kalshi_trades` (PK `trade_id`, overlapping poll windows dedup via `INSERT OR IGNORE`; a >100-trade burst inside one window loses the excess). Both stop at kickoff, same close semantics as `line_snapshots`. This is the maker-design dataset: spread width, re-centering speed after anchor moves, and where flow trades.
+5. For each `Candidate` (Over=YES, Under=NO), `ev.edge_for_yes` computes net EV after Kalshi taker fee. Asks are derived from the same fetched book (`yes_ask_from_book` / `no_ask_from_book`), so pricing costs no extra REST calls.
+6. Candidates above both `MIN_EV_PCT` and `MIN_EV_DOLLARS` are Kelly-sized and written to `flagged_edges`. Line snapshots (with the feed's `modified_on`) are written every tick **until kickoff** — so the last snapshot per event is the closing line by construction. Every priced candidate goes to the research firehose with rung provenance (`book`, `alt`, `overround`) so alt-line trustworthiness stays auditable. If both sides of one rung flag at once, that's a crossed/stale book and is logged as a data error, not a double edge.
 
 **Databases (both gitignored, pkg-local):**
-- `unabated_edge_market.duckdb` — `line_snapshots`, `flagged_edges`
+- `unabated_edge_market.duckdb` — `line_snapshots`, `flagged_edges`, `book_snapshots` (Kalshi bid/ask/depth per rung per tick), `kalshi_trades` (executed-trades tape)
 - `unabated_edge_research.duckdb` — `research_events` (full candidate lifecycle)
 
 **Shared dependency:** `kalshi_common/` (repo root) provides probit devigging (`fair_value._probit_devig_n`), fee math (`ev_calc.fee_per_contract`), and the authenticated Kalshi REST client (`auth_client`).
@@ -108,6 +109,7 @@ All tuneable constants live in `config.py` and can be overridden via `.env` or e
 | `MIN_EV_PCT` | `0.03` | Minimum net EV % to flag (3 %) |
 | `MIN_EV_DOLLARS` | `0.02` | Minimum absolute per-contract EV (gates with `MIN_EV_PCT` so cheap longshots can't clear on % alone) |
 | `UNABATED_V2_POLL_SEC` | `5` | Seconds between re-fetches of each league's v2 odds file (also the tick cadence) |
+| `KALSHI_TRADES_POLL_SEC` | `30` | Seconds between executed-trades tape polls (rides every Nth main tick) |
 | `MAX_STALENESS_SEC` | `20` | Reserved for Plan 2 live-execution staleness gate — not yet enforced |
 | `KICKOFF_CUTOFF_MIN` | `3` | Stop flagging this many minutes before kickoff |
 | `PER_MATCH_CAP_PCT` | `0.03` | Max fraction of bankroll per match (3 %) |
@@ -151,6 +153,21 @@ print(con.execute("""
 # Research firehose (every candidate priced, not just flagged ones)
 res = duckdb.connect("unabated_edge/unabated_edge_research.duckdb", read_only=True)
 print(res.execute("SELECT * FROM research_events ORDER BY ts DESC LIMIT 50").df())
+
+# Kalshi microstructure (maker design data): spread + depth per rung over time
+print(con.execute("""
+    SELECT market_ticker, floor_strike,
+           avg(yes_ask - yes_bid) AS avg_spread,
+           avg(yes_bid_qty) AS avg_top_depth,
+           max(volume) AS volume
+    FROM book_snapshots GROUP BY 1,2 ORDER BY 1
+""").df())
+
+# Where flow trades + taker direction (adverse-selection input)
+print(con.execute("""
+    SELECT market_ticker, taker_side, count(*) AS n, sum(count) AS contracts
+    FROM kalshi_trades GROUP BY 1,2 ORDER BY contracts DESC
+""").df())
 ```
 
 Both DBs have a `sport` column so multi-sport rows never collide.

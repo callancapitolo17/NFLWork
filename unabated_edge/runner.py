@@ -11,10 +11,24 @@ _running = threading.Event(); _running.set()
 # (v2 parsed -> anchors unblurred -> ladder built -> Kalshi paired -> asks live);
 # 0 with lines>0 exposes the silent-zero failure modes the raw line count hides.
 # null_dropped: priceless snapshot rows skipped since the last heartbeat.
-_stats = {"candidates": 0, "null_dropped": 0}
+# books/trades: Kalshi-side capture rows written since the last heartbeat.
+_stats = {"candidates": 0, "null_dropped": 0, "books": 0, "trades": 0}
 
 
-def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, ask_fn) -> list[dict]:
+def _market_fp(mk, key):
+    """Numeric market field: live API sends `<key>_fp` as a STRING decimal
+    (contracts are fractional, e.g. "2084.00" — verified 2026-07-10); fall back
+    to a bare integer `<key>` for older payload shapes."""
+    v = mk.get(f"{key}_fp")
+    if v is None:
+        v = mk.get(key)
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, book_fn, trades_fn=None) -> list[dict]:
     if not kill_switch_ok():
         return []
     flagged = []
@@ -49,10 +63,49 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, ask_fn) -> lis
     storage.snapshot_lines(adapter.sport, snap)
     flagged_sides = {}          # market_ticker -> set of flagged sides (crossed-book tripwire)
     for event_meta, kev in mapping.pair_events(adapter, events, kalshi_events):
+        if event_meta.start_utc is not None and now >= event_meta.start_utc:
+            continue            # in-play: Kalshi book/trade capture stops at kickoff too
+        # One book fetch per market per tick: persist the full depth (maker
+        # design data — spread width, re-centering speed, where flow rests),
+        # then reuse the same book for candidate asks below. Halves the REST
+        # load vs the old two-fetches-per-rung ask path.
+        books, book_rows = {}, []
+        for mk in kev.get("markets", []):
+            tkr = mk.get("ticker")
+            if not tkr:
+                continue
+            book = book_fn(tkr)
+            if book is None:
+                continue
+            books[tkr] = book
+            yes_bid = book["yes_bids"][0] if book["yes_bids"] else (None, None)
+            no_bid = book["no_bids"][0] if book["no_bids"] else (None, None)
+            try:
+                strike = float(mk.get("floor_strike"))
+            except (TypeError, ValueError):
+                strike = None
+            book_rows.append({
+                "ts": now, "market_ticker": tkr, "floor_strike": strike,
+                "yes_bid": yes_bid[0], "yes_bid_qty": yes_bid[1],
+                "no_bid": no_bid[0], "no_bid_qty": no_bid[1],
+                "yes_ask": kalshi.yes_ask_from_book(book),
+                "no_ask": kalshi.no_ask_from_book(book),
+                "volume": _market_fp(mk, "volume"),
+                "open_interest": _market_fp(mk, "open_interest"),
+                "depth": book,
+            })
+        storage.snapshot_books(adapter.sport, book_rows)
+        _stats["books"] += len(book_rows)
+        if trades_fn is not None:
+            for tkr in books:
+                trades = trades_fn(tkr)
+                storage.insert_trades(adapter.sport, trades, now)
+                _stats["trades"] += len(trades)
         if not tipoff_ok(event_meta.start_utc, config.KICKOFF_CUTOFF_MIN, now):
             continue
         for c in adapter.price_event(state, event_meta, kev):
-            ask = ask_fn(c.market_ticker, c.side)
+            book = books.get(c.market_ticker)
+            ask = kalshi.yes_ask_from_book(book) if c.side == "yes" else kalshi.no_ask_from_book(book)
             if ask is None:
                 continue
             _stats["candidates"] += 1
@@ -115,29 +168,36 @@ def main_loop(dry_run: bool):
     ticks = 0
     flagged_since_hb = 0
     hb_every = max(1, round(60 / config.V2_POLL_SEC))    # ~60s heartbeat
-    ask_fn = lambda t, side: kalshi.best_yes_ask(t) if side == "yes" else kalshi.best_no_ask(t)
+    trades_every = max(1, round(config.TRADES_POLL_SEC / config.V2_POLL_SEC))
     while _running.is_set():
         try:
             now = datetime.datetime.now(datetime.timezone.utc)
             if time.time() - last_k > 30:
                 kalshi_events = {a.sport: kalshi.list_events(a.kalshi_series()) for a in registry.ADAPTERS}
                 last_k = time.time()
+            # trades poll rides every Nth tick; lookback overlaps 2x so a slow
+            # tick can't open a gap (dedup on trade_id absorbs the overlap)
+            trades_fn = ((lambda t: kalshi.recent_trades(t, int(config.TRADES_POLL_SEC * 2)))
+                         if ticks % trades_every == 0 else None)
             n_events = n_lines = 0
             for a in registry.ADAPTERS:
                 state = feed.fetch_v2(a.league_id, a.league_prefix)
                 n_events += len(state.events)
                 n_lines += len(state.lines)
                 flagged_since_hb += len(run_tick(a, state, kalshi_events.get(a.sport, []),
-                                                 now=now, dry_run=dry_run, ask_fn=ask_fn))
+                                                 now=now, dry_run=dry_run,
+                                                 book_fn=kalshi.get_book, trades_fn=trades_fn))
             storage.flush()
             ticks += 1
             if ticks % hb_every == 0:            # heartbeat: distinguishes "broken" from "no edges"
-                log.info("heartbeat tick=%d events=%d lines=%d kalshi_events=%d candidates_recent=%d flagged_recent=%d null_dropped_recent=%d",
+                log.info("heartbeat tick=%d events=%d lines=%d kalshi_events=%d candidates_recent=%d flagged_recent=%d null_dropped_recent=%d books_recent=%d trades_recent=%d",
                          ticks, n_events, n_lines,
                          sum(len(v) for v in kalshi_events.values()), _stats["candidates"],
-                         flagged_since_hb, _stats["null_dropped"])
+                         flagged_since_hb, _stats["null_dropped"], _stats["books"], _stats["trades"])
                 _stats["candidates"] = 0
                 _stats["null_dropped"] = 0
+                _stats["books"] = 0
+                _stats["trades"] = 0
                 flagged_since_hb = 0
         except Exception:
             log.exception("tick failed")
