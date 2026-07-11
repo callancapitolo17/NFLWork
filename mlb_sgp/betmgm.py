@@ -463,3 +463,97 @@ def _price_ml_total_for_games(client, matched_by_gid, parsed_cache, filtered,
                 if verbose:
                     print(f"  [mgm] ML target error: {e}")
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2: on-demand pricing of arbitrary same-game leg sets (kalshi_mlb_mm). #
+# Append-only — nothing above this line changes.                              #
+# --------------------------------------------------------------------------- #
+
+from mlb_sgp._shared import ResolvedLeg  # noqa: E402
+
+
+def resolve_legs(structure, legs, home_team: str, away_team: str):
+    """Map CanonicalLegs onto a ``parse_markets(...)[period]`` structure.
+
+    ``structure`` is one period's dict from :func:`parse_markets`::
+
+        {"spreads": {home_signed_line: {"home": (mid, oid, dec), "away": ...}},
+         "totals":  {line: {"over": ..., "under": ...}},
+         "moneyline": {"home": ..., "away": ...} | None}
+
+    Canonical spread lines are SIGNED home-perspective (negative = home
+    favored) — exactly how ``parse_markets`` keys its spread buckets — so a
+    spread leg is a direct ``spreads[float(leg.line)]`` lookup and both the
+    home and away side live in the same bucket (mirrors ``price_sgps``).
+
+    Returns one ``ResolvedLeg`` per input leg with ``ref = (market_id,
+    option_id)`` and the stored single decimal, or ``None`` when ANY leg's
+    chosen side is unresolvable. A missing opposite side only nulls that
+    leg's ``opposite_ref`` (routes the book to correlation transfer).
+    ``home_team``/``away_team`` are unused here (the structure is already
+    home/away-keyed) but kept for the cross-book resolver signature.
+    Fail-safe: never raises — any malformed input resolves to ``None``.
+    """
+    try:
+        resolved: list[ResolvedLeg] = []
+        for leg in legs:
+            mt = leg.market_type
+            if mt == "spread":
+                bucket = (structure.get("spreads") or {}).get(float(leg.line))
+                chosen_key = leg.side
+                other_key = "away" if leg.side == "home" else "home"
+            elif mt == "total":
+                bucket = (structure.get("totals") or {}).get(float(leg.line))
+                chosen_key = leg.side
+                other_key = "under" if leg.side == "over" else "over"
+            elif mt == "ml":
+                bucket = structure.get("moneyline")
+                chosen_key = leg.side
+                other_key = "away" if leg.side == "home" else "home"
+            else:
+                return None
+            if not bucket:
+                return None
+            chosen = bucket.get(chosen_key)
+            if not chosen:
+                return None
+            mid, oid, dec = chosen
+            opp = bucket.get(other_key)
+            resolved.append(ResolvedLeg(
+                ref=(mid, oid),
+                opposite_ref=(opp[0], opp[1]) if opp else None,
+                single_decimal=dec,
+                opposite_decimal=opp[2] if opp else None,
+            ))
+        return resolved
+    except Exception:
+        return None
+
+
+def price_selection_set(client, refs, fixture_id) -> float | None:
+    """Price one same-game selection set; return its correlated decimal.
+
+    ``refs`` is a list of ``(market_id, option_id)`` tuples (``ResolvedLeg.ref``
+    values); a 1-element list prices a single. ``fixture_id`` is passed as a
+    SEPARATE argument rather than embedded per-ref because the structure that
+    ``resolve_legs`` reads (``parse_markets`` output) does not carry the
+    fixture id — only the matched Event does — and ``price_sgps`` likewise
+    threads ``ev.event_id`` alongside the (mid, oid) legs at call time. The
+    kalshi_common caller resolves the event anyway, so it has the id in hand.
+
+    Returns the decimal (> 1.0) or ``None`` when BetMGM declines to price the
+    combo. Fail-safe: never raises.
+    """
+    try:
+        if not refs:
+            return None
+        priced = client.price_picks(fixture_id, [(mid, oid) for mid, oid in refs])
+        if priced is None:
+            return None
+        dec = priced.get("decimal")
+        if not dec or dec <= 1.0:
+            return None
+        return float(dec)
+    except Exception:
+        return None
