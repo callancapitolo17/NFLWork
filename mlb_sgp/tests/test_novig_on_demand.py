@@ -348,3 +348,133 @@ def test_price_selection_set_empty_refs_returns_none():
     client = _FakeClient({"decimal": 2.0})
     assert price_selection_set(client, []) is None
     assert client.calls == []
+
+
+# ---------------------------------------------------------------------------
+# build_line_structure — raw NV market tree -> per-line FG bucket
+# ---------------------------------------------------------------------------
+# Raw market shapes mirror scraper_novig_sgp's GraphQL EventMarkets tree:
+# SPREAD markets carry a HOME-perspective `strike` (fetch_event_legs matches
+# it against the home-perspective target line, scraper_novig_sgp.py:402-404)
+# and symbol-keyed outcomes; TOTAL outcomes split on "Over "/"Under "
+# description prefixes; MONEY is line-independent.
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from mlb_sgp.novig import build_line_structure  # noqa: E402
+
+HOME_SYM, AWAY_SYM = "BOS", "NYY"
+
+
+def _out_spread(uuid, avail, sym):
+    return {"id": uuid, "available": avail, "competitor": {"symbol": sym}}
+
+
+def _out_total(uuid, avail, desc):
+    return {"id": uuid, "available": avail, "description": desc}
+
+
+def _spread_mkt(strike, home_uuid="hs", away_uuid="as", consensus=True,
+                one_sided=False):
+    outs = [_out_spread(home_uuid, 0.6, HOME_SYM)]
+    if not one_sided:
+        outs.append(_out_spread(away_uuid, 0.44, AWAY_SYM))
+    return {"type": "SPREAD", "strike": strike, "is_consensus": consensus,
+            "outcomes": outs}
+
+
+def _total_mkt(strike, over_uuid="ov", under_uuid="un", consensus=True):
+    return {"type": "TOTAL", "strike": strike, "is_consensus": consensus,
+            "outcomes": [_out_total(over_uuid, 0.52, f"Over {strike}"),
+                         _out_total(under_uuid, 0.50, f"Under {strike}")]}
+
+
+def _money_mkt():
+    return {"type": "MONEY", "strike": None,
+            "outcomes": [_out_spread("hml", 0.62, HOME_SYM),
+                         _out_spread("aml", 0.42, AWAY_SYM)]}
+
+
+def test_builder_spread_lines_home_and_mirrored_away():
+    s = build_line_structure(
+        [_spread_mkt(-1.5), _spread_mkt(-2.5, "hs2", "as2")],
+        HOME_SYM, AWAY_SYM)
+    assert s["home_spread"][-1.5]["id"] == "hs"
+    assert s["away_spread"][1.5]["id"] == "as"       # away key = -home strike
+    assert s["home_spread"][-2.5]["id"] == "hs2"
+    assert s["away_spread"][2.5]["id"] == "as2"
+
+
+def test_builder_totals_all_lines():
+    s = build_line_structure(
+        [_total_mkt(8.5), _total_mkt(9.5, "ov9", "un9")], HOME_SYM, AWAY_SYM)
+    assert s["over"][8.5]["id"] == "ov"
+    assert s["under"][8.5]["id"] == "un"
+    assert s["over"][9.5]["id"] == "ov9"
+    assert s["under"][9.5]["id"] == "un9"
+    assert s["over"][8.5]["available"] == 0.52
+
+
+def test_builder_moneyline():
+    s = build_line_structure([_money_mkt()], HOME_SYM, AWAY_SYM)
+    assert s["home_ml"]["id"] == "hml"
+    assert s["away_ml"]["id"] == "aml"
+
+
+def test_builder_prefers_consensus_market_on_duplicate_strike():
+    dup = _spread_mkt(-1.5, "hs-promo", "as-promo", consensus=False)
+    con = _spread_mkt(-1.5, "hs-con", "as-con", consensus=True)
+    for order in ([dup, con], [con, dup]):
+        s = build_line_structure(order, HOME_SYM, AWAY_SYM)
+        assert s["home_spread"][-1.5]["id"] == "hs-con"
+
+
+def test_builder_keeps_one_sided_line_for_route_b():
+    # Deviation from fetch_event_legs (which required both sides): a
+    # one-sided line still lands so opposite_ref=None can route to B.
+    s = build_line_structure([_spread_mkt(-1.5, one_sided=True)],
+                             HOME_SYM, AWAY_SYM)
+    assert s["home_spread"][-1.5]["id"] == "hs"
+    assert -1.5 not in s["away_spread"] and 1.5 not in s["away_spread"]
+
+
+def test_builder_ignores_first_half_and_unknown_market_types():
+    s = build_line_structure(
+        [{"type": "SPREAD_1H", "strike": -0.5,
+          "outcomes": [_out_spread("x", 0.5, HOME_SYM)]},
+         {"type": "TOTAL_1H", "strike": 4.5,
+          "outcomes": [_out_total("y", 0.5, "Over 4.5")]},
+         {"type": "MONEY_1H",
+          "outcomes": [_out_spread("z", 0.5, HOME_SYM)]},
+         {"type": "TEAM_TOTAL", "strike": 4.5, "outcomes": []}],
+        HOME_SYM, AWAY_SYM)
+    assert s["home_spread"] == {} and s["over"] == {}
+    assert s["home_ml"] is None and s["away_ml"] is None
+
+
+def test_builder_never_raises_on_garbage():
+    s = build_line_structure(
+        [None, {}, {"type": "SPREAD", "strike": "junk"},
+         {"type": "TOTAL", "strike": 8.5, "outcomes": None}],
+        HOME_SYM, AWAY_SYM)
+    assert isinstance(s, dict)
+    assert set(s) == {"home_spread", "away_spread", "over", "under",
+                      "home_ml", "away_ml"}
+
+
+def test_builder_feeds_resolve_legs_end_to_end():
+    s = build_line_structure(
+        [_spread_mkt(-1.5), _total_mkt(8.5), _money_mkt()],
+        HOME_SYM, AWAY_SYM)
+    out = resolve_legs(
+        s,
+        [CanonicalLeg(GAME, "spread", -1.5, "away"),
+         CanonicalLeg(GAME, "total", 8.5, "over"),
+         CanonicalLeg(GAME, "ml", None, "home")],
+        HOME, AWAY)
+    assert out is not None
+    assert [rl.ref for rl in out] == ["as", "ov", "hml"]
+    assert [rl.opposite_ref for rl in out] == ["hs", "un", "aml"]

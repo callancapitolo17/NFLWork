@@ -669,3 +669,81 @@ def price_selection_set(client, refs) -> float | None:
         return dec if dec > 1.0 else None
     except Exception:
         return None
+
+
+def build_line_structure(markets: list, home_sym: str, away_sym: str) -> dict:
+    """Build the per-line FG bucket ``resolve_legs`` consumes from Novig's
+    RAW market tree (the ``markets`` list ``fetch_event_legs`` returns as its
+    second element).
+
+    Generalizes ``scraper_novig_sgp.fetch_event_legs``'s single-target-line
+    parse (scraper_novig_sgp.py:391-443) to ALL offered FG lines, reusing its
+    exact outcome extractors:
+
+    * SPREAD markets: ``strike`` is the HOME-perspective line (the scraper
+      matches ``m["strike"]`` against the home-perspective target at
+      scraper_novig_sgp.py:402-404); outcomes are identified by
+      ``competitor.symbol`` via ``_find_outcome_in_spread`` →
+      ``home_spread[strike]`` / ``away_spread[-strike]``.
+    * TOTAL markets: outcomes split on "Over "/"Under " description prefixes
+      via ``_find_outcome_in_total`` → ``over[strike]`` / ``under[strike]``.
+    * MONEY market: line-independent, symbol-matched like a spread →
+      ``home_ml`` / ``away_ml`` (scraper_novig_sgp.py:438-443).
+
+    Mirrors the scraper's ``is_consensus`` preference (scraper_novig_sgp.py:
+    398-406): when several markets share a (type, strike), the consensus
+    market wins regardless of list order. DEVIATION from ``fetch_event_legs``
+    (documented): a ONE-SIDED line (only one outcome present) is still
+    recorded — on-demand routes a missing opposite to Route B via
+    ``opposite_ref=None``, whereas the grid sweep required both sides.
+    FG only (SPREAD/TOTAL/MONEY; ``*_1H`` and prop types ignored).
+    Fail-safe: never raises; malformed markets are skipped.
+    """
+    from scraper_novig_sgp import (
+        _find_outcome_in_spread,
+        _find_outcome_in_total,
+    )
+
+    out: dict = {"home_spread": {}, "away_spread": {}, "over": {},
+                 "under": {}, "home_ml": None, "away_ml": None}
+
+    # Group by (type, strike) so the is_consensus preference is applied
+    # per line, exactly like fetch_event_legs' spread_matches/total_matches.
+    groups: dict[tuple, list] = {}
+    for m in markets or []:
+        try:
+            typ = m.get("type")
+            if typ not in ("SPREAD", "TOTAL", "MONEY"):
+                continue
+            if typ == "MONEY":
+                strike = None
+            else:
+                strike = float(m.get("strike"))
+            groups.setdefault((typ, strike), []).append(m)
+        except (AttributeError, TypeError, ValueError):
+            continue
+
+    for (typ, strike), cands in groups.items():
+        m = next((c for c in cands if c.get("is_consensus") is True), cands[0])
+        try:
+            if typ == "SPREAD":
+                home_leg, away_leg = _find_outcome_in_spread(m, home_sym, away_sym)
+                if home_leg:
+                    out["home_spread"][strike] = home_leg
+                if away_leg:
+                    out["away_spread"][-strike] = away_leg
+            elif typ == "TOTAL":
+                over_leg, under_leg = _find_outcome_in_total(m)
+                if over_leg:
+                    out["over"][strike] = over_leg
+                if under_leg:
+                    out["under"][strike] = under_leg
+            else:  # MONEY
+                home_ml, away_ml = _find_outcome_in_spread(m, home_sym, away_sym)
+                if home_ml:
+                    out["home_ml"] = home_ml
+                if away_ml:
+                    out["away_ml"] = away_ml
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return out
