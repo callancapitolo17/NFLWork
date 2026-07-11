@@ -37,13 +37,24 @@ def test_devig_partition_result_is_a_probability_and_target_first():
 
 
 def test_devig_partition_overround_above_n_aware_bound_rejected():
-    # 2 legs -> bound 1.24; craft cells summing to ~1.30 implied
-    cells = [1.0 / 0.40, 1.0 / 0.35, 1.0 / 0.30, 1.0 / 0.25]  # sum=1.30
+    # 2 legs -> bound 1.50; craft cells summing to 1.60 implied
+    cells = [1.0 / 0.50, 1.0 / 0.40, 1.0 / 0.40, 1.0 / 0.30]  # sum=1.60
     assert fv.devig_partition(cells, n_legs=2) is None
-    # but the same overround is fine for 3 legs (bound 1.36) — pad to 8 cells
-    cells8 = [1 / 0.20, 1 / 0.20, 1 / 0.15, 1 / 0.15,
-              1 / 0.15, 1 / 0.15, 1 / 0.15, 1 / 0.15]        # sum=1.30
+    # but the same overround is fine for 3 legs (bound 1.75) — pad to 8 cells
+    cells8 = [1 / 0.20, 1 / 0.20, 1 / 0.20, 1 / 0.20,
+              1 / 0.20, 1 / 0.20, 1 / 0.20, 1 / 0.20]        # sum=1.60
     assert fv.devig_partition(cells8, n_legs=3) is not None
+
+
+def test_devig_partition_accepts_real_fd_margin():
+    """LIVE calibration case (2026-07-10, FD ml+total @ MIN/LAA): a real
+    healthy 4-cell SGP partition sums to 1.279 implied — the gate must not
+    reject real book margin (the original 0.12/leg bound did, silently
+    forcing Route B at high-margin books)."""
+    cells = [2.813302325581395, 3.793224, 2.446418604651163, 3.983544]
+    fair = fv.devig_partition(cells, n_legs=2)
+    assert fair is not None
+    assert 0.0 < fair < 1.0 / cells[0]      # devigged below raw implied
 
 
 def test_devig_partition_underround_rejected():

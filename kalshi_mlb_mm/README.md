@@ -6,7 +6,7 @@ Independent maker daemon that listens for others' RFQs on the Kalshi cross-categ
 
 - **2-leg same-game grids** — spread×total and moneyline×total (both FG), priced from each book's 4-cell devig grid (unchanged math).
 - **Cross-game combos** — each game's sub-combo is priced independently and the per-game fairs are **multiplied** (independence assumption); a single leg within a game is marginalized out of that game's grid.
-- **Out of scope** (skipped fail-safe): lone single-leg RFQs, and novel same-game shapes (3-leg, spread+ml, total+total) which route to `on_demand` — Phase 2 will price those on-demand.
+- **On-demand same-game shapes (Phase 2)** — 3-leg, spread+ml, total+total and any other novel shape route to `on_demand` and are priced by live book queries at RFQ time (see **On-demand pricing** below). Lone single-leg RFQs remain out of scope (skipped fail-safe).
 
 The read side is **book-agnostic**: it consumes whatever the 6 SGP scrapers write to `mlb_sgp_odds`, so all books' moneyline rows are priced with no maker-side change.
 
@@ -109,7 +109,7 @@ combo) by `SGPService.price_on_demand`:
   side-combination cells (`legset.enumerate_partition`; cell 0 = target,
   bit j of cell i flips leg j), probit-devig across the partition
   (`devig_partition`), read the target cell. Overround gate scales with leg
-  count (`1 ≤ Σ(1/dec) ≤ 1 + 0.12·N`). No fallback within the route — any
+  count (`1 ≤ Σ(1/dec) ≤ 1 + 0.25·N`, live-calibrated — real FD 2-leg partitions sum to ~1.28). No fallback within the route — any
   missing/insane cell abandons to Route B.
 - **Route B — correlation transfer** (any N, or any one-sided leg): one SGP
   call; `fair = ∏(devigged singles) × [SGP implied / ∏(vigged singles)]`

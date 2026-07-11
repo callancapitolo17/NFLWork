@@ -116,7 +116,13 @@ def blend(model_fair_value: float, book_fairs: dict[str, float]) -> float | None
 
 # SGP vig compounds per leg, so the partition overround gate must scale
 # with leg count (a fixed cap would reject healthy 8-cell partitions).
-PARTITION_OVERROUND_PER_LEG = 0.12
+# Calibrated LIVE 2026-07-10: FanDuel's real 2-leg ml+total 4-cell
+# partition sums to 1.279 implied — books embed heavy SGP margin per
+# cell, far above compounded-singles-vig theory (~1.10). The gate's job
+# is catching NONSENSE partitions (mispriced/degenerate cells), which
+# land far beyond real margin; 0.25/leg keeps that bite (N=2 -> 1.50,
+# N=3 -> 1.75) without silently forcing Route B at high-margin books.
+PARTITION_OVERROUND_PER_LEG = 0.25
 
 
 def devig_partition(cell_decimals, n_legs: int) -> float | None:

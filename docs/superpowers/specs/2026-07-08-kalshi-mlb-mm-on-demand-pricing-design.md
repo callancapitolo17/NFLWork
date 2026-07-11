@@ -65,7 +65,7 @@ our sportsbook scraping," with no artificial limitations or switches.
    books = the SGP service's book set. The existing bot-wide kill file covers
    emergencies; dropping a misbehaving book is a one-line code change.
    Module constants (correctness guards, not knobs): `QUOTE_FRESH_SEC=15`,
-   `PARTITION_OVERROUND_PER_LEG=0.12`.
+   `PARTITION_OVERROUND_PER_LEG=0.25` (live-calibrated: real FD 2-leg partitions sum to ~1.28).
 5. **Plain 2-book consensus, same as grids** (user decision, rev 1). A
    DK+Novig pair counts even though Novig mirrors DK; fills carry a
    `consensus_books` research field so the risk is measured, not silent.
@@ -306,7 +306,7 @@ is shared across cells.
   probabilities; returns the target cell's devigged probability. Sanity gate
   (rev 5, N-aware — SGP vig compounds per leg, so a fixed cap would reject
   healthy 8-cell partitions): `1.0 <= sum(1/d) <= 1.0 + 0.12·N`
-  (`PARTITION_OVERROUND_PER_LEG = 0.12`; N=2 → 1.24, N=3 → 1.36). Any
+  (`PARTITION_OVERROUND_PER_LEG = 0.25`, live-calibrated 2026-07-10 — a real healthy FD 4-cell partition sums to 1.279 implied, far above compounded-singles theory; N=2 → 1.50, N=3 → 1.75). Any
   missing/insane cell → None; the caller then tries Route B.
 - `fair_by_correlation_transfer(sgp_decimal, singles) -> float | None` — Route
   B: `singles` is per-leg `(vigged_implied_of_chosen_side, devigged_fair)`.
@@ -455,7 +455,7 @@ research field, a pure sibling `consensus_detail()` returns
 
 **None.** No new config keys (user decision, rev 3). Module constants
 (correctness guards, not knobs): `QUOTE_FRESH_SEC = 15`,
-`PARTITION_OVERROUND_PER_LEG = 0.12`; Route B is bounded by Fréchet limits
+`PARTITION_OVERROUND_PER_LEG = 0.25` (live-calibrated); Route B is bounded by Fréchet limits
 (no constant needed). Pacing is one on-demand combo in flight per book; the
 existing bot-wide kill file (`config.KILL_FILE`) remains the emergency stop;
 removing a misbehaving book from on-demand is a one-line code change shipped
