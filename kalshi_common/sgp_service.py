@@ -89,6 +89,16 @@ class SGPService:
         # root). Make it resolvable here, once.
         if str(_MLB_SGP_DIR) not in sys.path:
             sys.path.insert(0, str(_MLB_SGP_DIR))
+        # canonical_match (used by betmgm/caesars/novig event matchers) lives
+        # in "Answer Keys". The sweep resolves it as a SIDE EFFECT of
+        # importing the legacy scrapers (e.g. scraper_betmgm_sgp inserts the
+        # path at import time), but on-demand pricing calls the matchers
+        # directly — without this insert the import fails inside the hook and
+        # is swallowed into a clean "no match" None. Insert deterministically
+        # here, once, like _MLB_SGP_DIR above.
+        _answer_keys = _REPO_ROOT / "Answer Keys"
+        if str(_answer_keys) not in sys.path:
+            sys.path.insert(0, str(_answer_keys))
 
     # ------------------------------------------------------------------ #
     # Public API                                                          #

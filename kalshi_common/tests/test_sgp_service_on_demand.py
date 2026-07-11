@@ -365,3 +365,16 @@ def test_mgm_real_price_hook_threads_fixture_id():
     dec = hooks["price"](st.client, [("m1", "o1"), ("m2", "o2")], ev)
     assert dec == 3.2
     assert st.client.calls == [("F1", [("m1", "o1"), ("m2", "o2")])]
+
+
+def test_service_init_makes_canonical_match_resolvable():
+    """betmgm/caesars/novig matchers import canonical_match (lives in
+    "Answer Keys"); the sweep only resolves it via legacy-scraper import
+    side effects, so the service must insert the path deterministically."""
+    import sys
+    from kalshi_common import sgp_service as mod
+    SGPService = mod.SGPService
+    SGPService()
+    assert any(p.endswith("Answer Keys") for p in sys.path)
+    import importlib
+    assert importlib.util.find_spec("canonical_match") is not None
