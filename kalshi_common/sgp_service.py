@@ -43,8 +43,12 @@ ON_DEMAND_VIG_FALLBACK = {
     "fanduel": 0.18,
     "prophetx": 0.05,
     "novig": 0.05,
-    "betmgm": 0.06,
-    "caesars": 0.06,
+    # MGM/CZR have no maker-config precedent; 0.12 mirrors the TAKER's
+    # BetMGM/Caesars vig fallbacks (kalshi_mlb_rfq/config.py) — the only
+    # calibrated values in the repo. Near-dormant today (both books'
+    # parse_markets only store two-sided lines).
+    "betmgm": 0.12,
+    "caesars": 0.12,
 }
 
 
@@ -376,10 +380,27 @@ class SGPService:
             if res is None:
                 return None
             fair, route = res
+            # route_gap (spec §4.2): where BOTH routes come free — partition
+            # succeeded AND every leg carries structure odds (no extra wire
+            # calls, so never at DK) — also compute the transfer fair and
+            # emit the gap. This is the live measurement of Route B's
+            # vig-cancellation assumption (retreat trigger input).
+            route_gap = None
+            if (route == "partition" and target_dec is not None
+                    and all(r.single_decimal is not None
+                            and r.opposite_decimal is not None
+                            for r in resolved)):
+                free_singles = self._route_b_singles(book, resolved, _price)
+                if free_singles is not None:
+                    alt = fair_value.fair_by_correlation_transfer(
+                        target_dec, free_singles)
+                    if alt is not None:
+                        route_gap = alt - fair
             return OnDemandBookResult(
                 book=book, fair=fair, route=route,
                 n_cells_priced=n_cells_priced,
-                latency_sec=time.monotonic() - t0)
+                latency_sec=time.monotonic() - t0,
+                route_gap=route_gap)
         except Exception as e:
             log.warning("sgp_service: %s on-demand transport error: %s", book, e)
             self._book_done(book, None)

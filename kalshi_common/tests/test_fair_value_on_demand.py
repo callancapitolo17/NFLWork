@@ -161,3 +161,20 @@ def test_book_on_demand_fair_falls_back_to_transfer():
 def test_book_on_demand_fair_none_when_neither():
     assert fv.book_on_demand_fair(None, None, None, n_legs=2) is None
     assert fv.book_on_demand_fair(None, 3.0, [], n_legs=2) is None
+
+
+def test_transfer_multiplier_sanity_rejects_px_style_pricer_bugs():
+    """Adversarial review #4: PX's known F5-Over bug inflates parlay odds
+    5-7x (SANITY_MULT_RATIO defense in the grid path). A 5x-inflated SGP
+    decimal deflates the transfer fair; Fréchet's lower bound (often 0)
+    doesn't catch it — the implied correlation multiplier does. Bound is
+    deliberately LOOSE ([1/3, 3]) so legitimate high-correlation stacks
+    (RL+ML ~2x, accepted above) still pass."""
+    singles = [(0.52, 0.49), (0.51, 0.48)]
+    fair_joint = 0.25
+    good_dec = 1.0 / (fair_joint * (0.52 / 0.49) * (0.51 / 0.48))
+    assert fv.fair_by_correlation_transfer(good_dec, singles) is not None
+    assert fv.fair_by_correlation_transfer(good_dec * 5.0, singles) is None  # bugged 5x
+    # inflated the other way (absurdly rich joint) also rejected
+    rich_dec = 1.0 / (0.9 * (0.52 / 0.49) * (0.51 / 0.48))
+    assert fv.fair_by_correlation_transfer(rich_dec, singles) is None

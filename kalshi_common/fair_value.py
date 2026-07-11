@@ -191,7 +191,15 @@ def fair_by_correlation_transfer(sgp_decimal, singles) -> float | None:
         prod_vig *= vigged
         prod_fair *= fair
         fairs.append(fair)
-    result = prod_fair * (1.0 / dec) / prod_vig
+    multiplier = (1.0 / dec) / prod_vig
+    # Pricer-bug guard (mirrors the grid path's SANITY_MULT_RATIO defense):
+    # ProphetX's known F5-Over bug inflates parlay odds 5-7x, which DEFLATES
+    # the transfer fair — and Fréchet's lower bound (often 0) can't catch
+    # that. Deliberately loose ([1/3, 3], vs the grid's 1.5 on 2-leg grids)
+    # so legitimate high-correlation stacks (run line + moneyline ~2x) pass.
+    if not (1.0 / 3.0 <= multiplier <= 3.0):
+        return None
+    result = prod_fair * multiplier
     lo = max(0.0, sum(fairs) - (len(fairs) - 1))
     hi = min(fairs)
     if not (lo <= result <= hi) or not (0.0 < result < 1.0):

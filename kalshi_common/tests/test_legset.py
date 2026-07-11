@@ -160,3 +160,22 @@ def test_enumerate_partition_deterministic_and_lines_unchanged():
     assert a == b
     for cell in a:
         assert [l.line for l in cell] == [7.5, 8.5]
+
+
+def test_duplicate_market_same_game_is_unpriceable():
+    """Adversarial review #3: a creator-crafted combo repeating one market
+    (e.g. Over 8.5 AND Under 8.5 — joint probability exactly 0, or the same
+    leg twice) must never reach a pricing route: Route B would happily
+    transfer-price a contradictory pair a multiplying book returns."""
+    over = legset.CanonicalLeg(EVT, "total", 8.5, "over")
+    under = legset.CanonicalLeg(EVT, "total", 8.5, "under")
+    assert legset.classify_subcombo([over, under]) == "unpriceable"
+    assert legset.classify_subcombo([over, over]) == "unpriceable"
+    ml_h = legset.CanonicalLeg(EVT, "ml", None, "home")
+    ml_a = legset.CanonicalLeg(EVT, "ml", None, "away")
+    assert legset.classify_subcombo([ml_h, ml_a]) == "unpriceable"
+    sp = legset.CanonicalLeg(EVT, "spread", -1.5, "home")
+    assert legset.classify_subcombo([sp, over, ml_h, ml_a]) == "unpriceable"
+    # nested totals at DIFFERENT lines stay allowed (Fréchet handles them)
+    over75 = legset.CanonicalLeg(EVT, "total", 7.5, "over")
+    assert legset.classify_subcombo([over, over75]) == "on_demand"

@@ -281,6 +281,10 @@ def _maybe_emit_on_demand_result(rfq_id, ticker, hash_):
         if landed is None or _OD_RESULT_EMITTED.get(hash_) == landed:
             return
         _OD_RESULT_EMITTED[hash_] = landed
+        # bounded: prune oldest entries (insertion-ordered dict) — days-long
+        # uptime with real flow must not leak (adversarial review #9)
+        while len(_OD_RESULT_EMITTED) > 512:
+            _OD_RESULT_EMITTED.pop(next(iter(_OD_RESULT_EMITTED)))
         res = _ENGINE.lookup_results(hash_) or {}
         research.emit("on_demand_result", rfq_id=rfq_id, ticker=ticker,
                       payload=dict(

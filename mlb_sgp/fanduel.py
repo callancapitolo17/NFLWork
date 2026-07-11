@@ -646,11 +646,18 @@ def price_selection_set(client, refs) -> float | None:
         for bc in combos:
             if not bc.get("isSGM"):
                 continue
+            # Leg-coverage guard (adversarial review #10): if FD silently
+            # dropped a suspended leg and returned an (N-1)-leg SGM
+            # combination, taking its price would misprice the full combo.
+            if len(bc.get("legCombinations", []) or []) != len(refs):
+                continue
             dec = _decimal(bc)
             if dec is not None:
                 return dec
         if len(refs) == 1:
             for bc in combos:
+                if len(bc.get("legCombinations", []) or []) != 1:
+                    continue
                 dec = _decimal(bc)
                 if dec is not None:
                     return dec

@@ -102,6 +102,15 @@ def classify_subcombo(game_legs: list[CanonicalLeg]) -> str:
     n = len(game_legs)
     if n == 0:
         return "unpriceable"
+    # Duplicate-market guard (Phase 2): a repeated (market_type, line) within
+    # one game is either the same leg twice or a contradictory pair whose
+    # joint probability is exactly 0 (Over 8.5 & Under 8.5, both moneylines).
+    # RFQ creators choose the leg set, and a book that product-prices
+    # contradictory legs would let Route B assign such a combo real value —
+    # a craftable pick-off. Nested totals at DIFFERENT lines stay allowed.
+    keys = [(l.market_type, l.line) for l in game_legs]
+    if len(set(keys)) != len(keys):
+        return "unpriceable"
     if n == 1:
         return "single"
     types = sorted(l.market_type for l in game_legs)

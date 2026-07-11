@@ -186,3 +186,41 @@ def test_no_poll_no_fetch_invariant():
     clock.t += 500                            # way past freshness
     eng._drain_once()                         # nothing queued
     assert len(svc.calls) == n and eng._queue_len() == 0
+
+
+def test_refetch_now_never_reuses_a_pre_entry_result():
+    """Blocker fix (adversarial review #1): a feed result that is still
+    FRESH when the accept arrives must NOT satisfy the confirm last look —
+    the fill gate re-fetches unless it can await an in-flight landing."""
+    svc = FakeService()
+    eng = OnDemandEngine(svc)
+    legs = _legs()
+    h = legset.leg_set_hash(legs)
+    eng.ensure_fetch(h, GAME, legs)
+    deadline = time.monotonic() + 5.0
+    while eng.lookup(h) is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert eng.lookup(h) is not None          # fresh feed result in store
+    calls_before = len(svc.calls)
+    ok = eng.refetch_now([(h, GAME, legs)], deadline_sec=5.0)
+    assert ok is True
+    assert len(svc.calls) == calls_before + len(svc.books)   # re-fetched live
+
+
+def test_ensure_fetch_reaps_wedged_inflight_and_restarts_worker():
+    clock = FakeClock()
+    svc = FakeService()
+    eng = OnDemandEngine(svc, now_fn=clock, autostart=False)
+    legs = _legs()
+    h = legset.leg_set_hash(legs)
+    eng.ensure_fetch(h, GAME, legs)
+    # simulate a worker death mid-job: job pulled off the queue, never finished
+    with eng._lock:
+        eng._queue.clear()
+    assert eng._inflight_len() == 1
+    # within the reap window the dedup holds
+    assert eng.ensure_fetch(h, GAME, legs) is False
+    # after the reap bound, the wedged flight is cleared and we re-enqueue
+    clock.t += 301
+    assert eng.ensure_fetch(h, GAME, legs) is True
+    assert eng._queue_len() == 1

@@ -258,6 +258,9 @@ class OnDemandBookResult:
     route: str              # "partition" | "transfer"
     n_cells_priced: int
     latency_sec: float
+    # transfer_fair - partition_fair, computed only where both routes came
+    # free (Route B vig-cancellation live measurement); None otherwise.
+    route_gap: float | None = None
 
 
 @dataclass(frozen=True)

@@ -234,9 +234,13 @@ def test_resolve_multi_leg_order_preserved():
 # 3. price_selection_set
 # --------------------------------------------------------------------------
 
-def _imply_bets_response(decimal=5.6, is_sgm=True):
+def _imply_bets_response(decimal=5.6, is_sgm=True, n_legs=None):
+    # Live FD responses carry one legCombinations entry per covered leg
+    # (verified 2026-07-10); the leg-coverage guard requires it to equal
+    # len(refs). Callers pass n_legs to match their refs.
     return {"betCombinations": [
         {"isSGM": is_sgm,
+         "legCombinations": [{"legType": "SIMPLE_SELECTION"}] * (n_legs or 1),
          "winAvgOdds": {"trueOdds": {"decimalOdds": {"decimalOdds": decimal}},
                         "americanDisplayOdds": {"americanOddsInt": 460}}},
     ]}
@@ -251,7 +255,7 @@ def _fake_client(payload, status=200):
 def test_price_selection_set_three_leg_body_shape():
     from mlb_sgp.fanduel import price_selection_set
     refs = [("734.rl", 101), ("734.tot", 201), ("734.ml", 302)]
-    client = _fake_client(_imply_bets_response(decimal=7.25))
+    client = _fake_client(_imply_bets_response(decimal=7.25, n_legs=3))
 
     out = price_selection_set(client, refs)
     assert out == 7.25
@@ -285,6 +289,16 @@ def test_price_selection_set_single_leg_accepts_non_sgm():
     from mlb_sgp.fanduel import price_selection_set
     client = _fake_client(_imply_bets_response(decimal=1.91, is_sgm=False))
     assert price_selection_set(client, [("m", 1)]) == 1.91
+
+
+def test_price_selection_set_rejects_partial_leg_coverage():
+    """Adversarial review #10: an SGM combination that covers fewer legs
+    than requested (FD silently dropped a suspended leg) must not be taken
+    as the N-leg price."""
+    from mlb_sgp.fanduel import price_selection_set
+    client = _fake_client(_imply_bets_response(decimal=7.25, n_legs=2))
+    refs = [("734.rl", 101), ("734.tot", 201), ("734.ml", 302)]
+    assert price_selection_set(client, refs) is None
 
 
 def test_price_selection_set_never_raises():

@@ -32,6 +32,16 @@ QUOTE_FRESH_SEC = 15.0
 # only for research comparison / logging).
 _STORE_RETENTION_SEC = 300.0
 
+# In-flight entries older than this are reaped (a worker that died mid-job
+# can no longer produce a usable result for them; without reaping, the
+# dedup would suppress re-fetches of that combo forever).
+_INFLIGHT_REAP_SEC = 300.0
+
+# Per-book wall bound for FEED fetches (the confirm lane passes its own
+# confirm-window deadline). One slow/hung book must not stall the single
+# consumer thread — mirrors SGPService.refresh's deadline discipline.
+_FEED_FETCH_DEADLINE_SEC = 75.0
+
 
 class OnDemandEngine:
     def __init__(self, service, now_fn=time.monotonic, autostart: bool = True):
@@ -41,7 +51,7 @@ class OnDemandEngine:
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._queue: deque = deque()        # (hash, GameRef, legs)
-        self._inflight: set[str] = set()    # queued or currently fetching
+        self._inflight: dict[str, float] = {}   # hash -> enqueue time
         self._landed: dict[str, threading.Event] = {}   # hash -> landing signal
         self._store: dict = {}              # hash -> (landed_at, {book: OnDemandBookResult})
         self._worker: threading.Thread | None = None
@@ -55,15 +65,30 @@ class OnDemandEngine:
         Idempotent per flight — the poll calls this every tick while pending.
         Returns True iff this call newly enqueued (lets the caller emit the
         on_demand_requested research event once per flight, not per tick)."""
+        if self._autostart:
+            # Unconditionally, BEFORE the in-flight dedup: a worker that died
+            # mid-job leaves its hash in-flight, and if all subsequent poll
+            # traffic is for that hash the early-return would otherwise never
+            # reach a restart.
+            self._ensure_worker()
+        now = self._now()
         with self._lock:
+            # Reap wedged in-flight entries (worker died mid-job): a flight
+            # older than the reap bound can't still be producing a usable
+            # (<=15s-fresh) result, so clearing it is always safe.
+            stale = [h for h, t in self._inflight.items()
+                     if now - t > _INFLIGHT_REAP_SEC]
+            for h in stale:
+                del self._inflight[h]
+                ev = self._landed.pop(h, None)
+                if ev is not None:
+                    ev.set()
             if hash_ in self._inflight:
                 return False
-            self._inflight.add(hash_)
+            self._inflight[hash_] = now
             self._landed[hash_] = threading.Event()
             self._queue.append((hash_, game, legs))
         self._wake.set()
-        if self._autostart:
-            self._ensure_worker()
         return True
 
     def landed_at(self, hash_: str) -> float | None:
@@ -96,11 +121,15 @@ class OnDemandEngine:
     # ------------------------------------------------------------- #
 
     def refetch_now(self, jobs, deadline_sec: float) -> bool:
-        """Synchronously land fresh results for EVERY (hash, game, legs) job
-        within deadline_sec. Awaits an already-in-flight feed fetch for a
-        hash instead of duplicating it. True iff all hashes are fresh at
-        return; False on any overrun/failure (caller voids — fail-safe)."""
-        deadline = self._now() + deadline_sec
+        """Synchronously land results for EVERY (hash, game, legs) job that
+        arrive AFTER this call was entered, within deadline_sec. A result
+        already in the store — however fresh — never satisfies the last
+        look ("we never confirm on a previously-fetched number"); the only
+        non-duplicating shortcut is awaiting an already-in-flight feed fetch,
+        whose landing is also after entry. True iff every hash lands in
+        time; False on any overrun/failure (caller voids — fail-safe)."""
+        entry = self._now()
+        deadline = entry + deadline_sec
         try:
             for hash_, game, legs in jobs:
                 with self._lock:
@@ -110,12 +139,13 @@ class OnDemandEngine:
                     remaining = deadline - self._now()
                     if remaining <= 0 or not event.wait(timeout=remaining):
                         return False
-                elif self.lookup(hash_) is None:
+                else:
                     if self._now() >= deadline:
                         return False
                     self._fetch_combo(hash_, game, legs,
                                       deadline=deadline)
-                if self.lookup(hash_) is None:
+                landed = self.landed_at(hash_)
+                if landed is None or landed < entry or self.lookup(hash_) is None:
                     return False
             return True
         except Exception as e:                      # never raise into confirm
@@ -157,7 +187,13 @@ class OnDemandEngine:
                 return False
             hash_, game, legs = self._queue.popleft()
         try:
-            self._fetch_combo(hash_, game, legs)
+            per_book = getattr(self._service, "per_book_deadline_sec", None)
+            try:
+                per_book = float(per_book)
+            except (TypeError, ValueError):
+                per_book = _FEED_FETCH_DEADLINE_SEC
+            self._fetch_combo(hash_, game, legs,
+                              deadline=self._now() + per_book)
         except Exception as e:
             log.warning("on_demand fetch error for %s: %s", hash_[:12], e)
             self._finish(hash_, {})
@@ -197,7 +233,7 @@ class OnDemandEngine:
         now = self._now()
         with self._lock:
             self._store[hash_] = (now, results)
-            self._inflight.discard(hash_)
+            self._inflight.pop(hash_, None)
             event = self._landed.pop(hash_, None)
             # prune stale research leftovers
             for k in [k for k, (t, _) in self._store.items()
