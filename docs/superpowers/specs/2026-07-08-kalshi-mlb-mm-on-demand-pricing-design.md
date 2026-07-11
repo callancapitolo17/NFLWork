@@ -109,10 +109,17 @@ our sportsbook scraping," with no artificial limitations or switches.
   rarely fit the per-book deadline). Retreat is a one-line code change.
 - **Route B rests on a vig-cancellation assumption** (the book's SGP margin ≈
   compounded leg vig, so it divides out of the correlation ratio). Extra SGP
-  margin beyond that inflates Route B fairs slightly. Defenses: Fréchet
-  bounds (rev 5) reject logically impossible fairs, the consensus band
-  rejects outliers, and a partition-vs-ratio `route_gap` research metric is
-  emitted wherever both routes come free — so the assumption is measured.
+  margin beyond that inflates Route B fairs. **Live-measured 2026-07-10 (one
+  sample, FD ml+total):** transfer fair 0.3265 vs partition fair 0.2809 —
+  Route B ran ~4.6 points RICH, because FD's SGP margin (~1.28 overround on
+  4 cells) far exceeds its compounded singles vig. Against a 3% quoting
+  margin this is the TOP WATCH ITEM: if two Route B books agree rich, the
+  consensus band will not save the quote. Defenses: Fréchet bounds + a
+  [1/3, 3] multiplier sanity bound (PX pricer-bug guard) reject impossible/
+  bugged fairs, the consensus band rejects lone outliers, `route_gap` is
+  computed wherever both routes come free, and the pre-registered retreat
+  trigger (haircut or disable Route B on evidence) stands. Route B fills
+  deserve extra scrutiny in the dry-run soak before live enablement.
 - **DK+Novig-only consensus on correlation-heavy shapes** is the known
   "fill our fair-error tail" vector from the adversarial review. Accepted;
   measured via `consensus_books`.
@@ -466,9 +473,10 @@ on evidence.
 | Failure | Behavior |
 |---|---|
 | Leg's side not offered at a book (one-sided line) | Route A impossible at that book → Route B (single SGP call + correlation transfer) |
+| Same market repeated in a leg set (Over 8.5 + Under 8.5, both MLs) | `classify_subcombo` → unpriceable (creator-craftable Route B pick-off closed) |
 | Single itself one-sided at the book | Route B single devig uses the book's vig-fallback haircut; Fréchet + consensus still gate |
 | Book prices some cells but not all 2^N | Route A → Route B fallback; if the SGP call also fails, book drops out |
-| Partition overround outside N-aware bound / fair outside Fréchet bounds | sanity gate → book drops out |
+| Partition overround outside N-aware bound / fair outside Fréchet or multiplier bounds | Route A gate failure falls through to Route B (its own gates still apply); Route B gate failure → book drops out |
 | Book rejects the combo (DK combinability, MGM no-group) | book drops out |
 | < MIN_AGREEING_BOOKS survive | consensus None → `no_fair` skip; open quote stays until feed or last look resolves it |
 | Fetch in flight when RFQ re-seen | shared fetch (dedup); still `on_demand_pending` |
