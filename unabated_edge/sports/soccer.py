@@ -2,6 +2,13 @@ from unabated_edge.sports.base import SportAdapter, Candidate
 from unabated_edge import pricing, config
 from unabated_edge.feed import line_american_price
 
+
+def _older_mo(a, b):
+    """Older (lexicographically smaller, since ISO-8601 sorts by time) of two
+    modifiedOn strings; ignores None."""
+    vals = [x for x in (a, b) if x]
+    return min(vals) if vals else None
+
 # Maps known divergent spellings -> a single plain-English canonical so that
 # Unabated and Kalshi names collapse to the same string. Each entry is a genuine
 # synonym (no two distinct nations collide). Expand/verify against live data in
@@ -69,10 +76,15 @@ class Soccer(SportAdapter):
         same line). Same-book only — never mixes books' vig. `alt` marks rungs
         built from alternateLines (possibly Unabated-derived, not a raw book
         quote) and `overround` is the pre-devig implied sum — both go to the
-        research firehose so alt provenance stays auditable."""
+        research firehose so alt provenance stays auditable. Each rung also
+        carries `modified_on` — the older of the two sides' feed modifiedOn —
+        for the staleness gate."""
         for ms in config.ANCHOR_SOURCE_IDS:
-            overs = self._side_prices(state.lines.get(f"{eid}|0|{ms}|bt3"))   # side 0 = Over
-            unders = self._side_prices(state.lines.get(f"{eid}|1|{ms}|bt3"))  # side 1 = Under
+            over_ln = state.lines.get(f"{eid}|0|{ms}|bt3")
+            under_ln = state.lines.get(f"{eid}|1|{ms}|bt3")
+            overs = self._side_prices(over_ln)
+            unders = self._side_prices(under_ln)
+            mo = _older_mo((over_ln or {}).get("modifiedOn"), (under_ln or {}).get("modifiedOn"))
             ladder = {}
             for line in sorted(set(overs) & set(unders)):
                 (opx, o_alt), (upx, u_alt) = overs[line], unders[line]
@@ -80,7 +92,8 @@ class Soccer(SportAdapter):
                 p_over, _ = pricing.devig([po_raw, pu_raw])
                 ladder[line] = {"p_over": p_over, "book": ms,
                                 "alt": o_alt or u_alt,
-                                "overround": round(po_raw + pu_raw, 6)}
+                                "overround": round(po_raw + pu_raw, 6),
+                                "modified_on": mo}
             if ladder:
                 return ladder
         return {}

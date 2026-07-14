@@ -251,6 +251,38 @@ def test_fair_ladder_none_when_no_anchor():
     assert Soccer().fair_ladder(st, em) is None
 
 
+def test_ladder_rung_carries_older_modified_on():
+    """Each rung's modified_on is the OLDER of the two injected side modifiedOn
+    strings (the staleness gate must trust the stalest half of the rung)."""
+    s = Soccer()
+    st = feed.parse_snapshot({
+        "marketSources": [{"id": 7, "name": "S"}],
+        "teams": {"1": {"name": "Colombia"}, "2": {"name": "Ghana"}},
+        "gameOddsEvents": {
+            "lg21:pt1:pregame": [{
+                "eventId": 9,
+                "eventStart": "2026-06-22T17:00:00+00:00",
+                "eventTeams": {"1": {"id": 1}, "0": {"id": 2}},
+                "gameOddsMarketSourcesLines": {
+                    "si0:ms7:an0": {"bt3": {"price": 115, "points": 2.5,
+                                            "modifiedOn": "2026-07-14T10:00:00"}},
+                    "si1:ms7:an0": {"bt3": {"price": -140, "points": 2.5,
+                                            "modifiedOn": "2026-07-14T09:00:00"}},
+                }
+            }]
+        }
+    }, {"lg21"})
+    ladder = s._anchor_ladder(st, 9)
+    assert ladder[2.5]["modified_on"] == "2026-07-14T09:00:00"
+
+
+def test_older_mo_helper():
+    from unabated_edge.sports.soccer import _older_mo
+    assert _older_mo("2026-07-14T10:00:00", "2026-07-14T09:00:00") == "2026-07-14T09:00:00"
+    assert _older_mo(None, "x") == "x"
+    assert _older_mo(None, None) is None
+
+
 def test_fail_closed_mismatched_points():
     """Over and Under at different `points` share no common line → empty ladder."""
     s = Soccer()

@@ -44,6 +44,27 @@ class MakerEngine:
         times = self.state.fill_times.get(eid, [])
         return len([t for t in times if (now - t).total_seconds() < 60]) > config.FILL_BURST_N
 
+    @staticmethod
+    def _parse_mo(s):
+        if not s:
+            return None
+        try:
+            dt = datetime.datetime.fromisoformat(s)
+        except (ValueError, TypeError):
+            return None
+        return dt.replace(tzinfo=datetime.timezone.utc) if dt.tzinfo is None else dt
+
+    def _anchor_stale(self, ladder, now):
+        """True if even the freshest rung's anchor modifiedOn is older than
+        ANCHOR_STALE_SEC (whole feed frozen), or no rung has a parseable
+        timestamp (fail-safe: can't prove freshness -> treat as stale)."""
+        ages = [(now - dt).total_seconds()
+                for dt in (self._parse_mo(r.get("modified_on")) for r in ladder.values())
+                if dt is not None]
+        if not ages:
+            return True
+        return min(ages) > config.ANCHOR_STALE_SEC
+
     # ---------- quote math ----------
 
     def _margin_cents(self, fair_cents, alt):
@@ -193,6 +214,9 @@ class MakerEngine:
             return self._pull_match(eid, now, "fill_burst")
         if not ladder:
             return self._pull_match(eid, now, "anchor_gone")
+        self._fair_by_event[eid] = {ln: r["p_over"] for ln, r in ladder.items()}
+        if self._anchor_stale(ladder, now):
+            return self._pull_match(eid, now, "anchor_stale")
         for mk in kalshi_event.get("markets", []):
             book = books.get(mk.get("ticker"))
             if book is None:

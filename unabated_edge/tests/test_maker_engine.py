@@ -11,7 +11,8 @@ _EM = EventMeta(event_id=1, league_key="lg21", start_utc=_KICK,
                 home_id=10, away_id=20, home="TeamA", away="TeamB")
 _KEV = {"title": "A vs B: Regulation Time Total Goals",
         "markets": [{"ticker": "T-O25", "strike_type": "greater", "floor_strike": 2.5}]}
-_LADDER = {2.5: {"p_over": 0.42, "book": 7, "alt": False, "overround": 1.05}}
+_LADDER = {2.5: {"p_over": 0.42, "book": 7, "alt": False, "overround": 1.05,
+                "modified_on": _NOW.isoformat()}}
 # wide crowd: 0.30 yes bid / 0.55 yes ask (no bid 0.45) -> our quotes fit inside
 _BOOK = {"yes_bids": [(0.30, 500.0)], "no_bids": [(0.45, 500.0)]}
 _BOOKS = {"T-O25": _BOOK}
@@ -74,7 +75,8 @@ def test_never_crosses_the_ask(eng):
 
 
 def test_alt_rung_gated_on_overround(eng):
-    bad_alt = {2.5: {"p_over": 0.42, "book": 7, "alt": True, "overround": 1.30}}
+    bad_alt = {2.5: {"p_over": 0.42, "book": 7, "alt": True, "overround": 1.30,
+                     "modified_on": _NOW.isoformat()}}
     eng.on_match(Soccer(), _EM, _KEV, bad_alt, _BOOKS, _NOW)
     assert eng.gateway.placed == []
 
@@ -141,3 +143,16 @@ def test_hard_stop_pulls_all(eng):
     eng.on_match(Soccer(), _EM, _KEV, _LADDER, _BOOKS, _NOW)
     assert eng.gateway.placed == []
     assert eng.stats()["halted"] is True
+
+
+def test_anchor_stale_pulls(eng):
+    stale = {2.5: {**_LADDER[2.5],
+                  "modified_on": (_NOW - datetime.timedelta(minutes=10)).isoformat()}}
+    eng.on_match(Soccer(), _EM, _KEV, stale, _BOOKS, _NOW)
+    assert eng.gateway.placed == []
+
+
+def test_anchor_fresh_still_quotes(eng):
+    fresh = {2.5: {**_LADDER[2.5], "modified_on": _NOW.isoformat()}}
+    eng.on_match(Soccer(), _EM, _KEV, fresh, _BOOKS, _NOW)
+    assert eng.gateway.placed
