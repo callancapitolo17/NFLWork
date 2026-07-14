@@ -7,7 +7,6 @@ is a tripwire, never silently reconciled."""
 import datetime
 import logging
 
-from unabated_edge import config
 from unabated_edge.maker import ledger, store
 from kalshi_common import auth_client
 
@@ -136,7 +135,7 @@ def poll_fills(state: MakerState, now) -> list[str]:
                 state.resting.pop((ticker, placed_side), None)
         worst = ledger.worst_case(state.fills[eid])
         store.log_fill(now, info["sport"], eid, oid, ticker, side, price, n,
-                       _fp(f, "fee") or 0.0, worst, tid)
+                       _money(f, "fee"), worst, tid)
         log.info("maker FILL %s %s %.2f@%.2f worst_after=%.2f", ticker, side, n, price, worst)
         new.append(tid)
     # overlap the next window; trade_id dedup absorbs the re-delivery

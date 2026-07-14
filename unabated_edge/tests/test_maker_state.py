@@ -23,11 +23,12 @@ def test_exposure_includes_resting_as_fills():
 def test_poll_fills_parses_updates_and_dedups(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "MAKER_DB_PATH", tmp_path / "mk.duckdb")
     from unabated_edge.maker import store
+    from unabated_edge.storage import connect
     store.init()
     s = _state_with_order()
     payload = {"fills": [
         {"trade_id": "tr1", "order_id": "ord-1", "ticker": "T-O25", "side": "yes",
-         "count_fp": "12.5", "yes_price_dollars": "0.4000", "no_price_dollars": "0.6000"},
+         "count_fp": "12.5", "yes_price_dollars": "0.4000", "no_price_dollars": "0.6000", "fee": 4},
         {"trade_id": "tr2", "order_id": "someone-else", "ticker": "T-O25", "side": "yes",
          "count": 5, "yes_price": 40},
     ]}
@@ -38,6 +39,9 @@ def test_poll_fills_parses_updates_and_dedups(tmp_path, monkeypatch):
     assert s.fills_by_ticker["T-O25"] == 12.5
     assert s.resting[("T-O25", "yes")]["count"] == 17.5    # 30 - 12.5
     assert mstate.poll_fills(s, _NOW) == []                # dedup on trade_id
+    # Verify fee is stored as dollars (4 cents = 0.04 dollars)
+    with connect(config.MAKER_DB_PATH, read_only=True) as c:
+        assert c.execute("SELECT fee FROM maker_fills WHERE trade_id='tr1'").fetchone()[0] == 0.04
 
 
 def test_poll_fills_full_fill_clears_resting(tmp_path, monkeypatch):
