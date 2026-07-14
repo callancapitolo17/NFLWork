@@ -91,8 +91,9 @@ class MakerEngine:
         fair_cents = fair * 100
         price = math.floor(fair_cents + 1e-9) - self._margin_cents(fair_cents, alt)
         opp_ask = yes_ask_from_book(book) if side == "yes" else no_ask_from_book(book)
-        if opp_ask is not None:
-            price = min(price, int(round(opp_ask * 100)) - 1)     # never cross
+        if opp_ask is None:
+            return None, "no_crowd"
+        price = min(price, int(round(opp_ask * 100)) - 1)     # never cross
         if price < 1:
             return None, "price_floor"
         if price < fair_cents - config.MAX_MARGIN_CENTS - 1e-9:
@@ -217,6 +218,12 @@ class MakerEngine:
         self._fair_by_event[eid] = {ln: r["p_over"] for ln, r in ladder.items()}
         if self._anchor_stale(ladder, now):
             return self._pull_match(eid, now, "anchor_stale")
+        baseline = self.state.position_baseline
+        if baseline:
+            for mk in kalshi_event.get("markets", []):
+                t = mk.get("ticker")
+                if t and abs(baseline.get(t, 0.0)) > 0.01 and t not in self.state.settled:
+                    return self._pull_match(eid, now, "baseline_blocked")
         for mk in kalshi_event.get("markets", []):
             book = books.get(mk.get("ticker"))
             if book is None:

@@ -156,3 +156,17 @@ def test_anchor_fresh_still_quotes(eng):
     fresh = {2.5: {**_LADDER[2.5], "modified_on": _NOW.isoformat()}}
     eng.on_match(Soccer(), _EM, _KEV, fresh, _BOOKS, _NOW)
     assert eng.gateway.placed
+
+
+def test_no_crowd_side_skipped(eng):
+    """no_bids empty -> yes_ask_from_book is None -> the YES side must be
+    skipped (no_crowd), not quoted at some unconstrained price."""
+    book = {"T-O25": {"yes_bids": [(0.30, 5.0)], "no_bids": []}}
+    eng.on_match(Soccer(), _EM, _KEV, _LADDER, book, _NOW)
+    assert not any(s == "yes" for _t, s, _p, _n in eng.gateway.placed)
+
+
+def test_baseline_blocked(eng):
+    eng.state.position_baseline = {"T-O25": 5.0}
+    eng.on_match(Soccer(), _EM, _KEV, _LADDER, _BOOKS, _NOW)
+    assert eng.gateway.placed == []
