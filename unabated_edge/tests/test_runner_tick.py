@@ -1,4 +1,6 @@
 import datetime
+import os
+import pytest
 from unabated_edge import feed, runner, config, storage
 from unabated_edge.sports.soccer import Soccer
 
@@ -262,3 +264,20 @@ def test_main_loop_live_startup_sync(tmp_path, monkeypatch):
     state, gw, prefixes = calls[0]
     assert isinstance(gw, _GW)
     assert "KXWCTOTAL" in prefixes
+
+
+def test_singleton_lock_blocks_second_instance(tmp_path, monkeypatch):
+    """A second runner must refuse to start while our own pid's lock is live,
+    but reclaim a stale lock left by a dead pid (crash / kill -9)."""
+    lock_path = tmp_path / ".runner.lock"
+    monkeypatch.setattr(runner, "_LOCK_PATH", lock_path)
+    lock_path.write_text(str(os.getpid()))          # our own pid: definitely alive
+    try:
+        with pytest.raises(SystemExit):
+            runner._acquire_singleton_lock()
+    finally:
+        lock_path.unlink(missing_ok=True)
+    lock_path.write_text("999999")                   # a pid that should not be alive
+    runner._acquire_singleton_lock()                 # must NOT raise: stale lock reclaimed
+    assert lock_path.read_text().strip() == str(os.getpid())
+    lock_path.unlink(missing_ok=True)

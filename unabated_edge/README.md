@@ -136,7 +136,11 @@ quote on that match unless noted as global):
 | unpaired / kickoff passed / market closed | that match | pull (`sweep()`) |
 | Kalshi position mismatch vs local fills | all matches | pull everything (live mode only — reconciliation polling runs only when `MAKER_MODE=live`) |
 | daily loss halt (§cap stack) | all matches | pull everything |
+| hard $-stop: realized + mark-to-anchor unrealized P&L ≤ `-HARD_STOP_DOLLARS` ($50) | all matches | pull everything (`hard_stop`) — checked every tick, right after the daily halt |
 | anchor ladder disappears for a match | that match | pull that match (`anchor_gone`) |
+| anchor frozen: even the freshest rung's `modifiedOn` is older than `ANCHOR_STALE_SEC` (180s), or no rung has a parseable timestamp (fail-safe) | that match | pull that match (`anchor_stale`) |
+| Kalshi position on this event's ticker still carries a startup baseline (restart-with-inventory not yet settled) | that match | pull/skip that match (`baseline_blocked`) — no fresh quotes rest on top of unreconciled inventory |
+| no opposing crowd bid on a side (`yes_ask`/`no_ask` is `None`) | that side | skip, don't quote (`no_crowd`) — never quote unconstrained into an empty book |
 | graceful shutdown (SIGINT/SIGTERM or kill file exit) | all matches | pull ALL resting quotes (`shutdown`/`kill_switch`) — global |
 | `.kill` file present | all matches | pull everything — **deviation from spec's "watchdog" framing**: the check is at the top of `run_tick` itself (same 5s tick cadence), not inside the `watchdog()` staleness method |
 
@@ -180,6 +184,35 @@ right after its `while _running.is_set():` loop ends. Only killing the
 process directly (`kill -9`) or a crash skips this cleanup and leaves any
 resting quotes live on Kalshi's book until the next `poll_positions`
 reconciliation on restart.
+
+**Operational runbook (live) — tuition run:**
+
+- **$300 account note:** `BANKROLL` stays `1000` for the cap-stack math (§cap
+  stack percentages are computed off it), but the leashes that actually bind
+  at this account size are `MAKER_MAX_CONTRACTS=2` (every order is ~$1) and
+  `HARD_STOP_DOLLARS=50`; the %-based caps (`MAX_QUOTE_PCT`/`MATCH_CAP_PCT`/
+  `GLOBAL_CAP_PCT`/`DAILY_LOSS_HALT_PCT`) are outer ceilings that never bind at
+  this size. **Never raise `MAKER_MAX_CONTRACTS` without first checking it
+  against the real account balance.**
+- **Single writer:** stop the capture runner before starting the maker (the
+  maker captures too — running two `unabated_edge.runner` processes means two
+  writers on the same DuckDB files). A `.runner.lock` PID file at
+  `unabated_edge/.runner.lock` enforces one runner: a second `main_loop` call
+  refuses to start (`SystemExit`) while the PID in the lock file is alive, and
+  automatically reclaims a stale lock left by a crashed/`kill -9`'d process.
+- **Launch inline, never in `.env`:** start live mode with
+  `MAKER_MODE=live MAKER_LIVE_ACK=1 python3 -m unabated_edge.runner` from the
+  worktree cwd — as an inline env var, not baked into `unabated_edge/.env` —
+  so a bare restart (no env vars) always returns to `MAKER_MODE=off`.
+- **Safe stop:** `touch unabated_edge/.kill`, wait one 5s tick so the kill
+  switch pulls all resting quotes (`kill_switch`), THEN send `Ctrl-C` /
+  `SIGTERM`. Never `kill -9` while quotes are live — it skips the shutdown
+  pull and can leave resting orders live on Kalshi until the next
+  `poll_positions` reconciliation.
+- **No mid-match restart while holding inventory** (see the Reconciliation
+  caveat above) — a restart rebuilds positions/orders but not the per-match
+  goal-grid ledger, so pre-restart fills don't count toward the match cap
+  until settlement.
 
 ---
 
@@ -248,6 +281,9 @@ All tuneable constants live in `config.py` and can be overridden via `.env` or e
 | `DAILY_LOSS_HALT_PCT` | `0.40` | Realized settled loss (fraction of bankroll) that halts quoting for the day |
 | `FILL_BURST_N` | `3` | More than this many fills on one match in 60s trips the fill-burst tripwire |
 | `COOLOFF_MIN` | `10` | Minutes a match stays pulled after a fill-burst trip |
+| `MAKER_MAX_CONTRACTS` | `2` | Hard per-quote contract ceiling (tuition-run leash — binds before the %-based ledger caps at this account size) |
+| `HARD_STOP_DOLLARS` | `50` | Cumulative realized + mark-to-anchor unrealized loss (dollars) that halts the maker for the day, separate from `DAILY_LOSS_HALT_PCT` |
+| `ANCHOR_STALE_SEC` | `180` | Pull a match if even its freshest anchor rung's `modifiedOn` is older than this — frozen-feed guard |
 
 ---
 

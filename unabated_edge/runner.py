@@ -1,4 +1,4 @@
-import argparse, datetime, time, signal, threading
+import argparse, datetime, os, time, signal, threading
 from unabated_edge import config, feed, ev, sizing, mapping, storage
 from unabated_edge.venues import kalshi
 from unabated_edge.sports import registry
@@ -8,6 +8,38 @@ from unabated_edge.maker import engine as maker_engine, gateway as maker_gateway
     state as maker_state, store as maker_store
 
 log = setup_logging()
+
+_LOCK_PATH = config.PKG_DIR / ".runner.lock"
+
+
+def _acquire_singleton_lock():
+    """Refuse to start if another runner is already writing these DBs (prevents
+    two-writer DuckDB contention: capture + maker, or two makers)."""
+    if _LOCK_PATH.exists():
+        try:
+            pid = int(_LOCK_PATH.read_text().strip())
+        except (ValueError, OSError):
+            pid = None
+        if pid and _pid_alive(pid):
+            raise SystemExit(f"another unabated_edge.runner is running (pid {pid}); "
+                             f"stop it first or remove {_LOCK_PATH}")
+    _LOCK_PATH.write_text(str(os.getpid()))
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return False
+    return True
+
+
+def _release_singleton_lock():
+    try:
+        if _LOCK_PATH.exists() and _LOCK_PATH.read_text().strip() == str(os.getpid()):
+            _LOCK_PATH.unlink()
+    except OSError:
+        pass
 _running = threading.Event(); _running.set()
 # candidates priced since the last heartbeat: >0 proves the full chain works
 # (v2 parsed -> anchors unblurred -> ladder built -> Kalshi paired -> asks live);
@@ -169,6 +201,7 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, book_fn, trade
 
 
 def main_loop(dry_run: bool):
+    _acquire_singleton_lock()
     storage.init()
     kalshi.init()
     # v2 per-league polling: the v2 odds file carries UNBLURRED anchors anonymously
@@ -240,6 +273,7 @@ def main_loop(dry_run: bool):
     if maker is not None:
         maker.pull_all(datetime.datetime.now(datetime.timezone.utc), "shutdown")
         log.info("maker shutdown: resting quotes pulled")
+    _release_singleton_lock()
 
 
 def _stop(*_):

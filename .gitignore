@@ -150,6 +150,7 @@ unabated_edge/*.duckdb.wal
 unabated_edge/bot.log
 unabated_edge/bot.log.*
 unabated_edge/.kill
+unabated_edge/.runner.lock
 
 # Caesars SGP scraper runtime artifacts + recon data dumps (token has short TTL
 # but should never be committed; browser profile + JSON captures are data).
