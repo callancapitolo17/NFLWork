@@ -201,3 +201,26 @@ def test_kill_switch_pulls_maker_quotes(tmp_path, monkeypatch):
                            book_fn=lambda t: _BOOK, maker=mk)
     assert rows == [] and pulls == ["kill_switch"]
     assert mk.calls == []            # no quoting happened under the kill switch
+
+
+def test_main_loop_shutdown_pulls_maker_quotes(tmp_path, monkeypatch):
+    """SIGINT/SIGTERM (cleared _running) must pull resting maker quotes on exit."""
+    _init_dbs(tmp_path, monkeypatch)
+    pulls = []
+    class _GW:
+        is_live = False
+    class _MK:
+        def pull_all(self, now, reason):
+            pulls.append(reason)
+        def stats(self):
+            return {}
+    monkeypatch.setattr(runner.kalshi, "init", lambda: None)
+    monkeypatch.setattr(runner.maker_gateway, "make_gateway", lambda mode, ack: _GW())
+    monkeypatch.setattr(runner.maker_engine, "MakerEngine", lambda gw, st: _MK())
+    monkeypatch.setattr(runner.maker_store, "init", lambda: None)
+    runner._running.clear()          # simulate signal received before first tick
+    try:
+        runner.main_loop(dry_run=True)
+    finally:
+        runner._running.set()        # restore for other tests
+    assert pulls == ["shutdown"]

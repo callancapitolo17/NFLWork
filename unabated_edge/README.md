@@ -158,11 +158,12 @@ MAKER_MODE=live MAKER_LIVE_ACK=1 python3 -m unabated_edge.runner
 placing orders. Creating the existing `.kill` file does **not** stop the
 process loop — it makes `run_tick` skip pricing and, every tick (5s), call
 `maker.pull_all(reason="kill_switch")` to cancel every resting quote, for as
-long as the file exists. **`SIGINT`/`SIGTERM` only stop the loop — they do
-not cancel resting orders first.** To take the maker flat before stopping
-the process: create `.kill`, wait one tick (≤5s) for the pull to log, then
-send `SIGINT`/`SIGTERM`. Killing the process directly (or a crash) leaves
-any resting quotes live on Kalshi's book until the next `poll_positions`
+long as the file exists. Graceful shutdown — `SIGINT`/`SIGTERM` (handlers
+clear `_running`) or the `.kill` file — pulls every resting maker quote
+before the process exits: `main_loop` calls `maker.pull_all(reason="shutdown")`
+right after its `while _running.is_set():` loop ends. Only killing the
+process directly (`kill -9`) or a crash skips this cleanup and leaves any
+resting quotes live on Kalshi's book until the next `poll_positions`
 reconciliation on restart.
 
 ---
@@ -247,7 +248,7 @@ python3 -m unabated_edge.runner
 
 The bot re-fetches each adapter's v2 league odds file every `V2_POLL_SEC` (default 5s), refreshes Kalshi event listings every 30 seconds, and logs flagged edges to `unabated_edge/bot.log` and to the two DuckDB files. A heartbeat line (~every 60s) reports event/line/market counts **and candidates priced** — `candidates_recent=0` while `lines>0` means the pricing chain is broken (re-blurred anchors, feed shape drift, or no Kalshi pairings), which a raw line count alone would hide.
 
-**Kill switch:** create `unabated_edge/.kill` to pause pricing/flagging (and, if the maker is enabled, pull its resting quotes) every tick for as long as the file exists — this does **not** exit the process. `SIGINT`/`SIGTERM` exit the loop; see [Market maker](#market-maker-maker) for the safe shutdown order when the maker is live.
+**Kill switch:** create `unabated_edge/.kill` to pause pricing/flagging (and, if the maker is enabled, pull its resting quotes) every tick for as long as the file exists — this does **not** exit the process. `SIGINT`/`SIGTERM` exit the loop and, if the maker is enabled, pull all resting quotes on the way out — see [Market maker](#market-maker-maker) for details.
 
 ---
 

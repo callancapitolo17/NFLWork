@@ -233,6 +233,9 @@ def main_loop(dry_run: bool):
         if maker is not None:
             maker.watchdog(datetime.datetime.now(datetime.timezone.utc))
         time.sleep(config.V2_POLL_SEC)
+    if maker is not None:
+        maker.pull_all(datetime.datetime.now(datetime.timezone.utc), "shutdown")
+        log.info("maker shutdown: resting quotes pulled")
 
 
 def _stop(*_):
