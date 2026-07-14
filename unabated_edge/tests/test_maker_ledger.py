@@ -58,3 +58,17 @@ def test_max_contracts_zero_when_already_breached_or_no_budget():
     fills = [(2.5, "yes", 100, 0.42)]          # worst -42
     assert ledger.max_contracts(fills, 1.5, "yes", 0.70, 30.0) == 0
     assert ledger.max_contracts([], 2.5, "yes", 0.42, 0.0) == 0
+
+
+def test_mark_to_fair_yes_profit_when_fair_rises():
+    val = ledger.mark_to_fair([(2.5, "yes", 10, 0.40)], {2.5: 0.50})
+    assert round(val, 9) == round(10 * (0.50 - 0.40), 9) == 1.0
+
+
+def test_mark_to_fair_no_side():
+    val = ledger.mark_to_fair([(2.5, "no", 10, 0.55)], {2.5: 0.50})
+    assert round(val, 9) == round(10 * ((1 - 0.50) - 0.55), 9) == -0.5
+
+
+def test_mark_to_fair_unmarked_line_contributes_zero():
+    assert ledger.mark_to_fair([(2.5, "yes", 10, 0.40)], {}) == 0.0

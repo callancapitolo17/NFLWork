@@ -51,3 +51,18 @@ def max_contracts(fills, line: float, side: str, price: float, budget: float) ->
             allowed = (budget + base[g]) / (-unit)
             bound = allowed if bound is None else min(bound, allowed)
     return int(bound + 1e-9) if bound is not None else 0
+
+
+def mark_to_fair(fills, fair_by_line) -> float:
+    """Unrealized P&L of open fills marked at the current devigged anchor fair.
+    fair_by_line: {line: p_over}. A fill's current value ≈ p_over (yes) or
+    1−p_over (no); unrealized = contracts × (value − price). Lines with no
+    current fair are left unmarked (contribute 0)."""
+    total = 0.0
+    for line, side, contracts, price in fills:
+        p_over = fair_by_line.get(line)
+        if p_over is None:
+            continue
+        val = p_over if side == "yes" else (1.0 - p_over)
+        total += contracts * (val - price)
+    return total

@@ -21,6 +21,7 @@ class MakerEngine:
         self.last_success = {}      # sport -> last successful tick (watchdog)
         self._last_skip = {}        # (ticker, side) -> reason (dedup skip rows)
         self._halted = False
+        self._fair_by_event = {}    # eid -> {line: p_over}, latest tick
 
     # ---------- gates ----------
 
@@ -28,6 +29,16 @@ class MakerEngine:
         self.state.roll_day(now)
         self._halted = self.state.settled_pnl_today <= -config.DAILY_LOSS_HALT_PCT * config.BANKROLL
         return self._halted
+
+    def _hard_stopped(self, now):
+        realized = self.state.settled_pnl_today
+        unreal = sum(ledger.mark_to_fair(self.state.fills.get(e, []),
+                                          self._fair_by_event.get(e, {}))
+                     for e in self.state.fills)
+        if realized + unreal <= -config.HARD_STOP_DOLLARS:
+            self._halted = True
+            return True
+        return False
 
     def _fill_burst(self, eid, now):
         times = self.state.fill_times.get(eid, [])
@@ -69,6 +80,7 @@ class MakerEngine:
         n = math.floor(config.MAX_QUOTE_PCT * config.BANKROLL / pd)
         if alt:
             n = math.floor(n * config.ALT_SIZE_MULT)
+        n = min(n, config.MAKER_MAX_CONTRACTS)
         budget = min(config.MATCH_CAP_PCT * config.BANKROLL, self._global_room(eid))
         if budget <= 0:
             return None, "global_cap"
@@ -154,8 +166,12 @@ class MakerEngine:
     def stats(self):
         committed = sum(max(0.0, -ledger.worst_case(self.state.exposure_fills(e)))
                         for e in self.state.events_with_exposure())
+        unreal = sum(ledger.mark_to_fair(self.state.fills.get(e, []),
+                                         self._fair_by_event.get(e, {}))
+                     for e in self.state.fills)
+        pnl = round(self.state.settled_pnl_today + unreal, 2)
         return {"quotes_live": self.state.quotes_live(),
-                "worst_total": round(committed, 2), "halted": self._halted}
+                "worst_total": round(committed, 2), "pnl": pnl, "halted": self._halted}
 
     # ---------- main entry ----------
 
@@ -164,6 +180,8 @@ class MakerEngine:
         sport = adapter.sport
         if self._daily_halted(now):
             return self.pull_all(now, "daily_halt")
+        if self._hard_stopped(now):
+            return self.pull_all(now, "hard_stop")
         if event_meta.start_utc is not None and \
                 (event_meta.start_utc - now).total_seconds() < config.QUOTE_PULL_MIN * 60:
             return self._pull_match(eid, now, "pull_window")

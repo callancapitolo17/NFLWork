@@ -124,3 +124,20 @@ def test_daily_halt_pulls_everything(eng, monkeypatch):
     eng.on_match(Soccer(), _EM, _KEV, _LADDER, _BOOKS, _NOW + datetime.timedelta(seconds=5))
     assert eng.state.quotes_live() == 0
     assert eng.stats()["halted"] is True
+
+
+def test_fixed_contract_cap(eng):
+    """_BOOK gives plenty of room; every placed quote must still be capped at
+    MAKER_MAX_CONTRACTS (the tuition-run ceiling), regardless of budget room."""
+    eng.on_match(Soccer(), _EM, _KEV, _LADDER, _BOOKS, _NOW)
+    assert eng.gateway.placed                                   # sanity: quotes actually placed
+    for _t, _s, _p, n in eng.gateway.placed:
+        assert n <= config.MAKER_MAX_CONTRACTS
+
+
+def test_hard_stop_pulls_all(eng):
+    eng.state.fills = {1: [(2.5, "yes", 100, 0.90)]}
+    eng._fair_by_event = {1: {2.5: 0.10}}   # unrealized ~= 100*(0.10-0.90) = -80 < -50
+    eng.on_match(Soccer(), _EM, _KEV, _LADDER, _BOOKS, _NOW)
+    assert eng.gateway.placed == []
+    assert eng.stats()["halted"] is True
