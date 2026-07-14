@@ -1,6 +1,6 @@
 # unabated_edge
 
-Sport-agnostic, Unabated-anchored Kalshi edge-detection engine. Runs dry only — no order placement. Soccer (World Cup **totals**) is the first adapter.
+Sport-agnostic, Unabated-anchored Kalshi edge-detection engine. The taker/flagging path runs dry (no orders); the in-process market maker (`maker/`, see below) places real resting orders when `MAKER_MODE=live`. Soccer (World Cup **totals**) is the first adapter.
 
 ---
 
@@ -127,15 +127,17 @@ quote on that match unless noted as global):
 
 | trigger | scope | action |
 |---|---|---|
-| any rung's fair moved ≥ 1c since our quote | that rung | cancel/replace this tick |
+| recomputed quote price differs from the resting price (fair moved ≥ 1c, or the opposing ask moved the never-cross cap) | that rung | cancel/replace that rung |
 | feed watchdog: no successful tick for a sport in `MAX_STALENESS_SEC` (20s) | all matches | pull everything (`watchdog()`, run every main-loop iteration) |
 | within `QUOTE_PULL_MIN` (3 min) of kickoff | that match | pull; inventory rides to settlement |
 | `COOLOFF_MIN` (10 min) after a fill burst | that match | pull + hold off requoting |
 | fill burst: > `FILL_BURST_N` (3) fills in 60s | that match | pull + start cooloff |
 | crossed/impossible book (`yes_ask + no_ask < 1 − 2·fee`) | that match | pull (data error) |
 | unpaired / kickoff passed / market closed | that match | pull (`sweep()`) |
-| Kalshi position mismatch vs local fills | all matches | pull everything |
+| Kalshi position mismatch vs local fills | all matches | pull everything (live mode only — reconciliation polling runs only when `MAKER_MODE=live`) |
 | daily loss halt (§cap stack) | all matches | pull everything |
+| anchor ladder disappears for a match | that match | pull that match (`anchor_gone`) |
+| graceful shutdown (SIGINT/SIGTERM or kill file exit) | all matches | pull ALL resting quotes (`shutdown`/`kill_switch`) — global |
 | `.kill` file present | all matches | pull everything — **deviation from spec's "watchdog" framing**: the check is at the top of `run_tick` itself (same 5s tick cadence), not inside the `watchdog()` staleness method |
 
 **Data model** — sibling DB `unabated_edge_maker.duckdb` (`maker/store.py::init`),
@@ -242,7 +244,7 @@ All tuneable constants live in `config.py` and can be overridden via `.env` or e
 # install deps (from repo root or unabated_edge/)
 pip install -r unabated_edge/requirements.txt
 
-# run (always dry-run — no orders are placed)
+# run (taker path is dry-run; maker places orders only with MAKER_MODE=live + MAKER_LIVE_ACK=1)
 python3 -m unabated_edge.runner
 ```
 
