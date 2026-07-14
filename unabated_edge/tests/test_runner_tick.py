@@ -158,3 +158,28 @@ def test_trades_fn_rows_inserted(tmp_path, monkeypatch):
     with storage.connect(config.MARKET_DB_PATH, read_only=True) as c:
         got = c.execute("SELECT trade_id, taker_side FROM kalshi_trades").fetchall()
     assert got == [("t1", "yes")]
+
+
+class _FakeMaker:
+    def __init__(self):
+        self.calls, self.sweeps = [], []
+    def on_match(self, adapter, event_meta, kev, ladder, books, now):
+        self.calls.append((event_meta.event_id, ladder is not None, sorted(books)))
+    def sweep(self, sport, seen, now):
+        self.sweeps.append((sport, set(seen)))
+
+
+def test_maker_hook_receives_ladder_and_books(tmp_path, monkeypatch):
+    _init_dbs(tmp_path, monkeypatch)
+    mk = _FakeMaker()
+    runner.run_tick(Soccer(), _state(), [_KEV], now=_NOW, dry_run=True,
+                    book_fn=lambda t: _BOOK, maker=mk)
+    assert mk.calls == [(1, True, ["T-O25"])]
+    assert mk.sweeps == [("soccer", {1})]
+
+
+def test_maker_hook_skipped_when_none(tmp_path, monkeypatch):
+    _init_dbs(tmp_path, monkeypatch)
+    rows = runner.run_tick(Soccer(), _state(), [_KEV], now=_NOW, dry_run=True,
+                           book_fn=lambda t: _BOOK)     # maker defaults to None
+    assert any(rows)

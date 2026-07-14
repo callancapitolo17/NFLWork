@@ -235,6 +235,22 @@ def test_fail_closed_anchor_missing_under():
     assert candidates == []
 
 
+def test_fair_ladder_exposes_anchor_ladder():
+    from unabated_edge.tests.test_runner_tick import _state, _NOW  # reuse fixture helpers
+    st = _state()
+    em = next(iter(st.events.values()))
+    ladder = Soccer().fair_ladder(st, em)
+    assert 2.5 in ladder and 0 < ladder[2.5]["p_over"] < 1
+
+
+def test_fair_ladder_none_when_no_anchor():
+    from unabated_edge.tests.test_runner_tick import _state
+    st = _state()
+    st.lines.clear()
+    em = next(iter(st.events.values()))
+    assert Soccer().fair_ladder(st, em) is None
+
+
 def test_fail_closed_mismatched_points():
     """Over and Under at different `points` share no common line → empty ladder."""
     s = Soccer()

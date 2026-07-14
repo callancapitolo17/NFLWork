@@ -4,6 +4,8 @@ from unabated_edge.venues import kalshi
 from unabated_edge.sports import registry
 from unabated_edge.log_setup import setup_logging
 from unabated_edge.risk import tipoff_ok, kill_switch_ok
+from unabated_edge.maker import engine as maker_engine, gateway as maker_gateway, \
+    state as maker_state, store as maker_store
 
 log = setup_logging()
 _running = threading.Event(); _running.set()
@@ -28,7 +30,7 @@ def _market_fp(mk, key):
         return None
 
 
-def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, book_fn, trades_fn=None) -> list[dict]:
+def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, book_fn, trades_fn=None, maker=None) -> list[dict]:
     if not kill_switch_ok():
         return []
     flagged = []
@@ -62,9 +64,11 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, book_fn, trade
     _stats["null_dropped"] += dropped
     storage.snapshot_lines(adapter.sport, snap)
     flagged_sides = {}          # market_ticker -> set of flagged sides (crossed-book tripwire)
+    seen_eids = set()
     for event_meta, kev in mapping.pair_events(adapter, events, kalshi_events):
         if event_meta.start_utc is not None and now >= event_meta.start_utc:
             continue            # in-play: Kalshi book/trade capture stops at kickoff too
+        seen_eids.add(event_meta.event_id)
         # One book fetch per market per tick: persist the full depth (maker
         # design data — spread width, re-centering speed, where flow rests),
         # then reuse the same book for candidate asks below. Halves the REST
@@ -101,6 +105,9 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, book_fn, trade
                 trades = trades_fn(tkr)
                 storage.insert_trades(adapter.sport, trades, now)
                 _stats["trades"] += len(trades)
+        if maker is not None:
+            maker.on_match(adapter, event_meta, kev,
+                           adapter.fair_ladder(state, event_meta), books, now)
         if not tipoff_ok(event_meta.start_utc, config.KICKOFF_CUTOFF_MIN, now):
             continue
         for c in adapter.price_event(state, event_meta, kev):
@@ -154,6 +161,8 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, book_fn, trade
                 "EDGE %s %s %s fair=%.3f ask=%.2f ev=%.1f%% n=%d [DRY]",
                 adapter.sport, c.label, c.side, c.fair_prob, ask, ev_pct * 100, n,
             )
+    if maker is not None:
+        maker.sweep(adapter.sport, seen_eids, now)
     return flagged
 
 
@@ -164,11 +173,18 @@ def main_loop(dry_run: bool):
     # (no token needed), and the legacy changes/query delta feed does not carry
     # soccer at all — so each tick re-fetches the per-league file from the CDN.
     last_k = 0.0
+    last_recon = 0.0
     kalshi_events = {}
     ticks = 0
     flagged_since_hb = 0
     hb_every = max(1, round(60 / config.V2_POLL_SEC))    # ~60s heartbeat
     trades_every = max(1, round(config.TRADES_POLL_SEC / config.V2_POLL_SEC))
+    maker = None
+    gw = maker_gateway.make_gateway(config.MAKER_MODE, config.MAKER_LIVE_ACK)
+    if gw is not None:
+        maker_store.init()
+        maker = maker_engine.MakerEngine(gw, maker_state.MakerState())
+        log.info("maker enabled mode=%s live=%s", config.MAKER_MODE, gw.is_live)
     while _running.is_set():
         try:
             now = datetime.datetime.now(datetime.timezone.utc)
@@ -186,14 +202,25 @@ def main_loop(dry_run: bool):
                 n_lines += len(state.lines)
                 flagged_since_hb += len(run_tick(a, state, kalshi_events.get(a.sport, []),
                                                  now=now, dry_run=dry_run,
-                                                 book_fn=kalshi.get_book, trades_fn=trades_fn))
+                                                 book_fn=kalshi.get_book, trades_fn=trades_fn,
+                                                 maker=maker))
+                if maker:
+                    maker.note_success(a.sport, now)
             storage.flush()
+            if maker is not None and gw.is_live:
+                maker_state.poll_fills(maker.state, now)
+                if time.time() - last_recon > 60:
+                    if not maker_state.poll_positions(maker.state):
+                        maker.pull_all(now, "position_mismatch")
+                    maker_state.poll_settlements(maker.state, now)
+                    last_recon = time.time()
             ticks += 1
             if ticks % hb_every == 0:            # heartbeat: distinguishes "broken" from "no edges"
-                log.info("heartbeat tick=%d events=%d lines=%d kalshi_events=%d candidates_recent=%d flagged_recent=%d null_dropped_recent=%d books_recent=%d trades_recent=%d",
+                log.info("heartbeat tick=%d events=%d lines=%d kalshi_events=%d candidates_recent=%d flagged_recent=%d null_dropped_recent=%d books_recent=%d trades_recent=%d maker=%s",
                          ticks, n_events, n_lines,
                          sum(len(v) for v in kalshi_events.values()), _stats["candidates"],
-                         flagged_since_hb, _stats["null_dropped"], _stats["books"], _stats["trades"])
+                         flagged_since_hb, _stats["null_dropped"], _stats["books"], _stats["trades"],
+                         maker.stats() if maker else None)
                 _stats["candidates"] = 0
                 _stats["null_dropped"] = 0
                 _stats["books"] = 0
@@ -201,6 +228,8 @@ def main_loop(dry_run: bool):
                 flagged_since_hb = 0
         except Exception:
             log.exception("tick failed")
+        if maker is not None:
+            maker.watchdog(datetime.datetime.now(datetime.timezone.utc))
         time.sleep(config.V2_POLL_SEC)
 
 

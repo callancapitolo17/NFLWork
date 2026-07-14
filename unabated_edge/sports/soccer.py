@@ -89,6 +89,9 @@ class Soccer(SportAdapter):
         """{line: p_over} view of the ladder (see _anchor_ladder)."""
         return {line: r["p_over"] for line, r in self._anchor_ladder(state, eid).items()}
 
+    def fair_ladder(self, state, event_meta):
+        return self._anchor_ladder(state, event_meta.event_id) or None
+
     def price_event(self, state, event_meta, kalshi_event) -> list[Candidate]:
         """Price Over/Under candidates at every Kalshi rung the anchor ladder quotes.
 
