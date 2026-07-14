@@ -64,6 +64,109 @@ unabated_edge/
 
 ---
 
+## Market maker (maker/)
+
+`unabated_edge/maker/` rests two-sided limit orders (fair ± margin) on every
+rung the anchor ladder prices, in-process off the same 5s tick that already
+fetched the anchor and the Kalshi book — no separate daemon, no duplicated
+polling (unlike `kalshi_mlb_mm/`, which is standalone). It earns the
+bid/ask spread from retail flow; the taker dry-run found no taker edge on
+these markets (1c spreads sitting on the anchor), so the maker is the play.
+Spec: `docs/superpowers/specs/2026-07-10-wc-totals-maker-design.md`.
+
+```
+unabated_edge/maker/
+  engine.py   # per-match quote decisions: margins, never-cross, alt gating, pulls, cap enforcement
+  ledger.py   # pure math: fills -> pnl(g) over goal-grid g=0..10 -> worst case
+  gateway.py  # QuoteGateway ABC; LiveGateway (REST orders) / ShadowGateway (record only)
+  state.py    # resting-order book + Kalshi fills/positions/settlements reconciliation
+  store.py    # maker_quotes / maker_fills / ledger_snapshots / maker_pnl writes
+```
+
+**Quoting.** For each rung, margin = `max(maker_fee_per_contract + PICKOFF_BUFFER_CENTS, ROI_MARGIN × price)`
+(alt rungs multiply margin by `ALT_MARGIN_MULT`). The bid is capped one tick
+below the opposing best ask (never cross); if that cap would sit tighter
+than `fair − MAX_MARGIN_CENTS`, the rung is skipped — the crowd is already
+tighter than we're willing to quote. Alt (non-main) rungs only quote inside
+an `[ALT_OVERROUND_MIN, ALT_OVERROUND_MAX]` vig band and get smaller size
+(`ALT_SIZE_MULT`).
+
+**The goal-grid ledger** (`ledger.py`) treats every fill on a match as
+settling on one integer — the regulation-time total goals `g` — and computes
+exact worst-case P&L by evaluating `pnl(g)` over `g = 0..10` and taking the
+min, instead of per-market caps. Every candidate quote is sized (or
+dropped) so a full hypothetical fill keeps that worst case inside the caps
+below. **Deviation from spec:** the ledger's exposure snapshot
+(`state.exposure_fills`) folds in *resting* (not-yet-filled) quotes as if
+already filled, so simultaneous fills across rungs can never breach a cap —
+the reported "worst case" is a hypothetical ceiling, not realized exposure.
+
+**Cap stack** (percent of `BANKROLL`; all four are separate env vars):
+
+| cap | param | default | at $1,000 |
+|---|---|---|---|
+| per resting order | `MAX_QUOTE_PCT` | 0.30 | $300 (ledger usually binds first) |
+| per match worst case | `MATCH_CAP_PCT` | 0.40 | $400 |
+| global Σ worst cases (all matches) | `GLOBAL_CAP_PCT` | 0.75 | $750 |
+| daily realized-loss halt | `DAILY_LOSS_HALT_PCT` | 0.40 | $400 |
+
+A second same-day match's budget is squeezed by whatever the first match's
+worst case has already committed against the global cap.
+
+**Modes — `MAKER_MODE=off|shadow|live`** (`config.py`, `.env`-overridable).
+**Deviation from spec:** the default is `off` (spec drafted `live` as the
+default; shipped safer). `shadow` builds a `ShadowGateway` that logs every
+quote decision to `maker_quotes` but places nothing — for testing future
+leagues, not this v1 path. `live` builds a `LiveGateway` that places/cancels
+real orders via `kalshi_common.auth_client`, and refuses to start unless
+`MAKER_LIVE_ACK=1` is also set (`gateway.make_gateway` raises `SystemExit`
+otherwise) — a dead-man switch so `MAKER_MODE=live` can never go live by typo.
+
+**Pull triggers** (checked per match, per tick, each cancels every resting
+quote on that match unless noted as global):
+
+| trigger | scope | action |
+|---|---|---|
+| any rung's fair moved ≥ 1c since our quote | that rung | cancel/replace this tick |
+| feed watchdog: no successful tick for a sport in `MAX_STALENESS_SEC` (20s) | all matches | pull everything (`watchdog()`, run every main-loop iteration) |
+| within `QUOTE_PULL_MIN` (3 min) of kickoff | that match | pull; inventory rides to settlement |
+| `COOLOFF_MIN` (10 min) after a fill burst | that match | pull + hold off requoting |
+| fill burst: > `FILL_BURST_N` (3) fills in 60s | that match | pull + start cooloff |
+| crossed/impossible book (`yes_ask + no_ask < 1 − 2·fee`) | that match | pull (data error) |
+| unpaired / kickoff passed / market closed | that match | pull (`sweep()`) |
+| Kalshi position mismatch vs local fills | all matches | pull everything |
+| daily loss halt (§cap stack) | all matches | pull everything |
+| `.kill` file present | all matches | pull everything — **deviation from spec's "watchdog" framing**: the check is at the top of `run_tick` itself (same 5s tick cadence), not inside the `watchdog()` staleness method |
+
+**Data model** — sibling DB `unabated_edge_maker.duckdb` (`maker/store.py::init`),
+kept separate from the capture DBs so maker state can reset independently:
+
+| table | row = |
+|---|---|
+| `maker_quotes` | every quote decision (rest/replace/cancel/skip), with price, size, fair, margin, reason |
+| `maker_fills` | every real fill (PK `trade_id`), price, contracts, fee, ledger worst-case after |
+| `ledger_snapshots` | per match per tick: worst case, full `pnl_grid` JSON, quotes live |
+| `maker_pnl` | per market (PK `market_ticker`) settled P&L |
+
+**Runbook:**
+
+```bash
+MAKER_MODE=live MAKER_LIVE_ACK=1 python3 -m unabated_edge.runner
+```
+
+`MAKER_MODE=shadow` (no ack needed) exercises the same code path without
+placing orders. Creating the existing `.kill` file does **not** stop the
+process loop — it makes `run_tick` skip pricing and, every tick (5s), call
+`maker.pull_all(reason="kill_switch")` to cancel every resting quote, for as
+long as the file exists. **`SIGINT`/`SIGTERM` only stop the loop — they do
+not cancel resting orders first.** To take the maker flat before stopping
+the process: create `.kill`, wait one tick (≤5s) for the pull to log, then
+send `SIGINT`/`SIGTERM`. Killing the process directly (or a crash) leaves
+any resting quotes live on Kalshi's book until the next `poll_positions`
+reconciliation on restart.
+
+---
+
 ## Authentication
 
 ### Unabated token (NOT needed for soccer)
@@ -110,9 +213,25 @@ All tuneable constants live in `config.py` and can be overridden via `.env` or e
 | `MIN_EV_DOLLARS` | `0.02` | Minimum absolute per-contract EV (gates with `MIN_EV_PCT` so cheap longshots can't clear on % alone) |
 | `UNABATED_V2_POLL_SEC` | `5` | Seconds between re-fetches of each league's v2 odds file (also the tick cadence) |
 | `KALSHI_TRADES_POLL_SEC` | `30` | Seconds between executed-trades tape polls (rides every Nth main tick) |
-| `MAX_STALENESS_SEC` | `20` | Reserved for Plan 2 live-execution staleness gate — not yet enforced |
+| `MAX_STALENESS_SEC` | `20` | Taker path: reserved, not enforced. **Maker path: enforced** — `maker.watchdog()` pulls all quotes if a sport's feed hasn't ticked successfully within this many seconds |
 | `KICKOFF_CUTOFF_MIN` | `3` | Stop flagging this many minutes before kickoff |
-| `PER_MATCH_CAP_PCT` | `0.03` | Max fraction of bankroll per match (3 %) |
+| `PER_MATCH_CAP_PCT` | `0.03` | Max fraction of bankroll per match (3 %) — taker sizing only |
+| `MAKER_MODE` | `off` | `off` \| `shadow` \| `live` — see [Market maker](#market-maker-maker) |
+| `MAKER_LIVE_ACK` | unset | Must be `"1"` for `MAKER_MODE=live` to start (dead-man switch) |
+| `ROI_MARGIN` | `0.03` | Margin floor as a fraction of price (3 %), before the fee+buffer floor |
+| `PICKOFF_BUFFER_CENTS` | `1` | Cents added above `maker_fee_per_contract` for the margin floor |
+| `MAX_MARGIN_CENTS` | `5` | Skip a rung if never-cross would tighten our bid beyond `fair − this` |
+| `ALT_MARGIN_MULT` | `1.5` | Margin multiplier on alt (non-main) rungs |
+| `ALT_SIZE_MULT` | `0.5` | Size multiplier on alt rungs |
+| `ALT_OVERROUND_MIN` | `1.01` | Alt rung quotes only if the rung's devig overround is ≥ this |
+| `ALT_OVERROUND_MAX` | `1.15` | Alt rung quotes only if the rung's devig overround is ≤ this |
+| `QUOTE_PULL_MIN` | `3` | Minutes before kickoff to pull a match's quotes (inventory rides) |
+| `MAX_QUOTE_PCT` | `0.30` | Max fraction of bankroll per resting order (ledger cap usually binds first) |
+| `MATCH_CAP_PCT` | `0.40` | Max ledger worst-case per match, as a fraction of bankroll |
+| `GLOBAL_CAP_PCT` | `0.75` | Max Σ ledger worst-case across all matches, as a fraction of bankroll |
+| `DAILY_LOSS_HALT_PCT` | `0.40` | Realized settled loss (fraction of bankroll) that halts quoting for the day |
+| `FILL_BURST_N` | `3` | More than this many fills on one match in 60s trips the fill-burst tripwire |
+| `COOLOFF_MIN` | `10` | Minutes a match stays pulled after a fill-burst trip |
 
 ---
 
@@ -128,7 +247,7 @@ python3 -m unabated_edge.runner
 
 The bot re-fetches each adapter's v2 league odds file every `V2_POLL_SEC` (default 5s), refreshes Kalshi event listings every 30 seconds, and logs flagged edges to `unabated_edge/bot.log` and to the two DuckDB files. A heartbeat line (~every 60s) reports event/line/market counts **and candidates priced** — `candidates_recent=0` while `lines>0` means the pricing chain is broken (re-blurred anchors, feed shape drift, or no Kalshi pairings), which a raw line count alone would hide.
 
-**Kill switch:** create `unabated_edge/.kill` to stop the loop gracefully. `SIGINT`/`SIGTERM` also stop it.
+**Kill switch:** create `unabated_edge/.kill` to pause pricing/flagging (and, if the maker is enabled, pull its resting quotes) every tick for as long as the file exists — this does **not** exit the process. `SIGINT`/`SIGTERM` exit the loop; see [Market maker](#market-maker-maker) for the safe shutdown order when the maker is live.
 
 ---
 
