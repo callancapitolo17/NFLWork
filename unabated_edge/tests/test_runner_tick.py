@@ -183,3 +183,21 @@ def test_maker_hook_skipped_when_none(tmp_path, monkeypatch):
     rows = runner.run_tick(Soccer(), _state(), [_KEV], now=_NOW, dry_run=True,
                            book_fn=lambda t: _BOOK)     # maker defaults to None
     assert any(rows)
+
+
+def test_kill_switch_pulls_maker_quotes(tmp_path, monkeypatch):
+    """The kill file is the emergency stop: it must cancel resting maker orders,
+    not just stop the taker tick."""
+    _init_dbs(tmp_path, monkeypatch)
+    kill = tmp_path / ".kill"
+    kill.touch()
+    monkeypatch.setattr(config, "KILL_FILE", kill)
+    pulls = []
+    class _PullRecorder(_FakeMaker):
+        def pull_all(self, now, reason):
+            pulls.append(reason)
+    mk = _PullRecorder()
+    rows = runner.run_tick(Soccer(), _state(), [_KEV], now=_NOW, dry_run=True,
+                           book_fn=lambda t: _BOOK, maker=mk)
+    assert rows == [] and pulls == ["kill_switch"]
+    assert mk.calls == []            # no quoting happened under the kill switch

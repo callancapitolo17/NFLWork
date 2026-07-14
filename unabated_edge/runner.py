@@ -32,6 +32,8 @@ def _market_fp(mk, key):
 
 def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, book_fn, trades_fn=None, maker=None) -> list[dict]:
     if not kill_switch_ok():
+        if maker is not None:
+            maker.pull_all(now, "kill_switch")   # emergency stop must also clear resting orders
         return []
     flagged = []
     events = [e for e in state.events.values() if e.league_key == adapter.league_prefix]
