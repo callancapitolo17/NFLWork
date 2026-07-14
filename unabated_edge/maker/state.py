@@ -168,6 +168,13 @@ def poll_positions(state: MakerState, series_prefixes=()) -> bool:
     for t in set(kalshi_pos) | set(state.fills_by_ticker) | set(state.position_baseline):
         if t in state.settled:
             continue
+        if (t in state.position_baseline and t not in state.fills_by_ticker
+                and abs(kalshi_pos.get(t, 0.0)) < 0.01):
+            # baselined ticker we never traded this run went to zero on Kalshi
+            # (settled or closed) — retire the baseline instead of tripping forever
+            log.info("maker baseline retired for %s (position now flat)", t)
+            state.position_baseline.pop(t)
+            continue
         expected = state.position_baseline.get(t, 0.0) + state.fills_by_ticker.get(t, 0.0)
         actual = kalshi_pos.get(t, 0.0)
         if abs(actual - expected) > 0.01:

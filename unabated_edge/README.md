@@ -161,7 +161,7 @@ before — and cancels any in-series resting orders left over from before
 (`state.sweep_orphan_orders`), bounding the orphaned-order window from a
 landed-but-errored POST to ~60s. Position mismatches beyond
 baseline + local fills still pull all quotes (`position_mismatch`, see the
-pull-triggers table below).
+pull-triggers table below). Operational caveat: a mid-match restart rebuilds positions and orders but not the per-match goal-grid ledger — pre-restart fills don't count toward the match cap until settlement, so don't restart mid-match while holding inventory (flatten or wait for settlement first).
 
 **Runbook:**
 

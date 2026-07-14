@@ -138,6 +138,41 @@ def test_poll_positions_baseline_restart(monkeypatch):
     assert mstate.poll_positions(s) is False
 
 
+def test_poll_positions_retires_settled_baseline(monkeypatch):
+    """Baselined ticker we never traded that settled (position now zero) should be
+    retired from baseline, not cause permanent mismatch."""
+    s = mstate.MakerState()
+    # Adopt two baselines at startup
+    s.position_baseline["T-O25"] = -223.0  # never traded in this run
+    s.position_baseline["T-O26"] = 100.0   # will trade this one
+
+    # T-O25 settled (kalshi position is now 0), T-O26 still live with partial fill
+    s.fills_by_ticker["T-O26"] = 50.0  # we filled 50 on T-O26
+
+    def fake_api(method, path, body=None, timeout=30):
+        return (200, {"market_positions": [
+            {"ticker": "T-O25", "position_fp": "0.00"},  # settled to zero
+            {"ticker": "T-O26", "position_fp": "150.00"},  # baseline -100 (oops, should be 50+baseline? no, baseline+fills)
+        ]}, {})
+
+    monkeypatch.setattr(mstate.auth_client, "api", fake_api)
+
+    # First poll: T-O25 retired, T-O26 still checked
+    assert mstate.poll_positions(s) is True
+    assert "T-O25" not in s.position_baseline  # retired
+    assert "T-O26" in s.position_baseline  # still there
+
+    # Second baselined ticker with nonzero position must still be checked normally
+    s.position_baseline["T-O27"] = 75.0
+    def fake_api2(method, path, body=None, timeout=30):
+        return (200, {"market_positions": [
+            {"ticker": "T-O26", "position_fp": "150.00"},
+            {"ticker": "T-O27", "position_fp": "50.00"},  # mismatch: baseline 75 + no fills = 75, but kalshi is 50
+        ]}, {})
+    monkeypatch.setattr(mstate.auth_client, "api", fake_api2)
+    assert mstate.poll_positions(s) is False  # should detect mismatch on T-O27
+
+
 def test_startup_sync_adopts_and_cancels(monkeypatch):
     s = mstate.MakerState()
     s.on_place("T-O26", "yes", "o-ours", 40, 10)   # register one of our own orders
