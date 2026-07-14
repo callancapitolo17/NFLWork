@@ -224,3 +224,41 @@ def test_main_loop_shutdown_pulls_maker_quotes(tmp_path, monkeypatch):
     finally:
         runner._running.set()        # restore for other tests
     assert pulls == ["shutdown"]
+
+
+def test_main_loop_live_startup_sync(tmp_path, monkeypatch):
+    """Live mode must run startup_sync (baseline positions + cancel orphan
+    orders) before the first tick, so a restart with inventory or stray
+    resting orders doesn't false-trip the fresh cap stack / mismatch tripwire."""
+    _init_dbs(tmp_path, monkeypatch)
+
+    class _GW:
+        is_live = True
+
+    class _MK:
+        def __init__(self):
+            self.state = object()
+        def pull_all(self, now, reason):
+            pass
+        def stats(self):
+            return {}
+
+    calls = []
+
+    def fake_startup_sync(state, gw, prefixes):
+        calls.append((state, gw, prefixes))
+
+    monkeypatch.setattr(runner.kalshi, "init", lambda: None)
+    monkeypatch.setattr(runner.maker_gateway, "make_gateway", lambda mode, ack: _GW())
+    monkeypatch.setattr(runner.maker_engine, "MakerEngine", lambda gw, st: _MK())
+    monkeypatch.setattr(runner.maker_store, "init", lambda: None)
+    monkeypatch.setattr(runner.maker_state, "startup_sync", fake_startup_sync)
+    runner._running.clear()          # simulate signal received before first tick
+    try:
+        runner.main_loop(dry_run=True)
+    finally:
+        runner._running.set()        # restore for other tests
+    assert len(calls) == 1
+    state, gw, prefixes = calls[0]
+    assert isinstance(gw, _GW)
+    assert "KXWCTOTAL" in prefixes

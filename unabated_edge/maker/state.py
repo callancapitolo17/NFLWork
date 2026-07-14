@@ -36,8 +36,14 @@ def _money(d, key):
     v = d.get(f"{key}_dollars")
     if v is not None:
         return float(v)
-    v = _fp(d, key)
-    return v / 100.0 if v is not None else 0.0   # legacy bare value = cents
+    v = d.get(f"{key}_fp")
+    if v is None:
+        v = d.get(key)
+    if v is None:
+        return 0.0
+    if isinstance(v, str):
+        return float(v)          # string decimals are dollars (e.g. fee_cost "2.168600")
+    return float(v) / 100.0      # bare numbers are integer cents (e.g. revenue 16807)
 
 
 class MakerState:
@@ -50,6 +56,7 @@ class MakerState:
         self.fill_times = {}       # event_id -> [fill datetimes] (burst tripwire)
         self.cooloff_until = {}    # event_id -> datetime
         self.settled = set()       # tickers already settled (skip in positions check)
+        self.position_baseline = {}  # ticker -> Kalshi position adopted at startup (restart-with-inventory)
         self.settled_pnl_today = 0.0
         self._day = None
         self._fills_min_ts = None
@@ -143,24 +150,29 @@ def poll_fills(state: MakerState, now) -> list[str]:
     return new
 
 
-def poll_positions(state: MakerState) -> bool:
-    """True when Kalshi's net positions match our fills-derived book on every
-    ticker we quoted (settled tickers excluded). API failure returns True —
-    'cannot verify' must not false-trip the tripwire."""
-    if not state.fills_by_ticker:
-        return True
+def poll_positions(state: MakerState, series_prefixes=()) -> bool:
+    """True when Kalshi's net positions match baseline + our fills-derived book
+    on every relevant ticker (in-series, locally-filled, or baselined; settled
+    excluded). An in-series Kalshi position we can't account for is a mismatch —
+    that is exactly the orphan shape a restart or a lost fill produces. API
+    failure returns True — 'cannot verify' must not false-trip."""
     status, body, _ = auth_client.api("GET", "/portfolio/positions?limit=1000")
     if status != 200 or not isinstance(body, dict):
         log.warning("maker poll_positions failed: status=%s", status)
         return True
-    kalshi_pos = {p.get("ticker"): (_fp(p, "position") or 0.0)
-                  for p in body.get("market_positions") or []}
-    for ticker, expected in state.fills_by_ticker.items():
-        if ticker in state.settled:
+    kalshi_pos = {}
+    for p in body.get("market_positions") or []:
+        t = p.get("ticker") or ""
+        if _in_series(t, series_prefixes) or t in state.fills_by_ticker or t in state.position_baseline:
+            kalshi_pos[t] = _fp(p, "position") or 0.0
+    for t in set(kalshi_pos) | set(state.fills_by_ticker) | set(state.position_baseline):
+        if t in state.settled:
             continue
-        actual = kalshi_pos.get(ticker, 0.0)
+        expected = state.position_baseline.get(t, 0.0) + state.fills_by_ticker.get(t, 0.0)
+        actual = kalshi_pos.get(t, 0.0)
         if abs(actual - expected) > 0.01:
-            log.warning("maker position mismatch %s: kalshi=%.2f local=%.2f", ticker, actual, expected)
+            log.warning("maker position mismatch %s: kalshi=%.2f local=%.2f (baseline=%.2f)",
+                        t, actual, expected, state.position_baseline.get(t, 0.0))
             return False
     return True
 
@@ -174,10 +186,54 @@ def poll_settlements(state: MakerState, now):
         info = state.ticker_info.get(ticker)
         if info is None or ticker in state.settled:
             continue
-        pnl = _money(s, "revenue") - _money(s, "yes_total_cost") - _money(s, "no_total_cost")
+        pnl = (_money(s, "revenue") - _money(s, "yes_total_cost")
+               - _money(s, "no_total_cost") - _money(s, "fee_cost"))
         state.settled.add(ticker)
         state.fills_by_ticker.pop(ticker, None)
         state.roll_day(now)
         state.settled_pnl_today += pnl
         store.log_settlement(now, info["sport"], ticker, pnl)
         log.info("maker SETTLED %s pnl=%.2f day_total=%.2f", ticker, pnl, state.settled_pnl_today)
+
+
+def _in_series(ticker, prefixes):
+    return any(ticker.startswith(p) for p in prefixes)
+
+
+def startup_sync(state: MakerState, gateway, series_prefixes):
+    """Live-mode startup reconciliation. A fresh MakerState knows nothing about
+    a previous run: adopt existing in-series positions as a baseline (so the
+    mismatch tripwire doesn't false-trip after a restart with inventory) and
+    cancel any in-series resting orders — they are invisible to the fresh cap
+    stack and must not stay live."""
+    status, body, _ = auth_client.api("GET", "/portfolio/positions?limit=1000")
+    if status == 200 and isinstance(body, dict):
+        for p in body.get("market_positions") or []:
+            t = p.get("ticker") or ""
+            pos = _fp(p, "position") or 0.0
+            if pos and _in_series(t, series_prefixes):
+                state.position_baseline[t] = pos
+                log.warning("maker startup: adopting existing position %s=%.2f as baseline", t, pos)
+    else:
+        log.warning("maker startup: positions fetch failed status=%s (baseline empty)", status)
+    sweep_orphan_orders(state, gateway, series_prefixes)
+
+
+def sweep_orphan_orders(state: MakerState, gateway, series_prefixes) -> int:
+    """Cancel in-series resting orders Kalshi knows about but we don't — left
+    by a previous run, or created by a POST that errored after landing (never
+    retried, next tick gets a fresh client_order_id). Runs at startup and every
+    recon cycle, bounding the orphan window to ~60s."""
+    status, body, _ = auth_client.api("GET", "/portfolio/orders?status=resting&limit=1000")
+    if status != 200 or not isinstance(body, dict):
+        log.warning("maker orphan sweep: orders fetch failed status=%s", status)
+        return 0
+    n = 0
+    for o in body.get("orders") or []:
+        oid, t = o.get("order_id"), o.get("ticker") or ""
+        if not oid or oid in state.our_orders or not _in_series(t, series_prefixes):
+            continue
+        log.warning("maker orphan order %s on %s — cancelling", oid, t)
+        if gateway.cancel(oid):
+            n += 1
+    return n

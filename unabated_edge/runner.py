@@ -187,6 +187,9 @@ def main_loop(dry_run: bool):
         maker_store.init()
         maker = maker_engine.MakerEngine(gw, maker_state.MakerState())
         log.info("maker enabled mode=%s live=%s", config.MAKER_MODE, gw.is_live)
+        series_prefixes = tuple(a.kalshi_series() for a in registry.ADAPTERS)
+        if gw.is_live:
+            maker_state.startup_sync(maker.state, gw, series_prefixes)
     while _running.is_set():
         try:
             now = datetime.datetime.now(datetime.timezone.utc)
@@ -212,9 +215,10 @@ def main_loop(dry_run: bool):
             if maker is not None and gw.is_live:
                 maker_state.poll_fills(maker.state, now)
                 if time.time() - last_recon > 60:
-                    if not maker_state.poll_positions(maker.state):
+                    if not maker_state.poll_positions(maker.state, series_prefixes):
                         maker.pull_all(now, "position_mismatch")
                     maker_state.poll_settlements(maker.state, now)
+                    maker_state.sweep_orphan_orders(maker.state, gw, series_prefixes)
                     last_recon = time.time()
             ticks += 1
             if ticks % hb_every == 0:            # heartbeat: distinguishes "broken" from "no edges"

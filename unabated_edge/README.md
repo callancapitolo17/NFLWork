@@ -150,6 +150,19 @@ kept separate from the capture DBs so maker state can reset independently:
 | `ledger_snapshots` | per match per tick: worst case, full `pnl_grid` JSON, quotes live |
 | `maker_pnl` | per market (PK `market_ticker`) settled P&L |
 
+**Reconciliation.** A fresh `MakerState` knows nothing about a previous run
+(crash/restart) or a POST that landed but errored before returning an
+`order_id` (`auth_client` never retries POSTs, so the next tick gets a new
+`client_order_id`). In `MAKER_MODE=live`, startup adopts any existing
+in-series Kalshi positions as a baseline (`state.position_baseline`) —
+so the mismatch tripwire doesn't false-trip on inventory carried over from
+before — and cancels any in-series resting orders left over from before
+(`state.startup_sync`). Every 60s recon cycle repeats the order sweep
+(`state.sweep_orphan_orders`), bounding the orphaned-order window from a
+landed-but-errored POST to ~60s. Position mismatches beyond
+baseline + local fills still pull all quotes (`position_mismatch`, see the
+pull-triggers table below).
+
 **Runbook:**
 
 ```bash
