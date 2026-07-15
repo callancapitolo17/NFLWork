@@ -124,9 +124,17 @@ def poll_fills(state: MakerState, now) -> list[str]:
         info = state.ticker_info.get(ticker)
         if info is None:
             continue
-        side = f.get("side") or placed_side
+        # Trust OUR logical side (from our_orders), not the fill's label: a v2
+        # "no" quote is placed as a sell-YES (ask), so the fill reports the YES
+        # execution price. Derive the ledger cost on our logical side —
+        # no-cost = 1 - yes_exec_price. Fall back to the side-labelled price.
+        side = placed_side
         n = _fp(f, "count") or 0.0
-        price = _price_dollars(f, side)
+        yes_px = _price_dollars(f, "yes")
+        if yes_px is not None:
+            price = yes_px if side == "yes" else round(1.0 - yes_px, 4)
+        else:
+            price = _price_dollars(f, side)
         if price is None or n <= 0:
             log.warning("maker fill %s unparseable payload keys=%s", tid, sorted(f))
             continue

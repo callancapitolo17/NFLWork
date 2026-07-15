@@ -45,6 +45,26 @@ def test_poll_fills_parses_updates_and_dedups(tmp_path, monkeypatch):
         assert c.execute("SELECT fee FROM maker_fills WHERE trade_id='tr1'").fetchone()[0] == 0.04
 
 
+def test_poll_fills_no_side_records_no_cost_from_yes_price(tmp_path, monkeypatch):
+    """A "no" quote is placed as a sell-YES (ask); its fill reports the YES
+    execution price, so the ledger cost must be recorded as (1 - yes_price)
+    on the "no" side, and net position decremented."""
+    monkeypatch.setattr(config, "MAKER_DB_PATH", tmp_path / "mk.duckdb")
+    from unabated_edge.maker import store
+    store.init()
+    s = mstate.MakerState()
+    s.register_ticker("T-O25", "soccer", 1, 2.5)
+    s.on_place("T-O25", "no", "ord-no", 30, 20)        # our no quote @ 30c
+    # fill reports the YES side @ 0.70 (== buying NO @ 0.30)
+    payload = {"fills": [{"trade_id": "trN", "order_id": "ord-no", "ticker": "T-O25",
+                          "side": "yes", "count": 20, "yes_price_dollars": "0.7000"}]}
+    monkeypatch.setattr(mstate.auth_client, "api", lambda m, p, body=None, timeout=30: (200, payload, {}))
+    mstate.poll_fills(s, _NOW)
+    assert s.fills[1] == [(2.5, "no", 20.0, 0.30)]      # no-cost = 1 - 0.70
+    assert s.fills_by_ticker["T-O25"] == -20.0          # short YES == long NO
+    assert ("T-O25", "no") not in s.resting             # fully filled
+
+
 def test_poll_fills_full_fill_clears_resting(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "MAKER_DB_PATH", tmp_path / "mk.duckdb")
     from unabated_edge.maker import store

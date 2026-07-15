@@ -39,18 +39,30 @@ class LiveGateway(QuoteGateway):
     is_live = True
 
     def place(self, ticker, side, price_cents, count, client_order_id):
-        body = {"ticker": ticker, "client_order_id": client_order_id,
-                "action": "buy", "side": side, "type": "limit", "count": int(count)}
-        body["yes_price" if side == "yes" else "no_price"] = int(price_cents)
-        status, resp, _ = auth_client.api("POST", "/portfolio/orders", body)
+        # Kalshi v2 order API (v1 POST /portfolio/orders was retired -> HTTP 410).
+        # side is bid/ask on the YES leg only: buy YES = bid @ price;
+        # buy NO = sell YES (ask) @ (1 - price). price/count are decimal-DOLLAR
+        # strings, not integer cents. Our logical price_cents is the price we
+        # want to PAY on our logical side, so the ask price is the YES inverse.
+        if side == "yes":
+            v2_side, price_dollars = "bid", price_cents / 100.0
+        else:
+            v2_side, price_dollars = "ask", (100 - price_cents) / 100.0
+        body = {"ticker": ticker, "side": v2_side,
+                "price": f"{price_dollars:.4f}", "count": f"{float(count):.2f}",
+                "time_in_force": "good_till_canceled",
+                "self_trade_prevention_type": "taker_at_cross",
+                "client_order_id": client_order_id}
+        status, resp, _ = auth_client.api("POST", "/portfolio/events/orders", body)
         if status not in (200, 201) or not isinstance(resp, dict):
-            log.warning("maker place failed %s %s %dc x%d: status=%s resp=%s",
-                        ticker, side, price_cents, count, status, resp)
+            log.warning("maker place failed %s %s(%s) $%.4f x%d: status=%s resp=%s",
+                        ticker, side, v2_side, price_dollars, count, status, resp)
             return None
-        return (resp.get("order") or {}).get("order_id")
+        # v2 returns order_id at top level; keep the nested fallback defensively.
+        return resp.get("order_id") or (resp.get("order") or {}).get("order_id")
 
     def cancel(self, order_id):
-        status, _, _ = auth_client.api("DELETE", f"/portfolio/orders/{order_id}")
+        status, _, _ = auth_client.api("DELETE", f"/portfolio/events/orders/{order_id}")
         if status not in (200, 204):
             log.warning("maker cancel failed %s: status=%s", order_id, status)
             return False

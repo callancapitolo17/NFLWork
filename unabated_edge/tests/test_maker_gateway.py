@@ -20,19 +20,30 @@ def test_shadow_place_and_cancel():
 
 
 def test_live_place_payload_yes_and_no(monkeypatch):
+    """v2: POST /portfolio/events/orders; buy YES = bid @ price; buy NO =
+    sell YES (ask) @ (1 - price); price/count are decimal-dollar strings."""
     calls = []
     def fake_api(method, path, body=None, timeout=30):
         calls.append((method, path, body))
-        return 201, {"order": {"order_id": "ord-1"}}, {}
+        return 201, {"order_id": "ord-1"}, {}          # v2: order_id at top level
     monkeypatch.setattr(gateway.auth_client, "api", fake_api)
     gw = gateway.LiveGateway()
     assert gw.place("T-O25", "yes", 40, 30, "c1") == "ord-1"
     assert gw.place("T-O25", "no", 57, 12, "c2") == "ord-1"
     (m1, p1, b1), (m2, p2, b2) = calls
-    assert (m1, p1) == ("POST", "/portfolio/orders")
-    assert b1 == {"ticker": "T-O25", "client_order_id": "c1", "action": "buy",
-                  "side": "yes", "type": "limit", "count": 30, "yes_price": 40}
-    assert b2["no_price"] == 57 and "yes_price" not in b2
+    assert (m1, p1) == ("POST", "/portfolio/events/orders")
+    # buy YES @ 40c -> bid @ "0.4000"
+    assert b1["ticker"] == "T-O25" and b1["side"] == "bid" and b1["price"] == "0.4000"
+    assert b1["count"] == "30.00" and b1["time_in_force"] == "good_till_canceled"
+    assert b1["self_trade_prevention_type"] == "taker_at_cross" and b1["client_order_id"] == "c1"
+    # buy NO @ 57c -> sell YES (ask) @ (1 - 0.57) = "0.4300"
+    assert b2["side"] == "ask" and b2["price"] == "0.4300"
+
+
+def test_live_place_reads_nested_order_id(monkeypatch):
+    monkeypatch.setattr(gateway.auth_client, "api",
+        lambda m, p, body=None, timeout=30: (201, {"order": {"order_id": "nested-1"}}, {}))
+    assert gateway.LiveGateway().place("T", "yes", 40, 30, "c") == "nested-1"
 
 
 def test_live_place_failure_returns_none(monkeypatch):
@@ -47,4 +58,4 @@ def test_live_cancel(monkeypatch):
         return 200, {}, {}
     monkeypatch.setattr(gateway.auth_client, "api", fake_api)
     assert gateway.LiveGateway().cancel("ord-9") is True
-    assert seen["call"] == ("DELETE", "/portfolio/orders/ord-9")
+    assert seen["call"] == ("DELETE", "/portfolio/events/orders/ord-9")
