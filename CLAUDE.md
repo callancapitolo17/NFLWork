@@ -28,6 +28,20 @@ Both hooks always exit 0 and can never block a tool call.
 - **Speed matters** - First to find a soft line wins
 - **Verify before scaling** - Small bets to validate, then increase sizing
 
+## Code Style — Clean, LLM-Readable Code
+
+Most code in this repo is read, extended, and debugged by an LLM under time pressure (a scraper broke mid-slate). Optimize for **interpretability without full-repo context**: a reader dropped into one file should understand what it does, what data it touches, and what can go wrong.
+
+- **Names carry the meaning.** Descriptive function/variable names over comments: `devig_probit_two_way()` beats `calc()` + a comment. Use the same name for the same concept everywhere (e.g. `game_start_time`, `american_odds`, `fair_prob`) — synonyms (`start_ts`, `price`, `p`) force a reader to guess whether two things are the same.
+- **Explicit > clever.** No dense one-liners, magic numbers, or implicit type coercion. Name constants (`MIN_AGREEING_BOOKS = 2`), unpack steps, prefer boring code. In SQL, always list columns — never `SELECT *` — so schema dependencies are visible at the call site.
+- **Small functions, flat control flow.** One job per function; early returns over nested `if`s. If a function needs a paragraph to describe, split it.
+- **Locality of context.** Each entry-point script/function gets a short docstring stating: inputs, outputs, and **side effects** — especially which DuckDB file/table it reads or writes and whether it appends, upserts, or replaces. DB writes are the highest-stakes side effect in this repo; they must never be hidden.
+- **Comments explain *why*, not *what*.** Reserve comments for non-obvious constraints: "Kalshi rounds to the cent, so...", "DK caches this endpoint ~30s". Delete comments that restate the code.
+- **No hidden state.** Avoid module-level mutable globals and functions whose behavior depends on call order. Pass config in explicitly (the `kalshi_common.configure()` pattern) rather than reading env vars deep inside helpers.
+- **Type hints on Python function signatures** (at minimum public/entry-point functions); in R, document expected data frame columns where a function consumes one.
+- **Fail loudly and specifically.** Error messages should say what was expected vs. found (`"expected >=2 books for {market}, got {n}"`), never bare `except: pass`. A silent wrong number is far worse than a crash in a betting pipeline.
+- **Delete dead code; don't comment it out.** Git is the archive. Commented-out blocks and unused flags mislead an LLM into preserving or resurrecting them.
+
 ## Project Structure
 
 This repo contains tools for:
