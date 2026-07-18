@@ -65,7 +65,8 @@ FILL_BURST_N = int(_get("FILL_BURST_N", "3"))
 COOLOFF_MIN = float(_get("COOLOFF_MIN", "10"))
 MAKER_MAX_CONTRACTS = int(_get("MAKER_MAX_CONTRACTS", "2"))   # hard per-quote contract ceiling (tuition run)
 HARD_STOP_DOLLARS = float(_get("HARD_STOP_DOLLARS", "50"))    # cumulative realized+unrealized loss halt (mark-to-anchor)
-ANCHOR_STALE_SEC = float(_get("ANCHOR_STALE_SEC", "180"))     # pull match if even the freshest anchor rung's modifiedOn is older than this (frozen-feed guard)
+ANCHOR_STALE_SEC = float(_get("ANCHOR_STALE_SEC", "180"))     # WITHIN ANCHOR_STALE_FARK_SEC of kickoff: pull match if even the freshest anchor rung's modifiedOn is older than this (frozen-feed guard)
+ANCHOR_STALE_FARK_SEC = float(_get("ANCHOR_STALE_FARK_SEC", "7200"))  # far-from-kickoff cutoff (default 2h): beyond this the sharp total legitimately sits unchanged for hours, so tolerate an old-but-latest number and rely on the poll-success watchdog as the dead-feed guard
 MAKER_DB_PATH = PKG_DIR / "unabated_edge_maker.duckdb"
 
 KALSHI_API_KEY_ID = _get("KALSHI_API_KEY_ID")

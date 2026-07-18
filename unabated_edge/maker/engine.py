@@ -54,15 +54,23 @@ class MakerEngine:
             return None
         return dt.replace(tzinfo=datetime.timezone.utc) if dt.tzinfo is None else dt
 
-    def _anchor_stale(self, ladder, now):
-        """True if even the freshest rung's anchor modifiedOn is older than
-        ANCHOR_STALE_SEC (whole feed frozen), or no rung has a parseable
-        timestamp (fail-safe: can't prove freshness -> treat as stale)."""
+    def _anchor_stale(self, ladder, start_utc, now):
+        """Dead-feed guard on the anchor's own modifiedOn — kickoff-aware.
+
+        Near kickoff the sharp total churns constantly, so a rung older than
+        ANCHOR_STALE_SEC means the feed is lagging/dark -> pull. Far from
+        kickoff (> ANCHOR_STALE_FARK_SEC out) the sharp total legitimately sits
+        unchanged for hours; there the poll-success watchdog (MAX_STALENESS_SEC)
+        is the real dead-feed guard, so we quote against Unabated's latest even
+        if it's old. Always fail stale if NO rung carries a parseable timestamp
+        (can't prove provenance)."""
         ages = [(now - dt).total_seconds()
                 for dt in (self._parse_mo(r.get("modified_on")) for r in ladder.values())
                 if dt is not None]
         if not ages:
             return True
+        if start_utc is not None and (start_utc - now).total_seconds() > config.ANCHOR_STALE_FARK_SEC:
+            return False
         return min(ages) > config.ANCHOR_STALE_SEC
 
     # ---------- quote math ----------
@@ -216,7 +224,7 @@ class MakerEngine:
         if not ladder:
             return self._pull_match(eid, now, "anchor_gone")
         self._fair_by_event[eid] = {ln: r["p_over"] for ln, r in ladder.items()}
-        if self._anchor_stale(ladder, now):
+        if self._anchor_stale(ladder, event_meta.start_utc, now):
             return self._pull_match(eid, now, "anchor_stale")
         baseline = self.state.position_baseline
         if baseline:

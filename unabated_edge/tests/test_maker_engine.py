@@ -145,10 +145,33 @@ def test_hard_stop_pulls_all(eng):
     assert eng.stats()["halted"] is True
 
 
-def test_anchor_stale_pulls(eng):
+def test_anchor_stale_pulls_near_kickoff(eng):
+    """Within ANCHOR_STALE_FARK_SEC of kickoff the sharp total should churn, so a
+    10-min-old anchor means the feed is lagging -> pull."""
+    near_kick = EventMeta(event_id=1, league_key="lg21",
+                          start_utc=_NOW + datetime.timedelta(minutes=30),
+                          home_id=10, away_id=20, home="TeamA", away="TeamB")
     stale = {2.5: {**_LADDER[2.5],
                   "modified_on": (_NOW - datetime.timedelta(minutes=10)).isoformat()}}
+    eng.on_match(Soccer(), near_kick, _KEV, stale, _BOOKS, _NOW)
+    assert eng.gateway.placed == []
+
+
+def test_anchor_stale_tolerated_far_from_kickoff(eng):
+    """Far from kickoff (_EM is 3h out, beyond the 2h FARK cutoff) the sharp
+    total legitimately sits unchanged for hours -> quote against the latest
+    number anyway; the poll-success watchdog is the dead-feed guard here."""
+    stale = {2.5: {**_LADDER[2.5],
+                  "modified_on": (_NOW - datetime.timedelta(minutes=90)).isoformat()}}
     eng.on_match(Soccer(), _EM, _KEV, stale, _BOOKS, _NOW)
+    assert eng.gateway.placed
+
+
+def test_anchor_no_timestamp_always_pulls(eng):
+    """No parseable modifiedOn on any rung -> can't prove provenance -> pull,
+    even far from kickoff."""
+    no_ts = {2.5: {**_LADDER[2.5], "modified_on": None}}
+    eng.on_match(Soccer(), _EM, _KEV, no_ts, _BOOKS, _NOW)
     assert eng.gateway.placed == []
 
 
