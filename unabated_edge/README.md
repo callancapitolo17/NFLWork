@@ -93,7 +93,7 @@ an `[ALT_OVERROUND_MIN, ALT_OVERROUND_MAX]` vig band and get smaller size
 
 **Touch-join pricing.** When the crowd's best opposing bid/ask offers better
 entry than our resting fair−margin quote, we join it instead. Entry condition:
-net edge (join_price − fair − maker_fee) ∈ [TOUCH_JOIN_MIN_EDGE_CENTS, MAX_MARGIN_CENTS];
+net edge (fair − join_price − maker_fee) ∈ [TOUCH_JOIN_MIN_EDGE_CENTS, MAX_MARGIN_CENTS];
 alt rungs use TOUCH_JOIN_ALT_MIN_EDGE_CENTS (default 1.5c). The calculation
 self-excludes our own resting order from the touch. Hysteresis: hold join order
 while edge ≥ TOUCH_JOIN_EXIT_EDGE_CENTS (0.25c), exit if edge < 0.25c or >5c
