@@ -91,6 +91,18 @@ tighter than we're willing to quote. Alt (non-main) rungs only quote inside
 an `[ALT_OVERROUND_MIN, ALT_OVERROUND_MAX]` vig band and get smaller size
 (`ALT_SIZE_MULT`).
 
+**Touch-join pricing.** When the crowd's best opposing bid/ask offers better
+entry than our resting fair−margin quote, we join it instead. Entry condition:
+net edge (join_price − fair − maker_fee) ∈ [TOUCH_JOIN_MIN_EDGE_CENTS, MAX_MARGIN_CENTS];
+alt rungs use TOUCH_JOIN_ALT_MIN_EDGE_CENTS (default 1.5c). The calculation
+self-excludes our own resting order from the touch. Hysteresis: hold join order
+while edge ≥ TOUCH_JOIN_EXIT_EDGE_CENTS (0.25c), exit if edge < 0.25c or >5c
+(suspicious distortion). Config dials: `TOUCH_JOIN_MIN_EDGE_CENTS` (1.0c main),
+`TOUCH_JOIN_ALT_MIN_EDGE_CENTS` (1.5c), `TOUCH_JOIN_EXIT_EDGE_CENTS` (0.25c).
+Joins are attributed `touch_join` in `maker_quotes` vs `quote` for standard-margin
+orders. Deferred protections: spec `docs/superpowers/specs/2026-07-18-wc-touchjoin-pricing-design.md`,
+GitHub issues #1 (mid-jump circuit breaker) and #2 (markout/toxicity brake).
+
 **The goal-grid ledger** (`ledger.py`) treats every fill on a match as
 settling on one integer — the regulation-time total goals `g` — and computes
 exact worst-case P&L by evaluating `pnl(g)` over `g = 0..10` and taking the
