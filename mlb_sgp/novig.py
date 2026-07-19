@@ -518,3 +518,232 @@ def _passes_sanity_mult_ratio(
         return True
     naive = (1.0 / sp_available) * (1.0 / to_available)
     return parlay_decimal <= naive * SANITY_MULT_RATIO
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 on-demand pricing (kalshi_mlb_mm on-demand engine).
+# Append-only: nothing above this line (esp. price_sgps) is modified.
+# ---------------------------------------------------------------------------
+
+def _available_to_decimal(leg: dict | None) -> float | None:
+    """Novig legs carry `available` = implied probability. Leg decimal is
+    1/available, valid only for 0 < available < 1 (available==1 would be a
+    decimal of exactly 1.0, i.e. no payout — treat as missing, matching the
+    _passes_sanity_mult_ratio convention of only trusting sane probs)."""
+    if not isinstance(leg, dict):
+        return None
+    av = leg.get("available")
+    try:
+        av = float(av)
+    except (TypeError, ValueError):
+        return None
+    if not (0.0 < av < 1.0):
+        return None
+    return 1.0 / av
+
+
+def _lookup_leg(structure: dict, key: str, line: float | None) -> dict | None:
+    """Fetch one leg dict from the line-keyed fg bucket. EXACT line match
+    only — the integer-line fallback (try_integer_fallback_nv) is
+    deliberately NOT applied on the on-demand path (fail-safe: a line the
+    book doesn't quote directly resolves to nothing).
+
+    Spread/total keys map ``{line: leg}``; ML keys map straight to a leg
+    dict (line-independent), signalled by ``line is None``.
+    """
+    bucket = structure.get(key)
+    if line is None:                       # moneyline: value IS the leg
+        return bucket if isinstance(bucket, dict) else None
+    if not isinstance(bucket, dict):
+        return None
+    leg = bucket.get(float(line))
+    return leg if isinstance(leg, dict) else None
+
+
+def resolve_legs(structure, legs, home_team, away_team):
+    """Resolve canonical legs against Novig's FG per-event leg bucket.
+
+    Parameters
+    ----------
+    structure
+        Line-keyed FG bucket built from Novig's EventMarkets tree — the
+        per-line generalization of ``fetch_event_legs``'s fg dict
+        (scraper_novig_sgp.py:440-459, keys ``home_spread / away_spread /
+        over / under / home_ml / away_ml``)::
+
+            {
+              "home_spread": {home_line: leg},  # keyed by HOME team's signed line
+              "away_spread": {away_line: leg},  # keyed by AWAY team's line (= -home)
+              "over":        {total_line: leg},
+              "under":       {total_line: leg},
+              "home_ml":     leg | None,        # line-independent
+              "away_ml":     leg | None,
+            }
+
+        where each ``leg`` is the ``_find_outcome_in_spread`` /
+        ``_find_outcome_in_total`` shape: ``{"id": <outcome uuid>,
+        "available": <implied prob or None>}``. One NV SPREAD market at
+        home-perspective strike -1.5 therefore lands in the bucket as
+        ``home_spread[-1.5]`` + ``away_spread[+1.5]``.
+    legs
+        list[CanonicalLeg] — lines are SIGNED home-perspective (negative =
+        home favored), so an away-side spread lookup mirrors the sign.
+    home_team / away_team
+        Unused for Novig (the bucket is already side-labelled); kept for
+        the cross-book ``resolve_legs`` signature.
+
+    Returns
+    -------
+    list[ResolvedLeg] | None
+        None when ANY leg's chosen side is unresolvable (or on any
+        unexpected input — never raises). A missing OPPOSITE side yields
+        ``opposite_ref=None`` on that leg (one-sided → Route B).
+        ``single_decimal`` / ``opposite_decimal`` = 1/available when
+        0 < available < 1, else None.
+    """
+    # ResolvedLeg lives in _shared; import matches the module's lazy style.
+    from mlb_sgp._shared import ResolvedLeg
+
+    try:
+        if not isinstance(structure, dict):
+            return None
+        out: list = []
+        for leg in legs:
+            mt, side, line = leg.market_type, leg.side, leg.line
+            if mt == "spread":
+                if side == "home":
+                    chosen_key, opp_key = "home_spread", "away_spread"
+                    chosen_line, opp_line = float(line), -float(line)
+                elif side == "away":
+                    chosen_key, opp_key = "away_spread", "home_spread"
+                    chosen_line, opp_line = -float(line), float(line)
+                else:
+                    return None
+            elif mt == "total":
+                if side not in ("over", "under"):
+                    return None
+                chosen_key = side
+                opp_key = "under" if side == "over" else "over"
+                chosen_line = opp_line = float(line)
+            elif mt == "ml":
+                if side not in ("home", "away"):
+                    return None
+                chosen_key = f"{side}_ml"
+                opp_key = "away_ml" if side == "home" else "home_ml"
+                chosen_line = opp_line = None
+            else:
+                return None
+
+            chosen = _lookup_leg(structure, chosen_key, chosen_line)
+            if chosen is None or not chosen.get("id"):
+                return None                     # chosen side miss → fail all
+            opposite = _lookup_leg(structure, opp_key, opp_line)
+            opp_ref = opposite.get("id") if isinstance(opposite, dict) else None
+            out.append(ResolvedLeg(
+                ref=chosen["id"],
+                opposite_ref=opp_ref or None,
+                single_decimal=_available_to_decimal(chosen),
+                opposite_decimal=(
+                    _available_to_decimal(opposite) if opp_ref else None
+                ),
+            ))
+        return out
+    except Exception:
+        return None
+
+
+def price_selection_set(client, refs) -> float | None:
+    """Price one arbitrary selection set via Novig's anonymous parlay RFQ.
+
+    ``refs`` is a list of outcome UUID strings (a 1-element list prices a
+    single). One wire call: ``client.submit_parlay(refs)``
+    (novig_client.py:157) returns ``{"decimal": ..., ...}`` or ``{}`` on
+    any failure. Returns the float decimal when > 1.0, else None.
+    Never raises.
+    """
+    try:
+        if not refs:
+            return None
+        priced = client.submit_parlay(list(refs)) or {}
+        dec = float(priced.get("decimal"))
+        return dec if dec > 1.0 else None
+    except Exception:
+        return None
+
+
+def build_line_structure(markets: list, home_sym: str, away_sym: str) -> dict:
+    """Build the per-line FG bucket ``resolve_legs`` consumes from Novig's
+    RAW market tree (the ``markets`` list ``fetch_event_legs`` returns as its
+    second element).
+
+    Generalizes ``scraper_novig_sgp.fetch_event_legs``'s single-target-line
+    parse (scraper_novig_sgp.py:391-443) to ALL offered FG lines, reusing its
+    exact outcome extractors:
+
+    * SPREAD markets: ``strike`` is the HOME-perspective line (the scraper
+      matches ``m["strike"]`` against the home-perspective target at
+      scraper_novig_sgp.py:402-404); outcomes are identified by
+      ``competitor.symbol`` via ``_find_outcome_in_spread`` →
+      ``home_spread[strike]`` / ``away_spread[-strike]``.
+    * TOTAL markets: outcomes split on "Over "/"Under " description prefixes
+      via ``_find_outcome_in_total`` → ``over[strike]`` / ``under[strike]``.
+    * MONEY market: line-independent, symbol-matched like a spread →
+      ``home_ml`` / ``away_ml`` (scraper_novig_sgp.py:438-443).
+
+    Mirrors the scraper's ``is_consensus`` preference (scraper_novig_sgp.py:
+    398-406): when several markets share a (type, strike), the consensus
+    market wins regardless of list order. DEVIATION from ``fetch_event_legs``
+    (documented): a ONE-SIDED line (only one outcome present) is still
+    recorded — on-demand routes a missing opposite to Route B via
+    ``opposite_ref=None``, whereas the grid sweep required both sides.
+    FG only (SPREAD/TOTAL/MONEY; ``*_1H`` and prop types ignored).
+    Fail-safe: never raises; malformed markets are skipped.
+    """
+    from scraper_novig_sgp import (
+        _find_outcome_in_spread,
+        _find_outcome_in_total,
+    )
+
+    out: dict = {"home_spread": {}, "away_spread": {}, "over": {},
+                 "under": {}, "home_ml": None, "away_ml": None}
+
+    # Group by (type, strike) so the is_consensus preference is applied
+    # per line, exactly like fetch_event_legs' spread_matches/total_matches.
+    groups: dict[tuple, list] = {}
+    for m in markets or []:
+        try:
+            typ = m.get("type")
+            if typ not in ("SPREAD", "TOTAL", "MONEY"):
+                continue
+            if typ == "MONEY":
+                strike = None
+            else:
+                strike = float(m.get("strike"))
+            groups.setdefault((typ, strike), []).append(m)
+        except (AttributeError, TypeError, ValueError):
+            continue
+
+    for (typ, strike), cands in groups.items():
+        m = next((c for c in cands if c.get("is_consensus") is True), cands[0])
+        try:
+            if typ == "SPREAD":
+                home_leg, away_leg = _find_outcome_in_spread(m, home_sym, away_sym)
+                if home_leg:
+                    out["home_spread"][strike] = home_leg
+                if away_leg:
+                    out["away_spread"][-strike] = away_leg
+            elif typ == "TOTAL":
+                over_leg, under_leg = _find_outcome_in_total(m)
+                if over_leg:
+                    out["over"][strike] = over_leg
+                if under_leg:
+                    out["under"][strike] = under_leg
+            else:  # MONEY
+                home_ml, away_ml = _find_outcome_in_spread(m, home_sym, away_sym)
+                if home_ml:
+                    out["home_ml"] = home_ml
+                if away_ml:
+                    out["away_ml"] = away_ml
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return out

@@ -117,9 +117,30 @@ def single_marginal_fairs(game_id, leg: legset.CanonicalLeg, sgp_df) -> dict[str
     return out
 
 
+def consensus_detail(book_fairs: dict[str, float], min_books: int,
+                     band: float) -> tuple[float, list[str]] | None:
+    """consensus() plus WHICH books agreed (research/observability only).
+
+    Pure sibling — consensus() itself is untouched (it is part of the
+    Phase 1 regression lock). Kept in exact algorithmic lockstep."""
+    if len(book_fairs) < min_books:
+        return None
+    med = statistics.median(book_fairs.values())
+    agree = {b: f for b, f in book_fairs.items() if abs(f - med) <= band}
+    if len(agree) < min_books:
+        return None
+    return statistics.median(agree.values()), sorted(agree)
+
+
 def subcombo_fair(game_id, game_legs, sgp_df, min_books: int,
-                  band: float) -> float | None:
-    """Price one game's sub-combo: route via classify_subcombo -> grid/single book fairs -> consensus."""
+                  band: float, on_demand_fairs=None) -> float | None:
+    """Price one game's sub-combo: route via classify_subcombo -> grid/single book fairs -> consensus.
+
+    on_demand_fairs (Phase 2): optional pure lookup, leg_set_hash -> {book:
+    fair} | None, injected by main (the OnDemandEngine's fresh-results read).
+    Default None reproduces Phase 1 byte-identically — grid/single routes
+    never touch it, and on_demand routes return None.
+    """
     route = legset.classify_subcombo(game_legs)
     if route == "single":
         book_fairs = single_marginal_fairs(game_id, game_legs[0], sgp_df)
@@ -127,13 +148,15 @@ def subcombo_fair(game_id, game_legs, sgp_df, min_books: int,
         family, spread_line, total_line, target = grid_spec(game_legs)
         book_fairs = grid_cell_fairs(game_id, family, spread_line, total_line,
                                      target, sgp_df)
-    else:                       # "on_demand" (Phase 2) or "unpriceable"
+    elif route == "on_demand" and on_demand_fairs is not None:
+        book_fairs = on_demand_fairs(legset.leg_set_hash(game_legs)) or {}
+    else:                       # "on_demand" without lookup, or "unpriceable"
         return None
     return consensus(book_fairs, min_books, band)
 
 
 def combo_fair(legs: list[dict], sgp_df, resolve_game, min_books: int,
-               band: float) -> float | None:
+               band: float, on_demand_fairs=None) -> float | None:
     """Full RFQ: parse -> partition by game -> per-game subcombo_fair -> multiply."""
     canon = legset.parse_legs(legs)
     if canon is None:
@@ -143,7 +166,8 @@ def combo_fair(legs: list[dict], sgp_df, resolve_game, min_books: int,
         game_id = resolve_game(game_legs)
         if game_id is None:
             return None
-        f = subcombo_fair(game_id, game_legs, sgp_df, min_books, band)
+        f = subcombo_fair(game_id, game_legs, sgp_df, min_books, band,
+                          on_demand_fairs=on_demand_fairs)
         if f is None:
             return None
         product *= f

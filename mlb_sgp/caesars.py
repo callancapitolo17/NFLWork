@@ -401,3 +401,86 @@ def _price_ml_total_for_games(client, parsed_cache, filtered, fetch_now,
                 if verbose:
                     print(f"  [czr] ML target error: {e}")
     return out
+
+
+# ------------------------------------------------------------------ #
+# Phase 2 on-demand pricing (kalshi_mlb_mm on-demand engine).        #
+# Append-only: the grid-sweep path above is untouched.               #
+# ------------------------------------------------------------------ #
+
+from mlb_sgp._shared import ResolvedLeg  # noqa: E402
+
+# CanonicalLeg.side -> the opposite side within the same market bucket.
+_OPPOSITE_SIDE = {"home": "away", "away": "home", "over": "under", "under": "over"}
+
+
+def resolve_legs(structure: dict, legs: list, home_team: str,
+                 away_team: str) -> list[ResolvedLeg] | None:
+    """Map CanonicalLegs to Caesars /bets/details leg dicts (the ref IS the dict).
+
+    `structure` is one period of `parse_markets(event)` (e.g. `["FG"]`):
+    {"spreads": {home_line: {"home": leg, "away": leg}},
+     "totals":  {line: {"over": leg, "under": leg}},
+     "moneyline": {"home": leg, "away": leg} | None}.
+
+    Caesars stores spreads keyed by the signed HOME-perspective market line —
+    the same convention as CanonicalLeg.line — so lookup is direct. The stored
+    away leg dict already carries the NEGATED line (`parse_markets` builds it
+    via `_leg(..., line=-ml)`); Caesars silently declines a combo whose away
+    selection keeps the home sign, so the ref must be used as stored.
+
+    home_team / away_team are unused (Caesars selections are typed home/away
+    directly) — kept for the uniform per-book resolve_legs interface.
+
+    Returns None if ANY chosen side is unresolvable (all-or-nothing). A leg
+    whose OPPOSITE side is missing resolves with opposite_ref=None (routes the
+    book to Route B). Fail-safe: never raises.
+    """
+    try:
+        out: list[ResolvedLeg] = []
+        for leg in legs:
+            mt = leg.market_type
+            if mt == "spread":
+                bucket = structure["spreads"].get(float(leg.line))
+            elif mt == "total":
+                bucket = structure["totals"].get(float(leg.line))
+            elif mt == "ml":
+                bucket = structure.get("moneyline")
+            else:
+                return None
+            if not bucket:
+                return None
+            chosen = bucket.get(leg.side)
+            if not chosen:
+                return None
+            opposite = bucket.get(_OPPOSITE_SIDE.get(leg.side))
+            out.append(ResolvedLeg(
+                ref=chosen,
+                opposite_ref=opposite if opposite else None,
+                single_decimal=_price_d(chosen),
+                opposite_decimal=_price_d(opposite) if opposite else None,
+            ))
+        return out
+    except Exception:
+        return None
+
+
+def price_selection_set(client, refs: list) -> float | None:
+    """Price one same-game selection set: a single /bets/details call.
+
+    `refs` are the leg dicts returned by resolve_legs. Returns the correlated
+    decimal (> 1.0) or None. Fail-safe: never raises.
+    """
+    try:
+        if not refs:
+            return None
+        priced = client.price_combo(refs)
+        if not priced:
+            return None
+        dec = priced.get("decimal")
+        if dec is None:
+            return None
+        dec = float(dec)
+        return dec if dec > 1.0 else None
+    except Exception:
+        return None

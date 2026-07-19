@@ -305,9 +305,16 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
     """Fetch all SGP-eligible runners for one event (main + alt, FG + F5).
 
     Returns:
-        {'fg': {'spreads': {('home'|'away', line): (marketId, selectionId), ...},
-                'totals':  {('O'|'U', line): (marketId, selectionId), ...}},
+        {'fg': {'spreads': {('home'|'away', line): (marketId, selectionId, dec), ...},
+                'totals':  {('O'|'U', line): (marketId, selectionId, dec), ...}},
          'f5': {'spreads': {...}, 'totals': {...}}}
+
+    ``dec`` is the runner's single decimal odds from
+    ``winRunnerOdds.trueOdds.decimalOdds.decimalOdds`` (same nesting FD
+    uses for SGP combos in implyBets responses), or None when absent /
+    malformed. Consumers that only need the selection ref keep indexing
+    ``[0]``/``[1]``; the on-demand resolver (mlb_sgp.fanduel.resolve_legs)
+    reads ``[2]`` for two-sided single-devig.
 
     For spreads, key is ('home', abs_line) or ('away', abs_line) — determined
     by matching the runner's team name against fd_home/fd_away. This handles
@@ -358,6 +365,7 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
             hc = run.get("handicap")
             if sid is None:
                 continue
+            dec = _runner_decimal(run)
 
             if mtype == "spreads":
                 parsed = _parse_spread_runner(rn, hc, main_or_alt, fd_home, fd_away)
@@ -367,7 +375,7 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
                 key = (side, line)
                 # Main takes priority over alt
                 if key not in bucket or main_or_alt == "main":
-                    bucket[key] = (mid, sid)
+                    bucket[key] = (mid, sid, dec)
 
             elif mtype == "totals":
                 parsed = _parse_total_runner(rn, hc, main_or_alt)
@@ -376,7 +384,7 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
                 ou, line = parsed
                 key = (ou, line)
                 if key not in bucket or main_or_alt == "main":
-                    bucket[key] = (mid, sid)
+                    bucket[key] = (mid, sid, dec)
 
             elif mtype == "moneyline":
                 # Moneyline runners carry the team name and no handicap; key by
@@ -385,9 +393,27 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
                         else "away" if rn == fd_away else None)
                 if side is None:
                     continue
-                bucket[side] = (mid, sid)
+                bucket[side] = (mid, sid, dec)
 
     return out
+
+
+def _runner_decimal(run: dict) -> float | None:
+    """Runner's single decimal odds, or None when absent/malformed.
+
+    Path: ``winRunnerOdds.trueOdds.decimalOdds.decimalOdds`` — the same
+    odds nesting price_combo reads off implyBets ``winAvgOdds``.
+    Defensive: FD occasionally omits winRunnerOdds (suspended runners),
+    and any non-dict level must not crash the structure fetch.
+    """
+    try:
+        dec = ((run.get("winRunnerOdds") or {})
+               .get("trueOdds", {})
+               .get("decimalOdds", {})
+               .get("decimalOdds"))
+        return float(dec) if dec is not None else None
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def _parse_spread_runner(rn: str, hc, main_or_alt: str,

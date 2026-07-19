@@ -580,3 +580,134 @@ def _price_combo(
             if sgp:
                 return sgp
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2: on-demand pricing of arbitrary same-game leg sets (kalshi_mlb_mm). #
+# Appended additively — nothing above (especially price_sgps) is modified.    #
+# --------------------------------------------------------------------------- #
+
+from mlb_sgp._shared import ResolvedLeg  # noqa: E402  (Phase 2 section import)
+
+
+def resolve_legs(structure, legs, home_team, away_team):
+    """Resolve canonical legs against DK's FG selection-id structure.
+
+    Parameters
+    ----------
+    structure
+        The FG bucket of ``fetch_selection_ids`` output, i.e.
+        ``fetch_selection_ids(session, eid, nums)["fg"]``:
+        ``{"spreads": {(sign, abs_line, participant): [sel_ids]},
+        "totals": {("O"|"U", line): [sel_ids]},
+        "moneyline": {"1": [sel_ids], "3": [sel_ids]}, "canonical": set()}``.
+    legs
+        ``list[kalshi_common.legset.CanonicalLeg]`` — market_type in
+        {"spread", "total", "ml"}; spread line SIGNED home-perspective.
+    home_team / away_team
+        Unused at DK (participant "1"/"3" already encodes home/away);
+        kept for the cross-book resolve_legs interface.
+
+    Returns ``list[ResolvedLeg] | None``. Sign convention mirrors the
+    main pricing loop (this file, ~line 333) and try_integer_fallback_dk
+    (scraper_draftkings_sgp.py:188-195): home favored (line < 0) means
+    home is the "N" (negative-line) side / away "P"; flipped when home
+    is the underdog. Participant "1" = home, "3" = away; the key stores
+    ``abs(line)`` (the sign letter carries direction).
+
+    A missing CHOSEN side fails the whole resolution (None). A missing
+    OPPOSITE side yields ``opposite_ref=None`` (routes the book to
+    Route B downstream). DK structure carries no odds, so
+    single_decimal / opposite_decimal are always None. Any unexpected
+    structure shape returns None — never raises.
+    """
+    try:
+        out: list[ResolvedLeg] = []
+        for leg in legs:
+            if leg.market_type == "spread":
+                # Same sign convention as price_sgps / try_integer_fallback_dk.
+                if leg.line < 0:
+                    home_sign, away_sign = "N", "P"
+                else:
+                    home_sign, away_sign = "P", "N"
+                abs_line = abs(leg.line)
+                home_sels = structure["spreads"].get((home_sign, abs_line, "1")) or []
+                away_sels = structure["spreads"].get((away_sign, abs_line, "3")) or []
+                if leg.side == "home":
+                    chosen, opposite = home_sels, away_sels
+                elif leg.side == "away":
+                    chosen, opposite = away_sels, home_sels
+                else:
+                    return None
+            elif leg.market_type == "total":
+                over_sels = structure["totals"].get(("O", leg.line)) or []
+                under_sels = structure["totals"].get(("U", leg.line)) or []
+                if leg.side == "over":
+                    chosen, opposite = over_sels, under_sels
+                elif leg.side == "under":
+                    chosen, opposite = under_sels, over_sels
+                else:
+                    return None
+            elif leg.market_type == "ml":
+                ml = structure["moneyline"]
+                home_ml = ml.get("1") or []
+                away_ml = ml.get("3") or []
+                if leg.side == "home":
+                    chosen, opposite = home_ml, away_ml
+                elif leg.side == "away":
+                    chosen, opposite = away_ml, home_ml
+                else:
+                    return None
+            else:
+                return None
+            if not chosen:
+                return None                      # chosen side unresolvable
+            out.append(ResolvedLeg(
+                ref=chosen[0],
+                opposite_ref=opposite[0] if opposite else None,
+                # DK's structure carries no odds — decimals stay None.
+                single_decimal=None,
+                opposite_decimal=None,
+            ))
+        return out
+    except Exception:
+        # Fail-safe: malformed/unexpected structure shape → None, never raise.
+        return None
+
+
+def price_selection_set(client, refs):
+    """Price one set of DK selection ids (1..N legs) via calculateBets.
+
+    Generalizes the 2-leg ``calculate_sgp`` (scraper_draftkings_sgp.py:598)
+    / trifecta ``post_calculate_bets`` (scraper_draftkings_trifecta.py:104)
+    body to N ``selectionsForYourBet`` entries, all in yourBetGroup 0 (one
+    SGP). Written here rather than importing post_calculate_bets because
+    that helper does not reject ``combinabilityRestrictions`` responses,
+    which this caller must treat as unpriceable.
+
+    Returns the decimal ``trueOdds`` float, or None on 422 /
+    combinabilityRestrictions / any failure (never raises).
+    """
+    try:
+        from scraper_draftkings_sgp import DK_CALCULATE_BETS_URL
+        resp = client.session.post(DK_CALCULATE_BETS_URL, json={
+            "selections": [],
+            "selectionsForYourBet": [
+                {"id": sid, "yourBetGroup": 0} for sid in refs
+            ],
+            "selectionsForCombinator": [],
+            "selectionsForProgressiveParlay": [],
+            "oddsStyle": "american",
+        }, headers={"Content-Type": "application/json"}, timeout=10)
+        if resp.status_code != 200:
+            return None                          # 422 (non-combinable) et al.
+        data = resp.json()
+        if data.get("combinabilityRestrictions"):
+            return None                          # cross-market rejection
+        for bet in data.get("bets", []):
+            true_odds = bet.get("trueOdds")
+            if true_odds and len(bet.get("selectionsMapped", [])) >= len(refs):
+                return float(true_odds)
+        return None
+    except Exception:
+        return None

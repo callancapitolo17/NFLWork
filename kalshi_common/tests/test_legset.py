@@ -115,3 +115,67 @@ def test_classify_two_totals_is_on_demand():
 
 def test_classify_empty_is_unpriceable():
     assert legset.classify_subcombo([]) == "unpriceable"
+
+
+# ---------------------------------------------------------------- #
+# Phase 2: enumerate_partition (2^N side-combination cells)        #
+# ---------------------------------------------------------------- #
+
+def test_flip_leg_spread_home_away():
+    leg = legset.CanonicalLeg(EVT, "spread", -1.5, "home")
+    assert legset.flip_leg(leg) == legset.CanonicalLeg(EVT, "spread", -1.5, "away")
+    assert legset.flip_leg(legset.flip_leg(leg)) == leg
+
+def test_flip_leg_total_over_under():
+    leg = legset.CanonicalLeg(EVT, "total", 8.5, "over")
+    assert legset.flip_leg(leg) == legset.CanonicalLeg(EVT, "total", 8.5, "under")
+
+def test_flip_leg_ml_line_stays_none():
+    leg = legset.CanonicalLeg(EVT, "ml", None, "away")
+    flipped = legset.flip_leg(leg)
+    assert flipped.side == "home" and flipped.line is None
+
+def test_enumerate_partition_count_and_target_first():
+    legs = [legset.CanonicalLeg(EVT, "spread", -1.5, "home"),
+            legset.CanonicalLeg(EVT, "total", 8.5, "over"),
+            legset.CanonicalLeg(EVT, "ml", None, "home")]
+    cells = legset.enumerate_partition(legs)
+    assert len(cells) == 8
+    assert cells[0] == legs                     # cell 0 == the target
+
+def test_enumerate_partition_bitmask_ordering():
+    # bit j of cell index i flips leg j (LSB = leg 0)
+    legs = [legset.CanonicalLeg(EVT, "spread", -1.5, "home"),
+            legset.CanonicalLeg(EVT, "total", 8.5, "over")]
+    cells = legset.enumerate_partition(legs)
+    assert cells[1][0].side == "away" and cells[1][1].side == "over"   # i=1: flip leg0
+    assert cells[2][0].side == "home" and cells[2][1].side == "under"  # i=2: flip leg1
+    assert cells[3][0].side == "away" and cells[3][1].side == "under"  # i=3: flip both
+
+def test_enumerate_partition_deterministic_and_lines_unchanged():
+    legs = [legset.CanonicalLeg(EVT, "total", 7.5, "over"),
+            legset.CanonicalLeg(EVT, "total", 8.5, "over")]
+    a = legset.enumerate_partition(legs)
+    b = legset.enumerate_partition(legs)
+    assert a == b
+    for cell in a:
+        assert [l.line for l in cell] == [7.5, 8.5]
+
+
+def test_duplicate_market_same_game_is_unpriceable():
+    """Adversarial review #3: a creator-crafted combo repeating one market
+    (e.g. Over 8.5 AND Under 8.5 — joint probability exactly 0, or the same
+    leg twice) must never reach a pricing route: Route B would happily
+    transfer-price a contradictory pair a multiplying book returns."""
+    over = legset.CanonicalLeg(EVT, "total", 8.5, "over")
+    under = legset.CanonicalLeg(EVT, "total", 8.5, "under")
+    assert legset.classify_subcombo([over, under]) == "unpriceable"
+    assert legset.classify_subcombo([over, over]) == "unpriceable"
+    ml_h = legset.CanonicalLeg(EVT, "ml", None, "home")
+    ml_a = legset.CanonicalLeg(EVT, "ml", None, "away")
+    assert legset.classify_subcombo([ml_h, ml_a]) == "unpriceable"
+    sp = legset.CanonicalLeg(EVT, "spread", -1.5, "home")
+    assert legset.classify_subcombo([sp, over, ml_h, ml_a]) == "unpriceable"
+    # nested totals at DIFFERENT lines stay allowed (Fréchet handles them)
+    over75 = legset.CanonicalLeg(EVT, "total", 7.5, "over")
+    assert legset.classify_subcombo([over, over75]) == "on_demand"

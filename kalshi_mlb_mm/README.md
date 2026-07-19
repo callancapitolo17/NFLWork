@@ -6,7 +6,7 @@ Independent maker daemon that listens for others' RFQs on the Kalshi cross-categ
 
 - **2-leg same-game grids** — spread×total and moneyline×total (both FG), priced from each book's 4-cell devig grid (unchanged math).
 - **Cross-game combos** — each game's sub-combo is priced independently and the per-game fairs are **multiplied** (independence assumption); a single leg within a game is marginalized out of that game's grid.
-- **Out of scope** (skipped fail-safe): lone single-leg RFQs, and novel same-game shapes (3-leg, spread+ml, total+total) which route to `on_demand` — Phase 2 will price those on-demand.
+- **On-demand same-game shapes (Phase 2)** — 3-leg, spread+ml, total+total and any other novel shape route to `on_demand` and are priced by live book queries at RFQ time (see **On-demand pricing** below). Lone single-leg RFQs remain out of scope (skipped fail-safe).
 
 The read side is **book-agnostic**: it consumes whatever the 6 SGP scrapers write to `mlb_sgp_odds`, so all books' moneyline rows are priced with no maker-side change.
 
@@ -80,7 +80,82 @@ Fair value is the median of *book-consensus-agreeing* devigged book fairs. `rout
 3. Compute the median across books, then keep only books within `±BOOK_CONSENSUS_BAND` of that median.
 4. If `>= MIN_AGREEING_BOOKS` survive, the fair is the median of the survivors. Otherwise we do not quote.
 
-A **single leg** (within a cross-game combo) is priced by marginalizing that game's grid — summing the two devigged cells along the free axis. **Cross-game** fairs are the product of the per-game consensus fairs; if any game fails consensus or routes to `on_demand`/`unpriceable`, `combo_fair` returns `None` and we do not quote (fail-safe). This is the v1 correlation defense (mirrors the MLB answer-key dashboard's consensus-band pattern). The v1.1 explicit correlation-premium gate is deferred — see spec section 13.
+A **single leg** (within a cross-game combo) is priced by marginalizing that game's grid — summing the two devigged cells along the free axis. **Cross-game** fairs are the product of the per-game consensus fairs; if any game fails consensus or is `unpriceable`, `combo_fair` returns `None` and we do not quote (fail-safe). Novel same-game shapes (`on_demand` — 3+ legs, spread+ml, total+total, …) price via live book queries — see **On-demand pricing** below. This is the v1 correlation defense (mirrors the MLB answer-key dashboard's consensus-band pattern). The v1.1 explicit correlation-premium gate is deferred — see spec section 13.
+
+## On-demand pricing (Phase 2)
+
+Spec: `docs/superpowers/specs/2026-07-08-kalshi-mlb-mm-on-demand-pricing-design.md` (rev 5).
+
+Any same-game shape the two pre-scraped grids can't price is queried **live**
+at the six books' SGP endpoints for that exact leg set, at RFQ time. Always
+on — no config switch; the bot-wide kill file remains the emergency stop, and
+dropping a misbehaving book is a one-line code change.
+
+**Feed model — the open-RFQ poll drives everything.** The 2s discovery tick
+never blocks on a book. An on-demand shape with no fresh result enqueues a
+background fetch (`OnDemandEngine`, `kalshi_mlb_mm/on_demand.py`) and skips
+with reason `on_demand_pending`; the fetch (~10–20s, all books concurrent)
+lands per-book fairs in an in-memory store, and the next tick prices them
+through the normal consensus + gates + hysteresis/replace path. A result may
+back a NEW quote only within `QUOTE_FRESH_SEC` (15s, module constant) of
+landing — after that the next tick that still sees the RFQ re-fetches. When
+the RFQ leaves the poll, fetching stops; nothing self-schedules, and there is
+no price reuse across RFQs.
+
+**Two devig routes** (`kalshi_common/fair_value.py`), selected per (book,
+combo) by `SGPService.price_on_demand`:
+
+- **Route A — full partition** (≤3 legs, all sides offered): price all 2^N
+  side-combination cells (`legset.enumerate_partition`; cell 0 = target,
+  bit j of cell i flips leg j), probit-devig across the partition
+  (`devig_partition`), read the target cell. Overround gate scales with leg
+  count (`1 ≤ Σ(1/dec) ≤ 1 + 0.25·N`, live-calibrated — real FD 2-leg partitions sum to ~1.28). No fallback within the route — any
+  missing/insane cell abandons to Route B.
+- **Route B — correlation transfer** (any N, or any one-sided leg): one SGP
+  call; `fair = ∏(devigged singles) × [SGP implied / ∏(vigged singles)]`
+  (the book's SGP margin ≈ compounded leg vig cancels in the ratio). Singles
+  come free from the structure fetch at FD/PX/NV/MGM/CZR; DK's structure has
+  IDs only, so DK singles are priced as 1-leg `calculateBets` calls (only
+  when Route B is actually taken). Result gated by exact **Fréchet bounds**
+  (`max(0, Σp−(n−1)) ≤ fair ≤ min(p)`) — assumption-free joint-probability
+  limits.
+
+Consensus is the same `MIN_AGREEING_BOOKS=2` + band rule as grids. Per-book
+`resolve_legs` / `price_selection_set` live in each `mlb_sgp/<book>.py`,
+reusing the orchestrators' own lookup structures — the grid-sweep path is
+untouched (`_priceable_in_phase1` and `test_router_integration.py` are the
+retained Phase 1 regression oracles).
+
+**Accepted quotes get a live last look**: the confirm tick synchronously
+re-fetches every on-demand game in the combo (priority lane, budgeted
+`CONFIRM_REFETCH_BUDGET_SEC=20s` against the ~30s confirm window); a failed
+or late re-fetch leaves the lookup stale → `voided_no_fresh_books`. We never
+confirm on a previously-fetched number.
+
+**Failure direction is always "fewer/laggier quotes", never "staler
+quotes"**: unresolvable leg → book drops; incomplete partition → Route B →
+drop; sanity/Fréchet/consensus failure → no quote; worker death → lazy
+restart, meanwhile skip; RFQ flood → queue grows, late landings, expired
+RFQs go unquoted (pacing = one on-demand combo in flight per book).
+
+**Observability**: research events `on_demand_requested` (once per fetch
+flight), `on_demand_result` (once per landing; per-book route/fair/latency,
+`route_gap` where both routes came free), fill payloads gain per-book
+`route` + `consensus_books` (DK+Novig-only fills are a named risk metric).
+Out-of-scope RFQs now store `legs_json` and granular reasons
+(`out_of_scope_non_mlb` / `out_of_scope_lone_single` /
+`out_of_scope_unparseable`) in `seen_rfqs` — on-demand demand is finally
+measurable (it was 0 in ~1,100 classified markets over the 30 days before
+this shipped).
+
+**Rollout / retreat playbook**: restart from main repo cwd in `--dry-run`
+first; watch route mix, `route_gap`, per-book completion, void rate
+on-demand-vs-grid, Caesars WAF health, PX on-demand volume (each PX fetch is
+a real RFQ on their exchange). Retreat triggers (all code changes, no
+config): drop CZR from on-demand if its WAF failures spill into the grid
+sweep; haircut/disable Route B if `route_gap` shows it systematically rich;
+reinstate a pull loop only if on-demand voids threaten the global void-rate
+halt.
 
 The model (a fraction-of-sample-paths estimate driven by `mlb_game_samples` from the R answer-key pipeline) was removed in the v1 hardening pass: it was being medianed out of the blend, carried documented bias on certain combo families ([[mlb_parlay_edge_overestimation]]), and added a soft dependency on the R pipeline.
 

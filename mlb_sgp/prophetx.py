@@ -719,3 +719,226 @@ def _safe_leg_decimal(sel: dict) -> float:
         return american_to_decimal(int(am))
     except (TypeError, ValueError):
         return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 on-demand pricing (kalshi_mlb_mm) — resolve_legs + price_selection_set
+#
+# Append-only additions: nothing above this banner (in particular
+# ``price_sgps``) is touched. The ``_od_*`` helpers mirror the exact
+# selection-picking mechanics the orchestrator uses (``_find_market`` /
+# ``_pick_selection`` from scraper_prophetx_sgp, and the nested
+# ``_pick_ml_selection`` in ``_price_ml_total_for_games``) WITHOUT importing
+# the legacy scraper module — its top-level imports (curl_cffi,
+# canonical_match, db) are heavyweight and shadow the project-root ``db``
+# module in tests. The FG market names have no NAME_ALIASES entries, so an
+# exact-name match is behavior-identical to ``_find_market`` here.
+# ---------------------------------------------------------------------------
+
+# FG market display names (scraper_prophetx_sgp.MARKET_NAMES["fg"]). On-demand
+# pricing is FG-only — CanonicalLegs come from Kalshi FG markets.
+_OD_MARKET_NAMES = {"spread": "Run Line", "total": "Total Runs", "ml": "Moneyline"}
+
+
+def _od_normalize_markets(markets) -> list[dict]:
+    """``Market`` dataclasses (fetch_event_markets output) or raw dicts ->
+    the raw-dict shape all pickers consume. Mirrors the markets_cache
+    construction in ``price_sgps`` (moneyline order book under top-level
+    ``selections``, spread/total lines under ``marketLines``)."""
+    out: list[dict] = []
+    for m in markets or []:
+        if isinstance(m, dict):
+            out.append(m)
+        else:
+            out.append({
+                "id": m.market_id,
+                "name": m.name,
+                "marketLines": m.selections,
+                "outcomes": m.outcomes,
+                "selections": m.ml_selections,
+            })
+    return out
+
+
+def _od_find_market(markets: list[dict], name: str) -> dict | None:
+    """Exact-name market lookup (FG names carry no NAME_ALIASES)."""
+    for m in markets:
+        if m.get("name") == name:
+            return m
+    return None
+
+
+def _od_pick_selection(market: dict, predicate) -> dict | None:
+    """First selection matching ``predicate`` — same walk order as
+    scraper_prophetx_sgp._pick_selection (marketLines selections/outcomes,
+    then top-level selections), via the shared ``_iter_selections``."""
+    for sel in _iter_selections(market):
+        if predicate(sel):
+            return sel
+    return None
+
+
+def _od_best_ml_entry(ml_market: dict, competitor_id) -> dict | None:
+    """Best (first) order-book entry for a competitor from the ML book.
+
+    Mirrors ``_pick_ml_selection`` inside ``_price_ml_total_for_games``:
+    PX nests the moneyline order book under top-level ``selections`` as one
+    best-first ladder per outcome. A side with no resting orders returns
+    None."""
+    for ladder in ml_market.get("selections") or []:
+        if (ladder and isinstance(ladder, list) and isinstance(ladder[0], dict)
+                and ladder[0].get("competitorId") == competitor_id):
+            return ladder[0]
+    return None
+
+
+def _od_leg_decimal(sel: dict) -> float | None:
+    """Single-leg decimal odds for a ResolvedLeg, or None.
+
+    Same american->decimal conversion as ``_safe_leg_decimal`` but maps the
+    "unpriceable" cases (odds absent, zero, unparseable) to None instead of
+    0.0 — ResolvedLeg's contract is ``single_decimal=None`` when the book's
+    structure carries no usable odds. Zero is guarded up front because
+    ``american_to_decimal(0)`` divides by zero."""
+    am = sel.get("odds")
+    if not am:
+        return None
+    try:
+        return american_to_decimal(int(am))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def resolve_legs(structure, legs, home_team, away_team):
+    """Resolve CanonicalLegs to ProphetX SelectionLeg refs for one event.
+
+    Parameters
+    ----------
+    structure : dict
+        Per-event PX structure::
+
+            {"event_id": str,          # PX sportEvent id (RFQ payload key)
+             "markets":  list,         # ProphetXClient.fetch_event_markets()
+                                       # output (Market dataclasses) or the
+                                       # equivalent raw dicts
+             "home_id":  int,          # PX competitor ids from the matched
+             "away_id":  int}          # Event (list_events / match_events)
+
+        The competitor ids and event id ride along because PX's leg pickers
+        select spread/ML sides by ``competitorId`` (not team name) and every
+        RFQ leg embeds the sportEvent id — the market list alone is not
+        enough context.
+    legs : list[CanonicalLeg]
+        market_type in {"spread","total","ml"}; spread/total ``line`` is
+        SIGNED home-perspective (negative = home favored); side in
+        {"home","away"} (spread/ml) or {"over","under"} (total).
+    home_team, away_team : str
+        Unused for PX (side selection is competitor-id based); accepted for
+        cross-book interface parity.
+
+    Returns
+    -------
+    list[ResolvedLeg] | None
+        One ResolvedLeg per input leg, order preserved. ``ref`` /
+        ``opposite_ref`` are ``SelectionLeg``s ready for
+        ``price_selection_set``. None when any leg's CHOSEN side is
+        unresolvable; a missing OPPOSITE side yields ``opposite_ref=None``
+        (routes the book to Route B). Never raises.
+    """
+    from mlb_sgp._shared import ResolvedLeg
+
+    try:
+        event_id = structure["event_id"]
+        markets = _od_normalize_markets(structure["markets"])
+        home_id = structure["home_id"]
+        away_id = structure["away_id"]
+
+        out: list[ResolvedLeg] = []
+        for leg in legs:
+            mkt_name = _OD_MARKET_NAMES.get(leg.market_type)
+            if mkt_name is None:
+                return None
+            market = _od_find_market(markets, mkt_name)
+            if market is None:
+                return None
+
+            if leg.market_type == "spread":
+                if leg.side not in ("home", "away"):
+                    return None
+                # PX stores each outcome's line from its OWN perspective:
+                # home outcome carries leg.line, away outcome -leg.line
+                # (same predicates as price_sgps' home_sel / away_sel).
+                home_pred = (lambda s, lv=leg.line, cid=home_id:
+                             s.get("competitorId") == cid
+                             and _line_eq(s.get("line"), lv))
+                away_pred = (lambda s, lv=-leg.line, cid=away_id:
+                             s.get("competitorId") == cid
+                             and _line_eq(s.get("line"), lv))
+                if leg.side == "home":
+                    chosen = _od_pick_selection(market, home_pred)
+                    opposite = _od_pick_selection(market, away_pred)
+                else:
+                    chosen = _od_pick_selection(market, away_pred)
+                    opposite = _od_pick_selection(market, home_pred)
+            elif leg.market_type == "total":
+                if leg.side not in ("over", "under"):
+                    return None
+                other = "under" if leg.side == "over" else "over"
+                # Same name-prefix + line predicates as price_sgps'
+                # over_sel / under_sel; opposite is the other side at the
+                # SAME line.
+                def _tot_pred(prefix, lv=leg.line):
+                    return lambda s: (
+                        (s.get("name") or "").lower().startswith(prefix)
+                        and _line_eq(s.get("line"), lv))
+                chosen = _od_pick_selection(market, _tot_pred(leg.side))
+                opposite = _od_pick_selection(market, _tot_pred(other))
+            else:  # "ml"
+                if leg.side not in ("home", "away"):
+                    return None
+                cid = home_id if leg.side == "home" else away_id
+                opp_cid = away_id if leg.side == "home" else home_id
+                chosen = _od_best_ml_entry(market, cid)
+                opposite = _od_best_ml_entry(market, opp_cid)
+
+            if chosen is None:
+                return None
+            mkt_id = market.get("id")
+            out.append(ResolvedLeg(
+                ref=_selection_to_leg(event_id, mkt_id, chosen),
+                opposite_ref=(_selection_to_leg(event_id, mkt_id, opposite)
+                              if opposite is not None else None),
+                single_decimal=_od_leg_decimal(chosen),
+                opposite_decimal=(_od_leg_decimal(opposite)
+                                  if opposite is not None else None),
+            ))
+        return out
+    except Exception:
+        # Fail-safe contract: malformed structure/legs -> None, never raise.
+        return None
+
+
+def price_selection_set(client, refs) -> float | None:
+    """Price one arbitrary set of PX selections with a single RFQ.
+
+    ``refs`` is a list of ``SelectionLeg`` (from ``resolve_legs`` refs /
+    opposite_refs); a 1-element list prices a single. One wire call:
+    ``client.submit_parlay_rfq(refs)`` -> ``(chosen_offer, used_fallback)``.
+    ``offer["odds"]`` is the AMERICAN parlay odds — converted to decimal
+    exactly like the existing orchestrator (``_price_combos_parallel``).
+    ``used_fallback=True`` (thin-market teaser tier) still counts as priced.
+    Returns None for empty refs, a None offer, or unparseable odds. Never
+    raises.
+    """
+    if not refs:
+        return None
+    try:
+        offer, _used_fallback = client.submit_parlay_rfq(refs)
+        if offer is None:
+            return None
+        am_parlay = offer.get("odds")
+        if am_parlay is None:
+            return None
+        return american_to_decimal(int(am_parlay))
+    except Exception:
+        return None

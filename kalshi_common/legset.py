@@ -102,6 +102,15 @@ def classify_subcombo(game_legs: list[CanonicalLeg]) -> str:
     n = len(game_legs)
     if n == 0:
         return "unpriceable"
+    # Duplicate-market guard (Phase 2): a repeated (market_type, line) within
+    # one game is either the same leg twice or a contradictory pair whose
+    # joint probability is exactly 0 (Over 8.5 & Under 8.5, both moneylines).
+    # RFQ creators choose the leg set, and a book that product-prices
+    # contradictory legs would let Route B assign such a combo real value —
+    # a craftable pick-off. Nested totals at DIFFERENT lines stay allowed.
+    keys = [(l.market_type, l.line) for l in game_legs]
+    if len(set(keys)) != len(keys):
+        return "unpriceable"
     if n == 1:
         return "single"
     types = sorted(l.market_type for l in game_legs)
@@ -110,3 +119,26 @@ def classify_subcombo(game_legs: list[CanonicalLeg]) -> str:
     if n == 2 and types == ["ml", "total"]:
         return "grid_ml_total"
     return "on_demand"
+
+
+_FLIP = {"home": "away", "away": "home", "over": "under", "under": "over"}
+
+
+def flip_leg(leg: CanonicalLeg) -> CanonicalLeg:
+    """The same leg on its opposite side (line unchanged)."""
+    return CanonicalLeg(leg.game_id, leg.market_type, leg.line, _FLIP[leg.side])
+
+
+def enumerate_partition(game_legs: list[CanonicalLeg]) -> list[list[CanonicalLeg]]:
+    """All 2^N side-combinations of a leg set (the joint-outcome partition).
+
+    Cell ordering contract (shared with fair_value.devig_partition and
+    SGPService.price_on_demand): cell index i in range(2^N); bit j of i
+    (LSB = leg 0) means leg j is FLIPPED to its opposite side. Cell 0 is
+    therefore the target (all chosen sides). Lines never change — only
+    sides — so per-book leg->selection resolution is shared across cells.
+    """
+    n = len(game_legs)
+    return [[flip_leg(l) if (i >> j) & 1 else l
+             for j, l in enumerate(game_legs)]
+            for i in range(2 ** n)]

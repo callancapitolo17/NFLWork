@@ -26,8 +26,10 @@ signatures. This orchestrator adapts:
 * ``fetch_event_runners(session, fd_event_id, fd_home, fd_away)`` —
   the legacy SGP helper takes the team-name strings (used to label
   spread runners as home vs away) and returns the nested SGP-filtered
-  shape ``{"fg": {"spreads": {(side, line): (mid, sid)}, "totals":
-  {("O"|"U", line): (mid, sid)}}, "f5": {...}}``. This is the
+  shape ``{"fg": {"spreads": {(side, line): (mid, sid, dec)}, "totals":
+  {("O"|"U", line): (mid, sid, dec)}}, "f5": {...}}`` where ``dec`` is
+  the runner's single decimal odds or None (Phase 2 on-demand devig
+  input; combo-pricing consumers only index ``[0]``/``[1]``). This is the
   scraper helper, NOT ``FanDuelClient.fetch_event_runners`` (which
   returns a flat Runner list for the singles scraper). The two share
   a name but emit different shapes.
@@ -55,11 +57,17 @@ signatures. This orchestrator adapts:
 """
 from __future__ import annotations
 
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-from mlb_sgp._shared import PricedRow, TargetLine, decimal_to_american
+from mlb_sgp._shared import (
+    PricedRow,
+    ResolvedLeg,
+    TargetLine,
+    decimal_to_american,
+)
 from mlb_sgp.fd_client import FanDuelClient
 
 
@@ -497,3 +505,162 @@ def _price_combos_parallel(
             if result:
                 results[combo_name] = result
     return results
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 on-demand pricing (kalshi_mlb_mm): leg resolution + N-leg pricing
+# ---------------------------------------------------------------------------
+
+# CanonicalLeg total sides -> FD totals-bucket key prefix.
+_TOTAL_SIDE_KEY = {"over": "O", "under": "U"}
+
+
+def _split_ref(entry) -> tuple[tuple | None, float | None]:
+    """FD runner tuple ``(mid, sid, dec)`` -> ``((mid, sid), dec_or_None)``.
+
+    Tolerates legacy 2-tuples (pre-odds-capture callers / hand-built test
+    fixtures) by treating the odds slot as None. ``(None, None)`` when the
+    bucket entry is missing.
+    """
+    if not entry:
+        return None, None
+    ref = (entry[0], entry[1])
+    dec = entry[2] if len(entry) > 2 else None
+    return ref, (float(dec) if dec is not None else None)
+
+
+def resolve_legs(structure, legs, home_team, away_team) -> list[ResolvedLeg] | None:
+    """Resolve canonical legs against one FD event's fg structure.
+
+    Parameters
+    ----------
+    structure
+        ``fetch_event_runners(...)["fg"]`` — ``{"spreads": {(side, signed
+        line): (mid, sid, dec)}, "totals": {("O"|"U", line): ...},
+        "moneyline": {"home"|"away": ...}}``.
+    legs
+        ``list[CanonicalLeg]`` (kalshi_common.legset): market_type in
+        {"spread", "total", "ml"}; spread/total ``line`` is the SIGNED
+        home-perspective line (negative = home favored); ml line is None.
+    home_team / away_team
+        Unused for FD — the structure is already keyed home/away (runner
+        team names were matched inside ``fetch_event_runners``). Kept for
+        the book-uniform resolver signature.
+
+    Sign convention mirrors ``price_sgps``: the home spread key is
+    ``("home", line)`` and the away key is ``("away", -line)`` — FD stores
+    each side's OWN signed handicap, so the away side of home-perspective
+    -1.5 lives at ("away", +1.5).
+
+    Returns one ``ResolvedLeg`` per input leg (order preserved); a leg
+    whose CHOSEN side is missing fails the whole set (None); a missing
+    OPPOSITE side yields ``opposite_ref=None`` (routes the book to the
+    correlation-transfer path). Never raises.
+    """
+    try:
+        if not legs:
+            return None
+        spreads = structure.get("spreads") or {}
+        totals = structure.get("totals") or {}
+        moneyline = structure.get("moneyline") or {}
+
+        out: list[ResolvedLeg] = []
+        for leg in legs:
+            if leg.market_type == "spread":
+                line = float(leg.line)
+                home_key, away_key = ("home", line), ("away", -line)
+                if leg.side == "home":
+                    chosen, opp = spreads.get(home_key), spreads.get(away_key)
+                elif leg.side == "away":
+                    chosen, opp = spreads.get(away_key), spreads.get(home_key)
+                else:
+                    return None
+            elif leg.market_type == "total":
+                ou = _TOTAL_SIDE_KEY.get(leg.side)
+                if ou is None:
+                    return None
+                line = float(leg.line)
+                chosen = totals.get((ou, line))
+                opp = totals.get(("U" if ou == "O" else "O", line))
+            elif leg.market_type == "ml":
+                if leg.side not in ("home", "away"):
+                    return None
+                chosen = moneyline.get(leg.side)
+                opp = moneyline.get("away" if leg.side == "home" else "home")
+            else:
+                return None
+
+            ref, dec = _split_ref(chosen)
+            if ref is None:
+                return None
+            opp_ref, opp_dec = _split_ref(opp)
+            out.append(ResolvedLeg(ref=ref, opposite_ref=opp_ref,
+                                   single_decimal=dec,
+                                   opposite_decimal=opp_dec))
+        return out
+    except Exception:
+        return None
+
+
+def price_selection_set(client, refs) -> float | None:
+    """Price an arbitrary selection set via implyBets; decimal or None.
+
+    Generalizes ``scraper_fanduel_sgp.price_combo``'s 2-leg body to N
+    ``betLegs`` — one SIMPLE_SELECTION leg per ``(marketId, selectionId)``
+    ref, order preserved. ``client`` is a FanDuelClient (only ``.session``
+    is used). Decimal is read off the isSGM combination's
+    ``winAvgOdds.trueOdds.decimalOdds.decimalOdds``; a 1-element refs list
+    prices a single, where FD tags nothing isSGM, so the sole
+    combination's odds are accepted. Never raises — any HTTP / JSON /
+    shape failure returns None.
+    """
+    try:
+        if not refs:
+            return None
+        # Lazy import, same pattern as price_sgps (the scraper module
+        # carries curl_cffi + Answer Keys imports we keep off this
+        # module's import path).
+        from scraper_fanduel_sgp import FD_HEADERS, FD_IMPLY_BETS_URL
+
+        body = {"betLegs": [
+            {"legType": "SIMPLE_SELECTION",
+             "betRunners": [{"runner": {"marketId": mid, "selectionId": sid}}]}
+            for mid, sid in refs
+        ]}
+        resp = client.session.post(
+            FD_IMPLY_BETS_URL,
+            headers={**FD_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps(body),
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+
+        def _decimal(bc) -> float | None:
+            odds = (bc.get("winAvgOdds", {}).get("trueOdds", {})
+                    .get("decimalOdds", {}).get("decimalOdds"))
+            return float(odds) if odds is not None else None
+
+        combos = data.get("betCombinations", []) or []
+        for bc in combos:
+            if not bc.get("isSGM"):
+                continue
+            # Leg-coverage guard (adversarial review #10): if FD silently
+            # dropped a suspended leg and returned an (N-1)-leg SGM
+            # combination, taking its price would misprice the full combo.
+            if len(bc.get("legCombinations", []) or []) != len(refs):
+                continue
+            dec = _decimal(bc)
+            if dec is not None:
+                return dec
+        if len(refs) == 1:
+            for bc in combos:
+                if len(bc.get("legCombinations", []) or []) != 1:
+                    continue
+                dec = _decimal(bc)
+                if dec is not None:
+                    return dec
+        return None
+    except Exception:
+        return None
