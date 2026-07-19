@@ -83,6 +83,36 @@ class MakerEngine:
             m *= config.ALT_MARGIN_MULT
         return math.ceil(m)
 
+    def _touch_join_price(self, ticker, side, fair_cents, alt, book, opp_ask_cents):
+        """Crowd-touch join price (cents) or None. Entry: net edge within
+        [threshold, MAX_MARGIN_CENTS] — the upper bound is the same too-good-
+        to-be-true guard as the legacy crowd_tighter skip. Hysteresis: an
+        already-resting touch-join holds (queue position is capital) until its
+        edge decays below TOUCH_JOIN_EXIT_EDGE_CENTS or turns suspicious. The
+        touch is self-excluded: our own resting qty never counts as crowd."""
+        bids = book["yes_bids"] if side == "yes" else book["no_bids"]
+        cur = self.state.resting_for(ticker, side)
+
+        def edge(price_cents):
+            return fair_cents - price_cents - maker_fee_per_contract(price_cents / 100.0) * 100
+
+        touch = None
+        for p, q in bids:                       # best-first
+            pc = int(round(p * 100))
+            if cur and cur["price_cents"] == pc:
+                q -= cur["count"]
+            if q > 0.5:
+                touch = pc
+                break
+        thr = config.TOUCH_JOIN_ALT_MIN_EDGE_CENTS if alt else config.TOUCH_JOIN_MIN_EDGE_CENTS
+        if touch is not None and touch <= opp_ask_cents - 1 and \
+                thr <= edge(touch) <= config.MAX_MARGIN_CENTS:
+            return touch
+        if cur and cur.get("mode") == "touch_join" and cur["price_cents"] <= opp_ask_cents - 1 and \
+                config.TOUCH_JOIN_EXIT_EDGE_CENTS <= edge(cur["price_cents"]) <= config.MAX_MARGIN_CENTS:
+            return cur["price_cents"]
+        return None
+
     def _global_room(self, eid):
         committed = 0.0
         for other in self.state.events_with_exposure():

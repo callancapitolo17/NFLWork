@@ -193,3 +193,45 @@ def test_baseline_blocked(eng):
     eng.state.position_baseline = {"T-O25": 5.0}
     eng.on_match(Soccer(), _EM, _KEV, _LADDER, _BOOKS, _NOW)
     assert eng.gateway.placed == []
+
+
+# ---------- touch-join (spec 2026-07-18) ----------
+
+def _tj(eng, book, fair_cents, ticker="T-O25", side="yes", alt=False, opp_ask_cents=99):
+    return eng._touch_join_price(ticker, side, fair_cents, alt, book, opp_ask_cents)
+
+def test_touch_join_entry_within_band(eng):
+    book = {"yes_bids": [(0.78, 500.0)], "no_bids": [(0.21, 500.0)]}
+    assert _tj(eng, book, 80.0) == 78          # edge ~1.7c in [1, 5]
+
+def test_touch_join_rejects_thin_and_suspicious_edges(eng):
+    book = {"yes_bids": [(0.78, 500.0)], "no_bids": []}
+    assert _tj(eng, book, 79.0) is None        # edge ~0.7c < 1c entry
+    deep = {"yes_bids": [(0.60, 500.0)], "no_bids": []}
+    assert _tj(eng, deep, 80.0) is None        # edge ~19c > MAX_MARGIN suspicion guard
+
+def test_touch_join_alt_needs_bigger_edge(eng):
+    book = {"yes_bids": [(0.78, 500.0)], "no_bids": []}
+    assert _tj(eng, book, 79.5, alt=True) is None   # ~1.2c < 1.5c alt entry
+    assert _tj(eng, book, 80.0, alt=True) == 78     # ~1.5c >= 1.5c
+
+def test_touch_join_self_exclusion(eng):
+    # our own 2-lot at 78c is the only order at the level -> not "the crowd"
+    eng.state.on_place("T-O25", "yes", "o-x", 78, 2, mode="quote")
+    book = {"yes_bids": [(0.78, 2.0), (0.63, 500.0)], "no_bids": []}
+    assert _tj(eng, book, 80.0) is None        # real touch 63 -> edge 16.7c: suspicious
+
+def test_touch_join_hysteresis_hold_and_exit(eng):
+    eng.state.on_place("T-O25", "yes", "o-x", 78, 2, mode="touch_join")
+    book = {"yes_bids": [(0.78, 2.0)], "no_bids": []}   # only us at the level
+    assert _tj(eng, book, 79.0) == 78          # edge ~0.7c in [0.25, 5] -> hold
+    assert _tj(eng, book, 78.2) is None        # edge ~-0.1c < 0.25c -> exit
+
+def test_touch_join_hold_ignored_for_legacy_orders(eng):
+    eng.state.on_place("T-O25", "yes", "o-x", 78, 2, mode="quote")
+    book = {"yes_bids": [(0.78, 2.0)], "no_bids": []}
+    assert _tj(eng, book, 79.0) is None        # hysteresis only holds touch-joins
+
+def test_touch_join_never_crosses(eng):
+    book = {"yes_bids": [(0.78, 500.0)], "no_bids": []}
+    assert _tj(eng, book, 80.0, opp_ask_cents=78) is None   # touch == ask-0 -> cross

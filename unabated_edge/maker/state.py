@@ -73,8 +73,9 @@ class MakerState:
     def resting_for(self, ticker, side):
         return self.resting.get((ticker, side))
 
-    def on_place(self, ticker, side, order_id, price_cents, count):
-        self.resting[(ticker, side)] = {"order_id": order_id, "price_cents": price_cents, "count": count}
+    def on_place(self, ticker, side, order_id, price_cents, count, mode="quote"):
+        self.resting[(ticker, side)] = {"order_id": order_id, "price_cents": price_cents,
+                                        "count": count, "mode": mode}
         self.our_orders[order_id] = (ticker, side)
 
     def on_cancel(self, ticker, side):
