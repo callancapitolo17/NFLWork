@@ -121,21 +121,27 @@ class MakerEngine:
         return config.GLOBAL_CAP_PCT * config.BANKROLL - committed
 
     def _desired(self, eid, ticker, line, rung, book, side):
-        """((price_cents, count), None) or (None, skip_reason)."""
+        """((price_cents, count, mode), None) or (None, skip_reason)."""
         alt = bool(rung.get("alt"))
         if alt and not (config.ALT_OVERROUND_MIN <= (rung.get("overround") or 0) <= config.ALT_OVERROUND_MAX):
             return None, "alt_overround"
         fair = rung["p_over"] if side == "yes" else 1 - rung["p_over"]
         fair_cents = fair * 100
-        price = math.floor(fair_cents + 1e-9) - self._margin_cents(fair_cents, alt)
         opp_ask = yes_ask_from_book(book) if side == "yes" else no_ask_from_book(book)
         if opp_ask is None:
             return None, "no_crowd"
-        price = min(price, int(round(opp_ask * 100)) - 1)     # never cross
+        opp_ask_cents = int(round(opp_ask * 100))
+        legacy = math.floor(fair_cents + 1e-9) - self._margin_cents(fair_cents, alt)
+        legacy = min(legacy, opp_ask_cents - 1)               # never cross
+        join = self._touch_join_price(ticker, side, fair_cents, alt, book, opp_ask_cents)
+        if join is not None and join > legacy:
+            price, mode = join, "touch_join"
+        else:
+            price, mode = legacy, "quote"
+            if price < fair_cents - config.MAX_MARGIN_CENTS - 1e-9:
+                return None, "crowd_tighter"
         if price < 1:
             return None, "price_floor"
-        if price < fair_cents - config.MAX_MARGIN_CENTS - 1e-9:
-            return None, "crowd_tighter"
         pd = price / 100.0
         n = math.floor(config.MAX_QUOTE_PCT * config.BANKROLL / pd)
         if alt:
@@ -148,7 +154,7 @@ class MakerEngine:
             self.state.exposure_fills(eid, exclude=(ticker, side)), line, side, pd, budget))
         if n <= 0:
             return None, "no_room"
-        return (price, n), None
+        return (price, n, mode), None
 
     # ---------- order sync ----------
 
@@ -166,7 +172,7 @@ class MakerEngine:
             self._last_skip[(ticker, side)] = reason
             return
         self._last_skip.pop((ticker, side), None)
-        price, count = desired
+        price, count, mode = desired
         if cur and cur["price_cents"] == price:
             return                                      # hold: queue position is capital
         action = "replace" if cur else "rest"
@@ -181,9 +187,9 @@ class MakerEngine:
             store.log_quote(now, sport, eid, ticker, side, "skip", price / 100.0, count,
                             fair, margin, alt, "place_failed", None)
             return
-        self.state.on_place(ticker, side, oid, price, count)
+        self.state.on_place(ticker, side, oid, price, count, mode)
         store.log_quote(now, sport, eid, ticker, side, action, price / 100.0, count,
-                        fair, margin, alt, "quote", oid)
+                        fair, margin, alt, mode, oid)
 
     # ---------- pulls ----------
 

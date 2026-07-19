@@ -235,3 +235,38 @@ def test_touch_join_hold_ignored_for_legacy_orders(eng):
 def test_touch_join_never_crosses(eng):
     book = {"yes_bids": [(0.78, 500.0)], "no_bids": []}
     assert _tj(eng, book, 80.0, opp_ask_cents=78) is None   # touch == ask-0 -> cross
+
+
+# ---------- touch-join wired into _desired/_sync (spec 2026-07-18, task 2) ----------
+
+_JBOOK = {"T-O25": {"yes_bids": [(0.78, 500.0)], "no_bids": [(0.21, 500.0)]}}  # yes ask 79c
+_JLADDER = {2.5: {"p_over": 0.80, "book": 7, "alt": False, "overround": 1.05,
+                  "modified_on": _NOW.isoformat()}}
+
+def test_desired_joins_touch_when_edge_in_band(eng):
+    eng.on_match(Soccer(), _EM, _KEV, _JLADDER, _JBOOK, _NOW)
+    yes = [(p, n) for _t, s, p, n in eng.gateway.placed if s == "yes"]
+    assert yes and yes[0][0] == 78              # joined the touch, not legacy 77
+    assert eng.state.resting_for("T-O25", "yes")["mode"] == "touch_join"
+
+def test_desired_falls_back_to_legacy_when_no_join(eng):
+    eng.on_match(Soccer(), _EM, _KEV, _LADDER, _BOOKS, _NOW)   # wide crowd fixture
+    assert eng.state.resting_for("T-O25", "yes")["mode"] == "quote"
+
+def test_join_holds_through_fair_wiggle_no_churn(eng):
+    eng.on_match(Soccer(), _EM, _KEV, _JLADDER, _JBOOK, _NOW)
+    yes_before = eng.state.resting_for("T-O25", "yes")
+    wiggle = {2.5: {**_JLADDER[2.5], "p_over": 0.79}}           # entry fails, exit holds
+    eng.on_match(Soccer(), _EM, _KEV, wiggle, _JBOOK, _NOW + datetime.timedelta(seconds=5))
+    yes_after = eng.state.resting_for("T-O25", "yes")
+    assert yes_after["order_id"] == yes_before["order_id"]     # never cancelled/replaced
+    assert yes_after["price_cents"] == 78 and yes_after["mode"] == "touch_join"
+
+def test_join_exits_to_legacy_when_edge_gone(eng):
+    eng.on_match(Soccer(), _EM, _KEV, _JLADDER, _JBOOK, _NOW)
+    dead = {2.5: {**_JLADDER[2.5], "p_over": 0.782}}            # edge ~-0.1c
+    eng.on_match(Soccer(), _EM, _KEV, dead, _JBOOK, _NOW + datetime.timedelta(seconds=5))
+    assert eng.gateway.cancelled                                 # touch-join replaced
+    yes_prices = [p for _t, s, p, _n in eng.gateway.placed if s == "yes"]
+    assert yes_prices[-1] == 75                                  # legacy: floor(78.2) - 3c margin
+    assert eng.state.resting_for("T-O25", "yes")["mode"] == "quote"
