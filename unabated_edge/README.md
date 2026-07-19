@@ -91,8 +91,9 @@ tighter than we're willing to quote. Alt (non-main) rungs only quote inside
 an `[ALT_OVERROUND_MIN, ALT_OVERROUND_MAX]` vig band and get smaller size
 (`ALT_SIZE_MULT`).
 
-**Touch-join pricing.** When the crowd's best opposing bid/ask offers better
-entry than our resting fair−margin quote, we join it instead. Entry condition:
+**Touch-join pricing.** When the crowd's best same-side bid offers better
+entry than our resting fair−margin quote, we join it instead (the opposing
+ask still caps the join one tick below it — never cross). Entry condition:
 net edge (fair − join_price − maker_fee) ∈ [TOUCH_JOIN_MIN_EDGE_CENTS, MAX_MARGIN_CENTS];
 alt rungs use TOUCH_JOIN_ALT_MIN_EDGE_CENTS (default 1.5c). The calculation
 self-excludes our own resting order from the touch. Hysteresis: hold join order

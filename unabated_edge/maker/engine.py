@@ -85,8 +85,10 @@ class MakerEngine:
 
     def _touch_join_price(self, ticker, side, fair_cents, alt, book, opp_ask_cents):
         """Crowd-touch join price (cents) or None. Entry: net edge within
-        [threshold, MAX_MARGIN_CENTS] — the upper bound is the same too-good-
-        to-be-true guard as the legacy crowd_tighter skip. Hysteresis: an
+        [threshold, MAX_MARGIN_CENTS] — same intent as the legacy crowd_tighter
+        too-good-to-be-true guard, but fee-inclusive: effective floor here is
+        approx fair − 5.5c (5c margin + 0.5c maker fee) vs legacy's fair − 5c.
+        Hysteresis: an
         already-resting touch-join holds (queue position is capital) until its
         edge decays below TOUCH_JOIN_EXIT_EDGE_CENTS or turns suspicious. The
         touch is self-excluded: our own resting qty never counts as crowd."""
@@ -174,7 +176,10 @@ class MakerEngine:
         self._last_skip.pop((ticker, side), None)
         price, count, mode = desired
         if cur and cur["price_cents"] == price:
-            return                                      # hold: queue position is capital
+            # hold: queue position is capital. Note `mode` is NOT updated here,
+            # so a held touch_join keeps its hysteresis even if `desired`'s mode
+            # changed at the same price (attribution drift only, no money impact).
+            return
         action = "replace" if cur else "rest"
         if cur:
             if not self.gateway.cancel(cur["order_id"]):
