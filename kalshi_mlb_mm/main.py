@@ -1088,6 +1088,27 @@ def _reconcile_sweep_tick():
                                        outcome="matched"))
 
 
+def _quote_game_ids(legs_json: str | None) -> list[str] | None:
+    """All game_ids a resting quote's combo touches, or None if ANY is
+    unresolvable (missing/unparseable legs, unresolved game). B1 fix (issue
+    #15): live_quotes.game_id holds only the PRIMARY game, so the sweep
+    re-derives the full set from legs_json via the same legset path discovery
+    uses. Callers must treat None as fail-safe → cancel, never fail open."""
+    if not legs_json:
+        return None
+    try:
+        canon = legset.parse_legs(json.loads(legs_json))
+        if not canon:
+            return None
+        gids = [_resolve_game_for_legs(gl)
+                for gl in legset.partition_by_game(canon).values()]
+        if any(gid is None for gid in gids):
+            return None
+        return gids
+    except Exception:
+        return None
+
+
 def _risk_sweep_tick(gateway):
     if config.KILL_FILE.exists():
         notify.halt("kill_switch")
@@ -1104,11 +1125,26 @@ def _risk_sweep_tick(gateway):
             "FROM live_quotes lq LEFT JOIN seen_rfqs sr ON lq.rfq_id = sr.rfq_id "
             "WHERE lq.status='open'").fetchall()
     for qid, game_id, ticker, book_fair_at_q, rid, legs_json in live:
-        ct = _commence_time(game_id)
         cancel = False
-        if books_stale or not risk.tipoff_ok(ct, config.TIPOFF_CANCEL_MIN):
-            cancel = True
+        cancel_reason = None
+        if books_stale:
+            cancel, cancel_reason = True, "books_stale"
         else:
+            # B1 fix: tipoff-check the EARLIEST commence time across ALL the
+            # combo's games, not just the primary game_id column. Any game we
+            # can't resolve or clock we can't read → cancel (fail-safe).
+            gids = _quote_game_ids(legs_json)
+            if gids is None:
+                cancel, cancel_reason = True, "unresolvable_game"
+            else:
+                commence_times = [_commence_time(gid) for gid in gids]
+                if any(ct is None for ct in commence_times):
+                    cancel, cancel_reason = True, "unresolvable_game"
+                else:
+                    earliest_ct = min(commence_times)
+                    if not risk.tipoff_ok(earliest_ct, config.TIPOFF_CANCEL_MIN):
+                        cancel, cancel_reason = True, "tipoff"
+        if not cancel:
             # H1 (part 2): per-open-quote drift-since-quote sweep.
             # Recompute current book consensus for this combo; if it has drifted
             # more than BOOK_MOVE_CB_THRESHOLD from book_fair-at-quote, cancel.
@@ -1125,7 +1161,7 @@ def _risk_sweep_tick(gateway):
                                                                 else None))
                     if cur_med is not None and risk.book_move_triggered(
                             book_fair_at_q, cur_med, config.BOOK_MOVE_CB_THRESHOLD):
-                        cancel = True
+                        cancel, cancel_reason = True, "book_drift"
                 except Exception:
                     pass
         if cancel:
@@ -1137,6 +1173,8 @@ def _risk_sweep_tick(gateway):
                 con.execute(
                     "UPDATE live_quotes SET status='cancelled', closed_at=? WHERE quote_id=?",
                     [datetime.now(timezone.utc), qid])
+            _log_decision("sweep_cancel", rfq_id=rid, quote_id=qid, ticker=ticker,
+                          game_id=game_id, reason=cancel_reason)
 
 
 def main_loop(dry_run: bool):

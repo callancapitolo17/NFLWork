@@ -209,7 +209,7 @@ Resting quotes are priced off books that lag reality (books refresh every 60s). 
 
 4. **Book-move circuit breaker (discrete events).** Two layers: (a) per-tick — if a scrape shows a book-fair jump greater than `BOOK_MOVE_CB_THRESHOLD` for a combo vs the prior scrape, the bot immediately cancels that combo's resting quotes (does not wait for the next discovery tick). (b) per-quote in the risk sweep — if current book consensus has drifted more than `BOOK_MOVE_CB_THRESHOLD` from the `book_fair_at_quote` stored when the quote was placed, the quote is cancelled. The per-quote sweep catches gradual drift the per-tick threshold misses (e.g., five 1¢ moves across ticks).
 
-5. **Tipoff blackout.** `TIPOFF_CANCEL_MIN` pulls all quotes for a game before first pitch.
+5. **Tipoff blackout.** `TIPOFF_CANCEL_MIN` pulls all quotes for a game before first pitch. A cross-game combo is swept against the **earliest** first pitch across ALL its games (re-derived from `seen_rfqs.legs_json` each sweep — same legset path as discovery); any game the sweep can't resolve cancels the quote (fail-safe, never fail open).
 
 6. **Last-look backstop (discrete, but limited scope).** On accept, the bot recomputes fair from a fresh book pull and voids the confirm if (a) we cannot re-price (no fresh books, blend fails), (b) the filled side is no longer +EV (`price + fee >= current_fair`), or (c) fair drifted past `FAIR_DRIFT_TOLERANCE`. The "can't re-price ⇒ don't confirm" rule is intentional: silently falling back to the stored fair would neuter the drift check. Non-confirms are abusive behavior Kalshi can throttle — do not lean on this gate.
 
