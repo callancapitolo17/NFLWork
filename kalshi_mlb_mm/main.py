@@ -793,19 +793,27 @@ def _discovery_tick(source, gateway, dry_run):
                 "SELECT quote_id, yes_bid, no_bid FROM live_quotes "
                 "WHERE rfq_id=? AND status='open'",
                 [rid]).fetchone()
+        replaced_qid = None
         if existing:
             eqid, eyb, enb = existing
             if (abs(q.yes_bid - eyb) < config.QUOTE_HYSTERESIS
                     and abs(q.no_bid - enb) < config.QUOTE_HYSTERESIS):
                 continue  # price essentially unchanged — leave the resting quote in place
-            # price moved beyond hysteresis → replace: mark old row closed, then submit new
-            with db.connect() as con:
-                con.execute(
-                    "UPDATE live_quotes SET status='replaced', closed_at=? WHERE quote_id=?",
-                    [datetime.now(timezone.utc), eqid])
+            # price moved beyond hysteresis → replace. B2 fix (issue #16):
+            # submit FIRST, mark the old row 'replaced' only on success. Kalshi
+            # auto-cancels the prior quote only when a new one lands, so
+            # marking 'replaced' before a submit that then fails would leave a
+            # live exchange quote invisible to the confirm loop and risk sweep.
+            # On failure the old row stays 'open' (still tracked); the next
+            # tick retries the replace.
+            replaced_qid = eqid
         qid = gateway.submit_quote(rid, q.yes_bid, q.no_bid)
         if qid:
             with db.connect() as con:
+                if replaced_qid is not None:
+                    con.execute(
+                        "UPDATE live_quotes SET status='replaced', closed_at=? WHERE quote_id=?",
+                        [datetime.now(timezone.utc), replaced_qid])
                 con.execute("INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                             [qid, rid, ticker, game_id, q.yes_bid, q.no_bid, None, book_med,
                              blended, "open", datetime.now(timezone.utc), None])
