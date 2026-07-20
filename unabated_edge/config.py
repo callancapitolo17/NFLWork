@@ -29,6 +29,8 @@ UNABATED_CHANGES_URL = "https://api-k.unabated.com/api/markets/changes/query"
 # changes/query delta feed does NOT carry soccer (lg21) at all — v2 polling replaces it.
 UNABATED_V2_LEAGUE_URL = "https://content.unabated.com/markets/v2/league/{league_id}/odds.json"
 V2_POLL_SEC = float(_get("UNABATED_V2_POLL_SEC", "5"))
+# Kalshi executed-trades tape poll cadence (rides every Nth main tick)
+TRADES_POLL_SEC = float(_get("KALSHI_TRADES_POLL_SEC", "30"))
 UNABATED_TOKEN = _get("UNABATED_AT_PROD")
 SHARP_BOOK_PRICE_ID = 7
 ANCHOR_SOURCE_IDS = [7, 6, 68]
@@ -43,6 +45,32 @@ MIN_EV_DOLLARS = float(_get("MIN_EV_DOLLARS", "0.02"))
 MAX_STALENESS_SEC = int(_get("MAX_STALENESS_SEC", "20"))  # RESERVED — Plan 2 live-execution staleness gate (not yet enforced)
 KICKOFF_CUTOFF_MIN = int(_get("KICKOFF_CUTOFF_MIN", "3"))
 PER_MATCH_CAP_PCT = float(_get("PER_MATCH_CAP_PCT", "0.03"))
+
+# ---- maker (unabated_edge/maker/) — spec docs/superpowers/specs/2026-07-10-wc-totals-maker-design.md ----
+MAKER_MODE = _get("MAKER_MODE", "off")            # off | shadow | live
+MAKER_LIVE_ACK = _get("MAKER_LIVE_ACK")           # dead-man switch: must be "1" for live
+ROI_MARGIN = float(_get("ROI_MARGIN", "0.03"))
+PICKOFF_BUFFER_CENTS = int(_get("PICKOFF_BUFFER_CENTS", "1"))
+MAX_MARGIN_CENTS = int(_get("MAX_MARGIN_CENTS", "5"))
+ALT_MARGIN_MULT = float(_get("ALT_MARGIN_MULT", "1.5"))
+ALT_SIZE_MULT = float(_get("ALT_SIZE_MULT", "0.5"))
+ALT_OVERROUND_MIN = float(_get("ALT_OVERROUND_MIN", "1.01"))
+ALT_OVERROUND_MAX = float(_get("ALT_OVERROUND_MAX", "1.15"))
+QUOTE_PULL_MIN = float(_get("QUOTE_PULL_MIN", "3"))
+MAX_QUOTE_PCT = float(_get("MAX_QUOTE_PCT", "0.30"))
+MATCH_CAP_PCT = float(_get("MATCH_CAP_PCT", "0.40"))
+GLOBAL_CAP_PCT = float(_get("GLOBAL_CAP_PCT", "0.75"))
+DAILY_LOSS_HALT_PCT = float(_get("DAILY_LOSS_HALT_PCT", "0.40"))
+FILL_BURST_N = int(_get("FILL_BURST_N", "3"))
+COOLOFF_MIN = float(_get("COOLOFF_MIN", "10"))
+MAKER_MAX_CONTRACTS = int(_get("MAKER_MAX_CONTRACTS", "2"))   # hard per-quote contract ceiling (tuition run)
+HARD_STOP_DOLLARS = float(_get("HARD_STOP_DOLLARS", "50"))    # cumulative realized+unrealized loss halt (mark-to-anchor)
+ANCHOR_STALE_SEC = float(_get("ANCHOR_STALE_SEC", "180"))     # WITHIN ANCHOR_STALE_FARK_SEC of kickoff: pull match if even the freshest anchor rung's modifiedOn is older than this (frozen-feed guard)
+ANCHOR_STALE_FARK_SEC = float(_get("ANCHOR_STALE_FARK_SEC", "7200"))  # far-from-kickoff cutoff (default 2h): beyond this the sharp total legitimately sits unchanged for hours, so tolerate an old-but-latest number and rely on the poll-success watchdog as the dead-feed guard
+TOUCH_JOIN_MIN_EDGE_CENTS = float(_get("TOUCH_JOIN_MIN_EDGE_CENTS", "1.0"))       # net edge (fair - touch - maker fee) to join the crowd's best bid
+TOUCH_JOIN_ALT_MIN_EDGE_CENTS = float(_get("TOUCH_JOIN_ALT_MIN_EDGE_CENTS", "1.5"))  # alt rungs: less-trusted fair demands more edge
+TOUCH_JOIN_EXIT_EDGE_CENTS = float(_get("TOUCH_JOIN_EXIT_EDGE_CENTS", "0.25"))    # hold a resting touch-join (queue position) until edge decays below this
+MAKER_DB_PATH = PKG_DIR / "unabated_edge_maker.duckdb"
 
 KALSHI_API_KEY_ID = _get("KALSHI_API_KEY_ID")
 KALSHI_PRIVATE_KEY_PATH = _get("KALSHI_PRIVATE_KEY_PATH")

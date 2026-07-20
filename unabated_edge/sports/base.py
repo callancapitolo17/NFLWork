@@ -35,3 +35,9 @@ class SportAdapter(ABC):
     def price_event(self, state, event_meta, kalshi_event) -> list[Candidate]:
         """Return priced Candidates for the given event pair. Return [] to fail closed."""
         ...
+
+    def fair_ladder(self, state, event_meta) -> dict | None:
+        """Devigged {line: {p_over, book, alt, overround}} for the maker.
+        None when this adapter/event has no anchored ladder this tick
+        (adapters without maker support simply inherit this default)."""
+        return None
