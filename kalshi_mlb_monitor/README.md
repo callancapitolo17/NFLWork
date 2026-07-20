@@ -52,8 +52,10 @@ vs live, and a **STALE** banner if a bot is down.
   fields, so the render code in `app.py` stays generic across the two schemas.
 - **Reason vocabularies are read from the data**, never hardcoded — new decision
   codes appear automatically. `bots.py::REASON_GLOSS` adds human descriptions.
-- **Naive-local timestamps.** Bot timestamps are naive local wall-clock, so
-  time-window cutoffs are computed in Python and passed as parameters.
+- **Naive-local timestamps.** The dashboard operates in naive local wall-clock:
+  the maker's tables are `TIMESTAMPTZ` (migrated 2026-07) and `queries._read`
+  converts them to naive-local on read; the taker's tables are still naive-local
+  natively. Time-window cutoffs are computed in Python and passed as parameters.
 
 ## Files
 

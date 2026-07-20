@@ -1060,22 +1060,20 @@ def test_confirm_arms_combo_cooldown(monkeypatch, tmp_path):
         def cancel(self, qid):
             return True
 
-    # DuckDB TIMESTAMP is naive — it stores aware datetimes as naive LOCAL
-    # (production stays consistent because reads also come back naive-local).
-    # The test asserts the delta between insert-now and cooled_until matches
-    # COMBO_COOLDOWN_SEC within a small tolerance, which is tz-invariant.
-    before_naive = datetime.now().replace(tzinfo=None)
+    # O-2: cooled_until is TIMESTAMPTZ — reads come back timezone-aware, so
+    # the delta assertion compares true instants in UTC.
+    before = datetime.now(timezone.utc)
     main._confirm_tick(GW(), dry_run=False)
-    after_naive = datetime.now().replace(tzinfo=None)
+    after = datetime.now(timezone.utc)
 
     with db.connect(read_only=True) as con:
         row = con.execute(
             "SELECT cooled_until FROM combo_cooldown WHERE combo_market_ticker='COMBO-ARM'"
         ).fetchone()
     assert row is not None, "combo_cooldown row must be created on successful confirm"
-    cooled_until = row[0]  # naive local from DuckDB
-    expected_min = before_naive + timedelta(seconds=cfg.COMBO_COOLDOWN_SEC - 1)
-    expected_max = after_naive + timedelta(seconds=cfg.COMBO_COOLDOWN_SEC + 1)
+    cooled_until = row[0]  # aware datetime from DuckDB TIMESTAMPTZ
+    expected_min = before + timedelta(seconds=cfg.COMBO_COOLDOWN_SEC - 1)
+    expected_max = after + timedelta(seconds=cfg.COMBO_COOLDOWN_SEC + 1)
     assert expected_min <= cooled_until <= expected_max, (
         f"cooled_until {cooled_until} not within [{expected_min}, {expected_max}]")
 
