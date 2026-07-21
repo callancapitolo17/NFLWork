@@ -23,6 +23,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import duckdb
+import pandas as pd
 
 from kalshi_common import auth_client, legset, sgp_runner
 from kalshi_common.ev_calc import maker_fee_per_contract
@@ -266,6 +267,43 @@ def _open_quote_exposure_by_game(exclude_rfq_id: str | None = None):
             "AND lq.rfq_id IS DISTINCT FROM ?",
             [config.max_fill_exposure_usd(), exclude_rfq_id]).fetchall()
     return [{"game_id": g, "price": float(exp)} for g, exp in rows]
+
+
+def _post_fill_refresh_landed(game_ids: list, filled_at) -> bool:
+    """True iff EVERY game in `game_ids` has at least one `_SGP_ODDS` row
+    scraped AFTER `filled_at` (P-7, issue #21). The COMBO_COOLDOWN_SEC floor
+    (60s) expires before a full SGP cycle completes (~150-165s end-to-end),
+    so without this check a re-quote after the floor would be priced off the
+    exact book snapshot that produced the picked-off fill.
+
+    Timezone rule mirrors `risk._now_matching`: a NAIVE fetch_time is
+    session-LOCAL (mlb_sgp_odds.fetch_time is a naive TIMESTAMP column —
+    DuckDB drops the offset on write), an aware one compares as a true
+    instant. Fail-CLOSED: missing games, NaT, or any comparison error keeps
+    the combo cooled — a stale re-quote is worse than a skipped one.
+    """
+    try:
+        if filled_at is None or _SGP_ODDS is None or _SGP_ODDS.empty:
+            return False
+        combo_rows = _SGP_ODDS[_SGP_ODDS.game_id.isin(game_ids)]
+        if combo_rows.empty:
+            return False
+        per_game_latest = combo_rows.groupby("game_id").fetch_time.max()
+        if (len(per_game_latest) < len(set(game_ids))
+                or per_game_latest.isna().any()):
+            return False
+        oldest_refresh = pd.Timestamp(per_game_latest.min()).to_pydatetime()
+        if oldest_refresh.tzinfo is None:
+            filled_cmp = (filled_at.astimezone().replace(tzinfo=None)
+                          if filled_at.tzinfo is not None else filled_at)
+        else:
+            filled_cmp = (filled_at if filled_at.tzinfo is not None
+                          else filled_at.astimezone())
+        return oldest_refresh > filled_cmp
+    except Exception:
+        log.warning("[post_fill_refresh_check_failed] game_ids=%s — keeping "
+                    "combo cooled", game_ids)
+        return False
 
 
 def _resolve_game_for_legs(game_legs: list) -> str | None:
@@ -794,19 +832,40 @@ def _discovery_tick(source, gateway, dry_run):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="per_game_cap")
             continue
-        # H9: per-combo cooldown — refuse new quotes for COMBO_COOLDOWN_SEC
-        # after a recent fill on this combo (same-price re-pickoff defense).
+        # H9 + P-7 (issue #21): per-combo cooldown, two layers after a fill:
+        # (1) hard floor — COMBO_COOLDOWN_SEC past the fill (unchanged);
+        # (2) data-aware — even after the floor, stay cooled until EVERY game
+        #     this combo touches has a post-fill SGP scrape. The 60s floor
+        #     expires before the ~150-165s scrape cycle, so until then a
+        #     re-quote would re-post the exact books that priced the
+        #     picked-off fill.
         # cooled_until is TIMESTAMPTZ (O-2), so the aware bind compares as a
-        # true instant.
+        # true instant. last_fill_fair feeds the same-price block below (only
+        # set once the refresh gate has passed).
+        last_fill_fair = None
         with db.connect(read_only=True) as con:
             cd_row = con.execute(
-                "SELECT 1 FROM combo_cooldown "
-                "WHERE combo_market_ticker=? AND cooled_until > ?",
-                [ticker, now_utc]).fetchone()
+                "SELECT CAST(cooled_until > ? AS BOOLEAN) FROM combo_cooldown "
+                "WHERE combo_market_ticker=?",
+                [now_utc, ticker]).fetchone()
         if cd_row is not None:
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
-                          reason="in_cooldown")
-            continue
+            if cd_row[0]:
+                _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                              reason="in_cooldown")
+                continue
+            with db.connect(read_only=True) as con:
+                last_fill = con.execute(
+                    "SELECT filled_at, "
+                    "COALESCE(fair_at_confirm, blended_fair_at_quote) "
+                    "FROM fills WHERE combo_market_ticker=? "
+                    "ORDER BY filled_at DESC LIMIT 1", [ticker]).fetchone()
+            if last_fill is not None:
+                if not _post_fill_refresh_landed(game_ids_list, last_fill[0]):
+                    _log_decision("skipped", rfq_id=rid, ticker=ticker,
+                                  game_id=game_id,
+                                  reason="in_cooldown_awaiting_refresh")
+                    continue
+                last_fill_fair = last_fill[1]
         # Tipoff gate: earliest commence across all games.
         commence_times = [_commence_time(gid) for gid in game_ids_list]
         earliest_ct = min((ct for ct in commence_times if ct is not None), default=None)
@@ -880,6 +939,16 @@ def _discovery_tick(source, gateway, dry_run):
                                        threshold=config.BOOK_MOVE_CB_THRESHOLD,
                                        opens_cancelled=len(opens),
                                        game_id=game_id))
+            continue
+        # P-7 same-price block (issue #21): books have refreshed since the
+        # last fill on this combo (refresh gate above), but if consensus fair
+        # hasn't actually moved we would re-post the exact price that just got
+        # picked off. Placed after the circuit breaker so a big move still
+        # cancels resting quotes first.
+        if last_fill_fair is not None and risk.same_price_blocked(
+                blended, last_fill_fair, config.QUOTE_HYSTERESIS):
+            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                          reason="same_price_block", book=book_med, blended=blended)
             continue
         q = pricing.quote(blended, config.TARGET_ROI)
         if q is None:
