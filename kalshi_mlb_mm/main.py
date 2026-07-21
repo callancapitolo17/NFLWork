@@ -894,6 +894,11 @@ def _discovery_tick(source, gateway, dry_run):
         qid = gateway.submit_quote(rid, q.yes_bid, q.no_bid)
         if qid:
             with db.connect() as con:
+                # One explicit transaction: DuckDB autocommits per statement,
+                # and a crash between marking the old row 'replaced' and
+                # inserting the new one would leave the freshly-submitted
+                # exchange quote untracked.
+                con.execute("BEGIN TRANSACTION")
                 if replaced_qid is not None:
                     con.execute(
                         "UPDATE live_quotes SET status='replaced', closed_at=? WHERE quote_id=?",
@@ -908,6 +913,7 @@ def _discovery_tick(source, gateway, dry_run):
                     "VALUES (?,?,?,?,?,?,?,?)",
                     [rid, ticker, True, game_id, json.dumps(legs),
                      datetime.now(timezone.utc), "quoted", creator_id])
+                con.execute("COMMIT")
             _log_decision("quoted", rfq_id=rid, quote_id=qid, ticker=ticker, game_id=game_id,
                           model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
             open_count += 1
