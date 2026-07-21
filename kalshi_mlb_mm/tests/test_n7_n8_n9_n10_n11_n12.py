@@ -23,6 +23,11 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
     monkeypatch.setattr(cfg, "BANKROLL", 500.0)
     monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 0.10)   # per-fill cap = $50
     monkeypatch.setattr(cfg, "MAX_COMBO_EXPOSURE_USD", 10.0)  # tight combo cap
+    # R-1 (issue #22): the per-game/daily gates now also count open quotes'
+    # worst-case exposure ($200 here) and run BEFORE the per-combo gate. Give
+    # them headroom so this test still pins the per-combo path specifically.
+    monkeypatch.setattr(cfg, "MAX_GAME_EXPOSURE_PCT", 1.0)    # per-game cap = $500
+    monkeypatch.setattr(cfg, "DAILY_EXPOSURE_CAP_PCT", 1.0)   # daily cap = $500
 
     import importlib
     importlib.reload(db)
@@ -57,7 +62,7 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
     with db.connect() as con:
         for i in range(4):
             con.execute(
-                "INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO live_quotes (quote_id, rfq_id, combo_market_ticker, game_id, yes_bid, no_bid, model_fair, book_fair, blended_fair, status, submitted_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 [f"qid-n7-{i}", f"r-n7-{i}", "COMBO-N7", "g7",
                  0.50, 0.43, None, 0.55, 0.55, "open", now, None])
 

@@ -223,6 +223,51 @@ def _today_fills_by_game():
     return [{"game_id": g, "price": exp} for g, exp in rows]
 
 
+def _open_quote_exposure_rows(exclude_rfq_id: str | None = None):
+    """Worst-case exposure of OPEN quotes, one row per quote — for the DAILY
+    cap (R-1, issue #22). The cap gates must see money that could fill in one
+    burst (a counterparty sweeping resting quotes), not just money that already
+    filled. worst_exposure_usd is frozen at quote time; NULL (pre-migration
+    rows) counts at the per-fill cap — same conservative convention as N8
+    unreconciled fills. Shape matches `_today_fills` rows so callers can
+    concatenate the two lists straight into `risk.daily_cap_ok`.
+
+    `exclude_rfq_id`: the RFQ currently being (re-)quoted. Its existing open
+    quote is SUPERSEDED by the new one (hysteresis keeps it, or Kalshi
+    auto-cancels it when the replacement lands — issue #16), so counting it
+    would self-block every replace once a game/day nears its cap.
+    IS DISTINCT FROM makes exclude_rfq_id=None exclude nothing.
+    """
+    with db.connect(read_only=True) as con:
+        rows = con.execute(
+            "SELECT game_id, COALESCE(worst_exposure_usd, ?) AS exposure "
+            "FROM live_quotes WHERE status='open' "
+            "AND rfq_id IS DISTINCT FROM ?",
+            [config.max_fill_exposure_usd(), exclude_rfq_id]).fetchall()
+    return [{"game_id": g, "price": float(exp)} for g, exp in rows]
+
+
+def _open_quote_exposure_by_game(exclude_rfq_id: str | None = None):
+    """Open-quote worst-case exposure fanned out to one row per (quote × game)
+    via `quote_games` — for the PER-GAME cap. Mirror of `_today_fills_by_game`:
+    a cross-game quote counts its FULL worst case against EVERY game it
+    touches. LEFT JOIN + COALESCE falls back to the primary game_id for open
+    rows written before the quote_games migration, so a quote is never
+    invisible to the per-game cap. Same NULL-exposure and exclude_rfq_id
+    conventions as `_open_quote_exposure_rows`.
+    """
+    with db.connect(read_only=True) as con:
+        rows = con.execute(
+            "SELECT COALESCE(qg.game_id, lq.game_id) AS game_id, "
+            "COALESCE(lq.worst_exposure_usd, ?) AS exposure "
+            "FROM live_quotes lq "
+            "LEFT JOIN quote_games qg ON lq.quote_id = qg.quote_id "
+            "WHERE lq.status='open' "
+            "AND lq.rfq_id IS DISTINCT FROM ?",
+            [config.max_fill_exposure_usd(), exclude_rfq_id]).fetchall()
+    return [{"game_id": g, "price": float(exp)} for g, exp in rows]
+
+
 def _resolve_game_for_legs(game_legs: list) -> str | None:
     """Cached wrapper (O-1) — keyed by the game's event_ticker; failures (None)
     are not cached; invalidated on SGP refresh."""
@@ -726,16 +771,25 @@ def _discovery_tick(source, gateway, dry_run):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="no_game")
             continue
         game_id = game_ids_list[0]  # primary id stored in schema (single column)
-        # FIX I3: exposure cap gates (wired — were defined but never called)
-        if not risk.daily_cap_ok(fills_today, config.daily_exposure_cap_usd()):
+        # FIX I3: exposure cap gates (wired — were defined but never called).
+        # R-1 (issue #22): both gates ALSO count open quotes' worst-case
+        # exposure — a burst sweep of resting quotes could otherwise fill to
+        # many multiples of the caps before the first fill registers. Queried
+        # per-RFQ (not per-tick) so quotes submitted earlier in this same loop
+        # count immediately, matching the N7 per-combo precedent.
+        open_quote_rows = _open_quote_exposure_rows(exclude_rfq_id=rid)
+        if not risk.daily_cap_ok(fills_today + open_quote_rows,
+                                 config.daily_exposure_cap_usd()):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="daily_cap")
             continue
         # Per-game cap: all games must pass (cross-game combos checked per-game).
         # game_exposure_rows attributes each combo's full stake to EVERY game it
-        # touches, so a game can't slip past its cap by only ever being a 2nd leg.
-        if any(not risk.per_game_cap_ok(gid, game_exposure_rows, config.BANKROLL,
-                                        config.MAX_GAME_EXPOSURE_PCT)
+        # touches, so a game can't slip past its cap by only ever being a 2nd leg;
+        # open_quotes_by_game does the same for still-resting quotes via quote_games.
+        open_quotes_by_game = _open_quote_exposure_by_game(exclude_rfq_id=rid)
+        if any(not risk.per_game_cap_ok(gid, game_exposure_rows + open_quotes_by_game,
+                                        config.BANKROLL, config.MAX_GAME_EXPOSURE_PCT)
                for gid in game_ids_list):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="per_game_cap")
@@ -855,8 +909,7 @@ def _discovery_tick(source, gateway, dry_run):
                 "WHERE combo_market_ticker=? AND status='open'",
                 [ticker]).fetchone()[0]
         worst_inflight = float(inflight_count) * config.max_fill_exposure_usd()
-        this_quote_max = _worst_fill_exposure_usd(rfq, q)
-        if float(combo_exp or 0) + worst_inflight + this_quote_max > config.MAX_COMBO_EXPOSURE_USD:
+        if float(combo_exp or 0) + worst_inflight + fill_exposure > config.MAX_COMBO_EXPOSURE_USD:
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="per_combo_cap")
             continue
@@ -903,9 +956,21 @@ def _discovery_tick(source, gateway, dry_run):
                     con.execute(
                         "UPDATE live_quotes SET status='replaced', closed_at=? WHERE quote_id=?",
                         [datetime.now(timezone.utc), replaced_qid])
-                con.execute("INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                            [qid, rid, ticker, game_id, q.yes_bid, q.no_bid, None, book_med,
-                             blended, "open", datetime.now(timezone.utc), None])
+                con.execute(
+                    "INSERT INTO live_quotes (quote_id, rfq_id, combo_market_ticker, "
+                    "game_id, yes_bid, no_bid, model_fair, book_fair, blended_fair, "
+                    "status, submitted_at, closed_at, worst_exposure_usd) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    [qid, rid, ticker, game_id, q.yes_bid, q.no_bid, None, book_med,
+                     blended, "open", datetime.now(timezone.utc), None, fill_exposure])
+                # R-1 (issue #22): game attribution for the OPEN-quote exposure
+                # gates — one row per game the combo touches, same rule as
+                # fill_games. Written in this transaction so an open quote can
+                # never exist without its game map.
+                for quote_game_id in sorted(set(game_ids_list)):
+                    con.execute(
+                        "INSERT OR REPLACE INTO quote_games (quote_id, game_id) "
+                        "VALUES (?, ?)", [qid, quote_game_id])
                 con.execute(
                     "INSERT OR REPLACE INTO seen_rfqs "
                     "(rfq_id, market_ticker, in_scope, game_id, legs_json, "

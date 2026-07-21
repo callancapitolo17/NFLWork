@@ -48,7 +48,7 @@ def _replace_env(monkeypatch, tmp_path, db_name):
 
     with db.connect() as con:
         con.execute(
-            "INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO live_quotes (quote_id, rfq_id, combo_market_ticker, game_id, yes_bid, no_bid, model_fair, book_fair, blended_fair, status, submitted_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             ["qid-old", "r1", "COMBO-1", "game1", 0.500, 0.430,
              None, 0.55, 0.55, "open", datetime.now(timezone.utc), None])
 

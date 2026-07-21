@@ -170,7 +170,7 @@ def test_confirm_on_demand_refetches_and_voids_on_stale(monkeypatch, tmp_path):
     h = legset.leg_set_hash(canon)
     now = datetime.now(timezone.utc)
     with db.connect() as con:
-        con.execute("INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        con.execute("INSERT INTO live_quotes (quote_id, rfq_id, combo_market_ticker, game_id, yes_bid, no_bid, model_fair, book_fair, blended_fair, status, submitted_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     ["q-od", "r-od", "COMBO-OD", "game1", 0.5, 0.43,
                      0.2, 0.2, 0.2, "open", now, None])
         con.execute(

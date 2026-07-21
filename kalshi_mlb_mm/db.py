@@ -32,7 +32,12 @@ CREATE TABLE IF NOT EXISTS live_quotes (
     blended_fair        DOUBLE,
     status              VARCHAR NOT NULL,
     submitted_at        TIMESTAMPTZ NOT NULL,
-    closed_at           TIMESTAMPTZ
+    closed_at           TIMESTAMPTZ,
+    -- R-1 (issue #22): worst-case dollars at risk if this quote fills, frozen
+    -- at quote time (main._worst_fill_exposure_usd). Summed over open quotes
+    -- by the per-game and daily cap gates. NULL (pre-migration rows) is
+    -- counted at the per-fill cap by readers — never treated as zero.
+    worst_exposure_usd  DOUBLE
 );
 CREATE TABLE IF NOT EXISTS quote_decisions (
     decision_id   VARCHAR PRIMARY KEY,
@@ -97,6 +102,17 @@ CREATE TABLE IF NOT EXISTS fill_games (
     game_id  VARCHAR NOT NULL,
     PRIMARY KEY (fill_id, game_id)
 );
+-- Open-quote exposure ledger (R-1, issue #22): maps each live quote to EVERY
+-- game its combo touches, written in the same transaction as the live_quotes
+-- insert. The per-game cap gate sums OPEN quotes' worst_exposure_usd through
+-- this map so a cross-game quote counts against each game it touches — same
+-- attribution rule as fill_games. Rows for closed quotes are inert (readers
+-- join on live_quotes.status='open').
+CREATE TABLE IF NOT EXISTS quote_games (
+    quote_id VARCHAR NOT NULL,
+    game_id  VARCHAR NOT NULL,
+    PRIMARY KEY (quote_id, game_id)
+);
 CREATE INDEX IF NOT EXISTS idx_quote_decisions_observed_at
     ON quote_decisions(observed_at);
 CREATE INDEX IF NOT EXISTS idx_fills_reconciled
@@ -115,6 +131,7 @@ CREATE INDEX IF NOT EXISTS idx_fills_reconciled
 MIGRATE_SQL = """
 ALTER TABLE fills ADD COLUMN IF NOT EXISTS reconciled BOOLEAN DEFAULT FALSE;
 ALTER TABLE seen_rfqs ADD COLUMN IF NOT EXISTS creator_id VARCHAR;
+ALTER TABLE live_quotes ADD COLUMN IF NOT EXISTS worst_exposure_usd DOUBLE;
 DROP INDEX IF EXISTS idx_quote_decisions_observed_at;
 DROP INDEX IF EXISTS idx_fills_reconciled;
 ALTER TABLE seen_rfqs ALTER COLUMN first_seen_at SET DATA TYPE TIMESTAMPTZ;
