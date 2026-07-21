@@ -284,6 +284,10 @@ def test_risk_sweep_cancels_on_drift_since_quote(monkeypatch, tmp_path):
                                       "total_line": [8.5]}))
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
+    # B1 fix: the sweep now re-derives the combo's games from legs_json and
+    # fail-safe cancels on an unresolvable game — resolve to a real id so this
+    # test still exercises the DRIFT path, not the fail-safe.
+    monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "g1")
 
     # Book_fair_at_q was 0.40; now consensus is 0.45 (drift 0.05 > 0.03 threshold).
     # router.combo_fair replaces _book_fairs + statistics.median in the live path.
@@ -323,6 +327,149 @@ def test_risk_sweep_cancels_on_drift_since_quote(monkeypatch, tmp_path):
     with db.connect(read_only=True) as con:
         st = con.execute("SELECT status FROM live_quotes WHERE quote_id='qid-drift'").fetchone()[0]
     assert st == "cancelled", f"expected status='cancelled', got '{st}'"
+
+
+# ---------------------------------------------------------------------------
+# B1 (issue #15) — cross-game tipoff sweep. A quote's tipoff re-check must use
+# the EARLIEST commence time across ALL the combo's games, not just the primary
+# game stored in live_quotes.game_id.
+# ---------------------------------------------------------------------------
+_XG_SUF_A = "25JUN271905TEXLAA"     # primary game (spread + total legs)
+_XG_SUF_B = "25JUN271910NYYBOS"     # secondary game (ml leg) — starts FIRST
+
+
+def _cross_game_legs():
+    return [
+        {"market_ticker": f"KXMLBSPREAD-{_XG_SUF_A}-LAA2",
+         "event_ticker": f"KXMLBGAME-{_XG_SUF_A}", "side": "yes"},
+        {"market_ticker": f"KXMLBTOTAL-{_XG_SUF_A}-9",
+         "event_ticker": f"KXMLBGAME-{_XG_SUF_A}", "side": "yes"},
+        {"market_ticker": f"KXMLBGAME-{_XG_SUF_B}-NYY",
+         "event_ticker": f"KXMLBGAME-{_XG_SUF_B}", "side": "yes"},
+    ]
+
+
+def _seed_cross_game_quote(db, quote_id, rfq_id, ticker, book_fair=None):
+    """Open live_quote on a 2-game combo. game_id stores only the PRIMARY game
+    ("gA"); book_fair=None keeps the drift-since-quote branch out of the way."""
+    from datetime import datetime, timezone
+    import json
+    with db.connect() as con:
+        con.execute(
+            "INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            [quote_id, rfq_id, ticker, "gA", 0.50, 0.43, None, book_fair,
+             0.55, "open", datetime.now(timezone.utc), None])
+        con.execute(
+            "INSERT OR REPLACE INTO seen_rfqs "
+            "(rfq_id, market_ticker, in_scope, game_id, legs_json, "
+            "first_seen_at, last_decision) VALUES (?,?,?,?,?,?,?)",
+            [rfq_id, ticker, True, "gA", json.dumps(_cross_game_legs()),
+             datetime.now(timezone.utc), "quoted"])
+
+
+def _sweep_env(monkeypatch, tmp_path, db_name):
+    """Common sweep-test setup: fresh DB, fresh books, real risk.tipoff_ok."""
+    import importlib
+    import kalshi_mlb_mm.config as cfg
+    import kalshi_mlb_mm.db as db
+    from kalshi_mlb_mm import main
+    import pandas as pd
+
+    monkeypatch.setattr(cfg, "DB_PATH", tmp_path / db_name)
+    monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
+    importlib.reload(db)
+    db.init_database()
+    monkeypatch.setattr(main, "_SGP_ODDS",
+                        pd.DataFrame({"game_id": ["gA"], "combo": ["c"], "period": ["FG"],
+                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
+                                      "fetch_time": [None], "spread_line": [-1.5],
+                                      "total_line": [8.5]}))
+    # Resolve each game's legs by event ticker (deterministic, no market DB).
+    monkeypatch.setattr(
+        main, "_resolve_game_for_legs",
+        lambda gl: {f"KXMLBGAME-{_XG_SUF_A}": "gA",
+                    f"KXMLBGAME-{_XG_SUF_B}": "gB"}.get(gl[0].game_id))
+    return db, main
+
+
+class _CancelRecorder:
+    def __init__(self):
+        self.cancelled = []
+
+    def cancel(self, qid):
+        self.cancelled.append(qid)
+        return True
+
+
+def test_risk_sweep_cancels_when_nonprimary_game_near_tipoff(monkeypatch, tmp_path):
+    """THE regression test for issue #15: the combo's NON-primary game is inside
+    TIPOFF_CANCEL_MIN while the primary game is hours away. The sweep must
+    cancel. On pre-fix code (sweep reads only live_quotes.game_id) this fails.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    db, main = _sweep_env(monkeypatch, tmp_path, "xg_tipoff.duckdb")
+    now = datetime.now(timezone.utc)
+    commence = {"gA": now + timedelta(hours=3),
+                "gB": now + timedelta(minutes=2)}   # inside TIPOFF_CANCEL_MIN=5
+    monkeypatch.setattr(main, "_commence_time", lambda gid: commence[gid])
+
+    _seed_cross_game_quote(db, "qid-xg", "r-xg", "COMBO-XG")
+    gw = _CancelRecorder()
+    main._risk_sweep_tick(gw)
+
+    assert "qid-xg" in gw.cancelled, \
+        "non-primary game inside tipoff window must cancel the quote"
+    with db.connect(read_only=True) as con:
+        st = con.execute(
+            "SELECT status FROM live_quotes WHERE quote_id='qid-xg'").fetchone()[0]
+    assert st == "cancelled"
+
+
+def test_risk_sweep_keeps_quote_when_all_games_far_from_tipoff(monkeypatch, tmp_path):
+    """Control: both games hours away, no drift → the quote must stay open
+    (guards against the fix over-cancelling)."""
+    from datetime import datetime, timedelta, timezone
+
+    db, main = _sweep_env(monkeypatch, tmp_path, "xg_keep.duckdb")
+    now = datetime.now(timezone.utc)
+    commence = {"gA": now + timedelta(hours=3), "gB": now + timedelta(hours=2)}
+    monkeypatch.setattr(main, "_commence_time", lambda gid: commence[gid])
+
+    _seed_cross_game_quote(db, "qid-keep", "r-keep", "COMBO-KEEP")
+    gw = _CancelRecorder()
+    main._risk_sweep_tick(gw)
+
+    assert gw.cancelled == []
+    with db.connect(read_only=True) as con:
+        st = con.execute(
+            "SELECT status FROM live_quotes WHERE quote_id='qid-keep'").fetchone()[0]
+    assert st == "open"
+
+
+def test_risk_sweep_cancels_when_any_game_unresolvable(monkeypatch, tmp_path):
+    """Fail-safe: if ANY of the combo's games can't be resolved, the sweep must
+    cancel — never fail open on a quote whose clock we can't see."""
+    from datetime import datetime, timedelta, timezone
+
+    db, main = _sweep_env(monkeypatch, tmp_path, "xg_unresolvable.duckdb")
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(main, "_commence_time",
+                        lambda gid: now + timedelta(hours=3))
+    # Secondary game resolves to None (e.g. dropped out of mlb_target_lines).
+    monkeypatch.setattr(
+        main, "_resolve_game_for_legs",
+        lambda gl: "gA" if gl[0].game_id == f"KXMLBGAME-{_XG_SUF_A}" else None)
+
+    _seed_cross_game_quote(db, "qid-unres", "r-unres", "COMBO-UNRES")
+    gw = _CancelRecorder()
+    main._risk_sweep_tick(gw)
+
+    assert "qid-unres" in gw.cancelled, "unresolvable game must fail safe → cancel"
+    with db.connect(read_only=True) as con:
+        st = con.execute(
+            "SELECT status FROM live_quotes WHERE quote_id='qid-unres'").fetchone()[0]
+    assert st == "cancelled"
 
 
 # ---------------------------------------------------------------------------
@@ -913,22 +1060,20 @@ def test_confirm_arms_combo_cooldown(monkeypatch, tmp_path):
         def cancel(self, qid):
             return True
 
-    # DuckDB TIMESTAMP is naive — it stores aware datetimes as naive LOCAL
-    # (production stays consistent because reads also come back naive-local).
-    # The test asserts the delta between insert-now and cooled_until matches
-    # COMBO_COOLDOWN_SEC within a small tolerance, which is tz-invariant.
-    before_naive = datetime.now().replace(tzinfo=None)
+    # O-2: cooled_until is TIMESTAMPTZ — reads come back timezone-aware, so
+    # the delta assertion compares true instants in UTC.
+    before = datetime.now(timezone.utc)
     main._confirm_tick(GW(), dry_run=False)
-    after_naive = datetime.now().replace(tzinfo=None)
+    after = datetime.now(timezone.utc)
 
     with db.connect(read_only=True) as con:
         row = con.execute(
             "SELECT cooled_until FROM combo_cooldown WHERE combo_market_ticker='COMBO-ARM'"
         ).fetchone()
     assert row is not None, "combo_cooldown row must be created on successful confirm"
-    cooled_until = row[0]  # naive local from DuckDB
-    expected_min = before_naive + timedelta(seconds=cfg.COMBO_COOLDOWN_SEC - 1)
-    expected_max = after_naive + timedelta(seconds=cfg.COMBO_COOLDOWN_SEC + 1)
+    cooled_until = row[0]  # aware datetime from DuckDB TIMESTAMPTZ
+    expected_min = before + timedelta(seconds=cfg.COMBO_COOLDOWN_SEC - 1)
+    expected_max = after + timedelta(seconds=cfg.COMBO_COOLDOWN_SEC + 1)
     assert expected_min <= cooled_until <= expected_max, (
         f"cooled_until {cooled_until} not within [{expected_min}, {expected_max}]")
 

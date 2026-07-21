@@ -5,10 +5,10 @@ query, and closes it. If the live bot is mid-checkpoint and the file is briefly
 locked, ``_read`` returns the ``LOCKED`` sentinel instead of raising — callbacks
 treat that as "no new data, keep the last render".
 
-Bot timestamps are naive local wall-clock (verified: the maker's newest decision
-time matches the local clock). So time-window cutoffs are computed in Python with
-``datetime.now()`` and passed as parameters — never compared against SQL ``now()``
-(which is timezone-aware and would mis-cast).
+Bot timestamps reach the dashboard as naive local wall-clock: the taker's tables
+still store naive-local, and ``_read`` converts the maker's TIMESTAMPTZ columns
+(O-2 migration, issue #18) into the same frame. So time-window cutoffs are
+computed in Python with ``datetime.now()`` and passed as parameters.
 """
 
 from __future__ import annotations
@@ -59,7 +59,18 @@ def _read(db_path: str, sql: str, params=None, retries: int = 3):
                 con.execute("PRAGMA disable_progress_bar")  # keep logs clean
             except Exception:
                 pass
-            return con.execute(sql, params or []).fetchdf()
+            df = con.execute(sql, params or []).fetchdf()
+            # Maker tables are TIMESTAMPTZ since the O-2 migration (issue
+            # #18) and come back tz-aware; the taker's are still naive
+            # local. Normalize aware columns to naive LOCAL here — the one
+            # read funnel — so every downstream datetime.now() comparison
+            # and cross-bot concat keeps working unchanged.
+            local_tz = datetime.now().astimezone().tzinfo
+            for col in df.columns:
+                if isinstance(df[col].dtype, pd.DatetimeTZDtype):
+                    df[col] = (df[col].dt.tz_convert(local_tz)
+                               .dt.tz_localize(None))
+            return df
         except Exception:
             if attempt < retries - 1:
                 time.sleep(0.06)  # ~60ms; checkpoint locks clear fast

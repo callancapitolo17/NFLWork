@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS seen_rfqs (
     in_scope        BOOLEAN,
     game_id         VARCHAR,
     legs_json       VARCHAR,
-    first_seen_at   TIMESTAMP NOT NULL,
+    first_seen_at   TIMESTAMPTZ NOT NULL,
     last_decision   VARCHAR,
     creator_id      VARCHAR
 );
@@ -31,8 +31,8 @@ CREATE TABLE IF NOT EXISTS live_quotes (
     book_fair           DOUBLE,
     blended_fair        DOUBLE,
     status              VARCHAR NOT NULL,
-    submitted_at        TIMESTAMP NOT NULL,
-    closed_at           TIMESTAMP
+    submitted_at        TIMESTAMPTZ NOT NULL,
+    closed_at           TIMESTAMPTZ
 );
 CREATE TABLE IF NOT EXISTS quote_decisions (
     decision_id   VARCHAR PRIMARY KEY,
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS quote_decisions (
     blended_fair  DOUBLE,
     yes_bid       DOUBLE,
     no_bid        DOUBLE,
-    observed_at   TIMESTAMP NOT NULL
+    observed_at   TIMESTAMPTZ NOT NULL
 );
 CREATE TABLE IF NOT EXISTS fills (
     fill_id              VARCHAR PRIMARY KEY,
@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS fills (
     blended_fair_at_quote DOUBLE,
     fair_at_confirm      DOUBLE,
     realized_pnl         DOUBLE,
-    filled_at            TIMESTAMP NOT NULL,
+    filled_at            TIMESTAMPTZ NOT NULL,
     reconciled           BOOLEAN NOT NULL DEFAULT FALSE
 );
 CREATE TABLE IF NOT EXISTS positions (
@@ -73,19 +73,19 @@ CREATE TABLE IF NOT EXISTS positions (
     game_id             VARCHAR NOT NULL,
     net_contracts       DOUBLE NOT NULL,
     weighted_price      DOUBLE NOT NULL,
-    updated_at          TIMESTAMP NOT NULL,
+    updated_at          TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (combo_market_ticker, side)
 );
 CREATE TABLE IF NOT EXISTS sessions (
     session_id VARCHAR PRIMARY KEY,
-    started_at TIMESTAMP NOT NULL,
-    ended_at   TIMESTAMP,
+    started_at TIMESTAMPTZ NOT NULL,
+    ended_at   TIMESTAMPTZ,
     pid        INTEGER,
     dry_run    BOOLEAN NOT NULL
 );
 CREATE TABLE IF NOT EXISTS combo_cooldown (
     combo_market_ticker VARCHAR PRIMARY KEY,
-    cooled_until        TIMESTAMP NOT NULL
+    cooled_until        TIMESTAMPTZ NOT NULL
 );
 -- Per-game exposure ledger: maps each fill to EVERY game its combo touches
 -- (one row per game). A cross-game combo lands one row per game so the
@@ -105,9 +105,31 @@ CREATE INDEX IF NOT EXISTS idx_fills_reconciled
 
 # Idempotent column-adds for DBs created before the H4/N5 hardening pass.
 # DuckDB accepts "ADD COLUMN IF NOT EXISTS" — safe to run on every startup.
+#
+# O-2 (issue #18): TIMESTAMPTZ migration. Pre-migration DBs stored naive-LOCAL
+# timestamps (DuckDB converts an aware bind into the session TimeZone and
+# drops the offset on a naive TIMESTAMP column). ALTER ... SET DATA TYPE
+# TIMESTAMPTZ reinterprets the naive value in the session TimeZone — i.e.
+# local — so the true instant is preserved (verified empirically). Re-running
+# on an already-TIMESTAMPTZ column is a no-op cast, so this stays idempotent.
 MIGRATE_SQL = """
 ALTER TABLE fills ADD COLUMN IF NOT EXISTS reconciled BOOLEAN DEFAULT FALSE;
 ALTER TABLE seen_rfqs ADD COLUMN IF NOT EXISTS creator_id VARCHAR;
+DROP INDEX IF EXISTS idx_quote_decisions_observed_at;
+DROP INDEX IF EXISTS idx_fills_reconciled;
+ALTER TABLE seen_rfqs ALTER COLUMN first_seen_at SET DATA TYPE TIMESTAMPTZ;
+ALTER TABLE live_quotes ALTER COLUMN submitted_at SET DATA TYPE TIMESTAMPTZ;
+ALTER TABLE live_quotes ALTER COLUMN closed_at SET DATA TYPE TIMESTAMPTZ;
+ALTER TABLE quote_decisions ALTER COLUMN observed_at SET DATA TYPE TIMESTAMPTZ;
+ALTER TABLE fills ALTER COLUMN filled_at SET DATA TYPE TIMESTAMPTZ;
+ALTER TABLE positions ALTER COLUMN updated_at SET DATA TYPE TIMESTAMPTZ;
+ALTER TABLE sessions ALTER COLUMN started_at SET DATA TYPE TIMESTAMPTZ;
+ALTER TABLE sessions ALTER COLUMN ended_at SET DATA TYPE TIMESTAMPTZ;
+ALTER TABLE combo_cooldown ALTER COLUMN cooled_until SET DATA TYPE TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_quote_decisions_observed_at
+    ON quote_decisions(observed_at);
+CREATE INDEX IF NOT EXISTS idx_fills_reconciled
+    ON fills(reconciled);
 """
 
 

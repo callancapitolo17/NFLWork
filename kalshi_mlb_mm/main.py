@@ -43,6 +43,10 @@ _running.set()
 _SGP_ODDS = None         # pd.DataFrame
 _PREV_BOOK_FAIR = {}     # combo_market_ticker -> last blended book fair (circuit breaker)
 _SCOPE_CACHE = {}        # market_ticker -> (in_scope, game_id, legs)
+# B5 fix (issue #18): bound the scope cache. Crude full-clear on overflow is
+# fine — verdicts re-warm within one poll cycle and a slate is a few hundred
+# tickers, so the bound is a leak backstop, not a working-set limit.
+_SCOPE_CACHE_MAX = 5000
 _VOID_HALT_ACTIVE = False  # N12: track prior void-rate halt state for edge-triggered notify
 
 # Phase 2 on-demand pricing: engine constructed in main_loop (None in tests /
@@ -65,6 +69,9 @@ def _configure_auth():
 
 def _refresh_sgp():
     global _SGP_ODDS
+    # O-1: a fresh scrape may add games / correct schedule rows — drop the
+    # game-metadata caches before anything else (including the early returns).
+    _invalidate_game_caches()
     if not config.MARKET_DB.exists():
         return
     try:
@@ -139,7 +146,32 @@ def _book_fairs(game_id, desc):
     return _consensus_filter(out)
 
 
+# O-1 fix (issue #18): _commence_time and _resolve_game_for_legs used to open
+# a fresh read-only DuckDB connection per RFQ per 2s tick (lock churn against
+# the scraper's writes and the monitor's readers). Game→game_id resolution and
+# commence times are static per slate, so cache them in memory and invalidate
+# on every SGP refresh (each scrape cycle + startup warm-up). Lookup FAILURES
+# (None) are never cached — a transient DB lock must not stick until the next
+# refresh (the risk sweep fail-safe cancels on None).
+_COMMENCE_CACHE: dict = {}       # game_id -> commence_time
+_RESOLVE_CACHE: dict = {}        # event_ticker -> game_id
+
+
+def _invalidate_game_caches():
+    _COMMENCE_CACHE.clear()
+    _RESOLVE_CACHE.clear()
+
+
 def _commence_time(game_id):
+    if game_id in _COMMENCE_CACHE:
+        return _COMMENCE_CACHE[game_id]
+    ct = _commence_time_uncached(game_id)
+    if ct is not None:
+        _COMMENCE_CACHE[game_id] = ct
+    return ct
+
+
+def _commence_time_uncached(game_id):
     # read from mlb_target_lines (written by sgp_runner) for tipoff gating
     if not config.MARKET_DB.exists():
         return None
@@ -192,6 +224,20 @@ def _today_fills_by_game():
 
 
 def _resolve_game_for_legs(game_legs: list) -> str | None:
+    """Cached wrapper (O-1) — keyed by the game's event_ticker; failures (None)
+    are not cached; invalidated on SGP refresh."""
+    if not game_legs:
+        return None
+    event_ticker = game_legs[0].game_id
+    if event_ticker in _RESOLVE_CACHE:
+        return _RESOLVE_CACHE[event_ticker]
+    gid = _resolve_game_for_legs_uncached(game_legs)
+    if gid is not None:
+        _RESOLVE_CACHE[event_ticker] = gid
+    return gid
+
+
+def _resolve_game_for_legs_uncached(game_legs: list) -> str | None:
     """Resolve ONE game's CanonicalLegs to the mlb_target_lines game_id, or None.
 
     game_legs[0].game_id is the Kalshi event_ticker shared by all legs of that
@@ -428,6 +474,34 @@ def _rfq_requested_contracts(rfq: dict) -> float:
         return 0.0
 
 
+def _accept_fill_contracts(q: dict | None) -> float | None:
+    """Filled size from the quote-status response, or None when unparseable.
+
+    Kalshi live payloads denominate sizes as fixed-point STRINGS
+    (`contracts_fp`) — mirror _rfq_requested_contracts: parse that first,
+    fall back to the legacy int `contracts`. None means "size unknown";
+    callers must record conservatively (0 + reconciled=FALSE), never 1."""
+    if not isinstance(q, dict):
+        return None
+    fp = q.get("contracts_fp")
+    if fp is not None:
+        try:
+            parsed = float(fp)
+            if parsed > 0:
+                return parsed
+        except (TypeError, ValueError):
+            pass
+    legacy = q.get("contracts")
+    if legacy is not None:
+        try:
+            parsed = float(legacy)
+            if parsed > 0:
+                return parsed
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
 def _worst_fill_exposure_usd(rfq: dict, q) -> float:
     """Worst-case DOLLARS at risk if this RFQ fills at quote q, maxed over both
     sides the creator could take. Our cost basis on the side we'd hold IS our
@@ -578,10 +652,20 @@ def _discovery_tick(source, gateway, dry_run):
             canon = legset.parse_legs(legs) if legs else None
         else:
             market = source.get_market(ticker)
-            legs = scope.decode_legs(market) if market else None
+            if market is None:
+                # B5 fix (issue #18): a transient fetch failure (HTTP blip)
+                # must not be cached as in_scope=False — that permanently
+                # blacklisted the combo until restart — nor recorded as a
+                # decided RFQ. Skip this tick; a later poll retries.
+                log.warning("[market_fetch_failed] ticker=%s — will retry "
+                            "next tick", ticker)
+                continue
+            legs = scope.decode_legs(market)
             canon = legset.parse_legs(legs) if legs else None
             in_scope = bool(canon and _priceable(canon))
             game_id = None
+            if len(_SCOPE_CACHE) >= _SCOPE_CACHE_MAX:
+                _SCOPE_CACHE.clear()
             _SCOPE_CACHE[ticker] = (in_scope, game_id, legs)
         if not in_scope:
             if not seen:
@@ -658,8 +742,8 @@ def _discovery_tick(source, gateway, dry_run):
             continue
         # H9: per-combo cooldown — refuse new quotes for COMBO_COOLDOWN_SEC
         # after a recent fill on this combo (same-price re-pickoff defense).
-        # Compare in SQL: DuckDB normalizes the AWARE bind param into the
-        # stored naive-local frame for us, so this is tz-consistent end-to-end.
+        # cooled_until is TIMESTAMPTZ (O-2), so the aware bind compares as a
+        # true instant.
         with db.connect(read_only=True) as con:
             cd_row = con.execute(
                 "SELECT 1 FROM combo_cooldown "
@@ -793,19 +877,32 @@ def _discovery_tick(source, gateway, dry_run):
                 "SELECT quote_id, yes_bid, no_bid FROM live_quotes "
                 "WHERE rfq_id=? AND status='open'",
                 [rid]).fetchone()
+        replaced_qid = None
         if existing:
             eqid, eyb, enb = existing
             if (abs(q.yes_bid - eyb) < config.QUOTE_HYSTERESIS
                     and abs(q.no_bid - enb) < config.QUOTE_HYSTERESIS):
                 continue  # price essentially unchanged — leave the resting quote in place
-            # price moved beyond hysteresis → replace: mark old row closed, then submit new
-            with db.connect() as con:
-                con.execute(
-                    "UPDATE live_quotes SET status='replaced', closed_at=? WHERE quote_id=?",
-                    [datetime.now(timezone.utc), eqid])
+            # price moved beyond hysteresis → replace. B2 fix (issue #16):
+            # submit FIRST, mark the old row 'replaced' only on success. Kalshi
+            # auto-cancels the prior quote only when a new one lands, so
+            # marking 'replaced' before a submit that then fails would leave a
+            # live exchange quote invisible to the confirm loop and risk sweep.
+            # On failure the old row stays 'open' (still tracked); the next
+            # tick retries the replace.
+            replaced_qid = eqid
         qid = gateway.submit_quote(rid, q.yes_bid, q.no_bid)
         if qid:
             with db.connect() as con:
+                # One explicit transaction: DuckDB autocommits per statement,
+                # and a crash between marking the old row 'replaced' and
+                # inserting the new one would leave the freshly-submitted
+                # exchange quote untracked.
+                con.execute("BEGIN TRANSACTION")
+                if replaced_qid is not None:
+                    con.execute(
+                        "UPDATE live_quotes SET status='replaced', closed_at=? WHERE quote_id=?",
+                        [datetime.now(timezone.utc), replaced_qid])
                 con.execute("INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                             [qid, rid, ticker, game_id, q.yes_bid, q.no_bid, None, book_med,
                              blended, "open", datetime.now(timezone.utc), None])
@@ -816,6 +913,7 @@ def _discovery_tick(source, gateway, dry_run):
                     "VALUES (?,?,?,?,?,?,?,?)",
                     [rid, ticker, True, game_id, json.dumps(legs),
                      datetime.now(timezone.utc), "quoted", creator_id])
+                con.execute("COMMIT")
             _log_decision("quoted", rfq_id=rid, quote_id=qid, ticker=ticker, game_id=game_id,
                           model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
             open_count += 1
@@ -895,7 +993,18 @@ def _confirm_tick(gateway, dry_run):
             if risk.last_look_ok(side_held, price, fee, cur_fair, prev_fair,
                                  config.FAIR_DRIFT_TOLERANCE):
                 if not dry_run and gateway.confirm(qid):
-                    contracts = int(float((q or {}).get("contracts", 1) or 1))
+                    # B4 fix (issue #18): sizes arrive as contracts_fp strings;
+                    # an unknown size records 0 (NOT 1) — the N8 convention
+                    # already counts unreconciled fills at the per-fill cap,
+                    # and the reconcile sweep sets the true size from Kalshi
+                    # positions.
+                    contracts = _accept_fill_contracts(q)
+                    if contracts is None:
+                        log.warning(
+                            "[fill_size_unparseable] quote_id=%s ticker=%s "
+                            "response_keys=%s — recording 0 contracts pending "
+                            "reconcile", qid, ticker, list((q or {}).keys()))
+                        contracts = 0.0
                     # N5: record the fill IMMEDIATELY with EXPECTED side/size
                     # (no positions retry in the hot path — that lived here
                     # before and could spend up to 15s/fill, blowing the 30s
@@ -999,13 +1108,14 @@ def _reconcile_sweep_tick():
     for fill_id, ticker, recorded_side, recorded_ct, filled_at in rows:
         # N11: compute fill age before the API call so we can apply the max-age
         # fallback if the positions API is persistently unreachable.
-        # DuckDB TIMESTAMP (not TIMESTAMPTZ) returns naive datetimes stored in
-        # local time. Use naive local `now` on both sides to stay consistent.
+        # O-2: filled_at is TIMESTAMPTZ (aware) post-migration — compare aware
+        # UTC. Naive branch kept only for rows read before a restart applies
+        # the migration; those are naive-LOCAL, so compare naive-local.
         if filled_at is not None:
-            now_local = datetime.now()
-            filled_at_naive = (filled_at.replace(tzinfo=None)
-                               if filled_at.tzinfo is not None else filled_at)
-            fill_age = max(0.0, (now_local - filled_at_naive).total_seconds())
+            if filled_at.tzinfo is not None:
+                fill_age = max(0.0, (now - filled_at).total_seconds())
+            else:
+                fill_age = max(0.0, (datetime.now() - filled_at).total_seconds())
         else:
             fill_age = 0.0
         actual = _get_position_contracts(ticker)
@@ -1088,6 +1198,27 @@ def _reconcile_sweep_tick():
                                        outcome="matched"))
 
 
+def _quote_game_ids(legs_json: str | None) -> list[str] | None:
+    """All game_ids a resting quote's combo touches, or None if ANY is
+    unresolvable (missing/unparseable legs, unresolved game). B1 fix (issue
+    #15): live_quotes.game_id holds only the PRIMARY game, so the sweep
+    re-derives the full set from legs_json via the same legset path discovery
+    uses. Callers must treat None as fail-safe → cancel, never fail open."""
+    if not legs_json:
+        return None
+    try:
+        canon = legset.parse_legs(json.loads(legs_json))
+        if not canon:
+            return None
+        gids = [_resolve_game_for_legs(gl)
+                for gl in legset.partition_by_game(canon).values()]
+        if any(gid is None for gid in gids):
+            return None
+        return gids
+    except Exception:
+        return None
+
+
 def _risk_sweep_tick(gateway):
     if config.KILL_FILE.exists():
         notify.halt("kill_switch")
@@ -1104,11 +1235,26 @@ def _risk_sweep_tick(gateway):
             "FROM live_quotes lq LEFT JOIN seen_rfqs sr ON lq.rfq_id = sr.rfq_id "
             "WHERE lq.status='open'").fetchall()
     for qid, game_id, ticker, book_fair_at_q, rid, legs_json in live:
-        ct = _commence_time(game_id)
         cancel = False
-        if books_stale or not risk.tipoff_ok(ct, config.TIPOFF_CANCEL_MIN):
-            cancel = True
+        cancel_reason = None
+        if books_stale:
+            cancel, cancel_reason = True, "books_stale"
         else:
+            # B1 fix: tipoff-check the EARLIEST commence time across ALL the
+            # combo's games, not just the primary game_id column. Any game we
+            # can't resolve or clock we can't read → cancel (fail-safe).
+            gids = _quote_game_ids(legs_json)
+            if gids is None:
+                cancel, cancel_reason = True, "unresolvable_game"
+            else:
+                commence_times = [_commence_time(gid) for gid in gids]
+                if any(ct is None for ct in commence_times):
+                    cancel, cancel_reason = True, "unresolvable_game"
+                else:
+                    earliest_ct = min(commence_times)
+                    if not risk.tipoff_ok(earliest_ct, config.TIPOFF_CANCEL_MIN):
+                        cancel, cancel_reason = True, "tipoff"
+        if not cancel:
             # H1 (part 2): per-open-quote drift-since-quote sweep.
             # Recompute current book consensus for this combo; if it has drifted
             # more than BOOK_MOVE_CB_THRESHOLD from book_fair-at-quote, cancel.
@@ -1125,7 +1271,7 @@ def _risk_sweep_tick(gateway):
                                                                 else None))
                     if cur_med is not None and risk.book_move_triggered(
                             book_fair_at_q, cur_med, config.BOOK_MOVE_CB_THRESHOLD):
-                        cancel = True
+                        cancel, cancel_reason = True, "book_drift"
                 except Exception:
                     pass
         if cancel:
@@ -1137,6 +1283,8 @@ def _risk_sweep_tick(gateway):
                 con.execute(
                     "UPDATE live_quotes SET status='cancelled', closed_at=? WHERE quote_id=?",
                     [datetime.now(timezone.utc), qid])
+            _log_decision("sweep_cancel", rfq_id=rid, quote_id=qid, ticker=ticker,
+                          game_id=game_id, reason=cancel_reason)
 
 
 def main_loop(dry_run: bool):
