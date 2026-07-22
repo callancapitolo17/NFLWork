@@ -103,7 +103,7 @@ def test_discovery_dedup_no_resubmit_when_price_unchanged(monkeypatch, tmp_path)
     # Pre-insert the open live_quote at exactly the fixed bid prices.
     with db.connect() as con:
         con.execute(
-            "INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO live_quotes (quote_id, rfq_id, combo_market_ticker, game_id, yes_bid, no_bid, model_fair, book_fair, blended_fair, status, submitted_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             ["qid-existing", "r1", "COMBO-1", "game1",
              fixed_quote.yes_bid, fixed_quote.no_bid,
              0.55, 0.55, 0.55, "open",
@@ -303,7 +303,7 @@ def test_risk_sweep_cancels_on_drift_since_quote(monkeypatch, tmp_path):
              "event_ticker": _evt, "side": "yes"}]
     with db.connect() as con:
         con.execute(
-            "INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO live_quotes (quote_id, rfq_id, combo_market_ticker, game_id, yes_bid, no_bid, model_fair, book_fair, blended_fair, status, submitted_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             ["qid-drift", "r-drift", "COMBO-G1", "g1",
              0.40, 0.45, None, 0.40, 0.40, "open",
              datetime.now(timezone.utc), None])
@@ -356,7 +356,7 @@ def _seed_cross_game_quote(db, quote_id, rfq_id, ticker, book_fair=None):
     import json
     with db.connect() as con:
         con.execute(
-            "INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO live_quotes (quote_id, rfq_id, combo_market_ticker, game_id, yes_bid, no_bid, model_fair, book_fair, blended_fair, status, submitted_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             [quote_id, rfq_id, ticker, "gA", 0.50, 0.43, None, book_fair,
              0.55, "open", datetime.now(timezone.utc), None])
         con.execute(
@@ -496,7 +496,7 @@ def test_confirm_voids_when_no_fresh_books(monkeypatch, tmp_path):
              "event_ticker": _evt, "side": "yes"}]
     with db.connect() as con:
         con.execute(
-            "INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO live_quotes (quote_id, rfq_id, combo_market_ticker, game_id, yes_bid, no_bid, model_fair, book_fair, blended_fair, status, submitted_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             ["qid-nofresh", "r-nofresh", "COMBO-G2", "g2",
              0.50, 0.43, None, 0.55, 0.55, "open",
              datetime.now(timezone.utc), None])
@@ -570,7 +570,7 @@ def test_confirm_records_fill_fast_with_reconciled_false(monkeypatch, tmp_path):
              "event_ticker": _evt, "side": "yes"}]
     with db.connect() as con:
         con.execute(
-            "INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO live_quotes (quote_id, rfq_id, combo_market_ticker, game_id, yes_bid, no_bid, model_fair, book_fair, blended_fair, status, submitted_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             ["qid-fast", "r-fast", "COMBO-G3", "g3",
              0.45, 0.45, None, 0.55, 0.55, "open",
              datetime.now(timezone.utc), None])
@@ -1031,7 +1031,7 @@ def test_confirm_arms_combo_cooldown(monkeypatch, tmp_path):
              "event_ticker": _evt, "side": "yes"}]
     with db.connect() as con:
         con.execute(
-            "INSERT INTO live_quotes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO live_quotes (quote_id, rfq_id, combo_market_ticker, game_id, yes_bid, no_bid, model_fair, book_fair, blended_fair, status, submitted_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             ["qid-arm", "r-arm", "COMBO-ARM", "gAR",
              0.45, 0.45, None, 0.55, 0.55, "open",
              datetime.now(timezone.utc), None])

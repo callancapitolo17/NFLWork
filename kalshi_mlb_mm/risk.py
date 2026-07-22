@@ -61,6 +61,20 @@ def last_look_ok(side: str, price: float, fee: float, current_fair: float,
     return True
 
 
+def same_price_blocked(current_fair: float, last_fill_fair: float | None,
+                       epsilon: float) -> bool:
+    """P-7 same-price re-pickoff block: after a fill's cooldown clears, refuse
+    to re-quote until consensus fair has moved at least `epsilon` away from the
+    fair the fill transacted against. Quote prices are fair ± a fixed ROI
+    margin, so an unchanged fair reproduces the exact just-picked-off price.
+    A missing last_fill_fair (both fair columns NULL on the fill) cannot be
+    compared — do not block; the awaiting-refresh gate has already required
+    post-fill book data by the time this runs."""
+    if last_fill_fair is None:
+        return False
+    return abs(current_fair - last_fill_fair) < epsilon
+
+
 def daily_cap_ok(today_fills: list[dict], cap_usd: float) -> bool:
     used = sum(float(f.get("price", 0)) for f in today_fills)
     return used < cap_usd

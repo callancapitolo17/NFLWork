@@ -48,6 +48,21 @@ def test_daily_cap():
     assert risk.daily_cap_ok([{"price": 4.0}, {"price": 5.0}], cap_usd=375.0) is True
     assert risk.daily_cap_ok([{"price": 380.0}], cap_usd=375.0) is False
 
+def test_same_price_blocked_within_epsilon():
+    # P-7 (issue #21): fair still within ε of the last fill's fair → blocked.
+    assert risk.same_price_blocked(0.552, last_fill_fair=0.55, epsilon=0.005) is True
+    assert risk.same_price_blocked(0.55, last_fill_fair=0.55, epsilon=0.005) is True
+
+def test_same_price_blocked_allows_moved_fair():
+    assert risk.same_price_blocked(0.58, last_fill_fair=0.55, epsilon=0.005) is False
+    # Exactly ε away counts as moved (strict < inside the block).
+    assert risk.same_price_blocked(0.555, last_fill_fair=0.55, epsilon=0.005) is False
+
+def test_same_price_blocked_no_prior_fill_fair():
+    # No recorded fair on the last fill (both columns NULL) → cannot compare,
+    # do not block (the refresh gate has already required post-fill data).
+    assert risk.same_price_blocked(0.55, last_fill_fair=None, epsilon=0.005) is False
+
 def test_per_game_cap():
     fills = [{"game_id": "g1", "price": 40.0}, {"game_id": "g2", "price": 10.0}]
     assert risk.per_game_cap_ok("g1", fills, bankroll=500.0, pct=0.10) is True   # $40 < $50
