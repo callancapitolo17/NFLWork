@@ -129,10 +129,15 @@ untouched (`_priceable_in_phase1` and `test_router_integration.py` are the
 retained Phase 1 regression oracles).
 
 **Accepted quotes get a live last look**: the confirm tick synchronously
-re-fetches every on-demand game in the combo (priority lane, budgeted
-`CONFIRM_REFETCH_BUDGET_SEC=20s` against the ~30s confirm window); a failed
-or late re-fetch leaves the lookup stale → `voided_no_fresh_books`. We never
-confirm on a previously-fetched number.
+re-fetches every on-demand game **and every 2-leg grid game** in the combo
+(issue #17 — a grid sub-combo is just a 2²-cell partition to
+`price_on_demand`, so grids re-price on a live fetch instead of the ~150s
+scrape cache; priority lane, all jobs share the
+`CONFIRM_REFETCH_BUDGET_SEC=20s` budget against the ~30s confirm window).
+A failed or late re-fetch leaves the lookup stale → `voided_no_fresh_books`.
+We never confirm on a previously-fetched number. Single-leg sub-combos of
+cross-game combos still last-look from the cache marginal — issue #23 adds
+a Kalshi-singles fast check at that seam.
 
 **Failure direction is always "fewer/laggier quotes", never "staler
 quotes"**: unresolvable leg → book drops; incomplete partition → Route B →
@@ -217,7 +222,7 @@ Resting quotes are priced off books that lag reality (books refresh every 60s). 
 
 6. **Tipoff blackout.** `TIPOFF_CANCEL_MIN` pulls all quotes for a game before first pitch. A cross-game combo is swept against the **earliest** first pitch across ALL its games (re-derived from `seen_rfqs.legs_json` each sweep — same legset path as discovery); any game the sweep can't resolve cancels the quote (fail-safe, never fail open).
 
-7. **Last-look backstop (discrete, but limited scope).** On accept, the bot recomputes fair from a fresh book pull and voids the confirm if (a) we cannot re-price (no fresh books, blend fails), (b) the filled side is no longer +EV (`price + fee >= current_fair`), or (c) fair drifted past `FAIR_DRIFT_TOLERANCE`. The "can't re-price ⇒ don't confirm" rule is intentional: silently falling back to the stored fair would neuter the drift check. Non-confirms are abusive behavior Kalshi can throttle — do not lean on this gate.
+7. **Last-look backstop (discrete events).** On accept, the bot re-prices the combo on a **live book fetch** — on-demand games AND 2-leg grid games (issue #17; grids previously re-read the ~150s scrape cache, making the drift check a no-op exactly in the fast-pickoff window) — and voids the confirm if (a) we cannot re-price live (fetch failed/late, too few books → `voided_no_fresh_books`), (b) the filled side is no longer +EV (`price + fee >= current_fair`), or (c) fair drifted past `FAIR_DRIFT_TOLERANCE` (→ `voided_last_look`). The "can't re-price ⇒ don't confirm" rule is intentional: silently falling back to the stored fair or the scrape cache would neuter the drift check. `fills.fair_at_confirm` stores the fresh fair, and every accept emits a `confirm_fresh_check` research event (quote age at accept, per-book fetch latency, stale-cache vs fresh fair delta) so the gate's save-rate is measurable. Non-confirms are abusive behavior Kalshi can throttle — do not lean on this gate.
 
 8. **Position reconciliation.** After every confirm we call `/portfolio/positions` for the combo ticker and trust Kalshi as the source of truth; if the confirm response's side or size disagrees, the `fills` row is written with the reconciled values and a `[position_mismatch]` warning is printed.
 

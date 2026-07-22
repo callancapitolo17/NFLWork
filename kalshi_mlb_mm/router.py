@@ -133,21 +133,31 @@ def consensus_detail(book_fairs: dict[str, float], min_books: int,
 
 
 def subcombo_fair(game_id, game_legs, sgp_df, min_books: int,
-                  band: float, on_demand_fairs=None) -> float | None:
+                  band: float, on_demand_fairs=None,
+                  fresh_grid_fairs=None) -> float | None:
     """Price one game's sub-combo: route via classify_subcombo -> grid/single book fairs -> consensus.
 
     on_demand_fairs (Phase 2): optional pure lookup, leg_set_hash -> {book:
     fair} | None, injected by main (the OnDemandEngine's fresh-results read).
     Default None reproduces Phase 1 byte-identically — grid/single routes
     never touch it, and on_demand routes return None.
+
+    fresh_grid_fairs (issue #17, confirm-window last look only): same lookup
+    shape as on_demand_fairs. When provided, grid routes price EXCLUSIVELY
+    from it — never the sgp_df scrape cache — so an accepted quote is
+    re-priced on a live fetch. A lookup miss returns no fairs (consensus
+    fails -> None -> caller voids); there is deliberately no cache fallback.
     """
     route = legset.classify_subcombo(game_legs)
     if route == "single":
         book_fairs = single_marginal_fairs(game_id, game_legs[0], sgp_df)
     elif route in ("grid_spread_total", "grid_ml_total"):
-        family, spread_line, total_line, target = grid_spec(game_legs)
-        book_fairs = grid_cell_fairs(game_id, family, spread_line, total_line,
-                                     target, sgp_df)
+        if fresh_grid_fairs is not None:
+            book_fairs = fresh_grid_fairs(legset.leg_set_hash(game_legs)) or {}
+        else:
+            family, spread_line, total_line, target = grid_spec(game_legs)
+            book_fairs = grid_cell_fairs(game_id, family, spread_line,
+                                         total_line, target, sgp_df)
     elif route == "on_demand" and on_demand_fairs is not None:
         book_fairs = on_demand_fairs(legset.leg_set_hash(game_legs)) or {}
     else:                       # "on_demand" without lookup, or "unpriceable"
@@ -156,7 +166,8 @@ def subcombo_fair(game_id, game_legs, sgp_df, min_books: int,
 
 
 def combo_fair(legs: list[dict], sgp_df, resolve_game, min_books: int,
-               band: float, on_demand_fairs=None) -> float | None:
+               band: float, on_demand_fairs=None,
+               fresh_grid_fairs=None) -> float | None:
     """Full RFQ: parse -> partition by game -> per-game subcombo_fair -> multiply."""
     canon = legset.parse_legs(legs)
     if canon is None:
@@ -167,7 +178,8 @@ def combo_fair(legs: list[dict], sgp_df, resolve_game, min_books: int,
         if game_id is None:
             return None
         f = subcombo_fair(game_id, game_legs, sgp_df, min_books, band,
-                          on_demand_fairs=on_demand_fairs)
+                          on_demand_fairs=on_demand_fairs,
+                          fresh_grid_fairs=fresh_grid_fairs)
         if f is None:
             return None
         product *= f

@@ -451,6 +451,42 @@ def _on_demand_fill_info(canon):
         return None
 
 
+def _quote_age_sec(submitted_at) -> float | None:
+    """Seconds between quote submission and now, for confirm_fresh_check.
+    O-2 convention: submitted_at is TIMESTAMPTZ (aware) post-migration; a
+    naive value (pre-migration row) is naive-LOCAL, compared accordingly.
+    Fail-safe: any surprise shape returns None rather than raising."""
+    try:
+        if submitted_at is None:
+            return None
+        if submitted_at.tzinfo is not None:
+            return max(0.0, (datetime.now(timezone.utc) - submitted_at).total_seconds())
+        return max(0.0, (datetime.now() - submitted_at).total_seconds())
+    except Exception:
+        return None
+
+
+def _confirm_fresh_book_info(jobs):
+    """Per-sub-combo per-book fresh-fetch detail (fair/route/latency) for the
+    confirm_fresh_check research event. `jobs` is the refetch job list
+    (possibly None/empty). Never raises into the confirm path."""
+    try:
+        if _ENGINE is None or not jobs:
+            return None
+        out = {}
+        for h, _gref, _gl in jobs:
+            res = _ENGINE.lookup_results(h)
+            if not res:
+                out[h] = None
+                continue
+            out[h] = {b: dict(fair=r.fair, route=r.route,
+                              latency_sec=r.latency_sec)
+                      for b, r in res.items()}
+        return out or None
+    except Exception:
+        return None
+
+
 def _fill_game_ids(legs, primary_game_id):
     """All game_ids a filled combo touches, for per-game exposure attribution.
 
@@ -1058,9 +1094,10 @@ def _confirm_tick(gateway, dry_run):
         # FIX I2: also select model_fair and book_fair so we can carry them into fills
         live = con.execute(
             "SELECT quote_id, rfq_id, combo_market_ticker, game_id, yes_bid, no_bid, "
-            "blended_fair, model_fair, book_fair "
+            "blended_fair, model_fair, book_fair, submitted_at "
             "FROM live_quotes WHERE status='open'").fetchall()
-    for qid, rid, ticker, game_id, yb, nb, prev_fair, model_fair_at_q, book_fair_at_q in live:
+    for (qid, rid, ticker, game_id, yb, nb, prev_fair, model_fair_at_q,
+         book_fair_at_q, submitted_at) in live:
         status, body, _ = auth_client.api("GET", f"/communications/quotes/{qid}")
         q = body.get("quote") if isinstance(body, dict) else None
         st = (q or {}).get("status")
@@ -1093,29 +1130,55 @@ def _confirm_tick(gateway, dry_run):
                         "UPDATE live_quotes SET status='voided', closed_at=? WHERE quote_id=?",
                         [datetime.now(timezone.utc), qid])
                 continue
-            # Phase 2 live last look: for combos with on-demand games, trigger
-            # a synchronous priority re-fetch budgeted against the confirm
+            # Phase 2 live last look, extended to grids by issue #17: trigger
+            # a synchronous priority re-fetch for every re-fetchable sub-combo
+            # — on-demand shapes AND 2-leg grid games (price_on_demand's 2^N
+            # partition IS the grid's 4-cell devig, fetched live instead of
+            # from the ~150s scrape cache) — budgeted against the confirm
             # window. We never confirm on a previously-fetched number — a
             # failed/late re-fetch leaves lookup() stale, so cur_fair below
             # comes back None and the existing void path fires.
             canon_c = legset.parse_legs(legs)
+            refetch_jobs = []
             if _ENGINE is not None and canon_c:
-                od_jobs = []
                 for gl in legset.partition_by_game(canon_c).values():
-                    if legset.classify_subcombo(gl) != "on_demand":
+                    # "single" sub-combos (cross-game marginals) still re-price
+                    # from the cache — issue #23 adds a Kalshi-singles fast
+                    # check at this seam.
+                    if legset.classify_subcombo(gl) not in (
+                            "grid_spread_total", "grid_ml_total", "on_demand"):
                         continue
                     gid_c = _resolve_game_for_legs(gl)
                     gref = _game_ref(gid_c) if gid_c else None
                     if gref is None:
-                        od_jobs = None      # unresolvable -> stale -> void path
+                        refetch_jobs = None  # unresolvable -> stale -> void path
                         break
-                    od_jobs.append((legset.leg_set_hash(gl), gref, gl))
-                if od_jobs:
-                    _ENGINE.refetch_now(od_jobs, CONFIRM_REFETCH_BUDGET_SEC)
+                    refetch_jobs.append((legset.leg_set_hash(gl), gref, gl))
+                if refetch_jobs:
+                    _ENGINE.refetch_now(refetch_jobs, CONFIRM_REFETCH_BUDGET_SEC)
             od_lookup = _ENGINE.lookup if _ENGINE is not None else None
+            # #17: grid games must re-price from the live fetch, never the
+            # scrape cache. Engine absent ⇒ every lookup misses ⇒ cur_fair
+            # None ⇒ void ("can't re-price ⇒ don't confirm").
+            fresh_grid_lookup = od_lookup if od_lookup is not None else (lambda _h: None)
+            # Research-only baseline: what the pre-#17 last look would have
+            # seen (grid legs priced from the stale cache). Never decides.
+            stale_fair = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
+                                           config.MIN_AGREEING_BOOKS,
+                                           config.BOOK_CONSENSUS_BAND,
+                                           on_demand_fairs=od_lookup)
             cur_fair = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
                                          config.MIN_AGREEING_BOOKS, config.BOOK_CONSENSUS_BAND,
-                                         on_demand_fairs=od_lookup)
+                                         on_demand_fairs=od_lookup,
+                                         fresh_grid_fairs=fresh_grid_lookup)
+            # Firehose (#17): measures how often the fresh check saves us —
+            # quote age at accept, per-book fresh-fetch latency, and the
+            # stale-vs-fresh fair gap. Emitted on every accept outcome.
+            research.emit("confirm_fresh_check", rfq_id=rid, quote_id=qid, ticker=ticker,
+                          payload=dict(quote_age_sec=_quote_age_sec(submitted_at),
+                                       per_book=_confirm_fresh_book_info(refetch_jobs),
+                                       stale_fair=stale_fair, fresh_fair=cur_fair,
+                                       prev_fair=prev_fair))
             if cur_fair is None:
                 _log_decision("voided_no_fresh_books", rfq_id=rid, quote_id=qid, ticker=ticker,
                               game_id=game_id)
