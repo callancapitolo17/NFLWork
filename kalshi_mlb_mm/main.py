@@ -33,7 +33,8 @@ from kalshi_common.leg_types import (
     _MLB_CODE_TO_TEAM,
     combo_descriptor,
 )
-from kalshi_mlb_mm import config, db, notify, pricing, research, risk, scope, router
+from kalshi_mlb_mm import (config, db, notify, pricing, research, risk, scope,
+                           router, settlement)
 from kalshi_mlb_mm.rfq_source import RestRFQSource
 from kalshi_mlb_mm.quote_gateway import RestQuoteGateway
 
@@ -1573,7 +1574,7 @@ def main_loop(dry_run: bool):
     except Exception as e:
         log.warning("warmup sgp failed: %s", e)
     last = {"disc": 0.0, "conf": 0.0, "risk": 0.0, "reconcile": 0.0,
-            "sgp": time.time()}
+            "settle": 0.0, "sgp": time.time()}
     try:
         while _running.is_set():
             now = time.time()
@@ -1602,6 +1603,17 @@ def main_loop(dry_run: bool):
                 except Exception as e:
                     log.error("reconcile err: %s", e)
                 last["reconcile"] = now
+            # Settlement sweep (issue #12): populate realized_pnl once markets
+            # settle. Own slow cadence — only matters hours post-game. Gated
+            # off dry-run like reconcile (both read /portfolio-side truth that
+            # only exists for live sessions).
+            if (not dry_run
+                    and now - last["settle"] >= config.SETTLEMENT_SWEEP_SEC):
+                try:
+                    settlement.settlement_sweep_tick()
+                except Exception as e:
+                    log.error("settle err: %s", e)
+                last["settle"] = now
             if now - last["sgp"] >= config.SGP_REFRESH_SEC:
                 try:
                     rc = sgp_runner.sgp_cycle(

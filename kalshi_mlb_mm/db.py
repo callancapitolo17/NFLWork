@@ -118,6 +118,18 @@ CREATE TABLE IF NOT EXISTS quote_games (
     game_id  VARCHAR NOT NULL,
     PRIMARY KEY (quote_id, game_id)
 );
+-- Settlement audit (issue #12 / audit M-1): one row per settled combo market,
+-- written by settlement.settlement_sweep_tick in the same transaction as the
+-- fills.realized_pnl updates. raw_payload preserves Kalshi's /markets/{ticker}
+-- response verbatim — the verification record for the settlement response
+-- shape (status/result field vocabulary is unverified until real data lands).
+CREATE TABLE IF NOT EXISTS settlements (
+    combo_market_ticker VARCHAR PRIMARY KEY,
+    result              VARCHAR NOT NULL,
+    settled_at          TIMESTAMPTZ,
+    raw_payload         VARCHAR,
+    recorded_at         TIMESTAMPTZ NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_quote_decisions_observed_at
     ON quote_decisions(observed_at);
 CREATE INDEX IF NOT EXISTS idx_fills_reconciled
