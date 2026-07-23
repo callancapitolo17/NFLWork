@@ -94,6 +94,8 @@ def _setup(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-OD": (True, None, OD_LEGS)})
     monkeypatch.setattr(main, "_OD_RESULT_EMITTED", {})
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})   # isolate circuit breaker
+    monkeypatch.setattr(main, "_leg_market_prices",
+                        lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
     return main, db, clock, svc, eng
 
 

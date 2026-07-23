@@ -58,6 +58,8 @@ def _cooldown_env(monkeypatch, tmp_path, db_name, *, fetch_time, cooled_until,
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
     monkeypatch.setattr(main, "_SCOPE_CACHE", {_TICKER: (True, _GAME, _LEGS)})
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: _GAME)
+    monkeypatch.setattr(main, "_leg_market_prices",
+                        lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
 
     filled_at = datetime.now(timezone.utc) - timedelta(seconds=120)
     with db.connect() as con:

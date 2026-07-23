@@ -128,11 +128,24 @@ reusing the orchestrators' own lookup structures — the grid-sweep path is
 untouched (`_priceable_in_phase1` and `test_router_integration.py` are the
 retained Phase 1 regression oracles).
 
-**Accepted quotes get a live last look**: the confirm tick synchronously
-re-fetches every on-demand game in the combo (priority lane, budgeted
-`CONFIRM_REFETCH_BUDGET_SEC=20s` against the ~30s confirm window); a failed
-or late re-fetch leaves the lookup stale → `voided_no_fresh_books`. We never
-confirm on a previously-fetched number.
+**Accepted quotes get a live last look**, two layers (issue #17):
+
+1. **Singles-move veto (all combo shapes).** At quote time the bot snapshots
+   the raw Kalshi odds of every leg (each leg is its own Kalshi singles
+   market; `live_quotes.leg_prices_json`) — no snapshot, no quote. On accept
+   it re-reads those markets live (one GET per leg, <~1s — fast enough for
+   the 2s High-Volatility confirm window) and voids (`voided_singles_moved`)
+   if ANY leg's bid or ask moved even one tick. Rationale: over the seconds
+   between quote and accept the legs' correlation is structural and static —
+   the marginals carry the pickoff signal. Missing baseline / failed read /
+   unparseable snapshot all void ("can't verify ⇒ don't confirm").
+2. **On-demand re-price (novel shapes only).** Combos with on-demand games
+   additionally get the synchronous priority re-fetch (budgeted
+   `CONFIRM_REFETCH_BUDGET_SEC=20s`) — those shapes have no cache fairs, so
+   without a live fetch they cannot be re-priced for the EV/drift gate at
+   all. The confirm gate honours `refetch_now`'s landed-after-entry guarantee
+   (a failed re-fetch voids even if a pre-entry result still sits in the
+   15s-fresh store) — we never confirm on a previously-fetched number.
 
 **Failure direction is always "fewer/laggier quotes", never "staler
 quotes"**: unresolvable leg → book drops; incomplete partition → Route B →
@@ -217,7 +230,7 @@ Resting quotes are priced off books that lag reality (books refresh every 60s). 
 
 6. **Tipoff blackout.** `TIPOFF_CANCEL_MIN` pulls all quotes for a game before first pitch. A cross-game combo is swept against the **earliest** first pitch across ALL its games (re-derived from `seen_rfqs.legs_json` each sweep — same legset path as discovery); any game the sweep can't resolve cancels the quote (fail-safe, never fail open).
 
-7. **Last-look backstop (discrete, but limited scope).** On accept, the bot recomputes fair from a fresh book pull and voids the confirm if (a) we cannot re-price (no fresh books, blend fails), (b) the filled side is no longer +EV (`price + fee >= current_fair`), or (c) fair drifted past `FAIR_DRIFT_TOLERANCE`. The "can't re-price ⇒ don't confirm" rule is intentional: silently falling back to the stored fair would neuter the drift check. Non-confirms are abusive behavior Kalshi can throttle — do not lean on this gate.
+7. **Last-look backstop (discrete events).** On accept, the bot first runs the **singles-move veto** (issue #17): the raw Kalshi odds of every leg, snapshotted at quote time, are re-read live (<~1s) and ANY one-tick move on any leg's bid or ask voids the fill (`voided_singles_moved`). Previously the last look re-priced grid combos from the same ~150s scrape cache the quote came from — `cur_fair == prev_fair` by construction, a no-op exactly in the fast-pickoff window. Combos that pass the veto still run the existing gates: (a) cannot re-price (no fresh books / failed on-demand re-fetch → `voided_no_fresh_books`), (b) no longer +EV (`price + fee >= current_fair`), (c) fair drifted past `FAIR_DRIFT_TOLERANCE` (→ `voided_last_look`). "Can't verify ⇒ don't confirm" is intentional throughout. Every accept emits a `confirm_singles_check` research event (quote age at accept, per-leg snapshot-vs-fresh odds, moved flag) — both the gate's save-rate and what a non-zero tolerance would have passed are measurable from day one. Non-confirms are abusive behavior Kalshi can throttle; the zero-tolerance veto's void rate is a watch item — if crowd noise voids too many clean accepts, the firehose deltas are the tuning dataset.
 
 8. **Position reconciliation.** After every confirm we call `/portfolio/positions` for the combo ticker and trust Kalshi as the source of truth; if the confirm response's side or size disagrees, the `fills` row is written with the reconciled values and a `[position_mismatch]` warning is printed.
 

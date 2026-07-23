@@ -506,6 +506,8 @@ def test_confirm_voids_when_no_fresh_books(monkeypatch, tmp_path):
             "first_seen_at, last_decision) VALUES (?,?,?,?,?,?,?)",
             ["r-nofresh", "COMBO-G2", True, "g2", json.dumps(legs),
              datetime.now(timezone.utc), "quoted"])
+        con.execute("UPDATE live_quotes SET leg_prices_json = "
+                    "'{\"L\": {\"yes_bid\": 0.5, \"yes_ask\": 0.52}}'")
 
     # The quote came back 'accepted' from the API.
     def fake_api(method, path, *a, **kw):
@@ -518,6 +520,8 @@ def test_confirm_voids_when_no_fresh_books(monkeypatch, tmp_path):
     # No fresh books available — router.combo_fair returns None (replaces _book_fairs).
     import kalshi_mlb_mm.router as router_mod
     monkeypatch.setattr(router_mod, "combo_fair", lambda *a, **k: None)
+    monkeypatch.setattr(main, "_leg_market_prices",
+                        lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
 
     confirm_calls = []
 
@@ -580,12 +584,16 @@ def test_confirm_records_fill_fast_with_reconciled_false(monkeypatch, tmp_path):
             "first_seen_at, last_decision) VALUES (?,?,?,?,?,?,?)",
             ["r-fast", "COMBO-G3", True, "g3", json.dumps(legs),
              datetime.now(timezone.utc), "quoted"])
+        con.execute("UPDATE live_quotes SET leg_prices_json = "
+                    "'{\"L\": {\"yes_bid\": 0.5, \"yes_ask\": 0.52}}'")
 
     # router.combo_fair replaces _book_fairs + blended_fair in confirm path.
     import kalshi_mlb_mm.router as router_mod
     monkeypatch.setattr(router_mod, "combo_fair", lambda *a, **k: 0.56)
 
     # Track API calls; if confirm path ever hits /portfolio/positions, we fail.
+    monkeypatch.setattr(main, "_leg_market_prices",
+                        lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
     api_paths = []
 
     def fake_api(method, path, *a, **kw):
@@ -1041,6 +1049,8 @@ def test_confirm_arms_combo_cooldown(monkeypatch, tmp_path):
             "first_seen_at, last_decision) VALUES (?,?,?,?,?,?,?)",
             ["r-arm", "COMBO-ARM", True, "gAR", json.dumps(legs),
              datetime.now(timezone.utc), "quoted"])
+        con.execute("UPDATE live_quotes SET leg_prices_json = "
+                    "'{\"L\": {\"yes_bid\": 0.5, \"yes_ask\": 0.52}}'")
 
     # router.combo_fair replaces _book_fairs + blended_fair in confirm path.
     import kalshi_mlb_mm.router as router_mod
@@ -1051,6 +1061,8 @@ def test_confirm_arms_combo_cooldown(monkeypatch, tmp_path):
             return 200, {"quote": {"status": "accepted", "accepted_side": "no",
                                    "contracts": 1}}, None
         raise AssertionError(f"unexpected api call: {method} {path}")
+    monkeypatch.setattr(main, "_leg_market_prices",
+                        lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
     monkeypatch.setattr(auth_client, "api", fake_api)
 
     class GW:

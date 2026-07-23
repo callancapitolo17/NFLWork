@@ -451,6 +451,74 @@ def _on_demand_fill_info(canon):
         return None
 
 
+def _quote_age_sec(submitted_at) -> float | None:
+    """Seconds between quote submission and now, for confirm_singles_check.
+    O-2 convention: submitted_at is TIMESTAMPTZ (aware) post-migration; a
+    naive value (pre-migration row) is naive-LOCAL, compared accordingly.
+    Fail-safe: any surprise shape returns None rather than raising."""
+    try:
+        if submitted_at is None:
+            return None
+        if submitted_at.tzinfo is not None:
+            return max(0.0, (datetime.now(timezone.utc) - submitted_at).total_seconds())
+        return max(0.0, (datetime.now() - submitted_at).total_seconds())
+    except Exception:
+        return None
+
+
+def _market_bid_ask(mkt: dict) -> tuple[float, float] | None:
+    """(yes_bid, yes_ask) in DOLLARS from either Kalshi market response shape
+    — int cents (`yes_bid`) or string-dollar (`yes_bid_dollars`); see the
+    kalshi_price_gotchas note on *_dollars vs int shapes."""
+    bid, ask = mkt.get("yes_bid"), mkt.get("yes_ask")
+    if bid is not None and ask is not None:
+        return float(bid) / 100.0, float(ask) / 100.0
+    bid, ask = mkt.get("yes_bid_dollars"), mkt.get("yes_ask_dollars")
+    if bid is not None and ask is not None:
+        return float(bid), float(ask)
+    return None
+
+
+def _leg_market_prices(legs: list[dict]) -> dict | None:
+    """Raw Kalshi odds for every leg of a combo: {leg market_ticker:
+    {"yes_bid": $, "yes_ask": $}}. Each leg IS its own Kalshi singles market,
+    so this is one fast GET per leg (~<1s for a 2-3 leg combo). Returns None
+    if ANY leg can't be read (fail-safe: no partial baselines)."""
+    try:
+        out = {}
+        for leg in legs:
+            mt = str(leg.get("market_ticker") or "")
+            if not mt:
+                return None
+            if mt in out:
+                continue
+            _status, body, _hdrs = auth_client.api("GET", f"/markets/{mt}")
+            mkt = body.get("market") if isinstance(body, dict) else None
+            prices = _market_bid_ask(mkt) if isinstance(mkt, dict) else None
+            if prices is None:
+                return None
+            out[mt] = {"yes_bid": prices[0], "yes_ask": prices[1]}
+        return out or None
+    except Exception as e:
+        log.warning("[leg_snapshot] fetch failed: %s", e)
+        return None
+
+
+def _singles_moved(snapshot: dict, fresh: dict) -> bool:
+    """True if ANY leg's yes_bid or yes_ask differs between the quote-time
+    snapshot and the fresh read. Zero tolerance by design: Kalshi prices move
+    in 1c ticks, so 'moved at all' == 'moved >= one tick'. A leg-set mismatch
+    counts as moved (fail-safe)."""
+    if set(snapshot) != set(fresh):
+        return True
+    for mt, snap in snapshot.items():
+        cur = fresh[mt]
+        if (abs(float(snap["yes_bid"]) - float(cur["yes_bid"])) > 1e-9
+                or abs(float(snap["yes_ask"]) - float(cur["yes_ask"])) > 1e-9):
+            return True
+    return False
+
+
 def _fill_game_ids(legs, primary_game_id):
     """All game_ids a filled combo touches, for per-game exposure attribution.
 
@@ -1013,6 +1081,16 @@ def _discovery_tick(source, gateway, dry_run):
             # On failure the old row stays 'open' (still tracked); the next
             # tick retries the replace.
             replaced_qid = eqid
+        # #17 singles baseline: snapshot the raw Kalshi odds of every leg at
+        # quote time — the confirm-window veto compares a fresh read against
+        # this and voids on any tick. No baseline ⇒ don't quote: a quote
+        # without one is doomed to void on accept, and chronic non-confirms
+        # are abusive behavior Kalshi can throttle.
+        leg_snapshot = _leg_market_prices(legs)
+        if leg_snapshot is None:
+            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                          reason="no_leg_snapshot")
+            continue
         qid = gateway.submit_quote(rid, q.yes_bid, q.no_bid)
         if qid:
             with db.connect() as con:
@@ -1028,10 +1106,11 @@ def _discovery_tick(source, gateway, dry_run):
                 con.execute(
                     "INSERT INTO live_quotes (quote_id, rfq_id, combo_market_ticker, "
                     "game_id, yes_bid, no_bid, model_fair, book_fair, blended_fair, "
-                    "status, submitted_at, closed_at, worst_exposure_usd) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "status, submitted_at, closed_at, worst_exposure_usd, leg_prices_json) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     [qid, rid, ticker, game_id, q.yes_bid, q.no_bid, None, book_med,
-                     blended, "open", datetime.now(timezone.utc), None, fill_exposure])
+                     blended, "open", datetime.now(timezone.utc), None, fill_exposure,
+                     json.dumps(leg_snapshot)])
                 # R-1 (issue #22): game attribution for the OPEN-quote exposure
                 # gates — one row per game the combo touches, same rule as
                 # fill_games. Written in this transaction so an open quote can
@@ -1058,9 +1137,10 @@ def _confirm_tick(gateway, dry_run):
         # FIX I2: also select model_fair and book_fair so we can carry them into fills
         live = con.execute(
             "SELECT quote_id, rfq_id, combo_market_ticker, game_id, yes_bid, no_bid, "
-            "blended_fair, model_fair, book_fair "
+            "blended_fair, model_fair, book_fair, submitted_at, leg_prices_json "
             "FROM live_quotes WHERE status='open'").fetchall()
-    for qid, rid, ticker, game_id, yb, nb, prev_fair, model_fair_at_q, book_fair_at_q in live:
+    for (qid, rid, ticker, game_id, yb, nb, prev_fair, model_fair_at_q,
+         book_fair_at_q, submitted_at, leg_prices_json) in live:
         status, body, _ = auth_client.api("GET", f"/communications/quotes/{qid}")
         q = body.get("quote") if isinstance(body, dict) else None
         st = (q or {}).get("status")
@@ -1093,30 +1173,70 @@ def _confirm_tick(gateway, dry_run):
                         "UPDATE live_quotes SET status='voided', closed_at=? WHERE quote_id=?",
                         [datetime.now(timezone.utc), qid])
                 continue
+            # #17 (reworked): singles-move veto — the fast last look. Re-read
+            # the raw Kalshi odds of every leg (each leg is its own singles
+            # market, so this is <~1s regardless of combo shape) and refuse
+            # the fill if ANY leg's bid or ask moved even one tick since the
+            # quote-time snapshot. Rationale: over the seconds between quote
+            # and accept the legs' correlation is structural and static — the
+            # marginals carry the pickoff signal, so unmoved raw leg odds ⇒
+            # unmoved combo fair. Missing baseline, unparseable snapshot, or
+            # a failed fresh read all void ("can't verify ⇒ don't confirm").
+            try:
+                snapshot = json.loads(leg_prices_json) if leg_prices_json else None
+            except (TypeError, ValueError):
+                snapshot = None
+            fresh_leg_prices = _leg_market_prices(legs)
+            singles_moved = (snapshot is None or fresh_leg_prices is None
+                             or _singles_moved(snapshot, fresh_leg_prices))
+            # Firehose: quote age at accept + snapshot-vs-fresh per-leg odds.
+            # Measures how often the veto saves us AND (via the deltas) what a
+            # non-zero tolerance would have passed — the tuning dataset.
+            research.emit("confirm_singles_check", rfq_id=rid, quote_id=qid, ticker=ticker,
+                          payload=dict(quote_age_sec=_quote_age_sec(submitted_at),
+                                       snapshot=snapshot, fresh=fresh_leg_prices,
+                                       moved=singles_moved, prev_fair=prev_fair))
+            if singles_moved:
+                _log_decision("voided_singles_moved", rfq_id=rid, quote_id=qid,
+                              ticker=ticker, game_id=game_id)
+                with db.connect() as con:
+                    con.execute(
+                        "UPDATE live_quotes SET status='voided', closed_at=? WHERE quote_id=?",
+                        [datetime.now(timezone.utc), qid])
+                continue
             # Phase 2 live last look: for combos with on-demand games, trigger
             # a synchronous priority re-fetch budgeted against the confirm
-            # window. We never confirm on a previously-fetched number — a
-            # failed/late re-fetch leaves lookup() stale, so cur_fair below
-            # comes back None and the existing void path fires.
+            # window (on-demand shapes have no cache fairs at all — without a
+            # live fetch they cannot be re-priced for the EV check below).
             canon_c = legset.parse_legs(legs)
+            refetch_jobs = []
+            # refetch_ok is the engine's own "every job landed AFTER this
+            # refetch entered" guarantee. It must gate the confirm: the result
+            # store serves lookups for QUOTE_FRESH_SEC, so after a failed
+            # re-fetch a PRE-entry result (e.g. from another accept on the
+            # same combo seconds ago) could still satisfy the lookup — relying
+            # on "failed fetch ⇒ stale lookup" alone would confirm on a
+            # previously-fetched number.
+            refetch_ok = True
             if _ENGINE is not None and canon_c:
-                od_jobs = []
                 for gl in legset.partition_by_game(canon_c).values():
                     if legset.classify_subcombo(gl) != "on_demand":
                         continue
                     gid_c = _resolve_game_for_legs(gl)
                     gref = _game_ref(gid_c) if gid_c else None
                     if gref is None:
-                        od_jobs = None      # unresolvable -> stale -> void path
+                        refetch_jobs = None  # unresolvable -> stale -> void path
+                        refetch_ok = False
                         break
-                    od_jobs.append((legset.leg_set_hash(gl), gref, gl))
-                if od_jobs:
-                    _ENGINE.refetch_now(od_jobs, CONFIRM_REFETCH_BUDGET_SEC)
+                    refetch_jobs.append((legset.leg_set_hash(gl), gref, gl))
+                if refetch_jobs:
+                    refetch_ok = _ENGINE.refetch_now(refetch_jobs,
+                                                     CONFIRM_REFETCH_BUDGET_SEC)
             od_lookup = _ENGINE.lookup if _ENGINE is not None else None
             cur_fair = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
                                          config.MIN_AGREEING_BOOKS, config.BOOK_CONSENSUS_BAND,
                                          on_demand_fairs=od_lookup)
-            if cur_fair is None:
+            if cur_fair is None or not refetch_ok:
                 _log_decision("voided_no_fresh_books", rfq_id=rid, quote_id=qid, ticker=ticker,
                               game_id=game_id)
                 with db.connect() as con:
