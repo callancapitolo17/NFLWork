@@ -34,6 +34,12 @@ log = logging.getLogger("kalshi_mlb_mm.settlement")
 # loud log so it isn't silently re-polled forever.
 _TERMINAL_STATUSES = {"settled", "finalized", "determined"}
 
+# The sweep shares the trading loop's single thread — a hung API call at the
+# default 30s timeout, multiplied over several unsettled tickers, would starve
+# the 2s confirm loop (whose accepts expire in ~30s). Same rationale as
+# _get_position_contracts' short timeout in main.py.
+API_TIMEOUT_SEC = 10
+
 
 def realized_pnl_usd(side_held: str, contracts: float, price: float,
                      fee: float, result: str) -> float:
@@ -72,7 +78,8 @@ def _any_settlements_recorded() -> bool:
 
 def _fetch_market(ticker: str) -> dict | None:
     """GET /markets/{ticker} → market dict, or None on any API failure."""
-    status_code, body, _ = auth_client.api("GET", f"/markets/{ticker}")
+    status_code, body, _ = auth_client.api("GET", f"/markets/{ticker}",
+                                           timeout=API_TIMEOUT_SEC)
     if status_code != 200 or not isinstance(body, dict):
         log.warning("[settlement_fetch_failed] ticker=%s status=%s — will "
                     "retry next sweep", ticker, status_code)
@@ -169,6 +176,22 @@ def _collect_fee_fields(obj, prefix: str = "", out: dict | None = None) -> dict:
     return out
 
 
+def _filter_entries_to_ticker(obj, ticker: str):
+    """Copy of `obj` with list entries about OTHER tickers dropped.
+
+    Any dict inside a list that carries a "ticker" key is kept only if it
+    matches `ticker`. Dicts without a "ticker" key are kept (fail-open:
+    better to over-collect than to silently verify against nothing).
+    """
+    if isinstance(obj, dict):
+        return {k: _filter_entries_to_ticker(v, ticker) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_filter_entries_to_ticker(item, ticker) for item in obj
+                if not (isinstance(item, dict) and "ticker" in item
+                        and item.get("ticker") != ticker)]
+    return obj
+
+
 def _verify_fee_assumption(ticker: str) -> None:
     """One-time fee check (issue #12 item 3): does the fee Kalshi ACTUALLY
     charged match maker_fee_per_contract (assumed 25% of taker)? The
@@ -192,11 +215,18 @@ def _verify_fee_assumption(ticker: str) -> None:
                 ("portfolio_fills", f"/portfolio/fills?ticker={ticker}&limit=100"),
                 ("portfolio_settlements", f"/portfolio/settlements?limit=100")):
             try:
-                status_code, body, _ = auth_client.api("GET", path)
+                status_code, body, _ = auth_client.api("GET", path,
+                                                       timeout=API_TIMEOUT_SEC)
                 payloads[name] = dict(status=status_code, body=body)
             except Exception as exc:
                 payloads[name] = dict(error=repr(exc))
-        observed_fields = _collect_fee_fields(payloads)
+        # Harvest fee fields only from entries about THIS ticker: the
+        # /portfolio/settlements payload has no ticker filter and covers the
+        # whole account, so other markets' fees would otherwise pollute the
+        # sum and fire a false [FEE_MISMATCH]. The research event still gets
+        # the unfiltered payloads.
+        observed_fields = _collect_fee_fields(
+            _filter_entries_to_ticker(payloads, ticker))
         verdict = "no_fee_field_found"
         if observed_fields:
             observed_total = sum(observed_fields.values())

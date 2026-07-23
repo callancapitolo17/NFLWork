@@ -56,16 +56,19 @@ class ApiStub:
     """Programmable auth_client.api stand-in. Records every call."""
 
     def __init__(self, market_result="yes", market_status="settled",
-                 market_http=200, portfolio_fills_body=None, raise_exc=None):
+                 market_http=200, portfolio_fills_body=None,
+                 portfolio_settlements_body=None, raise_exc=None):
         self.market_result = market_result
         self.market_status = market_status
         self.market_http = market_http
         self.portfolio_fills_body = portfolio_fills_body or {"fills": []}
+        self.portfolio_settlements_body = (portfolio_settlements_body
+                                           or {"settlements": []})
         self.raise_exc = raise_exc
         self.calls = []
 
     def __call__(self, method, path, body=None, timeout=30):
-        self.calls.append((method, path))
+        self.calls.append((method, path, timeout))
         if self.raise_exc is not None:
             raise self.raise_exc
         if path.startswith("/markets/"):
@@ -79,7 +82,7 @@ class ApiStub:
         if path.startswith("/portfolio/fills"):
             return 200, self.portfolio_fills_body, {}
         if path.startswith("/portfolio/settlements"):
-            return 200, {"settlements": []}, {}
+            return 200, self.portfolio_settlements_body, {}
         raise AssertionError(f"unexpected path {path}")
 
 
@@ -340,6 +343,54 @@ def test_fee_verification_runs_once_ever(monkeypatch, tmp_path, emitted):
     settlement.settlement_sweep_tick()
     fee_events = [kw for e, kw in emitted if e == "fee_verification"]
     assert len(fee_events) == 1
+
+
+def test_fee_check_ignores_other_tickers(monkeypatch, tmp_path, emitted,
+                                         caplog):
+    """/portfolio/settlements is account-wide (no ticker filter) — other
+    markets' fee fields must not pollute the comparison into a false
+    [FEE_MISMATCH]."""
+    from kalshi_mlb_mm import settlement
+    db = _setup_db(monkeypatch, tmp_path, "feexticker")
+    # Expected $0.10 on TKR-A; account payload also shows a $9.99 fee on an
+    # unrelated market.
+    _insert_fill(db, "f1", "TKR-A", "yes", 10, 0.55, 0.01)
+    _patch_api(monkeypatch, ApiStub(
+        market_result="yes",
+        portfolio_fills_body={"fills": [{"ticker": "TKR-A", "fee_cost": "0.10"}]},
+        portfolio_settlements_body={"settlements": [
+            {"ticker": "SOMETHING-ELSE", "fee_paid": "9.99"}]}))
+    with caplog.at_level(logging.WARNING, logger="kalshi_mlb_mm.settlement"):
+        settlement.settlement_sweep_tick()
+    assert "FEE_MISMATCH" not in caplog.text
+    fee_events = [kw for e, kw in emitted if e == "fee_verification"]
+    assert fee_events[0]["payload"]["verdict"] == "matched"
+    # Raw (unfiltered) payloads are still captured for manual inspection.
+    assert "SOMETHING-ELSE" in json.dumps(fee_events[0]["payload"]["raw"])
+
+
+def test_api_calls_use_bounded_timeout(monkeypatch, tmp_path, emitted):
+    """The sweep shares the trading loop's thread — every API call must use a
+    short explicit timeout so a hung call can't starve the confirm loop."""
+    from kalshi_mlb_mm import settlement
+    db = _setup_db(monkeypatch, tmp_path, "timeouts")
+    _insert_fill(db, "f1", "TKR-A", "yes", 10, 0.55, 0.01)
+    stub = ApiStub(market_result="yes")
+    _patch_api(monkeypatch, stub)
+    settlement.settlement_sweep_tick()
+    assert stub.calls   # market fetch + fee-verification portfolio calls
+    assert all(timeout <= 10 for _, _, timeout in stub.calls)
+
+
+def test_filter_entries_to_ticker():
+    from kalshi_mlb_mm.settlement import _filter_entries_to_ticker
+    filtered = _filter_entries_to_ticker(
+        {"settlements": [{"ticker": "A", "fee": 1}, {"ticker": "B", "fee": 2},
+                         {"no_ticker_key": True}],
+         "scalar": 5}, "A")
+    assert filtered == {"settlements": [{"ticker": "A", "fee": 1},
+                                        {"no_ticker_key": True}],
+                        "scalar": 5}
 
 
 def test_fee_field_absent_logs_unverified(monkeypatch, tmp_path, emitted,
