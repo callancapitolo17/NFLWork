@@ -56,8 +56,12 @@ def _confirm_env(monkeypatch, tmp_path, db_name, quote_response):
             "first_seen_at, last_decision) VALUES (?,?,?,?,?,?,?)",
             ["r-b4", "COMBO-B4", True, "g4", json.dumps(legs),
              datetime.now(timezone.utc), "quoted"])
+        con.execute("UPDATE live_quotes SET leg_prices_json = "
+                    "'{\"L\": {\"yes_bid\": 0.5, \"yes_ask\": 0.52}}'")
 
     monkeypatch.setattr(router_mod, "combo_fair", lambda *a, **k: 0.56)
+    monkeypatch.setattr(main, "_leg_market_prices",
+                        lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
 
     def fake_api(method, path, *a, **kw):
         if path.startswith("/communications/quotes/"):

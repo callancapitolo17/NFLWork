@@ -37,7 +37,12 @@ CREATE TABLE IF NOT EXISTS live_quotes (
     -- at quote time (main._worst_fill_exposure_usd). Summed over open quotes
     -- by the per-game and daily cap gates. NULL (pre-migration rows) is
     -- counted at the per-fill cap by readers — never treated as zero.
-    worst_exposure_usd  DOUBLE
+    worst_exposure_usd  DOUBLE,
+    -- #17 singles-veto baseline: raw Kalshi odds of every leg at quote time,
+    -- JSON {leg market_ticker: {yes_bid, yes_ask}} in dollars. The confirm
+    -- tick voids the accept if any leg moved vs this snapshot. NULL
+    -- (pre-migration rows) fails CLOSED — the accept voids.
+    leg_prices_json     VARCHAR
 );
 CREATE TABLE IF NOT EXISTS quote_decisions (
     decision_id   VARCHAR PRIMARY KEY,
@@ -132,6 +137,7 @@ MIGRATE_SQL = """
 ALTER TABLE fills ADD COLUMN IF NOT EXISTS reconciled BOOLEAN DEFAULT FALSE;
 ALTER TABLE seen_rfqs ADD COLUMN IF NOT EXISTS creator_id VARCHAR;
 ALTER TABLE live_quotes ADD COLUMN IF NOT EXISTS worst_exposure_usd DOUBLE;
+ALTER TABLE live_quotes ADD COLUMN IF NOT EXISTS leg_prices_json VARCHAR;
 DROP INDEX IF EXISTS idx_quote_decisions_observed_at;
 DROP INDEX IF EXISTS idx_fills_reconciled;
 ALTER TABLE seen_rfqs ALTER COLUMN first_seen_at SET DATA TYPE TIMESTAMPTZ;

@@ -48,6 +48,8 @@ def _setup(monkeypatch, tmp_path, db_name, candidate_ticker, candidate_game):
     monkeypatch.setattr(main, "_SCOPE_CACHE",
                         {candidate_ticker: (True, candidate_game, _LEGS)})
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: candidate_game)
+    monkeypatch.setattr(main, "_leg_market_prices",
+                        lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
     return db
 
 

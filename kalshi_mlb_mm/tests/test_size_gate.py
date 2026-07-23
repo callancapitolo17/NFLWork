@@ -132,6 +132,8 @@ def _scaffold(monkeypatch, tmp_path, db, cfg, risk):
              "event_ticker": "KXMLBGAME-25JUN271905TEXLAA", "side": "yes"}]
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-SZ": (True, "g1", legs)})
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "g1")
+    monkeypatch.setattr(main, "_leg_market_prices",
+                        lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
 
 

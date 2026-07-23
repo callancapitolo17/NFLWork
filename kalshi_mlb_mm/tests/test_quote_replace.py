@@ -39,6 +39,8 @@ def _replace_env(monkeypatch, tmp_path, db_name):
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     monkeypatch.setattr(router_mod, "combo_fair", lambda *a, **k: 0.55)
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
+    monkeypatch.setattr(main, "_leg_market_prices",
+                        lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-1": (True, "game1", _LEGS)})

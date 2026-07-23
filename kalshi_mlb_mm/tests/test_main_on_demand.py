@@ -76,6 +76,8 @@ def _setup(monkeypatch, tmp_path, engine, db_name):
     monkeypatch.setattr(main, "_SCOPE_CACHE",
                         {"COMBO-OD": (True, None, OD_LEGS)})
     monkeypatch.setattr(main, "_OD_RESULT_EMITTED", {})
+    monkeypatch.setattr(main, "_leg_market_prices",
+                        lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
     return main, db
 
 
@@ -178,6 +180,8 @@ def test_confirm_on_demand_refetches_and_voids_on_stale(monkeypatch, tmp_path):
             "game_id, legs_json, first_seen_at, last_decision, creator_id) "
             "VALUES (?,?,?,?,?,?,?,?)",
             ["r-od", "COMBO-OD", True, "game1", json.dumps(OD_LEGS), now, "quoted", ""])
+        con.execute("UPDATE live_quotes SET leg_prices_json = "
+                    "'{\"L\": {\"yes_bid\": 0.5, \"yes_ask\": 0.52}}'")
     monkeypatch.setattr(main.auth_client, "api",
                         lambda *a, **k: (200, {"quote": {"status": "accepted",
                                                          "accepted_side": "yes",
