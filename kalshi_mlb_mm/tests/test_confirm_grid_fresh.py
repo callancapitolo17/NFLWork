@@ -232,6 +232,34 @@ def test_confirm_fresh_check_emitted_on_void_too(monkeypatch, tmp_path):
     assert abs(payload["stale_fair"] - STALE_CACHE_FAIR) < 1e-9
 
 
+def test_confirm_refetch_false_voids_even_if_lookup_serves_a_result(
+        monkeypatch, tmp_path):
+    """refetch_now returning False must void EVEN IF lookup still serves a
+    (pre-entry) result. The store keeps results for QUOTE_FRESH_SEC=15s, so a
+    prior accept's refetch on the same combo can satisfy the lookup after this
+    accept's re-fetch failed — confirming on it would break the 'never confirm
+    on a previously-fetched number' invariant. The engine reports exactly this
+    via refetch_now's return value; main must honour it."""
+
+    class PreEntryResultEngine(FakeEngine):
+        def refetch_now(self, jobs, deadline_sec):
+            self.refetch_calls.append((list(jobs), deadline_sec))
+            return False        # this accept's fetch failed/landed pre-entry
+
+    eng = PreEntryResultEngine(fairs={"draftkings": 0.25, "fanduel": 0.25})
+    main, db = _setup(monkeypatch, tmp_path, eng, "grid_preentry.duckdb")
+    main._confirm_tick(MustNotConfirmGW(), dry_run=False)
+    assert eng.refetch_calls
+    with db.connect(read_only=True) as con:
+        st = con.execute(
+            "SELECT status FROM live_quotes WHERE quote_id='q-grid'").fetchone()[0]
+        dec = con.execute(
+            "SELECT decision FROM quote_decisions WHERE quote_id='q-grid' "
+            "ORDER BY observed_at DESC LIMIT 1").fetchone()[0]
+    assert st == "voided"
+    assert dec == "voided_no_fresh_books"
+
+
 # --------------------------------------------------------------------------- #
 # Router unit level: fresh_grid_fairs plumbing                                #
 # --------------------------------------------------------------------------- #

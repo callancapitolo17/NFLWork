@@ -1140,6 +1140,14 @@ def _confirm_tick(gateway, dry_run):
             # comes back None and the existing void path fires.
             canon_c = legset.parse_legs(legs)
             refetch_jobs = []
+            # refetch_ok is the engine's own "every job landed AFTER this
+            # refetch entered" guarantee. It must gate the confirm: the result
+            # store serves lookups for QUOTE_FRESH_SEC, so after a failed
+            # re-fetch a PRE-entry result (e.g. from another accept on the
+            # same combo seconds ago) can still satisfy the lookup — relying
+            # on "failed fetch ⇒ stale lookup" alone would confirm on a
+            # previously-fetched number.
+            refetch_ok = True
             if _ENGINE is not None and canon_c:
                 for gl in legset.partition_by_game(canon_c).values():
                     # "single" sub-combos (cross-game marginals) still re-price
@@ -1152,10 +1160,12 @@ def _confirm_tick(gateway, dry_run):
                     gref = _game_ref(gid_c) if gid_c else None
                     if gref is None:
                         refetch_jobs = None  # unresolvable -> stale -> void path
+                        refetch_ok = False
                         break
                     refetch_jobs.append((legset.leg_set_hash(gl), gref, gl))
                 if refetch_jobs:
-                    _ENGINE.refetch_now(refetch_jobs, CONFIRM_REFETCH_BUDGET_SEC)
+                    refetch_ok = _ENGINE.refetch_now(refetch_jobs,
+                                                     CONFIRM_REFETCH_BUDGET_SEC)
             od_lookup = _ENGINE.lookup if _ENGINE is not None else None
             # #17: grid games must re-price from the live fetch, never the
             # scrape cache. Engine absent ⇒ every lookup misses ⇒ cur_fair
@@ -1178,8 +1188,9 @@ def _confirm_tick(gateway, dry_run):
                           payload=dict(quote_age_sec=_quote_age_sec(submitted_at),
                                        per_book=_confirm_fresh_book_info(refetch_jobs),
                                        stale_fair=stale_fair, fresh_fair=cur_fair,
-                                       prev_fair=prev_fair))
-            if cur_fair is None:
+                                       prev_fair=prev_fair,
+                                       refetch_ok=refetch_ok))
+            if cur_fair is None or not refetch_ok:
                 _log_decision("voided_no_fresh_books", rfq_id=rid, quote_id=qid, ticker=ticker,
                               game_id=game_id)
                 with db.connect() as con:
