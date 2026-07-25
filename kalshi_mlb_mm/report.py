@@ -319,6 +319,90 @@ def _render_universe(stats: dict) -> str:
     return "\n".join(lines)
 
 
+def _age_dist(ages: list[float]) -> dict:
+    return {"n": len(ages), "p50": _percentile(ages, 0.50),
+            "p90": _percentile(ages, 0.90), "p95": _percentile(ages, 0.95),
+            "max": max(ages) if ages else None}
+
+
+def staleness_stats(research_db: str, since: datetime) -> dict:
+    """Book-data age at quote time + quote age at accept time (seconds).
+
+    Quote-time age is a proxy: per-book scrape ages aren't persisted at
+    quote time, so we measure each quote_priced event against the latest
+    prior scrape_done (the SGP cycle that produced the data it priced on).
+    Accept-time age is exact: confirm_singles_check.quote_age_sec.
+    """
+    import bisect
+    import json
+
+    out = {"quote_age": _age_dist([]), "quote_age_unknown": 0,
+           "accept_age": _age_dist([]), "unavailable": None}
+
+    scrapes = _read(research_db,
+                    "SELECT ts FROM events WHERE event_type = 'scrape_done' "
+                    "ORDER BY ts")
+    if not _usable(scrapes):
+        out["unavailable"] = _unavailable_note(scrapes, "research")
+        return out
+    quotes = _read(research_db,
+                   "SELECT ts FROM events WHERE event_type = 'quote_priced' "
+                   "AND ts >= ?", [since])
+    confirms = _read(research_db,
+                     "SELECT payload FROM events "
+                     "WHERE event_type = 'confirm_singles_check' "
+                     "AND ts >= ?", [since])
+    if not _usable(quotes) or not _usable(confirms):
+        out["unavailable"] = _unavailable_note(LOCKED, "research")
+        return out
+
+    # scrape_done is deliberately unwindowed: a quote just inside the window
+    # may price off a scrape just before it.
+    scrape_ts = [r[0] for r in scrapes]
+    quote_ages = []
+    for (quote_ts,) in quotes:
+        idx = bisect.bisect_right(scrape_ts, quote_ts)
+        if idx == 0:
+            out["quote_age_unknown"] += 1
+        else:
+            quote_ages.append((quote_ts - scrape_ts[idx - 1]).total_seconds())
+    out["quote_age"] = _age_dist(quote_ages)
+
+    accept_ages = []
+    for (payload_str,) in confirms:
+        age = json.loads(payload_str).get("quote_age_sec")
+        if age is not None:
+            accept_ages.append(float(age))
+    out["accept_age"] = _age_dist(accept_ages)
+    return out
+
+
+def _render_age_row(label: str, dist: dict) -> str:
+    return (f"| {label} | {dist['n']} | {_fmt(dist['p50'])} | "
+            f"{_fmt(dist['p90'])} | {_fmt(dist['p95'])} | "
+            f"{_fmt(dist['max'])} |")
+
+
+def _render_staleness(stats: dict) -> str:
+    if stats["unavailable"]:
+        return stats["unavailable"]
+    if stats["quote_age"]["n"] == 0 and stats["accept_age"]["n"] == 0:
+        return "_no quotes in window._"
+    lines = [
+        "| age (s) | n | p50 | p90 | p95 | max |",
+        "|---|---:|---:|---:|---:|---:|",
+        _render_age_row("book data at quote", stats["quote_age"]),
+        _render_age_row("quote at accept", stats["accept_age"]),
+        "",
+        "_Quote-time age = gap to the latest prior scrape cycle (per-book "
+        "ages aren't persisted at quote time)._",
+    ]
+    if stats["quote_age_unknown"]:
+        lines.append(f"_{stats['quote_age_unknown']} quotes had no prior "
+                     "scrape_done event (bot warmup)._")
+    return "\n".join(lines)
+
+
 def _fmt(value, spec: str = ".1f") -> str:
     return "—" if value is None else format(value, spec)
 
@@ -429,6 +513,10 @@ def build_report(state_db: str, research_db: str, market_db: str,
         _render_universe(universe_stats(
             market_db, (now - timedelta(days=7)).replace(tzinfo=None),
             now.replace(tzinfo=None))),
+        "",
+        "## 3. Staleness (7d)",
+        "",
+        _render_staleness(staleness_stats(research_db, d7)),
         "",
         "## 5. Settlement P&L",
         "",

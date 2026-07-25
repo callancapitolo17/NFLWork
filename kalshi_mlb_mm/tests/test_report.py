@@ -286,3 +286,45 @@ def test_universe_empty(monkeypatch, tmp_path):
                                   now_naive)
     assert stats["per_day"] == []
     assert stats["per_book"] == []
+
+
+# ---------------------------------------------------------------------------
+# Task 5: staleness — book-data age at quote time / quote age at accept
+# ---------------------------------------------------------------------------
+
+def test_staleness_stats(monkeypatch, tmp_path):
+    from kalshi_mlb_mm import report
+    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    t0 = NOW - timedelta(hours=3)
+
+    _insert_event(research, "scrape_done", t0, {"book_counts": {}})
+    _insert_event(research, "scrape_done", t0 + timedelta(seconds=120),
+                  {"book_counts": {}})
+    # ages vs latest prior scrape: 30s and 30s
+    _insert_event(research, "quote_priced", t0 + timedelta(seconds=30),
+                  {"blended_fair": 0.5})
+    _insert_event(research, "quote_priced", t0 + timedelta(seconds=150),
+                  {"blended_fair": 0.6})
+    # a quote before any scrape_done: unknown age, not a crash
+    _insert_event(research, "quote_priced", t0 - timedelta(seconds=10),
+                  {"blended_fair": 0.7})
+    _insert_event(research, "confirm_singles_check",
+                  t0 + timedelta(seconds=200), {"quote_age_sec": 5.0})
+    _insert_event(research, "confirm_singles_check",
+                  t0 + timedelta(seconds=300), {"quote_age_sec": 45.0})
+
+    stats = report.staleness_stats(research, NOW - timedelta(days=7))
+    assert stats["quote_age"]["n"] == 2
+    assert stats["quote_age"]["p50"] == pytest.approx(30.0)
+    assert stats["quote_age_unknown"] == 1
+    assert stats["accept_age"]["n"] == 2
+    assert stats["accept_age"]["p50"] == pytest.approx(25.0)
+    assert stats["accept_age"]["max"] == pytest.approx(45.0)
+
+
+def test_staleness_empty(monkeypatch, tmp_path):
+    from kalshi_mlb_mm import report
+    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    stats = report.staleness_stats(research, NOW - timedelta(days=7))
+    assert stats["quote_age"]["n"] == 0
+    assert stats["accept_age"]["n"] == 0
