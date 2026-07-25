@@ -630,6 +630,95 @@ def _render_pnl(stats: dict) -> str:
     return "\n".join(lines)
 
 
+VOID_DECISIONS = ("voided_no_legs", "voided_singles_moved",
+                  "voided_no_fresh_books", "voided_last_look")
+
+
+def health_stats(state_db: str, research_db: str, since: datetime) -> dict:
+    """Void rate, sweep cancels, halts, phantom fills, reconcile outcomes."""
+    import json
+
+    out = {"confirmed": 0, "voids_by_decision": {}, "void_rate": None,
+           "sweep_cancels_by_reason": {}, "circuit_breakers": 0,
+           "void_rate_halts": 0, "halt_transitions": {}, "phantom_fills": 0,
+           "reconcile_outcomes": {}, "unavailable": None}
+
+    decisions = _read(
+        state_db,
+        "SELECT decision, coalesce(reason, ''), count(*) "
+        "FROM quote_decisions WHERE observed_at >= ? "
+        f"AND (decision IN {_sql_in(VOID_DECISIONS)} "
+        "     OR decision IN ('confirmed', 'sweep_cancel', "
+        "                     'circuit_breaker', 'halted_high_void_rate')) "
+        "GROUP BY 1, 2", [since])
+    if not _usable(decisions):
+        out["unavailable"] = _unavailable_note(decisions, "state")
+        return out
+    for decision, reason, n in decisions:
+        if decision == "confirmed":
+            out["confirmed"] += n
+        elif decision in VOID_DECISIONS:
+            out["voids_by_decision"][decision] = (
+                out["voids_by_decision"].get(decision, 0) + n)
+        elif decision == "sweep_cancel":
+            out["sweep_cancels_by_reason"][reason] = (
+                out["sweep_cancels_by_reason"].get(reason, 0) + n)
+        elif decision == "circuit_breaker":
+            out["circuit_breakers"] += n
+        elif decision == "halted_high_void_rate":
+            out["void_rate_halts"] += n
+    voids = sum(out["voids_by_decision"].values())
+    if voids + out["confirmed"] > 0:
+        out["void_rate"] = voids / (voids + out["confirmed"])
+
+    phantoms = _read(state_db,
+                     "SELECT count(*) FROM fills "
+                     "WHERE contracts = 0 AND reconciled AND filled_at >= ?",
+                     [since])
+    if _usable(phantoms) and phantoms:
+        out["phantom_fills"] = phantoms[0][0]
+
+    events = _read(research_db,
+                   "SELECT event_type, payload FROM events "
+                   "WHERE event_type IN ('halt_event', 'reconcile_done') "
+                   "AND ts >= ?", [since])
+    if _usable(events):
+        for event_type, payload_str in events:
+            payload = json.loads(payload_str)
+            if event_type == "halt_event":
+                key = payload.get("transition", "?")
+                out["halt_transitions"][key] = (
+                    out["halt_transitions"].get(key, 0) + 1)
+            else:
+                key = payload.get("outcome", "?")
+                out["reconcile_outcomes"][key] = (
+                    out["reconcile_outcomes"].get(key, 0) + 1)
+    return out
+
+
+def _render_counts(d: dict) -> str:
+    return ", ".join(f"{k}: {v}" for k, v in sorted(d.items())) or "none"
+
+
+def _render_health(stats: dict) -> str:
+    if stats["unavailable"]:
+        return stats["unavailable"]
+    voids = sum(stats["voids_by_decision"].values())
+    lines = [
+        f"- accepts: {stats['confirmed'] + voids} → confirmed "
+        f"{stats['confirmed']}, voided {voids} "
+        f"(void rate {_fmt(stats['void_rate'], '.0%')})",
+        f"- voids by reason: {_render_counts(stats['voids_by_decision'])}",
+        f"- sweep cancels: {_render_counts(stats['sweep_cancels_by_reason'])}",
+        f"- circuit breakers: {stats['circuit_breakers']}, "
+        f"void-rate halts: {stats['void_rate_halts']} "
+        f"(transitions: {_render_counts(stats['halt_transitions'])})",
+        f"- phantom fills: {stats['phantom_fills']}, reconcile outcomes: "
+        f"{_render_counts(stats['reconcile_outcomes'])}",
+    ]
+    return "\n".join(lines)
+
+
 def build_report(state_db: str, research_db: str, market_db: str,
                  now: datetime | None = None) -> str:
     """Assemble the full markdown report. Never raises on empty/missing DBs."""
@@ -672,6 +761,10 @@ def build_report(state_db: str, research_db: str, market_db: str,
         "## 5. Settlement P&L (all-time)",
         "",
         _render_pnl(pnl_stats(state_db)),
+        "",
+        "## 6. Health (7d)",
+        "",
+        _render_health(health_stats(state_db, research_db, d7)),
         "",
     ]
     return "\n".join(lines)

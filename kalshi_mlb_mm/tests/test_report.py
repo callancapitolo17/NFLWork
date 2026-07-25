@@ -433,3 +433,57 @@ def test_pnl_stats_empty(monkeypatch, tmp_path):
     state, research, market = _setup_dbs(monkeypatch, tmp_path)
     stats = report.pnl_stats(state)
     assert stats["fills"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 8: health — voids, halts, phantom fills, reconcile outcomes
+# ---------------------------------------------------------------------------
+
+def test_health_stats(monkeypatch, tmp_path):
+    from kalshi_mlb_mm import report
+    import kalshi_mlb_mm.db as db
+    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    recent = NOW - timedelta(hours=1)
+
+    _insert_decision(db, "r1", "confirmed", None, recent)
+    _insert_decision(db, "r2", "confirmed", None, recent)
+    _insert_decision(db, "r3", "voided_singles_moved", None, recent)
+    _insert_decision(db, "r4", "sweep_cancel", "tipoff", recent)
+    _insert_decision(db, "r5", "circuit_breaker",
+                     "book_move_pulled_3_quotes", recent)
+    _insert_decision(db, None, "halted_high_void_rate", None, recent)
+
+    # Phantom fill: reconcile found no exchange record → contracts zeroed.
+    with db.connect() as con:
+        con.execute(
+            "INSERT INTO fills (fill_id, quote_id, rfq_id, "
+            "combo_market_ticker, game_id, side_held, contracts, price, fee, "
+            "model_fair_at_quote, book_fair_at_quote, blended_fair_at_quote, "
+            "fair_at_confirm, realized_pnl, filled_at, reconciled) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ["ph1", "q-ph1", "r-ph1", "T-ph1", "g1", "yes", 0.0, 0.5, 0.0,
+             None, None, None, None, None, recent, True])
+
+    _insert_event(research, "halt_event", recent,
+                  {"halt_type": "void_rate", "transition": "fire"})
+    _insert_event(research, "reconcile_done", recent, {"outcome": "phantom"})
+    _insert_event(research, "reconcile_done", recent, {"outcome": "matched"})
+
+    stats = report.health_stats(state, research, NOW - timedelta(days=7))
+    assert stats["confirmed"] == 2
+    assert stats["voids_by_decision"] == {"voided_singles_moved": 1}
+    assert stats["void_rate"] == pytest.approx(1 / 3)
+    assert stats["sweep_cancels_by_reason"] == {"tipoff": 1}
+    assert stats["circuit_breakers"] == 1
+    assert stats["void_rate_halts"] == 1
+    assert stats["halt_transitions"] == {"fire": 1}
+    assert stats["phantom_fills"] == 1
+    assert stats["reconcile_outcomes"] == {"matched": 1, "phantom": 1}
+
+
+def test_health_empty(monkeypatch, tmp_path):
+    from kalshi_mlb_mm import report
+    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    stats = report.health_stats(state, research, NOW - timedelta(days=7))
+    assert stats["void_rate"] is None
+    assert stats["phantom_fills"] == 0
