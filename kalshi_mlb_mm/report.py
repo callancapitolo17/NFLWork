@@ -172,6 +172,110 @@ def funnel_counts(state_db: str, since: datetime) -> dict:
     return out
 
 
+def _percentile(values: list[float], q: float) -> float | None:
+    """Linear-interpolated percentile (q in [0,1]); None on empty input."""
+    if not values:
+        return None
+    s = sorted(values)
+    pos = (len(s) - 1) * q
+    lo = int(pos)
+    hi = min(lo + 1, len(s) - 1)
+    return s[lo] + (s[hi] - s[lo]) * (pos - lo)
+
+
+def on_demand_stats(research_db: str, since: datetime) -> dict:
+    """Phase-2 on-demand pricing coverage: fetch success rate + latency.
+
+    A fetch flight is `on_demand_requested`; a landing is `on_demand_result`
+    with the same leg_set_hash. A hash with a request but no result = the
+    whole fetch failed (all 6 books errored/timed out — main.py re-enqueues).
+    Per-book latency_sec comes from the result payload's books dict; per-book
+    failures show up as absence (book missing from the dict).
+    """
+    import json
+
+    out = {"flights_requested": 0, "hashes_requested": 0, "hashes_landed": 0,
+           "success_rate": None, "wall_p50": None, "wall_p95": None,
+           "per_book": [], "unavailable": None}
+
+    requests = _read(research_db,
+                     "SELECT json_extract_string(payload, '$.leg_set_hash'), ts "
+                     "FROM events WHERE event_type = 'on_demand_requested' "
+                     "AND ts >= ?", [since])
+    if not _usable(requests):
+        out["unavailable"] = _unavailable_note(requests, "research")
+        return out
+    results = _read(research_db,
+                    "SELECT payload, ts FROM events "
+                    "WHERE event_type = 'on_demand_result' AND ts >= ?",
+                    [since])
+    if not _usable(results):
+        out["unavailable"] = _unavailable_note(results, "research")
+        return out
+
+    out["flights_requested"] = len(requests)
+    req_ts_by_hash: dict[str, list] = {}
+    for leg_hash, ts in requests:
+        req_ts_by_hash.setdefault(leg_hash, []).append(ts)
+    out["hashes_requested"] = len(req_ts_by_hash)
+
+    landed_hashes = set()
+    wall_latencies = []
+    book_latencies: dict[str, list[float]] = {}
+    for payload_str, result_ts in results:
+        payload = json.loads(payload_str)
+        leg_hash = payload.get("leg_set_hash")
+        landed_hashes.add(leg_hash)
+        prior = [t for t in req_ts_by_hash.get(leg_hash, ())
+                 if t <= result_ts]
+        if prior:
+            wall_latencies.append((result_ts - max(prior)).total_seconds())
+        for book, info in (payload.get("books") or {}).items():
+            latency = info.get("latency_sec")
+            if latency is not None:
+                book_latencies.setdefault(book, []).append(float(latency))
+
+    out["hashes_landed"] = len(landed_hashes & set(req_ts_by_hash))
+    if out["hashes_requested"]:
+        out["success_rate"] = out["hashes_landed"] / out["hashes_requested"]
+    out["wall_p50"] = _percentile(wall_latencies, 0.50)
+    out["wall_p95"] = _percentile(wall_latencies, 0.95)
+    out["per_book"] = sorted(
+        (book, len(lats), _percentile(lats, 0.50), _percentile(lats, 0.95))
+        for book, lats in book_latencies.items())
+    return out
+
+
+def _fmt(value, spec: str = ".1f") -> str:
+    return "—" if value is None else format(value, spec)
+
+
+def _render_on_demand(stats: dict) -> str:
+    if stats["unavailable"]:
+        return stats["unavailable"]
+    if stats["flights_requested"] == 0:
+        return "_no on-demand fetches in window._"
+    lines = [
+        f"- fetch flights: {stats['flights_requested']} "
+        f"({stats['hashes_requested']} distinct leg sets)",
+        f"- landed: {stats['hashes_landed']} / {stats['hashes_requested']} "
+        f"(success rate {_fmt(stats['success_rate'], '.0%')})",
+        f"- wall latency request→result: p50 {_fmt(stats['wall_p50'])}s, "
+        f"p95 {_fmt(stats['wall_p95'])}s",
+        "",
+        "| book | landings | fetch p50 (s) | fetch p95 (s) |",
+        "|---|---:|---:|---:|",
+    ]
+    for book, n, p50, p95 in stats["per_book"]:
+        lines.append(f"| {book} | {n} | {_fmt(p50)} | {_fmt(p95)} |")
+    lines += [
+        "",
+        "_Confirm-lane re-fetch latency is not persisted; its failures appear "
+        "as `voided_no_fresh_books` in §6._",
+    ]
+    return "\n".join(lines)
+
+
 def _render_funnel(d24: dict, d7: dict) -> str:
     if d24["unavailable"]:
         return d24["unavailable"]
@@ -242,6 +346,10 @@ def build_report(state_db: str, research_db: str, market_db: str,
         "",
         _render_funnel(funnel_counts(state_db, h24),
                        funnel_counts(state_db, d7)),
+        "",
+        "### 1b. On-demand pricing coverage (7d)",
+        "",
+        _render_on_demand(on_demand_stats(research_db, d7)),
         "",
         "## 5. Settlement P&L",
         "",

@@ -169,3 +169,63 @@ def test_funnel_empty(monkeypatch, tmp_path):
     counts = report.funnel_counts(state, NOW - timedelta(hours=24))
     assert counts["seen"] == 0
     assert counts["paths"]["grid"] == {"rfqs": 0, "quoted": 0}
+
+
+# ---------------------------------------------------------------------------
+# Task 3: on-demand coverage — fetch success rate + latency
+# ---------------------------------------------------------------------------
+
+_EVENT_SEQ = iter(range(10_000))
+
+
+def _insert_event(research_path, event_type, ts, payload):
+    import json
+    con = duckdb.connect(research_path)
+    try:
+        con.execute(
+            "INSERT INTO events (event_id, session_id, event_type, ts, "
+            "ticker, rfq_id, quote_id, payload) VALUES (?,?,?,?,?,?,?,?)",
+            [f"e{next(_EVENT_SEQ)}", "s-test", event_type, ts,
+             None, None, None, json.dumps(payload)])
+    finally:
+        con.close()
+
+
+def test_on_demand_stats(monkeypatch, tmp_path):
+    """Request→result pairing on leg_set_hash: success rate + latencies."""
+    from kalshi_mlb_mm import report
+    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    t0 = NOW - timedelta(hours=2)
+
+    for h in ("h1", "h2", "h3"):
+        _insert_event(research, "on_demand_requested", t0,
+                      {"leg_set_hash": h, "game_id": "g1", "n_legs": 3})
+    _insert_event(research, "on_demand_result", t0 + timedelta(seconds=5),
+                  {"leg_set_hash": "h1",
+                   "books": {"draftkings": {"fair": 0.2, "route": "exact",
+                                            "latency_sec": 1.2},
+                             "fanduel": {"fair": 0.21, "route": "transfer",
+                                         "latency_sec": 2.0}}})
+    _insert_event(research, "on_demand_result", t0 + timedelta(seconds=3),
+                  {"leg_set_hash": "h2",
+                   "books": {"draftkings": {"fair": 0.4, "route": "exact",
+                                            "latency_sec": 0.8}}})
+
+    stats = report.on_demand_stats(research, NOW - timedelta(days=7))
+    assert stats["flights_requested"] == 3
+    assert stats["hashes_requested"] == 3
+    assert stats["hashes_landed"] == 2
+    assert stats["success_rate"] == pytest.approx(2 / 3)
+    assert stats["wall_p50"] == pytest.approx(4.0)
+    per_book = {b: (n, p50) for b, n, p50, _p95 in stats["per_book"]}
+    assert per_book["draftkings"] == (2, pytest.approx(1.0))
+    assert per_book["fanduel"] == (1, pytest.approx(2.0))
+
+
+def test_on_demand_stats_empty(monkeypatch, tmp_path):
+    from kalshi_mlb_mm import report
+    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    stats = report.on_demand_stats(research, NOW - timedelta(days=7))
+    assert stats["flights_requested"] == 0
+    assert stats["success_rate"] is None
+    assert stats["per_book"] == []
