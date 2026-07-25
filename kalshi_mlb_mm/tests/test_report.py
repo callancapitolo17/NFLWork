@@ -328,3 +328,43 @@ def test_staleness_empty(monkeypatch, tmp_path):
     stats = report.staleness_stats(research, NOW - timedelta(days=7))
     assert stats["quote_age"]["n"] == 0
     assert stats["accept_age"]["n"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 6: demand curve — quotes vs accepts by margin x fair band
+# ---------------------------------------------------------------------------
+
+def test_demand_stats(monkeypatch, tmp_path):
+    from kalshi_mlb_mm import report
+    import kalshi_mlb_mm.db as db
+    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    recent = NOW - timedelta(hours=1)
+
+    # One quoted decision: yes side margin .60-.57=.03 at fair .60;
+    # no side margin .40-.375=.025 at fair .40.
+    _insert_decision(db, "r1", "quoted", None, recent,
+                     blended_fair=0.60, yes_bid=0.57, no_bid=0.375)
+    # One accept of the yes side at the quoted price.
+    with db.connect() as con:
+        con.execute(
+            "INSERT INTO fills (fill_id, quote_id, rfq_id, "
+            "combo_market_ticker, game_id, side_held, contracts, price, fee, "
+            "model_fair_at_quote, book_fair_at_quote, blended_fair_at_quote, "
+            "fair_at_confirm, realized_pnl, filled_at, reconciled) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ["f1", "q1", "r1", "T-r1", "g1", "yes", 10.0, 0.57, 0.01,
+             None, 0.60, 0.60, 0.61, None, recent, True])
+
+    stats = report.demand_stats(state, NOW - timedelta(days=7))
+    assert stats["cells"][("3-4c", "[.50,.75)")] == {"quotes": 1, "accepts": 1}
+    assert stats["cells"][("2-3c", "[.25,.50)")] == {"quotes": 1, "accepts": 0}
+    assert stats["quote_sides"] == 2
+    assert stats["accepts"] == 1
+
+
+def test_demand_empty(monkeypatch, tmp_path):
+    from kalshi_mlb_mm import report
+    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    stats = report.demand_stats(state, NOW - timedelta(days=7))
+    assert stats["cells"] == {}
+    assert stats["quote_sides"] == 0

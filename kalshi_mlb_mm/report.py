@@ -403,6 +403,86 @@ def _render_staleness(stats: dict) -> str:
     return "\n".join(lines)
 
 
+MARGIN_BUCKETS = ((0.01, "<1c"), (0.02, "1-2c"), (0.03, "2-3c"),
+                  (0.04, "3-4c"), (0.05, "4-5c"), (None, ">=5c"))
+FAIR_BANDS = ((0.10, "<.10"), (0.25, "[.10,.25)"), (0.50, "[.25,.50)"),
+              (0.75, "[.50,.75)"), (0.90, "[.75,.90)"), (None, ">=.90"))
+
+
+def _bucket(value: float, edges) -> str:
+    for edge, label in edges:
+        if edge is None or value < edge:
+            return label
+    raise AssertionError("unreachable")
+
+
+def demand_stats(state_db: str, since: datetime) -> dict:
+    """Quotes vs accepts by (margin bucket x fair-prob band) — feeds #26.
+
+    Each quoted decision contributes two quote-sides: yes at fair
+    blended_fair with margin fair - yes_bid, no at fair 1 - blended_fair
+    with margin (1 - fair) - no_bid. An accept (fill) lands in the bucket
+    of the side actually held, margin = side fair at quote - price paid.
+    """
+    out = {"cells": {}, "quote_sides": 0, "accepts": 0, "unavailable": None}
+
+    def _cell(margin: float, fair: float) -> dict:
+        key = (_bucket(margin, MARGIN_BUCKETS), _bucket(fair, FAIR_BANDS))
+        return out["cells"].setdefault(key, {"quotes": 0, "accepts": 0})
+
+    quotes = _read(
+        state_db,
+        f"SELECT blended_fair, yes_bid, no_bid FROM quote_decisions "
+        f"WHERE decision IN {_sql_in(QUOTED_DECISIONS)} "
+        "AND observed_at >= ? AND blended_fair IS NOT NULL", [since])
+    if not _usable(quotes):
+        out["unavailable"] = _unavailable_note(quotes, "state")
+        return out
+    for fair, yes_bid, no_bid in quotes:
+        for side_fair, bid in ((fair, yes_bid), (1.0 - fair, no_bid)):
+            if bid is None:
+                continue
+            _cell(side_fair - bid, side_fair)["quotes"] += 1
+            out["quote_sides"] += 1
+
+    fills = _read(state_db,
+                  "SELECT side_held, price, blended_fair_at_quote FROM fills "
+                  "WHERE contracts > 0 AND filled_at >= ? "
+                  "AND blended_fair_at_quote IS NOT NULL "
+                  "AND side_held IN ('yes', 'no')", [since])
+    if _usable(fills):
+        for side_held, price, fair_at_quote in fills:
+            side_fair = (fair_at_quote if side_held == "yes"
+                         else 1.0 - fair_at_quote)
+            _cell(side_fair - price, side_fair)["accepts"] += 1
+            out["accepts"] += 1
+    return out
+
+
+def _render_demand(stats: dict) -> str:
+    if stats["unavailable"]:
+        return stats["unavailable"]
+    if stats["quote_sides"] == 0:
+        return "_no quotes in window._"
+    band_labels = [label for _edge, label in FAIR_BANDS]
+    lines = [
+        f"{stats['quote_sides']} quote-sides, {stats['accepts']} accepts. "
+        "Cells are `quotes/accepts` by margin (rows) x fair prob (cols):",
+        "",
+        "| margin \\ fair | " + " | ".join(band_labels) + " |",
+        "|---|" + "---:|" * len(band_labels),
+    ]
+    for _edge, margin_label in MARGIN_BUCKETS:
+        row = [f"| {margin_label} "]
+        for band_label in band_labels:
+            cell = stats["cells"].get((margin_label, band_label))
+            row.append(f"| {cell['quotes']}/{cell['accepts']} " if cell
+                       else "| ")
+        lines.append("".join(row) + "|")
+    lines += ["", "_Feeds #26 (margin experimentation ladder)._"]
+    return "\n".join(lines)
+
+
 def _fmt(value, spec: str = ".1f") -> str:
     return "—" if value is None else format(value, spec)
 
@@ -517,6 +597,10 @@ def build_report(state_db: str, research_db: str, market_db: str,
         "## 3. Staleness (7d)",
         "",
         _render_staleness(staleness_stats(research_db, d7)),
+        "",
+        "## 4. Demand curve (7d)",
+        "",
+        _render_demand(demand_stats(state_db, d7)),
         "",
         "## 5. Settlement P&L",
         "",
