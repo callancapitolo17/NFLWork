@@ -189,6 +189,43 @@ assert yes_bid + no_bid < 1               # sum ≈ 0.94 at fair=0.50, always va
 
 The 5% is a *quoted/expected* ROI — what we actually realize is what the validation phase measures. Maker fee = 25% of the taker fee on the same quadratic base (`maker_fee_per_contract` in `kalshi_common/ev_calc.py`). **Verify the exact charge on the first real fill** — the assumption is strongly implied by the Kalshi fee schedule but not yet confirmed against a real fill.
 
+## Reports
+
+`report.py` (issue #14) aggregates the three bot DBs into a printed markdown
+"state of the maker" — the measurement-phase readout that the raw
+`quote_decisions` / research-firehose rows can't answer at a glance:
+
+```bash
+# From the main repo root — reads the live DBs READ-ONLY (lock-safe, never writes)
+./kalshi_mlb_mm/venv/bin/python -m kalshi_mlb_mm.report
+
+# Or point at explicit DB copies
+./kalshi_mlb_mm/venv/bin/python -m kalshi_mlb_mm.report \
+    --state-db path/to/kalshi_mlb_mm.duckdb \
+    --research-db path/to/kalshi_mlb_mm_research.duckdb \
+    --market-db path/to/kalshi_mlb_mm_market.duckdb
+```
+
+Sections: **1** RFQ funnel (24h + 7d: seen → in-scope → quoted → accepted →
+confirmed → filled, full decision/reason breakdown, and the grid /
+on-demand / out-of-scope path split), **1b** on-demand fetch success rate +
+latency (paired `on_demand_requested`/`on_demand_result` events), **2**
+quotable universe (combos passing `MIN_AGREEING_BOOKS` per day + per-book
+participation), **3** staleness (book-data age at quote, quote age at
+accept), **4** demand curve (quotes vs accepts by margin × fair-prob band —
+feeds #26), **5** settlement P&L (quoted vs realized margin per contract
+from the #12 sweep; **markouts descoped with #13** — settlement P&L is the
+adverse-selection signal), **6** health (void rate, sweep cancels, halts,
+phantom fills, reconcile outcomes).
+
+Caveats printed in the report itself: the funnel is derived from
+`quote_decisions` (`seen_rfqs` only records out-of-scope and live-quoted
+RFQs); the grid-vs-on-demand split is a heuristic (an on-demand RFQ whose
+fetch lands within its first discovery tick counts as grid); quote-time
+staleness is the gap to the latest prior `scrape_done` event (per-book ages
+aren't persisted at quote time). Fresh/empty/locked DBs degrade to notes —
+the report never crashes and never writes.
+
 ## Knobs
 
 All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Defaults come from `kalshi_mlb_mm/config.py`.
