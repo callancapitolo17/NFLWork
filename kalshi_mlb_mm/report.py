@@ -226,6 +226,8 @@ def on_demand_stats(research_db: str, since: datetime) -> dict:
     wall_latencies = []
     book_latencies: dict[str, list[float]] = {}
     for payload_str, result_ts in results:
+        if payload_str is None:
+            continue
         payload = json.loads(payload_str)
         leg_hash = payload.get("leg_set_hash")
         landed_hashes.add(leg_hash)
@@ -342,9 +344,11 @@ def staleness_stats(research_db: str, since: datetime) -> dict:
     out = {"quote_age": _age_dist([]), "quote_age_unknown": 0,
            "accept_age": _age_dist([]), "unavailable": None}
 
+    # One-day lookback before the window so early quotes still find their
+    # scrape, without scanning the unbounded-retention events table forever.
     scrapes = _read(research_db,
                     "SELECT ts FROM events WHERE event_type = 'scrape_done' "
-                    "ORDER BY ts")
+                    "AND ts >= ? ORDER BY ts", [since - timedelta(days=1)])
     if not _usable(scrapes):
         out["unavailable"] = _unavailable_note(scrapes, "research")
         return out
@@ -373,6 +377,8 @@ def staleness_stats(research_db: str, since: datetime) -> dict:
 
     accept_ages = []
     for (payload_str,) in confirms:
+        if payload_str is None:
+            continue
         age = json.loads(payload_str).get("quote_age_sec")
         if age is not None:
             accept_ages.append(float(age))
@@ -555,6 +561,7 @@ def _render_funnel(d24: dict, d7: dict) -> str:
         lines.append("| _none_ | | |")
     return "\n".join(lines)
 
+
 def pnl_stats(state_db: str) -> dict:
     """All-time settlement P&L (research_queries.sql §7-8 math, no markouts).
 
@@ -688,6 +695,8 @@ def health_stats(state_db: str, research_db: str, since: datetime) -> dict:
                    "AND ts >= ?", [since])
     if _usable(events):
         for event_type, payload_str in events:
+            if payload_str is None:
+                continue
             payload = json.loads(payload_str)
             if event_type == "halt_event":
                 key = payload.get("transition", "?")
