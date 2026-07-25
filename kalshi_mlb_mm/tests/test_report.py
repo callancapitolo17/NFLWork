@@ -368,3 +368,68 @@ def test_demand_empty(monkeypatch, tmp_path):
     stats = report.demand_stats(state, NOW - timedelta(days=7))
     assert stats["cells"] == {}
     assert stats["quote_sides"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 7: settlement P&L (markouts descoped with #13)
+# ---------------------------------------------------------------------------
+
+def _insert_fill(db, fill_id, contracts, price, fee, fair_at_quote,
+                 realized_pnl):
+    with db.connect() as con:
+        con.execute(
+            "INSERT INTO fills (fill_id, quote_id, rfq_id, "
+            "combo_market_ticker, game_id, side_held, contracts, price, fee, "
+            "model_fair_at_quote, book_fair_at_quote, blended_fair_at_quote, "
+            "fair_at_confirm, realized_pnl, filled_at, reconciled) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [fill_id, f"q-{fill_id}", f"r-{fill_id}", f"T-{fill_id}", "g1",
+             "yes", contracts, price, fee, None, fair_at_quote,
+             fair_at_quote, fair_at_quote + 0.01, realized_pnl,
+             NOW - timedelta(hours=2), True])
+
+
+def test_pnl_stats_settled(monkeypatch, tmp_path):
+    from kalshi_mlb_mm import report
+    import kalshi_mlb_mm.db as db
+    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+
+    # Won yes-fill: 10 contracts at 55c, 1c/ct fee, fair at quote 58c.
+    # realized = 10 * ((1 - 0.55) - 0.01) = 4.40 (settlement.py math)
+    _insert_fill(db, "f1", 10.0, 0.55, 0.01, 0.58, 4.40)
+    _insert_fill(db, "f2", 5.0, 0.30, 0.01, 0.33, None)  # not settled yet
+    with db.connect() as con:
+        con.execute(
+            "INSERT INTO settlements (combo_market_ticker, result, "
+            "settled_at, raw_payload, recorded_at) VALUES (?,?,?,?,?)",
+            ["T-f1", "yes", NOW - timedelta(hours=1), "{}",
+             NOW - timedelta(hours=1)])
+
+    stats = report.pnl_stats(state)
+    assert stats["fills"] == 2
+    assert stats["settled_fills"] == 1
+    assert stats["unsettled_fills"] == 1
+    assert stats["realized_pnl_total"] == pytest.approx(4.40)
+    assert stats["avg_quoted_margin_per_ct"] == pytest.approx(0.03, abs=1e-9)
+    assert stats["realized_per_ct"] == pytest.approx(0.44)
+    assert stats["by_result"] == [("yes", 1, pytest.approx(4.40))]
+
+
+def test_pnl_stats_fills_but_no_settlements(monkeypatch, tmp_path):
+    from kalshi_mlb_mm import report
+    import kalshi_mlb_mm.db as db
+    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    _insert_fill(db, "f1", 10.0, 0.55, 0.01, 0.58, None)
+    stats = report.pnl_stats(state)
+    assert stats["fills"] == 1
+    assert stats["settled_fills"] == 0
+    assert stats["realized_pnl_total"] is None
+    out = report.build_report(state, research, market, now=NOW)
+    assert "none settled yet" in out
+
+
+def test_pnl_stats_empty(monkeypatch, tmp_path):
+    from kalshi_mlb_mm import report
+    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    stats = report.pnl_stats(state)
+    assert stats["fills"] == 0

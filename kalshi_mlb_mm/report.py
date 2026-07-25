@@ -551,16 +551,83 @@ def _render_funnel(d24: dict, d7: dict) -> str:
         lines.append("| _none_ | | |")
     return "\n".join(lines)
 
-def _section_pnl(state_db: str) -> str:
-    rows = _read(state_db,
-                 "SELECT count(*) FROM fills WHERE contracts > 0")
-    note = _unavailable_note(rows, "state")
-    if note:
-        return note
-    fill_count = rows[0][0] if rows else 0
-    if fill_count == 0:
+def pnl_stats(state_db: str) -> dict:
+    """All-time settlement P&L (research_queries.sql §7-8 math, no markouts).
+
+    Quoted margin per contract is side-adjusted (yes: fair - price;
+    no: (1 - fair) - price). Realized below quoted beyond noise = adverse
+    selection eating the margin — the measurement-phase headline.
+    """
+    out = {"fills": 0, "contracts": 0.0, "settled_fills": 0,
+           "unsettled_fills": 0, "realized_pnl_total": None,
+           "avg_quoted_margin_per_ct": None, "realized_per_ct": None,
+           "by_result": [], "unavailable": None}
+
+    totals = _read(
+        state_db,
+        "SELECT count(*), coalesce(sum(contracts), 0), "
+        "       count(*) FILTER (realized_pnl IS NOT NULL) "
+        "FROM fills WHERE contracts > 0")
+    if not _usable(totals):
+        out["unavailable"] = _unavailable_note(totals, "state")
+        return out
+    if totals:
+        out["fills"], out["contracts"], out["settled_fills"] = totals[0]
+        out["unsettled_fills"] = out["fills"] - out["settled_fills"]
+
+    settled = _read(
+        state_db,
+        "SELECT sum(realized_pnl), sum(contracts), "
+        "       avg(CASE WHEN side_held = 'yes' "
+        "                THEN blended_fair_at_quote - price "
+        "                ELSE (1 - blended_fair_at_quote) - price END) "
+        "FROM fills WHERE contracts > 0 AND realized_pnl IS NOT NULL "
+        "AND blended_fair_at_quote IS NOT NULL")
+    if _usable(settled) and settled and settled[0][0] is not None:
+        pnl_total, settled_contracts, avg_margin = settled[0]
+        out["realized_pnl_total"] = pnl_total
+        out["avg_quoted_margin_per_ct"] = avg_margin
+        if settled_contracts:
+            out["realized_per_ct"] = pnl_total / settled_contracts
+
+    by_result = _read(
+        state_db,
+        "SELECT s.result, count(*), sum(f.realized_pnl) "
+        "FROM fills f JOIN settlements s "
+        "  ON f.combo_market_ticker = s.combo_market_ticker "
+        "WHERE f.contracts > 0 AND f.realized_pnl IS NOT NULL "
+        "GROUP BY s.result ORDER BY s.result")
+    if _usable(by_result):
+        out["by_result"] = [tuple(r) for r in by_result]
+    return out
+
+
+def _render_pnl(stats: dict) -> str:
+    if stats["unavailable"]:
+        return stats["unavailable"]
+    if stats["fills"] == 0:
         return "no fills yet."
-    return f"{fill_count} fills recorded."
+    if stats["settled_fills"] == 0:
+        return (f"{stats['fills']} fills recorded, none settled yet "
+                "(settlement sweep may not have run since the #12 merge).")
+    lines = [
+        f"- fills: {stats['fills']} ({stats['contracts']:.0f} contracts), "
+        f"settled {stats['settled_fills']}, "
+        f"unsettled {stats['unsettled_fills']}",
+        f"- realized P&L (settled): ${stats['realized_pnl_total']:.2f}",
+        f"- quoted margin/ct {_fmt(stats['avg_quoted_margin_per_ct'], '.3f')} "
+        f"vs realized/ct {_fmt(stats['realized_per_ct'], '.3f')} — "
+        "realized persistently below quoted = adverse selection",
+        "",
+        "| result | fills | P&L ($) |",
+        "|---|---:|---:|",
+    ]
+    for result, n, pnl in stats["by_result"]:
+        lines.append(f"| {result} | {n} | {pnl:.2f} |")
+    lines += ["", "_Markouts descoped (#13); settlement P&L is the "
+              "adverse-selection signal. Attribution detail: "
+              "research_queries.sql §7-8._"]
+    return "\n".join(lines)
 
 
 def build_report(state_db: str, research_db: str, market_db: str,
@@ -602,9 +669,9 @@ def build_report(state_db: str, research_db: str, market_db: str,
         "",
         _render_demand(demand_stats(state_db, d7)),
         "",
-        "## 5. Settlement P&L",
+        "## 5. Settlement P&L (all-time)",
         "",
-        _section_pnl(state_db),
+        _render_pnl(pnl_stats(state_db)),
         "",
     ]
     return "\n".join(lines)
