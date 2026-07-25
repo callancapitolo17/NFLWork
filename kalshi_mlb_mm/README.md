@@ -54,13 +54,15 @@ rm kalshi_mlb_mm/.kill
 
 ## Architecture
 
-REST-polling daemon, single process. Four timed sub-loops:
+REST-polling daemon, single process. Six timed sub-loops:
 
 | Loop | Cadence | Job |
 |---|---|---|
 | Discovery + quote | 2s | Poll open RFQs → scope filter → price → submit or refresh quote |
 | Confirm | 2s | Poll open quotes → on `accepted`, last-look gate → confirm or void |
 | Risk sweep | 10s | Kill-switch, book-staleness auto-pull, tipoff cancel, drift-since-quote cancel |
+| Reconcile sweep | 30s | Verify recorded fill side/size against Kalshi `/portfolio/positions` (live only) |
+| Settlement sweep | 600s | Poll `GET /markets/{ticker}` for combos with unsettled fills → write `fills.realized_pnl` + `settlements` audit row (live only; issue #12) |
 | SGP scrape | 60s | Own scraper cadence → `kalshi_mlb_mm_market.duckdb` (sibling market DB) |
 
 **Transport seam.** All exchange I/O goes through two interfaces: `RFQSource.poll()` / `RFQSource.get_market()` (v1: `RestRFQSource`, REST poll of `GET /communications/rfqs?status=open`) and `QuoteGateway.submit_quote()` / `.confirm()` / `.cancel()` (v1: `RestQuoteGateway`). A WebSocket adapter is a drop-in replacement behind these interfaces — no pricing or risk code changes.
@@ -211,6 +213,8 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `DISCOVERY_SEC` | `2` | Discovery + quote loop cadence (seconds) |
 | `CONFIRM_SEC` | `2` | Confirm loop cadence (seconds) |
 | `RISK_SWEEP_SEC` | `10` | Risk sweep cadence (seconds) |
+| `RECONCILE_SWEEP_SEC` | `30` | Fill side/size reconciliation cadence against Kalshi positions (seconds) |
+| `SETTLEMENT_SWEEP_SEC` | `600` | Settlement sweep cadence (seconds) — populates `realized_pnl` once markets settle; only matters hours post-game |
 | `SGP_REFRESH_SEC` | `60` | SGP scrape cadence (seconds) |
 | `SGP_SCRAPER_TIMEOUT_SEC` | `90` | Per-book deadline passed to `SGPService` (seconds) — a book exceeding it contributes nothing that cycle and its client is rebuilt |
 
@@ -234,7 +238,7 @@ Resting quotes are priced off books that lag reality (books refresh every 60s). 
 
 8. **Position reconciliation.** After every confirm we call `/portfolio/positions` for the combo ticker and trust Kalshi as the source of truth; if the confirm response's side or size disagrees, the `fills` row is written with the reconciled values and a `[position_mismatch]` warning is printed.
 
-9. **Measure.** The `fills` table records `book_fair_at_quote`, `blended_fair_at_quote`, `fair_at_confirm`, and (at settlement) `realized_pnl` per fill. The primary deliverable of v1 is computing whether the 5% margin survives the adverse-selection tail. If pickoffs swamp the margin, the honest conclusion is that making is not viable at this data latency → improve data speed (WebSocket feeds, faster scrape cadence) before scaling.
+9. **Measure.** The `fills` table records `book_fair_at_quote`, `blended_fair_at_quote`, `fair_at_confirm`, and — via the **settlement sweep** (`settlement.py`, every `SETTLEMENT_SWEEP_SEC`; issue #12) — `realized_pnl` per fill: for each combo with reconciled unsettled fills the sweep polls `GET /markets/{ticker}` and, once Kalshi reports a yes/no result, writes `realized_pnl = contracts × ((won ? 1−price : −price) − fee)` plus a `settlements` audit row holding the raw market payload (the settlement response shape is unverified until real data lands). Only `reconciled=TRUE` fills settle, so a later side/size correction can never invalidate a written P&L; the sweep is idempotent and API failures just retry next pass. On the first settled ticker ever it also best-effort checks the maker-fee assumption against the `/portfolio` endpoints (`[FEE_MISMATCH]` logs loudly). Each settled fill emits a `settlement_recorded` research event, and `research_queries.sql` queries 7–8 decompose per-contract P&L into quoted margin vs fair drift (quote→confirm) vs settlement-vs-fair vs fee — the measurement-phase headline. If pickoffs swamp the margin, the honest conclusion is that making is not viable at this data latency → improve data speed (WebSocket feeds, faster scrape cadence) before scaling.
 
 **Crash safety.** An unconfirmed quote that the process never confirms voids automatically — no surprise open position on crash. Graceful SIGTERM cancels all open quotes before exit. The main loop uses a 250ms sleep between sub-loop checks so SIGTERM is never starved (directly addresses the taker's known SIGTERM-starvation issue with its 640s RFQ refresh block).
 
@@ -242,7 +246,7 @@ Resting quotes are priced off books that lag reality (books refresh every 60s). 
 
 These are noted in spec §10 and remain unconfirmed until live fills happen:
 
-1. **Maker fee** — confirm the actual charge matches 25% of taker fee (`maker_fee_per_contract` in `kalshi_common/ev_calc.py`). Adjust rounding there if it differs from the observed amount.
+1. **Maker fee** — confirm the actual charge matches 25% of taker fee (`maker_fee_per_contract` in `kalshi_common/ev_calc.py`). The settlement sweep automates a first pass: on the first settled ticker it fetches `/portfolio/fills` + `/portfolio/settlements`, compares any fee field found against our recorded fees (`[FEE_MISMATCH]` warning on disagreement), and captures the raw payloads in a `fee_verification` research event for manual inspection either way. Adjust the rounding in `ev_calc.py` if it differs.
 2. **Quote-status polling shape** — exact fields on `GET /communications/quotes/{id}` (`status`, `accepted_side`, `contracts`). The confirm path in `main.py::_confirm_tick` infers `side_held` from `accepted_side` (`"no" if accepted_side == "yes" else "yes"`). Verify this field name and semantics on the first accepted quote.
 3. **`get_competitors`** — competing quotes on an RFQ are stubbed out in v1 (future competitive pricing). Confirm the API shape if needed later.
 

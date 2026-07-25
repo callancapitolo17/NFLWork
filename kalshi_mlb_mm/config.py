@@ -88,6 +88,9 @@ CONFIRM_SEC = int(_get("CONFIRM_SEC", "2"))
 RISK_SWEEP_SEC = int(_get("RISK_SWEEP_SEC", "10"))
 RECONCILE_SWEEP_SEC = int(_get("RECONCILE_SWEEP_SEC", "30"))
 SGP_REFRESH_SEC = int(_get("SGP_REFRESH_SEC", "60"))
+# Settlement sweep (issue #12): populate fills.realized_pnl once markets
+# settle. Only matters hours post-game, so a slow cadence is plenty.
+SETTLEMENT_SWEEP_SEC = int(_get("SETTLEMENT_SWEEP_SEC", "600"))
 SGP_SCRAPER_TIMEOUT_SEC = int(_get("SGP_SCRAPER_TIMEOUT_SEC", "90"))
 
 # Adverse-selection halts (H4)

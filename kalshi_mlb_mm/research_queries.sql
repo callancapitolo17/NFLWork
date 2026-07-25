@@ -92,7 +92,7 @@ GROUP BY 1 ORDER BY 2 DESC;
 --    How long between when we price a quote and when Kalshi accepts it?
 --    How long from accept to fill confirmation? Helps tune loop intervals.
 -- ---------------------------------------------------------------------------
-WITH joined AS (
+WITH latency_joined AS (
     SELECT qp.ts AS quoted_at, ao.ts AS accepted_at, fr.ts AS filled_at
     FROM research.events qp
     JOIN research.events ao ON ao.event_type = 'accept_observed'
@@ -105,4 +105,59 @@ SELECT
     percentile_cont(0.50) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (accepted_at - quoted_at)) * 1000) AS quote_to_accept_p50_ms,
     percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (accepted_at - quoted_at)) * 1000) AS quote_to_accept_p95_ms,
     percentile_cont(0.50) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (filled_at - accepted_at)) * 1000) AS accept_to_fill_p50_ms
-FROM joined;
+FROM latency_joined;
+
+-- ---------------------------------------------------------------------------
+-- 7) P&L ATTRIBUTION PER SETTLED FILL (issue #12).
+--    Decomposes each settled fill's PER-CONTRACT P&L into:
+--      quoted_margin_per_ct      = fair(held side, at quote) - price paid
+--                                  → the edge we THOUGHT we were capturing
+--      fair_drift_per_ct         = fair moved between quote and confirm
+--                                  → adverse selection our last look tolerated
+--      settlement_vs_fair_per_ct = binary outcome (0/1) vs fair at confirm
+--                                  → noise per fill that converges to
+--                                    residual fair error over many fills
+--      fee                       = maker fee per contract
+--    Identity: (margin + drift + outcome_vs_fair - fee) * contracts
+--              == realized_pnl, so identity_check should be ~0 for every row.
+--    Uses state.fills + state.settlements (written by the settlement sweep).
+-- ---------------------------------------------------------------------------
+SELECT f.fill_id,
+       f.combo_market_ticker,
+       f.filled_at,
+       f.side_held,
+       f.contracts,
+       f.price,
+       f.fee,
+       s.result,
+       CASE WHEN f.side_held = 'yes' THEN f.blended_fair_at_quote
+            ELSE 1 - f.blended_fair_at_quote END               AS fair_side_at_quote,
+       CASE WHEN f.side_held = 'yes' THEN f.fair_at_confirm
+            ELSE 1 - f.fair_at_confirm END                     AS fair_side_at_confirm,
+       CASE WHEN s.result = f.side_held THEN 1.0 ELSE 0.0 END  AS outcome,
+       fair_side_at_quote - f.price                            AS quoted_margin_per_ct,
+       fair_side_at_confirm - fair_side_at_quote               AS fair_drift_per_ct,
+       outcome - fair_side_at_confirm                          AS settlement_vs_fair_per_ct,
+       f.realized_pnl,
+       (quoted_margin_per_ct + fair_drift_per_ct
+        + settlement_vs_fair_per_ct - f.fee) * f.contracts
+         - f.realized_pnl                                      AS identity_check
+FROM state.fills f
+JOIN state.settlements s ON s.combo_market_ticker = f.combo_market_ticker
+WHERE f.realized_pnl IS NOT NULL
+ORDER BY f.filled_at;
+
+-- ---------------------------------------------------------------------------
+-- 8) THE MEASUREMENT-PHASE HEADLINE: does the quoted margin survive?
+--    Aggregate of query 7 — average quoted margin vs average realized P&L
+--    per contract. realized < quoted by more than noise = adverse selection
+--    is eating the margin.
+-- ---------------------------------------------------------------------------
+SELECT COUNT(*)                                                   AS settled_fills,
+       SUM(f.contracts)                                           AS contracts,
+       AVG(CASE WHEN f.side_held = 'yes' THEN f.blended_fair_at_quote
+                ELSE 1 - f.blended_fair_at_quote END - f.price)   AS avg_quoted_margin_per_ct,
+       SUM(f.realized_pnl) / NULLIF(SUM(f.contracts), 0)          AS realized_pnl_per_ct,
+       SUM(f.realized_pnl)                                        AS total_realized_pnl
+FROM state.fills f
+WHERE f.realized_pnl IS NOT NULL;
