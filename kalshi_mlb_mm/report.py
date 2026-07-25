@@ -103,7 +103,13 @@ def _usable(rows) -> bool:
 # ---------------------------------------------------------------------------
 
 def funnel_counts(state_db: str, since: datetime) -> dict:
-    """RFQ funnel + path split for one window. Zeros on empty/unreadable DB.
+    """RFQ funnel + path split for one window, derived from quote_decisions.
+
+    quote_decisions is the only complete record of flow: seen_rfqs only
+    stores out-of-scope RFQs and LIVE-quoted ones (main.py:1124 writes it
+    inside the quote transaction), so in-scope-but-skipped and dry-run RFQs
+    never appear there. "seen" = RFQs with >=1 decision in the window;
+    an out-of-scope RFQ logs exactly one decision, at first sight.
 
     Path classification is rfq-level: out-of-scope (never priceable),
     on-demand (hit the Phase-2 live-fetch path at least once), else grid.
@@ -118,23 +124,41 @@ def funnel_counts(state_db: str, since: datetime) -> dict:
         "unavailable": None,
     }
 
-    seen = _read(state_db,
-                 "SELECT count(*), count(*) FILTER (in_scope) "
-                 "FROM seen_rfqs WHERE first_seen_at >= ?", [since])
-    if not _usable(seen):
-        out["unavailable"] = _unavailable_note(seen, "state")
-        return out
-    if seen:
-        out["seen"], out["in_scope"] = seen[0]
-
-    stages = _read(
+    # One row per RFQ with its lifecycle flags; halted_high_void_rate rows
+    # carry rfq_id NULL and are deliberately excluded.
+    per_rfq = _read(
         state_db,
-        f"SELECT count(DISTINCT rfq_id) FILTER (decision IN {_sql_in(QUOTED_DECISIONS)}), "
-        f"       count(DISTINCT rfq_id) FILTER (decision IN {_sql_in(ACCEPT_DECISIONS)}), "
-        f"       count(DISTINCT rfq_id) FILTER (decision = 'confirmed') "
-        "FROM quote_decisions WHERE observed_at >= ?", [since])
-    if _usable(stages) and stages:
-        out["quoted"], out["accepted"], out["confirmed"] = stages[0]
+        "WITH per_rfq AS ( "
+        "  SELECT rfq_id, "
+        "         max(CASE WHEN coalesce(reason, '') LIKE 'out_of_scope%' "
+        "             THEN 1 ELSE 0 END) AS oos, "
+        "         max(CASE WHEN reason = 'on_demand_pending' "
+        "             THEN 1 ELSE 0 END) AS on_demand, "
+        f"        max(CASE WHEN decision IN {_sql_in(QUOTED_DECISIONS)} "
+        "             THEN 1 ELSE 0 END) AS quoted, "
+        f"        max(CASE WHEN decision IN {_sql_in(ACCEPT_DECISIONS)} "
+        "             THEN 1 ELSE 0 END) AS accepted, "
+        "         max(CASE WHEN decision = 'confirmed' "
+        "             THEN 1 ELSE 0 END) AS confirmed "
+        "  FROM quote_decisions "
+        "  WHERE observed_at >= ? AND rfq_id IS NOT NULL "
+        "  GROUP BY rfq_id) "
+        "SELECT CASE WHEN oos = 1 THEN 'out_of_scope' "
+        "            WHEN on_demand = 1 THEN 'on_demand' "
+        "            ELSE 'grid' END AS path, "
+        "       count(*), sum(quoted), sum(accepted), sum(confirmed) "
+        "FROM per_rfq GROUP BY 1", [since])
+    if not _usable(per_rfq):
+        out["unavailable"] = _unavailable_note(per_rfq, "state")
+        return out
+    for path, rfqs, quoted, accepted, confirmed in per_rfq:
+        out["paths"][path] = {"rfqs": rfqs, "quoted": quoted}
+        out["seen"] += rfqs
+        if path != "out_of_scope":
+            out["in_scope"] += rfqs
+        out["quoted"] += quoted
+        out["accepted"] += accepted
+        out["confirmed"] += confirmed
 
     filled = _read(state_db,
                    "SELECT count(*) FROM fills "
@@ -148,27 +172,6 @@ def funnel_counts(state_db: str, since: datetime) -> dict:
                       "GROUP BY 1, 2 ORDER BY 3 DESC, 1, 2", [since])
     if _usable(decisions):
         out["decisions"] = [tuple(r) for r in decisions]
-
-    paths = _read(
-        state_db,
-        "WITH win AS (SELECT rfq_id, in_scope FROM seen_rfqs "
-        "             WHERE first_seen_at >= ?), "
-        "od AS (SELECT DISTINCT rfq_id FROM quote_decisions "
-        "       WHERE reason = 'on_demand_pending' AND observed_at >= ?), "
-        f"q AS (SELECT DISTINCT rfq_id FROM quote_decisions "
-        f"      WHERE decision IN {_sql_in(QUOTED_DECISIONS)} "
-        "       AND observed_at >= ?) "
-        "SELECT CASE WHEN NOT w.in_scope THEN 'out_of_scope' "
-        "            WHEN od.rfq_id IS NOT NULL THEN 'on_demand' "
-        "            ELSE 'grid' END AS path, "
-        "       count(*), count(q.rfq_id) "
-        "FROM win w "
-        "LEFT JOIN od ON w.rfq_id = od.rfq_id "
-        "LEFT JOIN q ON w.rfq_id = q.rfq_id "
-        "GROUP BY 1", [since, since, since])
-    if _usable(paths):
-        for path, rfqs, quoted in paths:
-            out["paths"][path] = {"rfqs": rfqs, "quoted": quoted}
     return out
 
 
@@ -540,7 +543,8 @@ def _render_funnel(d24: dict, d7: dict) -> str:
         "_Approximation: an on-demand RFQ whose fetch lands within its first "
         "discovery tick never logs `on_demand_pending` and counts as grid._",
         "",
-        "**Decision / reason breakdown (7d):**",
+        "**Decision / reason breakdown (7d)** — decision ROWS, not RFQs "
+        "(an open in-scope RFQ is re-decided every discovery tick):",
         "",
         "| decision | reason | n |",
         "|---|---|---:|",

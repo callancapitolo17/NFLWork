@@ -100,17 +100,11 @@ def test_read_missing_file_returns_missing(tmp_path):
 
 # ---------------------------------------------------------------------------
 # Task 2: RFQ funnel + path split (grid / on-demand / out-of-scope)
+#
+# The funnel is derived ONLY from quote_decisions: seen_rfqs is NOT a log of
+# all flow — in-scope RFQs only get a row inside the live quote transaction
+# (main.py:1124), so in-scope-but-skipped and dry-run RFQs never appear there.
 # ---------------------------------------------------------------------------
-
-def _insert_rfq(db, rfq_id, in_scope, last_decision, first_seen_at):
-    with db.connect() as con:
-        con.execute(
-            "INSERT INTO seen_rfqs (rfq_id, market_ticker, in_scope, game_id, "
-            "legs_json, first_seen_at, last_decision, creator_id) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            [rfq_id, f"T-{rfq_id}", in_scope, "g1", "[]",
-             first_seen_at, last_decision, None])
-
 
 def _insert_decision(db, rfq_id, decision, reason, observed_at,
                      blended_fair=None, yes_bid=None, no_bid=None):
@@ -133,13 +127,7 @@ def test_funnel_math(monkeypatch, tmp_path):
     recent = NOW - timedelta(hours=1)
     old = NOW - timedelta(days=8)  # outside every window
 
-    _insert_rfq(db, "r0", False, "out_of_scope", old)
-    _insert_rfq(db, "r1", False, "out_of_scope", recent)
-    _insert_rfq(db, "r2", False, "out_of_scope_lone_single", recent)
-    _insert_rfq(db, "r3", True, "quoted", recent)      # on-demand path
-    _insert_rfq(db, "r4", True, "confirmed", recent)   # grid path
-    _insert_rfq(db, "r5", True, "no_fair", recent)     # grid path, skipped
-
+    _insert_decision(db, "r0", "skipped", "out_of_scope", old)
     _insert_decision(db, "r1", "skipped", "out_of_scope", recent)
     _insert_decision(db, "r2", "skipped", "out_of_scope_lone_single", recent)
     _insert_decision(db, "r3", "skipped", "on_demand_pending", recent)
