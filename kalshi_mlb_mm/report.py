@@ -246,6 +246,79 @@ def on_demand_stats(research_db: str, since: datetime) -> dict:
     return out
 
 
+def universe_stats(market_db: str, since_naive: datetime,
+                   now_naive: datetime) -> dict:
+    """Quotable universe: combos passing consensus per day + book coverage.
+
+    A combo is (game_id, combo, spread_line, total_line) — GROUP BY treats
+    NULLs as equal, so ML x total rows (spread_line NULL by design) group
+    correctly. "Passing" = >= MIN_AGREEING_BOOKS distinct books that day
+    (an approximation of the live consensus gate, which also applies the
+    freshness window and the agreement band at price time).
+    """
+    out = {"per_day": [], "per_book": [], "min_books":
+           config.MIN_AGREEING_BOOKS, "unavailable": None}
+
+    per_day = _read(
+        market_db,
+        "WITH day_combos AS ( "
+        "  SELECT CAST(fetch_time AS DATE) AS day, game_id, combo, "
+        "         spread_line, total_line, "
+        "         count(DISTINCT bookmaker) AS books "
+        "  FROM mlb_sgp_odds WHERE fetch_time >= ? "
+        "  GROUP BY ALL) "
+        "SELECT day, count(*) FILTER (books >= ?), count(*) "
+        "FROM day_combos GROUP BY day ORDER BY day",
+        [since_naive, config.MIN_AGREEING_BOOKS])
+    if not _usable(per_day):
+        out["unavailable"] = _unavailable_note(per_day, "market")
+        return out
+    out["per_day"] = [tuple(r) for r in per_day]
+
+    per_book = _read(
+        market_db,
+        "SELECT bookmaker, "
+        "       count(DISTINCT CAST(fetch_time AS DATE)), "
+        "       count(DISTINCT (game_id, combo, spread_line, total_line)), "
+        "       CAST(epoch(? - max(fetch_time)) / 60 AS INTEGER) "
+        "FROM mlb_sgp_odds WHERE fetch_time >= ? "
+        "GROUP BY bookmaker ORDER BY bookmaker",
+        [now_naive, since_naive])
+    if _usable(per_book):
+        out["per_book"] = [tuple(r) for r in per_book]
+    return out
+
+
+def _render_universe(stats: dict) -> str:
+    if stats["unavailable"]:
+        return stats["unavailable"]
+    if not stats["per_day"]:
+        return "_no SGP odds rows in window._"
+    lines = [
+        f"Combos passing consensus (>= {stats['min_books']} books) per day:",
+        "",
+        "| day | passing | total scraped |",
+        "|---|---:|---:|",
+    ]
+    for day, passing, total in stats["per_day"]:
+        lines.append(f"| {day} | {passing} | {total} |")
+    lines += [
+        "",
+        "**Per-book participation (7d):**",
+        "",
+        "| book | days present | distinct combos | last row age (min) |",
+        "|---|---:|---:|---:|",
+    ]
+    for book, days, combos, age_min in stats["per_book"]:
+        lines.append(f"| {book} | {days} | {combos} | {age_min} |")
+    lines += [
+        "",
+        "_Passing = distinct-book count per day; the live gate also applies "
+        "freshness + agreement-band checks at price time._",
+    ]
+    return "\n".join(lines)
+
+
 def _fmt(value, spec: str = ".1f") -> str:
     return "—" if value is None else format(value, spec)
 
@@ -350,6 +423,12 @@ def build_report(state_db: str, research_db: str, market_db: str,
         "### 1b. On-demand pricing coverage (7d)",
         "",
         _render_on_demand(on_demand_stats(research_db, d7)),
+        "",
+        "## 2. Quotable universe",
+        "",
+        _render_universe(universe_stats(
+            market_db, (now - timedelta(days=7)).replace(tzinfo=None),
+            now.replace(tzinfo=None))),
         "",
         "## 5. Settlement P&L",
         "",

@@ -229,3 +229,60 @@ def test_on_demand_stats_empty(monkeypatch, tmp_path):
     assert stats["flights_requested"] == 0
     assert stats["success_rate"] is None
     assert stats["per_book"] == []
+
+
+# ---------------------------------------------------------------------------
+# Task 4: quotable universe (market DB, naive-UTC timestamps)
+# ---------------------------------------------------------------------------
+
+def _insert_sgp_odds(market_path, game_id, combo, bookmaker, fetch_time,
+                     spread_line, total_line):
+    con = duckdb.connect(market_path)
+    try:
+        con.execute(
+            "INSERT INTO mlb_sgp_odds (game_id, combo, period, bookmaker, "
+            "sgp_decimal, sgp_american, fetch_time, source, spread_line, "
+            "total_line) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            [game_id, combo, "full_game", bookmaker, 2.5, 150, fetch_time,
+             "scraper", spread_line, total_line])
+    finally:
+        con.close()
+
+
+def test_universe_stats(monkeypatch, tmp_path):
+    """Per-day combos passing MIN_AGREEING_BOOKS + per-book participation."""
+    from kalshi_mlb_mm import report
+    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    now_naive = NOW.replace(tzinfo=None)
+    day1 = now_naive - timedelta(days=1)
+    day2 = now_naive
+
+    # Combo X (spread x total) both days; combo Y (ml x total, NULL spread)
+    # day1 only with a single book, so it never passes consensus.
+    for book in ("draftkings", "fanduel", "novig"):
+        _insert_sgp_odds(market, "g1", "sxt", book, day1, -1.5, 8.5)
+    _insert_sgp_odds(market, "g1", "mxt", "draftkings", day1, None, 9.5)
+    for book in ("draftkings", "fanduel"):
+        _insert_sgp_odds(market, "g1", "sxt", book, day2, -1.5, 8.5)
+
+    stats = report.universe_stats(market, now_naive - timedelta(days=7),
+                                  now_naive)
+    per_day = {d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d):
+               (passing, total) for d, passing, total in stats["per_day"]}
+    assert per_day[day1.strftime("%Y-%m-%d")] == (1, 2)
+    assert per_day[day2.strftime("%Y-%m-%d")] == (1, 1)
+    per_book = {b: (days, combos) for b, days, combos, _age in
+                stats["per_book"]}
+    assert per_book["draftkings"] == (2, 2)
+    assert per_book["fanduel"] == (2, 1)
+    assert per_book["novig"] == (1, 1)
+
+
+def test_universe_empty(monkeypatch, tmp_path):
+    from kalshi_mlb_mm import report
+    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    now_naive = NOW.replace(tzinfo=None)
+    stats = report.universe_stats(market, now_naive - timedelta(days=7),
+                                  now_naive)
+    assert stats["per_day"] == []
+    assert stats["per_book"] == []
