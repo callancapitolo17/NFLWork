@@ -28,7 +28,7 @@
 
 | Question | Source |
 |---|---|
-| RFQs seen / in-scope | state `seen_rfqs` (`first_seen_at`, `in_scope`, `last_decision`, `rfq_id`) |
+| RFQs seen / in-scope | ~~state `seen_rfqs`~~ **CORRECTED during live smoke test:** `seen_rfqs` only records out-of-scope + live-quoted RFQs (main.py:1124 writes inside the quote transaction) — the funnel is derived rfq-level from `quote_decisions` instead |
 | Decision funnel + skip reasons | state `quote_decisions` (`decision`, `reason`, `observed_at`, `rfq_id`) — vocabulary at `main.py:682-1541` |
 | Grid vs on-demand vs skipped path | rfq-level: `last_decision LIKE 'out_of_scope%'` = skipped; any decision `reason='on_demand_pending'` = on-demand path; other in-scope = grid (approximation, footnoted: an on-demand RFQ whose fetch lands within its first 2s tick never logs `on_demand_pending`) |
 | On-demand fetch latency/success | research `events`: pair `on_demand_requested` ↔ `on_demand_result` on `json_extract_string(payload,'$.leg_set_hash')`; per-book `latency_sec` inside `on_demand_result` payload `books` dict (keys via `json_keys`); hash with request but no result = failed flight |
