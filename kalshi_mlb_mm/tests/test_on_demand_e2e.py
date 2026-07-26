@@ -203,10 +203,10 @@ def test_mixed_grid_plus_on_demand_combo_prices_product(monkeypatch, tmp_path):
     # sanity: quoted fair = grid(gA) * consensus(gB) — recompute directly
     from kalshi_mlb_mm import router
     canon_b = legset.parse_legs(legs_b)
-    fair_b = router.consensus({"draftkings": 0.20, "fanduel": 0.20},
-                              2, 0.02)
-    fair_a = router.subcombo_fair("gA", legset.parse_legs(legs_a),
-                                  main._SGP_ODDS, 2, 0.02)
+    cons_b, _ = router.consensus({"draftkings": 0.20, "fanduel": 0.20},
+                                 2, 0.07)
+    cons_a, _ = router.subcombo_consensus("gA", legset.parse_legs(legs_a),
+                                          main._SGP_ODDS, 2, 0.07)
     with db.connect(read_only=True) as con:
         blended = con.execute("SELECT blended_fair FROM live_quotes").fetchone()[0]
-    assert abs(blended - fair_a * fair_b) < 1e-9
+    assert abs(blended - cons_a.fair * cons_b.fair) < 1e-9

@@ -161,7 +161,7 @@ def test_tick_contracts_fp_string_over_cap_blocked(monkeypatch, tmp_path):
     _scaffold(monkeypatch, tmp_path, db, cfg, risk)
     monkeypatch.setattr(cfg, "BANKROLL", 500.0)
     monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 0.10)
-    monkeypatch.setattr(main.router, "combo_fair", lambda *a, **kw: 0.55)
+    monkeypatch.setattr(main.router, "combo_fair_detail", lambda *a, **kw: (main.router.ComboFair(0.55, 0.0, 1), "ok"))
 
     class Src:
         def poll(self):
@@ -185,7 +185,7 @@ def test_tick_contracts_fp_string_small_passes(monkeypatch, tmp_path):
     _scaffold(monkeypatch, tmp_path, db, cfg, risk)
     monkeypatch.setattr(cfg, "BANKROLL", 500.0)
     monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 0.10)
-    monkeypatch.setattr(main.router, "combo_fair", lambda *a, **kw: 0.55)
+    monkeypatch.setattr(main.router, "combo_fair_detail", lambda *a, **kw: (main.router.ComboFair(0.55, 0.0, 1), "ok"))
 
     class Src:
         def poll(self):
@@ -229,7 +229,7 @@ def test_tick_dollar_rfq_over_cap_blocked_post_pricing(monkeypatch, tmp_path):
     _scaffold(monkeypatch, tmp_path, db, cfg, risk)
     monkeypatch.setattr(cfg, "BANKROLL", 500.0)
     monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 0.10)
-    monkeypatch.setattr(main.router, "combo_fair", lambda *a, **kw: 0.55)
+    monkeypatch.setattr(main.router, "combo_fair_detail", lambda *a, **kw: (main.router.ComboFair(0.55, 0.0, 1), "ok"))
 
     class Src:
         def poll(self):
@@ -253,7 +253,7 @@ def test_tick_small_dollar_rfq_passes_and_quotes(monkeypatch, tmp_path):
     _scaffold(monkeypatch, tmp_path, db, cfg, risk)
     monkeypatch.setattr(cfg, "BANKROLL", 500.0)
     monkeypatch.setattr(cfg, "MAX_FILL_EXPOSURE_PCT", 0.10)
-    monkeypatch.setattr(main.router, "combo_fair", lambda *a, **kw: 0.55)
+    monkeypatch.setattr(main.router, "combo_fair_detail", lambda *a, **kw: (main.router.ComboFair(0.55, 0.0, 1), "ok"))
 
     class Src:
         def poll(self):

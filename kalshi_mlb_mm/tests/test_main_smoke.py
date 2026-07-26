@@ -80,12 +80,12 @@ def test_discovery_dedup_no_resubmit_when_price_unchanged(monkeypatch, tmp_path)
     from kalshi_mlb_mm.pricing import Quote
     import kalshi_mlb_mm.pricing as pricing_mod
     fixed_quote = Quote(yes_bid=0.500, no_bid=0.430)
-    monkeypatch.setattr(pricing_mod, "quote", lambda fair, roi: fixed_quote)
+    monkeypatch.setattr(pricing_mod, "quote", lambda fair, roi, **kw: fixed_quote)
 
     # Monkeypatch the helpers that require real DBs / network.
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     # router.combo_fair replaces _book_fairs + blended_fair in the live path.
-    monkeypatch.setattr(router_mod, "combo_fair", lambda *a, **k: 0.55)
+    monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.55, 0.0, 1), "ok"))
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
     # Make tipoff_ok pass (commence_time is None → normally fails; override).
@@ -292,7 +292,7 @@ def test_risk_sweep_cancels_on_drift_since_quote(monkeypatch, tmp_path):
     # Book_fair_at_q was 0.40; now consensus is 0.45 (drift 0.05 > 0.03 threshold).
     # router.combo_fair replaces _book_fairs + statistics.median in the live path.
     import kalshi_mlb_mm.router as router_mod
-    monkeypatch.setattr(router_mod, "combo_fair", lambda *a, **k: 0.45)
+    monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.45, 0.0, 1), "ok"))
 
     # Pre-seed an open live_quote referencing rfq r-drift, and a seen_rfqs row
     # with legs_json so the sweep can compute spread/total lines.
@@ -519,7 +519,7 @@ def test_confirm_voids_when_no_fresh_books(monkeypatch, tmp_path):
 
     # No fresh books available — router.combo_fair returns None (replaces _book_fairs).
     import kalshi_mlb_mm.router as router_mod
-    monkeypatch.setattr(router_mod, "combo_fair", lambda *a, **k: None)
+    monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (None, "too_few_books"))
     monkeypatch.setattr(main, "_leg_market_prices",
                         lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
 
@@ -589,7 +589,7 @@ def test_confirm_records_fill_fast_with_reconciled_false(monkeypatch, tmp_path):
 
     # router.combo_fair replaces _book_fairs + blended_fair in confirm path.
     import kalshi_mlb_mm.router as router_mod
-    monkeypatch.setattr(router_mod, "combo_fair", lambda *a, **k: 0.56)
+    monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.56, 0.0, 1), "ok"))
 
     # Track API calls; if confirm path ever hits /portfolio/positions, we fail.
     monkeypatch.setattr(main, "_leg_market_prices",
@@ -908,7 +908,7 @@ def test_discovery_skips_when_combo_exposure_capped(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     # Per-combo cap runs after pricing — mock router so pricing produces a valid fair.
     import kalshi_mlb_mm.router as router_mod
-    monkeypatch.setattr(router_mod, "combo_fair", lambda *a, **k: 0.55)
+    monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.55, 0.0, 1), "ok"))
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
 
     _evt = "KXMLBGAME-25JUN271905TEXLAA"
@@ -1054,7 +1054,7 @@ def test_confirm_arms_combo_cooldown(monkeypatch, tmp_path):
 
     # router.combo_fair replaces _book_fairs + blended_fair in confirm path.
     import kalshi_mlb_mm.router as router_mod
-    monkeypatch.setattr(router_mod, "combo_fair", lambda *a, **k: 0.56)
+    monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.56, 0.0, 1), "ok"))
 
     def fake_api(method, path, *a, **kw):
         if path.startswith("/communications/quotes/"):

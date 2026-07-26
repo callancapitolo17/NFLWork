@@ -42,7 +42,7 @@ def _setup(monkeypatch, tmp_path, db_name, candidate_ticker, candidate_game):
                                       "sgp_decimal": [2.0], "fetch_time": [None],
                                       "spread_line": [-1.5], "total_line": [8.5]}))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m: True)
-    monkeypatch.setattr(router_mod, "combo_fair", lambda *a, **k: 0.55)
+    monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.55, 0.0, 1), "ok"))
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
     monkeypatch.setattr(main, "_SCOPE_CACHE",
@@ -213,7 +213,7 @@ def test_own_open_quote_excluded_when_requoting_same_rfq(monkeypatch, tmp_path):
         con.execute("INSERT OR REPLACE INTO quote_games (quote_id, game_id) "
                     "VALUES (?, ?)", ["oq-self-old", "GAME-SELF"])
     monkeypatch.setattr(pricing_mod, "quote",
-                        lambda fair, roi: Quote(yes_bid=0.520, no_bid=0.410))
+                        lambda fair, roi, **kw: Quote(yes_bid=0.520, no_bid=0.410))
 
     gw = _GW()
     main._discovery_tick(_Src({"id": "r-self", "market_ticker": "COMBO-SELF",
