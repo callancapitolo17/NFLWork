@@ -184,14 +184,20 @@ recreate the problem.
 
 ## 4. Go-live plan
 
-1. **Shadow smoke** (first game day): full pipeline live, shadow gateway;
-   verify pairing, rung matching, candidate counts, heartbeat.
-2. **Live tiny** (next game day): `MAKER_MODE=live MAKER_LIVE_ACK=1`,
+1. **First-tick shadow check** (same session as launch, ~minutes, user
+   call 2026-07-25 — no standalone shadow day): run the pipeline with the
+   shadow gateway for the first poll cycles; verify pairing count, rung
+   matches, candidate counts, heartbeat. The order path is unchanged
+   WC-live-proven code, so shadow only needs to prove the new MLB wiring.
+2. **Flip live, same slate**: `MAKER_MODE=live MAKER_LIVE_ACK=1`,
    `MAKER_MAX_CONTRACTS=2–5`, `HARD_STOP_DOLLARS≈50`, kickoff-aware
    `ANCHOR_STALE_SEC` tuned to MLB anchor cadence from Task 0, kill file
    armed, %-of-bankroll caps as in WC config.
 3. **Review after ~1 week of slates**: fills by mode, markouts, worst
    rungs; decide scale-up, strategy changes (issue #1 breaker?), or stop.
+   The multi-sport expansion epic is written here, ranked on real fill
+   data (re-triage of unabated_edge issues #1–#10 plus deferred spec
+   items: spreads/ML, shared MLB exposure cap, news halts, NFL).
 
 Restart discipline: never mid-game while holding inventory (fills ledger
 rebuild caveat carries over from WC README).
