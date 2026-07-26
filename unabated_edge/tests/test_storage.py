@@ -40,43 +40,71 @@ def test_snapshot_books_roundtrip(tmp_path, monkeypatch):
     assert float(row[4]) == 0.40          # full depth ladder survives as queryable JSON
 
 
-def test_prune_capture_deletes_old_rows_keeps_recent(tmp_path, monkeypatch):
+def test_prune_capture_deletes_old_rows_keeps_recent_and_other_sports(tmp_path, monkeypatch):
     """Go-forward retention for the two high-volume capture tables: rows
-    older than the cutoff are deleted, rows within the window survive.
-    line_snapshots (not pruned) must be untouched."""
+    older than the cutoff are deleted for sports in the `sports` argument,
+    rows within the window survive, and — critically — an old row for a
+    sport NOT in `sports` (soccer's WC-era backtest archive, in production)
+    must also survive untouched. line_snapshots (never pruned, no sport
+    filter) must be untouched too."""
     monkeypatch.setattr(config, "MARKET_DB_PATH", tmp_path / "m.duckdb")
     monkeypatch.setattr(config, "RESEARCH_DB_PATH", tmp_path / "r.duckdb")
     storage.init()
     now = datetime.datetime.now(datetime.timezone.utc)
     old_ts = now - datetime.timedelta(days=20)
     recent_ts = now - datetime.timedelta(days=1)
-    storage.snapshot_books("mlb", [_book_row(old_ts, "OLD"), _book_row(recent_ts, "RECENT")])
+    storage.snapshot_books("mlb", [_book_row(old_ts, "OLD-MLB"), _book_row(recent_ts, "RECENT-MLB")])
+    # Old soccer row: same age as the old MLB row, but must survive because
+    # "soccer" isn't in the sports list passed to prune_capture below — this
+    # is the WC-archive-protection behavior itself, not incidental.
+    storage.snapshot_books("soccer", [_book_row(old_ts, "OLD-SOCCER")])
     # kalshi_trades is pruned on captured_ts, not created_time — captured_ts
     # is the per-call `captured_ts` argument below, so old/recent trades
     # must go in separate insert_trades calls to land at different cutoffs.
     storage.insert_trades("mlb", [
-        {"trade_id": "old", "market_ticker": "OLD", "created_time": old_ts.isoformat(),
+        {"trade_id": "old-mlb", "market_ticker": "OLD-MLB", "created_time": old_ts.isoformat(),
+         "yes_price": 0.40, "count": 1.0, "taker_side": "yes"},
+    ], old_ts)
+    storage.insert_trades("soccer", [
+        {"trade_id": "old-soccer", "market_ticker": "OLD-SOCCER", "created_time": old_ts.isoformat(),
          "yes_price": 0.40, "count": 1.0, "taker_side": "yes"},
     ], old_ts)
     storage.insert_trades("mlb", [
-        {"trade_id": "recent", "market_ticker": "RECENT", "created_time": recent_ts.isoformat(),
+        {"trade_id": "recent", "market_ticker": "RECENT-MLB", "created_time": recent_ts.isoformat(),
          "yes_price": 0.40, "count": 1.0, "taker_side": "yes"},
-        {"trade_id": "recent2", "market_ticker": "RECENT", "created_time": recent_ts.isoformat(),
+        {"trade_id": "recent2", "market_ticker": "RECENT-MLB", "created_time": recent_ts.isoformat(),
          "yes_price": 0.40, "count": 1.0, "taker_side": "yes"},
     ], recent_ts)
     storage.snapshot_lines("mlb", [{"ts": old_ts, "event_id": 1, "market_source_id": 7,
                                     "bet_type": "bt3", "side": "1", "price": -110.0, "points": 8.5}])
 
-    deleted = storage.prune_capture(14)
+    deleted = storage.prune_capture(14, ["mlb"])
 
     assert deleted == {"book_snapshots": 1, "kalshi_trades": 1}
     with storage.connect(config.MARKET_DB_PATH, read_only=True) as c:
         tickers = {r[0] for r in c.execute("SELECT market_ticker FROM book_snapshots").fetchall()}
-        assert tickers == {"RECENT"}
+        assert tickers == {"RECENT-MLB", "OLD-SOCCER"}       # old soccer row survives
         trade_ids = {r[0] for r in c.execute("SELECT trade_id FROM kalshi_trades").fetchall()}
-        assert trade_ids == {"recent", "recent2"}
+        assert trade_ids == {"recent", "recent2", "old-soccer"}   # old soccer trade survives
         # line_snapshots is never pruned — CLV backbone, small table.
         assert c.execute("SELECT count(*) FROM line_snapshots").fetchone()[0] == 1
+
+
+def test_prune_capture_empty_sports_list_is_noop(tmp_path, monkeypatch):
+    """CAPTURE_PRUNE_SPORTS="" (or any empty list) must delete nothing and
+    not even open a write connection — a safe default if the config is ever
+    misconfigured to an empty scope."""
+    monkeypatch.setattr(config, "MARKET_DB_PATH", tmp_path / "m.duckdb")
+    monkeypatch.setattr(config, "RESEARCH_DB_PATH", tmp_path / "r.duckdb")
+    storage.init()
+    old_ts = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=20)
+    storage.snapshot_books("mlb", [_book_row(old_ts, "OLD-MLB")])
+
+    deleted = storage.prune_capture(14, [])
+
+    assert deleted == {"book_snapshots": 0, "kalshi_trades": 0}
+    with storage.connect(config.MARKET_DB_PATH, read_only=True) as c:
+        assert c.execute("SELECT count(*) FROM book_snapshots").fetchone()[0] == 1
 
 
 def test_insert_trades_dedups_on_trade_id(tmp_path, monkeypatch):

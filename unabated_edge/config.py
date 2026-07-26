@@ -55,9 +55,20 @@ PER_MATCH_CAP_PCT = float(_get("PER_MATCH_CAP_PCT", "0.03"))
 # full-slate tick and caps capture volume for games nobody can trade yet.
 BOOK_CAPTURE_HORIZON_HOURS = float(_get("BOOK_CAPTURE_HORIZON_HOURS", "12"))
 # Go-forward retention for the high-volume capture tables (book_snapshots,
-# kalshi_trades). Does not touch any existing on-disk data — the runner
-# prunes only what it writes from here on.
+# kalshi_trades), scoped to CAPTURE_PRUNE_SPORTS below — it prunes old rows
+# for those sports on every restart/day, including rows that predate this
+# feature. It does NOT touch line_snapshots, and it does not touch any sport
+# absent from CAPTURE_PRUNE_SPORTS.
 CAPTURE_RETENTION_DAYS = int(_get("CAPTURE_RETENTION_DAYS", "14"))
+# Sports the automated prune is allowed to delete from, comma-separated.
+# Soccer is deliberately excluded: the WC-era book_snapshots/kalshi_trades
+# rows (2026-07-10 -> 19) in the shared market DB are a preserved backtest
+# archive (GitHub issue #9), not disposable capture — an unscoped prune
+# would delete a large chunk of it on first launch from main. Add a sport
+# here only when its accumulated history is genuinely disposable.
+CAPTURE_PRUNE_SPORTS = tuple(
+    s.strip() for s in _get("CAPTURE_PRUNE_SPORTS", "mlb").split(",") if s.strip()
+)
 
 # ---- maker (unabated_edge/maker/) — spec docs/superpowers/specs/2026-07-10-wc-totals-maker-design.md ----
 MAKER_MODE = _get("MAKER_MODE", "off")            # off | shadow | live

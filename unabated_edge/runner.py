@@ -223,9 +223,10 @@ def main_loop(dry_run: bool):
     ticks = 0
     flagged_since_hb = 0
     # Go-forward retention for book_snapshots/kalshi_trades: prune once now,
-    # then once per calendar day (see storage.prune_capture). Does not touch
-    # any pre-existing accumulated data.
-    deleted = storage.prune_capture(config.CAPTURE_RETENTION_DAYS)
+    # then once per calendar day (see storage.prune_capture). Scoped to
+    # CAPTURE_PRUNE_SPORTS — soccer's WC-era rows are a preserved backtest
+    # archive and must never be auto-deleted.
+    deleted = storage.prune_capture(config.CAPTURE_RETENTION_DAYS, config.CAPTURE_PRUNE_SPORTS)
     log.info("capture prune at startup: %s", deleted)
     last_prune_date = datetime.datetime.now(datetime.timezone.utc).date()
     hb_every = max(1, round(60 / config.V2_POLL_SEC))    # ~60s heartbeat
@@ -243,7 +244,7 @@ def main_loop(dry_run: bool):
         try:
             today = datetime.datetime.now(datetime.timezone.utc).date()
             if today != last_prune_date:
-                deleted = storage.prune_capture(config.CAPTURE_RETENTION_DAYS)
+                deleted = storage.prune_capture(config.CAPTURE_RETENTION_DAYS, config.CAPTURE_PRUNE_SPORTS)
                 log.info("capture prune: %s", deleted)
                 last_prune_date = today
             if time.time() - last_k > 30:

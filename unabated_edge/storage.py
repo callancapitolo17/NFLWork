@@ -113,19 +113,33 @@ def log_flagged(r):
         )
 
 
-def prune_capture(days: int) -> dict:
-    """Delete book_snapshots and kalshi_trades rows older than `days`, the
-    two highest-volume capture tables (a full MLB slate books ~176+ markets
-    every tick). Go-forward retention only — never touches line_snapshots
-    (small, CLV-critical) or any data already on disk from before this
-    function existed; it just caps future growth. Returns
-    {table_name: rows_deleted} for the caller to log."""
+def prune_capture(days: int, sports) -> dict:
+    """Delete book_snapshots and kalshi_trades rows older than `days` for
+    sports in `sports` only — the two highest-volume capture tables (a full
+    MLB slate books ~176+ markets every tick). Scoping by sport matters: the
+    WC soccer rows already in the shared market DB are a preserved backtest
+    archive (GitHub issue #9), not disposable capture, so callers must NOT
+    pass "soccer" here (see config.CAPTURE_PRUNE_SPORTS). Never touches
+    line_snapshots (small, CLV-critical) regardless of sport. An empty
+    `sports` is a no-op (returns zero counts, no DB connection opened).
+    Returns {table_name: rows_deleted} for the caller to log."""
+    sports = list(sports)
+    if not sports:
+        return {"book_snapshots": 0, "kalshi_trades": 0}
     cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+    sport_placeholders = ",".join("?" for _ in sports)
     deleted = {}
     with connect(config.MARKET_DB_PATH) as c:
         for table, ts_col in (("book_snapshots", "ts"), ("kalshi_trades", "captured_ts")):
-            n_before = c.execute(f"SELECT count(*) FROM {table} WHERE {ts_col} < ?", [cutoff]).fetchone()[0]
-            c.execute(f"DELETE FROM {table} WHERE {ts_col} < ?", [cutoff])
+            params = [cutoff, *sports]
+            n_before = c.execute(
+                f"SELECT count(*) FROM {table} WHERE {ts_col} < ? AND sport IN ({sport_placeholders})",
+                params,
+            ).fetchone()[0]
+            c.execute(
+                f"DELETE FROM {table} WHERE {ts_col} < ? AND sport IN ({sport_placeholders})",
+                params,
+            )
             deleted[table] = n_before
     return deleted
 

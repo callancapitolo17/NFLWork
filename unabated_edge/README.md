@@ -454,7 +454,8 @@ All tuneable constants live in `config.py` and can be overridden via `.env` or e
 | `KICKOFF_CUTOFF_MIN` | `3` | Stop flagging this many minutes before kickoff |
 | `PER_MATCH_CAP_PCT` | `0.03` | Max fraction of bankroll per match (3 %) — taker sizing only |
 | `BOOK_CAPTURE_HORIZON_HOURS` | `12` | Skip the per-tick Kalshi book/trades fetch for events more than this many hours before first pitch (`line_snapshots` still captures them) — shortens a full-slate tick and caps capture volume for games nobody can trade yet |
-| `CAPTURE_RETENTION_DAYS` | `14` | Go-forward retention for `book_snapshots`/`kalshi_trades` (the two high-volume capture tables); pruned once at startup and once per calendar day (`storage.prune_capture`). Never touches data already on disk or `line_snapshots` |
+| `CAPTURE_RETENTION_DAYS` | `14` | Retention window for `book_snapshots`/`kalshi_trades` (the two high-volume capture tables) — pruned once at startup and once per calendar day (`storage.prune_capture`). **Only deletes rows for sports listed in `CAPTURE_PRUNE_SPORTS`** — this DOES include pre-existing old rows for those sports, not just future ones. Never touches `line_snapshots` |
+| `CAPTURE_PRUNE_SPORTS` | `mlb` | Comma-separated sports the automated prune may delete from. Soccer is deliberately excluded by default: the WC-era `book_snapshots`/`kalshi_trades` rows in the shared market DB are a preserved backtest archive (issue #9), not disposable capture — add a sport here only when its accumulated history is genuinely disposable |
 | `MAKER_MODE` | `off` | `off` \| `shadow` \| `live` — see [Market maker](#market-maker-maker) |
 | `MAKER_LIVE_ACK` | unset | Must be `"1"` for `MAKER_MODE=live` to start (dead-man switch) |
 | `ROI_MARGIN` | `0.03` | Margin floor as a fraction of price (3 %), before the fee+buffer floor |
