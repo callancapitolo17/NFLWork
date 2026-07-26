@@ -655,10 +655,20 @@ git commit -m "docs(unabated_edge): multi-sport onboarding + MLB launch runbook"
 
 ## Appendix A — Task 1 recon findings (filled by Task 1)
 
+**Note on probe code:** the brief's Step-1 snippet assumes a feed shape
+(`raw.get("results", raw.get("data", []))`) that doesn't match this feed —
+the real v2 payload is `{"odds": {"lg{N}:pt1:pregame": [...]}, "teams": {...},
+"marketSources": {...}}` (same shape `feed.parse_v2` already consumes). All
+39 league ids 1-40 return HTTP 200 with content, so the brief's "one line
+whose teams are MLB clubs" filter never fired. Adapted the probe to read
+`raw["odds"][f"lg{{lid}}:pt1:pregame"]` and resolve team names via
+`raw["teams"]`, keeping the same goal (sweep ids, find MLB by team names).
+No other deviations from the brief.
+
 | Constant | Value | Evidence |
 |---|---|---|
-| `MLB_LEAGUE_PREFIX` | _recorded in Task 1_ | v2 feed sweep output |
-| `MLB_TOTAL_SERIES` | _recorded in Task 1_ | Kalshi series probe |
-| Kalshi title format | _recorded in Task 1_ | sample titles |
-| Anchor ids quoting MLB bt3 | _recorded in Task 1_ | Step 2 output |
-| Anchor `modifiedOn` cadence | _recorded in Task 1_ | Step 2 output |
+| `MLB_LEAGUE_PREFIX` | `"lg5"` | v2 feed sweep (adapted, see note above): `lg5:pt1:pregame` returns 43 distinct MLB events, e.g. eventId 108549 "Cubs Chicago @ Pirates Pittsburgh" (away=Chicago Cubs, home=Pittsburgh Pirates), 108565 "Blue Jays Toronto @ Nationals Washington", 108923 "Astros Houston @ White Sox Chicago". Team-name spelling in this feed is `"{Nickname} {City}"` in `eventName` but full `"{City} {Nickname}"` (e.g. `"Pittsburgh Pirates"`, `"Chicago Cubs"`) in the resolved `teams` map. |
+| `MLB_TOTAL_SERIES` | `"KXMLBTOTAL"` | Step 3 probe (run verbatim): `kalshi.list_events("KXMLBTOTAL")` → 22 open events; `KXMLBRUNS` and `KXMLBGAMETOTAL` → 0 events each (guesses miss). Markets: `strike_type == "greater"`, `floor_strike` ends in `.5` throughout (e.g. `KXMLBTOTAL-26JUL251805NYYPHI-3` floor 2.5, `-4` floor 3.5, `-5` floor 4.5) — matches Task 4's assumption. |
+| Kalshi title format | **`"{City[+disambiguator]} vs {City[+disambiguator]}: Total Runs"` — NOT `"Yankees vs Red Sox: Total Runs"` as Task 4 assumed.** | Sample titles from the 22 live events: `"New York Y vs Philadelphia: Total Runs"` (Yankees), `"Chicago C vs Pittsburgh: Total Runs"` (Cubs), `"Los Angeles D vs New York M: Total Runs"` (Dodgers vs Mets), `"Los Angeles A vs San Francisco: Total Runs"` (Angels), `"Houston vs Chicago WS: Total Runs"`, `"A's vs Minnesota: Total Runs"` (Athletics — no city disambiguator, uses nickname). Kalshi uses **city names**, only appending a one/two-letter or short suffix (`Y`/`C`/`M`/`D`/`A`/`WS`) when two MLB teams share a city; it never uses full nicknames like "Yankees" or "Red Sox". Task 4's title-matching / team-canon logic must key off city (+ disambiguator), not nickname, for the Kalshi side. `event_ticker` (e.g. `KXMLBTOTAL-26JUL251805NYYPHI`) carries clean 3-letter club codes (`NYY`, `PHI`, `CHC`, `PIT`, `LAD`, `NYM`, `ATH`, ...) that are a more reliable join key than the free-text title. |
+| Anchor ids quoting MLB bt3 | **All three: 7 (Sharp Book Price), 6 (Circa), 68 (Circa Sports)** | Step 2 probe (run verbatim, `MLB_ID=5, MLB_PREFIX="lg5"`) on eventId 108549 (Pirates vs Cubs, 8.5 total): `7` → over `{points: 8.5, americanPrice: -119}` / under `{points: 8.5, americanPrice: 104}`, 6 alternate lines; `6` (Circa) → over/under both `points: 8.5`, `-120`/`+100`, 0 alts; `68` (Circa Sports) → same 8.5 line, `-120`/`+100`, 0 alts. Side-convention sanity check: si0 ("over") alt ladder drops to `points: 7.0` at a much shorter price (`-232`), and si1 ("under") alt ladder drops to `points: 8.0` at a longer price (`+122`) — both move in the direction expected for over/under, confirming the si0=over / si1=under convention Task 4 assumes. Devigging id-7's 8.5 line (-119/+104) gives P(over) ≈ 52.6% > 50%, consistent with a below-average MLB total being a near-coin-flip tilted slightly to the over — sanity check passes. No anchor returned empty; the hard-stop condition did not trigger. |
+| Anchor `modifiedOn` cadence | Pregame lines ~17h before first pitch: anchor id 7 last moved ~2h28m before probe time; ids 6/68 last moved ~53min before probe time (probe run at 2026-07-26T00:43:10Z; sample `modifiedOn` values 2026-07-25T22:15:28Z (id 7) and 2026-07-25T23:49:41Z (ids 6/68)). | Step 2 output, cross-checked against wall clock. Interpretation: `modifiedOn` is "when the book last moved this number," not a poll timestamp — for a game ~17h out, tens of minutes to a couple hours between moves is normal (no live in-play repricing yet). This is looser than soccer's live-game cadence; `ANCHOR_STALE_SEC`/`ANCHOR_STALE_FARK_SEC` semantics (fresh-near-kickoff vs tolerate-stale-far-from-kickoff) should carry over directly to MLB without changes. |
