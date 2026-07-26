@@ -226,7 +226,7 @@ quote on that match unless noted as global):
 | trigger | scope | action |
 |---|---|---|
 | recomputed quote price differs from the resting price (fair moved ≥ 1c, or the opposing ask moved the never-cross cap) | that rung | cancel/replace that rung |
-| feed watchdog: no successful tick for a sport in `MAX_STALENESS_SEC` (20s) | all matches | pull everything (`watchdog()`, run every main-loop iteration) |
+| feed watchdog: no successful tick for a sport in `MAX_STALENESS_SEC` (120s) | all matches | pull everything (`watchdog()`, run every main-loop iteration) |
 | within `QUOTE_PULL_MIN` (3 min) of kickoff | that match | pull; inventory rides to settlement |
 | `COOLOFF_MIN` (10 min) after a fill burst | that match | pull + hold off requoting |
 | fill burst: > `FILL_BURST_N` (3) fills in 60s | that match | pull + start cooloff |
@@ -261,7 +261,10 @@ so the mismatch tripwire doesn't false-trip on inventory carried over from
 before — and cancels any in-series resting orders left over from before
 (`state.startup_sync`). Every 60s recon cycle repeats the order sweep
 (`state.sweep_orphan_orders`), bounding the orphaned-order window from a
-landed-but-errored POST to ~60s. Position mismatches beyond
+landed-but-errored POST to ~60s. **`sweep_orphan_orders` cancels ANY resting
+order on the maker's series from this account every 60s — never manually
+rest orders on those markets from the same account**, they will be swept.
+Position mismatches beyond
 baseline + local fills still pull all quotes (`position_mismatch`, see the
 pull-triggers table below). Operational caveat: a mid-match restart rebuilds positions and orders but not the per-match interval ledger — pre-restart fills don't count toward the match cap until settlement, so don't restart mid-match while holding inventory (flatten or wait for settlement first).
 
@@ -325,9 +328,21 @@ sequence — stop after step 1 and read the heartbeat before flipping live.**
 #    config.py loads it by package path, not cwd, but confirm it's actually there)
 df -h / | tail -1                      # need comfortable headroom; WC died at 98%
 ls unabated_edge/.env && grep -c KALSHI unabated_edge/.env
+# Before-first-launch checklist item: measure the last-2h anchor modifiedOn
+# cadence from the first captured slate (query line_snapshots.modified_on —
+# see "Querying results" below) and set ANCHOR_STALE_SEC above whatever that
+# cadence turns out to be. Task 1's soccer measurement only sampled cadence
+# ~17h out from kickoff, which is NOT representative of near-kickoff churn —
+# don't reuse that number for MLB without re-measuring on MLB's own slate.
 
 # 1. First-tick shadow check (same session; no standalone shadow day)
 MAKER_MODE=shadow python3 -m unabated_edge.runner
+# Heartbeat timing: on a real MLB slate one adapter's tick alone can run
+# tens of seconds (a full KXMLBTOTAL book pass measured ~37s), so don't
+# expect the ~60s heartbeat cadence assumption to hold exactly — heartbeats
+# can land every several minutes on a busy slate. Give it more than "2-3
+# ticks" of wall-clock patience below; watch for the log line to appear at
+# all, not for it to appear on a tight schedule.
 # watch the heartbeat line (runner.py's `log.info("heartbeat ...")`, one per
 # hb_every ticks): kalshi_events is an AGGREGATE sum across both sports'
 # open-event counts (not split per sport) — check it's roughly in line with
@@ -435,9 +450,11 @@ All tuneable constants live in `config.py` and can be overridden via `.env` or e
 | `MIN_EV_DOLLARS` | `0.02` | Minimum absolute per-contract EV (gates with `MIN_EV_PCT` so cheap longshots can't clear on % alone) |
 | `UNABATED_V2_POLL_SEC` | `5` | Seconds between re-fetches of each league's v2 odds file (also the tick cadence) |
 | `KALSHI_TRADES_POLL_SEC` | `30` | Seconds between executed-trades tape polls (rides every Nth main tick) |
-| `MAX_STALENESS_SEC` | `20` | Taker path: reserved, not enforced. **Maker path: enforced** — `maker.watchdog()` pulls all quotes if a sport's feed hasn't ticked successfully within this many seconds |
+| `MAX_STALENESS_SEC` | `120` | Taker path: reserved, not enforced. **Maker path: enforced** — `maker.watchdog()` pulls all quotes if a sport's feed hasn't ticked successfully within this many seconds. Must exceed the worst-case tick duration (a full KXMLBTOTAL slate's book pass alone measured ~37s) or the watchdog self-triggers every tick once quotes rest |
 | `KICKOFF_CUTOFF_MIN` | `3` | Stop flagging this many minutes before kickoff |
 | `PER_MATCH_CAP_PCT` | `0.03` | Max fraction of bankroll per match (3 %) — taker sizing only |
+| `BOOK_CAPTURE_HORIZON_HOURS` | `12` | Skip the per-tick Kalshi book/trades fetch for events more than this many hours before first pitch (`line_snapshots` still captures them) — shortens a full-slate tick and caps capture volume for games nobody can trade yet |
+| `CAPTURE_RETENTION_DAYS` | `14` | Go-forward retention for `book_snapshots`/`kalshi_trades` (the two high-volume capture tables); pruned once at startup and once per calendar day (`storage.prune_capture`). Never touches data already on disk or `line_snapshots` |
 | `MAKER_MODE` | `off` | `off` \| `shadow` \| `live` — see [Market maker](#market-maker-maker) |
 | `MAKER_LIVE_ACK` | unset | Must be `"1"` for `MAKER_MODE=live` to start (dead-man switch) |
 | `ROI_MARGIN` | `0.03` | Margin floor as a fraction of price (3 %), before the fee+buffer floor |
