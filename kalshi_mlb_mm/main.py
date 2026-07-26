@@ -54,6 +54,7 @@ _running = threading.Event()
 _running.set()
 _SGP_ODDS = None         # pd.DataFrame
 _PREV_BOOK_FAIR = {}     # combo_market_ticker -> last blended book fair (circuit breaker)
+_CONSTITUENT_POLL_CURSOR = 0   # #23: rotates the budgeted constituent poll (see _rotated_poll_order)
 _SCOPE_CACHE = {}        # market_ticker -> (in_scope, game_id, legs)
 # B5 fix (issue #18): bound the scope cache. Crude full-clear on overflow is
 # fine — verdicts re-warm within one poll cycle and a slate is a few hundred
@@ -1525,6 +1526,22 @@ def _open_quote_constituent_tickers(live_rows) -> set:
     return tickers
 
 
+def _rotated_poll_order(tickers: set) -> list:
+    """Constituent tickers in a deterministic order, rotated each sweep.
+
+    The poll is wall-clock budgeted (see singles.fetch_market_prices), so on a
+    large resting book some tickers go unpolled. Rotating the start point means
+    the SAME tail is not starved every sweep — over a few sweeps every ticker
+    gets looked at. Sorted first so the order is reproducible in tests.
+    """
+    global _CONSTITUENT_POLL_CURSOR
+    ordered = sorted(tickers)
+    if not ordered:
+        return ordered
+    start = _CONSTITUENT_POLL_CURSOR % len(ordered)
+    return ordered[start:] + ordered[:start]
+
+
 def _games_for_tickers(raw_legs: list, tickers: set) -> set:
     """game_ids of the legs whose market_ticker is in `tickers`.
 
@@ -1583,7 +1600,10 @@ def _constituent_jumped_games(live_rows, current_prices) -> tuple[set, dict]:
                                        config.CONSTITUENT_JUMP_THRESHOLD)
         if not moves:
             continue
-        if config.CONSTITUENT_JUMP_MODE == "book_quiet":
+        # Anything that is not explicitly "unconditional" gets the conservative
+        # guard, so a typo in the env var cannot silently arm the aggressive
+        # post-#54 mode on a bot whose quotes are still cache-priced.
+        if config.CONSTITUENT_JUMP_MODE != "unconditional":
             cur_med = _current_consensus_fair(legs_json)
             if cur_med is None or book_fair_at_q is None:
                 continue           # cannot establish "quiet" → no signal
@@ -1615,8 +1635,14 @@ def _risk_sweep_tick(gateway):
     # wasted).
     jumped_games, jump_detail = set(), {}
     if live and not books_stale:
+        global _CONSTITUENT_POLL_CURSOR
+        poll_order = _rotated_poll_order(_open_quote_constituent_tickers(live))
         current_prices = singles.fetch_market_prices(
-            _open_quote_constituent_tickers(live))
+            poll_order, budget_sec=config.CONSTITUENT_POLL_BUDGET_SEC)
+        # Advance past what we actually got, so the next sweep starts where
+        # this one ran out of budget (approximate: failed reads are not
+        # counted, which just re-polls them sooner).
+        _CONSTITUENT_POLL_CURSOR += max(1, len(current_prices))
         jumped_games, jump_detail = _constituent_jumped_games(live, current_prices)
         if jumped_games:
             research.emit("constituent_jump",

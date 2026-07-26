@@ -192,6 +192,36 @@ def test_fetch_market_prices_returns_partial_on_failure(monkeypatch):
     assert set(out) == {SPREAD}
 
 
+def test_fetch_market_prices_stops_at_the_wall_clock_budget(monkeypatch):
+    """All the bot's ticks share one thread, so an unbounded poll here would
+    delay the confirm tick — and Kalshi allows 2s to confirm in HVM. The poll
+    must yield rather than blow that window."""
+    from kalshi_common import auth_client
+    clock = {"t": 0.0}
+    monkeypatch.setattr(singles.time, "monotonic", lambda: clock["t"])
+    calls = []
+
+    def slow_api(method, path, *a, **k):
+        calls.append(path)
+        clock["t"] += 0.4                       # each GET "takes" 400ms
+        return 200, {"market": {"yes_bid": 45, "yes_ask": 47}}, None
+
+    monkeypatch.setattr(auth_client, "api", slow_api)
+    out = singles.fetch_market_prices([f"T{i}" for i in range(10)], budget_sec=1.0)
+    assert len(calls) == 3, f"1.0s budget at 400ms/call should stop at 3, got {len(calls)}"
+    assert len(out) == 3
+
+
+def test_fetch_market_prices_without_a_budget_polls_everything(monkeypatch):
+    from kalshi_common import auth_client
+    calls = []
+    monkeypatch.setattr(auth_client, "api",
+                        lambda m, path, *a, **k: (calls.append(path), (
+                            200, {"market": {"yes_bid": 45, "yes_ask": 47}}, None))[1])
+    singles.fetch_market_prices([f"T{i}" for i in range(5)])
+    assert len(calls) == 5
+
+
 def test_fetch_market_prices_makes_no_calls_for_an_empty_set(monkeypatch):
     from kalshi_common import auth_client
     monkeypatch.setattr(auth_client, "api",

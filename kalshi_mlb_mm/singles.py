@@ -19,6 +19,7 @@ Side effects: `leg_market_prices` and `fetch_market_prices` issue
 """
 import logging
 import math
+import time
 from dataclasses import dataclass
 
 from kalshi_common import auth_client, fair_value
@@ -64,7 +65,7 @@ def leg_market_prices(legs: list[dict]) -> dict | None:
         return None
 
 
-def fetch_market_prices(tickers) -> dict[str, dict]:
+def fetch_market_prices(tickers, budget_sec: float | None = None) -> dict[str, dict]:
     """Best-effort {ticker: {"yes_bid": $, "yes_ask": $}} for a SET of tickers.
 
     Unlike `leg_market_prices` this does NOT fail closed: unreadable tickers
@@ -74,11 +75,24 @@ def fetch_market_prices(tickers) -> dict[str, dict]:
     veto, which does fail closed.
 
     Cost: exactly one GET per DISTINCT ticker; callers dedup before calling.
+
+    `budget_sec` stops the loop once that much wall clock is spent. The bot's
+    ticks share ONE thread, so an unbounded poll here would delay the confirm
+    tick — and Kalshi allows only 2s to confirm in High Volatility Markets.
+    Polling fewer tickers is a far cheaper failure than missing a confirm
+    window, and partial coverage is safe under the same contract that makes
+    unreadable tickers safe. Callers rotate the iteration order so the tail
+    is not starved across sweeps.
     """
     out = {}
+    deadline = None if budget_sec is None else time.monotonic() + budget_sec
     for mt in tickers:
         if not mt:
             continue
+        if deadline is not None and time.monotonic() >= deadline:
+            log.warning("[constituent] poll budget %.2fs exhausted after %d ticker(s)",
+                        budget_sec, len(out))
+            break
         try:
             _status, body, _hdrs = auth_client.api("GET", f"/markets/{mt}")
             mkt = body.get("market") if isinstance(body, dict) else None

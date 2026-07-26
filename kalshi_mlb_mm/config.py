@@ -152,6 +152,15 @@ CONSTITUENT_JUMP_THRESHOLD = float(_get("CONSTITUENT_JUMP_THRESHOLD", "0.03"))
 #                   during the resting window means the market moved after us.
 CONSTITUENT_JUMP_MODE = _get("CONSTITUENT_JUMP_MODE", "book_quiet")
 CONSTITUENT_BOOK_QUIET_MAX = float(_get("CONSTITUENT_BOOK_QUIET_MAX", "0.01"))
+# Wall-clock ceiling on the constituent poll. ALL ticks share one thread, so a
+# slow poll inside the risk sweep delays the confirm tick — and Kalshi allows
+# only 2s to confirm in High Volatility Markets. Blowing a confirm window is a
+# far worse failure than polling fewer tickers this pass, so the poll yields
+# first and the iteration order rotates (main._rotated_poll_order) so no ticker
+# is starved across sweeps. At ~100ms/GET this covers ~10 tickers per 10s
+# sweep; a large resting book is therefore swept over several passes. The real
+# fix for wide coverage is the WebSocket feed the transport interface allows.
+CONSTITUENT_POLL_BUDGET_SEC = float(_get("CONSTITUENT_POLL_BUDGET_SEC", "1.0"))
 
 # Loops (seconds)
 DISCOVERY_SEC = int(_get("DISCOVERY_SEC", "2"))

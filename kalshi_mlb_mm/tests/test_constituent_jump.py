@@ -73,7 +73,8 @@ def _setup(monkeypatch, tmp_path, db_name, *, current, quotes=None,
     monkeypatch.setattr(cfg, "CONSTITUENT_BOOK_QUIET_MAX", 0.01)
     # current=None leaves the real fetch in place (for the API-bound test).
     if current is not None:
-        monkeypatch.setattr(singles, "fetch_market_prices", lambda tickers: current)
+        monkeypatch.setattr(singles, "fetch_market_prices",
+                            lambda tickers, budget_sec=None: current)
     if book_fair_now is not None:
         monkeypatch.setattr(main, "_current_consensus_fair",
                             lambda legs_json: book_fair_now)
@@ -239,6 +240,38 @@ def test_api_calls_are_one_per_distinct_ticker_per_sweep(monkeypatch, tmp_path):
     market_calls = [c for c in calls if c.startswith("/markets/")]
     assert len(market_calls) == 2, f"expected 2 distinct GETs, got {market_calls}"
     assert set(market_calls) == {f"/markets/{SPREAD_T}", f"/markets/{TOTAL_T}"}
+
+
+def test_a_typo_in_the_mode_falls_back_to_the_conservative_guard(monkeypatch, tmp_path):
+    """A misspelled env var must not silently arm the aggressive post-#54 mode
+    on a bot whose quotes are still cache-priced."""
+    main, db = _setup(monkeypatch, tmp_path, "cj_typo.duckdb", current=JUMPED,
+                      mode="unconditionl", book_fair_now=0.30)   # sic
+    main._risk_sweep_tick(_GW())
+    _status, decision = _state(db)
+    assert decision != ("sweep_cancel", "constituent_jump")
+
+
+def test_poll_order_rotates_so_the_tail_is_not_starved(monkeypatch):
+    """With a budget, a large book cannot be fully polled in one sweep. The
+    start point must advance, or the same trailing tickers never get read."""
+    from kalshi_mlb_mm import main
+    monkeypatch.setattr(main, "_CONSTITUENT_POLL_CURSOR", 0)
+    tickers = {"A", "B", "C", "D"}
+    assert main._rotated_poll_order(tickers) == ["A", "B", "C", "D"]
+    monkeypatch.setattr(main, "_CONSTITUENT_POLL_CURSOR", 2)
+    assert main._rotated_poll_order(tickers) == ["C", "D", "A", "B"]
+    monkeypatch.setattr(main, "_CONSTITUENT_POLL_CURSOR", 6)   # wraps
+    assert main._rotated_poll_order(tickers) == ["C", "D", "A", "B"]
+    assert main._rotated_poll_order(set()) == []
+
+
+def test_sweep_advances_the_poll_cursor(monkeypatch, tmp_path):
+    """Each sweep starts where the last one left off."""
+    main, db = _setup(monkeypatch, tmp_path, "cj_cursor.duckdb", current=QUIET)
+    monkeypatch.setattr(main, "_CONSTITUENT_POLL_CURSOR", 0)
+    main._risk_sweep_tick(_GW())
+    assert main._CONSTITUENT_POLL_CURSOR > 0
 
 
 def test_sweep_makes_no_constituent_calls_when_flat(monkeypatch, tmp_path):
