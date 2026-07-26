@@ -1,28 +1,38 @@
-"""Per-match risk ledger: exact worst-case P&L over the total-goals grid.
+"""Per-game risk ledger: exact worst-case P&L over a totals ladder.
 
-Every rung of a match settles on one integer (regulation-time total goals),
-so the match portfolio's P&L is a function of that single number. Evaluating
-it exactly on g=0..G_MAX replaces per-market caps and prices offsets, hedges,
-and middles correctly with no special cases.
+Sport-agnostic. Every rung settles on one number (the game's final total —
+goals, runs, points); portfolio P&L is a piecewise-constant function of that
+number whose only breakpoints are the fills' lines. Evaluating one
+representative outcome per interval is therefore exact — no fixed grid, no
+truncation above a top rung.
 
 A fill is (line, side, contracts, price): side is relative to the Over
-market — "yes" wins when g > line, "no" wins when g <= line. Prices in
+market — "yes" wins when t > line, "no" wins when t <= line. Prices in
 dollars; P&L per contract is (1 - price) on a win, -price on a loss.
 """
 
-G_MAX = 10   # "10 or more" bucket; P&L is constant above the top rung (tested)
 
-
-def pnl(fills, g: int) -> float:
+def pnl(fills, t: float) -> float:
     total = 0.0
     for line, side, contracts, price in fills:
-        win = (g > line) if side == "yes" else (g <= line)
+        win = (t > line) if side == "yes" else (t <= line)
         total += contracts * ((1.0 - price) if win else -price)
     return total
 
 
+def outcome_points(lines, extra_line=None) -> list[float]:
+    """One representative final-total per payoff interval of the given lines
+    (plus an optional candidate line): below the lowest strike, between each
+    consecutive pair, above the highest."""
+    ls = sorted(set(lines) | ({extra_line} if extra_line is not None else set()))
+    if not ls:
+        return [0.0]
+    return [ls[0] - 0.5] + [line + 0.5 for line in ls]
+
+
 def pnl_grid(fills) -> list[float]:
-    return [pnl(fills, g) for g in range(G_MAX + 1)]
+    """P&L per payoff interval (variable length — one entry per interval)."""
+    return [pnl(fills, t) for t in outcome_points([f[0] for f in fills])]
 
 
 def worst_case(fills) -> float:
@@ -35,20 +45,21 @@ def max_contracts(fills, line: float, side: str, price: float, budget: float) ->
     """Largest integer n >= 0 such that adding (line, side, n, price) keeps
     worst_case >= -budget.
 
-    Closed form: each goal outcome g imposes base_g + n*unit_g >= -budget and
-    only outcomes where the candidate loses (unit_g < 0) bind. If the book is
-    already beyond budget we never add exposure (fail closed)."""
+    Closed form per interval: base_t + n*unit_t >= -budget binds only where
+    the candidate loses (unit_t < 0). Intervals derive from existing fills'
+    lines PLUS the candidate's line. Fail closed if already beyond budget."""
     if budget <= 0:
         return 0
-    base = pnl_grid(fills) if fills else [0.0] * (G_MAX + 1)
+    points = outcome_points([f[0] for f in fills], extra_line=line)
+    base = [pnl(fills, t) for t in points]
     if min(base) < -budget - 1e-9:
         return 0
     bound = None
-    for g in range(G_MAX + 1):
-        win = (g > line) if side == "yes" else (g <= line)
+    for t, base_t in zip(points, base):
+        win = (t > line) if side == "yes" else (t <= line)
         unit = (1.0 - price) if win else -price
         if unit < 0:
-            allowed = (budget + base[g]) / (-unit)
+            allowed = (budget + base_t) / (-unit)
             bound = allowed if bound is None else min(bound, allowed)
     return int(bound + 1e-9) if bound is not None else 0
 
