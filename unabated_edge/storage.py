@@ -113,6 +113,23 @@ def log_flagged(r):
         )
 
 
+def prune_capture(days: int) -> dict:
+    """Delete book_snapshots and kalshi_trades rows older than `days`, the
+    two highest-volume capture tables (a full MLB slate books ~176+ markets
+    every tick). Go-forward retention only — never touches line_snapshots
+    (small, CLV-critical) or any data already on disk from before this
+    function existed; it just caps future growth. Returns
+    {table_name: rows_deleted} for the caller to log."""
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+    deleted = {}
+    with connect(config.MARKET_DB_PATH) as c:
+        for table, ts_col in (("book_snapshots", "ts"), ("kalshi_trades", "captured_ts")):
+            n_before = c.execute(f"SELECT count(*) FROM {table} WHERE {ts_col} < ?", [cutoff]).fetchone()[0]
+            c.execute(f"DELETE FROM {table} WHERE {ts_col} < ?", [cutoff])
+            deleted[table] = n_before
+    return deleted
+
+
 def emit(event_type, sport, **payload):
     try:
         _BUFFER.append((

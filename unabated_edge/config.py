@@ -42,9 +42,22 @@ MIN_EV_PCT = float(_get("MIN_EV_PCT", "0.03"))
 # absolute edge on a cheap longshot can't clear on percentage alone (ev_pct=ev/ask
 # inflates as ask->0, surfacing the noisiest devig estimates).
 MIN_EV_DOLLARS = float(_get("MIN_EV_DOLLARS", "0.02"))
-MAX_STALENESS_SEC = int(_get("MAX_STALENESS_SEC", "20"))  # RESERVED — Plan 2 live-execution staleness gate (not yet enforced)
+# Measured full-slate MLB tick (176+ KXMLBTOTAL markets, one book fetch per
+# market) runs ~37s end to end. This threshold must exceed the worst-case
+# tick duration or the maker watchdog self-triggers every iteration once
+# quotes rest (each adapter is judged on its own last-successful-tick clock,
+# not a shared iteration-start one — see runner.py's per-adapter now()).
+MAX_STALENESS_SEC = int(_get("MAX_STALENESS_SEC", "120"))
 KICKOFF_CUTOFF_MIN = int(_get("KICKOFF_CUTOFF_MIN", "3"))
 PER_MATCH_CAP_PCT = float(_get("PER_MATCH_CAP_PCT", "0.03"))
+# Beyond this many hours out from first pitch, skip the per-tick Kalshi book
+# + trades fetch for an event (line_snapshots still capture it). Shortens a
+# full-slate tick and caps capture volume for games nobody can trade yet.
+BOOK_CAPTURE_HORIZON_HOURS = float(_get("BOOK_CAPTURE_HORIZON_HOURS", "12"))
+# Go-forward retention for the high-volume capture tables (book_snapshots,
+# kalshi_trades). Does not touch any existing on-disk data — the runner
+# prunes only what it writes from here on.
+CAPTURE_RETENTION_DAYS = int(_get("CAPTURE_RETENTION_DAYS", "14"))
 
 # ---- maker (unabated_edge/maker/) — spec docs/superpowers/specs/2026-07-10-wc-totals-maker-design.md ----
 MAKER_MODE = _get("MAKER_MODE", "off")            # off | shadow | live

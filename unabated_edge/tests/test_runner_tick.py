@@ -1,5 +1,6 @@
 import datetime
 import os
+import types
 import pytest
 from unabated_edge import feed, runner, config, storage
 from unabated_edge.sports.soccer import Soccer
@@ -17,7 +18,11 @@ def _state():
                 "lg21:pt1:pregame": [
                     {
                         "eventId": 1,
-                        "eventStart": "2026-12-31T17:00:00+00:00",
+                        # 3h after _NOW: comfortably inside the default
+                        # BOOK_CAPTURE_HORIZON_HOURS (12) so these fixtures
+                        # still get a book/trades fetch, and past
+                        # tipoff_ok's 3-minute cutoff.
+                        "eventStart": "2026-06-01T03:00:00+00:00",
                         "eventTeams": {"1": {"id": 1}, "0": {"id": 2}},
                         "gameOddsMarketSourcesLines": {
                             "si0:ms7:an0": {"bt3": {"price": 115, "points": 2.5}},   # Over
@@ -73,8 +78,8 @@ def test_no_snapshots_after_kickoff(tmp_path, monkeypatch):
     """Once now >= kickoff, neither Unabated lines nor Kalshi books are snapshotted —
     the last pre-kickoff snapshot IS the close by construction for both tables."""
     _init_dbs(tmp_path, monkeypatch)
-    st = _state()                                # kickoff 2026-12-31T17:00
-    after_kickoff = datetime.datetime(2026, 12, 31, 18, 0, tzinfo=datetime.timezone.utc)
+    st = _state()                                # kickoff 2026-06-01T03:00
+    after_kickoff = datetime.datetime(2026, 6, 1, 4, 0, tzinfo=datetime.timezone.utc)
     runner.run_tick(Soccer(), st, [_KEV], now=after_kickoff, dry_run=True,
                     book_fn=lambda t: _BOOK)
     with storage.connect(config.MARKET_DB_PATH, read_only=True) as c:
@@ -281,3 +286,194 @@ def test_singleton_lock_blocks_second_instance(tmp_path, monkeypatch):
     runner._acquire_singleton_lock()                 # must NOT raise: stale lock reclaimed
     assert lock_path.read_text().strip() == str(os.getpid())
     lock_path.unlink(missing_ok=True)
+
+
+def test_book_capture_horizon_skips_far_future_events(tmp_path, monkeypatch):
+    """Finding 1d: an event more than BOOK_CAPTURE_HORIZON_HOURS out gets no
+    Kalshi book/trades fetch this tick (still gets a line_snapshots row from
+    the earlier per-line loop, which doesn't gate on the horizon) — this is
+    what shortens a full MLB slate tick and caps capture volume for games
+    nobody can trade yet."""
+    _init_dbs(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "BOOK_CAPTURE_HORIZON_HOURS", 12.0)
+    near_start = (_NOW + datetime.timedelta(hours=3)).isoformat()
+    far_start = (_NOW + datetime.timedelta(hours=48)).isoformat()
+    state = feed.parse_snapshot(
+        {
+            "marketSources": [{"id": 7, "name": "S"}],
+            "teams": {"1": {"name": "Argentina"}, "2": {"name": "Austria"},
+                      "3": {"name": "Brazil"}, "4": {"name": "Chile"}},
+            "gameOddsEvents": {
+                "lg21:pt1:pregame": [
+                    {
+                        "eventId": 1, "eventStart": near_start,
+                        "eventTeams": {"1": {"id": 1}, "0": {"id": 2}},
+                        "gameOddsMarketSourcesLines": {
+                            "si0:ms7:an0": {"bt3": {"price": 115, "points": 2.5}},
+                            "si1:ms7:an0": {"bt3": {"price": -140, "points": 2.5}},
+                        },
+                    },
+                    {
+                        "eventId": 2, "eventStart": far_start,
+                        "eventTeams": {"1": {"id": 3}, "0": {"id": 4}},
+                        "gameOddsMarketSourcesLines": {
+                            "si0:ms7:an0": {"bt3": {"price": 115, "points": 2.5}},
+                            "si1:ms7:an0": {"bt3": {"price": -140, "points": 2.5}},
+                        },
+                    },
+                ]
+            },
+        },
+        {"lg21"},
+    )
+    near_kev = {"title": "Argentina vs Austria: Regulation Time Total Goals",
+                "markets": [{"ticker": "NEAR-O25", "strike_type": "greater", "floor_strike": 2.5}]}
+    far_kev = {"title": "Brazil vs Chile: Regulation Time Total Goals",
+               "markets": [{"ticker": "FAR-O25", "strike_type": "greater", "floor_strike": 2.5}]}
+    called = []
+
+    def book_fn(t):
+        called.append(t)
+        return _BOOK
+
+    runner.run_tick(Soccer(), state, [near_kev, far_kev], now=_NOW, dry_run=True, book_fn=book_fn)
+    assert called == ["NEAR-O25"]                    # far event never hit the book_fn at all
+    with storage.connect(config.MARKET_DB_PATH, read_only=True) as c:
+        tickers = {r[0] for r in c.execute("SELECT market_ticker FROM book_snapshots").fetchall()}
+        n_events_snapshotted = c.execute(
+            "SELECT count(DISTINCT event_id) FROM line_snapshots").fetchone()[0]
+    assert tickers == {"NEAR-O25"}
+    assert n_events_snapshotted == 2                 # both events still line-snapshotted
+
+
+class _SeqClock:
+    """Returns real datetime objects from a fixed, pre-scripted sequence —
+    used to prove main_loop recomputes `now` per adapter instead of reusing
+    one shared iteration-start value."""
+    def __init__(self, values):
+        self._values = list(values)
+
+    def now(self, tz=None):
+        return self._values.pop(0)
+
+
+def test_note_success_stamped_fresh_after_each_adapter_tick(tmp_path, monkeypatch):
+    """Finding 1a/1b: main_loop must (a) recompute `now` fresh right before
+    each adapter's run_tick, not reuse a shared iteration-start value, and
+    (b) stamp note_success with an even fresher timestamp taken AFTER that
+    adapter's own tick completes. On a real slate the MLB book pass alone
+    runs ~37s — if note_success used the iteration-start clock, measured
+    staleness would include that whole duration and the watchdog would
+    self-trigger every tick once quotes rest."""
+    _init_dbs(tmp_path, monkeypatch)
+
+    t0 = datetime.datetime(2026, 7, 25, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    # 8 datetime.now() calls happen in one no-op iteration of main_loop:
+    # startup prune-date, in-loop prune-date check, then per adapter
+    # (before, after) x2, then watchdog, then the shutdown pull_all.
+    times = [
+        t0,                                          # 1: last_prune_date (startup)
+        t0,                                          # 2: today (in-loop, same day -> no re-prune)
+        t0,                                          # 3: soccer — now (before run_tick)
+        t0 + datetime.timedelta(seconds=25),          # 4: soccer — note_success (after)
+        t0 + datetime.timedelta(seconds=25),          # 5: mlb — now (before run_tick), fresh
+        t0 + datetime.timedelta(seconds=25 + 37),     # 6: mlb — note_success (after)
+        t0 + datetime.timedelta(seconds=25 + 37 + 1),  # 7: watchdog
+        t0 + datetime.timedelta(seconds=25 + 37 + 1),  # 8: shutdown pull_all
+    ]
+    fake_datetime = types.SimpleNamespace(
+        datetime=types.SimpleNamespace(now=_SeqClock(times).now),
+        timezone=datetime.timezone,
+        timedelta=datetime.timedelta,
+    )
+    monkeypatch.setattr(runner, "datetime", fake_datetime)
+
+    run_tick_calls = []
+
+    def fake_run_tick(adapter, state, kalshi_events, *, now, dry_run, book_fn, trades_fn=None, maker=None):
+        run_tick_calls.append((adapter.sport, now))
+        return []
+    monkeypatch.setattr(runner, "run_tick", fake_run_tick)
+    monkeypatch.setattr(runner.feed, "fetch_v2", lambda *a, **k: feed.FeedState())
+    monkeypatch.setattr(runner.kalshi, "init", lambda: None)
+    monkeypatch.setattr(runner.kalshi, "list_events", lambda series: [])
+
+    note_success_calls = []
+
+    class _FakeMaker:
+        def note_success(self, sport, now):
+            note_success_calls.append((sport, now))
+        def watchdog(self, now):
+            pass
+        def pull_all(self, now, reason):
+            pass
+        def stats(self):
+            return {}
+
+    class _GW:
+        is_live = False
+
+    monkeypatch.setattr(runner.maker_gateway, "make_gateway", lambda mode, ack: _GW())
+    monkeypatch.setattr(runner.maker_engine, "MakerEngine", lambda gw, st: _FakeMaker())
+    monkeypatch.setattr(runner.maker_store, "init", lambda: None)
+    monkeypatch.setattr(runner.time, "sleep", lambda _s: runner._running.clear())
+
+    runner._running.set()
+    try:
+        runner.main_loop(dry_run=True)
+    finally:
+        runner._running.set()
+
+    assert [sport for sport, _ in run_tick_calls] == ["soccer", "mlb"]
+    assert [sport for sport, _ in note_success_calls] == ["soccer", "mlb"]
+
+    soccer_now, mlb_now = run_tick_calls[0][1], run_tick_calls[1][1]
+    soccer_stamp, mlb_stamp = note_success_calls[0][1], note_success_calls[1][1]
+
+    assert soccer_now == t0
+    assert soccer_stamp == t0 + datetime.timedelta(seconds=25)
+    # mlb's pre-tick clock equals soccer's post-tick stamp — a fresh
+    # recompute, not a copy of the iteration-start t0.
+    assert mlb_now == soccer_stamp
+    assert mlb_stamp == t0 + datetime.timedelta(seconds=25 + 37)
+    # note_success is stamped exactly the simulated tick duration after the
+    # `now` run_tick was handed — proving it's a fresh post-tick timestamp.
+    assert (soccer_stamp - soccer_now).total_seconds() == 25
+    assert (mlb_stamp - mlb_now).total_seconds() == 37
+
+
+def test_adapter_exception_does_not_skip_other_adapter(tmp_path, monkeypatch, caplog):
+    """Finding 4: one adapter's fetch/tick exception must not skip the other
+    sport's tick. Soccer's feed fetch raises; MLB must still tick, and a
+    WARNING naming the failed sport must be logged (the outer try/except
+    stays as the last-resort net for the rest of the loop body)."""
+    import logging
+    _init_dbs(tmp_path, monkeypatch)
+
+    def fake_fetch_v2(league_id, league_prefix):
+        if league_prefix == "lg21":                  # soccer
+            raise RuntimeError("feed down")
+        return feed.FeedState()
+    monkeypatch.setattr(runner.feed, "fetch_v2", fake_fetch_v2)
+
+    run_tick_calls = []
+
+    def fake_run_tick(adapter, state, kalshi_events, *, now, dry_run, book_fn, trades_fn=None, maker=None):
+        run_tick_calls.append(adapter.sport)
+        return []
+    monkeypatch.setattr(runner, "run_tick", fake_run_tick)
+    monkeypatch.setattr(runner.kalshi, "init", lambda: None)
+    monkeypatch.setattr(runner.kalshi, "list_events", lambda series: [])
+    monkeypatch.setattr(runner.maker_gateway, "make_gateway", lambda mode, ack: None)
+    monkeypatch.setattr(runner.time, "sleep", lambda _s: runner._running.clear())
+
+    runner._running.set()
+    try:
+        with caplog.at_level(logging.WARNING, logger="unabated_edge"):
+            runner.main_loop(dry_run=True)
+    finally:
+        runner._running.set()
+
+    assert run_tick_calls == ["mlb"]                  # soccer's exception didn't stop mlb's tick
+    assert any(r.levelno == logging.WARNING and "soccer" in r.getMessage()
+               for r in caplog.records)

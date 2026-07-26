@@ -103,42 +103,52 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, book_fn, trade
         if event_meta.start_utc is not None and now >= event_meta.start_utc:
             continue            # in-play: Kalshi book/trade capture stops at kickoff too
         seen_eids.add(event_meta.event_id)
+        # Far-future events (no one can trade them yet) still get a
+        # line_snapshots row above, but skip the per-market Kalshi book +
+        # trades fetch — on a full MLB slate that's the expensive part of
+        # the tick (176+ markets, one REST call each).
+        within_capture_horizon = (
+            event_meta.start_utc is None
+            or (event_meta.start_utc - now).total_seconds()
+                <= config.BOOK_CAPTURE_HORIZON_HOURS * 3600
+        )
         # One book fetch per market per tick: persist the full depth (maker
         # design data — spread width, re-centering speed, where flow rests),
         # then reuse the same book for candidate asks below. Halves the REST
         # load vs the old two-fetches-per-rung ask path.
         books, book_rows = {}, []
-        for mk in kev.get("markets", []):
-            tkr = mk.get("ticker")
-            if not tkr:
-                continue
-            book = book_fn(tkr)
-            if book is None:
-                continue
-            books[tkr] = book
-            yes_bid = book["yes_bids"][0] if book["yes_bids"] else (None, None)
-            no_bid = book["no_bids"][0] if book["no_bids"] else (None, None)
-            try:
-                strike = float(mk.get("floor_strike"))
-            except (TypeError, ValueError):
-                strike = None
-            book_rows.append({
-                "ts": now, "market_ticker": tkr, "floor_strike": strike,
-                "yes_bid": yes_bid[0], "yes_bid_qty": yes_bid[1],
-                "no_bid": no_bid[0], "no_bid_qty": no_bid[1],
-                "yes_ask": kalshi.yes_ask_from_book(book),
-                "no_ask": kalshi.no_ask_from_book(book),
-                "volume": _market_fp(mk, "volume"),
-                "open_interest": _market_fp(mk, "open_interest"),
-                "depth": book,
-            })
-        storage.snapshot_books(adapter.sport, book_rows)
-        _stats["books"] += len(book_rows)
-        if trades_fn is not None:
-            for tkr in books:
-                trades = trades_fn(tkr)
-                storage.insert_trades(adapter.sport, trades, now)
-                _stats["trades"] += len(trades)
+        if within_capture_horizon:
+            for mk in kev.get("markets", []):
+                tkr = mk.get("ticker")
+                if not tkr:
+                    continue
+                book = book_fn(tkr)
+                if book is None:
+                    continue
+                books[tkr] = book
+                yes_bid = book["yes_bids"][0] if book["yes_bids"] else (None, None)
+                no_bid = book["no_bids"][0] if book["no_bids"] else (None, None)
+                try:
+                    strike = float(mk.get("floor_strike"))
+                except (TypeError, ValueError):
+                    strike = None
+                book_rows.append({
+                    "ts": now, "market_ticker": tkr, "floor_strike": strike,
+                    "yes_bid": yes_bid[0], "yes_bid_qty": yes_bid[1],
+                    "no_bid": no_bid[0], "no_bid_qty": no_bid[1],
+                    "yes_ask": kalshi.yes_ask_from_book(book),
+                    "no_ask": kalshi.no_ask_from_book(book),
+                    "volume": _market_fp(mk, "volume"),
+                    "open_interest": _market_fp(mk, "open_interest"),
+                    "depth": book,
+                })
+            storage.snapshot_books(adapter.sport, book_rows)
+            _stats["books"] += len(book_rows)
+            if trades_fn is not None:
+                for tkr in books:
+                    trades = trades_fn(tkr)
+                    storage.insert_trades(adapter.sport, trades, now)
+                    _stats["trades"] += len(trades)
         if maker is not None:
             maker.on_match(adapter, event_meta, kev,
                            adapter.fair_ladder(state, event_meta), books, now)
@@ -212,6 +222,12 @@ def main_loop(dry_run: bool):
     kalshi_events = {}
     ticks = 0
     flagged_since_hb = 0
+    # Go-forward retention for book_snapshots/kalshi_trades: prune once now,
+    # then once per calendar day (see storage.prune_capture). Does not touch
+    # any pre-existing accumulated data.
+    deleted = storage.prune_capture(config.CAPTURE_RETENTION_DAYS)
+    log.info("capture prune at startup: %s", deleted)
+    last_prune_date = datetime.datetime.now(datetime.timezone.utc).date()
     hb_every = max(1, round(60 / config.V2_POLL_SEC))    # ~60s heartbeat
     trades_every = max(1, round(config.TRADES_POLL_SEC / config.V2_POLL_SEC))
     maker = None
@@ -225,7 +241,11 @@ def main_loop(dry_run: bool):
             maker_state.startup_sync(maker.state, gw, series_prefixes)
     while _running.is_set():
         try:
-            now = datetime.datetime.now(datetime.timezone.utc)
+            today = datetime.datetime.now(datetime.timezone.utc).date()
+            if today != last_prune_date:
+                deleted = storage.prune_capture(config.CAPTURE_RETENTION_DAYS)
+                log.info("capture prune: %s", deleted)
+                last_prune_date = today
             if time.time() - last_k > 30:
                 kalshi_events = {a.sport: kalshi.list_events(a.kalshi_series()) for a in registry.ADAPTERS}
                 last_k = time.time()
@@ -235,15 +255,31 @@ def main_loop(dry_run: bool):
                          if ticks % trades_every == 0 else None)
             n_events = n_lines = 0
             for a in registry.ADAPTERS:
-                state = feed.fetch_v2(a.league_id, a.league_prefix)
-                n_events += len(state.events)
-                n_lines += len(state.lines)
-                flagged_since_hb += len(run_tick(a, state, kalshi_events.get(a.sport, []),
-                                                 now=now, dry_run=dry_run,
-                                                 book_fn=kalshi.get_book, trades_fn=trades_fn,
-                                                 maker=maker))
-                if maker:
-                    maker.note_success(a.sport, now)
+                # Each adapter gets its own try/except AND its own freshly
+                # recomputed `now`: a full-slate MLB tick alone runs ~37s, so
+                # judging late-processed events (or stamping note_success) on
+                # a shared iteration-start clock makes them look stale by the
+                # time this adapter's work actually happens. One adapter's
+                # exception (feed down, parse error) also must not skip the
+                # other sport's tick — the outer try/except stays as the
+                # last-resort net for everything else in the loop body.
+                try:
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    state = feed.fetch_v2(a.league_id, a.league_prefix)
+                    n_events += len(state.events)
+                    n_lines += len(state.lines)
+                    flagged_since_hb += len(run_tick(a, state, kalshi_events.get(a.sport, []),
+                                                     now=now, dry_run=dry_run,
+                                                     book_fn=kalshi.get_book, trades_fn=trades_fn,
+                                                     maker=maker))
+                    if maker:
+                        # Stamped AFTER this adapter's own tick completes, not
+                        # the iteration-start `now` above — otherwise measured
+                        # staleness includes the full tick duration and the
+                        # watchdog self-triggers once quotes rest.
+                        maker.note_success(a.sport, datetime.datetime.now(datetime.timezone.utc))
+                except Exception:
+                    log.warning("adapter %s tick failed", a.sport, exc_info=True)
             storage.flush()
             if maker is not None and gw.is_live:
                 maker_state.poll_fills(maker.state, now)
