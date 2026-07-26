@@ -162,27 +162,27 @@ class BetMGMClient(PriceCallTallyMixin):
         gone (skip it), anything else non-200 raises.
         """
         self.accessid()          # raises BookTransportError if it can't harvest
-        for attempt in (0, 1):
-            url = (f"{self._base}/bettingoffer/fixtures?{self._common_q()}"
-                   f"&fixtureIds={fixture_id}&offerMapping=All&state=Latest")
-            try:
-                r = self.session.get(url, timeout=30)
-            except TypeError:
-                r = self.session.get(url)          # FakeSession in unit tests
-            except Exception as e:
-                raise BookTransportError(BOOK, "structure", cause=e) from e
-            text = getattr(r, "text", "") or ""
-            if (getattr(r, "status_code", 200) == 400
-                    and "ccess id" in text.lower() and attempt == 0):
-                self.accessid(refresh=True)
-                continue
-            if not check_response(BOOK, "structure", r, allow_404=True):
-                return []
-            fxs = json_or_raise(BOOK, "structure", r).get("fixtures", [])
-            return fxs[0].get("optionMarkets", []) if fxs else []
-        # Both attempts hit the accessid gate — the refreshed id didn't help.
-        raise BookTransportError(BOOK, "structure", status_code=400,
-                                 detail="accessid gate persisted after refresh")
+        r = self._get_fixture_markets(fixture_id)
+        if _is_accessid_gate(r):
+            self.accessid(refresh=True)
+            r = self._get_fixture_markets(fixture_id)
+        if not check_response(BOOK, "structure", r, allow_404=True):
+            return []
+        fxs = json_or_raise(BOOK, "structure", r).get("fixtures", [])
+        return fxs[0].get("optionMarkets", []) if fxs else []
+
+    def _get_fixture_markets(self, fixture_id: str):
+        """One raw GET of the full market tree. Split out so fetch_markets can
+        retry it once after refreshing a stale accessid without a loop whose
+        exit branch is unreachable."""
+        url = (f"{self._base}/bettingoffer/fixtures?{self._common_q()}"
+               f"&fixtureIds={fixture_id}&offerMapping=All&state=Latest")
+        try:
+            return self.session.get(url, timeout=30)
+        except TypeError:
+            return self.session.get(url)           # FakeSession in unit tests
+        except Exception as e:
+            raise BookTransportError(BOOK, "structure", cause=e) from e
 
     # --- bet-builder price ----------------------------------------------- #
     def price_picks(self, fixture_id: str,
@@ -243,6 +243,14 @@ class BetMGMClient(PriceCallTallyMixin):
 # --------------------------------------------------------------------------- #
 # Module helpers
 # --------------------------------------------------------------------------- #
+def _is_accessid_gate(resp) -> bool:
+    """True for BetMGM's ``400 "Access id ..."`` stale-credential response —
+    the one non-200 worth retrying rather than raising on."""
+    if getattr(resp, "status_code", 200) != 400:
+        return False
+    return "ccess id" in (getattr(resp, "text", "") or "").lower()
+
+
 def _is_mlb(fixture: dict) -> bool:
     """True only for Major League Baseball fixtures (competition name 'MLB').
 

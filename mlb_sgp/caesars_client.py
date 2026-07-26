@@ -178,9 +178,11 @@ class CaesarsClient(PriceCallTallyMixin):
     def _get_json(self, url: str, stage: str, tries: int = 4):
         """GET + decode, or raise ``BookTransportError`` after ``tries``.
 
-        Returns None ONLY for a 404 (the event is gone — skip it). A WAF
-        challenge comes back 200 with HTML, so "not JSON" is a transport
-        failure too: before issue #33 that quietly became an empty slate.
+        Returns None for a 404 at the ``structure`` stage only — one delisted
+        event is a skip, but a 404 on the tabs FEED means the endpoint moved
+        and the book is down. A WAF challenge comes back 200 with HTML, so
+        "not JSON" is a transport failure too: before issue #33 that quietly
+        became an empty slate.
         """
         last_status = None
         last_exc = None
@@ -195,7 +197,7 @@ class CaesarsClient(PriceCallTallyMixin):
                 time.sleep(1.5)
                 continue
             last_status = getattr(r, "status_code", 200)
-            if last_status == 404:
+            if last_status == 404 and stage == "structure":
                 return None
             if last_status == 200 and (getattr(r, "text", "") or "").strip().startswith(("{", "[")):
                 return r.json()

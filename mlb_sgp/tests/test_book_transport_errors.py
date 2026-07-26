@@ -419,3 +419,56 @@ def test_czr_fetch_event_raises_on_waf_challenge(monkeypatch):
 def test_czr_fetch_event_404_skips_event_without_raising():
     client = _czr_client(FakeSession(NOT_FOUND))
     assert client.fetch_event("gone") is None
+
+
+def test_mgm_fetch_markets_retries_once_after_a_stale_accessid_gate():
+    """BetMGM's 400 "Access id ..." is the one non-200 worth retrying."""
+    from mlb_sgp.betmgm_client import BetMGMClient
+
+    gate = FakeResponse(400, {}, text='{"message":"Access id is invalid"}')
+    ok = FakeResponse(200, {"fixtures": [{"optionMarkets": [{"id": "m1"}]}]})
+
+    class TwoStepSession:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, url, **kwargs):
+            self.calls += 1
+            # 1: gated markets fetch, 2: accessid re-harvest, 3: retried fetch
+            if self.calls == 1:
+                return gate
+            if self.calls == 2:
+                return FakeResponse(200, {}, text='{"publicAccessId":"newid"}')
+            return ok
+
+    session = TwoStepSession()
+    client = _mgm_client(session)
+    assert client.fetch_markets("fx1") == [{"id": "m1"}]
+    assert session.calls == 3
+
+
+def test_mgm_fetch_markets_raises_when_the_gate_persists_after_refresh():
+    from mlb_sgp.betmgm_client import BetMGMClient
+    gate = FakeResponse(400, {}, text='{"message":"Access id is invalid"}')
+
+    class AlwaysGated:
+        def get(self, url, **kwargs):
+            if "clientconfig" in url:
+                return FakeResponse(200, {}, text='{"publicAccessId":"newid"}')
+            return gate
+
+    client = _mgm_client(AlwaysGated())
+    with pytest.raises(BookTransportError) as exc:
+        client.fetch_markets("fx1")
+    assert exc.value.stage == "structure"
+    assert exc.value.status_code == 400
+
+
+def test_czr_404_on_the_tabs_feed_raises_rather_than_looking_empty(monkeypatch):
+    """A 404 on ONE event is a skip; a 404 on the FEED means it moved."""
+    import mlb_sgp.caesars_client as czr
+    monkeypatch.setattr(czr.time, "sleep", lambda *_: None)
+    client = _czr_client(FakeSession(NOT_FOUND))
+    with pytest.raises(BookTransportError) as exc:
+        client.list_events()
+    assert exc.value.stage == "events"
