@@ -77,14 +77,30 @@ REST-polling daemon, single process. Six timed sub-loops:
 
 ## Pricing
 
-Fair value is the median of *book-consensus-agreeing* devigged book fairs. `router.combo_fair` parses the RFQ into canonical legs (`legset`), partitions them by game, prices each game's sub-combo, and **multiplies** the per-game fairs (cross-game independence). For each **2-leg same-game grid** (family + cell resolved from the legs — spread×total keyed by game × spread_line × total_line, moneyline×total keyed by game × total_line with `spread_line` NULL) we:
+Fair value is the median of the devigged book fairs, gated on cross-book agreement. `router.combo_fair_detail` parses the RFQ into canonical legs (`legset`), partitions them by game, prices each game's sub-combo, and **multiplies** the per-game fairs (cross-game independence). For each **2-leg same-game grid** (family + cell resolved from the legs — spread×total keyed by game × spread_line × total_line, moneyline×total keyed by game × total_line with `spread_line` NULL) we:
 
 1. Pull every book's 4-cell grid from `mlb_sgp_odds` (filtered by combo family, require all 4 cells — no fallback).
 2. Devig each book's 4-way grid to a single combo fair (`devig_book` in `kalshi_common.fair_value`).
-3. Compute the median across books, then keep only books within `±BOOK_CONSENSUS_BAND` of that median.
-4. If `>= MIN_AGREEING_BOOKS` survive, the fair is the median of the survivors. Otherwise we do not quote.
+3. **Consensus gate (issue #20 — z-space dispersion threshold).** Transform each book fair via `norm.ppf` (probit); decline the combo (`too_few_books`) if fewer than `MIN_AGREEING_BOOKS` books priced it, or (`consensus_dispersion`) if the sample stddev of the z-values exceeds `SIGMA_Z_MAX`. There is NO outlier removal — a dissenting book is as likely the informed one (news mid-propagation) as a broken scrape, so genuine disagreement declines the quote instead of outvoting the dissenter. Constant width in z-space = the same amount of disagreement at every price level: the tolerated absolute gap tightens automatically at the tails (~2¢ at p=0.50 → ~0.6¢ at p=0.08), where the old absolute ±2¢ band tolerated 25% relative disagreement.
+4. Fair = median of **all** books that priced the combo. The gate also reports `sigma_pts` — the stddev of the book fairs in probability points — which feeds the margin floor (below).
 
-A **single leg** (within a cross-game combo) is priced by marginalizing that game's grid — summing the two devigged cells along the free axis. **Cross-game** fairs are the product of the per-game consensus fairs; if any game fails consensus or is `unpriceable`, `combo_fair` returns `None` and we do not quote (fail-safe). Novel same-game shapes (`on_demand` — 3+ legs, spread+ml, total+total, …) price via live book queries — see **On-demand pricing** below. This is the v1 correlation defense (mirrors the MLB answer-key dashboard's consensus-band pattern). The v1.1 explicit correlation-premium gate is deferred — see spec section 13.
+A **single leg** (within a cross-game combo) is priced by marginalizing that game's grid — summing the two devigged cells along the free axis. **Cross-game** fairs are the product of the per-game consensus fairs (combo `sigma_pts` propagates as relative variances adding: `σ_combo = fair·sqrt(Σ(σ_g/f_g)²)`); if any game fails the gate or is `unpriceable`, the combo is not quoted (fail-safe), with the first failing game's reason logged in `quote_decisions`. Novel same-game shapes (`on_demand` — 3+ legs, spread+ml, total+total, …) price via live book queries — see **On-demand pricing** below. The v1.1 explicit correlation-premium gate is deferred — see spec section 13.
+
+### Margin (issue #19 — uncertainty-scaled)
+
+Per side (p = side win-prob, N = number of games in the combo):
+
+```
+margin_pts = max( p·(1 − (1+TARGET_ROI)^−N),  MIN_MARGIN_PTS + K_SIGMA·σ_books )
+bid        = (p − margin_pts) − maker_fee,  floored to the $0.001 grid
+```
+
+- **ROI part, compounded per game:** one `(1+r)` divisor per game — the same structure sportsbooks use to build multi-leg parlay hold (per-leg vig multiplies), because cross-game products multiply per-game fairs whose errors compound. At N=1 this is exactly the old constant-ROI price `p/(1+r)`.
+- **Probability-point floor:** the constant-ROI cushion ≈ `0.029·p` collapses at longshot fairs (~0.3¢ at p=0.10) while absolute fair error does not shrink with p — so the floor keeps an absolute minimum cushion, widened by `K_SIGMA·σ_books` when the books visibly disagree. `MIN_MARGIN_PTS` covers error σ cannot see (shared devig/correlation bias, mirrored books). This mirrors how books load vig onto longshots (favorite–longshot distribution) and how options MMs widen deep-OTM quotes.
+- The stepped-fee/grid-floor guard is unchanged: the bid steps down until `bid + fee(bid) ≤ p − margin_pts`, so the **realized** margin is ≥ target by construction; the `yes_bid + no_bid < 1` and positivity guards still apply (an unquotable side declines the RFQ).
+- Margin components (`sigma_pts`, `floor_pts`, `roi_pts_*`, `margin_pts_*`, `n_games`) are logged in the research firehose `quote_priced` payload — `quote_decisions` columns are unchanged.
+
+Interplay of the two tickets: **moderate** dispersion widens the margin (#19); dispersion **past `SIGMA_Z_MAX`** kills the quote (#20). One uncertainty number drives both.
 
 ## On-demand pricing (Phase 2)
 
@@ -189,6 +205,43 @@ assert yes_bid + no_bid < 1               # sum ≈ 0.94 at fair=0.50, always va
 
 The 5% is a *quoted/expected* ROI — what we actually realize is what the validation phase measures. Maker fee = 25% of the taker fee on the same quadratic base (`maker_fee_per_contract` in `kalshi_common/ev_calc.py`). **Verify the exact charge on the first real fill** — the assumption is strongly implied by the Kalshi fee schedule but not yet confirmed against a real fill.
 
+## Reports
+
+`report.py` (issue #14) aggregates the three bot DBs into a printed markdown
+"state of the maker" — the measurement-phase readout that the raw
+`quote_decisions` / research-firehose rows can't answer at a glance:
+
+```bash
+# From the main repo root — reads the live DBs READ-ONLY (lock-safe, never writes)
+./kalshi_mlb_mm/venv/bin/python -m kalshi_mlb_mm.report
+
+# Or point at explicit DB copies
+./kalshi_mlb_mm/venv/bin/python -m kalshi_mlb_mm.report \
+    --state-db path/to/kalshi_mlb_mm.duckdb \
+    --research-db path/to/kalshi_mlb_mm_research.duckdb \
+    --market-db path/to/kalshi_mlb_mm_market.duckdb
+```
+
+Sections: **1** RFQ funnel (24h + 7d: seen → in-scope → quoted → accepted →
+confirmed → filled, full decision/reason breakdown, and the grid /
+on-demand / out-of-scope path split), **1b** on-demand fetch success rate +
+latency (paired `on_demand_requested`/`on_demand_result` events), **2**
+quotable universe (combos passing `MIN_AGREEING_BOOKS` per day + per-book
+participation), **3** staleness (book-data age at quote, quote age at
+accept), **4** demand curve (quotes vs accepts by margin × fair-prob band —
+feeds #26), **5** settlement P&L (quoted vs realized margin per contract
+from the #12 sweep; **markouts descoped with #13** — settlement P&L is the
+adverse-selection signal), **6** health (void rate, sweep cancels, halts,
+phantom fills, reconcile outcomes).
+
+Caveats printed in the report itself: the funnel is derived from
+`quote_decisions` (`seen_rfqs` only records out-of-scope and live-quoted
+RFQs); the grid-vs-on-demand split is a heuristic (an on-demand RFQ whose
+fetch lands within its first discovery tick counts as grid); quote-time
+staleness is the gap to the latest prior `scrape_done` event (per-book ages
+aren't persisted at quote time). Fresh/empty/locked DBs degrade to notes —
+the report never crashes and never writes.
+
 ## Knobs
 
 All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Defaults come from `kalshi_mlb_mm/config.py`.
@@ -200,7 +253,9 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `MAX_GAME_EXPOSURE_PCT` | `0.10` | Per-game exposure cap as fraction of BANKROLL ($50 at default). Counts fills (`fill_games`) PLUS open quotes (`quote_games`) touching the game |
 | `MAX_FILL_EXPOSURE_PCT` | `0.10` | Per-fill dollar cap as fraction of BANKROLL ($50 at default). Quote-or-skip only — the RFQ creator fixes fill size; this is the only lever. |
 | `MAX_OPEN_QUOTES` | `25` | Cap on simultaneously resting quotes (well under Kalshi's 100 limit) |
-| `TARGET_ROI` | `0.05` | Quoted margin — the `p / (1 + TARGET_ROI)` divisor in pricing |
+| `TARGET_ROI` | `0.03` | Quoted margin — the ROI part of the per-side margin, compounded per game: `p·(1 − (1+TARGET_ROI)^−n_games)` |
+| `MIN_MARGIN_PTS` | `0.01` | Probability-point margin floor (issue #19) — minimum absolute cushion per side, covering fair error the books' visible disagreement can't measure |
+| `K_SIGMA` | `1.0` | Margin widening per unit of cross-book disagreement: floor = `MIN_MARGIN_PTS + K_SIGMA·σ_books` |
 | `FAIR_DRIFT_TOLERANCE` | `0.02` | Last-look: void confirm if fair drifted >2¢ against filled side since quote time |
 | `MAX_BOOK_STALENESS_SEC` | `60` | Withhold and pull quotes if book odds older than this |
 | `BOOK_MOVE_CB_THRESHOLD` | `0.03` | Circuit breaker: cancel a combo's quotes if book fair jumps >3¢ between scrapes (per-tick) or if drift since quote exceeds this (per-quote risk sweep) |
@@ -208,8 +263,8 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `QUOTE_HYSTERESIS` | `0.005` | Don't replace a resting quote unless fair moved more than ½¢. Also the ε of the post-fill `same_price_block` |
 | `COMBO_COOLDOWN_SEC` | `60` | Hard FLOOR of the post-fill per-combo cooldown. The combo additionally stays cooled until every game it touches has a post-fill SGP scrape, then until consensus fair moves off the filled fair (defense item 5) |
 | `MAX_COMBO_EXPOSURE_USD` | `50.0` | Per-combo concentration cap (H8/N7): fills + in-flight open quotes on one combo may not exceed this |
-| `BOOK_CONSENSUS_BAND` | `0.02` | v1 correlation defense: max distance from per-combo book median (fair-prob units) for a book to count as "agreeing"; outliers are discarded |
-| `MIN_AGREEING_BOOKS` | `3` | v1 correlation defense: minimum number of books that must agree before we quote |
+| `SIGMA_Z_MAX` | `0.07` | Consensus gate (issue #20): max sample stddev of the books' fairs in z-space (`norm.ppf`); above it the combo is declined (`consensus_dispersion`) — no outlier removal. 0.07 ≈ continuity with the old ±2¢ band at p=0.50 |
+| `MIN_AGREEING_BOOKS` | `2` | Consensus gate: minimum number of books with a fair for the combo (no longer "band survivors" — there is no band) |
 | `DISCOVERY_SEC` | `2` | Discovery + quote loop cadence (seconds) |
 | `CONFIRM_SEC` | `2` | Confirm loop cadence (seconds) |
 | `RISK_SWEEP_SEC` | `10` | Risk sweep cadence (seconds) |
@@ -222,9 +277,9 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 
 Resting quotes are priced off books that lag reality (books refresh every 60s). An informed counterparty can cross a stale quote before our data reacts. Defenses, in decreasing priority:
 
-1. **Margin (primary, continuous coverage).** The ~2.5–3¢ per-side cushion at 5% ROI absorbs *continuous* fair drift — a cent or two of movement between scrapes. This is the primary defense and fires on every fill. It does NOT cover discrete events (scratch / postponement / steam move).
+1. **Margin (primary, continuous coverage).** The per-side cushion `max(ROI part, MIN_MARGIN_PTS + K_SIGMA·σ_books)` absorbs *continuous* fair drift — a cent or two of movement between scrapes — and, since issue #19, keeps an absolute floor at longshot fairs (where the old flat-ROI cushion collapsed to ~0.3¢) and widens with cross-book disagreement and game count. This is the primary defense and fires on every fill. It does NOT cover discrete events (scratch / postponement / steam move).
 
-2. **Book-consensus gate (correlation defense).** Before quoting, we require `>= MIN_AGREEING_BOOKS` books within `±BOOK_CONSENSUS_BAND` of the per-combo book median; outliers are discarded and the fair is the median of survivors. A single rogue book cannot anchor our quote. This is v1's only correlation defense — the v1.1 explicit correlation-premium gate (where Kalshi singles serve as the marginal anchor) is documented in spec section 13 and deferred.
+2. **Book-consensus gate (issue #20 — z-space dispersion threshold).** Before quoting, we require `>= MIN_AGREEING_BOOKS` books to have priced the combo AND their fairs to agree within `SIGMA_Z_MAX` in probit space. No outlier removal: one loudly-dissenting book declines the whole combo — it may be the informed one, and quoting the stale majority's median is adverse selection by construction (a false decline is ~free; a false quote is not). This is v1's only correlation defense — the v1.1 explicit correlation-premium gate (where Kalshi singles serve as the marginal anchor) is documented in spec section 13 and deferred.
 
 3. **Freshness gate + auto-pull (discrete events).** Before submitting any quote and inside the risk sweep, the bot checks that fresh book odds exist (`_SGP_ODDS` non-empty within `MAX_BOOK_STALENESS_SEC`). The instant books go stale or a scrape fails, all open quotes are cancelled. Blind → no live quotes.
 

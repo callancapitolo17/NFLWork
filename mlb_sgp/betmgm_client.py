@@ -31,6 +31,10 @@ from dataclasses import dataclass
 
 from curl_cffi import requests
 
+from mlb_sgp._shared import (BookTransportError, PriceCallTallyMixin,
+                             check_response, json_or_raise)
+
+BOOK = "betmgm"
 MLB_SPORT_ID = "23"          # Entain CDS sport id for baseball
 COUNTRY = "US"
 DEFAULT_STATE = "pa"         # NJ omits the pubid; PA returns a clean static id
@@ -45,7 +49,9 @@ class Event:
     start_time: str          # ISO-8601 UTC (fixture.startDate)
 
 
-class BetMGMClient:
+class BetMGMClient(PriceCallTallyMixin):
+    BOOK = BOOK
+
     def __init__(self, state: str = DEFAULT_STATE, verbose: bool = False):
         self.state = state
         self.verbose = verbose
@@ -77,6 +83,11 @@ class BetMGMClient:
         The ``x-bwin-sports-api: prod`` header is the unlock — it flips the
         clientconfig response from the 11 KB host-app shell to the ~97 KB
         sports config carrying ``msApp.publicAccessId``.
+
+        Every CDS read is gated on this id, so a failed harvest is a
+        session-level AUTH failure, not an empty slate: it raises
+        ``BookTransportError`` rather than returning "" and letting every
+        downstream call quietly produce no rows (issue #33).
         """
         if self._accessid and not refresh:
             return self._accessid
@@ -90,16 +101,19 @@ class BetMGMClient:
                 "x-from-product": "host-app",
                 "x-bwin-sports-api": "prod",
             }, timeout=25)
+        except TypeError:
+            r = self.session.get(url)              # FakeSession in unit tests
         except Exception as e:
-            if self.verbose:
-                print(f"  [mgm] accessid harvest error: {e!r}")
-            return self._accessid
-        ids = re.findall(r'"publicAccessId":"([^"]+)"', r.text)
-        if ids:
-            self._accessid = ids[0]
-        elif self.verbose:
-            print(f"  [mgm] no publicAccessId in clientconfig for state={self.state}"
-                  f" (NJ omits it — try pa/mi/co/va/tn)")
+            raise BookTransportError(BOOK, "auth", cause=e,
+                                     detail="accessid harvest failed") from e
+        check_response(BOOK, "auth", r)
+        ids = re.findall(r'"publicAccessId":"([^"]+)"', getattr(r, "text", "") or "")
+        if not ids:
+            raise BookTransportError(
+                BOOK, "auth",
+                detail=(f"no publicAccessId in clientconfig for state="
+                        f"{self.state} (NJ omits it — try pa/mi/co/va/tn)"))
+        self._accessid = ids[0]
         return self._accessid
 
     # --- event listing --------------------------------------------------- #
@@ -111,22 +125,20 @@ class BetMGMClient:
         "MLB") client-side. ``take`` is generous because foreign overnight
         games pad the unfiltered list.
         """
-        if not self.accessid():
-            return []
+        self.accessid()          # raises BookTransportError if it can't harvest
         url = (f"{self._base}/bettingoffer/fixtures?{self._common_q()}"
                f"&fixtureTypes=Standard&state=Latest&offerMapping=Filtered"
                f"&offerCategories=Gridable&fixtureCategories=Gridable"
                f"&sportIds={MLB_SPORT_ID}&skip=0&take={take}&sortBy=Tags")
         try:
             r = self.session.get(url, timeout=30)
+        except TypeError:
+            r = self.session.get(url)              # FakeSession in unit tests
         except Exception as e:
-            if self.verbose:
-                print(f"  [mgm] list_events error: {e!r}")
-            return []
-        if r.status_code != 200:
-            return []
+            raise BookTransportError(BOOK, "events", cause=e) from e
+        check_response(BOOK, "events", r)
         out: list[Event] = []
-        for fx in r.json().get("fixtures", []):
+        for fx in json_or_raise(BOOK, "events", r).get("fixtures", []):
             if not _is_mlb(fx):
                 continue
             home, away = _split_home_away(fx)
@@ -146,27 +158,31 @@ class BetMGMClient:
 
         ``offerMapping=All`` returns every alt run line + alt total + F5
         market (the Gridable listing only carries the main line). Refreshes
-        the accessid once on a 400 gate error.
+        the accessid once on a 400 gate error; a 404 means the fixture is
+        gone (skip it), anything else non-200 raises.
         """
-        if not self.accessid():
+        self.accessid()          # raises BookTransportError if it can't harvest
+        r = self._get_fixture_markets(fixture_id)
+        if _is_accessid_gate(r):
+            self.accessid(refresh=True)
+            r = self._get_fixture_markets(fixture_id)
+        if not check_response(BOOK, "structure", r, allow_404=True):
             return []
-        for attempt in (0, 1):
-            url = (f"{self._base}/bettingoffer/fixtures?{self._common_q()}"
-                   f"&fixtureIds={fixture_id}&offerMapping=All&state=Latest")
-            try:
-                r = self.session.get(url, timeout=30)
-            except Exception as e:
-                if self.verbose:
-                    print(f"  [mgm] fetch_markets error: {e!r}")
-                return []
-            if r.status_code == 400 and "ccess id" in r.text.lower() and attempt == 0:
-                self.accessid(refresh=True)
-                continue
-            if r.status_code != 200:
-                return []
-            fxs = r.json().get("fixtures", [])
-            return fxs[0].get("optionMarkets", []) if fxs else []
-        return []
+        fxs = json_or_raise(BOOK, "structure", r).get("fixtures", [])
+        return fxs[0].get("optionMarkets", []) if fxs else []
+
+    def _get_fixture_markets(self, fixture_id: str):
+        """One raw GET of the full market tree. Split out so fetch_markets can
+        retry it once after refreshing a stale accessid without a loop whose
+        exit branch is unreachable."""
+        url = (f"{self._base}/bettingoffer/fixtures?{self._common_q()}"
+               f"&fixtureIds={fixture_id}&offerMapping=All&state=Latest")
+        try:
+            return self.session.get(url, timeout=30)
+        except TypeError:
+            return self.session.get(url)           # FakeSession in unit tests
+        except Exception as e:
+            raise BookTransportError(BOOK, "structure", cause=e) from e
 
     # --- bet-builder price ----------------------------------------------- #
     def price_picks(self, fixture_id: str,
@@ -190,23 +206,33 @@ class BetMGMClient:
         url = f"{self._base}/bettingoffer/picks?{self._common_q()}"
         try:
             r = self.session.post(url, json=body, timeout=30)
+        except TypeError:
+            r = self.session.post(url, json=body)
         except Exception as e:
+            # Per-combo price failures stay row-drops (they are partial), but
+            # they must be TALLIED so an all-fail cycle still gets a verdict.
+            self.price_calls.record(False)
             if self.verbose:
                 print(f"  [mgm] price_picks error: {e!r}")
             return None
-        if r.status_code != 200:
+        if getattr(r, "status_code", 200) != 200:
+            self.price_calls.record(False)
             return None
         try:
             groups = r.json().get("betBuilderPricingGroups", {}) or {}
         except Exception:
+            self.price_calls.record(False)
             return None
         if not groups:
+            self.price_calls.record(False)
             return None
         grp = next(iter(groups.values()))
         odds = grp.get("odds") or {}
         dec = odds.get("odds")
         if not dec or dec <= 1.0:
+            self.price_calls.record(False)
             return None
+        self.price_calls.record(True)
         return {
             "decimal": float(dec),
             "american": odds.get("americanOdds"),
@@ -217,6 +243,14 @@ class BetMGMClient:
 # --------------------------------------------------------------------------- #
 # Module helpers
 # --------------------------------------------------------------------------- #
+def _is_accessid_gate(resp) -> bool:
+    """True for BetMGM's ``400 "Access id ..."`` stale-credential response —
+    the one non-200 worth retrying rather than raising on."""
+    if getattr(resp, "status_code", 200) != 400:
+        return False
+    return "ccess id" in (getattr(resp, "text", "") or "").lower()
+
+
 def _is_mlb(fixture: dict) -> bool:
     """True only for Major League Baseball fixtures (competition name 'MLB').
 

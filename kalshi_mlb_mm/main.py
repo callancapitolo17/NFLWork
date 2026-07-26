@@ -7,9 +7,10 @@ Composes the prior modules into three timed loops:
 
 Fair value is now pure book-consensus median — the model was removed in the v1
 hardening pass (`fairs.py` docstring explains why). Book fairs come from the
-maker's own market DB (its own sgp_runner cadence) and are filtered through
-`_consensus_filter` (median + ±BOOK_CONSENSUS_BAND outlier rejection) so a
-single rogue book can't anchor the quote.
+maker's own market DB (its own sgp_runner cadence) and are gated by
+`_consensus_filter` (issue #20: z-space dispersion threshold — quote only
+when the books' fairs agree within SIGMA_Z_MAX in probit space; a loudly
+dissenting book declines the combo rather than being outvoted).
 """
 import argparse
 import json
@@ -24,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 
 import duckdb
 import pandas as pd
+from scipy.stats import norm
 
 from kalshi_common import auth_client, legset, sgp_runner
 from kalshi_common.ev_calc import maker_fee_per_contract
@@ -94,26 +96,27 @@ def _refresh_sgp():
 
 
 def _consensus_filter(book_fairs: dict[str, float]) -> dict[str, float]:
-    """Book-consensus-band gate (v1 correlation defense).
+    """Z-space dispersion gate (issue #20) — regression-test oracle.
 
-    Algorithm:
+    Algorithm (kept as an INDEPENDENT implementation of router.consensus so
+    the two can cross-check each other in tests):
       1. If fewer than MIN_AGREEING_BOOKS supplied → return {} (no quote).
-      2. Compute median of all supplied book devigged fairs.
-      3. Keep only books within ±BOOK_CONSENSUS_BAND of that median.
-      4. If fewer than MIN_AGREEING_BOOKS survive → return {} (no quote).
-      5. Otherwise return the surviving (agreeing) books.
-
-    Mirrors the MLB answer-key dashboard's consensus-band logic. The caller
-    then medians the surviving books to get the fair (see `fairs.blended_fair`).
+         A single book has sigma == 0 by construction, so the count check
+         must refuse it before dispersion is considered.
+      2. Transform each book's devigged fair via norm.ppf (probit z-space).
+      3. If the sample stddev (ddof=1) of the z-values exceeds SIGMA_Z_MAX
+         → return {} (books genuinely disagree; the dissenter may be the
+         informed one, so decline instead of outvoting it).
+      4. Otherwise return ALL supplied books — there is no outlier removal;
+         the caller medians the full set to get the fair.
     """
-    if len(book_fairs) < config.MIN_AGREEING_BOOKS:
+    if len(book_fairs) < max(config.MIN_AGREEING_BOOKS, 2):
         return {}
-    med = statistics.median(book_fairs.values())
-    agreeing = {b: f for b, f in book_fairs.items()
-                if abs(f - med) <= config.BOOK_CONSENSUS_BAND}
-    if len(agreeing) < config.MIN_AGREEING_BOOKS:
+    zs = [float(norm.ppf(min(max(f, 1e-6), 1.0 - 1e-6)))
+          for f in book_fairs.values()]
+    if statistics.stdev(zs) > config.SIGMA_Z_MAX:
         return {}
-    return agreeing
+    return dict(book_fairs)
 
 
 # Retained as the regression-test oracle; the production pricing path is router.combo_fair.
@@ -443,7 +446,7 @@ def _on_demand_fill_info(canon):
                 continue
             fairs = {b: r.fair for b, r in res.items()}
             det = router.consensus_detail(fairs, config.MIN_AGREEING_BOOKS,
-                                          config.BOOK_CONSENSUS_BAND)
+                                          config.SIGMA_Z_MAX)
             out[h] = dict(
                 books={b: dict(fair=r.fair, route=r.route) for b, r in res.items()},
                 consensus_books=det[1] if det else [])
@@ -970,15 +973,25 @@ def _discovery_tick(source, gateway, dry_run):
                           reason="on_demand_pending")
             continue
         # Fair value: router prices via legset/grid across all games; fresh
-        # on-demand fairs are injected via the engine's pure lookup.
+        # on-demand fairs are injected via the engine's pure lookup. The
+        # detail carries sigma_pts (cross-book dispersion) and n_games for
+        # the uncertainty-scaled margin (#19); gate declines get their own
+        # skip reasons (#20) so the report can tell "not enough books" from
+        # "books disagree" — everything else stays "no_fair".
         od_lookup = _ENGINE.lookup if _ENGINE is not None else None
-        blended = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
-                                    config.MIN_AGREEING_BOOKS, config.BOOK_CONSENSUS_BAND,
-                                    on_demand_fairs=od_lookup)
+        fair_detail, gate_reason = router.combo_fair_detail(
+            legs, _SGP_ODDS, _resolve_game_for_legs,
+            config.MIN_AGREEING_BOOKS, config.SIGMA_Z_MAX,
+            on_demand_fairs=od_lookup)
+        blended = fair_detail.fair if fair_detail is not None else None
         book_med = blended  # single consensus fair; book_med == blended
         if blended is None or not (config.MIN_FAIR_PROB <= blended <= config.MAX_FAIR_PROB):
+            skip_reason = (gate_reason if fair_detail is None and gate_reason
+                           in ("too_few_books", "consensus_dispersion")
+                           else "no_fair")
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
-                          reason="no_fair", model=None, book=book_med, blended=blended)
+                          reason=skip_reason, model=None, book=book_med,
+                          blended=blended)
             continue
         # circuit breaker bookkeeping
         prev = _PREV_BOOK_FAIR.get(ticker)
@@ -1019,7 +1032,13 @@ def _discovery_tick(source, gateway, dry_run):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="same_price_block", book=book_med, blended=blended)
             continue
-        q = pricing.quote(blended, config.TARGET_ROI)
+        # #19: uncertainty-scaled margin — cross-book dispersion widens the
+        # cushion, game count compounds the ROI divisor.
+        q = pricing.quote(blended, config.TARGET_ROI,
+                          sigma_pts=fair_detail.sigma_pts,
+                          n_games=fair_detail.n_games,
+                          min_margin_pts=config.MIN_MARGIN_PTS,
+                          k_sigma=config.K_SIGMA)
         if q is None:
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="unpriceable")
@@ -1052,11 +1071,17 @@ def _discovery_tick(source, gateway, dry_run):
                           reason="per_combo_cap")
             continue
         # Event 2: quote_priced — we have a valid quote from the pricer.
+        # #19 item 5: margin components ride in the firehose payload (NOT in
+        # quote_decisions — the #14 report's column semantics stay intact).
         research.emit("quote_priced", rfq_id=rid, ticker=ticker,
                       payload=dict(leg_set_hash=legset.leg_set_hash(canon),
                                    n_games=len(by_game),
                                    blended_fair=blended, yes_bid=q.yes_bid, no_bid=q.no_bid,
-                                   game_id=game_id))
+                                   game_id=game_id,
+                                   sigma_pts=q.sigma_pts, floor_pts=q.floor_pts,
+                                   roi_pts_yes=q.roi_pts_yes, roi_pts_no=q.roi_pts_no,
+                                   margin_pts_yes=q.margin_pts_yes,
+                                   margin_pts_no=q.margin_pts_no))
         if dry_run:
             _log_decision("dry_run_quote", rfq_id=rid, ticker=ticker, game_id=game_id,
                           model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
@@ -1235,7 +1260,7 @@ def _confirm_tick(gateway, dry_run):
                                                      CONFIRM_REFETCH_BUDGET_SEC)
             od_lookup = _ENGINE.lookup if _ENGINE is not None else None
             cur_fair = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
-                                         config.MIN_AGREEING_BOOKS, config.BOOK_CONSENSUS_BAND,
+                                         config.MIN_AGREEING_BOOKS, config.SIGMA_Z_MAX,
                                          on_demand_fairs=od_lookup)
             if cur_fair is None or not refetch_ok:
                 _log_decision("voided_no_fresh_books", rfq_id=rid, quote_id=qid, ticker=ticker,
@@ -1520,7 +1545,7 @@ def _risk_sweep_tick(gateway):
                     legs = json.loads(legs_json)
                     cur_med = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
                                                config.MIN_AGREEING_BOOKS,
-                                               config.BOOK_CONSENSUS_BAND,
+                                               config.SIGMA_Z_MAX,
                                                on_demand_fairs=(_ENGINE.lookup
                                                                 if _ENGINE is not None
                                                                 else None))

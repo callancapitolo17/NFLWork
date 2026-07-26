@@ -16,8 +16,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path
 
-from mlb_sgp._shared import (OnDemandBookResult, PricedRow, TargetLine,
-                             TTLCache)
+from mlb_sgp._shared import (BookTransportError, OnDemandBookResult, PricedRow,
+                             TargetLine, TTLCache)
 
 log = logging.getLogger(__name__)
 
@@ -190,11 +190,23 @@ class SGPService:
     def _run_book_safe(self, book: str, targets):
         """Runs in a worker thread. Returns rows or None — never raises
         (a raise would surface as a generic future error and lose the
-        book attribution in logs)."""
+        book attribution in logs).
+
+        None is the fail-safe signal: sgp_cycle preserves the book's
+        previously-written rows instead of clearing them, and _book_done
+        counts a strike toward client reinit.
+        """
         try:
             if self._runners is not None:
                 return self._runners[book](targets)
             return self._run_book(book, targets)
+        except BookTransportError as e:
+            # The book is DOWN (403 / DNS / WAF / auth gate), not empty.
+            # Logged at ERROR so it is greppable in bot.log — this is the
+            # signal that rotted silently before issue #33.
+            log.error("sgp_service: %s TRANSPORT FAILURE stage=%s status=%s: %s",
+                      book, e.stage, e.status_code, e)
+            return None
         except Exception as e:
             log.warning("sgp_service: %s runner error: %s", book, e)
             return None
@@ -401,6 +413,14 @@ class SGPService:
                 n_cells_priced=n_cells_priced,
                 latency_sec=time.monotonic() - t0,
                 route_gap=route_gap)
+        except BookTransportError as e:
+            # Same strike path as the sweep, so on-demand and refresh share
+            # one recovery (issue #33). A clean "book won't price this"
+            # returned early above and never reaches here.
+            log.error("sgp_service: %s on-demand TRANSPORT FAILURE stage=%s "
+                      "status=%s: %s", book, e.stage, e.status_code, e)
+            self._book_done(book, None)
+            return None
         except Exception as e:
             log.warning("sgp_service: %s on-demand transport error: %s", book, e)
             self._book_done(book, None)

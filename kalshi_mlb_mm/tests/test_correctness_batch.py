@@ -59,7 +59,7 @@ def _confirm_env(monkeypatch, tmp_path, db_name, quote_response):
         con.execute("UPDATE live_quotes SET leg_prices_json = "
                     "'{\"L\": {\"yes_bid\": 0.5, \"yes_ask\": 0.52}}'")
 
-    monkeypatch.setattr(router_mod, "combo_fair", lambda *a, **k: 0.56)
+    monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.56, 0.0, 1), "ok"))
     monkeypatch.setattr(main, "_leg_market_prices",
                         lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
 

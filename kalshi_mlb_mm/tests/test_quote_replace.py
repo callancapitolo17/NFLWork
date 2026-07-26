@@ -37,7 +37,7 @@ def _replace_env(monkeypatch, tmp_path, db_name):
                                       "fetch_time": [None], "spread_line": [-1.5],
                                       "total_line": [8.5]}))
     monkeypatch.setattr(main, "_today_fills", lambda: [])
-    monkeypatch.setattr(router_mod, "combo_fair", lambda *a, **k: 0.55)
+    monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.55, 0.0, 1), "ok"))
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
     monkeypatch.setattr(main, "_leg_market_prices",
                         lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
@@ -46,7 +46,7 @@ def _replace_env(monkeypatch, tmp_path, db_name):
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-1": (True, "game1", _LEGS)})
     # New price differs from the pre-seeded quote by >> QUOTE_HYSTERESIS.
     monkeypatch.setattr(pricing_mod, "quote",
-                        lambda fair, roi: Quote(yes_bid=0.520, no_bid=0.410))
+                        lambda fair, roi, **kw: Quote(yes_bid=0.520, no_bid=0.410))
 
     with db.connect() as con:
         con.execute(

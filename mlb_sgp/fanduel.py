@@ -67,6 +67,7 @@ from mlb_sgp._shared import (
     ResolvedLeg,
     TargetLine,
     decimal_to_american,
+    price_tally_for,
 )
 from mlb_sgp.fd_client import FanDuelClient
 
@@ -194,6 +195,13 @@ def price_sgps(
     _f = fetchers or {}
     fetch_events_fn = _f.get("fetch_fd_events", fetch_fd_events)
     fetch_runners_fn = _f.get("fetch_event_runners", fetch_event_runners)
+
+    # Issue #33: events + structure can be healthy while every implyBets
+    # price call is blocked. Tally them and raise a "price"-stage transport
+    # error if the whole cycle came back empty (see PriceCallTally).
+    price_calls = price_tally_for(client, BOOK_NAME)
+    price_combo = price_calls.wrap(price_combo)
+    tally_start = price_calls.snapshot()
 
     # ----- Group target lines by game ----- #
     # match_events expects the legacy parlay-lines dict shape: one
@@ -397,6 +405,7 @@ def price_sgps(
         fetch_now, n_workers, verbose,
     ))
 
+    price_calls.verdict(tally_start)   # raises if EVERY price call failed
     return out
 
 

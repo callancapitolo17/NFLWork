@@ -529,6 +529,68 @@ MLB RFQ bot (writes to a sibling `kalshi_mlb_rfq_market.duckdb`).
 
 **Output schema.** `mlb_sgp_odds` now carries `spread_line` and `total_line` columns alongside `combo`, so multi-line target lines from Kalshi can be priced and dedupe-merged without collision (the dashboard pipeline writes a single line per game/period, the bot writes many).
 
+## Failure semantics — "book down" vs "no markets" (issue #33, 2026-07-25)
+
+**The rule: an empty result means the book has nothing to offer. A dead book
+raises.** Before this, every client swallowed a 403 / DNS failure / WAF
+challenge into `[]`, which `SGPService._book_done` scored as SUCCESS (resetting
+the strike counter so the client reinit never fired) and `sgp_cycle` answered by
+running `clear_source` — *deleting* the book's rows. DK (403), Novig (DNS) and
+Caesars (WAF) each rotted for a month with zero alerts.
+
+### The contract
+
+| Situation | Client returns / raises | Caller must |
+|---|---|---|
+| Non-200 (not 404), connection error, timeout, malformed JSON, failed auth gate | raise `BookTransportError` | **preserve** the book's existing rows + count a failure |
+| Valid payload listing no markets | `[]` / empty structure | clear + rewrite the source (unchanged) |
+| `404` on ONE event's structure fetch | `[]` / `None` for that event | skip that game, keep the cycle |
+
+`BookTransportError(book, stage, status_code=…, cause=…, detail=…)` lives in
+`_shared.py`. `stage` is `"auth"` (MGM accessid, CZR AWS-WAF token),
+`"events"`, `"structure"`, or `"price"`. Helpers `check_response()` and
+`json_or_raise()` do the raising so the six clients don't hand-roll it.
+
+The 404 carve-out matters: without it, one postponed or delisted game would
+abort a whole book's cycle.
+
+### Orchestrators never catch it
+
+`price_sgps` lets `BookTransportError` propagate. `SGPService._run_book_safe`
+converts it to `None` and logs at ERROR with book + stage + status; `None` is
+the fail-safe signal that makes `sgp_cycle` skip `clear_source`. The on-demand
+path (`price_on_demand`) feeds the *same* `_book_done` strike path, so sweep and
+on-demand share one recovery. A clean "this book won't price this combo" (event
+miss, `None` structure, devig rejection) still counts **no** strike.
+
+### `PriceCallTally` — the all-price-calls-failed verdict
+
+A book can read fine and price nothing: DK READS from `sportsbook-nash` but
+PRICES on `gaming-us-nj`, so the price host can be blocked on its own. Each
+`price_sgps` snapshots the book's tally, records every price call, and calls
+`verdict()` before returning — raising `stage="price"` when a cycle made **≥ 8**
+price attempts (`PriceCallTally.MIN_ATTEMPTS_FOR_VERDICT`, ~2 games of combos)
+with **zero** successes. Below that threshold a legitimately thin one-game slate
+would look like a dead book, so the tally stays silent.
+
+Individual declined combos remain row-drops — they are partial, not systemic.
+
+### Consequence for consumers
+
+A book judged down keeps its **previous** rows rather than losing them. That is
+safe because the maker's staleness gate refuses stale fairs (it does not trade
+them) — absence of fresh rows becomes a no-quote, not a bad quote. If that gate
+is ever removed, revisit this fail-safe.
+
+### Shims
+
+All six `scraper_*_sgp.py` shims now catch a failed `price_sgps`, print
+`preserving last cycle's rows`, and exit 1 instead of clearing the source. The
+ProphetX shim additionally **defers** `clear_source` until the first batch
+prices without a transport error (it used to clear up-front, so a dead PX wiped
+the source before we knew it was dead). An empty-but-healthy slate still clears:
+the flag flips on a successful *call*, not on a non-zero row count.
+
 ## Files
 
 | File | Purpose |
@@ -539,7 +601,7 @@ MLB RFQ bot (writes to a sibling `kalshi_mlb_rfq_market.duckdb`).
 | `scraper_novig_sgp.py` | Novig SGP scraper shim |
 | `draftkings.py` / `fanduel.py` / `prophetx.py` / `novig.py` | Per-book orchestrators (`price_sgps`) |
 | `dk_client.py` / `fd_client.py` / `prophetx_client.py` / `novig_client.py` | Per-book HTTP clients |
-| `_shared.py` | `TargetLine` / `PricedRow` dataclasses, `load_target_lines`, `upsert_priced_rows`, decimal/american helpers |
+| `_shared.py` | `TargetLine` / `PricedRow` dataclasses, `load_target_lines`, `upsert_priced_rows`, decimal/american helpers, `BookTransportError` + `PriceCallTally` (see "Failure semantics") |
 | `scraper_pikkit_mlb.py` | Pikkit MLB SGP scraper (fallback) |
 | `pikkit_common.py` | Reusable Pikkit functions |
 | `recon_draftkings_sgp.py` | DK network recon tool |
@@ -551,6 +613,13 @@ MLB RFQ bot (writes to a sibling `kalshi_mlb_rfq_market.duckdb`).
 **"No mlb_parlay_opportunities table"** — Run the MLB pipeline first (`cd "Answer Keys" && python run.py --sport mlb`).
 
 **All games return "no price"** — curl_cffi session may have expired. The scraper auto-reinits after 3 consecutive failures, but if all games fail, try running again.
+
+**`BookTransportError` in `bot.log`** — the book is genuinely unreachable, not
+quiet. Read `stage=` to localize it: `auth` (MGM accessid / CZR WAF token),
+`events` (the fixture listing), `structure` (a per-event market fetch), `price`
+(every price call in the cycle failed — check whether that book prices on a
+different host). The book's previous rows were preserved, and its client is torn
+down and rebuilt after 3 consecutive failures. See "Failure semantics" above.
 
 **"Total X not found in DK selection IDs"** — Wagerzon total doesn't exist on DK for this game. Rare — DK offers totals from 5.0 to 13.0+.
 

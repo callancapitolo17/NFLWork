@@ -45,6 +45,19 @@ MVE_COLLECTION_TICKER = _get("MVE_COLLECTION_TICKER", "KXMVECROSSCATEGORY-R")
 # quote tighter and watch for fills. 3% per side = ~6% gross spread.
 TARGET_ROI = float(_get("TARGET_ROI", "0.03"))
 QUOTE_HYSTERESIS = float(_get("QUOTE_HYSTERESIS", "0.005"))
+# Uncertainty-scaled margin (issue #19): per side,
+#   margin_pts = max(p·(1−(1+TARGET_ROI)^−n_games), MIN_MARGIN_PTS + K_SIGMA·σ)
+# where σ = sample stddev of the consensus books' fairs for the combo (prob
+# points). The constant-ROI cushion ≈ 0.029·p collapses at longshot fairs
+# (~0.3¢ at p=0.10) while absolute fair error does NOT shrink with p — every
+# book loads margin onto longshots (favorite-longshot vig distribution) and
+# options MMs widen deep-OTM quotes for the same reason. σ prices visible
+# disagreement; MIN_MARGIN_PTS covers error σ cannot see (shared devig/
+# correlation bias, mirrored books — a 2-book set can agree by coincidence).
+# First-principles defaults (#13 markouts descoped): calibrate later from
+# settlement P&L (#12) and the daily report's demand curve (#14).
+MIN_MARGIN_PTS = float(_get("MIN_MARGIN_PTS", "0.01"))
+K_SIGMA = float(_get("K_SIGMA", "1.0"))
 
 # Risk (master dial = BANKROLL)
 BANKROLL = float(_get("BANKROLL", "500.0"))
@@ -70,10 +83,22 @@ MAX_BOOK_STALENESS_SEC = int(_get("MAX_BOOK_STALENESS_SEC", "180"))
 BOOK_MOVE_CB_THRESHOLD = float(_get("BOOK_MOVE_CB_THRESHOLD", "0.03"))
 TIPOFF_CANCEL_MIN = int(_get("TIPOFF_CANCEL_MIN", "5"))
 
-# Book consensus gate (v1 correlation defense — mirrors MLB answer-key dashboard
-# pattern). v1.1: see docs/superpowers/specs/2026-05-26-kalshi-mlb-mm-design.md §13
-# for the explicit correlation-premium gate (deferred enhancement).
-BOOK_CONSENSUS_BAND = float(_get("BOOK_CONSENSUS_BAND", "0.02"))
+# Book consensus gate (issue #20, rescoped 2026-07-25): z-space dispersion
+# threshold, replacing the old absolute ±2¢ outlier band (BOOK_CONSENSUS_BAND,
+# removed). Books' devigged combo fairs go through norm.ppf; we quote only if
+# the sample stddev (ddof=1) of those z-values is <= SIGMA_Z_MAX. Constant
+# width in z-space = the same amount of DISAGREEMENT at every price level —
+# the tolerated absolute gap tightens automatically at the tails (~2¢ at
+# p=0.50 → ~0.6¢ at p=0.08), where the ±2¢ band tolerated 25% relative
+# disagreement. No outlier removal: a dissenting book is as likely the
+# informed one (news mid-propagation) as a broken scrape, so large dispersion
+# DECLINES the quote instead of outvoting the dissenter (books suspend on
+# news; a false decline is ~free, a false quote is not). Default 0.07 keeps
+# continuity with the old gate at p=0.50 (2-book set 4¢ apart: z-gap ≈ 0.100
+# → sample stddev ≈ 0.071); calibrate later from #12/#14 data. v1.1: see
+# docs/superpowers/specs/2026-05-26-kalshi-mlb-mm-design.md §13 for the
+# explicit correlation-premium gate (deferred enhancement).
+SIGMA_Z_MAX = float(_get("SIGMA_Z_MAX", "0.07"))
 # Lowered 3→2 (2026-06-18, user-approved): at 3 books we quoted ~13 times in
 # 8 days (0 fills) — too few to test competitiveness or gather data. Measured
 # ~5 quotable tuples @3 vs ~40-47 @2 books (~8×). Trade-off: 2-book consensus

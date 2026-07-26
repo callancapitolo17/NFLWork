@@ -43,7 +43,7 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     # Per-combo cap is after pricing — mock router so pricing produces a valid fair.
     import kalshi_mlb_mm.router as router_mod
-    monkeypatch.setattr(router_mod, "combo_fair", lambda *a, **k: 0.55)
+    monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.55, 0.0, 1), "ok"))
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
 

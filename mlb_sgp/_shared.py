@@ -33,6 +33,170 @@ ML_TOTAL_COMBO_NAMES = (
 )
 
 
+class BookTransportError(Exception):
+    """A book's HTTP transport failed — the book is DOWN, not empty.
+
+    Raised by the per-book clients on a non-200 (other than a per-event 404),
+    a connection error/timeout, malformed JSON, or a failed auth gate. It is
+    deliberately NOT caught by the orchestrators' ``price_sgps``: it must
+    propagate so callers can tell "the book has no markets today" (``[]``)
+    apart from "the book is unreachable".
+
+    Every caller MUST, on seeing this:
+      1. preserve the book's previously-written ``mlb_sgp_odds`` rows
+         (do NOT run ``db.clear_source``), and
+      2. count a failure (``SGPService`` strikes the book and reinits its
+         client after ``MAX_FAILURES_BEFORE_REINIT``).
+
+    ``stage`` is one of:
+      "auth"      — session-level credential/token gate (MGM accessid,
+                    CZR AWS-WAF token)
+      "events"    — the book's event/fixture listing call
+      "structure" — a per-event market/selection structure fetch
+      "price"     — the combo pricing call(s); see ``PriceCallTally``
+    """
+
+    def __init__(self, book: str, stage: str, status_code: int | None = None,
+                 cause: BaseException | None = None, detail: str = ""):
+        self.book = book
+        self.stage = stage
+        self.status_code = status_code
+        self.cause = cause
+        self.detail = detail
+        parts = [f"{book} transport failed at stage={stage}"]
+        if status_code is not None:
+            parts.append(f"status={status_code}")
+        if cause is not None:
+            parts.append(f"cause={type(cause).__name__}: {cause}")
+        if detail:
+            parts.append(detail)
+        super().__init__(" | ".join(parts))
+
+
+def check_response(book: str, stage: str, resp, allow_404: bool = False) -> bool:
+    """Raise ``BookTransportError`` unless ``resp`` is a usable 200.
+
+    Returns False (instead of raising) for a 404 when ``allow_404`` — a
+    per-event structure fetch for a game the book has removed (postponed,
+    delisted) is a legitimate skip, not a dead book. Without that carve-out
+    one stale game_id would abort a whole book's cycle.
+    """
+    status = getattr(resp, "status_code", 200)
+    if status == 200:
+        return True
+    if allow_404 and status == 404:
+        return False
+    raise BookTransportError(book, stage, status_code=status,
+                             detail=(getattr(resp, "text", "") or "")[:200])
+
+
+def json_or_raise(book: str, stage: str, resp):
+    """``resp.json()`` with malformed bodies converted to BookTransportError.
+
+    A WAF challenge page and a Cloudflare interstitial both come back 200 with
+    HTML — decoding them is the only way to notice.
+    """
+    try:
+        return resp.json()
+    except Exception as e:
+        raise BookTransportError(book, stage, cause=e,
+                                 detail="response body is not JSON") from e
+
+
+class PriceCallTally:
+    """Per-cycle tally of one book's combo-price calls.
+
+    Motivation: a book's event listing and market structure can be perfectly
+    healthy while every PRICE call is blocked — DK, for instance, reads from
+    ``sportsbook-nash.draftkings.com`` but prices on
+    ``gaming-us-nj.draftkings.com``. Individual declined combos are normal
+    (partial row drops), but a whole cycle of price calls returning nothing is
+    a transport verdict, not an empty slate.
+
+    Lives on the persistent book client, so ``price_sgps`` takes a
+    ``snapshot()`` at the top and calls ``verdict(snapshot)`` before returning
+    — scoping the judgement to THIS cycle. Thread-safe: every orchestrator
+    prices combos through a thread pool.
+    """
+
+    # Two games' worth of combos. Below this a legitimately thin slate (one
+    # game the book declines to build) would look like a dead book.
+    MIN_ATTEMPTS_FOR_VERDICT = 8
+
+    def __init__(self, book: str):
+        self.book = book
+        self._lock = threading.Lock()
+        self._attempted = 0
+        self._succeeded = 0
+
+    def record(self, ok: bool) -> None:
+        with self._lock:
+            self._attempted += 1
+            if ok:
+                self._succeeded += 1
+
+    def snapshot(self) -> tuple[int, int]:
+        with self._lock:
+            return self._attempted, self._succeeded
+
+    def wrap(self, price_fn, ok=bool):
+        """Return ``price_fn`` with each call's outcome recorded.
+
+        Used for DK/FD/NV, whose price call is a legacy module-level function
+        threaded through the orchestrator rather than a client method. ``ok``
+        maps the return value to success/failure — override it for helpers
+        that return a tuple (Novig's ``submit_parlay`` returns
+        ``(priced, auth_failed)``, whose plain truthiness is always True).
+        """
+        def tallied(*args, **kwargs):
+            result = price_fn(*args, **kwargs)
+            self.record(bool(ok(result)))
+            return result
+        return tallied
+
+    def verdict(self, since: tuple[int, int]) -> None:
+        """Raise if every price call since ``since`` failed."""
+        attempted, succeeded = self.snapshot()
+        n_attempted = attempted - since[0]
+        n_succeeded = succeeded - since[1]
+        if n_attempted >= self.MIN_ATTEMPTS_FOR_VERDICT and n_succeeded == 0:
+            raise BookTransportError(
+                self.book, "price",
+                detail=f"all {n_attempted} price calls this cycle failed")
+
+
+def price_tally_for(client, book: str) -> PriceCallTally:
+    """The client's own ``PriceCallTally``, or a throwaway one.
+
+    Orchestrator tests inject ``MagicMock`` clients, whose ``.price_calls``
+    is another mock — wrapping a price function through it would silently
+    replace the function. A throwaway tally keeps those callers working:
+    nothing records into it, so ``verdict()`` is a no-op.
+    """
+    tally = getattr(client, "price_calls", None)
+    return tally if isinstance(tally, PriceCallTally) else PriceCallTally(book)
+
+
+class PriceCallTallyMixin:
+    """Gives a book client a lazily-created ``.price_calls`` tally.
+
+    Lazy (rather than set in ``__init__``) because the client tests build
+    instances via ``Client.__new__`` to skip the real HTTP session.
+    """
+
+    BOOK: str = ""
+
+    @property
+    def price_calls(self) -> PriceCallTally:
+        tally = self.__dict__.get("_price_calls")
+        if tally is None:
+            # setdefault is atomic under the GIL, so concurrent price calls
+            # on a pooled client all end up sharing ONE tally.
+            tally = self.__dict__.setdefault("_price_calls",
+                                             PriceCallTally(self.BOOK))
+        return tally
+
+
 @dataclass(frozen=True)
 class TargetLine:
     """One (game, period, spread, total) tuple the bot/dashboard wants priced."""
