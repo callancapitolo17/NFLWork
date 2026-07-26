@@ -1,25 +1,16 @@
 import datetime
 from unabated_edge import feed
 from unabated_edge.sports.soccer import Soccer
+from unabated_edge.tests.conftest import build_bt3_state
 
 
 def _state_with_bt3(eid=9, ms=7, over_price=115, under_price=-140, line=2.5):
-    """FeedState with bt3 total over/under lines for one event."""
-    return feed.parse_snapshot({
-        "marketSources": [{"id": ms, "name": "S"}],
-        "teams": {"1": {"name": "Colombia"}, "2": {"name": "Ghana"}},
-        "gameOddsEvents": {
-            "lg21:pt1:pregame": [{
-                "eventId": eid,
-                "eventStart": "2026-06-22T17:00:00+00:00",
-                "eventTeams": {"1": {"id": 1}, "0": {"id": 2}},
-                "gameOddsMarketSourcesLines": {
-                    f"si0:ms{ms}:an0": {"bt3": {"price": over_price, "points": line}},  # Over
-                    f"si1:ms{ms}:an0": {"bt3": {"price": under_price, "points": line}},  # Under
-                }
-            }]
-        }
-    }, {"lg21"})
+    """FeedState with bt3 total over/under lines for one event.
+
+    Thin soccer-flavored wrapper over the shared conftest builder (moved
+    there in Task 4 so the MLB adapter tests can reuse it too)."""
+    return build_bt3_state("lg21", "Colombia", "Ghana", eid=eid, ms=ms,
+                            over_price=over_price, under_price=under_price, line=line)
 
 
 def test_canon_alias():
