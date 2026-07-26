@@ -190,8 +190,10 @@ class PriceCallTallyMixin:
     def price_calls(self) -> PriceCallTally:
         tally = self.__dict__.get("_price_calls")
         if tally is None:
-            tally = PriceCallTally(self.BOOK)
-            self.__dict__["_price_calls"] = tally
+            # setdefault is atomic under the GIL, so concurrent price calls
+            # on a pooled client all end up sharing ONE tally.
+            tally = self.__dict__.setdefault("_price_calls",
+                                             PriceCallTally(self.BOOK))
         return tally
 
 
