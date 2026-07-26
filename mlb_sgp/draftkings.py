@@ -56,7 +56,8 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-from mlb_sgp._shared import PricedRow, TargetLine, decimal_to_american
+from mlb_sgp._shared import (PricedRow, TargetLine, decimal_to_american,
+                             price_tally_for)
 from mlb_sgp.dk_client import DraftKingsClient
 
 
@@ -202,6 +203,14 @@ def price_sgps(
     fetch_events_fn = _f.get("fetch_dk_events", fetch_dk_events)
     fetch_nums_fn = _f.get("fetch_main_market_nums", fetch_main_market_nums)
     fetch_selids_fn = _f.get("fetch_selection_ids", fetch_selection_ids)
+
+    # Issue #33: DK READS from sportsbook-nash but PRICES on gaming-us-nj, so
+    # events + structure can be healthy while every price call is blocked.
+    # Tally the price calls and raise a "price"-stage transport error if the
+    # whole cycle came back empty (see PriceCallTally).
+    price_calls = price_tally_for(client, BOOK_NAME)
+    calculate_sgp = price_calls.wrap(calculate_sgp)
+    tally_start = price_calls.snapshot()
 
     # ----- Group target lines by game ----- #
     # match_events expects a dict shaped like the legacy mlb_parlay_lines
@@ -425,6 +434,7 @@ def price_sgps(
         calculate_sgp, _market_num, fetch_now, verbose, n_workers,
     ))
 
+    price_calls.verdict(tally_start)   # raises if EVERY price call failed
     return out
 
 

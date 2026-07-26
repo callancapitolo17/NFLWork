@@ -49,7 +49,8 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-from mlb_sgp._shared import PricedRow, TargetLine, decimal_to_american
+from mlb_sgp._shared import (PricedRow, TargetLine, decimal_to_american,
+                             price_tally_for)
 from mlb_sgp.novig_client import NovigClient
 
 
@@ -178,6 +179,15 @@ def price_sgps(
         try_integer_fallback_nv,
         submit_parlay,
     )
+
+    # Issue #33: the parlay endpoint can be blocked while the GraphQL reads
+    # still work. Tally the price calls and raise a "price"-stage transport
+    # error if the whole cycle came back empty (see PriceCallTally).
+    price_calls = price_tally_for(client, BOOK_NAME)
+    # Novig's legacy submit_parlay returns (priced, auth_failed) — a 2-tuple is
+    # always truthy, so score on the priced element.
+    submit_parlay = price_calls.wrap(submit_parlay, ok=lambda r: bool(r and r[0]))
+    tally_start = price_calls.snapshot()
 
     # ----- Group target lines into the legacy parlay-lines dict shape ----- #
     # match_events expects: {game_id: {home_team, away_team, commence_time,
@@ -431,6 +441,7 @@ def price_sgps(
                 if verbose:
                     print(f"  nv ML target error: {e}", flush=True)
 
+    price_calls.verdict(tally_start)   # raises if EVERY price call failed
     return out
 
 

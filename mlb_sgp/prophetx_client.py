@@ -50,7 +50,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from mlb_sgp._shared import (BookTransportError, PriceCallTallyMixin,
+                             check_response, json_or_raise)
 
+BOOK = "prophetx"
 PROPHETX_BASE = "https://www.prophetx.co"
 DEFAULT_MIN_OFFER_STAKE = 150
 
@@ -101,8 +104,10 @@ class SelectionLeg:
     line: float
 
 
-class ProphetXClient:
+class ProphetXClient(PriceCallTallyMixin):
     """Thin wrapper around the three ProphetX endpoints SGP scrapers need."""
+
+    BOOK = BOOK
 
     def __init__(self, verbose: bool = False) -> None:
         # Reuse the legacy scraper's session bootstrap to avoid duplicating
@@ -112,7 +117,11 @@ class ProphetXClient:
         self.verbose = verbose
 
     def list_events(self) -> list[Event]:
-        """Fetch all events with `expand=events`, return MLB-only Event list."""
+        """Fetch all events with `expand=events`, return MLB-only Event list.
+
+        Raises ``BookTransportError`` when ProphetX is unreachable; an empty
+        list means ProphetX genuinely lists no MLB games.
+        """
         url = f"{PROPHETX_BASE}/trade/public/api/v1/tournaments"
         params = {"expand": "events", "type": "highlight", "limit": 150}
         try:
@@ -120,20 +129,27 @@ class ProphetXClient:
         except TypeError:
             # FakeSession in unit tests doesn't accept params/timeout kwargs
             r = self.session.get(url)
-        if getattr(r, "status_code", 200) != 200:
-            return []
-        return _parse_events_response(r.json())
+        except Exception as e:
+            raise BookTransportError(BOOK, "events", cause=e) from e
+        check_response(BOOK, "events", r)
+        return _parse_events_response(json_or_raise(BOOK, "events", r))
 
     def fetch_event_markets(self, event_id: str) -> list[Market]:
-        """Fetch the full market tree for one event."""
+        """Fetch the full market tree for one event.
+
+        A 404 means PX dropped this game (postponed/delisted) — return [] and
+        let the caller skip it. Anything else is a transport failure.
+        """
         url = f"{PROPHETX_BASE}/trade/public/api/v2/events/{event_id}/markets"
         try:
             r = self.session.get(url, timeout=15)
         except TypeError:
             r = self.session.get(url)
-        if getattr(r, "status_code", 200) != 200:
+        except Exception as e:
+            raise BookTransportError(BOOK, "structure", cause=e) from e
+        if not check_response(BOOK, "structure", r, allow_404=True):
             return []
-        return _parse_event_markets(r.json())
+        return _parse_event_markets(json_or_raise(BOOK, "structure", r))
 
     def submit_parlay_rfq(
         self,
@@ -173,16 +189,24 @@ class ProphetXClient:
             )
         except TypeError:
             r = self.session.post(url, json=payload)
+        except Exception:
+            # Per-combo price failures stay row-drops (they are partial), but
+            # they must be TALLIED so an all-fail cycle still gets a verdict.
+            self.price_calls.record(False)
+            return None, False
 
         if getattr(r, "status_code", 200) != 200:
+            self.price_calls.record(False)
             return None, False
         try:
             data = r.json()
         except Exception:
+            self.price_calls.record(False)
             return None, False
         # ProphetX wraps offers under data.offers when successful
         offers = (data.get("data") or {}).get("offers") or data.get("offers") or []
         picked = _pick_offer(offers, min_stake=min_offer_stake)
+        self.price_calls.record(picked is not None)
         if picked is None:
             return None, False
         used_fallback = (picked.get("stake") or 0) < min_offer_stake

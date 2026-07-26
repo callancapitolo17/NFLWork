@@ -255,3 +255,104 @@ def test_ttl_cache_keys_are_independent_and_clear_works():
     assert cache.get_or_fetch("a", lambda: 99) == 1   # still cached
     cache.clear()
     assert cache.get_or_fetch("a", lambda: 99) == 99
+
+
+# --------------------------------------------------------------------------- #
+# Issue #33: BookTransportError + PriceCallTally                               #
+# --------------------------------------------------------------------------- #
+
+def test_book_transport_error_carries_book_stage_and_status():
+    from mlb_sgp._shared import BookTransportError
+    err = BookTransportError("draftkings", "structure", status_code=403,
+                             detail="Access Denied")
+    assert err.book == "draftkings"
+    assert err.stage == "structure"
+    assert err.status_code == 403
+    # The message must be diagnosable straight out of bot.log.
+    assert "draftkings" in str(err) and "structure" in str(err) and "403" in str(err)
+
+
+def test_book_transport_error_carries_cause():
+    from mlb_sgp._shared import BookTransportError
+    cause = ConnectionError("nodename nor servname provided")
+    err = BookTransportError("novig", "events", cause=cause)
+    assert err.cause is cause
+    assert err.status_code is None
+    assert "novig" in str(err)
+
+
+def test_price_tally_raises_when_every_price_call_in_a_cycle_failed():
+    """Events + structure can be healthy while the PRICE host is blocked
+    (DK prices on a different host than it reads from). All-fail is a
+    transport verdict, not an empty slate."""
+    from mlb_sgp._shared import BookTransportError, PriceCallTally
+    tally = PriceCallTally("draftkings")
+    start = tally.snapshot()
+    for _ in range(PriceCallTally.MIN_ATTEMPTS_FOR_VERDICT):
+        tally.record(False)
+    with pytest.raises(BookTransportError) as exc:
+        tally.verdict(start)
+    assert exc.value.stage == "price"
+
+
+def test_price_tally_silent_when_at_least_one_price_call_succeeded():
+    from mlb_sgp._shared import PriceCallTally
+    tally = PriceCallTally("prophetx")
+    start = tally.snapshot()
+    for _ in range(PriceCallTally.MIN_ATTEMPTS_FOR_VERDICT):
+        tally.record(False)
+    tally.record(True)
+    tally.verdict(start)          # must not raise
+
+
+def test_price_tally_silent_below_the_attempt_threshold():
+    """A one-game slate can legitimately yield zero priced combos — don't
+    condemn the book on a handful of declines."""
+    from mlb_sgp._shared import PriceCallTally
+    tally = PriceCallTally("caesars")
+    start = tally.snapshot()
+    for _ in range(PriceCallTally.MIN_ATTEMPTS_FOR_VERDICT - 1):
+        tally.record(False)
+    tally.verdict(start)          # must not raise
+
+
+def test_price_tally_snapshot_scopes_the_verdict_to_one_cycle():
+    """The tally lives on a persistent client across cycles; a previous
+    cycle's failures must not condemn this one."""
+    from mlb_sgp._shared import PriceCallTally
+    tally = PriceCallTally("novig")
+    for _ in range(PriceCallTally.MIN_ATTEMPTS_FOR_VERDICT):
+        tally.record(False)       # cycle 1: all failed
+    start = tally.snapshot()      # cycle 2 begins
+    tally.record(True)
+    tally.verdict(start)          # must not raise
+
+
+def test_price_tally_wrap_records_outcomes_of_a_price_function():
+    from mlb_sgp._shared import BookTransportError, PriceCallTally
+    tally = PriceCallTally("fanduel")
+    calls = {"n": 0}
+
+    def price(_arg):
+        calls["n"] += 1
+        return None               # book declined / transport blocked
+
+    wrapped = tally.wrap(price)
+    start = tally.snapshot()
+    for _ in range(PriceCallTally.MIN_ATTEMPTS_FOR_VERDICT):
+        assert wrapped("x") is None
+    assert calls["n"] == PriceCallTally.MIN_ATTEMPTS_FOR_VERDICT
+    with pytest.raises(BookTransportError):
+        tally.verdict(start)
+
+
+def test_price_tally_is_thread_safe():
+    """Every orchestrator prices combos through a thread pool."""
+    from concurrent.futures import ThreadPoolExecutor
+    from mlb_sgp._shared import PriceCallTally
+    tally = PriceCallTally("betmgm")
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda i: tally.record(i % 2 == 0), range(400)))
+    attempted, succeeded = tally.snapshot()
+    assert attempted == 400
+    assert succeeded == 200

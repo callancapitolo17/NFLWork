@@ -58,7 +58,10 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from mlb_sgp._shared import (BookTransportError, PriceCallTallyMixin,
+                             check_response, json_or_raise)
 
+BOOK = "novig"
 NOVIG_GRAPHQL = "https://api.novig.us/v1/graphql"
 NOVIG_PARLAY = "https://api.novig.us/nbx/v1/parlay/request/unauthenticated"
 
@@ -93,8 +96,10 @@ SPREAD_TYPES = {"SPREAD", "SPREAD_1H"}
 TOTAL_TYPES = {"TOTAL", "TOTAL_1H"}
 
 
-class NovigClient:
+class NovigClient(PriceCallTallyMixin):
     """Thin wrapper around Novig's anonymous GraphQL + parlay RFQ endpoints."""
+
+    BOOK = BOOK
 
     def __init__(self, verbose: bool = False) -> None:
         # Reuse the legacy scraper's session bootstrap (curl_cffi Chrome
@@ -123,13 +128,12 @@ class NovigClient:
         except TypeError:
             # FakeSession in unit tests may not accept all kwargs
             r = self.session.post(NOVIG_GRAPHQL, data=body)
-        if getattr(r, "status_code", 200) != 200:
-            return []
-        try:
-            data = r.json()
-        except Exception:
-            return []
-        return _parse_events_response(data)
+        except Exception as e:
+            # api.novig.us stopped resolving in production — a DNS failure is
+            # a dead book, not an off-day.
+            raise BookTransportError(BOOK, "events", cause=e) from e
+        check_response(BOOK, "events", r)
+        return _parse_events_response(json_or_raise(BOOK, "events", r))
 
     def fetch_event_legs(self, event_id: str) -> EventLegs:
         """Fetch the market tree for one event and extract spread + total outcomes."""
@@ -146,12 +150,12 @@ class NovigClient:
             )
         except TypeError:
             r = self.session.post(NOVIG_GRAPHQL, data=json.dumps(q_obj))
-        if getattr(r, "status_code", 200) != 200:
+        except Exception as e:
+            raise BookTransportError(BOOK, "structure", cause=e) from e
+        # 404 = Novig dropped this event; skip the game, keep the cycle.
+        if not check_response(BOOK, "structure", r, allow_404=True):
             return EventLegs(event_id=event_id)
-        try:
-            data = r.json()
-        except Exception:
-            return EventLegs(event_id=event_id)
+        data = json_or_raise(BOOK, "structure", r)
         return _parse_event_legs_response(data, event_id_fallback=event_id)
 
     def submit_parlay(self, outcome_ids: list[str], stake: float = 1.0) -> dict:
@@ -177,13 +181,22 @@ class NovigClient:
             )
         except TypeError:
             r = self.session.post(NOVIG_PARLAY, json=payload)
+        except Exception:
+            # Per-combo failures stay row-drops, but must be tallied so an
+            # all-fail cycle still yields a "price" transport verdict.
+            self.price_calls.record(False)
+            return {}
         if getattr(r, "status_code", 200) not in (200, 201):
+            self.price_calls.record(False)
             return {}
         try:
             offers = r.json()
         except Exception:
+            self.price_calls.record(False)
             return {}
-        return _parse_parlay_response(offers)
+        parsed = _parse_parlay_response(offers)
+        self.price_calls.record(bool(parsed))
+        return parsed
 
 
 # ---------------------------------------------------------------------------
