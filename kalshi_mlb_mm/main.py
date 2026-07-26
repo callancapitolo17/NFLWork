@@ -1486,6 +1486,114 @@ def _quote_game_ids(legs_json: str | None) -> list[str] | None:
         return None
 
 
+def _current_consensus_fair(legs_json: str | None) -> float | None:
+    """Current book-consensus fair for a resting quote's combo, or None.
+
+    Extracted so the drift check and the #23 constituent-jump breaker's
+    "were the books quiet?" test read the SAME number. Fail-safe: any parse
+    or pricing error is None (no signal), never an exception into the sweep.
+    """
+    if not legs_json:
+        return None
+    try:
+        legs = json.loads(legs_json)
+        return router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
+                                 config.MIN_AGREEING_BOOKS,
+                                 config.SIGMA_Z_MAX,
+                                 on_demand_fairs=(_ENGINE.lookup
+                                                  if _ENGINE is not None else None))
+    except Exception:
+        return None
+
+
+def _open_quote_constituent_tickers(live_rows) -> set:
+    """Every DISTINCT constituent ticker across all open quotes.
+
+    This set IS the sweep's API cost: one GET per element, per sweep. It is
+    bounded by (open quotes × legs) and is usually far smaller, because quotes
+    on the same game share legs. Zero open quotes → zero calls.
+    """
+    tickers = set()
+    for row in live_rows:
+        leg_prices_json = row[6]
+        if not leg_prices_json:
+            continue
+        try:
+            tickers.update(str(t) for t in json.loads(leg_prices_json))
+        except Exception:
+            continue
+    return tickers
+
+
+def _games_for_tickers(raw_legs: list, tickers: set) -> set:
+    """game_ids of the legs whose market_ticker is in `tickers`.
+
+    CanonicalLeg carries the event_ticker but not the market_ticker, so the
+    raw leg dicts map ticker → event_ticker and legset.partition_by_game maps
+    event_ticker → the CanonicalLegs `_resolve_game_for_legs` consumes.
+    """
+    out = set()
+    try:
+        canon = legset.parse_legs(raw_legs)
+        if not canon:
+            return out
+        by_event = legset.partition_by_game(canon)
+        jumped_events = {str(leg.get("event_ticker") or "") for leg in raw_legs
+                         if str(leg.get("market_ticker") or "") in tickers}
+        for event_ticker in jumped_events:
+            game_legs = by_event.get(event_ticker)
+            gid = _resolve_game_for_legs(game_legs) if game_legs else None
+            if gid:
+                out.add(gid)
+    except Exception:
+        return out
+    return out
+
+
+def _constituent_jumped_games(live_rows, current_prices) -> tuple[set, dict]:
+    """(game_ids whose constituents jumped since quote time, per-quote detail).
+
+    #23 items 1-2. Our books refresh every ~150-165s; the constituent Kalshi
+    singles trade in real time, so a constituent that moved since we quoted is
+    the fastest evidence that the market left our resting price behind.
+
+    The placement baseline is `live_quotes.leg_prices_json` — the raw Kalshi
+    odds #17 already snapshots at submission — so this needs no schema of its
+    own. In "book_quiet" mode a jump only counts while our own book consensus
+    stayed put, which separates "we are the stale ones" from "the whole market
+    moved together"; see CONSTITUENT_JUMP_MODE.
+
+    Fail-safe: any row we cannot evaluate contributes NO jump signal. It is
+    still covered by the tipoff / staleness / book-drift gates, and #17's
+    confirm veto still fails closed on any accept.
+    """
+    jumped_games, detail = set(), {}
+    if not current_prices:
+        return jumped_games, detail
+    for (qid, _game_id, _ticker, book_fair_at_q, _rid,
+         legs_json, leg_prices_json) in live_rows:
+        if not legs_json or not leg_prices_json:
+            continue
+        try:
+            baseline = json.loads(leg_prices_json)
+            raw_legs = json.loads(legs_json)
+        except Exception:
+            continue
+        moves = singles.jumped_tickers(baseline, current_prices,
+                                       config.CONSTITUENT_JUMP_THRESHOLD)
+        if not moves:
+            continue
+        if config.CONSTITUENT_JUMP_MODE == "book_quiet":
+            cur_med = _current_consensus_fair(legs_json)
+            if cur_med is None or book_fair_at_q is None:
+                continue           # cannot establish "quiet" → no signal
+            if abs(float(cur_med) - float(book_fair_at_q)) >= config.CONSTITUENT_BOOK_QUIET_MAX:
+                continue           # market moved together, not a pickoff
+        detail[qid] = moves
+        jumped_games.update(_games_for_tickers(raw_legs, set(moves)))
+    return jumped_games, detail
+
+
 def _risk_sweep_tick(gateway):
     if config.KILL_FILE.exists():
         notify.halt("kill_switch")
@@ -1498,10 +1606,25 @@ def _risk_sweep_tick(gateway):
         # Pull the per-quote fields we need for the drift-since-quote check too.
         live = con.execute(
             "SELECT lq.quote_id, lq.game_id, lq.combo_market_ticker, lq.book_fair, "
-            "       lq.rfq_id, sr.legs_json "
+            "       lq.rfq_id, sr.legs_json, lq.leg_prices_json "
             "FROM live_quotes lq LEFT JOIN seen_rfqs sr ON lq.rfq_id = sr.rfq_id "
             "WHERE lq.status='open'").fetchall()
-    for qid, game_id, ticker, book_fair_at_q, rid, legs_json in live:
+    # #23: real-time constituent poll. ONE GET per DISTINCT ticker across all
+    # open quotes — skipped entirely when flat, and when books are already
+    # stale (every quote is being cancelled anyway, so the calls would be
+    # wasted).
+    jumped_games, jump_detail = set(), {}
+    if live and not books_stale:
+        current_prices = singles.fetch_market_prices(
+            _open_quote_constituent_tickers(live))
+        jumped_games, jump_detail = _constituent_jumped_games(live, current_prices)
+        if jumped_games:
+            research.emit("constituent_jump",
+                          payload=dict(games=sorted(jumped_games),
+                                       threshold=config.CONSTITUENT_JUMP_THRESHOLD,
+                                       mode=config.CONSTITUENT_JUMP_MODE,
+                                       moves=jump_detail))
+    for qid, game_id, ticker, book_fair_at_q, rid, legs_json, leg_prices_json in live:
         cancel = False
         cancel_reason = None
         if books_stale:
@@ -1521,6 +1644,16 @@ def _risk_sweep_tick(gateway):
                     earliest_ct = min(commence_times)
                     if not risk.tipoff_ok(earliest_ct, config.TIPOFF_CANCEL_MIN):
                         cancel, cancel_reason = True, "tipoff"
+        if not cancel and jumped_games:
+            # #23 item 2: a constituent single moved past the threshold since
+            # this quote was placed. Evaluated BEFORE the book-drift check
+            # because it is the more specific and much faster signal, so it
+            # wins the logged reason when both would fire. Game-level: a quote
+            # is pulled when ANY game it touches is compromised, even if its
+            # own legs are not the ones that moved.
+            gids = _quote_game_ids(legs_json)
+            if gids and (set(gids) & jumped_games):
+                cancel, cancel_reason = True, "constituent_jump"
         if not cancel:
             # H1 (part 2): per-open-quote drift-since-quote sweep.
             # Recompute current book consensus for this combo; if it has drifted
@@ -1528,14 +1661,8 @@ def _risk_sweep_tick(gateway):
             # Catches gradual drift that the per-tick (last vs current) circuit
             # breaker misses (e.g., 1¢ moves over several ticks adding to 4¢).
             if book_fair_at_q is not None and legs_json:
+                cur_med = _current_consensus_fair(legs_json)
                 try:
-                    legs = json.loads(legs_json)
-                    cur_med = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
-                                               config.MIN_AGREEING_BOOKS,
-                                               config.SIGMA_Z_MAX,
-                                               on_demand_fairs=(_ENGINE.lookup
-                                                                if _ENGINE is not None
-                                                                else None))
                     if cur_med is not None and risk.book_move_triggered(
                             book_fair_at_q, cur_med, config.BOOK_MOVE_CB_THRESHOLD):
                         cancel, cancel_reason = True, "book_drift"
