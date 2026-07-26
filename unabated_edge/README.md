@@ -153,7 +153,7 @@ Spec: `docs/superpowers/specs/2026-07-10-wc-totals-maker-design.md`.
 ```
 unabated_edge/maker/
   engine.py   # per-match quote decisions: margins, never-cross, alt gating, pulls, cap enforcement
-  ledger.py   # pure math: fills -> pnl(g) over goal-grid g=0..10 -> worst case
+  ledger.py   # pure math: fills -> exact worst case over payoff intervals derived from the fills' lines
   gateway.py  # QuoteGateway ABC; LiveGateway (REST orders) / ShadowGateway (record only)
   state.py    # resting-order book + Kalshi fills/positions/settlements reconciliation
   store.py    # maker_quotes / maker_fills / ledger_snapshots / maker_pnl writes
@@ -263,7 +263,7 @@ before — and cancels any in-series resting orders left over from before
 (`state.sweep_orphan_orders`), bounding the orphaned-order window from a
 landed-but-errored POST to ~60s. Position mismatches beyond
 baseline + local fills still pull all quotes (`position_mismatch`, see the
-pull-triggers table below). Operational caveat: a mid-match restart rebuilds positions and orders but not the per-match goal-grid ledger — pre-restart fills don't count toward the match cap until settlement, so don't restart mid-match while holding inventory (flatten or wait for settlement first).
+pull-triggers table below). Operational caveat: a mid-match restart rebuilds positions and orders but not the per-match interval ledger — pre-restart fills don't count toward the match cap until settlement, so don't restart mid-match while holding inventory (flatten or wait for settlement first).
 
 **Runbook:**
 
@@ -328,8 +328,14 @@ ls unabated_edge/.env && grep -c KALSHI unabated_edge/.env
 
 # 1. First-tick shadow check (same session; no standalone shadow day)
 MAKER_MODE=shadow python3 -m unabated_edge.runner
-# watch heartbeat: kalshi_events>0 for BOTH sports, candidates_recent>0,
-# maker= shows shadow quotes on MLB tickers. Ctrl-C after 2-3 clean ticks.
+# watch the heartbeat line (runner.py's `log.info("heartbeat ...")`, one per
+# hb_every ticks): kalshi_events is an AGGREGATE sum across both sports'
+# open-event counts (not split per sport) — check it's roughly in line with
+# today's soccer + MLB slate size, not zero. candidates_recent>0 means the
+# pricing chain is actually producing candidates. maker=<dict> is
+# {quotes_live, worst_total, pnl, halted} — also aggregate, no tickers in
+# it — so a nonzero quotes_live in shadow mode is your one-line "the maker
+# is doing something" signal. Ctrl-C after 2-3 clean ticks.
 
 # 2. Flip live, same slate (leashes ON - spec Review Pack decision)
 MAKER_MODE=live MAKER_LIVE_ACK=1 MAKER_MAX_CONTRACTS=3 HARD_STOP_DOLLARS=50 \
@@ -338,6 +344,26 @@ MAKER_MODE=live MAKER_LIVE_ACK=1 MAKER_MAX_CONTRACTS=3 HARD_STOP_DOLLARS=50 \
 # Kill switch at any time:
 touch unabated_edge/.kill
 ```
+
+**Confirming MLB specifically (the heartbeat can't tell you this — it has
+no per-sport or per-ticker breakdown):** query the maker's own DB instead.
+`maker_quotes` (in `unabated_edge_maker.duckdb`, see
+[Data model](#market-maker-maker)) logs every quote decision with `sport`
+and `market_ticker` columns, so it's the ground truth for "is the maker
+actually quoting MLB." Run this **after Ctrl-C'ing step 1** (the process
+has released the file by then); if you want to check while it's still
+running, copy the DB first — same WAL-hang caveat as `mlb_readout.sql`
+(see [MLB](#mlb) above):
+
+```bash
+duckdb -readonly unabated_edge/unabated_edge_maker.duckdb -c \
+  "SELECT market_ticker, action, count(*) FROM maker_quotes \
+   WHERE sport = 'mlb' AND ts > now() - INTERVAL 5 MINUTE \
+   GROUP BY 1, 2 ORDER BY 1"
+```
+
+Rows with `KXMLBTOTAL...` tickers confirm MLB is being priced and quoted,
+not just soccer.
 
 **Before step 0 passes:** disk headroom on this machine was ~5.8 GB free
 against a stated 15 GB threshold at the time this runbook was written — see
