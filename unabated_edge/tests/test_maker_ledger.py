@@ -1,4 +1,5 @@
 # unabated_edge/tests/test_maker_ledger.py
+import random
 from unabated_edge.maker import ledger
 
 
@@ -77,3 +78,64 @@ def test_mark_to_fair_no_side():
 
 def test_mark_to_fair_unmarked_line_contributes_zero():
     assert ledger.mark_to_fair([(2.5, "yes", 10, 0.40)], {}) == 0.0
+
+
+# NEW TESTS FOR INTERVAL LEDGER
+def _worst_case_bruteforce(fills, t_max=40):
+    """Reference: exhaustive integer totals 0..t_max (superset of any old grid)."""
+    return min(ledger.pnl(fills, t) for t in range(t_max + 1))
+
+
+def test_outcome_points_cover_every_interval():
+    pts = ledger.outcome_points([2.5, 8.5])
+    # intervals: t<2.5, 2.5<t<8.5, t>8.5 -> one representative each
+    assert pts == [2.0, 3.0, 9.0]
+
+
+def test_outcome_points_extra_line_included():
+    assert ledger.outcome_points([2.5], extra_line=8.5) == [2.0, 3.0, 9.0]
+    assert ledger.outcome_points([], extra_line=None) == [0.0]
+
+
+def test_high_line_no_longer_truncated():
+    # A NO fill at 12.5 loses only when t >= 13 — beyond the old g=0..10 grid,
+    # which valued this book at riskless +0.05/contract. Interval ledger sees it.
+    fills = [(12.5, "no", 10, 0.95)]
+    assert ledger.worst_case(fills) == -9.5  # t>=13: lose 0.95 x 10
+
+
+def test_worst_case_matches_bruteforce_on_random_books():
+    rng = random.Random(20260725)
+    lines = [0.5, 1.5, 2.5, 6.5, 7.5, 8.5, 9.5, 12.5]
+    for _ in range(200):
+        fills = [(rng.choice(lines), rng.choice(["yes", "no"]),
+                  rng.randint(1, 20), round(rng.uniform(0.05, 0.95), 2))
+                 for _ in range(rng.randint(1, 6))]
+        assert abs(ledger.worst_case(fills) - _worst_case_bruteforce(fills)) < 1e-9
+
+
+def test_max_contracts_binds_beyond_old_grid():
+    # Candidate NO at 12.5, price 0.95: worst case is -0.95/contract (t>=13).
+    # budget 9.5 -> exactly 10 contracts. The old grid said unlimited (bound None).
+    assert ledger.max_contracts([], 12.5, "no", 0.95, 9.5) == 10
+
+
+def test_max_contracts_agrees_with_bruteforce_greedy():
+    rng = random.Random(99)
+    lines = [0.5, 2.5, 8.5, 12.5]
+    for _ in range(100):
+        fills = [(rng.choice(lines), rng.choice(["yes", "no"]),
+                  rng.randint(1, 5), round(rng.uniform(0.1, 0.9), 2))
+                 for _ in range(rng.randint(0, 3))]
+        line, side = rng.choice(lines), rng.choice(["yes", "no"])
+        price, budget = round(rng.uniform(0.1, 0.9), 2), rng.uniform(1, 20)
+        n = ledger.max_contracts(fills, line, side, price, budget)
+
+        # guard: property only meaningful when the existing book already respects budget (fail-closed n=0 otherwise)
+        existing_worst = _worst_case_bruteforce(fills) if fills else 0.0
+        if existing_worst >= -budget - 1e-9:
+            # Property 1: the returned size respects the budget.
+            assert _worst_case_bruteforce(fills + [(line, side, n, price)]) >= -budget - 1e-6
+            # Property 2 (maximality): with price in (0,1) every candidate has a
+            # losing region, so one more contract must break the budget.
+            assert _worst_case_bruteforce(fills + [(line, side, n + 1, price)]) < -budget + 1e-6
