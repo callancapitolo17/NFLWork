@@ -655,15 +655,34 @@ git commit -m "docs(unabated_edge): multi-sport onboarding + MLB launch runbook"
 
 ## Appendix A — Task 1 recon findings (filled by Task 1)
 
-**Note on probe code:** the brief's Step-1 snippet assumes a feed shape
-(`raw.get("results", raw.get("data", []))`) that doesn't match this feed —
-the real v2 payload is `{"odds": {"lg{N}:pt1:pregame": [...]}, "teams": {...},
-"marketSources": {...}}` (same shape `feed.parse_v2` already consumes). All
-39 league ids 1-40 return HTTP 200 with content, so the brief's "one line
-whose teams are MLB clubs" filter never fired. Adapted the probe to read
-`raw["odds"][f"lg{{lid}}:pt1:pregame"]` and resolve team names via
-`raw["teams"]`, keeping the same goal (sweep ids, find MLB by team names).
-No other deviations from the brief.
+**Note on probe code — three deviations from the brief, all mechanical (wrong
+paths/shapes assumed by the brief, not a different data source):**
+
+1. **Step 1 feed shape.** The brief's snippet assumes a shape
+   (`raw.get("results", raw.get("data", []))`) that doesn't match this feed —
+   the real v2 payload is `{"odds": {"lg{N}:pt1:pregame": [...]}, "teams": {...},
+   "marketSources": {...}}` (same shape `feed.parse_v2` already consumes). All
+   39 league ids 1-40 return HTTP 200 with content, so the brief's "one line
+   whose teams are MLB clubs" filter never fired (silent no-op, not an
+   error). Adapted the probe to read `raw["odds"][f"lg{{lid}}:pt1:pregame"]`
+   and resolve team names via `raw["teams"]`, keeping the same goal (sweep
+   ids, find MLB by team names).
+2. **Step 3 import path.** The brief's snippet does
+   `from unabated_edge import kalshi`, but no such module exists at that
+   path — the Kalshi client actually lives at `unabated_edge/venues/kalshi.py`
+   (`from unabated_edge.venues import kalshi`). Confirmed by directory
+   listing before running the probe.
+3. **Step 3 auth call.** `kalshi.list_events()` calls `auth_client.api(...)`,
+   which is unconfigured in a fresh process — had to call `kalshi.init()`
+   first (wires `config.KALSHI_API_KEY_ID`/`KALSHI_PRIVATE_KEY_PATH`/
+   `KALSHI_BASE_URL` into `auth_client.configure()`) before `list_events`
+   would return real data instead of failing the auth call.
+
+Also, as part of environment setup (not a probe-code deviation): the fresh
+worktree had no `unabated_edge/.env`, so it was copied verbatim from the main
+checkout (`/Users/callancapitolo/NFLWork/unabated_edge/.env`) per the task's
+explicit controller authorization. It is gitignored
+(`.gitignore:147:unabated_edge/.env`) and was never staged or committed.
 
 | Constant | Value | Evidence |
 |---|---|---|
