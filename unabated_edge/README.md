@@ -1,6 +1,6 @@
 # unabated_edge
 
-Sport-agnostic, Unabated-anchored Kalshi edge-detection engine. The taker/flagging path runs dry (no orders); the in-process market maker (`maker/`, see below) places real resting orders when `MAKER_MODE=live`. Soccer (World Cup **totals**) is the first adapter.
+Sport-agnostic, Unabated-anchored Kalshi edge-detection engine. The taker/flagging path runs dry (no orders); the in-process market maker (`maker/`, see below) places real resting orders when `MAKER_MODE=live`. Soccer (World Cup **totals**) shipped first; MLB (**run totals**) is the second adapter, sharing the same totals-ladder pricing core (see [Multi-sport onboarding](#multi-sport-onboarding) and [MLB](#mlb)).
 
 ---
 
@@ -22,6 +22,80 @@ Soccer prices the **regulation-time total** (Over/Under goals), not the moneylin
 
 ---
 
+## MLB
+
+MLB (`sports/mlb.py`, class `Mlb`) prices the **regulation-length run
+total** the same way soccer prices goals — it subclasses
+`TotalsLadderAdapter` (see [Architecture](#architecture)) and adds nothing
+but identity: team-name canonicalization, the Kalshi series ticker, and
+ticker-based team/date parsing.
+
+**Constants (live-verified, Task 1 recon — see the plan's Appendix A for
+full evidence and the raw probe output):**
+
+| Constant | Value | Notes |
+|---|---|---|
+| `league_prefix` | `"lg5"` | Unabated MLB league id |
+| `MLB_TOTAL_SERIES` | `"KXMLBTOTAL"` | Kalshi series; `KXMLBRUNS`/`KXMLBGAMETOTAL` were guesses that returned 0 events |
+| Anchor books | 7 (Sharp Book Price), 6 (Circa), 68 (Circa Sports) | same three ids as soccer — `config.ANCHOR_SOURCE_IDS` is not sport-specific |
+| Kalshi title format | `"{City[+disambiguator]} vs {City[+disambiguator]}: Total Runs"` | city-based, NOT nickname-based like soccer's WC titles — too fragile to parse for team identity |
+
+**Team/date identity is ticker-derived, not title-parsed.** Kalshi's MLB
+`event_ticker` (e.g. `KXMLBTOTAL-26JUL251805NYYPHI`) carries an 11-char
+date/time block plus two concatenated club codes. `event_teams` splits the
+trailing letters at length (2, 3) against an explicit code table and fails
+closed (empty frozenset) if neither split resolves to two known codes; an
+import-time assertion checks no 2-letter code is a prefix of a 3-letter one
+(which would make that split ambiguous instead of failing closed).
+`event_date` parses the same block's date into a `datetime.date` — see
+below. **19 of ~32 club codes in `_MLB_CLUB_CODES` are convention-inferred,
+not individually live-verified** (only NYY, PHI, CHC, PIT, ATH, MIN, LAD,
+NYM, LAA, SF, and AZ were seen in live tickers during recon). Reconcile
+against a full week of slates before scaling order size — a wrong code
+entry fails closed (no pairing, no quote), not silently, but it does mean
+real games go unquoted until fixed.
+
+**Doubleheaders are never quoted — fail closed by design.** MLB is the
+first date-aware adapter: `mapping.pair_events` keys on (canon team pair,
+US-Eastern game date), converting the Unabated event's `start_utc` through
+`ZoneInfo("America/New_York")` before taking `.date()` (a naive UTC
+`.date()` would misdate any evening start). This fixes the common case —
+the same two teams meeting again on a later day in a multi-game series,
+which used to collide under team-pair-only matching — but a genuine
+doubleheader (same two teams, same Eastern calendar date, two Kalshi
+events) still collides on that same key. Rather than guess which Kalshi
+game an anchor line belongs to, `pair_events` excludes the whole key from
+that tick and logs one WARNING. **Accepted v1 cost:** the maker does not
+quote doubleheaders at all, not "quotes them wrong."
+
+**Capture readout — `mlb_readout.sql`.** Five queries against
+`unabated_edge_market.duckdb`, written to answer "does MLB look like the
+1c-spread WC book, or is there real maker room": (1) crowd spread
+distribution per rung, (2) depth at touch (read off the *complementary*
+side's bid qty — Kalshi's yes/no books are complementary, so there's no
+separate `yes_ask_qty` column), (3) share of trades within 1c of mid via an
+ASOF join (the WC kill-shot number was 99.99% — if MLB matches that, the
+touch-join maker has no room here either), (4) rung snapshot coverage, and
+(5) a **commented-out** 14-day retention prune (`DELETE ... WHERE ts <
+now() - INTERVAL 14 DAY`) to run manually once the market DB grows past
+~2 GB. **Always run against a read-only copy**, never the live file while
+the bot is running (DuckDB's WAL hangs a concurrent reader against the live
+path — same caveat as the WC maker):
+
+```bash
+cp unabated_edge/unabated_edge_market.duckdb /path/outside/repo/ro.duckdb
+duckdb -readonly /path/outside/repo/ro.duckdb < unabated_edge/mlb_readout.sql
+```
+
+**Disk check before capture.** MLB's capture volume (book snapshots +
+trades tape, same shape as soccer's) will grow the market DB the way WC's
+did — the WC-era `unabated_edge_market.duckdb` in the main checkout is
+already 4.4 GB, and this machine had only ~5.8 GB free as of this task.
+Free space (prune or archive that file) **before** starting MLB capture,
+not after — see the [Launch runbook](#launch-runbook) preflight step.
+
+---
+
 ## Architecture
 
 ```
@@ -39,14 +113,16 @@ unabated_edge/
 
   sports/
     base.py          # SportAdapter ABC + Candidate dataclass
-    soccer.py        # Soccer adapter (lg21, KXWCTOTAL, totals-only)
+    totals.py        # TotalsLadderAdapter — shared over/under ladder pricing (both sports subclass this)
+    soccer.py        # Soccer adapter (lg21, KXWCTOTAL) — subclasses TotalsLadderAdapter
+    mlb.py            # MLB adapter (lg5, KXMLBTOTAL) — subclasses TotalsLadderAdapter
     registry.py      # ADAPTERS list + league_prefixes() / by_league()
 
   venues/
     kalshi.py        # list_events, best_yes_ask, best_no_ask (via kalshi_common.auth_client)
 ```
 
-**Generic core, per-sport adapters.** Everything inside `feed.py`, `pricing.py`, `ev.py`, `sizing.py`, `mapping.py`, `storage.py`, and `runner.py` is sport-agnostic. All soccer-specific knowledge lives in `sports/soccer.py`. Adding a sport = one adapter file + one registry line.
+**Generic core, per-sport adapters.** Everything inside `feed.py`, `pricing.py`, `ev.py`, `sizing.py`, `mapping.py`, `storage.py`, `runner.py`, and `maker/ledger.py` is sport-agnostic. `sports/totals.py::TotalsLadderAdapter` holds the pricing logic every totals sport shares (anchor-ladder devig, rung matching) — a concrete sport adapter (`soccer.py`, `mlb.py`) subclasses it and implements only identity: `canon_team`, `kalshi_series`, `event_teams`, and optionally `event_date` (see [Multi-sport onboarding](#multi-sport-onboarding)). Adding a sport whose Kalshi market is a totals ladder = one adapter subclass + one registry line; a sport priced a different way (e.g. moneyline) would instead subclass `SportAdapter` directly.
 
 **Data flow per tick (every `V2_POLL_SEC`, default 5s):**
 1. `feed.fetch_v2(league_id, league_prefix)` re-fetches Unabated's **v2 per-league odds file** (`content.unabated.com/markets/v2/league/<id>/odds.json`). Anchors are **unblurred anonymously** in this file — no token needed — and each line carries its full `alternateLines` ladder. (The legacy `changes/query` delta feed does not carry soccer at all; the legacy snapshot's anchors are blurred. Both legacy functions remain in `feed.py` for future US-league adapters.)
@@ -104,15 +180,24 @@ Joins are attributed `touch_join` in `maker_quotes` vs `quote` for standard-marg
 orders. Deferred protections: spec `docs/superpowers/specs/2026-07-18-wc-touchjoin-pricing-design.md`,
 GitHub issues #1 (mid-jump circuit breaker) and #2 (markout/toxicity brake).
 
-**The goal-grid ledger** (`ledger.py`) treats every fill on a match as
-settling on one integer — the regulation-time total goals `g` — and computes
-exact worst-case P&L by evaluating `pnl(g)` over `g = 0..10` and taking the
-min, instead of per-market caps. Every candidate quote is sized (or
-dropped) so a full hypothetical fill keeps that worst case inside the caps
-below. **Deviation from spec:** the ledger's exposure snapshot
-(`state.exposure_fills`) folds in *resting* (not-yet-filled) quotes as if
-already filled, so simultaneous fills across rungs can never breach a cap —
-the reported "worst case" is a hypothetical ceiling, not realized exposure.
+**The interval ledger** (`ledger.py`) treats every fill on a match as
+settling on one number — the game's final total (goals, runs, points) —
+and computes *exact* worst-case P&L with no fixed grid and no truncation.
+`pnl(fills, t)` is piecewise-constant in `t`, so its only possible
+breakpoints are the fills' own lines: `outcome_points()` returns one
+representative `t` per payoff interval (below the lowest line, between each
+consecutive pair, above the highest), and `worst_case()` is the min of
+`pnl` evaluated at those points. This replaced an earlier soccer-specific
+goal grid (`pnl(g)` swept over a fixed `g = 0..10`) — the interval form is
+exact for *any* totals ladder (MLB runs routinely exceed 10, so a fixed
+0..10 grid would have silently truncated worst-case for MLB), which is
+what made the ledger sport-agnostic instead of a second per-sport rewrite.
+Every candidate quote is sized (or dropped) so a full hypothetical fill
+keeps that worst case inside the caps below. **Deviation from spec:** the
+ledger's exposure snapshot (`state.exposure_fills`) folds in *resting*
+(not-yet-filled) quotes as if already filled, so simultaneous fills across
+rungs can never breach a cap — the reported "worst case" is a hypothetical
+ceiling, not realized exposure.
 
 **Cap stack** (percent of `BANKROLL`; all four are separate env vars):
 
@@ -224,8 +309,57 @@ reconciliation on restart.
   `poll_positions` reconciliation.
 - **No mid-match restart while holding inventory** (see the Reconciliation
   caveat above) — a restart rebuilds positions/orders but not the per-match
-  goal-grid ledger, so pre-restart fills don't count toward the match cap
+  interval ledger, so pre-restart fills don't count toward the match cap
   until settlement.
+
+---
+
+## Launch runbook
+
+MLB-specific preflight, then the same shadow→live flip soccer used. Run
+from the worktree/repo root. **This is a runbook, not an automatic
+sequence — stop after step 1 and read the heartbeat before flipping live.**
+
+```bash
+# 0. Preflight: disk + env (unabated_edge/.env carries KALSHI keys + ANCHOR_STALE_SEC —
+#    config.py loads it by package path, not cwd, but confirm it's actually there)
+df -h / | tail -1                      # need comfortable headroom; WC died at 98%
+ls unabated_edge/.env && grep -c KALSHI unabated_edge/.env
+
+# 1. First-tick shadow check (same session; no standalone shadow day)
+MAKER_MODE=shadow python3 -m unabated_edge.runner
+# watch heartbeat: kalshi_events>0 for BOTH sports, candidates_recent>0,
+# maker= shows shadow quotes on MLB tickers. Ctrl-C after 2-3 clean ticks.
+
+# 2. Flip live, same slate (leashes ON - spec Review Pack decision)
+MAKER_MODE=live MAKER_LIVE_ACK=1 MAKER_MAX_CONTRACTS=3 HARD_STOP_DOLLARS=50 \
+  python3 -m unabated_edge.runner
+
+# Kill switch at any time:
+touch unabated_edge/.kill
+```
+
+**Before step 0 passes:** disk headroom on this machine was ~5.8 GB free
+against a stated 15 GB threshold at the time this runbook was written — see
+[MLB § Disk check](#mlb) above. Free space (e.g. prune/archive the 4.4 GB
+WC-era `unabated_edge_market.duckdb` in the main checkout) before starting
+MLB capture, not after.
+
+**Restart caveat (carries over verbatim from the WC maker):** never restart
+mid-game while holding inventory — a restart rebuilds positions/orders from
+Kalshi but not the per-match interval ledger, so pre-restart fills don't
+count toward the match cap until settlement. Flatten or wait for
+settlement first.
+
+**Other caveats specific to this launch:**
+- Doubleheaders are never quoted (fail-closed by design — see
+  [MLB](#mlb)); this is expected behavior, not a bug to chase.
+- 19 of ~32 MLB club codes are convention-inferred, not individually
+  live-verified (see [MLB](#mlb)) — watch for unmatched-event log lines
+  naming an unfamiliar code and reconcile `_MLB_CLUB_CODES` in
+  `sports/mlb.py` over the first full week of slates before scaling size.
+- The order gateway itself (`maker/gateway.py`) is unchanged, WC-live-proven
+  v2 code — MLB is a new adapter and a new ledger, not a new order path.
 
 ---
 
@@ -358,47 +492,92 @@ Both DBs have a `sport` column so multi-sport rows never collide.
 
 ---
 
-## How to add a sport
+## Multi-sport onboarding
 
-1. **Write `sports/<sport>.py`** implementing `SportAdapter`:
+Adding sport N+1 is four steps. **`sports/mlb.py` is the template** — it's
+the newest adapter and the one written specifically to be copied from.
+
+1. **Recon the constants live, the way Task 1 did for MLB** (see
+   [MLB](#mlb) Appendix-A-style provenance below for what "done" looks
+   like). You need three facts before writing any code, and none of them
+   should be guessed:
+   - **Unabated league id.** Sweep `feed.fetch_v2(league_id, f"lg{{id}}")`
+     across candidate ids and find the one whose `teams` map resolves to
+     your sport's team names. The v2 payload shape is
+     `{"odds": {"lg{N}:pt1:pregame": [...]}, "teams": {...},
+     "marketSources": {...}}` — read `raw["odds"][f"lg{{lid}}:pt1:pregame"]`
+     and cross-reference `raw["teams"]`, not a `results`/`data` key (a
+     plausible-looking shape that doesn't actually exist in this feed).
+   - **Kalshi series ticker.** Call `kalshi.list_events(series_ticker)`
+     (via `unabated_edge/venues/kalshi.py` — call `kalshi.init()` first in a
+     fresh process, since `list_events` goes through
+     `kalshi_common.auth_client`, which is unconfigured until `init()` wires
+     `KALSHI_API_KEY_ID`/`KALSHI_PRIVATE_KEY_PATH`/`KALSHI_BASE_URL` into
+     it) against your best-guess ticker(s) and confirm which one actually
+     returns open events — don't assume a name pattern holds.
+   - **Kalshi title/ticker format**, so `event_teams` (and `event_date`, if
+     the sport has multi-game series/doubleheaders like MLB) parses
+     reliably. MLB's title format turned out to use city names with short
+     disambiguator suffixes ("New York Y vs Philadelphia: Total Runs"), not
+     the nickname format soccer's WC titles use — free-text title parsing
+     would have been fragile, so `sports/mlb.py::event_teams` instead
+     parses two club codes out of `event_ticker`
+     (`KXMLBTOTAL-26JUL251805NYYPHI` → `NYY`, `PHI`) through an explicit
+     code table, failing closed (empty frozenset) on anything that doesn't
+     match. Check whether your sport's ticker carries a similarly reliable
+     structured key before committing to title parsing.
+
+2. **Subclass `TotalsLadderAdapter`** in `sports/<sport>.py` (only if your
+   sport's Kalshi market is an Over/Under total ladder — otherwise subclass
+   `SportAdapter` directly and implement `price_event` yourself, the way a
+   moneyline sport would have to). The base class already does anchor-ladder
+   devig and rung matching; you implement only identity:
 
 ```python
-from unabated_edge.sports.base import SportAdapter, Candidate
-from unabated_edge import pricing, config
-from unabated_edge.feed import line_american_price
+from unabated_edge.sports.totals import TotalsLadderAdapter
 
-class MyNewSport(SportAdapter):
+class MySport(TotalsLadderAdapter):
     sport = "my_sport"           # unique string key
-    league_prefix = "lgXX"       # Unabated league prefix
+    league_prefix = "lgXX"       # Unabated league prefix, from step 1
 
     def canon_team(self, name: str) -> str:
-        return name.strip()
-
-    def kalshi_series(self) -> str:
-        return "KXMYSERIES"
-
-    def event_teams(self, kalshi_event: dict) -> frozenset:
-        # parse two team names from kalshi_event["title"] (or markets)
+        # normalize an Unabated team name to the same key event_teams produces
         ...
 
-    def price_event(self, state, event_meta, kalshi_event) -> list[Candidate]:
-        # anchor from state.lines, devig, find Kalshi market, return Candidates
-        # return [] to fail closed
+    def kalshi_series(self) -> str:
+        return "KXMYSERIES"      # from step 1
+
+    def event_teams(self, kalshi_event: dict) -> frozenset:
+        # two canon team names from kalshi_event["event_ticker"] or ["title"]
+        # fail closed (empty frozenset) on anything that doesn't parse
+        ...
+
+    # optional — only if the same team pair can recur on different days
+    # (multi-game series, doubleheaders); see mapping.py date-aware pairing
+    def event_date(self, kalshi_event: dict):
         ...
 ```
 
-2. **Register it in `sports/registry.py`:**
+3. **Register it in `sports/registry.py`:**
 
 ```python
 from unabated_edge.sports.soccer import Soccer
-from unabated_edge.sports.my_sport import MyNewSport
+from unabated_edge.sports.mlb import Mlb
+from unabated_edge.sports.my_sport import MySport
 
-ADAPTERS = [Soccer(), MyNewSport()]
+ADAPTERS = [Soccer(), Mlb(), MySport()]
 ```
 
-That is all. The engine picks up every adapter in `ADAPTERS` automatically each tick.
+The engine picks up every adapter in `ADAPTERS` automatically each tick —
+no other file changes.
 
-**Rule:** only price markets that the sharp anchor quotes directly. Do not build a model to derive prices for markets the anchor doesn't quote.
+4. **Fixture tests.** Cover `canon_team`, `event_teams` (including the
+   fail-closed empty-frozenset path on a malformed ticker/title), and
+   `price_event`/`fair_ladder` against a captured anchor + Kalshi event
+   fixture, the way `unabated_edge/tests/` covers `sports/mlb.py`.
+
+**Rule:** only price markets that the sharp anchor quotes directly. Do not
+build a model to derive prices for markets the anchor doesn't quote.
 
 ---
 
