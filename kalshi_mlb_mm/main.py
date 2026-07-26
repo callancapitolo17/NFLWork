@@ -1072,6 +1072,38 @@ def _discovery_tick(source, gateway, dry_run):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="no_leg_snapshot")
             continue
+        # #23 item 3: correlation sanity against Kalshi's live singles. The leg
+        # snapshot we just fetched for #17's veto IS the marginal anchor, so
+        # this costs ZERO extra API calls. Independent of the #20 gate: that
+        # one asks whether the books agree with EACH OTHER, this asks whether
+        # their consensus is consistent with the real-time single-leg prices —
+        # tightly-agreeing books can still be jointly wrong. Degenerate books
+        # (yes_ask=100, empty, crossed) yield no marginals: we log the miss and
+        # quote on book consensus alone, exactly as before this ticket, rather
+        # than declining on missing information.
+        marginals = singles.marginals_for_legs(leg_snapshot, legs)
+        sanity = singles.corr_sanity(blended, marginals,
+                                     config.CORR_PREMIUM_MIN,
+                                     config.CORR_PREMIUM_MAX) if marginals else None
+        # Item 5: premium + marginals per quote — the tuning dataset for the
+        # band and the calibration dataset for a Phase-3 correlation model.
+        research.emit("corr_sanity_check", rfq_id=rid, ticker=ticker,
+                      payload=dict(game_id=game_id, combo_fair=blended,
+                                   n_legs=len(legs), marginals=marginals,
+                                   baseline_independent=(
+                                       sanity.baseline_independent if sanity else None),
+                                   premium=sanity.premium if sanity else None,
+                                   frechet_lo=sanity.frechet_lo if sanity else None,
+                                   frechet_hi=sanity.frechet_hi if sanity else None,
+                                   reason=sanity.reason if sanity else None))
+        gated = sanity is not None and (
+            (sanity.reason == "frechet" and config.CORR_SANITY_FRECHET_ENABLED)
+            or (sanity.reason == "premium" and config.CORR_SANITY_PREMIUM_ENABLED))
+        if gated:
+            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                          reason=f"corr_sanity_{sanity.reason}",
+                          book=book_med, blended=blended)
+            continue
         qid = gateway.submit_quote(rid, q.yes_bid, q.no_bid)
         if qid:
             with db.connect() as con:

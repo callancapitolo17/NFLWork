@@ -31,6 +31,13 @@ def _get(key, default=None):
     return os.environ.get(key, _FILE_ENV.get(key, default))
 
 
+def _get_bool(key: str, default: str) -> bool:
+    """Env/file flag as a bool. Anything other than a recognised true-ish
+    word is False, so a typo disables a gate rather than silently enabling
+    one (fail toward the pre-ticket behaviour, never toward surprise)."""
+    return str(_get(key, default)).strip().lower() in ("1", "true", "yes", "on")
+
+
 # Credentials
 KALSHI_API_KEY_ID = _get("KALSHI_API_KEY_ID")
 KALSHI_PRIVATE_KEY_PATH = _get("KALSHI_PRIVATE_KEY_PATH")
@@ -106,6 +113,45 @@ SIGMA_Z_MAX = float(_get("SIGMA_Z_MAX", "0.07"))
 # independent source since Novig mirrors DK (see [[novig_sgp_scraping]]) — a
 # DK/Novig-independence guard is a noted follow-up if those pairs dominate fills.
 MIN_AGREEING_BOOKS = int(_get("MIN_AGREEING_BOOKS", "2"))
+
+# Correlation sanity vs Kalshi's own single-leg markets (issue #23, spec §13).
+# Every leg of a combo IS its own 2-way Kalshi market trading in REAL TIME,
+# which makes its devigged marginal the one pricing input we have that is both
+# independent of the books and fast. Two tests on the combo fair:
+#
+#   Frechet:  max(0, Σp − (n−1)) <= combo_fair <= min(p)      [always true]
+#   premium:  combo_fair / Πp  ∈ [CORR_PREMIUM_MIN, MAX]      [heuristic]
+#
+# Frechet gates by default: it is parameter-free, and a violation means our
+# fair is arithmetically not a joint probability of these legs. The premium
+# band ships LOG-ONLY (enabled=False) because same-game legs legitimately run
+# well above 1× (run line + moneyline ~2×) and a guessed band would decline
+# real business; switch it on once the `corr_sanity_check` firehose shows the
+# true premium distribution. This is a LEVEL check against an outside anchor
+# and is deliberately independent of SIGMA_Z_MAX, which is a DISPERSION check
+# among the books themselves — tightly-agreeing books can still be jointly
+# wrong, and only this gate can see that.
+CORR_SANITY_FRECHET_ENABLED = _get_bool("CORR_SANITY_FRECHET_ENABLED", "true")
+CORR_SANITY_PREMIUM_ENABLED = _get_bool("CORR_SANITY_PREMIUM_ENABLED", "false")
+CORR_PREMIUM_MIN = float(_get("CORR_PREMIUM_MIN", "0.5"))
+CORR_PREMIUM_MAX = float(_get("CORR_PREMIUM_MAX", "2.0"))
+
+# Constituent-jump circuit breaker (issue #23 items 1-2). Our books refresh
+# every ~150-165s; the combo's constituent Kalshi singles trade in real time.
+# If a constituent's devigged mid moves past this threshold AFTER we quoted,
+# the market has moved and our resting quote is the stale side.
+CONSTITUENT_JUMP_THRESHOLD = float(_get("CONSTITUENT_JUMP_THRESHOLD", "0.03"))
+# Mode flag, flipped by the live-pricing pivot (#54) rather than a rewrite:
+#   "book_quiet"    (default, TODAY) — also require our book consensus to have
+#                   stayed within CONSTITUENT_BOOK_QUIET_MAX, which separates
+#                   "we are the stale ones" from "the whole market moved
+#                   together". Quotes are priced off a <=150s cache, so a jump
+#                   WITH the books moving is just our own data catching up.
+#   "unconditional" (post-#54) — once every quote is priced from a live fetch
+#                   the fair was fresh at placement, so ANY constituent jump
+#                   during the resting window means the market moved after us.
+CONSTITUENT_JUMP_MODE = _get("CONSTITUENT_JUMP_MODE", "book_quiet")
+CONSTITUENT_BOOK_QUIET_MAX = float(_get("CONSTITUENT_BOOK_QUIET_MAX", "0.01"))
 
 # Loops (seconds)
 DISCOVERY_SEC = int(_get("DISCOVERY_SEC", "2"))
