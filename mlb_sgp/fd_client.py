@@ -14,6 +14,11 @@ takes a `tab` argument (FD returns a different market slice per tab).
 from __future__ import annotations
 from dataclasses import dataclass
 
+from mlb_sgp._shared import (BookTransportError, PriceCallTallyMixin,
+                             check_response, json_or_raise)
+
+BOOK = "fanduel"
+
 
 @dataclass
 class Event:
@@ -38,7 +43,9 @@ class Market:
     name: str            # FD marketName, e.g. "Run Line", "First 5 Innings Total Runs"
 
 
-class FanDuelClient:
+class FanDuelClient(PriceCallTallyMixin):
+    BOOK = BOOK
+
     def __init__(self, verbose: bool = False) -> None:
         from scraper_fanduel_sgp import init_session
         self.session = init_session()
@@ -92,10 +99,14 @@ class FanDuelClient:
         except TypeError:
             # FakeSession in unit tests doesn't accept headers/timeout kwargs
             resp = self.session.get(url)
+        except Exception as e:
+            raise BookTransportError(BOOK, "structure", cause=e) from e
 
-        if getattr(resp, "status_code", 200) != 200:
+        # 404 = FD dropped this event; anything else non-200 (a PerimeterX
+        # block, for instance) is a dead book, not a market-less event.
+        if not check_response(BOOK, "structure", resp, allow_404=True):
             return [], []
-        payload = resp.json()
+        payload = json_or_raise(BOOK, "structure", resp)
 
         market_dicts: list[dict] = []
 

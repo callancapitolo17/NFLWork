@@ -743,16 +743,27 @@ def main():
     # The orchestrator currently emits only _direct rows; clearing
     # _interpolated too preserves the invariant in case the legacy
     # integer-fallback path is ever re-wired.
-    db.clear_source("prophetx_direct", db_path=db_path)
-    db.clear_source("prophetx_interpolated", db_path=db_path)
-
+    # Clearing is DEFERRED until the first batch prices without a transport
+    # error (issue #33): clearing up-front meant a dead PX deleted the whole
+    # source before we knew it was dead. An empty-but-healthy slate still
+    # clears — the flag flips on a successful CALL, not on a non-zero count.
     batch_size = int(os.environ.get("PX_WRITE_BATCH", "50"))
     client = prophetx.ProphetXClient(verbose=False)
     total = 0
+    cleared = False
     for i in range(0, len(targets), batch_size):
         batch = targets[i:i + batch_size]
-        rows = prophetx.price_sgps(batch, periods=periods, client=client,
-                                   verbose=False)
+        try:
+            rows = prophetx.price_sgps(batch, periods=periods, client=client,
+                                       verbose=False)
+        except Exception as e:
+            print(f"  PX shim: price_sgps failed ({e}) — preserving "
+                  f"last cycle's rows", flush=True)
+            return 1
+        if not cleared:
+            db.clear_source("prophetx_direct", db_path=db_path)
+            db.clear_source("prophetx_interpolated", db_path=db_path)
+            cleared = True
         if rows:
             db.upsert_priced_rows(rows, db_path=db_path)
             total += len(rows)

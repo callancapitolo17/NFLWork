@@ -33,7 +33,8 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-from mlb_sgp._shared import PricedRow, TargetLine, decimal_to_american
+from mlb_sgp._shared import (PricedRow, TargetLine, decimal_to_american,
+                             price_tally_for)
 from mlb_sgp.betmgm_client import BetMGMClient, Event
 
 BOOK_NAME = "betmgm"
@@ -259,10 +260,16 @@ def price_sgps(
 
     if client is None:
         client = BetMGMClient(verbose=verbose)
-    if not client.accessid():
-        if verbose:
-            print("  [mgm] no accessid — aborting (wrong state / harvest failed)")
-        return []
+    # accessid() now RAISES BookTransportError when the harvest fails (issue
+    # #33) — a missing accessid is an auth failure, not an empty slate — so
+    # there is no "" case to guard here.
+    client.accessid()
+
+    # Issue #33: the Angstrom price endpoint can be blocked while the CDS
+    # reads still work. client.price_picks records into this tally; a cycle
+    # where EVERY price call failed raises a "price"-stage transport error.
+    price_calls = price_tally_for(client, BOOK_NAME)
+    tally_start = price_calls.snapshot()
 
     events = client.list_events()
     if not events:
@@ -375,6 +382,7 @@ def price_sgps(
     # ----- Phase 3: moneyline × total combos (FG only) ----- #
     out.extend(_price_ml_total_for_games(
         client, matched_by_gid, parsed_cache, filtered, fetch_now, verbose))
+    price_calls.verdict(tally_start)   # raises if EVERY price call failed
     return out
 
 
