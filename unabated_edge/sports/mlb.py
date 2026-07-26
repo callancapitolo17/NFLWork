@@ -13,6 +13,7 @@ instead reads the two club codes out of the event's `event_ticker`, e.g.
 "KXMLBTOTAL-26JUL251805NYYPHI" (NYY=Yankees, PHI=Phillies), through an
 explicit code table, and fails closed (empty frozenset) on anything that
 doesn't parse into two known codes."""
+import datetime
 import re
 
 from unabated_edge.sports.totals import TotalsLadderAdapter
@@ -73,8 +74,10 @@ _MLB_CLUB_CODES = {
 # event_ticker shape verified live (Task 1): "KXMLBTOTAL-26JUL251805NYYPHI"
 # = series + "-" + an 11-char date/time block (2-digit year + 3-letter
 # month + 2-digit day + 4-digit HHMM) + the two club codes concatenated
-# with no separator between them (each code is 2 or 3 letters).
-_TICKER_RE = re.compile(r"^KXMLBTOTAL-\d{2}[A-Z]{3}\d{6}([A-Z]+)$")
+# with no separator between them (each code is 2 or 3 letters). Named groups
+# so both event_teams (codes) and event_date (yy/mon/dd) share one regex.
+_TICKER_RE = re.compile(
+    r"^KXMLBTOTAL-(?P<yy>\d{2})(?P<mon>[A-Z]{3})(?P<dd>\d{2})\d{4}(?P<codes>[A-Z]+)$")
 
 # event_teams tries the away/home split at lengths (2, 3) and stops at the
 # first split where both halves are known codes. If a 2-letter code were
@@ -111,7 +114,7 @@ class Mlb(TotalsLadderAdapter):
         m = _TICKER_RE.match(ticker)
         if not m:
             return frozenset()
-        codes = m.group(1)
+        codes = m.group("codes")
         for away_len in (2, 3):
             home_len = len(codes) - away_len
             if home_len not in (2, 3):
@@ -120,3 +123,22 @@ class Mlb(TotalsLadderAdapter):
             if away in _MLB_CLUB_CODES and home in _MLB_CLUB_CODES:
                 return frozenset({_MLB_CLUB_CODES[away], _MLB_CLUB_CODES[home]})
         return frozenset()
+
+    def event_date(self, kalshi_event: dict) -> datetime.date | None:
+        """US-local game date parsed from event_ticker's date block (e.g.
+        "26JUL25" in "KXMLBTOTAL-26JUL251805NYYPHI" -> 2026-07-25). Used by
+        mapping.pair_events to disambiguate a team-pair that recurs across a
+        multi-game series -- without this, "Yankees vs Phillies" on
+        consecutive days collides into one ambiguous, excluded pair instead
+        of two correctly-priced games. Fails closed (None) on anything that
+        doesn't parse, same as event_teams -- mapping.py treats a None date
+        as "exclude this ticker," never as "fall back to blind pairing.\""""
+        ticker = (kalshi_event.get("event_ticker") or "")
+        m = _TICKER_RE.match(ticker)
+        if not m:
+            return None
+        try:
+            return datetime.datetime.strptime(
+                f"{m.group('yy')}{m.group('mon')}{m.group('dd')}", "%y%b%d").date()
+        except ValueError:
+            return None

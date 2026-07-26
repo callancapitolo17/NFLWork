@@ -1,6 +1,22 @@
+import datetime
+
 from unabated_edge.sports.mlb import Mlb, _MLB_CLUB_CODES
 from unabated_edge.sports import registry
 from unabated_edge.tests.conftest import build_bt3_state
+
+
+def test_event_date_parses_ticker():
+    """Task 4b: date-aware pairing needs the game date, not just the club
+    codes, out of event_ticker's date block."""
+    m = Mlb()
+    assert m.event_date({"event_ticker": "KXMLBTOTAL-26JUL251805NYYPHI"}) == datetime.date(2026, 7, 25)
+    assert m.event_date({"event_ticker": "KXMLBTOTAL-26JUL261335CHCPIT"}) == datetime.date(2026, 7, 26)
+
+
+def test_event_date_fails_closed_on_garbage():
+    m = Mlb()
+    assert m.event_date({"event_ticker": "GARBAGE"}) is None
+    assert m.event_date({}) is None
 
 
 def test_import_enforces_no_2letter_code_is_prefix_of_3letter_code():

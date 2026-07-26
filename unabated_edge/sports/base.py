@@ -1,3 +1,4 @@
+import datetime
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -40,4 +41,13 @@ class SportAdapter(ABC):
         """Devigged {line: {p_over, book, alt, overround}} for the maker.
         None when this adapter/event has no anchored ladder this tick
         (adapters without maker support simply inherit this default)."""
+        return None
+
+    def event_date(self, kalshi_event: dict) -> datetime.date | None:
+        """US-local calendar date of the Kalshi event's game, used by
+        mapping.pair_events to disambiguate a team-pair that recurs across a
+        multi-game series (date-aware pairing). Default: no date support --
+        an adapter that doesn't override this keeps the legacy
+        team-pair-only matching (soccer's World Cup slate has no
+        multi-game-series collisions, so it never needed this)."""
         return None
