@@ -1,6 +1,21 @@
-from unabated_edge.sports.mlb import Mlb
+from unabated_edge.sports.mlb import Mlb, _MLB_CLUB_CODES
 from unabated_edge.sports import registry
 from unabated_edge.tests.conftest import build_bt3_state
+
+
+def test_import_enforces_no_2letter_code_is_prefix_of_3letter_code():
+    """mlb.py asserts this invariant at module load (a 2-letter code being a
+    prefix of a 3-letter one would make the ticker away/home split
+    ambiguous — see the assertion's comment in sports/mlb.py). This test
+    both proves the module already imported clean (the assert didn't fire
+    above) and re-checks the same condition directly against the live
+    table, so a future code addition that reintroduces the collision fails
+    loudly here instead of silently mis-parsing tickers."""
+    assert not any(
+        c2 != c3 and c3.startswith(c2)
+        for c2 in _MLB_CLUB_CODES for c3 in _MLB_CLUB_CODES
+        if len(c2) == 2 and len(c3) == 3
+    )
 
 
 def test_canon_team_city_and_nickname_collapse():

@@ -76,6 +76,20 @@ _MLB_CLUB_CODES = {
 # with no separator between them (each code is 2 or 3 letters).
 _TICKER_RE = re.compile(r"^KXMLBTOTAL-\d{2}[A-Z]{3}\d{6}([A-Z]+)$")
 
+# event_teams tries the away/home split at lengths (2, 3) and stops at the
+# first split where both halves are known codes. If a 2-letter code were
+# ever a prefix of a 3-letter code (e.g. hypothetical "SF"/"SFX"), a 4-letter
+# suffix like "SFXATL" would satisfy the away_len=2 split ("SF"+"XATL" ->
+# fails on length, fine) but a 5-letter one could wrongly resolve at the
+# wrong split before reaching the correct one — silently mis-parsing the
+# ticker instead of failing closed. Assert the invariant holds at import
+# time so a future code addition can't reintroduce that ambiguity unnoticed.
+assert not any(
+    c2 != c3 and c3.startswith(c2)
+    for c2 in _MLB_CLUB_CODES for c3 in _MLB_CLUB_CODES
+    if len(c2) == 2 and len(c3) == 3
+), "a 2-letter MLB club code is a prefix of a 3-letter one — ticker split is ambiguous"
+
 
 class Mlb(TotalsLadderAdapter):
     sport = "mlb"

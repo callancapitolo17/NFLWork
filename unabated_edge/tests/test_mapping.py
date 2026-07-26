@@ -70,3 +70,63 @@ def test_pair_events_logs_unmatched_once(caplog):
     assert len(unmatched_logs) == 1, f"expected 1 dedup'd log, got {len(unmatched_logs)}"
     assert "Nowhere United" in unmatched_logs[0].getMessage()
     mapping._warned_unmatched.clear()
+
+
+def test_pair_events_excludes_doubleheader_both_sides_ambiguous(caplog):
+    """Two Kalshi events AND two Unabated events share the same team pair
+    (a doubleheader) -> that team-pair returns NO pairs at all (fail closed,
+    since nothing downstream can tell which Kalshi game is which Unabated
+    game). A separate, unambiguous pair in the same tick still matches."""
+    mapping._warned_unmatched.clear()
+    ev1 = _ev("Yankees", "Phillies", event_id=1)
+    ev2 = _ev("Yankees", "Phillies", event_id=2)
+    ev3 = _ev("Argentina", "Austria", event_id=3)
+    kev1 = _total_kev("Yankees", "Phillies", "T-YP1")
+    kev2 = _total_kev("Yankees", "Phillies", "T-YP2")
+    kev3 = _total_kev("Argentina", "Austria", "T-ARG")
+    with caplog.at_level(logging.WARNING, logger="unabated_edge"):
+        result = mapping.pair_events(Soccer(), [ev1, ev2, ev3], [kev1, kev2, kev3])
+    assert len(result) == 1
+    em, kev = result[0]
+    assert em.event_id == 3 and kev is kev3
+    warn_logs = [r for r in caplog.records if "doubleheader" in r.getMessage()]
+    assert len(warn_logs) == 1
+    assert "2 kalshi events, 2 unabated events" in warn_logs[0].getMessage()
+    mapping._warned_unmatched.clear()
+
+
+def test_pair_events_excludes_duplicate_unabated_side_only(caplog):
+    """Two Unabated events share a team pair even though only one Kalshi
+    event exists for it -> still excluded (ambiguous on the Unabated side
+    alone is enough; guessing which Unabated event the lone Kalshi game
+    belongs to is exactly the unsafe case)."""
+    mapping._warned_unmatched.clear()
+    ev1 = _ev("Yankees", "Phillies", event_id=1)
+    ev2 = _ev("Yankees", "Phillies", event_id=2)
+    kev1 = _total_kev("Yankees", "Phillies", "T-YP1")
+    with caplog.at_level(logging.WARNING, logger="unabated_edge"):
+        result = mapping.pair_events(Soccer(), [ev1, ev2], [kev1])
+    assert result == []
+    warn_logs = [r for r in caplog.records if "doubleheader" in r.getMessage()]
+    assert len(warn_logs) == 1
+    assert "1 kalshi events, 2 unabated events" in warn_logs[0].getMessage()
+    mapping._warned_unmatched.clear()
+
+
+def test_pair_events_excludes_duplicate_kalshi_side_only(caplog):
+    """Two Kalshi events share a team pair even though only one Unabated
+    event exists for it (the failure mode actually observed live: a
+    doubleheader's second Kalshi game used to silently vanish via
+    last-write-wins and the survivor got paired to the wrong game) ->
+    excluded, not silently resolved to either one."""
+    mapping._warned_unmatched.clear()
+    ev1 = _ev("Yankees", "Phillies", event_id=1)
+    kev1 = _total_kev("Yankees", "Phillies", "T-YP1")
+    kev2 = _total_kev("Yankees", "Phillies", "T-YP2")
+    with caplog.at_level(logging.WARNING, logger="unabated_edge"):
+        result = mapping.pair_events(Soccer(), [ev1], [kev1, kev2])
+    assert result == []
+    warn_logs = [r for r in caplog.records if "doubleheader" in r.getMessage()]
+    assert len(warn_logs) == 1
+    assert "2 kalshi events, 1 unabated events" in warn_logs[0].getMessage()
+    mapping._warned_unmatched.clear()
