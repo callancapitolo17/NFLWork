@@ -19,6 +19,20 @@ def test_event_date_fails_closed_on_garbage():
     assert m.event_date({}) is None
 
 
+def test_event_date_fails_closed_on_unknown_month_not_locale_dependent():
+    """event_date must use an explicit month dict, not strptime's %b (which
+    is locale-dependent and would silently fail-closed on every ticker in a
+    non-English locale, zeroing out date-aware pairing). A ticker whose date
+    block doesn't match any known 3-letter English month abbreviation must
+    fail closed (None), and mixed-case month text must not match the
+    ticker regex at all (also None) -- neither path should raise."""
+    m = Mlb()
+    # Shape matches (3 uppercase letters) but "XXX" isn't a real month.
+    assert m.event_date({"event_ticker": "KXMLBTOTAL-26XXX251805NYYPHI"}) is None
+    # Lowercase month text doesn't match _TICKER_RE's uppercase-only group.
+    assert m.event_date({"event_ticker": "KXMLBTOTAL-26jul251805NYYPHI"}) is None
+
+
 def test_import_enforces_no_2letter_code_is_prefix_of_3letter_code():
     """mlb.py asserts this invariant at module load (a 2-letter code being a
     prefix of a 3-letter one would make the ticker away/home split

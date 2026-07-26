@@ -79,6 +79,16 @@ _MLB_CLUB_CODES = {
 _TICKER_RE = re.compile(
     r"^KXMLBTOTAL-(?P<yy>\d{2})(?P<mon>[A-Z]{3})(?P<dd>\d{2})\d{4}(?P<codes>[A-Z]+)$")
 
+# Explicit month lookup for event_date's ticker date block (avoids strptime's
+# %b, which is locale-dependent — a non-English locale wouldn't match the
+# regex's always-uppercase-English "JUL" and would silently fail-closed on
+# every ticker, zeroing out date-aware pairing). Uppercase 3-letter English
+# abbreviations only, matching _TICKER_RE's `mon` group.
+_MONTH_ABBR = {
+    "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+    "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
+}
+
 # event_teams tries the away/home split at lengths (2, 3) and stops at the
 # first split where both halves are known codes. If a 2-letter code were
 # ever a prefix of a 3-letter code (e.g. hypothetical "SF"/"SFX"), a 4-letter
@@ -137,8 +147,10 @@ class Mlb(TotalsLadderAdapter):
         m = _TICKER_RE.match(ticker)
         if not m:
             return None
+        month = _MONTH_ABBR.get(m.group("mon"))
+        if month is None:
+            return None
         try:
-            return datetime.datetime.strptime(
-                f"{m.group('yy')}{m.group('mon')}{m.group('dd')}", "%y%b%d").date()
+            return datetime.date(2000 + int(m.group("yy")), month, int(m.group("dd")))
         except ValueError:
             return None

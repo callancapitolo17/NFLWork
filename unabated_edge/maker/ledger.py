@@ -23,7 +23,12 @@ def pnl(fills, t: float) -> float:
 def outcome_points(lines, extra_line=None) -> list[float]:
     """One representative final-total per payoff interval of the given lines
     (plus an optional candidate line): below the lowest strike, between each
-    consecutive pair, above the highest."""
+    consecutive pair, above the highest.
+
+    The +/-0.5 representatives assume every pair of adjacent lines is at
+    least 0.5 apart (true for all Kalshi X.5 ladders today — MLB runs,
+    soccer goals). A quarter-line sport (e.g. X.25 rungs) would need finer
+    representatives here; revisit if one onboards."""
     ls = sorted(set(lines) | ({extra_line} if extra_line is not None else set()))
     if not ls:
         return [0.0]
