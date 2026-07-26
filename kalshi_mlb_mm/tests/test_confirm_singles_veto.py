@@ -220,12 +220,14 @@ def test_singles_moved_detects_any_tick_and_leg_mismatch():
 
 
 def test_market_bid_ask_handles_both_kalshi_shapes():
-    from kalshi_mlb_mm import main
-    assert main._market_bid_ask({"yes_bid": 45, "yes_ask": 47}) == (0.45, 0.47)
-    assert main._market_bid_ask(
+    # #23: the price-shape parser now lives in kalshi_mlb_mm/singles.py, shared
+    # by this veto, the quote-time sanity gate and the risk sweep.
+    from kalshi_mlb_mm import singles
+    assert singles.market_bid_ask({"yes_bid": 45, "yes_ask": 47}) == (0.45, 0.47)
+    assert singles.market_bid_ask(
         {"yes_bid_dollars": "0.45", "yes_ask_dollars": "0.47"}) == (0.45, 0.47)
-    assert main._market_bid_ask({"yes_bid": 45}) is None
-    assert main._market_bid_ask({}) is None
+    assert singles.market_bid_ask({"yes_bid": 45}) is None
+    assert singles.market_bid_ask({}) is None
 
 
 def test_leg_market_prices_reads_one_get_per_leg(monkeypatch):

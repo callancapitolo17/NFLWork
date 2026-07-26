@@ -44,7 +44,6 @@ from kalshi_mlb_mm.quote_gateway import RestQuoteGateway
 # implementation of "read a Kalshi single and compare it". Imported under their
 # original private names so existing call sites and test monkeypatches
 # (main._leg_market_prices, main._singles_moved) keep working unchanged.
-from kalshi_mlb_mm.singles import market_bid_ask as _market_bid_ask
 from kalshi_mlb_mm.singles import leg_market_prices as _leg_market_prices
 from kalshi_mlb_mm.singles import singles_moved as _singles_moved
 
