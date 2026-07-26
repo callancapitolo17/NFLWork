@@ -36,9 +36,17 @@ from kalshi_common.leg_types import (
     combo_descriptor,
 )
 from kalshi_mlb_mm import (config, db, notify, pricing, research, risk, scope,
-                           router, settlement)
+                           router, settlement, singles)
 from kalshi_mlb_mm.rfq_source import RestRFQSource
 from kalshi_mlb_mm.quote_gateway import RestQuoteGateway
+# #23: the constituent-singles helpers moved to kalshi_mlb_mm/singles.py so the
+# quote-time sanity gate, the risk sweep, and #17's confirm veto all share ONE
+# implementation of "read a Kalshi single and compare it". Imported under their
+# original private names so existing call sites and test monkeypatches
+# (main._leg_market_prices, main._singles_moved) keep working unchanged.
+from kalshi_mlb_mm.singles import market_bid_ask as _market_bid_ask
+from kalshi_mlb_mm.singles import leg_market_prices as _leg_market_prices
+from kalshi_mlb_mm.singles import singles_moved as _singles_moved
 
 log = logging.getLogger("kalshi_mlb_mm")
 
@@ -468,59 +476,6 @@ def _quote_age_sec(submitted_at) -> float | None:
         return max(0.0, (datetime.now() - submitted_at).total_seconds())
     except Exception:
         return None
-
-
-def _market_bid_ask(mkt: dict) -> tuple[float, float] | None:
-    """(yes_bid, yes_ask) in DOLLARS from either Kalshi market response shape
-    — int cents (`yes_bid`) or string-dollar (`yes_bid_dollars`); see the
-    kalshi_price_gotchas note on *_dollars vs int shapes."""
-    bid, ask = mkt.get("yes_bid"), mkt.get("yes_ask")
-    if bid is not None and ask is not None:
-        return float(bid) / 100.0, float(ask) / 100.0
-    bid, ask = mkt.get("yes_bid_dollars"), mkt.get("yes_ask_dollars")
-    if bid is not None and ask is not None:
-        return float(bid), float(ask)
-    return None
-
-
-def _leg_market_prices(legs: list[dict]) -> dict | None:
-    """Raw Kalshi odds for every leg of a combo: {leg market_ticker:
-    {"yes_bid": $, "yes_ask": $}}. Each leg IS its own Kalshi singles market,
-    so this is one fast GET per leg (~<1s for a 2-3 leg combo). Returns None
-    if ANY leg can't be read (fail-safe: no partial baselines)."""
-    try:
-        out = {}
-        for leg in legs:
-            mt = str(leg.get("market_ticker") or "")
-            if not mt:
-                return None
-            if mt in out:
-                continue
-            _status, body, _hdrs = auth_client.api("GET", f"/markets/{mt}")
-            mkt = body.get("market") if isinstance(body, dict) else None
-            prices = _market_bid_ask(mkt) if isinstance(mkt, dict) else None
-            if prices is None:
-                return None
-            out[mt] = {"yes_bid": prices[0], "yes_ask": prices[1]}
-        return out or None
-    except Exception as e:
-        log.warning("[leg_snapshot] fetch failed: %s", e)
-        return None
-
-
-def _singles_moved(snapshot: dict, fresh: dict) -> bool:
-    """True if ANY leg's yes_bid or yes_ask differs between the quote-time
-    snapshot and the fresh read. Zero tolerance by design: Kalshi prices move
-    in 1c ticks, so 'moved at all' == 'moved >= one tick'. A leg-set mismatch
-    counts as moved (fail-safe)."""
-    if set(snapshot) != set(fresh):
-        return True
-    for mt, snap in snapshot.items():
-        cur = fresh[mt]
-        if (abs(float(snap["yes_bid"]) - float(cur["yes_bid"])) > 1e-9
-                or abs(float(snap["yes_ask"]) - float(cur["yes_ask"])) > 1e-9):
-            return True
-    return False
 
 
 def _fill_game_ids(legs, primary_game_id):
