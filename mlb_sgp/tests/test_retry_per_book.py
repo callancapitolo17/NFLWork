@@ -274,6 +274,78 @@ def test_czr_403_is_no_longer_retried(recorded_sleeps):
 
 
 # --------------------------------------------------------------------------- #
+# The on-demand SEAM — does the LIVE profile actually reach the wire?          #
+# --------------------------------------------------------------------------- #
+# The unit tests above prove each client retries. These prove SGPService binds
+# the *right* profile on the on-demand path. Attempt count is the tell:
+# 2 attempts = RETRY_LIVE, 3 = RETRY_BACKGROUND. Getting this wrong is silent
+# — the sweep would look fine while every live quote paid a BACKGROUND
+# backoff inside the RFQ budget.
+
+def _service_with_client(book, client):
+    from kalshi_common.sgp_service import SGPService
+    svc = SGPService(books=(book,))
+    svc._state[book].client = client
+    return svc
+
+
+def _game_ref():
+    from mlb_sgp._shared import GameRef
+    return GameRef(game_id="g1", home_team="San Francisco Giants",
+                   away_team="Athletics",
+                   commence_time=datetime(2026, 6, 25, 23, 0, tzinfo=timezone.utc))
+
+
+def test_on_demand_event_fetch_uses_the_LIVE_profile_at_prophetx(
+        recorded_sleeps):
+    session = FlakySession(FakeResponse(200, {}), n_failures=99)
+    client = _px_client(session)
+    svc = _service_with_client("prophetx", client)
+    hooks = svc._book_on_demand_hooks("prophetx")
+
+    with pytest.raises(BookTransportError):
+        hooks["match_event"](client, _game_ref())
+
+    assert session.calls == 2, (
+        "on-demand fetch took the BACKGROUND profile — a live quote would pay "
+        "a sweep-sized backoff inside the RFQ budget")
+    assert sum(recorded_sleeps) <= 1.0          # RETRY_LIVE cumulative cap
+
+
+def test_on_demand_event_fetch_uses_the_LIVE_profile_at_draftkings(
+        recorded_sleeps):
+    """DK/FD bind their profile through the shared _dk_fetchers factory
+    rather than a client method, so it needs its own proof."""
+    session = FlakySession(FakeResponse(200, {}), n_failures=99)
+    client = _dk_client(session)
+    svc = _service_with_client("draftkings", client)
+    hooks = svc._book_on_demand_hooks("draftkings")
+
+    with pytest.raises(BookTransportError):
+        hooks["match_event"](client, _game_ref())
+
+    assert session.calls == 2
+    assert sum(recorded_sleeps) <= 1.0
+
+
+def test_sweep_keeps_the_BACKGROUND_profile_at_draftkings(recorded_sleeps):
+    """The complement: the sweep must NOT be downgraded to one retry — losing
+    a book there costs a whole refresh cycle and there is no deadline to
+    protect."""
+    from kalshi_common.sgp_service import SGPService
+    session = FlakySession(FakeResponse(200, {}), n_failures=99)
+    client = _dk_client(session)
+    svc = _service_with_client("draftkings", client)
+    svc._structure_caches(svc._state["draftkings"])
+    f = SGPService._dk_fetchers(svc._state["draftkings"])   # sweep binding
+
+    with pytest.raises(BookTransportError):
+        f["fetch_dk_events"](client.session)
+
+    assert session.calls == 3                   # RETRY_BACKGROUND max_attempts
+
+
+# --------------------------------------------------------------------------- #
 # Price calls — RETRY_LIVE on BOTH paths                                       #
 # --------------------------------------------------------------------------- #
 # The on-demand quote path prices through price_selection_set at every book.

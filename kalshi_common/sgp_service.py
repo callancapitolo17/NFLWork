@@ -17,8 +17,8 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path
 
 from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, BookTransportError,
-                             OnDemandBookResult, PricedRow, TargetLine,
-                             TTLCache)
+                             OnDemandBookResult, PricedRow, RetryProfile,
+                             TargetLine, TTLCache)
 
 log = logging.getLogger(__name__)
 
@@ -269,7 +269,8 @@ class SGPService:
         return mod.price_sgps(targets, periods=("FG",), client=st.client)
 
     @staticmethod
-    def _dk_fetchers(st: _BookState, profile=RETRY_BACKGROUND) -> dict:
+    def _dk_fetchers(st: _BookState,
+                     profile: RetryProfile = RETRY_BACKGROUND) -> dict:
         """DK's structure fetchers, bound to one retry profile.
 
         The SAME factory serves the sweep (RETRY_BACKGROUND) and the
@@ -295,7 +296,8 @@ class SGPService:
         }
 
     @staticmethod
-    def _fd_fetchers(st: _BookState, profile=RETRY_BACKGROUND) -> dict:
+    def _fd_fetchers(st: _BookState,
+                     profile: RetryProfile = RETRY_BACKGROUND) -> dict:
         """FD's structure fetchers, bound to one retry profile — see
         ``_dk_fetchers`` for why the profile is bound here."""
         import scraper_fanduel_sgp as legacy
