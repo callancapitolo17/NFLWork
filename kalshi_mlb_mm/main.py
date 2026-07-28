@@ -36,9 +36,16 @@ from kalshi_common.leg_types import (
     combo_descriptor,
 )
 from kalshi_mlb_mm import (config, db, notify, pricing, research, risk, scope,
-                           router, settlement)
+                           router, settlement, singles)
 from kalshi_mlb_mm.rfq_source import RestRFQSource
 from kalshi_mlb_mm.quote_gateway import RestQuoteGateway
+# #23: the constituent-singles helpers moved to kalshi_mlb_mm/singles.py so the
+# quote-time sanity gate, the risk sweep, and #17's confirm veto all share ONE
+# implementation of "read a Kalshi single and compare it". Imported under their
+# original private names so existing call sites and test monkeypatches
+# (main._leg_market_prices, main._singles_moved) keep working unchanged.
+from kalshi_mlb_mm.singles import leg_market_prices as _leg_market_prices
+from kalshi_mlb_mm.singles import singles_moved as _singles_moved
 
 log = logging.getLogger("kalshi_mlb_mm")
 
@@ -46,6 +53,7 @@ _running = threading.Event()
 _running.set()
 _SGP_ODDS = None         # pd.DataFrame
 _PREV_BOOK_FAIR = {}     # combo_market_ticker -> last blended book fair (circuit breaker)
+_CONSTITUENT_POLL_CURSOR = 0   # #23: rotates the budgeted constituent poll (see _rotated_poll_order)
 _SCOPE_CACHE = {}        # market_ticker -> (in_scope, game_id, legs)
 # B5 fix (issue #18): bound the scope cache. Crude full-clear on overflow is
 # fine — verdicts re-warm within one poll cycle and a slate is a few hundred
@@ -468,59 +476,6 @@ def _quote_age_sec(submitted_at) -> float | None:
         return max(0.0, (datetime.now() - submitted_at).total_seconds())
     except Exception:
         return None
-
-
-def _market_bid_ask(mkt: dict) -> tuple[float, float] | None:
-    """(yes_bid, yes_ask) in DOLLARS from either Kalshi market response shape
-    — int cents (`yes_bid`) or string-dollar (`yes_bid_dollars`); see the
-    kalshi_price_gotchas note on *_dollars vs int shapes."""
-    bid, ask = mkt.get("yes_bid"), mkt.get("yes_ask")
-    if bid is not None and ask is not None:
-        return float(bid) / 100.0, float(ask) / 100.0
-    bid, ask = mkt.get("yes_bid_dollars"), mkt.get("yes_ask_dollars")
-    if bid is not None and ask is not None:
-        return float(bid), float(ask)
-    return None
-
-
-def _leg_market_prices(legs: list[dict]) -> dict | None:
-    """Raw Kalshi odds for every leg of a combo: {leg market_ticker:
-    {"yes_bid": $, "yes_ask": $}}. Each leg IS its own Kalshi singles market,
-    so this is one fast GET per leg (~<1s for a 2-3 leg combo). Returns None
-    if ANY leg can't be read (fail-safe: no partial baselines)."""
-    try:
-        out = {}
-        for leg in legs:
-            mt = str(leg.get("market_ticker") or "")
-            if not mt:
-                return None
-            if mt in out:
-                continue
-            _status, body, _hdrs = auth_client.api("GET", f"/markets/{mt}")
-            mkt = body.get("market") if isinstance(body, dict) else None
-            prices = _market_bid_ask(mkt) if isinstance(mkt, dict) else None
-            if prices is None:
-                return None
-            out[mt] = {"yes_bid": prices[0], "yes_ask": prices[1]}
-        return out or None
-    except Exception as e:
-        log.warning("[leg_snapshot] fetch failed: %s", e)
-        return None
-
-
-def _singles_moved(snapshot: dict, fresh: dict) -> bool:
-    """True if ANY leg's yes_bid or yes_ask differs between the quote-time
-    snapshot and the fresh read. Zero tolerance by design: Kalshi prices move
-    in 1c ticks, so 'moved at all' == 'moved >= one tick'. A leg-set mismatch
-    counts as moved (fail-safe)."""
-    if set(snapshot) != set(fresh):
-        return True
-    for mt, snap in snapshot.items():
-        cur = fresh[mt]
-        if (abs(float(snap["yes_bid"]) - float(cur["yes_bid"])) > 1e-9
-                or abs(float(snap["yes_ask"]) - float(cur["yes_ask"])) > 1e-9):
-            return True
-    return False
 
 
 def _fill_game_ids(legs, primary_game_id):
@@ -1117,6 +1072,38 @@ def _discovery_tick(source, gateway, dry_run):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="no_leg_snapshot")
             continue
+        # #23 item 3: correlation sanity against Kalshi's live singles. The leg
+        # snapshot we just fetched for #17's veto IS the marginal anchor, so
+        # this costs ZERO extra API calls. Independent of the #20 gate: that
+        # one asks whether the books agree with EACH OTHER, this asks whether
+        # their consensus is consistent with the real-time single-leg prices —
+        # tightly-agreeing books can still be jointly wrong. Degenerate books
+        # (yes_ask=100, empty, crossed) yield no marginals: we log the miss and
+        # quote on book consensus alone, exactly as before this ticket, rather
+        # than declining on missing information.
+        marginals = singles.marginals_for_legs(leg_snapshot, legs)
+        sanity = singles.corr_sanity(blended, marginals,
+                                     config.CORR_PREMIUM_MIN,
+                                     config.CORR_PREMIUM_MAX) if marginals else None
+        # Item 5: premium + marginals per quote — the tuning dataset for the
+        # band and the calibration dataset for a Phase-3 correlation model.
+        research.emit("corr_sanity_check", rfq_id=rid, ticker=ticker,
+                      payload=dict(game_id=game_id, combo_fair=blended,
+                                   n_legs=len(legs), marginals=marginals,
+                                   baseline_independent=(
+                                       sanity.baseline_independent if sanity else None),
+                                   premium=sanity.premium if sanity else None,
+                                   frechet_lo=sanity.frechet_lo if sanity else None,
+                                   frechet_hi=sanity.frechet_hi if sanity else None,
+                                   reason=sanity.reason if sanity else None))
+        gated = sanity is not None and (
+            (sanity.reason == "frechet" and config.CORR_SANITY_FRECHET_ENABLED)
+            or (sanity.reason == "premium" and config.CORR_SANITY_PREMIUM_ENABLED))
+        if gated:
+            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                          reason=f"corr_sanity_{sanity.reason}",
+                          book=book_med, blended=blended)
+            continue
         qid = gateway.submit_quote(rid, q.yes_bid, q.no_bid)
         if qid:
             with db.connect() as con:
@@ -1499,6 +1486,133 @@ def _quote_game_ids(legs_json: str | None) -> list[str] | None:
         return None
 
 
+def _current_consensus_fair(legs_json: str | None) -> float | None:
+    """Current book-consensus fair for a resting quote's combo, or None.
+
+    Extracted so the drift check and the #23 constituent-jump breaker's
+    "were the books quiet?" test read the SAME number. Fail-safe: any parse
+    or pricing error is None (no signal), never an exception into the sweep.
+    """
+    if not legs_json:
+        return None
+    try:
+        legs = json.loads(legs_json)
+        return router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
+                                 config.MIN_AGREEING_BOOKS,
+                                 config.SIGMA_Z_MAX,
+                                 on_demand_fairs=(_ENGINE.lookup
+                                                  if _ENGINE is not None else None))
+    except Exception:
+        return None
+
+
+def _open_quote_constituent_tickers(live_rows) -> set:
+    """Every DISTINCT constituent ticker across all open quotes.
+
+    This set IS the sweep's API cost: one GET per element, per sweep. It is
+    bounded by (open quotes × legs) and is usually far smaller, because quotes
+    on the same game share legs. Zero open quotes → zero calls.
+    """
+    tickers = set()
+    for row in live_rows:
+        leg_prices_json = row[6]
+        if not leg_prices_json:
+            continue
+        try:
+            tickers.update(str(t) for t in json.loads(leg_prices_json))
+        except Exception:
+            continue
+    return tickers
+
+
+def _rotated_poll_order(tickers: set) -> list:
+    """Constituent tickers in a deterministic order, rotated each sweep.
+
+    The poll is wall-clock budgeted (see singles.fetch_market_prices), so on a
+    large resting book some tickers go unpolled. Rotating the start point means
+    the SAME tail is not starved every sweep — over a few sweeps every ticker
+    gets looked at. Sorted first so the order is reproducible in tests.
+    """
+    global _CONSTITUENT_POLL_CURSOR
+    ordered = sorted(tickers)
+    if not ordered:
+        return ordered
+    start = _CONSTITUENT_POLL_CURSOR % len(ordered)
+    return ordered[start:] + ordered[:start]
+
+
+def _games_for_tickers(raw_legs: list, tickers: set) -> set:
+    """game_ids of the legs whose market_ticker is in `tickers`.
+
+    CanonicalLeg carries the event_ticker but not the market_ticker, so the
+    raw leg dicts map ticker → event_ticker and legset.partition_by_game maps
+    event_ticker → the CanonicalLegs `_resolve_game_for_legs` consumes.
+    """
+    out = set()
+    try:
+        canon = legset.parse_legs(raw_legs)
+        if not canon:
+            return out
+        by_event = legset.partition_by_game(canon)
+        jumped_events = {str(leg.get("event_ticker") or "") for leg in raw_legs
+                         if str(leg.get("market_ticker") or "") in tickers}
+        for event_ticker in jumped_events:
+            game_legs = by_event.get(event_ticker)
+            gid = _resolve_game_for_legs(game_legs) if game_legs else None
+            if gid:
+                out.add(gid)
+    except Exception:
+        return out
+    return out
+
+
+def _constituent_jumped_games(live_rows, current_prices) -> tuple[set, dict]:
+    """(game_ids whose constituents jumped since quote time, per-quote detail).
+
+    #23 items 1-2. Our books refresh every ~150-165s; the constituent Kalshi
+    singles trade in real time, so a constituent that moved since we quoted is
+    the fastest evidence that the market left our resting price behind.
+
+    The placement baseline is `live_quotes.leg_prices_json` — the raw Kalshi
+    odds #17 already snapshots at submission — so this needs no schema of its
+    own. In "book_quiet" mode a jump only counts while our own book consensus
+    stayed put, which separates "we are the stale ones" from "the whole market
+    moved together"; see CONSTITUENT_JUMP_MODE.
+
+    Fail-safe: any row we cannot evaluate contributes NO jump signal. It is
+    still covered by the tipoff / staleness / book-drift gates, and #17's
+    confirm veto still fails closed on any accept.
+    """
+    jumped_games, detail = set(), {}
+    if not current_prices:
+        return jumped_games, detail
+    for (qid, _game_id, _ticker, book_fair_at_q, _rid,
+         legs_json, leg_prices_json) in live_rows:
+        if not legs_json or not leg_prices_json:
+            continue
+        try:
+            baseline = json.loads(leg_prices_json)
+            raw_legs = json.loads(legs_json)
+        except Exception:
+            continue
+        moves = singles.jumped_tickers(baseline, current_prices,
+                                       config.CONSTITUENT_JUMP_THRESHOLD)
+        if not moves:
+            continue
+        # Anything that is not explicitly "unconditional" gets the conservative
+        # guard, so a typo in the env var cannot silently arm the aggressive
+        # post-#54 mode on a bot whose quotes are still cache-priced.
+        if config.CONSTITUENT_JUMP_MODE != "unconditional":
+            cur_med = _current_consensus_fair(legs_json)
+            if cur_med is None or book_fair_at_q is None:
+                continue           # cannot establish "quiet" → no signal
+            if abs(float(cur_med) - float(book_fair_at_q)) >= config.CONSTITUENT_BOOK_QUIET_MAX:
+                continue           # market moved together, not a pickoff
+        detail[qid] = moves
+        jumped_games.update(_games_for_tickers(raw_legs, set(moves)))
+    return jumped_games, detail
+
+
 def _risk_sweep_tick(gateway):
     if config.KILL_FILE.exists():
         notify.halt("kill_switch")
@@ -1511,10 +1625,31 @@ def _risk_sweep_tick(gateway):
         # Pull the per-quote fields we need for the drift-since-quote check too.
         live = con.execute(
             "SELECT lq.quote_id, lq.game_id, lq.combo_market_ticker, lq.book_fair, "
-            "       lq.rfq_id, sr.legs_json "
+            "       lq.rfq_id, sr.legs_json, lq.leg_prices_json "
             "FROM live_quotes lq LEFT JOIN seen_rfqs sr ON lq.rfq_id = sr.rfq_id "
             "WHERE lq.status='open'").fetchall()
-    for qid, game_id, ticker, book_fair_at_q, rid, legs_json in live:
+    # #23: real-time constituent poll. ONE GET per DISTINCT ticker across all
+    # open quotes — skipped entirely when flat, and when books are already
+    # stale (every quote is being cancelled anyway, so the calls would be
+    # wasted).
+    jumped_games, jump_detail = set(), {}
+    if live and not books_stale:
+        global _CONSTITUENT_POLL_CURSOR
+        poll_order = _rotated_poll_order(_open_quote_constituent_tickers(live))
+        current_prices = singles.fetch_market_prices(
+            poll_order, budget_sec=config.CONSTITUENT_POLL_BUDGET_SEC)
+        # Advance past what we actually got, so the next sweep starts where
+        # this one ran out of budget (approximate: failed reads are not
+        # counted, which just re-polls them sooner).
+        _CONSTITUENT_POLL_CURSOR += max(1, len(current_prices))
+        jumped_games, jump_detail = _constituent_jumped_games(live, current_prices)
+        if jumped_games:
+            research.emit("constituent_jump",
+                          payload=dict(games=sorted(jumped_games),
+                                       threshold=config.CONSTITUENT_JUMP_THRESHOLD,
+                                       mode=config.CONSTITUENT_JUMP_MODE,
+                                       moves=jump_detail))
+    for qid, game_id, ticker, book_fair_at_q, rid, legs_json, leg_prices_json in live:
         cancel = False
         cancel_reason = None
         if books_stale:
@@ -1534,6 +1669,16 @@ def _risk_sweep_tick(gateway):
                     earliest_ct = min(commence_times)
                     if not risk.tipoff_ok(earliest_ct, config.TIPOFF_CANCEL_MIN):
                         cancel, cancel_reason = True, "tipoff"
+        if not cancel and jumped_games:
+            # #23 item 2: a constituent single moved past the threshold since
+            # this quote was placed. Evaluated BEFORE the book-drift check
+            # because it is the more specific and much faster signal, so it
+            # wins the logged reason when both would fire. Game-level: a quote
+            # is pulled when ANY game it touches is compromised, even if its
+            # own legs are not the ones that moved.
+            gids = _quote_game_ids(legs_json)
+            if gids and (set(gids) & jumped_games):
+                cancel, cancel_reason = True, "constituent_jump"
         if not cancel:
             # H1 (part 2): per-open-quote drift-since-quote sweep.
             # Recompute current book consensus for this combo; if it has drifted
@@ -1541,14 +1686,8 @@ def _risk_sweep_tick(gateway):
             # Catches gradual drift that the per-tick (last vs current) circuit
             # breaker misses (e.g., 1¢ moves over several ticks adding to 4¢).
             if book_fair_at_q is not None and legs_json:
+                cur_med = _current_consensus_fair(legs_json)
                 try:
-                    legs = json.loads(legs_json)
-                    cur_med = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
-                                               config.MIN_AGREEING_BOOKS,
-                                               config.SIGMA_Z_MAX,
-                                               on_demand_fairs=(_ENGINE.lookup
-                                                                if _ENGINE is not None
-                                                                else None))
                     if cur_med is not None and risk.book_move_triggered(
                             book_fair_at_q, cur_med, config.BOOK_MOVE_CB_THRESHOLD):
                         cancel, cancel_reason = True, "book_drift"
