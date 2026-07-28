@@ -145,8 +145,6 @@ def fetch_fd_events(session: cffi_requests.Session) -> list[dict]:
             data=json.dumps(body),
             timeout=30,
         )
-    except TypeError:
-        resp = session.post(FD_SCAN_URL)           # FakeSession in unit tests
     except Exception as e:
         raise BookTransportError(FD_BOOK, "events", cause=e) from e
     check_response(FD_BOOK, "events", resp)
@@ -343,8 +341,6 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
            f"&useCombinedTouchdownsVirtualMarket=true&useQuickBets=true")
     try:
         resp = session.get(url, headers=FD_HEADERS, timeout=20)
-    except TypeError:
-        resp = session.get(url)                    # FakeSession in unit tests
     except Exception as e:
         raise BookTransportError(FD_BOOK, "structure", cause=e) from e
 

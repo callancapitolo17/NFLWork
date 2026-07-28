@@ -113,8 +113,6 @@ def fetch_dk_events(session: cffi_requests.Session) -> list[dict]:
     }
     try:
         resp = session.get(DK_LEAGUE_URL, params=params, timeout=30)
-    except TypeError:
-        resp = session.get(DK_LEAGUE_URL)      # FakeSession in unit tests
     except Exception as e:
         raise BookTransportError(DK_BOOK, "events", cause=e) from e
     check_response(DK_BOOK, "events", resp)
@@ -365,8 +363,6 @@ def _fetch_subcat_markets(session, dk_event_id, subcat_id):
     }
     try:
         resp = session.get(DK_EVENT_MARKETS_URL, params=params, timeout=15)
-    except TypeError:
-        resp = session.get(DK_EVENT_MARKETS_URL)   # FakeSession in unit tests
     except Exception as e:
         raise BookTransportError(DK_BOOK, "structure", cause=e) from e
     if not check_response(DK_BOOK, "structure", resp, allow_404=True):
@@ -477,8 +473,6 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
     url = f"{DK_SGP_PARLAYS_URL}/{dk_event_id}"
     try:
         resp = session.get(url, timeout=60)
-    except TypeError:
-        resp = session.get(url)                    # FakeSession in unit tests
     except Exception as e:
         raise BookTransportError(DK_BOOK, "structure", cause=e) from e
 
