@@ -190,8 +190,8 @@ class CaesarsClient(PriceCallTallyMixin):
         return False
 
     # --- REST --------------------------------------------------------------- #
-    # NOTE: _looks_like_json (module level, below the class) is what makes a
-    # 200-with-HTML AWS-WAF challenge retryable instead of an instant failure.
+    # NOTE: the module-level _looks_like_json (top of this file) is what makes
+    # a 200-with-HTML AWS-WAF challenge retryable instead of an instant failure.
     def _get_json(self, url: str, stage: str,
                   profile: RetryProfile = RETRY_BACKGROUND):
         """GET + decode, or raise ``BookTransportError``.
