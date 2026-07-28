@@ -69,9 +69,18 @@ from canonical_match import load_team_dict, load_canonical_games, resolve_team_n
 from db import MLB_DB, _connect_with_retry
 from integer_line_derivation import is_integer_line, derive_fair_probs
 
+# Import via the PACKAGE path, never `from _shared import ...`: this file is
+# also importable as a top-level module (cwd=mlb_sgp/), and a second module
+# object would give us a second BookTransportError class that no caller's
+# `except` clause would match.
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from mlb_sgp._shared import RETRY_BACKGROUND, RetryProfile, request_with_retry
+
 # ---------------------------------------------------------------------------
 # Novig API config
 # ---------------------------------------------------------------------------
+NV_BOOK = "novig"
 NOVIG_GRAPHQL = "https://api.novig.us/v1/graphql"
 NOVIG_PARLAY  = "https://api.novig.us/nbx/v1/parlay/request/unauthenticated"
 
@@ -212,13 +221,20 @@ def init_session() -> cffi_requests.Session:
     return session
 
 
-def _gql(session, body: str) -> dict:
-    """POST a raw GraphQL payload string. Returns parsed JSON (or raises)."""
-    resp = session.post(
-        NOVIG_GRAPHQL, data=body,
-        headers={"Content-Type": "application/json"},
-        timeout=GQL_TIMEOUT,
-    )
+def _gql(session, body: str, profile: RetryProfile = RETRY_BACKGROUND) -> dict:
+    """POST a raw GraphQL payload string. Returns parsed JSON (or raises).
+
+    Retries transient failures per ``profile`` (issue #34). ``raise_for_status``
+    still decides the final verdict, so a 403 surfaces on the first attempt
+    exactly as before — only 5xx/429/connection blips cost extra attempts.
+    """
+    resp = request_with_retry(
+        lambda: session.post(
+            NOVIG_GRAPHQL, data=body,
+            headers={"Content-Type": "application/json"},
+            timeout=GQL_TIMEOUT,
+        ),
+        profile=profile, book=NV_BOOK, stage="structure")
     resp.raise_for_status()
     return resp.json()
 
@@ -363,7 +379,8 @@ def _float_eq(a, b, eps=1e-6) -> bool:
         return False
 
 
-def fetch_event_legs(session, game: dict, verbose: bool = False) -> tuple[dict, list]:
+def fetch_event_legs(session, game: dict, verbose: bool = False,
+                     profile: RetryProfile = RETRY_BACKGROUND) -> tuple[dict, list]:
     """Fetch market tree for one event, extract the 4 outcome UUIDs per period.
 
     Returns (legs, markets) where legs is the per-period dict and markets is the
@@ -375,7 +392,7 @@ def fetch_event_legs(session, game: dict, verbose: bool = False) -> tuple[dict, 
     q_obj = json.loads(query_text)
     q_obj["variables"]["eventId"] = game["nv_event_id"]
     try:
-        data = _gql(session, json.dumps(q_obj))
+        data = _gql(session, json.dumps(q_obj), profile)
     except Exception as e:
         if verbose:
             print(f"      EventMarkets error for {game['nv_event_id']}: {e}")
