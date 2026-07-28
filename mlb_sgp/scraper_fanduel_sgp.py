@@ -50,8 +50,8 @@ from integer_line_derivation import is_integer_line, derive_fair_probs
 # `except` clause would match.
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-from mlb_sgp._shared import (RETRY_BACKGROUND, RetryProfile, check_response,
-                             json_or_raise, request_with_retry)
+from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, RetryProfile,
+                             check_response, json_or_raise, request_with_retry)
 
 FD_BOOK = "fanduel"
 
@@ -504,12 +504,16 @@ def price_combo(session: cffi_requests.Session,
         {"legType": "SIMPLE_SELECTION",
          "betRunners": [{"runner": {"marketId": total_market, "selectionId": total_sel}}]},
     ]}
-    resp = session.post(
-        FD_IMPLY_BETS_URL,
-        headers={**FD_HEADERS, "Content-Type": "application/json"},
-        data=json.dumps(body),
-        timeout=15,
-    )
+    # RETRY_LIVE on the price stage — see calculate_sgp in the DK shim for
+    # why price calls never take the 3-attempt BACKGROUND profile.
+    resp = request_with_retry(
+        lambda: session.post(
+            FD_IMPLY_BETS_URL,
+            headers={**FD_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps(body),
+            timeout=15,
+        ),
+        profile=RETRY_LIVE, book=FD_BOOK, stage="price")
     if resp.status_code != 200:
         if verbose:
             print(f"      HTTP {resp.status_code}")

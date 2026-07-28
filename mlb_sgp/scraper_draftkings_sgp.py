@@ -37,8 +37,8 @@ from integer_line_derivation import is_integer_line, derive_fair_probs
 # `except` clause would match.
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-from mlb_sgp._shared import (RETRY_BACKGROUND, RetryProfile, check_response,
-                             json_or_raise, request_with_retry)
+from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, RetryProfile,
+                             check_response, json_or_raise, request_with_retry)
 
 # ---------------------------------------------------------------------------
 # DK API config
@@ -630,16 +630,21 @@ def calculate_sgp(session: cffi_requests.Session,
                   spread_sel: str, total_sel: str,
                   verbose: bool = False) -> dict | None:
     """Call DK's calculateBets with two selections. Returns {trueOdds, displayOdds} or None."""
-    resp = session.post(DK_CALCULATE_BETS_URL, json={
-        "selections": [],
-        "selectionsForYourBet": [
-            {"id": spread_sel, "yourBetGroup": 0},
-            {"id": total_sel, "yourBetGroup": 0},
-        ],
-        "selectionsForCombinator": [],
-        "selectionsForProgressiveParlay": [],
-        "oddsStyle": "american",
-    }, headers={"Content-Type": "application/json"}, timeout=10)
+    # RETRY_LIVE on the price stage even here: these calls fan out across a
+    # thread pool (targets x combos), so BACKGROUND's 3 attempts would stall a
+    # degraded cycle for minutes. A 422 (non-combinable) is not retried.
+    resp = request_with_retry(
+        lambda: session.post(DK_CALCULATE_BETS_URL, json={
+            "selections": [],
+            "selectionsForYourBet": [
+                {"id": spread_sel, "yourBetGroup": 0},
+                {"id": total_sel, "yourBetGroup": 0},
+            ],
+            "selectionsForCombinator": [],
+            "selectionsForProgressiveParlay": [],
+            "oddsStyle": "american",
+        }, headers={"Content-Type": "application/json"}, timeout=10),
+        profile=RETRY_LIVE, book=DK_BOOK, stage="price")
 
     if resp.status_code == 422:
         if verbose:

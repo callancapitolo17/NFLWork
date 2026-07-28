@@ -249,7 +249,16 @@ def request_with_retry(call: Callable[[], object], *, profile: RetryProfile,
                   f"[{profile.name} profile]")
         return f"{detail} | {suffix}" if detail else suffix
 
-    for attempt in range(profile.max_attempts):
+    # A price-stage retry is routine and HIGH VOLUME (one per combo across a
+    # thread pool), so it logs at DEBUG — hundreds of WARNINGs per cycle would
+    # drown bot.log, and PriceCallTally's all-failed verdict is the aggregate
+    # signal that actually matters. A session-level retry (auth/events/
+    # structure) is rare and consequential, so it stays at WARNING.
+    retry_log = logger.debug if stage == "price" else logger.warning
+
+    # max(1, ...) so a misconfigured profile degrades to a single attempt
+    # rather than returning None and handing callers a non-response.
+    for attempt in range(max(1, profile.max_attempts)):
         retry_after = None
         attempts_made += 1
         try:
@@ -270,13 +279,13 @@ def request_with_retry(call: Callable[[], object], *, profile: RetryProfile,
 
         # Out of attempts: hand the caller the last response so
         # check_response raises, or raise the last transport exception.
-        if attempt == profile.max_attempts - 1:
+        if attempt == max(1, profile.max_attempts) - 1:
             break
 
         delay = _next_delay(profile, attempt, retry_after, jitter, slept_total)
         if delay is None:
             break                                    # sleep budget exhausted
-        logger.warning(
+        retry_log(
             "%s: retrying stage=%s attempt %d/%d (status=%s exc=%s) in "
             "%.2fs [%s profile]",
             book, stage, attempt + 1, profile.max_attempts, last_status,

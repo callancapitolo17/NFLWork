@@ -56,8 +56,9 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-from mlb_sgp._shared import (PricedRow, TargetLine, decimal_to_american,
-                             price_tally_for)
+from mlb_sgp._shared import (RETRY_LIVE, PricedRow, TargetLine,
+                             decimal_to_american, price_tally_for,
+                             request_with_retry)
 from mlb_sgp.dk_client import DraftKingsClient
 
 
@@ -700,15 +701,19 @@ def price_selection_set(client, refs):
     """
     try:
         from scraper_draftkings_sgp import DK_CALCULATE_BETS_URL
-        resp = client.session.post(DK_CALCULATE_BETS_URL, json={
-            "selections": [],
-            "selectionsForYourBet": [
-                {"id": sid, "yourBetGroup": 0} for sid in refs
-            ],
-            "selectionsForCombinator": [],
-            "selectionsForProgressiveParlay": [],
-            "oddsStyle": "american",
-        }, headers={"Content-Type": "application/json"}, timeout=10)
+        # RETRY_LIVE: this is the on-demand quote path — one fast retry, and
+        # a 4xx (422 non-combinable) still resolves on the first attempt.
+        resp = request_with_retry(
+            lambda: client.session.post(DK_CALCULATE_BETS_URL, json={
+                "selections": [],
+                "selectionsForYourBet": [
+                    {"id": sid, "yourBetGroup": 0} for sid in refs
+                ],
+                "selectionsForCombinator": [],
+                "selectionsForProgressiveParlay": [],
+                "oddsStyle": "american",
+            }, headers={"Content-Type": "application/json"}, timeout=10),
+            profile=RETRY_LIVE, book=BOOK_NAME, stage="price")
         if resp.status_code != 200:
             return None                          # 422 (non-combinable) et al.
         data = resp.json()

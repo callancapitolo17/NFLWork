@@ -274,6 +274,68 @@ def test_czr_403_is_no_longer_retried(recorded_sleeps):
 
 
 # --------------------------------------------------------------------------- #
+# Price calls — RETRY_LIVE on BOTH paths                                       #
+# --------------------------------------------------------------------------- #
+# The on-demand quote path prices through price_selection_set at every book.
+# DK and FD build that POST themselves rather than going through a client
+# price method, so they need their own coverage — without it the highest-
+# priority path (a live RFQ quote) would silently have no retry at 2 of 6
+# books.
+
+def test_dk_price_selection_set_retries_once_then_prices(recorded_sleeps):
+    from mlb_sgp.draftkings import price_selection_set
+    good = FakeResponse(200, {"bets": [
+        {"trueOdds": 6.42, "selectionsMapped": ["a", "b"]}]})
+    client = _dk_client(FlakySession(good))
+    assert price_selection_set(client, ["a", "b"]) == 6.42
+    assert len(recorded_sleeps) == 1
+    assert sum(recorded_sleeps) <= 1.0          # RETRY_LIVE budget
+
+
+def test_dk_price_selection_set_does_not_retry_a_422(recorded_sleeps):
+    """422 = non-combinable. A real verdict, not a blip — retrying it would
+    add latency to a quote that was never going to price."""
+    from mlb_sgp.draftkings import price_selection_set
+    session = FlakySession(FakeResponse(200, {}),
+                           failure=FakeResponse(422, text="not combinable"))
+    client = _dk_client(session)
+    assert price_selection_set(client, ["a", "b"]) is None
+    assert session.calls == 1
+    assert recorded_sleeps == []
+
+
+def test_fd_price_selection_set_retries_once_then_prices(recorded_sleeps):
+    from mlb_sgp.fanduel import price_selection_set
+    good = FakeResponse(200, {"betCombinations": [{
+        "isSGM": True,
+        # One entry per ref — FD's leg-coverage guard rejects an (N-1)-leg
+        # combination, which would misprice the combo.
+        "legCombinations": [{"n": 1}, {"n": 2}],
+        "winAvgOdds": {"trueOdds": {"decimalOdds": {"decimalOdds": 4.2}}},
+    }]})
+    client = _fd_client(FlakySession(good))
+    assert price_selection_set(client, [("m1", "s1"), ("m2", "s2")]) == 4.2
+    assert len(recorded_sleeps) == 1
+
+
+def test_price_retries_stay_inside_the_live_budget_when_a_book_is_broken():
+    """A fully-broken price endpoint must not blow the quote budget: the
+    on-demand path bails after the failure, so the cost is one LIVE retry."""
+    from mlb_sgp._shared import RETRY_LIVE
+    from mlb_sgp.draftkings import price_selection_set
+    slept: list[float] = []
+    import mlb_sgp._shared as shared
+    original = shared._sleep
+    shared._sleep = slept.append
+    try:
+        client = _dk_client(FlakySession(FakeResponse(200, {}), n_failures=99))
+        assert price_selection_set(client, ["a", "b"]) is None
+    finally:
+        shared._sleep = original
+    assert sum(slept) <= RETRY_LIVE.max_total_delay_sec
+
+
+# --------------------------------------------------------------------------- #
 # THE ACCEPTANCE BAR — blast radius of a single transient failure              #
 # --------------------------------------------------------------------------- #
 
