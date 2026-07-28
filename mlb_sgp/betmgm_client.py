@@ -101,8 +101,6 @@ class BetMGMClient(PriceCallTallyMixin):
                 "x-from-product": "host-app",
                 "x-bwin-sports-api": "prod",
             }, timeout=25)
-        except TypeError:
-            r = self.session.get(url)              # FakeSession in unit tests
         except Exception as e:
             raise BookTransportError(BOOK, "auth", cause=e,
                                      detail="accessid harvest failed") from e
@@ -132,8 +130,6 @@ class BetMGMClient(PriceCallTallyMixin):
                f"&sportIds={MLB_SPORT_ID}&skip=0&take={take}&sortBy=Tags")
         try:
             r = self.session.get(url, timeout=30)
-        except TypeError:
-            r = self.session.get(url)              # FakeSession in unit tests
         except Exception as e:
             raise BookTransportError(BOOK, "events", cause=e) from e
         check_response(BOOK, "events", r)
@@ -179,8 +175,6 @@ class BetMGMClient(PriceCallTallyMixin):
                f"&fixtureIds={fixture_id}&offerMapping=All&state=Latest")
         try:
             return self.session.get(url, timeout=30)
-        except TypeError:
-            return self.session.get(url)           # FakeSession in unit tests
         except Exception as e:
             raise BookTransportError(BOOK, "structure", cause=e) from e
 
@@ -206,8 +200,6 @@ class BetMGMClient(PriceCallTallyMixin):
         url = f"{self._base}/bettingoffer/picks?{self._common_q()}"
         try:
             r = self.session.post(url, json=body, timeout=30)
-        except TypeError:
-            r = self.session.post(url, json=body)
         except Exception as e:
             # Per-combo price failures stay row-drops (they are partial), but
             # they must be TALLIED so an all-fail cycle still gets a verdict.

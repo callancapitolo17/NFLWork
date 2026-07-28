@@ -190,8 +190,6 @@ class CaesarsClient(PriceCallTallyMixin):
             try:
                 r = self.session.get(url, headers=self._headers(), cookies=self._cookies,
                                      impersonate="chrome", timeout=25)
-            except TypeError:
-                r = self.session.get(url)          # FakeSession in unit tests
             except Exception as e:
                 last_exc = e
                 time.sleep(1.5)
@@ -272,8 +270,6 @@ class CaesarsClient(PriceCallTallyMixin):
             r = self.session.post(f"{self._sb}/v2/bets/details", headers=self._headers(),
                                   cookies=self._cookies, json=body, impersonate="chrome",
                                   timeout=30)
-        except TypeError:
-            r = self.session.post(f"{self._sb}/v2/bets/details", json=body)
         except Exception:
             # Per-combo price failures stay row-drops (they are partial), but
             # they must be TALLIED so an all-fail cycle still gets a verdict.

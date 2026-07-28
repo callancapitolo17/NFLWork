@@ -111,8 +111,6 @@ class DraftKingsClient(PriceCallTallyMixin):
                 f"{DK_SGP_PARLAYS_URL}/{event_id}",
                 timeout=60,
             )
-        except TypeError:
-            resp = self.session.get(f"{DK_SGP_PARLAYS_URL}/{event_id}")
         except Exception as e:
             raise BookTransportError(BOOK, "structure", cause=e) from e
         if not check_response(BOOK, "structure", resp, allow_404=True):
