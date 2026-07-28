@@ -30,7 +30,8 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-from mlb_sgp._shared import PricedRow, TargetLine, decimal_to_american
+from mlb_sgp._shared import (PricedRow, TargetLine, decimal_to_american,
+                             price_tally_for)
 from mlb_sgp.caesars_client import CaesarsClient, Event
 
 BOOK_NAME = "caesars"
@@ -211,10 +212,19 @@ def price_sgps(
 
     if client is None:
         client = CaesarsClient(verbose=verbose)
+
+    # Issue #33: the bets/details price endpoint can be blocked while the
+    # tabs/event reads still work. client.price_combo records into this
+    # tally; a cycle where EVERY price call failed raises "price".
+    price_calls = price_tally_for(client, BOOK_NAME)
+    tally_start = price_calls.snapshot()
+
+    # list_events() now RAISES BookTransportError on an unmintable WAF token
+    # (issue #33) — an empty list here really means an off-day.
     events = client.list_events()
     if not events:
         if verbose:
-            print("  [czr] no events (token unverified / off-day) — no rows")
+            print("  [czr] no events (off-day) — no rows")
         return []
     matched_by_gid = _match_events(events, targets)
     if not matched_by_gid:
@@ -317,6 +327,7 @@ def price_sgps(
     # ----- Phase 3: moneyline × total combos (FG only) ----- #
     out.extend(_price_ml_total_for_games(
         client, parsed_cache, filtered, fetch_now, verbose))
+    price_calls.verdict(tally_start)   # raises if EVERY price call failed
     return out
 
 

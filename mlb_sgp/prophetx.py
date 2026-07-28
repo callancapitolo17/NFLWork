@@ -64,7 +64,8 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-from mlb_sgp._shared import PricedRow, TargetLine, american_to_decimal, decimal_to_american
+from mlb_sgp._shared import (PricedRow, TargetLine, american_to_decimal,
+                             decimal_to_american, price_tally_for)
 from mlb_sgp.prophetx_client import ProphetXClient, SelectionLeg
 
 
@@ -228,6 +229,12 @@ def price_sgps(
         _verify_competitor_ids,
         MARKET_NAMES,
     )
+
+    # Issue #33: the RFQ endpoint can be blocked while the read endpoints
+    # still work. client.submit_parlay_rfq records into this tally; a cycle
+    # where EVERY price call failed raises a "price"-stage transport error.
+    price_calls = price_tally_for(client, BOOK_NAME)
+    tally_start = price_calls.snapshot()
 
     # ----- Group target lines into the legacy parlay_lines dict shape ----- #
     # match_events expects: {game_id: {home_team, away_team, commence_time,
@@ -452,6 +459,7 @@ def price_sgps(
         fetch_now, parallelism, verbose,
     ))
 
+    price_calls.verdict(tally_start)   # raises if EVERY price call failed
     return out
 
 

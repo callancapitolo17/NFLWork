@@ -676,7 +676,14 @@ def main():
 
     from mlb_sgp import novig
     print(f"  NV shim: {len(targets)} target lines, periods={periods}")
-    rows = novig.price_sgps(targets, periods=periods, verbose=False)
+    try:
+        rows = novig.price_sgps(targets, periods=periods, verbose=False)
+    except Exception as e:
+        # Transport failure (403 / DNS / auth gate — issue #33): leave the
+        # previous cycle's rows in place rather than clearing the source.
+        # The downstream fetch_time freshness gate filters anything stale.
+        print(f"  NV shim: price_sgps failed ({e}) — preserving last cycle's rows")
+        return 1
     print(f"  NV shim: priced {len(rows)} rows")
 
     # Wipe both source labels so stale rows from a previous run never linger.

@@ -31,6 +31,9 @@ from pathlib import Path
 
 from curl_cffi import requests
 
+from mlb_sgp._shared import BookTransportError, PriceCallTallyMixin
+
+BOOK = "caesars"
 DEFAULT_STATE = "nj"
 API = "https://api.americanwagering.com"
 # A real (non-Headless) Chrome UA — CloudFront blocks HeadlessChrome.
@@ -55,7 +58,9 @@ class Event:
     start_time: str          # ISO-8601 UTC (event.startTime)
 
 
-class CaesarsClient:
+class CaesarsClient(PriceCallTallyMixin):
+    BOOK = BOOK
+
     def __init__(self, state: str = DEFAULT_STATE, verbose: bool = False):
         self.state = state
         self.verbose = verbose
@@ -170,22 +175,42 @@ class CaesarsClient:
         return False
 
     # --- REST --------------------------------------------------------------- #
-    def _get_json(self, url: str, tries: int = 4):
-        for _ in range(tries):
+    def _get_json(self, url: str, stage: str, tries: int = 4):
+        """GET + decode, or raise ``BookTransportError`` after ``tries``.
+
+        Returns None for a 404 at the ``structure`` stage only — one delisted
+        event is a skip, but a 404 on the tabs FEED means the endpoint moved
+        and the book is down. A WAF challenge comes back 200 with HTML, so
+        "not JSON" is a transport failure too: before issue #33 that quietly
+        became an empty slate.
+        """
+        last_status = None
+        last_exc = None
+        for attempt in range(tries):
             try:
                 r = self.session.get(url, headers=self._headers(), cookies=self._cookies,
                                      impersonate="chrome", timeout=25)
-                if r.status_code == 200 and r.text.strip().startswith(("{", "[")):
-                    return r.json()
-            except Exception:
-                pass
-            time.sleep(1.5)
-        return None
+            except Exception as e:
+                last_exc = e
+                time.sleep(1.5)
+                continue
+            last_status = getattr(r, "status_code", 200)
+            if last_status == 404 and stage == "structure":
+                return None
+            if last_status == 200 and (getattr(r, "text", "") or "").strip().startswith(("{", "[")):
+                return r.json()
+            if attempt < tries - 1:
+                time.sleep(1.5)
+        raise BookTransportError(
+            BOOK, stage, status_code=last_status, cause=last_exc,
+            detail=f"no usable JSON after {tries} attempts")
 
     def list_events(self) -> list[Event]:
         if not self.ensure_token():
-            return []
-        tj = self._get_json(f"{self._sb}/{TABS_PATH}")
+            raise BookTransportError(
+                BOOK, "auth",
+                detail="AWS-WAF token could not be minted/validated")
+        tj = self._get_json(f"{self._sb}/{TABS_PATH}", "events")
         if not tj:
             return []
         out: list[Event] = []
@@ -217,10 +242,16 @@ class CaesarsClient:
         return out
 
     def fetch_event(self, event_id: str) -> dict | None:
-        """Full event detail (event.keyMarketGroups[].markets[] incl. alts)."""
+        """Full event detail (event.keyMarketGroups[].markets[] incl. alts).
+
+        None means Caesars no longer lists this event (404); transport
+        failures raise instead — see issue #33.
+        """
         if not self.ensure_token():
-            return None
-        j = self._get_json(f"{self._sb}/v4/events/{event_id}")
+            raise BookTransportError(
+                BOOK, "auth",
+                detail="AWS-WAF token could not be minted/validated")
+        j = self._get_json(f"{self._sb}/v4/events/{event_id}", "structure")
         if not j:
             return None
         return j.get("event") or j
@@ -240,22 +271,31 @@ class CaesarsClient:
                                   cookies=self._cookies, json=body, impersonate="chrome",
                                   timeout=30)
         except Exception:
+            # Per-combo price failures stay row-drops (they are partial), but
+            # they must be TALLIED so an all-fail cycle still gets a verdict.
+            self.price_calls.record(False)
             return None
-        if r.status_code != 200 or not r.text.strip().startswith("{"):
+        if (getattr(r, "status_code", 200) != 200
+                or not (getattr(r, "text", "") or "").strip().startswith("{")):
+            self.price_calls.record(False)
             return None
         try:
             parlays = r.json().get("parlays") or []
         except Exception:
+            self.price_calls.record(False)
             return None
         if not parlays:
+            self.price_calls.record(False)
             return None
         price = (parlays[0].get("price") or {})
         dec = price.get("decimal") if price.get("decimal") is not None else price.get("d")
         if not dec or dec <= 1.0:
+            self.price_calls.record(False)
             return None
         am = price.get("american")
         try:
             am = int(str(am).replace("+", "")) if am is not None else None
         except (TypeError, ValueError):
             am = None
+        self.price_calls.record(True)
         return {"decimal": float(dec), "american": am}

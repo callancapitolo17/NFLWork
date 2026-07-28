@@ -31,10 +31,19 @@ from canonical_match import load_team_dict, load_canonical_games, resolve_team_n
 from db import MLB_DB, _connect_with_retry
 from integer_line_derivation import is_integer_line, derive_fair_probs
 
+# Import via the PACKAGE path, never `from _shared import ...`: this file is
+# also importable as a top-level module (cwd=mlb_sgp/), and a second module
+# object would give us a second BookTransportError class that no caller's
+# `except` clause would match.
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from mlb_sgp._shared import BookTransportError, check_response, json_or_raise
+
 # ---------------------------------------------------------------------------
 # DK API config
 # ---------------------------------------------------------------------------
 
+DK_BOOK = "draftkings"
 DK_BASE_URL = "https://sportsbook.draftkings.com"
 
 # Public REST — event listing (no Akamai)
@@ -82,8 +91,13 @@ def init_session() -> cffi_requests.Session:
 # ---------------------------------------------------------------------------
 
 def fetch_dk_events(session: cffi_requests.Session) -> list[dict]:
-    """Fetch today's MLB events with home/away teams."""
-    resp = session.get(DK_LEAGUE_URL, params={
+    """Fetch today's MLB events with home/away teams.
+
+    Raises ``BookTransportError`` when DK is unreachable (it has been serving
+    403 in production since ~2026-06); ``[]`` means DK genuinely lists no MLB
+    games today. Callers must not confuse the two — see issue #33.
+    """
+    params = {
         "isBatchable": "false",
         "templateVars": DK_MLB_LEAGUE_ID,
         "eventsQuery": (
@@ -96,11 +110,15 @@ def fetch_dk_events(session: cffi_requests.Session) -> list[dict]:
         ),
         "include": "Events",
         "entity": "events",
-    }, timeout=30)
-    resp.raise_for_status()
+    }
+    try:
+        resp = session.get(DK_LEAGUE_URL, params=params, timeout=30)
+    except Exception as e:
+        raise BookTransportError(DK_BOOK, "events", cause=e) from e
+    check_response(DK_BOOK, "events", resp)
 
     events = []
-    for evt in resp.json().get("events", []):
+    for evt in json_or_raise(DK_BOOK, "events", resp).get("events", []):
         participants = evt.get("participants", [])
         home = next((p for p in participants if p.get("venueRole") == "Home"), {})
         away = next((p for p in participants if p.get("venueRole") == "Away"), {})
@@ -327,8 +345,12 @@ DK_EVENT_MARKETS_URL = (
 
 
 def _fetch_subcat_markets(session, dk_event_id, subcat_id):
-    """Fetch all markets in a given subcategory. Returns list of (id, name)."""
-    resp = session.get(DK_EVENT_MARKETS_URL, params={
+    """Fetch all markets in a given subcategory. Returns list of (id, name).
+
+    404 = DK dropped this event (skip the game). Any other non-200 raises
+    ``BookTransportError`` — see issue #33.
+    """
+    params = {
         "isBatchable": "false",
         "templateVars": dk_event_id,
         "marketsQuery": (
@@ -338,10 +360,15 @@ def _fetch_subcat_markets(session, dk_event_id, subcat_id):
         ),
         "include": "MarketSplits",
         "entity": "markets",
-    }, timeout=15)
-    if resp.status_code != 200:
+    }
+    try:
+        resp = session.get(DK_EVENT_MARKETS_URL, params=params, timeout=15)
+    except Exception as e:
+        raise BookTransportError(DK_BOOK, "structure", cause=e) from e
+    if not check_response(DK_BOOK, "structure", resp, allow_404=True):
         return []
-    return [(m["id"], m.get("name", "")) for m in resp.json().get("markets", [])]
+    markets = json_or_raise(DK_BOOK, "structure", resp).get("markets", [])
+    return [(m["id"], m.get("name", "")) for m in markets]
 
 
 def _strip_prefix(mid: str) -> str:
@@ -443,14 +470,17 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
     f5_rl = main_market_nums["f5"].get("run_line")
     f5_tot = main_market_nums["f5"].get("total")
 
-    resp = session.get(
-        f"{DK_SGP_PARLAYS_URL}/{dk_event_id}",
-        timeout=60,
-    )
+    url = f"{DK_SGP_PARLAYS_URL}/{dk_event_id}"
+    try:
+        resp = session.get(url, timeout=60)
+    except Exception as e:
+        raise BookTransportError(DK_BOOK, "structure", cause=e) from e
 
     empty = {"fg": {"spreads": {}, "totals": {}, "moneyline": {"1": [], "3": []}},
              "f5": {"spreads": {}, "totals": {}, "moneyline": {"1": [], "3": []}}}
-    if resp.status_code != 200:
+    # 404 = event gone; any other non-200 (DK's 403) is a dead book, not an
+    # event with no SGP selections — see issue #33.
+    if not check_response(DK_BOOK, "structure", resp, allow_404=True):
         return empty
 
     text = resp.text
@@ -688,7 +718,14 @@ def main():
 
     from mlb_sgp import draftkings
     print(f"  DK shim: {len(targets)} target lines, periods={periods}")
-    rows = draftkings.price_sgps(targets, periods=periods, verbose=False)
+    try:
+        rows = draftkings.price_sgps(targets, periods=periods, verbose=False)
+    except Exception as e:
+        # Transport failure (403 / DNS / auth gate — issue #33): leave the
+        # previous cycle's rows in place rather than clearing the source.
+        # The downstream fetch_time freshness gate filters anything stale.
+        print(f"  DK shim: price_sgps failed ({e}) — preserving last cycle's rows")
+        return 1
     print(f"  DK shim: priced {len(rows)} rows")
 
     # Wipe both source labels so stale rows from a previous run never linger.

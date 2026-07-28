@@ -9,6 +9,11 @@ both the SGP scraper and the singles scraper need:
 from __future__ import annotations
 from dataclasses import dataclass
 
+from mlb_sgp._shared import (BookTransportError, PriceCallTallyMixin,
+                             check_response, json_or_raise)
+
+BOOK = "draftkings"
+
 
 @dataclass
 class Event:
@@ -34,7 +39,9 @@ class Selection:
     american_odds: int
 
 
-class DraftKingsClient:
+class DraftKingsClient(PriceCallTallyMixin):
+    BOOK = BOOK
+
     def __init__(self, verbose: bool = False) -> None:
         from scraper_draftkings_sgp import init_session
         self.session = init_session()
@@ -94,15 +101,21 @@ class DraftKingsClient:
 
         Selections that are disabled or missing displayOdds.american are skipped
         — the singles scraper can't price an unavailable bet.
+
+        A 404 means DK dropped this event; anything else non-200 (DK has been
+        serving 403 in production) raises ``BookTransportError``.
         """
         from scraper_draftkings_sgp import DK_SGP_PARLAYS_URL
-        resp = self.session.get(
-            f"{DK_SGP_PARLAYS_URL}/{event_id}",
-            timeout=60,
-        )
-        if getattr(resp, "status_code", 200) != 200:
+        try:
+            resp = self.session.get(
+                f"{DK_SGP_PARLAYS_URL}/{event_id}",
+                timeout=60,
+            )
+        except Exception as e:
+            raise BookTransportError(BOOK, "structure", cause=e) from e
+        if not check_response(BOOK, "structure", resp, allow_404=True):
             return []
-        payload = resp.json()
+        payload = json_or_raise(BOOK, "structure", resp)
         markets = (payload.get("data") or {}).get("markets") or []
         out: list[Selection] = []
         for mkt in markets:

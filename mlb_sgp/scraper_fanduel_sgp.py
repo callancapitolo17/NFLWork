@@ -44,6 +44,16 @@ from canonical_match import load_team_dict, load_canonical_games, resolve_team_n
 from db import MLB_DB, _connect_with_retry
 from integer_line_derivation import is_integer_line, derive_fair_probs
 
+# Import via the PACKAGE path, never `from _shared import ...`: this file is
+# also importable as a top-level module (cwd=mlb_sgp/), and a second module
+# object would give us a second BookTransportError class that no caller's
+# `except` clause would match.
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from mlb_sgp._shared import BookTransportError, check_response, json_or_raise
+
+FD_BOOK = "fanduel"
+
 # ---------------------------------------------------------------------------
 # FD API config
 # ---------------------------------------------------------------------------
@@ -128,14 +138,17 @@ def fetch_fd_events(session: cffi_requests.Session) -> list[dict]:
         "facets": [{"type": "EVENT"}],
         "currencyCode": "USD",
     }
-    resp = session.post(
-        FD_SCAN_URL,
-        headers={**FD_HEADERS, "Content-Type": "application/json"},
-        data=json.dumps(body),
-        timeout=30,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    try:
+        resp = session.post(
+            FD_SCAN_URL,
+            headers={**FD_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps(body),
+            timeout=30,
+        )
+    except Exception as e:
+        raise BookTransportError(FD_BOOK, "events", cause=e) from e
+    check_response(FD_BOOK, "events", resp)
+    data = json_or_raise(FD_BOOK, "events", resp)
 
     events = {}
 
@@ -326,14 +339,18 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
     url = (f"{FD_EVENT_PAGE_URL}?_ak={FD_AK}&eventId={fd_event_id}"
            f"&tab=same-game-parlay-"
            f"&useCombinedTouchdownsVirtualMarket=true&useQuickBets=true")
-    resp = session.get(url, headers=FD_HEADERS, timeout=20)
+    try:
+        resp = session.get(url, headers=FD_HEADERS, timeout=20)
+    except Exception as e:
+        raise BookTransportError(FD_BOOK, "structure", cause=e) from e
 
     empty = {"fg": {"spreads": {}, "totals": {}, "moneyline": {}},
              "f5": {"spreads": {}, "totals": {}, "moneyline": {}}}
-    if resp.status_code != 200:
+    # 404 = FD dropped this event; any other non-200 is a dead book.
+    if not check_response(FD_BOOK, "structure", resp, allow_404=True):
         return empty
 
-    data = resp.json()
+    data = json_or_raise(FD_BOOK, "structure", resp)
     markets = []
 
     def walk(o):
@@ -625,7 +642,14 @@ def main():
 
     from mlb_sgp import fanduel
     print(f"  FD shim: {len(targets)} target lines, periods={periods}")
-    rows = fanduel.price_sgps(targets, periods=periods, verbose=False)
+    try:
+        rows = fanduel.price_sgps(targets, periods=periods, verbose=False)
+    except Exception as e:
+        # Transport failure (403 / DNS / auth gate — issue #33): leave the
+        # previous cycle's rows in place rather than clearing the source.
+        # The downstream fetch_time freshness gate filters anything stale.
+        print(f"  FD shim: price_sgps failed ({e}) — preserving last cycle's rows")
+        return 1
     print(f"  FD shim: priced {len(rows)} rows")
 
     # Wipe both source labels so stale rows from a previous run never linger.
