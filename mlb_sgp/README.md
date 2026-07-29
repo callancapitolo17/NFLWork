@@ -386,6 +386,89 @@ New books write to `mlb_sgp_odds` with their own `bookmaker` and `source` values
 
 The blend automatically scales: `mean(model, dk, fd, nb)` when all present, falls back gracefully when books are missing.
 
+## Observability: logging + per-fetch counters (issues #35, #36)
+
+### Logging, not printing
+
+Every module a bot imports uses `logger = logging.getLogger(__name__)`. The
+library attaches **no handlers** — the host process decides where logs go (the
+same principle as R's `message()` vs `cat()`). Both bots run these scrapers
+in-process via `kalshi_common.sgp_service`, so a `print()` here would bypass
+their handlers and levels entirely and never reach `bot.log`.
+
+CLI entry points (`scraper_*_sgp.py`, the two `*_singles.py` scrapers) call
+`logging.basicConfig(..., stream=sys.stdout)` inside their `__main__` block
+only, so subprocess/dashboard runs still write to `mlb_sgp/logs/<scraper>.log`
+exactly as before.
+
+Level policy — chosen so one broken book cannot drown `bot.log`:
+
+| event | level |
+|---|---|
+| per-game "N targets → M offered" | DEBUG |
+| individual `SANITY-DROP` | DEBUG (the per-fetch count rides in the summary) |
+| broad-`except` catch | WARNING the **first** time per stage per fetch, DEBUG after |
+| per-fetch summary | INFO (sweep) / DEBUG (on-demand — it runs per RFQ per book) |
+| parse tripwire | WARNING |
+| auth / token-mint failure | WARNING–ERROR |
+
+`mlb_sgp/tests/test_library_logging.py` enforces this with an AST scan: no
+`print()` outside a `__main__` guard, a module logger in every bot-path file,
+and no handler configuration at import time. Standalone diagnostics
+(`recon_*.py`, `probe_concurrency.py`, `quick_recon.py`, the Pikkit modules)
+are deliberately out of scope — no bot imports them.
+
+### Per-fetch counters and the parse tripwire
+
+`_shared.FetchCounters` records what one book's one fetch actually did. It is
+the parse-side counterpart to `PriceCallTally` (#33): the tally answers *"is
+the book's price endpoint reachable?"*, the counters answer *"does our parser
+still understand what the book sends back?"*
+
+| counter | sweep | on-demand |
+|---|---|---|
+| `events_seen` / `events_matched` | events listed / matched to our slate | 1 / 1 when the game is listed |
+| `legs_attempted` / `legs_resolved` | targets checked against parsed structure / offered by the book | `len(legs)` / `len(resolved)` |
+| `targets_attempted` / `prices_returned` | targets priced / priced rows produced | price calls / non-`None` decimals |
+| `sanity_drops`, `parse_failures`, `transport_errors` | same on both paths | |
+
+Counters sit **outside** `request_with_retry` (#34): one logical fetch is one
+tick no matter how many attempts the wire call took. `parse_failures` also
+carries a per-stage breakdown (`stages=price_combo:3,resolve_legs:1`).
+
+Both `price_sgps` (sweep) and `SGPService.price_on_demand` scope a fetch with
+the `fetch_counters(...)` context manager, so the summary line is emitted on
+every exit path — including the several `return []` short-circuits and the way
+out of a `BookTransportError`. Every fetch logs one line:
+
+```
+sgp fetch book=fanduel path=sweep events_seen=15 events_matched=15 \
+  targets_attempted=42 legs_attempted=60 legs_resolved=42 prices_returned=168 \
+  sanity_drops=0 parse_failures=0 transport_errors=0
+```
+
+**Tripwires** (WARNING, `PARSE TRIPWIRE book=… path=… tripped=…`):
+
+| name | condition | what it means |
+|---|---|---|
+| `events_unmatched` | `events_seen > 0 and events_matched == 0` | book is up and listing games, none map to our slate (team-name / canonical-match drift) |
+| `legs_unresolved` | `legs_attempted > 0 and legs_resolved == 0` | **the FanDuel alt-total case** — the book offered lines, our parser recognized none |
+| `prices_empty` | `targets_attempted > 0 and prices_returned == 0 and transport_errors == 0` | legs resolved but nothing priced, and transport never complained |
+
+Each compares a stage's OUTPUT against its INPUT, so a genuinely empty slate
+(no input) never fires, and a transport failure is never dressed up as a parse
+bug — that is #33's story and is already loud there.
+
+On the on-demand path the counters also ride back on
+`OnDemandBookResult.counters` (an immutable `FetchCountersSnapshot`), which is
+what #38's per-book fetch-health history will persist.
+
+`counters` is **keyword-only** everywhere it was threaded into a book module,
+so a future positional argument can never silently bind to it (BetMGM's
+`price_selection_set(client, refs, fixture_id)` is the live hazard).
+`mlb_sgp/tests/test_counter_signatures.py` proves this with
+`inspect.signature().bind()`.
+
 ## Concurrency & Logs
 
 The four SGP scrapers (DK, FD, ProphetX, Novig) are launched in parallel by

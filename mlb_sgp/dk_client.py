@@ -7,11 +7,14 @@ both the SGP scraper and the singles scraper need:
   - fetch_event_selections()— all selections with prices, in one call
 """
 from __future__ import annotations
+import logging
 from dataclasses import dataclass
 
 from mlb_sgp._shared import (RETRY_BACKGROUND, PriceCallTallyMixin,
                              RetryProfile, check_response, json_or_raise,
                              request_with_retry)
+
+logger = logging.getLogger(__name__)
 
 BOOK = "draftkings"
 

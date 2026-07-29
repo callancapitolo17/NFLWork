@@ -12,11 +12,14 @@ single GET yields both — fetch_event_page() is the primary entry point and
 takes a `tab` argument (FD returns a different market slice per tab).
 """
 from __future__ import annotations
+import logging
 from dataclasses import dataclass
 
 from mlb_sgp._shared import (RETRY_BACKGROUND, PriceCallTallyMixin,
                              RetryProfile, check_response, json_or_raise,
                              request_with_retry)
+
+logger = logging.getLogger(__name__)
 
 BOOK = "fanduel"
 

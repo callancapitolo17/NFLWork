@@ -12,9 +12,12 @@ clear_source + upsert_priced_rows. The orchestrator's optional
 other books) are forward-compatible here — this shim passes neither, so it
 keeps the current serial-per-cycle behavior the bot's cadence loop expects.
 """
+import logging
 import os
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Resolve repo root dynamically (works from worktrees too)
 _THIS_DIR = Path(__file__).resolve().parent
@@ -40,23 +43,23 @@ def main():
 
     targets = load_target_lines(db_path)
     if not targets:
-        print(f"  No target lines in {db_path} — nothing to scrape.")
+        logger.info("no target lines in %s — nothing to scrape", db_path)
         return 0
 
     periods_raw = os.environ.get("MLB_SGP_PERIODS", "FG,F5").split(",")
     periods = tuple(p.strip() for p in periods_raw if p.strip())
 
     from mlb_sgp import betmgm
-    print(f"  MGM shim: {len(targets)} target lines, periods={periods}")
+    logger.info("MGM shim: %d target lines, periods=%s", len(targets), periods)
     try:
         rows = betmgm.price_sgps(targets, periods=periods, verbose=False)
     except Exception as e:
         # Hard failure (e.g. fixtures/markets fetch blew up): leave the previous
         # cycle's rows in place rather than wiping the source. The downstream
         # fetch_time freshness gate filters anything stale.
-        print(f"  MGM shim: price_sgps failed ({e}) — preserving last cycle's rows")
+        logger.error("MGM shim: price_sgps failed (%s) — preserving last cycle's rows", e)
         return 1
-    print(f"  MGM shim: priced {len(rows)} rows")
+    logger.info("MGM shim: priced %d rows", len(rows))
 
     db.clear_source("betmgm_direct", db_path=db_path)
     db.upsert_priced_rows(rows, db_path=db_path)
@@ -64,4 +67,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # Library code attaches no handlers; the CLI entry point does, so a
+    # subprocess/dashboard run still writes progress to the runner log.
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout,
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     sys.exit(main())

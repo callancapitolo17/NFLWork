@@ -46,6 +46,7 @@ intentionally drops all three:
   made for the DK/FD/PX shims.
 """
 
+import logging
 import os
 import json
 import sys
@@ -75,6 +76,8 @@ from integer_line_derivation import is_integer_line, derive_fair_probs
 # `except` clause would match.
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+logger = logging.getLogger(__name__)
+
 from mlb_sgp._shared import RETRY_BACKGROUND, RetryProfile, request_with_retry
 
 # ---------------------------------------------------------------------------
@@ -196,7 +199,7 @@ def _load_event_markets_query() -> str:
                         EVENT_MARKETS_QUERY = pd
                         return EVENT_MARKETS_QUERY
         except Exception as e:
-            print(f"  (could not parse recon JSON: {e})")
+            logger.debug("could not parse recon JSON: %s", e)
 
     raise RuntimeError(
         "EventMarkets_Query text unavailable. Expected at "
@@ -282,7 +285,9 @@ def load_parlay_lines() -> dict:
     try:
         tables = [t[0] for t in con.execute("SHOW TABLES").fetchall()]
         if "mlb_parlay_lines" not in tables:
-            print("  No mlb_parlay_lines table — run the MLB pipeline first.")
+            # WARNING: a missing table is an upstream pipeline fault, not an
+            # empty slate — exactly the confusion issue #32 exists to remove.
+            logger.warning("no mlb_parlay_lines table — run the MLB pipeline first")
             return {}
         rows = con.execute("""
             SELECT game_id, home_team, away_team,
@@ -394,8 +399,7 @@ def fetch_event_legs(session, game: dict, verbose: bool = False,
     try:
         data = _gql(session, json.dumps(q_obj), profile)
     except Exception as e:
-        if verbose:
-            print(f"      EventMarkets error for {game['nv_event_id']}: {e}")
+        logger.debug(f"      EventMarkets error for {game['nv_event_id']}: {e}")
         return _empty_legs(), []
 
     ev = ((data.get("data") or {}).get("event") or [{}])[0]
@@ -421,14 +425,15 @@ def fetch_event_legs(session, game: dict, verbose: bool = False,
                           and _float_eq(m.get("strike"), target_spread)]
         spread_mkt = next((m for m in spread_matches if m.get("is_consensus") is True),
                           spread_matches[0] if spread_matches else None)
-        if spread_mkt is None and period == "f5" and verbose:
+        if spread_mkt is None and period == "f5":
             # Diagnostic only: Novig exposes only the main F5 line, so an unmatched
             # target means our fg_pipeline's F5 line moved relative to Novig's.
             cand = [m for m in markets if m.get("type") == spread_type]
             if cand:
-                print(f"      [F5] {game['game_id'][:8]}: target spread "
-                      f"{target_spread} != Novig's F5 line {cand[0].get('strike')} "
-                      "— skipping for strict match")
+                logger.debug(
+                    "      [F5] %s: target spread %s != Novig's F5 line %s "
+                    "— skipping for strict match",
+                    game["game_id"][:8], target_spread, cand[0].get("strike"))
         if spread_mkt:
             home_leg, away_leg = _find_outcome_in_spread(spread_mkt, home_sym, away_sym)
             if home_leg and away_leg:
@@ -459,11 +464,12 @@ def fetch_event_legs(session, game: dict, verbose: bool = False,
                 out[period]["home_ml"] = home_ml
                 out[period]["away_ml"] = away_ml
 
-        if verbose:
-            missing = [k for k, v in out[period].items() if v is None]
-            if missing:
-                print(f"      [{period.upper()}] {game['game_id'][:8]}: "
-                      f"missing {missing}  (target spread={target_spread}, total={target_total})")
+        missing = [k for k, v in out[period].items() if v is None]
+        if missing:
+            logger.debug(
+                "      [%s] %s: missing %s  (target spread=%s, total=%s)",
+                period.upper(), game["game_id"][:8], missing,
+                target_spread, target_total)
 
     return out, markets
 
@@ -518,13 +524,11 @@ def try_integer_fallback_nv(
     spread_mkt = next((m for m in spread_matches if m.get("is_consensus") is True),
                       spread_matches[0] if spread_matches else None)
     if spread_mkt is None:
-        if verbose:
-            print(f"      integer fallback: no spread market at {spread_line}")
+        logger.debug(f"      integer fallback: no spread market at {spread_line}")
         return None
     home_leg, away_leg = _find_outcome_in_spread(spread_mkt, home_sym, away_sym)
     if not (home_leg and away_leg):
-        if verbose:
-            print(f"      integer fallback: spread legs missing for {spread_line}")
+        logger.debug(f"      integer fallback: spread legs missing for {spread_line}")
         return None
 
     # --- Adjacent total markets ---
@@ -543,13 +547,13 @@ def try_integer_fallback_nv(
     over_hi, under_hi = _get_total_legs(hi)
 
     if not all([over_lo, under_lo, over_hi, under_hi]):
-        if verbose:
-            missing = []
-            if not over_lo:  missing.append(f"over {lo}")
-            if not under_lo: missing.append(f"under {lo}")
-            if not over_hi:  missing.append(f"over {hi}")
-            if not under_hi: missing.append(f"under {hi}")
-            print(f"      integer fallback: missing adjacent alt legs {missing} for total={total_line}")
+        missing = []
+        if not over_lo:  missing.append(f"over {lo}")
+        if not under_lo: missing.append(f"under {lo}")
+        if not over_hi:  missing.append(f"over {hi}")
+        if not under_hi: missing.append(f"under {hi}")
+        logger.debug("      integer fallback: missing adjacent alt legs %s "
+                     "for total=%s", missing, total_line)
         return None
 
     def _price(sp_leg, tot_leg):
@@ -570,8 +574,7 @@ def try_integer_fallback_nv(
     }
 
     if any(d is None for d in decimals_lo.values()) or any(d is None for d in decimals_hi.values()):
-        if verbose:
-            print(f"      integer fallback: pricing failed for total={total_line}")
+        logger.debug(f"      integer fallback: pricing failed for total={total_line}")
         return None
 
     return derive_fair_probs(decimals_lo, decimals_hi)
@@ -595,18 +598,15 @@ def submit_parlay(session, outcome_ids: list[str],
             timeout=RFQ_TIMEOUT,
         )
     except Exception as e:
-        if verbose:
-            print(f"      parlay error: {e}")
+        logger.debug(f"      parlay error: {e}")
         return None, False
 
     if resp.status_code in (401, 403):
-        if verbose:
-            print(f"      parlay {resp.status_code} — unexpected for /unauthenticated endpoint")
+        logger.debug(f"      parlay {resp.status_code} — unexpected for /unauthenticated endpoint")
         return None, True
     if resp.status_code not in (200, 201):
-        if verbose:
-            preview = resp.text[:200] if resp.text else ""
-            print(f"      parlay HTTP {resp.status_code}: {preview}")
+        logger.debug("      parlay HTTP %s: %s", resp.status_code,
+                     resp.text[:200] if resp.text else "")
         return None, False
 
     try:
@@ -685,23 +685,23 @@ def main():
 
     targets = load_target_lines(db_path)
     if not targets:
-        print(f"  No target lines in {db_path} — nothing to scrape.")
+        logger.info("no target lines in %s — nothing to scrape", db_path)
         return 0
 
     periods_raw = os.environ.get("MLB_SGP_PERIODS", "FG,F5").split(",")
     periods = tuple(p.strip() for p in periods_raw if p.strip())
 
     from mlb_sgp import novig
-    print(f"  NV shim: {len(targets)} target lines, periods={periods}")
+    logger.info("NV shim: %d target lines, periods=%s", len(targets), periods)
     try:
         rows = novig.price_sgps(targets, periods=periods, verbose=False)
     except Exception as e:
         # Transport failure (403 / DNS / auth gate — issue #33): leave the
         # previous cycle's rows in place rather than clearing the source.
         # The downstream fetch_time freshness gate filters anything stale.
-        print(f"  NV shim: price_sgps failed ({e}) — preserving last cycle's rows")
+        logger.error("NV shim: price_sgps failed (%s) — preserving last cycle's rows", e)
         return 1
-    print(f"  NV shim: priced {len(rows)} rows")
+    logger.info("NV shim: priced %d rows", len(rows))
 
     # Wipe both source labels so stale rows from a previous run never linger.
     # novig.price_sgps emits both ``novig_direct`` (main RFQ path) and
@@ -714,4 +714,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # Library code attaches no handlers; the CLI entry point does, so a
+    # subprocess/dashboard run still writes progress to the runner log.
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout,
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     sys.exit(main())

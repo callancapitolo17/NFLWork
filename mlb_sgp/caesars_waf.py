@@ -30,10 +30,13 @@ VERIFIED 2026-06-16: token_len=182, tabs feed -> 200 / 210 KB JSON. GREEN.
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import subprocess
 import uuid
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _THIS_DIR = Path(__file__).resolve().parent
 _NODE_HARNESS = _THIS_DIR / "caesars_waf_node.js"
@@ -56,32 +59,29 @@ def mint_token_browser_free(state: str = "nj",
     `state` is accepted for signature parity with CaesarsClient._mint."""
     node = node_bin or shutil.which("node")
     if not node:
-        if verbose:
-            print("  [czr-waf] node not found on PATH")
+        # ERROR, not DEBUG: with no node there is no Caesars token and so no
+        # Caesars data at all — an environment fault, not a slate condition.
+        logger.error("caesars-waf: node not found on PATH")
         return "", ""
     if not _NODE_HARNESS.exists():
-        if verbose:
-            print(f"  [czr-waf] missing harness {_NODE_HARNESS}")
+        logger.error("caesars-waf: missing node harness %s", _NODE_HARNESS)
         return "", ""
     try:
         proc = subprocess.run(
             [node, str(_NODE_HARNESS), issuer, issuer_key, ua],
             capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        if verbose:
-            print("  [czr-waf] node mint timed out")
+        logger.warning("caesars-waf: node mint timed out after %ss", timeout)
         return "", ""
     line = (proc.stdout or "").strip().splitlines()[-1] if proc.stdout.strip() else ""
     try:
         res = json.loads(line)
     except Exception:
-        if verbose:
-            print(f"  [czr-waf] bad node output: {proc.stdout[:200]!r} "
-                  f"stderr={proc.stderr[:200]!r}")
+        logger.warning("caesars-waf: unparseable node output: %r stderr=%r",
+                       proc.stdout[:200], proc.stderr[:200])
         return "", ""
     if not res.get("ok") or not res.get("token"):
-        if verbose:
-            print(f"  [czr-waf] mint failed: {res.get('error')}")
+        logger.warning("caesars-waf: mint failed: %s", res.get("error"))
         return "", ""
     return res["token"], str(uuid.uuid4())
 

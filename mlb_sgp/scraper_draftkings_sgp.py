@@ -12,6 +12,7 @@ import them lazily. They stay here during the transition; a follow-up
 refactor can lift them into the library module.
 """
 
+import logging
 import os
 import re
 import sys
@@ -39,6 +40,8 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, RetryProfile,
                              check_response, json_or_raise, request_with_retry)
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # DK API config
@@ -152,7 +155,9 @@ def load_parlay_lines() -> dict:
     try:
         tables = [t[0] for t in con.execute("SHOW TABLES").fetchall()]
         if "mlb_parlay_lines" not in tables:
-            print("  No mlb_parlay_lines table — run the MLB pipeline first.")
+            # WARNING: a missing table is an upstream pipeline fault, not an
+            # empty slate — exactly the confusion issue #32 exists to remove.
+            logger.warning("no mlb_parlay_lines table — run the MLB pipeline first")
             return {}
 
         rows = con.execute("""
@@ -220,8 +225,7 @@ def try_integer_fallback_dk(
 
     if not (home_spread_sels and away_spread_sels and
             over_lo_sels and under_lo_sels and over_hi_sels and under_hi_sels):
-        if verbose:
-            print(f"      integer fallback: missing alts for {total_line}")
+        logger.debug(f"      integer fallback: missing alts for {total_line}")
         return None
 
     # Helper: price one canonical-canonical combo, return decimal or None
@@ -254,8 +258,7 @@ def try_integer_fallback_dk(
     }
 
     if any(d is None for d in decimals_lo.values()) or any(d is None for d in decimals_hi.values()):
-        if verbose:
-            print(f"      integer fallback: pricing call failed for {total_line}")
+        logger.debug(f"      integer fallback: pricing call failed for {total_line}")
         return None
 
     return derive_fair_probs(decimals_lo, decimals_hi)
@@ -612,12 +615,12 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
     out["fg"]["moneyline"] = _extract_moneyline_selections(text, fg_ml)
     out["f5"]["moneyline"] = _extract_moneyline_selections(text, f5_ml)
 
-    if verbose:
+    if logger.isEnabledFor(logging.DEBUG):
         for per in ("fg", "f5"):
             sp = sorted(set(k[1] for k in out[per]["spreads"]))
             to = sorted(set(k[1] for k in out[per]["totals"] if k[0] == 'O'))
-            print(f"    [{per.upper()}] spreads: {sp}  totals(O): {to}  "
-                  f"canonical: {sorted(out[per]['canonical'])}")
+            logger.debug("    [%s] spreads: %s  totals(O): %s  canonical: %s",
+                         per.upper(), sp, to, sorted(out[per]["canonical"]))
 
     return out
 
@@ -647,19 +650,16 @@ def calculate_sgp(session: cffi_requests.Session,
         profile=RETRY_LIVE, book=DK_BOOK, stage="price")
 
     if resp.status_code == 422:
-        if verbose:
-            try:
-                err = resp.json()
-                code = err.get("statusCode", "")
-                desc = err.get("description", "")
-                print(f"      422: {code} — {desc[:100]}")
-            except Exception:
-                pass
+        try:
+            err = resp.json()
+            logger.debug("      422: %s — %s", err.get("statusCode", ""),
+                         str(err.get("description", ""))[:100])
+        except Exception:
+            pass
         return None
 
     if resp.status_code != 200:
-        if verbose:
-            print(f"      HTTP {resp.status_code}")
+        logger.debug(f"      HTTP {resp.status_code}")
         return None
 
     data = resp.json()
@@ -667,8 +667,7 @@ def calculate_sgp(session: cffi_requests.Session,
     # Check for combinability restrictions (cross-market rejection)
     restrictions = data.get("combinabilityRestrictions", [])
     if restrictions:
-        if verbose:
-            print(f"      NonCombinable: selections can't be combined in SGP")
+        logger.debug(f"      NonCombinable: selections can't be combined in SGP")
         return None
 
     for bet in data.get("bets", []):
@@ -716,23 +715,23 @@ def main():
 
     targets = load_target_lines(db_path)
     if not targets:
-        print(f"  No target lines in {db_path} — nothing to scrape.")
+        logger.info("no target lines in %s — nothing to scrape", db_path)
         return 0
 
     periods_raw = os.environ.get("MLB_SGP_PERIODS", "FG,F5").split(",")
     periods = tuple(p.strip() for p in periods_raw if p.strip())
 
     from mlb_sgp import draftkings
-    print(f"  DK shim: {len(targets)} target lines, periods={periods}")
+    logger.info("DK shim: %d target lines, periods=%s", len(targets), periods)
     try:
         rows = draftkings.price_sgps(targets, periods=periods, verbose=False)
     except Exception as e:
         # Transport failure (403 / DNS / auth gate — issue #33): leave the
         # previous cycle's rows in place rather than clearing the source.
         # The downstream fetch_time freshness gate filters anything stale.
-        print(f"  DK shim: price_sgps failed ({e}) — preserving last cycle's rows")
+        logger.error("DK shim: price_sgps failed (%s) — preserving last cycle's rows", e)
         return 1
-    print(f"  DK shim: priced {len(rows)} rows")
+    logger.info("DK shim: priced %d rows", len(rows))
 
     # Wipe both source labels so stale rows from a previous run never linger.
     # The orchestrator tags _direct vs _interpolated rows; clearing both
@@ -744,4 +743,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # Library code attaches no handlers; the CLI entry point does, so a
+    # subprocess/dashboard run still writes progress to the runner log.
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout,
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     sys.exit(main())

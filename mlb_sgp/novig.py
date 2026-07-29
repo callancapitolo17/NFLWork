@@ -46,13 +46,16 @@ verbatim.
 """
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-from mlb_sgp._shared import (PricedRow, TargetLine, decimal_to_american,
+from mlb_sgp._shared import (BookTransportError, FetchCounters, PricedRow,
+                             TargetLine, decimal_to_american, fetch_counters,
                              price_tally_for)
 from mlb_sgp.novig_client import NovigClient
 
+logger = logging.getLogger(__name__)
 
 BOOK_NAME = "novig"
 SOURCE_LABEL = "novig_direct"
@@ -156,7 +159,22 @@ def price_sgps(
         dropped. Rows produced via the integer-fallback path are tagged
         with ``source = novig_interpolated`` instead of
         ``novig_direct``.
+
+    This is a thin wrapper over ``_price_sgps`` so issue #35's per-fetch
+    counter summary and parse tripwire are emitted on every exit path,
+    early returns included.
     """
+    with fetch_counters(BOOK_NAME, "sweep", logger) as counters:
+        return _price_sgps(target_lines, periods, client, verbose, counters)
+
+
+def _price_sgps(
+    target_lines: list[TargetLine],
+    periods: tuple[str, ...],
+    client: NovigClient | None,
+    verbose: bool,
+    counters: FetchCounters,
+) -> list[PricedRow]:
     if not target_lines:
         return []
 
@@ -226,7 +244,9 @@ def price_sgps(
         }
         for e in events
     ]
+    counters.bump("events_seen", len(nv_events))
     matched = match_events(nv_events, parlay_lines)
+    counters.bump("events_matched", len(matched or []))
     if not matched:
         return []
 
@@ -292,8 +312,11 @@ def price_sgps(
             ):
                 filtered_targets.append(t)
                 post += 1
-        if verbose:
-            print(f"  game {game_id}: {pre} kalshi → {post} offered", flush=True)
+        counters.bump("legs_attempted", pre)
+        counters.bump("legs_resolved", post)
+        logger.debug("%s: game %s: %d kalshi -> %d offered",
+                     BOOK_NAME, game_id, pre, post)
+    counters.bump("targets_attempted", len(filtered_targets))
 
     # ----- Phase 2: per target row, price 4 combos (or fall back) ----- #
     # Layer target-level concurrency on top of the per-combo parallelism
@@ -362,7 +385,7 @@ def price_sgps(
         )
 
         priced_by_combo = _price_combos_parallel(
-            client.session, combos, submit_parlay, verbose,
+            client.session, combos, submit_parlay, verbose, counters=counters,
         )
 
         for combo_name, _sp, _to in combos:
@@ -390,8 +413,7 @@ def price_sgps(
             try:
                 out.extend(f.result())
             except Exception as e:
-                if verbose:
-                    print(f"  nv target error: {e}", flush=True)
+                counters.record_parse_failure("price_target", logger, e)
 
     # ----- Phase 3: moneyline × total combos (FG only) ----- #
     # Priced ONCE per game (not per spread target) so a game with several
@@ -418,7 +440,8 @@ def price_sgps(
             ("Away ML + Under", away_ml, under),
         )
         ml_priced = _price_combos_parallel(
-            client.session, ml_combos, submit_parlay, verbose)
+            client.session, ml_combos, submit_parlay, verbose,
+            counters=counters)
         rows: list[PricedRow] = []
         for combo_name, _ml, _to in ml_combos:
             priced = ml_priced.get(combo_name)
@@ -438,9 +461,9 @@ def price_sgps(
             try:
                 out.extend(f.result())
             except Exception as e:
-                if verbose:
-                    print(f"  nv ML target error: {e}", flush=True)
+                counters.record_parse_failure("price_ml_target", logger, e)
 
+    counters.bump("prices_returned", len(out))
     price_calls.verdict(tally_start)   # raises if EVERY price call failed
     return out
 
@@ -450,6 +473,8 @@ def _price_combos_parallel(
     combos: tuple,
     submit_parlay_fn,
     verbose: bool,
+    *,
+    counters: FetchCounters | None = None,
 ) -> dict:
     """Price the 4 combo flavors in parallel and return {combo_name: priced}.
 
@@ -457,7 +482,10 @@ def _price_combos_parallel(
     curl_cffi session. The SANITY_MULT_RATIO filter runs *inside* the
     worker so a combo that fails sanity is omitted from the result dict
     — same behavior as the sequential path, just executed concurrently.
+
+    ``counters`` is keyword-only and optional (direct-call tests).
     """
+    counters = counters or FetchCounters(BOOK_NAME, "sweep")
     results: dict = {}
 
     def _price_one(combo_name, sp, to):
@@ -474,15 +502,16 @@ def _price_combos_parallel(
             sp_av = sp.get("available")
             to_av = to.get("available")
             if not _passes_sanity_mult_ratio(priced["decimal"], sp_av, to_av):
-                if verbose:
-                    print(
-                        f"      SANITY-DROP {combo_name} "
-                        f"parlay={priced['decimal']:.2f}"
-                    )
+                counters.bump("sanity_drops")
+                # DEBUG, not WARNING: one line per dropped combo across a
+                # thread pool. The per-fetch count rides in the summary.
+                logger.debug("%s: SANITY-DROP %s parlay=%.2f",
+                             BOOK_NAME, combo_name, priced["decimal"])
                 return combo_name, None
 
             return combo_name, priced
-        except Exception:
+        except Exception as e:
+            counters.record_parse_failure("price_combo", logger, e)
             return combo_name, None
 
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -493,7 +522,8 @@ def _price_combos_parallel(
         for fut in as_completed(futures):
             try:
                 combo_name, priced = fut.result()
-            except Exception:
+            except Exception as e:
+                counters.record_parse_failure("price_combo_future", logger, e)
                 continue
             if priced is not None:
                 results[combo_name] = priced
@@ -571,7 +601,8 @@ def _lookup_leg(structure: dict, key: str, line: float | None) -> dict | None:
     return leg if isinstance(leg, dict) else None
 
 
-def resolve_legs(structure, legs, home_team, away_team):
+def resolve_legs(structure, legs, home_team, away_team, *,
+                 counters: FetchCounters | None = None):
     """Resolve canonical legs against Novig's FG per-event leg bucket.
 
     Parameters
@@ -659,11 +690,17 @@ def resolve_legs(structure, legs, home_team, away_team):
                 ),
             ))
         return out
-    except Exception:
+    except Exception as e:
+        # Fail-safe stays (a raise here would kill the quote); the counter is
+        # what tells "book doesn't offer this leg" from "our parser broke".
+        if counters is not None:
+            counters.record_parse_failure("resolve_legs", logger, e)
         return None
 
 
-def price_selection_set(client, refs) -> float | None:
+def price_selection_set(client, refs, *,
+                        counters: FetchCounters | None = None,
+                        ) -> float | None:
     """Price one arbitrary selection set via Novig's anonymous parlay RFQ.
 
     ``refs`` is a list of outcome UUID strings (a 1-element list prices a
@@ -678,7 +715,14 @@ def price_selection_set(client, refs) -> float | None:
         priced = client.submit_parlay(list(refs)) or {}
         dec = float(priced.get("decimal"))
         return dec if dec > 1.0 else None
-    except Exception:
+    except BookTransportError:
+        # Counted, NOT re-raised — see caesars.price_selection_set.
+        if counters is not None:
+            counters.bump("transport_errors")
+        return None
+    except Exception as e:
+        if counters is not None:
+            counters.record_parse_failure("price_selection_set", logger, e)
         return None
 
 
