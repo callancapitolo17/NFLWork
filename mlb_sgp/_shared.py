@@ -9,6 +9,7 @@ import logging
 import random
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -413,6 +414,237 @@ class PriceCallTallyMixin:
         return tally
 
 
+# --------------------------------------------------------------------------- #
+# Per-fetch drop counters + parse tripwires (issue #35)                        #
+# --------------------------------------------------------------------------- #
+
+# One tick per LOGICAL fetch, never per wire attempt: these counters sit
+# outside request_with_retry, so a combo that needed two attempts still counts
+# once. The two are complementary — PriceCallTally answers "is the book's
+# price endpoint reachable?", these answer "does our parser still understand
+# what the book sends back?".
+COUNTER_NAMES = (
+    "events_seen",         # events the book listed at all
+    "events_matched",      # of those, ones matched to a game on our slate
+    "targets_attempted",   # UNITS DIFFER BY PATH — see the warning below
+    "legs_attempted",      # candidate lines/legs handed to structure lookup
+    "legs_resolved",       # of those, ones the book actually offers
+    "prices_returned",     # UNITS DIFFER BY PATH — see the warning below
+    "sanity_drops",        # combos dropped by SANITY_MULT_RATIO
+    "parse_failures",      # non-transport broad-except catches, by named stage
+    "transport_errors",    # BookTransportError seen during this fetch
+)
+
+# !! UNITS WARNING for #38 (per-book fetch-health history) and anything else
+# that aggregates these ACROSS the two paths:
+#
+#   sweep      targets_attempted = TARGET LINES priced (each fans out to ~4
+#                                  combo price calls)
+#              prices_returned   = PricedRows produced (includes rows derived
+#                                  by the integer-line fallback, which are not
+#                                  1:1 with price calls)
+#   on-demand  targets_attempted = PRICE CALLS issued (2^N partition cells,
+#                                  plus any Route B singles)
+#              prices_returned   = those calls that returned a decimal
+#
+# Each path's own tripwire is correct in its own units ("we priced targets and
+# got no rows" / "we issued calls and got no prices"), but a ratio computed
+# across paths is NOT meaningful: the sweep's is ~1:4 by construction and
+# on-demand's is 1:1. Store the path alongside the counts and compare within a
+# path, never across. Unifying the units would mean counting price calls in the
+# sweep too, which loses "rows produced" — the number that actually says
+# whether the sweep wrote data — so the split is deliberate, not an oversight.
+
+
+@dataclass(frozen=True)
+class FetchCountersSnapshot:
+    """Immutable per-fetch counter record. Stable shape — #38 persists it."""
+    book: str
+    path: str                       # "sweep" | "on_demand"
+    events_seen: int
+    events_matched: int
+    targets_attempted: int
+    legs_attempted: int
+    legs_resolved: int
+    prices_returned: int
+    sanity_drops: int
+    parse_failures: int
+    transport_errors: int
+    by_stage: tuple                 # ((stage, count), ...) sorted by stage
+
+
+class FetchCounters:
+    """What one book's one fetch actually did — the parse-side counterpart
+    to ``PriceCallTally``.
+
+    Motivation: the FanDuel alt-total paren regression produced ZERO rows for
+    weeks with no error anywhere. Transport was healthy, the book was healthy;
+    our parser had simply stopped recognizing the format. Nothing in the
+    pipeline could tell that apart from "FanDuel has no markets today".
+
+    Both the sweep (``price_sgps``) and the on-demand path
+    (``SGPService.price_on_demand``) fill the SAME counter shape, so a reader
+    — or #38's health table — reads one vocabulary for both.
+
+    Thread-safe: sweep pricing fans targets and combos across thread pools.
+    """
+
+    def __init__(self, book: str, path: str = "sweep"):
+        self.book = book
+        self.path = path
+        self._lock = threading.Lock()
+        self._counts = dict.fromkeys(COUNTER_NAMES, 0)
+        self._by_stage: dict[str, int] = {}
+        self._emitted = False
+
+    def bump(self, name: str, n: int = 1) -> None:
+        """Add ``n`` to a counter. Unknown names raise — a typo'd counter
+        that silently vanished would recreate the exact bug this fixes."""
+        if name not in self._counts:
+            raise AttributeError(
+                f"unknown counter {name!r}; expected one of {COUNTER_NAMES}")
+        with self._lock:
+            self._counts[name] += n
+
+    def record_exception(self, stage: str, logger_: logging.Logger,
+                         exc: BaseException | None = None) -> int:
+        """Count one broad-``except`` catch at ``stage``, in the RIGHT bucket.
+
+        Use this — not ``record_parse_failure`` — wherever the caught
+        exception could have come off the wire. The book clients differ: CZR
+        and MGM swallow a price-stage ``BookTransportError`` internally and
+        return None, but DK/FD/NV/PX price through module-level helpers whose
+        ``request_with_retry(stage="price")`` RAISES it, and that exception
+        lands in the orchestrators' broad excepts. Filing it under
+        ``parse_failures`` would point a fixer at the parser while the real
+        story is a dead endpoint — the exact misdiagnosis this epic exists to
+        remove — and it would also leave the ``prices_empty`` tripwire armed
+        when #33 already owns that failure.
+        """
+        if isinstance(exc, BookTransportError):
+            self.bump("transport_errors")
+            return self._log_at_stage(stage, logger_, exc)
+        return self.record_parse_failure(stage, logger_, exc)
+
+    def record_parse_failure(self, stage: str, logger_: logging.Logger,
+                             exc: BaseException | None = None) -> int:
+        """Count one PARSE failure at ``stage`` and log it.
+
+        Only for exceptions that cannot be transport (pure structure/parse
+        code). Anywhere the wire is reachable, call ``record_exception``.
+
+        Returns the running count for this stage.
+        """
+        with self._lock:
+            self._counts["parse_failures"] += 1
+        return self._log_at_stage(stage, logger_, exc)
+
+    def _log_at_stage(self, stage: str, logger_: logging.Logger,
+                      exc: BaseException | None) -> int:
+        """Tally the per-stage breakdown and log at the volume-safe level.
+
+        Volume policy (same reasoning as #34's price-stage DEBUG decision):
+        the FIRST failure of a stage in this fetch is a WARNING — that is the
+        signal a human needs — and every repeat drops to DEBUG. A wholesale
+        break would otherwise emit one WARNING per target per book per cycle
+        and drown bot.log; the aggregate rides in the summary line and trips
+        the tripwire anyway.
+        """
+        with self._lock:
+            count = self._by_stage.get(stage, 0) + 1
+            self._by_stage[stage] = count
+        log_at = logger_.warning if count == 1 else logger_.debug
+        log_at("%s: caught %s at stage=%s (#%d this fetch): %s",
+               self.book, type(exc).__name__ if exc else "error", stage,
+               count, exc)
+        return count
+
+    def snapshot(self) -> FetchCountersSnapshot:
+        with self._lock:
+            counts = dict(self._counts)
+            by_stage = tuple(sorted(self._by_stage.items()))
+        return FetchCountersSnapshot(book=self.book, path=self.path,
+                                     by_stage=by_stage, **counts)
+
+    def tripwires(self) -> list[str]:
+        """Names of the "we went silent" conditions that currently hold.
+
+        Each compares a stage's OUTPUT against its INPUT, so a genuinely
+        empty slate (no input) never fires.
+        """
+        with self._lock:
+            c = dict(self._counts)
+        fired = []
+        # The book listed games but none mapped onto our slate: a team-name
+        # or canonical-match regression.
+        if c["events_seen"] > 0 and c["events_matched"] == 0:
+            fired.append("events_unmatched")
+        # THE FanDuel case: candidate lines existed, the parser recognized none.
+        if c["legs_attempted"] > 0 and c["legs_resolved"] == 0:
+            fired.append("legs_unresolved")
+        # Priced targets, got nothing back, and transport never complained —
+        # a transport failure is #33's story and is already loud there.
+        if (c["targets_attempted"] > 0 and c["prices_returned"] == 0
+                and c["transport_errors"] == 0):
+            fired.append("prices_empty")
+        return fired
+
+    def counter_fields(self) -> str:
+        """The counters as ``name=value`` pairs — shared by both log lines."""
+        snap = self.snapshot()
+        parts = [f"book={snap.book}", f"path={snap.path}"]
+        parts += [f"{name}={getattr(snap, name)}" for name in COUNTER_NAMES]
+        if snap.by_stage:
+            parts.append("stages=" + ",".join(f"{s}:{n}"
+                                              for s, n in snap.by_stage))
+        return " ".join(parts)
+
+    def summary_line(self) -> str:
+        return "sgp fetch " + self.counter_fields()
+
+    def emit(self, logger_: logging.Logger, level: int = logging.INFO) -> None:
+        """Log the summary line plus one WARNING if any tripwire fired.
+
+        Idempotent — ``price_sgps`` emits from a ``finally``, and a nested
+        caller emitting again must not double-log.
+        """
+        with self._lock:
+            if self._emitted:
+                return
+            self._emitted = True
+        # isEnabledFor FIRST: the on-demand path emits at DEBUG on every RFQ
+        # for every book, and building the summary string only to have the
+        # handler drop it is pure overhead on the quote path (#50's budget).
+        if logger_.isEnabledFor(level):
+            logger_.log(level, "%s", self.summary_line())
+        fired = self.tripwires()
+        if fired:
+            logger_.warning(
+                "PARSE TRIPWIRE book=%s path=%s tripped=%s — %s",
+                self.book, self.path, ",".join(fired), self.counter_fields())
+
+
+@contextmanager
+def fetch_counters(book: str, path: str, logger_: logging.Logger,
+                   level: int = logging.INFO):
+    """Scope one book's one fetch, guaranteeing the summary is emitted.
+
+    Wraps ``price_sgps`` bodies (which have several ``return []``
+    short-circuits) and ``price_on_demand``. A ``BookTransportError`` on the
+    way out is tallied first — that suppresses the ``prices_empty`` tripwire,
+    which would otherwise point a fixer at the parser when the real story is
+    a dead endpoint.
+    """
+    counters = FetchCounters(book, path)
+    try:
+        yield counters
+    except BookTransportError:
+        counters.bump("transport_errors")
+        raise
+    finally:
+        counters.emit(logger_, level=level)
+
+
 @dataclass(frozen=True)
 class TargetLine:
     """One (game, period, spread, total) tuple the bot/dashboard wants priced."""
@@ -641,6 +873,9 @@ class OnDemandBookResult:
     # transfer_fair - partition_fair, computed only where both routes came
     # free (Route B vig-cancellation live measurement); None otherwise.
     route_gap: float | None = None
+    # Per-fetch drop counters for THIS on-demand call (issue #35). Optional so
+    # existing constructions keep working; #38 persists it to the health table.
+    counters: "FetchCountersSnapshot | None" = None
 
 
 @dataclass(frozen=True)

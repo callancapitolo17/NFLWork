@@ -31,7 +31,9 @@ Other FD specifics:
 """
 from __future__ import annotations
 import argparse
+import logging
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -39,6 +41,8 @@ from typing import Any
 import duckdb
 
 from fd_client import FanDuelClient, Event, Market, Runner
+
+logger = logging.getLogger(__name__)
 
 
 # Regex helpers for FD's alt-market name formats.
@@ -257,11 +261,12 @@ def parse_runners_to_wide_rows(
         if effective_line is None and market_type in (
             "alternate_spreads", "alternate_totals"
         ):
-            print(
-                f"[fd_singles] WARN: alt-line parse failed for "
-                f"runner={r.name!r} market_type={market_type}",
-                flush=True,
-            )
+            # WARNING per runner: this is the exact signature of FD format
+            # drift (the alt-total paren regression), and the aggregate
+            # tripwire below only fires when EVERY runner failed.
+            logger.warning(
+                "fd_singles: alt-line parse failed for runner=%r market_type=%s",
+                r.name, market_type)
             continue
         if alt_parse_stats is not None and market_type in alt_parse_stats:
             alt_parse_stats[market_type]["ok"] += 1
@@ -350,12 +355,10 @@ def parse_runners_to_wide_rows(
                 # enough on F5 alts that warning would be noise.
                 continue
             if abs(row["home_spread"] + row["away_spread"]) > 1e-9:
-                print(
-                    f"[fd_singles] WARN: asymmetric spread "
-                    f"home={row['home_spread']} away={row['away_spread']} "
-                    f"on event={event.event_id}; skipping",
-                    flush=True,
-                )
+                logger.warning(
+                    "fd_singles: asymmetric spread home=%s away=%s on "
+                    "event=%s; skipping",
+                    row["home_spread"], row["away_spread"], event.event_id)
                 continue
         out.append(row)
     return out
@@ -401,7 +404,7 @@ def scrape_singles(verbose: bool = False) -> int:
     """
     client = FanDuelClient(verbose=verbose)
     events = client.list_events()
-    print(f"[fd_singles] {len(events)} events to scrape", flush=True)
+    logger.info("fd_singles: %d events to scrape", len(events))
 
     # Use timezone-aware UTC so DuckDB's TIMESTAMPTZ column receives an
     # explicit UTC instant. A naive datetime (datetime.utcnow()) would be
@@ -427,15 +430,13 @@ def scrape_singles(verbose: bool = False) -> int:
             rows = parse_runners_to_wide_rows(event, runners, market_meta, fetch_time,
                                               alt_parse_stats=alt_parse_stats)
             all_rows.extend(rows)
-            if verbose:
-                print(
-                    f"  [{event.event_id}] {event.away_team} @ {event.home_team}: "
-                    f"{len(rows)} rows ({len(market_meta)} in-scope markets, "
-                    f"{len(runners)} runners total)",
-                    flush=True,
-                )
+            logger.debug(
+                f"  [{event.event_id}] {event.away_team} @ {event.home_team}: "
+                f"{len(rows)} rows ({len(market_meta)} in-scope markets, "
+                f"{len(runners)} runners total)",
+            )
         except Exception as e:
-            print(f"  [{event.event_id}] FAILED: {e}", flush=True)
+            logger.warning("fd_singles: event %s FAILED: %s", event.event_id, e)
             failed.append(event.event_id)
             continue
 
@@ -445,21 +446,17 @@ def scrape_singles(verbose: bool = False) -> int:
     # with no alts posted (seen == 0) stays quiet.
     summary = ", ".join(
         f"{mt} {s['ok']}/{s['seen']}" for mt, s in alt_parse_stats.items())
-    print(f"[fd_singles] alt parse: {summary}", flush=True)
+    logger.info("fd_singles: alt parse: %s", summary)
     for mt, s in alt_parse_stats.items():
         if s["seen"] > 0 and s["ok"] == 0:
-            print(
-                f"[fd_singles] ALERT: {mt}: {s['seen']} runners seen, 0 parsed "
-                f"— FD format drift likely (every name failed the line regex)",
-                flush=True,
-            )
+            logger.warning(
+                "PARSE TRIPWIRE book=fanduel path=singles tripped=%s — "
+                "%d runners seen, 0 parsed (FD format drift likely: every "
+                "name failed the line regex)", mt, s["seen"])
 
     write_to_duckdb(all_rows)
-    print(
-        f"[fd_singles] wrote {len(all_rows)} rows "
-        f"({len(failed)} events failed)",
-        flush=True,
-    )
+    logger.info("fd_singles: wrote %d rows (%d events failed)",
+                len(all_rows), len(failed))
     return len(all_rows)
 
 
@@ -489,8 +486,9 @@ def write_to_duckdb(rows: list[dict]) -> None:
             "WHERE table_name = 'mlb_odds' AND column_name = 'fetch_time'"
         ).fetchone()
         if existing is not None and "WITH TIME ZONE" not in (existing[1] or "").upper():
-            print(f"[fd] Migrating mlb_odds.fetch_time TIMESTAMP -> TIMESTAMPTZ "
-                  f"(existing snapshot will be re-populated this run)")
+            logger.warning(
+                "fd_singles: migrating mlb_odds.fetch_time TIMESTAMP -> "
+                "TIMESTAMPTZ (existing snapshot will be re-populated this run)")
             con.execute("DROP TABLE mlb_odds")
 
         # Migrate pre-tie_ml schema: a table created before the 3-way Result
@@ -505,8 +503,8 @@ def write_to_duckdb(rows: list[dict]) -> None:
             "WHERE table_name = 'mlb_odds' AND column_name = 'tie_ml'"
         ).fetchone()
         if table_exists is not None and has_tie is None:
-            print("[fd] Migrating mlb_odds: adding tie_ml column "
-                  "(snapshot re-populated this run)")
+            logger.warning("fd_singles: migrating mlb_odds — adding tie_ml "
+                           "column (snapshot re-populated this run)")
             con.execute("DROP TABLE mlb_odds")
 
         con.execute(
@@ -561,10 +559,8 @@ def write_to_duckdb(rows: list[dict]) -> None:
             )
             con.execute("DROP TABLE IF EXISTS mlb_odds_new")
         else:
-            print(
-                "[fd_singles] empty scrape — leaving prior snapshot in place",
-                flush=True,
-            )
+            logger.warning(
+                "fd_singles: empty scrape — leaving prior snapshot in place")
     finally:
         con.close()
 
@@ -576,10 +572,14 @@ def main() -> None:
     p.add_argument("--verbose", action="store_true", help="Per-event row logging")
     args = p.parse_args()
     if args.sport != "mlb":
-        print(f"[fd_singles] sport={args.sport!r} not supported, exiting", flush=True)
+        logger.info("fd_singles: sport=%r not supported, exiting", args.sport)
         return
     scrape_singles(verbose=args.verbose)
 
 
 if __name__ == "__main__":
+    # Library code attaches no handlers; the CLI entry point does, so a
+    # subprocess/dashboard run still writes progress to the runner log.
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout,
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     main()

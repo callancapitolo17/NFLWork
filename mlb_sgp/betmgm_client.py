@@ -24,6 +24,7 @@ default state is ``pa``.
 See ``recon_betmgm_sgp.py`` (``mgm`` mode) for the end-to-end proof.
 """
 from __future__ import annotations
+import logging
 
 import re
 import uuid
@@ -34,6 +35,8 @@ from curl_cffi import requests
 from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, BookTransportError,
                              PriceCallTallyMixin, RetryProfile, check_response,
                              json_or_raise, request_with_retry)
+
+logger = logging.getLogger(__name__)
 
 BOOK = "betmgm"
 MLB_SPORT_ID = "23"          # Entain CDS sport id for baseball
@@ -214,8 +217,9 @@ class BetMGMClient(PriceCallTallyMixin):
             # Per-combo price failures stay row-drops (they are partial), but
             # they must be TALLIED so an all-fail cycle still gets a verdict.
             self.price_calls.record(False)
-            if self.verbose:
-                print(f"  [mgm] price_picks error: {e!r}")
+            # DEBUG: one line per declined combo across a thread pool; the
+            # all-failed verdict is PriceCallTally's job, not this line's.
+            logger.debug("%s: price_picks transport error: %r", BOOK, e)
             return None
         if getattr(r, "status_code", 200) != 200:
             self.price_calls.record(False)

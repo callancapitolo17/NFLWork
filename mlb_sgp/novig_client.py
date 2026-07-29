@@ -53,6 +53,7 @@ and a flat `{"event": [...]}` / `{"events": [...]}` fallback so synthetic
 fixtures stay simple.
 """
 from __future__ import annotations
+import logging
 
 import json
 from dataclasses import dataclass, field
@@ -61,6 +62,8 @@ from typing import Any
 from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, BookTransportError,
                              PriceCallTallyMixin, RetryProfile, check_response,
                              json_or_raise, request_with_retry)
+
+logger = logging.getLogger(__name__)
 
 BOOK = "novig"
 NOVIG_GRAPHQL = "https://api.novig.us/v1/graphql"

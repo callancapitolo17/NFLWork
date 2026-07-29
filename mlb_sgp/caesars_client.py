@@ -23,6 +23,7 @@ Origin: https://sportsbook.caesars.com.
 See recon_caesars_betdetails_live.py for the end-to-end proof (3 MLB games).
 """
 from __future__ import annotations
+import logging
 
 import json
 import time
@@ -34,6 +35,8 @@ from curl_cffi import requests
 from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, BookTransportError,
                              PriceCallTallyMixin, RetryProfile,
                              request_with_retry)
+
+logger = logging.getLogger(__name__)
 
 
 def _looks_like_json(resp) -> bool:
@@ -166,14 +169,16 @@ class CaesarsClient(PriceCallTallyMixin):
             from caesars_waf import mint_token_browser_free  # cwd=mlb_sgp path
         for attempt in range(3):
             try:
-                tok, dev = mint_token_browser_free(state=self.state, verbose=self.verbose)
+                tok, dev = mint_token_browser_free(state=self.state)
             except Exception as e:
-                if self.verbose:
-                    print(f"  [czr] mint error (attempt {attempt+1}): {e!r}")
+                # Auth-stage surprise: WARNING (rare, and a dead WAF token is
+                # how this book rots silently — see issue #32's meta-bug).
+                logger.warning("caesars: WAF mint error (attempt %d/3): %r",
+                               attempt + 1, e)
                 continue
             if not tok:
-                if self.verbose:
-                    print(f"  [czr] node mint returned no token (attempt {attempt+1})")
+                logger.warning("caesars: WAF mint returned no token "
+                               "(attempt %d/3)", attempt + 1)
                 continue
             self._token = tok
             self._device = dev
@@ -181,12 +186,12 @@ class CaesarsClient(PriceCallTallyMixin):
             self._minted_at = time.time()
             if self._validate():
                 self._save_cache()
-                if self.verbose:
-                    print(f"  [czr] token minted+validated browser-free (attempt {attempt+1})")
+                logger.info("caesars: WAF token minted+validated browser-free "
+                            "(attempt %d/3)", attempt + 1)
                 return True
-            if self.verbose:
-                print(f"  [czr] token minted but NOT validated (attempt {attempt+1}) "
-                      f"— WAF reject or IP throttle")
+            logger.warning("caesars: WAF token minted but NOT validated "
+                           "(attempt %d/3) — WAF reject or IP throttle",
+                           attempt + 1)
         return False
 
     # --- REST --------------------------------------------------------------- #

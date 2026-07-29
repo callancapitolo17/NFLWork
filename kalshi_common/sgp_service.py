@@ -17,8 +17,9 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path
 
 from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, BookTransportError,
-                             OnDemandBookResult, PricedRow, RetryProfile,
-                             TargetLine, TTLCache)
+                             FetchCounters, OnDemandBookResult, PricedRow,
+                             RetryProfile, TargetLine, TTLCache,
+                             fetch_counters)
 
 log = logging.getLogger(__name__)
 
@@ -341,30 +342,54 @@ class SGPService:
         prices, devig gate rejection) is NOT a failure: no accounting, just
         None. Success does NOT touch last_success — that timestamp belongs
         to the sweep's min_refresh_sec scheduling.
+
+        Issue #35: the whole call is scoped by a ``FetchCounters``. Its
+        summary logs at DEBUG (this runs per RFQ per book — an INFO line each
+        time would drown bot.log), and a parse tripwire still logs WARNING.
+        The counters ride back on ``OnDemandBookResult.counters``.
         """
-        t0 = time.monotonic()
         if book not in self._state or not legs:
             return None
+        with fetch_counters(book, "on_demand", log,
+                            level=logging.DEBUG) as counters:
+            return self._price_on_demand(book, game, legs, counters)
+
+    def _price_on_demand(self, book: str, game, legs,
+                         counters: FetchCounters):
+        t0 = time.monotonic()
         st = self._state[book]
         try:
             hooks = (self._on_demand_hooks or {}).get(book)
             if hooks is None:
                 self._ensure_client(book)
-                hooks = self._book_on_demand_hooks(book)
+                hooks = self._book_on_demand_hooks(book, counters=counters)
 
             event = hooks["match_event"](st.client, game)
             if event is None:
                 return None                      # book doesn't list the game
+            # One game in, one matched: events_seen stays 0 on a miss so an
+            # unlisted game never reads as an event-match regression.
+            counters.bump("events_seen")
+            counters.bump("events_matched")
             structure = hooks["build_structure"](st.client, event, game)
             if structure is None:
                 return None
+            counters.bump("legs_attempted", len(legs))
             resolved = hooks["resolve"](structure, legs,
                                         game.home_team, game.away_team)
             if not resolved:
                 return None                      # a chosen side is missing
+            counters.bump("legs_resolved", len(resolved))
 
             def _price(refs):
-                return hooks["price"](st.client, list(refs), event)
+                # Counted here rather than inside the book modules so one
+                # LOGICAL price is one tick no matter how many times #34's
+                # request_with_retry re-issued the wire call.
+                counters.bump("targets_attempted")
+                dec = hooks["price"](st.client, list(refs), event)
+                if dec is not None:
+                    counters.bump("prices_returned")
+                return dec
 
             n = len(legs)
             n_cells_priced = 0
@@ -428,17 +453,22 @@ class SGPService:
                 book=book, fair=fair, route=route,
                 n_cells_priced=n_cells_priced,
                 latency_sec=time.monotonic() - t0,
-                route_gap=route_gap)
+                route_gap=route_gap,
+                counters=counters.snapshot())
         except BookTransportError as e:
             # Same strike path as the sweep, so on-demand and refresh share
             # one recovery (issue #33). A clean "book won't price this"
-            # returned early above and never reaches here.
+            # returned early above and never reaches here. Counted so the
+            # parse tripwire does not blame the parser for a dead endpoint.
+            counters.bump("transport_errors")
             log.error("sgp_service: %s on-demand TRANSPORT FAILURE stage=%s "
                       "status=%s: %s", book, e.stage, e.status_code, e)
             self._book_done(book, None)
             return None
         except Exception as e:
-            log.warning("sgp_service: %s on-demand transport error: %s", book, e)
+            # record_parse_failure does the logging (WARNING the first time
+            # per stage this fetch, DEBUG after).
+            counters.record_parse_failure("on_demand", log, e)
             self._book_done(book, None)
             return None
 
@@ -497,7 +527,12 @@ class SGPService:
         struct = st.caches.setdefault("structure", TTLCache(STRUCTURE_TTL_SEC))
         return ev, struct
 
-    def _book_on_demand_hooks(self, book: str) -> dict:
+    def _book_on_demand_hooks(self, book: str, *,
+                              counters: FetchCounters | None = None) -> dict:
+        """Per-book hook dict. ``counters`` (keyword-only) is threaded into
+        each book's ``resolve_legs`` / ``price_selection_set`` so their
+        fail-safe ``except`` blocks can record a NAMED parse failure instead
+        of silently returning None (issue #35)."""
         st = self._state[book]
 
         if book == "draftkings":
@@ -519,9 +554,12 @@ class SGPService:
 
             return {"match_event": match_event,
                     "build_structure": build_structure,
-                    "resolve": mod.resolve_legs,
+                    "resolve": lambda structure, legs, home, away:
+                        mod.resolve_legs(structure, legs, home, away,
+                                         counters=counters),
                     "price": lambda client, refs, event:
-                        mod.price_selection_set(client, refs)}
+                        mod.price_selection_set(client, refs,
+                                                counters=counters)}
 
         if book == "fanduel":
             from mlb_sgp import fanduel as mod
@@ -542,9 +580,12 @@ class SGPService:
 
             return {"match_event": match_event,
                     "build_structure": build_structure,
-                    "resolve": mod.resolve_legs,
+                    "resolve": lambda structure, legs, home, away:
+                        mod.resolve_legs(structure, legs, home, away,
+                                         counters=counters),
                     "price": lambda client, refs, event:
-                        mod.price_selection_set(client, refs)}
+                        mod.price_selection_set(client, refs,
+                                                counters=counters)}
 
         if book == "prophetx":
             from mlb_sgp import prophetx as mod
@@ -591,9 +632,12 @@ class SGPService:
 
             return {"match_event": match_event,
                     "build_structure": build_structure,
-                    "resolve": mod.resolve_legs,
+                    "resolve": lambda structure, legs, home, away:
+                        mod.resolve_legs(structure, legs, home, away,
+                                         counters=counters),
                     "price": lambda client, refs, event:
-                        mod.price_selection_set(client, refs)}
+                        mod.price_selection_set(client, refs,
+                                                counters=counters)}
 
         if book == "novig":
             from mlb_sgp import novig as mod
@@ -633,9 +677,12 @@ class SGPService:
 
             return {"match_event": match_event,
                     "build_structure": build_structure,
-                    "resolve": mod.resolve_legs,
+                    "resolve": lambda structure, legs, home, away:
+                        mod.resolve_legs(structure, legs, home, away,
+                                         counters=counters),
                     "price": lambda client, refs, event:
-                        mod.price_selection_set(client, refs)}
+                        mod.price_selection_set(client, refs,
+                                                counters=counters)}
 
         if book == "betmgm":
             from mlb_sgp import betmgm as mod
@@ -660,11 +707,15 @@ class SGPService:
 
             return {"match_event": match_event,
                     "build_structure": build_structure,
-                    "resolve": mod.resolve_legs,
+                    "resolve": lambda structure, legs, home, away:
+                        mod.resolve_legs(structure, legs, home, away,
+                                         counters=counters),
                     # MGM's price_selection_set takes fixture_id as a 3rd
-                    # arg — threaded from the matched Event.
+                    # POSITIONAL arg — threaded from the matched Event.
+                    # counters stays keyword-only so it can never bind here.
                     "price": lambda client, refs, event:
-                        mod.price_selection_set(client, refs, event.event_id)}
+                        mod.price_selection_set(client, refs, event.event_id,
+                                                counters=counters)}
 
         if book == "caesars":
             from mlb_sgp import caesars as mod
@@ -686,9 +737,12 @@ class SGPService:
 
             return {"match_event": match_event,
                     "build_structure": build_structure,
-                    "resolve": mod.resolve_legs,
+                    "resolve": lambda structure, legs, home, away:
+                        mod.resolve_legs(structure, legs, home, away,
+                                         counters=counters),
                     "price": lambda client, refs, event:
-                        mod.price_selection_set(client, refs)}
+                        mod.price_selection_set(client, refs,
+                                                counters=counters)}
 
         raise ValueError(f"unknown book {book!r}")
 

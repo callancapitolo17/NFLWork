@@ -52,15 +52,18 @@ adapts to the real signatures:
 """
 from __future__ import annotations
 
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-from mlb_sgp._shared import (RETRY_LIVE, PricedRow, TargetLine,
-                             decimal_to_american, price_tally_for,
+from mlb_sgp._shared import (RETRY_LIVE, BookTransportError, FetchCounters,
+                             PricedRow, TargetLine, decimal_to_american,
+                             fetch_counters, price_tally_for,
                              request_with_retry)
 from mlb_sgp.dk_client import DraftKingsClient
 
+logger = logging.getLogger(__name__)
 
 BOOK_NAME = "draftkings"
 SOURCE_LABEL = "draftkings_direct"
@@ -170,7 +173,25 @@ def price_sgps(
         Rows produced via the integer-fallback path are tagged with
         ``source = draftkings_interpolated`` instead of
         ``draftkings_direct``.
+
+    This is a thin wrapper over ``_price_sgps`` so issue #35's per-fetch
+    counter summary and parse tripwire are emitted on every exit path,
+    early returns included.
     """
+    with fetch_counters(BOOK_NAME, "sweep", logger) as counters:
+        return _price_sgps(target_lines, periods, client, verbose,
+                           parallelism, fetchers, counters)
+
+
+def _price_sgps(
+    target_lines: list[TargetLine],
+    periods: tuple[str, ...],
+    client: DraftKingsClient | None,
+    verbose: bool,
+    parallelism: int | None,
+    fetchers: dict | None,
+    counters: FetchCounters,
+) -> list[PricedRow]:
     if not target_lines:
         return []
 
@@ -238,7 +259,9 @@ def price_sgps(
 
     # ----- Phase 1: list DK events and match to our game_ids ----- #
     dk_events = fetch_events_fn(client.session)
+    counters.bump("events_seen", len(dk_events or []))
     matched = match_events(dk_events, target_dict)
+    counters.bump("events_matched", len(matched or []))
     if not matched:
         return []
 
@@ -305,7 +328,15 @@ def price_sgps(
             and (t.total + 0.5) in offered_totals
         ):
             filtered_targets.append(t)
-    if verbose:
+    # Count only targets whose game actually matched, so legs_attempted
+    # means the same thing here as in the other five books (their Filter A
+    # loops iterate per MATCHED game). A target for an unmatched game is an
+    # event-match miss, not a parse miss.
+    counters.bump("legs_attempted",
+                  sum(1 for t in targets if t.game_id in per_game_cache))
+    counters.bump("legs_resolved", len(filtered_targets))
+    counters.bump("targets_attempted", len(filtered_targets))
+    if logger.isEnabledFor(logging.DEBUG):
         # Group counts per game for log readability.
         pre_per_game: dict[str, int] = {}
         post_per_game: dict[str, int] = {}
@@ -315,7 +346,8 @@ def price_sgps(
             post_per_game[t.game_id] = post_per_game.get(t.game_id, 0) + 1
         for gid, pre in pre_per_game.items():
             post = post_per_game.get(gid, 0)
-            print(f"  game {gid}: {pre} kalshi → {post} offered", flush=True)
+            logger.debug("%s: game %s: %d kalshi -> %d offered",
+                         BOOK_NAME, gid, pre, post)
 
     # ----- Phase 2: per target row, build and price 4 combos ----- #
     # Each TargetLine is priced independently (its own sel-id lookups +
@@ -394,7 +426,7 @@ def price_sgps(
 
         priced_by_combo = _price_combos_parallel(
             client.session, combos, canonical,
-            calculate_sgp, _market_num, verbose,
+            calculate_sgp, _market_num, verbose, counters=counters,
         )
 
         for combo_name, _sp_sels, _tot_sels in combos:
@@ -423,8 +455,7 @@ def price_sgps(
             try:
                 out.extend(f.result())
             except Exception as e:
-                if verbose:
-                    print(f"  dk target error: {e}", flush=True)
+                counters.record_exception("price_target", logger, e)
 
     # ----- Phase 3: moneyline × total combos (FG) ----- #
     # ML+total is a 4-cell devig-able grid keyed by total line only (no spread),
@@ -433,15 +464,18 @@ def price_sgps(
     out.extend(_price_ml_total_for_games(
         client, per_game_cache, filtered_targets,
         calculate_sgp, _market_num, fetch_now, verbose, n_workers,
+        counters=counters,
     ))
 
+    counters.bump("prices_returned", len(out))
     price_calls.verdict(tally_start)   # raises if EVERY price call failed
     return out
 
 
 def _price_ml_total_for_games(
     client, per_game_cache, filtered_targets,
-    calculate_sgp_fn, market_num_fn, fetch_now, verbose, n_workers,
+    calculate_sgp_fn, market_num_fn, fetch_now, verbose, n_workers, *,
+    counters: FetchCounters | None = None,
 ) -> list[PricedRow]:
     """Price the 4 moneyline×total combos (Home/Away ML × Over/Under) for each
     (game, distinct FG total line). Returns PricedRows with spread_line=None
@@ -451,7 +485,11 @@ def _price_ml_total_for_games(
     gate the TOTAL leg on canonical; DK's calculateBets itself rejects a
     non-combinable ML+total pair (the combinabilityRestrictions / 422 path in
     calculate_sgp), so an unsupported pair simply yields no row.
+
+    ``counters`` is keyword-only and optional so existing direct-call tests
+    keep working; a throwaway tally stands in when it is absent.
     """
+    counters = counters or FetchCounters(BOOK_NAME, "sweep")
     # distinct FG totals per game from the already-offered (filtered) targets.
     totals_by_game: dict[str, set] = {}
     for t in filtered_targets:
@@ -514,8 +552,7 @@ def _price_ml_total_for_games(
             try:
                 out.extend(f.result())
             except Exception as e:
-                if verbose:
-                    print(f"  dk ML target error: {e}", flush=True)
+                counters.record_exception("price_ml_target", logger, e)
     return out
 
 
@@ -526,6 +563,8 @@ def _price_combos_parallel(
     calculate_sgp_fn,
     market_num_fn,
     verbose: bool,
+    *,
+    counters: FetchCounters | None = None,
 ) -> dict:
     """Price the 4 combo flavors in parallel and return {combo_name: sgp_dict}.
 
@@ -540,7 +579,10 @@ def _price_combos_parallel(
     A combo that fails to price (None) is simply omitted from the
     result dict, mirroring the sequential path's ``if not sgp: continue``
     behavior.
+
+    ``counters`` is keyword-only and optional (direct-call tests).
     """
+    counters = counters or FetchCounters(BOOK_NAME, "sweep")
     results: dict = {}
 
     def _price_one(combo_name, sp_sels, tot_sels):
@@ -557,7 +599,8 @@ def _price_combos_parallel(
         for fut in as_completed(futures):
             try:
                 combo_name, sgp = fut.result()
-            except Exception:
+            except Exception as e:
+                counters.record_exception("price_combo_future", logger, e)
                 continue
             if sgp:
                 results[combo_name] = sgp
@@ -601,7 +644,8 @@ def _price_combo(
 from mlb_sgp._shared import ResolvedLeg  # noqa: E402  (Phase 2 section import)
 
 
-def resolve_legs(structure, legs, home_team, away_team):
+def resolve_legs(structure, legs, home_team, away_team, *,
+                 counters: FetchCounters | None = None):
     """Resolve canonical legs against DK's FG selection-id structure.
 
     Parameters
@@ -681,12 +725,17 @@ def resolve_legs(structure, legs, home_team, away_team):
                 opposite_decimal=None,
             ))
         return out
-    except Exception:
+    except Exception as e:
         # Fail-safe: malformed/unexpected structure shape → None, never raise.
+        # The counter is what tells "DK doesn't offer this leg" from "our
+        # parser broke".
+        if counters is not None:
+            counters.record_parse_failure("resolve_legs", logger, e)
         return None
 
 
-def price_selection_set(client, refs):
+def price_selection_set(client, refs, *,
+                        counters: FetchCounters | None = None):
     """Price one set of DK selection ids (1..N legs) via calculateBets.
 
     Generalizes the 2-leg ``calculate_sgp`` (scraper_draftkings_sgp.py:598)
@@ -724,5 +773,12 @@ def price_selection_set(client, refs):
             if true_odds and len(bet.get("selectionsMapped", [])) >= len(refs):
                 return float(true_odds)
         return None
-    except Exception:
+    except BookTransportError:
+        # Counted, NOT re-raised — see caesars.price_selection_set.
+        if counters is not None:
+            counters.bump("transport_errors")
+        return None
+    except Exception as e:
+        if counters is not None:
+            counters.record_parse_failure("price_selection_set", logger, e)
         return None

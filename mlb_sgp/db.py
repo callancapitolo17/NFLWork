@@ -8,6 +8,7 @@ against sample-based fair odds for cross-validation.
 """
 
 from __future__ import annotations
+import logging
 
 import duckdb
 import os
@@ -16,6 +17,8 @@ import time
 from pathlib import Path
 from datetime import datetime
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from mlb_sgp._shared import PricedRow

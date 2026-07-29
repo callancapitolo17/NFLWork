@@ -23,6 +23,7 @@ so a second client-side filter would be redundant. Matches DK's shim
 shape and behavior.
 """
 
+import logging
 import os
 import re
 import sys
@@ -50,6 +51,14 @@ from integer_line_derivation import is_integer_line, derive_fair_probs
 # `except` clause would match.
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+logger = logging.getLogger(__name__)
+
+# Issue #36 moved every diagnostic in this module to the module logger, so the
+# `verbose` parameters marked "inert" below no longer control anything. They
+# are kept because the orchestrators, SGPService's fetcher hooks and the
+# dashboard shims all still pass them; #49 (shim cleanup) removes them and
+# every call site together.
+
 from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, RetryProfile,
                              check_response, json_or_raise, request_with_retry)
 
@@ -210,7 +219,9 @@ def load_parlay_lines() -> dict:
     try:
         tables = [t[0] for t in con.execute("SHOW TABLES").fetchall()]
         if "mlb_parlay_lines" not in tables:
-            print("  No mlb_parlay_lines table — run the MLB pipeline first.")
+            # WARNING: a missing table is an upstream pipeline fault, not an
+            # empty slate — exactly the confusion issue #32 exists to remove.
+            logger.warning("no mlb_parlay_lines table — run the MLB pipeline first")
             return {}
 
         rows = con.execute("""
@@ -496,7 +507,8 @@ def _parse_total_runner(rn: str, hc, main_or_alt: str) -> tuple[str, float] | No
 def price_combo(session: cffi_requests.Session,
                 spread_market: str, spread_sel: int,
                 total_market: str, total_sel: int,
-                verbose: bool = False) -> dict | None:
+                verbose: bool = False,   # inert since #36 (see module note)
+                ) -> dict | None:
     """POST implyBets, return the SGP combined entry (isSGM=true) or None."""
     body = {"betLegs": [
         {"legType": "SIMPLE_SELECTION",
@@ -515,8 +527,7 @@ def price_combo(session: cffi_requests.Session,
         ),
         profile=RETRY_LIVE, book=FD_BOOK, stage="price")
     if resp.status_code != 200:
-        if verbose:
-            print(f"      HTTP {resp.status_code}")
+        logger.debug(f"      HTTP {resp.status_code}")
         return None
 
     try:
@@ -533,8 +544,7 @@ def price_combo(session: cffi_requests.Session,
             continue
         return {"decimal": float(odds), "american": int(am)}
 
-    if verbose:
-        print(f"      No isSGM entry in response (singles only)")
+    logger.debug(f"      No isSGM entry in response (singles only)")
     return None
 
 
@@ -569,8 +579,7 @@ def try_integer_fallback_fd(
     under_hi = sel["totals"].get(("U", hi))
 
     if not all([home_spread, away_spread, over_lo, under_lo, over_hi, under_hi]):
-        if verbose:
-            print(f"      integer fallback: missing alts for {total_line}")
+        logger.debug(f"      integer fallback: missing alts for {total_line}")
         return None
 
     def _price(sp_pair, tot_pair):
@@ -591,8 +600,7 @@ def try_integer_fallback_fd(
     }
 
     if any(d is None for d in decimals_lo.values()) or any(d is None for d in decimals_hi.values()):
-        if verbose:
-            print(f"      integer fallback: pricing failed for {total_line}")
+        logger.debug(f"      integer fallback: pricing failed for {total_line}")
         return None
 
     return derive_fair_probs(decimals_lo, decimals_hi)
@@ -639,23 +647,23 @@ def main():
 
     targets = load_target_lines(db_path)
     if not targets:
-        print(f"  No target lines in {db_path} — nothing to scrape.")
+        logger.info("no target lines in %s — nothing to scrape", db_path)
         return 0
 
     periods_raw = os.environ.get("MLB_SGP_PERIODS", "FG,F5").split(",")
     periods = tuple(p.strip() for p in periods_raw if p.strip())
 
     from mlb_sgp import fanduel
-    print(f"  FD shim: {len(targets)} target lines, periods={periods}")
+    logger.info("FD shim: %d target lines, periods=%s", len(targets), periods)
     try:
         rows = fanduel.price_sgps(targets, periods=periods, verbose=False)
     except Exception as e:
         # Transport failure (403 / DNS / auth gate — issue #33): leave the
         # previous cycle's rows in place rather than clearing the source.
         # The downstream fetch_time freshness gate filters anything stale.
-        print(f"  FD shim: price_sgps failed ({e}) — preserving last cycle's rows")
+        logger.error("FD shim: price_sgps failed (%s) — preserving last cycle's rows", e)
         return 1
-    print(f"  FD shim: priced {len(rows)} rows")
+    logger.info("FD shim: priced %d rows", len(rows))
 
     # Wipe both source labels so stale rows from a previous run never linger.
     # The orchestrator tags _direct vs _interpolated rows; clearing both
@@ -667,4 +675,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # Library code attaches no handlers; the CLI entry point does, so a
+    # subprocess/dashboard run still writes progress to the runner log.
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout,
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     sys.exit(main())

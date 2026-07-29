@@ -30,10 +30,13 @@ VERIFIED 2026-06-16: token_len=182, tabs feed -> 200 / 210 KB JSON. GREEN.
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import subprocess
 import uuid
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _THIS_DIR = Path(__file__).resolve().parent
 _NODE_HARNESS = _THIS_DIR / "caesars_waf_node.js"
@@ -49,39 +52,35 @@ def mint_token_browser_free(state: str = "nj",
                             issuer_key: str = DEFAULT_KEY,
                             ua: str = REAL_UA,
                             node_bin: str | None = None,
-                            timeout: int = 60,
-                            verbose: bool = False) -> tuple[str, str]:
+                            timeout: int = 60) -> tuple[str, str]:
     """Mint an aws-waf-token without a browser. Returns (token, device_id);
     ("", "") on failure (caller then produces no rows, same as Playwright path).
     `state` is accepted for signature parity with CaesarsClient._mint."""
     node = node_bin or shutil.which("node")
     if not node:
-        if verbose:
-            print("  [czr-waf] node not found on PATH")
+        # ERROR, not DEBUG: with no node there is no Caesars token and so no
+        # Caesars data at all — an environment fault, not a slate condition.
+        logger.error("caesars-waf: node not found on PATH")
         return "", ""
     if not _NODE_HARNESS.exists():
-        if verbose:
-            print(f"  [czr-waf] missing harness {_NODE_HARNESS}")
+        logger.error("caesars-waf: missing node harness %s", _NODE_HARNESS)
         return "", ""
     try:
         proc = subprocess.run(
             [node, str(_NODE_HARNESS), issuer, issuer_key, ua],
             capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        if verbose:
-            print("  [czr-waf] node mint timed out")
+        logger.warning("caesars-waf: node mint timed out after %ss", timeout)
         return "", ""
     line = (proc.stdout or "").strip().splitlines()[-1] if proc.stdout.strip() else ""
     try:
         res = json.loads(line)
     except Exception:
-        if verbose:
-            print(f"  [czr-waf] bad node output: {proc.stdout[:200]!r} "
-                  f"stderr={proc.stderr[:200]!r}")
+        logger.warning("caesars-waf: unparseable node output: %r stderr=%r",
+                       proc.stdout[:200], proc.stderr[:200])
         return "", ""
     if not res.get("ok") or not res.get("token"):
-        if verbose:
-            print(f"  [czr-waf] mint failed: {res.get('error')}")
+        logger.warning("caesars-waf: mint failed: %s", res.get("error"))
         return "", ""
     return res["token"], str(uuid.uuid4())
 
@@ -105,7 +104,7 @@ def _validate(token: str, device: str, state: str = "nj") -> tuple[int, int, boo
 if __name__ == "__main__":
     import time
     t0 = time.time()
-    token, device = mint_token_browser_free(verbose=True)
+    token, device = mint_token_browser_free()
     dt = time.time() - t0
     print(f"token_len={len(token)} device={device} mint={dt:.2f}s")
     if not token:
