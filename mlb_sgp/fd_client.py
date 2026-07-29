@@ -14,8 +14,9 @@ takes a `tab` argument (FD returns a different market slice per tab).
 from __future__ import annotations
 from dataclasses import dataclass
 
-from mlb_sgp._shared import (BookTransportError, PriceCallTallyMixin,
-                             check_response, json_or_raise)
+from mlb_sgp._shared import (RETRY_BACKGROUND, PriceCallTallyMixin,
+                             RetryProfile, check_response, json_or_raise,
+                             request_with_retry)
 
 BOOK = "fanduel"
 
@@ -72,7 +73,8 @@ class FanDuelClient(PriceCallTallyMixin):
         ) for e in raw]
 
     def fetch_event_page(
-        self, event_id: str, tab: str = "same-game-parlay-"
+        self, event_id: str, tab: str = "same-game-parlay-",
+        profile: RetryProfile = RETRY_BACKGROUND,
     ) -> tuple[list["Market"], list["Runner"]]:
         """Fetch one FD event-page tab; return (markets, runners) from it.
 
@@ -94,13 +96,15 @@ class FanDuelClient(PriceCallTallyMixin):
             f"&tab={tab}"
             f"&useCombinedTouchdownsVirtualMarket=true&useQuickBets=true"
         )
-        try:
-            resp = self.session.get(url, headers=FD_HEADERS, timeout=20)
-        except TypeError:
-            # FakeSession in unit tests doesn't accept headers/timeout kwargs
-            resp = self.session.get(url)
-        except Exception as e:
-            raise BookTransportError(BOOK, "structure", cause=e) from e
+        def _get():
+            try:
+                return self.session.get(url, headers=FD_HEADERS, timeout=20)
+            except TypeError:
+                # FakeSession in unit tests doesn't accept headers/timeout kwargs
+                return self.session.get(url)
+
+        resp = request_with_retry(_get, profile=profile, book=BOOK,
+                                  stage="structure")
 
         # 404 = FD dropped this event; anything else non-200 (a PerimeterX
         # block, for instance) is a dead book, not a market-less event.

@@ -63,11 +63,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from mlb_sgp._shared import (
+    RETRY_LIVE,
     PricedRow,
     ResolvedLeg,
     TargetLine,
     decimal_to_american,
     price_tally_for,
+    request_with_retry,
 )
 from mlb_sgp.fd_client import FanDuelClient
 
@@ -636,12 +638,15 @@ def price_selection_set(client, refs) -> float | None:
              "betRunners": [{"runner": {"marketId": mid, "selectionId": sid}}]}
             for mid, sid in refs
         ]}
-        resp = client.session.post(
-            FD_IMPLY_BETS_URL,
-            headers={**FD_HEADERS, "Content-Type": "application/json"},
-            data=json.dumps(body),
-            timeout=15,
-        )
+        # RETRY_LIVE: this is the on-demand quote path — one fast retry.
+        resp = request_with_retry(
+            lambda: client.session.post(
+                FD_IMPLY_BETS_URL,
+                headers={**FD_HEADERS, "Content-Type": "application/json"},
+                data=json.dumps(body),
+                timeout=15,
+            ),
+            profile=RETRY_LIVE, book=BOOK_NAME, stage="price")
         if resp.status_code != 200:
             return None
         data = resp.json()

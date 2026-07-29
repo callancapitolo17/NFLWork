@@ -43,7 +43,7 @@ def test_extract_moneyline_empty_when_no_mnum():
 def test_fetch_main_market_nums_captures_moneyline(monkeypatch):
     import scraper_draftkings_sgp as dk
 
-    def fake_subcat(session, eid, subcat):
+    def fake_subcat(session, eid, subcat, profile=None):
         if subcat == "4519":
             return [("1_85265198", "Moneyline"), ("2_85265198", "Run Line"),
                     ("3_85265198", "Total")]

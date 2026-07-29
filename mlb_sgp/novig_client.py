@@ -58,8 +58,9 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from mlb_sgp._shared import (BookTransportError, PriceCallTallyMixin,
-                             check_response, json_or_raise)
+from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, BookTransportError,
+                             PriceCallTallyMixin, RetryProfile, check_response,
+                             json_or_raise, request_with_retry)
 
 BOOK = "novig"
 NOVIG_GRAPHQL = "https://api.novig.us/v1/graphql"
@@ -108,7 +109,7 @@ class NovigClient(PriceCallTallyMixin):
         self.session = init_session()
         self.verbose = verbose
 
-    def list_events(self) -> list[Event]:
+    def list_events(self, profile: RetryProfile = RETRY_BACKGROUND) -> list[Event]:
         """List upcoming MLB events. Uses the same query the legacy scraper does."""
         from datetime import datetime, timezone, timedelta
         from scraper_novig_sgp import MLB_EVENTS_QUERY, EVENT_WINDOW_HOURS
@@ -119,39 +120,45 @@ class NovigClient(PriceCallTallyMixin):
             "query": MLB_EVENTS_QUERY,
             "variables": {"start_gte": now.isoformat(), "start_lte": cutoff},
         })
-        try:
-            r = self.session.post(
-                NOVIG_GRAPHQL, data=body,
-                headers={"Content-Type": "application/json"},
-                timeout=20,
-            )
-        except TypeError:
-            # FakeSession in unit tests may not accept all kwargs
-            r = self.session.post(NOVIG_GRAPHQL, data=body)
-        except Exception as e:
-            # api.novig.us stopped resolving in production — a DNS failure is
-            # a dead book, not an off-day.
-            raise BookTransportError(BOOK, "events", cause=e) from e
+        def _post():
+            try:
+                return self.session.post(
+                    NOVIG_GRAPHQL, data=body,
+                    headers={"Content-Type": "application/json"},
+                    timeout=20,
+                )
+            except TypeError:
+                # FakeSession in unit tests may not accept all kwargs
+                return self.session.post(NOVIG_GRAPHQL, data=body)
+
+        # api.novig.us stopped resolving in production — a DNS failure that
+        # survives the retries is a dead book, not an off-day.
+        r = request_with_retry(_post, profile=profile, book=BOOK,
+                               stage="events")
         check_response(BOOK, "events", r)
         return _parse_events_response(json_or_raise(BOOK, "events", r))
 
-    def fetch_event_legs(self, event_id: str) -> EventLegs:
+    def fetch_event_legs(self, event_id: str,
+                         profile: RetryProfile = RETRY_BACKGROUND) -> EventLegs:
         """Fetch the market tree for one event and extract spread + total outcomes."""
         from scraper_novig_sgp import _load_event_markets_query
 
         query_text = _load_event_markets_query()
         q_obj = json.loads(query_text)
         q_obj["variables"]["eventId"] = event_id
-        try:
-            r = self.session.post(
-                NOVIG_GRAPHQL, data=json.dumps(q_obj),
-                headers={"Content-Type": "application/json"},
-                timeout=20,
-            )
-        except TypeError:
-            r = self.session.post(NOVIG_GRAPHQL, data=json.dumps(q_obj))
-        except Exception as e:
-            raise BookTransportError(BOOK, "structure", cause=e) from e
+
+        def _post():
+            try:
+                return self.session.post(
+                    NOVIG_GRAPHQL, data=json.dumps(q_obj),
+                    headers={"Content-Type": "application/json"},
+                    timeout=20,
+                )
+            except TypeError:
+                return self.session.post(NOVIG_GRAPHQL, data=json.dumps(q_obj))
+
+        r = request_with_retry(_post, profile=profile, book=BOOK,
+                               stage="structure")
         # 404 = Novig dropped this event; skip the game, keep the cycle.
         if not check_response(BOOK, "structure", r, allow_404=True):
             return EventLegs(event_id=event_id)
@@ -173,15 +180,22 @@ class NovigClient(PriceCallTallyMixin):
         endpoint doesn't gate by stake — it returns offers regardless.
         """
         payload = {"outcomes": [{"id": oid} for oid in outcome_ids], "boostId": None}
+
+        def _post():
+            try:
+                return self.session.post(
+                    NOVIG_PARLAY, json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=15,
+                )
+            except TypeError:
+                return self.session.post(NOVIG_PARLAY, json=payload)
+
         try:
-            r = self.session.post(
-                NOVIG_PARLAY, json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=15,
-            )
-        except TypeError:
-            r = self.session.post(NOVIG_PARLAY, json=payload)
-        except Exception:
+            # RETRY_LIVE on every path — price calls are the fan-out surface.
+            r = request_with_retry(_post, profile=RETRY_LIVE, book=BOOK,
+                                   stage="price")
+        except BookTransportError:
             # Per-combo failures stay row-drops, but must be tallied so an
             # all-fail cycle still yields a "price" transport verdict.
             self.price_calls.record(False)

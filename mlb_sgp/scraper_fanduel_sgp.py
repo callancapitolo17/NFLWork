@@ -50,7 +50,8 @@ from integer_line_derivation import is_integer_line, derive_fair_probs
 # `except` clause would match.
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-from mlb_sgp._shared import BookTransportError, check_response, json_or_raise
+from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, RetryProfile,
+                             check_response, json_or_raise, request_with_retry)
 
 FD_BOOK = "fanduel"
 
@@ -124,7 +125,8 @@ def init_session() -> cffi_requests.Session:
 # Step 1: Fetch FD MLB events
 # ---------------------------------------------------------------------------
 
-def fetch_fd_events(session: cffi_requests.Session) -> list[dict]:
+def fetch_fd_events(session: cffi_requests.Session,
+                    profile: RetryProfile = RETRY_BACKGROUND) -> list[dict]:
     """List today's MLB events. Name format: 'Away (P Pitcher) @ Home (P Pitcher)'."""
     body = {
         "filter": {
@@ -138,15 +140,14 @@ def fetch_fd_events(session: cffi_requests.Session) -> list[dict]:
         "facets": [{"type": "EVENT"}],
         "currencyCode": "USD",
     }
-    try:
-        resp = session.post(
+    resp = request_with_retry(
+        lambda: session.post(
             FD_SCAN_URL,
             headers={**FD_HEADERS, "Content-Type": "application/json"},
             data=json.dumps(body),
             timeout=30,
-        )
-    except Exception as e:
-        raise BookTransportError(FD_BOOK, "events", cause=e) from e
+        ),
+        profile=profile, book=FD_BOOK, stage="events")
     check_response(FD_BOOK, "events", resp)
     data = json_or_raise(FD_BOOK, "events", resp)
 
@@ -314,7 +315,8 @@ def match_events(fd_events: list[dict], parlay_lines: dict) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
-                        fd_home: str, fd_away: str) -> dict:
+                        fd_home: str, fd_away: str,
+                        profile: RetryProfile = RETRY_BACKGROUND) -> dict:
     """Fetch all SGP-eligible runners for one event (main + alt, FG + F5).
 
     Returns:
@@ -339,10 +341,9 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
     url = (f"{FD_EVENT_PAGE_URL}?_ak={FD_AK}&eventId={fd_event_id}"
            f"&tab=same-game-parlay-"
            f"&useCombinedTouchdownsVirtualMarket=true&useQuickBets=true")
-    try:
-        resp = session.get(url, headers=FD_HEADERS, timeout=20)
-    except Exception as e:
-        raise BookTransportError(FD_BOOK, "structure", cause=e) from e
+    resp = request_with_retry(
+        lambda: session.get(url, headers=FD_HEADERS, timeout=20),
+        profile=profile, book=FD_BOOK, stage="structure")
 
     empty = {"fg": {"spreads": {}, "totals": {}, "moneyline": {}},
              "f5": {"spreads": {}, "totals": {}, "moneyline": {}}}
@@ -503,12 +504,16 @@ def price_combo(session: cffi_requests.Session,
         {"legType": "SIMPLE_SELECTION",
          "betRunners": [{"runner": {"marketId": total_market, "selectionId": total_sel}}]},
     ]}
-    resp = session.post(
-        FD_IMPLY_BETS_URL,
-        headers={**FD_HEADERS, "Content-Type": "application/json"},
-        data=json.dumps(body),
-        timeout=15,
-    )
+    # RETRY_LIVE on the price stage — see calculate_sgp in the DK shim for
+    # why price calls never take the 3-attempt BACKGROUND profile.
+    resp = request_with_retry(
+        lambda: session.post(
+            FD_IMPLY_BETS_URL,
+            headers={**FD_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps(body),
+            timeout=15,
+        ),
+        profile=RETRY_LIVE, book=FD_BOOK, stage="price")
     if resp.status_code != 200:
         if verbose:
             print(f"      HTTP {resp.status_code}")

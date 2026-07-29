@@ -9,8 +9,9 @@ both the SGP scraper and the singles scraper need:
 from __future__ import annotations
 from dataclasses import dataclass
 
-from mlb_sgp._shared import (BookTransportError, PriceCallTallyMixin,
-                             check_response, json_or_raise)
+from mlb_sgp._shared import (RETRY_BACKGROUND, PriceCallTallyMixin,
+                             RetryProfile, check_response, json_or_raise,
+                             request_with_retry)
 
 BOOK = "draftkings"
 
@@ -90,7 +91,8 @@ class DraftKingsClient(PriceCallTallyMixin):
                 ))
         return results
 
-    def fetch_event_selections(self, event_id: str) -> list[Selection]:
+    def fetch_event_selections(self, event_id: str,
+                               profile: RetryProfile = RETRY_BACKGROUND) -> list[Selection]:
         """Returns all selections (with prices) for one event from the parlays endpoint.
 
         DK's parlays/v1/sgp/events/{event_id} returns a payload of shape:
@@ -106,13 +108,10 @@ class DraftKingsClient(PriceCallTallyMixin):
         serving 403 in production) raises ``BookTransportError``.
         """
         from scraper_draftkings_sgp import DK_SGP_PARLAYS_URL
-        try:
-            resp = self.session.get(
-                f"{DK_SGP_PARLAYS_URL}/{event_id}",
-                timeout=60,
-            )
-        except Exception as e:
-            raise BookTransportError(BOOK, "structure", cause=e) from e
+        resp = request_with_retry(
+            lambda: self.session.get(f"{DK_SGP_PARLAYS_URL}/{event_id}",
+                                     timeout=60),
+            profile=profile, book=BOOK, stage="structure")
         if not check_response(BOOK, "structure", resp, allow_404=True):
             return []
         payload = json_or_raise(BOOK, "structure", resp)

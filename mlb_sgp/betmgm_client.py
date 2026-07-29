@@ -31,8 +31,9 @@ from dataclasses import dataclass
 
 from curl_cffi import requests
 
-from mlb_sgp._shared import (BookTransportError, PriceCallTallyMixin,
-                             check_response, json_or_raise)
+from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, BookTransportError,
+                             PriceCallTallyMixin, RetryProfile, check_response,
+                             json_or_raise, request_with_retry)
 
 BOOK = "betmgm"
 MLB_SPORT_ID = "23"          # Entain CDS sport id for baseball
@@ -77,7 +78,8 @@ class BetMGMClient(PriceCallTallyMixin):
                 f"&lang=en&country={COUNTRY}&userCountry={COUNTRY}")
 
     # --- accessid harvest ------------------------------------------------ #
-    def accessid(self, refresh: bool = False) -> str:
+    def accessid(self, refresh: bool = False,
+                 profile: RetryProfile = RETRY_BACKGROUND) -> str:
         """Return the cached static accessid, harvesting it on first use.
 
         The ``x-bwin-sports-api: prod`` header is the unlock — it flips the
@@ -94,16 +96,19 @@ class BetMGMClient(PriceCallTallyMixin):
         burl = f"http%3A%2F%2F{self._host}%2Fen%2Fsports%2Fbaseball-23"
         url = (f"https://{self._host}/en/api/clientconfig"
                f"?browserUrl={burl}&x-from-product=host-app")
-        try:
-            r = self.session.get(url, headers={
+        def _get():
+            return self.session.get(url, headers={
                 "Referer": f"https://{self._host}/en/sports/baseball-23",
                 "x-bwin-browser-url": burl,
                 "x-from-product": "host-app",
                 "x-bwin-sports-api": "prod",
             }, timeout=25)
-        except Exception as e:
-            raise BookTransportError(BOOK, "auth", cause=e,
-                                     detail="accessid harvest failed") from e
+
+        # Every CDS read is gated on this call, so retrying it is the single
+        # highest-leverage retry at this book: one blip here loses the whole
+        # cycle, not one event.
+        r = request_with_retry(_get, profile=profile, book=BOOK, stage="auth",
+                               detail="accessid harvest failed")
         check_response(BOOK, "auth", r)
         ids = re.findall(r'"publicAccessId":"([^"]+)"', getattr(r, "text", "") or "")
         if not ids:
@@ -115,7 +120,8 @@ class BetMGMClient(PriceCallTallyMixin):
         return self._accessid
 
     # --- event listing --------------------------------------------------- #
-    def list_events(self, take: int = 120) -> list[Event]:
+    def list_events(self, take: int = 120,
+                    profile: RetryProfile = RETRY_BACKGROUND) -> list[Event]:
         """List upcoming MLB fixtures (cheap Gridable call) as Event records.
 
         ``sportIds=23`` is *all* baseball (KBO, NPB, CPBL, college, Mexican
@@ -123,15 +129,13 @@ class BetMGMClient(PriceCallTallyMixin):
         "MLB") client-side. ``take`` is generous because foreign overnight
         games pad the unfiltered list.
         """
-        self.accessid()          # raises BookTransportError if it can't harvest
+        self.accessid(profile=profile)   # raises BookTransportError if it can't harvest
         url = (f"{self._base}/bettingoffer/fixtures?{self._common_q()}"
                f"&fixtureTypes=Standard&state=Latest&offerMapping=Filtered"
                f"&offerCategories=Gridable&fixtureCategories=Gridable"
                f"&sportIds={MLB_SPORT_ID}&skip=0&take={take}&sortBy=Tags")
-        try:
-            r = self.session.get(url, timeout=30)
-        except Exception as e:
-            raise BookTransportError(BOOK, "events", cause=e) from e
+        r = request_with_retry(lambda: self.session.get(url, timeout=30),
+                               profile=profile, book=BOOK, stage="events")
         check_response(BOOK, "events", r)
         out: list[Event] = []
         for fx in json_or_raise(BOOK, "events", r).get("fixtures", []):
@@ -149,7 +153,8 @@ class BetMGMClient(PriceCallTallyMixin):
         return out
 
     # --- full market tree (alts) ----------------------------------------- #
-    def fetch_markets(self, fixture_id: str) -> list[dict]:
+    def fetch_markets(self, fixture_id: str,
+                      profile: RetryProfile = RETRY_BACKGROUND) -> list[dict]:
         """Return the full ``optionMarkets`` list for one fixture.
 
         ``offerMapping=All`` returns every alt run line + alt total + F5
@@ -157,26 +162,28 @@ class BetMGMClient(PriceCallTallyMixin):
         the accessid once on a 400 gate error; a 404 means the fixture is
         gone (skip it), anything else non-200 raises.
         """
-        self.accessid()          # raises BookTransportError if it can't harvest
-        r = self._get_fixture_markets(fixture_id)
+        self.accessid(profile=profile)   # raises BookTransportError if it can't harvest
+        r = self._get_fixture_markets(fixture_id, profile)
         if _is_accessid_gate(r):
-            self.accessid(refresh=True)
-            r = self._get_fixture_markets(fixture_id)
+            self.accessid(refresh=True, profile=profile)
+            r = self._get_fixture_markets(fixture_id, profile)
         if not check_response(BOOK, "structure", r, allow_404=True):
             return []
         fxs = json_or_raise(BOOK, "structure", r).get("fixtures", [])
         return fxs[0].get("optionMarkets", []) if fxs else []
 
-    def _get_fixture_markets(self, fixture_id: str):
-        """One raw GET of the full market tree. Split out so fetch_markets can
-        retry it once after refreshing a stale accessid without a loop whose
-        exit branch is unreachable."""
+    def _get_fixture_markets(self, fixture_id: str, profile: RetryProfile):
+        """One raw GET of the full market tree (retried per ``profile``).
+
+        Split out so fetch_markets can re-issue it once after refreshing a
+        stale accessid without a loop whose exit branch is unreachable. That
+        accessid re-issue is an APPLICATION-level retry on a 400 gate — the
+        transport retry inside this call is a separate, orthogonal concern.
+        """
         url = (f"{self._base}/bettingoffer/fixtures?{self._common_q()}"
                f"&fixtureIds={fixture_id}&offerMapping=All&state=Latest")
-        try:
-            return self.session.get(url, timeout=30)
-        except Exception as e:
-            raise BookTransportError(BOOK, "structure", cause=e) from e
+        return request_with_retry(lambda: self.session.get(url, timeout=30),
+                                  profile=profile, book=BOOK, stage="structure")
 
     # --- bet-builder price ----------------------------------------------- #
     def price_picks(self, fixture_id: str,
@@ -199,8 +206,11 @@ class BetMGMClient(PriceCallTallyMixin):
         }
         url = f"{self._base}/bettingoffer/picks?{self._common_q()}"
         try:
-            r = self.session.post(url, json=body, timeout=30)
-        except Exception as e:
+            # RETRY_LIVE on every path — price calls are the fan-out surface.
+            r = request_with_retry(
+                lambda: self.session.post(url, json=body, timeout=30),
+                profile=RETRY_LIVE, book=BOOK, stage="price")
+        except BookTransportError as e:
             # Per-combo price failures stay row-drops (they are partial), but
             # they must be TALLIED so an all-fail cycle still gets a verdict.
             self.price_calls.record(False)

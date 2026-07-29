@@ -6,12 +6,13 @@ Module-private (`_` prefix) but stable API consumed by per-book modules
 """
 from __future__ import annotations
 import logging
+import random
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 import duckdb
 
@@ -101,6 +102,221 @@ def json_or_raise(book: str, stage: str, resp):
     except Exception as e:
         raise BookTransportError(book, stage, cause=e,
                                  detail="response body is not JSON") from e
+
+
+# --------------------------------------------------------------------------- #
+# Bounded retry / backoff (issue #34)                                          #
+# --------------------------------------------------------------------------- #
+
+# A retryable status is one where the SAME request may well succeed if we ask
+# again: the book is overloaded (5xx) or throttling us (429). Everything else
+# non-200 — 401/403 auth, 404 delisted, 422 non-combinable — is a real verdict
+# and retrying it only burns the caller's latency budget.
+RETRYABLE_STATUS_CODES = frozenset({429})
+RETRYABLE_STATUS_FLOOR = 500
+
+# curl_cffi's RequestException and requests' RequestException BOTH subclass
+# OSError (curl_cffi 0.14: RequestException -> CurlError -> OSError), as do
+# socket.timeout and the builtin ConnectionError family. One base therefore
+# covers DNS failure, connect/read timeout, TLS error and connection reset
+# across every transport this package uses.
+_RETRYABLE_EXCEPTION_TYPES = (OSError,)
+
+# Belt-and-braces for a future transport whose exceptions do NOT subclass
+# OSError: silently NOT retrying is the exact failure mode this ticket exists
+# to remove, so fall back to matching the class name.
+_RETRYABLE_EXCEPTION_NAME_HINTS = (
+    "timeout", "connection", "ssl", "proxy", "dns", "curl", "socket",
+)
+
+
+@dataclass(frozen=True)
+class RetryProfile:
+    """How hard to retry one wire call, and how much delay that may add.
+
+    Two named profiles exist (below). Both are bounded in ATTEMPTS and in
+    cumulative SLEEP, because the on-demand pricing path runs inside an RFQ
+    quote budget — an unbounded backoff would trade a lost book for a lost
+    quote, which is the worse failure.
+    """
+    name: str
+    max_attempts: int
+    base_delay_sec: float
+    backoff_multiplier: float
+    max_total_delay_sec: float      # hard ceiling on cumulative sleep
+
+
+# Sweep / structure-warming: the caller has no deadline worth protecting, and
+# losing a book costs a whole refresh cycle. Worst case ~5.6s of added sleep
+# (1.5s then 3.0s, each +/-25% jitter), hard-capped at 10s.
+RETRY_BACKGROUND = RetryProfile(
+    name="background", max_attempts=3, base_delay_sec=1.5,
+    backoff_multiplier=2.0, max_total_delay_sec=10.0,
+)
+
+# On-demand pricing (inside the RFQ quote budget, #50 targets p95 <= 8s warm)
+# and EVERY price call regardless of path — price calls are the high-fan-out
+# surface (DK runs targets x combos concurrently), so a 3-attempt backoff
+# there would stall a degraded sweep for minutes. One fast retry only:
+# worst case ~0.63s of added sleep, hard-capped at 1.0s.
+RETRY_LIVE = RetryProfile(
+    name="live", max_attempts=2, base_delay_sec=0.5,
+    backoff_multiplier=2.0, max_total_delay_sec=1.0,
+)
+
+# Indirected so tests can neutralize/observe backoff without burning wall
+# clock (see mlb_sgp/tests/conftest.py). Resolved at CALL time, not bound as
+# a default argument, so monkeypatching the module attribute works.
+_sleep = time.sleep
+_jitter = random.random
+
+
+def is_retryable_exception(exc: BaseException) -> bool:
+    """True when ``exc`` is a transport blip worth one more attempt."""
+    if isinstance(exc, _RETRYABLE_EXCEPTION_TYPES):
+        return True
+    name = type(exc).__name__.lower()
+    return any(hint in name for hint in _RETRYABLE_EXCEPTION_NAME_HINTS)
+
+
+def is_retryable_status(status: int) -> bool:
+    """True for 429 and 5xx. Explicitly False for every 4xx incl. 404."""
+    return status in RETRYABLE_STATUS_CODES or status >= RETRYABLE_STATUS_FLOOR
+
+
+def _retry_after_seconds(resp) -> float | None:
+    """``Retry-After`` in seconds, or None when absent/unparseable.
+
+    Only the delta-seconds form is honored. The HTTP-date form is legal but
+    no SGP book emits it, and mis-parsing a date into a huge sleep is a worse
+    outcome than falling back to our own backoff.
+    """
+    headers = getattr(resp, "headers", None) or {}
+    try:
+        raw = headers.get("Retry-After")
+    except AttributeError:
+        return None
+    if raw is None:
+        return None
+    try:
+        seconds = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
+
+def request_with_retry(call: Callable[[], object], *, profile: RetryProfile,
+                       book: str, stage: str, detail: str = "",
+                       body_ok: Callable[[object], bool] | None = None,
+                       sleep_fn: Callable[[float], None] | None = None,
+                       jitter_fn: Callable[[], float] | None = None):
+    """Run ``call()`` (a zero-arg wire request) with bounded retries.
+
+    Returns the LAST response. It deliberately does NOT judge that response:
+    status classification stays with ``check_response`` / ``json_or_raise``
+    so ``BookTransportError`` is constructed in exactly one place and the
+    per-event 404 carve-out keeps working. A 404 is never retried.
+
+    Raises ``BookTransportError`` only when every attempt raised — with the
+    last exception as ``cause``, matching the pre-retry behavior of the
+    ``except Exception: raise BookTransportError(...)`` blocks it replaces.
+    A NON-retryable exception (a ``TypeError`` from our own bug) still raises
+    on attempt 1; it is simply never retried.
+
+    ``body_ok`` marks a 200 whose BODY is unusable as retryable — Caesars'
+    AWS-WAF challenge comes back 200 with an HTML interstitial, and asking
+    again is how that book recovers.
+
+    Worst-case added latency, measured by
+    ``test_retry_backoff.py::test_worst_case_added_delay_stays_within_profile``:
+    RETRY_BACKGROUND <= 5.63s (hard cap 10s), RETRY_LIVE <= 0.63s (hard cap
+    1.0s). Both are per WIRE CALL, not per pricing operation.
+    """
+    sleep = sleep_fn if sleep_fn is not None else _sleep
+    jitter = jitter_fn if jitter_fn is not None else _jitter
+
+    slept_total = 0.0
+    attempts_made = 0
+    last_exc: BaseException | None = None
+    last_status: int | None = None
+    last_resp = None
+
+    def _detail() -> str:
+        """Caller's detail plus how hard we actually tried — the attempt
+        count is what tells a bot.log reader "transient blip" from "book is
+        gone"."""
+        suffix = (f"failed after {attempts_made} attempt(s) "
+                  f"[{profile.name} profile]")
+        return f"{detail} | {suffix}" if detail else suffix
+
+    # A price-stage retry is routine and HIGH VOLUME (one per combo across a
+    # thread pool), so it logs at DEBUG — hundreds of WARNINGs per cycle would
+    # drown bot.log, and PriceCallTally's all-failed verdict is the aggregate
+    # signal that actually matters. A session-level retry (auth/events/
+    # structure) is rare and consequential, so it stays at WARNING.
+    retry_log = logger.debug if stage == "price" else logger.warning
+
+    # max(1, ...) so a misconfigured profile degrades to a single attempt
+    # rather than returning None and handing callers a non-response.
+    for attempt in range(max(1, profile.max_attempts)):
+        retry_after = None
+        attempts_made += 1
+        try:
+            resp = call()
+        except Exception as e:                      # noqa: BLE001 — reraised below
+            if not is_retryable_exception(e):
+                raise BookTransportError(book, stage, status_code=last_status,
+                                         cause=e, detail=_detail()) from e
+            last_exc = e
+        else:
+            status = getattr(resp, "status_code", 200)
+            last_resp, last_status, last_exc = resp, status, None
+            body_unusable = (status == 200 and body_ok is not None
+                             and not body_ok(resp))
+            if not (is_retryable_status(status) or body_unusable):
+                return resp                          # 200, or a real verdict
+            retry_after = _retry_after_seconds(resp) if status == 429 else None
+
+        # Out of attempts: hand the caller the last response so
+        # check_response raises, or raise the last transport exception.
+        if attempt == max(1, profile.max_attempts) - 1:
+            break
+
+        delay = _next_delay(profile, attempt, retry_after, jitter, slept_total)
+        if delay is None:
+            break                                    # sleep budget exhausted
+        retry_log(
+            "%s: retrying stage=%s attempt %d/%d (status=%s exc=%s) in "
+            "%.2fs [%s profile]",
+            book, stage, attempt + 1, profile.max_attempts, last_status,
+            type(last_exc).__name__ if last_exc else None, delay, profile.name)
+        sleep(delay)
+        slept_total += delay
+
+    if last_exc is not None:
+        raise BookTransportError(book, stage, status_code=last_status,
+                                 cause=last_exc, detail=_detail()) from last_exc
+    return last_resp
+
+
+def _next_delay(profile: RetryProfile, attempt: int, retry_after: float | None,
+                jitter: Callable[[], float], slept_total: float) -> float | None:
+    """Seconds to sleep before the next attempt, or None to stop retrying.
+
+    ``Retry-After`` wins when it FITS the remaining budget; a book asking for
+    30s when the profile allows 1s is not "sane", so we fall back to our own
+    backoff rather than blowing a quote deadline honoring it.
+    """
+    remaining = profile.max_total_delay_sec - slept_total
+    if remaining <= 0:
+        return None
+    if retry_after is not None and retry_after <= remaining:
+        return retry_after
+    # +/-25% jitter around the exponential step, so a book that 5xx'd every
+    # concurrent combo at once doesn't get the whole pool back in lockstep.
+    step = profile.base_delay_sec * (profile.backoff_multiplier ** attempt)
+    delay = step * (0.75 + 0.5 * jitter())
+    return min(delay, remaining)
 
 
 class PriceCallTally:

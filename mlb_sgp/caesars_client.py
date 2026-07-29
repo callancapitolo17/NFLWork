@@ -31,7 +31,22 @@ from pathlib import Path
 
 from curl_cffi import requests
 
-from mlb_sgp._shared import BookTransportError, PriceCallTallyMixin
+from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, BookTransportError,
+                             PriceCallTallyMixin, RetryProfile,
+                             request_with_retry)
+
+
+def _looks_like_json(resp) -> bool:
+    """True when the body opens like JSON.
+
+    Caesars' AWS-WAF challenge is served as HTTP 200 with an HTML
+    interstitial, so status alone cannot tell a good response from a blocked
+    one. Passed to ``request_with_retry(body_ok=...)`` so a challenge is
+    RETRIED (asking again after a token mint is exactly how this book
+    recovers) rather than treated as a usable response.
+    """
+    return (getattr(resp, "text", "") or "").strip().startswith(("{", "["))
+
 
 BOOK = "caesars"
 DEFAULT_STATE = "nj"
@@ -175,42 +190,46 @@ class CaesarsClient(PriceCallTallyMixin):
         return False
 
     # --- REST --------------------------------------------------------------- #
-    def _get_json(self, url: str, stage: str, tries: int = 4):
-        """GET + decode, or raise ``BookTransportError`` after ``tries``.
+    # NOTE: the module-level _looks_like_json (top of this file) is what makes
+    # a 200-with-HTML AWS-WAF challenge retryable instead of an instant failure.
+    def _get_json(self, url: str, stage: str,
+                  profile: RetryProfile = RETRY_BACKGROUND):
+        """GET + decode, or raise ``BookTransportError``.
 
         Returns None for a 404 at the ``structure`` stage only — one delisted
         event is a skip, but a 404 on the tabs FEED means the endpoint moved
         and the book is down. A WAF challenge comes back 200 with HTML, so
         "not JSON" is a transport failure too: before issue #33 that quietly
         became an empty slate.
-        """
-        last_status = None
-        last_exc = None
-        for attempt in range(tries):
-            try:
-                r = self.session.get(url, headers=self._headers(), cookies=self._cookies,
-                                     impersonate="chrome", timeout=25)
-            except Exception as e:
-                last_exc = e
-                time.sleep(1.5)
-                continue
-            last_status = getattr(r, "status_code", 200)
-            if last_status == 404 and stage == "structure":
-                return None
-            if last_status == 200 and (getattr(r, "text", "") or "").strip().startswith(("{", "[")):
-                return r.json()
-            if attempt < tries - 1:
-                time.sleep(1.5)
-        raise BookTransportError(
-            BOOK, stage, status_code=last_status, cause=last_exc,
-            detail=f"no usable JSON after {tries} attempts")
 
-    def list_events(self) -> list[Event]:
+        Issue #34 replaced this method's bespoke 4x1.5s loop with the shared
+        helper. The behavior change worth knowing: that loop retried EVERY
+        non-JSON outcome including a 403 auth gate, burning 6s before
+        admitting the book was dead. 4xx now fails on the first attempt; only
+        5xx/429/connection errors and the 200-with-HTML WAF challenge (via
+        ``body_ok``) are retried.
+        """
+        r = request_with_retry(
+            lambda: self.session.get(url, headers=self._headers(),
+                                     cookies=self._cookies,
+                                     impersonate="chrome", timeout=25),
+            profile=profile, book=BOOK, stage=stage,
+            body_ok=_looks_like_json, detail="no usable JSON")
+        status = getattr(r, "status_code", 200)
+        if status == 404 and stage == "structure":
+            return None
+        if status == 200 and _looks_like_json(r):
+            return r.json()
+        raise BookTransportError(
+            BOOK, stage, status_code=status,
+            detail="response was not usable JSON")
+
+    def list_events(self, profile: RetryProfile = RETRY_BACKGROUND) -> list[Event]:
         if not self.ensure_token():
             raise BookTransportError(
                 BOOK, "auth",
                 detail="AWS-WAF token could not be minted/validated")
-        tj = self._get_json(f"{self._sb}/{TABS_PATH}", "events")
+        tj = self._get_json(f"{self._sb}/{TABS_PATH}", "events", profile)
         if not tj:
             return []
         out: list[Event] = []
@@ -241,7 +260,8 @@ class CaesarsClient(PriceCallTallyMixin):
                 ))
         return out
 
-    def fetch_event(self, event_id: str) -> dict | None:
+    def fetch_event(self, event_id: str,
+                    profile: RetryProfile = RETRY_BACKGROUND) -> dict | None:
         """Full event detail (event.keyMarketGroups[].markets[] incl. alts).
 
         None means Caesars no longer lists this event (404); transport
@@ -251,7 +271,8 @@ class CaesarsClient(PriceCallTallyMixin):
             raise BookTransportError(
                 BOOK, "auth",
                 detail="AWS-WAF token could not be minted/validated")
-        j = self._get_json(f"{self._sb}/v4/events/{event_id}", "structure")
+        j = self._get_json(f"{self._sb}/v4/events/{event_id}", "structure",
+                           profile)
         if not j:
             return None
         return j.get("event") or j
@@ -267,10 +288,15 @@ class CaesarsClient(PriceCallTallyMixin):
             "legs": legs,
         }
         try:
-            r = self.session.post(f"{self._sb}/v2/bets/details", headers=self._headers(),
-                                  cookies=self._cookies, json=body, impersonate="chrome",
-                                  timeout=30)
-        except Exception:
+            # RETRY_LIVE on every path — price calls are the fan-out surface.
+            r = request_with_retry(
+                lambda: self.session.post(
+                    f"{self._sb}/v2/bets/details", headers=self._headers(),
+                    cookies=self._cookies, json=body, impersonate="chrome",
+                    timeout=30),
+                profile=RETRY_LIVE, book=BOOK, stage="price",
+                body_ok=_looks_like_json)
+        except BookTransportError:
             # Per-combo price failures stay row-drops (they are partial), but
             # they must be TALLIED so an all-fail cycle still gets a verdict.
             self.price_calls.record(False)

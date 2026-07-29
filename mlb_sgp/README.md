@@ -591,6 +591,82 @@ prices without a transport error (it used to clear up-front, so a dead PX wiped
 the source before we knew it was dead). An empty-but-healthy slate still clears:
 the flag flips on a successful *call*, not on a non-zero row count.
 
+## Retry & backoff (issue #34, 2026-07-27)
+
+Making failures loud (#33) measurably **widened their blast radius**: a 5xx on
+one event's structure fetch used to return `[]` and skip that one game; after
+#33 it raises and the book loses the whole cycle. Retry shrinks that window
+back down — a transient blip must not cost a book its fetch, nor (post-#54)
+its vote on a live quote.
+
+`_shared.request_with_retry(call, profile=…, book=…, stage=…)` wraps every
+wire call in the six clients.
+
+### The two profiles
+
+| Profile | Attempts | Backoff | Max added latency | Used by |
+|---|---|---|---|---|
+| `RETRY_BACKGROUND` | 3 | 1.5s → 3.0s, ±25% jitter | **≤ 5.63s** (hard cap 10s) | sweep / structure-warming fetches (auth, events, structure) |
+| `RETRY_LIVE` | 2 | 0.5s, ±25% jitter | **≤ 0.63s** (hard cap 1.0s) | on-demand pricing fetches, **and every price call on both paths** |
+
+Those ceilings are per **wire call**, not per pricing operation, and are pinned
+by `test_retry_backoff.py::test_worst_case_added_delay_stays_within_profile`.
+`max_total_delay_sec` is a hard cap on cumulative sleep, so the live path can
+never trade a lost book for a blown RFQ quote budget.
+
+**Why price calls are always LIVE:** they fan out across a thread pool
+(targets × combos at DK), so a 3-attempt backoff there would stall a degraded
+cycle for minutes. One fast retry is the right trade at that fan-out.
+
+### What is and isn't retried
+
+| Outcome | Retried? |
+|---|---|
+| 429 (honors `Retry-After` when it FITS the profile's budget, else backs off) | ✅ |
+| 5xx | ✅ |
+| Connection reset / DNS / timeout / TLS | ✅ — classified via `OSError`, which both `curl_cffi`'s and `requests`' exception bases subclass |
+| 200 with an unusable body, where a `body_ok` predicate is supplied | ✅ — Caesars' AWS-WAF challenge is HTTP 200 + HTML |
+| **404** | ❌ — #33's per-event carve-out; one delisted game costs exactly one attempt |
+| **4xx auth/permission** (401/403) | ❌ — a real verdict; DK's production 403 fails immediately |
+| Programming errors (`TypeError` etc.) | ❌ — still raise `BookTransportError` on attempt 1 |
+
+The helper **returns the last response** rather than judging it, so status
+classification stays in `check_response()` / `json_or_raise()` and
+`BookTransportError` keeps being constructed in exactly one place. It raises
+only when every attempt threw, and stamps the attempt count into `detail`
+(`failed after 3 attempt(s) [background profile]`) so a `bot.log` reader can
+tell a transient blip from a book that is simply gone.
+
+### Choosing the profile at a call site
+
+Every structure/events/auth function takes `profile: RetryProfile =
+RETRY_BACKGROUND`, so sweep call sites are unchanged. The **on-demand path
+binds `RETRY_LIVE` at the `SGPService` seam**: `_dk_fetchers(st, profile)` /
+`_fd_fetchers(st, profile)` bake the profile into the fetcher lambdas, and the
+PX/NV/MGM/CZR hooks pass it at the client call. That keeps the profile out of
+the six orchestrators' signatures entirely. Both bindings share one `TTLCache`,
+so a warm entry written by either path serves the other.
+
+This is an explicit argument, deliberately **not** a `contextvars` ambient:
+`ThreadPoolExecutor` does not propagate context, so an ambient profile would
+silently fall back to BACKGROUND inside every book's worker pool — precisely
+the latency blowup the LIVE profile exists to prevent.
+
+### Caesars behavior change
+
+`caesars_client._get_json` used to hand-roll a 4×1.5s loop that retried
+**everything**, including a 403 auth gate — burning ~6s before admitting the
+book was dead. It now uses the shared helper: 4xx fails on the first attempt,
+while the 200-with-HTML WAF challenge retry is preserved via `body_ok`.
+
+### Testing note
+
+`mlb_sgp/tests/conftest.py` installs an autouse fixture that **records** backoff
+instead of sleeping (and pins jitter to its midpoint), so the suite never burns
+wall-clock on retries and the schedule is directly assertable. A test that cares
+takes `recorded_sleeps` as an argument and reads the durations that would have
+been slept.
+
 ## Files
 
 | File | Purpose |
@@ -601,7 +677,7 @@ the flag flips on a successful *call*, not on a non-zero row count.
 | `scraper_novig_sgp.py` | Novig SGP scraper shim |
 | `draftkings.py` / `fanduel.py` / `prophetx.py` / `novig.py` | Per-book orchestrators (`price_sgps`) |
 | `dk_client.py` / `fd_client.py` / `prophetx_client.py` / `novig_client.py` | Per-book HTTP clients |
-| `_shared.py` | `TargetLine` / `PricedRow` dataclasses, `load_target_lines`, `upsert_priced_rows`, decimal/american helpers, `BookTransportError` + `PriceCallTally` (see "Failure semantics") |
+| `_shared.py` | `TargetLine` / `PricedRow` dataclasses, `load_target_lines`, `upsert_priced_rows`, decimal/american helpers, `BookTransportError` + `PriceCallTally` (see "Failure semantics"), `request_with_retry` + the two `RetryProfile`s (see "Retry & backoff") |
 | `scraper_pikkit_mlb.py` | Pikkit MLB SGP scraper (fallback) |
 | `pikkit_common.py` | Reusable Pikkit functions |
 | `recon_draftkings_sgp.py` | DK network recon tool |

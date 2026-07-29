@@ -37,7 +37,8 @@ from integer_line_derivation import is_integer_line, derive_fair_probs
 # `except` clause would match.
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-from mlb_sgp._shared import BookTransportError, check_response, json_or_raise
+from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, RetryProfile,
+                             check_response, json_or_raise, request_with_retry)
 
 # ---------------------------------------------------------------------------
 # DK API config
@@ -90,7 +91,8 @@ def init_session() -> cffi_requests.Session:
 # Step 2: Fetch DK events (public REST)
 # ---------------------------------------------------------------------------
 
-def fetch_dk_events(session: cffi_requests.Session) -> list[dict]:
+def fetch_dk_events(session: cffi_requests.Session,
+                    profile: RetryProfile = RETRY_BACKGROUND) -> list[dict]:
     """Fetch today's MLB events with home/away teams.
 
     Raises ``BookTransportError`` when DK is unreachable (it has been serving
@@ -111,10 +113,9 @@ def fetch_dk_events(session: cffi_requests.Session) -> list[dict]:
         "include": "Events",
         "entity": "events",
     }
-    try:
-        resp = session.get(DK_LEAGUE_URL, params=params, timeout=30)
-    except Exception as e:
-        raise BookTransportError(DK_BOOK, "events", cause=e) from e
+    resp = request_with_retry(
+        lambda: session.get(DK_LEAGUE_URL, params=params, timeout=30),
+        profile=profile, book=DK_BOOK, stage="events")
     check_response(DK_BOOK, "events", resp)
 
     events = []
@@ -344,7 +345,8 @@ DK_EVENT_MARKETS_URL = (
 )
 
 
-def _fetch_subcat_markets(session, dk_event_id, subcat_id):
+def _fetch_subcat_markets(session, dk_event_id, subcat_id,
+                          profile: RetryProfile = RETRY_BACKGROUND):
     """Fetch all markets in a given subcategory. Returns list of (id, name).
 
     404 = DK dropped this event (skip the game). Any other non-200 raises
@@ -361,10 +363,9 @@ def _fetch_subcat_markets(session, dk_event_id, subcat_id):
         "include": "MarketSplits",
         "entity": "markets",
     }
-    try:
-        resp = session.get(DK_EVENT_MARKETS_URL, params=params, timeout=15)
-    except Exception as e:
-        raise BookTransportError(DK_BOOK, "structure", cause=e) from e
+    resp = request_with_retry(
+        lambda: session.get(DK_EVENT_MARKETS_URL, params=params, timeout=15),
+        profile=profile, book=DK_BOOK, stage="structure")
     if not check_response(DK_BOOK, "structure", resp, allow_404=True):
         return []
     markets = json_or_raise(DK_BOOK, "structure", resp).get("markets", [])
@@ -414,7 +415,8 @@ def _extract_moneyline_selections(text: str, ml_mnum: str | None) -> dict:
     return out
 
 
-def fetch_main_market_nums(session: cffi_requests.Session, dk_event_id: str) -> dict:
+def fetch_main_market_nums(session: cffi_requests.Session, dk_event_id: str,
+                           profile: RetryProfile = RETRY_BACKGROUND) -> dict:
     """Fetch main Run Line + Total + Moneyline market numbers for both FG and F5.
 
     Returns {
@@ -427,14 +429,14 @@ def fetch_main_market_nums(session: cffi_requests.Session, dk_event_id: str) -> 
         "fg": {"run_line": None, "total": None, "moneyline": None},
         "f5": {"run_line": None, "total": None, "moneyline": None},
     }
-    for m_id, name in _fetch_subcat_markets(session, dk_event_id, "4519"):
+    for m_id, name in _fetch_subcat_markets(session, dk_event_id, "4519", profile):
         if name == "Run Line":
             out["fg"]["run_line"] = _strip_prefix(m_id)
         elif name == "Total":
             out["fg"]["total"] = _strip_prefix(m_id)
         elif name == "Moneyline":
             out["fg"]["moneyline"] = _strip_prefix(m_id)
-    for m_id, name in _fetch_subcat_markets(session, dk_event_id, "15628"):
+    for m_id, name in _fetch_subcat_markets(session, dk_event_id, "15628", profile):
         if name == "Run Line - 1st 5 Innings":
             out["f5"]["run_line"] = _strip_prefix(m_id)
         elif name == "Total Runs - 1st 5 Innings":
@@ -446,7 +448,8 @@ def fetch_main_market_nums(session: cffi_requests.Session, dk_event_id: str) -> 
 
 def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
                         main_market_nums: dict | None = None,
-                        verbose: bool = False) -> dict:
+                        verbose: bool = False,
+                        profile: RetryProfile = RETRY_BACKGROUND) -> dict:
     """
     Fetch all SGP selection IDs for a game from the parlays endpoint, split
     by period (FG vs F5).
@@ -471,10 +474,8 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
     f5_tot = main_market_nums["f5"].get("total")
 
     url = f"{DK_SGP_PARLAYS_URL}/{dk_event_id}"
-    try:
-        resp = session.get(url, timeout=60)
-    except Exception as e:
-        raise BookTransportError(DK_BOOK, "structure", cause=e) from e
+    resp = request_with_retry(lambda: session.get(url, timeout=60),
+                              profile=profile, book=DK_BOOK, stage="structure")
 
     empty = {"fg": {"spreads": {}, "totals": {}, "moneyline": {"1": [], "3": []}},
              "f5": {"spreads": {}, "totals": {}, "moneyline": {"1": [], "3": []}}}
@@ -629,16 +630,21 @@ def calculate_sgp(session: cffi_requests.Session,
                   spread_sel: str, total_sel: str,
                   verbose: bool = False) -> dict | None:
     """Call DK's calculateBets with two selections. Returns {trueOdds, displayOdds} or None."""
-    resp = session.post(DK_CALCULATE_BETS_URL, json={
-        "selections": [],
-        "selectionsForYourBet": [
-            {"id": spread_sel, "yourBetGroup": 0},
-            {"id": total_sel, "yourBetGroup": 0},
-        ],
-        "selectionsForCombinator": [],
-        "selectionsForProgressiveParlay": [],
-        "oddsStyle": "american",
-    }, headers={"Content-Type": "application/json"}, timeout=10)
+    # RETRY_LIVE on the price stage even here: these calls fan out across a
+    # thread pool (targets x combos), so BACKGROUND's 3 attempts would stall a
+    # degraded cycle for minutes. A 422 (non-combinable) is not retried.
+    resp = request_with_retry(
+        lambda: session.post(DK_CALCULATE_BETS_URL, json={
+            "selections": [],
+            "selectionsForYourBet": [
+                {"id": spread_sel, "yourBetGroup": 0},
+                {"id": total_sel, "yourBetGroup": 0},
+            ],
+            "selectionsForCombinator": [],
+            "selectionsForProgressiveParlay": [],
+            "oddsStyle": "american",
+        }, headers={"Content-Type": "application/json"}, timeout=10),
+        profile=RETRY_LIVE, book=DK_BOOK, stage="price")
 
     if resp.status_code == 422:
         if verbose:
