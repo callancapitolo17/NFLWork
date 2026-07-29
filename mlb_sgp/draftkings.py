@@ -455,7 +455,7 @@ def _price_sgps(
             try:
                 out.extend(f.result())
             except Exception as e:
-                counters.record_parse_failure("price_target", logger, e)
+                counters.record_exception("price_target", logger, e)
 
     # ----- Phase 3: moneyline × total combos (FG) ----- #
     # ML+total is a 4-cell devig-able grid keyed by total line only (no spread),
@@ -552,7 +552,7 @@ def _price_ml_total_for_games(
             try:
                 out.extend(f.result())
             except Exception as e:
-                counters.record_parse_failure("price_ml_target", logger, e)
+                counters.record_exception("price_ml_target", logger, e)
     return out
 
 
@@ -600,7 +600,7 @@ def _price_combos_parallel(
             try:
                 combo_name, sgp = fut.result()
             except Exception as e:
-                counters.record_parse_failure("price_combo_future", logger, e)
+                counters.record_exception("price_combo_future", logger, e)
                 continue
             if sgp:
                 results[combo_name] = sgp

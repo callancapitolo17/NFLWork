@@ -423,7 +423,7 @@ def _price_sgps(
             try:
                 out.extend(f.result())
             except Exception as e:
-                counters.record_parse_failure("price_target", logger, e)
+                counters.record_exception("price_target", logger, e)
 
     # ----- Phase 3: moneyline × total combos (FG) ----- #
     # ML+total is a 4-cell devig-able grid keyed by total line only. implyBets
@@ -501,7 +501,7 @@ def _price_ml_total_for_games(
             try:
                 out.extend(f.result())
             except Exception as e:
-                counters.record_parse_failure("price_ml_target", logger, e)
+                counters.record_exception("price_ml_target", logger, e)
     return out
 
 
@@ -538,7 +538,7 @@ def _price_combos_parallel(
                 verbose=verbose,
             )
         except Exception as e:
-            counters.record_parse_failure("price_combo", logger, e)
+            counters.record_exception("price_combo", logger, e)
             return combo_name, None
 
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -550,7 +550,7 @@ def _price_combos_parallel(
             try:
                 combo_name, result = fut.result()
             except Exception as e:
-                counters.record_parse_failure("price_combo_future", logger, e)
+                counters.record_exception("price_combo_future", logger, e)
                 continue
             if result:
                 results[combo_name] = result

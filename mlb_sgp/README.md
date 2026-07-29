@@ -63,14 +63,14 @@ with FD-specific junk exclusions (`parlay`, `listed`, `bands`, `tri-bet`,
 under an unlisted name (that bug is why F7 totals were absent). It now covers
 FG/F5/F7/F3 main + alt wherever FD posts them and auto-picks-up new markets.
 
-**Parse-failure tripwire (2026-06-10).** Every scrape prints
-`[fd_singles] alt parse: alternate_spreads N/M, alternate_totals N/M`
-(parsed/seen). If FD hands us alt runners and **none** parse
-(`M > 0, N == 0`) the scrape prints a loud `ALERT` — that's the signature
-of an FD name-format change (the FG alt-total parens bug shipped silently
-in exactly this mode). A day where FD posts no alts at all stays quiet.
-Grep the runner log for `ALERT` when alt pills go missing from the
-dashboard.
+**Parse-failure tripwire (2026-06-10; logging since #36).** Every scrape logs
+`fd_singles: alt parse: alternate_spreads N/M, alternate_totals N/M`
+(parsed/seen) at INFO. If FD hands us alt runners and **none** parse
+(`M > 0, N == 0`) it logs a WARNING — that's the signature of an FD
+name-format change (the FG alt-total parens bug shipped silently in exactly
+this mode). A day where FD posts no alts at all stays quiet. Grep the runner
+log for `PARSE TRIPWIRE` when alt pills go missing from the dashboard; the
+wording is shared with the SGP-path tripwires (#35) so one grep finds both.
 
 ### Coverage
 
@@ -433,8 +433,24 @@ still understand what the book sends back?"*
 | `sanity_drops`, `parse_failures`, `transport_errors` | same on both paths | |
 
 Counters sit **outside** `request_with_retry` (#34): one logical fetch is one
-tick no matter how many attempts the wire call took. `parse_failures` also
-carries a per-stage breakdown (`stages=price_combo:3,resolve_legs:1`).
+tick no matter how many attempts the wire call took. The per-stage breakdown
+rides along as `stages=price_combo:3,resolve_legs:1`.
+
+**Transport vs parse.** A broad `except` that could have caught something off
+the wire calls `counters.record_exception(...)`, which files a
+`BookTransportError` under `transport_errors` and everything else under
+`parse_failures`. This matters because CZR/MGM swallow a price-stage transport
+error inside the client and return `None`, while DK/FD/NV/PX price through
+module-level helpers whose `request_with_retry(stage="price")` **raises** — so
+without the split, a 403'd FanDuel price endpoint reported `parse_failures=4`
+and fired a PARSE tripwire, sending a fixer to the parser instead of the
+endpoint.
+
+**Units differ by path — do not compare across them.** On the sweep,
+`targets_attempted` counts target LINES (each fanning out to ~4 combo calls)
+and `prices_returned` counts PricedRows; on-demand both count PRICE CALLS.
+Each path's tripwire is right in its own units, but a cross-path ratio is not
+meaningful. `_shared.COUNTER_NAMES` carries the same warning for #38.
 
 Both `price_sgps` (sweep) and `SGPService.price_on_demand` scope a fetch with
 the `fetch_counters(...)` context manager, so the summary line is emitted on

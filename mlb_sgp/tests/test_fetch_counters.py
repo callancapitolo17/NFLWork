@@ -115,6 +115,68 @@ def test_record_parse_failure_returns_running_count():
 
 
 # ------------------------------------------------------------------ #
+# record_exception: transport vs parse                                #
+# ------------------------------------------------------------------ #
+
+def test_record_exception_files_transport_under_transport(caplog):
+    """Adversarial-review finding: DK/FD/NV/PX price through helpers whose
+    request_with_retry RAISES BookTransportError into the orchestrators'
+    broad excepts. Counting that as a parse failure points the fixer at the
+    parser while the endpoint is dead."""
+    from mlb_sgp._shared import BookTransportError
+
+    c = FetchCounters(book="fanduel", path="sweep")
+    logger = logging.getLogger("test.rec_transport")
+    dead = BookTransportError("fanduel", "price", status_code=403)
+    with caplog.at_level(logging.DEBUG, logger="test.rec_transport"):
+        c.record_exception("price_combo", logger, dead)
+
+    snap = c.snapshot()
+    assert snap.transport_errors == 1
+    assert snap.parse_failures == 0
+    assert dict(snap.by_stage) == {"price_combo": 1}
+
+
+def test_record_exception_files_everything_else_under_parse():
+    c = FetchCounters(book="fanduel", path="sweep")
+    logger = logging.getLogger("test.rec_parse")
+    c.record_exception("price_combo", logger, KeyError("selectionId"))
+
+    snap = c.snapshot()
+    assert snap.parse_failures == 1
+    assert snap.transport_errors == 0
+
+
+def test_record_exception_shares_the_volume_policy(caplog):
+    """Transport catches follow the same first-loud-then-quiet rule, so a
+    wholly dead book cannot drown bot.log either."""
+    from mlb_sgp._shared import BookTransportError
+
+    c = FetchCounters(book="fanduel", path="sweep")
+    logger = logging.getLogger("test.rec_volume")
+    with caplog.at_level(logging.DEBUG, logger="test.rec_volume"):
+        for _ in range(4):
+            c.record_exception("price_combo", logger,
+                               BookTransportError("fanduel", "price"))
+    assert [r.levelno for r in caplog.records] == [
+        logging.WARNING, logging.DEBUG, logging.DEBUG, logging.DEBUG]
+
+
+def test_transport_catches_suppress_the_price_tripwire():
+    """The point of the split: a dead endpoint must not arm prices_empty."""
+    from mlb_sgp._shared import BookTransportError
+
+    c = FetchCounters(book="fanduel", path="sweep")
+    logger = logging.getLogger("test.rec_suppress")
+    c.bump("legs_attempted", 1)
+    c.bump("legs_resolved", 1)
+    c.bump("targets_attempted", 1)
+    c.record_exception("price_combo", logger,
+                       BookTransportError("fanduel", "price"))
+    assert c.tripwires() == []
+
+
+# ------------------------------------------------------------------ #
 # Tripwires                                                           #
 # ------------------------------------------------------------------ #
 

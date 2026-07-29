@@ -325,7 +325,7 @@ def _price_sgps(
                 try:
                     combo_name, res = f.result()
                 except Exception as e:
-                    counters.record_parse_failure("price_combo", logger, e)
+                    counters.record_exception("price_combo", logger, e)
                     continue
                 if res is None:
                     continue
@@ -351,7 +351,7 @@ def _price_sgps(
             try:
                 out.extend(f.result())
             except Exception as e:
-                counters.record_parse_failure("price_target", logger, e)
+                counters.record_exception("price_target", logger, e)
 
     # ----- Phase 3: moneyline × total combos (FG only) ----- #
     out.extend(_price_ml_total_for_games(
@@ -422,7 +422,7 @@ def _price_ml_total_for_games(client, parsed_cache, filtered, fetch_now, *,
                 try:
                     res = f.result()
                 except Exception as e:
-                    counters.record_parse_failure("price_ml_combo", logger, e)
+                    counters.record_exception("price_ml_combo", logger, e)
                     continue
                 if res is None:
                     continue
@@ -446,7 +446,7 @@ def _price_ml_total_for_games(client, parsed_cache, filtered, fetch_now, *,
             try:
                 out.extend(f.result())
             except Exception as e:
-                counters.record_parse_failure("price_ml_target", logger, e)
+                counters.record_exception("price_ml_target", logger, e)
     return out
 
 

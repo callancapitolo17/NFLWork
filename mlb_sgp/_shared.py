@@ -426,14 +426,34 @@ class PriceCallTallyMixin:
 COUNTER_NAMES = (
     "events_seen",         # events the book listed at all
     "events_matched",      # of those, ones matched to a game on our slate
-    "targets_attempted",   # (sweep) targets priced / (on-demand) price calls
+    "targets_attempted",   # UNITS DIFFER BY PATH — see the warning below
     "legs_attempted",      # candidate lines/legs handed to structure lookup
     "legs_resolved",       # of those, ones the book actually offers
-    "prices_returned",     # priced rows (sweep) / non-None decimals (on-demand)
+    "prices_returned",     # UNITS DIFFER BY PATH — see the warning below
     "sanity_drops",        # combos dropped by SANITY_MULT_RATIO
-    "parse_failures",      # broad-except catches, by named stage
+    "parse_failures",      # non-transport broad-except catches, by named stage
     "transport_errors",    # BookTransportError seen during this fetch
 )
+
+# !! UNITS WARNING for #38 (per-book fetch-health history) and anything else
+# that aggregates these ACROSS the two paths:
+#
+#   sweep      targets_attempted = TARGET LINES priced (each fans out to ~4
+#                                  combo price calls)
+#              prices_returned   = PricedRows produced (includes rows derived
+#                                  by the integer-line fallback, which are not
+#                                  1:1 with price calls)
+#   on-demand  targets_attempted = PRICE CALLS issued (2^N partition cells,
+#                                  plus any Route B singles)
+#              prices_returned   = those calls that returned a decimal
+#
+# Each path's own tripwire is correct in its own units ("we priced targets and
+# got no rows" / "we issued calls and got no prices"), but a ratio computed
+# across paths is NOT meaningful: the sweep's is ~1:4 by construction and
+# on-demand's is 1:1. Store the path alongside the counts and compare within a
+# path, never across. Unifying the units would mean counting price calls in the
+# sweep too, which loses "rows produced" — the number that actually says
+# whether the sweep wrote data — so the split is deliberate, not an oversight.
 
 
 @dataclass(frozen=True)
@@ -486,21 +506,51 @@ class FetchCounters:
         with self._lock:
             self._counts[name] += n
 
+    def record_exception(self, stage: str, logger_: logging.Logger,
+                         exc: BaseException | None = None) -> int:
+        """Count one broad-``except`` catch at ``stage``, in the RIGHT bucket.
+
+        Use this — not ``record_parse_failure`` — wherever the caught
+        exception could have come off the wire. The book clients differ: CZR
+        and MGM swallow a price-stage ``BookTransportError`` internally and
+        return None, but DK/FD/NV/PX price through module-level helpers whose
+        ``request_with_retry(stage="price")`` RAISES it, and that exception
+        lands in the orchestrators' broad excepts. Filing it under
+        ``parse_failures`` would point a fixer at the parser while the real
+        story is a dead endpoint — the exact misdiagnosis this epic exists to
+        remove — and it would also leave the ``prices_empty`` tripwire armed
+        when #33 already owns that failure.
+        """
+        if isinstance(exc, BookTransportError):
+            self.bump("transport_errors")
+            return self._log_at_stage(stage, logger_, exc)
+        return self.record_parse_failure(stage, logger_, exc)
+
     def record_parse_failure(self, stage: str, logger_: logging.Logger,
                              exc: BaseException | None = None) -> int:
-        """Count one broad-``except`` catch at ``stage`` and log it.
+        """Count one PARSE failure at ``stage`` and log it.
 
-        Volume policy (same reasoning as #34's price-stage DEBUG decision):
-        the FIRST failure of a stage in this fetch is a WARNING — that is the
-        signal a human needs — and every repeat drops to DEBUG. A wholesale
-        parser break would otherwise emit one WARNING per target per book per
-        cycle and drown bot.log; the aggregate rides in the summary line and
-        trips the tripwire anyway.
+        Only for exceptions that cannot be transport (pure structure/parse
+        code). Anywhere the wire is reachable, call ``record_exception``.
 
         Returns the running count for this stage.
         """
         with self._lock:
             self._counts["parse_failures"] += 1
+        return self._log_at_stage(stage, logger_, exc)
+
+    def _log_at_stage(self, stage: str, logger_: logging.Logger,
+                      exc: BaseException | None) -> int:
+        """Tally the per-stage breakdown and log at the volume-safe level.
+
+        Volume policy (same reasoning as #34's price-stage DEBUG decision):
+        the FIRST failure of a stage in this fetch is a WARNING — that is the
+        signal a human needs — and every repeat drops to DEBUG. A wholesale
+        break would otherwise emit one WARNING per target per book per cycle
+        and drown bot.log; the aggregate rides in the summary line and trips
+        the tripwire anyway.
+        """
+        with self._lock:
             count = self._by_stage.get(stage, 0) + 1
             self._by_stage[stage] = count
         log_at = logger_.warning if count == 1 else logger_.debug
@@ -562,7 +612,11 @@ class FetchCounters:
             if self._emitted:
                 return
             self._emitted = True
-        logger_.log(level, "%s", self.summary_line())
+        # isEnabledFor FIRST: the on-demand path emits at DEBUG on every RFQ
+        # for every book, and building the summary string only to have the
+        # handler drop it is pure overhead on the quote path (#50's budget).
+        if logger_.isEnabledFor(level):
+            logger_.log(level, "%s", self.summary_line())
         fired = self.tripwires()
         if fired:
             logger_.warning(

@@ -148,3 +148,172 @@ def test_counters_do_not_double_count_retry_attempts(monkeypatch,
     # 4 spread×total combos priced from ONE target -> 4 rows, 1 target.
     assert "targets_attempted=1" in summary
     assert "prices_returned=4" in summary
+
+
+# ------------------------------------------------------------------ #
+# A DEAD PRICE ENDPOINT MUST NOT READ AS A PARSE FAILURE              #
+# ------------------------------------------------------------------ #
+# Adversarial-review finding (2026-07-29): DK/FD/NV/PX price through
+# module-level helpers whose request_with_retry(stage="price") RAISES
+# BookTransportError, and that exception lands in the orchestrators' broad
+# excepts. Filing it under parse_failures pointed a fixer at the parser while
+# the real story was a 403 — and left the prices_empty tripwire armed on a
+# thin slate, below PriceCallTally's 8-call verdict floor.
+
+def test_dead_price_endpoint_counts_as_transport_not_parse(caplog, monkeypatch):
+    from mlb_sgp._shared import BookTransportError
+    from mlb_sgp.tests.sweep_drives import drive_fanduel
+
+    dead = BookTransportError("fanduel", "price", status_code=403,
+                              detail="failed after 2 attempt(s)")
+    with caplog.at_level(logging.DEBUG, logger="mlb_sgp.fanduel"):
+        rows = drive_fanduel(monkeypatch, healthy=True, price_exc=dead)
+
+    assert rows == []
+    summary = next(r.getMessage() for r in _records(caplog, "fanduel")
+                   if r.getMessage().startswith("sgp fetch"))
+    assert "parse_failures=0" in summary, "a 403 was blamed on the parser"
+    assert "transport_errors=4" in summary
+    # #33 owns this failure and is already loud about it; a PARSE tripwire on
+    # top would send the fixer to the wrong file.
+    assert not any("PARSE TRIPWIRE" in r.getMessage()
+                   for r in _records(caplog, "fanduel"))
+
+
+def test_client_swallowed_transport_still_leaves_the_wire_armed(caplog,
+                                                                monkeypatch):
+    """CZR/MGM clients swallow a price-stage BookTransportError and return
+    None, so the orchestrator never sees an exception and has nothing to
+    reclassify. prices_empty stays armed — correct, because from the
+    orchestrator's view the book simply priced nothing, and no exception was
+    misfiled as a parse bug on the way."""
+    from mlb_sgp.tests.sweep_drives import drive_caesars
+
+    with caplog.at_level(logging.DEBUG, logger="mlb_sgp.caesars"):
+        rows = drive_caesars(monkeypatch, healthy=True, combo_decimal=None)
+
+    assert rows == []
+    summary = next(r.getMessage() for r in _records(caplog, "caesars")
+                   if r.getMessage().startswith("sgp fetch"))
+    # The client returned None cleanly: no exception, so nothing is counted
+    # as either parse or transport.
+    assert "parse_failures=0" in summary and "transport_errors=0" in summary
+    assert "prices_returned=0" in summary
+    assert any("prices_empty" in r.getMessage()
+               for r in _records(caplog, "caesars"))
+
+
+def test_malformed_price_payload_is_a_visible_parse_failure(caplog,
+                                                            monkeypatch):
+    """A price body with decimal=None used to blow up inside the sanity check
+    and vanish into `except Exception: continue`. It is a genuine parse
+    problem and must now be counted and named."""
+    from mlb_sgp.tests.sweep_drives import drive_caesars
+
+    with caplog.at_level(logging.DEBUG, logger="mlb_sgp.caesars"):
+        rows = drive_caesars(monkeypatch, healthy=True,
+                             price_exc=TypeError("decimal is None"))
+
+    assert rows == []
+    summary = next(r.getMessage() for r in _records(caplog, "caesars")
+                   if r.getMessage().startswith("sgp fetch"))
+    assert "parse_failures=4" in summary
+    assert "stages=price_combo:4" in summary
+
+
+def test_transport_exception_from_a_client_method_is_also_transport(
+        caplog, monkeypatch):
+    """If a client DOES let a price-stage BookTransportError escape (CZR's
+    contract could change), the orchestrator must still bucket it as
+    transport."""
+    from mlb_sgp._shared import BookTransportError
+    from mlb_sgp.tests.sweep_drives import drive_caesars
+
+    dead = BookTransportError("caesars", "price", status_code=403)
+    with caplog.at_level(logging.DEBUG, logger="mlb_sgp.caesars"):
+        rows = drive_caesars(monkeypatch, healthy=True, price_exc=dead)
+
+    assert rows == []
+    summary = next(r.getMessage() for r in _records(caplog, "caesars")
+                   if r.getMessage().startswith("sgp fetch"))
+    assert "parse_failures=0" in summary
+    assert "transport_errors=" in summary and "transport_errors=0" not in summary
+    assert not any("PARSE TRIPWIRE" in r.getMessage()
+                   for r in _records(caplog, "caesars"))
+
+
+def test_a_genuine_parser_bug_is_still_a_parse_failure(caplog, monkeypatch):
+    """The reclassification must not swallow the case it exists to expose:
+    a non-transport exception stays in parse_failures and still trips."""
+    from mlb_sgp.tests.sweep_drives import drive_fanduel
+
+    with caplog.at_level(logging.DEBUG, logger="mlb_sgp.fanduel"):
+        rows = drive_fanduel(monkeypatch, healthy=True,
+                             price_exc=KeyError("selectionId"))
+
+    assert rows == []
+    summary = next(r.getMessage() for r in _records(caplog, "fanduel")
+                   if r.getMessage().startswith("sgp fetch"))
+    assert "parse_failures=4" in summary
+    assert "transport_errors=0" in summary
+    assert any("PARSE TRIPWIRE" in r.getMessage()
+               for r in _records(caplog, "fanduel"))
+
+
+def test_thick_slate_all_price_calls_failing_is_a_transport_verdict(caplog,
+                                                                    monkeypatch):
+    """Past PriceCallTally's 8-call floor, an all-failed price cycle raises
+    BookTransportError out of price_sgps (#33). The summary must still land,
+    tallied as transport, with no parse tripwire on top.
+
+    Uses a stub client that owns a REAL PriceCallTally: ``price_tally_for``
+    deliberately hands MagicMock clients a throwaway tally (#34), so a mock
+    can never reach the verdict at CZR/MGM, where the client — not the
+    orchestrator — does the recording.
+    """
+    from types import SimpleNamespace
+    from mlb_sgp import caesars
+    from mlb_sgp._shared import BookTransportError, PriceCallTally
+    from mlb_sgp.tests.sweep_drives import (SPREAD, TOTAL, _czr_leg, target)
+    from dataclasses import replace
+
+    event = SimpleNamespace(event_id="e1", home_team="New York Yankees",
+                            away_team="Boston Red Sox", start_time=None)
+    monkeypatch.setattr(caesars, "_match_events",
+                        lambda events, targets: {"g1": event})
+    totals = {TOTAL + i: {"over": _czr_leg(1.9), "under": _czr_leg(1.9)}
+              for i in range(3)}
+    parsed = {"FG": {"spreads": {SPREAD: {"home": _czr_leg(1.9),
+                                          "away": _czr_leg(1.9)}},
+                     "totals": totals, "moneyline": None},
+              "F5": {"spreads": {}, "totals": {}, "moneyline": None}}
+    monkeypatch.setattr(caesars, "parse_markets", lambda ev: parsed)
+
+    class DeadPriceClient:
+        """Every price call fails the way a real client reports it: record
+        the miss on the tally, return None."""
+        def __init__(self):
+            self.price_calls = PriceCallTally("caesars")
+
+        def list_events(self):
+            return [event]
+
+        def fetch_event(self, event_id):
+            return {"id": "e1"}
+
+        def price_combo(self, legs):
+            self.price_calls.record(False)
+            return None
+
+    targets = [replace(target(), total=TOTAL + i) for i in range(3)]
+    with caplog.at_level(logging.DEBUG, logger="mlb_sgp.caesars"):
+        with pytest.raises(BookTransportError) as excinfo:
+            caesars.price_sgps(targets, periods=("FG",),
+                               client=DeadPriceClient())
+
+    assert excinfo.value.stage == "price"      # 12 calls, 0 successes
+    summary = next(r.getMessage() for r in _records(caplog, "caesars")
+                   if r.getMessage().startswith("sgp fetch"))
+    assert "transport_errors=1" in summary
+    assert not any("PARSE TRIPWIRE" in r.getMessage()
+                   for r in _records(caplog, "caesars"))

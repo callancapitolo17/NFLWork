@@ -413,7 +413,7 @@ def _price_sgps(
             try:
                 out.extend(f.result())
             except Exception as e:
-                counters.record_parse_failure("price_target", logger, e)
+                counters.record_exception("price_target", logger, e)
 
     # ----- Phase 3: moneyline × total combos (FG only) ----- #
     # Priced ONCE per game (not per spread target) so a game with several
@@ -461,7 +461,7 @@ def _price_sgps(
             try:
                 out.extend(f.result())
             except Exception as e:
-                counters.record_parse_failure("price_ml_target", logger, e)
+                counters.record_exception("price_ml_target", logger, e)
 
     counters.bump("prices_returned", len(out))
     price_calls.verdict(tally_start)   # raises if EVERY price call failed
@@ -511,7 +511,7 @@ def _price_combos_parallel(
 
             return combo_name, priced
         except Exception as e:
-            counters.record_parse_failure("price_combo", logger, e)
+            counters.record_exception("price_combo", logger, e)
             return combo_name, None
 
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -523,7 +523,7 @@ def _price_combos_parallel(
             try:
                 combo_name, priced = fut.result()
             except Exception as e:
-                counters.record_parse_failure("price_combo_future", logger, e)
+                counters.record_exception("price_combo_future", logger, e)
                 continue
             if priced is not None:
                 results[combo_name] = priced

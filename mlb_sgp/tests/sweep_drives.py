@@ -18,6 +18,7 @@ at the smallest seam that keeps ``price_sgps``'s own control flow real.
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -49,7 +50,7 @@ def _czr_leg(decimal: float) -> dict:
 
 
 def drive_caesars(monkeypatch, *, healthy=True, combo_decimal=2.5,
-                  leg_decimal=1.9):
+                  leg_decimal=1.9, price_exc=None, n_targets=1):
     from mlb_sgp import caesars
 
     event = SimpleNamespace(event_id="e1", home_team="New York Yankees",
@@ -74,9 +75,27 @@ def drive_caesars(monkeypatch, *, healthy=True, combo_decimal=2.5,
     client = MagicMock()
     client.list_events.return_value = [event]
     client.fetch_event.return_value = {"id": "e1"}
-    client.price_combo.return_value = {"decimal": combo_decimal,
-                                       "american": 150}
-    return caesars.price_sgps([target()], periods=("FG",), client=client)
+    if price_exc is not None:
+        client.price_combo.side_effect = price_exc
+    elif combo_decimal is None:
+        # How CZR/MGM report BOTH "book declines this combo" and a swallowed
+        # price-stage transport failure: the client returns None, so the
+        # orchestrator never sees an exception.
+        client.price_combo.return_value = None
+    else:
+        client.price_combo.return_value = {"decimal": combo_decimal,
+                                           "american": 150}
+    # n_targets>1 walks the same game at several totals, which is how a real
+    # slate reaches PriceCallTally's 8-price-call verdict floor. TargetLine is
+    # a frozen dataclass (NOT a namedtuple), so replace() is the way to vary
+    # it — an earlier cut used _replace and silently produced N identical
+    # targets instead.
+    targets = [replace(target(), total=TOTAL + i) for i in range(n_targets)]
+    if n_targets > 1 and healthy:
+        for i in range(n_targets):
+            parsed["FG"]["totals"][TOTAL + i] = {
+                "over": _czr_leg(leg_decimal), "under": _czr_leg(leg_decimal)}
+    return caesars.price_sgps(targets, periods=("FG",), client=client)
 
 
 # ------------------------------------------------------------------ #
@@ -113,7 +132,7 @@ def drive_betmgm(monkeypatch, *, healthy=True, combo_decimal=2.5,
 # FanDuel                                                             #
 # ------------------------------------------------------------------ #
 
-def drive_fanduel(monkeypatch, *, healthy=True):
+def drive_fanduel(monkeypatch, *, healthy=True, price_exc=None):
     import scraper_fanduel_sgp as legacy
     from mlb_sgp import fanduel
 
@@ -131,9 +150,12 @@ def drive_fanduel(monkeypatch, *, healthy=True):
     monkeypatch.setattr(legacy, "match_events", lambda evs, tgt: [
         {"game_id": "g1", "fd_event_id": "e1",
          "fd_home": "New York Yankees", "fd_away": "Boston Red Sox"}])
-    monkeypatch.setattr(legacy, "price_combo",
-                        lambda session, smid, ssid, tmid, tsid, verbose=False:
-                        {"decimal": 3.4, "american": 240})
+    def _price(session, smid, ssid, tmid, tsid, verbose=False):
+        if price_exc is not None:
+            raise price_exc
+        return {"decimal": 3.4, "american": 240}
+
+    monkeypatch.setattr(legacy, "price_combo", _price)
     fetchers = {
         "fetch_fd_events": lambda session: [{"id": "e1"}],
         "fetch_event_runners": lambda session, eid, h, a: runners,

@@ -476,7 +476,7 @@ def _price_sgps(
             try:
                 out.extend(f.result())
             except Exception as e:
-                counters.record_parse_failure("price_target", logger, e)
+                counters.record_exception("price_target", logger, e)
 
     # ----- Phase 3: moneyline × total combos (FG) ----- #
     out.extend(_price_ml_total_for_games(
@@ -584,7 +584,7 @@ def _price_ml_total_for_games(
             try:
                 out.extend(f.result())
             except Exception as e:
-                counters.record_parse_failure("price_ml_target", logger, e)
+                counters.record_exception("price_ml_target", logger, e)
     return out
 
 
@@ -647,7 +647,7 @@ def _price_combos_parallel(
 
             return combo_name, sgp_decimal
         except Exception as e:
-            counters.record_parse_failure("price_combo", logger, e)
+            counters.record_exception("price_combo", logger, e)
             return combo_name, None
 
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -659,7 +659,7 @@ def _price_combos_parallel(
             try:
                 combo_name, sgp_decimal = fut.result()
             except Exception as e:
-                counters.record_parse_failure("price_combo_future", logger, e)
+                counters.record_exception("price_combo_future", logger, e)
                 continue
             if sgp_decimal is not None:
                 results[combo_name] = sgp_decimal
