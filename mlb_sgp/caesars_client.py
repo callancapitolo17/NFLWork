@@ -169,7 +169,7 @@ class CaesarsClient(PriceCallTallyMixin):
             from caesars_waf import mint_token_browser_free  # cwd=mlb_sgp path
         for attempt in range(3):
             try:
-                tok, dev = mint_token_browser_free(state=self.state, verbose=self.verbose)
+                tok, dev = mint_token_browser_free(state=self.state)
             except Exception as e:
                 # Auth-stage surprise: WARNING (rare, and a dead WAF token is
                 # how this book rots silently — see issue #32's meta-bug).

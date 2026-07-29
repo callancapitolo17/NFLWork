@@ -558,9 +558,10 @@ class FetchCounters:
         Idempotent — ``price_sgps`` emits from a ``finally``, and a nested
         caller emitting again must not double-log.
         """
-        if self._emitted:
-            return
-        self._emitted = True
+        with self._lock:
+            if self._emitted:
+                return
+            self._emitted = True
         logger_.log(level, "%s", self.summary_line())
         fired = self.tripwires()
         if fired:

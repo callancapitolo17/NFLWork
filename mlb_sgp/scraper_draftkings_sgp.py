@@ -43,6 +43,12 @@ from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, RetryProfile,
 
 logger = logging.getLogger(__name__)
 
+# Issue #36 moved every diagnostic in this module to the module logger, so the
+# `verbose` parameters marked "inert" below no longer control anything. They
+# are kept because the orchestrators, SGPService's fetcher hooks and the
+# dashboard shims all still pass them; #49 (shim cleanup) removes them and
+# every call site together.
+
 # ---------------------------------------------------------------------------
 # DK API config
 # ---------------------------------------------------------------------------
@@ -451,7 +457,7 @@ def fetch_main_market_nums(session: cffi_requests.Session, dk_event_id: str,
 
 def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
                         main_market_nums: dict | None = None,
-                        verbose: bool = False,
+                        verbose: bool = False,   # inert since #36 (see module note)
                         profile: RetryProfile = RETRY_BACKGROUND) -> dict:
     """
     Fetch all SGP selection IDs for a game from the parlays endpoint, split
@@ -631,7 +637,8 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
 
 def calculate_sgp(session: cffi_requests.Session,
                   spread_sel: str, total_sel: str,
-                  verbose: bool = False) -> dict | None:
+                  verbose: bool = False,   # inert since #36 (see module note)
+                  ) -> dict | None:
     """Call DK's calculateBets with two selections. Returns {trueOdds, displayOdds} or None."""
     # RETRY_LIVE on the price stage even here: these calls fan out across a
     # thread pool (targets x combos), so BACKGROUND's 3 attempts would stall a

@@ -52,8 +52,7 @@ def mint_token_browser_free(state: str = "nj",
                             issuer_key: str = DEFAULT_KEY,
                             ua: str = REAL_UA,
                             node_bin: str | None = None,
-                            timeout: int = 60,
-                            verbose: bool = False) -> tuple[str, str]:
+                            timeout: int = 60) -> tuple[str, str]:
     """Mint an aws-waf-token without a browser. Returns (token, device_id);
     ("", "") on failure (caller then produces no rows, same as Playwright path).
     `state` is accepted for signature parity with CaesarsClient._mint."""
@@ -105,7 +104,7 @@ def _validate(token: str, device: str, state: str = "nj") -> tuple[int, int, boo
 if __name__ == "__main__":
     import time
     t0 = time.time()
-    token, device = mint_token_browser_free(verbose=True)
+    token, device = mint_token_browser_free()
     dt = time.time() - t0
     print(f"token_len={len(token)} device={device} mint={dt:.2f}s")
     if not token:

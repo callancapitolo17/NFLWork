@@ -78,6 +78,12 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 logger = logging.getLogger(__name__)
 
+# Issue #36 moved every diagnostic in this module to the module logger, so the
+# `verbose` parameters marked "inert" below no longer control anything. They
+# are kept because the orchestrators, SGPService's fetcher hooks and the
+# dashboard shims all still pass them; #49 (shim cleanup) removes them and
+# every call site together.
+
 from mlb_sgp._shared import RETRY_BACKGROUND, RetryProfile, request_with_retry
 
 # ---------------------------------------------------------------------------
@@ -384,7 +390,8 @@ def _float_eq(a, b, eps=1e-6) -> bool:
         return False
 
 
-def fetch_event_legs(session, game: dict, verbose: bool = False,
+def fetch_event_legs(session, game: dict,
+                     verbose: bool = False,   # inert since #36 (see module note)
                      profile: RetryProfile = RETRY_BACKGROUND) -> tuple[dict, list]:
     """Fetch market tree for one event, extract the 4 outcome UUIDs per period.
 
@@ -584,7 +591,8 @@ def try_integer_fallback_nv(
 # Parlay RFQ
 # ---------------------------------------------------------------------------
 def submit_parlay(session, outcome_ids: list[str],
-                  verbose: bool = False) -> tuple[dict | None, bool]:
+                  verbose: bool = False,   # inert since #36 (see module note)
+                  ) -> tuple[dict | None, bool]:
     """POST 2+ outcome UUIDs to the Novig parlay endpoint.
 
     Returns (priced, auth_failed) where priced is

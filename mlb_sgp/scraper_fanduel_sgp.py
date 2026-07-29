@@ -53,6 +53,12 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 logger = logging.getLogger(__name__)
 
+# Issue #36 moved every diagnostic in this module to the module logger, so the
+# `verbose` parameters marked "inert" below no longer control anything. They
+# are kept because the orchestrators, SGPService's fetcher hooks and the
+# dashboard shims all still pass them; #49 (shim cleanup) removes them and
+# every call site together.
+
 from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, RetryProfile,
                              check_response, json_or_raise, request_with_retry)
 
@@ -501,7 +507,8 @@ def _parse_total_runner(rn: str, hc, main_or_alt: str) -> tuple[str, float] | No
 def price_combo(session: cffi_requests.Session,
                 spread_market: str, spread_sel: int,
                 total_market: str, total_sel: int,
-                verbose: bool = False) -> dict | None:
+                verbose: bool = False,   # inert since #36 (see module note)
+                ) -> dict | None:
     """POST implyBets, return the SGP combined entry (isSGM=true) or None."""
     body = {"betLegs": [
         {"legType": "SIMPLE_SELECTION",

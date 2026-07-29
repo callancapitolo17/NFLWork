@@ -448,7 +448,7 @@ def _price_sgps(
 
         priced_by_combo = _price_combos_parallel(
             client, game["px_event_id"], spread_mid, total_mid,
-            combos, verbose, counters=counters,
+            combos, counters=counters,
         )
 
         target_rows: list[PricedRow] = []
@@ -559,7 +559,7 @@ def _price_ml_total_for_games(
                 ("Away ML + Under", away_sel, under_sel),
             )
             priced = _price_combos_parallel(
-                client, event_id, ml_mid, total_mid, ml_combos, verbose,
+                client, event_id, ml_mid, total_mid, ml_combos,
                 counters=counters)
             for combo_name, _ml, _tot in ml_combos:
                 dec = priced.get(combo_name)
@@ -594,7 +594,6 @@ def _price_combos_parallel(
     spread_mid,
     total_mid,
     combos: tuple,
-    verbose: bool,
     *,
     counters: FetchCounters | None = None,
 ) -> dict:

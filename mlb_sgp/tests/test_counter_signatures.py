@@ -97,3 +97,50 @@ def test_sgp_service_hook_factory_counters_is_keyword_only():
         SGPService._book_on_demand_hooks).parameters["counters"]
     assert param.kind is inspect.Parameter.KEYWORD_ONLY
     assert param.default is None
+
+
+@pytest.mark.parametrize("book", sorted(BOOK_MODULES))
+def test_wrapper_delegates_positionally_in_the_right_order(book):
+    """``price_sgps`` forwards to ``_price_sgps`` POSITIONALLY. A parameter
+    reordered on one side only would silently swap e.g. `verbose` and
+    `parallelism`, so check the names line up rather than trusting the eye."""
+    import ast
+
+    mod = BOOK_MODULES[book]
+    src = inspect.getsource(mod.price_sgps).lstrip()
+    call = next(n for n in ast.walk(ast.parse(src))
+                if isinstance(n, ast.Call)
+                and getattr(n.func, "id", "") == "_price_sgps")
+    passed = [getattr(a, "id", "<expr>") for a in call.args]
+    assert not call.keywords, f"{book}: delegation should be all-positional"
+    assert passed == list(inspect.signature(mod._price_sgps).parameters), (
+        f"{book}: wrapper args do not line up with _price_sgps parameters")
+
+
+def test_concurrent_fetches_do_not_share_counters():
+    """The sweep and an on-demand call for the SAME book run concurrently by
+    design (price_on_demand runs on the caller's thread, alongside refresh()).
+    Each fetch scope must own its counters, or one fetch's numbers would bleed
+    into the other's and both tripwire verdicts would be wrong."""
+    import logging
+    from concurrent.futures import ThreadPoolExecutor
+
+    from mlb_sgp._shared import fetch_counters
+
+    logger = logging.getLogger("test.concurrent_counters")
+    logger.addHandler(logging.NullHandler())
+    seen = []
+
+    def one_fetch(n):
+        with fetch_counters("caesars", "sweep", logger) as c:
+            seen.append(c)          # keep a REFERENCE: id() alone would be
+            c.bump("legs_attempted", n)   # ambiguous once CPython recycles
+            c.bump("legs_resolved", n)    # a freed object's id.
+            return c.snapshot()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        snaps = list(pool.map(one_fetch, range(1, 9)))
+
+    assert len({id(c) for c in seen}) == 8, "fetch scopes shared a counters object"
+    # Each scope sees only its OWN bumps, never the other seven's.
+    assert sorted(s.legs_attempted for s in snaps) == list(range(1, 9))

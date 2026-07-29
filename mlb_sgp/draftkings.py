@@ -328,7 +328,12 @@ def _price_sgps(
             and (t.total + 0.5) in offered_totals
         ):
             filtered_targets.append(t)
-    counters.bump("legs_attempted", len(targets))
+    # Count only targets whose game actually matched, so legs_attempted
+    # means the same thing here as in the other five books (their Filter A
+    # loops iterate per MATCHED game). A target for an unmatched game is an
+    # event-match miss, not a parse miss.
+    counters.bump("legs_attempted",
+                  sum(1 for t in targets if t.game_id in per_game_cache))
     counters.bump("legs_resolved", len(filtered_targets))
     counters.bump("targets_attempted", len(filtered_targets))
     if logger.isEnabledFor(logging.DEBUG):

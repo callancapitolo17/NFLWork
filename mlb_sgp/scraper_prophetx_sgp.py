@@ -52,6 +52,12 @@ from integer_line_derivation import is_integer_line, derive_fair_probs
 
 logger = logging.getLogger(__name__)
 
+# Issue #36 moved every diagnostic in this module to the module logger, so the
+# `verbose` parameters marked "inert" below no longer control anything. They
+# are kept because the orchestrators, SGPService's fetcher hooks and the
+# dashboard shims all still pass them; #49 (shim cleanup) removes them and
+# every call site together.
+
 # ---------------------------------------------------------------------------
 # ProphetX API config
 # ---------------------------------------------------------------------------
@@ -364,7 +370,9 @@ def _verify_competitor_ids(markets, home_id, away_id) -> bool:
     return True  # no moneyline market — can't verify; don't block
 
 
-def fetch_event_legs(session, game: dict, verbose: bool = False) -> dict:
+def fetch_event_legs(session, game: dict,
+                     verbose: bool = False,   # inert since #36 (see module note)
+                     ) -> dict:
     """For one game, fetch its market tree and extract the 4 canonical legs
     per period: home spread, away spread, over, under.
 
@@ -625,7 +633,9 @@ def try_integer_fallback_px(
 # ---------------------------------------------------------------------------
 # Step 4: RFQ pricing
 # ---------------------------------------------------------------------------
-def submit_parlay_rfq(session, legs: list[dict], verbose: bool = False) -> tuple[dict | None, bool]:
+def submit_parlay_rfq(session, legs: list[dict],
+                      verbose: bool = False,   # inert since #36 (see module note)
+                      ) -> tuple[dict | None, bool]:
     """POST two legs to the RFQ endpoint.
 
     Returns (priced, auth_failed) where:
