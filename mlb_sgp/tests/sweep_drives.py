@@ -14,6 +14,11 @@ network faked at the client boundary, in two flavors:
 The parsers themselves are covered by their own fixture tests; these drives
 exist to prove the COUNTERS and the TRIPWIRE, so per-book structure is stubbed
 at the smallest seam that keeps ``price_sgps``'s own control flow real.
+
+``counters=`` (issue #38) forwards a caller-owned ``FetchCounters`` into the
+sweep so a test can inspect what the real orchestration counted — that is the
+seam ``SGPService`` uses to put sweep counters on a health row. Default None
+keeps every pre-#38 caller unchanged.
 """
 from __future__ import annotations
 
@@ -50,7 +55,8 @@ def _czr_leg(decimal: float) -> dict:
 
 
 def drive_caesars(monkeypatch, *, healthy=True, combo_decimal=2.5,
-                  leg_decimal=1.9, price_exc=None, n_targets=1):
+                  leg_decimal=1.9, price_exc=None, n_targets=1,
+                  counters=None):
     from mlb_sgp import caesars
 
     event = SimpleNamespace(event_id="e1", home_team="New York Yankees",
@@ -95,7 +101,8 @@ def drive_caesars(monkeypatch, *, healthy=True, combo_decimal=2.5,
         for i in range(n_targets):
             parsed["FG"]["totals"][TOTAL + i] = {
                 "over": _czr_leg(leg_decimal), "under": _czr_leg(leg_decimal)}
-    return caesars.price_sgps(targets, periods=("FG",), client=client)
+    return caesars.price_sgps(targets, periods=("FG",), client=client,
+                              counters=counters)
 
 
 # ------------------------------------------------------------------ #
@@ -103,7 +110,7 @@ def drive_caesars(monkeypatch, *, healthy=True, combo_decimal=2.5,
 # ------------------------------------------------------------------ #
 
 def drive_betmgm(monkeypatch, *, healthy=True, combo_decimal=2.5,
-                 leg_decimal=1.9):
+                 leg_decimal=1.9, counters=None):
     from mlb_sgp import betmgm
 
     event = SimpleNamespace(event_id="e1", home_team="New York Yankees",
@@ -125,14 +132,16 @@ def drive_betmgm(monkeypatch, *, healthy=True, combo_decimal=2.5,
     client.list_events.return_value = [event]
     client.fetch_markets.return_value = [{"raw": True}]
     client.price_picks.return_value = {"decimal": combo_decimal}
-    return betmgm.price_sgps([target()], periods=("FG",), client=client)
+    return betmgm.price_sgps([target()], periods=("FG",), client=client,
+                             counters=counters)
 
 
 # ------------------------------------------------------------------ #
 # FanDuel                                                             #
 # ------------------------------------------------------------------ #
 
-def drive_fanduel(monkeypatch, *, healthy=True, price_exc=None):
+def drive_fanduel(monkeypatch, *, healthy=True, price_exc=None,
+                  counters=None):
     import scraper_fanduel_sgp as legacy
     from mlb_sgp import fanduel
 
@@ -161,14 +170,15 @@ def drive_fanduel(monkeypatch, *, healthy=True, price_exc=None):
         "fetch_event_runners": lambda session, eid, h, a: runners,
     }
     return fanduel.price_sgps([target()], periods=("FG",), client=MagicMock(),
-                              parallelism=2, fetchers=fetchers)
+                              parallelism=2, fetchers=fetchers,
+                              counters=counters)
 
 
 # ------------------------------------------------------------------ #
 # DraftKings                                                          #
 # ------------------------------------------------------------------ #
 
-def drive_draftkings(monkeypatch, *, healthy=True):
+def drive_draftkings(monkeypatch, *, healthy=True, counters=None):
     import scraper_draftkings_sgp as legacy
     from mlb_sgp import draftkings
 
@@ -200,7 +210,7 @@ def drive_draftkings(monkeypatch, *, healthy=True):
     }
     return draftkings.price_sgps([target()], periods=("FG",),
                                  client=MagicMock(), parallelism=2,
-                                 fetchers=fetchers)
+                                 fetchers=fetchers, counters=counters)
 
 
 # ------------------------------------------------------------------ #
@@ -212,7 +222,7 @@ def _nv_market(mtype, strike, offered=True):
             "outcomes": [] if not offered else [{"id": "o1"}]}
 
 
-def drive_novig(monkeypatch, *, healthy=True):
+def drive_novig(monkeypatch, *, healthy=True, counters=None):
     import scraper_novig_sgp as legacy
     from mlb_sgp import novig
 
@@ -243,14 +253,15 @@ def drive_novig(monkeypatch, *, healthy=True):
         SimpleNamespace(event_id="e1", home_team="New York Yankees",
                         away_team="Boston Red Sox", home_sym="NYY",
                         away_sym="BOS", start_time=CT)]
-    return novig.price_sgps([target()], periods=("FG",), client=client)
+    return novig.price_sgps([target()], periods=("FG",), client=client,
+                            counters=counters)
 
 
 # ------------------------------------------------------------------ #
 # ProphetX                                                            #
 # ------------------------------------------------------------------ #
 
-def drive_prophetx(monkeypatch, *, healthy=True):
+def drive_prophetx(monkeypatch, *, healthy=True, counters=None):
     import scraper_prophetx_sgp as legacy
     from mlb_sgp import prophetx
 
@@ -295,7 +306,7 @@ def drive_prophetx(monkeypatch, *, healthy=True):
     client.fetch_event_markets.return_value = market_objs
     client.submit_parlay_rfq.return_value = ({"odds": 150}, False)
     return prophetx.price_sgps([target()], periods=("FG",), client=client,
-                               parallelism=2)
+                               parallelism=2, counters=counters)
 
 
 DRIVES = {

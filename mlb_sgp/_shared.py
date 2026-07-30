@@ -626,7 +626,8 @@ class FetchCounters:
 
 @contextmanager
 def fetch_counters(book: str, path: str, logger_: logging.Logger,
-                   level: int = logging.INFO):
+                   level: int = logging.INFO, *,
+                   counters: "FetchCounters | None" = None):
     """Scope one book's one fetch, guaranteeing the summary is emitted.
 
     Wraps ``price_sgps`` bodies (which have several ``return []``
@@ -634,8 +635,21 @@ def fetch_counters(book: str, path: str, logger_: logging.Logger,
     way out is tallied first — that suppresses the ``prices_empty`` tripwire,
     which would otherwise point a fixer at the parser when the real story is
     a dead endpoint.
+
+    ``counters`` (issue #38) lets a CALLER own the object instead of having
+    one created here. ``SGPService`` uses that to read a sweep's counters
+    after ``price_sgps`` returns — including on the exception paths, where
+    there is no return value to ride back on — and persist them to
+    ``sgp_fetch_health``. Passing a counter whose ``book``/``path`` disagree
+    with the arguments would silently mislabel a health row, so it raises.
     """
-    counters = FetchCounters(book, path)
+    if counters is None:
+        counters = FetchCounters(book, path)
+    elif (counters.book, counters.path) != (book, path):
+        raise ValueError(
+            f"fetch_counters: caller passed counters for "
+            f"({counters.book!r}, {counters.path!r}) but this fetch is "
+            f"({book!r}, {path!r})")
     try:
         yield counters
     except BookTransportError:

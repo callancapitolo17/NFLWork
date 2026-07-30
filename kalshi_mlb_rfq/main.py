@@ -1754,7 +1754,11 @@ def main_loop(dry_run: bool):
     # book fairs and burn Kalshi quota on candidates that can't pass the
     # N>=2 books gate.
     from kalshi_common.sgp_service import SGPService
-    sgp_service = SGPService(per_book_deadline_sec=config.SGP_SCRAPER_TIMEOUT_SEC)
+    # health_db_path (issue #38): per-book fetch health lands in the SAME
+    # market DB (and write lock) the SGP rows go to. Buffered — see
+    # flush_health() in the tick loop below.
+    sgp_service = SGPService(per_book_deadline_sec=config.SGP_SCRAPER_TIMEOUT_SEC,
+                             health_db_path=str(config.BOT_MARKET_DB))
     log.info("startup: warming SGP cache (one synchronous scrape tick)...")
     try:
         rcs = sgp_runner.sgp_cycle(
@@ -1837,6 +1841,7 @@ def main_loop(dry_run: bool):
                 last_heartbeat = now
 
             research.flush()   # persist this tick's buffered research events
+            sgp_service.flush_health()   # issue #38: drain fetch-health rows
             time.sleep(0.5)
     finally:
         with db.connect(read_only=True) as con:
