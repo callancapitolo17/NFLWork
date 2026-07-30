@@ -165,6 +165,66 @@ dashboard spawns the shims + blends them in `mlb_correlated_parlay.R`.
   any non-browser client. Only a persistent live browser works; revisit if that
   tradeoff becomes acceptable.
 
+## Fetch-health history — `sgp_fetch_health` (issue #38)
+
+Every book fetch the bots make leaves one row behind, so "when did this book
+last return a price?" is a SQL question instead of an archaeology project.
+(The taker's feed died 2026-06-28 and went unnoticed for four weeks; nothing
+recorded it.)
+
+**Where:** the bot's own market DB — the same file, and therefore the same
+write lock, as `mlb_sgp_odds`:
+
+| bot | DB |
+|---|---|
+| maker | `kalshi_mlb_mm/kalshi_mlb_mm_market.duckdb` |
+| taker | `kalshi_mlb_rfq/kalshi_mlb_rfq_market.duckdb` |
+
+The dashboard's CLI-shim path writes **nothing** — health recording is opt-in
+via `SGPService(health_db_path=...)`, which only the bots pass.
+
+**Schema** (`kalshi_common/sgp_health.py`):
+
+| column | meaning |
+|---|---|
+| `fetched_at` | TIMESTAMPTZ, UTC |
+| `book` | draftkings / fanduel / prophetx / novig / betmgm / caesars |
+| `path` | `sweep` (periodic full-slate) or `on_demand` (live at-quote fetch) |
+| `outcome` | `ok` / `empty` / `transport_error` / `timeout` / `error` |
+| `rows_or_prices` | sweep: PricedRows written. on-demand: price calls that returned |
+| `duration_sec` | the WHOLE logical fetch, including #34's retry sleeps |
+| `error_class` | e.g. `BookTransportError:events:403`, `FutureTimeout` |
+| `counters_json` | the #35 per-fetch counter snapshot |
+
+`outcome` distinguishes four failure modes on purpose: `empty` is a book with
+no markets, `transport_error` is a dead endpoint (#33), `timeout` is our own
+deadline firing while the book was still working, and `error` is a bug in our
+parse code. Collapsing them is the meta-bug this epic exists to remove. A book
+skipped by `min_refresh_sec` writes **no row** — it was never fetched.
+
+**Reading it** — `kalshi_common/fetch_health_queries.sql` ships four queries
+(`outcome_mix_24h`, `current_failure_streak`, `parse_health_24h`,
+`retention_footprint`):
+
+```bash
+duckdb kalshi_mlb_mm/kalshi_mlb_mm_market.duckdb -readonly \
+    < kalshi_common/fetch_health_queries.sql
+```
+
+⚠️ **Always group by `path`.** `targets_attempted` and `prices_returned` carry
+different units on the two paths (sweep ~1:4, on-demand 1:1 — see the warning
+block in `_shared.COUNTER_NAMES`). A ratio pooled across paths is wrong, not
+merely noisy.
+
+**Cost and safety.** Writes are buffered in memory and flushed once per bot
+tick (`SGPService.flush_health()`); the on-demand path never touches the DB
+inside a quote. A flush failure (locked DB) is swallowed and the buffer is
+retained for the next attempt — a health write can never break pricing.
+Retention is 30 days, pruned at flush time at most hourly. Measured footprint
+(50k rows written through the real recorder, extrapolated): **~21 MB per 1M
+rows**, and 1M rows is roughly a 30-day worst case at post-#53 quote volume
+(~33k rows/day = 6 books x 1,440 sweeps + ~2k on-demand fetches x 6 books x 2).
+
 ## DraftKings API Endpoints
 
 | Endpoint | Auth | Purpose |

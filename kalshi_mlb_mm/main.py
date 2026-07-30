@@ -1717,7 +1717,11 @@ def main_loop(dry_run: bool):
     log.info("=== MM bot session %s dry_run=%s ===", sid, dry_run)
     source, gateway = RestRFQSource(), RestQuoteGateway()
     from kalshi_common.sgp_service import SGPService
-    sgp_service = SGPService(per_book_deadline_sec=config.SGP_SCRAPER_TIMEOUT_SEC)
+    # health_db_path (issue #38): per-book fetch health lands in the SAME
+    # market DB (and write lock) the SGP rows go to. Buffered — see
+    # flush_health() in the tick loop below.
+    sgp_service = SGPService(per_book_deadline_sec=config.SGP_SCRAPER_TIMEOUT_SEC,
+                             health_db_path=str(config.MARKET_DB))
     # Phase 2: on-demand pricing engine shares the service's persistent
     # clients + structure caches. Always on — no switch (user decision);
     # the bot-wide kill file remains the emergency stop.
@@ -1795,6 +1799,7 @@ def main_loop(dry_run: bool):
                     log.error("sgp err: %s", e)
                 last["sgp"] = now
             research.flush()  # per-tick batched drain
+            sgp_service.flush_health()   # issue #38: drain fetch-health rows
             time.sleep(0.25)   # short sleep → responsive SIGTERM
     finally:
         with db.connect(read_only=True) as con:

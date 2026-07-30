@@ -66,7 +66,15 @@ def test_non_mgm_price_selection_set_binds_two_positionals(book):
 def test_price_sgps_public_signature_is_unchanged(book):
     """The sweep wrapper must keep the shim/dashboard call shape: every
     parameter after ``target_lines`` still has a default, and the names the
-    shims pass by keyword still exist."""
+    shims pass by keyword still exist.
+
+    #35 originally asserted ``counters`` was ABSENT here, to stop the seam
+    leaking to the dashboard shims. #38 gave it one legitimate caller —
+    ``SGPService`` must read a sweep's counters to persist them to
+    ``sgp_fetch_health`` — so the guard becomes the stronger form: present,
+    keyword-only, defaulted, and unable to swallow a positional argument.
+    See ``mlb_sgp/tests/test_sweep_counters_param.py``.
+    """
     sig = inspect.signature(BOOK_MODULES[book].price_sgps)
     names = list(sig.parameters)
     assert names[0] == "target_lines"
@@ -74,9 +82,12 @@ def test_price_sgps_public_signature_is_unchanged(book):
         assert sig.parameters[name].default is not inspect.Parameter.empty, (
             f"{book}.price_sgps: {name} lost its default")
     # Shim call shape: price_sgps(targets, periods=..., client=..., verbose=...)
-    sig.bind(["t"], periods=("FG",), client=object(), verbose=False)
-    assert "counters" not in sig.parameters, (
-        f"{book}.price_sgps must not leak the counters seam to callers")
+    bound = sig.bind(["t"], periods=("FG",), client=object(), verbose=False)
+    assert "counters" not in bound.arguments, (
+        f"{book}.price_sgps: a shim call must never bind counters")
+    counters_param = sig.parameters["counters"]
+    assert counters_param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert counters_param.default is None
 
 
 @pytest.mark.parametrize("book", sorted(BOOK_MODULES))

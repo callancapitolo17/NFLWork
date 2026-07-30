@@ -279,6 +279,25 @@ def write_target_lines(target_lines: list[TargetLine], db_path: str):
         con.close()
 
 
+# Issue #38, item 4. This LEGACY subprocess path (dashboard only — the bots
+# price in-process) opened each scraper's log with mode "w", so every cycle
+# erased the last one: a book that died at 14:02 left no trace by 14:03.
+# Append instead, and reset the file once it passes the cap so an unattended
+# dashboard cannot fill the disk. Deliberately no rotation — the path is
+# legacy and does not warrant the machinery.
+RUNNER_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _log_open_mode(log_path: Path) -> str:
+    """"a" normally; "w" when the existing log has outgrown the cap."""
+    try:
+        if log_path.stat().st_size >= RUNNER_LOG_MAX_BYTES:
+            return "w"
+    except OSError:
+        pass            # missing file (first run) or unstattable — just append
+    return "a"
+
+
 def run_scrapers(
     scraper_dir: str,
     scraper_names: list[str],
@@ -306,7 +325,7 @@ def run_scrapers(
     try:
         for name in scraper_names:
             log_path = Path(scraper_dir) / f"{name}.runner.log"
-            handle = open(log_path, "w")
+            handle = open(log_path, _log_open_mode(log_path))
             log_handles.append(handle)
             try:
                 p = subprocess.Popen(

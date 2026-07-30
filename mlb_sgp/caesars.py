@@ -207,6 +207,8 @@ def price_sgps(
     periods: tuple[str, ...] = ("FG",),
     client: CaesarsClient | None = None,
     verbose: bool = False,
+    *,
+    counters: FetchCounters | None = None,
 ) -> list[PricedRow]:
     """Price every target line against Caesars. See ``_price_sgps``.
 
@@ -214,8 +216,14 @@ def price_sgps(
     body has several ``return []`` short-circuits, and the summary line +
     parse tripwire must be emitted on every one of them (and on the way out
     of a ``BookTransportError``).
+
+    ``counters`` (issue #38, keyword-only) prices into a CALLER-owned
+    ``FetchCounters`` instead of a fresh one, so ``SGPService`` can read
+    this fetch's counts afterwards and persist them to
+    ``sgp_fetch_health``. Omitting it keeps the pre-#38 behavior.
     """
-    with fetch_counters(BOOK_NAME, "sweep", logger) as counters:
+    with fetch_counters(BOOK_NAME, "sweep", logger,
+                        counters=counters) as counters:
         return _price_sgps(target_lines, periods, client, verbose, counters)
 
 

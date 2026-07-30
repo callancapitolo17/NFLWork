@@ -242,6 +242,23 @@ staleness is the gap to the latest prior `scrape_done` event (per-book ages
 aren't persisted at quote time). Fresh/empty/locked DBs degrade to notes —
 the report never crashes and never writes.
 
+## Per-book fetch health
+
+Every SGP fetch this bot makes — the periodic sweep and every on-demand live
+fetch — writes one row to `sgp_fetch_health` in
+`kalshi_mlb_mm_market.duckdb` (book, path, outcome, duration, error class,
+#35 counters). It is the memory that makes "DraftKings has been 403ing since
+Tuesday" answerable. Buffered and flushed once per tick; a locked DB costs
+history, never a quote. 30-day retention.
+
+```bash
+duckdb kalshi_mlb_mm/kalshi_mlb_mm_market.duckdb -readonly \
+    < kalshi_common/fetch_health_queries.sql
+```
+
+Schema, outcome vocabulary and the units caveat (**always group by `path`**)
+are documented in `mlb_sgp/README.md` → "Fetch-health history".
+
 ## Knobs
 
 All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Defaults come from `kalshi_mlb_mm/config.py`.

@@ -14,8 +14,10 @@ import logging
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from dataclasses import dataclass
 from pathlib import Path
 
+from kalshi_common.sgp_health import FetchHealthRecorder, transport_error_class
 from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, BookTransportError,
                              FetchCounters, OnDemandBookResult, PricedRow,
                              RetryProfile, TargetLine, TTLCache,
@@ -37,6 +39,12 @@ STRUCTURE_TTL_SEC = 180    # sel-ids / runners churn when a book re-mains a line
 # the ceiling we accept; beyond that Route B (1 SGP call + singles).
 ON_DEMAND_MAX_PARTITION_LEGS = 3
 
+# Issue #38: how often the per-tick health drain may open the market DB.
+# Health rows are diagnostics — landing them 5s late costs nothing, while
+# a read-write handle opened 4x/sec on the file the pricing path reads is
+# a window worth not having (see SGPService.flush_health).
+HEALTH_FLUSH_MIN_INTERVAL_SEC = 5.0
+
 # Route B haircut when a leg's single is ONE-SIDED at the book (no opposite
 # to devig against): fair ≈ implied/(1+vig). Mirrors the maker's per-book
 # vig-fallback config defaults (kalshi_common cannot import maker config).
@@ -52,6 +60,56 @@ ON_DEMAND_VIG_FALLBACK = {
     "betmgm": 0.12,
     "caesars": 0.12,
 }
+
+
+@dataclass(frozen=True)
+class _BookRun:
+    """What one book's sweep did, as the worker thread saw it.
+
+    Internal to ``refresh``. It exists because the old seam was LOSSY: the
+    worker returned ``None`` for both "the book is down" and "we ran out of
+    time", so the health row could not tell ``transport_error`` from
+    ``timeout``. The verdict is therefore decided where the exception is
+    caught, and carried back with the rows.
+    """
+    rows: list | None
+    outcome: str
+    error_class: str | None
+    duration_sec: float
+    counters: object | None          # FetchCountersSnapshot | None
+
+
+class _Verdict:
+    """Why an on-demand fetch produced no price (issue #38).
+
+    ``price_on_demand`` classifies its own failures inside a broad ``except``
+    and returns a bare ``None``, so the health row would otherwise have to
+    guess. One instance per call — NEVER on ``self``: two RFQs can price the
+    same book on two threads at the same time.
+
+    Default 'empty' is the honest reading of a plain ``None``: the book was
+    reachable and simply would not price this combo.
+    """
+    __slots__ = ("outcome", "error_class")
+
+    def __init__(self):
+        self.outcome = "empty"
+        self.error_class = None
+
+    def set(self, outcome: str, error_class: str | None) -> None:
+        self.outcome = outcome
+        self.error_class = error_class
+
+
+def _snapshot(counters):
+    """``counters.snapshot()`` or None — the sweep's test seam has no counters."""
+    return counters.snapshot() if counters is not None else None
+
+
+def _prices_returned(snapshot) -> int | None:
+    """How much a FAILED fetch still got back, for the health row's
+    ``rows_or_prices``. None when the fetch produced no counters at all."""
+    return getattr(snapshot, "prices_returned", None)
 
 
 class _BookState:
@@ -80,6 +138,12 @@ class SGPService:
         # hook dict keys: match_event / build_structure / resolve / price
         # (see _book_on_demand_hooks for the real implementations)
         now_fn=time.monotonic,
+        *,
+        # Issue #38: where to persist per-fetch health. Pass the bot's market
+        # DB — the SAME file (and write lock) the fetch's rows go to. None
+        # disables health recording entirely (dashboard CLI path, tests).
+        # Keyword-only: it must never bind positionally to now_fn.
+        health_db_path: str | None = None,
     ):
         self.books = tuple(books)
         self.per_book_deadline_sec = per_book_deadline_sec
@@ -88,6 +152,8 @@ class SGPService:
         self._on_demand_hooks = on_demand_hooks
         self._now = now_fn
         self._state = {b: _BookState() for b in self.books}
+        self.health = FetchHealthRecorder(health_db_path)
+        self._last_health_flush = None
         # The orchestrators lazily import the legacy scraper modules by
         # top-level name (`from scraper_draftkings_sgp import ...`),
         # which only resolves with mlb_sgp/ itself on sys.path — true
@@ -118,6 +184,11 @@ class SGPService:
           None                             -> failure or deadline timeout
         Books skipped by min_refresh_sec are ABSENT from the dict —
         callers must not clear their previously-written rows.
+
+        Side effect (issue #38): one ``sgp_fetch_health`` row per ATTEMPTED
+        book, buffered and flushed at the end of this call. A skipped book
+        writes NO row — it was never fetched, and inventing an 'empty' for
+        it would fabricate a failure streak out of scheduling.
         """
         due = [b for b in self.books if self._due(b)]
         results: dict[str, list[PricedRow] | None] = {}
@@ -130,6 +201,10 @@ class SGPService:
         pool = ThreadPoolExecutor(max_workers=len(due),
                                   thread_name_prefix="sgp-book")
         try:
+            # Shared across books on purpose: every future is already
+            # running, so this is "wall time from submit until we gave up
+            # on this book" — the only duration a timed-out fetch has.
+            t_submit = time.monotonic()
             futs = {b: pool.submit(self._run_book_safe, b, targets) for b in due}
             # All futures are already running concurrently (one worker per
             # due book), so per-book `remaining` is wall-bounded by the
@@ -139,22 +214,89 @@ class SGPService:
                 remaining = max(0.0, wall_deadline - time.monotonic())
                 timed_out = False
                 try:
-                    rows = fut.result(timeout=remaining)
+                    run = fut.result(timeout=remaining)
                 except FutureTimeout:
                     # The worker thread is still running and still holds
                     # this book's curl_cffi session (not thread-safe).
                     # Drop the client NOW so the next cycle builds a fresh
                     # session the lingering thread no longer shares —
                     # don't wait for the 3-strike teardown.
-                    rows = None
+                    #
+                    # The health row is written HERE, from the _BookRun we
+                    # never receive — so the lingering thread cannot also
+                    # land a late 'ok' row for the same fetch.
+                    run = _BookRun(rows=None, outcome="timeout",
+                                   error_class="FutureTimeout",
+                                   duration_sec=time.monotonic() - t_submit,
+                                   counters=None)
                     timed_out = True
-                except Exception:
-                    rows = None
-                self._book_done(b, rows, timed_out=timed_out)
-                results[b] = rows
+                except Exception as e:   # pragma: no cover
+                    # Unreachable: _run_book_safe never raises. Kept so a
+                    # future refactor that breaks that still lands a row.
+                    run = _BookRun(rows=None, outcome="error",
+                                   error_class=type(e).__name__,
+                                   duration_sec=time.monotonic() - t_submit,
+                                   counters=None)
+                self._record_health(b, "sweep", run)
+                self._book_done(b, run.rows, timed_out=timed_out)
+                results[b] = run.rows
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
+        # Sweep rows land immediately: this runs on the bot's main-loop
+        # thread right before sgp_cycle takes the same write lock anyway.
+        self.health.flush()
         return results
+
+    def flush_health(self, force: bool = False) -> int:
+        """Drain buffered fetch-health rows. Call once per bot tick.
+
+        On-demand fetches run on the quote path and must not block on a DB,
+        so they only buffer; this is what actually persists them. Never
+        raises. Returns rows written.
+
+        Coalesced to one DB open per ``HEALTH_FLUSH_MIN_INTERVAL_SEC``
+        (``force=True`` overrides). The maker ticks 4x/sec, and each flush
+        holds a READ-WRITE handle on the market DB — see the thread-safety
+        note below for why holding that handle less often matters.
+
+        !! THREAD SAFETY — call this from the SAME thread that does the
+        bot's other market-DB work (the main tick loop). Reproduced on
+        duckdb 1.4.4: while ANY read-write connection to a file is open,
+        a read-only connect to that same file FROM THE SAME PROCESS raises
+        ``ConnectionException("Can't open a connection to same database
+        file with a different configuration")`` — immediately, no retry.
+        ``kalshi_mlb_mm/main.py::_game_ref`` catches only IOException /
+        CatalogException there, so the ConnectionException would fall to
+        its outer fail-safe, return None, and leave the RFQ
+        ``on_demand_pending``. That is a LOST QUOTE caused by a health
+        write, which this module's whole contract forbids. Today every
+        in-process market-DB read and every flush happen on the one tick
+        thread, so the window does not exist; moving this call onto a
+        worker thread would open it.
+        """
+        if not force and not self._health_flush_due():
+            return 0
+        self._last_health_flush = time.monotonic()
+        return self.health.flush()
+
+    def _health_flush_due(self) -> bool:
+        last = self._last_health_flush
+        if last is None:
+            return True
+        return (time.monotonic() - last) >= HEALTH_FLUSH_MIN_INTERVAL_SEC
+
+    def health_pending(self) -> int:
+        """Buffered health rows not yet written (retained across failures)."""
+        return self.health.pending()
+
+    def _record_health(self, book: str, path: str, run: _BookRun) -> None:
+        rows = run.rows
+        self.health.record(
+            book=book, path=path, outcome=run.outcome,
+            rows_or_prices=(len(rows) if rows is not None
+                            else _prices_returned(run.counters)),
+            duration_sec=run.duration_sec, error_class=run.error_class,
+            counters=run.counters)
 
     def close(self):
         """Drop all persistent clients (sessions close on GC)."""
@@ -189,29 +331,53 @@ class SGPService:
             st.failures = 0
             st.last_success = self._now()
 
-    def _run_book_safe(self, book: str, targets):
-        """Runs in a worker thread. Returns rows or None — never raises
+    def _run_book_safe(self, book: str, targets) -> _BookRun:
+        """Runs in a worker thread. Returns a ``_BookRun`` — never raises
         (a raise would surface as a generic future error and lose the
         book attribution in logs).
 
-        None is the fail-safe signal: sgp_cycle preserves the book's
-        previously-written rows instead of clearing them, and _book_done
-        counts a strike toward client reinit.
+        ``rows is None`` is the fail-safe signal: sgp_cycle preserves the
+        book's previously-written rows instead of clearing them, and
+        _book_done counts a strike toward client reinit.
+
+        ``duration_sec`` spans the WHOLE logical fetch — lazy client init and
+        every retry #34 slept through — because that is the number #50's
+        latency baselines need. One fetch, one measurement, one row.
         """
+        # The counters object is created HERE so the verdict is readable even
+        # when price_sgps raises; the sweep fills it in place.
+        counters = FetchCounters(book, "sweep")
+        t0 = time.monotonic()
+
+        def elapsed() -> float:
+            return time.monotonic() - t0
+
         try:
             if self._runners is not None:
-                return self._runners[book](targets)
-            return self._run_book(book, targets)
+                counters = None      # test seam fills no counters, ever
+                rows = self._runners[book](targets)
+            else:
+                rows = self._run_book(book, targets, counters=counters)
         except BookTransportError as e:
             # The book is DOWN (403 / DNS / WAF / auth gate), not empty.
             # Logged at ERROR so it is greppable in bot.log — this is the
             # signal that rotted silently before issue #33.
             log.error("sgp_service: %s TRANSPORT FAILURE stage=%s status=%s: %s",
                       book, e.stage, e.status_code, e)
-            return None
+            return _BookRun(None, "transport_error", transport_error_class(e),
+                            elapsed(), _snapshot(counters))
         except Exception as e:
             log.warning("sgp_service: %s runner error: %s", book, e)
-            return None
+            return _BookRun(None, "error", type(e).__name__, elapsed(),
+                            _snapshot(counters))
+        if rows is None:
+            # Only reachable through the `runners` test seam — a book module
+            # always returns a list. _book_done already treats it as a
+            # failure; the health row must not read it as an empty slate.
+            return _BookRun(None, "error", "NoneResult", elapsed(),
+                            _snapshot(counters))
+        return _BookRun(rows, "ok" if rows else "empty", None, elapsed(),
+                        _snapshot(counters))
 
     def _ensure_client(self, book: str) -> _BookState:
         """Lazily build the book's persistent client — extracted verbatim
@@ -249,16 +415,19 @@ class SGPService:
             raise ValueError(f"unknown book {book!r}")
         return st
 
-    def _run_book(self, book: str, targets):
+    def _run_book(self, book: str, targets, *,
+                  counters: FetchCounters | None = None):
         st = self._ensure_client(book)
         if book == "draftkings":
             from mlb_sgp import draftkings as mod
             return mod.price_sgps(targets, periods=("FG",), client=st.client,
-                                  fetchers=self._dk_fetchers(st))
+                                  fetchers=self._dk_fetchers(st),
+                                  counters=counters)
         if book == "fanduel":
             from mlb_sgp import fanduel as mod
             return mod.price_sgps(targets, periods=("FG",), client=st.client,
-                                  fetchers=self._fd_fetchers(st))
+                                  fetchers=self._fd_fetchers(st),
+                                  counters=counters)
         if book == "prophetx":
             from mlb_sgp import prophetx as mod
         elif book == "novig":
@@ -267,7 +436,8 @@ class SGPService:
             from mlb_sgp import betmgm as mod
         else:            # caesars — unknown books already raised above
             from mlb_sgp import caesars as mod
-        return mod.price_sgps(targets, periods=("FG",), client=st.client)
+        return mod.price_sgps(targets, periods=("FG",), client=st.client,
+                              counters=counters)
 
     @staticmethod
     def _dk_fetchers(st: _BookState,
@@ -347,17 +517,39 @@ class SGPService:
         summary logs at DEBUG (this runs per RFQ per book — an INFO line each
         time would drown bot.log), and a parse tripwire still logs WARNING.
         The counters ride back on ``OnDemandBookResult.counters``.
+
+        Issue #38: one buffered ``sgp_fetch_health`` row per call. Buffered,
+        never written here — this is the quote path, and a DB round trip
+        inside an RFQ budget is exactly what must not happen. The bot's tick
+        loop calls ``flush_health()``. A call that never reaches a wire
+        (unknown book, empty leg set) writes nothing.
         """
         if book not in self._state or not legs:
             return None
+        t0 = time.monotonic()
+        # Per-call, never shared: two RFQs can price the same book on two
+        # threads at once, so the verdict cannot live on self.
+        verdict = _Verdict()
         with fetch_counters(book, "on_demand", log,
                             level=logging.DEBUG) as counters:
-            return self._price_on_demand(book, game, legs, counters)
+            result = self._price_on_demand(book, game, legs, counters,
+                                           verdict)
+            snapshot = counters.snapshot()
+            self.health.record(
+                book=book, path="on_demand",
+                outcome="ok" if result is not None else verdict.outcome,
+                rows_or_prices=snapshot.prices_returned,
+                duration_sec=time.monotonic() - t0,
+                error_class=verdict.error_class,
+                counters=snapshot)
+            return result
 
     def _price_on_demand(self, book: str, game, legs,
-                         counters: FetchCounters):
+                         counters: FetchCounters,
+                         verdict: "_Verdict | None" = None):
         t0 = time.monotonic()
         st = self._state[book]
+        verdict = verdict if verdict is not None else _Verdict()
         try:
             hooks = (self._on_demand_hooks or {}).get(book)
             if hooks is None:
@@ -463,12 +655,14 @@ class SGPService:
             counters.bump("transport_errors")
             log.error("sgp_service: %s on-demand TRANSPORT FAILURE stage=%s "
                       "status=%s: %s", book, e.stage, e.status_code, e)
+            verdict.set("transport_error", transport_error_class(e))
             self._book_done(book, None)
             return None
         except Exception as e:
             # record_parse_failure does the logging (WARNING the first time
             # per stage this fetch, DEBUG after).
             counters.record_parse_failure("on_demand", log, e)
+            verdict.set("error", type(e).__name__)
             self._book_done(book, None)
             return None
 

@@ -132,6 +132,8 @@ def price_sgps(
     periods: tuple[str, ...] = ("FG",),
     client: NovigClient | None = None,
     verbose: bool = False,
+    *,
+    counters: FetchCounters | None = None,
 ) -> list[PricedRow]:
     """Price every target line against the Novig parlay RFQ endpoint.
 
@@ -163,8 +165,14 @@ def price_sgps(
     This is a thin wrapper over ``_price_sgps`` so issue #35's per-fetch
     counter summary and parse tripwire are emitted on every exit path,
     early returns included.
+
+    ``counters`` (issue #38, keyword-only) prices into a CALLER-owned
+    ``FetchCounters`` instead of a fresh one, so ``SGPService`` can read
+    this fetch's counts afterwards and persist them to
+    ``sgp_fetch_health``. Omitting it keeps the pre-#38 behavior.
     """
-    with fetch_counters(BOOK_NAME, "sweep", logger) as counters:
+    with fetch_counters(BOOK_NAME, "sweep", logger,
+                        counters=counters) as counters:
         return _price_sgps(target_lines, periods, client, verbose, counters)
 
 
