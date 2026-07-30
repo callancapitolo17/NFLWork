@@ -345,12 +345,38 @@ class PriceCallTally:
         self._lock = threading.Lock()
         self._attempted = 0
         self._succeeded = 0
+        # Last HTTP status a price call declined with, and the attempt number
+        # it came from. The attempt number is what scopes it to ONE cycle:
+        # without it, a previous cycle's 403 would be reported against a later
+        # cycle whose declines carried no status at all.
+        self._last_status: int | None = None
+        self._last_status_at = 0
 
-    def record(self, ok: bool) -> None:
+    def record(self, ok: bool, *, status: int | None = None) -> None:
         with self._lock:
             self._attempted += 1
             if ok:
                 self._succeeded += 1
+            elif status is not None:
+                self._last_status = status
+                self._last_status_at = self._attempted
+
+    def note_status(self, status: int) -> None:
+        """Record the status of the decline currently in flight.
+
+        Separate from ``record`` because DK's ``calculate_sgp`` swallows a
+        non-200 into ``None`` — by the time ``wrap`` tallies the result the
+        status is gone. Passed in as ``calculate_sgp(..., on_decline=...)`` so
+        the value reaches the verdict rather than being logged and dropped
+        (issue #39: the missing ``:403`` is what made a blocked price HOST look
+        like an ordinary run of unpriceable combos).
+
+        Stamps the in-flight attempt (``_attempted + 1``): this fires inside
+        the price call, before ``wrap`` increments the counter.
+        """
+        with self._lock:
+            self._last_status = status
+            self._last_status_at = self._attempted + 1
 
     def snapshot(self) -> tuple[int, int]:
         with self._lock:
@@ -372,13 +398,23 @@ class PriceCallTally:
         return tallied
 
     def verdict(self, since: tuple[int, int]) -> None:
-        """Raise if every price call since ``since`` failed."""
+        """Raise if every price call since ``since`` failed.
+
+        Carries the last decline status so ``sgp_fetch_health.error_class``
+        reads ``BookTransportError:price:403`` — stage AND status, which is
+        what distinguishes a blocked price host from a slate of combos the
+        book simply won't build.
+        """
         attempted, succeeded = self.snapshot()
         n_attempted = attempted - since[0]
         n_succeeded = succeeded - since[1]
         if n_attempted >= self.MIN_ATTEMPTS_FOR_VERDICT and n_succeeded == 0:
+            with self._lock:
+                # Only report a status recorded during THIS cycle.
+                status = (self._last_status
+                          if self._last_status_at > since[0] else None)
             raise BookTransportError(
-                self.book, "price",
+                self.book, "price", status_code=status,
                 detail=f"all {n_attempted} price calls this cycle failed")
 
 

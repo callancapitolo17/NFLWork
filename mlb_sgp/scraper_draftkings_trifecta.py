@@ -48,15 +48,18 @@ import duckdb
 # Reuse the production DK SGP scraper's session + event-discovery functions
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
-from scraper_draftkings_sgp import init_session, fetch_dk_events  # noqa: E402
+from scraper_draftkings_sgp import (init_session, fetch_dk_events,  # noqa: E402
+                                    DK_CALCULATE_BETS_URL)
 from dk_leg_resolvers import resolve_legs, find_market_by_name      # noqa: E402
 
-# DK API URLs — same prefix the production scraper uses
+# DK API URLs — same prefix the production scraper uses.
+# DK_CALCULATE_BETS_URL is IMPORTED, never redefined here: it used to be a
+# second hardcoded copy, which meant issue #39's Akamai fix (the "/en/" locale
+# prefix) would have repaired the SGP scraper while leaving this one 403ing.
 SGP_EVENTS_URL_TPL = (
     "https://sportsbook-nash.draftkings.com/sites/US-SB/api/sportscontent/"
     "parlays/v1/sgp/events/{event_id}"
 )
-DK_CALCULATE_BETS_URL = "https://gaming-us-nj.draftkings.com/api/wager/v1/calculateBets"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("scraper_draftkings_trifecta")
