@@ -412,7 +412,13 @@ def book_health(bot_key: str) -> "pd.DataFrame | _Locked | None":
         df["last_fetch_at"] = df["last_fetch_at"].fillna(
             df["last_fetch_at_streak"])
         df = df.drop(columns=["last_fetch_at_streak"])
-    df["failing_streak"] = df.get("failing_streak", 0).fillna(0).astype(int)
+    # `current_failure_streak` HAVINGs out healthy books, so an all-healthy
+    # fleet returns zero rows — with the column still present. Guard the
+    # column explicitly rather than with a .get() default that would only
+    # ever be reached as an AttributeError.
+    if "failing_streak" not in df.columns:
+        df["failing_streak"] = 0
+    df["failing_streak"] = df["failing_streak"].fillna(0).astype(int)
     for col in ("n_fetches", "n_ok", "n_empty"):
         if col in df.columns:
             df[col] = df[col].fillna(0).astype(int)

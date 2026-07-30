@@ -163,7 +163,6 @@ class BookHealthAlerter:
         self._lock = threading.Lock()
         self._streaks: dict[tuple[str, str], int] = {}
         self._degraded: set[tuple[str, str]] = set()
-        self._last_error: dict[tuple[str, str], str | None] = {}
         self._pending: list[BookAlert] = []
         self._dark = False
 
@@ -189,7 +188,6 @@ class BookHealthAlerter:
                 if is_failure(outcome):
                     streak = self._streaks.get(key, 0) + 1
                     self._streaks[key] = streak
-                    self._last_error[key] = error_class
                     if (streak >= self.streak_threshold
                             and key not in self._degraded):
                         self._degraded.add(key)
@@ -197,7 +195,6 @@ class BookHealthAlerter:
                             book, path, streak, error_class))
                     return
                 self._streaks[key] = 0
-                self._last_error[key] = None
                 if key in self._degraded:
                     self._degraded.discard(key)
                     self._pending.append(BookAlert(
