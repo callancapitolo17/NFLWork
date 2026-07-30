@@ -36,11 +36,29 @@ vs live, and a **STALE** banner if a bot is down.
 
 | Tab | Purpose |
 |-----|---------|
-| **Overview** | Headline KPIs + a conversion **funnel** (Seen → In-scope → Quoted → Filled for the maker; Sent → Evaluated → Filled for the taker). Shows *where* RFQs drop off. |
+| **Overview** | Headline KPIs, a conversion **funnel** (Seen → In-scope → Quoted → Filled for the maker; Sent → Evaluated → Filled for the taker), and **SGP feed health** per book × path. |
 | **Why Not Filled ★** | The core view. Decision/reason breakdown (bar + share table with a plain-language legend) and a stacked time-series so you see *when* a reason spikes. |
 | **Fills & P&L** | Recent fills table + cumulative fills/stake. Friendly empty-state when a bot has 0 fills. |
 | **Positions & Exposure** | Open positions with exposure, working-order status counts (flags **orphaned** `open` orders when the bot is down), and working-order detail. |
 | **Adverse Selection** | Maker: per-fill fair drift (`fair_at_confirm − fair_at_quote`) vs the quoted 5% margin — the v1 "does the margin survive adverse selection?" question. Taker: accept vs walk vs halt over time. |
+
+## SGP feed health (Overview)
+
+Per book × path: 🟢 healthy · 🟡 degraded (1+ consecutive failed fetches) ·
+🔴 DEAD (`BOOK_ALERT_STREAK`, default 3), with last-fetch age, 24h
+%-answered, and the newest `error_class` (`BookTransportError:events:403`
+tells DK's Akamai block apart from Novig's DNS death).
+
+- Reads `sgp_fetch_health` from each bot's **market DB** (`bots.py::market_db`)
+  through the shipped queries in `kalshi_common/fetch_health_queries.sql` — the
+  panel never re-derives the health predicate, so it cannot disagree with what
+  the bot alerts on (issue #37).
+- **`empty` is healthy**, not a failure: the book answered and had no markets
+  (off-day, thin slate). The column reads "% answered" for that reason.
+- A book that died days ago still appears (the streak query looks back 7 days,
+  the mix only 24h) — the longest outage must not be the most invisible one.
+- No `sgp_fetch_health` table (a bot that hasn't run since #38) renders as
+  "no history yet", never as a lock error.
 
 ## How it works
 

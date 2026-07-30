@@ -38,6 +38,9 @@ BOTS = {
         "proc_match": "kalshi_mlb_mm.main",  # pgrep pattern to detect if live
         "state_db": _p("kalshi_mlb_mm", "kalshi_mlb_mm.duckdb"),
         "research_db": _p("kalshi_mlb_mm", "kalshi_mlb_mm_research.duckdb"),
+        # Market DB: SGP odds + per-book fetch health (issue #38). Third
+        # sibling, separate write lock from the state DB.
+        "market_db": _p("kalshi_mlb_mm", "kalshi_mlb_mm_market.duckdb"),
         # RFQ ledger: one row per RFQ the maker *observed*.
         "rfq_table": "seen_rfqs",
         "rfq_ts": "first_seen_at",
@@ -69,6 +72,7 @@ BOTS = {
         "proc_match": "kalshi_mlb_rfq.main",
         "state_db": _p("kalshi_mlb_rfq", "kalshi_mlb_rfq.duckdb"),
         "research_db": _p("kalshi_mlb_rfq", "kalshi_mlb_rfq_research.duckdb"),
+        "market_db": _p("kalshi_mlb_rfq", "kalshi_mlb_rfq_market.duckdb"),
         # RFQ ledger: one row per RFQ the taker *sent*.
         "rfq_table": "live_rfqs",
         "rfq_ts": "submitted_at",

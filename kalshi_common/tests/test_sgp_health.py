@@ -30,7 +30,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from kalshi_common import sgp_health
+from kalshi_common import health_queries, sgp_health
 from kalshi_common.legset import CanonicalLeg
 from kalshi_common.sgp_health import FetchHealthRecorder
 from kalshi_common.sgp_service import SGPService
@@ -719,26 +719,18 @@ def test_service_without_health_path_still_prices(db):
 # The ready-made health query (fix-spec item 5)                       #
 # ------------------------------------------------------------------ #
 
-QUERY_FILE = (Path(__file__).resolve().parents[1] / "fetch_health_queries.sql")
+# The parser moved into kalshi_common.health_queries for #37 — the monitor
+# needs the same named queries, and a second copy of the loader is a second
+# place for the streak predicate to drift.
+QUERY_FILE = health_queries.QUERY_FILE
 
 
 def _named_query(name: str) -> str:
-    """Queries are delimited by `-- name: <id>` headers."""
-    blocks = {}
-    current = None
-    for line in QUERY_FILE.read_text().splitlines():
-        if line.startswith("-- name:"):
-            current = line.split(":", 1)[1].strip()
-            blocks[current] = []
-        elif current is not None:
-            blocks[current].append(line)
-    return "\n".join(blocks[name])
+    return health_queries.named_query(name)
 
 
 def _all_query_names() -> list[str]:
-    return [line.split(":", 1)[1].strip()
-            for line in QUERY_FILE.read_text().splitlines()
-            if line.startswith("-- name:")]
+    return sorted(health_queries.all_queries())
 
 
 def test_every_named_query_executes(db):
