@@ -235,7 +235,9 @@ def test_empty_also_rearms():
 
 def test_streak_is_tracked_per_book_and_path():
     notifier = FakeNotifier()
-    a = _alerter(notifier, streak_threshold=3)
+    # min_healthy_books=1 isolates Rule A: with only two books observed here,
+    # one degrading would legitimately also trip the capacity rule.
+    a = _alerter(notifier, streak_threshold=3, min_healthy_books=1)
     _fail(a, book="draftkings", path="sweep", n=2)
     _fail(a, book="draftkings", path="on_demand", n=2)
     _fail(a, book="novig", path="sweep", n=2)
