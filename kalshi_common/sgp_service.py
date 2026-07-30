@@ -144,6 +144,12 @@ class SGPService:
         # disables health recording entirely (dashboard CLI path, tests).
         # Keyword-only: it must never bind positionally to now_fn.
         health_db_path: str | None = None,
+        # Issue #37: run-time book-death alerting. A BookHealthAlerter fed
+        # from the same two places health rows are written, so the streak
+        # can never drift from the recorded history. None (the default)
+        # disables alerting entirely — dashboard CLI path, tests, and every
+        # pre-#37 caller. Keyword-only for the same reason as above.
+        book_health=None,
     ):
         self.books = tuple(books)
         self.per_book_deadline_sec = per_book_deadline_sec
@@ -153,6 +159,7 @@ class SGPService:
         self._now = now_fn
         self._state = {b: _BookState() for b in self.books}
         self.health = FetchHealthRecorder(health_db_path)
+        self.book_health = book_health
         self._last_health_flush = None
         # The orchestrators lazily import the legacy scraper modules by
         # top-level name (`from scraper_draftkings_sgp import ...`),
@@ -297,6 +304,39 @@ class SGPService:
                             else _prices_returned(run.counters)),
             duration_sec=run.duration_sec, error_class=run.error_class,
             counters=run.counters)
+        self._observe_book_health(book, path, run.outcome, run.error_class)
+
+    def _observe_book_health(self, book: str, path: str, outcome: str,
+                             error_class: str | None) -> None:
+        """Feed issue #37's streak tracker. Paired with EVERY health.record
+        call so the alarm can never disagree with the history it alarms on.
+        """
+        if self.book_health is None:
+            return
+        try:
+            self.book_health.observe(book=book, path=path, outcome=outcome,
+                                     error_class=error_class)
+        except Exception:   # pragma: no cover — alerting never breaks a fetch
+            log.debug("book-health observe failed", exc_info=True)
+
+    def check_book_health(self) -> list:
+        """Emit any book-health alerts queued since the last tick (#37).
+
+        Call once per bot tick, from the SAME thread as the bot's other
+        market-DB work. Cheap (no I/O, no DB) and never raises: the notifier
+        itself runs on a daemon thread inside dispatch().
+
+        Unlike ``flush_health``, this is NOT coalesced — it reads in-memory
+        counters, so the 5s flush interval (and a locked DB delaying rows on
+        disk) cannot delay or lose an alert.
+        """
+        if self.book_health is None:
+            return []
+        try:
+            return self.book_health.dispatch()
+        except Exception:   # pragma: no cover — alerting never halts a bot
+            log.debug("book-health dispatch failed", exc_info=True)
+            return []
 
     def close(self):
         """Drop all persistent clients (sessions close on GC)."""
@@ -535,13 +575,16 @@ class SGPService:
             result = self._price_on_demand(book, game, legs, counters,
                                            verdict)
             snapshot = counters.snapshot()
+            outcome = "ok" if result is not None else verdict.outcome
             self.health.record(
-                book=book, path="on_demand",
-                outcome="ok" if result is not None else verdict.outcome,
+                book=book, path="on_demand", outcome=outcome,
                 rows_or_prices=snapshot.prices_returned,
                 duration_sec=time.monotonic() - t0,
                 error_class=verdict.error_class,
                 counters=snapshot)
+            # Issue #37: runs on the RFQ's thread — counters only, no I/O.
+            self._observe_book_health(book, "on_demand", outcome,
+                                      verdict.error_class)
             return result
 
     def _price_on_demand(self, book: str, game, legs,

@@ -259,6 +259,18 @@ duckdb kalshi_mlb_mm/kalshi_mlb_mm_market.duckdb -readonly \
 Schema, outcome vocabulary and the units caveat (**always group by `path`**)
 are documented in `mlb_sgp/README.md` → "Fetch-health history".
 
+**Run-time alerting (#37).** `check_book_health()` runs every tick off
+in-memory streaks fed by the same two call sites that write those rows.
+`BOOK_ALERT_STREAK` (default 3) consecutive non-`ok`/non-`empty` outcomes on
+one (book, path) → one ERROR log + one macOS notification, once per incident,
+re-armed only when the book answers again. If healthy books drop below
+`MIN_AGREEING_BOOKS` — the same gate that decides whether this bot can quote
+at all — it alerts "quoting effectively blind". `empty` is a healthy answer
+and a book skipped by `min_refresh_sec` is not a failure; see
+`mlb_sgp/README.md` → "Run-time book-health alerting" for the full semantics,
+the known silent-parser gap, and why this reads memory instead of the DB.
+Knobs: `BOOK_ALERT_ENABLED`, `BOOK_ALERT_STREAK`, `BOOK_ALERT_PATHS`.
+
 ## Knobs
 
 All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Defaults come from `kalshi_mlb_mm/config.py`.

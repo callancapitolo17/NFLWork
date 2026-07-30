@@ -24,6 +24,15 @@ def test_new_env_knobs_have_defaults():
     assert isinstance(config_mod.MLB_SGP_DIR, Path)
 
 
+def test_book_alert_knobs_have_defaults():
+    """Issue #37. BOOK_ALERT_PATHS must parse to a tuple of path names — #57
+    flips it to on_demand-only in config, so a broken parse silently turns
+    alerting off for the path that will carry every quote."""
+    assert config_mod.BOOK_ALERT_ENABLED is True
+    assert config_mod.BOOK_ALERT_STREAK == 3
+    assert config_mod.BOOK_ALERT_PATHS == ("sweep", "on_demand")
+
+
 def test_mlb_sgp_dir_resolves_to_main_repo():
     assert config_mod.MLB_SGP_DIR.name == "mlb_sgp"
     assert ".worktrees" not in str(config_mod.MLB_SGP_DIR)

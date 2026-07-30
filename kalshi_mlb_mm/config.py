@@ -173,6 +173,22 @@ SGP_REFRESH_SEC = int(_get("SGP_REFRESH_SEC", "60"))
 SETTLEMENT_SWEEP_SEC = int(_get("SETTLEMENT_SWEEP_SEC", "600"))
 SGP_SCRAPER_TIMEOUT_SEC = int(_get("SGP_SCRAPER_TIMEOUT_SEC", "90"))
 
+# Run-time book-health alerting (issue #37). Keys on consecutive FAILED
+# fetches, never on data age — an age rule would false-fire by design once
+# #57 slows the sweep to background structure-warming.
+BOOK_ALERT_ENABLED = _get_bool("BOOK_ALERT_ENABLED", "true")
+# One 403 is noise (a book hiccups); three consecutive is a dead book.
+BOOK_ALERT_STREAK = int(_get("BOOK_ALERT_STREAK", "3"))
+# Which fetch paths count toward a book's health. Post-#53 every quote is
+# priced by an on-demand fetch and the sweep is legacy warming, so #57 flips
+# this to "on_demand" in CONFIG — no code change.
+BOOK_ALERT_PATHS = tuple(
+    p.strip() for p in _get("BOOK_ALERT_PATHS", "sweep,on_demand").split(",")
+    if p.strip())
+# Rule B's floor deliberately REUSES MIN_AGREEING_BOOKS rather than adding a
+# second knob: an alert that fires at a different count than the gate it is
+# warning about is worse than no alert.
+
 # Adverse-selection halts (H4)
 VOID_RATE_HALT_THRESHOLD = float(_get("VOID_RATE_HALT_THRESHOLD", "0.25"))
 VOID_RATE_WINDOW_HOURS = int(_get("VOID_RATE_WINDOW_HOURS", "1"))

@@ -225,6 +225,63 @@ Retention is 30 days, pruned at flush time at most hourly. Measured footprint
 rows**, and 1M rows is roughly a 30-day worst case at post-#53 quote volume
 (~33k rows/day = 6 books x 1,440 sweeps + ~2k on-demand fetches x 6 books x 2).
 
+## Run-time book-health alerting (issue #37)
+
+The history above is the *memory*; this is the *alarm*. Both bots run
+`kalshi_common/book_health.py::BookHealthAlerter` inside their tick loop, so a
+book that dies mid-slate is loud within a few cycles instead of four weeks
+later.
+
+**Two rules**, both keyed on consecutive failed fetches — never on data age,
+because an age rule would false-fire by design once #57 slows the sweep to
+background structure-warming:
+
+| Rule | Fires when | Message |
+|---|---|---|
+| A — book degraded | `BOOK_ALERT_STREAK` (default 3) consecutive failures on one (book, path) | `SGP book degraded: draftkings/sweep — 3 consecutive failed fetches (last: BookTransportError:events:403)` |
+| B — consensus capacity | healthy books drop below the bot's own gate (maker `MIN_AGREEING_BOOKS`, taker `MIN_BOOK_COUNT_FOR_BLEND`) | `SGP consensus DARK: 1 healthy book(s), need 2 — quoting effectively blind` |
+
+Each fires **once per incident** — a book failing 400 times in a row notifies
+once — and re-arms only when the book answers again. Recovery is logged, not
+notified. Channel: one `ERROR` line in `bot.log` plus a macOS notification
+(`osascript`, same mechanism as `coverage_audit/`); it runs on a daemon thread
+so a slow notification can never stall a loop that ticks 4x/sec.
+
+⚠️ **`empty` is NOT a failure.** The predicate is `outcome NOT IN
+('ok','empty')` — identical to `current_failure_streak` in the shipped SQL. A
+book that answers with no markets is healthy: that is an off-day, a thin
+slate, or (on-demand) "this book won't price that combo", which is the
+*default* verdict for a plain `None`. Alerting on `!= 'ok'` would page on
+every quiet morning and on every RFQ for a game a book doesn't list.
+
+⚠️ **A skipped book is not a failing book.** `min_refresh_sec` skips write no
+health row and make no observation; state simply persists. A gap means "we
+didn't ask".
+
+**Zero alerts while the bots are down.** State is in-memory and per-process,
+so weeks of intentional downtime are silent by construction. It also means
+streaks reset on restart — the first alert after a restart takes
+`BOOK_ALERT_STREAK` fresh failures.
+
+**Known gap — the silent parser.** A book whose parser breaks such that it
+returns zero rows *without raising* records `empty` forever: Rule A stays
+quiet and Rule B still counts it as healthy. That case is what #35's
+`parse_failures` / `legs_resolved` counters are for (`parse_health_24h`), not
+these alerts.
+
+**Why in-memory counters and not a query over `sgp_fetch_health`:** the table
+is a lossy view (flushes are swallowed and retried, so rows land up to 5s
+late and later under a stuck lock), and on duckdb 1.4.4 an in-process
+read-only connect while any read-write handle is open raises
+`ConnectionException` — which the bots' narrow `IOException`/`CatalogException`
+guards don't catch, so it would fall through to a fail-safe and **cost a
+quote**. The monitor dashboard reads the table instead; it is a separate
+process and hits the ordinary cross-process lock, which it already retries.
+
+**Knobs** (both bots): `BOOK_ALERT_ENABLED` (default true),
+`BOOK_ALERT_STREAK` (3), `BOOK_ALERT_PATHS` (`sweep,on_demand` — #57 sets
+this to `on_demand` when every quote is live-priced; config, not code).
+
 ## DraftKings API Endpoints
 
 | Endpoint | Auth | Purpose |
