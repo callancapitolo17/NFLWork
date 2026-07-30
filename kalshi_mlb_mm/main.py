@@ -1716,12 +1716,24 @@ def main_loop(dry_run: bool):
     research.set_session_id(str(sid))
     log.info("=== MM bot session %s dry_run=%s ===", sid, dry_run)
     source, gateway = RestRFQSource(), RestQuoteGateway()
+    from kalshi_common.book_health import build_alerter
     from kalshi_common.sgp_service import SGPService
     # health_db_path (issue #38): per-book fetch health lands in the SAME
     # market DB (and write lock) the SGP rows go to. Buffered — see
     # flush_health() in the tick loop below.
+    # book_health (issue #37): run-time alerting on consecutive failed
+    # fetches. In-memory streaks fed by the same two call sites that write
+    # health rows — never a query, which on duckdb 1.4.4 could cost a quote
+    # (see kalshi_common/book_health.py). Rule B reuses MIN_AGREEING_BOOKS so
+    # the alert fires at exactly the count the quoting gate cares about.
     sgp_service = SGPService(per_book_deadline_sec=config.SGP_SCRAPER_TIMEOUT_SEC,
-                             health_db_path=str(config.MARKET_DB))
+                             health_db_path=str(config.MARKET_DB),
+                             book_health=build_alerter(
+                                 label="MM",
+                                 enabled=config.BOOK_ALERT_ENABLED,
+                                 streak_threshold=config.BOOK_ALERT_STREAK,
+                                 min_healthy_books=config.MIN_AGREEING_BOOKS,
+                                 paths=config.BOOK_ALERT_PATHS))
     # Phase 2: on-demand pricing engine shares the service's persistent
     # clients + structure caches. Always on — no switch (user decision);
     # the bot-wide kill file remains the emergency stop.
@@ -1800,6 +1812,7 @@ def main_loop(dry_run: bool):
                 last["sgp"] = now
             research.flush()  # per-tick batched drain
             sgp_service.flush_health()   # issue #38: drain fetch-health rows
+            sgp_service.check_book_health()   # issue #37: book-death alerts
             time.sleep(0.25)   # short sleep → responsive SIGTERM
     finally:
         with db.connect(read_only=True) as con:
