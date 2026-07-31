@@ -195,7 +195,12 @@ const ISSUER_BASE = ISSUER.includes('://') ? ISSUER : `https://${ISSUER}`;
 // longer exits early, and the mint can sit on the on-demand quote path — so
 // bound it here rather than waiting out the Python-side subprocess timeout.
 // A healthy mint takes well under a second.
-const DEADLINE_MS = Number(process.env.CZR_WAF_DEADLINE_MS || 20000);
+// A malformed override must not become NaN — setTimeout(fn, NaN) fires
+// immediately, which would fail every mint instantly.
+const DEADLINE_DEFAULT_MS = 20000;
+const _deadlineOverride = Number(process.env.CZR_WAF_DEADLINE_MS);
+const DEADLINE_MS = Number.isFinite(_deadlineOverride) && _deadlineOverride > 0
+  ? _deadlineOverride : DEADLINE_DEFAULT_MS;
 
 async function mint() {
   const r = await _origFetch(`${ISSUER_BASE}/${KEY}/challenge.js`, {

@@ -184,6 +184,16 @@ def test_a_wedged_sdk_hits_the_harness_deadline_instead_of_hanging():
     assert "deadline" in (res.get("error") or "")
 
 
+@needs_node
+def test_a_malformed_deadline_override_falls_back_instead_of_firing_instantly():
+    """``setTimeout(fn, NaN)`` fires immediately, so a typo'd env var would
+    fail every mint the moment it started. A bad value must be ignored."""
+    with _Issuer(STUB_CHALLENGE_JS) as base:
+        res = _run_harness(base, env={"CZR_WAF_DEADLINE_MS": "not-a-number"})
+    assert res.get("ok") is True
+    assert res.get("token") == "STUB-WAF-TOKEN"
+
+
 def test_harness_does_not_predefine_the_aws_waf_integration():
     """Source-level guard. Re-adding the pre-stub silently re-breaks Caesars
     on the real bundle, where no test issuer can catch it."""
