@@ -334,6 +334,43 @@ def test_orchestrator_tolerates_a_pre_issue_40_substitute():
     assert accepts_on_decline(legacy_stub) is False
 
 
+def test_on_demand_decline_is_not_filed_as_a_parse_failure():
+    """Found by adversarial review. ``price_selection_set`` used to call
+    ``float(priced.get("decimal"))`` on the ``{}`` that a declined/blocked
+    combo returns. ``float(None)`` raises TypeError into the broad except and
+    was counted as a PARSE failure — blaming our parser for a book that
+    declined or rate-limited us, which is exactly the misdiagnosis issue #35
+    removed elsewhere. caesars / betmgm / prophetx all guard this; Novig was
+    the odd one out."""
+    from mlb_sgp._shared import FetchCounters
+    from mlb_sgp import novig
+
+    counters = FetchCounters("novig", "on_demand")
+    assert novig.price_selection_set(_novig(RATE_LIMITED), ["a", "b"],
+                                     counters=counters) is None
+    snap = counters.snapshot()
+    assert snap.parse_failures == 0, (
+        "a 403 block was filed as a parse failure — the parser is fine, the "
+        "endpoint blocked us")
+
+
+def test_on_demand_decline_on_a_400_is_not_a_parse_failure():
+    from mlb_sgp._shared import FetchCounters
+    from mlb_sgp import novig
+
+    counters = FetchCounters("novig", "on_demand")
+    assert novig.price_selection_set(_novig(CANNOT_PRICE), ["a", "b"],
+                                     counters=counters) is None
+    assert counters.snapshot().parse_failures == 0
+
+
+def test_on_demand_still_prices_a_good_combo():
+    """The guard must not swallow real prices."""
+    from mlb_sgp import novig
+    assert novig.price_selection_set(_novig(PRICED), ["a", "b"]) == pytest.approx(
+        2.8500, rel=1e-3)
+
+
 def test_on_demand_call_records_the_block_status():
     from mlb_sgp import novig
 

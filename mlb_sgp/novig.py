@@ -731,7 +731,15 @@ def price_selection_set(client, refs, *,
         if not refs:
             return None
         priced = client.submit_parlay(list(refs)) or {}
-        dec = float(priced.get("decimal"))
+        # A declined combo comes back as {} (submit_parlay swallows the non-200
+        # after tallying it). Guard explicitly — float(None) would raise
+        # TypeError into the broad except below and be filed as a PARSE
+        # failure, blaming our parser for a book that declined or blocked us.
+        # Matches caesars / betmgm / prophetx, which all guard this.
+        dec_raw = priced.get("decimal")
+        if dec_raw is None:
+            return None
+        dec = float(dec_raw)
         return dec if dec > 1.0 else None
     except BookTransportError:
         # Counted, NOT re-raised — see caesars.price_selection_set.
