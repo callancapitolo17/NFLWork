@@ -152,14 +152,22 @@ dashboard spawns the shims + blends them in `mlb_correlated_parlay.R`.
   the ZeroFlucs correlated price (`parlays[0].price.decimal`), logged-out.
   Every call needs an `aws-waf-token`, minted **without a browser** by running
   AWS WAF's real `challenge.js` under `node` (the `NetworkBandwidth` challenge —
-  see `caesars_waf.py`; ~1.5s, cached ~4 min, validated before use, emits no
+  see `caesars_waf.py`; ~0.5s, cached ~4 min, validated before use, emits no
   rows on failure → never bad data). Requires `node` on PATH (no Playwright/
-  Chromium). Parsing is **exact-name** (`Run Line`/`Total Runs` + Alternate/F5
+  Chromium). **Never pre-define `window.AwsWafIntegration` in the node
+  harness** (issue #41): AWS's bundle installs itself only when that global is
+  absent, so a placeholder makes `getToken()` return an empty string and the
+  book silently drops to zero rows — that is exactly how Caesars died for a
+  month. The SDK's auto-init rejection is logged and ignored instead, and every
+  mint failure now logs at ERROR with node's stderr. `CaesarsClient.last_mint_sec`
+  carries the last mint's wall-clock cost. Parsing is **exact-name** (`Run Line`/`Total Runs` + Alternate/F5
   variants) to exclude player props, team totals, and in-play (`... Live`)
   markets; events filtered to the **MLB** competition and **pregame** only;
   the away run-line leg carries its own (negated) line so all 4 corners price.
-  Source `caesars_direct`. Verified: browser-free mint validated live; 4/4
-  corners price with sane overround.
+  Source `caesars_direct`. Verified 2026-07-30 (issue #41): mint 0.43–0.68s,
+  tabs feed 200 / 178 KB JSON, sweep 8 rows in 2.2s with a 4-corner partition
+  summing to 1.128 (12.8% hold), on-demand 2.62s. Target parallelism stays at
+  3 — the WAF rate-limits aggressive hits.
 - **bet365** — DEFERRED. Recon (`recon_bet365_*.py`) proved no fast path: odds
   live only on the `zap` WebSocket, which is Cloudflare-fingerprint-blocked for
   any non-browser client. Only a persistent live browser works; revisit if that
