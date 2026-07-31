@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 import shutil
 import subprocess
 import threading
@@ -194,20 +195,73 @@ def test_a_malformed_deadline_override_falls_back_instead_of_firing_instantly():
     assert res.get("token") == "STUB-WAF-TOKEN"
 
 
+def _predefinition_offenders(src: str) -> list[str]:
+    """Non-comment lines that DEFINE ``AwsWafIntegration`` rather than read it.
+
+    Two independent signals, because a first cut of this guard keyed off "is
+    there an '=' just after the name" and missed 6 of 8 realistic forms —
+    including the bracket form this very file uses elsewhere:
+
+      1. assignment to the property, in any accessor/operator form
+         (``x.Name =``, ``x['Name'] =``, ``??=``, ``||=``, extra spaces)
+      2. the name as a STRING LITERAL — how ``setGlobal('Name', …)`` and
+         ``Object.defineProperty(o, 'Name', …)`` have to spell it
+      3. the name as an object-literal KEY (``{ Name: … }``) — the
+         ``Object.assign`` form, which has neither an ``=`` nor quotes
+
+    A plain read (``const integ = win.AwsWafIntegration;``) matches none.
+    """
+    patterns = (
+        re.compile(r"""AwsWafIntegration['"]?\s*\]?\s*(\?\?|\|\||)=(?!=)"""),
+        re.compile(r"""['"]AwsWafIntegration['"]"""),
+        re.compile(r"""AwsWafIntegration\s*:"""),
+    )
+    offenders = []
+    for n, raw in enumerate(src.splitlines(), 1):
+        line = raw.split("//", 1)[0]          # drop trailing/whole-line comments
+        if "AwsWafIntegration" not in line:
+            continue
+        if any(p.search(line) for p in patterns):
+            offenders.append(f"{n}: {raw.strip()}")
+    return offenders
+
+
 def test_harness_does_not_predefine_the_aws_waf_integration():
     """Source-level guard. Re-adding the pre-stub silently re-breaks Caesars
-    on the real bundle, where no test issuer can catch it."""
-    src = _HARNESS.read_text()
-    offenders = [
-        f"{n}: {line.strip()}"
-        for n, line in enumerate(src.splitlines(), 1)
-        if "AwsWafIntegration" in line
-        and "=" in line.split("AwsWafIntegration")[-1][:3]
-        and not line.lstrip().startswith("//")
-    ]
+    on the real bundle; the stub-issuer test above catches it behaviourally,
+    this catches it without needing node."""
+    offenders = _predefinition_offenders(_HARNESS.read_text())
     assert not offenders, (
-        "caesars_waf_node.js assigns window.AwsWafIntegration before eval'ing "
+        "caesars_waf_node.js defines window.AwsWafIntegration before eval'ing "
         f"challenge.js; AWS's bundle then declines to install itself: {offenders}")
+
+
+@pytest.mark.parametrize("snippet", [
+    "win.AwsWafIntegration = {};",
+    "win['AwsWafIntegration'] = {};",
+    'win["AwsWafIntegration"] = {};',
+    "window.AwsWafIntegration = {};",
+    "win.AwsWafIntegration ??= {};",
+    "win.AwsWafIntegration ||= {};",
+    "win.AwsWafIntegration   =   {};",
+    "setGlobal('AwsWafIntegration', {});",
+    "Object.assign(win, { AwsWafIntegration: {} });",
+    "Object.defineProperty(win, 'AwsWafIntegration', { value: {} });",
+])
+def test_the_guard_catches_every_predefinition_form(snippet):
+    """The guard is the thing standing between us and another silent month of
+    zero Caesars rows, so pin its coverage rather than trusting one spelling."""
+    assert _predefinition_offenders(snippet), f"guard missed: {snippet}"
+
+
+@pytest.mark.parametrize("snippet", [
+    "const integ = win.AwsWafIntegration;",
+    "if (!integ || typeof integ.forceRefreshToken !== 'function') { return; }",
+    "// _0x5120cd = void 0x0 !== window['AwsWafIntegration']",
+    "  // DO NOT pre-stub win.AwsWafIntegration = {} here",
+])
+def test_the_guard_does_not_flag_reads_or_comments(snippet):
+    assert not _predefinition_offenders(snippet), f"false positive: {snippet}"
 
 
 # --------------------------------------------------------------------------- #
