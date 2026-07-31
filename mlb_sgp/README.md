@@ -289,12 +289,42 @@ this to `on_demand` when every quote is live-priced; config, not code).
 | `sportsbook-nash.../league/leagueSubcategory/v1/markets` | None | List MLB events |
 | `sportsbook-nash.../event/eventSubcategory/v1/markets` | None | Main market IDs per game |
 | `sportsbook-nash.../parlays/v1/sgp/events/{id}` | curl_cffi | **All selection IDs** (2MB response) |
-| `gaming-us-nj.../api/wager/v1/calculateBets` | curl_cffi | **SGP pricing** (POST, returns trueOdds) |
+| `gaming-us-nj.../en/api/wager/v1/calculateBets` | curl_cffi | **SGP pricing** (POST, returns trueOdds) — note the `/en/`, see below |
 | `sportsbook-nash.../sgp/dkusnj/sportsdata/v2/sgp` | Full Akamai | SGP pricing (DK frontend only — **inaccessible** via REST) |
 
 ### Why curl_cffi?
 
 DraftKings uses Akamai Bot Manager. Plain `requests` gets blocked by TLS fingerprinting. `curl_cffi` impersonates Chrome's TLS signature, which is enough to bypass Akamai on `calculateBets` and `parlays/v1/sgp/events`. The `sportsdata/v2/sgp` endpoint has stricter protection and is inaccessible — that's why we use `calculateBets` instead.
+
+### The `/en/` prefix on calculateBets (issue #39)
+
+DK reads on `sportsbook-nash` but **prices on `gaming-us-nj`**, and only the
+price host is bot-protected. On **2026-06-24** an Akamai edge rule began
+denying `POST /api/wager/v1/calculateBets` — DK's rows fell from ~18k/day to
+zero while events and structure stayed perfectly green (200s, full selection
+lists). That asymmetry is the signature of a price-host block, and it is why
+`PriceCallTally` exists.
+
+The rule matches that path **exactly**. DK's own betslip builds the URL as
+`{locale}/api/wager/v1/calculateBets` (English maps to an empty prefix), and
+the origin still routes the explicit `/en/` form, which the rule misses:
+
+```
+POST /api/wager/v1/calculateBets     -> 403 AkamaiGHost "Access Denied"
+POST /en/api/wager/v1/calculateBets  -> 200 correlated SGP price
+```
+
+**The `/en/` is load-bearing — do not "tidy" it away.** It is pinned by
+`tests/test_dk_price_host_403.py`, along with a guard that no module may
+hardcode a second copy of the wager URL (the trifecta scraper used to, so a
+fix here would have left that one 403ing).
+
+This is *not* a TLS-fingerprint problem: every `impersonate=` target, DK's own
+betslip headers, its anonymous enterprise JWT, and a real logged-out Chrome all
+get the identical 403 on the bare path. If DK closes `/en/` too, the tell is
+`error_class` `BookTransportError:price:403` in `sgp_fetch_health` — the next
+move is re-reading `dkBetSlip.js` for the current route, **not** bumping
+curl_cffi (which is shared by all 6 books).
 
 **Things that DON'T work:** direct HTTP requests, page.evaluate(fetch()), cookie transfer from browser to requests, Playwright stealth plugins. All tested extensively.
 

@@ -52,6 +52,8 @@ adapts to the real signatures:
 """
 from __future__ import annotations
 
+import functools
+import inspect
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -129,6 +131,18 @@ def _extract_offered_lines_dk(
         spreads.add(signed)
     totals = {line for (ou, line) in sel_ids.get("totals", {}).keys()}
     return {"spreads": spreads, "totals": totals}
+
+
+def _accepts_on_decline(price_fn) -> bool:
+    """True if ``price_fn`` takes issue #39's ``on_decline`` status callback.
+
+    Mocks and builtins have no introspectable signature; those simply do not
+    get the callback.
+    """
+    try:
+        return "on_decline" in inspect.signature(price_fn).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def price_sgps(
@@ -239,6 +253,15 @@ def _price_sgps(
     # Tally the price calls and raise a "price"-stage transport error if the
     # whole cycle came back empty (see PriceCallTally).
     price_calls = price_tally_for(client, BOOK_NAME)
+    # Bind the decline-status callback here, the one seam where the tally is in
+    # scope (downstream call sites pass only session/spread/total). Guarded
+    # because calculate_sgp is re-imported per call (above), which is exactly
+    # what lets tests monkeypatch it — and a stand-in written before issue #39
+    # does not accept the kwarg. Such a substitute keeps working; it just
+    # reports no status, as before.
+    if _accepts_on_decline(calculate_sgp):
+        calculate_sgp = functools.partial(calculate_sgp,
+                                          on_decline=price_calls.note_status)
     calculate_sgp = price_calls.wrap(calculate_sgp)
     tally_start = price_calls.snapshot()
 

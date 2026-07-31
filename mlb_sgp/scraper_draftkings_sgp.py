@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from curl_cffi import requests as cffi_requests
 
@@ -68,9 +69,23 @@ DK_SGP_PARLAYS_URL = (
     "parlays/v1/sgp/events"
 )
 
-# SGP pricing — correlation-adjusted odds (curl_cffi bypasses Akamai)
+# SGP pricing — correlation-adjusted odds. DK reads on sportsbook-nash but
+# prices on gaming-us-nj, and only THIS host is bot-protected.
+#
+# The "/en/" is load-bearing — do not "tidy" it away (issue #39). On
+# 2026-06-24 an Akamai edge rule began denying the bare path, which killed
+# every DK price call (~18k rows/day -> 0) while events and structure stayed
+# green. The rule matches the path EXACTLY. DK's own betslip builds this URL
+# as `{locale}/api/wager/v1/calculateBets` (English maps to an empty prefix),
+# and the origin still routes the explicit "/en/" form, which the rule misses.
+# Verified live 2026-07-30:
+#     POST /api/wager/v1/calculateBets     -> 403 AkamaiGHost "Access Denied"
+#     POST /en/api/wager/v1/calculateBets  -> 200 correlated SGP price
+# If DK ever closes this too, the tell is error_class "…:price:403" in
+# sgp_fetch_health; the other locale prefixes (/de/, /fr/) 404, so the next
+# move is re-reading dkBetSlip.js for the current route, not a fingerprint fix.
 DK_CALCULATE_BETS_URL = (
-    "https://gaming-us-nj.draftkings.com/api/wager/v1/calculateBets"
+    "https://gaming-us-nj.draftkings.com/en/api/wager/v1/calculateBets"
 )
 
 DK_MLB_LEAGUE_ID = "84240"
@@ -638,8 +653,18 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
 def calculate_sgp(session: cffi_requests.Session,
                   spread_sel: str, total_sel: str,
                   verbose: bool = False,   # inert since #36 (see module note)
+                  *,
+                  on_decline: Callable[[int], None] | None = None,
                   ) -> dict | None:
-    """Call DK's calculateBets with two selections. Returns {trueOdds, displayOdds} or None."""
+    """Call DK's calculateBets with two selections. Returns {trueOdds, displayOdds} or None.
+
+    ``on_decline`` is called with the HTTP status whenever the combo is not
+    priced (422 non-combinable, 403 blocked host, anything else non-200).
+    Declines stay non-fatal — one unpriceable combo must never abort a cycle —
+    but the status has to escape, or ``PriceCallTally``'s all-failed verdict
+    cannot say WHY (issue #39). ``PriceCallTally.note_status`` is the intended
+    callback; omitting it leaves behavior exactly as before.
+    """
     # RETRY_LIVE on the price stage even here: these calls fan out across a
     # thread pool (targets x combos), so BACKGROUND's 3 attempts would stall a
     # degraded cycle for minutes. A 422 (non-combinable) is not retried.
@@ -663,10 +688,14 @@ def calculate_sgp(session: cffi_requests.Session,
                          str(err.get("description", ""))[:100])
         except Exception:
             pass
+        if on_decline is not None:
+            on_decline(resp.status_code)
         return None
 
     if resp.status_code != 200:
         logger.debug(f"      HTTP {resp.status_code}")
+        if on_decline is not None:
+            on_decline(resp.status_code)
         return None
 
     data = resp.json()
