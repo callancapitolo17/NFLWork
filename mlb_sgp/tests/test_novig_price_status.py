@@ -269,6 +269,59 @@ def test_orchestrator_binds_the_callback_to_the_real_price_fn():
     assert accepts_on_decline(scraper_novig_sgp.submit_parlay) is True
 
 
+def test_orchestrator_end_to_end_reports_the_block_status():
+    """The test that would have caught the two-implementations trap on its own:
+    drive the REAL ``price_sgps`` against a 403 and assert the raised verdict
+    names the status. Checking ``accepts_on_decline`` alone does not prove the
+    binding survives the wrap and reaches the call site."""
+    import datetime as dt
+    from unittest.mock import patch
+
+    from mlb_sgp._shared import TargetLine
+    from mlb_sgp import novig
+    from mlb_sgp.novig_client import Event
+
+    ct = dt.datetime(2030, 7, 31, 2, 10, tzinfo=dt.timezone.utc)
+    # Enough targets that the 4-combo fan-out clears MIN_ATTEMPTS_FOR_VERDICT;
+    # the tally deliberately refuses to call a book dead on a tiny sample.
+    totals = (7.5, 8.5, 9.5)
+    targets = [TargetLine("g1", "Los Angeles Dodgers", "Seattle Mariners",
+                          ct, "FG", -1.5, tot) for tot in totals]
+    assert len(targets) * 4 >= PriceCallTally.MIN_ATTEMPTS_FOR_VERDICT
+    markets = [{"type": "SPREAD", "strike": -1.5, "is_consensus": True,
+                "outcomes": []}] + [
+               {"type": "TOTAL", "strike": tot, "is_consensus": True,
+                "outcomes": []} for tot in totals]
+    legs = {"fg": {"home_spread": {"id": "H"}, "away_spread": {"id": "A"},
+                   "over": {"id": "O"}, "under": {"id": "U"}}, "f5": {}}
+
+    class _Client:
+        session = FakeSession(RATE_LIMITED)
+
+        def list_events(self):
+            return [Event("ev1", "Los Angeles Dodgers", "Seattle Mariners",
+                          "LAD", "SEA", ct.isoformat())]
+
+    def _match(nv_events, parlay_lines):
+        return [{"game_id": "g1", "nv_event_id": "ev1", "nv_home_sym": "LAD",
+                 "nv_away_sym": "SEA", "home_team": "Los Angeles Dodgers",
+                 "away_team": "Seattle Mariners", "fg_spread_line": -1.5,
+                 "fg_total_line": 8.5, "f5_spread_line": None,
+                 "f5_total_line": None}]
+
+    with patch("scraper_novig_sgp.fetch_event_legs",
+               lambda s, g, v=False: (legs, markets)), \
+         patch("scraper_novig_sgp.match_events", _match):
+        with pytest.raises(BookTransportError) as exc:
+            novig.price_sgps(targets, ("FG",), client=_Client())
+
+    assert exc.value.stage == "price"
+    assert exc.value.status_code == 403, (
+        "the sweep orchestrator dropped the decline status — the legacy "
+        "scraper_novig_sgp.submit_parlay is a SECOND implementation and needs "
+        "the same on_decline wiring as the client method")
+
+
 def test_orchestrator_tolerates_a_pre_issue_40_substitute():
     """Orchestrator tests monkeypatch this seam with stand-ins that predate the
     kwarg; binding it unconditionally would TypeError on every combo and turn

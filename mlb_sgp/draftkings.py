@@ -53,7 +53,6 @@ adapts to the real signatures:
 from __future__ import annotations
 
 import functools
-import inspect
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
