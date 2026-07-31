@@ -46,12 +46,14 @@ verbatim.
 """
 from __future__ import annotations
 
+import functools
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from mlb_sgp._shared import (BookTransportError, FetchCounters, PricedRow,
-                             TargetLine, decimal_to_american, fetch_counters,
+                             TargetLine, accepts_on_decline,
+                             decimal_to_american, fetch_counters,
                              price_tally_for)
 from mlb_sgp.novig_client import NovigClient
 
@@ -210,6 +212,14 @@ def _price_sgps(
     # still work. Tally the price calls and raise a "price"-stage transport
     # error if the whole cycle came back empty (see PriceCallTally).
     price_calls = price_tally_for(client, BOOK_NAME)
+    # Issue #40: carry the decline status so the verdict distinguishes a 400
+    # ("book won't price this combo" — normal) from a 403 (rate-limited).
+    # Capability-guarded because submit_parlay is re-imported per call, which
+    # is what lets tests monkeypatch it; a pre-#40 stand-in keeps working and
+    # simply reports no status.
+    if accepts_on_decline(submit_parlay):
+        submit_parlay = functools.partial(submit_parlay,
+                                          on_decline=price_calls.note_status)
     # Novig's legacy submit_parlay returns (priced, auth_failed) — a 2-tuple is
     # always truthy, so score on the priced element.
     submit_parlay = price_calls.wrap(submit_parlay, ok=lambda r: bool(r and r[0]))

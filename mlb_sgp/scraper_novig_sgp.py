@@ -592,11 +592,24 @@ def try_integer_fallback_nv(
 # ---------------------------------------------------------------------------
 def submit_parlay(session, outcome_ids: list[str],
                   verbose: bool = False,   # inert since #36 (see module note)
+                  *,
+                  on_decline=None,
                   ) -> tuple[dict | None, bool]:
     """POST 2+ outcome UUIDs to the Novig parlay endpoint.
 
     Returns (priced, auth_failed) where priced is
     {'decimal','american','price_str','status','raw_offers'} or None.
+
+    ``on_decline`` (issue #40, keyword-only) receives the HTTP status of a
+    non-200. Novig's two failure statuses mean opposite things —
+
+        400 "Cannot price parlay"  the book declines THIS combo (the common,
+                                   normal case; most combos do this)
+        403 <html>                 we have been RATE-LIMITED
+
+    — and without the status an all-failed cycle raises a bare
+    ``BookTransportError:price``, which cannot tell "Novig won't build these
+    combos" from "Novig has blocked us". Mirrors DK's ``calculate_sgp``.
     """
     payload = {"outcomes": [{"id": oid} for oid in outcome_ids], "boostId": None}
     try:
@@ -606,15 +619,20 @@ def submit_parlay(session, outcome_ids: list[str],
             timeout=RFQ_TIMEOUT,
         )
     except Exception as e:
+        # A connection error carries no HTTP status; don't invent one.
         logger.debug(f"      parlay error: {e}")
         return None, False
 
     if resp.status_code in (401, 403):
         logger.debug(f"      parlay {resp.status_code} — unexpected for /unauthenticated endpoint")
+        if on_decline is not None:
+            on_decline(resp.status_code)
         return None, True
     if resp.status_code not in (200, 201):
         logger.debug("      parlay HTTP %s: %s", resp.status_code,
                      resp.text[:200] if resp.text else "")
+        if on_decline is not None:
+            on_decline(resp.status_code)
         return None, False
 
     try:

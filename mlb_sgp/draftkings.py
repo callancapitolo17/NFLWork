@@ -60,9 +60,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from mlb_sgp._shared import (RETRY_LIVE, BookTransportError, FetchCounters,
-                             PricedRow, TargetLine, decimal_to_american,
-                             fetch_counters, price_tally_for,
-                             request_with_retry)
+                             PricedRow, TargetLine, accepts_on_decline,
+                             decimal_to_american, fetch_counters,
+                             price_tally_for, request_with_retry)
 from mlb_sgp.dk_client import DraftKingsClient
 
 logger = logging.getLogger(__name__)
@@ -133,16 +133,8 @@ def _extract_offered_lines_dk(
     return {"spreads": spreads, "totals": totals}
 
 
-def _accepts_on_decline(price_fn) -> bool:
-    """True if ``price_fn`` takes issue #39's ``on_decline`` status callback.
-
-    Mocks and builtins have no introspectable signature; those simply do not
-    get the callback.
-    """
-    try:
-        return "on_decline" in inspect.signature(price_fn).parameters
-    except (TypeError, ValueError):
-        return False
+# Issue #39's capability guard, shared with Novig since issue #40.
+_accepts_on_decline = accepts_on_decline
 
 
 def price_sgps(

@@ -134,8 +134,9 @@ class NovigClient(PriceCallTallyMixin):
                 # FakeSession in unit tests may not accept all kwargs
                 return self.session.post(NOVIG_GRAPHQL, data=body)
 
-        # api.novig.us stopped resolving in production — a DNS failure that
-        # survives the retries is a dead book, not an off-day.
+        # A connection failure that survives the retries is a dead book, not
+        # an off-day. (The 2026-07 "api.novig.us unresolvable" reports were a
+        # transient blip — the host resolves and answers; see issue #40.)
         r = request_with_retry(_post, profile=profile, book=BOOK,
                                stage="events")
         check_response(BOOK, "events", r)
@@ -198,22 +199,42 @@ class NovigClient(PriceCallTallyMixin):
             # RETRY_LIVE on every path — price calls are the fan-out surface.
             r = request_with_retry(_post, profile=RETRY_LIVE, book=BOOK,
                                    stage="price")
-        except BookTransportError:
+        except BookTransportError as e:
             # Per-combo failures stay row-drops, but must be tallied so an
             # all-fail cycle still yields a "price" transport verdict.
-            self.price_calls.record(False)
+            self._decline(e.status_code)
             return {}
-        if getattr(r, "status_code", 200) not in (200, 201):
-            self.price_calls.record(False)
+        status = getattr(r, "status_code", 200)
+        if status not in (200, 201):
+            # Novig's two non-200s mean opposite things (issue #40):
+            #   400 "Cannot price parlay" -> the book declines THIS combo,
+            #                                which is the common, normal case
+            #   403 <html>                -> we have been RATE-LIMITED
+            # Recording the status is what lets sgp_fetch_health.error_class
+            # say which, instead of an ambiguous bare "price".
+            self._decline(status)
             return {}
         try:
             offers = r.json()
         except Exception:
-            self.price_calls.record(False)
+            self._decline(None)
             return {}
         parsed = _parse_parlay_response(offers)
-        self.price_calls.record(bool(parsed))
+        if not parsed:
+            # A 200 whose body carries no usable price is still a decline, but
+            # the status says nothing about why — don't attribute one.
+            self._decline(None)
+            return parsed
+        self.price_calls.record(True)
         return parsed
+
+    def _decline(self, status: int | None) -> None:
+        """Tally one failed price call, carrying its HTTP status when there is
+        one. Order matters: ``note_status`` stamps the in-flight attempt, so it
+        must precede ``record`` (see PriceCallTally)."""
+        if status is not None:
+            self.price_calls.note_status(status)
+        self.price_calls.record(False)
 
 
 # ---------------------------------------------------------------------------
