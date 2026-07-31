@@ -352,14 +352,11 @@ class PriceCallTally:
         self._last_status: int | None = None
         self._last_status_at = 0
 
-    def record(self, ok: bool, *, status: int | None = None) -> None:
+    def record(self, ok: bool) -> None:
         with self._lock:
             self._attempted += 1
             if ok:
                 self._succeeded += 1
-            elif status is not None:
-                self._last_status = status
-                self._last_status_at = self._attempted
 
     def note_status(self, status: int) -> None:
         """Record the status of the decline currently in flight.

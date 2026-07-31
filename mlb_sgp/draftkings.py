@@ -255,10 +255,10 @@ def _price_sgps(
     price_calls = price_tally_for(client, BOOK_NAME)
     # Bind the decline-status callback here, the one seam where the tally is in
     # scope (downstream call sites pass only session/spread/total). Guarded
-    # because calculate_sgp is a SUBSTITUTABLE module-level seam — tests
-    # monkeypatch it and the dashboard shims import it — and a stand-in written
-    # before issue #39 does not accept the kwarg. Such a substitute keeps
-    # working; it just reports no status, exactly as before.
+    # because calculate_sgp is re-imported per call (above), which is exactly
+    # what lets tests monkeypatch it — and a stand-in written before issue #39
+    # does not accept the kwarg. Such a substitute keeps working; it just
+    # reports no status, as before.
     if _accepts_on_decline(calculate_sgp):
         calculate_sgp = functools.partial(calculate_sgp,
                                           on_decline=price_calls.note_status)

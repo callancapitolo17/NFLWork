@@ -145,11 +145,19 @@ def test_on_demand_price_path_shares_the_same_url_constant():
 # 2. The all-failed verdict must carry the decline status                      #
 # --------------------------------------------------------------------------- #
 
+def _decline(tally, status):
+    """Drive the tally the way production does: the price call reports its
+    status from INSIDE the call (on_decline), then ``wrap`` records the
+    result. Ordering matters — note_status stamps the in-flight attempt."""
+    tally.note_status(status)
+    tally.record(False)
+
+
 def test_price_tally_verdict_reports_the_last_decline_status():
     tally = PriceCallTally("draftkings")
     start = tally.snapshot()
     for _ in range(PriceCallTally.MIN_ATTEMPTS_FOR_VERDICT):
-        tally.record(False, status=403)
+        _decline(tally, 403)
     with pytest.raises(BookTransportError) as exc:
         tally.verdict(start)
     assert exc.value.stage == "price"
@@ -169,26 +177,58 @@ def test_price_tally_verdict_status_is_none_when_no_status_was_seen():
     assert exc.value.status_code is None
 
 
-def test_price_tally_status_is_keyword_only():
-    """Positional drift here would silently rebind ``ok``."""
-    sig = inspect.signature(PriceCallTally.record)
-    with pytest.raises(TypeError):
-        sig.bind(PriceCallTally("dk"), False, 403)
-    sig.bind(PriceCallTally("dk"), False, status=403)
-
-
-def test_price_tally_success_clears_the_recorded_status():
-    """A cycle that priced anything is healthy — no stale status should leak
-    into a later cycle's verdict."""
+def test_price_tally_does_not_leak_a_status_across_cycles():
+    """The tally lives on a persistent client. A previous cycle's 403 must not
+    be reported against a later cycle whose declines carried no status."""
     tally = PriceCallTally("draftkings")
     for _ in range(PriceCallTally.MIN_ATTEMPTS_FOR_VERDICT):
-        tally.record(False, status=403)
+        _decline(tally, 403)
     start = tally.snapshot()                 # a NEW cycle begins
     for _ in range(PriceCallTally.MIN_ATTEMPTS_FOR_VERDICT):
         tally.record(False)                  # declines with no status
     with pytest.raises(BookTransportError) as exc:
         tally.verdict(start)
     assert exc.value.status_code is None
+
+
+def test_price_tally_reports_a_status_from_the_current_cycle():
+    """The mirror of the leak test: a status recorded in THIS cycle is used
+    even when an earlier cycle recorded a different one."""
+    tally = PriceCallTally("draftkings")
+    for _ in range(PriceCallTally.MIN_ATTEMPTS_FOR_VERDICT):
+        _decline(tally, 403)
+    start = tally.snapshot()
+    for _ in range(PriceCallTally.MIN_ATTEMPTS_FOR_VERDICT):
+        _decline(tally, 422)                 # this cycle: non-combinable
+    with pytest.raises(BookTransportError) as exc:
+        tally.verdict(start)
+    assert exc.value.status_code == 422, (
+        "a 422-only cycle means 'book won't build these combos', which must "
+        "not be reported as the 403 blockade of an earlier cycle")
+
+
+def test_price_tally_is_thread_safe_under_concurrent_declines():
+    """Price calls fan out across a thread pool; the verdict must still be
+    reached and carry a status."""
+    import threading
+
+    tally = PriceCallTally("draftkings")
+    start = tally.snapshot()
+
+    def worker():
+        for _ in range(20):
+            _decline(tally, 403)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert tally.snapshot() == (160, 0)      # no lost updates
+    with pytest.raises(BookTransportError) as exc:
+        tally.verdict(start)
+    assert exc.value.status_code == 403
 
 
 # --------------------------------------------------------------------------- #
