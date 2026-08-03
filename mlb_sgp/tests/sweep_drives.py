@@ -217,9 +217,27 @@ def drive_draftkings(monkeypatch, *, healthy=True, counters=None):
 # Novig                                                               #
 # ------------------------------------------------------------------ #
 
-def _nv_market(mtype, strike, offered=True):
+def _nv_market(mtype, strike):
+    """One NV market with both outcomes.
+
+    Issue #64: the sweep resolves legs per target straight out of this raw
+    tree (build_line_structure), so the outcomes must carry the fields the
+    real parsers key on — competitor.symbol for SPREAD/MONEY, an
+    "Over "/"Under " description for TOTAL. The unhealthy drive fakes its
+    parse failure at ``_extract_offered_lines_nv``, not here.
+    """
+    if mtype.startswith("TOTAL"):
+        outcomes = [{"id": f"nv_over_{strike}", "available": 0.52,
+                     "description": f"Over {strike}"},
+                    {"id": f"nv_under_{strike}", "available": 0.52,
+                     "description": f"Under {strike}"}]
+    else:  # SPREAD / MONEY — outcomes identified by competitor symbol
+        outcomes = [{"id": f"nv_home_{mtype}_{strike}", "available": 0.52,
+                     "competitor": {"symbol": "NYY"}},
+                    {"id": f"nv_away_{mtype}_{strike}", "available": 0.52,
+                     "competitor": {"symbol": "BOS"}}]
     return {"type": mtype, "strike": strike, "is_consensus": True,
-            "outcomes": [] if not offered else [{"id": "o1"}]}
+            "outcomes": outcomes}
 
 
 def drive_novig(monkeypatch, *, healthy=True, counters=None):
@@ -230,12 +248,11 @@ def drive_novig(monkeypatch, *, healthy=True, counters=None):
         {"game_id": "g1", "nv_event_id": "e1", "nv_home": "New York Yankees",
          "nv_away": "Boston Red Sox", "nv_home_sym": "NYY",
          "nv_away_sym": "BOS", "fg_total_line": TOTAL}])
-    leg = {"id": "u1", "available": 0.52}
-    legs = {"fg": {"home_spread": leg, "away_spread": leg,
-                   "over": leg, "under": leg,
-                   "home_ml": leg, "away_ml": leg},
-            "f5": {}}
-    markets = [_nv_market("SPREAD", SPREAD), _nv_market("TOTAL", TOTAL)]
+    # The first element of fetch_event_legs' return is the legacy single-line
+    # leg dict; issue #64 stopped reading it, so the legs live in `markets`.
+    legs = {"fg": {}, "f5": {}}
+    markets = [_nv_market("SPREAD", SPREAD), _nv_market("TOTAL", TOTAL),
+               _nv_market("MONEY", None)]
     monkeypatch.setattr(legacy, "fetch_event_legs",
                         lambda session, game, verbose=False, **kw: (legs, markets))
     monkeypatch.setattr(legacy, "submit_parlay",
