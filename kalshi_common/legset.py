@@ -93,15 +93,22 @@ def partition_by_game(legs: list[CanonicalLeg]) -> dict[str, list[CanonicalLeg]]
     return out
 
 
-def classify_subcombo(game_legs: list[CanonicalLeg]) -> str:
-    """Classify a single game's legs into a pricing route.
+def classify_subcombo_detail(game_legs: list[CanonicalLeg]) -> tuple[str, str]:
+    """Classify a single game's legs into (pricing_route, reason).
 
-    Returns one of: "single", "grid_spread_total", "grid_ml_total",
-    "on_demand", "unpriceable".
+    route  : "single" | "grid_spread_total" | "grid_ml_total" | "on_demand"
+             | "unpriceable"
+    reason : "ok" for every priceable route; otherwise WHY the set is refused —
+             "empty_leg_set" | "duplicate_market" | "spread_ml_implication".
+
+    The reason exists so a refusal is nameable at the decision log. A combo
+    dropped as the single opaque "out_of_scope" is indistinguishable from a
+    lone single or a non-MLB leg, which makes a deliberate refusal look like
+    a silent drop in kalshi_mlb_monitor.
     """
     n = len(game_legs)
     if n == 0:
-        return "unpriceable"
+        return "unpriceable", "empty_leg_set"
     # Duplicate-market guard (Phase 2): a repeated (market_type, line) within
     # one game is either the same leg twice or a contradictory pair whose
     # joint probability is exactly 0 (Over 8.5 & Under 8.5, both moneylines).
@@ -110,15 +117,45 @@ def classify_subcombo(game_legs: list[CanonicalLeg]) -> str:
     # a craftable pick-off. Nested totals at DIFFERENT lines stay allowed.
     keys = [(l.market_type, l.line) for l in game_legs]
     if len(set(keys)) != len(keys):
-        return "unpriceable"
+        return "unpriceable", "duplicate_market"
+    # Implication guard (issue #66) — the same argument as the duplicate-market
+    # guard above, one step weaker: a spread leg and a moneyline leg on the SAME
+    # game are logically dependent, so the 2^N side enumeration is not a
+    # partition and Route A's precondition is violated. Working the margin
+    # m = home - away at a -1.5 spread, the four side combinations are:
+    #
+    #   spread home + ml home   m>1.5 & m>0   spread => ml    implication
+    #   spread away + ml away   m<1.5 & m<0   ml => spread    implication
+    #   spread home + ml away   m>1.5 & m<0   empty           contradiction
+    #   spread away + ml home   m<1.5 & m>0   0<m<1.5         legitimate
+    #
+    # Only the last is a well-posed joint, and no book prices it (verified live
+    # across all six on 2026-08-03), so refusing all four costs no coverage.
+    # Measured consequence of NOT refusing: Novig returns the total+ml price
+    # under a 3-leg label, ProphetX/Caesars devig the same book price to
+    # different fairs because the correlation transfer treats the legs as
+    # independent. An MLB same-game 3-leg can only draw on spread/total/ml, so
+    # it ALWAYS contains this pair — this guard is what refuses 3-leg shapes.
+    market_types = {l.market_type for l in game_legs}
+    if "spread" in market_types and "ml" in market_types:
+        return "unpriceable", "spread_ml_implication"
     if n == 1:
-        return "single"
+        return "single", "ok"
     types = sorted(l.market_type for l in game_legs)
     if n == 2 and types == ["spread", "total"]:
-        return "grid_spread_total"
+        return "grid_spread_total", "ok"
     if n == 2 and types == ["ml", "total"]:
-        return "grid_ml_total"
-    return "on_demand"
+        return "grid_ml_total", "ok"
+    return "on_demand", "ok"
+
+
+def classify_subcombo(game_legs: list[CanonicalLeg]) -> str:
+    """The pricing route for a single game's legs (see classify_subcombo_detail).
+
+    Returns one of: "single", "grid_spread_total", "grid_ml_total",
+    "on_demand", "unpriceable".
+    """
+    return classify_subcombo_detail(game_legs)[0]
 
 
 _FLIP = {"home": "away", "away": "home", "over": "under", "under": "over"}

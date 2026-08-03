@@ -1059,6 +1059,38 @@ byte-identical, and the implied probabilities sum to **2.364** instead of
 cells — home covers −1.5 *and* away wins — are correctly refused by the book)
 and Route B's transfer does not preserve the implication.
 
+**Resolved (issue #66): the maker now refuses these shapes outright.** A
+same-game leg set containing BOTH a spread leg and a moneyline leg classifies
+as `unpriceable` in `kalshi_common/legset.py::classify_subcombo`, with reason
+`spread_ml_implication`, and is dropped at the RFQ scope gate — **before any
+book is queried**. Since every MLB same-game 3-leg necessarily contains that
+pair, this is also what refuses 3-leg shapes. The refusal is deliberately
+sign- and side-agnostic; it over-refuses exactly one well-posed shape
+(underdog spread + favourite ML, i.e. `0 < margin < 1.5`), which **no book
+offers** — see the ❌ row above, re-confirmed at all six books on 2026-08-03.
+
+Re-measured 2026-08-03 (PIT @ MIL, `home −1.5 + over 7.5`), the identity
+`P(3-leg) == P(spread ∧ total)` fails at every book that returns a number:
+
+| book | spread × total | 3-leg | ratio (must be 1.00) |
+|---|---|---|---|
+| ProphetX | 0.2419 | 0.2647 | 1.09× |
+| Novig | 0.2478 | 0.3773 | **1.52×** |
+| Caesars | 0.1933 | 0.1391 | 0.72× |
+| DK / FD / BetMGM | — | `no_price` | book declines the shape |
+
+Novig's 0.3773 also **exceeds its own `ML × total` fair (0.3292)** — a strict
+superset of the event — so the 3-leg number violates a Fréchet upper bound
+outright. Note the manifestation varies by run: the byte-identical leg-drop
+above was Route A (`part`); on 2026-08-03 Novig fell to Route B (`tran`) and
+produced a different wrong number. The failure is not a single book bug to
+patch, which is why the fix refuses the shape rather than special-casing a
+book.
+
+`verify_books.py` still probes `spread_x_ml` and `three_leg` — a diagnostic
+must be able to measure the broken thing. `SGPService.price_on_demand` is
+deliberately NOT guarded; the refusal lives in the router's classifier.
+
 ### Cross-book agreement
 
 #39 closed with "cross-book price equivalence unverified at n=1". Closed here:

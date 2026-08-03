@@ -410,6 +410,15 @@ def _out_of_scope_reason(legs, canon) -> str:
         return "out_of_scope_non_mlb"      # some leg untypeable (other sport etc.)
     if len(canon) < 2:
         return "out_of_scope_lone_single"
+    # Issue #66: name a STRUCTURAL refusal (spread+ml implication, duplicate
+    # market, empty group) rather than bucketing it into the opaque
+    # "out_of_scope". A refusal nobody can see in kalshi_mlb_monitor is
+    # indistinguishable from a silent drop. First failing game wins — the
+    # same convention router.combo_fair_detail uses.
+    for game_legs in legset.partition_by_game(canon).values():
+        route, reason = legset.classify_subcombo_detail(game_legs)
+        if route == "unpriceable":
+            return f"out_of_scope_{reason}"
     return "out_of_scope"
 
 
