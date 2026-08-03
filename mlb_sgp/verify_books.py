@@ -104,30 +104,65 @@ def shapes_for(spread: float, total: float) -> dict:
     }
 
 
-def pick_game() -> GameRef:
+# Books that can list today's fixtures cheaply, in the order pick_game() will
+# try them. A gate for six books must not be unable to start because ONE book
+# is unreachable — which is exactly what happened when this read Novig only
+# and Novig's TLS dropped.
+GAME_SOURCE_BOOKS = ("novig", "caesars", "betmgm", "prophetx")
+
+
+def _events_from(book: str):
+    """That book's event listing, or [] if it cannot be reached."""
+    from kalshi_common.sgp_service import SGPService
+    try:
+        client = SGPService(books=(book,), health_db_path=None) \
+            ._ensure_client(book).client
+        return client.list_events() or []
+    except Exception:
+        return []
+
+
+def pick_game(source_books=GAME_SOURCE_BOOKS) -> GameRef:
     """A live, not-yet-started MLB game, resolved to canonical team names.
 
-    Sourced from Novig's event list purely because it is the cheapest
-    anonymous listing available; the GameRef is book-agnostic from there.
+    Any book's listing will do — the GameRef is book-agnostic once the team
+    names are canonical. Falls through the list so one unreachable book
+    cannot block verification of the other five.
     """
     from canonical_match import (load_canonical_games, load_team_dict,
                                  resolve_team_names)
-    from mlb_sgp.novig_client import NovigClient
 
     team_dict = load_team_dict("mlb")
     canonical = load_canonical_games("mlb")
     now = datetime.now(timezone.utc)
-    for event in NovigClient(verbose=False).list_events():
-        resolved = resolve_team_names(event.away_team, event.home_team,
-                                      team_dict, canonical)
-        if not resolved or not resolved[0] or not resolved[1]:
-            continue
-        start = datetime.fromisoformat(event.start_time)
-        if start <= now:
-            continue
-        return GameRef(game_id=GAME_ID, home_team=resolved[1],
-                       away_team=resolved[0], commence_time=start)
-    raise SystemExit("no upcoming MLB game could be resolved")
+    tried = []
+    for book in source_books:
+        for event in _events_from(book):
+            home = getattr(event, "home_team", None)
+            away = getattr(event, "away_team", None)
+            start_raw = getattr(event, "start_time", None)
+            if not (home and away and start_raw):
+                continue
+            resolved = resolve_team_names(away, home, team_dict, canonical)
+            if not resolved or not resolved[0] or not resolved[1]:
+                continue
+            try:
+                start = (start_raw if isinstance(start_raw, datetime)
+                         else datetime.fromisoformat(
+                             str(start_raw).replace("Z", "+00:00")))
+            except ValueError:
+                continue
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=timezone.utc)
+            if start <= now:
+                continue
+            return GameRef(game_id=GAME_ID, home_team=resolved[1],
+                           away_team=resolved[0], commence_time=start)
+        tried.append(book)
+    raise SystemExit(
+        f"no upcoming MLB game could be resolved from any of: "
+        f"{', '.join(tried)} — every listing book is unreachable, or the "
+        f"slate is over")
 
 
 def probe_coverage(service: SGPService, book: str, game: GameRef) -> dict:

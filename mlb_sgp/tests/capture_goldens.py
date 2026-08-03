@@ -95,6 +95,40 @@ def capture_book(book: str, targets) -> dict | None:
             "rows": gr.sort_rows(gr.rows_to_json(rows))}
 
 
+def verify_capture(book: str, blob: dict) -> str | None:
+    """Replay a fresh capture before writing it. Returns a problem, or None.
+
+    A capture that cannot reproduce its own rows offline is worse than no
+    fixture: it would be committed as a baseline and only fail later, in
+    someone else's session. This closes any gap between what the recorder
+    stored and what the replayer can rebuild — an unencodable payload, a
+    seam whose key is not stable, a type that does not survive JSON.
+    """
+    patcher = _Patcher()
+    try:
+        client, fetchers = gr.replay(book, patcher, blob["payloads"])
+        rows = gr.price_with(book, _targets_from(blob), client, fetchers)
+    except Exception as exc:
+        return f"replay of the fresh capture failed: {exc!r}"
+    finally:
+        patcher.undo()
+    replayed = gr.sort_rows(gr.rows_to_json(rows))
+    if replayed != blob["rows"]:
+        return (f"replay produced {len(replayed)} rows vs {len(blob['rows'])} "
+                f"captured — the fixture does not reproduce itself")
+    return None
+
+
+def _targets_from(blob: dict):
+    return [TargetLine(game_id=t["game_id"], home_team=t["home_team"],
+                       away_team=t["away_team"],
+                       commence_time=datetime.fromisoformat(
+                           t["commence_time"]),
+                       period=t["period"], spread=t["spread"],
+                       total=t["total"])
+            for t in blob["targets"]]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--books", default=",".join(ALL_BOOKS))
@@ -113,6 +147,10 @@ def main() -> int:
     for book in (b.strip() for b in args.books.split(",") if b.strip()):
         blob = capture_book(book, targets)
         if blob is None:
+            continue
+        problem = verify_capture(book, blob)
+        if problem:
+            print(f"  {book}: NOT written — {problem}")
             continue
         gr.save_golden(book, blob)
         written += 1

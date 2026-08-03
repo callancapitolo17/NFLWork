@@ -7,6 +7,7 @@ so the classification logic and the seam declarations are pinned here.
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -144,6 +145,55 @@ def test_candidate_ladder_spans_whole_and_half_totals():
     assert any(not float(t).is_integer() for t in vb.CANDIDATE_TOTALS)
 
 
+def test_pick_game_falls_through_an_unreachable_book(monkeypatch):
+    """A gate for six books must not fail to start because ONE book is down.
+
+    This is not hypothetical — pick_game read Novig only, and a Novig TLS
+    drop made the whole harness unrunnable mid-review.
+    """
+    from datetime import datetime, timedelta, timezone
+    soon = datetime.now(timezone.utc) + timedelta(hours=3)
+    good = SimpleNamespace(home_team="Philadelphia Phillies",
+                           away_team="Washington Nationals",
+                           start_time=soon.isoformat())
+
+    calls = []
+
+    def fake_events(book):
+        calls.append(book)
+        if book == "novig":
+            return []          # unreachable
+        return [good]
+
+    monkeypatch.setattr(vb, "_events_from", fake_events)
+    game = vb.pick_game(source_books=("novig", "caesars"))
+    assert calls == ["novig", "caesars"], "must move on to the next book"
+    assert game.home_team == "Philadelphia Phillies"
+
+
+def test_pick_game_skips_games_already_started(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    started = datetime.now(timezone.utc) - timedelta(minutes=30)
+    upcoming = datetime.now(timezone.utc) + timedelta(hours=2)
+    monkeypatch.setattr(vb, "_events_from", lambda book: [
+        SimpleNamespace(home_team="Philadelphia Phillies",
+                        away_team="Washington Nationals",
+                        start_time=started.isoformat()),
+        SimpleNamespace(home_team="New York Yankees",
+                        away_team="Boston Red Sox",
+                        start_time=upcoming.isoformat()),
+    ])
+    game = vb.pick_game(source_books=("novig",))
+    assert game.home_team == "New York Yankees"
+
+
+def test_pick_game_raises_when_every_book_is_unreachable(monkeypatch):
+    monkeypatch.setattr(vb, "_events_from", lambda book: [])
+    with pytest.raises(SystemExit) as exc:
+        vb.pick_game(source_books=("novig", "caesars"))
+    assert "novig" in str(exc.value) and "caesars" in str(exc.value)
+
+
 def test_secs_formats_a_missing_sample():
     assert vb._secs(None) == "-"
     assert vb._secs(1.234) == "1.23"
@@ -200,7 +250,7 @@ def test_call_key_ignores_noise_kwargs():
 def test_replay_miss_raises_loudly():
     """A missing payload must never be served as an empty result — that is
     exactly the silent-failure mode this epic exists to remove."""
-    replayer = gr._Replayer("novig", "submit_parlay", 1, {}, {})
+    replayer = gr._Replayer("novig", "submit_parlay", 1, {})
     with pytest.raises(gr.ReplayMiss) as exc:
         replayer(object(), ["a", "b"])
     assert "novig/submit_parlay" in str(exc.value)
@@ -210,8 +260,30 @@ def test_recorder_stores_under_the_key_replay_will_ask_for():
     sink = {}
     recorder = gr._Recorder(lambda _s, ids: {"decimal": 2.0}, 1, sink)
     recorder(object(), ["x", "y"])
-    replayer = gr._Replayer("novig", "submit_parlay", 1, sink, {})
+    replayer = gr._Replayer("novig", "submit_parlay", 1, sink)
     assert replayer(object(), ["x", "y"]) == {"decimal": 2.0}
+
+
+def test_datetimes_survive_the_json_round_trip():
+    """encode() used to pass a datetime straight through, so json's
+    default=str stringified it with a SPACE separator and it never became a
+    datetime again — a silent type drift, in a repo where timestamp handling
+    is a regression gate."""
+    from datetime import datetime, timezone
+    value = {"start": datetime(2026, 8, 3, 22, 40, tzinfo=timezone.utc)}
+    restored = gr.decode(json.loads(json.dumps(gr.encode(value))))
+    assert restored == value
+    assert isinstance(restored["start"], datetime)
+
+
+def test_auth_seams_are_redacted_at_capture():
+    """A captured accessid is auth material, is never read on replay, and
+    must not be committed."""
+    sink = {}
+    recorder = gr._Recorder(lambda: "a-real-live-accessid", 0, sink,
+                            "accessid")
+    assert recorder() == "a-real-live-accessid", "the live call is unchanged"
+    assert list(sink.values()) == [gr.REDACTED]
 
 
 def test_encode_qualifies_dataclasses_by_module():

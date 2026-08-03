@@ -32,6 +32,7 @@ look like a book with nothing to say.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import gzip
 import json
 from dataclasses import asdict, is_dataclass
@@ -78,6 +79,12 @@ def encode(obj):
         return {"__dict__": [[encode(k), encode(v)] for k, v in obj.items()]}
     if isinstance(obj, list):
         return [encode(v) for v in obj]
+    if isinstance(obj, (_dt.datetime, _dt.date)):
+        # Without this a datetime falls through to json.dump(default=str),
+        # which stringifies it with a SPACE separator and never becomes a
+        # datetime again on replay — a silent type drift in a repo whose
+        # timestamp handling is a regression gate (CLAUDE.md housekeeping #6).
+        return {"__datetime__": obj.isoformat()}
     return obj
 
 
@@ -93,27 +100,26 @@ def _resolve_dataclass(path: str):
         return None
 
 
-def decode(obj, registry: dict | None = None):
-    registry = registry or {}
+def decode(obj):
     if isinstance(obj, dict):
         if "__dataclass__" in obj:
-            fields = {k: decode(v, registry)
-                      for k, v in obj["fields"].items()}
+            fields = {k: decode(v) for k, v in obj["fields"].items()}
             cls = _resolve_dataclass(obj["__dataclass__"])
             return cls(**fields) if cls else SimpleNamespace(**fields)
         if "__namespace__" in obj:
-            return SimpleNamespace(**{k: decode(v, registry)
-                                      for k, v in obj["__namespace__"].items()})
+            return SimpleNamespace(
+                **{k: decode(v) for k, v in obj["__namespace__"].items()})
         if "__tuple__" in obj:
-            return tuple(decode(v, registry) for v in obj["__tuple__"])
+            return tuple(decode(v) for v in obj["__tuple__"])
         if "__set__" in obj:
-            return {decode(v, registry) for v in obj["__set__"]}
+            return {decode(v) for v in obj["__set__"]}
+        if "__datetime__" in obj:
+            return _dt.datetime.fromisoformat(obj["__datetime__"])
         if "__dict__" in obj:
-            return {decode(k, registry): decode(v, registry)
-                    for k, v in obj["__dict__"]}
-        return {k: decode(v, registry) for k, v in obj.items()}
+            return {decode(k): decode(v) for k, v in obj["__dict__"]}
+        return {k: decode(v) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [decode(v, registry) for v in obj]
+        return [decode(v) for v in obj]
     return obj
 
 
@@ -226,10 +232,9 @@ class _Replayer:
     """Serves recorded returns for one seam. A miss raises rather than
     returning an empty result — see the module docstring."""
 
-    def __init__(self, book: str, seam: str, skip: int, recorded: dict,
-                 registry: dict):
+    def __init__(self, book: str, seam: str, skip: int, recorded: dict):
         self.book, self.seam, self.skip = book, seam, skip
-        self.recorded, self.registry = recorded, registry
+        self.recorded = recorded
         self.calls: list[str] = []
 
     def __call__(self, *args, **kwargs):
@@ -241,22 +246,32 @@ class _Replayer:
                 f"The fixture holds {len(self.recorded)} key(s); recapture "
                 f"with mlb_sgp/tests/capture_goldens.py if the orchestrator's "
                 f"call pattern changed on purpose.")
-        return decode(self.recorded[key], self.registry)
+        return decode(self.recorded[key])
+
+
+# Seams whose captured value is auth material rather than market data. It is
+# never read on replay (every downstream call is replayed too), so a constant
+# keeps the fixture honest without committing a live credential.
+_REDACT_SEAMS = {"accessid"}
+REDACTED = "REDACTED-BY-CAPTURE"
 
 
 class _Recorder:
     """Wraps a real seam, remembering every (key -> return) it produced."""
 
-    def __init__(self, real, skip: int, sink: dict):
+    def __init__(self, real, skip: int, sink: dict, seam: str = ""):
         self.real, self.skip, self.sink = real, skip, sink
+        self.seam = seam
 
     def __call__(self, *args, **kwargs):
         result = self.real(*args, **kwargs)
+        stored = REDACTED if self.seam in _REDACT_SEAMS else encode(result)
         try:
-            self.sink[call_key(args, kwargs, self.skip)] = encode(result)
+            self.sink[call_key(args, kwargs, self.skip)] = stored
         except (TypeError, ValueError):
-            # An unencodable payload must not break a live capture; the
-            # replay will fail loudly on the missing key instead.
+            # An unencodable payload must not break a live capture. The
+            # replay would fail loudly on the missing key, and
+            # verify_capture() catches it before the fixture is written.
             pass
         return result
 
@@ -270,24 +285,22 @@ def replay(book: str, monkeypatch, recorded: dict):
     import importlib
 
     seams = _seams(book)
-    registry = {}
 
     for module_name, attr, skip in seams.get("module_patches", []):
         module = importlib.import_module(module_name)
         monkeypatch.setattr(module, attr,
                             _Replayer(book, attr, skip,
-                                      recorded.get(attr, {}), registry))
+                                      recorded.get(attr, {})))
 
     client = MagicMock()
     for method, skip in seams.get("client_methods", {}).items():
         setattr(client, method,
-                _Replayer(book, method, skip, recorded.get(method, {}),
-                          registry))
+                _Replayer(book, method, skip, recorded.get(method, {})))
 
     fetchers = None
     if "fetchers" in seams:
         fetchers = {name: _Replayer(book, name, skip,
-                                    recorded.get(name, {}), registry)
+                                    recorded.get(name, {}))
                     for name, skip in seams["fetchers"].items()}
     return client, fetchers
 
@@ -306,19 +319,19 @@ def record(book: str, monkeypatch, client, sink: dict):
         module = importlib.import_module(module_name)
         monkeypatch.setattr(module, attr,
                             _Recorder(getattr(module, attr), skip,
-                                      sink.setdefault(attr, {})))
+                                      sink.setdefault(attr, {}), attr))
 
     for method, skip in seams.get("client_methods", {}).items():
         monkeypatch.setattr(client, method,
                             _Recorder(getattr(client, method), skip,
-                                      sink.setdefault(method, {})))
+                                      sink.setdefault(method, {}), method))
 
     fetchers = None
     if "fetchers" in seams:
         import importlib as _il
         legacy = _il.import_module(_LEGACY_MODULE[book])
         fetchers = {name: _Recorder(getattr(legacy, name), skip,
-                                    sink.setdefault(name, {}))
+                                    sink.setdefault(name, {}), name)
                     for name, skip in seams["fetchers"].items()}
     return fetchers
 
