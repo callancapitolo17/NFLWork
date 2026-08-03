@@ -976,10 +976,229 @@ wall-clock on retries and the schedule is directly assertable. A test that cares
 takes `recorded_sleeps` as an argument and reads the durations that would have
 been slept.
 
+## Six-book verification + the pre-restart checklist (issue #42)
+
+`mlb_sgp/verify_books.py` is the bot-restart gate. It answers, per book, on the
+path a quote actually uses (`SGPService.price_on_demand`): **can this book
+price a real combo right now, and how fast?**
+
+```bash
+python3 mlb_sgp/verify_books.py                        # all six books
+python3 mlb_sgp/verify_books.py --json /tmp/gate.json  # machine-readable
+python3 mlb_sgp/verify_books.py --books novig --pacing 12   # rate-limit safe
+```
+
+It is read-only: no DB is opened for write, no bot is touched.
+
+### Why it separates four outcomes
+
+A book returning no price is ambiguous, and collapsing that ambiguity is how
+DK, Novig and Caesars each rotted for a month. The harness never collapses it:
+
+| outcome | meaning | action |
+|---|---|---|
+| `priced` | resolved legs, returned a fair | none |
+| `not_offered` | structure healthy, carries none of the probed lines | none — a coverage fact |
+| `no_price` | legs resolved, book declined to price them | check the shape (see below) |
+| `down` | event match or structure fetch failed | **a real failure** |
+
+Coverage is probed through each book's own `resolve` hook — a pure lookup
+against an already-fetched structure — so it costs zero extra wire calls.
+
+### Line coverage differs wildly per book
+
+Measured 2026-08-03, one game (WSH @ PHI, main total 9.0), out of 4 candidate
+spreads and 7 candidate totals:
+
+| book | spreads | totals | shape |
+|---|---|---|---|
+| DraftKings | 4 | 7 | full ladder, half AND whole numbers |
+| ProphetX | 4 | 5 | wide ladder |
+| Novig | 4 | 4 | half-point ladder only (3.5–13.5) |
+| BetMGM | 4 | 4 | half-point ladder only |
+| FanDuel | 4 | **1** | main total only |
+| Caesars | **1** | **1** | main line only |
+
+**No single rung is priced by all six books.** The books split on whole-number
+vs half-point totals: at a 9.0 main line, FD and Caesars carry it and Novig and
+BetMGM do not; at 8.5 the reverse. Expect a quorum of ~4 of 6 at any rung, not
+6 of 6 — this is the number #55 must design against, and it is a property of
+the books, not a bug.
+
+### Shape capability matrix
+
+| shape | DK | FD | PX | NV | MGM | CZR |
+|---|---|---|---|---|---|---|
+| spread × total | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| ML × total | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| spread × ML | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| 3-leg (spread+total+ML) | ❌ | ❌ | ⚠️ | ⚠️ | ❌ | ⚠️ |
+
+**No book prices spread × ML.** Verified on DK for all three side
+combinations (home+home, home+away, away+away) — it is not a same-team
+restriction, the pairing is simply not offered. Since an MLB same-game 3-leg
+can only draw on spread / total / ML, every 3-leg necessarily contains that
+pair, which is why the 3-leg column is mostly ❌.
+
+⚠️ **The three books that do return a 3-leg number return a WRONG one — do not
+quote 3-leg shapes.** A home −1.5 spread *implies* the home ML, so
+`P(spread ∧ total ∧ ML)` must equal `P(spread ∧ total)`. It does not:
+
+```
+Novig  [home -1.5, over 7.5]             dec=3.1949
+Novig  [over 7.5, home ML]               dec=2.3981
+Novig  [home -1.5, over 7.5, home ML]    dec=2.3981   <-- spread leg DROPPED
+```
+
+Novig silently drops the spread leg and returns the 2-leg price under a 3-leg
+label. Its partition confirms it: cells differing only in the spread's side are
+byte-identical, and the implied probabilities sum to **2.364** instead of
+~1.18. ProphetX is less dramatic but still wrong — the book itself prices the
+3-leg identically to the 2-leg (3.25 both), yet our engine devigs them to
+0.2975 vs 0.2885, because Route A cannot complete (the logically impossible
+cells — home covers −1.5 *and* away wins — are correctly refused by the book)
+and Route B's transfer does not preserve the implication.
+
+### Cross-book agreement
+
+#39 closed with "cross-book price equivalence unverified at n=1". Closed here:
+the harness re-prices one common rung at every book that carries it. Measured
+2026-08-03, `home -1.5 + over 7.5`, devigged fair:
+
+| book | fair |
+|---|---|
+| BetMGM | 0.2550 |
+| Novig | 0.2652 |
+| DraftKings | 0.2661 |
+| ProphetX | 0.2885 |
+
+Range 0.2550–0.2885, **spread 13.1% of the low, median 0.2656**. ProphetX runs
+consistently high — it was also the high book at 8.5 (0.2595 vs ~0.23). Four
+books is the realistic quorum at a half-point rung; FanDuel and Caesars carry
+only the main line and so cannot vote on it.
+
+This is the strongest correctness signal available without a ground truth: an
+independently-wrong book shows up here, whereas #20's dispersion gate cannot
+see books that are jointly wrong.
+
+### Latency baseline (feeds #50 and #55)
+
+`price_on_demand`, seconds, measured 2026-08-03. **Cold** is a fresh
+`SGPService` — event discovery + structure fetch + price, i.e. what the maker
+pays on a game's first RFQ. Warm reuses the cached structure.
+
+| book | shape | cold | warm p50 | warm p95 | structure fetch |
+|---|---|---|---|---|---|
+| DraftKings | spread × total | 2.77 | 0.76 | 3.55 | 1.37 |
+| DraftKings | ML × total | 2.63 | 0.77 | 0.77 | |
+| FanDuel | spread × total | 1.12 | 0.85 | 1.05 | 0.64 |
+| FanDuel | ML × total | 0.90 | 0.72 | 0.74 | |
+| ProphetX | spread × total | 2.42 | 1.38 | 1.43 | 0.51 |
+| ProphetX | ML × total | 1.80 | 1.45 | 2.36 | |
+| ProphetX | 3-leg | 2.78 | 1.76 | 1.86 | |
+| Novig ¹ | spread × total | 6.69 | 3.89 | 9.06 | 0.33 |
+| Novig ¹ | ML × total | 4.63 | 3.68 | 4.49 | |
+| BetMGM | spread × total | 1.71 | 1.30 | 1.35 | 0.85 |
+| BetMGM | ML × total | 1.70 | 1.27 | 1.35 | |
+| Caesars ² | spread × total | 2.68 | 2.20 | 2.36 | 1.36 |
+| Caesars ² | ML × total | 2.54 | 2.36 | 2.54 | |
+| Caesars ² | 3-leg | 7.04 | 6.48 | 7.26 | |
+| Caesars ² | AWS-WAF token mint | 0.67 | (cached 240s) | | |
+
+¹ **Novig must be measured with `--pacing 12`.** At the default 1s pacing it
+returned zero warm samples on three of four shapes — that was its own rate
+limit (26 rapid price calls → 403, #40), not latency. Every shape here fans
+out into a 2^N partition, so a full verification run is 60+ wire price calls
+per book. Novig is the slowest book by a wide margin and its p95 sits at the
+edge of #50's 8–10s budget.
+
+² Caesars numbers are from the run before its WAF began throttling this IP —
+see the checklist note below.
+
+### Caesars WAF throttles under verification load
+
+#41 closed with "not verified: behaviour under WAF rate-limiting". Now
+observed: after a full verification run plus several diagnostics, Caesars began
+returning `WAF token minted but NOT validated (attempt n/3)` and stayed that
+way for **over 30 minutes**. The mint itself succeeds — the WAF rejects the
+minted token, which is the signature of IP throttling rather than a broken
+integration (the same code minted in 0.67s an hour earlier).
+
+Operationally this is handled correctly: the client raises
+`BookTransportError(stage="auth")`, and #33's contract preserves Caesars' prior
+rows instead of clearing them. But it means **Caesars should be verified first
+in a session, not last**, and a verification run should not be repeated
+back-to-back.
+
+### Pre-restart checklist
+
+Run this before restarting the maker or taker. Self-contained; nothing here
+starts, stops or restarts a bot.
+
+1. **Confirm you are on a healthy slate.** Games must be upcoming, not live:
+   `python3 mlb_sgp/verify_books.py` prints the game it picked and its start.
+2. **Verify Caesars FIRST if you will run anything else** —
+   `python3 mlb_sgp/verify_books.py --books caesars`. Its WAF throttles under
+   load and takes >30 min to clear.
+3. **Run the gate:** `python3 mlb_sgp/verify_books.py --json /tmp/gate.json`.
+   Every book must report `priced` or `not_offered`. Any `down` blocks the
+   restart — read `coverage.error` in the JSON for the stage.
+4. **Re-measure Novig separately** with `--books novig --pacing 12`; at default
+   pacing its warm samples are rate-limit noise.
+5. **Check cross-book agreement.** The harness re-prices one common rung at
+   every book carrying it. A spread wider than ~15% of the low means one book
+   is mispricing — do not restart into that.
+6. **Run the offline suite:**
+   `python3 -m pytest mlb_sgp/tests/ kalshi_common/tests/ kalshi_mlb_mm/tests/ kalshi_mlb_rfq/tests/ -q`.
+   Goldens (`test_golden_baselines.py`) must pass for every active book.
+7. **Sweep check.** Every active book should write rows with its own
+   `*_direct` source label and no `PARSE TRIPWIRE` lines. A book that raises
+   keeps its previous rows — that is #33 working, not a failure to fix.
+8. **Known limits to carry into the restart:** no book prices spread × ML;
+   3-leg shapes return incoherent numbers and must not be quoted; expect a
+   4-of-6 quorum at any given rung.
+
+### Goldens
+
+`mlb_sgp/tests/test_golden_baselines.py` replays frozen per-book payloads
+through each real `price_sgps` and pins the resulting rows. Fully offline — a
+companion test poisons every HTTP transport to prove it.
+
+Recapture only when a book's call pattern changes on purpose, and only from a
+slate where that book is healthy:
+
+```bash
+python3 mlb_sgp/tests/capture_goldens.py --books novig
+```
+
+Capturing mid-repair bakes a broken book's output in as the baseline. The
+capture refuses to write a fixture for a book that produced zero rows.
+
+Fixtures are gzipped (`<book>_golden.json.gz`). A raw capture is up to 4.5 MB
+of market tree per book — 7.3 MB across the set — and every recapture would add
+another blob; compressed they total ~220 KB.
+
+**Caesars has no golden fixture yet.** Capturing one needs a single healthy
+live pass, and its WAF was throttling this IP for the whole capture window (see
+above). `test_every_book_has_a_golden` fails until it is captured — that is the
+gate correctly reporting a gap, not a broken test. Fix it with:
+
+```bash
+python3 mlb_sgp/tests/capture_goldens.py --books caesars
+```
+
+This replaced two earlier "golden" tests for DK and FD that re-ran the real
+scraper against the live book, wrote into the shared production DuckDB from a
+test run, and diffed against a CSV keyed by `game_id` — so they went stale
+within hours and could never pass on an ordinary day.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
+| `verify_books.py` | Six-book live verification gate (issue #42) — read-only |
+| `tests/golden_replay.py` | Record/replay harness behind the golden baselines |
+| `tests/capture_goldens.py` | Hand-run capture of frozen golden fixtures |
 | `scraper_draftkings_sgp.py` | DK SGP scraper shim (calls `draftkings.price_sgps`) |
 | `scraper_fanduel_sgp.py` | FD SGP scraper shim (calls `fanduel.price_sgps`) |
 | `scraper_prophetx_sgp.py` | ProphetX SGP scraper shim |
