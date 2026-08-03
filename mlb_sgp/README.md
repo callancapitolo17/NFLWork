@@ -1115,6 +1115,15 @@ edge of #50's 8–10s budget.
 ² Caesars numbers are from the run before its WAF began throttling this IP —
 see the checklist note below.
 
+**Reading the `cold` column on a future run.** The table above was captured
+with a harness that built a fresh `SGPService` per shape, so every `cold` cell
+is a true cold path. That cost ~5 client builds per book — and for Caesars, ~5
+AWS-WAF token mints — which is what tripped its throttle (#67). The harness now
+builds **two** services per book (one for coverage + warm, one for the cold
+pass), so on a future run only the FIRST shape's cold time includes event
+discovery and the structure fetch. The JSON marks it: each cold cell carries
+`cold_includes_structure`.
+
 ### Caesars WAF throttles under verification load
 
 #41 closed with "not verified: behaviour under WAF rate-limiting". Now

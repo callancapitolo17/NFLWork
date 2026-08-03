@@ -193,15 +193,19 @@ def price_shape(service: SGPService, book: str, game: GameRef, legs) -> dict:
 
 def verify_book(book: str, game: GameRef, repeat: int,
                 pacing: float = DEFAULT_PACING_SEC) -> dict:
-    """Cold pass on a fresh service, then ``repeat`` warm passes.
+    """Coverage probe, then a cold pass on a fresh service, then warm passes.
 
-    Cold is measured on a brand-new ``SGPService`` so it includes event
-    discovery, structure fetch and (for Caesars) the AWS-WAF token mint —
-    the latency a maker actually pays on the first RFQ of a game.
+    The cold pass runs on a brand-new ``SGPService`` so its first measurement
+    includes event discovery, the structure fetch and (for Caesars) the
+    AWS-WAF token mint — the latency a maker actually pays on the first RFQ
+    of a game.
+
+    Exactly TWO services are built per book: one for coverage + warm samples,
+    one for the cold pass. See the note below on why that count matters.
     """
     report = {"book": book}
-    cold_service = SGPService(books=(book,), health_db_path=None)
-    coverage = probe_coverage(cold_service, book, game)
+    probe_service = SGPService(books=(book,), health_db_path=None)
+    coverage = probe_coverage(probe_service, book, game)
     report["coverage"] = coverage
     if coverage["status"] == "down":
         report["outcome"] = "down"
@@ -215,29 +219,40 @@ def verify_book(book: str, game: GameRef, repeat: int,
     report["priced_at"] = {"spread": spread, "total": total}
     shapes = shapes_for(spread, total)
 
-    # Cold: a fresh service so nothing is cached. The coverage probe above
-    # already warmed THIS service's structure cache, so cold latency is
-    # measured on yet another fresh one.
+    # ONE fresh service for the whole cold pass, not one per shape.
+    #
+    # A fresh service means a fresh client, and for Caesars a fresh client
+    # means a new AWS-WAF token mint. Minting once per shape put ~5 mints per
+    # book through a WAF that throttles on volume, which is what took Caesars
+    # out mid-verification (issue #67) — the harness caused the outage it was
+    # measuring.
+    #
+    # Consequence for the numbers: only the FIRST shape's cold time includes
+    # event discovery and the structure fetch. The rest pay price latency
+    # against a warm structure. `cold_includes_structure` marks which is which
+    # so the timing table cannot be misread.
     report["cold"] = {}
-    for name, legs in shapes.items():
-        fresh = SGPService(books=(book,), health_db_path=None)
-        report["cold"][name] = price_shape(fresh, book, game, legs)
+    cold_service = SGPService(books=(book,), health_db_path=None)
+    for index, (name, legs) in enumerate(shapes.items()):
+        cell = price_shape(cold_service, book, game, legs)
+        cell["cold_includes_structure"] = (index == 0)
+        report["cold"][name] = cell
         time.sleep(pacing)
 
     report["warm"] = {}
     for name, legs in shapes.items():
         samples = []
         for _ in range(repeat):
-            samples.append(price_shape(cold_service, book, game, legs))
+            samples.append(price_shape(probe_service, book, game, legs))
             time.sleep(pacing)
         report["warm"][name] = samples
 
     outcomes = {s["outcome"] for s in report["cold"].values()}
     report["outcome"] = "priced" if "priced" in outcomes else "no_price"
-    if hasattr(cold_service._state.get(book), "client"):
-        mint = getattr(cold_service._state[book].client, "last_mint_sec", None)
-        if mint:
-            report["token_mint_sec"] = mint
+    state = cold_service._state.get(book)
+    mint = getattr(getattr(state, "client", None), "last_mint_sec", None)
+    if mint:
+        report["token_mint_sec"] = mint
     return report
 
 
