@@ -68,6 +68,44 @@ def test_other_out_of_scope_reasons_are_unchanged():
         "out_of_scope_lone_single"
 
 
+def test_refusal_survives_inside_a_multi_game_combo():
+    """One game carrying spread+ml poisons the whole combo, even when the
+    other game is a perfectly priceable grid — a combo is only as priceable
+    as its worst game."""
+    from kalshi_mlb_mm import main
+    legs = SPREAD_ML + [
+        {"market_ticker": "KXMLBSPREAD-25JUN272005SDLAD-LAD2",
+         "event_ticker": EVT_B, "side": "yes"},
+        {"market_ticker": "KXMLBTOTAL-25JUN272005SDLAD-9",
+         "event_ticker": EVT_B, "side": "yes"}]
+    canon = legset.parse_legs(legs)
+    assert len(legset.partition_by_game(canon)) == 2
+    assert main._priceable(canon) is False
+    assert main._out_of_scope_reason(legs, canon) == \
+        "out_of_scope_spread_ml_implication"
+
+
+def test_reason_is_deterministic_when_two_games_fail_differently():
+    """Game A carries a duplicate market, game B a spread+ml pair. The reason
+    reported is the FIRST failing game in leg order — same convention as
+    router.combo_fair_detail — and must not flip between runs."""
+    from kalshi_mlb_mm import main
+    dup_first = [_total(9, "yes"), _total(9, "no")] + [
+        {"market_ticker": "KXMLBSPREAD-25JUN272005SDLAD-LAD2",
+         "event_ticker": EVT_B, "side": "yes"},
+        {"market_ticker": "KXMLBGAME-25JUN272005SDLAD-LAD",
+         "event_ticker": EVT_B, "side": "yes"}]
+    canon = legset.parse_legs(dup_first)
+    reasons = {main._out_of_scope_reason(dup_first, canon) for _ in range(20)}
+    assert reasons == {"out_of_scope_duplicate_market"}
+    # reverse the leg order -> the other game is now first, and the reason
+    # tracks it. Still deterministic for a given input.
+    impl_first = dup_first[2:] + dup_first[:2]
+    canon2 = legset.parse_legs(impl_first)
+    reasons2 = {main._out_of_scope_reason(impl_first, canon2) for _ in range(20)}
+    assert reasons2 == {"out_of_scope_spread_ml_implication"}
+
+
 def test_in_scope_shapes_are_still_in_scope():
     """Non-regression: the two grid routes and a cross-game pair keep quoting."""
     from kalshi_mlb_mm import main
