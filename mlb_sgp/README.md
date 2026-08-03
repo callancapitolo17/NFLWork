@@ -1128,10 +1128,17 @@ discovery and the structure fetch. The JSON marks it: each cold cell carries
 
 #41 closed with "not verified: behaviour under WAF rate-limiting". Now
 observed: after a full verification run plus several diagnostics, Caesars began
-returning `WAF token minted but NOT validated (attempt n/3)` and stayed that
-way for **over 30 minutes**. The mint itself succeeds — the WAF rejects the
-minted token, which is the signature of IP throttling rather than a broken
-integration (the same code minted in 0.67s an hour earlier).
+returning `WAF token minted but NOT validated (attempt n/3)`.
+
+**Measured duration: at least 1h45m**, across seven spaced retries — failing at
+19:22, 19:30, 19:39, 19:47 and 20:59 UTC, recovering by 21:08. It then priced
+normally again (0.2229 vs 0.2240 before the throttle, structure fetch 0.82s),
+so nothing was broken by it.
+
+The mint itself succeeds — the WAF rejects the minted token, which is the
+signature of IP throttling rather than a broken integration (the same code
+minted in 0.67s an hour earlier, and again afterwards). Contrast #41's failure
+mode, where the token came back EMPTY.
 
 Operationally this is handled correctly: the client raises
 `BookTransportError(stage="auth")`, and #33's contract preserves Caesars' prior
@@ -1187,14 +1194,9 @@ Fixtures are gzipped (`<book>_golden.json.gz`). A raw capture is up to 4.5 MB
 of market tree per book — 7.3 MB across the set — and every recapture would add
 another blob; compressed they total ~220 KB.
 
-**Caesars has no golden fixture yet.** Capturing one needs a single healthy
-live pass, and its WAF was throttling this IP for the whole capture window (see
-above). `test_every_book_has_a_golden` fails until it is captured — that is the
-gate correctly reporting a gap, not a broken test. Fix it with:
-
-```bash
-python3 mlb_sgp/tests/capture_goldens.py --books caesars
-```
+All six books have a fixture. Caesars' had to wait out its WAF throttle (see
+above) — captured on the seventh attempt, roughly two hours after the throttle
+began.
 
 This replaced two earlier "golden" tests for DK and FD that re-ran the real
 scraper against the live book, wrote into the shared production DuckDB from a
