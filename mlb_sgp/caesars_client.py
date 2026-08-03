@@ -87,6 +87,8 @@ class CaesarsClient(PriceCallTallyMixin):
         self._device = ""
         self._cookies: dict = {}
         self._minted_at = 0.0
+        # Wall-clock cost of the most recent token mint (0.0 until one runs).
+        self.last_mint_sec = 0.0
 
     # --- hosts -------------------------------------------------------------- #
     @property
@@ -161,15 +163,22 @@ class CaesarsClient(PriceCallTallyMixin):
 
         Runs AWS WAF's real challenge.js under `node` (no Chromium/Playwright)
         via caesars_waf.mint_token_browser_free, then validates the token.
-        ~1.5s and works in the bot venvs (node on PATH + curl_cffi only).
+        Sub-second in practice and works in the bot venvs (node on PATH +
+        curl_cffi only). `last_mint_sec` carries the most recent mint's
+        wall-clock cost — the latency an RFQ pays on a cold token, which #50's
+        pre-warm work needs to measure.
         """
         try:
             from mlb_sgp.caesars_waf import mint_token_browser_free
         except ImportError:
             from caesars_waf import mint_token_browser_free  # cwd=mlb_sgp path
+        def _record_duration(seconds: float) -> None:
+            self.last_mint_sec = seconds
+
         for attempt in range(3):
             try:
-                tok, dev = mint_token_browser_free(state=self.state)
+                tok, dev = mint_token_browser_free(state=self.state,
+                                                   on_duration=_record_duration)
             except Exception as e:
                 # Auth-stage surprise: WARNING (rare, and a dead WAF token is
                 # how this book rots silently — see issue #32's meta-bug).
@@ -178,7 +187,8 @@ class CaesarsClient(PriceCallTallyMixin):
                 continue
             if not tok:
                 logger.warning("caesars: WAF mint returned no token "
-                               "(attempt %d/3)", attempt + 1)
+                               "(attempt %d/3, %.2fs)",
+                               attempt + 1, self.last_mint_sec)
                 continue
             self._token = tok
             self._device = dev
@@ -187,7 +197,8 @@ class CaesarsClient(PriceCallTallyMixin):
             if self._validate():
                 self._save_cache()
                 logger.info("caesars: WAF token minted+validated browser-free "
-                            "(attempt %d/3)", attempt + 1)
+                            "(attempt %d/3, mint %.2fs)",
+                            attempt + 1, self.last_mint_sec)
                 return True
             logger.warning("caesars: WAF token minted but NOT validated "
                            "(attempt %d/3) — WAF reject or IP throttle",
