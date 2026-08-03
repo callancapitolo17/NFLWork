@@ -792,6 +792,55 @@ the strike counter so the client reinit never fired) and `sgp_cycle` answered by
 running `clear_source` — *deleting* the book's rows. DK (403), Novig (DNS) and
 Caesars (WAF) each rotted for a month with zero alerts.
 
+Two of those three diagnoses turned out to be wrong once the wire was actually
+read: DK was an Akamai path-exact rule, not a stale fingerprint (issue #39),
+and Novig's DNS was a transient blip — the host resolves and the book prices
+(issue #40). Treat a recorded cause as a hypothesis until reproduced.
+
+### Novig: 400 vs 403 at the price stage (issue #40)
+
+Novig's anonymous parlay endpoint has two non-200s that mean opposite things:
+
+| status | meaning | how often |
+|---|---|---|
+| `400 {"message": "Cannot price parlay"}` | the book declines **this combo** | common and normal |
+| `403 <html>` | we have been **rate-limited** | after burst traffic |
+
+Both used to collapse into a bare `BookTransportError:price`. They now carry
+the status (`price:400` vs `price:403` in `sgp_fetch_health.error_class`), on
+both the sweep and the on-demand path.
+
+**Novig rate-limits bursts.** Two full sweeps back-to-back drove 100/100 price
+calls to 403; the same combos recovered after a cooldown. The production
+sweep's ~7-minute cadence is what has been hiding this. Live-at-RFQ pricing
+(epic #53) is exactly the burst pattern that will trigger it — watch
+`price:403`.
+
+#### ⚠️ KNOWN DEFECT: the Novig **sweep** mislabels alt-line rows
+
+Found while verifying issue #40; **not** fixed there. `novig._price_sgps`
+collapses every TargetLine of a game into ONE `fg_spread_line` /
+`fg_total_line` (`novig.py:232-247` — the loop overwrites, so the last target
+wins), resolves the leg UUIDs once per *game*, and caches them in
+`legs_cache`. `_price_one_target` then prices all ~33 of that game's targets
+with those SAME legs while stamping each row with its own `spread_line` /
+`total_line`.
+
+Result: N rows per game that all carry the SAME price under DIFFERENT line
+labels. Reproduced offline (3 targets at totals 7.5 / 8.5 / 12.5 requested a
+single leg set and produced 12 rows) and live (totals 6.5 / 8.5 / 9.5 all
+priced 17.5439 / 4.1667 / 4.8544 / 1.4925, hold 18.6%).
+
+The cache comment still says "two TargetLines on the same game (FG + F5)" —
+it was written when there was one FG target per game, and silently degraded
+once the bot began enumerating alt lines.
+
+**The on-demand path is NOT affected**: `resolve_legs` / `_lookup_leg` look up
+a line-keyed structure with an exact match, so a live quote resolves the legs
+it actually asked for. Cross-checked live — Novig 0.2144 vs Caesars 0.2167 on
+the same combo. Until the sweep is fixed or retired, treat `novig_direct` rows
+away from a game's main line as unreliable.
+
 ### The contract
 
 | Situation | Client returns / raises | Caller must |

@@ -415,6 +415,23 @@ class PriceCallTally:
                 detail=f"all {n_attempted} price calls this cycle failed")
 
 
+def accepts_on_decline(price_fn) -> bool:
+    """True if ``price_fn`` takes the ``on_decline`` status callback.
+
+    The per-book price function is re-imported per call so tests and the
+    dashboard can monkeypatch it, and a stand-in written before issue #39 does
+    not accept the kwarg. Binding it unconditionally would make every such
+    substitute raise TypeError on every combo — i.e. a silent zero-row cycle.
+    Mocks and builtins have no introspectable signature; those simply do not
+    get the callback.
+    """
+    import inspect
+    try:
+        return "on_decline" in inspect.signature(price_fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def price_tally_for(client, book: str) -> PriceCallTally:
     """The client's own ``PriceCallTally``, or a throwaway one.
 
