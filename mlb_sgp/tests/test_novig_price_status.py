@@ -288,12 +288,22 @@ def test_orchestrator_end_to_end_reports_the_block_status():
     targets = [TargetLine("g1", "Los Angeles Dodgers", "Seattle Mariners",
                           ct, "FG", -1.5, tot) for tot in totals]
     assert len(targets) * 4 >= PriceCallTally.MIN_ATTEMPTS_FOR_VERDICT
+    # Issue #64: the sweep resolves legs per target out of the raw market
+    # tree, so the outcomes have to be real here — the leg dict that
+    # fetch_event_legs returns as its first element is no longer read.
     markets = [{"type": "SPREAD", "strike": -1.5, "is_consensus": True,
-                "outcomes": []}] + [
+                "outcomes": [
+                    {"id": "H", "available": 0.5,
+                     "competitor": {"symbol": "LAD"}},
+                    {"id": "A", "available": 0.5,
+                     "competitor": {"symbol": "SEA"}}]}] + [
                {"type": "TOTAL", "strike": tot, "is_consensus": True,
-                "outcomes": []} for tot in totals]
-    legs = {"fg": {"home_spread": {"id": "H"}, "away_spread": {"id": "A"},
-                   "over": {"id": "O"}, "under": {"id": "U"}}, "f5": {}}
+                "outcomes": [
+                    {"id": f"O{tot}", "available": 0.5,
+                     "description": f"Over {tot}"},
+                    {"id": f"U{tot}", "available": 0.5,
+                     "description": f"Under {tot}"}]} for tot in totals]
+    legs = {"fg": {}, "f5": {}}
 
     class _Client:
         session = FakeSession(RATE_LIMITED)

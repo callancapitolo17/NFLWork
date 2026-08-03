@@ -816,30 +816,36 @@ sweep's ~7-minute cadence is what has been hiding this. Live-at-RFQ pricing
 (epic #53) is exactly the burst pattern that will trigger it — watch
 `price:403`.
 
-#### ⚠️ KNOWN DEFECT: the Novig **sweep** mislabels alt-line rows
+#### Novig leg resolution is line-keyed on BOTH paths (issue #64)
 
-Found while verifying issue #40; **not** fixed there. `novig._price_sgps`
-collapses every TargetLine of a game into ONE `fg_spread_line` /
-`fg_total_line` (`novig.py:232-247` — the loop overwrites, so the last target
-wins), resolves the leg UUIDs once per *game*, and caches them in
-`legs_cache`. `_price_one_target` then prices all ~33 of that game's targets
-with those SAME legs while stamping each row with its own `spread_line` /
-`total_line`.
+The sweep and the on-demand path now resolve legs the same way: one GraphQL
+EventMarkets call per game, parsed by `build_line_structure` into per-**line**
+buckets, then `_lookup_leg`'d per target at exactly the lines that target
+asked for. `fetch_event_legs` is still the fetch, but only its raw `markets`
+half is read — its single-line leg dict is no longer used by the sweep.
 
-Result: N rows per game that all carry the SAME price under DIFFERENT line
-labels. Reproduced offline (3 targets at totals 7.5 / 8.5 / 12.5 requested a
-single leg set and produced 12 rows) and live (totals 6.5 / 8.5 / 9.5 all
-priced 17.5439 / 4.1667 / 4.8544 / 1.4925, hold 18.6%).
+This closes a defect found while verifying #40 and fixed in #64. The sweep
+used to collapse every TargetLine of a game into ONE `fg_spread_line` /
+`fg_total_line` (the grouping loop overwrote, so the last target won), resolve
+the leg UUIDs once per *game*, then price all ~33 of that game's targets with
+those SAME legs while stamping each row with its own `spread_line` /
+`total_line` — N rows carrying one price under N labels, which fed the maker's
+cross-book median a wrong number presented as a real one. It was reproduced
+offline (3 targets at totals 7.5 / 8.5 / 12.5 requested a single leg set and
+produced 12 rows) and live (totals 6.5 / 8.5 / 9.5 all priced
+17.5439 / 4.1667 / 4.8544 / 1.4925, hold 18.6%). The on-demand path was never
+affected, which is more evidence for the epic's de-sweep rule.
 
-The cache comment still says "two TargetLines on the same game (FG + F5)" —
-it was written when there was one FG target per game, and silently degraded
-once the bot began enumerating alt lines.
+Two consequences worth knowing:
 
-**The on-demand path is NOT affected**: `resolve_legs` / `_lookup_leg` look up
-a line-keyed structure with an exact match, so a live quote resolves the legs
-it actually asked for. Cross-checked live — Novig 0.2144 vs Caesars 0.2167 on
-the same combo. Until the sweep is fixed or retired, treat `novig_direct` rows
-away from a game's main line as unreliable.
+* A target whose exact `(spread, total)` Novig does not offer on both sides
+  now yields **no row**, where it previously got a plausible-looking wrong
+  one. Integer totals still route to `try_integer_fallback_nv` (which was
+  always per-target correct) and stay labelled `novig_interpolated`.
+* **ML × total** is priced once per game — pricing it at every offered total
+  would multiply wire calls into Novig's rate limit. Its over/under legs are
+  looked up at `fg_total_line`, so the label names the line actually priced,
+  but which rung of the ladder that is remains arbitrary.
 
 ### The contract
 

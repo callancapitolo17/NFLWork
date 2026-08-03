@@ -32,17 +32,21 @@ exceeds ``SANITY_MULT_RATIO`` (1.5x) times the naive independent
 leg-product. Legitimate anti-correlated combos top out around ~1.15x;
 1.5x leaves headroom while catching systematic mispricings.
 
-Helper-signature deviations from the original plan
---------------------------------------------------
-The plan spec referenced ``_select_outcome_ids_for_combo`` as a
-function to lift from the legacy scraper. In practice the legacy
-scraper doesn't have such a per-combo helper — its leg selection is
-already done at the ``fetch_event_legs`` level (returning a per-
-period dict ``{home_spread, away_spread, over, under}``). We reuse
-``fetch_event_legs`` directly, which is simpler and keeps the
-orchestrator behavior byte-identical to the scraper. The integer
-fallback path is handled by lifting ``try_integer_fallback_nv``
-verbatim.
+Leg resolution (issue #64)
+--------------------------
+Both the sweep and the on-demand path resolve legs the same way: one
+GraphQL EventMarkets call per game, parsed by ``build_line_structure``
+into per-LINE buckets, then looked up per target with ``_lookup_leg``
+at exactly the lines that target asked for.
+
+The sweep used to call ``fetch_event_legs``, which resolves ONE line
+pair per period — fine when there was a single target per game, wrong
+once the bot began enumerating alt lines: every target of a game was
+priced with one leg set while each row was stamped with its own
+``spread_line`` / ``total_line``. ``fetch_event_legs`` is still called
+(it is the fetch), but only its raw ``markets`` half is read. The
+integer fallback path ``try_integer_fallback_nv`` was always per-target
+correct and is lifted verbatim.
 """
 from __future__ import annotations
 
@@ -273,12 +277,51 @@ def _price_sgps(
     out: list[PricedRow] = []
     fetch_now = datetime.now(timezone.utc)
 
-    # Cache fetched legs + raw markets per game_id so two TargetLines on
-    # the same game (FG + F5) only hit the GraphQL event-markets endpoint
-    # once. fetch_event_legs returns (legs, markets) where `legs` is the
-    # per-period dict and `markets` is the raw market list (needed by
-    # try_integer_fallback_nv).
-    legs_cache: dict[str, tuple[dict, list]] = {}
+    # Cache the raw market tree + its per-line leg buckets per game_id, so
+    # every TargetLine of a game shares ONE GraphQL event-markets call.
+    #
+    # Issue #64: the buckets are keyed BY LINE (build_line_structure), and
+    # each target resolves the legs it actually asked for. The previous
+    # shape cached ONE leg set per game — resolved at whichever target
+    # happened to land last in the grouping loop — and priced every alt line
+    # of that game with it while stamping each row with its own line, i.e. N
+    # rows carrying the same price under different labels.
+    #
+    # `markets` is still needed raw by try_integer_fallback_nv.
+    game_cache: dict[str, tuple[list, dict[str, dict]]] = {}
+
+    def _game_markets_and_structures(
+        game_id: str, game: dict,
+    ) -> tuple[list, dict[str, dict]]:
+        """(raw markets, {period_key: line-keyed leg bucket}) for one game.
+
+        One EventMarkets call per game, memoized. fetch_event_legs' first
+        element — the legacy single-line leg dict — is deliberately dropped;
+        only the raw tree is consumed, which is exactly what the on-demand
+        path already does (kalshi_common/sgp_service.py:899-912). That
+        collapses the two leg-resolution paths onto one line-keyed lookup.
+        """
+        cached = game_cache.get(game_id)
+        if cached is None:
+            # Blank the target lines so fetch_event_legs skips its per-period
+            # single-line parse and just returns the raw tree — the same
+            # trick the on-demand path uses (_od_parlay_lines). Without it
+            # the helper would resolve, and log about, a line nobody prices.
+            markets_only_game = dict(game)
+            for key in ("fg_spread_line", "fg_total_line",
+                        "f5_spread_line", "f5_total_line"):
+                markets_only_game[key] = None
+            _unused_legs, markets = fetch_event_legs(
+                client.session, markets_only_game, verbose)
+            structures = {
+                period_key: build_line_structure(
+                    markets, game["nv_home_sym"], game["nv_away_sym"],
+                    period=period_key)
+                for period_key in ("fg", "f5")
+            }
+            cached = (markets, structures)
+            game_cache[game_id] = cached
+        return cached
 
     # ----- Phase 1.6: group + cache + filter (Filter A) ----- #
     # NV markets are very sparse for alt lines (often only main +/- one
@@ -298,9 +341,7 @@ def _price_sgps(
         game = matched_by_gid.get(game_id)
         if game is None:
             continue
-        if game_id not in legs_cache:
-            legs_cache[game_id] = fetch_event_legs(client.session, game, verbose)
-        _legs_dict, markets = legs_cache[game_id]
+        markets, _structures = _game_markets_and_structures(game_id, game)
 
         # Build offered (spread, total) sets per period via the testable
         # _extract_offered_lines_nv helper.
@@ -344,22 +385,26 @@ def _price_sgps(
     def _price_one_target(t: TargetLine) -> list[PricedRow]:
         """Compute up to 4 PricedRows for a single (game, period, spread, total).
 
-        Pure function over the surrounding closure (legs_cache,
+        Pure function over the surrounding closure (game_cache,
         matched_by_gid, client.session, fetch_now, verbose). Returns an
         empty list when the target can't be priced (any missing leg + no
         fallback hit).
+
+        Issue #64: legs come from THIS target's own lines. The spread bucket
+        is keyed by the HOME-perspective line, so the away side mirrors the
+        sign — the same convention resolve_legs uses on-demand.
         """
         game = matched_by_gid.get(t.game_id)
         if game is None:
             return []
         period_key = "fg" if t.period == "FG" else "f5"
-        legs, markets = legs_cache[t.game_id]
+        markets, structures = game_cache[t.game_id]
+        structure = structures.get(period_key) or {}
 
-        p = legs.get(period_key, {}) or {}
-        home = p.get("home_spread")
-        away = p.get("away_spread")
-        over = p.get("over")
-        under = p.get("under")
+        home = _lookup_leg(structure, "home_spread", t.spread)
+        away = _lookup_leg(structure, "away_spread", -float(t.spread))
+        over = _lookup_leg(structure, "over", t.total)
+        under = _lookup_leg(structure, "under", t.total)
 
         prefix = "" if t.period == "FG" else "F5 "
         target_rows: list[PricedRow] = []
@@ -435,21 +480,31 @@ def _price_sgps(
 
     # ----- Phase 3: moneyline × total combos (FG only) ----- #
     # Priced ONCE per game (not per spread target) so a game with several
-    # alt-spread targets doesn't re-issue identical ML parlay RFQs. Novig
-    # resolves over/under at the game's single fg_total_line, so the ML×total
-    # is labelled with THAT total (matched_by_gid[gid]["fg_total_line"]) — the
-    # one the cached over/under legs actually belong to. spread_line=None.
+    # alt-spread targets doesn't re-issue identical ML parlay RFQs — pricing
+    # the ML at every offered total would multiply Novig's wire calls, and it
+    # rate-limits (26 rapid price calls trip a 403, issue #40).
+    #
+    # That one total is matched_by_gid[gid]["fg_total_line"], and the
+    # over/under legs are looked up AT that total, so the label always names
+    # the line actually priced. Which total that is remains arbitrary — the
+    # target grouping keeps whichever FG target landed last — so a game's ML
+    # rows describe one rung of its ladder, not the main line. spread_line=None.
     fg_games = {t.game_id for t in filtered_targets if t.period == "FG"}
 
     def _price_ml_game(gid: str) -> list[PricedRow]:
-        cached = legs_cache.get(gid)
+        cached = game_cache.get(gid)
         if not cached:
             return []
-        fg = (cached[0] or {}).get("fg", {})
-        home_ml, away_ml = fg.get("home_ml"), fg.get("away_ml")
-        over, under = fg.get("over"), fg.get("under")
+        _markets, structures = cached
+        fg = structures.get("fg") or {}
         total = (matched_by_gid.get(gid) or {}).get("fg_total_line")
-        if not (home_ml and away_ml and over and under) or total is None:
+        if total is None:
+            return []
+        home_ml = _lookup_leg(fg, "home_ml", None)
+        away_ml = _lookup_leg(fg, "away_ml", None)
+        over = _lookup_leg(fg, "over", total)
+        under = _lookup_leg(fg, "under", total)
+        if not (home_ml and away_ml and over and under):
             return []
         ml_combos = (
             ("Home ML + Over",  home_ml, over),
@@ -752,8 +807,9 @@ def price_selection_set(client, refs, *,
         return None
 
 
-def build_line_structure(markets: list, home_sym: str, away_sym: str) -> dict:
-    """Build the per-line FG bucket ``resolve_legs`` consumes from Novig's
+def build_line_structure(markets: list, home_sym: str, away_sym: str, *,
+                         period: str = "fg") -> dict:
+    """Build the per-line leg bucket ``resolve_legs`` consumes from Novig's
     RAW market tree (the ``markets`` list ``fetch_event_legs`` returns as its
     second element).
 
@@ -776,14 +832,31 @@ def build_line_structure(markets: list, home_sym: str, away_sym: str) -> dict:
     market wins regardless of list order. DEVIATION from ``fetch_event_legs``
     (documented): a ONE-SIDED line (only one outcome present) is still
     recorded — on-demand routes a missing opposite to Route B via
-    ``opposite_ref=None``, whereas the grid sweep required both sides.
-    FG only (SPREAD/TOTAL/MONEY; ``*_1H`` and prop types ignored).
-    Fail-safe: never raises; malformed markets are skipped.
+    ``opposite_ref=None``, whereas the grid sweep requires both sides and so
+    treats a one-sided line as unresolvable (same as pre-#64).
+
+    ``period`` (keyword-only, issue #64) selects which market types to read:
+    ``"fg"`` -> SPREAD/TOTAL/MONEY, ``"f5"`` -> SPREAD_1H/TOTAL_1H/MONEY_1H.
+    It defaults to FG so the on-demand call site is untouched; the sweep
+    passes it because the dashboard prices both periods. Prop types are
+    always ignored. An unknown ``period`` raises KeyError — that is a caller
+    bug, not book data, and silently returning an empty structure would look
+    exactly like a book that offers nothing.
+
+    Fail-safe with respect to book DATA: malformed markets are skipped, never
+    raised on.
     """
     from scraper_novig_sgp import (
+        MONEY_TYPE,
+        SPREAD_TYPE,
+        TOTAL_TYPE,
         _find_outcome_in_spread,
         _find_outcome_in_total,
     )
+
+    spread_type = SPREAD_TYPE[period]
+    total_type = TOTAL_TYPE[period]
+    money_type = MONEY_TYPE[period]
 
     out: dict = {"home_spread": {}, "away_spread": {}, "over": {},
                  "under": {}, "home_ml": None, "away_ml": None}
@@ -794,9 +867,9 @@ def build_line_structure(markets: list, home_sym: str, away_sym: str) -> dict:
     for m in markets or []:
         try:
             typ = m.get("type")
-            if typ not in ("SPREAD", "TOTAL", "MONEY"):
+            if typ not in (spread_type, total_type, money_type):
                 continue
-            if typ == "MONEY":
+            if typ == money_type:
                 strike = None
             else:
                 strike = float(m.get("strike"))
@@ -807,13 +880,13 @@ def build_line_structure(markets: list, home_sym: str, away_sym: str) -> dict:
     for (typ, strike), cands in groups.items():
         m = next((c for c in cands if c.get("is_consensus") is True), cands[0])
         try:
-            if typ == "SPREAD":
+            if typ == spread_type:
                 home_leg, away_leg = _find_outcome_in_spread(m, home_sym, away_sym)
                 if home_leg:
                     out["home_spread"][strike] = home_leg
                 if away_leg:
                     out["away_spread"][-strike] = away_leg
-            elif typ == "TOTAL":
+            elif typ == total_type:
                 over_leg, under_leg = _find_outcome_in_total(m)
                 if over_leg:
                     out["over"][strike] = over_leg
