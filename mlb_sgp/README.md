@@ -1059,15 +1059,16 @@ byte-identical, and the implied probabilities sum to **2.364** instead of
 cells — home covers −1.5 *and* away wins — are correctly refused by the book)
 and Route B's transfer does not preserve the implication.
 
-**Resolved (issue #66): the maker now refuses these shapes outright.** A
-same-game leg set containing BOTH a spread leg and a moneyline leg classifies
-as `unpriceable` in `kalshi_common/legset.py::classify_subcombo`, with reason
-`spread_ml_implication`, and is dropped at the RFQ scope gate — **before any
-book is queried**. Since every MLB same-game 3-leg necessarily contains that
-pair, this is also what refuses 3-leg shapes. The refusal is deliberately
-sign- and side-agnostic; it over-refuses exactly one well-posed shape
-(underdog spread + favourite ML, i.e. `0 < margin < 1.5`), which **no book
-offers** — see the ❌ row above, re-confirmed at all six books on 2026-08-03.
+**Decision (issue #66, 2026-08-03): measured, and deliberately NOT guarded in
+code.** A `classify_subcombo` guard refusing same-game spread+ML sets was built
+and reviewed, then dropped. The reasoning: no RFQ the maker has ever seen
+carries the shape (0 of 341,941 with recorded legs — and all 738 in-scope RFQs
+were cross-game single-leg combos), a counterparty constructing one is not
+someone we want to fill anyway, and #20's z-space dispersion gate declines
+every observed case (σ_z 0.20–0.52 against `SIGMA_Z_MAX=0.07`). **That
+protection is incidental, not designed** — widen `SIGMA_Z_MAX`, or have two
+books agree wrongly, and a bad number reaches a quote. Anyone extending the
+on-demand path (epic #53) should treat this as a live, unguarded hazard.
 
 Re-measured 2026-08-03 (PIT @ MIL, `home −1.5 + over 7.5`), the identity
 `P(3-leg) == P(spread ∧ total)` fails at every book that returns a number:
@@ -1087,9 +1088,8 @@ produced a different wrong number. The failure is not a single book bug to
 patch, which is why the fix refuses the shape rather than special-casing a
 book.
 
-`verify_books.py` still probes `spread_x_ml` and `three_leg` — a diagnostic
-must be able to measure the broken thing. `SGPService.price_on_demand` is
-deliberately NOT guarded; the refusal lives in the router's classifier.
+`verify_books.py` probes `spread_x_ml` and `three_leg` on every run, so this
+stays measurable: re-run it before enabling any 3-leg quoting.
 
 ### Cross-book agreement
 

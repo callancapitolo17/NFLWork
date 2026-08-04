@@ -107,12 +107,6 @@ REASON_GLOSS = {
     "out_of_scope_unparseable": "RFQ carried no decodable legs",
     "out_of_scope_non_mlb": "A leg wasn't a typeable MLB market",
     "out_of_scope_lone_single": "Lone single-leg RFQ — the maker only quotes combos",
-    "out_of_scope_spread_ml_implication": (
-        "Same-game spread + moneyline: the spread implies the ML, so the "
-        "books' joint price is not a partition and every fair is wrong (#66)"),
-    "out_of_scope_duplicate_market": (
-        "Same market twice in one game — contradictory or repeated leg"),
-    "out_of_scope_empty_leg_set": "A game's leg group was empty",
     "no_fair": "No blended fair (too few fresh books, or fair out of bounds)",
     "size_gate": "Worst-case exposure exceeds the per-fill contract cap",
     "size_gate_dollars": "Worst-case exposure exceeds the per-fill dollar cap",

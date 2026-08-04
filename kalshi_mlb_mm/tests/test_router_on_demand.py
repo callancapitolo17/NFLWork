@@ -8,17 +8,9 @@ EVT = "KXMLBGAME-25JUN271905NYYBOS"
 
 
 def _legs3():
-    """A 3-leg same-game shape that still routes on_demand after issue #66.
-
-    NOT spread+total+ml: that shape is now refused ("spread_ml_implication"),
-    because a spread leg implies the moneyline and the 2^N enumeration stops
-    being a partition. This is a totals BAND (8.5 < runs < 10.5) plus a
-    spread — a genuinely well-posed joint, so it exercises the on-demand
-    machinery without enshrining a logically broken leg set as the example.
-    """
     return [legset.CanonicalLeg(EVT, "spread", -1.5, "home"),
             legset.CanonicalLeg(EVT, "total", 8.5, "over"),
-            legset.CanonicalLeg(EVT, "total", 10.5, "under")]
+            legset.CanonicalLeg(EVT, "ml", None, "home")]
 
 
 def test_on_demand_route_prices_via_injected_lookup():
@@ -68,8 +60,8 @@ def test_combo_fair_threads_lookup_through_multi_game():
                "event_ticker": evt_b, "side": "yes"},
               {"market_ticker": "KXMLBTOTAL-25JUN272005SDLAD-8",
                "event_ticker": evt_b, "side": "yes"},
-              {"market_ticker": "KXMLBTOTAL-25JUN272005SDLAD-11",
-               "event_ticker": evt_b, "side": "no"}]   # Under 10.5 (see _legs3)
+              {"market_ticker": "KXMLBGAME-25JUN272005SDLAD-LAD",
+               "event_ticker": evt_b, "side": "yes"}]
     # grid rows for game A: full 4-cell grid, two books
     rows = []
     for book in ("draftkings", "fanduel"):

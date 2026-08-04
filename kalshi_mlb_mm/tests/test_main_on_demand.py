@@ -10,17 +10,13 @@ from kalshi_common import legset
 from mlb_sgp._shared import GameRef
 
 EVT = "KXMLBGAME-25JUN271905TEXLAA"
-# 3-leg same-game -> on_demand route. Deliberately spread + a totals BAND
-# (Over 8.5 & Under 10.5), NOT spread+total+ml: since issue #66 a same-game
-# set carrying both a spread and a moneyline is refused outright
-# ("spread_ml_implication"), so it can no longer stand in for on_demand.
-OD_LEGS = [
+OD_LEGS = [  # 3-leg same-game -> on_demand route
     {"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
      "event_ticker": EVT, "side": "yes"},
     {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
      "event_ticker": EVT, "side": "yes"},
-    {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-11",
-     "event_ticker": EVT, "side": "no"},
+    {"market_ticker": "KXMLBGAME-25JUN271905TEXLAA-LAA",
+     "event_ticker": EVT, "side": "yes"},
 ]
 GREF = GameRef(game_id="game1", home_team="Los Angeles Angels",
                away_team="Texas Rangers", commence_time=None)
