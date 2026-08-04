@@ -340,10 +340,11 @@ _XG_SUF_B = "25JUN271910NYYBOS"     # secondary game (ml leg) — starts FIRST
 
 def _cross_game_legs():
     return [
+        # Each family carries its OWN event ticker, as Kalshi emits them (#71).
         {"market_ticker": f"KXMLBSPREAD-{_XG_SUF_A}-LAA2",
-         "event_ticker": f"KXMLBGAME-{_XG_SUF_A}", "side": "yes"},
+         "event_ticker": f"KXMLBSPREAD-{_XG_SUF_A}", "side": "yes"},
         {"market_ticker": f"KXMLBTOTAL-{_XG_SUF_A}-9",
-         "event_ticker": f"KXMLBGAME-{_XG_SUF_A}", "side": "yes"},
+         "event_ticker": f"KXMLBTOTAL-{_XG_SUF_A}", "side": "yes"},
         {"market_ticker": f"KXMLBGAME-{_XG_SUF_B}-NYY",
          "event_ticker": f"KXMLBGAME-{_XG_SUF_B}", "side": "yes"},
     ]
@@ -384,11 +385,12 @@ def _sweep_env(monkeypatch, tmp_path, db_name):
                                       "bookmaker": ["dk"], "sgp_decimal": [2.0],
                                       "fetch_time": [None], "spread_line": [-1.5],
                                       "total_line": [8.5]}))
-    # Resolve each game's legs by event ticker (deterministic, no market DB).
+    # Resolve each game's legs by GAME CODE (deterministic, no market DB).
+    # Keyed on the code, not the event ticker — post-#71 that is what
+    # CanonicalLeg.game_id carries.
     monkeypatch.setattr(
         main, "_resolve_game_for_legs",
-        lambda gl: {f"KXMLBGAME-{_XG_SUF_A}": "gA",
-                    f"KXMLBGAME-{_XG_SUF_B}": "gB"}.get(gl[0].game_id))
+        lambda gl: {_XG_SUF_A: "gA", _XG_SUF_B: "gB"}.get(gl[0].game_id))
     return db, main
 
 

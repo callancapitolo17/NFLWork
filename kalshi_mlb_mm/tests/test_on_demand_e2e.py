@@ -9,15 +9,14 @@ import pandas as pd
 from kalshi_common import legset
 from kalshi_mlb_mm.on_demand import OnDemandEngine, QUOTE_FRESH_SEC
 from mlb_sgp._shared import GameRef, OnDemandBookResult
+from kalshi_mlb_mm.tests.conftest import leg
 
-EVT = "KXMLBGAME-25JUN271905TEXLAA"
+
+EVT = "25JUN271905TEXLAA"
 OD_LEGS = [
-    {"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
-     "event_ticker": EVT, "side": "yes"},
-    {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
-     "event_ticker": EVT, "side": "yes"},
-    {"market_ticker": "KXMLBGAME-25JUN271905TEXLAA-LAA",
-     "event_ticker": EVT, "side": "yes"},
+    leg("KXMLBSPREAD-25JUN271905TEXLAA-LAA2", "yes"),
+    leg("KXMLBTOTAL-25JUN271905TEXLAA-9", "yes"),
+    leg("KXMLBGAME-25JUN271905TEXLAA-LAA", "yes"),
 ]
 GREF = GameRef(game_id="game1", home_team="Los Angeles Angels",
                away_team="Texas Rangers", commence_time=None)
@@ -164,17 +163,11 @@ def test_full_feed_lifecycle(monkeypatch, tmp_path):
 def test_mixed_grid_plus_on_demand_combo_prices_product(monkeypatch, tmp_path):
     main, db, clock, svc, eng = _setup(monkeypatch, tmp_path)
     # Combo: game A 2-leg grid + game B 3-leg on-demand.
-    evt_b = "KXMLBGAME-25JUN272005SDLAD"
-    legs_a = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
-               "event_ticker": EVT, "side": "yes"},
-              {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
-               "event_ticker": EVT, "side": "yes"}]
-    legs_b = [{"market_ticker": "KXMLBSPREAD-25JUN272005SDLAD-LAD2",
-               "event_ticker": evt_b, "side": "yes"},
-              {"market_ticker": "KXMLBTOTAL-25JUN272005SDLAD-8",
-               "event_ticker": evt_b, "side": "yes"},
-              {"market_ticker": "KXMLBGAME-25JUN272005SDLAD-LAD",
-               "event_ticker": evt_b, "side": "yes"}]
+    legs_a = [leg("KXMLBSPREAD-25JUN271905TEXLAA-LAA2", "yes"),
+              leg("KXMLBTOTAL-25JUN271905TEXLAA-9", "yes")]
+    legs_b = [leg("KXMLBSPREAD-25JUN272005SDLAD-LAD2", "yes"),
+              leg("KXMLBTOTAL-25JUN272005SDLAD-8", "yes"),
+              leg("KXMLBGAME-25JUN272005SDLAD-LAD", "yes")]
     rows = []
     for book in ("draftkings", "fanduel"):
         for combo, dec in (("Home Spread + Over", 3.10), ("Home Spread + Under", 4.20),

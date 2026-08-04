@@ -13,15 +13,38 @@ from kalshi_common import leg_types
 
 @dataclass(frozen=True)
 class CanonicalLeg:
-    game_id: str          # the leg's event_ticker (all legs of one game share it)
+    game_id: str          # the GAME code, family-independent — see game_id_of
     market_type: str      # "spread" | "total" | "ml"
     line: float | None    # signed home-perspective; None for ml
     side: str             # "home"/"away" (spread, ml) or "over"/"under" (total)
 
 
+def game_id_of(event_ticker: str) -> str:
+    """The family-independent game code inside a Kalshi event ticker.
+
+    Kalshi gives every market family its own event, so one physical game is
+    named by several event tickers that agree only on the trailing code:
+
+        KXMLBSPREAD-26JUN102105MILATH  ->  26JUN102105MILATH
+        KXMLBTOTAL -26JUN102105MILATH  ->  26JUN102105MILATH
+        KXMLBGAME  -26JUN102105MILATH  ->  26JUN102105MILATH
+
+    Issue #71: keying ``CanonicalLeg.game_id`` on the whole event ticker put a
+    game's spread and total legs in different partitions, so
+    ``classify_subcombo`` never saw a same-game 2-leg set — the correlation
+    grids were unreachable and same-game combos were priced as independent
+    games multiplied together. Every MLB event ticker in the recorded corpus
+    (2.2M legs) has exactly one dash, but a ticker without one degrades to
+    itself rather than raising: it still partitions consistently, and the
+    downstream game lookup is already fail-safe on an unparseable code.
+    """
+    _, _, code = event_ticker.partition("-")
+    return code or event_ticker
+
+
 def parse_leg(leg: dict) -> CanonicalLeg | None:
     """One Kalshi leg dict -> CanonicalLeg in home-perspective, or None."""
-    et = str(leg.get("event_ticker", ""))
+    et = game_id_of(str(leg.get("event_ticker", "")))
     mt = str(leg.get("market_ticker", ""))
     if not et or not mt:
         return None
@@ -86,7 +109,7 @@ def leg_set_hash(legs: list[CanonicalLeg]) -> str:
 
 
 def partition_by_game(legs: list[CanonicalLeg]) -> dict[str, list[CanonicalLeg]]:
-    """Partition legs by game_id (event_ticker)."""
+    """Partition legs by game_id (the family-independent game code, #71)."""
     out: dict[str, list[CanonicalLeg]] = {}
     for l in legs:
         out.setdefault(l.game_id, []).append(l)

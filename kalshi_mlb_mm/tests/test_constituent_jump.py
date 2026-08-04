@@ -16,14 +16,16 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from kalshi_common.leg_types import SPREAD_TOTAL_FAMILY
+from kalshi_mlb_mm.tests.conftest import leg
 
-EVT = "KXMLBGAME-25JUN271905TEXLAA"
+
+EVT = "25JUN271905TEXLAA"
 SPREAD_T = "KXMLBSPREAD-25JUN271905TEXLAA-LAA2"
 TOTAL_T = "KXMLBTOTAL-25JUN271905TEXLAA-9"
-LEGS = [{"market_ticker": SPREAD_T, "event_ticker": EVT, "side": "yes"},
-        {"market_ticker": TOTAL_T, "event_ticker": EVT, "side": "yes"}]
+LEGS = [leg(SPREAD_T, "yes"),
+        leg(TOTAL_T, "yes")]
 # Second quote on the SAME game, resting on the total only.
-SIBLING_LEGS = [{"market_ticker": TOTAL_T, "event_ticker": EVT, "side": "yes"}]
+SIBLING_LEGS = [leg(TOTAL_T, "yes")]
 
 BASELINE = {SPREAD_T: {"yes_bid": 0.45, "yes_ask": 0.47},
             TOTAL_T: {"yes_bid": 0.52, "yes_ask": 0.54}}

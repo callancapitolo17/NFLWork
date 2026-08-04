@@ -3,8 +3,10 @@ import pandas as pd
 
 from kalshi_common import legset
 from kalshi_mlb_mm import router
+from kalshi_mlb_mm.tests.conftest import leg
 
-EVT = "KXMLBGAME-25JUN271905NYYBOS"
+
+EVT = "25JUN271905NYYBOS"
 
 
 def _legs3():
@@ -51,17 +53,11 @@ def test_on_demand_route_consensus_gate_applies():
 
 def test_combo_fair_threads_lookup_through_multi_game():
     # game A: 2-leg grid (from sgp_df), game B: 3-leg on_demand (from lookup)
-    evt_b = "KXMLBGAME-25JUN272005SDLAD"
-    legs_a = [{"market_ticker": f"KXMLBSPREAD-25JUN271905NYYBOS-BOS2",
-               "event_ticker": EVT, "side": "yes"},
-              {"market_ticker": f"KXMLBTOTAL-25JUN271905NYYBOS-9",
-               "event_ticker": EVT, "side": "yes"}]
-    legs_b = [{"market_ticker": "KXMLBSPREAD-25JUN272005SDLAD-LAD2",
-               "event_ticker": evt_b, "side": "yes"},
-              {"market_ticker": "KXMLBTOTAL-25JUN272005SDLAD-8",
-               "event_ticker": evt_b, "side": "yes"},
-              {"market_ticker": "KXMLBGAME-25JUN272005SDLAD-LAD",
-               "event_ticker": evt_b, "side": "yes"}]
+    legs_a = [leg(f"KXMLBSPREAD-25JUN271905NYYBOS-BOS2", "yes"),
+              leg(f"KXMLBTOTAL-25JUN271905NYYBOS-9", "yes")]
+    legs_b = [leg("KXMLBSPREAD-25JUN272005SDLAD-LAD2", "yes"),
+              leg("KXMLBTOTAL-25JUN272005SDLAD-8", "yes"),
+              leg("KXMLBGAME-25JUN272005SDLAD-LAD", "yes")]
     # grid rows for game A: full 4-cell grid, two books
     rows = []
     for book in ("draftkings", "fanduel"):

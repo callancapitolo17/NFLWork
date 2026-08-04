@@ -319,33 +319,36 @@ def _post_fill_refresh_landed(game_ids: list, filled_at) -> bool:
 
 
 def _resolve_game_for_legs(game_legs: list) -> str | None:
-    """Cached wrapper (O-1) — keyed by the game's event_ticker; failures (None)
+    """Cached wrapper (O-1) — keyed by the game code; failures (None)
     are not cached; invalidated on SGP refresh."""
     if not game_legs:
         return None
-    event_ticker = game_legs[0].game_id
-    if event_ticker in _RESOLVE_CACHE:
-        return _RESOLVE_CACHE[event_ticker]
+    game_code = game_legs[0].game_id
+    if game_code in _RESOLVE_CACHE:
+        return _RESOLVE_CACHE[game_code]
     gid = _resolve_game_for_legs_uncached(game_legs)
     if gid is not None:
-        _RESOLVE_CACHE[event_ticker] = gid
+        _RESOLVE_CACHE[game_code] = gid
     return gid
 
 
 def _resolve_game_for_legs_uncached(game_legs: list) -> str | None:
     """Resolve ONE game's CanonicalLegs to the mlb_target_lines game_id, or None.
 
-    game_legs[0].game_id is the Kalshi event_ticker shared by all legs of that
-    game. Parses the event suffix with _parse_event_suffix + _MLB_CODE_TO_TEAM
-    and looks up mlb_target_lines. Fail-safe: returns None on any error — never raises.
+    game_legs[0].game_id is the family-independent GAME CODE shared by all legs
+    of that game (issue #71 — it used to be the whole event ticker, which
+    differs per market family). Parses it with _parse_event_suffix +
+    _MLB_CODE_TO_TEAM and looks up mlb_target_lines. Fail-safe: returns None on
+    any error — never raises.
     """
     try:
         if not game_legs:
             return None
-        event_ticker = game_legs[0].game_id
-        if "-" not in event_ticker:
+        # Already the trailing code; tolerate a stray prefix rather than
+        # returning None, so a future ticker shape can't silently unprice a game.
+        suffix = game_legs[0].game_id.rsplit("-", 1)[-1]
+        if not suffix:
             return None
-        suffix = event_ticker.rsplit("-", 1)[-1]
         away_code, home_code = _parse_event_suffix(suffix)
         if not away_code or not home_code:
             return None
@@ -1544,20 +1547,22 @@ def _rotated_poll_order(tickers: set) -> list:
 def _games_for_tickers(raw_legs: list, tickers: set) -> set:
     """game_ids of the legs whose market_ticker is in `tickers`.
 
-    CanonicalLeg carries the event_ticker but not the market_ticker, so the
-    raw leg dicts map ticker → event_ticker and legset.partition_by_game maps
-    event_ticker → the CanonicalLegs `_resolve_game_for_legs` consumes.
+    CanonicalLeg carries the game code but not the market_ticker, so the raw
+    leg dicts map ticker → event_ticker, `legset.game_id_of` reduces that to
+    the same family-independent code `partition_by_game` keys on (#71), and
+    that yields the CanonicalLegs `_resolve_game_for_legs` consumes.
     """
     out = set()
     try:
         canon = legset.parse_legs(raw_legs)
         if not canon:
             return out
-        by_event = legset.partition_by_game(canon)
-        jumped_events = {str(leg.get("event_ticker") or "") for leg in raw_legs
-                         if str(leg.get("market_ticker") or "") in tickers}
-        for event_ticker in jumped_events:
-            game_legs = by_event.get(event_ticker)
+        by_game = legset.partition_by_game(canon)
+        jumped_games = {legset.game_id_of(str(leg.get("event_ticker") or ""))
+                        for leg in raw_legs
+                        if str(leg.get("market_ticker") or "") in tickers}
+        for game_code in jumped_games:
+            game_legs = by_game.get(game_code)
             gid = _resolve_game_for_legs(game_legs) if game_legs else None
             if gid:
                 out.add(gid)
