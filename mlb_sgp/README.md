@@ -1059,6 +1059,49 @@ byte-identical, and the implied probabilities sum to **2.364** instead of
 cells — home covers −1.5 *and* away wins — are correctly refused by the book)
 and Route B's transfer does not preserve the implication.
 
+**Decision (issue #66, 2026-08-03): measured, and deliberately NOT guarded in
+code.** A `classify_subcombo` guard refusing same-game spread+ML sets was built
+and reviewed, then dropped. The reasoning: no RFQ the maker has ever seen
+carries the shape (0 of 341,941 with recorded legs), a counterparty
+constructing one is not someone we want to fill anyway, and #20's z-space
+dispersion gate declines every observed case (σ_z 0.20–0.52 against
+`SIGMA_Z_MAX=0.07`). **That protection is incidental, not designed** — widen
+`SIGMA_Z_MAX`, or have two books agree wrongly, and a bad number reaches a
+quote. Anyone extending the on-demand path (epic #53) should treat this as a
+live, unguarded hazard.
+
+⚠️ **Do not read the routing census as "no same-game demand" (issue #71).**
+Every one of the 738 in-scope RFQs classifies as cross-game single legs, but
+that is a *partitioning artifact*, not the traffic. `parse_leg` keys
+`CanonicalLeg.game_id` on the **event_ticker**, and Kalshi puts each market
+family in its own event — so a spread leg and a total leg on one game can never
+share a partition, and the same-game grids are unreachable in production.
+Regrouped by the game code inside the ticker, 87 of those RFQs are genuinely
+same-game (50 spread×total, 36 ml×total, 1 three-leg) and were quoted after
+having their marginals multiplied as if independent. The three-leg hazard
+measured above therefore has arrived once already — misrouted, not refused.
+
+Re-measured 2026-08-03 (PIT @ MIL, `home −1.5 + over 7.5`), the identity
+`P(3-leg) == P(spread ∧ total)` fails at every book that returns a number:
+
+| book | spread × total | 3-leg | ratio (must be 1.00) |
+|---|---|---|---|
+| ProphetX | 0.2419 | 0.2647 | 1.09× |
+| Novig | 0.2478 | 0.3773 | **1.52×** |
+| Caesars | 0.1933 | 0.1391 | 0.72× |
+| DK / FD / BetMGM | — | `no_price` | book declines the shape |
+
+Novig's 0.3773 also **exceeds its own `ML × total` fair (0.3292)** — a strict
+superset of the event — so the 3-leg number violates a Fréchet upper bound
+outright. Note the manifestation varies by run: the byte-identical leg-drop
+above was Route A (`part`); on 2026-08-03 Novig fell to Route B (`tran`) and
+produced a different wrong number. The failure is not a single book bug to
+patch, which is why the fix refuses the shape rather than special-casing a
+book.
+
+`verify_books.py` probes `spread_x_ml` and `three_leg` on every run, so this
+stays measurable: re-run it before enabling any 3-leg quoting.
+
 ### Cross-book agreement
 
 #39 closed with "cross-book price equivalence unverified at n=1". Closed here:

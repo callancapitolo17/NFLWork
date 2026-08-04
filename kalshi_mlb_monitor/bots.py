@@ -104,6 +104,9 @@ BOTS = {
 REASON_GLOSS = {
     # ---- shared / maker ----
     "out_of_scope": "Not a spread×total 2-leg combo — outside what the bot quotes",
+    "out_of_scope_unparseable": "RFQ carried no decodable legs",
+    "out_of_scope_non_mlb": "A leg wasn't a typeable MLB market",
+    "out_of_scope_lone_single": "Lone single-leg RFQ — the maker only quotes combos",
     "no_fair": "No blended fair (too few fresh books, or fair out of bounds)",
     "size_gate": "Worst-case exposure exceeds the per-fill contract cap",
     "size_gate_dollars": "Worst-case exposure exceeds the per-fill dollar cap",
