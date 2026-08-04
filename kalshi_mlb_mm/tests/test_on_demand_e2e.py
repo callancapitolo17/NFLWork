@@ -10,14 +10,24 @@ from kalshi_common import legset
 from kalshi_mlb_mm.on_demand import OnDemandEngine, QUOTE_FRESH_SEC
 from mlb_sgp._shared import GameRef, OnDemandBookResult
 
-EVT = "KXMLBGAME-25JUN271905TEXLAA"
+def _et(market_ticker: str) -> str:
+    """The family-specific event ticker a Kalshi market ticker belongs to.
+
+    Issue #71: each market family lives in its OWN event, so a game's spread
+    and total legs never share an event_ticker. Deriving it here keeps these
+    fixtures on the shape Kalshi actually emits.
+    """
+    return market_ticker.rsplit("-", 1)[0]
+
+
+EVT = "25JUN271905TEXLAA"
 OD_LEGS = [
     {"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
-     "event_ticker": EVT, "side": "yes"},
+     "event_ticker": _et("KXMLBSPREAD-25JUN271905TEXLAA-LAA2"), "side": "yes"},
     {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
-     "event_ticker": EVT, "side": "yes"},
+     "event_ticker": _et("KXMLBTOTAL-25JUN271905TEXLAA-9"), "side": "yes"},
     {"market_ticker": "KXMLBGAME-25JUN271905TEXLAA-LAA",
-     "event_ticker": EVT, "side": "yes"},
+     "event_ticker": _et("KXMLBGAME-25JUN271905TEXLAA-LAA"), "side": "yes"},
 ]
 GREF = GameRef(game_id="game1", home_team="Los Angeles Angels",
                away_team="Texas Rangers", commence_time=None)
@@ -164,17 +174,16 @@ def test_full_feed_lifecycle(monkeypatch, tmp_path):
 def test_mixed_grid_plus_on_demand_combo_prices_product(monkeypatch, tmp_path):
     main, db, clock, svc, eng = _setup(monkeypatch, tmp_path)
     # Combo: game A 2-leg grid + game B 3-leg on-demand.
-    evt_b = "KXMLBGAME-25JUN272005SDLAD"
     legs_a = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
-               "event_ticker": EVT, "side": "yes"},
+               "event_ticker": _et("KXMLBSPREAD-25JUN271905TEXLAA-LAA2"), "side": "yes"},
               {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
-               "event_ticker": EVT, "side": "yes"}]
+               "event_ticker": _et("KXMLBTOTAL-25JUN271905TEXLAA-9"), "side": "yes"}]
     legs_b = [{"market_ticker": "KXMLBSPREAD-25JUN272005SDLAD-LAD2",
-               "event_ticker": evt_b, "side": "yes"},
+               "event_ticker": _et("KXMLBSPREAD-25JUN272005SDLAD-LAD2"), "side": "yes"},
               {"market_ticker": "KXMLBTOTAL-25JUN272005SDLAD-8",
-               "event_ticker": evt_b, "side": "yes"},
+               "event_ticker": _et("KXMLBTOTAL-25JUN272005SDLAD-8"), "side": "yes"},
               {"market_ticker": "KXMLBGAME-25JUN272005SDLAD-LAD",
-               "event_ticker": evt_b, "side": "yes"}]
+               "event_ticker": _et("KXMLBGAME-25JUN272005SDLAD-LAD"), "side": "yes"}]
     rows = []
     for book in ("draftkings", "fanduel"):
         for combo, dec in (("Home Spread + Over", 3.10), ("Home Spread + Under", 4.20),

@@ -17,13 +17,23 @@ import pandas as pd
 
 from kalshi_common.leg_types import SPREAD_TOTAL_FAMILY
 
-EVT = "KXMLBGAME-25JUN271905TEXLAA"
+def _et(market_ticker: str) -> str:
+    """The family-specific event ticker a Kalshi market ticker belongs to.
+
+    Issue #71: each market family lives in its OWN event, so a game's spread
+    and total legs never share an event_ticker. Deriving it here keeps these
+    fixtures on the shape Kalshi actually emits.
+    """
+    return market_ticker.rsplit("-", 1)[0]
+
+
+EVT = "25JUN271905TEXLAA"
 SPREAD_T = "KXMLBSPREAD-25JUN271905TEXLAA-LAA2"
 TOTAL_T = "KXMLBTOTAL-25JUN271905TEXLAA-9"
-LEGS = [{"market_ticker": SPREAD_T, "event_ticker": EVT, "side": "yes"},
-        {"market_ticker": TOTAL_T, "event_ticker": EVT, "side": "yes"}]
+LEGS = [{"market_ticker": SPREAD_T, "event_ticker": _et(SPREAD_T), "side": "yes"},
+        {"market_ticker": TOTAL_T, "event_ticker": _et(TOTAL_T), "side": "yes"}]
 # Second quote on the SAME game, resting on the total only.
-SIBLING_LEGS = [{"market_ticker": TOTAL_T, "event_ticker": EVT, "side": "yes"}]
+SIBLING_LEGS = [{"market_ticker": TOTAL_T, "event_ticker": _et(TOTAL_T), "side": "yes"}]
 
 BASELINE = {SPREAD_T: {"yes_bid": 0.45, "yes_ask": 0.47},
             TOTAL_T: {"yes_bid": 0.52, "yes_ask": 0.54}}

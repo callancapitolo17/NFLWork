@@ -3,7 +3,17 @@ import pytest
 from kalshi_common import legset
 from kalshi_mlb_mm import router
 
-EVT = "KXMLBGAME-25JUN271905NYYBOS"
+def _et(market_ticker: str) -> str:
+    """The family-specific event ticker a Kalshi market ticker belongs to.
+
+    Issue #71: each market family lives in its OWN event, so a game's spread
+    and total legs never share an event_ticker. Deriving it here keeps these
+    fixtures on the shape Kalshi actually emits.
+    """
+    return market_ticker.rsplit("-", 1)[0]
+
+
+EVT = "25JUN271905NYYBOS"
 
 def _grid_rows(book, game_id, spread_line, total_line, family_decimals):
     # family_decimals: dict of combo-name -> decimal odds (4 cells)
@@ -39,9 +49,9 @@ def test_consensus_median_of_all_books():
 def test_grid_spec_spread_total():
     legs = legset.parse_legs([
         {"market_ticker": "KXMLBSPREAD-25JUN271905NYYBOS-BOS2",
-         "event_ticker": EVT, "side": "yes"},
+         "event_ticker": _et("KXMLBSPREAD-25JUN271905NYYBOS-BOS2"), "side": "yes"},
         {"market_ticker": "KXMLBTOTAL-25JUN271905NYYBOS-9",
-         "event_ticker": EVT, "side": "yes"}])
+         "event_ticker": _et("KXMLBTOTAL-25JUN271905NYYBOS-9"), "side": "yes"}])
     family, spread_line, total_line, target = router.grid_spec(legs)
     assert spread_line == -1.5 and total_line == 8.5
     assert target == "Home Spread + Over"
@@ -62,9 +72,9 @@ ML_CELLS = {"Home ML + Over": 3.6, "Home ML + Under": 4.0,
 def test_grid_spec_ml_total():
     legs = legset.parse_legs([
         {"market_ticker": "KXMLBGAME-25JUN271905NYYBOS-BOS",
-         "event_ticker": EVT, "side": "yes"},          # home ML
+         "event_ticker": _et("KXMLBGAME-25JUN271905NYYBOS-BOS"), "side": "yes"},          # home ML
         {"market_ticker": "KXMLBTOTAL-25JUN271905NYYBOS-9",
-         "event_ticker": EVT, "side": "yes"}])         # over 8.5
+         "event_ticker": _et("KXMLBTOTAL-25JUN271905NYYBOS-9"), "side": "yes"}])         # over 8.5
     from kalshi_common.leg_types import ML_TOTAL_FAMILY
     family, spread_line, total_line, target = router.grid_spec(legs)
     assert family == ML_TOTAL_FAMILY
@@ -119,9 +129,9 @@ def test_single_marginal_missing_grid_returns_empty():
 def test_subcombo_grid_spread_total():
     legs = legset.parse_legs([
         {"market_ticker": "KXMLBSPREAD-25JUN271905NYYBOS-BOS2",
-         "event_ticker": EVT, "side": "yes"},
+         "event_ticker": _et("KXMLBSPREAD-25JUN271905NYYBOS-BOS2"), "side": "yes"},
         {"market_ticker": "KXMLBTOTAL-25JUN271905NYYBOS-9",
-         "event_ticker": EVT, "side": "yes"}])
+         "event_ticker": _et("KXMLBTOTAL-25JUN271905NYYBOS-9"), "side": "yes"}])
     df = pd.DataFrame(_grid_rows("dk", EVT, -1.5, 8.5, ST_CELLS)
                       + _grid_rows("fd", EVT, -1.5, 8.5, ST_CELLS))
     cons, reason = router.subcombo_consensus(EVT, legs, df, min_books=2,
@@ -132,23 +142,23 @@ def test_subcombo_grid_spread_total():
 def test_subcombo_on_demand_returns_none_in_phase1():
     legs = legset.parse_legs([
         {"market_ticker": "KXMLBSPREAD-25JUN271905NYYBOS-BOS2",
-         "event_ticker": EVT, "side": "yes"},
+         "event_ticker": _et("KXMLBSPREAD-25JUN271905NYYBOS-BOS2"), "side": "yes"},
         {"market_ticker": "KXMLBTOTAL-25JUN271905NYYBOS-9",
-         "event_ticker": EVT, "side": "yes"},
+         "event_ticker": _et("KXMLBTOTAL-25JUN271905NYYBOS-9"), "side": "yes"},
         {"market_ticker": "KXMLBGAME-25JUN271905NYYBOS-BOS",
-         "event_ticker": EVT, "side": "yes"}])
+         "event_ticker": _et("KXMLBGAME-25JUN271905NYYBOS-BOS"), "side": "yes"}])
     df = pd.DataFrame(_grid_rows("dk", EVT, -1.5, 8.5, ST_CELLS))
     cons, reason = router.subcombo_consensus(EVT, legs, df, 2, 0.07)
     assert cons is None and reason == "unpriceable"
 
 
 def test_combo_fair_cross_game_multiplies():
-    EVT2 = "KXMLBGAME-25JUN271905LADSF"
+    EVT2 = "25JUN271905LADSF"
     legs_dicts = [
         {"market_ticker": "KXMLBGAME-25JUN271905NYYBOS-BOS",
-         "event_ticker": EVT, "side": "yes"},                 # game1 home ML
+         "event_ticker": _et("KXMLBGAME-25JUN271905NYYBOS-BOS"), "side": "yes"},                 # game1 home ML
         {"market_ticker": "KXMLBGAME-25JUN271905LADSF-LAD",
-         "event_ticker": EVT2, "side": "yes"}]                # game2 away ML
+         "event_ticker": _et("KXMLBGAME-25JUN271905LADSF-LAD"), "side": "yes"}]                # game2 away ML
     df = pd.DataFrame(
         _grid_rows("dk", EVT, None, 8.5, ML_CELLS)
         + _grid_rows("fd", EVT, None, 8.5, ML_CELLS)
@@ -170,12 +180,12 @@ def test_combo_fair_cross_game_multiplies():
 def test_combo_fair_detail_reports_n_games_and_sigma():
     # Same 2-game setup as above: detail must carry n_games=2 and a
     # non-negative combo sigma (identical books here -> sigma 0).
-    EVT2 = "KXMLBGAME-25JUN271905LADSF"
+    EVT2 = "25JUN271905LADSF"
     legs_dicts = [
         {"market_ticker": "KXMLBGAME-25JUN271905NYYBOS-BOS",
-         "event_ticker": EVT, "side": "yes"},
+         "event_ticker": _et("KXMLBGAME-25JUN271905NYYBOS-BOS"), "side": "yes"},
         {"market_ticker": "KXMLBGAME-25JUN271905LADSF-LAD",
-         "event_ticker": EVT2, "side": "yes"}]
+         "event_ticker": _et("KXMLBGAME-25JUN271905LADSF-LAD"), "side": "yes"}]
     df = pd.DataFrame(
         _grid_rows("dk", EVT, None, 8.5, ML_CELLS)
         + _grid_rows("fd", EVT, None, 8.5, ML_CELLS)
@@ -190,7 +200,7 @@ def test_combo_fair_detail_reports_n_games_and_sigma():
 
 def test_combo_fair_skips_when_a_game_unresolved():
     legs_dicts = [{"market_ticker": "KXMLBGAME-25JUN271905NYYBOS-BOS",
-                   "event_ticker": EVT, "side": "yes"}]
+                   "event_ticker": _et("KXMLBGAME-25JUN271905NYYBOS-BOS"), "side": "yes"}]
     df = pd.DataFrame(_grid_rows("dk", EVT, None, 8.5, ML_CELLS)
                       + _grid_rows("fd", EVT, None, 8.5, ML_CELLS))
     detail, reason = router.combo_fair_detail(legs_dicts, df, lambda gl: None,
@@ -200,7 +210,7 @@ def test_combo_fair_skips_when_a_game_unresolved():
 
 def test_combo_fair_skips_untypeable():
     legs_dicts = [{"market_ticker": "KXMLBPLAYER-foo",
-                   "event_ticker": EVT, "side": "yes"}]
+                   "event_ticker": _et("KXMLBPLAYER-foo"), "side": "yes"}]
     detail, reason = router.combo_fair_detail(legs_dicts, pd.DataFrame(),
                                               lambda gl: EVT, 2, 0.07)
     assert detail is None and reason == "unparseable"
@@ -210,7 +220,7 @@ def test_combo_fair_skips_untypeable():
 def test_priceable_in_phase1_rejects_lone_single():
     from kalshi_mlb_mm import main
     one_leg = legset.parse_legs([{"market_ticker": "KXMLBGAME-25JUN271905NYYBOS-BOS",
-                                  "event_ticker": EVT, "side": "yes"}])
+                                  "event_ticker": _et("KXMLBGAME-25JUN271905NYYBOS-BOS"), "side": "yes"}])
     assert one_leg is not None and len(one_leg) == 1
     assert main._priceable_in_phase1(one_leg) is False
 
@@ -218,8 +228,8 @@ def test_priceable_in_phase1_rejects_lone_single():
 def test_priceable_in_phase1_accepts_two_leg_combo():
     from kalshi_mlb_mm import main
     two_legs = legset.parse_legs([
-        {"market_ticker": "KXMLBSPREAD-25JUN271905NYYBOS-BOS2", "event_ticker": EVT, "side": "yes"},
-        {"market_ticker": "KXMLBTOTAL-25JUN271905NYYBOS-9",     "event_ticker": EVT, "side": "yes"},
+        {"market_ticker": "KXMLBSPREAD-25JUN271905NYYBOS-BOS2", "event_ticker": _et("KXMLBSPREAD-25JUN271905NYYBOS-BOS2"), "side": "yes"},
+        {"market_ticker": "KXMLBTOTAL-25JUN271905NYYBOS-9",     "event_ticker": _et("KXMLBTOTAL-25JUN271905NYYBOS-9"), "side": "yes"},
     ])
     assert two_legs is not None and len(two_legs) == 2
     assert main._priceable_in_phase1(two_legs) is True

@@ -4,7 +4,17 @@ import pandas as pd
 from kalshi_common import legset
 from kalshi_mlb_mm import router
 
-EVT = "KXMLBGAME-25JUN271905NYYBOS"
+def _et(market_ticker: str) -> str:
+    """The family-specific event ticker a Kalshi market ticker belongs to.
+
+    Issue #71: each market family lives in its OWN event, so a game's spread
+    and total legs never share an event_ticker. Deriving it here keeps these
+    fixtures on the shape Kalshi actually emits.
+    """
+    return market_ticker.rsplit("-", 1)[0]
+
+
+EVT = "25JUN271905NYYBOS"
 
 
 def _legs3():
@@ -51,17 +61,16 @@ def test_on_demand_route_consensus_gate_applies():
 
 def test_combo_fair_threads_lookup_through_multi_game():
     # game A: 2-leg grid (from sgp_df), game B: 3-leg on_demand (from lookup)
-    evt_b = "KXMLBGAME-25JUN272005SDLAD"
     legs_a = [{"market_ticker": f"KXMLBSPREAD-25JUN271905NYYBOS-BOS2",
-               "event_ticker": EVT, "side": "yes"},
+               "event_ticker": _et(f"KXMLBSPREAD-25JUN271905NYYBOS-BOS2"), "side": "yes"},
               {"market_ticker": f"KXMLBTOTAL-25JUN271905NYYBOS-9",
-               "event_ticker": EVT, "side": "yes"}]
+               "event_ticker": _et(f"KXMLBTOTAL-25JUN271905NYYBOS-9"), "side": "yes"}]
     legs_b = [{"market_ticker": "KXMLBSPREAD-25JUN272005SDLAD-LAD2",
-               "event_ticker": evt_b, "side": "yes"},
+               "event_ticker": _et("KXMLBSPREAD-25JUN272005SDLAD-LAD2"), "side": "yes"},
               {"market_ticker": "KXMLBTOTAL-25JUN272005SDLAD-8",
-               "event_ticker": evt_b, "side": "yes"},
+               "event_ticker": _et("KXMLBTOTAL-25JUN272005SDLAD-8"), "side": "yes"},
               {"market_ticker": "KXMLBGAME-25JUN272005SDLAD-LAD",
-               "event_ticker": evt_b, "side": "yes"}]
+               "event_ticker": _et("KXMLBGAME-25JUN272005SDLAD-LAD"), "side": "yes"}]
     # grid rows for game A: full 4-cell grid, two books
     rows = []
     for book in ("draftkings", "fanduel"):

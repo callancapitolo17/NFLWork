@@ -1,18 +1,24 @@
 from kalshi_common import legset
 
-EVT = "KXMLBGAME-25JUN271905NYYBOS"  # away=NYY, home=BOS
+# Kalshi puts every market family in its OWN event, so the three helpers below
+# deliberately emit three DIFFERENT event_tickers for one game. An earlier
+# version of this file shared one event_ticker across all three families —
+# input Kalshi never emits — which is what hid issue #71 (the same-game grids
+# were unreachable in production while these tests passed).
+GAME = "25JUN271905NYYBOS"          # away=NYY, home=BOS
+EVT = GAME                           # the canonical game_id: family-independent
 
 def _spread(team, n, side):   # team code, ticker N (2 => ±1.5), yes/no
-    return {"market_ticker": f"KXMLBSPREAD-25JUN271905NYYBOS-{team}{n}",
-            "event_ticker": EVT, "side": side}
+    return {"market_ticker": f"KXMLBSPREAD-{GAME}-{team}{n}",
+            "event_ticker": f"KXMLBSPREAD-{GAME}", "side": side}
 
 def _total(n, side):
-    return {"market_ticker": f"KXMLBTOTAL-25JUN271905NYYBOS-{n}",
-            "event_ticker": EVT, "side": side}
+    return {"market_ticker": f"KXMLBTOTAL-{GAME}-{n}",
+            "event_ticker": f"KXMLBTOTAL-{GAME}", "side": side}
 
 def _ml(team, side):
-    return {"market_ticker": f"KXMLBGAME-25JUN271905NYYBOS-{team}",
-            "event_ticker": EVT, "side": side}
+    return {"market_ticker": f"KXMLBGAME-{GAME}-{team}",
+            "event_ticker": f"KXMLBGAME-{GAME}", "side": side}
 
 def test_parse_spread_home_minus_1_5():
     leg = legset.parse_leg(_spread("BOS", 2, "yes"))   # home -1.5, YES
@@ -76,11 +82,12 @@ def test_canonical_legs_sorts_with_none_line():
     ordered = legset.canonical_legs(legs)
     assert [l.market_type for l in ordered] == sorted(l.market_type for l in legs)
 
-EVT2 = "KXMLBGAME-25JUN271905LADSFG"  # a different game
+GAME2 = "25JUN271905LADSFG"          # a different game
+EVT2 = GAME2
 
 def _spread2(team, n, side):
-    return {"market_ticker": f"KXMLBSPREAD-25JUN271905LADSFG-{team}{n}",
-            "event_ticker": EVT2, "side": side}
+    return {"market_ticker": f"KXMLBSPREAD-{GAME2}-{team}{n}",
+            "event_ticker": f"KXMLBSPREAD-{GAME2}", "side": side}
 
 def test_partition_groups_two_games():
     legs = legset.parse_legs([_spread("BOS", 2, "yes"), _spread2("SF", 2, "yes")])
@@ -179,3 +186,54 @@ def test_duplicate_market_same_game_is_unpriceable():
     # nested totals at DIFFERENT lines stay allowed (Fréchet handles them)
     over75 = legset.CanonicalLeg(EVT, "total", 7.5, "over")
     assert legset.classify_subcombo([over, over75]) == "on_demand"
+
+
+# --------------------------------------------------------------------- #
+# Issue #71: game_id must be family-independent                          #
+# --------------------------------------------------------------------- #
+
+def test_same_game_legs_share_one_partition_across_market_families():
+    """THE #71 regression. Kalshi gives each market family its own event, so
+    a spread leg and a total leg on one game arrive with DIFFERENT
+    event_tickers. Keying game_id on the event_ticker put them in separate
+    partitions, which made grid_spread_total unreachable in production and
+    silently priced 86 real same-game RFQs as independent games multiplied
+    together (the zero-correlation error)."""
+    legs = legset.parse_legs([_spread("BOS", 2, "yes"), _total(9, "yes")])
+    assert legs is not None
+    assert legs[0].game_id == legs[1].game_id == GAME, (
+        "spread and total on one game must canonicalize to one game_id")
+    by_game = legset.partition_by_game(legs)
+    assert len(by_game) == 1, f"expected 1 partition, got {list(by_game)}"
+    assert legset.classify_subcombo(next(iter(by_game.values()))) == \
+        "grid_spread_total"
+
+
+def test_all_three_families_partition_together():
+    legs = legset.parse_legs([_spread("BOS", 2, "yes"), _total(9, "yes"),
+                              _ml("BOS", "yes")])
+    by_game = legset.partition_by_game(legs)
+    assert len(by_game) == 1
+    assert legset.classify_subcombo(next(iter(by_game.values()))) == "on_demand"
+
+
+def test_different_games_still_partition_apart():
+    """The fix must not over-merge: two genuinely different games stay split
+    even when they share a market family."""
+    other = {"market_ticker": "KXMLBGAME-25JUN271905LADSF-SF",
+             "event_ticker": "KXMLBGAME-25JUN271905LADSF", "side": "yes"}
+    legs = legset.parse_legs([_ml("BOS", "yes"), other])
+    by_game = legset.partition_by_game(legs)
+    assert len(by_game) == 2
+    assert all(legset.classify_subcombo(v) == "single"
+               for v in by_game.values())
+
+
+def test_leg_set_hash_still_separates_the_two_families():
+    """game_id no longer distinguishes a spread leg from a total leg on the
+    same game — market_type must still do it, or the on-demand store would
+    collide two different combos onto one hash."""
+    spread_only = legset.parse_legs([_spread("BOS", 2, "yes")])
+    total_only = legset.parse_legs([_total(9, "yes")])
+    assert (legset.leg_set_hash(spread_only)
+            != legset.leg_set_hash(total_only))

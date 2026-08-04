@@ -8,6 +8,22 @@ Independent maker daemon that listens for others' RFQs on the Kalshi cross-categ
 - **Cross-game combos** — each game's sub-combo is priced independently and the per-game fairs are **multiplied** (independence assumption); a single leg within a game is marginalized out of that game's grid.
 - **On-demand same-game shapes (Phase 2)** — 3-leg, spread+ml, total+total and any other novel shape route to `on_demand` and are priced by live book queries at RFQ time (see **On-demand pricing** below). Lone single-leg RFQs remain out of scope (skipped fail-safe).
 
+Legs are grouped into games by `legset.game_id_of` — the **game code** inside
+the event ticker (`KXMLBTOTAL-26JUN102105MILATH` → `26JUN102105MILATH`), not
+the ticker itself. Kalshi gives every market family its own event, so keying on
+the whole ticker split a game's spread and total legs into two partitions and
+made the same-game grids unreachable (**issue #71**, fixed 2026-08-04). The
+symptom was silent: same-game combos were priced as two independent games and
+multiplied, and the routing census read as "no same-game demand". Re-running
+that census over the 738 in-scope RFQs recorded to date, post-fix:
+
+| route | sub-combos |
+|---|---|
+| `single` | 1611 |
+| `grid_spread_total` | 50 |
+| `grid_ml_total` | 36 |
+| `on_demand` | 1 |
+
 The read side is **book-agnostic**: it consumes whatever the 6 SGP scrapers write to `mlb_sgp_odds`, so all books' moneyline rows are priced with no maker-side change.
 
 **Spec:** `docs/superpowers/specs/2026-05-26-kalshi-mlb-mm-design.md`
