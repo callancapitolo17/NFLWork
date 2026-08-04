@@ -1062,13 +1062,24 @@ and Route B's transfer does not preserve the implication.
 **Decision (issue #66, 2026-08-03): measured, and deliberately NOT guarded in
 code.** A `classify_subcombo` guard refusing same-game spread+ML sets was built
 and reviewed, then dropped. The reasoning: no RFQ the maker has ever seen
-carries the shape (0 of 341,941 with recorded legs — and all 738 in-scope RFQs
-were cross-game single-leg combos), a counterparty constructing one is not
-someone we want to fill anyway, and #20's z-space dispersion gate declines
-every observed case (σ_z 0.20–0.52 against `SIGMA_Z_MAX=0.07`). **That
-protection is incidental, not designed** — widen `SIGMA_Z_MAX`, or have two
-books agree wrongly, and a bad number reaches a quote. Anyone extending the
-on-demand path (epic #53) should treat this as a live, unguarded hazard.
+carries the shape (0 of 341,941 with recorded legs), a counterparty
+constructing one is not someone we want to fill anyway, and #20's z-space
+dispersion gate declines every observed case (σ_z 0.20–0.52 against
+`SIGMA_Z_MAX=0.07`). **That protection is incidental, not designed** — widen
+`SIGMA_Z_MAX`, or have two books agree wrongly, and a bad number reaches a
+quote. Anyone extending the on-demand path (epic #53) should treat this as a
+live, unguarded hazard.
+
+⚠️ **Do not read the routing census as "no same-game demand" (issue #71).**
+Every one of the 738 in-scope RFQs classifies as cross-game single legs, but
+that is a *partitioning artifact*, not the traffic. `parse_leg` keys
+`CanonicalLeg.game_id` on the **event_ticker**, and Kalshi puts each market
+family in its own event — so a spread leg and a total leg on one game can never
+share a partition, and the same-game grids are unreachable in production.
+Regrouped by the game code inside the ticker, 87 of those RFQs are genuinely
+same-game (50 spread×total, 36 ml×total, 1 three-leg) and were quoted after
+having their marginals multiplied as if independent. The three-leg hazard
+measured above therefore has arrived once already — misrouted, not refused.
 
 Re-measured 2026-08-03 (PIT @ MIL, `home −1.5 + over 7.5`), the identity
 `P(3-leg) == P(spread ∧ total)` fails at every book that returns a number:
