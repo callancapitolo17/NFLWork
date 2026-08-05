@@ -24,6 +24,22 @@ that census over the 738 in-scope RFQs recorded to date, post-fix:
 | `grid_ml_total` | 36 |
 | `on_demand` | 1 |
 
+Spread lines are **signed home-perspective throughout** (**issue #70**, fixed
+2026-08-04): a home-team margin ticker (`…-COL2` with COL home) canonicalizes
+to `spread_line = -(N-0.5)`, an away-team margin ticker (`…-MIA2` with MIA
+away) to `+(N-0.5)` — matching `mlb_sgp_odds.spread_line`, where the
+`Home Spread` cell is always the home team at the signed line and `Away
+Spread` its negation. Before the fix both teams' tickers collapsed onto
+`-(N-0.5)`, so an away-favourite leg (away −1.5, a hard event) was priced
+with the away **+1.5** cell (an easy event) — fair systematically too high on
+58% of in-scope spread legs. The maker's scrape cycle now passes
+`both_teams=True` (as the taker always did), scraping **both** teams' margin
+grids per game — roughly double the spread target lines per cycle; without
+the positive-line grids an away-favourite leg would decline `too_few_books`.
+Research-firehose rows written before 2026-08-04 encode away favourites with
+a negative `spread_line`; rows after are signed (convention epoch — mind the
+boundary in longitudinal queries).
+
 The read side is **book-agnostic**: it consumes whatever the 6 SGP scrapers write to `mlb_sgp_odds`, so all books' moneyline rows are priced with no maker-side change.
 
 **Spec:** `docs/superpowers/specs/2026-05-26-kalshi-mlb-mm-design.md`
@@ -93,7 +109,7 @@ REST-polling daemon, single process. Six timed sub-loops:
 
 ## Pricing
 
-Fair value is the median of the devigged book fairs, gated on cross-book agreement. `router.combo_fair_detail` parses the RFQ into canonical legs (`legset`), partitions them by game, prices each game's sub-combo, and **multiplies** the per-game fairs (cross-game independence). For each **2-leg same-game grid** (family + cell resolved from the legs — spread×total keyed by game × spread_line × total_line, moneyline×total keyed by game × total_line with `spread_line` NULL) we:
+Fair value is the median of the devigged book fairs, gated on cross-book agreement. `router.combo_fair_detail` parses the RFQ into canonical legs (`legset`), partitions them by game, prices each game's sub-combo, and **multiplies** the per-game fairs (cross-game independence). For each **2-leg same-game grid** (family + cell resolved from the legs — spread×total keyed by game × **signed** spread_line × total_line (#70: negative = home margin market, positive = away margin market), moneyline×total keyed by game × total_line with `spread_line` NULL) we:
 
 1. Pull every book's 4-cell grid from `mlb_sgp_odds` (filtered by combo family, require all 4 cells — no fallback).
 2. Devig each book's 4-way grid to a single combo fair (`devig_book` in `kalshi_common.fair_value`).

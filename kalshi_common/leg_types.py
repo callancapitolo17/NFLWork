@@ -96,14 +96,28 @@ def _leg_dict_to_typed(leg: dict, game_id: str):
     return None
 
 
-def _spread_line_from_legs(legs: list[dict]) -> float:
+def _spread_line_from_legs(legs: list[dict]) -> float | None:
+    """Signed home-perspective spread line of the first spread leg.
+
+    Issue #70: sign follows the ticker's team — home margin -> -(n-0.5),
+    away margin -> +(n-0.5). Returns 0.0 when no leg is a spread (legacy
+    contract) and None when a spread leg's team cannot be resolved from its
+    event ticker — a silently wrong sign is worse than a NULL in telemetry
+    (this helper's only production caller is the taker's research events).
+    """
     for l in legs:
         if l["market_ticker"].startswith("KXMLBSPREAD-"):
-            suffix = l["market_ticker"].rsplit("-", 1)[-1]
-            digits = "".join(c for c in suffix if c.isdigit())
-            if digits:
-                n = int(digits)
-                return -(n - 0.5)
+            try:
+                typed = _leg_dict_to_typed(l, "")
+            except (KeyError, TypeError, ValueError):
+                return None
+            if typed is None:
+                return None
+            home_code = _home_code_from_event_ticker(str(l.get("event_ticker", "")))
+            if home_code is None:
+                return None
+            return (-(typed.line_n - 0.5) if typed.team_is_home
+                    else (typed.line_n - 0.5))
     return 0.0
 
 
@@ -204,9 +218,12 @@ def combo_descriptor(legs: list[dict]) -> "ComboDescriptor | None":
         home_covers = ((spread.team_is_home and spread.side == "yes")
                        or (not spread.team_is_home and spread.side == "no"))
         part = "Home" if home_covers else "Away"
+        # Issue #70: sign follows the ticker's team (home margin -> negative,
+        # away margin -> positive), matching mlb_sgp_odds.spread_line.
         return ComboDescriptor(
             kind="spread_total",
-            spread_line=-(spread.line_n - 0.5),
+            spread_line=(-(spread.line_n - 0.5) if spread.team_is_home
+                         else (spread.line_n - 0.5)),
             total_line=total_line,
             target_combo=f"{part} Spread + {over_part}",
             combo_family=SPREAD_TOTAL_FAMILY,
