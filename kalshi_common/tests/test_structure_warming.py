@@ -230,6 +230,60 @@ def test_warm_cycle_params_are_keyword_only():
         sig.bind("db_path", object())
 
 
+# --------------------------------------------------------------------- #
+# 7. no cold window: warming REFRESHES entries older than one cadence     #
+# --------------------------------------------------------------------- #
+# get_or_fetch does not extend TTL on a hit, so warming that only fills
+# missing entries leaves a cold window: entry fetched at t=0, pass at 120
+# hits (age 120 < TTL), entry expires at TTL, next pass refreshes at 240 —
+# every RFQ in [TTL, 240) pays cold. The pass must evict-then-refetch
+# entries older than the cadence so entry age never reaches the TTL.
+
+def test_ttlcache_evict_older_than():
+    from mlb_sgp._shared import TTLCache
+    clock = SimpleNamespace(t=1000.0)
+    cache = TTLCache(ttl_sec=420, now_fn=lambda: clock.t)
+    cache.get_or_fetch("old", lambda: "a")
+    clock.t += 130
+    cache.get_or_fetch("young", lambda: "b")
+    assert cache.evict_older_than(120) == 1          # only "old"
+    fetches = []
+    cache.get_or_fetch("old", lambda: fetches.append(1) or "a2")
+    cache.get_or_fetch("young", lambda: fetches.append(1) or "b2")
+    assert fetches == [1]                            # "young" still cached
+
+
+def test_warming_pass_refetches_structures_older_than_refresh_age(
+        tmp_path, monkeypatch):
+    from mlb_sgp._shared import TTLCache
+    from kalshi_common.tests.test_on_demand_cache_state import (
+        _legs, _patched_mgm_service)
+    clock = SimpleNamespace(t=1000.0)
+    svc, st = _patched_mgm_service(monkeypatch, str(tmp_path / "h.duckdb"))
+    # inject a controllable clock into this book's caches (pre-seed wins:
+    # _structure_caches uses setdefault)
+    st.caches = {"events": TTLCache(900, now_fn=lambda: clock.t),
+                 "structure": TTLCache(420, now_fn=lambda: clock.t)}
+
+    svc.warm_structures([GAME])
+    after_first = st.client.structure_calls
+    assert after_first > 0
+
+    clock.t += 60                                    # young: pass is a no-op
+    svc.warm_structures([GAME])
+    assert st.client.structure_calls == after_first
+
+    clock.t += 70                                    # age 130 > cadence 120
+    svc.warm_structures([GAME])
+    assert st.client.structure_calls > after_first   # refreshed, not hit
+
+    # and the RFQ right after still pays nothing
+    before = st.client.structure_calls
+    res = svc.price_on_demand("betmgm", GAME, _legs())
+    assert res is not None
+    assert st.client.structure_calls == before
+
+
 def test_warm_cycle_empty_target_table_is_a_noop(tmp_path):
     from kalshi_common import sgp_runner
     db = str(tmp_path / "market.duckdb")

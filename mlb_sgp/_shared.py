@@ -913,6 +913,22 @@ class TTLCache:
             self._store[key] = (self._now(), val)
         return val
 
+    def evict_older_than(self, max_age_sec: float) -> int:
+        """Drop entries older than ``max_age_sec``; returns how many.
+
+        #50's warming pass calls this with its own cadence before re-walking
+        the slate: get_or_fetch never refreshes on a hit, so without the
+        evict an entry would silently age to the TTL and expire BETWEEN
+        passes — handing the cold fetch to whatever RFQ arrives first.
+        """
+        now = self._now()
+        with self._lock:
+            stale = [k for k, (t, _) in self._store.items()
+                     if (now - t) > max_age_sec]
+            for k in stale:
+                del self._store[k]
+        return len(stale)
+
     def clear(self):
         with self._lock:
             self._store.clear()

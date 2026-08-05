@@ -1834,7 +1834,8 @@ def main_loop(dry_run: bool):
                 try:
                     warmed = sgp_runner.warm_cycle(
                         bot_market_db=str(config.MARKET_DB),
-                        service=sgp_service)
+                        service=sgp_service,
+                        cadence_sec=config.STRUCTURE_WARM_SEC)
                     log.info("structure warm: %s", warmed)
                 except Exception as e:
                     log.error("warm err: %s", e)

@@ -30,9 +30,14 @@ _MLB_SGP_DIR = _REPO_ROOT / "mlb_sgp"
 
 DEFAULT_BOOKS = ("draftkings", "fanduel", "prophetx", "novig", "betmgm", "caesars")
 
-# TTLs for structure fetches (market *structure*, never prices).
-EVENTS_TTL_SEC = 300       # game list churns ~daily
-STRUCTURE_TTL_SEC = 180    # sel-ids / runners churn when a book re-mains a line
+# TTLs for structure fetches (market *structure*, never prices). Since #50
+# the warming pass actively re-fetches entries older than its cadence
+# (default 120s), so normal entry age stays <= ~2x cadence and these TTLs
+# only bite when warming has DIED: they are the staleness ceiling before an
+# RFQ falls back to paying the cold fetch itself (the pre-#50 behavior).
+# Stale-structure risk is a decline (resolve miss), never a wrong price.
+EVENTS_TTL_SEC = 900       # game list churns ~daily
+STRUCTURE_TTL_SEC = 420    # sel-ids / runners churn when a book re-mains a line
 
 # ---- Phase 2 on-demand pricing constants ---- #
 # Route A (full 2^N partition) only up to 3 legs: 8 wire calls per book is
@@ -346,7 +351,8 @@ class SGPService:
             return []
 
     def warm_structures(self, games, *,
-                        token_min_remaining_sec: float = 180.0) -> dict[str, int]:
+                        token_min_remaining_sec: float = 180.0,
+                        refresh_older_than_sec: float = 120.0) -> dict[str, int]:
         """Structure-only warming pass over ``games`` (issue #50 item 2).
 
         For every book, concurrently: pre-warm the auth token where the
@@ -372,6 +378,13 @@ class SGPService:
         ``token_min_remaining_sec`` (keyword-only): the token-TTL floor
         passed to ``ensure_fresh_token`` — set it to the warming cadence
         plus slack so a token always outlives the gap to the next pass.
+
+        ``refresh_older_than_sec`` (keyword-only): cache entries older than
+        this are evicted and RE-FETCHED by the pass. Without it, a hit
+        never extends an entry's TTL, so entries would expire BETWEEN
+        passes and hand the cold fetch to an RFQ. Set to the warming
+        cadence; entry age then never exceeds ~2x cadence, comfortably
+        inside STRUCTURE_TTL_SEC.
         """
         games = list(games)
         if not games:
@@ -382,7 +395,8 @@ class SGPService:
         try:
             t_submit = time.monotonic()
             futs = {b: pool.submit(self._warm_book_safe, b, games,
-                                   token_min_remaining_sec)
+                                   token_min_remaining_sec,
+                                   refresh_older_than_sec)
                     for b in self.books}
             wall_deadline = time.monotonic() + self.per_book_deadline_sec
             for b, fut in futs.items():
@@ -410,7 +424,8 @@ class SGPService:
             pool.shutdown(wait=False, cancel_futures=True)
         return results
 
-    def _warm_book_safe(self, book: str, games, token_min_remaining_sec):
+    def _warm_book_safe(self, book: str, games, token_min_remaining_sec,
+                        refresh_older_than_sec=120.0):
         """One book's warming pass, on a worker thread. Never raises.
 
         Returns (outcome, error_class, games_warmed, counters_snapshot).
@@ -424,6 +439,10 @@ class SGPService:
             if hooks is None:
                 self._ensure_client(book)
                 hooks = self._book_on_demand_hooks(book, counters=counters)
+            # Evict entries the pass should renew (see warm_structures) —
+            # the game loop below then re-fetches them as ordinary misses.
+            for cache in self._state[book].caches.values():
+                cache.evict_older_than(refresh_older_than_sec)
             client = self._state[book].client
             prewarm = getattr(client, "ensure_fresh_token", None)
             if callable(prewarm):
