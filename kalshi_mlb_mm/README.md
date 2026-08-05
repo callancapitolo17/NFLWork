@@ -146,9 +146,15 @@ dropping a misbehaving book is a one-line code change.
 **Feed model — the open-RFQ poll drives everything.** The 2s discovery tick
 never blocks on a book. An on-demand shape with no fresh result enqueues a
 background fetch (`OnDemandEngine`, `kalshi_mlb_mm/on_demand.py`) and skips
-with reason `on_demand_pending`; the fetch (~10–20s, all books concurrent)
-lands per-book fairs in an in-memory store, and the next tick prices them
-through the normal consensus + gates + hysteresis/replace path. A result may
+with reason `on_demand_pending`; the fetch (all books concurrent, each book
+capped at `ON_DEMAND_DEADLINE_SEC` — a straggler is dropped, never waited
+on) lands per-book fairs in an in-memory store, and the next tick prices
+them through the normal consensus + gates + hysteresis/replace path.
+Multi-game RFQs enqueue one job per game; jobs run on up to 4 concurrent
+daemon threads (issue #50 — previously strictly serial), and a background
+structure-warming pass (`STRUCTURE_WARM_SEC`) keeps every book's
+events/structure caches and Caesars' WAF token hot so the live fetch never
+pays cold discovery. A result may
 back a NEW quote only within `QUOTE_FRESH_SEC` (15s, module constant) of
 landing — after that the next tick that still sees the RFQ re-fetches. When
 the RFQ leaves the poll, fetching stops; nothing self-schedules, and there is
@@ -340,6 +346,8 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `SETTLEMENT_SWEEP_SEC` | `600` | Settlement sweep cadence (seconds) — populates `realized_pnl` once markets settle; only matters hours post-game |
 | `SGP_REFRESH_SEC` | `60` | SGP scrape cadence (seconds) |
 | `SGP_SCRAPER_TIMEOUT_SEC` | `90` | Per-book deadline passed to `SGPService` (seconds) — a book exceeding it contributes nothing that cycle and its client is rebuilt |
+| `STRUCTURE_WARM_SEC` | `120` | Structure-only warming cadence (issue #50): every book's events/structure TTL caches + Caesars' WAF token are re-warmed with ZERO pricing calls, so an RFQ never pays cold-structure discovery. Keep under `STRUCTURE_TTL_SEC` (180) and the CZR token TTL (240) |
+| `ON_DEMAND_DEADLINE_SEC` | `10.0` | Per-book wall budget for LIVE (on-demand) pricing fetches (issue #50). A book still running at the cap is dropped; the fast books' results land. Sized so warm Novig (p95 ~9s) barely fits — the 75s sweep budget never applies to the quote path |
 
 ## Defense hierarchy (stale-quote / adverse-selection risk)
 
