@@ -124,6 +124,30 @@ class CaesarsClient(PriceCallTallyMixin):
             return True
         return self._mint()
 
+    def ensure_fresh_token(self, *, min_remaining_sec: float) -> bool:
+        """Pre-warm (#50): guarantee the token has >= ``min_remaining_sec``
+        of TTL left, re-minting in the BACKGROUND if not.
+
+        ``ensure_token`` refreshes only at expiry, so an RFQ landing just
+        after the 240s TTL lapses pays the ~1.5s node mint inline on the
+        quote path. The warming pass calls this instead with its own cadence
+        (+ slack) as the floor: a token that cannot outlive the next warming
+        gap is re-minted NOW, while nobody is waiting on it. Keyword-only so
+        the floor can never bind positionally by accident.
+
+        A sibling process's fresher on-disk token satisfies the floor
+        without a duplicate mint. Returns False only if a needed mint failed
+        (same contract as ``ensure_token`` — caller just skips this cycle).
+        """
+        def _remaining() -> float:
+            return TOKEN_TTL_SEC - (time.time() - self._minted_at)
+
+        if self._token and _remaining() >= min_remaining_sec:
+            return True
+        if self._load_cache() and _remaining() >= min_remaining_sec:
+            return True
+        return self._mint()
+
     def _load_cache(self) -> bool:
         try:
             c = json.loads(TOKEN_CACHE.read_text())

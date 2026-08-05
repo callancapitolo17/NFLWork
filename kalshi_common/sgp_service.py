@@ -338,6 +338,112 @@ class SGPService:
             log.debug("book-health dispatch failed", exc_info=True)
             return []
 
+    def warm_structures(self, games, *,
+                        token_min_remaining_sec: float = 180.0) -> dict[str, int]:
+        """Structure-only warming pass over ``games`` (issue #50 item 2).
+
+        For every book, concurrently: pre-warm the auth token where the
+        client supports it (Caesars' WAF mint), then run match_event +
+        build_structure for each game so the events/structure TTL caches are
+        hot before an RFQ arrives. The ``price`` hook is NEVER invoked —
+        warming makes zero pricing calls, which is what lets it run on a
+        tight cadence without touching any book's rate limit budget.
+
+        This is the seam #57 later re-points cadence/roles into; today the
+        maker calls it via ``sgp_runner.warm_cycle`` every
+        STRUCTURE_WARM_SEC.
+
+        Returns {book: games whose structure is now cached}.
+
+        Side effects: one buffered ``sgp_fetch_health`` row per book per
+        pass (path='warming'; the bot's tick loop flushes). A transport
+        failure feeds the SAME 3-strike client-reinit accounting the sweep
+        and on-demand paths share. Success deliberately touches neither
+        ``last_success`` (that timestamp belongs to the sweep's
+        min_refresh_sec scheduling) nor the failure streak.
+
+        ``token_min_remaining_sec`` (keyword-only): the token-TTL floor
+        passed to ``ensure_fresh_token`` — set it to the warming cadence
+        plus slack so a token always outlives the gap to the next pass.
+        """
+        games = list(games)
+        if not games:
+            return {}
+        results: dict[str, int] = {}
+        pool = ThreadPoolExecutor(max_workers=len(self.books),
+                                  thread_name_prefix="sgp-warm")
+        try:
+            t_submit = time.monotonic()
+            futs = {b: pool.submit(self._warm_book_safe, b, games,
+                                   token_min_remaining_sec)
+                    for b in self.books}
+            wall_deadline = time.monotonic() + self.per_book_deadline_sec
+            for b, fut in futs.items():
+                remaining = max(0.0, wall_deadline - time.monotonic())
+                try:
+                    outcome, error_class, warmed, counters = fut.result(
+                        timeout=remaining)
+                    duration = time.monotonic() - t_submit
+                except FutureTimeout:
+                    # Same discipline as refresh(): the lingering thread
+                    # still shares this book's curl session — drop the
+                    # client now so the next cycle builds a fresh one.
+                    outcome, error_class = "timeout", "FutureTimeout"
+                    warmed, counters = 0, None
+                    duration = time.monotonic() - t_submit
+                    self._book_done(b, None, timed_out=True)
+                self.health.record(book=b, path="warming", outcome=outcome,
+                                   rows_or_prices=warmed,
+                                   duration_sec=duration,
+                                   error_class=error_class,
+                                   counters=counters)
+                self._observe_book_health(b, "warming", outcome, error_class)
+                results[b] = warmed
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+        return results
+
+    def _warm_book_safe(self, book: str, games, token_min_remaining_sec):
+        """One book's warming pass, on a worker thread. Never raises.
+
+        Returns (outcome, error_class, games_warmed, counters_snapshot).
+        A game the book doesn't list is skipped, not a failure; 'empty'
+        means the book listed none of the slate.
+        """
+        counters = FetchCounters(book, "warming")
+        warmed = 0
+        try:
+            hooks = (self._on_demand_hooks or {}).get(book)
+            if hooks is None:
+                self._ensure_client(book)
+                hooks = self._book_on_demand_hooks(book, counters=counters)
+            client = self._state[book].client
+            prewarm = getattr(client, "ensure_fresh_token", None)
+            if callable(prewarm):
+                prewarm(min_remaining_sec=token_min_remaining_sec)
+            for game in games:
+                event = hooks["match_event"](client, game)
+                if event is None:
+                    continue                 # book doesn't list this game
+                counters.bump("events_seen")
+                counters.bump("events_matched")
+                structure = hooks["build_structure"](client, event, game)
+                if structure is not None:
+                    warmed += 1
+        except BookTransportError as e:
+            log.error("sgp_service: %s warming TRANSPORT FAILURE stage=%s "
+                      "status=%s: %s", book, e.stage, e.status_code, e)
+            counters.bump("transport_errors")
+            self._book_done(book, None)      # shared 3-strike recovery
+            return ("transport_error", transport_error_class(e), warmed,
+                    counters.snapshot())
+        except Exception as e:
+            counters.record_parse_failure("warming", log, e)
+            self._book_done(book, None)
+            return ("error", type(e).__name__, warmed, counters.snapshot())
+        outcome = "ok" if warmed else "empty"
+        return (outcome, None, warmed, counters.snapshot())
+
     def close(self):
         """Drop all persistent clients (sessions close on GC)."""
         for st in self._state.values():

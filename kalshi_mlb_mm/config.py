@@ -172,6 +172,11 @@ SGP_REFRESH_SEC = int(_get("SGP_REFRESH_SEC", "60"))
 # settle. Only matters hours post-game, so a slow cadence is plenty.
 SETTLEMENT_SWEEP_SEC = int(_get("SETTLEMENT_SWEEP_SEC", "600"))
 SGP_SCRAPER_TIMEOUT_SEC = int(_get("SGP_SCRAPER_TIMEOUT_SEC", "90"))
+# Issue #50: structure-only warming cadence. Keeps every book's
+# events/structure TTL caches (and Caesars' 240s WAF token) warm so an RFQ
+# never pays a cold-structure penalty. Must stay under STRUCTURE_TTL_SEC
+# (kalshi_common/sgp_service.py) and under the CZR token TTL.
+STRUCTURE_WARM_SEC = int(_get("STRUCTURE_WARM_SEC", "120"))
 
 # Run-time book-health alerting (issue #37). Keys on consecutive FAILED
 # fetches, never on data age — an age rule would false-fire by design once

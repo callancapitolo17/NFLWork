@@ -1763,8 +1763,12 @@ def main_loop(dry_run: bool):
         research.emit("scrape_done", payload=dict(return_codes=rc, book_counts=book_counts))
     except Exception as e:
         log.warning("warmup sgp failed: %s", e)
+    # "warm" starts at 0.0 so the first loop iteration warms immediately:
+    # the warmup sgp_cycle above populated mlb_target_lines and DK/FD's
+    # caches, but PX/NV/MGM/CZR's on-demand structure caches (and the CZR
+    # WAF token) are still cold until the first warming pass (issue #50).
     last = {"disc": 0.0, "conf": 0.0, "risk": 0.0, "reconcile": 0.0,
-            "settle": 0.0, "sgp": time.time()}
+            "settle": 0.0, "sgp": time.time(), "warm": 0.0}
     try:
         while _running.is_set():
             now = time.time()
@@ -1820,6 +1824,20 @@ def main_loop(dry_run: bool):
                 except Exception as e:
                     log.error("sgp err: %s", e)
                 last["sgp"] = now
+            # Issue #50: structure-only warming — no pricing calls, keeps
+            # every book's on-demand structure caches + CZR token hot so an
+            # RFQ never pays the cold-start penalty. Runs inline on the tick
+            # thread like the sweep (and is far cheaper); #57 re-points
+            # cadence/roles later.
+            if now - last["warm"] >= config.STRUCTURE_WARM_SEC:
+                try:
+                    warmed = sgp_runner.warm_cycle(
+                        bot_market_db=str(config.MARKET_DB),
+                        service=sgp_service)
+                    log.info("structure warm: %s", warmed)
+                except Exception as e:
+                    log.error("warm err: %s", e)
+                last["warm"] = now
             research.flush()  # per-tick batched drain
             sgp_service.flush_health()   # issue #38: drain fetch-health rows
             sgp_service.check_book_health()   # issue #37: book-death alerts
