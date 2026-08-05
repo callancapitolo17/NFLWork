@@ -53,7 +53,11 @@ log = logging.getLogger(__name__)
 # misdiagnosis #33 exists to remove. Anything outside {ok, empty} is a
 # failure for streak purposes (#37).
 OUTCOMES = frozenset({"ok", "empty", "transport_error", "timeout", "error"})
-PATHS = frozenset({"sweep", "on_demand"})
+PATHS = frozenset({"sweep", "on_demand", "warming"})
+# Issue #50: on-demand rows tag whether the call paid a wire structure fetch
+# (cold) or was fully cache-served (warm). Sweep/warming rows carry NULL —
+# the split only means something on the quote path.
+CACHE_STATES = frozenset({"cold", "warm"})
 
 DEFAULT_BUFFER_MAX = 5_000       # ~1 hour of maker traffic; drops oldest
 DEFAULT_RETENTION_DAYS = 30
@@ -71,15 +75,23 @@ CREATE TABLE IF NOT EXISTS sgp_fetch_health (
     rows_or_prices INTEGER,
     duration_sec   DOUBLE,
     error_class    VARCHAR,
-    counters_json  VARCHAR
+    counters_json  VARCHAR,
+    cache_state    VARCHAR
 );
+"""
+
+# Pre-#50 tables lack cache_state; ALTER is a no-op once applied. Runs on
+# every flush right after SCHEMA_SQL — same idempotent-DDL pattern, so a
+# live DB migrates on the first post-upgrade flush with no manual step.
+_MIGRATE_SQL = """
+ALTER TABLE sgp_fetch_health ADD COLUMN IF NOT EXISTS cache_state VARCHAR;
 """
 
 _INSERT_SQL = """
 INSERT INTO sgp_fetch_health
     (fetched_at, book, path, outcome, rows_or_prices, duration_sec,
-     error_class, counters_json)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     error_class, counters_json, cache_state)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -154,11 +166,15 @@ class FetchHealthRecorder:
                rows_or_prices: int | None = None,
                duration_sec: float | None = None,
                error_class: str | None = None,
-               counters: FetchCountersSnapshot | None = None) -> None:
+               counters: FetchCountersSnapshot | None = None,
+               cache_state: str | None = None) -> None:
         """Buffer one fetch's health. O(1), touches no disk, NEVER raises.
 
         Called from sweep worker threads, the on-demand caller thread, and
         the refresh thread — hence the lock.
+
+        ``cache_state`` (#50): 'cold' | 'warm' on on-demand rows, None
+        elsewhere — cold/warm latency percentiles are one GROUP BY away.
         """
         if not self.enabled:
             return
@@ -167,11 +183,14 @@ class FetchHealthRecorder:
         if outcome not in OUTCOMES or path not in PATHS:
             log.warning("sgp_fetch_health: unknown outcome=%r / path=%r for "
                         "book=%s", outcome, path, book)
+        if cache_state is not None and cache_state not in CACHE_STATES:
+            log.warning("sgp_fetch_health: unknown cache_state=%r for "
+                        "book=%s", cache_state, book)
         try:
             row = (datetime.now(timezone.utc), book, path, outcome,
                    None if rows_or_prices is None else int(rows_or_prices),
                    None if duration_sec is None else float(duration_sec),
-                   error_class, counters_to_json(counters))
+                   error_class, counters_to_json(counters), cache_state)
             with self._lock:
                 self._buffer.append(row)
                 if len(self._buffer) > self.buffer_max:
@@ -198,6 +217,7 @@ class FetchHealthRecorder:
             con = _connect(self.db_path, retries=1)
             try:
                 con.execute(SCHEMA_SQL)
+                con.execute(_MIGRATE_SQL)
                 con.executemany(_INSERT_SQL, batch)
                 if self._prune_due():
                     self._prune(con)

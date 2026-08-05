@@ -481,7 +481,8 @@ class SGPService:
 
     @staticmethod
     def _dk_fetchers(st: _BookState,
-                     profile: RetryProfile = RETRY_BACKGROUND) -> dict:
+                     profile: RetryProfile = RETRY_BACKGROUND, *,
+                     miss_cb=None) -> dict:
         """DK's structure fetchers, bound to one retry profile.
 
         The SAME factory serves the sweep (RETRY_BACKGROUND) and the
@@ -490,35 +491,45 @@ class SGPService:
         cold-cache on-demand fetch stay inside the RFQ quote budget. Both
         bindings share ``st.caches``, so a warm entry written by either path
         is reused by the other.
+
+        ``miss_cb`` (keyword-only, #50): fires per WIRE structure fetch —
+        the on-demand hooks bind it to the ``structure_fetches`` counter so
+        health rows can tell cold from warm. The sweep passes None.
         """
         import scraper_draftkings_sgp as legacy
         ev, struct = st.caches["events"], st.caches["structure"]
         return {
             "fetch_dk_events": lambda session: ev.get_or_fetch(
-                "dk_events", lambda: legacy.fetch_dk_events(session, profile)),
+                "dk_events", lambda: legacy.fetch_dk_events(session, profile),
+                miss_cb=miss_cb),
             "fetch_main_market_nums": lambda session, eid: struct.get_or_fetch(
                 ("nums", eid),
-                lambda: legacy.fetch_main_market_nums(session, eid, profile)),
+                lambda: legacy.fetch_main_market_nums(session, eid, profile),
+                miss_cb=miss_cb),
             "fetch_selection_ids": lambda session, eid, nums, verbose=False:
                 struct.get_or_fetch(
                     ("selids", eid),
                     lambda: legacy.fetch_selection_ids(session, eid, nums,
-                                                       verbose, profile)),
+                                                       verbose, profile),
+                    miss_cb=miss_cb),
         }
 
     @staticmethod
     def _fd_fetchers(st: _BookState,
-                     profile: RetryProfile = RETRY_BACKGROUND) -> dict:
+                     profile: RetryProfile = RETRY_BACKGROUND, *,
+                     miss_cb=None) -> dict:
         """FD's structure fetchers, bound to one retry profile — see
-        ``_dk_fetchers`` for why the profile is bound here."""
+        ``_dk_fetchers`` for why the profile (and ``miss_cb``) bind here."""
         import scraper_fanduel_sgp as legacy
         ev, struct = st.caches["events"], st.caches["structure"]
         return {
             "fetch_fd_events": lambda session: ev.get_or_fetch(
-                "fd_events", lambda: legacy.fetch_fd_events(session, profile)),
+                "fd_events", lambda: legacy.fetch_fd_events(session, profile),
+                miss_cb=miss_cb),
             "fetch_event_runners": lambda session, eid, h, a: struct.get_or_fetch(
                 ("runners", eid),
-                lambda: legacy.fetch_event_runners(session, eid, h, a, profile)),
+                lambda: legacy.fetch_event_runners(session, eid, h, a, profile),
+                miss_cb=miss_cb),
         }
     # ------------------------------------------------------------------ #
     # Phase 2: on-demand pricing of one same-game leg set                 #
@@ -576,12 +587,18 @@ class SGPService:
                                            verdict)
             snapshot = counters.snapshot()
             outcome = "ok" if result is not None else verdict.outcome
+            # Issue #50: cold = this call paid >=1 wire events/structure
+            # fetch; warm = fully cache-served (only price calls hit the
+            # wire). Explicit in the row so cold/warm p50/p95 is pure SQL.
+            cache_state = ("cold" if snapshot.structure_fetches > 0
+                           else "warm")
             self.health.record(
                 book=book, path="on_demand", outcome=outcome,
                 rows_or_prices=snapshot.prices_returned,
                 duration_sec=time.monotonic() - t0,
                 error_class=verdict.error_class,
-                counters=snapshot)
+                counters=snapshot,
+                cache_state=cache_state)
             # Issue #37: runs on the RFQ's thread — counters only, no I/O.
             self._observe_book_health(book, "on_demand", outcome,
                                       verdict.error_class)
@@ -769,13 +786,20 @@ class SGPService:
         """Per-book hook dict. ``counters`` (keyword-only) is threaded into
         each book's ``resolve_legs`` / ``price_selection_set`` so their
         fail-safe ``except`` blocks can record a NAMED parse failure instead
-        of silently returning None (issue #35)."""
+        of silently returning None (issue #35).
+
+        Every cache read below passes ``miss_cb`` (#50): a wire-level
+        events/structure fetch bumps ``structure_fetches``, and
+        ``price_on_demand`` derives the health row's cold/warm tag from it.
+        """
         st = self._state[book]
+        miss_cb = ((lambda: counters.bump("structure_fetches"))
+                   if counters is not None else None)
 
         if book == "draftkings":
             from mlb_sgp import draftkings as mod
             self._structure_caches(st)      # guarantee the caches exist
-            f = self._dk_fetchers(st, RETRY_LIVE)
+            f = self._dk_fetchers(st, RETRY_LIVE, miss_cb=miss_cb)
 
             def match_event(client, game):
                 import scraper_draftkings_sgp as legacy
@@ -801,7 +825,7 @@ class SGPService:
         if book == "fanduel":
             from mlb_sgp import fanduel as mod
             self._structure_caches(st)      # guarantee the caches exist
-            f = self._fd_fetchers(st, RETRY_LIVE)
+            f = self._fd_fetchers(st, RETRY_LIVE, miss_cb=miss_cb)
 
             def match_event(client, game):
                 import scraper_fanduel_sgp as legacy
@@ -831,7 +855,8 @@ class SGPService:
             def match_event(client, game):
                 import scraper_prophetx_sgp as legacy
                 events = ev_cache.get_or_fetch(
-                    "px_events", lambda: client.list_events(RETRY_LIVE))
+                    "px_events", lambda: client.list_events(RETRY_LIVE),
+                    miss_cb=miss_cb)
                 # Same Event -> legacy-dict translation as price_sgps
                 # (prophetx.py:258-268).
                 px_events = [
@@ -858,7 +883,8 @@ class SGPService:
                          "selections": m.ml_selections}
                         for m in client.fetch_event_markets(eid, RETRY_LIVE)
                     ]
-                markets = struct_cache.get_or_fetch(("px_markets", eid), _fetch)
+                markets = struct_cache.get_or_fetch(("px_markets", eid), _fetch,
+                                                    miss_cb=miss_cb)
                 home_id = event["px_home_competitor_id"]
                 away_id = event["px_away_competitor_id"]
                 if not markets or not _verify_competitor_ids(
@@ -883,7 +909,8 @@ class SGPService:
             def match_event(client, game):
                 import scraper_novig_sgp as legacy
                 events = ev_cache.get_or_fetch(
-                    "nv_events", lambda: client.list_events(RETRY_LIVE))
+                    "nv_events", lambda: client.list_events(RETRY_LIVE),
+                    miss_cb=miss_cb)
                 # Same Event -> legacy-dict translation as price_sgps
                 # (novig.py:207-218).
                 nv_events = [
@@ -906,7 +933,8 @@ class SGPService:
                     _, markets = fetch_event_legs(client.session, event,
                                                   profile=RETRY_LIVE)
                     return markets
-                markets = struct_cache.get_or_fetch(("nv_markets", eid), _fetch)
+                markets = struct_cache.get_or_fetch(("nv_markets", eid), _fetch,
+                                                    miss_cb=miss_cb)
                 if not markets:
                     return None
                 return mod.build_line_structure(
@@ -927,7 +955,8 @@ class SGPService:
 
             def match_event(client, game):
                 events = ev_cache.get_or_fetch(
-                    "mgm_events", lambda: client.list_events(profile=RETRY_LIVE))
+                    "mgm_events", lambda: client.list_events(profile=RETRY_LIVE),
+                    miss_cb=miss_cb)
                 matched = mod._match_events(events, [_od_target(game)])
                 return matched.get(game.game_id)
 
@@ -939,7 +968,7 @@ class SGPService:
                     return mod.parse_markets(
                         markets, event.home_team, event.away_team)
                 parsed = struct_cache.get_or_fetch(
-                    ("mgm_markets", event.event_id), _fetch)
+                    ("mgm_markets", event.event_id), _fetch, miss_cb=miss_cb)
                 return (parsed or {}).get("FG") or None
 
             return {"match_event": match_event,
@@ -960,7 +989,8 @@ class SGPService:
 
             def match_event(client, game):
                 events = ev_cache.get_or_fetch(
-                    "czr_events", lambda: client.list_events(RETRY_LIVE))
+                    "czr_events", lambda: client.list_events(RETRY_LIVE),
+                    miss_cb=miss_cb)
                 matched = mod._match_events(events, [_od_target(game)])
                 return matched.get(game.game_id)
 
@@ -969,7 +999,7 @@ class SGPService:
                     ev = client.fetch_event(event.event_id, RETRY_LIVE)
                     return mod.parse_markets(ev) if ev else None
                 parsed = struct_cache.get_or_fetch(
-                    ("czr_event", event.event_id), _fetch)
+                    ("czr_event", event.event_id), _fetch, miss_cb=miss_cb)
                 return (parsed or {}).get("FG") or None
 
             return {"match_event": match_event,

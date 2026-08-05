@@ -242,12 +242,14 @@ def test_prune_deletes_rows_past_retention(db):
     con = duckdb.connect(str(db))
     try:
         con.execute(
-            "INSERT INTO sgp_fetch_health VALUES (?, 'novig', 'sweep', 'ok', "
-            "1, 0.1, NULL, NULL)",
+            "INSERT INTO sgp_fetch_health " +
+            "(fetched_at, book, path, outcome, rows_or_prices, duration_sec, error_class, counters_json) "
+            "VALUES (?, 'novig', 'sweep', 'ok', 1, 0.1, NULL, NULL)",
             [datetime.now(timezone.utc) - timedelta(days=31)])
         con.execute(
-            "INSERT INTO sgp_fetch_health VALUES (?, 'novig', 'sweep', 'ok', "
-            "1, 0.1, NULL, NULL)",
+            "INSERT INTO sgp_fetch_health " +
+            "(fetched_at, book, path, outcome, rows_or_prices, duration_sec, error_class, counters_json) "
+            "VALUES (?, 'novig', 'sweep', 'ok', 1, 0.1, NULL, NULL)",
             [datetime.now(timezone.utc) - timedelta(days=29)])
     finally:
         con.close()
@@ -773,8 +775,9 @@ def test_failure_streak_query_counts_only_the_current_run(db):
         ]
         for book, mins, outcome in seq:
             con.execute(
-                "INSERT INTO sgp_fetch_health VALUES (?, ?, 'on_demand', ?, "
-                "0, 1.0, NULL, NULL)",
+                "INSERT INTO sgp_fetch_health " +
+                "(fetched_at, book, path, outcome, rows_or_prices, duration_sec, error_class, counters_json) "
+                "VALUES (?, ?, 'on_demand', ?, 0, 1.0, NULL, NULL)",
                 [base + timedelta(minutes=mins), book, outcome])
     finally:
         con.close()

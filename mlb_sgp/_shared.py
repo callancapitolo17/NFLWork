@@ -476,6 +476,8 @@ class PriceCallTallyMixin:
 COUNTER_NAMES = (
     "events_seen",         # events the book listed at all
     "events_matched",      # of those, ones matched to a game on our slate
+    "structure_fetches",   # WIRE events/structure fetches (TTL-cache misses);
+                           # 0 = fully cache-served — #50 derives cold/warm
     "targets_attempted",   # UNITS DIFFER BY PATH — see the warning below
     "legs_attempted",      # candidate lines/legs handed to structure lookup
     "legs_resolved",       # of those, ones the book actually offers
@@ -510,9 +512,10 @@ COUNTER_NAMES = (
 class FetchCountersSnapshot:
     """Immutable per-fetch counter record. Stable shape — #38 persists it."""
     book: str
-    path: str                       # "sweep" | "on_demand"
+    path: str                       # "sweep" | "on_demand" | "warming"
     events_seen: int
     events_matched: int
+    structure_fetches: int
     targets_attempted: int
     legs_attempted: int
     legs_resolved: int
@@ -891,11 +894,20 @@ class TTLCache:
         self._lock = threading.Lock()
         self._store: dict = {}
 
-    def get_or_fetch(self, key, fetch_fn):
+    def get_or_fetch(self, key, fetch_fn, *, miss_cb=None):
+        """Cached value for ``key``, fetching (and storing) on a miss.
+
+        ``miss_cb`` (keyword-only) fires exactly when ``fetch_fn`` is about
+        to run — i.e. this call pays the wire cost. #50 uses it to tag
+        on-demand health rows cold vs. warm; passing None keeps the
+        pre-#50 behavior for every existing call site.
+        """
         with self._lock:
             ent = self._store.get(key)
             if ent is not None and (self._now() - ent[0]) < self.ttl_sec:
                 return ent[1]
+        if miss_cb is not None:
+            miss_cb()
         val = fetch_fn()
         with self._lock:
             self._store[key] = (self._now(), val)
