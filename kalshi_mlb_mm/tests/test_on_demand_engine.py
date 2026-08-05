@@ -275,10 +275,12 @@ def test_engine_prefers_on_demand_deadline_over_sweep_deadline():
 
 def test_multi_game_jobs_drain_concurrently_not_serially():
     """A cross-game RFQ enqueues one job per game. The old single-consumer
-    worker drained them strictly serially, so game 2's fetch waited out all
-    of game 1's. Both jobs must be in flight at once."""
-    svc = FakeService(latency=0.8)
-    svc.on_demand_deadline_sec = 5.0
+    worker drained them strictly serially — game 2 waited out ALL of game
+    1, including its hung straggler. Now jobs overlap: game 1's hung book
+    must not delay game 2's healthy books (per-book calls pipeline behind
+    the #40 gate; other books run freely)."""
+    svc = UnevenService({"draftkings": 0.0, "fanduel": 3.0})
+    svc.on_demand_deadline_sec = 0.5
     eng = OnDemandEngine(svc)
     legs_a = _legs()
     legs_b = _legs()[:2]
@@ -290,9 +292,50 @@ def test_multi_game_jobs_drain_concurrently_not_serially():
     eng.ensure_fetch(h_b, GAME, legs_b)
     assert _await_landing(eng, h_a) and _await_landing(eng, h_b)
     wall = time.monotonic() - t0
-    # parallel ≈ 0.8s; serial ≥ 1.6s. Generous margin for CI jitter.
-    assert wall < 1.4, f"jobs drained serially: {wall:.2f}s"
-    assert eng.lookup(h_a) is not None and eng.lookup(h_b) is not None
+    # serial drain: job 2 starts only after job 1 fully lands -> >= 2x the
+    # hung book (or 2x deadline). Concurrent: both land ~one deadline.
+    assert wall < 2.0, f"jobs drained serially: {wall:.2f}s"
+    assert eng.lookup(h_a) == {"draftkings": svc.fair}
+    assert eng.lookup(h_b) == {"draftkings": svc.fair}
+
+
+def test_per_book_calls_never_overlap_across_jobs():
+    """#40 pacing invariant survives concurrent jobs: at most ONE
+    on-demand pricing call in flight per book, ever (Novig 403s under
+    bursts — the gate is what makes concurrent jobs rate-limit-safe)."""
+    class TrackingService(FakeService):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.active = {}
+            self.max_active = {}
+
+        def price_on_demand(self, book, game, legs):
+            with self.lock:
+                self.active[book] = self.active.get(book, 0) + 1
+                self.max_active[book] = max(self.max_active.get(book, 0),
+                                            self.active[book])
+            time.sleep(0.15)
+            with self.lock:
+                self.active[book] -= 1
+            return OnDemandBookResult(book=book, fair=self.fair,
+                                      route="partition", n_cells_priced=8,
+                                      latency_sec=0.1)
+
+    svc = TrackingService()
+    svc.on_demand_deadline_sec = 5.0
+    eng = OnDemandEngine(svc)
+    hashes = []
+    for i in range(3):
+        legs = _legs()[:2] + [legset.CanonicalLeg(EVT, "total",
+                                                  7.5 + i, "over")]
+        h = legset.leg_set_hash(legs)
+        hashes.append(h)
+        eng.ensure_fetch(h, GAME, legs)
+    for h in hashes:
+        assert _await_landing(eng, h)
+        assert eng.lookup(h) is not None
+    assert svc.max_active, "no calls recorded"
+    assert all(v == 1 for v in svc.max_active.values()), svc.max_active
 
 
 def test_job_flood_past_the_concurrency_cap_fully_drains():

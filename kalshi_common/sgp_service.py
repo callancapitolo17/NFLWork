@@ -402,9 +402,11 @@ class SGPService:
             for b, fut in futs.items():
                 remaining = max(0.0, wall_deadline - time.monotonic())
                 try:
-                    outcome, error_class, warmed, counters = fut.result(
-                        timeout=remaining)
-                    duration = time.monotonic() - t_submit
+                    # duration is measured INSIDE the worker (like
+                    # refresh()'s _BookRun) — collection order must not
+                    # inflate later books' warming rows.
+                    outcome, error_class, warmed, counters, duration = \
+                        fut.result(timeout=remaining)
                 except FutureTimeout:
                     # Same discipline as refresh(): the lingering thread
                     # still shares this book's curl session — drop the
@@ -428,12 +430,13 @@ class SGPService:
                         refresh_older_than_sec=120.0):
         """One book's warming pass, on a worker thread. Never raises.
 
-        Returns (outcome, error_class, games_warmed, counters_snapshot).
-        A game the book doesn't list is skipped, not a failure; 'empty'
-        means the book listed none of the slate.
+        Returns (outcome, error_class, games_warmed, counters_snapshot,
+        duration_sec). A game the book doesn't list is skipped, not a
+        failure; 'empty' means the book listed none of the slate.
         """
         counters = FetchCounters(book, "warming")
         warmed = 0
+        t0 = time.monotonic()
         try:
             hooks = (self._on_demand_hooks or {}).get(book)
             if hooks is None:
@@ -462,13 +465,15 @@ class SGPService:
             counters.bump("transport_errors")
             self._book_done(book, None)      # shared 3-strike recovery
             return ("transport_error", transport_error_class(e), warmed,
-                    counters.snapshot())
+                    counters.snapshot(), time.monotonic() - t0)
         except Exception as e:
             counters.record_parse_failure("warming", log, e)
             self._book_done(book, None)
-            return ("error", type(e).__name__, warmed, counters.snapshot())
+            return ("error", type(e).__name__, warmed, counters.snapshot(),
+                    time.monotonic() - t0)
         outcome = "ok" if warmed else "empty"
-        return (outcome, None, warmed, counters.snapshot())
+        return (outcome, None, warmed, counters.snapshot(),
+                time.monotonic() - t0)
 
     def close(self):
         """Drop all persistent clients (sessions close on GC)."""

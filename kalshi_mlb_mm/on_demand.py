@@ -67,6 +67,12 @@ class OnDemandEngine:
         # Caps concurrent jobs; acquired by the dispatcher, released by the
         # job thread — the dispatcher blocks (backpressure) at the cap.
         self._job_slots = threading.Semaphore(_MAX_CONCURRENT_JOBS)
+        # Issue #40 pacing invariant: ONE on-demand pricing call in flight
+        # per book, even with concurrent jobs (Novig 403s at ~26 rapid
+        # calls; a 3-job burst of 8-cell partitions would blow past it).
+        # Jobs therefore pipeline per book while their other books run
+        # freely. Lazily created; guarded by self._lock.
+        self._book_gates: dict[str, threading.Semaphore] = {}
 
     # ------------------------------------------------------------- #
     # Feed side (discovery tick)                                     #
@@ -257,7 +263,8 @@ class OnDemandEngine:
         pool = ThreadPoolExecutor(max_workers=max(1, len(books)),
                                   thread_name_prefix="on-demand-book")
         try:
-            futs = {b: pool.submit(self._price_book_safe, b, game, legs)
+            futs = {b: pool.submit(self._price_book_safe, b, game, legs,
+                                   deadline)
                     for b in books}
             for b, fut in futs.items():
                 timeout = None
@@ -273,12 +280,33 @@ class OnDemandEngine:
             pool.shutdown(wait=False, cancel_futures=True)
         self._finish(hash_, results)
 
-    def _price_book_safe(self, book, game, legs):
+    def _book_gate(self, book) -> threading.Semaphore:
+        with self._lock:
+            gate = self._book_gates.get(book)
+            if gate is None:
+                gate = self._book_gates[book] = threading.Semaphore(1)
+            return gate
+
+    def _price_book_safe(self, book, game, legs, deadline=None):
+        """One book's pricing call, gated to one-in-flight per book (#40).
+
+        The gate wait is bounded by the job's deadline: a thread that
+        cannot acquire in time returns None instead of firing a wire call
+        whose result nobody will collect. The poll re-feeds the combo, so
+        a skipped book costs one tick, not a rate-limit strike."""
+        gate = self._book_gate(book)
+        timeout = None
+        if deadline is not None:
+            timeout = max(0.0, deadline - self._now())
+        if not gate.acquire(timeout=timeout):
+            return None
         try:
             return self._service.price_on_demand(book, game, legs)
         except Exception as e:
             log.warning("on_demand %s error: %s", book, e)
             return None
+        finally:
+            gate.release()
 
     def _finish(self, hash_: str, results: dict) -> None:
         now = self._now()

@@ -151,10 +151,12 @@ capped at `ON_DEMAND_DEADLINE_SEC` — a straggler is dropped, never waited
 on) lands per-book fairs in an in-memory store, and the next tick prices
 them through the normal consensus + gates + hysteresis/replace path.
 Multi-game RFQs enqueue one job per game; jobs run on up to 4 concurrent
-daemon threads (issue #50 — previously strictly serial), and a background
-structure-warming pass (`STRUCTURE_WARM_SEC`) keeps every book's
-events/structure caches and Caesars' WAF token hot so the live fetch never
-pays cold discovery. A result may
+daemon threads (issue #50 — previously strictly serial) while the #40
+pacing invariant still holds: a per-book gate keeps at most ONE pricing
+call in flight per book, so concurrent jobs pipeline per book instead of
+bursting into a rate limit. A background structure-warming pass
+(`STRUCTURE_WARM_SEC`) keeps every book's events/structure caches and
+Caesars' WAF token hot so the live fetch never pays cold discovery. A result may
 back a NEW quote only within `QUOTE_FRESH_SEC` (15s, module constant) of
 landing — after that the next tick that still sees the RFQ re-fetches. When
 the RFQ leaves the poll, fetching stops; nothing self-schedules, and there is
