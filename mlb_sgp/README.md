@@ -1167,6 +1167,52 @@ pass), so on a future run only the FIRST shape's cold time includes event
 discovery and the structure fetch. The JSON marks it: each cold cell carries
 `cold_includes_structure`.
 
+### On-demand latency after #50 (input to #55's quorum design)
+
+`price_on_demand`, seconds, 2-leg spread × total, measured 2026-08-05 on a
+live slate (CWS @ BOS, pre-game) with structure warming in place. **Cold**
+is a fresh service with NO warming pass (what an RFQ paid before #50);
+**warm p50/p95** are repeat calls after `warm_structures` — since #50 the
+health table records the split explicitly (`sgp_fetch_health.cache_state`,
+query `on_demand_latency_cold_warm` in
+`kalshi_common/fetch_health_queries.sql`). Novig measured at 12s pacing
+(its own rate limit, #40); warming-pass cost is per book for one game,
+zero pricing calls.
+
+| book | cold (no warming) | warm p50 | warm p95 | warming pass | p95 ≤ 8s |
+|---|---|---|---|---|---|
+| FanDuel | 1.42 | 0.71 | 0.77 | 0.38 | ✓ |
+| ProphetX | 4.55 | 1.48 | 1.55 | 0.61 | ✓ |
+| BetMGM | 2.01 | 1.45 | 1.66 | 0.70 | ✓ |
+| Caesars ¹ | 2.49 | 2.14 | 2.37 | 0.51 | ✓ |
+| Novig ² | 4.03 | 2.56 | 4.00 | 0.59 | ✓ |
+| DraftKings ³ | 3.27 | 4.78 | 20.79 | 1.75 | ✗ |
+
+**5 of 6 books meet the #50 target (p95 ≤ 8s warm)** — the acceptance bar
+was ≥4. Structure warming removes the cold-start penalty outright at the
+four books whose sweep never touched the on-demand caches (ProphetX is the
+starkest: 4.55s cold → 1.55s warmed).
+
+¹ **Caesars**: WAF healthy this window. Its true cold cost is understated
+here — the coverage probe minted the WAF token minutes earlier and the
+"cold" service loaded it from the shared disk cache. With warming running,
+`ensure_fresh_token` re-mints in background before the 240s TTL lapses, so
+the ~0.7–1.5s mint never lands inline on an RFQ regardless.
+
+² **Novig latency ≠ Novig prices.** Its latency passes, but Novig has an
+open data defect (found in #70's review, tracked separately): sweep rows
+broadcast one grid across all line pairs. A quorum design consuming this
+table must not treat Novig's on-demand column as evidence its *prices* are
+trustworthy — only that it answers fast enough.
+
+³ **DraftKings is the straggler #55 must design around.** Its warm samples
+are bimodal: 4 of 6 landed in 0.82–1.63s, but individual calls stalled at
+7.9s, 17.9s and 21.7s (one returned nothing) — the stall is the *price
+call itself* (structure was warm on those rows), so warming cannot fix it.
+The live path's `ON_DEMAND_DEADLINE_SEC` (10s) drops those stalls instead
+of blocking the combo; for quorum purposes DK answers fast *usually* and
+must never be a required voter.
+
 ### Caesars WAF throttles under verification load
 
 #41 closed with "not verified: behaviour under WAF rate-limiting". Now

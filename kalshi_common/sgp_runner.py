@@ -281,6 +281,47 @@ def write_target_lines(target_lines: list[TargetLine], db_path: str):
         con.close()
 
 
+def warm_cycle(*, bot_market_db: str, service,
+               cadence_sec: float | None = None) -> dict[str, int]:
+    """One structure-only warming pass over the current slate (issue #50).
+
+    Inputs: the bot's market DB (``mlb_target_lines``, written by
+    ``sgp_cycle`` each sweep) and an ``SGPService``. Reads the DB
+    READ-ONLY on the caller's thread — call from the bot's main tick
+    thread, like ``flush_health`` (same duckdb same-process caveat).
+
+    No pricing calls, no odds writes; the only side effect is the
+    service's buffered path='warming' health rows. Returns
+    ``service.warm_structures``'s {book: games_warmed} ({} on an empty
+    slate).
+
+    ``cadence_sec``: how often the caller runs this (the maker's
+    STRUCTURE_WARM_SEC). Sets both the refresh-eviction age and the
+    token-TTL floor (+60s slack) so an env-tuned cadence cannot drift
+    from the service defaults. None keeps the service defaults (120s
+    cadence semantics).
+    """
+    from mlb_sgp._shared import GameRef
+    con = duckdb.connect(bot_market_db, read_only=True)
+    try:
+        rows = con.execute("""
+            SELECT DISTINCT game_id, home_team, away_team, commence_time
+            FROM mlb_target_lines
+        """).fetchall()
+    finally:
+        con.close()
+    if not rows:
+        return {}
+    games = [GameRef(game_id=r[0], home_team=r[1], away_team=r[2],
+                     commence_time=r[3]) for r in rows]
+    if cadence_sec is None:
+        return service.warm_structures(games)
+    return service.warm_structures(
+        games,
+        token_min_remaining_sec=float(cadence_sec) + 60.0,
+        refresh_older_than_sec=float(cadence_sec))
+
+
 # Issue #38, item 4. This LEGACY subprocess path (dashboard only — the bots
 # price in-process) opened each scraper's log with mode "w", so every cycle
 # erased the last one: a book that died at 14:02 left no trace by 14:03.

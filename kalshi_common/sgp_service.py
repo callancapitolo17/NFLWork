@@ -30,9 +30,14 @@ _MLB_SGP_DIR = _REPO_ROOT / "mlb_sgp"
 
 DEFAULT_BOOKS = ("draftkings", "fanduel", "prophetx", "novig", "betmgm", "caesars")
 
-# TTLs for structure fetches (market *structure*, never prices).
-EVENTS_TTL_SEC = 300       # game list churns ~daily
-STRUCTURE_TTL_SEC = 180    # sel-ids / runners churn when a book re-mains a line
+# TTLs for structure fetches (market *structure*, never prices). Since #50
+# the warming pass actively re-fetches entries older than its cadence
+# (default 120s), so normal entry age stays <= ~2x cadence and these TTLs
+# only bite when warming has DIED: they are the staleness ceiling before an
+# RFQ falls back to paying the cold fetch itself (the pre-#50 behavior).
+# Stale-structure risk is a decline (resolve miss), never a wrong price.
+EVENTS_TTL_SEC = 900       # game list churns ~daily
+STRUCTURE_TTL_SEC = 420    # sel-ids / runners churn when a book re-mains a line
 
 # ---- Phase 2 on-demand pricing constants ---- #
 # Route A (full 2^N partition) only up to 3 legs: 8 wire calls per book is
@@ -150,9 +155,16 @@ class SGPService:
         # disables alerting entirely — dashboard CLI path, tests, and every
         # pre-#37 caller. Keyword-only for the same reason as above.
         book_health=None,
+        # Issue #50: per-book wall budget for LIVE (on-demand) pricing
+        # calls. The 75s per_book_deadline_sec is sized for the background
+        # sweep; a quote-path fetch that slow is worthless — the on-demand
+        # engine drops any book still running past this and lands the fast
+        # books' results. #45 will cap the client timeouts underneath.
+        on_demand_deadline_sec: float = 10.0,
     ):
         self.books = tuple(books)
         self.per_book_deadline_sec = per_book_deadline_sec
+        self.on_demand_deadline_sec = on_demand_deadline_sec
         self.min_refresh_sec = dict(min_refresh_sec or {})
         self._runners = runners
         self._on_demand_hooks = on_demand_hooks
@@ -338,6 +350,131 @@ class SGPService:
             log.debug("book-health dispatch failed", exc_info=True)
             return []
 
+    def warm_structures(self, games, *,
+                        token_min_remaining_sec: float = 180.0,
+                        refresh_older_than_sec: float = 120.0) -> dict[str, int]:
+        """Structure-only warming pass over ``games`` (issue #50 item 2).
+
+        For every book, concurrently: pre-warm the auth token where the
+        client supports it (Caesars' WAF mint), then run match_event +
+        build_structure for each game so the events/structure TTL caches are
+        hot before an RFQ arrives. The ``price`` hook is NEVER invoked —
+        warming makes zero pricing calls, which is what lets it run on a
+        tight cadence without touching any book's rate limit budget.
+
+        This is the seam #57 later re-points cadence/roles into; today the
+        maker calls it via ``sgp_runner.warm_cycle`` every
+        STRUCTURE_WARM_SEC.
+
+        Returns {book: games whose structure is now cached}.
+
+        Side effects: one buffered ``sgp_fetch_health`` row per book per
+        pass (path='warming'; the bot's tick loop flushes). A transport
+        failure feeds the SAME 3-strike client-reinit accounting the sweep
+        and on-demand paths share. Success deliberately touches neither
+        ``last_success`` (that timestamp belongs to the sweep's
+        min_refresh_sec scheduling) nor the failure streak.
+
+        ``token_min_remaining_sec`` (keyword-only): the token-TTL floor
+        passed to ``ensure_fresh_token`` — set it to the warming cadence
+        plus slack so a token always outlives the gap to the next pass.
+
+        ``refresh_older_than_sec`` (keyword-only): cache entries older than
+        this are evicted and RE-FETCHED by the pass. Without it, a hit
+        never extends an entry's TTL, so entries would expire BETWEEN
+        passes and hand the cold fetch to an RFQ. Set to the warming
+        cadence; entry age then never exceeds ~2x cadence, comfortably
+        inside STRUCTURE_TTL_SEC.
+        """
+        games = list(games)
+        if not games:
+            return {}
+        results: dict[str, int] = {}
+        pool = ThreadPoolExecutor(max_workers=len(self.books),
+                                  thread_name_prefix="sgp-warm")
+        try:
+            t_submit = time.monotonic()
+            futs = {b: pool.submit(self._warm_book_safe, b, games,
+                                   token_min_remaining_sec,
+                                   refresh_older_than_sec)
+                    for b in self.books}
+            wall_deadline = time.monotonic() + self.per_book_deadline_sec
+            for b, fut in futs.items():
+                remaining = max(0.0, wall_deadline - time.monotonic())
+                try:
+                    # duration is measured INSIDE the worker (like
+                    # refresh()'s _BookRun) — collection order must not
+                    # inflate later books' warming rows.
+                    outcome, error_class, warmed, counters, duration = \
+                        fut.result(timeout=remaining)
+                except FutureTimeout:
+                    # Same discipline as refresh(): the lingering thread
+                    # still shares this book's curl session — drop the
+                    # client now so the next cycle builds a fresh one.
+                    outcome, error_class = "timeout", "FutureTimeout"
+                    warmed, counters = 0, None
+                    duration = time.monotonic() - t_submit
+                    self._book_done(b, None, timed_out=True)
+                self.health.record(book=b, path="warming", outcome=outcome,
+                                   rows_or_prices=warmed,
+                                   duration_sec=duration,
+                                   error_class=error_class,
+                                   counters=counters)
+                self._observe_book_health(b, "warming", outcome, error_class)
+                results[b] = warmed
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+        return results
+
+    def _warm_book_safe(self, book: str, games, token_min_remaining_sec,
+                        refresh_older_than_sec=120.0):
+        """One book's warming pass, on a worker thread. Never raises.
+
+        Returns (outcome, error_class, games_warmed, counters_snapshot,
+        duration_sec). A game the book doesn't list is skipped, not a
+        failure; 'empty' means the book listed none of the slate.
+        """
+        counters = FetchCounters(book, "warming")
+        warmed = 0
+        t0 = time.monotonic()
+        try:
+            hooks = (self._on_demand_hooks or {}).get(book)
+            if hooks is None:
+                self._ensure_client(book)
+                hooks = self._book_on_demand_hooks(book, counters=counters)
+            # Evict entries the pass should renew (see warm_structures) —
+            # the game loop below then re-fetches them as ordinary misses.
+            for cache in self._state[book].caches.values():
+                cache.evict_older_than(refresh_older_than_sec)
+            client = self._state[book].client
+            prewarm = getattr(client, "ensure_fresh_token", None)
+            if callable(prewarm):
+                prewarm(min_remaining_sec=token_min_remaining_sec)
+            for game in games:
+                event = hooks["match_event"](client, game)
+                if event is None:
+                    continue                 # book doesn't list this game
+                counters.bump("events_seen")
+                counters.bump("events_matched")
+                structure = hooks["build_structure"](client, event, game)
+                if structure is not None:
+                    warmed += 1
+        except BookTransportError as e:
+            log.error("sgp_service: %s warming TRANSPORT FAILURE stage=%s "
+                      "status=%s: %s", book, e.stage, e.status_code, e)
+            counters.bump("transport_errors")
+            self._book_done(book, None)      # shared 3-strike recovery
+            return ("transport_error", transport_error_class(e), warmed,
+                    counters.snapshot(), time.monotonic() - t0)
+        except Exception as e:
+            counters.record_parse_failure("warming", log, e)
+            self._book_done(book, None)
+            return ("error", type(e).__name__, warmed, counters.snapshot(),
+                    time.monotonic() - t0)
+        outcome = "ok" if warmed else "empty"
+        return (outcome, None, warmed, counters.snapshot(),
+                time.monotonic() - t0)
+
     def close(self):
         """Drop all persistent clients (sessions close on GC)."""
         for st in self._state.values():
@@ -481,7 +618,8 @@ class SGPService:
 
     @staticmethod
     def _dk_fetchers(st: _BookState,
-                     profile: RetryProfile = RETRY_BACKGROUND) -> dict:
+                     profile: RetryProfile = RETRY_BACKGROUND, *,
+                     miss_cb=None) -> dict:
         """DK's structure fetchers, bound to one retry profile.
 
         The SAME factory serves the sweep (RETRY_BACKGROUND) and the
@@ -490,35 +628,45 @@ class SGPService:
         cold-cache on-demand fetch stay inside the RFQ quote budget. Both
         bindings share ``st.caches``, so a warm entry written by either path
         is reused by the other.
+
+        ``miss_cb`` (keyword-only, #50): fires per WIRE structure fetch —
+        the on-demand hooks bind it to the ``structure_fetches`` counter so
+        health rows can tell cold from warm. The sweep passes None.
         """
         import scraper_draftkings_sgp as legacy
         ev, struct = st.caches["events"], st.caches["structure"]
         return {
             "fetch_dk_events": lambda session: ev.get_or_fetch(
-                "dk_events", lambda: legacy.fetch_dk_events(session, profile)),
+                "dk_events", lambda: legacy.fetch_dk_events(session, profile),
+                miss_cb=miss_cb),
             "fetch_main_market_nums": lambda session, eid: struct.get_or_fetch(
                 ("nums", eid),
-                lambda: legacy.fetch_main_market_nums(session, eid, profile)),
+                lambda: legacy.fetch_main_market_nums(session, eid, profile),
+                miss_cb=miss_cb),
             "fetch_selection_ids": lambda session, eid, nums, verbose=False:
                 struct.get_or_fetch(
                     ("selids", eid),
                     lambda: legacy.fetch_selection_ids(session, eid, nums,
-                                                       verbose, profile)),
+                                                       verbose, profile),
+                    miss_cb=miss_cb),
         }
 
     @staticmethod
     def _fd_fetchers(st: _BookState,
-                     profile: RetryProfile = RETRY_BACKGROUND) -> dict:
+                     profile: RetryProfile = RETRY_BACKGROUND, *,
+                     miss_cb=None) -> dict:
         """FD's structure fetchers, bound to one retry profile — see
-        ``_dk_fetchers`` for why the profile is bound here."""
+        ``_dk_fetchers`` for why the profile (and ``miss_cb``) bind here."""
         import scraper_fanduel_sgp as legacy
         ev, struct = st.caches["events"], st.caches["structure"]
         return {
             "fetch_fd_events": lambda session: ev.get_or_fetch(
-                "fd_events", lambda: legacy.fetch_fd_events(session, profile)),
+                "fd_events", lambda: legacy.fetch_fd_events(session, profile),
+                miss_cb=miss_cb),
             "fetch_event_runners": lambda session, eid, h, a: struct.get_or_fetch(
                 ("runners", eid),
-                lambda: legacy.fetch_event_runners(session, eid, h, a, profile)),
+                lambda: legacy.fetch_event_runners(session, eid, h, a, profile),
+                miss_cb=miss_cb),
         }
     # ------------------------------------------------------------------ #
     # Phase 2: on-demand pricing of one same-game leg set                 #
@@ -576,12 +724,18 @@ class SGPService:
                                            verdict)
             snapshot = counters.snapshot()
             outcome = "ok" if result is not None else verdict.outcome
+            # Issue #50: cold = this call paid >=1 wire events/structure
+            # fetch; warm = fully cache-served (only price calls hit the
+            # wire). Explicit in the row so cold/warm p50/p95 is pure SQL.
+            cache_state = ("cold" if snapshot.structure_fetches > 0
+                           else "warm")
             self.health.record(
                 book=book, path="on_demand", outcome=outcome,
                 rows_or_prices=snapshot.prices_returned,
                 duration_sec=time.monotonic() - t0,
                 error_class=verdict.error_class,
-                counters=snapshot)
+                counters=snapshot,
+                cache_state=cache_state)
             # Issue #37: runs on the RFQ's thread — counters only, no I/O.
             self._observe_book_health(book, "on_demand", outcome,
                                       verdict.error_class)
@@ -717,17 +871,24 @@ class SGPService:
         structure carries no odds) -> each available side priced as a 1-leg
         wire call first (Route-B-only cost, per spec §4.2). Any leg that
         still has no usable chosen-side decimal fails the whole set (None).
+
+        Issue #50 item 4: the 1-leg wire calls fire CONCURRENTLY — DK pays
+        2 per leg, and serially that alone (2N x RTT) dominated the live
+        budget. Wall cost is now ~one RTT regardless of leg count. The math
+        below consumes the fetched decimals in leg order, so the fair is
+        identical to the serial version's.
         """
         from kalshi_common import fair_value
         vig = ON_DEMAND_VIG_FALLBACK.get(book, 0.06)
+        fetched = self._fetch_missing_singles(resolved, price_fn)
         singles = []
-        for r in resolved:
+        for j, r in enumerate(resolved):
             sd, od = r.single_decimal, r.opposite_decimal
             if sd is None and od is None:
-                # DK-style: no odds in the structure — 1-leg price calls.
-                sd = price_fn([r.ref])
-                od = (price_fn([r.opposite_ref])
-                      if r.opposite_ref is not None else None)
+                # DK-style: no odds in the structure — 1-leg price calls
+                # (already landed concurrently above).
+                sd = fetched.get((j, "single"))
+                od = fetched.get((j, "opposite"))
             try:
                 sd = float(sd) if sd is not None else None
                 od = float(od) if od is not None else None
@@ -746,6 +907,45 @@ class SGPService:
                 return None
             singles.append((1.0 / sd, fair))
         return singles
+
+    @staticmethod
+    def _fetch_missing_singles(resolved, price_fn) -> dict:
+        """Concurrent 1-leg price calls for every leg with NO structure odds.
+
+        Returns {(leg_index, 'single'|'opposite'): decimal | None}. A wire
+        exception (BookTransportError from the client) is re-raised AFTER
+        every in-flight call completes, preserving _price_on_demand's
+        transport-failure accounting exactly as in the serial version.
+        """
+        jobs = []                    # (leg_index, side_key, ref)
+        for j, r in enumerate(resolved):
+            if r.single_decimal is None and r.opposite_decimal is None:
+                jobs.append((j, "single", r.ref))
+                if r.opposite_ref is not None:
+                    jobs.append((j, "opposite", r.opposite_ref))
+        if not jobs:
+            return {}
+        if len(jobs) == 1:
+            j, side, ref = jobs[0]
+            return {(j, side): price_fn([ref])}
+        fetched: dict = {}
+        first_error = None
+        pool = ThreadPoolExecutor(max_workers=min(8, len(jobs)),
+                                  thread_name_prefix="sgp-single")
+        try:
+            futs = {(j, side): pool.submit(price_fn, [ref])
+                    for j, side, ref in jobs}
+            for key, fut in futs.items():
+                try:
+                    fetched[key] = fut.result()
+                except Exception as e:
+                    if first_error is None:
+                        first_error = e
+        finally:
+            pool.shutdown(wait=True)
+        if first_error is not None:
+            raise first_error
+        return fetched
 
     # ------------------------------------------------------------------ #
     # Per-book on-demand hooks (real implementations).                    #
@@ -769,13 +969,20 @@ class SGPService:
         """Per-book hook dict. ``counters`` (keyword-only) is threaded into
         each book's ``resolve_legs`` / ``price_selection_set`` so their
         fail-safe ``except`` blocks can record a NAMED parse failure instead
-        of silently returning None (issue #35)."""
+        of silently returning None (issue #35).
+
+        Every cache read below passes ``miss_cb`` (#50): a wire-level
+        events/structure fetch bumps ``structure_fetches``, and
+        ``price_on_demand`` derives the health row's cold/warm tag from it.
+        """
         st = self._state[book]
+        miss_cb = ((lambda: counters.bump("structure_fetches"))
+                   if counters is not None else None)
 
         if book == "draftkings":
             from mlb_sgp import draftkings as mod
             self._structure_caches(st)      # guarantee the caches exist
-            f = self._dk_fetchers(st, RETRY_LIVE)
+            f = self._dk_fetchers(st, RETRY_LIVE, miss_cb=miss_cb)
 
             def match_event(client, game):
                 import scraper_draftkings_sgp as legacy
@@ -801,7 +1008,7 @@ class SGPService:
         if book == "fanduel":
             from mlb_sgp import fanduel as mod
             self._structure_caches(st)      # guarantee the caches exist
-            f = self._fd_fetchers(st, RETRY_LIVE)
+            f = self._fd_fetchers(st, RETRY_LIVE, miss_cb=miss_cb)
 
             def match_event(client, game):
                 import scraper_fanduel_sgp as legacy
@@ -831,7 +1038,8 @@ class SGPService:
             def match_event(client, game):
                 import scraper_prophetx_sgp as legacy
                 events = ev_cache.get_or_fetch(
-                    "px_events", lambda: client.list_events(RETRY_LIVE))
+                    "px_events", lambda: client.list_events(RETRY_LIVE),
+                    miss_cb=miss_cb)
                 # Same Event -> legacy-dict translation as price_sgps
                 # (prophetx.py:258-268).
                 px_events = [
@@ -858,7 +1066,8 @@ class SGPService:
                          "selections": m.ml_selections}
                         for m in client.fetch_event_markets(eid, RETRY_LIVE)
                     ]
-                markets = struct_cache.get_or_fetch(("px_markets", eid), _fetch)
+                markets = struct_cache.get_or_fetch(("px_markets", eid), _fetch,
+                                                    miss_cb=miss_cb)
                 home_id = event["px_home_competitor_id"]
                 away_id = event["px_away_competitor_id"]
                 if not markets or not _verify_competitor_ids(
@@ -883,7 +1092,8 @@ class SGPService:
             def match_event(client, game):
                 import scraper_novig_sgp as legacy
                 events = ev_cache.get_or_fetch(
-                    "nv_events", lambda: client.list_events(RETRY_LIVE))
+                    "nv_events", lambda: client.list_events(RETRY_LIVE),
+                    miss_cb=miss_cb)
                 # Same Event -> legacy-dict translation as price_sgps
                 # (novig.py:207-218).
                 nv_events = [
@@ -906,7 +1116,8 @@ class SGPService:
                     _, markets = fetch_event_legs(client.session, event,
                                                   profile=RETRY_LIVE)
                     return markets
-                markets = struct_cache.get_or_fetch(("nv_markets", eid), _fetch)
+                markets = struct_cache.get_or_fetch(("nv_markets", eid), _fetch,
+                                                    miss_cb=miss_cb)
                 if not markets:
                     return None
                 return mod.build_line_structure(
@@ -927,7 +1138,8 @@ class SGPService:
 
             def match_event(client, game):
                 events = ev_cache.get_or_fetch(
-                    "mgm_events", lambda: client.list_events(profile=RETRY_LIVE))
+                    "mgm_events", lambda: client.list_events(profile=RETRY_LIVE),
+                    miss_cb=miss_cb)
                 matched = mod._match_events(events, [_od_target(game)])
                 return matched.get(game.game_id)
 
@@ -939,7 +1151,7 @@ class SGPService:
                     return mod.parse_markets(
                         markets, event.home_team, event.away_team)
                 parsed = struct_cache.get_or_fetch(
-                    ("mgm_markets", event.event_id), _fetch)
+                    ("mgm_markets", event.event_id), _fetch, miss_cb=miss_cb)
                 return (parsed or {}).get("FG") or None
 
             return {"match_event": match_event,
@@ -960,7 +1172,8 @@ class SGPService:
 
             def match_event(client, game):
                 events = ev_cache.get_or_fetch(
-                    "czr_events", lambda: client.list_events(RETRY_LIVE))
+                    "czr_events", lambda: client.list_events(RETRY_LIVE),
+                    miss_cb=miss_cb)
                 matched = mod._match_events(events, [_od_target(game)])
                 return matched.get(game.game_id)
 
@@ -969,7 +1182,7 @@ class SGPService:
                     ev = client.fetch_event(event.event_id, RETRY_LIVE)
                     return mod.parse_markets(ev) if ev else None
                 parsed = struct_cache.get_or_fetch(
-                    ("czr_event", event.event_id), _fetch)
+                    ("czr_event", event.event_id), _fetch, miss_cb=miss_cb)
                 return (parsed or {}).get("FG") or None
 
             return {"match_event": match_event,

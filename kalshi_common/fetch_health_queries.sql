@@ -48,6 +48,27 @@ GROUP BY book, path
 ORDER BY book, path;
 
 
+-- name: on_demand_latency_cold_warm
+-- Issue #50's acceptance readout: per-book LIVE-path latency percentiles,
+-- split by the explicit cache_state tag ('cold' = the call paid a wire
+-- events/structure fetch; 'warm' = fully cache-served). With structure
+-- warming running, cold rows should all but disappear — a persistent cold
+-- share means the warming cadence is losing to the structure TTL.
+SELECT
+    book,
+    cache_state,
+    count(*)                                              AS n_fetches,
+    count(*) FILTER (WHERE outcome = 'ok')                AS n_ok,
+    round(quantile_cont(duration_sec, 0.50), 2)           AS p50_duration_sec,
+    round(quantile_cont(duration_sec, 0.95), 2)           AS p95_duration_sec,
+    max(fetched_at)                                       AS last_fetch_at
+FROM sgp_fetch_health
+WHERE path = 'on_demand'
+  AND fetched_at >= now() - INTERVAL 24 HOUR
+GROUP BY book, cache_state
+ORDER BY book, cache_state;
+
+
 -- name: current_failure_streak
 -- How many consecutive fetches a book's most recent run of failures spans,
 -- per path. This is what #37 alerts on: one 403 is noise, forty in a row is
