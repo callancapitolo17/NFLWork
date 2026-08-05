@@ -367,6 +367,50 @@ def test_mgm_real_price_hook_threads_fixture_id():
     assert st.client.calls == [("F1", [("m1", "o1"), ("m2", "o2")])]
 
 
+# --------------------------------------------------------------------- #
+# Issue #50 item 4: DK's Route-B 1-leg calls fire concurrently            #
+# --------------------------------------------------------------------- #
+
+def test_route_b_one_leg_calls_fire_concurrently_not_serially():
+    """DK's structure carries no single-leg odds, so Route B pays 2 extra
+    wire calls per leg. Serially that is 8 × RTT on a 4-leg combo — the
+    straggler behavior #50 item 4 removes. At least two 1-leg calls must
+    be in flight at the same moment."""
+    import threading
+    import time as _time
+
+    state = {"active": 0, "max_active": 0}
+    lock = threading.Lock()
+
+    def price(client, refs, event):
+        if len(refs) == 4:
+            return 3.5                          # the target SGP
+        with lock:
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+        _time.sleep(0.15)                       # a realistic 1-leg RTT
+        with lock:
+            state["active"] -= 1
+        (ref,) = refs
+        return 1.35 if ref.startswith("r") else 3.4
+
+    svc = _svc("draftkings", _hooks(_resolved(4, singles=False), price))
+    t0 = _time.monotonic()
+    res = svc.price_on_demand("draftkings", GAME, _legs(4))
+    wall = _time.monotonic() - t0
+
+    assert res is not None
+    assert res.route == "transfer"
+    # 8 one-leg calls at 0.15s each: serial ≥ 1.2s, parallel ≪ that.
+    assert state["max_active"] >= 2, "1-leg calls ran strictly serially"
+    assert wall < 1.0, f"Route B singles took {wall:.2f}s — serial wire calls"
+    # the math is unchanged by the parallelism
+    fair = fair_value.devig_two_way(1.35, 3.4)[0]
+    expected = fair_value.fair_by_correlation_transfer(
+        3.5, [(1.0 / 1.35, fair)] * 4)
+    assert res.fair == pytest.approx(expected)
+
+
 def test_service_init_makes_canonical_match_resolvable():
     """betmgm/caesars/novig matchers import canonical_match (lives in
     "Answer Keys"); the sweep only resolves it via legacy-scraper import

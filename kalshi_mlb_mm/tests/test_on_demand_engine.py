@@ -207,6 +207,94 @@ def test_refetch_now_never_reuses_a_pre_entry_result():
     assert len(svc.calls) == calls_before + len(svc.books)   # re-fetched live
 
 
+# --------------------------------------------------------------------- #
+# Issue #50 item 3: per-call budgets on the live path                     #
+# --------------------------------------------------------------------- #
+
+class UnevenService(FakeService):
+    """Per-book latency map — models one hung book among fast ones."""
+
+    def __init__(self, latency_by_book, **kwargs):
+        super().__init__(**kwargs)
+        self.latency_by_book = dict(latency_by_book)
+
+    def price_on_demand(self, book, game, legs):
+        with self.lock:
+            self.calls.append((book, legset.leg_set_hash(legs)))
+        time.sleep(self.latency_by_book.get(book, 0.0))
+        if book in self.fail_books:
+            return None
+        return OnDemandBookResult(book=book, fair=self.fair, route="partition",
+                                  n_cells_priced=8, latency_sec=0.1)
+
+
+def _await_landing(eng, h, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while eng.landed_at(h) is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return eng.landed_at(h) is not None
+
+
+def test_hung_book_is_ignored_and_fast_books_land_within_budget():
+    """One book over the on-demand budget must not stall the combo to the
+    75s feed deadline — the fast books' results land, the straggler is
+    dropped. This is the ticket's headline engine behavior."""
+    svc = UnevenService({"draftkings": 0.0, "fanduel": 2.0})
+    svc.on_demand_deadline_sec = 0.3
+    eng = OnDemandEngine(svc)
+    legs = _legs()
+    h = legset.leg_set_hash(legs)
+    t0 = time.monotonic()
+    eng.ensure_fetch(h, GAME, legs)
+    assert _await_landing(eng, h)
+    wall = time.monotonic() - t0
+    assert wall < 1.5, f"combo waited {wall:.2f}s for a hung book"
+    assert eng.lookup(h) == {"draftkings": svc.fair}
+
+
+def test_engine_prefers_on_demand_deadline_over_sweep_deadline():
+    """The 75s sweep deadline (per_book_deadline_sec) is sized for the
+    background path; the live path must read the service's dedicated
+    on_demand_deadline_sec instead."""
+    svc = UnevenService({"draftkings": 0.0, "fanduel": 1.5})
+    svc.per_book_deadline_sec = 75.0
+    svc.on_demand_deadline_sec = 0.2
+    eng = OnDemandEngine(svc)
+    legs = _legs()
+    h = legset.leg_set_hash(legs)
+    t0 = time.monotonic()
+    eng.ensure_fetch(h, GAME, legs)
+    assert _await_landing(eng, h)
+    assert time.monotonic() - t0 < 1.0
+    assert eng.lookup(h) == {"draftkings": svc.fair}
+
+
+# --------------------------------------------------------------------- #
+# Issue #50 item 3 (second finding): multi-game jobs drain concurrently   #
+# --------------------------------------------------------------------- #
+
+def test_multi_game_jobs_drain_concurrently_not_serially():
+    """A cross-game RFQ enqueues one job per game. The old single-consumer
+    worker drained them strictly serially, so game 2's fetch waited out all
+    of game 1's. Both jobs must be in flight at once."""
+    svc = FakeService(latency=0.8)
+    svc.on_demand_deadline_sec = 5.0
+    eng = OnDemandEngine(svc)
+    legs_a = _legs()
+    legs_b = _legs()[:2]
+    h_a = legset.leg_set_hash(legs_a)
+    h_b = legset.leg_set_hash(legs_b)
+    assert h_a != h_b
+    t0 = time.monotonic()
+    eng.ensure_fetch(h_a, GAME, legs_a)
+    eng.ensure_fetch(h_b, GAME, legs_b)
+    assert _await_landing(eng, h_a) and _await_landing(eng, h_b)
+    wall = time.monotonic() - t0
+    # parallel ≈ 0.8s; serial ≥ 1.6s. Generous margin for CI jitter.
+    assert wall < 1.4, f"jobs drained serially: {wall:.2f}s"
+    assert eng.lookup(h_a) is not None and eng.lookup(h_b) is not None
+
+
 def test_ensure_fetch_reaps_wedged_inflight_and_restarts_worker():
     clock = FakeClock()
     svc = FakeService()
