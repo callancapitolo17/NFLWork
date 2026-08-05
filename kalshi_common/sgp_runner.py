@@ -88,7 +88,9 @@ def _fetch_kalshi_spread_lines(suffix: str, home_code: str | None = None,
             line = -(n - 0.5) if who == "home" else (n - 0.5)
             out.append((line, who))
         else:
-            # Legacy/MM behavior: one home-favorite grid per |line|, deduped.
+            # Legacy behavior (dashboard subprocess path only since #70 —
+            # both bots pass both_teams=True): one home-favorite grid per
+            # |line|, deduped, losing WHICH team is favoured.
             line = -(n - 0.5)
             key = round(line, 1)
             if key in seen:

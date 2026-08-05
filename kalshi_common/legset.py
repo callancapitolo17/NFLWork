@@ -57,7 +57,15 @@ def parse_leg(leg: dict) -> CanonicalLeg | None:
             return None
         home_covers = ((typed.team_is_home and typed.side == "yes")
                        or (not typed.team_is_home and typed.side == "no"))
-        return CanonicalLeg(et, "spread", -(typed.line_n - 0.5),
+        # Issue #70: the line's sign follows the ticker's TEAM (which margin
+        # market this is), matching mlb_sgp_odds.spread_line — home margin
+        # ticker -> negative, away margin ticker -> positive. The side is the
+        # covering team. This keeps the four (team x side) legs distinct;
+        # collapsing both teams onto -(n-0.5) selected the away +1.5 grid
+        # cell for an away -1.5 leg.
+        home_perspective_line = (-(typed.line_n - 0.5) if typed.team_is_home
+                                 else (typed.line_n - 0.5))
+        return CanonicalLeg(et, "spread", home_perspective_line,
                             "home" if home_covers else "away")
     if mt.startswith("KXMLBTOTAL-"):
         try:

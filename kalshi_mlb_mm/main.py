@@ -1747,8 +1747,13 @@ def main_loop(dry_run: bool):
     _ENGINE = OnDemandEngine(sgp_service)
     # synchronous warm-up: one SGP cycle
     try:
+        # Issue #70: both_teams=True scrapes BOTH teams' margin grids (signed
+        # spread_line: home margin negative, away margin positive), matching
+        # the taker. Without it the +N grids don't exist and every
+        # away-favourite spread leg declines as too_few_books. Roughly
+        # doubles the spread target lines per cycle.
         rc = sgp_runner.sgp_cycle(bot_market_db=str(config.MARKET_DB),
-                                   service=sgp_service)
+                                   service=sgp_service, both_teams=True)
         _refresh_sgp()
         # Event 8: scrape_done — warmup cycle
         book_counts = {}
@@ -1803,7 +1808,7 @@ def main_loop(dry_run: bool):
                 try:
                     rc = sgp_runner.sgp_cycle(
                         bot_market_db=str(config.MARKET_DB),
-                        service=sgp_service)
+                        service=sgp_service, both_teams=True)  # issue #70
                     _refresh_sgp()
                     # Event 8: scrape_done — periodic cycle
                     book_counts = {}

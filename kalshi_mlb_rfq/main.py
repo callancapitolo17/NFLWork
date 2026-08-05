@@ -77,7 +77,7 @@ def _research_sample() -> bool:
 
 
 def _emit_candidate_event(outcome: str, *, game_id: str, cand,
-                          spread_line: float, total_line: float,
+                          spread_line: float | None, total_line: float,
                           model: float | None = None,
                           books: dict | None = None,
                           blended: float | None = None,
