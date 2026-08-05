@@ -37,10 +37,19 @@ _STORE_RETENTION_SEC = 300.0
 # dedup would suppress re-fetches of that combo forever).
 _INFLIGHT_REAP_SEC = 300.0
 
-# Per-book wall bound for FEED fetches (the confirm lane passes its own
-# confirm-window deadline). One slow/hung book must not stall the single
-# consumer thread — mirrors SGPService.refresh's deadline discipline.
+# Fallback wall bound for FEED fetches when the service carries no
+# on_demand_deadline_sec (duck-typed test services). The real budget comes
+# from SGPService.on_demand_deadline_sec (issue #50): a book still running
+# past it is dropped and the fast books' results land. The confirm lane
+# passes its own confirm-window deadline.
 _FEED_FETCH_DEADLINE_SEC = 75.0
+
+# Issue #50: multi-game RFQs enqueue one job per game; the old single
+# consumer drained them strictly serially, so game N's fetch waited out
+# games 1..N-1 in full. Jobs now run on up to this many concurrent daemon
+# threads (each job already fans one thread per book internally, so the
+# ceiling bounds total fan-out at jobs x books).
+_MAX_CONCURRENT_JOBS = 4
 
 
 class OnDemandEngine:
@@ -55,6 +64,9 @@ class OnDemandEngine:
         self._landed: dict[str, threading.Event] = {}   # hash -> landing signal
         self._store: dict = {}              # hash -> (landed_at, {book: OnDemandBookResult})
         self._worker: threading.Thread | None = None
+        # Caps concurrent jobs; acquired by the dispatcher, released by the
+        # job thread — the dispatcher blocks (backpressure) at the cap.
+        self._job_slots = threading.Semaphore(_MAX_CONCURRENT_JOBS)
 
     # ------------------------------------------------------------- #
     # Feed side (discovery tick)                                     #
@@ -168,7 +180,7 @@ class OnDemandEngine:
         while True:
             self._wake.wait(timeout=1.0)
             self._wake.clear()
-            while self._drain_once():
+            while self._dispatch_once():
                 pass
 
     def _queue_len(self) -> int:
@@ -179,21 +191,52 @@ class OnDemandEngine:
         with self._lock:
             return len(self._inflight)
 
+    def _feed_deadline_sec(self) -> float:
+        """The live path's per-job wall budget (issue #50): the service's
+        on_demand_deadline_sec — NEVER per_book_deadline_sec, which is the
+        75s background-sweep budget. A quote is worthless at sweep speed."""
+        budget = getattr(self._service, "on_demand_deadline_sec", None)
+        try:
+            return float(budget)
+        except (TypeError, ValueError):
+            return _FEED_FETCH_DEADLINE_SEC
+
+    def _dispatch_once(self) -> bool:
+        """Move one queued job onto its own daemon thread. Returns False
+        when the queue is empty. Blocks at _MAX_CONCURRENT_JOBS in flight
+        (backpressure on the dispatcher, never a dropped job)."""
+        with self._lock:
+            if not self._queue:
+                return False
+            hash_, game, legs = self._queue.popleft()
+        self._job_slots.acquire()
+        threading.Thread(target=self._process_job, args=(hash_, game, legs),
+                         daemon=True, name="on-demand-job").start()
+        return True
+
+    def _process_job(self, hash_: str, game, legs) -> None:
+        """One job, on its own thread. Never raises; always releases its
+        slot and always lands SOMETHING for the hash (a failed job lands
+        {} so the poll's dedup can re-feed instead of wedging)."""
+        try:
+            self._fetch_combo(hash_, game, legs,
+                              deadline=self._now() + self._feed_deadline_sec())
+        except Exception as e:
+            log.warning("on_demand fetch error for %s: %s", hash_[:12], e)
+            self._finish(hash_, {})
+        finally:
+            self._job_slots.release()
+
     def _drain_once(self) -> bool:
-        """Process one queued job. Returns False when the queue is empty.
-        Never raises (a raise would kill the consumer thread)."""
+        """Synchronous single-job drain — the autostart=False test seam
+        (production traffic flows through _dispatch_once). Never raises."""
         with self._lock:
             if not self._queue:
                 return False
             hash_, game, legs = self._queue.popleft()
         try:
-            per_book = getattr(self._service, "per_book_deadline_sec", None)
-            try:
-                per_book = float(per_book)
-            except (TypeError, ValueError):
-                per_book = _FEED_FETCH_DEADLINE_SEC
             self._fetch_combo(hash_, game, legs,
-                              deadline=self._now() + per_book)
+                              deadline=self._now() + self._feed_deadline_sec())
         except Exception as e:
             log.warning("on_demand fetch error for %s: %s", hash_[:12], e)
             self._finish(hash_, {})

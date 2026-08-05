@@ -177,6 +177,10 @@ SGP_SCRAPER_TIMEOUT_SEC = int(_get("SGP_SCRAPER_TIMEOUT_SEC", "90"))
 # never pays a cold-structure penalty. Must stay under STRUCTURE_TTL_SEC
 # (kalshi_common/sgp_service.py) and under the CZR token TTL.
 STRUCTURE_WARM_SEC = int(_get("STRUCTURE_WARM_SEC", "120"))
+# Issue #50: per-book wall budget for LIVE (on-demand) pricing fetches.
+# 10s keeps warm Novig (p95 ~9s at #42's baseline) barely inside while a
+# hung book is dropped instead of stalling the combo to the sweep budget.
+ON_DEMAND_DEADLINE_SEC = float(_get("ON_DEMAND_DEADLINE_SEC", "10.0"))
 
 # Run-time book-health alerting (issue #37). Keys on consecutive FAILED
 # fetches, never on data age — an age rule would false-fire by design once

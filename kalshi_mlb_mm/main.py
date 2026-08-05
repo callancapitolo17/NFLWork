@@ -1732,6 +1732,7 @@ def main_loop(dry_run: bool):
     # (see kalshi_common/book_health.py). Rule B reuses MIN_AGREEING_BOOKS so
     # the alert fires at exactly the count the quoting gate cares about.
     sgp_service = SGPService(per_book_deadline_sec=config.SGP_SCRAPER_TIMEOUT_SEC,
+                             on_demand_deadline_sec=config.ON_DEMAND_DEADLINE_SEC,
                              health_db_path=str(config.MARKET_DB),
                              book_health=build_alerter(
                                  label="MM",

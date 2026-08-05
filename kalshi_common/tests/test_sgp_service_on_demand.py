@@ -203,10 +203,12 @@ def test_dk_style_no_singles_prices_each_side_as_one_leg_call():
     assert res is not None
     assert res.route == "transfer"
     assert res.n_cells_priced == 1               # target only
-    expected_calls = [["r0", "r1", "r2", "r3"]]
-    for j in range(4):
-        expected_calls += [[f"r{j}"], [f"o{j}"]]
-    assert calls == expected_calls
+    # #50 item 4: the 1-leg calls fire concurrently, so only the target's
+    # position is ordered; the 8 single calls are an unordered multiset.
+    assert calls[0] == ["r0", "r1", "r2", "r3"]
+    expected_singles = sorted(
+        [[f"r{j}"] for j in range(4)] + [[f"o{j}"] for j in range(4)])
+    assert sorted(calls[1:]) == expected_singles
     fair = fair_value.devig_two_way(1.35, 3.4)[0]
     expected = fair_value.fair_by_correlation_transfer(
         3.5, [(1.0 / 1.35, fair)] * 4)
@@ -234,8 +236,9 @@ def test_dk_style_one_sided_leg_haircuts_after_one_leg_call():
 
     assert res is not None
     assert res.route == "transfer"
-    # target, r0, o0, r1 — never a call for the missing o1.
-    assert calls == [["r0", "r1"], ["r0"], ["o0"], ["r1"]]
+    # target first, then r0/o0/r1 concurrently (#50) — never the missing o1.
+    assert calls[0] == ["r0", "r1"]
+    assert sorted(calls[1:]) == [["o0"], ["r0"], ["r1"]]
     fair0 = fair_value.devig_two_way(1.9, 2.0)[0]
     vig = ON_DEMAND_VIG_FALLBACK["draftkings"]
     fair1 = (1.0 / 1.9) / (1.0 + vig)

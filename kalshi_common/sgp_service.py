@@ -150,9 +150,16 @@ class SGPService:
         # disables alerting entirely — dashboard CLI path, tests, and every
         # pre-#37 caller. Keyword-only for the same reason as above.
         book_health=None,
+        # Issue #50: per-book wall budget for LIVE (on-demand) pricing
+        # calls. The 75s per_book_deadline_sec is sized for the background
+        # sweep; a quote-path fetch that slow is worthless — the on-demand
+        # engine drops any book still running past this and lands the fast
+        # books' results. #45 will cap the client timeouts underneath.
+        on_demand_deadline_sec: float = 10.0,
     ):
         self.books = tuple(books)
         self.per_book_deadline_sec = per_book_deadline_sec
+        self.on_demand_deadline_sec = on_demand_deadline_sec
         self.min_refresh_sec = dict(min_refresh_sec or {})
         self._runners = runners
         self._on_demand_hooks = on_demand_hooks
@@ -840,17 +847,24 @@ class SGPService:
         structure carries no odds) -> each available side priced as a 1-leg
         wire call first (Route-B-only cost, per spec §4.2). Any leg that
         still has no usable chosen-side decimal fails the whole set (None).
+
+        Issue #50 item 4: the 1-leg wire calls fire CONCURRENTLY — DK pays
+        2 per leg, and serially that alone (2N x RTT) dominated the live
+        budget. Wall cost is now ~one RTT regardless of leg count. The math
+        below consumes the fetched decimals in leg order, so the fair is
+        identical to the serial version's.
         """
         from kalshi_common import fair_value
         vig = ON_DEMAND_VIG_FALLBACK.get(book, 0.06)
+        fetched = self._fetch_missing_singles(resolved, price_fn)
         singles = []
-        for r in resolved:
+        for j, r in enumerate(resolved):
             sd, od = r.single_decimal, r.opposite_decimal
             if sd is None and od is None:
-                # DK-style: no odds in the structure — 1-leg price calls.
-                sd = price_fn([r.ref])
-                od = (price_fn([r.opposite_ref])
-                      if r.opposite_ref is not None else None)
+                # DK-style: no odds in the structure — 1-leg price calls
+                # (already landed concurrently above).
+                sd = fetched.get((j, "single"))
+                od = fetched.get((j, "opposite"))
             try:
                 sd = float(sd) if sd is not None else None
                 od = float(od) if od is not None else None
@@ -869,6 +883,45 @@ class SGPService:
                 return None
             singles.append((1.0 / sd, fair))
         return singles
+
+    @staticmethod
+    def _fetch_missing_singles(resolved, price_fn) -> dict:
+        """Concurrent 1-leg price calls for every leg with NO structure odds.
+
+        Returns {(leg_index, 'single'|'opposite'): decimal | None}. A wire
+        exception (BookTransportError from the client) is re-raised AFTER
+        every in-flight call completes, preserving _price_on_demand's
+        transport-failure accounting exactly as in the serial version.
+        """
+        jobs = []                    # (leg_index, side_key, ref)
+        for j, r in enumerate(resolved):
+            if r.single_decimal is None and r.opposite_decimal is None:
+                jobs.append((j, "single", r.ref))
+                if r.opposite_ref is not None:
+                    jobs.append((j, "opposite", r.opposite_ref))
+        if not jobs:
+            return {}
+        if len(jobs) == 1:
+            j, side, ref = jobs[0]
+            return {(j, side): price_fn([ref])}
+        fetched: dict = {}
+        first_error = None
+        pool = ThreadPoolExecutor(max_workers=min(8, len(jobs)),
+                                  thread_name_prefix="sgp-single")
+        try:
+            futs = {(j, side): pool.submit(price_fn, [ref])
+                    for j, side, ref in jobs}
+            for key, fut in futs.items():
+                try:
+                    fetched[key] = fut.result()
+                except Exception as e:
+                    if first_error is None:
+                        first_error = e
+        finally:
+            pool.shutdown(wait=True)
+        if first_error is not None:
+            raise first_error
+        return fetched
 
     # ------------------------------------------------------------------ #
     # Per-book on-demand hooks (real implementations).                    #
