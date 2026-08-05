@@ -62,9 +62,35 @@ def test_parse_ml_no_flips_to_away():
     assert leg == legset.CanonicalLeg(EVT, "ml", None, "away")
 
 def test_parse_spread_away_team_yes():
-    # NYY is away team in EVT; -1.5 YES on away = away covers
+    # NYY is away team in EVT. The NYY margin ticker is AWAY -1.5, which in
+    # home-perspective is +1.5 (issue #70: this used to collapse onto -1.5,
+    # the home-favourite line, selecting the away +1.5 grid cell instead).
     leg = legset.parse_leg(_spread("NYY", 2, "yes"))
-    assert leg == legset.CanonicalLeg(EVT, "spread", -1.5, "away")
+    assert leg == legset.CanonicalLeg(EVT, "spread", 1.5, "away")
+
+def test_parse_spread_away_team_no():
+    # NYY -1.5 NO == home covers +1.5 -> home-perspective line +1.5, side home
+    leg = legset.parse_leg(_spread("NYY", 2, "no"))
+    assert leg == legset.CanonicalLeg(EVT, "spread", 1.5, "home")
+
+def test_spread_four_way_distinct():
+    """Issue #70: the four (ticker team x side) spreads at one N must be four
+    DISTINCT CanonicalLegs with four distinct hashes. Line sign follows the
+    ticker's team (home margin -> negative, away margin -> positive); side is
+    the covering team."""
+    legs = [legset.parse_leg(_spread("BOS", 2, "yes")),   # home -1.5
+            legset.parse_leg(_spread("BOS", 2, "no")),    # away +1.5 @ home grid
+            legset.parse_leg(_spread("NYY", 2, "yes")),   # away -1.5
+            legset.parse_leg(_spread("NYY", 2, "no"))]    # home +1.5 @ away grid
+    assert legs == [
+        legset.CanonicalLeg(EVT, "spread", -1.5, "home"),
+        legset.CanonicalLeg(EVT, "spread", -1.5, "away"),
+        legset.CanonicalLeg(EVT, "spread", 1.5, "away"),
+        legset.CanonicalLeg(EVT, "spread", 1.5, "home"),
+    ]
+    assert len(set(legs)) == 4
+    hashes = {legset.leg_set_hash([l]) for l in legs}
+    assert len(hashes) == 4
 
 def test_hash_is_order_independent():
     a = legset.parse_legs([_spread("BOS", 2, "yes"), _total(9, "yes")])

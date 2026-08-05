@@ -59,6 +59,68 @@ def test_grid_cell_fairs_devigs_per_book():
 ML_CELLS = {"Home ML + Over": 3.6, "Home ML + Under": 4.0,
             "Away ML + Over": 4.4, "Away ML + Under": 4.0}
 
+def test_grid_spec_away_favourite_positive_line():
+    # Issue #70: NYY is the away team; its margin ticker is away -1.5, which is
+    # +1.5 home-perspective. Before the fix this collapsed onto spread_line
+    # -1.5, whose "Away Spread" cell is away +1.5 — a different, easier event.
+    legs = legset.parse_legs([
+        leg("KXMLBSPREAD-25JUN271905NYYBOS-NYY2", "yes"),
+        leg("KXMLBTOTAL-25JUN271905NYYBOS-9", "yes")])
+    family, spread_line, total_line, target = router.grid_spec(legs)
+    assert spread_line == 1.5 and total_line == 8.5
+    assert target == "Away Spread + Over"
+
+
+# Two DISTINGUISHABLE grids for the same game: the home-favourite (-1.5) grid
+# devigs every cell to 0.25; the away-favourite (+1.5) grid devigs its Away
+# cells to 0.30 and its Home cells to 0.20. A test asserting ~0.30/0.60 can
+# therefore only pass if the +1.5 grid was selected.
+NEG_GRID_CELLS = {"Home Spread + Over": 4.0, "Home Spread + Under": 4.0,
+                  "Away Spread + Over": 4.0, "Away Spread + Under": 4.0}
+POS_GRID_CELLS = {"Home Spread + Over": 5.0, "Home Spread + Under": 5.0,
+                  "Away Spread + Over": 10.0 / 3.0, "Away Spread + Under": 10.0 / 3.0}
+
+
+def _both_sign_grids_df():
+    return pd.DataFrame(
+        _grid_rows("dk", EVT, -1.5, 8.5, NEG_GRID_CELLS)
+        + _grid_rows("fd", EVT, -1.5, 8.5, NEG_GRID_CELLS)
+        + _grid_rows("dk", EVT, 1.5, 8.5, POS_GRID_CELLS)
+        + _grid_rows("fd", EVT, 1.5, 8.5, POS_GRID_CELLS))
+
+
+def test_away_favourite_combo_prices_from_positive_grid():
+    # away -1.5 + Over 8.5 must price from the +1.5 grid's "Away Spread + Over"
+    # (~0.30), NOT the -1.5 grid's away +1.5 cell (~0.25).
+    legs = legset.parse_legs([
+        leg("KXMLBSPREAD-25JUN271905NYYBOS-NYY2", "yes"),
+        leg("KXMLBTOTAL-25JUN271905NYYBOS-9", "yes")])
+    cons, reason = router.subcombo_consensus(EVT, legs, _both_sign_grids_df(),
+                                             min_books=2, sigma_z_max=0.07)
+    assert reason == "ok"
+    assert cons.fair == pytest.approx(0.30, abs=0.02)
+
+
+def test_away_favourite_single_marginalizes_positive_grid():
+    # The SINGLE route (most common in the corpus): a lone away -1.5 leg must
+    # marginalize the +1.5 grid's Away cells (~0.60), not the -1.5 grid's
+    # away +1.5 cells (~0.50).
+    canon = legset.parse_legs([leg("KXMLBSPREAD-25JUN271905NYYBOS-NYY2", "yes")])
+    out = router.single_marginal_fairs(EVT, canon[0], _both_sign_grids_df())
+    assert set(out) == {"dk", "fd"}
+    assert out["dk"] == pytest.approx(0.60, abs=0.02)
+
+
+def test_home_underdog_leg_prices_from_away_favourite_grid():
+    # NYY2 NO == home +1.5: lives on the AWAY team's margin market, so it must
+    # look up the +1.5 grid's Home cells (~0.40), not the -1.5 grid's Home
+    # cells (~0.50).
+    canon = legset.parse_legs([leg("KXMLBSPREAD-25JUN271905NYYBOS-NYY2", "no")])
+    out = router.single_marginal_fairs(EVT, canon[0], _both_sign_grids_df())
+    assert set(out) == {"dk", "fd"}
+    assert out["dk"] == pytest.approx(0.40, abs=0.02)
+
+
 def test_grid_spec_ml_total():
     legs = legset.parse_legs([
         leg("KXMLBGAME-25JUN271905NYYBOS-BOS", "yes"),          # home ML
