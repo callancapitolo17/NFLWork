@@ -73,6 +73,14 @@ def test_ttlcache_miss_cb_fires_again_after_expiry():
     assert misses == [1, 1]
 
 
+def test_service_on_demand_deadline_param_is_keyword_only():
+    sig = inspect.signature(SGPService.__init__)
+    assert (sig.parameters["on_demand_deadline_sec"].kind
+            is inspect.Parameter.KEYWORD_ONLY)
+    svc = SGPService(books=("fanduel",))
+    assert svc.on_demand_deadline_sec == 10.0
+
+
 def test_ttlcache_miss_cb_is_keyword_only():
     sig = inspect.signature(TTLCache.get_or_fetch)
     assert sig.parameters["miss_cb"].kind is inspect.Parameter.KEYWORD_ONLY

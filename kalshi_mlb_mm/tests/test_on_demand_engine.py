@@ -295,6 +295,25 @@ def test_multi_game_jobs_drain_concurrently_not_serially():
     assert eng.lookup(h_a) is not None and eng.lookup(h_b) is not None
 
 
+def test_job_flood_past_the_concurrency_cap_fully_drains():
+    """More jobs than _MAX_CONCURRENT_JOBS: the semaphore backpressures the
+    dispatcher, every slot is released, and every job still lands."""
+    svc = FakeService(latency=0.2)
+    svc.on_demand_deadline_sec = 5.0
+    eng = OnDemandEngine(svc)
+    hashes = []
+    for i in range(6):
+        legs = _legs()[:2] + [legset.CanonicalLeg(EVT, "total",
+                                                  7.5 + i, "over")]
+        h = legset.leg_set_hash(legs)
+        hashes.append(h)
+        eng.ensure_fetch(h, GAME, legs)
+    assert len(set(hashes)) == 6
+    for h in hashes:
+        assert _await_landing(eng, h), "a job never landed — leaked slot?"
+        assert eng.lookup(h) is not None
+
+
 def test_ensure_fetch_reaps_wedged_inflight_and_restarts_worker():
     clock = FakeClock()
     svc = FakeService()

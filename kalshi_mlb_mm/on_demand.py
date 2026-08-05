@@ -210,8 +210,16 @@ class OnDemandEngine:
                 return False
             hash_, game, legs = self._queue.popleft()
         self._job_slots.acquire()
-        threading.Thread(target=self._process_job, args=(hash_, game, legs),
-                         daemon=True, name="on-demand-job").start()
+        try:
+            threading.Thread(target=self._process_job,
+                             args=(hash_, game, legs),
+                             daemon=True, name="on-demand-job").start()
+        except Exception as e:
+            # Thread creation failing (fd/thread exhaustion) must not leak
+            # the slot — four leaks would wedge the dispatcher forever.
+            self._job_slots.release()
+            log.warning("on_demand job spawn failed for %s: %s", hash_[:12], e)
+            self._finish(hash_, {})
         return True
 
     def _process_job(self, hash_: str, game, legs) -> None:
