@@ -373,6 +373,107 @@ def test_engine_landed_empty_and_result_age(monkeypatch):
     assert eng.result_age_sec("h1") == pytest.approx(QUOTE_FRESH_SEC + 1.0)
 
 
+# --------------------------------------------------------------------------- #
+# LIVE mode e2e — REAL OnDemandEngine + stubbed price_on_demand                #
+# --------------------------------------------------------------------------- #
+
+GREF_B = GameRef(game_id="gB", home_team="Los Angeles Dodgers",
+                 away_team="San Diego Padres", commence_time=None)
+SINGLE_LEG_B = [leg("KXMLBGAME-25JUN272005SDLAD-LAD", "yes")]
+
+
+class StubService:
+    """price_on_demand stub: per-game fair, or None to simulate a book that
+    never answers inside the budget."""
+    books = ("draftkings", "fanduel")
+    on_demand_deadline_sec = 10.0
+
+    def __init__(self, fair_by_game):
+        self.fair_by_game = fair_by_game      # game_id -> fair | None
+        self.calls = []
+
+    def price_on_demand(self, book, game, legs):
+        self.calls.append((book, game.game_id, tuple(legs)))
+        fair = self.fair_by_game.get(game.game_id)
+        if fair is None:
+            return None
+        from mlb_sgp._shared import OnDemandBookResult
+        return OnDemandBookResult(book=book, fair=fair, route="partition",
+                                  n_cells_priced=2 ** len(legs),
+                                  latency_sec=0.5)
+
+
+def _setup_real_engine(monkeypatch, tmp_path, svc, db_name):
+    from kalshi_mlb_mm.on_demand import OnDemandEngine
+    eng = OnDemandEngine(svc, autostart=False)
+    main, db, emitted = _setup(monkeypatch, tmp_path, eng, db_name, mode="live")
+    monkeypatch.setattr(
+        main, "_resolve_game_for_legs",
+        lambda gl: "game1" if gl[0].game_id == "25JUN271905TEXLAA" else "gB")
+    monkeypatch.setattr(
+        main, "_game_ref", lambda gid: GREF if gid == "game1" else GREF_B)
+    return main, db, emitted, eng
+
+
+def test_live_mode_e2e_grid_real_engine(monkeypatch, tmp_path):
+    svc = StubService({"game1": 0.30})
+    main, db, emitted, eng = _setup_real_engine(monkeypatch, tmp_path, svc,
+                                                "e2e1.duckdb")
+    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)   # pending + queued
+    assert _last_decision(db) == ("skipped", "on_demand_pending")
+    assert eng._queue_len() == 1
+    eng._drain_once()
+    assert svc.calls, "grid legs must reach price_on_demand in live mode"
+    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)   # priced live
+    assert _last_decision(db) == ("dry_run_quote", None)
+    payload = _quote_priced_payload(emitted)
+    assert payload["blended_fair"] == pytest.approx(0.30)
+    assert payload["pricing_mode"] == "live"
+    # The research trace: per-game live books + result age (the #54 proof).
+    canon = legset.parse_legs(GRID_LEGS)
+    h = legset.leg_set_hash(canon)
+    assert payload["live_games"][h]["books"].keys() == {"draftkings", "fanduel"}
+    assert payload["live_games"][h]["age_sec"] >= 0.0
+
+
+def test_live_mode_cross_game_multiplies_per_game_live_fetches(monkeypatch, tmp_path):
+    # Cross-game combo = grid sub-combo (game1) x SINGLE leg (gB). Each game
+    # gets its own live fetch — including the 1-leg set — and the quote is
+    # the product of the per-game live consensus fairs (0.30 * 0.30 = 0.09).
+    svc = StubService({"game1": 0.30, "gB": 0.30})
+    main, db, emitted, eng = _setup_real_engine(monkeypatch, tmp_path, svc,
+                                                "e2e2.duckdb")
+    monkeypatch.setattr(main, "_SCOPE_CACHE",
+                        {"COMBO-GRID": (True, None, GRID_LEGS + SINGLE_LEG_B)})
+    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
+    assert eng._queue_len() == 2, "one live job per game"
+    eng._drain_once()
+    eng._drain_once()
+    single_calls = [c for c in svc.calls if c[1] == "gB"]
+    assert single_calls and len(single_calls[0][2]) == 1, \
+        "the cross-game SINGLE leg must be live-fetched as a 1-leg set"
+    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
+    assert _last_decision(db) == ("dry_run_quote", None)
+    assert _quote_priced_payload(emitted)["blended_fair"] == pytest.approx(0.09)
+
+
+def test_live_mode_mixed_fresh_and_empty_declines_timeout(monkeypatch, tmp_path):
+    # game1 answers, gB lands EMPTY (every book over budget): once nothing is
+    # pending the combo declines live_fetch_timeout — the fresh half must not
+    # let a cache (or partial) fair through.
+    svc = StubService({"game1": 0.30, "gB": None})
+    main, db, emitted, eng = _setup_real_engine(monkeypatch, tmp_path, svc,
+                                                "e2e3.duckdb")
+    monkeypatch.setattr(main, "_SCOPE_CACHE",
+                        {"COMBO-GRID": (True, None, GRID_LEGS + SINGLE_LEG_B)})
+    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)   # both queued
+    eng._drain_once()
+    eng._drain_once()
+    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
+    assert _last_decision(db) == ("skipped", "live_fetch_timeout")
+    assert _quote_priced_payload(emitted) is None
+
+
 def test_config_mode_default_shadow_and_validation():
     import kalshi_mlb_mm.config as cfg
     # Worktrees have no kalshi_mlb_mm/.env (gitignored), so the default applies.
