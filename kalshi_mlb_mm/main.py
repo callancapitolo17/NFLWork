@@ -65,6 +65,7 @@ _VOID_HALT_ACTIVE = False  # N12: track prior void-rate halt state for edge-trig
 # before startup — every use is None-guarded, failing safe to "don't quote").
 _ENGINE = None
 _OD_RESULT_EMITTED = {}  # leg_set_hash -> landed_at of last on_demand_result emit
+_SHADOW_EMITTED = {}     # ticker -> landing-key of last shadow_fair_comparison emit
 # Confirm-window budget for the confirm-tick live re-fetch: the ~30s Kalshi
 # confirm window minus the poll gap and a buffer for the confirm API call.
 CONFIRM_REFETCH_BUDGET_SEC = 20.0
@@ -437,6 +438,91 @@ def _maybe_emit_on_demand_result(rfq_id, ticker, hash_):
                                          n_cells=r.n_cells_priced,
                                          latency_sec=r.latency_sec)
                                  for b, r in res.items()}))
+    except Exception:                      # research must never break the tick
+        pass
+
+
+def _live_games_detail(by_game):
+    """Per-game live-fetch trace for quote_priced (issue #54 acceptance: a
+    live-mode quote's fair must be provably backed by a post-RFQ fetch).
+    {hash: {age_sec, books: {book: {fair, route, latency_sec}}}} for every
+    game with a stored engine result; None when there is none (cached mode).
+    Fail-safe: research decoration only, never raises into the tick."""
+    try:
+        if _ENGINE is None:
+            return None
+        out = {}
+        for gl in by_game.values():
+            h = legset.leg_set_hash(gl)
+            res = _ENGINE.lookup_results(h)
+            if not res:
+                continue
+            out[h] = dict(
+                age_sec=_ENGINE.result_age_sec(h),
+                books={b: dict(fair=r.fair, route=r.route,
+                               latency_sec=r.latency_sec)
+                       for b, r in res.items()})
+        return out or None
+    except Exception:
+        return None
+
+
+def _maybe_emit_shadow_comparison(*, rfq_id, ticker, legs, by_game,
+                                  game_ids_list, cached_detail, cached_reason):
+    """Shadow mode (#54): fire the live fetch for every cache-routed sub-combo
+    and, once EVERY game has a fresh live result, emit ONE cached-vs-live fair
+    pair per landing-set — the rollout evidence for flipping the flag.
+
+    Traffic discipline: unlike the live feed this never re-fetches while a
+    landing (even an empty one) is still stored, so a resting RFQ costs one
+    fetch per ~_STORE_RETENTION window, not one per QUOTE_FRESH_SEC.
+    on_demand-classified games already ride the real feed and are not
+    re-requested here. Fail-safe: research only, never raises into the tick."""
+    try:
+        if _ENGINE is None:
+            return
+        hashes = []
+        all_fresh = True
+        for gl, od_gid in zip(by_game.values(), game_ids_list):
+            h = legset.leg_set_hash(gl)
+            hashes.append(h)
+            if _ENGINE.lookup(h) is not None:
+                continue
+            all_fresh = False
+            if legset.classify_subcombo(gl) == "on_demand":
+                continue                    # the quote path owns its feed
+            if _ENGINE.landed_at(h) is not None:
+                continue                    # landed already — one shot per window
+            gref = _game_ref(od_gid)
+            if gref is not None and _ENGINE.ensure_fetch(h, gref, gl):
+                research.emit("on_demand_requested", rfq_id=rfq_id,
+                              ticker=ticker,
+                              payload=dict(leg_set_hash=h, game_id=od_gid,
+                                           n_legs=len(gl),
+                                           pricing_mode="shadow",
+                                           purpose="shadow_comparison"))
+        if not all_fresh:
+            return
+        landing_key = tuple(_ENGINE.landed_at(h) for h in hashes)
+        if _SHADOW_EMITTED.get(ticker) == landing_key:
+            return
+        _SHADOW_EMITTED[ticker] = landing_key
+        while len(_SHADOW_EMITTED) > 512:   # bounded, like _OD_RESULT_EMITTED
+            _SHADOW_EMITTED.pop(next(iter(_SHADOW_EMITTED)))
+        live_detail, live_reason = router.combo_fair_detail(
+            legs, None, _resolve_game_for_legs,
+            config.MIN_AGREEING_BOOKS, config.SIGMA_Z_MAX,
+            on_demand_fairs=_ENGINE.lookup, live_routing=True)
+        research.emit(
+            "shadow_fair_comparison", rfq_id=rfq_id, ticker=ticker,
+            payload=dict(
+                cached_fair=cached_detail.fair if cached_detail else None,
+                cached_sigma_pts=cached_detail.sigma_pts if cached_detail else None,
+                cached_reason=cached_reason,
+                live_fair=live_detail.fair if live_detail else None,
+                live_sigma_pts=live_detail.sigma_pts if live_detail else None,
+                live_reason=live_reason,
+                live_games=_live_games_detail(by_game)))
     except Exception:                      # research must never break the tick
         pass
 
@@ -909,9 +995,17 @@ def _discovery_tick(source, gateway, dry_run):
         # fires each time the result ages out, and stops the moment the RFQ
         # leaves the poll. Placed after the caps/cooldown/tipoff gates so
         # gated RFQs never generate book traffic.
+        # Issue #54: in QUOTE_PRICING_MODE="live" EVERY in-scope sub-combo
+        # (grids and cross-game singles included) rides this feed — the
+        # sweep cache is out of the quote path entirely. A fetch that lands
+        # with ZERO books is a DECLINE (live_fetch_timeout), never a silent
+        # cache fallback; while that empty landing is fresh we deliberately
+        # do not re-feed, so a dead slate retries every ~QUOTE_FRESH_SEC.
+        live_mode = config.QUOTE_PRICING_MODE == "live"
         od_pending = False
+        od_timed_out = False
         for gl, od_gid in zip(by_game.values(), game_ids_list):
-            if legset.classify_subcombo(gl) != "on_demand":
+            if not live_mode and legset.classify_subcombo(gl) != "on_demand":
                 continue
             if _ENGINE is None:
                 od_pending = True          # engine absent -> fail-safe skip
@@ -920,15 +1014,26 @@ def _discovery_tick(source, gateway, dry_run):
             if _ENGINE.lookup(od_hash) is not None:
                 _maybe_emit_on_demand_result(rid, ticker, od_hash)
                 continue
+            if live_mode and _ENGINE.landed_empty(od_hash):
+                od_timed_out = True
+                continue
             gref = _game_ref(od_gid)
             if gref is not None and _ENGINE.ensure_fetch(od_hash, gref, gl):
                 research.emit("on_demand_requested", rfq_id=rid, ticker=ticker,
                               payload=dict(leg_set_hash=od_hash, game_id=od_gid,
-                                           n_legs=len(gl)))
+                                           n_legs=len(gl),
+                                           pricing_mode=config.QUOTE_PRICING_MODE))
             od_pending = True
         if od_pending:
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="on_demand_pending")
+            continue
+        if od_timed_out:
+            # Only claimed once nothing is still pending: every sub-combo
+            # either priced or landed empty — "we asked live and the books
+            # didn't answer" is a decline, not a wait.
+            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                          reason="live_fetch_timeout")
             continue
         # Fair value: router prices via legset/grid across all games; fresh
         # on-demand fairs are injected via the engine's pure lookup. The
@@ -940,13 +1045,25 @@ def _discovery_tick(source, gateway, dry_run):
         fair_detail, gate_reason = router.combo_fair_detail(
             legs, _SGP_ODDS, _resolve_game_for_legs,
             config.MIN_AGREEING_BOOKS, config.SIGMA_Z_MAX,
-            on_demand_fairs=od_lookup)
+            on_demand_fairs=od_lookup, live_routing=live_mode)
+        # Issue #54 shadow mode: the cached fair above IS the quote; the live
+        # fetch runs alongside and the pair lands in the research firehose.
+        # Fire-and-forget — a shadow failure must never touch the quote path.
+        if config.QUOTE_PRICING_MODE == "shadow":
+            _maybe_emit_shadow_comparison(
+                rfq_id=rid, ticker=ticker, legs=legs, by_game=by_game,
+                game_ids_list=game_ids_list, cached_detail=fair_detail,
+                cached_reason=gate_reason)
         blended = fair_detail.fair if fair_detail is not None else None
         book_med = blended  # single consensus fair; book_med == blended
         if blended is None or not (config.MIN_FAIR_PROB <= blended <= config.MAX_FAIR_PROB):
             skip_reason = (gate_reason if fair_detail is None and gate_reason
                            in ("too_few_books", "consensus_dispersion")
                            else "no_fair")
+            if live_mode and skip_reason == "too_few_books":
+                # Distinct vocabulary: "the live fetch answered too thin" is a
+                # different health signal from the sweep-era too_few_books.
+                skip_reason = "live_too_few_books"
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason=skip_reason, model=None, book=book_med,
                           blended=blended)
@@ -1039,7 +1156,9 @@ def _discovery_tick(source, gateway, dry_run):
                                    sigma_pts=q.sigma_pts, floor_pts=q.floor_pts,
                                    roi_pts_yes=q.roi_pts_yes, roi_pts_no=q.roi_pts_no,
                                    margin_pts_yes=q.margin_pts_yes,
-                                   margin_pts_no=q.margin_pts_no))
+                                   margin_pts_no=q.margin_pts_no,
+                                   pricing_mode=config.QUOTE_PRICING_MODE,
+                                   live_games=_live_games_detail(by_game)))
         if dry_run:
             _log_decision("dry_run_quote", rfq_id=rid, ticker=ticker, game_id=game_id,
                           model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
@@ -1234,9 +1353,14 @@ def _confirm_tick(gateway, dry_run):
             # on "failed fetch ⇒ stale lookup" alone would confirm on a
             # previously-fetched number.
             refetch_ok = True
+            confirm_live = config.QUOTE_PRICING_MODE == "live"
             if _ENGINE is not None and canon_c:
                 for gl in legset.partition_by_game(canon_c).values():
-                    if legset.classify_subcombo(gl) != "on_demand":
+                    # #54: in live mode EVERY sub-combo re-fetches — a grid
+                    # quote's fair came from the engine, whose result has
+                    # aged out by accept time; the cache must not stand in.
+                    if (not confirm_live
+                            and legset.classify_subcombo(gl) != "on_demand"):
                         continue
                     gid_c = _resolve_game_for_legs(gl)
                     gref = _game_ref(gid_c) if gid_c else None
@@ -1251,7 +1375,8 @@ def _confirm_tick(gateway, dry_run):
             od_lookup = _ENGINE.lookup if _ENGINE is not None else None
             cur_fair = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
                                          config.MIN_AGREEING_BOOKS, config.SIGMA_Z_MAX,
-                                         on_demand_fairs=od_lookup)
+                                         on_demand_fairs=od_lookup,
+                                         live_routing=confirm_live)
             if cur_fair is None or not refetch_ok:
                 _log_decision("voided_no_fresh_books", rfq_id=rid, quote_id=qid, ticker=ticker,
                               game_id=game_id)

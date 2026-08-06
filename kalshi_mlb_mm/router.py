@@ -173,7 +173,8 @@ def consensus_detail(book_fairs: dict[str, float], min_books: int,
 
 def subcombo_consensus(game_id, game_legs, sgp_df, min_books: int,
                        sigma_z_max: float,
-                       on_demand_fairs=None) -> tuple["Consensus | None", str]:
+                       on_demand_fairs=None, *,
+                       live_routing: bool = False) -> tuple["Consensus | None", str]:
     """Price one game's sub-combo: route via classify_subcombo -> grid/single
     book fairs -> dispersion-gate consensus. Returns (Consensus | None, reason).
 
@@ -181,8 +182,19 @@ def subcombo_consensus(game_id, game_legs, sgp_df, min_books: int,
     fair} | None, injected by main (the OnDemandEngine's fresh-results read).
     Default None reproduces Phase 1 routing — grid/single routes never touch
     it, and on_demand routes return (None, "unpriceable").
+
+    live_routing (issue #54): when True, EVERY in-scope route — single, both
+    grids, on_demand — prices from on_demand_fairs and sgp_df is never
+    consulted; without a lookup the route fails closed ("unpriceable"), it
+    never falls back to the cache. classify_subcombo still gates scope
+    (duplicate-market combos stay unpriceable).
     """
     route = legset.classify_subcombo(game_legs)
+    if live_routing:
+        if route == "unpriceable" or on_demand_fairs is None:
+            return None, "unpriceable"
+        book_fairs = on_demand_fairs(legset.leg_set_hash(game_legs)) or {}
+        return consensus(book_fairs, min_books, sigma_z_max)
     if route == "single":
         book_fairs = single_marginal_fairs(game_id, game_legs[0], sgp_df)
     elif route in ("grid_spread_total", "grid_ml_total"):
@@ -205,7 +217,8 @@ class ComboFair:
 
 def combo_fair_detail(legs: list[dict], sgp_df, resolve_game, min_books: int,
                       sigma_z_max: float,
-                      on_demand_fairs=None) -> tuple["ComboFair | None", str]:
+                      on_demand_fairs=None, *,
+                      live_routing: bool = False) -> tuple["ComboFair | None", str]:
     """Full RFQ: parse -> partition by game -> per-game consensus -> multiply.
 
     Returns (ComboFair | None, reason); reason is "ok" or the first failing
@@ -228,7 +241,8 @@ def combo_fair_detail(legs: list[dict], sgp_df, resolve_game, min_books: int,
             return None, "unresolved_game"
         cons, reason = subcombo_consensus(game_id, game_legs, sgp_df,
                                           min_books, sigma_z_max,
-                                          on_demand_fairs=on_demand_fairs)
+                                          on_demand_fairs=on_demand_fairs,
+                                          live_routing=live_routing)
         if cons is None:
             return None, reason
         if cons.fair <= 0.0:
@@ -241,10 +255,12 @@ def combo_fair_detail(legs: list[dict], sgp_df, resolve_game, min_books: int,
 
 
 def combo_fair(legs: list[dict], sgp_df, resolve_game, min_books: int,
-               sigma_z_max: float, on_demand_fairs=None) -> float | None:
+               sigma_z_max: float, on_demand_fairs=None, *,
+               live_routing: bool = False) -> float | None:
     """Fair-only wrapper for call sites that don't need sigma/n_games
     (confirm last-look drift check, risk-sweep drift check)."""
     detail, _reason = combo_fair_detail(legs, sgp_df, resolve_game, min_books,
                                         sigma_z_max,
-                                        on_demand_fairs=on_demand_fairs)
+                                        on_demand_fairs=on_demand_fairs,
+                                        live_routing=live_routing)
     return detail.fair if detail is not None else None

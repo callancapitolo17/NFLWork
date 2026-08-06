@@ -116,6 +116,29 @@ class OnDemandEngine:
             ent = self._store.get(hash_)
         return ent[0] if ent else None
 
+    def landed_empty(self, hash_: str) -> bool:
+        """True iff the last fetch landed within QUOTE_FRESH_SEC with ZERO
+        book results (every book over budget or declining). The live quote
+        path (#54) declines on this — never a cache fallback — and while the
+        empty landing is fresh the poll does not re-feed, so a dead slate
+        retries on the ~QUOTE_FRESH_SEC cadence instead of every tick."""
+        with self._lock:
+            ent = self._store.get(hash_)
+        if ent is None:
+            return False
+        landed_at, results = ent
+        return not results and (self._now() - landed_at) <= QUOTE_FRESH_SEC
+
+    def result_age_sec(self, hash_: str) -> float | None:
+        """Seconds since the stored result landed (fresh or not), or None.
+        Research payloads only (#54 live-trace proof): quoting freshness
+        stays in lookup."""
+        with self._lock:
+            ent = self._store.get(hash_)
+        if ent is None:
+            return None
+        return self._now() - ent[0]
+
     def lookup(self, hash_: str):
         """{book: fair} if landed within QUOTE_FRESH_SEC, else None."""
         results = self.lookup_results(hash_)
