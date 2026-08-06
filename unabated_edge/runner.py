@@ -132,8 +132,19 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, book_fn, trade
     storage.snapshot_lines(adapter.sport, snap)
     flagged_sides = {}          # market_ticker -> set of flagged sides (crossed-book tripwire)
     seen_eids = set()
+    # Finding #78/F3-F4: a full-slate MLB tick's per-event book_fn calls burn
+    # real wall-clock seconds (measured ~37s end to end), but `now` above is
+    # a single value computed once at tick start. Reusing it for every event
+    # made the last events in the loop look artificially fresh, understating
+    # _anchor_stale and the kickoff gates for exactly the events most at risk
+    # of a stale-quote pickoff. tick_wall_start anchors a per-event clock that
+    # advances by real elapsed time since the tick began, so event_now stays
+    # tied to the `now` this tick was handed (tests can fix it) while still
+    # marching forward through a slow loop like the real clock would.
+    tick_wall_start = time.monotonic()
     for event_meta, kev in mapping.pair_events(adapter, events, kalshi_events):
-        if event_meta.start_utc is not None and now >= event_meta.start_utc:
+        event_now = now + datetime.timedelta(seconds=time.monotonic() - tick_wall_start)
+        if event_meta.start_utc is not None and event_now >= event_meta.start_utc:
             continue            # in-play: Kalshi book/trade capture stops at kickoff too
         seen_eids.add(event_meta.event_id)
         # Far-future events (no one can trade them yet) still get a
@@ -184,8 +195,8 @@ def run_tick(adapter, state, kalshi_events, *, now, dry_run=True, book_fn, trade
                     _stats["trades"] += len(trades)
         if maker is not None:
             maker.on_match(adapter, event_meta, kev,
-                           adapter.fair_ladder(state, event_meta), books, now)
-        if not tipoff_ok(event_meta.start_utc, config.KICKOFF_CUTOFF_MIN, now):
+                           adapter.fair_ladder(state, event_meta), books, event_now)
+        if not tipoff_ok(event_meta.start_utc, config.KICKOFF_CUTOFF_MIN, event_now):
             continue
         for c in adapter.price_event(state, event_meta, kev):
             book = books.get(c.market_ticker)

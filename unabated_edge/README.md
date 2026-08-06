@@ -252,6 +252,42 @@ quote on that match unless noted as global):
 | graceful shutdown (SIGINT/SIGTERM or kill file exit) | all matches | pull ALL resting quotes (`shutdown`/`kill_switch`) — global |
 | `.kill` file present | all matches | pull everything — **deviation from spec's "watchdog" framing**: the check is at the top of `run_tick` itself (same 5s tick cadence), not inside the `watchdog()` staleness method |
 
+**Stale-quote pickoff window (finding #78/F3-F4) — structural, mitigated +
+sized, not eliminated.** This maker rests GTC limit orders on Kalshi's
+central limit order book. A resting order can be hit by anyone at any time
+with zero notice — `poll_fills` only *discovers* a fill after it already
+executed, so there is no last-look and none is possible here, structurally
+unlike `kalshi_mlb_mm` (the RFQ-based sibling bot), which gets a synchronous
+confirm re-fetch on every accept before it commits. The unavoidable window
+is bounded below by this bot's poll+repricing cadence — tens of seconds on a
+full slate (a full KXMLBTOTAL book pass measures ~37s end to end, see
+`MAX_STALENESS_SEC`'s docstring in `config.py`) — during which a resting
+quote sits at whatever fair it was last priced at. Pre-game news (a pitcher
+scratch, a lineup change, a weather shift) can move a total's fair 6-10c
+inside that window; the maker **will** occasionally get picked off before it
+reprices. This is accepted, not eliminated. Three mitigations, not a fix:
+
+1. **Anchor-staleness pull** — `_anchor_stale` (§pull triggers table) pulls
+   a match the moment the sharp anchor itself looks dark.
+2. **Per-event fresh clock** — `run_tick` used to compute `now` once at tick
+   start and reuse it for every event that tick, so an event processed late
+   in the ~37s loop was judged against a `now` that was already stale by
+   however long the loop had been running — understating exactly how old
+   its anchor/kickoff gates really were. `run_tick` now advances a per-event
+   clock by real elapsed wall time since the tick began (anchored to the
+   tick's own `now`, not the system clock, so it stays deterministic under
+   test), so `_anchor_stale` and the kickoff gates are honest for every
+   event, not just the first one processed.
+3. **Sizing** — the interval-ledger `MATCH_CAP_PCT` cap (§cap stack, ~$30/game
+   at the current tuition-run bankroll) is what actually bounds the
+   worst-case loss from a single pickoff, since the window itself can't be
+   closed on a CLOB.
+
+**Tracked follow-up, out of scope here:** the ~37s tick duration itself is a
+sequential per-market Kalshi book fetch; making those concurrent would
+shrink the window further but is deliberately not part of this fix — see
+GitHub issue #78.
+
 **Data model** — sibling DB `unabated_edge_maker.duckdb` (`maker/store.py::init`),
 kept separate from the capture DBs so maker state can reset independently:
 

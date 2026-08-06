@@ -171,8 +171,11 @@ def test_trades_fn_rows_inserted(tmp_path, monkeypatch):
 class _FakeMaker:
     def __init__(self):
         self.calls, self.sweeps = [], []
+        self.match_nows = []          # (event_id, now) — separate from `calls` so existing
+                                       # assertions on `calls`'s tuple shape stay unchanged
     def on_match(self, adapter, event_meta, kev, ladder, books, now):
         self.calls.append((event_meta.event_id, ladder is not None, sorted(books)))
+        self.match_nows.append((event_meta.event_id, now))
     def sweep(self, sport, seen, now):
         self.sweeps.append((sport, set(seen)))
 
@@ -184,6 +187,71 @@ def test_maker_hook_receives_ladder_and_books(tmp_path, monkeypatch):
                     book_fn=lambda t: _BOOK, maker=mk)
     assert mk.calls == [(1, True, ["T-O25"])]
     assert mk.sweeps == [("soccer", {1})]
+
+
+def test_maker_hook_gets_fresh_now_per_event(tmp_path, monkeypatch):
+    """Finding #78/F3-F4: on a real slate, book_fn calls burn real wall-clock
+    seconds between events (a full MLB slate's book-fetch loop measures
+    ~37s end to end) -- an event processed late in that loop must NOT be
+    judged against the same frozen `now` as the first event, or
+    _anchor_stale/tipoff_ok understate how stale it really is. run_tick
+    advances its per-event clock by real elapsed wall time (time.monotonic)
+    since the tick started, anchored to the `now` argument -- not the real
+    system clock, so this stays deterministic under a fictional `now`
+    fixture like every other test in this file."""
+    _init_dbs(tmp_path, monkeypatch)
+    state = feed.parse_snapshot(
+        {
+            "marketSources": [{"id": 7, "name": "S"}],
+            "teams": {"1": {"name": "Argentina"}, "2": {"name": "Austria"},
+                      "3": {"name": "Brazil"}, "4": {"name": "Chile"}},
+            "gameOddsEvents": {
+                "lg21:pt1:pregame": [
+                    {
+                        "eventId": 1, "eventStart": (_NOW + datetime.timedelta(hours=3)).isoformat(),
+                        "eventTeams": {"1": {"id": 1}, "0": {"id": 2}},
+                        "gameOddsMarketSourcesLines": {
+                            "si0:ms7:an0": {"bt3": {"price": 115, "points": 2.5}},
+                            "si1:ms7:an0": {"bt3": {"price": -140, "points": 2.5}},
+                        },
+                    },
+                    {
+                        "eventId": 2, "eventStart": (_NOW + datetime.timedelta(hours=3)).isoformat(),
+                        "eventTeams": {"1": {"id": 3}, "0": {"id": 4}},
+                        "gameOddsMarketSourcesLines": {
+                            "si0:ms7:an0": {"bt3": {"price": 115, "points": 2.5}},
+                            "si1:ms7:an0": {"bt3": {"price": -140, "points": 2.5}},
+                        },
+                    },
+                ]
+            },
+        },
+        {"lg21"},
+    )
+    kev1 = {"title": "Argentina vs Austria: Regulation Time Total Goals",
+            "markets": [{"ticker": "T1-O25", "strike_type": "greater", "floor_strike": 2.5}]}
+    kev2 = {"title": "Brazil vs Chile: Regulation Time Total Goals",
+            "markets": [{"ticker": "T2-O25", "strike_type": "greater", "floor_strike": 2.5}]}
+
+    # A slow per-event loop: 30s of real wall time elapses between the two
+    # events being processed (simulating each event's own book_fn REST
+    # round-trip). First monotonic() call is run_tick's own baseline.
+    mono_values = iter([100.0, 100.0, 130.0])
+    monkeypatch.setattr(runner.time, "monotonic", lambda: next(mono_values))
+
+    mk = _FakeMaker()
+    runner.run_tick(Soccer(), state, [kev1, kev2], now=_NOW, dry_run=True,
+                    book_fn=lambda t: _BOOK, maker=mk)
+
+    assert [eid for eid, _ in mk.match_nows] == [1, 2]
+    now1, now2 = mk.match_nows[0][1], mk.match_nows[1][1]
+    assert now1 == _NOW                                    # first event: no elapsed time yet
+    assert now2 == _NOW + datetime.timedelta(seconds=30)   # second event: fresh, later clock
+    assert now2 > now1                                      # late-processed event sees a later `now`,
+                                                              # so a genuinely stale anchor would now
+                                                              # correctly trip _anchor_stale for event 2
+                                                              # even though the frozen tick-start `now`
+                                                              # (event1's value) would have passed it
 
 
 def test_maker_hook_skipped_when_none(tmp_path, monkeypatch):
