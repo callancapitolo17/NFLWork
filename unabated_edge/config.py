@@ -98,6 +98,13 @@ MAKER_MAX_CONTRACTS = int(_get("MAKER_MAX_CONTRACTS", "2"))   # hard per-quote c
 HARD_STOP_DOLLARS = float(_get("HARD_STOP_DOLLARS", "50"))    # cumulative realized+unrealized loss halt (mark-to-anchor)
 ANCHOR_STALE_SEC = float(_get("ANCHOR_STALE_SEC", "180"))     # WITHIN ANCHOR_STALE_FARK_SEC of kickoff: pull match if even the freshest anchor rung's modifiedOn is older than this (frozen-feed guard)
 ANCHOR_STALE_FARK_SEC = float(_get("ANCHOR_STALE_FARK_SEC", "7200"))  # far-from-kickoff cutoff (default 2h): beyond this the sharp total legitimately sits unchanged for hours, so tolerate an old-but-latest number and rely on the poll-success watchdog as the dead-feed guard
+# Frozen-CDN detector (Finding #77): an HTTP 200 serving a byte-identical
+# feed_signature (feed.py) for longer than this is treated as a dead feed —
+# note_success is withheld so MAX_STALENESS_SEC's watchdog trips and pulls
+# quotes, even though every individual poll "succeeded". Deliberately much
+# longer than a normal tick so a genuinely calm pre-game market (numbers not
+# moving, but the connection is alive) never false-trips this.
+FEED_FROZEN_SEC = float(_get("FEED_FROZEN_SEC", "600"))
 TOUCH_JOIN_MIN_EDGE_CENTS = float(_get("TOUCH_JOIN_MIN_EDGE_CENTS", "1.0"))       # net edge (fair - touch - maker fee) to join the crowd's best bid
 TOUCH_JOIN_ALT_MIN_EDGE_CENTS = float(_get("TOUCH_JOIN_ALT_MIN_EDGE_CENTS", "1.5"))  # alt rungs: less-trusted fair demands more edge
 TOUCH_JOIN_EXIT_EDGE_CENTS = float(_get("TOUCH_JOIN_EXIT_EDGE_CENTS", "0.25"))    # hold a resting touch-join (queue position) until edge decays below this

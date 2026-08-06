@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import logging
 from dataclasses import dataclass, field
 import requests
@@ -145,6 +146,27 @@ def _ingest_v2_row(st, row, league_prefix):
     except Exception:
         log.warning("skipped malformed v2 row (eventId=%s)",
                     row.get("eventId") if isinstance(row, dict) else "?")
+
+
+def feed_signature(state: FeedState) -> str:
+    """Deterministic fingerprint of a parsed FeedState's line data (price,
+    points, modifiedOn per line key), for the frozen-feed detector
+    (runner.py, Finding #77).
+
+    Chosen signal: repeated IDENTICAL bytes across many consecutive polls,
+    not "the number didn't move" — a legitimately calm pre-game market can
+    go a long stretch with an unchanged price, and that must NOT look like a
+    dead feed (that's what config.ANCHOR_STALE_FARK_SEC already tolerates
+    elsewhere). Including modifiedOn means even a same-price "re-affirmed"
+    tick from a live feed still changes the hash, so only a truly frozen
+    CDN/origin (same bytes, same modifiedOn, forever) reproduces this
+    signature poll after poll."""
+    parts = sorted(
+        f"{key}|{line.get('americanPrice', line.get('price'))}|"
+        f"{line.get('points')}|{line.get('modifiedOn')}"
+        for key, line in state.lines.items()
+    )
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
 def fetch_v2(league_id: int, league_prefix: str, session=None) -> FeedState:

@@ -88,3 +88,33 @@ def test_line_american_price_valid_values_pass_through():
 
 def test_line_american_price_none_when_missing():
     assert feed.line_american_price({}) is None
+
+
+# ---------- feed_signature (Finding #77 / frozen-feed detection) ----------
+
+def test_feed_signature_stable_across_identical_parses():
+    """Same raw payload parsed twice -> identical signature (deterministic,
+    not order-dependent on dict iteration)."""
+    st1 = feed.parse_v2(_v2_raw(), "lg21")
+    st2 = feed.parse_v2(_v2_raw(), "lg21")
+    assert feed.feed_signature(st1) == feed.feed_signature(st2)
+
+
+def test_feed_signature_changes_when_a_price_changes():
+    st1 = feed.parse_v2(_v2_raw(), "lg21")
+    raw2 = _v2_raw()
+    raw2["odds"]["lg21:pt1:pregame"][0]["sides"]["si0:tid2058"]["ms7"]["americanPrice"] = 105
+    st2 = feed.parse_v2(raw2, "lg21")
+    assert feed.feed_signature(st1) != feed.feed_signature(st2)
+
+
+def test_feed_signature_changes_when_modified_on_changes():
+    """Same price, only modifiedOn ticks -- the whole point is to catch a
+    byte-identical repeat, so even a modifiedOn-only change must register."""
+    raw1 = _v2_raw()
+    raw1["odds"]["lg21:pt1:pregame"][0]["sides"]["si0:tid2058"]["ms7"]["modifiedOn"] = "t1"
+    raw2 = _v2_raw()
+    raw2["odds"]["lg21:pt1:pregame"][0]["sides"]["si0:tid2058"]["ms7"]["modifiedOn"] = "t2"
+    st1 = feed.parse_v2(raw1, "lg21")
+    st2 = feed.parse_v2(raw2, "lg21")
+    assert feed.feed_signature(st1) != feed.feed_signature(st2)

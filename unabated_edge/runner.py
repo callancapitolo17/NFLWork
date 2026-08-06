@@ -49,6 +49,39 @@ _running = threading.Event(); _running.set()
 _stats = {"candidates": 0, "null_dropped": 0, "books": 0, "trades": 0}
 
 
+def _feed_advanced(freeze_state: dict, sport: str, signature: str, now: datetime.datetime) -> bool:
+    """Frozen-feed detector (Finding #77): a poll that returns HTTP 200 with
+    the exact same feed_signature (feed.py) as last time, held for longer
+    than config.FEED_FROZEN_SEC, means the CDN/origin is serving stale bytes
+    even though every individual request "succeeded" — note_success must be
+    withheld so the existing MAX_STALENESS_SEC watchdog trips and pulls
+    quotes. `freeze_state` is a caller-owned {sport: (signature, since, warned)}
+    dict (local to one main_loop() run, not module-global, so tests/restarts
+    never see stale carryover); mutated in place.
+
+    A NEW signature — including a first-ever observation for this sport —
+    always counts as advanced and resets the timer. A REPEATED signature
+    only starts failing once it has been repeated for longer than
+    FEED_FROZEN_SEC; a short repeat (a calm pre-game market that hasn't
+    changed in the last poll or two) is tolerated. The WARNING is logged
+    once per freeze episode (`warned`), not every tick — the tick loop polls
+    every V2_POLL_SEC (~5s), and this state can persist for as long as the
+    feed stays dark."""
+    prev = freeze_state.get(sport)
+    if prev is None or prev[0] != signature:
+        freeze_state[sport] = (signature, now, False)
+        return True
+    _, since, warned = prev
+    if (now - since).total_seconds() > config.FEED_FROZEN_SEC:
+        if not warned:
+            log.warning("maker feed frozen for %s — identical payload since %s (>%.0fs); "
+                        "withholding note_success so the staleness watchdog can trip",
+                        sport, since.isoformat(), config.FEED_FROZEN_SEC)
+            freeze_state[sport] = (signature, since, True)
+        return False
+    return True
+
+
 def _market_fp(mk, key):
     """Numeric market field: live API sends `<key>_fp` as a STRING decimal
     (contracts are fractional, e.g. "2084.00" — verified 2026-07-10); fall back
@@ -222,6 +255,7 @@ def main_loop(dry_run: bool):
     kalshi_events = {}
     ticks = 0
     flagged_since_hb = 0
+    feed_freeze = {}   # sport -> (last feed_signature, first-seen datetime); frozen-feed detector (#77)
     # Go-forward retention for book_snapshots/kalshi_trades: prune once now,
     # then once per calendar day (see storage.prune_capture). Scoped to
     # CAPTURE_PRUNE_SPORTS — soccer's WC-era rows are a preserved backtest
@@ -278,7 +312,13 @@ def main_loop(dry_run: bool):
                         # the iteration-start `now` above — otherwise measured
                         # staleness includes the full tick duration and the
                         # watchdog self-triggers once quotes rest.
-                        maker.note_success(a.sport, datetime.datetime.now(datetime.timezone.utc))
+                        success_stamp = datetime.datetime.now(datetime.timezone.utc)
+                        # Frozen-CDN guard (#77): a byte-identical feed_signature
+                        # held past FEED_FROZEN_SEC means this "successful" poll
+                        # is stale data, not a live feed — don't let it fool the
+                        # MAX_STALENESS_SEC watchdog into staying quiet.
+                        if _feed_advanced(feed_freeze, a.sport, feed.feed_signature(state), success_stamp):
+                            maker.note_success(a.sport, success_stamp)
                 except Exception:
                     log.warning("adapter %s tick failed", a.sport, exc_info=True)
             storage.flush()

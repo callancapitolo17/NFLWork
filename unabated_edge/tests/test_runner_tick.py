@@ -1,4 +1,5 @@
 import datetime
+import logging
 import os
 import types
 import pytest
@@ -440,6 +441,141 @@ def test_note_success_stamped_fresh_after_each_adapter_tick(tmp_path, monkeypatc
     # `now` run_tick was handed — proving it's a fresh post-tick timestamp.
     assert (soccer_stamp - soccer_now).total_seconds() == 25
     assert (mlb_stamp - mlb_now).total_seconds() == 37
+
+
+# ---------- frozen-feed detection (Finding #77) ----------
+
+def test_feed_advanced_true_on_first_observation():
+    """A sport never seen before must not false-trip the frozen check."""
+    freeze_state = {}
+    now = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+    assert runner._feed_advanced(freeze_state, "mlb", "sigA", now) is True
+    assert freeze_state["mlb"] == ("sigA", now, False)
+
+
+def test_feed_advanced_true_when_signature_changes():
+    since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+    freeze_state = {"mlb": ("sigA", since, False)}
+    later = since + datetime.timedelta(minutes=20)
+    assert runner._feed_advanced(freeze_state, "mlb", "sigB", later) is True
+    assert freeze_state["mlb"] == ("sigB", later, False)   # timer resets on the new signature
+
+
+def test_feed_advanced_tolerates_repeat_under_threshold():
+    """A calm pre-game market can legitimately serve the same signature for a
+    while -- must not trip before FEED_FROZEN_SEC, and must not reset the
+    'since' clock on every repeat poll (that would mean it never trips)."""
+    since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+    freeze_state = {"mlb": ("sigA", since, False)}
+    still_within = since + datetime.timedelta(seconds=config.FEED_FROZEN_SEC - 1)
+    assert runner._feed_advanced(freeze_state, "mlb", "sigA", still_within) is True
+    assert freeze_state["mlb"] == ("sigA", since, False)
+
+
+def test_feed_advanced_false_when_frozen_past_threshold(caplog):
+    """The exact same payload served for longer than FEED_FROZEN_SEC is a
+    frozen CDN/origin, not a calm market -- must fail closed."""
+    since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+    freeze_state = {"mlb": ("sigA", since, False)}
+    past_threshold = since + datetime.timedelta(seconds=config.FEED_FROZEN_SEC + 1)
+    with caplog.at_level(logging.WARNING, logger="unabated_edge"):
+        result = runner._feed_advanced(freeze_state, "mlb", "sigA", past_threshold)
+    assert result is False
+    assert any("frozen" in r.getMessage() and "mlb" in r.getMessage() for r in caplog.records)
+
+
+def test_feed_advanced_warns_once_per_freeze_episode(caplog):
+    """Once frozen, the tick loop polls every V2_POLL_SEC (~5s) -- the WARNING
+    must not repeat on every one of those ticks while the freeze persists."""
+    since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+    freeze_state = {"mlb": ("sigA", since, False)}
+    past_threshold = since + datetime.timedelta(seconds=config.FEED_FROZEN_SEC + 1)
+    with caplog.at_level(logging.WARNING, logger="unabated_edge"):
+        runner._feed_advanced(freeze_state, "mlb", "sigA", past_threshold)
+        still_frozen = past_threshold + datetime.timedelta(seconds=5)
+        result = runner._feed_advanced(freeze_state, "mlb", "sigA", still_frozen)
+    assert result is False
+    frozen_warnings = [r for r in caplog.records if "frozen" in r.getMessage()]
+    assert len(frozen_warnings) == 1
+
+
+def test_main_loop_withholds_note_success_when_feed_frozen(tmp_path, monkeypatch):
+    """Wiring check: main_loop must gate note_success on _feed_advanced, so a
+    frozen-but-200-OK feed lets MAX_STALENESS_SEC's watchdog trip and pull
+    quotes instead of being fooled by note_success firing every tick."""
+    _init_dbs(tmp_path, monkeypatch)
+    monkeypatch.setattr(runner, "run_tick", lambda *a, **k: [])
+    monkeypatch.setattr(runner.feed, "fetch_v2", lambda *a, **k: feed.FeedState())
+    monkeypatch.setattr(runner, "_feed_advanced", lambda *a, **k: False)
+    monkeypatch.setattr(runner.kalshi, "init", lambda: None)
+    monkeypatch.setattr(runner.kalshi, "list_events", lambda series: [])
+
+    note_success_calls = []
+
+    class _FakeMaker:
+        def note_success(self, sport, now):
+            note_success_calls.append(sport)
+        def watchdog(self, now):
+            pass
+        def pull_all(self, now, reason):
+            pass
+        def stats(self):
+            return {}
+
+    class _GW:
+        is_live = False
+
+    monkeypatch.setattr(runner.maker_gateway, "make_gateway", lambda mode, ack: _GW())
+    monkeypatch.setattr(runner.maker_engine, "MakerEngine", lambda gw, st: _FakeMaker())
+    monkeypatch.setattr(runner.maker_store, "init", lambda: None)
+    monkeypatch.setattr(runner.time, "sleep", lambda _s: runner._running.clear())
+
+    runner._running.set()
+    try:
+        runner.main_loop(dry_run=True)
+    finally:
+        runner._running.set()
+
+    assert note_success_calls == []
+
+
+def test_main_loop_calls_note_success_when_feed_advancing(tmp_path, monkeypatch):
+    """Regression guard for the wiring above: when the feed IS advancing,
+    note_success must still fire normally."""
+    _init_dbs(tmp_path, monkeypatch)
+    monkeypatch.setattr(runner, "run_tick", lambda *a, **k: [])
+    monkeypatch.setattr(runner.feed, "fetch_v2", lambda *a, **k: feed.FeedState())
+    monkeypatch.setattr(runner, "_feed_advanced", lambda *a, **k: True)
+    monkeypatch.setattr(runner.kalshi, "init", lambda: None)
+    monkeypatch.setattr(runner.kalshi, "list_events", lambda series: [])
+
+    note_success_calls = []
+
+    class _FakeMaker:
+        def note_success(self, sport, now):
+            note_success_calls.append(sport)
+        def watchdog(self, now):
+            pass
+        def pull_all(self, now, reason):
+            pass
+        def stats(self):
+            return {}
+
+    class _GW:
+        is_live = False
+
+    monkeypatch.setattr(runner.maker_gateway, "make_gateway", lambda mode, ack: _GW())
+    monkeypatch.setattr(runner.maker_engine, "MakerEngine", lambda gw, st: _FakeMaker())
+    monkeypatch.setattr(runner.maker_store, "init", lambda: None)
+    monkeypatch.setattr(runner.time, "sleep", lambda _s: runner._running.clear())
+
+    runner._running.set()
+    try:
+        runner.main_loop(dry_run=True)
+    finally:
+        runner._running.set()
+
+    assert sorted(note_success_calls) == ["mlb", "soccer"]
 
 
 def test_adapter_exception_does_not_skip_other_adapter(tmp_path, monkeypatch, caplog):
