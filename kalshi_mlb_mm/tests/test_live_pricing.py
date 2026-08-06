@@ -1,11 +1,10 @@
-"""Issue #54 — QUOTE_PRICING_MODE routing: cached / shadow / live.
-
-PIN TESTS first (written against pre-#54 code, must stay green forever):
-`cached` mode is byte-identical to the pre-#54 quote path — a grid RFQ is
-priced from the sweep cache with ZERO on-demand engine traffic.
-
-Regression tests for the live/shadow modes follow; they FAIL on pre-#54
-code by construction (grids never touched the engine before this ticket).
+"""Issue #54 — live-only quote pricing: EVERY in-scope shape (grids,
+cross-game singles, novel) prices from an on-demand fetch initiated after
+the RFQ landed. The sweep cache is never in the quote path: these tests seed
+a perfectly quotable cached grid alongside DIFFERENT live fairs and assert
+the quote always traces to the live side, declines loudly on live-fetch
+failure (live_fetch_timeout / live_too_few_books), and voids at confirm when
+the live re-fetch cannot land.
 
 Scaffolding style follows test_main_on_demand.py; leg dicts go through
 conftest.leg() so the Kalshi event-ticker shape is real (#71).
@@ -29,9 +28,9 @@ GRID_LEGS = [
 GREF = GameRef(game_id="game1", home_team="Los Angeles Angels",
                away_team="Texas Rangers", commence_time=None)
 
-# Balanced 4-cell grid: every cell devigs to ~0.25, so the CACHED consensus
-# fair is ~0.2375 — far from the 0.30/0.32 LIVE fairs the FakeEngine serves,
-# which lets every assertion prove WHICH source priced the quote.
+# Balanced 4-cell grid: every cell devigs to ~0.25, so a CACHE-priced quote
+# would land at ~0.2375 — far from the 0.30/0.32 LIVE fairs the FakeEngine
+# serves. Every assertion can therefore prove WHICH source priced the quote.
 ST_CELLS = {"Home Spread + Over": 4.2, "Home Spread + Under": 4.2,
             "Away Spread + Over": 3.8, "Away Spread + Under": 3.8}
 CACHED_FAIR = pytest.approx(0.2375, abs=0.01)
@@ -99,18 +98,17 @@ class NoQuoteGW:
         raise AssertionError("must not submit in these tests")
 
 
-def _setup(monkeypatch, tmp_path, engine, db_name, mode):
+def _setup(monkeypatch, tmp_path, engine, db_name):
     import kalshi_mlb_mm.config as cfg
     import kalshi_mlb_mm.db as db
     import kalshi_mlb_mm.risk as risk
     from kalshi_mlb_mm import main
     monkeypatch.setattr(cfg, "DB_PATH", tmp_path / db_name)
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
-    # raising=False: the attribute does not exist on pre-#54 config, and the
-    # pin tests must run (and pass) against that code.
-    monkeypatch.setattr(cfg, "QUOTE_PRICING_MODE", mode, raising=False)
     importlib.reload(db)
     db.init_database()
+    # A COMPLETE, quotable cached grid — the bait every test leaves out for
+    # the quote path. Touching it is the regression these tests exist for.
     monkeypatch.setattr(main, "_SGP_ODDS", pd.DataFrame(
         _grid_rows("dk", "game1", -1.5, 8.5, ST_CELLS)
         + _grid_rows("fd", "game1", -1.5, 8.5, ST_CELLS)))
@@ -144,48 +142,17 @@ def _quote_priced_payload(emitted):
 
 
 # --------------------------------------------------------------------------- #
-# PIN — cached mode is the pre-#54 quote path, byte-identical                  #
+# Live routing — every in-scope shape prices from a post-RFQ fetch             #
 # --------------------------------------------------------------------------- #
 
-def test_cached_mode_grid_prices_from_cache_no_engine_traffic(monkeypatch, tmp_path):
-    eng = FakeEngine(fairs=LIVE_FAIRS)     # engine HAS fairs — must be ignored
-    main, db, emitted = _setup(monkeypatch, tmp_path, eng, "pin1.duckdb",
-                               mode="cached")
-    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
-    assert _last_decision(db) == ("dry_run_quote", None)
-    assert eng.ensure_calls == [], "cached mode must never touch the engine"
-    assert eng.refetch_calls == []
-    payload = _quote_priced_payload(emitted)
-    assert payload is not None
-    assert payload["blended_fair"] == CACHED_FAIR, \
-        "cached mode must price from the sweep grid, not the live fairs"
-
-
-def test_cached_mode_grid_quotes_even_when_engine_has_nothing(monkeypatch, tmp_path):
-    # The stronger pin: with an engine that has NO results at all, cached mode
-    # still quotes (pre-#54 grids never depended on the engine).
+def test_grid_pending_then_priced_from_live_fairs(monkeypatch, tmp_path):
     eng = FakeEngine(fairs=None)
-    main, db, emitted = _setup(monkeypatch, tmp_path, eng, "pin2.duckdb",
-                               mode="cached")
-    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
-    assert _last_decision(db) == ("dry_run_quote", None)
-    assert eng.ensure_calls == []
-    assert _quote_priced_payload(emitted)["blended_fair"] == CACHED_FAIR
-
-
-# --------------------------------------------------------------------------- #
-# LIVE mode — every in-scope shape prices from a fetch initiated at RFQ time   #
-# --------------------------------------------------------------------------- #
-
-def test_live_mode_grid_pending_then_priced_from_live_fairs(monkeypatch, tmp_path):
-    eng = FakeEngine(fairs=None)
-    main, db, emitted = _setup(monkeypatch, tmp_path, eng, "live1.duckdb",
-                               mode="live")
+    main, db, emitted = _setup(monkeypatch, tmp_path, eng, "live1.duckdb")
     canon = legset.parse_legs(GRID_LEGS)
     h = legset.leg_set_hash(canon)
 
     # Tick 1: no live result yet — the GRID sub-combo must be fed to the
-    # engine (pre-#54 code prices it from cache instead) and the RFQ skipped.
+    # engine and the RFQ skipped, cached grid notwithstanding.
     main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
     assert eng.ensure_calls and eng.ensure_calls[0][0] == h
     assert eng.ensure_calls[0][1] == GREF
@@ -197,17 +164,15 @@ def test_live_mode_grid_pending_then_priced_from_live_fairs(monkeypatch, tmp_pat
     assert _last_decision(db) == ("dry_run_quote", None)
     payload = _quote_priced_payload(emitted)
     assert payload["blended_fair"] == LIVE_FAIR, \
-        "live mode must price from the live fetch, never the sweep cache"
-    assert payload["pricing_mode"] == "live"
+        "quotes must price from the live fetch, never the sweep cache"
 
 
-def test_live_mode_timeout_declines_never_falls_back_to_cache(monkeypatch, tmp_path):
+def test_timeout_declines_never_falls_back_to_cache(monkeypatch, tmp_path):
     # A fetch landed with ZERO books (every book over budget / declined). The
-    # sweep cache holds a perfectly quotable grid — live mode must still
+    # sweep cache holds a perfectly quotable grid — the bot must still
     # DECLINE with live_fetch_timeout, never silently quote the cache.
     eng = FakeEngine(fairs=None, empty_landed=True)
-    main, db, emitted = _setup(monkeypatch, tmp_path, eng, "live2.duckdb",
-                               mode="live")
+    main, db, emitted = _setup(monkeypatch, tmp_path, eng, "live2.duckdb")
     main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
     assert _last_decision(db) == ("skipped", "live_fetch_timeout")
     assert _quote_priced_payload(emitted) is None
@@ -216,27 +181,24 @@ def test_live_mode_timeout_declines_never_falls_back_to_cache(monkeypatch, tmp_p
     assert eng.ensure_calls == []
 
 
-def test_live_mode_one_book_declines_live_too_few_books(monkeypatch, tmp_path):
+def test_one_book_declines_live_too_few_books(monkeypatch, tmp_path):
     # One book answered in time; MIN_AGREEING_BOOKS=2. The cache (2 books)
-    # must not top it up — live mode declines with its own reason so the
-    # monitor can tell "live fetch thin" from the sweep-era too_few_books.
+    # must not top it up.
     eng = FakeEngine(fairs={"draftkings": 0.30})
-    main, db, emitted = _setup(monkeypatch, tmp_path, eng, "live3.duckdb",
-                               mode="live")
+    main, db, emitted = _setup(monkeypatch, tmp_path, eng, "live3.duckdb")
     main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
     assert _last_decision(db) == ("skipped", "live_too_few_books")
     assert _quote_priced_payload(emitted) is None
 
 
-def test_live_mode_confirm_refetches_grid_and_voids_on_failure(monkeypatch, tmp_path):
-    # Confirm last look in live mode: a GRID quote's re-price must come from a
-    # synchronous live re-fetch; a failed re-fetch voids — even though the
-    # sweep cache could still price the combo.
+def test_confirm_refetches_grid_and_voids_on_failure(monkeypatch, tmp_path):
+    # Confirm last look: a GRID quote's re-price must come from a synchronous
+    # live re-fetch; a failed re-fetch voids — even though the sweep cache
+    # could still price the combo.
     import json
     from datetime import datetime, timezone
     eng = FakeEngine(fairs=None)                       # refetch_now -> False
-    main, db, emitted = _setup(monkeypatch, tmp_path, eng, "live4.duckdb",
-                               mode="live")
+    main, db, emitted = _setup(monkeypatch, tmp_path, eng, "live4.duckdb")
     canon = legset.parse_legs(GRID_LEGS)
     h = legset.leg_set_hash(canon)
     now = datetime.now(timezone.utc)
@@ -270,7 +232,7 @@ def test_live_mode_confirm_refetches_grid_and_voids_on_failure(monkeypatch, tmp_
             return True
 
     main._confirm_tick(GW(), dry_run=False)
-    assert eng.refetch_calls, "live mode confirm must live-refetch grid shapes"
+    assert eng.refetch_calls, "confirm must live-refetch grid shapes"
     jobs, budget = eng.refetch_calls[0]
     assert jobs[0][0] == h and jobs[0][1] == GREF
     assert budget == main.CONFIRM_REFETCH_BUDGET_SEC
@@ -280,13 +242,13 @@ def test_live_mode_confirm_refetches_grid_and_voids_on_failure(monkeypatch, tmp_
     assert st[0] == "voided"
 
 
-def test_live_mode_confirm_voids_without_engine_even_with_cache(monkeypatch, tmp_path):
-    # _ENGINE can be None (process start / wiring gap). Live-mode confirm
-    # must void — the perfectly quotable sweep cache must not stand in.
+def test_confirm_voids_without_engine_even_with_cache(monkeypatch, tmp_path):
+    # _ENGINE can be None (process start / wiring gap). Confirm must void —
+    # the perfectly quotable sweep cache must not stand in.
     import json
     from datetime import datetime, timezone
     main, db, emitted = _setup(monkeypatch, tmp_path, FakeEngine(fairs=None),
-                               "live5.duckdb", mode="live")
+                               "live5.duckdb")
     monkeypatch.setattr(main, "_ENGINE", None)
     now = datetime.now(timezone.utc)
     with db.connect() as con:
@@ -313,7 +275,7 @@ def test_live_mode_confirm_voids_without_engine_even_with_cache(monkeypatch, tmp
 
     class GW:
         def confirm(self, qid):
-            raise AssertionError("no engine in live mode must void, not confirm")
+            raise AssertionError("no engine must void, not confirm")
 
         def cancel(self, qid):
             return True
@@ -326,43 +288,7 @@ def test_live_mode_confirm_voids_without_engine_even_with_cache(monkeypatch, tmp
 
 
 # --------------------------------------------------------------------------- #
-# SHADOW mode — quote from cache, ALSO live-fetch and log both fairs           #
-# --------------------------------------------------------------------------- #
-
-def test_shadow_mode_quotes_from_cache_and_fetches_live(monkeypatch, tmp_path):
-    eng = FakeEngine(fairs=None)
-    main, db, emitted = _setup(monkeypatch, tmp_path, eng, "sh1.duckdb",
-                               mode="shadow")
-    canon = legset.parse_legs(GRID_LEGS)
-    h = legset.leg_set_hash(canon)
-    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
-    # Quoting is NOT blocked on the live fetch...
-    assert _last_decision(db) == ("dry_run_quote", None)
-    assert _quote_priced_payload(emitted)["blended_fair"] == CACHED_FAIR
-    # ...but the fetch was fired for the comparison dataset.
-    assert eng.ensure_calls and eng.ensure_calls[0][0] == h
-
-
-def test_shadow_mode_logs_cached_vs_live_pair_once_per_landing(monkeypatch, tmp_path):
-    eng = FakeEngine(fairs=dict(LIVE_FAIRS))
-    main, db, emitted = _setup(monkeypatch, tmp_path, eng, "sh2.duckdb",
-                               mode="shadow")
-    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
-    assert _last_decision(db) == ("dry_run_quote", None)
-    assert _quote_priced_payload(emitted)["blended_fair"] == CACHED_FAIR
-    comps = [kw["payload"] for ev, kw in emitted
-             if ev == "shadow_fair_comparison"]
-    assert len(comps) == 1, "shadow mode must log the cached-vs-live pair"
-    assert comps[0]["cached_fair"] == CACHED_FAIR
-    assert comps[0]["live_fair"] == LIVE_FAIR
-    # Same landing consumed again next tick -> no duplicate comparison row.
-    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
-    comps = [1 for ev, _ in emitted if ev == "shadow_fair_comparison"]
-    assert len(comps) == 1
-
-
-# --------------------------------------------------------------------------- #
-# Router + engine + config units                                               #
+# Router + engine units                                                        #
 # --------------------------------------------------------------------------- #
 
 def test_router_live_routing_prices_grids_from_lookup_not_sgp_df():
@@ -419,7 +345,7 @@ def test_engine_landed_empty_and_result_age(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# LIVE mode e2e — REAL OnDemandEngine + stubbed price_on_demand                #
+# E2e — REAL OnDemandEngine + stubbed price_on_demand                          #
 # --------------------------------------------------------------------------- #
 
 GREF_B = GameRef(game_id="gB", home_team="Los Angeles Dodgers",
@@ -451,7 +377,7 @@ class StubService:
 def _setup_real_engine(monkeypatch, tmp_path, svc, db_name):
     from kalshi_mlb_mm.on_demand import OnDemandEngine
     eng = OnDemandEngine(svc, autostart=False)
-    main, db, emitted = _setup(monkeypatch, tmp_path, eng, db_name, mode="live")
+    main, db, emitted = _setup(monkeypatch, tmp_path, eng, db_name)
     monkeypatch.setattr(
         main, "_resolve_game_for_legs",
         lambda gl: "game1" if gl[0].game_id == "25JUN271905TEXLAA" else "gB")
@@ -460,7 +386,7 @@ def _setup_real_engine(monkeypatch, tmp_path, svc, db_name):
     return main, db, emitted, eng
 
 
-def test_live_mode_e2e_grid_real_engine(monkeypatch, tmp_path):
+def test_e2e_grid_real_engine(monkeypatch, tmp_path):
     svc = StubService({"game1": 0.30})
     main, db, emitted, eng = _setup_real_engine(monkeypatch, tmp_path, svc,
                                                 "e2e1.duckdb")
@@ -468,12 +394,11 @@ def test_live_mode_e2e_grid_real_engine(monkeypatch, tmp_path):
     assert _last_decision(db) == ("skipped", "on_demand_pending")
     assert eng._queue_len() == 1
     eng._drain_once()
-    assert svc.calls, "grid legs must reach price_on_demand in live mode"
+    assert svc.calls, "grid legs must reach price_on_demand"
     main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)   # priced live
     assert _last_decision(db) == ("dry_run_quote", None)
     payload = _quote_priced_payload(emitted)
     assert payload["blended_fair"] == pytest.approx(0.30)
-    assert payload["pricing_mode"] == "live"
     # The research trace: per-game live books + result age (the #54 proof).
     canon = legset.parse_legs(GRID_LEGS)
     h = legset.leg_set_hash(canon)
@@ -481,7 +406,7 @@ def test_live_mode_e2e_grid_real_engine(monkeypatch, tmp_path):
     assert payload["live_games"][h]["age_sec"] >= 0.0
 
 
-def test_live_mode_cross_game_multiplies_per_game_live_fetches(monkeypatch, tmp_path):
+def test_e2e_cross_game_multiplies_per_game_live_fetches(monkeypatch, tmp_path):
     # Cross-game combo = grid sub-combo (game1) x SINGLE leg (gB). Each game
     # gets its own live fetch — including the 1-leg set — and the quote is
     # the product of the per-game live consensus fairs (0.30 * 0.30 = 0.09).
@@ -502,7 +427,7 @@ def test_live_mode_cross_game_multiplies_per_game_live_fetches(monkeypatch, tmp_
     assert _quote_priced_payload(emitted)["blended_fair"] == pytest.approx(0.09)
 
 
-def test_live_mode_mixed_fresh_and_empty_declines_timeout(monkeypatch, tmp_path):
+def test_e2e_mixed_fresh_and_empty_declines_timeout(monkeypatch, tmp_path):
     # game1 answers, gB lands EMPTY (every book over budget): once nothing is
     # pending the combo declines live_fetch_timeout — the fresh half must not
     # let a cache (or partial) fair through.
@@ -517,13 +442,3 @@ def test_live_mode_mixed_fresh_and_empty_declines_timeout(monkeypatch, tmp_path)
     main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
     assert _last_decision(db) == ("skipped", "live_fetch_timeout")
     assert _quote_priced_payload(emitted) is None
-
-
-def test_config_mode_default_shadow_and_validation():
-    import kalshi_mlb_mm.config as cfg
-    # Worktrees have no kalshi_mlb_mm/.env (gitignored), so the default applies.
-    assert cfg.QUOTE_PRICING_MODE == "shadow"
-    with pytest.raises(ValueError):
-        cfg.validate_quote_pricing_mode("bogus")
-    for mode in ("live", "cached", "shadow"):
-        assert cfg.validate_quote_pricing_mode(mode) == mode

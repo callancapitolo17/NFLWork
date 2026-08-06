@@ -188,18 +188,17 @@ def test_mixed_grid_plus_on_demand_combo_prices_product(monkeypatch, tmp_path):
             return {}
 
     gw = GW()
-    main._discovery_tick(SrcMix(), gw, dry_run=False)     # pending (game B)
+    # #54 live-only: BOTH games ride the engine — the grid game no longer
+    # prices from the cached _SGP_ODDS rows seeded above.
+    svc.fair = 0.30           # 0.30 * 0.30 = 0.09, above MIN_FAIR_PROB
+    main._discovery_tick(SrcMix(), gw, dry_run=False)     # pending (both games)
     assert gw.submits == []
+    assert eng._queue_len() == 2, "one live job per game, grid included"
+    eng._drain_once()
     eng._drain_once()
     main._discovery_tick(SrcMix(), gw, dry_run=False)     # both games priceable
     assert len(gw.submits) == 1
-    # sanity: quoted fair = grid(gA) * consensus(gB) — recompute directly
-    from kalshi_mlb_mm import router
-    canon_b = legset.parse_legs(legs_b)
-    cons_b, _ = router.consensus({"draftkings": 0.20, "fanduel": 0.20},
-                                 2, 0.07)
-    cons_a, _ = router.subcombo_consensus("gA", legset.parse_legs(legs_a),
-                                          main._SGP_ODDS, 2, 0.07)
+    # quoted fair = live consensus(gA) * live consensus(gB) = 0.30 * 0.30
     with db.connect(read_only=True) as con:
         blended = con.execute("SELECT blended_fair FROM live_quotes").fetchone()[0]
-    assert abs(blended - cons_a.fair * cons_b.fair) < 1e-9
+    assert abs(blended - 0.09) < 1e-9

@@ -44,6 +44,9 @@ def _replace_env(monkeypatch, tmp_path, db_name):
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-1": (True, "game1", _LEGS)})
+    # #54 live-only: pricing requires a live engine result for every game.
+    from kalshi_mlb_mm.tests.conftest import FakeLiveEngine
+    monkeypatch.setattr(main, "_ENGINE", FakeLiveEngine())
     # New price differs from the pre-seeded quote by >> QUOTE_HYSTERESIS.
     monkeypatch.setattr(pricing_mod, "quote",
                         lambda fair, roi, **kw: Quote(yes_bid=0.520, no_bid=0.410))

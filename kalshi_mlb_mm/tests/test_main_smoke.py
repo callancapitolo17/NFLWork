@@ -99,6 +99,9 @@ def test_discovery_dedup_no_resubmit_when_price_unchanged(monkeypatch, tmp_path)
              "event_ticker": _evt, "side": "yes"}]
     monkeypatch.setattr(main, "_SCOPE_CACHE",
                         {"COMBO-1": (True, "game1", legs)})
+    # #54 live-only: pricing requires a live engine result for every game.
+    from kalshi_mlb_mm.tests.conftest import FakeLiveEngine
+    monkeypatch.setattr(main, "_ENGINE", FakeLiveEngine())
 
     # Pre-insert the open live_quote at exactly the fixed bid prices.
     with db.connect() as con:
@@ -921,6 +924,9 @@ def test_discovery_skips_when_combo_exposure_capped(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-CAP": (True, "gCAP", legs)})
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "gCAP")
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
+    # #54 live-only: pricing requires a live engine result for every game.
+    from kalshi_mlb_mm.tests.conftest import FakeLiveEngine
+    monkeypatch.setattr(main, "_ENGINE", FakeLiveEngine())
 
     # Pre-seed fills totaling $51 on this ticker (102 contracts × $0.50 = $51.00).
     # reconciled=True → counted as price*contracts = $51, which exceeds cap $50.

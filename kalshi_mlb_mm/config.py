@@ -80,36 +80,6 @@ FAIR_DRIFT_TOLERANCE = float(_get("FAIR_DRIFT_TOLERANCE", "0.02"))
 MIN_FAIR_PROB = float(_get("MIN_FAIR_PROB", "0.05"))
 MAX_FAIR_PROB = float(_get("MAX_FAIR_PROB", "0.95"))
 
-# Quote pricing mode (issue #54): where an in-scope RFQ's fair comes from.
-#   "cached" — pre-#54 behavior (rollback): grids/singles price from the
-#              sweep's mlb_sgp_odds cache; only novel same-game shapes hit the
-#              on-demand engine.
-#   "shadow" — quote from the cache exactly as "cached", but ALSO run the live
-#              fetch for every sub-combo and log the cached-vs-live fair pair
-#              to the research firehose (shadow_fair_comparison) — the rollout
-#              evidence for flipping to "live".
-#   "live"   — the target: EVERY in-scope sub-combo (grids, cross-game
-#              per-game sub-fetches, novel shapes) prices from a fetch
-#              initiated after the RFQ landed. A fetch that lands with zero
-#              books DECLINES (live_fetch_timeout) — never a cache fallback.
-# Default stays "shadow" until the user flips it (rollout decision, not ours).
-_QUOTE_PRICING_MODES = ("live", "cached", "shadow")
-
-
-def validate_quote_pricing_mode(value: str) -> str:
-    """Fail LOUDLY on a typo'd mode: a bot silently running in the wrong
-    pricing mode is a rollout-state lie, worse than refusing to start."""
-    mode = str(value).strip().lower()
-    if mode not in _QUOTE_PRICING_MODES:
-        raise ValueError(
-            f"QUOTE_PRICING_MODE must be one of {_QUOTE_PRICING_MODES}, "
-            f"got {value!r}")
-    return mode
-
-
-QUOTE_PRICING_MODE = validate_quote_pricing_mode(
-    _get("QUOTE_PRICING_MODE", "shadow"))
-
 # Freshness / circuit breaker
 # Observed live 2026-06-08: a full SGP cycle is ~150-165s end-to-end (60s tick
 # gap + ~90-105s scrape runtime), so a 60s staleness window left the bot
@@ -171,16 +141,17 @@ CORR_PREMIUM_MAX = float(_get("CORR_PREMIUM_MAX", "2.0"))
 # If a constituent's devigged mid moves past this threshold AFTER we quoted,
 # the market has moved and our resting quote is the stale side.
 CONSTITUENT_JUMP_THRESHOLD = float(_get("CONSTITUENT_JUMP_THRESHOLD", "0.03"))
-# Mode flag, flipped by the live-pricing pivot (#54) rather than a rewrite:
-#   "book_quiet"    (default, TODAY) — also require our book consensus to have
-#                   stayed within CONSTITUENT_BOOK_QUIET_MAX, which separates
+# Mode flag, flipped by the live-pricing pivot (#54) as designed:
+#   "unconditional" (default, post-#54) — every quote is priced from a live
+#                   fetch, so the fair was fresh at placement and ANY
+#                   constituent jump during the resting window means the
+#                   market moved after us.
+#   "book_quiet"    (pre-#54 behavior) — also required our book consensus to
+#                   have stayed within CONSTITUENT_BOOK_QUIET_MAX, separating
 #                   "we are the stale ones" from "the whole market moved
-#                   together". Quotes are priced off a <=150s cache, so a jump
-#                   WITH the books moving is just our own data catching up.
-#   "unconditional" (post-#54) — once every quote is priced from a live fetch
-#                   the fair was fresh at placement, so ANY constituent jump
-#                   during the resting window means the market moved after us.
-CONSTITUENT_JUMP_MODE = _get("CONSTITUENT_JUMP_MODE", "book_quiet")
+#                   together". Only made sense while quotes were priced off a
+#                   <=150s cache; kept as an env override.
+CONSTITUENT_JUMP_MODE = _get("CONSTITUENT_JUMP_MODE", "unconditional")
 CONSTITUENT_BOOK_QUIET_MAX = float(_get("CONSTITUENT_BOOK_QUIET_MAX", "0.01"))
 # Wall-clock ceiling on the constituent poll. ALL ticks share one thread, so a
 # slow poll inside the risk sweep delays the confirm tick — and Kalshi allows

@@ -54,6 +54,9 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
              "event_ticker": _evt, "side": "yes"}]
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-N7": (True, "g7", legs)})
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "g7")
+    # #54 live-only: pricing requires a live engine result for every game.
+    from kalshi_mlb_mm.tests.conftest import FakeLiveEngine
+    monkeypatch.setattr(main, "_ENGINE", FakeLiveEngine())
 
     # Pre-seed 4 open live_quotes on COMBO-N7 — fills table is EMPTY.
     # N7: inflight worst-case = 4 * max_fill_exposure_usd() = 4 * $50 = $200.
