@@ -214,10 +214,13 @@ def test_kill_switch_pulls_maker_quotes(tmp_path, monkeypatch):
 def test_main_loop_shutdown_pulls_maker_quotes(tmp_path, monkeypatch):
     """SIGINT/SIGTERM (cleared _running) must pull resting maker quotes on exit."""
     _init_dbs(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "MAKER_DB_PATH", tmp_path / "mk.duckdb")  # restore_halt_latch needs a real maker DB
     pulls = []
     class _GW:
         is_live = False
     class _MK:
+        def __init__(self):
+            self.state = runner.maker_state.MakerState()
         def pull_all(self, now, reason):
             pulls.append(reason)
         def stats(self):
@@ -225,7 +228,6 @@ def test_main_loop_shutdown_pulls_maker_quotes(tmp_path, monkeypatch):
     monkeypatch.setattr(runner.kalshi, "init", lambda: None)
     monkeypatch.setattr(runner.maker_gateway, "make_gateway", lambda mode, ack: _GW())
     monkeypatch.setattr(runner.maker_engine, "MakerEngine", lambda gw, st: _MK())
-    monkeypatch.setattr(runner.maker_store, "init", lambda: None)
     runner._running.clear()          # simulate signal received before first tick
     try:
         runner.main_loop(dry_run=True)
@@ -239,13 +241,14 @@ def test_main_loop_live_startup_sync(tmp_path, monkeypatch):
     orders) before the first tick, so a restart with inventory or stray
     resting orders doesn't false-trip the fresh cap stack / mismatch tripwire."""
     _init_dbs(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "MAKER_DB_PATH", tmp_path / "mk.duckdb")  # restore_halt_latch needs a real maker DB
 
     class _GW:
         is_live = True
 
     class _MK:
         def __init__(self):
-            self.state = object()
+            self.state = runner.maker_state.MakerState()
         def pull_all(self, now, reason):
             pass
         def stats(self):
@@ -259,7 +262,6 @@ def test_main_loop_live_startup_sync(tmp_path, monkeypatch):
     monkeypatch.setattr(runner.kalshi, "init", lambda: None)
     monkeypatch.setattr(runner.maker_gateway, "make_gateway", lambda mode, ack: _GW())
     monkeypatch.setattr(runner.maker_engine, "MakerEngine", lambda gw, st: _MK())
-    monkeypatch.setattr(runner.maker_store, "init", lambda: None)
     monkeypatch.setattr(runner.maker_state, "startup_sync", fake_startup_sync)
     runner._running.clear()          # simulate signal received before first tick
     try:
@@ -369,18 +371,20 @@ def test_note_success_stamped_fresh_after_each_adapter_tick(tmp_path, monkeypatc
     _init_dbs(tmp_path, monkeypatch)
 
     t0 = datetime.datetime(2026, 7, 25, 12, 0, 0, tzinfo=datetime.timezone.utc)
-    # 8 datetime.now() calls happen in one no-op iteration of main_loop:
-    # startup prune-date, in-loop prune-date check, then per adapter
-    # (before, after) x2, then watchdog, then the shutdown pull_all.
+    # 9 datetime.now() calls happen in one no-op iteration of main_loop:
+    # startup prune-date, maker setup's restore_halt_latch (finding #75/F6),
+    # in-loop prune-date check, then per adapter (before, after) x2, then
+    # watchdog, then the shutdown pull_all.
     times = [
         t0,                                          # 1: last_prune_date (startup)
-        t0,                                          # 2: today (in-loop, same day -> no re-prune)
-        t0,                                          # 3: soccer — now (before run_tick)
-        t0 + datetime.timedelta(seconds=25),          # 4: soccer — note_success (after)
-        t0 + datetime.timedelta(seconds=25),          # 5: mlb — now (before run_tick), fresh
-        t0 + datetime.timedelta(seconds=25 + 37),     # 6: mlb — note_success (after)
-        t0 + datetime.timedelta(seconds=25 + 37 + 1),  # 7: watchdog
-        t0 + datetime.timedelta(seconds=25 + 37 + 1),  # 8: shutdown pull_all
+        t0,                                          # 2: restore_halt_latch (maker setup, pre-loop)
+        t0,                                          # 3: today (in-loop, same day -> no re-prune)
+        t0,                                          # 4: soccer — now (before run_tick)
+        t0 + datetime.timedelta(seconds=25),          # 5: soccer — note_success (after)
+        t0 + datetime.timedelta(seconds=25),          # 6: mlb — now (before run_tick), fresh
+        t0 + datetime.timedelta(seconds=25 + 37),     # 7: mlb — note_success (after)
+        t0 + datetime.timedelta(seconds=25 + 37 + 1),  # 8: watchdog
+        t0 + datetime.timedelta(seconds=25 + 37 + 1),  # 9: shutdown pull_all
     ]
     fake_datetime = types.SimpleNamespace(
         datetime=types.SimpleNamespace(now=_SeqClock(times).now),
@@ -400,8 +404,11 @@ def test_note_success_stamped_fresh_after_each_adapter_tick(tmp_path, monkeypatc
     monkeypatch.setattr(runner.kalshi, "list_events", lambda series: [])
 
     note_success_calls = []
+    monkeypatch.setattr(config, "MAKER_DB_PATH", tmp_path / "mk.duckdb")  # restore_halt_latch needs a real maker DB
 
     class _FakeMaker:
+        def __init__(self):
+            self.state = runner.maker_state.MakerState()
         def note_success(self, sport, now):
             note_success_calls.append((sport, now))
         def watchdog(self, now):
@@ -416,7 +423,6 @@ def test_note_success_stamped_fresh_after_each_adapter_tick(tmp_path, monkeypatc
 
     monkeypatch.setattr(runner.maker_gateway, "make_gateway", lambda mode, ack: _GW())
     monkeypatch.setattr(runner.maker_engine, "MakerEngine", lambda gw, st: _FakeMaker())
-    monkeypatch.setattr(runner.maker_store, "init", lambda: None)
     monkeypatch.setattr(runner.time, "sleep", lambda _s: runner._running.clear())
 
     runner._running.set()
@@ -511,8 +517,11 @@ def test_main_loop_withholds_note_success_when_feed_frozen(tmp_path, monkeypatch
     monkeypatch.setattr(runner.kalshi, "list_events", lambda series: [])
 
     note_success_calls = []
+    monkeypatch.setattr(config, "MAKER_DB_PATH", tmp_path / "mk.duckdb")  # restore_halt_latch needs a real maker DB
 
     class _FakeMaker:
+        def __init__(self):
+            self.state = runner.maker_state.MakerState()
         def note_success(self, sport, now):
             note_success_calls.append(sport)
         def watchdog(self, now):
@@ -527,7 +536,6 @@ def test_main_loop_withholds_note_success_when_feed_frozen(tmp_path, monkeypatch
 
     monkeypatch.setattr(runner.maker_gateway, "make_gateway", lambda mode, ack: _GW())
     monkeypatch.setattr(runner.maker_engine, "MakerEngine", lambda gw, st: _FakeMaker())
-    monkeypatch.setattr(runner.maker_store, "init", lambda: None)
     monkeypatch.setattr(runner.time, "sleep", lambda _s: runner._running.clear())
 
     runner._running.set()
@@ -550,8 +558,11 @@ def test_main_loop_calls_note_success_when_feed_advancing(tmp_path, monkeypatch)
     monkeypatch.setattr(runner.kalshi, "list_events", lambda series: [])
 
     note_success_calls = []
+    monkeypatch.setattr(config, "MAKER_DB_PATH", tmp_path / "mk.duckdb")  # restore_halt_latch needs a real maker DB
 
     class _FakeMaker:
+        def __init__(self):
+            self.state = runner.maker_state.MakerState()
         def note_success(self, sport, now):
             note_success_calls.append(sport)
         def watchdog(self, now):
@@ -566,7 +577,6 @@ def test_main_loop_calls_note_success_when_feed_advancing(tmp_path, monkeypatch)
 
     monkeypatch.setattr(runner.maker_gateway, "make_gateway", lambda mode, ack: _GW())
     monkeypatch.setattr(runner.maker_engine, "MakerEngine", lambda gw, st: _FakeMaker())
-    monkeypatch.setattr(runner.maker_store, "init", lambda: None)
     monkeypatch.setattr(runner.time, "sleep", lambda _s: runner._running.clear())
 
     runner._running.set()

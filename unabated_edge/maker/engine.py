@@ -26,8 +26,14 @@ class MakerEngine:
     # ---------- gates ----------
 
     def _daily_halted(self, now):
+        """Finding #75/F6: the halt is a LATCH, not a fresh-each-tick
+        recompute. Once realized loss breaches the threshold this trading
+        day, stay halted regardless of subsequent P&L recovery -- it only
+        clears on a genuine ET trading-day roll (state.roll_day)."""
         self.state.roll_day(now)
-        self._halted = self.state.settled_pnl_today <= -config.DAILY_LOSS_HALT_PCT * config.BANKROLL
+        if self.state.settled_pnl_today <= -config.DAILY_LOSS_HALT_PCT * config.BANKROLL:
+            self.state.latch_halt(now)
+        self._halted = self.state.halt_latched
         return self._halted
 
     def _hard_stopped(self, now):

@@ -112,6 +112,78 @@ def test_roll_day_resets_pnl():
     assert s.settled_pnl_today == 0.0
 
 
+# ---------- daily halt: ET trading day + latch (finding #75/F6) ----------
+
+def test_roll_day_no_reset_at_utc_midnight_mid_slate():
+    """UTC midnight is 8pm ET (EDT) -- squarely mid-slate. The trading day
+    must NOT roll there, or a losing run gets a fresh loss budget mid-game."""
+    s = mstate.MakerState()
+    before = datetime.datetime(2026, 8, 5, 23, 59, tzinfo=datetime.timezone.utc)  # 7:59pm ET
+    after = datetime.datetime(2026, 8, 6, 0, 1, tzinfo=datetime.timezone.utc)     # 8:01pm ET, same evening
+    s.roll_day(before)
+    s.settled_pnl_today = -100.0
+    s.roll_day(after)
+    assert s.settled_pnl_today == -100.0
+
+
+def test_roll_day_resets_after_early_morning_et_roll():
+    s = mstate.MakerState()
+    late_night = datetime.datetime(2026, 8, 6, 3, 0, tzinfo=datetime.timezone.utc)     # 11pm ET Aug 5
+    s.roll_day(late_night)
+    s.settled_pnl_today = -100.0
+    next_morning = datetime.datetime(2026, 8, 6, 11, 0, tzinfo=datetime.timezone.utc)  # 7am ET Aug 6 -- past the 6am roll
+    s.roll_day(next_morning)
+    assert s.settled_pnl_today == 0.0
+
+
+def test_halt_latch_persists_through_pnl_recovery(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "MAKER_DB_PATH", tmp_path / "mk.duckdb")
+    from unabated_edge.maker import store
+    store.init()
+    s = mstate.MakerState()
+    s.roll_day(_NOW)
+    s.latch_halt(_NOW)
+    assert s.halt_latched is True
+    s.settled_pnl_today = 500.0                                    # fully recovered
+    s.roll_day(_NOW + datetime.timedelta(minutes=5))                # still same trading day
+    assert s.halt_latched is True                                   # no auto-resume
+
+
+def test_halt_latch_clears_on_new_trading_day(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "MAKER_DB_PATH", tmp_path / "mk.duckdb")
+    from unabated_edge.maker import store
+    store.init()
+    s = mstate.MakerState()
+    s.roll_day(_NOW)
+    s.latch_halt(_NOW)
+    s.roll_day(_NOW + datetime.timedelta(days=1))                   # genuine new trading day
+    assert s.halt_latched is False
+
+
+def test_halt_latch_persists_across_restart(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "MAKER_DB_PATH", tmp_path / "mk.duckdb")
+    from unabated_edge.maker import store
+    store.init()
+    s = mstate.MakerState()
+    s.roll_day(_NOW)
+    s.latch_halt(_NOW)
+    s2 = mstate.MakerState()                                        # fresh state, as after a restart
+    mstate.restore_halt_latch(s2, _NOW + datetime.timedelta(minutes=1))
+    assert s2.halt_latched is True
+
+
+def test_halt_latch_not_restored_on_new_trading_day(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "MAKER_DB_PATH", tmp_path / "mk.duckdb")
+    from unabated_edge.maker import store
+    store.init()
+    s = mstate.MakerState()
+    s.roll_day(_NOW)
+    s.latch_halt(_NOW)
+    s2 = mstate.MakerState()
+    mstate.restore_halt_latch(s2, _NOW + datetime.timedelta(days=1))
+    assert s2.halt_latched is False
+
+
 def test_money_real_payload_shapes():
     assert mstate._money({"revenue": 16807}, "revenue") == 168.07
     assert mstate._money({"fee_cost": "2.168600"}, "fee_cost") == 2.1686

@@ -6,11 +6,24 @@ each minute, and a divergence between local bookkeeping and Kalshi positions
 is a tripwire, never silently reconciled."""
 import datetime
 import logging
+from zoneinfo import ZoneInfo
 
+from unabated_edge import config
 from unabated_edge.maker import ledger, store
 from kalshi_common import auth_client
 
 log = logging.getLogger("unabated_edge")
+
+_ET = ZoneInfo("America/New_York")
+
+
+def trading_day(now: datetime.datetime) -> datetime.date:
+    """The trading day a timestamp belongs to, rolled in US-Eastern at
+    config.DAILY_ROLL_HOUR_ET (default 6am) rather than UTC midnight --
+    see config.py for why (UTC midnight = 8pm ET, mid-slate)."""
+    now_et = now.astimezone(_ET)
+    shifted = now_et - datetime.timedelta(hours=config.DAILY_ROLL_HOUR_ET)
+    return shifted.date()
 
 
 def _fp(d, key):
@@ -59,13 +72,30 @@ class MakerState:
         self.position_baseline = {}  # ticker -> Kalshi position adopted at startup (restart-with-inventory)
         self.settled_pnl_today = 0.0
         self._day = None
+        self.halt_latched = False  # daily-loss halt latch (finding #75/F6): once tripped,
+                                    # stays halted for the rest of this trading day even if
+                                    # settled P&L recovers -- clears only on a genuine roll
         self._fills_min_ts = None
         self._done_trades = set()
 
     def roll_day(self, now):
-        if self._day != now.date():
-            self._day = now.date()
+        day = trading_day(now)
+        if self._day != day:
+            self._day = day
             self.settled_pnl_today = 0.0
+            if self.halt_latched:                      # only touch the DB on an actual clear
+                self.halt_latched = False
+                store.set_halt_latch(day, False)
+                log.info("maker daily halt latch cleared -- new trading day %s", day)
+
+    def latch_halt(self, now):
+        """Trip the daily-halt latch (idempotent). Persisted so a restart
+        within the same halted trading day comes back up still halted --
+        a deliberate same-day resume is an operator restart, not automatic."""
+        if not self.halt_latched:                       # only touch the DB on an actual trip
+            self.halt_latched = True
+            store.set_halt_latch(self._day, True)
+            log.warning("maker daily halt latched for trading day %s", self._day)
 
     def register_ticker(self, ticker, sport, event_id, line):
         self.ticker_info[ticker] = {"sport": sport, "event_id": event_id, "line": line}
@@ -214,6 +244,20 @@ def poll_settlements(state: MakerState, now):
 
 def _in_series(ticker, prefixes):
     return any(ticker.startswith(p) for p in prefixes)
+
+
+def restore_halt_latch(state: MakerState, now):
+    """Restart-time restore of the daily-halt latch (finding #75/F6): a
+    fresh MakerState knows nothing about a previous run, so without this a
+    restart during an already-halted trading day would silently un-halt.
+    Only restores when the persisted latch belongs to the SAME trading day
+    as `now` -- a latch from a prior trading day is stale and must not
+    carry forward (that's the roll's job, not a restart's)."""
+    state.roll_day(now)
+    saved_day, saved_halted = store.get_halt_latch()
+    if saved_halted and saved_day == state._day:
+        state.halt_latched = True
+        log.warning("maker restart: daily halt latch restored for trading day %s", state._day)
 
 
 def startup_sync(state: MakerState, gateway, series_prefixes):

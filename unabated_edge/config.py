@@ -92,6 +92,12 @@ MAX_QUOTE_PCT = float(_get("MAX_QUOTE_PCT", "0.30"))
 MATCH_CAP_PCT = float(_get("MATCH_CAP_PCT", "0.40"))
 GLOBAL_CAP_PCT = float(_get("GLOBAL_CAP_PCT", "0.75"))
 DAILY_LOSS_HALT_PCT = float(_get("DAILY_LOSS_HALT_PCT", "0.40"))
+# The trading day rolls in US-Eastern at this hour, not UTC midnight (finding
+# #75/F6): UTC midnight is 8pm ET -- squarely mid-slate -- so a naive
+# now.date() reset hands a fresh loss budget in the middle of a losing
+# night's games. All MLB/soccer games are settled by 6am ET, so rolling
+# then keeps a full evening slate inside one trading day.
+DAILY_ROLL_HOUR_ET = float(_get("DAILY_ROLL_HOUR_ET", "6"))
 FILL_BURST_N = int(_get("FILL_BURST_N", "3"))
 COOLOFF_MIN = float(_get("COOLOFF_MIN", "10"))
 MAKER_MAX_CONTRACTS = int(_get("MAKER_MAX_CONTRACTS", "2"))   # hard per-quote contract ceiling (tuition run)

@@ -233,7 +233,7 @@ quote on that match unless noted as global):
 | crossed/impossible book (`yes_ask + no_ask < 1 − 2·fee`) | that match | pull (data error) |
 | unpaired / kickoff passed / market closed | that match | pull (`sweep()`) |
 | Kalshi position mismatch vs local fills | all matches | pull everything (live mode only — reconciliation polling runs only when `MAKER_MODE=live`) |
-| daily loss halt (§cap stack) | all matches | pull everything |
+| daily loss halt (§cap stack) — a LATCH, not a fresh-each-tick check: once tripped it stays halted for the rest of the ET trading day even if settled P&L recovers; a deliberate same-day resume is an operator restart | all matches | pull everything |
 | hard $-stop: realized + mark-to-anchor unrealized P&L ≤ `-HARD_STOP_DOLLARS` ($50) | all matches | pull everything (`hard_stop`) — checked every tick, right after the daily halt |
 | anchor ladder disappears for a match | that match | pull that match (`anchor_gone`) |
 | anchor frozen: even the freshest rung's `modifiedOn` is older than `ANCHOR_STALE_SEC` (180s), or no rung has a parseable timestamp (fail-safe) | that match | pull that match (`anchor_stale`) |
@@ -469,7 +469,8 @@ All tuneable constants live in `config.py` and can be overridden via `.env` or e
 | `MAX_QUOTE_PCT` | `0.30` | Max fraction of bankroll per resting order (ledger cap usually binds first) |
 | `MATCH_CAP_PCT` | `0.40` | Max ledger worst-case per match, as a fraction of bankroll |
 | `GLOBAL_CAP_PCT` | `0.75` | Max Σ ledger worst-case across all matches, as a fraction of bankroll |
-| `DAILY_LOSS_HALT_PCT` | `0.40` | Realized settled loss (fraction of bankroll) that halts quoting for the day |
+| `DAILY_LOSS_HALT_PCT` | `0.40` | Realized settled loss (fraction of bankroll) that halts quoting for the day. **This is a latch, not a fresh-each-tick check** (finding #75/F6): once tripped it stays halted for the rest of the trading day even if settled P&L recovers back above the threshold — no intraday auto-resume. The latch is persisted in `unabated_edge_maker.duckdb` (`maker_halt_state`), so a process restart during an already-halted trading day comes back up still halted; a deliberate same-day resume is an operator restart, not automatic. |
+| `DAILY_ROLL_HOUR_ET` | `6` | Hour (US-Eastern) the trading day rolls over, e.g. `roll_day` compares `(now_ET − this many hours).date()`. **Not UTC midnight** — UTC midnight is 8pm ET, squarely mid-slate, so a naive `now.date()` reset would hand a fresh loss budget mid-game. All MLB/soccer games are settled by 6am ET, so the default keeps a full evening slate inside one trading day. |
 | `FILL_BURST_N` | `3` | More than this many fills on one match in 60s trips the fill-burst tripwire |
 | `COOLOFF_MIN` | `10` | Minutes a match stays pulled after a fill-burst trip |
 | `MAKER_MAX_CONTRACTS` | `2` | Hard per-quote contract ceiling (tuition-run leash — binds before the %-based ledger caps at this account size) |

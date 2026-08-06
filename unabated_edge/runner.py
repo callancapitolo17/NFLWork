@@ -271,6 +271,10 @@ def main_loop(dry_run: bool):
         maker_store.init()
         maker = maker_engine.MakerEngine(gw, maker_state.MakerState())
         log.info("maker enabled mode=%s live=%s", config.MAKER_MODE, gw.is_live)
+        # Restore the daily-halt latch (finding #75/F6) before the first tick: a
+        # fresh MakerState knows nothing about a previous run, so without this a
+        # restart during an already-halted trading day would silently un-halt.
+        maker_state.restore_halt_latch(maker.state, datetime.datetime.now(datetime.timezone.utc))
         series_prefixes = tuple(a.kalshi_series() for a in registry.ADAPTERS)
         if gw.is_live:
             maker_state.startup_sync(maker.state, gw, series_prefixes)

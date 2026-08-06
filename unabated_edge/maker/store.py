@@ -26,6 +26,11 @@ def init():
         c.execute("""CREATE TABLE IF NOT EXISTS maker_pnl(
             market_ticker VARCHAR PRIMARY KEY, ts TIMESTAMPTZ, sport VARCHAR,
             settled_pnl DOUBLE)""")
+        # Single-row latch for the daily-loss halt (finding #75/F6): persists
+        # across a restart so a losing run can't silently un-halt just
+        # because the process bounced. id is always 1 -- one latch, upserted.
+        c.execute("""CREATE TABLE IF NOT EXISTS maker_halt_state(
+            id INTEGER PRIMARY KEY, trading_day DATE, halted BOOLEAN)""")
 
 
 def log_quote(ts, sport, event_id, ticker, side, action, price, size, fair, margin, alt, reason, order_id):
@@ -49,3 +54,19 @@ def log_ledger(ts, sport, event_id, worst_case, grid, quotes_live):
 def log_settlement(ts, sport, ticker, pnl):
     with connect(config.MAKER_DB_PATH) as c:
         c.execute("INSERT OR IGNORE INTO maker_pnl VALUES (?,?,?,?)", [ticker, ts, sport, pnl])
+
+
+def set_halt_latch(trading_day, halted):
+    with connect(config.MAKER_DB_PATH) as c:
+        c.execute("""INSERT INTO maker_halt_state VALUES (1, ?, ?)
+                     ON CONFLICT (id) DO UPDATE SET
+                     trading_day = excluded.trading_day, halted = excluded.halted""",
+                  [trading_day, halted])
+
+
+def get_halt_latch():
+    """(trading_day, halted) for the persisted latch, or (None, False) if
+    never written (fresh DB / first run)."""
+    with connect(config.MAKER_DB_PATH) as c:
+        row = c.execute("SELECT trading_day, halted FROM maker_halt_state WHERE id = 1").fetchone()
+    return (row[0], row[1]) if row else (None, False)

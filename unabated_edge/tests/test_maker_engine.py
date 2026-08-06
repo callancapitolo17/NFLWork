@@ -128,6 +128,36 @@ def test_daily_halt_pulls_everything(eng, monkeypatch):
     assert eng.stats()["halted"] is True
 
 
+def test_daily_halt_latches_no_auto_resume(eng):
+    """Finding #75/F6: once tripped, the halt must stay latched for the rest
+    of the trading day even after settled P&L fully recovers -- no
+    intraday auto-resume."""
+    eng.on_match(Soccer(), _EM, _KEV, _LADDER, _BOOKS, _NOW)
+    eng.state.roll_day(_NOW)
+    eng.state.settled_pnl_today = -config.DAILY_LOSS_HALT_PCT * config.BANKROLL - 1
+    eng.on_match(Soccer(), _EM, _KEV, _LADDER, _BOOKS, _NOW + datetime.timedelta(seconds=5))
+    assert eng.state.quotes_live() == 0
+    assert eng.stats()["halted"] is True
+    eng.state.settled_pnl_today = 1000.0                            # fully recovered
+    eng.on_match(Soccer(), _EM, _KEV, _LADDER, _BOOKS, _NOW + datetime.timedelta(seconds=10))
+    assert eng.state.quotes_live() == 0                              # still no new quotes rest
+    assert eng.stats()["halted"] is True
+
+
+def test_daily_halt_clears_on_new_trading_day(eng):
+    eng.on_match(Soccer(), _EM, _KEV, _LADDER, _BOOKS, _NOW)
+    eng.state.roll_day(_NOW)
+    eng.state.settled_pnl_today = -config.DAILY_LOSS_HALT_PCT * config.BANKROLL - 1
+    eng.on_match(Soccer(), _EM, _KEV, _LADDER, _BOOKS, _NOW + datetime.timedelta(seconds=5))
+    assert eng.stats()["halted"] is True
+    next_day = _NOW + datetime.timedelta(days=1)
+    eng.state.settled_pnl_today = 0.0
+    em2 = EventMeta(event_id=1, league_key="lg21", start_utc=next_day + datetime.timedelta(hours=3),
+                    home_id=10, away_id=20, home="TeamA", away="TeamB")
+    eng.on_match(Soccer(), em2, _KEV, _LADDER, _BOOKS, next_day)
+    assert eng.stats()["halted"] is False
+
+
 def test_fixed_contract_cap(eng):
     """_BOOK gives plenty of room; every placed quote must still be capped at
     MAKER_MAX_CONTRACTS (the tuition-run ceiling), regardless of budget room."""
