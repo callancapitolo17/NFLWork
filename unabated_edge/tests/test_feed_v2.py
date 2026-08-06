@@ -1,4 +1,5 @@
 import datetime
+import logging
 from unabated_edge import feed
 
 
@@ -61,3 +62,29 @@ def test_parse_v2_blur_guard_and_filters():
     assert not any(v.get("points") == 1.0 for v in st.lines.values())  # pt2 period ignored
     # malformed row was isolated: the good rows still landed
     assert len(st.lines) == 2
+
+
+# ---------- line_american_price shape validation (Finding #76) ----------
+
+def test_line_american_price_rejects_decimal_odds_shape(caplog):
+    """A decimal-odds value (e.g. 1.91) leaking into the americanPrice field
+    is a malformed input, not a real price -- must fail closed (None) so it
+    never reaches pricing.american_to_prob, and log once naming the value."""
+    with caplog.at_level(logging.WARNING, logger="unabated_edge"):
+        result = feed.line_american_price({"americanPrice": 1.91})
+    assert result is None
+    assert any("1.91" in r.getMessage() for r in caplog.records)
+
+
+def test_line_american_price_boundary_100_allowed():
+    assert feed.line_american_price({"americanPrice": 100}) == 100
+    assert feed.line_american_price({"americanPrice": -100}) == -100
+
+
+def test_line_american_price_valid_values_pass_through():
+    assert feed.line_american_price({"americanPrice": -110}) == -110
+    assert feed.line_american_price({"americanPrice": 145}) == 145
+
+
+def test_line_american_price_none_when_missing():
+    assert feed.line_american_price({}) is None

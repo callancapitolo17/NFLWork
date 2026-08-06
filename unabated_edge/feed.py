@@ -2,7 +2,7 @@ import datetime
 import logging
 from dataclasses import dataclass, field
 import requests
-from unabated_edge import config
+from unabated_edge import config, pricing
 
 log = logging.getLogger("unabated_edge")
 
@@ -10,8 +10,29 @@ log = logging.getLogger("unabated_edge")
 def line_american_price(ln: dict):
     """American moneyline price from a raw Unabated line dict.
     Field name is americanPrice in the authed feed; some captures show
-    'price'. Tolerant of both until Task 0 live recon pins it down."""
-    return ln.get("americanPrice", ln.get("price"))
+    'price'. Tolerant of both until Task 0 live recon pins it down.
+
+    Fail-closed shape check (Finding #76): American odds are never in
+    (-100, 100). This is the choke point for that invariant — a malformed
+    value (e.g. a stray decimal-odds price like 1.91) is rejected here
+    (None, logged once) so it never reaches pricing.american_to_prob and
+    silently produces a plausible-but-wrong probability. Callers
+    (sports/totals.py::_side_prices, runner.py's line-snapshot loop) already
+    treat None as "no price" and drop the side/rung."""
+    px = ln.get("americanPrice", ln.get("price"))
+    if px is None:
+        return None
+    try:
+        out_of_range = -pricing.MIN_ABS_AMERICAN_ODDS < px < pricing.MIN_ABS_AMERICAN_ODDS
+    except TypeError:
+        log.warning("line_american_price: non-numeric price %r", px)
+        return None
+    if out_of_range:
+        log.warning("line_american_price: rejecting out-of-range American odds %r "
+                    "(must be <=-%s or >=%s)", px, pricing.MIN_ABS_AMERICAN_ODDS,
+                    pricing.MIN_ABS_AMERICAN_ODDS)
+        return None
+    return px
 
 @dataclass(frozen=True)
 class EventMeta:
