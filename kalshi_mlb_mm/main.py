@@ -1626,9 +1626,9 @@ def _constituent_jumped_games(live_rows, current_prices) -> tuple[set, dict]:
 
     The placement baseline is `live_quotes.leg_prices_json` — the raw Kalshi
     odds #17 already snapshots at submission — so this needs no schema of its
-    own. In "book_quiet" mode a jump only counts while our own book consensus
-    stayed put, which separates "we are the stale ones" from "the whole market
-    moved together"; see CONSTITUENT_JUMP_MODE.
+    own. The jump is unconditional (#54): every quote was live-priced at
+    placement, so any constituent move since then means the market moved
+    after us.
 
     Fail-safe: any row we cannot evaluate contributes NO jump signal. It is
     still covered by the tipoff / staleness / book-drift gates, and #17's
@@ -1650,15 +1650,6 @@ def _constituent_jumped_games(live_rows, current_prices) -> tuple[set, dict]:
                                        config.CONSTITUENT_JUMP_THRESHOLD)
         if not moves:
             continue
-        # Anything that is not explicitly "unconditional" gets the conservative
-        # guard, so a typo in the env var cannot silently arm the aggressive
-        # post-#54 mode on a bot whose quotes are still cache-priced.
-        if config.CONSTITUENT_JUMP_MODE != "unconditional":
-            cur_med = _current_consensus_fair(legs_json)
-            if cur_med is None or book_fair_at_q is None:
-                continue           # cannot establish "quiet" → no signal
-            if abs(float(cur_med) - float(book_fair_at_q)) >= config.CONSTITUENT_BOOK_QUIET_MAX:
-                continue           # market moved together, not a pickoff
         detail[qid] = moves
         jumped_games.update(_games_for_tickers(raw_legs, set(moves)))
     return jumped_games, detail
@@ -1698,7 +1689,6 @@ def _risk_sweep_tick(gateway):
             research.emit("constituent_jump",
                           payload=dict(games=sorted(jumped_games),
                                        threshold=config.CONSTITUENT_JUMP_THRESHOLD,
-                                       mode=config.CONSTITUENT_JUMP_MODE,
                                        moves=jump_detail))
     for qid, game_id, ticker, book_fair_at_q, rid, legs_json, leg_prices_json in live:
         cancel = False
