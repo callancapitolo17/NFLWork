@@ -1,4 +1,5 @@
 import datetime
+import logging
 from unabated_edge import feed
 from unabated_edge.sports.soccer import Soccer
 from unabated_edge.tests.conftest import build_bt3_state
@@ -272,6 +273,67 @@ def test_older_mo_helper():
     assert _older_mo("2026-07-14T10:00:00", "2026-07-14T09:00:00") == "2026-07-14T09:00:00"
     assert _older_mo(None, "x") == "x"
     assert _older_mo(None, None) is None
+
+
+# ---------- main-rung overround/crossed gate (Finding #73) ----------
+
+def test_anchor_ladder_drops_crossed_main_rung(caplog):
+    """A crossed pair (po_raw+pu_raw < 1.0) is a data error -- possible only
+    from bad feed data, never a real two-way quote. It must be dropped
+    before ever reaching devig, which would otherwise silently normalize it
+    into a plausible-but-wrong p_over (confirmed against
+    kalshi_common.fair_value._probit_devig_n, which just renormalizes any
+    two raw probs to sum to 1 regardless of whether they started crossed)."""
+    s = Soccer()
+    # american_to_prob(144) == 100/244 ~= 0.40984 on both sides -> sum ~0.8197
+    st = build_bt3_state("lg21", "Colombia", "Ghana", eid=9, ms=7,
+                         over_price=144, under_price=144, line=2.5)
+    with caplog.at_level(logging.WARNING, logger="unabated_edge"):
+        ladder = s._anchor_ladder(st, 9)
+    assert ladder == {}
+    assert any("main" in r.getMessage() and "2.5" in r.getMessage()
+              for r in caplog.records)
+
+
+def test_anchor_ladder_drops_blown_vig_main_rung():
+    """Both sides implying a favorite (overround well above a normal ~1.05
+    two-way vig) is also a data error for a main (non-alt) rung."""
+    s = Soccer()
+    # american_to_prob(-300)=0.75, american_to_prob(-140)=0.5833 -> sum ~1.333
+    st = build_bt3_state("lg21", "Colombia", "Ghana", eid=9, ms=7,
+                         over_price=-300, under_price=-140, line=2.5)
+    ladder = s._anchor_ladder(st, 9)
+    assert ladder == {}
+
+
+def test_anchor_ladder_keeps_main_rung_within_band():
+    s = Soccer()
+    # american_to_prob(-115)=0.5349, american_to_prob(-110)=0.5238 -> sum ~1.059
+    st = build_bt3_state("lg21", "Colombia", "Ghana", eid=9, ms=7,
+                         over_price=-115, under_price=-110, line=2.5)
+    ladder = s._anchor_ladder(st, 9)
+    assert 2.5 in ladder
+
+
+def test_anchor_ladder_logs_failover_when_primary_book_unavailable(caplog):
+    """Finding #4b: falling through past the primary anchor book (7) to a
+    later one in ANCHOR_SOURCE_IDS must be visible in logs, not silent."""
+    s = Soccer()
+    st = feed.parse_snapshot({
+        "marketSources": [{"id": 7, "name": "S7"}, {"id": 6, "name": "S6"}],
+        "teams": {"1": {"name": "A"}, "2": {"name": "B"}},
+        "gameOddsEvents": {"lg21:pt1:pregame": [{
+            "eventId": 9, "eventStart": "2026-07-11T21:00:00+00:00",
+            "eventTeams": {"1": {"id": 1}, "0": {"id": 2}},
+            "gameOddsMarketSourcesLines": {
+                "si0:ms6:an0": {"bt3": {"price": 100, "points": 2.5}},
+                "si1:ms6:an0": {"bt3": {"price": -120, "points": 2.5}},
+            }}]}}, {"lg21"})
+    with caplog.at_level(logging.WARNING, logger="unabated_edge"):
+        ladder = s._anchor_ladder(st, 9)
+    assert 2.5 in ladder
+    assert any("failover" in r.getMessage() and "6" in r.getMessage()
+              for r in caplog.records)
 
 
 def test_fail_closed_mismatched_points():

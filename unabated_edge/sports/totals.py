@@ -3,9 +3,13 @@ final total (goals, runs, points), anchored by Unabated bt3 over/under.
 
 Subclasses provide only identity: sport, league_prefix, canon_team,
 kalshi_series, event_teams. All ladder devigging and rung matching lives here."""
+import logging
+
 from unabated_edge.sports.base import SportAdapter, Candidate
 from unabated_edge import pricing, config
 from unabated_edge.feed import line_american_price
+
+log = logging.getLogger("unabated_edge")
 
 
 def _older_mo(a, b):
@@ -40,8 +44,17 @@ class TotalsLadderAdapter(SportAdapter):
         quote) and `overround` is the pre-devig implied sum — both go to the
         research firehose so alt provenance stays auditable. Each rung also
         carries `modified_on` — the older of the two sides' feed modifiedOn —
-        for the staleness gate."""
-        for ms in config.ANCHOR_SOURCE_IDS:
+        for the staleness gate.
+
+        Overround/crossed gate (Finding #73): a rung is dropped BEFORE devig
+        if its raw implied sum falls outside the applicable band (main rungs:
+        config.MAIN_OVERROUND_MIN/MAX; alt rungs: config.ALT_OVERROUND_MIN/MAX).
+        A crossed pair (sum < 1.0) is a data error, not a real two-way quote —
+        pricing.devig would otherwise silently renormalize it into a
+        plausible-but-wrong p_over. This is the layer that keeps a blown/
+        crossed rung from ever becoming a candidate; engine.py's alt-only
+        gate (_desired) is a second, redundant layer for alt rungs specifically."""
+        for idx, ms in enumerate(config.ANCHOR_SOURCE_IDS):
             over_ln = state.lines.get(f"{eid}|0|{ms}|bt3")
             under_ln = state.lines.get(f"{eid}|1|{ms}|bt3")
             overs = self._side_prices(over_ln)
@@ -50,13 +63,25 @@ class TotalsLadderAdapter(SportAdapter):
             ladder = {}
             for line in sorted(set(overs) & set(unders)):
                 (opx, o_alt), (upx, u_alt) = overs[line], unders[line]
+                alt = o_alt or u_alt
                 po_raw, pu_raw = pricing.american_to_prob(opx), pricing.american_to_prob(upx)
+                overround = round(po_raw + pu_raw, 6)
+                lo, hi = (config.ALT_OVERROUND_MIN, config.ALT_OVERROUND_MAX) if alt \
+                    else (config.MAIN_OVERROUND_MIN, config.MAIN_OVERROUND_MAX)
+                if not (lo <= overround <= hi):
+                    log.warning(
+                        "dropping %s rung: eid=%s line=%s book=%s overround=%.4f "
+                        "outside band [%.2f, %.2f]",
+                        "alt" if alt else "main", eid, line, ms, overround, lo, hi)
+                    continue
                 p_over, _ = pricing.devig([po_raw, pu_raw])
-                ladder[line] = {"p_over": p_over, "book": ms,
-                                "alt": o_alt or u_alt,
-                                "overround": round(po_raw + pu_raw, 6),
-                                "modified_on": mo}
+                ladder[line] = {"p_over": p_over, "book": ms, "alt": alt,
+                                "overround": overround, "modified_on": mo}
             if ladder:
+                if idx > 0:
+                    log.warning(
+                        "anchor failover: eid=%s using book %s (primary book %s "
+                        "unavailable/incomplete)", eid, ms, config.ANCHOR_SOURCE_IDS[0])
                 return ladder
         return {}
 
