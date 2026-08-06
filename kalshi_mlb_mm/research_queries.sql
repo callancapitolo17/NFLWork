@@ -161,3 +161,55 @@ SELECT COUNT(*)                                                   AS settled_fil
        SUM(f.realized_pnl)                                        AS total_realized_pnl
 FROM state.fills f
 WHERE f.realized_pnl IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- 9) LIVE-PRICING HEALTH (issue #54): daily veto/void rate. In live mode the
+--    confirm last look re-checks a SECONDS-old number, so the void rate
+--    should collapse vs the cache era. quote_priced carries pricing_mode, so
+--    the daily mode mix is joined in — if voids do not collapse once the mix
+--    goes live, live pricing is not actually working.
+-- ---------------------------------------------------------------------------
+WITH daily_decisions AS (
+    SELECT CAST(observed_at AS DATE)                                AS day,
+           SUM(CASE WHEN decision LIKE 'voided_%' THEN 1 ELSE 0 END) AS voided,
+           SUM(CASE WHEN decision = 'confirmed'   THEN 1 ELSE 0 END) AS confirmed
+    FROM state.quote_decisions
+    GROUP BY 1
+), daily_modes AS (
+    SELECT CAST(ts AS DATE)                                          AS day,
+           json_extract_string(payload, 'pricing_mode')              AS pricing_mode,
+           COUNT(*)                                                  AS quotes_priced
+    FROM research.events
+    WHERE event_type = 'quote_priced'
+    GROUP BY 1, 2
+)
+SELECT d.day,
+       m.pricing_mode,
+       m.quotes_priced,
+       d.voided,
+       d.confirmed,
+       d.voided * 1.0 / NULLIF(d.voided + d.confirmed, 0) AS void_rate
+FROM daily_decisions d
+LEFT JOIN daily_modes m USING (day)
+ORDER BY d.day, m.pricing_mode;
+
+-- ---------------------------------------------------------------------------
+-- 10) SHADOW ROLLOUT EVIDENCE (issue #54): cached-vs-live fair pairs. The
+--     decision dataset for flipping QUOTE_PRICING_MODE to 'live': a small,
+--     centered cached_minus_live distribution means the cache was not lying;
+--     a fat or skewed one is the adverse-selection window live pricing
+--     closes. Novig caveat: NV rows inherit its open sweep-price broadcast
+--     defect — check per-book live fairs in the live_games payload before
+--     leaning on NV-heavy pairs.
+-- ---------------------------------------------------------------------------
+SELECT ts,
+       ticker,
+       CAST(json_extract_string(payload, 'cached_fair') AS DOUBLE)  AS cached_fair,
+       CAST(json_extract_string(payload, 'live_fair')   AS DOUBLE)  AS live_fair,
+       cached_fair - live_fair                                      AS cached_minus_live,
+       json_extract_string(payload, 'cached_reason')                AS cached_reason,
+       json_extract_string(payload, 'live_reason')                  AS live_reason,
+       json_extract_string(payload, 'live_games')                   AS live_games
+FROM research.events
+WHERE event_type = 'shadow_fair_comparison'
+ORDER BY ts DESC;

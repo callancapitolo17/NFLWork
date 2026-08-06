@@ -109,6 +109,18 @@ REST-polling daemon, single process. Six timed sub-loops:
 
 ## Pricing
 
+### Quote pricing modes (issue #54)
+
+`QUOTE_PRICING_MODE` selects where an in-scope RFQ's fair comes from. **Default is `shadow` until the operator flips it** (an unrecognized value refuses to start — a bot silently in the wrong rollout state is worse than a crash).
+
+- **`live` (the target).** EVERY in-scope sub-combo — 2-leg grids, each game of a cross-game combo (including its single legs), novel shapes — rides the on-demand engine: the RFQ landing triggers a fetch of exactly that leg set at all six books, and the quote is priced from those fresh per-book fairs through the same #20 consensus gate and #19 margin machinery (the math is input-agnostic; `σ_books` comes from the live set). The sweep cache is out of the quote path entirely. A fetch that lands with **zero** books declines with `live_fetch_timeout` — never a silent cache fallback — and is not re-fetched until the empty landing ages out (~`QUOTE_FRESH_SEC`), so a dead slate retries on a ~15s cadence instead of hammering per tick. A live consensus with too few books declines `live_too_few_books` (distinct from the sweep-era `too_few_books` so the monitor can tell them apart). Confirm last look re-fetches **every** sub-combo live (see below). Every `quote_priced` research event carries `pricing_mode` plus a per-game `live_games` trace (leg-set hash, result age, per-book fair/route/latency) — combined with `on_demand_requested`/`on_demand_result` timestamps, the research DB proves each quoted fair traces to a fetch initiated after its RFQ landed.
+- **`shadow` (default — measurement mode).** Quotes exactly as `cached`, but ALSO fires the live fetch for each sub-combo and, once every game has a fresh live result, emits one `shadow_fair_comparison` research event per landing-set: cached fair vs live fair (plus per-book live fairs and latencies). This is the rollout evidence for flipping to `live`. Shadow fetches are throttled to one per store-retention window (~5 min) per combo, never per tick, and never block or alter quoting.
+- **`cached` (rollback).** The pre-#54 path below, byte-identical (pinned by `test_quote_pricing_mode.py`): grids/singles from the sweep's `mlb_sgp_odds`, only novel shapes on-demand.
+
+Why live is right for this flow: ~40 in-scope RFQs/day × 6 books is a few hundred book hits/day vs the sweep's thousands (~10× less fingerprint surface), and quote-time staleness → ~0 — the adverse-selection window the staleness gates only bounded. DraftKings is never load-bearing: its price call is bimodal (0.8–1.6s usual, 8–22s stalls) and the `ON_DEMAND_DEADLINE_SEC=10` budget drops it; consensus needs `MIN_AGREEING_BOOKS=2` of the remaining books (warm p95s: FD 0.77s, PX 1.55s, MGM 1.66s, CZR 2.37s, NV 4.00s — `mlb_sgp/README.md`).
+
+### Consensus fair (shared math, all modes)
+
 Fair value is the median of the devigged book fairs, gated on cross-book agreement. `router.combo_fair_detail` parses the RFQ into canonical legs (`legset`), partitions them by game, prices each game's sub-combo, and **multiplies** the per-game fairs (cross-game independence). For each **2-leg same-game grid** (family + cell resolved from the legs — spread×total keyed by game × **signed** spread_line × total_line (#70: negative = home margin market, positive = away margin market), moneyline×total keyed by game × total_line with `spread_line` NULL) we:
 
 1. Pull every book's 4-cell grid from `mlb_sgp_odds` (filtered by combo family, require all 4 cells — no fallback).
@@ -139,9 +151,11 @@ Interplay of the two tickets: **moderate** dispersion widens the margin (#19); d
 Spec: `docs/superpowers/specs/2026-07-08-kalshi-mlb-mm-on-demand-pricing-design.md` (rev 5).
 
 Any same-game shape the two pre-scraped grids can't price is queried **live**
-at the six books' SGP endpoints for that exact leg set, at RFQ time. Always
-on — no config switch; the bot-wide kill file remains the emergency stop, and
-dropping a misbehaving book is a one-line code change.
+at the six books' SGP endpoints for that exact leg set, at RFQ time — and in
+`QUOTE_PRICING_MODE=live` (issue #54, above) this engine prices **all**
+in-scope shapes, grids included. Always on — no config switch for the novel
+shapes; the bot-wide kill file remains the emergency stop, and dropping a
+misbehaving book is a one-line code change.
 
 **Feed model — the open-RFQ poll drives everything.** The 2s discovery tick
 never blocks on a book. An on-demand shape with no fresh result enqueues a
@@ -197,13 +211,19 @@ retained Phase 1 regression oracles).
    between quote and accept the legs' correlation is structural and static —
    the marginals carry the pickoff signal. Missing baseline / failed read /
    unparseable snapshot all void ("can't verify ⇒ don't confirm").
-2. **On-demand re-price (novel shapes only).** Combos with on-demand games
-   additionally get the synchronous priority re-fetch (budgeted
-   `CONFIRM_REFETCH_BUDGET_SEC=20s`) — those shapes have no cache fairs, so
-   without a live fetch they cannot be re-priced for the EV/drift gate at
-   all. The confirm gate honours `refetch_now`'s landed-after-entry guarantee
+2. **On-demand re-price (novel shapes; in `live` mode, EVERY sub-combo).**
+   Combos with on-demand games additionally get the synchronous priority
+   re-fetch (budgeted `CONFIRM_REFETCH_BUDGET_SEC=20s`) — those shapes have
+   no cache fairs, so without a live fetch they cannot be re-priced for the
+   EV/drift gate at all. In `QUOTE_PRICING_MODE=live` the re-fetch covers
+   grid and single sub-combos too: their quote fair came from the engine,
+   whose result has aged out by accept time, and the cache must not stand
+   in. The confirm gate honours `refetch_now`'s landed-after-entry guarantee
    (a failed re-fetch voids even if a pre-entry result still sits in the
-   15s-fresh store) — we never confirm on a previously-fetched number.
+   15s-fresh store) — we never confirm on a previously-fetched number. The
+   void/veto rate is the live-pricing health signal: re-checking a
+   seconds-old number should collapse it vs the cache era (research query
+   9); if it does not, live pricing is not actually working.
 
 **Failure direction is always "fewer/laggier quotes", never "staler
 quotes"**: unresolvable leg → book drops; incomplete partition → Route B →
@@ -212,9 +232,15 @@ restart, meanwhile skip; RFQ flood → queue grows, late landings, expired
 RFQs go unquoted (pacing = one on-demand combo in flight per book).
 
 **Observability**: research events `on_demand_requested` (once per fetch
-flight), `on_demand_result` (once per landing; per-book route/fair/latency,
-`route_gap` where both routes came free), fill payloads gain per-book
-`route` + `consensus_books` (DK+Novig-only fills are a named risk metric).
+flight; carries `pricing_mode`, and `purpose=shadow_comparison` for shadow
+fetches), `on_demand_result` (once per landing; per-book
+route/fair/latency, `route_gap` where both routes came free),
+`shadow_fair_comparison` (shadow mode: cached vs live fair, once per
+landing-set), `quote_priced` with `pricing_mode` + `live_games` trace, fill
+payloads gain per-book `route` + `consensus_books` (DK+Novig-only fills are
+a named risk metric). New `quote_decisions` reasons: `live_fetch_timeout`,
+`live_too_few_books` (the monitor reads reason vocabularies from data — no
+dashboard change).
 Out-of-scope RFQs now store `legs_json` and granular reasons
 (`out_of_scope_non_mlb` / `out_of_scope_lone_single` /
 `out_of_scope_unparseable`) in `seen_rfqs` — on-demand demand is finally
@@ -317,6 +343,7 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 
 | Knob | Default | Purpose |
 |---|---|---|
+| `QUOTE_PRICING_MODE` | `shadow` | Issue #54: `live` = every in-scope shape priced from a post-RFQ live fetch; `shadow` = quote from cache while logging cached-vs-live pairs (rollout evidence); `cached` = pre-#54 behavior (rollback). Typo = refuse to start |
 | `BANKROLL` | `500.0` | Master risk dial — raise this one number to scale everything |
 | `DAILY_EXPOSURE_CAP_PCT` | `0.75` | Daily hard stop as a fraction of BANKROLL ($375 at default). Counts today's fills PLUS open quotes' worst-case exposure |
 | `MAX_GAME_EXPOSURE_PCT` | `0.10` | Per-game exposure cap as fraction of BANKROLL ($50 at default). Counts fills (`fill_games`) PLUS open quotes (`quote_games`) touching the game |
