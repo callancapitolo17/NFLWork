@@ -280,6 +280,51 @@ def test_live_mode_confirm_refetches_grid_and_voids_on_failure(monkeypatch, tmp_
     assert st[0] == "voided"
 
 
+def test_live_mode_confirm_voids_without_engine_even_with_cache(monkeypatch, tmp_path):
+    # _ENGINE can be None (process start / wiring gap). Live-mode confirm
+    # must void — the perfectly quotable sweep cache must not stand in.
+    import json
+    from datetime import datetime, timezone
+    main, db, emitted = _setup(monkeypatch, tmp_path, FakeEngine(fairs=None),
+                               "live5.duckdb", mode="live")
+    monkeypatch.setattr(main, "_ENGINE", None)
+    now = datetime.now(timezone.utc)
+    with db.connect() as con:
+        con.execute(
+            "INSERT INTO live_quotes (quote_id, rfq_id, combo_market_ticker, "
+            "game_id, yes_bid, no_bid, model_fair, book_fair, blended_fair, "
+            "status, submitted_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ["q-ne", "r-grid", "COMBO-GRID", "game1", 0.5, 0.43,
+             0.3, 0.3, 0.3, "open", now, None])
+        con.execute(
+            "INSERT OR REPLACE INTO seen_rfqs (rfq_id, market_ticker, in_scope, "
+            "game_id, legs_json, first_seen_at, last_decision, creator_id) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            ["r-grid", "COMBO-GRID", True, "game1", json.dumps(GRID_LEGS), now,
+             "quoted", ""])
+        con.execute("UPDATE live_quotes SET leg_prices_json = "
+                    "'{\"L\": {\"yes_bid\": 0.5, \"yes_ask\": 0.52}}'")
+    monkeypatch.setattr(main, "_leg_market_prices",
+                        lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
+    monkeypatch.setattr(main.auth_client, "api",
+                        lambda *a, **k: (200, {"quote": {"status": "accepted",
+                                                         "accepted_side": "yes",
+                                                         "contracts": 1}}, None))
+
+    class GW:
+        def confirm(self, qid):
+            raise AssertionError("no engine in live mode must void, not confirm")
+
+        def cancel(self, qid):
+            return True
+
+    main._confirm_tick(GW(), dry_run=False)
+    with db.connect(read_only=True) as con:
+        st = con.execute(
+            "SELECT status FROM live_quotes WHERE quote_id='q-ne'").fetchone()
+    assert st[0] == "voided"
+
+
 # --------------------------------------------------------------------------- #
 # SHADOW mode — quote from cache, ALSO live-fetch and log both fairs           #
 # --------------------------------------------------------------------------- #
