@@ -199,14 +199,24 @@ ledger's exposure snapshot (`state.exposure_fills`) folds in *resting*
 rungs can never breach a cap — the reported "worst case" is a hypothetical
 ceiling, not realized exposure.
 
-**Cap stack** (percent of `BANKROLL`; all four are separate env vars):
+**Cap stack** (percent of `BANKROLL`; all four are separate env vars).
+**This — not `HARD_STOP_DOLLARS` — is what actually binds a single game's
+risk** (see the tuition-run note below for why the old $400/$750 defaults
+were theater at this account size):
 
 | cap | param | default | at $1,000 |
 |---|---|---|---|
-| per resting order | `MAX_QUOTE_PCT` | 0.30 | $300 (ledger usually binds first) |
-| per match worst case | `MATCH_CAP_PCT` | 0.40 | $400 |
-| global Σ worst cases (all matches) | `GLOBAL_CAP_PCT` | 0.75 | $750 |
+| per resting order | `MAX_QUOTE_PCT` | 0.30 | $300 (ledger cap below binds first) |
+| **per match worst case (the real per-game leash)** | `MATCH_CAP_PCT` | 0.03 | **$30** |
+| global Σ worst cases (all matches) | `GLOBAL_CAP_PCT` | 0.075 | $75 |
 | daily realized-loss halt | `DAILY_LOSS_HALT_PCT` | 0.40 | $400 |
+
+**⚠️ Operator confirmation required:** `MATCH_CAP_PCT`/`GLOBAL_CAP_PCT`
+(and the `BANKROLL` they're computed off) encode the operator's risk
+appetite, not an engineering judgment — the $30/$75 defaults above are
+conservative tuition-run numbers (finding #74/F2/F8), not a validated
+"correct" size. Confirm them against the real account balance before
+flipping `MAKER_MODE=live`.
 
 A second same-day match's budget is squeezed by whatever the first match's
 worst case has already committed against the global cap.
@@ -234,7 +244,7 @@ quote on that match unless noted as global):
 | unpaired / kickoff passed / market closed | that match | pull (`sweep()`) |
 | Kalshi position mismatch vs local fills | all matches | pull everything (live mode only — reconciliation polling runs only when `MAKER_MODE=live`) |
 | daily loss halt (§cap stack) — a LATCH, not a fresh-each-tick check: once tripped it stays halted for the rest of the ET trading day even if settled P&L recovers; a deliberate same-day resume is an operator restart | all matches | pull everything |
-| hard $-stop: realized + mark-to-anchor unrealized P&L ≤ `-HARD_STOP_DOLLARS` ($50) | all matches | pull everything (`hard_stop`) — checked every tick, right after the daily halt |
+| hard $-stop: realized (settled_pnl_today, always live) + mark-to-anchor unrealized P&L on still-open positions ≤ `-HARD_STOP_DOLLARS` ($50) | all matches | pull everything (`hard_stop`) — checked every tick, right after the daily halt. **Secondary breaker, not the per-game leash** (finding #74/F2/F8) — it only halts NEW quoting (no liquidation path exists or is possible without an in-play anchor), and in-play positions are marked at the last pre-kickoff fair (frozen at kickoff — `runner.py` stops calling `on_match` once a game goes live) plus any realized settlements; the interval-ledger `MATCH_CAP_PCT` above is what actually bounds a single game's worst case |
 | anchor ladder disappears for a match | that match | pull that match (`anchor_gone`) |
 | anchor frozen: even the freshest rung's `modifiedOn` is older than `ANCHOR_STALE_SEC` (180s), or no rung has a parseable timestamp (fail-safe) | that match | pull that match (`anchor_stale`) |
 | Kalshi position on this event's ticker still carries a startup baseline (restart-with-inventory not yet settled) | that match | pull/skip that match (`baseline_blocked`) — no fresh quotes rest on top of unreconciled inventory |
@@ -288,13 +298,23 @@ reconciliation on restart.
 
 **Operational runbook (live) — tuition run:**
 
-- **$300 account note:** `BANKROLL` stays `1000` for the cap-stack math (§cap
-  stack percentages are computed off it), but the leashes that actually bind
-  at this account size are `MAKER_MAX_CONTRACTS=2` (every order is ~$1) and
-  `HARD_STOP_DOLLARS=50`; the %-based caps (`MAX_QUOTE_PCT`/`MATCH_CAP_PCT`/
-  `GLOBAL_CAP_PCT`/`DAILY_LOSS_HALT_PCT`) are outer ceilings that never bind at
-  this size. **Never raise `MAKER_MAX_CONTRACTS` without first checking it
-  against the real account balance.**
+- **$300 account note (updated, finding #74/F2/F8):** `BANKROLL` stays `1000`
+  for the cap-stack math (§cap stack percentages are computed off it), but
+  the leashes that actually bind at this account size are `MAKER_MAX_CONTRACTS=2`
+  (every order is ~$1), the interval-ledger **`MATCH_CAP_PCT=0.03` → $30/game**
+  (the true ride-to-settlement worst case per match — see §cap stack), and
+  `GLOBAL_CAP_PCT=0.075` → $75 across all matches. **`HARD_STOP_DOLLARS=50`
+  is a secondary breaker, not the binding leash** — it only halts new
+  quoting (no liquidation path exists), and marks in-play positions at the
+  last pre-kickoff fair plus realized settlements (see the pull-triggers
+  table). The old $400/$750 %-based defaults were previously described as
+  ceilings that "never bind" — that framing was wrong: at $400/$750 they sat
+  far above both the real account and the $50 hard stop, so the interval
+  ledger effectively enforced no real per-game limit. The new $30/$75
+  defaults fix that. **Never raise `MAKER_MAX_CONTRACTS`, `MATCH_CAP_PCT`,
+  or `GLOBAL_CAP_PCT` without first checking the resulting dollar bound
+  against the real account balance — these encode risk appetite, confirm
+  them, don't inherit them.**
 - **Single writer:** stop the capture runner before starting the maker (the
   maker captures too — running two `unabated_edge.runner` processes means two
   writers on the same DuckDB files). A `.runner.lock` PID file at
@@ -352,8 +372,11 @@ MAKER_MODE=shadow python3 -m unabated_edge.runner
 # it — so a nonzero quotes_live in shadow mode is your one-line "the maker
 # is doing something" signal. Ctrl-C after 2-3 clean ticks.
 
-# 2. Flip live, same slate (leashes ON - spec Review Pack decision)
-MAKER_MODE=live MAKER_LIVE_ACK=1 MAKER_MAX_CONTRACTS=3 HARD_STOP_DOLLARS=50 \
+# 2. Flip live, same slate (leashes ON - spec Review Pack decision).
+#    MAKER_MAX_CONTRACTS matches the config.py default (2) here -- keep them
+#    consistent (finding #74/F2/F8 fixed a README/code mismatch where this
+#    example said 3 but the shipped default was 2).
+MAKER_MODE=live MAKER_LIVE_ACK=1 MAKER_MAX_CONTRACTS=2 HARD_STOP_DOLLARS=50 \
   python3 -m unabated_edge.runner
 
 # Kill switch at any time:
@@ -467,14 +490,14 @@ All tuneable constants live in `config.py` and can be overridden via `.env` or e
 | `ALT_OVERROUND_MAX` | `1.15` | Alt rung quotes only if the rung's devig overround is ≤ this |
 | `QUOTE_PULL_MIN` | `3` | Minutes before kickoff to pull a match's quotes (inventory rides) |
 | `MAX_QUOTE_PCT` | `0.30` | Max fraction of bankroll per resting order (ledger cap usually binds first) |
-| `MATCH_CAP_PCT` | `0.40` | Max ledger worst-case per match, as a fraction of bankroll |
-| `GLOBAL_CAP_PCT` | `0.75` | Max Σ ledger worst-case across all matches, as a fraction of bankroll |
+| `MATCH_CAP_PCT` | `0.03` | Max ledger worst-case per match, as a fraction of bankroll (default → **$30/game** at `BANKROLL=1000` — the real per-game leash, finding #74/F2/F8; ⚠️ operator must confirm before live) |
+| `GLOBAL_CAP_PCT` | `0.075` | Max Σ ledger worst-case across all matches, as a fraction of bankroll (default → **$75** at `BANKROLL=1000`; ⚠️ operator must confirm before live) |
 | `DAILY_LOSS_HALT_PCT` | `0.40` | Realized settled loss (fraction of bankroll) that halts quoting for the day. **This is a latch, not a fresh-each-tick check** (finding #75/F6): once tripped it stays halted for the rest of the trading day even if settled P&L recovers back above the threshold — no intraday auto-resume. The latch is persisted in `unabated_edge_maker.duckdb` (`maker_halt_state`), so a process restart during an already-halted trading day comes back up still halted; a deliberate same-day resume is an operator restart, not automatic. |
 | `DAILY_ROLL_HOUR_ET` | `6` | Hour (US-Eastern) the trading day rolls over, e.g. `roll_day` compares `(now_ET − this many hours).date()`. **Not UTC midnight** — UTC midnight is 8pm ET, squarely mid-slate, so a naive `now.date()` reset would hand a fresh loss budget mid-game. All MLB/soccer games are settled by 6am ET, so the default keeps a full evening slate inside one trading day. |
 | `FILL_BURST_N` | `3` | More than this many fills on one match in 60s trips the fill-burst tripwire |
 | `COOLOFF_MIN` | `10` | Minutes a match stays pulled after a fill-burst trip |
 | `MAKER_MAX_CONTRACTS` | `2` | Hard per-quote contract ceiling (tuition-run leash — binds before the %-based ledger caps at this account size) |
-| `HARD_STOP_DOLLARS` | `50` | Cumulative realized + mark-to-anchor unrealized loss (dollars) that halts the maker for the day, separate from `DAILY_LOSS_HALT_PCT` |
+| `HARD_STOP_DOLLARS` | `50` | Cumulative realized (always live, settled-fills excluded from the unrealized mark so nothing double-counts) + mark-to-anchor unrealized loss on still-open positions (dollars) that halts NEW quoting for the day. **Secondary breaker, not the per-game leash** (finding #74/F2/F8) — see §cap stack's `MATCH_CAP_PCT` for the constraint that actually bounds a single game |
 | `ANCHOR_STALE_SEC` | `180` | Pull a match if even its freshest anchor rung's `modifiedOn` is older than this — frozen-feed guard |
 
 ---

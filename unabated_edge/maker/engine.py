@@ -37,8 +37,17 @@ class MakerEngine:
         return self._halted
 
     def _hard_stopped(self, now):
+        """Finding #74/F2/F8: the realized component (settled_pnl_today)
+        is always live -- it reacts to in-play games settling badly even
+        though there's no in-play anchor feed to reprice them (runner.py
+        stops calling on_match at kickoff, so _fair_by_event is frozen at
+        the last pre-kickoff number for the rest of the game; that's the
+        best available mark for STILL-OPEN positions, not invented live
+        data). Settled fills are excluded from the unrealized mark
+        (state.open_fills) so a position isn't counted twice -- once
+        correctly via settled_pnl_today, once via a stale phantom mark."""
         realized = self.state.settled_pnl_today
-        unreal = sum(ledger.mark_to_fair(self.state.fills.get(e, []),
+        unreal = sum(ledger.mark_to_fair(self.state.open_fills(e),
                                           self._fair_by_event.get(e, {}))
                      for e in self.state.fills)
         if realized + unreal <= -config.HARD_STOP_DOLLARS:
@@ -243,7 +252,10 @@ class MakerEngine:
     def stats(self):
         committed = sum(max(0.0, -ledger.worst_case(self.state.exposure_fills(e)))
                         for e in self.state.events_with_exposure())
-        unreal = sum(ledger.mark_to_fair(self.state.fills.get(e, []),
+        # Same settled-fill exclusion as _hard_stopped (finding #74/F2/F8) --
+        # this pnl number is what the heartbeat/operator watches, so it must
+        # not double-count a settled leg's now-known value.
+        unreal = sum(ledger.mark_to_fair(self.state.open_fills(e),
                                          self._fair_by_event.get(e, {}))
                      for e in self.state.fills)
         pnl = round(self.state.settled_pnl_today + unreal, 2)

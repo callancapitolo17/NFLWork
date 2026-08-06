@@ -175,6 +175,32 @@ def test_hard_stop_pulls_all(eng):
     assert eng.stats()["halted"] is True
 
 
+def test_hard_stop_trips_on_realized_settled_loss_alone(eng):
+    """Finding #74/F2/F8: the breaker must react to realized losses as
+    in-play games settle, not just the frozen-fair unrealized mark -- with
+    no open positions at all, a realized settled loss past the threshold
+    alone must trip it."""
+    eng.state.roll_day(_NOW)
+    eng.state.settled_pnl_today = -config.HARD_STOP_DOLLARS - 1
+    assert eng._hard_stopped(_NOW) is True
+
+
+def test_hard_stop_excludes_settled_fills_from_unrealized_mark(eng):
+    """Once a ticker settles, its fill must not ALSO be marked unrealized
+    against a stale pre-kickoff/frozen fair -- that double-counts the same
+    position (once correctly via settled_pnl_today, once via a phantom
+    mark-to-fair the position no longer carries). A small real realized
+    loss, well inside the threshold, must not trip just because a settled
+    leg's stale fair still shows a large phantom unrealized loss."""
+    eng.state.register_ticker("T-O25", "soccer", 1, 2.5)
+    eng.state.fills = {1: [(2.5, "yes", 100, 0.90)]}
+    eng.state.settled.add("T-O25")
+    eng.state.roll_day(_NOW)
+    eng.state.settled_pnl_today = -5.0             # small real realized loss
+    eng._fair_by_event = {1: {2.5: 0.10}}           # stale fair: phantom unreal would be -80
+    assert eng._hard_stopped(_NOW) is False
+
+
 def test_anchor_stale_pulls_near_kickoff(eng):
     """Within ANCHOR_STALE_FARK_SEC of kickoff the sharp total should churn, so a
     10-min-old anchor means the feed is lagging -> pull."""

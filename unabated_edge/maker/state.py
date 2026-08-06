@@ -127,6 +127,22 @@ class MakerState:
         return sum(1 for (t, _s) in self.resting
                    if self.ticker_info.get(t, {}).get("event_id") == eid)
 
+    def settled_lines(self, eid):
+        """Lines of this event whose ticker has already settled. Used to
+        exclude settled fills from the unrealized mark (finding #74/F2/F8):
+        a settled fill's true value is already captured exactly in
+        settled_pnl_today, so marking it AGAIN against a stale pre-kickoff/
+        frozen fair would double-count the same position."""
+        return {info["line"] for t, info in self.ticker_info.items()
+               if info["event_id"] == eid and t in self.settled}
+
+    def open_fills(self, eid):
+        """This event's fills, excluding any already-settled ticker's fill
+        (see settled_lines) -- the set that should still be marked
+        unrealized against the last-known fair."""
+        settled = self.settled_lines(eid)
+        return [f for f in self.fills.get(eid, []) if f[0] not in settled]
+
     def exposure_fills(self, eid, exclude=None):
         """Committed fills PLUS all resting quotes treated as filled, so
         simultaneous fills across rungs can never breach the match cap."""

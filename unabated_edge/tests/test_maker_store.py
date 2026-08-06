@@ -5,9 +5,16 @@ from unabated_edge.storage import connect
 
 
 def test_maker_config_defaults():
+    """Finding #74/F2/F8: MATCH_CAP_PCT/GLOBAL_CAP_PCT are conservative
+    tuition-run defaults -- $30/game, $75 global at the documented
+    BANKROLL=1000 (see config.py's arithmetic comment). Confirm the actual
+    dollar bound, not just the raw fraction, so a future BANKROLL change
+    can't silently drift the real leash without anyone noticing."""
     assert config.MAKER_MODE == "off"
-    assert config.MATCH_CAP_PCT == 0.40
-    assert config.GLOBAL_CAP_PCT == 0.75
+    assert config.MATCH_CAP_PCT == 0.03
+    assert config.GLOBAL_CAP_PCT == 0.075
+    assert config.MATCH_CAP_PCT * config.BANKROLL == 30.0
+    assert config.GLOBAL_CAP_PCT * config.BANKROLL == 75.0
     assert config.MAX_QUOTE_PCT == 0.30
     assert config.QUOTE_PULL_MIN == 3.0
 

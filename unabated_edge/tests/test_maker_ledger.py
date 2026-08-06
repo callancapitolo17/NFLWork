@@ -1,5 +1,7 @@
 # unabated_edge/tests/test_maker_ledger.py
 import random
+import pytest
+from unabated_edge import config
 from unabated_edge.maker import ledger
 
 
@@ -118,6 +120,25 @@ def test_max_contracts_binds_beyond_old_grid():
     # Candidate NO at 12.5, price 0.95: worst case is -0.95/contract (t>=13).
     # budget 9.5 -> exactly 10 contracts. The old grid said unlimited (bound None).
     assert ledger.max_contracts([], 12.5, "no", 0.95, 9.5) == 10
+
+
+# ---------- tuition-run cap sizing (finding #74/F2/F8) ----------
+
+def test_match_cap_budget_yields_documented_thirty_dollar_worst_case():
+    """MATCH_CAP_PCT * BANKROLL must equal the $30/game tuition bound the
+    README documents -- and sizing a candidate at exactly that budget must
+    actually keep the ledger's worst_case within it (the honest number, not
+    an aspirational one)."""
+    budget = config.MATCH_CAP_PCT * config.BANKROLL
+    assert budget == pytest.approx(30.0)
+    n = ledger.max_contracts([], line=2.5, side="yes", price=0.40, budget=budget)
+    assert n > 0
+    worst = ledger.worst_case([(2.5, "yes", n, 0.40)])
+    assert worst >= -budget - 1e-9
+
+
+def test_global_cap_budget_yields_documented_seventy_five_dollars():
+    assert config.GLOBAL_CAP_PCT * config.BANKROLL == pytest.approx(75.0)
 
 
 def test_max_contracts_agrees_with_bruteforce_greedy():

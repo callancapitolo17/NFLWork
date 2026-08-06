@@ -89,8 +89,17 @@ MAIN_OVERROUND_MIN = float(_get("MAIN_OVERROUND_MIN", "1.00"))
 MAIN_OVERROUND_MAX = float(_get("MAIN_OVERROUND_MAX", "1.15"))
 QUOTE_PULL_MIN = float(_get("QUOTE_PULL_MIN", "3"))
 MAX_QUOTE_PCT = float(_get("MAX_QUOTE_PCT", "0.30"))
-MATCH_CAP_PCT = float(_get("MATCH_CAP_PCT", "0.40"))
-GLOBAL_CAP_PCT = float(_get("GLOBAL_CAP_PCT", "0.75"))
+# Conservative tuition-run defaults (finding #74/F2/F8): at the documented
+# BANKROLL=1000, MATCH_CAP_PCT=0.03 -> $30/game and GLOBAL_CAP_PCT=0.075 ->
+# $75 global. The OLD defaults (0.40/0.75 -> $400/$750) were far above the
+# real ~$300 account and above what HARD_STOP_DOLLARS ($50) implied was the
+# leash -- the interval ledger, not the hard stop, is what actually bounds
+# a single game's worst case, so it must be the honest small number.
+# Arithmetic (BANKROLL * pct): 1000*0.03=30.0, 1000*0.075=75.0.
+# THE OPERATOR MUST CONFIRM these before going live -- this is risk
+# appetite, not something to accept on a default.
+MATCH_CAP_PCT = float(_get("MATCH_CAP_PCT", "0.03"))
+GLOBAL_CAP_PCT = float(_get("GLOBAL_CAP_PCT", "0.075"))
 DAILY_LOSS_HALT_PCT = float(_get("DAILY_LOSS_HALT_PCT", "0.40"))
 # The trading day rolls in US-Eastern at this hour, not UTC midnight (finding
 # #75/F6): UTC midnight is 8pm ET -- squarely mid-slate -- so a naive
