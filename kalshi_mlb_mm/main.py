@@ -441,6 +441,31 @@ def _maybe_emit_on_demand_result(rfq_id, ticker, hash_):
         pass
 
 
+def _live_games_detail(by_game):
+    """Per-game live-fetch trace for quote_priced (issue #54 acceptance: a
+    live-mode quote's fair must be provably backed by a post-RFQ fetch).
+    {hash: {age_sec, books: {book: {fair, route, latency_sec}}}} for every
+    game with a stored engine result; None when there is none (cached mode).
+    Fail-safe: research decoration only, never raises into the tick."""
+    try:
+        if _ENGINE is None:
+            return None
+        out = {}
+        for gl in by_game.values():
+            h = legset.leg_set_hash(gl)
+            res = _ENGINE.lookup_results(h)
+            if not res:
+                continue
+            out[h] = dict(
+                age_sec=_ENGINE.result_age_sec(h),
+                books={b: dict(fair=r.fair, route=r.route,
+                               latency_sec=r.latency_sec)
+                       for b, r in res.items()})
+        return out or None
+    except Exception:
+        return None
+
+
 def _on_demand_fill_info(canon):
     """Per-on-demand-game route/consensus detail for the fill research event."""
     try:
@@ -902,23 +927,30 @@ def _discovery_tick(source, gateway, dry_run):
         if not risk.tipoff_ok(earliest_ct, config.TIPOFF_CANCEL_MIN):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id, reason="tipoff")
             continue
-        # Phase 2: on-demand same-game shapes ride a live feed keyed off this
-        # very poll — a fresh (<=QUOTE_FRESH_SEC) result prices this tick;
-        # otherwise ensure a fetch is queued and skip. The tick re-enters
-        # every open RFQ every 2s, so this single rule IS the feed: re-fetch
-        # fires each time the result ages out, and stops the moment the RFQ
-        # leaves the poll. Placed after the caps/cooldown/tipoff gates so
-        # gated RFQs never generate book traffic.
+        # Live pricing (#54): EVERY in-scope sub-combo — grids, cross-game
+        # singles, novel shapes — rides a live feed keyed off this very poll.
+        # A fresh (<=QUOTE_FRESH_SEC) result prices this tick; otherwise
+        # ensure a fetch is queued and skip. The tick re-enters every open
+        # RFQ every 2s, so this single rule IS the feed: re-fetch fires each
+        # time the result ages out, and stops the moment the RFQ leaves the
+        # poll. The sweep cache is never in the quote path: a fetch that
+        # lands with ZERO books is a DECLINE (live_fetch_timeout), and while
+        # that empty landing is fresh we deliberately do not re-feed, so a
+        # dead slate retries every ~QUOTE_FRESH_SEC. Placed after the
+        # caps/cooldown/tipoff gates so gated RFQs never generate book
+        # traffic.
         od_pending = False
+        od_timed_out = False
         for gl, od_gid in zip(by_game.values(), game_ids_list):
-            if legset.classify_subcombo(gl) != "on_demand":
-                continue
             if _ENGINE is None:
                 od_pending = True          # engine absent -> fail-safe skip
                 continue
             od_hash = legset.leg_set_hash(gl)
             if _ENGINE.lookup(od_hash) is not None:
                 _maybe_emit_on_demand_result(rid, ticker, od_hash)
+                continue
+            if _ENGINE.landed_empty(od_hash):
+                od_timed_out = True
                 continue
             gref = _game_ref(od_gid)
             if gref is not None and _ENGINE.ensure_fetch(od_hash, gref, gl):
@@ -930,6 +962,13 @@ def _discovery_tick(source, gateway, dry_run):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="on_demand_pending")
             continue
+        if od_timed_out:
+            # Only claimed once nothing is still pending: every sub-combo
+            # either priced or landed empty — "we asked live and the books
+            # didn't answer" is a decline, not a wait.
+            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                          reason="live_fetch_timeout")
+            continue
         # Fair value: router prices via legset/grid across all games; fresh
         # on-demand fairs are injected via the engine's pure lookup. The
         # detail carries sigma_pts (cross-book dispersion) and n_games for
@@ -940,13 +979,17 @@ def _discovery_tick(source, gateway, dry_run):
         fair_detail, gate_reason = router.combo_fair_detail(
             legs, _SGP_ODDS, _resolve_game_for_legs,
             config.MIN_AGREEING_BOOKS, config.SIGMA_Z_MAX,
-            on_demand_fairs=od_lookup)
+            on_demand_fairs=od_lookup, live_routing=True)
         blended = fair_detail.fair if fair_detail is not None else None
         book_med = blended  # single consensus fair; book_med == blended
         if blended is None or not (config.MIN_FAIR_PROB <= blended <= config.MAX_FAIR_PROB):
             skip_reason = (gate_reason if fair_detail is None and gate_reason
                            in ("too_few_books", "consensus_dispersion")
                            else "no_fair")
+            if skip_reason == "too_few_books":
+                # "The live fetch answered too thin" — named so the monitor
+                # separates a thin live slate from the pre-#54 cache era.
+                skip_reason = "live_too_few_books"
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason=skip_reason, model=None, book=book_med,
                           blended=blended)
@@ -1039,7 +1082,8 @@ def _discovery_tick(source, gateway, dry_run):
                                    sigma_pts=q.sigma_pts, floor_pts=q.floor_pts,
                                    roi_pts_yes=q.roi_pts_yes, roi_pts_no=q.roi_pts_no,
                                    margin_pts_yes=q.margin_pts_yes,
-                                   margin_pts_no=q.margin_pts_no))
+                                   margin_pts_no=q.margin_pts_no,
+                                   live_games=_live_games_detail(by_game)))
         if dry_run:
             _log_decision("dry_run_quote", rfq_id=rid, ticker=ticker, game_id=game_id,
                           model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
@@ -1236,8 +1280,9 @@ def _confirm_tick(gateway, dry_run):
             refetch_ok = True
             if _ENGINE is not None and canon_c:
                 for gl in legset.partition_by_game(canon_c).values():
-                    if legset.classify_subcombo(gl) != "on_demand":
-                        continue
+                    # #54: EVERY sub-combo re-fetches — the quote's fair came
+                    # from the engine, whose result has aged out by accept
+                    # time; the cache must not stand in.
                     gid_c = _resolve_game_for_legs(gl)
                     gref = _game_ref(gid_c) if gid_c else None
                     if gref is None:
@@ -1251,7 +1296,8 @@ def _confirm_tick(gateway, dry_run):
             od_lookup = _ENGINE.lookup if _ENGINE is not None else None
             cur_fair = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
                                          config.MIN_AGREEING_BOOKS, config.SIGMA_Z_MAX,
-                                         on_demand_fairs=od_lookup)
+                                         on_demand_fairs=od_lookup,
+                                         live_routing=True)
             if cur_fair is None or not refetch_ok:
                 _log_decision("voided_no_fresh_books", rfq_id=rid, quote_id=qid, ticker=ticker,
                               game_id=game_id)
@@ -1580,9 +1626,9 @@ def _constituent_jumped_games(live_rows, current_prices) -> tuple[set, dict]:
 
     The placement baseline is `live_quotes.leg_prices_json` — the raw Kalshi
     odds #17 already snapshots at submission — so this needs no schema of its
-    own. In "book_quiet" mode a jump only counts while our own book consensus
-    stayed put, which separates "we are the stale ones" from "the whole market
-    moved together"; see CONSTITUENT_JUMP_MODE.
+    own. The jump is unconditional (#54): every quote was live-priced at
+    placement, so any constituent move since then means the market moved
+    after us.
 
     Fail-safe: any row we cannot evaluate contributes NO jump signal. It is
     still covered by the tipoff / staleness / book-drift gates, and #17's
@@ -1604,15 +1650,6 @@ def _constituent_jumped_games(live_rows, current_prices) -> tuple[set, dict]:
                                        config.CONSTITUENT_JUMP_THRESHOLD)
         if not moves:
             continue
-        # Anything that is not explicitly "unconditional" gets the conservative
-        # guard, so a typo in the env var cannot silently arm the aggressive
-        # post-#54 mode on a bot whose quotes are still cache-priced.
-        if config.CONSTITUENT_JUMP_MODE != "unconditional":
-            cur_med = _current_consensus_fair(legs_json)
-            if cur_med is None or book_fair_at_q is None:
-                continue           # cannot establish "quiet" → no signal
-            if abs(float(cur_med) - float(book_fair_at_q)) >= config.CONSTITUENT_BOOK_QUIET_MAX:
-                continue           # market moved together, not a pickoff
         detail[qid] = moves
         jumped_games.update(_games_for_tickers(raw_legs, set(moves)))
     return jumped_games, detail
@@ -1652,7 +1689,6 @@ def _risk_sweep_tick(gateway):
             research.emit("constituent_jump",
                           payload=dict(games=sorted(jumped_games),
                                        threshold=config.CONSTITUENT_JUMP_THRESHOLD,
-                                       mode=config.CONSTITUENT_JUMP_MODE,
                                        moves=jump_detail))
     for qid, game_id, ticker, book_fair_at_q, rid, legs_json, leg_prices_json in live:
         cancel = False

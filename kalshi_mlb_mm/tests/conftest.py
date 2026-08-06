@@ -29,3 +29,47 @@ def leg(market_ticker: str, side: str = "yes") -> dict:
     return {"market_ticker": market_ticker,
             "event_ticker": event_ticker_for(market_ticker),
             "side": side}
+
+
+class FakeLiveEngine:
+    """Duck-typed OnDemandEngine serving canned live fairs for EVERY hash.
+
+    Post-#54 the quote path is live-only: every discovery/confirm test that
+    reaches pricing needs an engine, even when the test is about something
+    else entirely (caps, cooldowns, hysteresis, corr-sanity). Install this
+    via `monkeypatch.setattr(main, "_ENGINE", FakeLiveEngine(...))` so those
+    tests exercise their own subject instead of stalling on_demand_pending.
+    Tests about the engine/feed itself build their own stubs instead.
+    """
+
+    def __init__(self, fairs=None):
+        self.fairs = dict(fairs) if fairs else {"draftkings": 0.55,
+                                                "fanduel": 0.55}
+        self.ensure_calls = []
+        self.refetch_calls = []
+
+    def lookup(self, h):
+        return dict(self.fairs)
+
+    def lookup_results(self, h):
+        from mlb_sgp._shared import OnDemandBookResult
+        return {b: OnDemandBookResult(book=b, fair=f, route="partition",
+                                      n_cells_priced=4, latency_sec=1.0)
+                for b, f in self.fairs.items()}
+
+    def landed_at(self, h):
+        return 1000.0
+
+    def landed_empty(self, h):
+        return False
+
+    def result_age_sec(self, h):
+        return 1.0
+
+    def ensure_fetch(self, h, game, legs):
+        self.ensure_calls.append((h, game, tuple(legs)))
+        return True
+
+    def refetch_now(self, jobs, deadline_sec):
+        self.refetch_calls.append((list(jobs), deadline_sec))
+        return True

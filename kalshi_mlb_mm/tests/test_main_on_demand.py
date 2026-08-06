@@ -43,6 +43,12 @@ class FakeEngine:
     def landed_at(self, h):
         return self.landed if self.fairs else None
 
+    def landed_empty(self, h):
+        return False            # #54: "never landed" rather than "landed empty"
+
+    def result_age_sec(self, h):
+        return 1.0 if self.fairs else None
+
     def ensure_fetch(self, h, game, legs):
         self.ensure_calls.append((h, game, tuple(legs)))
         return len(self.ensure_calls) == 1     # first call = newly enqueued

@@ -141,17 +141,12 @@ CORR_PREMIUM_MAX = float(_get("CORR_PREMIUM_MAX", "2.0"))
 # If a constituent's devigged mid moves past this threshold AFTER we quoted,
 # the market has moved and our resting quote is the stale side.
 CONSTITUENT_JUMP_THRESHOLD = float(_get("CONSTITUENT_JUMP_THRESHOLD", "0.03"))
-# Mode flag, flipped by the live-pricing pivot (#54) rather than a rewrite:
-#   "book_quiet"    (default, TODAY) — also require our book consensus to have
-#                   stayed within CONSTITUENT_BOOK_QUIET_MAX, which separates
-#                   "we are the stale ones" from "the whole market moved
-#                   together". Quotes are priced off a <=150s cache, so a jump
-#                   WITH the books moving is just our own data catching up.
-#   "unconditional" (post-#54) — once every quote is priced from a live fetch
-#                   the fair was fresh at placement, so ANY constituent jump
-#                   during the resting window means the market moved after us.
-CONSTITUENT_JUMP_MODE = _get("CONSTITUENT_JUMP_MODE", "book_quiet")
-CONSTITUENT_BOOK_QUIET_MAX = float(_get("CONSTITUENT_BOOK_QUIET_MAX", "0.01"))
+# The jump is unconditional (#54 live-only): every quote is priced from a
+# live fetch, so the fair was fresh at placement and ANY constituent jump
+# during the resting window means the market moved after us. The pre-#54
+# "book_quiet" guard (only count a jump while our book consensus stayed put)
+# existed to excuse cache-priced quotes catching up to their own stale data —
+# a case that no longer exists, so the knob was deleted with it.
 # Wall-clock ceiling on the constituent poll. ALL ticks share one thread, so a
 # slow poll inside the risk sweep delays the confirm tick — and Kalshi allows
 # only 2s to confirm in High Volatility Markets. Blowing a confirm window is a

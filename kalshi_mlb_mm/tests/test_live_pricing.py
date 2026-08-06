@@ -1,0 +1,444 @@
+"""Issue #54 — live-only quote pricing: EVERY in-scope shape (grids,
+cross-game singles, novel) prices from an on-demand fetch initiated after
+the RFQ landed. The sweep cache is never in the quote path: these tests seed
+a perfectly quotable cached grid alongside DIFFERENT live fairs and assert
+the quote always traces to the live side, declines loudly on live-fetch
+failure (live_fetch_timeout / live_too_few_books), and voids at confirm when
+the live re-fetch cannot land.
+
+Scaffolding style follows test_main_on_demand.py; leg dicts go through
+conftest.leg() so the Kalshi event-ticker shape is real (#71).
+"""
+import importlib
+
+import pandas as pd
+import pytest
+
+from kalshi_common import legset
+from mlb_sgp._shared import GameRef
+
+from kalshi_mlb_mm.tests.conftest import leg
+
+# 2-leg same-game spread+total -> grid_spread_total route. LAA is the home
+# team of 25JUN271905TEXLAA, so LAA2 is home -1.5 (target "Home Spread + Over").
+GRID_LEGS = [
+    leg("KXMLBSPREAD-25JUN271905TEXLAA-LAA2", "yes"),
+    leg("KXMLBTOTAL-25JUN271905TEXLAA-9", "yes"),
+]
+GREF = GameRef(game_id="game1", home_team="Los Angeles Angels",
+               away_team="Texas Rangers", commence_time=None)
+
+# Balanced 4-cell grid: every cell devigs to ~0.25, so a CACHE-priced quote
+# would land at ~0.2375 — far from the 0.30/0.32 LIVE fairs the FakeEngine
+# serves. Every assertion can therefore prove WHICH source priced the quote.
+ST_CELLS = {"Home Spread + Over": 4.2, "Home Spread + Under": 4.2,
+            "Away Spread + Over": 3.8, "Away Spread + Under": 3.8}
+CACHED_FAIR = pytest.approx(0.2375, abs=0.01)
+LIVE_FAIRS = {"draftkings": 0.30, "fanduel": 0.32}
+LIVE_FAIR = pytest.approx(0.31, abs=0.001)
+
+
+def _grid_rows(book, game_id, spread_line, total_line, family_decimals):
+    return [
+        {"game_id": game_id, "combo": c, "period": "FG", "bookmaker": book,
+         "sgp_decimal": d, "fetch_time": None,
+         "spread_line": spread_line, "total_line": total_line}
+        for c, d in family_decimals.items()
+    ]
+
+
+class FakeEngine:
+    """Duck-typed OnDemandEngine: serves canned live fairs, records traffic."""
+
+    def __init__(self, fairs=None, empty_landed=False):
+        self.fairs = fairs                    # {book: fair} | None
+        self.empty_landed = empty_landed      # fresh landing with zero books
+        self.ensure_calls = []
+        self.refetch_calls = []
+
+    def lookup(self, h):
+        return self.fairs
+
+    def lookup_results(self, h):
+        if not self.fairs:
+            return None
+        from mlb_sgp._shared import OnDemandBookResult
+        return {b: OnDemandBookResult(book=b, fair=f, route="partition",
+                                      n_cells_priced=4, latency_sec=1.2)
+                for b, f in self.fairs.items()}
+
+    def landed_at(self, h):
+        return 1000.0 if (self.fairs or self.empty_landed) else None
+
+    def landed_empty(self, h):
+        return self.empty_landed
+
+    def result_age_sec(self, h):
+        return 2.0 if (self.fairs or self.empty_landed) else None
+
+    def ensure_fetch(self, h, game, legs):
+        self.ensure_calls.append((h, game, tuple(legs)))
+        return True
+
+    def refetch_now(self, jobs, deadline_sec):
+        self.refetch_calls.append((list(jobs), deadline_sec))
+        return self.fairs is not None
+
+
+class Src:
+    def poll(self):
+        return [{"id": "r-grid", "market_ticker": "COMBO-GRID", "contracts": 1}]
+
+    def get_market(self, t):
+        return {}
+
+
+class NoQuoteGW:
+    def submit_quote(self, *a):
+        raise AssertionError("must not submit in these tests")
+
+
+def _setup(monkeypatch, tmp_path, engine, db_name):
+    import kalshi_mlb_mm.config as cfg
+    import kalshi_mlb_mm.db as db
+    import kalshi_mlb_mm.risk as risk
+    from kalshi_mlb_mm import main
+    monkeypatch.setattr(cfg, "DB_PATH", tmp_path / db_name)
+    monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
+    importlib.reload(db)
+    db.init_database()
+    # A COMPLETE, quotable cached grid — the bait every test leaves out for
+    # the quote path. Touching it is the regression these tests exist for.
+    monkeypatch.setattr(main, "_SGP_ODDS", pd.DataFrame(
+        _grid_rows("dk", "game1", -1.5, 8.5, ST_CELLS)
+        + _grid_rows("fd", "game1", -1.5, 8.5, ST_CELLS)))
+    monkeypatch.setattr(main, "_today_fills", lambda: [])
+    monkeypatch.setattr(main, "_today_fills_by_game", lambda: [])
+    monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
+    monkeypatch.setattr(main, "_commence_time", lambda gid: None)
+    monkeypatch.setattr(main, "_game_ref", lambda gid: GREF)
+    monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
+    monkeypatch.setattr(main, "_ENGINE", engine)
+    monkeypatch.setattr(main, "_SCOPE_CACHE",
+                        {"COMBO-GRID": (True, None, GRID_LEGS)})
+    monkeypatch.setattr(main, "_OD_RESULT_EMITTED", {})
+    monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
+    emitted = []
+    monkeypatch.setattr(main.research, "emit",
+                        lambda ev, **kw: emitted.append((ev, kw)))
+    return main, db, emitted
+
+
+def _last_decision(db):
+    with db.connect(read_only=True) as con:
+        return con.execute(
+            "SELECT decision, reason FROM quote_decisions "
+            "ORDER BY observed_at DESC LIMIT 1").fetchone()
+
+
+def _quote_priced_payload(emitted):
+    payloads = [kw["payload"] for ev, kw in emitted if ev == "quote_priced"]
+    return payloads[-1] if payloads else None
+
+
+# --------------------------------------------------------------------------- #
+# Live routing — every in-scope shape prices from a post-RFQ fetch             #
+# --------------------------------------------------------------------------- #
+
+def test_grid_pending_then_priced_from_live_fairs(monkeypatch, tmp_path):
+    eng = FakeEngine(fairs=None)
+    main, db, emitted = _setup(monkeypatch, tmp_path, eng, "live1.duckdb")
+    canon = legset.parse_legs(GRID_LEGS)
+    h = legset.leg_set_hash(canon)
+
+    # Tick 1: no live result yet — the GRID sub-combo must be fed to the
+    # engine and the RFQ skipped, cached grid notwithstanding.
+    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
+    assert eng.ensure_calls and eng.ensure_calls[0][0] == h
+    assert eng.ensure_calls[0][1] == GREF
+    assert _last_decision(db) == ("skipped", "on_demand_pending")
+
+    # Tick 2: live fairs landed — the quote must trace to THEM, not the cache.
+    eng.fairs = dict(LIVE_FAIRS)
+    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
+    assert _last_decision(db) == ("dry_run_quote", None)
+    payload = _quote_priced_payload(emitted)
+    assert payload["blended_fair"] == LIVE_FAIR, \
+        "quotes must price from the live fetch, never the sweep cache"
+
+
+def test_timeout_declines_never_falls_back_to_cache(monkeypatch, tmp_path):
+    # A fetch landed with ZERO books (every book over budget / declined). The
+    # sweep cache holds a perfectly quotable grid — the bot must still
+    # DECLINE with live_fetch_timeout, never silently quote the cache.
+    eng = FakeEngine(fairs=None, empty_landed=True)
+    main, db, emitted = _setup(monkeypatch, tmp_path, eng, "live2.duckdb")
+    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
+    assert _last_decision(db) == ("skipped", "live_fetch_timeout")
+    assert _quote_priced_payload(emitted) is None
+    # An empty landing is fresh for QUOTE_FRESH_SEC — do not hammer the books
+    # with an immediate re-fetch; retry resumes once the landing ages out.
+    assert eng.ensure_calls == []
+
+
+def test_one_book_declines_live_too_few_books(monkeypatch, tmp_path):
+    # One book answered in time; MIN_AGREEING_BOOKS=2. The cache (2 books)
+    # must not top it up.
+    eng = FakeEngine(fairs={"draftkings": 0.30})
+    main, db, emitted = _setup(monkeypatch, tmp_path, eng, "live3.duckdb")
+    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
+    assert _last_decision(db) == ("skipped", "live_too_few_books")
+    assert _quote_priced_payload(emitted) is None
+
+
+def test_confirm_refetches_grid_and_voids_on_failure(monkeypatch, tmp_path):
+    # Confirm last look: a GRID quote's re-price must come from a synchronous
+    # live re-fetch; a failed re-fetch voids — even though the sweep cache
+    # could still price the combo.
+    import json
+    from datetime import datetime, timezone
+    eng = FakeEngine(fairs=None)                       # refetch_now -> False
+    main, db, emitted = _setup(monkeypatch, tmp_path, eng, "live4.duckdb")
+    canon = legset.parse_legs(GRID_LEGS)
+    h = legset.leg_set_hash(canon)
+    now = datetime.now(timezone.utc)
+    with db.connect() as con:
+        con.execute(
+            "INSERT INTO live_quotes (quote_id, rfq_id, combo_market_ticker, "
+            "game_id, yes_bid, no_bid, model_fair, book_fair, blended_fair, "
+            "status, submitted_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ["q-lv", "r-grid", "COMBO-GRID", "game1", 0.5, 0.43,
+             0.31, 0.31, 0.31, "open", now, None])
+        con.execute(
+            "INSERT OR REPLACE INTO seen_rfqs (rfq_id, market_ticker, in_scope, "
+            "game_id, legs_json, first_seen_at, last_decision, creator_id) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            ["r-grid", "COMBO-GRID", True, "game1", json.dumps(GRID_LEGS), now,
+             "quoted", ""])
+        con.execute("UPDATE live_quotes SET leg_prices_json = "
+                    "'{\"L\": {\"yes_bid\": 0.5, \"yes_ask\": 0.52}}'")
+    monkeypatch.setattr(main, "_leg_market_prices",
+                        lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
+    monkeypatch.setattr(main.auth_client, "api",
+                        lambda *a, **k: (200, {"quote": {"status": "accepted",
+                                                         "accepted_side": "yes",
+                                                         "contracts": 1}}, None))
+
+    class GW:
+        def confirm(self, qid):
+            raise AssertionError("failed live re-fetch must void, not confirm")
+
+        def cancel(self, qid):
+            return True
+
+    main._confirm_tick(GW(), dry_run=False)
+    assert eng.refetch_calls, "confirm must live-refetch grid shapes"
+    jobs, budget = eng.refetch_calls[0]
+    assert jobs[0][0] == h and jobs[0][1] == GREF
+    assert budget == main.CONFIRM_REFETCH_BUDGET_SEC
+    with db.connect(read_only=True) as con:
+        st = con.execute(
+            "SELECT status FROM live_quotes WHERE quote_id='q-lv'").fetchone()
+    assert st[0] == "voided"
+
+
+def test_confirm_voids_without_engine_even_with_cache(monkeypatch, tmp_path):
+    # _ENGINE can be None (process start / wiring gap). Confirm must void —
+    # the perfectly quotable sweep cache must not stand in.
+    import json
+    from datetime import datetime, timezone
+    main, db, emitted = _setup(monkeypatch, tmp_path, FakeEngine(fairs=None),
+                               "live5.duckdb")
+    monkeypatch.setattr(main, "_ENGINE", None)
+    now = datetime.now(timezone.utc)
+    with db.connect() as con:
+        con.execute(
+            "INSERT INTO live_quotes (quote_id, rfq_id, combo_market_ticker, "
+            "game_id, yes_bid, no_bid, model_fair, book_fair, blended_fair, "
+            "status, submitted_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ["q-ne", "r-grid", "COMBO-GRID", "game1", 0.5, 0.43,
+             0.3, 0.3, 0.3, "open", now, None])
+        con.execute(
+            "INSERT OR REPLACE INTO seen_rfqs (rfq_id, market_ticker, in_scope, "
+            "game_id, legs_json, first_seen_at, last_decision, creator_id) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            ["r-grid", "COMBO-GRID", True, "game1", json.dumps(GRID_LEGS), now,
+             "quoted", ""])
+        con.execute("UPDATE live_quotes SET leg_prices_json = "
+                    "'{\"L\": {\"yes_bid\": 0.5, \"yes_ask\": 0.52}}'")
+    monkeypatch.setattr(main, "_leg_market_prices",
+                        lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
+    monkeypatch.setattr(main.auth_client, "api",
+                        lambda *a, **k: (200, {"quote": {"status": "accepted",
+                                                         "accepted_side": "yes",
+                                                         "contracts": 1}}, None))
+
+    class GW:
+        def confirm(self, qid):
+            raise AssertionError("no engine must void, not confirm")
+
+        def cancel(self, qid):
+            return True
+
+    main._confirm_tick(GW(), dry_run=False)
+    with db.connect(read_only=True) as con:
+        st = con.execute(
+            "SELECT status FROM live_quotes WHERE quote_id='q-ne'").fetchone()
+    assert st[0] == "voided"
+
+
+# --------------------------------------------------------------------------- #
+# Router + engine units                                                        #
+# --------------------------------------------------------------------------- #
+
+def test_router_live_routing_prices_grids_from_lookup_not_sgp_df():
+    from kalshi_mlb_mm import router
+    canon = legset.parse_legs(GRID_LEGS)
+    sgp_df = pd.DataFrame(_grid_rows("dk", "game1", -1.5, 8.5, ST_CELLS)
+                          + _grid_rows("fd", "game1", -1.5, 8.5, ST_CELLS))
+    lookup = lambda h: dict(LIVE_FAIRS)
+    cons, reason = router.subcombo_consensus(
+        "game1", canon, sgp_df, 2, 0.07,
+        on_demand_fairs=lookup, live_routing=True)
+    assert reason == "ok"
+    assert cons.fair == LIVE_FAIR
+    # Without a lookup, live routing must fail closed — never read sgp_df.
+    cons, reason = router.subcombo_consensus(
+        "game1", canon, sgp_df, 2, 0.07,
+        on_demand_fairs=None, live_routing=True)
+    assert cons is None and reason == "unpriceable"
+
+
+def test_router_live_routing_param_is_keyword_only():
+    import inspect
+    from kalshi_mlb_mm import router
+    for fn in (router.subcombo_consensus, router.combo_fair_detail,
+               router.combo_fair):
+        param = inspect.signature(fn).parameters["live_routing"]
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY, fn.__name__
+        assert param.default is False, fn.__name__
+
+
+def test_engine_landed_empty_and_result_age(monkeypatch):
+    from kalshi_mlb_mm.on_demand import OnDemandEngine, QUOTE_FRESH_SEC
+
+    clock = [100.0]
+
+    class SvcEmpty:               # every book fails -> {} lands
+        books = ("dk",)
+        on_demand_deadline_sec = 10.0
+
+        def price_on_demand(self, book, game, legs):
+            return None
+
+    eng = OnDemandEngine(SvcEmpty(), now_fn=lambda: clock[0], autostart=False)
+    assert eng.landed_empty("h1") is False          # nothing stored yet
+    assert eng.result_age_sec("h1") is None
+    eng.ensure_fetch("h1", GREF, legset.parse_legs(GRID_LEGS))
+    eng._drain_once()
+    assert eng.landed_empty("h1") is True           # fresh empty landing
+    assert eng.result_age_sec("h1") == pytest.approx(0.0)
+    assert eng.lookup("h1") is None
+    clock[0] += QUOTE_FRESH_SEC + 1.0               # aged out -> re-fetchable
+    assert eng.landed_empty("h1") is False
+    assert eng.result_age_sec("h1") == pytest.approx(QUOTE_FRESH_SEC + 1.0)
+
+
+# --------------------------------------------------------------------------- #
+# E2e — REAL OnDemandEngine + stubbed price_on_demand                          #
+# --------------------------------------------------------------------------- #
+
+GREF_B = GameRef(game_id="gB", home_team="Los Angeles Dodgers",
+                 away_team="San Diego Padres", commence_time=None)
+SINGLE_LEG_B = [leg("KXMLBGAME-25JUN272005SDLAD-LAD", "yes")]
+
+
+class StubService:
+    """price_on_demand stub: per-game fair, or None to simulate a book that
+    never answers inside the budget."""
+    books = ("draftkings", "fanduel")
+    on_demand_deadline_sec = 10.0
+
+    def __init__(self, fair_by_game):
+        self.fair_by_game = fair_by_game      # game_id -> fair | None
+        self.calls = []
+
+    def price_on_demand(self, book, game, legs):
+        self.calls.append((book, game.game_id, tuple(legs)))
+        fair = self.fair_by_game.get(game.game_id)
+        if fair is None:
+            return None
+        from mlb_sgp._shared import OnDemandBookResult
+        return OnDemandBookResult(book=book, fair=fair, route="partition",
+                                  n_cells_priced=2 ** len(legs),
+                                  latency_sec=0.5)
+
+
+def _setup_real_engine(monkeypatch, tmp_path, svc, db_name):
+    from kalshi_mlb_mm.on_demand import OnDemandEngine
+    eng = OnDemandEngine(svc, autostart=False)
+    main, db, emitted = _setup(monkeypatch, tmp_path, eng, db_name)
+    monkeypatch.setattr(
+        main, "_resolve_game_for_legs",
+        lambda gl: "game1" if gl[0].game_id == "25JUN271905TEXLAA" else "gB")
+    monkeypatch.setattr(
+        main, "_game_ref", lambda gid: GREF if gid == "game1" else GREF_B)
+    return main, db, emitted, eng
+
+
+def test_e2e_grid_real_engine(monkeypatch, tmp_path):
+    svc = StubService({"game1": 0.30})
+    main, db, emitted, eng = _setup_real_engine(monkeypatch, tmp_path, svc,
+                                                "e2e1.duckdb")
+    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)   # pending + queued
+    assert _last_decision(db) == ("skipped", "on_demand_pending")
+    assert eng._queue_len() == 1
+    eng._drain_once()
+    assert svc.calls, "grid legs must reach price_on_demand"
+    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)   # priced live
+    assert _last_decision(db) == ("dry_run_quote", None)
+    payload = _quote_priced_payload(emitted)
+    assert payload["blended_fair"] == pytest.approx(0.30)
+    # The research trace: per-game live books + result age (the #54 proof).
+    canon = legset.parse_legs(GRID_LEGS)
+    h = legset.leg_set_hash(canon)
+    assert payload["live_games"][h]["books"].keys() == {"draftkings", "fanduel"}
+    assert payload["live_games"][h]["age_sec"] >= 0.0
+
+
+def test_e2e_cross_game_multiplies_per_game_live_fetches(monkeypatch, tmp_path):
+    # Cross-game combo = grid sub-combo (game1) x SINGLE leg (gB). Each game
+    # gets its own live fetch — including the 1-leg set — and the quote is
+    # the product of the per-game live consensus fairs (0.30 * 0.30 = 0.09).
+    svc = StubService({"game1": 0.30, "gB": 0.30})
+    main, db, emitted, eng = _setup_real_engine(monkeypatch, tmp_path, svc,
+                                                "e2e2.duckdb")
+    monkeypatch.setattr(main, "_SCOPE_CACHE",
+                        {"COMBO-GRID": (True, None, GRID_LEGS + SINGLE_LEG_B)})
+    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
+    assert eng._queue_len() == 2, "one live job per game"
+    eng._drain_once()
+    eng._drain_once()
+    single_calls = [c for c in svc.calls if c[1] == "gB"]
+    assert single_calls and len(single_calls[0][2]) == 1, \
+        "the cross-game SINGLE leg must be live-fetched as a 1-leg set"
+    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
+    assert _last_decision(db) == ("dry_run_quote", None)
+    assert _quote_priced_payload(emitted)["blended_fair"] == pytest.approx(0.09)
+
+
+def test_e2e_mixed_fresh_and_empty_declines_timeout(monkeypatch, tmp_path):
+    # game1 answers, gB lands EMPTY (every book over budget): once nothing is
+    # pending the combo declines live_fetch_timeout — the fresh half must not
+    # let a cache (or partial) fair through.
+    svc = StubService({"game1": 0.30, "gB": None})
+    main, db, emitted, eng = _setup_real_engine(monkeypatch, tmp_path, svc,
+                                                "e2e3.duckdb")
+    monkeypatch.setattr(main, "_SCOPE_CACHE",
+                        {"COMBO-GRID": (True, None, GRID_LEGS + SINGLE_LEG_B)})
+    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)   # both queued
+    eng._drain_once()
+    eng._drain_once()
+    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
+    assert _last_decision(db) == ("skipped", "live_fetch_timeout")
+    assert _quote_priced_payload(emitted) is None

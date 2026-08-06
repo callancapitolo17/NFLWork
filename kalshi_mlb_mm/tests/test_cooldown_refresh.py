@@ -60,6 +60,9 @@ def _cooldown_env(monkeypatch, tmp_path, db_name, *, fetch_time, cooled_until,
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: _GAME)
     monkeypatch.setattr(main, "_leg_market_prices",
                         lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
+    # #54 live-only: pricing requires a live engine result for every game.
+    from kalshi_mlb_mm.tests.conftest import FakeLiveEngine
+    monkeypatch.setattr(main, "_ENGINE", FakeLiveEngine())
 
     filled_at = datetime.now(timezone.utc) - timedelta(seconds=120)
     with db.connect() as con:

@@ -161,11 +161,16 @@ def test_confirm_voids_when_snapshot_missing(monkeypatch, tmp_path):
 
 
 def test_confirm_passes_when_all_legs_unchanged(monkeypatch, tmp_path):
-    """Unmoved raw leg odds -> veto passes -> existing cache gates run ->
-    confirm; fair_at_confirm keeps the cache fair convention."""
+    """Unmoved raw leg odds -> veto passes -> #54 live re-fetch re-prices at
+    the unchanged fair -> confirm; fair_at_confirm carries the live fair."""
     main, db = _setup(monkeypatch, tmp_path, "veto_pass.duckdb",
                       snapshot_json=json.dumps(SNAPSHOT),
                       fresh=json.loads(json.dumps(SNAPSHOT)))
+    # #54 live-only: the confirm re-price comes from the engine, not the
+    # cache; serve the same fair the quote was placed at (no drift).
+    from kalshi_mlb_mm.tests.conftest import FakeLiveEngine
+    monkeypatch.setattr(main, "_ENGINE", FakeLiveEngine(
+        {"draftkings": STALE_CACHE_FAIR, "fanduel": STALE_CACHE_FAIR}))
     gw = ConfirmGW()
     main._confirm_tick(gw, dry_run=False)
     assert gw.confirmed == ["q-grid"]

@@ -51,7 +51,7 @@ def _grid_df():
 
 
 def _setup(monkeypatch, tmp_path, db_name, *, current, quotes=None,
-           mode="book_quiet", book_fair_now=None):
+           book_fair_now=None):
     """Seed open quote(s) with a placement baseline and stub the live poll.
 
     `current` is what the constituent poll returns this sweep; `book_fair_now`
@@ -70,9 +70,7 @@ def _setup(monkeypatch, tmp_path, db_name, *, current, quotes=None,
     monkeypatch.setattr(main, "_ENGINE", None)
     monkeypatch.setattr(main, "_commence_time",
                         lambda gid: datetime(2099, 1, 1, tzinfo=timezone.utc))
-    monkeypatch.setattr(cfg, "CONSTITUENT_JUMP_MODE", mode)
     monkeypatch.setattr(cfg, "CONSTITUENT_JUMP_THRESHOLD", 0.03)
-    monkeypatch.setattr(cfg, "CONSTITUENT_BOOK_QUIET_MAX", 0.01)
     # current=None leaves the real fetch in place (for the API-bound test).
     if current is not None:
         monkeypatch.setattr(singles, "fetch_market_prices",
@@ -147,27 +145,16 @@ def test_quiet_constituents_leave_the_quote_open(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# The two modes                                                               #
+# Unconditional since #54                                                     #
 # --------------------------------------------------------------------------- #
 
-def test_moving_books_suppress_the_breaker_in_book_quiet_mode(monkeypatch, tmp_path):
-    """Everything moved together -> our data is just catching up, not a
-    pickoff. The existing book_drift breaker owns that case and keeps its own
-    reason, so the two signals stay distinguishable in the funnel."""
-    main, db = _setup(monkeypatch, tmp_path, "cj_moving.duckdb", current=JUMPED,
-                      book_fair_now=0.30)          # 5c from the 0.25 at quote
-    gw = _GW()
-    main._risk_sweep_tick(gw)
-    _status, decision = _state(db)
-    assert decision != ("sweep_cancel", "constituent_jump")
-    assert decision == ("sweep_cancel", "book_drift")
-
-
-def test_unconditional_mode_fires_regardless_of_book_movement(monkeypatch, tmp_path):
-    """Post-#54 mode: the fair was live at placement, so ANY constituent jump
-    during the resting window means the market moved after us."""
+def test_jump_fires_regardless_of_book_movement(monkeypatch, tmp_path):
+    """#54 live-only: the fair was live at placement, so ANY constituent jump
+    during the resting window means the market moved after us — even when the
+    books moved too (the pre-#54 book_quiet guard excused exactly this case
+    for cache-priced quotes, and was deleted with cache pricing)."""
     main, db = _setup(monkeypatch, tmp_path, "cj_uncond.duckdb", current=JUMPED,
-                      mode="unconditional", book_fair_now=0.30)
+                      book_fair_now=0.30)          # 5c from the 0.25 at quote
     gw = _GW()
     main._risk_sweep_tick(gw)
     status, decision = _state(db)
@@ -244,16 +231,6 @@ def test_api_calls_are_one_per_distinct_ticker_per_sweep(monkeypatch, tmp_path):
     assert set(market_calls) == {f"/markets/{SPREAD_T}", f"/markets/{TOTAL_T}"}
 
 
-def test_a_typo_in_the_mode_falls_back_to_the_conservative_guard(monkeypatch, tmp_path):
-    """A misspelled env var must not silently arm the aggressive post-#54 mode
-    on a bot whose quotes are still cache-priced."""
-    main, db = _setup(monkeypatch, tmp_path, "cj_typo.duckdb", current=JUMPED,
-                      mode="unconditionl", book_fair_now=0.30)   # sic
-    main._risk_sweep_tick(_GW())
-    _status, decision = _state(db)
-    assert decision != ("sweep_cancel", "constituent_jump")
-
-
 def test_poll_order_rotates_so_the_tail_is_not_starved(monkeypatch):
     """With a budget, a large book cannot be fully polled in one sweep. The
     start point must advance, or the same trailing tickers never get read."""
@@ -326,7 +303,6 @@ def test_constituent_jump_event_carries_games_and_moves(monkeypatch, tmp_path):
     assert len(jumps) == 1
     payload = jumps[0]["payload"]
     assert payload["games"] == ["game1"]
-    assert payload["mode"] == "book_quiet"
     assert payload["threshold"] == 0.03
     assert SPREAD_T in payload["moves"]["q1"]
     assert TOTAL_T not in payload["moves"]["q1"]
