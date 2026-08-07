@@ -245,6 +245,9 @@ def _setup(monkeypatch, tmp_path, engine, db_name, legs=GRID_LEGS):
     from kalshi_mlb_mm import main
     monkeypatch.setattr(cfg, "DB_PATH", tmp_path / db_name)
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
+    # One open quote's worst-case exposure saturates the default per-combo
+    # cap and would mask the refine paths (same as test_quote_replace).
+    monkeypatch.setattr(cfg, "MAX_COMBO_EXPOSURE_USD", 200.0)
     importlib.reload(db)
     db.init_database()
     monkeypatch.setattr(main, "_SGP_ODDS", pd.DataFrame(
@@ -361,6 +364,10 @@ def test_straggler_within_hysteresis_no_action(monkeypatch, tmp_path):
     main._discovery_tick(Src(), gw, dry_run=False)
     assert len(gw.submits) == 1, "within hysteresis the quote must rest"
     assert _quote_rows(db) == {"qid-1": "open"}
+    # The hold must come from HYSTERESIS (no new decision row), not from an
+    # exposure cap quietly blocking the re-quote.
+    assert _last_decision(db) == ("quoted", None)
+    assert _quote_priced_payload(emitted)["refine_action"] == "hold"
 
 
 def test_straggler_beyond_hysteresis_replaces(monkeypatch, tmp_path):
@@ -376,6 +383,9 @@ def test_straggler_beyond_hysteresis_replaces(monkeypatch, tmp_path):
     main._discovery_tick(Src(), gw, dry_run=False)
     assert len(gw.submits) == 2, "beyond hysteresis the quote must replace"
     assert _quote_rows(db) == {"qid-1": "replaced", "qid-2": "open"}
+    payload = _quote_priced_payload(emitted)
+    assert payload["refine_action"] == "replace"
+    assert payload["resting_quote_id"] == "qid-1"
 
 
 def test_straggler_dispersion_bust_pulls_quote(monkeypatch, tmp_path):
