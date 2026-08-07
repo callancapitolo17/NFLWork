@@ -91,7 +91,7 @@ def emit(event_type: str, *, ticker: str | None = None,
             merged.update(payload)
         if kwargs:
             merged.update(kwargs)
-        _BUFFER.append({
+        row = {
             "event_id": str(uuid.uuid4()),
             "session_id": _SESSION_ID,
             "event_type": event_type,
@@ -100,10 +100,15 @@ def emit(event_type: str, *, ticker: str | None = None,
             "rfq_id": rfq_id,
             "quote_id": quote_id,
             "payload": merged,
-        })
+        }
+        # Issue #56 made emit() multi-threaded (the WS RFQ reader thread
+        # emits rfq_seen_latency / transition events), so append + cap-trim
+        # must be atomic against flush()'s copy-and-delete.
         cap = config.RESEARCH_BUFFER_MAX
-        if len(_BUFFER) > cap:
-            del _BUFFER[:len(_BUFFER) - cap]   # drop oldest
+        with _BUFFER_LOCK:
+            _BUFFER.append(row)
+            if len(_BUFFER) > cap:
+                del _BUFFER[:len(_BUFFER) - cap]   # drop oldest
     except Exception:  # pragma: no cover — emit must never break trading
         pass
 
@@ -123,7 +128,8 @@ def flush() -> int:
     if not _BUFFER:
         return 0
     try:
-        batch = list(_BUFFER)
+        with _BUFFER_LOCK:
+            batch = list(_BUFFER)
         rows = [
             [e["event_id"], e["session_id"], e["event_type"], e["ts"],
              e["ticker"], e["rfq_id"], e["quote_id"],
@@ -140,7 +146,15 @@ def flush() -> int:
             )
         finally:
             con.close()
-        del _BUFFER[:len(batch)]   # only clear what we successfully wrote
+        # Only clear what we successfully wrote. The DB write above runs
+        # UNLOCKED so a slow flush can never stall an emit; appends land at
+        # the tail, so the head prefix is still exactly `batch`. The one
+        # exception is an at-cap trim racing the write — but at cap the
+        # buffer is already in its designed drop-oldest mode, min() keeps
+        # the delete in bounds, and a re-flushed survivor is absorbed by
+        # ON CONFLICT DO NOTHING.
+        with _BUFFER_LOCK:
+            del _BUFFER[:min(len(batch), len(_BUFFER))]
         return len(batch)
     except Exception as exc:
         global _LAST_FLUSH_WARN

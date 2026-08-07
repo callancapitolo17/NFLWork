@@ -1967,6 +1967,10 @@ def main_loop(dry_run: bool):
             sgp_service.check_book_health()   # issue #37: book-death alerts
             time.sleep(0.25)   # short sleep → responsive SIGTERM
     finally:
+        # Stop the WS reader first (no-op for RestRFQSource) so shutdown's
+        # quote-cancel sweep doesn't race reconnect attempts and their logs.
+        if hasattr(source, "stop"):
+            source.stop()
         with db.connect(read_only=True) as con:
             live = [r[0] for r in con.execute(
                 "SELECT quote_id FROM live_quotes WHERE status='open'").fetchall()]

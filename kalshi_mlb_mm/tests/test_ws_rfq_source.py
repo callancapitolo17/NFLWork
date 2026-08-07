@@ -33,16 +33,21 @@ def _rfq(rid: str, ticker: str = "KXMVE-TEST-1", **extra) -> dict:
 
 class FakeTransport:
     """Scripted transport: recv() blocks on an inbox queue with a short
-    timeout so the reader thread stays responsive to stop()."""
+    timeout so the reader thread stays responsive to stop(). Acks the
+    subscription on connect (like the real server) unless auto_ack=False."""
 
-    def __init__(self):
+    def __init__(self, auto_ack: bool = True):
         self.inbox: queue.Queue = queue.Queue()
         self.sent: list[str] = []
         self.connect_calls = 0
         self.closed = False
+        self.auto_ack = auto_ack
 
     def connect(self) -> None:
         self.connect_calls += 1
+        if self.auto_ack:
+            self.push({"id": 1, "type": "subscribed",
+                       "msg": {"channel": "communications", "sid": 1}})
 
     def send(self, text: str) -> None:
         self.sent.append(text)
@@ -70,8 +75,8 @@ class FakeTransport:
 class FakeTransportFactory:
     """Hands out one FakeTransport per connect cycle; remembers them all."""
 
-    def __init__(self, count: int = 4):
-        self.transports = [FakeTransport() for _ in range(count)]
+    def __init__(self, count: int = 4, auto_ack: bool = True):
+        self.transports = [FakeTransport(auto_ack=auto_ack) for _ in range(count)]
         self.created = 0
 
     def __call__(self):
@@ -236,6 +241,55 @@ def test_reconnect_gap_fill_reconciles_additions_and_removals(capture, running):
     assert ids == {"r2"}, "gap-fill must reconcile removals AND additions"
     # subscribe re-sent on the new connection
     assert any("subscribe" in s for s in factory.transports[1].sent)
+
+
+# --- subscription ack gate --------------------------------------------------
+
+def test_unacked_subscribe_forces_reconnect(capture, running):
+    """A live socket whose subscribe is silently dropped must NOT count as
+    ready — server pings would keep the heartbeat watchdog quiet forever."""
+    factory, rest = FakeTransportFactory(auto_ack=False), FakeRestSource()
+    # 2nd transport acks normally, so recovery is also proven.
+    factory.transports[1].auto_ack = True
+    src = make_source(factory, rest, subscribe_ack_timeout_sec=0.05)
+    running.append(src)
+    src.start()
+    assert wait_until(lambda: factory.created >= 2)
+    assert wait_until(lambda: src.ws_ready)
+    assert rest.poll_calls == 1  # gap-fill only ran for the ACKED connection
+
+
+def test_error_frame_forces_reconnect(capture, running):
+    factory, rest = FakeTransportFactory(), FakeRestSource()
+    src = make_source(factory, rest)
+    running.append(src)
+    src.start()
+    assert wait_until(lambda: src.ws_ready)
+    factory.transports[0].push({"id": 6, "type": "error",
+                                "msg": {"code": 9, "msg": "subscription dropped"}})
+    assert wait_until(lambda: factory.created == 2 and src.ws_ready)
+    assert rest.poll_calls == 2  # one gap-fill per (re)connect
+    assert src.malformed_count == 0  # an error frame is fatal, not malformed
+
+
+def test_connect_failure_streak_alerts_once(capture, running):
+    class DeadFactory:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self):
+            self.calls += 1
+            raise ConnectionError("refused")
+
+    factory, rest = DeadFactory(), FakeRestSource()
+    src = make_source(factory, rest, connect_alert_streak=3)
+    running.append(src)
+    src.start()
+    assert wait_until(lambda: factory.calls >= 5)
+    halts = [e for e in capture if e[0] == "halt"]
+    assert len(halts) == 1 and halts[0][1] == "ws_rfq_source"
+    assert src.poll() == []  # REST fallback keeps serving (rest is empty)
+    assert rest.poll_calls >= 1
 
 
 # --- watchdog / fallback ----------------------------------------------------

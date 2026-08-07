@@ -53,6 +53,14 @@ class TransportTimeout(Exception):
     be alive (liveness is judged by the watchdog, not the transport)."""
 
 
+class WSProtocolError(Exception):
+    """Server rejected or never acknowledged our subscription. Treated as a
+    dead connection: a live socket with a dead subscription passes the ping
+    watchdog — the one silent-deafness heartbeats cannot see — so the only
+    safe response is tearing down and reconnecting (which re-subscribes and
+    gap-fills)."""
+
+
 class WSTransport(Protocol):
     """Minimal blocking transport the reader thread drives. recv() returns a
     text frame, None for non-message activity (server pings), raises
@@ -134,7 +142,8 @@ class WebSocketRFQSource:
                  heartbeat_timeout_sec: float | None = None,
                  reconnect_base_sec: float | None = None,
                  reconnect_max_sec: float | None = None,
-                 connect_alert_streak: int | None = None):
+                 connect_alert_streak: int | None = None,
+                 subscribe_ack_timeout_sec: float = 10.0):
         self._rest = rest_source
         self._transport_factory = transport_factory or (
             lambda: KalshiWSTransport(url=config.KALSHI_WS_URL))
@@ -150,6 +159,7 @@ class WebSocketRFQSource:
         self._connect_alert_streak = (
             config.WS_CONNECT_ALERT_STREAK if connect_alert_streak is None
             else connect_alert_streak)
+        self._subscribe_ack_timeout_sec = subscribe_ack_timeout_sec
         self._lock = threading.Lock()
         self._open_rfqs: dict[str, dict] = {}
         self._ws_ready = False          # connect + subscribe + gap-fill done
@@ -236,21 +246,45 @@ class WebSocketRFQSource:
                 transport.send(json.dumps(
                     {"id": SUBSCRIBE_CMD_ID, "cmd": "subscribe",
                      "params": {"channels": [COMMUNICATIONS_CHANNEL]}}))
-                # Gap-fill AFTER subscribe: events created in the meantime
-                # buffer on the socket and re-apply on top of the snapshot.
-                self._gap_fill("connect")
-                with self._lock:
-                    self._ws_ready = True
-                    self._last_msg_at = time.time()
-                    self._connect_failures = 0
-                backoff = self._reconnect_base_sec
-                log.info("[ws_rfq] connected, subscribed to %s, gap-filled",
-                         COMMUNICATIONS_CHANNEL)
+                # ws_ready is gated on the server's "subscribed" ack: a live
+                # socket whose subscription was rejected/dropped still passes
+                # the ping watchdog, so an unacked or errored subscribe must
+                # force a reconnect, never a quiet no-event session.
+                subscribed = False
+                ack_deadline = time.time() + self._subscribe_ack_timeout_sec
                 while not self._stop.is_set():
+                    if not subscribed and time.time() > ack_deadline:
+                        raise WSProtocolError(
+                            f"subscribe unacknowledged after "
+                            f"{self._subscribe_ack_timeout_sec:.0f}s")
                     try:
                         raw = transport.recv()
                     except TransportTimeout:
                         continue  # idle — watchdog in poll() judges liveness
+                    if not subscribed:
+                        # Pre-ack frames: only the ack or an error matter.
+                        # TCP ordering guarantees no channel events precede
+                        # the ack of the subscription that produces them.
+                        envelope = self._parse_envelope(raw) if raw else None
+                        if envelope is None:
+                            continue
+                        if envelope.get("type") == "error":
+                            raise WSProtocolError(
+                                f"subscribe rejected: {envelope.get('msg')}")
+                        if envelope.get("type") != "subscribed":
+                            continue
+                        subscribed = True
+                        # Gap-fill AFTER the ack: events created meanwhile
+                        # buffer on the socket and re-apply on top.
+                        self._gap_fill("connect")
+                        with self._lock:
+                            self._ws_ready = True
+                            self._last_msg_at = time.time()
+                            self._connect_failures = 0
+                        backoff = self._reconnect_base_sec
+                        log.info("[ws_rfq] connected, %s subscription acked, "
+                                 "gap-filled", COMMUNICATIONS_CHANNEL)
+                        continue
                     with self._lock:
                         self._last_msg_at = time.time()
                     if raw:
@@ -309,14 +343,37 @@ class WebSocketRFQSource:
                       payload=dict(reason=reason, open_count=len(snapshot),
                                    prior_count=had))
 
-    def _handle_message(self, raw: str) -> None:
+    def _parse_envelope(self, raw: str) -> dict | None:
+        """JSON-parse one frame; malformed frames are counted and skipped
+        (returns None), never crash the reader."""
         try:
             envelope = json.loads(raw)
             if not isinstance(envelope, dict):
-                raise ValueError(f"expected object envelope, got {type(envelope).__name__}")
-            msg_type = envelope.get("type")
-            if msg_type not in ("rfq_created", "rfq_deleted"):
-                return  # subscribed ack, quote_* lifecycle, errors — not ours
+                raise ValueError(
+                    f"expected object envelope, got {type(envelope).__name__}")
+            return envelope
+        except Exception as e:
+            self._count_malformed(e)
+            return None
+
+    def _count_malformed(self, err: Exception) -> None:
+        self.malformed_count += 1
+        log.warning("[ws_rfq] malformed payload skipped (count=%d): %s",
+                    self.malformed_count, err)
+
+    def _handle_message(self, raw: str) -> None:
+        """Apply one post-subscription frame to the mirror. Raises
+        WSProtocolError on a server error frame (forces reconnect); malformed
+        payloads are counted and skipped."""
+        envelope = self._parse_envelope(raw)
+        if envelope is None:
+            return
+        msg_type = envelope.get("type")
+        if msg_type == "error":
+            raise WSProtocolError(f"server error frame: {envelope.get('msg')}")
+        if msg_type not in ("rfq_created", "rfq_deleted"):
+            return  # quote_* lifecycle, duplicate acks — not ours
+        try:
             msg = envelope.get("msg")
             if not isinstance(msg, dict):
                 raise ValueError(f"{msg_type} without object msg payload")
@@ -331,9 +388,7 @@ class WebSocketRFQSource:
                 with self._lock:
                     self._open_rfqs.pop(rfq_id, None)
         except Exception as e:
-            self.malformed_count += 1
-            log.warning("[ws_rfq] malformed payload skipped (count=%d): %s",
-                        self.malformed_count, e)
+            self._count_malformed(e)
 
     def _emit_seen_latency(self, msg: dict) -> None:
         """Issue #56 measurement: created→seen latency per RFQ, so the WS
