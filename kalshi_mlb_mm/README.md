@@ -97,7 +97,12 @@ REST-polling daemon, single process. Six timed sub-loops:
 | Settlement sweep | 600s | Poll `GET /markets/{ticker}` for combos with unsettled fills → write `fills.realized_pnl` + `settlements` audit row (live only; issue #12) |
 | SGP scrape | 60s | Own scraper cadence → `kalshi_mlb_mm_market.duckdb` (sibling market DB) |
 
-**Transport seam.** All exchange I/O goes through two interfaces: `RFQSource.poll()` / `RFQSource.get_market()` (v1: `RestRFQSource`, REST poll of `GET /communications/rfqs?status=open`) and `QuoteGateway.submit_quote()` / `.confirm()` / `.cancel()` (v1: `RestQuoteGateway`). A WebSocket adapter is a drop-in replacement behind these interfaces — no pricing or risk code changes.
+**Transport seam.** All exchange I/O goes through two interfaces: `RFQSource.poll()` / `RFQSource.get_market()` and `QuoteGateway.submit_quote()` / `.confirm()` / `.cancel()` (v1: `RestQuoteGateway`). RFQ discovery has two adapters selected by `RFQ_SOURCE` (issue #56):
+
+- `rest` (default) — `RestRFQSource`, the proven 2s REST poll of `GET /communications/rfqs?status=open`.
+- `ws` — `WebSocketRFQSource` (`ws_rfq_source.py`): a daemon reader thread subscribes to Kalshi's `communications` WS channel (`rfq_created` / `rfq_deleted`) and mirrors it into a stateful open-RFQ set, so `poll()` keeps the **level-triggered** contract the discovery tick depends on (all open RFQs every tick — that re-entry drives on-demand re-fetch, quorum refinement, and pulls). Payloads are stored verbatim (`contracts_fp` stays a string), so downstream is byte-compatible with REST. `get_market()` stays pure REST.
+
+**WS fallback semantics (never silently deaf).** Liveness = any WS frame (server pings every ~10s count) within `WS_HEARTBEAT_TIMEOUT_SEC`. The watchdog runs inside `poll()` on the tick thread — a wedged reader thread still trips it. Trip → ERROR log + one notify + `rfq_source_transition` research event, and `poll()` transparently serves the REST source until the feed recovers, which flips back the same loud way. Reconnects use backoff+jitter and re-subscribe; each (re)connect performs ONE REST gap-fill that reconciles the mirror wholesale — additions AND removals, so a missed `rfq_deleted` can never leave a zombie RFQ being re-fetched forever (events buffered during the gap-fill re-apply on top, so nothing lands lost). Repeated connect failures (`WS_CONNECT_ALERT_STREAK`) alert once per outage. Every WS `rfq_created` emits `rfq_seen_latency` (payload `created_ts` vs receipt) to the firehose, so the discovery-latency win over the 2s poll is measured per RFQ.
 
 **Shared math.** Fair value, EV calc (including `maker_fee_per_contract`), authenticated HTTP, SGP orchestration, and leg-typing helpers all live in `kalshi_common/`. Both bots import from there; the taker's original files are now one-line re-export shims (behavior unchanged).
 
@@ -385,6 +390,11 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `CORR_PREMIUM_MIN` / `CORR_PREMIUM_MAX` | `0.5` / `2.0` | Band for `combo_fair / Π(live marginals)` — deliberately wide, since same-game stacks legitimately run ~2× |
 | `CONSTITUENT_JUMP_THRESHOLD` | `0.03` | Devigged move on a constituent single, since quote placement, that pulls every resting quote on that game (issue #23) |
 | `CONSTITUENT_POLL_BUDGET_SEC` | `1.0` | Wall-clock ceiling on the constituent poll. All ticks share one thread, so this protects the 2s HVM confirm window; the poll order rotates so no ticker is starved |
+| `RFQ_SOURCE` | `rest` | RFQ discovery adapter (issue #56): `rest` = 2s REST poll; `ws` = WebSocket mirror of the `communications` channel with loud automatic REST fallback. Unknown values warn and run `rest` |
+| `KALSHI_WS_URL` | `wss://api.elections.kalshi.com/trade-api/ws/v2` | WS endpoint (signed handshake via `kalshi_common.auth_client.ws_auth_headers()`) |
+| `WS_HEARTBEAT_TIMEOUT_SEC` | `30` | Watchdog: no WS frame (pings included) for this long → REST fallback, loudly. Kalshi pings ~10s, so 30 = three missed heartbeats |
+| `WS_RECONNECT_BASE_SEC` / `WS_RECONNECT_MAX_SEC` | `1` / `30` | Reconnect backoff bounds (exponential + jitter) |
+| `WS_CONNECT_ALERT_STREAK` | `3` | Consecutive connect failures before the one-per-outage notification |
 | `DISCOVERY_SEC` | `2` | Discovery + quote loop cadence (seconds) |
 | `CONFIRM_SEC` | `2` | Confirm loop cadence (seconds) |
 | `RISK_SWEEP_SEC` | `10` | Risk sweep cadence (seconds) |
