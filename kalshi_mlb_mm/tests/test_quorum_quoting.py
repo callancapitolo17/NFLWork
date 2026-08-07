@@ -176,6 +176,31 @@ def test_engine_records_budget_dropped_books():
         release.set()
 
 
+def test_engine_failure_finish_preserves_landed_partials():
+    """The _process_job failure path finishes with NO results; partials a
+    dying job already landed must survive into the completed entry (a
+    clobber would erase servable fresh fairs mid-quorum)."""
+    from kalshi_mlb_mm.on_demand import OnDemandEngine
+
+    class SvcUnused:
+        books = ("fast_a",)
+        on_demand_deadline_sec = 5.0
+
+        def price_on_demand(self, book, game, legs):
+            raise AssertionError("not exercised in this white-box test")
+
+    eng = OnDemandEngine(SvcUnused(), autostart=False)
+    canon = legset.parse_legs(GRID_LEGS)
+    h = legset.leg_set_hash(canon)
+    eng.ensure_fetch(h, GREF, canon)          # marks the flight in-flight
+    eng._land_partial(h, "fast_a", _result("fast_a", 0.30))
+    assert eng.lookup(h) == {"fast_a": 0.30}
+    eng._finish(h, {})                        # the failure path's call shape
+    assert eng.lookup(h) == {"fast_a": 0.30}, \
+        "failure-path _finish must not clobber landed partials"
+    assert eng.landed_empty(h) is False
+
+
 # --------------------------------------------------------------------------- #
 # Tick-level harness (dry_run=False; style follows test_live_pricing._setup)   #
 # --------------------------------------------------------------------------- #
