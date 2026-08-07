@@ -5,6 +5,9 @@ The open-RFQ poll is the feed driver (spec §4.5): the discovery tick calls
 `lookup` only ever serves results younger than QUOTE_FRESH_SEC — so quotes
 are always backed by a fetch triggered by the RFQ being priced, fetching
 stops the moment an RFQ leaves the poll, and nothing here self-schedules.
+Quorum quoting (issue #55): landings are INCREMENTAL — each book's result
+is servable the moment it returns, so the poll quotes on the fast books
+while stragglers are still in flight (see _Flight for the semantics).
 
 Threading model: one daemon consumer thread drains a FIFO of combo jobs;
 each job fans out to every book concurrently (thread per book, mirroring
@@ -20,7 +23,9 @@ import logging
 import threading
 import time
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
+from concurrent.futures import wait as futures_wait
+from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +49,28 @@ _INFLIGHT_REAP_SEC = 300.0
 # passes its own confirm-window deadline.
 _FEED_FETCH_DEADLINE_SEC = 75.0
 
+@dataclass
+class _Flight:
+    """One leg-set's stored fetch state (issue #55: incremental landings).
+
+    landed_at   monotonic time of the MOST RECENT landing (each book's
+                arrival slides it forward; completion stamps it once more).
+                Freshness is measured from here, so the worst-case serve
+                window is unchanged from the pre-quorum atomic landing:
+                job deadline + QUOTE_FRESH_SEC after fetch start.
+    complete    False while the job is still fanning out. landed_empty
+                (-> live_fetch_timeout) fires ONLY on complete+empty —
+                a zero-book PARTIAL stays "pending", exactly as before.
+    dropped_books  books whose call was still running at the job deadline
+                (#50 budget). Failed books (returned None in time) are NOT
+                dropped — the distinction feeds #38's health picture.
+    """
+    landed_at: float
+    results: dict = field(default_factory=dict)
+    complete: bool = False
+    dropped_books: tuple = ()
+
+
 # Issue #50: multi-game RFQs enqueue one job per game; the old single
 # consumer drained them strictly serially, so game N's fetch waited out
 # games 1..N-1 in full. Jobs now run on up to this many concurrent daemon
@@ -62,7 +89,7 @@ class OnDemandEngine:
         self._queue: deque = deque()        # (hash, GameRef, legs)
         self._inflight: dict[str, float] = {}   # hash -> enqueue time
         self._landed: dict[str, threading.Event] = {}   # hash -> landing signal
-        self._store: dict = {}              # hash -> (landed_at, {book: OnDemandBookResult})
+        self._store: dict[str, _Flight] = {}            # hash -> _Flight
         self._worker: threading.Thread | None = None
         # Caps concurrent jobs; acquired by the dispatcher, released by the
         # job thread — the dispatcher blocks (backpressure) at the cap.
@@ -101,6 +128,12 @@ class OnDemandEngine:
                 ev = self._landed.pop(h, None)
                 if ev is not None:
                     ev.set()
+                # Drop the dead flight's PARTIAL landing too: a later flight
+                # for this hash must never merge with (or resurrect) book
+                # fairs from a worker that died mid-job.
+                ent = self._store.get(h)
+                if ent is not None and not ent.complete:
+                    del self._store[h]
             if hash_ in self._inflight:
                 return False
             self._inflight[hash_] = now
@@ -110,34 +143,44 @@ class OnDemandEngine:
         return True
 
     def landed_at(self, hash_: str) -> float | None:
-        """Monotonic landing time of the stored result (fresh or not), or
+        """Monotonic time of the most recent landing (fresh or not), or
         None. Research-event dedup only — quoting freshness lives in lookup."""
         with self._lock:
             ent = self._store.get(hash_)
-        return ent[0] if ent else None
+        return ent.landed_at if ent else None
 
     def landed_empty(self, hash_: str) -> bool:
-        """True iff the last fetch landed within QUOTE_FRESH_SEC with ZERO
+        """True iff the last fetch COMPLETED within QUOTE_FRESH_SEC with ZERO
         book results (every book over budget or declining). The live quote
         path (#54) declines on this — never a cache fallback — and while the
         empty landing is fresh the poll does not re-feed, so a dead slate
-        retries on the ~QUOTE_FRESH_SEC cadence instead of every tick."""
+        retries on the ~QUOTE_FRESH_SEC cadence instead of every tick.
+        Quorum (#55): a zero-book PARTIAL is not a landing at all — the poll
+        keeps the RFQ pending until the flight completes."""
         with self._lock:
             ent = self._store.get(hash_)
-        if ent is None:
+        if ent is None or not ent.complete:
             return False
-        landed_at, results = ent
-        return not results and (self._now() - landed_at) <= QUOTE_FRESH_SEC
+        return (not ent.results
+                and (self._now() - ent.landed_at) <= QUOTE_FRESH_SEC)
 
     def result_age_sec(self, hash_: str) -> float | None:
-        """Seconds since the stored result landed (fresh or not), or None.
+        """Seconds since the most recent landing (fresh or not), or None.
         Research payloads only (#54 live-trace proof): quoting freshness
         stays in lookup."""
         with self._lock:
             ent = self._store.get(hash_)
         if ent is None:
             return None
-        return self._now() - ent[0]
+        return self._now() - ent.landed_at
+
+    def dropped_books(self, hash_: str) -> tuple:
+        """Books dropped at the job deadline on the last COMPLETED flight
+        (#55 item 4 observability; a chronically-dropped book is a de facto
+        non-participant). Empty while in flight or when nothing is stored."""
+        with self._lock:
+            ent = self._store.get(hash_)
+        return ent.dropped_books if ent else ()
 
     def lookup(self, hash_: str):
         """{book: fair} if landed within QUOTE_FRESH_SEC, else None."""
@@ -147,15 +190,17 @@ class OnDemandEngine:
         return {b: r.fair for b, r in results.items()}
 
     def lookup_results(self, hash_: str):
-        """{book: OnDemandBookResult} while fresh, else None (research read)."""
+        """{book: OnDemandBookResult} while fresh, else None (research read).
+        Quorum (#55): PARTIAL landings serve too — the moment one book has
+        returned, the tick can see it; the #20 consensus gate (not the
+        engine) decides whether the set is thick enough to quote."""
         with self._lock:
             ent = self._store.get(hash_)
         if ent is None:
             return None
-        landed_at, results = ent
-        if (self._now() - landed_at) > QUOTE_FRESH_SEC or not results:
+        if (self._now() - ent.landed_at) > QUOTE_FRESH_SEC or not ent.results:
             return None
-        return dict(results)
+        return dict(ent.results)
 
     # ------------------------------------------------------------- #
     # Confirm-tick last look (priority lane, caller's thread)        #
@@ -280,28 +325,46 @@ class OnDemandEngine:
         return True
 
     def _fetch_combo(self, hash_: str, game, legs, deadline=None) -> None:
-        """Fan out to every book concurrently; land whatever survives."""
+        """Fan out to every book concurrently; land each result AS IT
+        RETURNS (quorum quoting, #55) so the poll can quote on the fast
+        books while stragglers are still in flight. Books still running at
+        the deadline are dropped from this flight and recorded as such.
+
+        Partial landings are feed-path only (_land_partial no-ops unless
+        the hash is in-flight); correctness of the final landing rests on
+        the local `results` dict, so the confirm lane's DIRECT call (hash
+        not in-flight) still lands its full result set at _finish."""
         books = tuple(self._service.books)
         results = {}
+        dropped: list = []
         pool = ThreadPoolExecutor(max_workers=max(1, len(books)),
                                   thread_name_prefix="on-demand-book")
         try:
-            futs = {b: pool.submit(self._price_book_safe, b, game, legs,
-                                   deadline)
+            futs = {pool.submit(self._price_book_safe, b, game, legs,
+                                deadline): b
                     for b in books}
-            for b, fut in futs.items():
+            pending = set(futs)
+            while pending:
                 timeout = None
                 if deadline is not None:
                     timeout = max(0.0, deadline - self._now())
-                try:
-                    r = fut.result(timeout=timeout)
-                except Exception:
-                    r = None
-                if r is not None:
-                    results[b] = r
+                done, pending = futures_wait(pending, timeout=timeout,
+                                             return_when=FIRST_COMPLETED)
+                if not done:            # deadline hit — the rest are dropped
+                    dropped = sorted(futs[f] for f in pending)
+                    break
+                for fut in done:
+                    book = futs[fut]
+                    try:
+                        r = fut.result()
+                    except Exception:
+                        r = None
+                    if r is not None:
+                        results[book] = r
+                        self._land_partial(hash_, book, r)
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
-        self._finish(hash_, results)
+        self._finish(hash_, results, dropped_books=dropped)
 
     def _book_gate(self, book) -> threading.Semaphore:
         with self._lock:
@@ -331,15 +394,44 @@ class OnDemandEngine:
         finally:
             gate.release()
 
-    def _finish(self, hash_: str, results: dict) -> None:
+    def _land_partial(self, hash_: str, book: str, result) -> None:
+        """Land ONE book's result mid-flight (#55): lookup serves the
+        partial set immediately. No-op once the flight is no longer
+        in-flight — a book finishing past the deadline (or during a
+        confirm-lane direct fetch) must never mutate a landed entry, which
+        keeps refetch_now's landed-after-entry guarantee airtight."""
         now = self._now()
         with self._lock:
-            self._store[hash_] = (now, results)
+            if hash_ not in self._inflight:
+                return
+            prev = self._store.get(hash_)
+            # A COMPLETE previous entry belongs to an older flight — start
+            # fresh rather than mixing two flights' fairs.
+            results = (dict(prev.results)
+                       if prev is not None and not prev.complete else {})
+            results[book] = result
+            self._store[hash_] = _Flight(landed_at=now, results=results)
+
+    def _finish(self, hash_: str, results: dict | None = None, *,
+                dropped_books=()) -> None:
+        """Finalize a flight: merge over any partials already landed (the
+        failure paths call with no results and must never clobber them),
+        mark it complete, release the in-flight dedup, wake refetch waiters."""
+        now = self._now()
+        with self._lock:
+            prev = self._store.get(hash_)
+            merged = (dict(prev.results)
+                      if prev is not None and not prev.complete else {})
+            if results:
+                merged.update(results)
+            self._store[hash_] = _Flight(landed_at=now, results=merged,
+                                         complete=True,
+                                         dropped_books=tuple(dropped_books))
             self._inflight.pop(hash_, None)
             event = self._landed.pop(hash_, None)
             # prune stale research leftovers
-            for k in [k for k, (t, _) in self._store.items()
-                      if now - t > _STORE_RETENTION_SEC]:
+            for k in [k for k, f in self._store.items()
+                      if now - f.landed_at > _STORE_RETENTION_SEC]:
                 del self._store[k]
         if event is not None:
             event.set()

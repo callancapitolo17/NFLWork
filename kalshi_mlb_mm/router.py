@@ -213,6 +213,11 @@ class ComboFair:
     fair: float        # product of per-game consensus fairs
     sigma_pts: float   # combo-level fair uncertainty, probability points
     n_games: int
+    # Thinnest per-game consensus backing this combo (issue #55): the gate
+    # guarantees >=2 in real pricing, so ==2 marks a quorum quote and the
+    # pricer adds QUORUM_MARGIN_ADDON. Default 0 keeps legacy positional
+    # constructions working (and, being !=2, never triggers the add-on).
+    min_n_books: int = 0
 
 
 def combo_fair_detail(legs: list[dict], sgp_df, resolve_game, min_books: int,
@@ -235,6 +240,7 @@ def combo_fair_detail(legs: list[dict], sgp_df, resolve_game, min_books: int,
     product = 1.0
     rel_var = 0.0
     n_games = 0
+    min_n_books = None
     for _game_key, game_legs in legset.partition_by_game(canon).items():
         game_id = resolve_game(game_legs)
         if game_id is None:
@@ -250,8 +256,11 @@ def combo_fair_detail(legs: list[dict], sgp_df, resolve_game, min_books: int,
         product *= cons.fair
         rel_var += (cons.sigma_pts / cons.fair) ** 2
         n_games += 1
+        if min_n_books is None or cons.n_books < min_n_books:
+            min_n_books = cons.n_books
     return ComboFair(fair=product, sigma_pts=product * math.sqrt(rel_var),
-                     n_games=n_games), "ok"
+                     n_games=n_games,
+                     min_n_books=min_n_books or 0), "ok"
 
 
 def combo_fair(legs: list[dict], sgp_df, resolve_game, min_books: int,

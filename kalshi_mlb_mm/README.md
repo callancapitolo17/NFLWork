@@ -137,6 +137,7 @@ bid        = (p − margin_pts) − maker_fee,  floored to the $0.001 grid
 
 - **ROI part, compounded per game:** one `(1+r)` divisor per game — the same structure sportsbooks use to build multi-leg parlay hold (per-leg vig multiplies), because cross-game products multiply per-game fairs whose errors compound. At N=1 this is exactly the old constant-ROI price `p/(1+r)`.
 - **Probability-point floor:** the constant-ROI cushion ≈ `0.029·p` collapses at longshot fairs (~0.3¢ at p=0.10) while absolute fair error does not shrink with p — so the floor keeps an absolute minimum cushion, widened by `K_SIGMA·σ_books` when the books visibly disagree. `MIN_MARGIN_PTS` covers error σ cannot see (shared devig/correlation bias, mirrored books). This mirrors how books load vig onto longshots (favorite–longshot distribution) and how options MMs widen deep-OTM quotes.
+- **Quorum add-on (issue #55):** a quote whose thinnest per-game consensus is **exactly 2 books** carries one extra floor term — `floor = MIN_MARGIN_PTS + K_SIGMA·σ_books + QUORUM_MARGIN_ADDON` — because a 2-book σ is a 2-sample stddev, too noisy to price the visible disagreement alone. The add-on drops out automatically when a straggler book lands and the quote refines (see quorum quoting below); it is one term inside this framework, not a parallel margin system.
 - The stepped-fee/grid-floor guard is unchanged: the bid steps down until `bid + fee(bid) ≤ p − margin_pts`, so the **realized** margin is ≥ target by construction; the `yes_bid + no_bid < 1` and positivity guards still apply (an unquotable side declines the RFQ).
 - Margin components (`sigma_pts`, `floor_pts`, `roi_pts_*`, `margin_pts_*`, `n_games`) are logged in the research firehose `quote_priced` payload — `quote_decisions` columns are unchanged.
 
@@ -159,6 +160,29 @@ with reason `on_demand_pending`; the fetch (all books concurrent, each book
 capped at `ON_DEMAND_DEADLINE_SEC` — a straggler is dropped, never waited
 on) lands per-book fairs in an in-memory store, and the next tick prices
 them through the normal consensus + gates + hysteresis/replace path.
+
+**Quorum quoting (issue #55) — landings are incremental.** Each book's
+result becomes servable the moment it returns (`_Flight` in
+`on_demand.py`), so the tick quotes as soon as **2 fresh books** pass the
+#20 dispersion gate — RFQ→first-quote ≈ the 2nd-fastest book's response
+(~1.6s at the #50 latency table) + one ≤2s tick, never bounded by DK's
+tail. Freshness semantics for a partially-landed flight: `landed_at`
+slides forward with each arrival (worst-case serve window unchanged:
+job deadline + `QUOTE_FRESH_SEC`); a zero-book **partial** stays
+`on_demand_pending`; `live_fetch_timeout` fires only when a **completed**
+flight landed empty; a book finishing after its flight completed is
+discarded (post-completion immutability keeps the confirm lane's
+landed-after-entry guarantee). Stragglers then refine through the
+existing machinery as they land: within `QUOTE_HYSTERESIS` → hold;
+beyond → cancel/replace (#16 orphan-safety: submit first, mark
+`replaced` only on success); a straggler that busts the dispersion gate
+**pulls** the resting quote (decision `pulled`, reason
+`quorum_dispersion_bust`) — the resting price came from less information
+than we now have, and what we have says the books disagree. Exactly-2-book
+quotes carry `QUORUM_MARGIN_ADDON` (see Margin above), so expect one
+refine-replace per quote when the 3rd book lands and the add-on drops out.
+The live RFQ→first-quote latency vs the #50 table is a **post-restart
+measurement deliverable** — the bots were off when this shipped.
 Multi-game RFQs enqueue one job per game; jobs run on up to 4 concurrent
 daemon threads (issue #50 — previously strictly serial) while the #40
 pacing invariant still holds: a per-book gate keeps at most ONE pricing
@@ -224,12 +248,18 @@ restart, meanwhile skip; RFQ flood → queue grows, late landings, expired
 RFQs go unquoted (pacing = one on-demand combo in flight per book).
 
 **Observability**: research events `on_demand_requested` (once per fetch
-flight), `on_demand_result` (once per landing; per-book route/fair/latency,
-`route_gap` where both routes came free), `quote_priced` with the per-game
-`live_games` trace, fill payloads gain per-book `route` + `consensus_books`
-(DK+Novig-only fills are a named risk metric). New `quote_decisions`
-reasons: `live_fetch_timeout`, `live_too_few_books` (the monitor reads
-reason vocabularies from data — no dashboard change).
+flight), `on_demand_result` (once per landing — with incremental landings
+that is once per book arrival, so per-book arrival order and latency are
+recorded; payload also carries `dropped_books`, the books over their #50
+budget — a chronically-dropped book is a de facto non-participant for
+#38), `quote_priced` with the per-game `live_games` trace plus (#55)
+`quorum_size`, `quorum_addon_pts`, `refine_action`
+(initial/hold/replace) and `resting_quote_id`, `quote_pulled` on a
+dispersion-bust pull, and fill payloads gain per-book `route` +
+`consensus_books` (DK+Novig-only fills are a named risk metric). New
+`quote_decisions` reasons: `live_fetch_timeout`, `live_too_few_books`,
+and decision `pulled` / reason `quorum_dispersion_bust` (the monitor
+reads reason vocabularies from data — no dashboard change).
 Out-of-scope RFQs now store `legs_json` and granular reasons
 (`out_of_scope_non_mlb` / `out_of_scope_lone_single` /
 `out_of_scope_unparseable`) in `seen_rfqs` — on-demand demand is finally
@@ -340,6 +370,7 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `TARGET_ROI` | `0.03` | Quoted margin — the ROI part of the per-side margin, compounded per game: `p·(1 − (1+TARGET_ROI)^−n_games)` |
 | `MIN_MARGIN_PTS` | `0.01` | Probability-point margin floor (issue #19) — minimum absolute cushion per side, covering fair error the books' visible disagreement can't measure |
 | `K_SIGMA` | `1.0` | Margin widening per unit of cross-book disagreement: floor = `MIN_MARGIN_PTS + K_SIGMA·σ_books` |
+| `QUORUM_MARGIN_ADDON` | `0.01` | Extra probability-point floor term on quotes whose thinnest per-game consensus is exactly 2 books (issue #55) — a 2-sample σ underprices visible disagreement; drops out when a straggler book lands |
 | `FAIR_DRIFT_TOLERANCE` | `0.02` | Last-look: void confirm if fair drifted >2¢ against filled side since quote time |
 | `MAX_BOOK_STALENESS_SEC` | `60` | Withhold and pull quotes if book odds older than this |
 | `BOOK_MOVE_CB_THRESHOLD` | `0.03` | Circuit breaker: cancel a combo's quotes if book fair jumps >3¢ between scrapes (per-tick) or if drift since quote exceeds this (per-quote risk sweep) |

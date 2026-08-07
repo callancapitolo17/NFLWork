@@ -44,6 +44,7 @@ class Quote:
     sigma_pts: float = 0.0
     n_games: int = 1
     floor_pts: float = 0.0
+    quorum_addon_pts: float = 0.0
     roi_pts_yes: float = 0.0
     roi_pts_no: float = 0.0
     margin_pts_yes: float = 0.0
@@ -86,14 +87,20 @@ def _price_for_side(raw: float) -> float:
 
 def quote(fair: float, target_roi: float, *, sigma_pts: float = 0.0,
           n_games: int = 1, min_margin_pts: float = 0.0,
-          k_sigma: float = 0.0) -> "Quote | None":
+          k_sigma: float = 0.0,
+          quorum_addon_pts: float = 0.0) -> "Quote | None":
     """Two-sided quote around fair. Defaults (sigma 0, N=1, floor 0)
-    reproduce the legacy constant-ROI pricer bit-for-bit."""
+    reproduce the legacy constant-ROI pricer bit-for-bit.
+
+    quorum_addon_pts (issue #55): one extra probability-point term inside
+    the floor for quotes formed from exactly 2 books — their sigma_pts is a
+    2-sample stddev, too noisy to price the visible disagreement alone."""
     if not (0.0 < fair < 1.0):
         return None
     if n_games < 1:
         raise ValueError(f"expected n_games >= 1, got {n_games}")
-    floor_pts = min_margin_pts + k_sigma * max(sigma_pts, 0.0)
+    floor_pts = (min_margin_pts + k_sigma * max(sigma_pts, 0.0)
+                 + max(quorum_addon_pts, 0.0))
     roi_pts_yes, margin_yes, raw_yes = _side_targets(fair, target_roi,
                                                      n_games, floor_pts)
     roi_pts_no, margin_no, raw_no = _side_targets(1.0 - fair, target_roi,
@@ -104,5 +111,6 @@ def quote(fair: float, target_roi: float, *, sigma_pts: float = 0.0,
         return None
     return Quote(yes_bid=round(yes_bid, 4), no_bid=round(no_bid, 4),
                  sigma_pts=sigma_pts, n_games=n_games, floor_pts=floor_pts,
+                 quorum_addon_pts=max(quorum_addon_pts, 0.0),
                  roi_pts_yes=roi_pts_yes, roi_pts_no=roi_pts_no,
                  margin_pts_yes=margin_yes, margin_pts_no=margin_no)

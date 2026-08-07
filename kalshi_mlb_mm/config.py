@@ -65,6 +65,15 @@ QUOTE_HYSTERESIS = float(_get("QUOTE_HYSTERESIS", "0.005"))
 # settlement P&L (#12) and the daily report's demand curve (#14).
 MIN_MARGIN_PTS = float(_get("MIN_MARGIN_PTS", "0.01"))
 K_SIGMA = float(_get("K_SIGMA", "1.0"))
+# Quorum quoting (issue #55): the tick quotes the moment exactly
+# MIN_AGREEING_BOOKS(=2) fresh books pass the dispersion gate, without
+# waiting for stragglers. A 2-book sigma is a 2-sample stddev — too noisy
+# to price the visible disagreement alone — so exactly-2-book quotes carry
+# this extra probability-point term inside the #19 floor (one added term,
+# logged as a margin component in quote_priced; NOT a parallel margin
+# system). It drops out automatically when a 3rd book lands and the quote
+# refines. Default 1 prob-pt per the ticket's 1-2pt suggestion.
+QUORUM_MARGIN_ADDON = float(_get("QUORUM_MARGIN_ADDON", "0.01"))
 
 # Risk (master dial = BANKROLL)
 BANKROLL = float(_get("BANKROLL", "500.0"))

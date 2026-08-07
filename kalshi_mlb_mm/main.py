@@ -430,9 +430,14 @@ def _maybe_emit_on_demand_result(rfq_id, ticker, hash_):
         while len(_OD_RESULT_EMITTED) > 512:
             _OD_RESULT_EMITTED.pop(next(iter(_OD_RESULT_EMITTED)))
         res = _ENGINE.lookup_results(hash_) or {}
+        # #55: budget-dropped books ride along (getattr — duck-typed test
+        # engines may not implement the accessor). latency_sec per book is
+        # the arrival-order/latency record the quorum design is judged by.
+        dropped = getattr(_ENGINE, "dropped_books", lambda h: ())(hash_)
         research.emit("on_demand_result", rfq_id=rfq_id, ticker=ticker,
                       payload=dict(
                           leg_set_hash=hash_,
+                          dropped_books=list(dropped or ()),
                           books={b: dict(fair=r.fair, route=r.route,
                                          n_cells=r.n_cells_priced,
                                          latency_sec=r.latency_sec)
@@ -715,6 +720,36 @@ def _creator_halt_active(creator_id: str) -> bool:
     return int(count or 0) >= config.PER_CREATOR_FILL_HALT
 
 
+def _pull_quorum_quote(gateway, rid, ticker, game_id) -> bool:
+    """#55 straggler pull: a late book blew the #20 dispersion gate while a
+    quote from an earlier (thinner) quorum rests on this RFQ. The resting
+    price was formed from LESS information than we now have, and what we
+    have says the books disagree — the stale side of that disagreement is
+    us, so the quote comes down. Returns True iff a resting quote was
+    pulled (the caller then skips the ordinary gate-decline log)."""
+    with db.connect(read_only=True) as con:
+        row = con.execute(
+            "SELECT quote_id FROM live_quotes WHERE rfq_id=? AND status='open'",
+            [rid]).fetchone()
+    if row is None:
+        return False
+    qid = row[0]
+    try:
+        gateway.cancel(qid)
+    except Exception:
+        pass
+    with db.connect() as con:
+        con.execute(
+            "UPDATE live_quotes SET status='cancelled', closed_at=? WHERE quote_id=?",
+            [datetime.now(timezone.utc), qid])
+    _log_decision("pulled", rfq_id=rid, quote_id=qid, ticker=ticker,
+                  game_id=game_id, reason="quorum_dispersion_bust")
+    research.emit("quote_pulled", rfq_id=rid, ticker=ticker,
+                  payload=dict(quote_id=qid, game_id=game_id,
+                               reason="quorum_dispersion_bust"))
+    return True
+
+
 def _discovery_tick(source, gateway, dry_run):
     global _VOID_HALT_ACTIVE
     # FIX M2: kill-switch — stop quoting immediately if the kill file exists
@@ -990,6 +1025,15 @@ def _discovery_tick(source, gateway, dry_run):
                 # "The live fetch answered too thin" — named so the monitor
                 # separates a thin live slate from the pre-#54 cache era.
                 skip_reason = "live_too_few_books"
+            # #55: a dispersion bust doesn't just block a NEW quote — it
+            # pulls the RESTING one this RFQ may already have (a straggler
+            # book just contradicted the thinner quorum that priced it).
+            # too_few_books deliberately does NOT pull: a set that merely
+            # thinned was not contradicted, and the risk sweep's drift and
+            # constituent-jump breakers still cover the resting quote.
+            if (skip_reason == "consensus_dispersion"
+                    and _pull_quorum_quote(gateway, rid, ticker, game_id)):
+                continue
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason=skip_reason, model=None, book=book_med,
                           blended=blended)
@@ -1034,12 +1078,19 @@ def _discovery_tick(source, gateway, dry_run):
                           reason="same_price_block", book=book_med, blended=blended)
             continue
         # #19: uncertainty-scaled margin — cross-book dispersion widens the
-        # cushion, game count compounds the ROI divisor.
+        # cushion, game count compounds the ROI divisor. #55: a quote whose
+        # thinnest per-game consensus is exactly 2 books rides a 2-sample
+        # sigma, so it carries QUORUM_MARGIN_ADDON as one extra floor term;
+        # the add-on drops out on its own when a straggler thickens the set
+        # and the quote refines.
+        quorum_addon_pts = (config.QUORUM_MARGIN_ADDON
+                            if fair_detail.min_n_books == 2 else 0.0)
         q = pricing.quote(blended, config.TARGET_ROI,
                           sigma_pts=fair_detail.sigma_pts,
                           n_games=fair_detail.n_games,
                           min_margin_pts=config.MIN_MARGIN_PTS,
-                          k_sigma=config.K_SIGMA)
+                          k_sigma=config.K_SIGMA,
+                          quorum_addon_pts=quorum_addon_pts)
         if q is None:
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="unpriceable")
@@ -1071,15 +1122,47 @@ def _discovery_tick(source, gateway, dry_run):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="per_combo_cap")
             continue
+        # FIX I1 + M1: dedup + hysteresis — skip re-quote if price unchanged,
+        # else mark the old row 'replaced' so we never leave ghost-open rows.
+        # #55: computed BEFORE the quote_priced emit so the refine action
+        # (initial / hold / replace) rides in the research payload.
+        with db.connect(read_only=True) as con:
+            existing = con.execute(
+                "SELECT quote_id, yes_bid, no_bid FROM live_quotes "
+                "WHERE rfq_id=? AND status='open'",
+                [rid]).fetchone()
+        replaced_qid = None
+        refine_action = "initial"
+        if existing:
+            eqid, eyb, enb = existing
+            if (abs(q.yes_bid - eyb) < config.QUOTE_HYSTERESIS
+                    and abs(q.no_bid - enb) < config.QUOTE_HYSTERESIS):
+                refine_action = "hold"  # price essentially unchanged
+            else:
+                # price moved beyond hysteresis → replace. B2 fix (issue #16):
+                # submit FIRST, mark the old row 'replaced' only on success.
+                # Kalshi auto-cancels the prior quote only when a new one
+                # lands, so marking 'replaced' before a submit that then fails
+                # would leave a live exchange quote invisible to the confirm
+                # loop and risk sweep. On failure the old row stays 'open'
+                # (still tracked); the next tick retries the replace.
+                refine_action = "replace"
+                replaced_qid = eqid
         # Event 2: quote_priced — we have a valid quote from the pricer.
         # #19 item 5: margin components ride in the firehose payload (NOT in
         # quote_decisions — the #14 report's column semantics stay intact).
+        # #55: quorum_size + quorum_addon_pts + refine_action make quorum
+        # quoting and every refinement measurable from research data.
         research.emit("quote_priced", rfq_id=rid, ticker=ticker,
                       payload=dict(leg_set_hash=legset.leg_set_hash(canon),
                                    n_games=len(by_game),
                                    blended_fair=blended, yes_bid=q.yes_bid, no_bid=q.no_bid,
                                    game_id=game_id,
                                    sigma_pts=q.sigma_pts, floor_pts=q.floor_pts,
+                                   quorum_size=fair_detail.min_n_books,
+                                   quorum_addon_pts=q.quorum_addon_pts,
+                                   refine_action=refine_action,
+                                   resting_quote_id=existing[0] if existing else None,
                                    roi_pts_yes=q.roi_pts_yes, roi_pts_no=q.roi_pts_no,
                                    margin_pts_yes=q.margin_pts_yes,
                                    margin_pts_no=q.margin_pts_no,
@@ -1088,27 +1171,8 @@ def _discovery_tick(source, gateway, dry_run):
             _log_decision("dry_run_quote", rfq_id=rid, ticker=ticker, game_id=game_id,
                           model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
             continue
-        # FIX I1 + M1: dedup + hysteresis — skip re-quote if price unchanged, else
-        # mark the old row 'replaced' so we never leave ghost-open rows.
-        with db.connect(read_only=True) as con:
-            existing = con.execute(
-                "SELECT quote_id, yes_bid, no_bid FROM live_quotes "
-                "WHERE rfq_id=? AND status='open'",
-                [rid]).fetchone()
-        replaced_qid = None
-        if existing:
-            eqid, eyb, enb = existing
-            if (abs(q.yes_bid - eyb) < config.QUOTE_HYSTERESIS
-                    and abs(q.no_bid - enb) < config.QUOTE_HYSTERESIS):
-                continue  # price essentially unchanged — leave the resting quote in place
-            # price moved beyond hysteresis → replace. B2 fix (issue #16):
-            # submit FIRST, mark the old row 'replaced' only on success. Kalshi
-            # auto-cancels the prior quote only when a new one lands, so
-            # marking 'replaced' before a submit that then fails would leave a
-            # live exchange quote invisible to the confirm loop and risk sweep.
-            # On failure the old row stays 'open' (still tracked); the next
-            # tick retries the replace.
-            replaced_qid = eqid
+        if refine_action == "hold":
+            continue  # leave the resting quote in place
         # #17 singles baseline: snapshot the raw Kalshi odds of every leg at
         # quote time — the confirm-window veto compares a fresh read against
         # this and voids on any tick. No baseline ⇒ don't quote: a quote
