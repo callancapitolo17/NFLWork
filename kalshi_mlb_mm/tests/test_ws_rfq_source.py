@@ -9,7 +9,6 @@ no real sockets, no websocket-client dependency.
 import inspect
 import json
 import queue
-import threading
 import time
 
 import pytest
