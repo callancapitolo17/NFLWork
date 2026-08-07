@@ -52,6 +52,22 @@ def _sign(method: str, path_no_query: str) -> tuple[str, str]:
     return sig, ts
 
 
+def ws_auth_headers(*, ws_path: str = "/trade-api/ws/v2") -> dict[str, str]:
+    """Signed headers for the WebSocket handshake (issue #56).
+
+    Same scheme as REST, but the WS handshake is a GET signed over the WS
+    path itself (no /trade-api/v2 prefix), so _sign() cannot be reused.
+    Requires configure() first, like every signed call here.
+    """
+    if _sign_request is None:
+        raise RuntimeError("auth_client.configure() not called")
+    ts = str(int(datetime.now(timezone.utc).timestamp() * 1000))
+    sig = _sign_request(_PRIVATE_KEY_PATH, ts, "GET", ws_path)
+    return {"KALSHI-ACCESS-KEY": _API_KEY_ID or "",
+            "KALSHI-ACCESS-SIGNATURE": sig,
+            "KALSHI-ACCESS-TIMESTAMP": ts}
+
+
 _RETRY_STATUSES = (429, 503)
 _MAX_RETRIES = 3  # 4 total attempts max
 # N9: only retry on methods that are safe to repeat without side effects.

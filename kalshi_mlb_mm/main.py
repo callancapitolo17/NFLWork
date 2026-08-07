@@ -1811,6 +1811,28 @@ def _risk_sweep_tick(gateway):
                           game_id=game_id, reason=cancel_reason)
 
 
+def build_rfq_source():
+    """RFQ discovery source per config.RFQ_SOURCE (issue #56).
+
+    "rest" (default) keeps today's 2s poll byte-identical. "ws" mirrors the
+    communications channel behind the same interface — the WS source owns its
+    own loud REST fallback, so the tick loop never needs to know which one it
+    got. Unknown values warn and run "rest" (fail toward the proven path).
+    Must run after _configure_auth(): the WS handshake signs with the same
+    injected credentials.
+    """
+    if config.RFQ_SOURCE == "ws":
+        from kalshi_mlb_mm import ws_rfq_source
+        source = ws_rfq_source.WebSocketRFQSource(rest_source=RestRFQSource())
+        source.start()
+        log.info("RFQ_SOURCE=ws — WebSocket discovery with REST fallback")
+        return source
+    if config.RFQ_SOURCE != "rest":
+        log.warning("unknown RFQ_SOURCE=%r — defaulting to rest",
+                    config.RFQ_SOURCE)
+    return RestRFQSource()
+
+
 def main_loop(dry_run: bool):
     from kalshi_mlb_mm.log_setup import setup_logging
     setup_logging()
@@ -1820,7 +1842,7 @@ def main_loop(dry_run: bool):
     sid = db.start_session(pid=os.getpid(), dry_run=dry_run)
     research.set_session_id(str(sid))
     log.info("=== MM bot session %s dry_run=%s ===", sid, dry_run)
-    source, gateway = RestRFQSource(), RestQuoteGateway()
+    source, gateway = build_rfq_source(), RestQuoteGateway()
     from kalshi_common.book_health import build_alerter
     from kalshi_common.sgp_service import SGPService
     # health_db_path (issue #38): per-book fetch health lands in the SAME

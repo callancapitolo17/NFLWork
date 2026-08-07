@@ -166,6 +166,25 @@ CONSTITUENT_JUMP_THRESHOLD = float(_get("CONSTITUENT_JUMP_THRESHOLD", "0.03"))
 # fix for wide coverage is the WebSocket feed the transport interface allows.
 CONSTITUENT_POLL_BUDGET_SEC = float(_get("CONSTITUENT_POLL_BUDGET_SEC", "1.0"))
 
+# RFQ discovery source (issue #56). "rest" = the proven 2s open-RFQ poll
+# (default until WS is proven live); "ws" = WebSocketRFQSource mirroring
+# Kalshi's `communications` channel into the same poll() interface, with a
+# heartbeat watchdog that falls back to REST loudly and flips back on
+# recovery. Any other value warns and runs "rest" — fail toward the proven
+# path, never toward silence. The merge changes nothing until this is flipped.
+RFQ_SOURCE = str(_get("RFQ_SOURCE", "rest")).strip().lower()
+KALSHI_WS_URL = _get("KALSHI_WS_URL",
+                     "wss://api.elections.kalshi.com/trade-api/ws/v2")
+# Kalshi pings every ~10s (AsyncAPI spec, checked 2026-08-07), and any frame
+# counts as liveness — so 30s = three missed heartbeats before the watchdog
+# declares the socket dead and poll() serves REST.
+WS_HEARTBEAT_TIMEOUT_SEC = float(_get("WS_HEARTBEAT_TIMEOUT_SEC", "30"))
+WS_RECONNECT_BASE_SEC = float(_get("WS_RECONNECT_BASE_SEC", "1"))
+WS_RECONNECT_MAX_SEC = float(_get("WS_RECONNECT_MAX_SEC", "30"))
+# One connect failure is noise; this many consecutive is an outage worth one
+# notification (mirrors BOOK_ALERT_STREAK's reasoning).
+WS_CONNECT_ALERT_STREAK = int(_get("WS_CONNECT_ALERT_STREAK", "3"))
+
 # Loops (seconds)
 DISCOVERY_SEC = int(_get("DISCOVERY_SEC", "2"))
 CONFIRM_SEC = int(_get("CONFIRM_SEC", "2"))
