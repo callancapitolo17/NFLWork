@@ -110,7 +110,11 @@ class KalshiWSTransport:
             opcode, data = self._ws.recv_data(control_frame=True)
         except websocket.WebSocketTimeoutException:
             raise TransportTimeout()
-        if opcode == 1:  # ABNF.OPCODE_TEXT
+        if opcode == websocket.ABNF.OPCODE_CLOSE:
+            # Server-initiated close must read as a dead connection NOW, not
+            # as liveness — otherwise it refreshes the watchdog on its way out.
+            raise ConnectionError("server sent close frame")
+        if opcode == websocket.ABNF.OPCODE_TEXT:
             return data.decode() if isinstance(data, bytes) else data
         return None  # ping/pong/binary — activity, not a message
 
