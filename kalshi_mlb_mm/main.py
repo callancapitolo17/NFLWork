@@ -1811,6 +1811,23 @@ def _risk_sweep_tick(gateway):
                           game_id=game_id, reason=cancel_reason)
 
 
+def build_rfq_source():
+    """WS discovery source (issue #56, WS-only by user decision 2026-08-07 —
+    no mode switch; rollback is a git revert).
+
+    The WS source owns its loud automatic REST fallback (watchdog trip →
+    ERROR + notify + rest serving; recovery flips back), so the tick loop
+    never needs to know how discovery is feeling. Must run after
+    _configure_auth(): the WS handshake signs with the same injected
+    credentials.
+    """
+    from kalshi_mlb_mm import ws_rfq_source
+    source = ws_rfq_source.WebSocketRFQSource(rest_source=RestRFQSource())
+    source.start()
+    log.info("WS RFQ discovery started (REST is automatic fallback only)")
+    return source
+
+
 def main_loop(dry_run: bool):
     from kalshi_mlb_mm.log_setup import setup_logging
     setup_logging()
@@ -1820,7 +1837,7 @@ def main_loop(dry_run: bool):
     sid = db.start_session(pid=os.getpid(), dry_run=dry_run)
     research.set_session_id(str(sid))
     log.info("=== MM bot session %s dry_run=%s ===", sid, dry_run)
-    source, gateway = RestRFQSource(), RestQuoteGateway()
+    source, gateway = build_rfq_source(), RestQuoteGateway()
     from kalshi_common.book_health import build_alerter
     from kalshi_common.sgp_service import SGPService
     # health_db_path (issue #38): per-book fetch health lands in the SAME
@@ -1945,6 +1962,10 @@ def main_loop(dry_run: bool):
             sgp_service.check_book_health()   # issue #37: book-death alerts
             time.sleep(0.25)   # short sleep → responsive SIGTERM
     finally:
+        # Stop the WS reader first (no-op for RestRFQSource) so shutdown's
+        # quote-cancel sweep doesn't race reconnect attempts and their logs.
+        if hasattr(source, "stop"):
+            source.stop()
         with db.connect(read_only=True) as con:
             live = [r[0] for r in con.execute(
                 "SELECT quote_id FROM live_quotes WHERE status='open'").fetchall()]
