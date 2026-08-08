@@ -274,7 +274,7 @@ def test_risk_sweep_cancels_on_drift_since_quote(monkeypatch, tmp_path):
     importlib.reload(db)
     db.init_database()
 
-    # books are fresh (so books_stale path doesn't fire) and tipoff is far away.
+    # a book frame exists (inert since #57) and tipoff is far away.
     import pandas as pd
     monkeypatch.setattr(main, "_SGP_ODDS",
                         pd.DataFrame({"game_id": ["g1"], "combo": ["c"], "period": ["FG"],
