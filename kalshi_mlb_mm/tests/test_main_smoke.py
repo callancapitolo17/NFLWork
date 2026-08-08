@@ -214,11 +214,12 @@ def test_discovery_skips_when_daily_cap_exhausted(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# v1 hardening (Change A) — book-freshness gate. With _SGP_ODDS None or empty,
-# _discovery_tick must return BEFORE polling RFQs (no submit_quote possible,
-# no quote_decisions written, no source.poll() call).
+# #57 — there is NO sweep-freshness top gate. An empty/None _SGP_ODDS is the
+# normal state between slow sweep passes; the tick must keep polling RFQs
+# (per-RFQ data needs are enforced by the live-feed block, covered in
+# test_sweep_demotion.py).
 # ---------------------------------------------------------------------------
-def test_discovery_returns_early_when_books_empty(monkeypatch, tmp_path):
+def test_discovery_polls_even_when_sweep_frame_empty(monkeypatch, tmp_path):
     import kalshi_mlb_mm.config as cfg
     import kalshi_mlb_mm.db as db
     from kalshi_mlb_mm import main
@@ -229,7 +230,6 @@ def test_discovery_returns_early_when_books_empty(monkeypatch, tmp_path):
     importlib.reload(db)
     db.init_database()
 
-    # Set _SGP_ODDS to None: book-freshness gate must fire.
     monkeypatch.setattr(main, "_SGP_ODDS", None)
 
     polled = []
@@ -240,23 +240,19 @@ def test_discovery_returns_early_when_books_empty(monkeypatch, tmp_path):
             return []
 
         def get_market(self, t):
-            raise AssertionError("must not call get_market when books empty")
+            raise AssertionError("empty poll must not reach get_market")
 
     class GW:
         def submit_quote(self, *a):
-            raise AssertionError("must not submit when books empty")
+            raise AssertionError("empty poll must not submit")
 
     main._discovery_tick(Src(), GW(), dry_run=False)
-    assert polled == [], "source.poll must not be called when books are stale/missing"
-    with db.connect(read_only=True) as con:
-        n = con.execute("SELECT COUNT(*) FROM quote_decisions").fetchone()[0]
-    assert n == 0, "no decision rows should be written before the gate"
+    assert polled == [1], "an idle sweep must NOT idle RFQ discovery"
 
-    # Also with an empty DataFrame:
     import pandas as pd
     monkeypatch.setattr(main, "_SGP_ODDS", pd.DataFrame())
     main._discovery_tick(Src(), GW(), dry_run=False)
-    assert polled == []
+    assert polled == [1, 1]
 
 
 # ---------------------------------------------------------------------------

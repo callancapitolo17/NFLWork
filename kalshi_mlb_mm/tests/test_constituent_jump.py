@@ -271,22 +271,30 @@ def test_sweep_makes_no_constituent_calls_when_flat(monkeypatch, tmp_path):
     main._risk_sweep_tick(_GW())        # no exception == no polling
 
 
-def test_stale_books_skip_the_poll_and_cancel_anyway(monkeypatch, tmp_path):
-    """Books stale -> everything is cancelled regardless, so spending API
-    calls on constituents would be pure waste."""
+def test_unhealthy_books_skip_the_poll_and_cancel_anyway(monkeypatch, tmp_path):
+    """#57: the "can't trust our fair" pull keys on #38 live-fetch health,
+    not sweep-row age. When the alerter is dark everything is cancelled
+    regardless, so spending API calls on constituents would be pure waste.
+    (An EMPTY sweep frame alone must cancel nothing — test_sweep_demotion.)"""
+    from kalshi_common.book_health import BookHealthAlerter
     from kalshi_mlb_mm import singles
     main, db = _setup(monkeypatch, tmp_path, "cj_stale.duckdb", current=JUMPED)
 
-    def must_not_call(tickers):
-        raise AssertionError("stale books must not poll constituents")
+    def must_not_call(tickers, budget_sec=None):
+        raise AssertionError("dark books must not poll constituents")
 
     monkeypatch.setattr(singles, "fetch_market_prices", must_not_call)
     monkeypatch.setattr(main, "_SGP_ODDS", pd.DataFrame())
+    dark = BookHealthAlerter(label="T", streak_threshold=1,
+                             min_healthy_books=2, paths=("on_demand",),
+                             notifier=lambda t, m: None, notify_async=False)
+    for book in ("draftkings", "fanduel"):
+        dark.observe(book=book, path="on_demand", outcome="transport_error")
     gw = _GW()
-    main._risk_sweep_tick(gw)
+    main._risk_sweep_tick(gw, book_health=dark)
     status, decision = _state(db)
     assert status == "cancelled"
-    assert decision == ("sweep_cancel", "books_stale")
+    assert decision == ("sweep_cancel", "books_unhealthy")
 
 
 # --------------------------------------------------------------------------- #

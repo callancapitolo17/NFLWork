@@ -174,6 +174,19 @@ class OnDemandEngine:
             return None
         return self._now() - ent.landed_at
 
+    def completed_fetch_age_sec(self, hash_: str) -> float | None:
+        """Seconds since the last COMPLETED landing that produced >=1 book
+        result; None for never-fetched, still-in-flight, or zero-book
+        completions. The #57 post-fill cooldown gate reads this: a complete,
+        priced flight is proof the books were actually re-asked (and at
+        least one answered) — an in-flight partial or an all-declined
+        landing is not."""
+        with self._lock:
+            ent = self._store.get(hash_)
+        if ent is None or not ent.complete or not ent.results:
+            return None
+        return self._now() - ent.landed_at
+
     def dropped_books(self, hash_: str) -> tuple:
         """Books dropped at the job deadline on the last COMPLETED flight
         (#55 item 4 observability; a chronically-dropped book is a de facto

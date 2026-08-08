@@ -233,6 +233,19 @@ class BookHealthAlerter:
             log.exception("book-health dispatch failed")
             return []
 
+    def consensus_dark(self) -> bool:
+        """Rule B as a pure read: True iff enough books are KNOWN to judge
+        (the first-observation precondition from ``_capacity_alert_locked``)
+        and fewer than ``min_healthy_books`` of them are healthy. No state
+        change, no alert — the maker's risk sweep polls this (#57) to pull
+        resting quotes when live fetches say the books are down, replacing
+        the retired data-age ``books_stale`` rule."""
+        with self._lock:
+            known = {b for b, _ in self._streaks}
+            healthy = self._healthy_books_locked()
+        return (len(known) >= self.min_healthy_books
+                and len(healthy) < self.min_healthy_books)
+
     def snapshot(self) -> dict:
         """Current view, for tests and debugging.
 
