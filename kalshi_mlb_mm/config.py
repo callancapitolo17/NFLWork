@@ -166,13 +166,12 @@ CONSTITUENT_JUMP_THRESHOLD = float(_get("CONSTITUENT_JUMP_THRESHOLD", "0.03"))
 # fix for wide coverage is the WebSocket feed the transport interface allows.
 CONSTITUENT_POLL_BUDGET_SEC = float(_get("CONSTITUENT_POLL_BUDGET_SEC", "1.0"))
 
-# RFQ discovery source (issue #56). "rest" = the proven 2s open-RFQ poll
-# (default until WS is proven live); "ws" = WebSocketRFQSource mirroring
-# Kalshi's `communications` channel into the same poll() interface, with a
-# heartbeat watchdog that falls back to REST loudly and flips back on
-# recovery. Any other value warns and runs "rest" — fail toward the proven
-# path, never toward silence. The merge changes nothing until this is flipped.
-RFQ_SOURCE = str(_get("RFQ_SOURCE", "rest")).strip().lower()
+# RFQ discovery (issue #56, WS-only by user decision 2026-08-07 — no mode
+# switch, mirroring the #54 live-only decision; rollback is a git revert).
+# WebSocketRFQSource mirrors Kalshi's `communications` channel into the same
+# poll() interface. REST is not a mode: it survives only as the automatic
+# in-source fallback (heartbeat watchdog trips loudly, recovery flips back)
+# and the per-reconnect gap-fill — never silently deaf, never operator-flipped.
 KALSHI_WS_URL = _get("KALSHI_WS_URL",
                      "wss://api.elections.kalshi.com/trade-api/ws/v2")
 # Kalshi pings every ~10s (AsyncAPI spec, checked 2026-08-07), and any frame

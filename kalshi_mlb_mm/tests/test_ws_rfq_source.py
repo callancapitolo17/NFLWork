@@ -378,23 +378,11 @@ def test_seen_latency_emitted_per_rfq(capture, running):
     assert payload["latency_ms"] is not None and payload["latency_ms"] > 0
 
 
-# --- source selection (main.build_rfq_source) -------------------------------
+# --- source construction (main.build_rfq_source) ----------------------------
 
-def test_rfq_source_rest_default_selects_rest(monkeypatch):
-    from kalshi_mlb_mm import main
-    monkeypatch.setattr(config, "RFQ_SOURCE", "rest")
-    src = main.build_rfq_source()
-    assert isinstance(src, RestRFQSource)
-
-
-def test_rfq_source_unknown_falls_back_to_rest(monkeypatch):
-    from kalshi_mlb_mm import main
-    monkeypatch.setattr(config, "RFQ_SOURCE", "websocketz")
-    src = main.build_rfq_source()
-    assert isinstance(src, RestRFQSource)
-
-
-def test_rfq_source_ws_selects_and_starts_ws(monkeypatch):
+def test_build_rfq_source_is_ws_only_with_rest_fallback_injected(monkeypatch):
+    """WS-only by user decision 2026-08-07: no mode switch exists. The REST
+    source survives only as the injected automatic-fallback/gap-fill path."""
     from kalshi_mlb_mm import main
     started = []
 
@@ -406,11 +394,11 @@ def test_rfq_source_ws_selects_and_starts_ws(monkeypatch):
             started.append(self)
 
     monkeypatch.setattr(ws_rfq_source, "WebSocketRFQSource", StubWS)
-    monkeypatch.setattr(config, "RFQ_SOURCE", "ws")
     src = main.build_rfq_source()
     assert isinstance(src, StubWS)
     assert started == [src]
     assert isinstance(src.rest_source, RestRFQSource)
+    assert not hasattr(config, "RFQ_SOURCE")  # the knob must stay deleted
 
 
 # --- interface discipline ---------------------------------------------------

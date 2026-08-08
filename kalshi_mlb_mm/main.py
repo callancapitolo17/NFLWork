@@ -1812,25 +1812,20 @@ def _risk_sweep_tick(gateway):
 
 
 def build_rfq_source():
-    """RFQ discovery source per config.RFQ_SOURCE (issue #56).
+    """WS discovery source (issue #56, WS-only by user decision 2026-08-07 —
+    no mode switch; rollback is a git revert).
 
-    "rest" (default) keeps today's 2s poll byte-identical. "ws" mirrors the
-    communications channel behind the same interface — the WS source owns its
-    own loud REST fallback, so the tick loop never needs to know which one it
-    got. Unknown values warn and run "rest" (fail toward the proven path).
-    Must run after _configure_auth(): the WS handshake signs with the same
-    injected credentials.
+    The WS source owns its loud automatic REST fallback (watchdog trip →
+    ERROR + notify + rest serving; recovery flips back), so the tick loop
+    never needs to know how discovery is feeling. Must run after
+    _configure_auth(): the WS handshake signs with the same injected
+    credentials.
     """
-    if config.RFQ_SOURCE == "ws":
-        from kalshi_mlb_mm import ws_rfq_source
-        source = ws_rfq_source.WebSocketRFQSource(rest_source=RestRFQSource())
-        source.start()
-        log.info("RFQ_SOURCE=ws — WebSocket discovery with REST fallback")
-        return source
-    if config.RFQ_SOURCE != "rest":
-        log.warning("unknown RFQ_SOURCE=%r — defaulting to rest",
-                    config.RFQ_SOURCE)
-    return RestRFQSource()
+    from kalshi_mlb_mm import ws_rfq_source
+    source = ws_rfq_source.WebSocketRFQSource(rest_source=RestRFQSource())
+    source.start()
+    log.info("WS RFQ discovery started (REST is automatic fallback only)")
+    return source
 
 
 def main_loop(dry_run: bool):
