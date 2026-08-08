@@ -130,3 +130,68 @@ SELECT
     max(fetched_at)                                  AS newest,
     date_diff('day', min(fetched_at), max(fetched_at)) AS days_covered
 FROM sgp_fetch_health;
+
+
+-- name: book_requests_per_day
+-- #57 acceptance readout: estimated WIRE requests per day, per book x path.
+-- This is the number behind the epic's "thousands -> hundreds of book
+-- hits/day" claim — run it over a live window before and after the 300s
+-- sweep cadence lands (the ~10x reduction shows up as the 'sweep' rows
+-- collapsing while 'on_demand' + 'warming' stay roughly flat).
+--
+-- Per-row wire-call estimate, in each path's OWN units (see the warning at
+-- the top of this file):
+--   sweep      ~4 price calls per target line (4-cell grid fan-out)
+--              + structure_fetches (wire TTL-cache misses, events included)
+--   on_demand  targets_attempted IS price calls (2^N partition cells)
+--              + structure_fetches
+--   warming    structure_fetches only (that is the whole point of the pass)
+SELECT
+    date_trunc('day', fetched_at)                     AS day,
+    book,
+    path,
+    count(*)                                          AS n_fetches,
+    sum(CASE path
+          WHEN 'sweep' THEN
+              4 * coalesce(CAST(json_extract(counters_json,
+                    '$.targets_attempted') AS BIGINT), 0)
+            + coalesce(CAST(json_extract(counters_json,
+                    '$.structure_fetches') AS BIGINT), 0)
+          WHEN 'on_demand' THEN
+              coalesce(CAST(json_extract(counters_json,
+                    '$.targets_attempted') AS BIGINT), 0)
+            + coalesce(CAST(json_extract(counters_json,
+                    '$.structure_fetches') AS BIGINT), 0)
+          ELSE
+              coalesce(CAST(json_extract(counters_json,
+                    '$.structure_fetches') AS BIGINT), 0)
+        END)                                          AS est_wire_requests
+FROM sgp_fetch_health
+GROUP BY day, book, path
+ORDER BY day DESC, book, path;
+
+
+-- name: book_requests_per_day_total
+-- Same estimate rolled up across books: one row per day x path, plus the
+-- daily grand total. The before/after PR headline reads straight off this.
+SELECT
+    date_trunc('day', fetched_at)                     AS day,
+    path,
+    sum(CASE path
+          WHEN 'sweep' THEN
+              4 * coalesce(CAST(json_extract(counters_json,
+                    '$.targets_attempted') AS BIGINT), 0)
+            + coalesce(CAST(json_extract(counters_json,
+                    '$.structure_fetches') AS BIGINT), 0)
+          WHEN 'on_demand' THEN
+              coalesce(CAST(json_extract(counters_json,
+                    '$.targets_attempted') AS BIGINT), 0)
+            + coalesce(CAST(json_extract(counters_json,
+                    '$.structure_fetches') AS BIGINT), 0)
+          ELSE
+              coalesce(CAST(json_extract(counters_json,
+                    '$.structure_fetches') AS BIGINT), 0)
+        END)                                          AS est_wire_requests
+FROM sgp_fetch_health
+GROUP BY day, path
+ORDER BY day DESC, path;
