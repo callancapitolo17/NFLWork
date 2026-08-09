@@ -33,7 +33,6 @@ from kalshi_common.ev_calc import maker_fee_per_contract
 from kalshi_common.leg_types import (
     _parse_event_suffix,
     _MLB_CODE_TO_TEAM,
-    combo_descriptor,
 )
 from kalshi_mlb_mm import (config, db, notify, pricing, research, risk, scope,
                            router, settlement, singles)

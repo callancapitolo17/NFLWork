@@ -4,7 +4,6 @@ import importlib
 import json
 from datetime import datetime, timezone
 
-import pandas as pd
 
 from kalshi_common import legset
 from mlb_sgp._shared import GameRef

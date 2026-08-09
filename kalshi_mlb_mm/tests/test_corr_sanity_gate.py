@@ -10,7 +10,6 @@ costs no extra API calls. Scaffolding mirrors test_size_gate.py.
 """
 import importlib
 
-import pandas as pd
 
 from kalshi_mlb_mm import main
 

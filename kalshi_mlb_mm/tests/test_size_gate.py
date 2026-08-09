@@ -8,7 +8,6 @@ worst-case dollars at risk over both sides the creator could take.
 _rfq_requested_contracts parsing tests remain valid (still used to distinguish
 contract-denominated vs dollar-denominated RFQs).
 """
-import pandas as pd
 
 from kalshi_mlb_mm import main
 from kalshi_mlb_mm.pricing import Quote

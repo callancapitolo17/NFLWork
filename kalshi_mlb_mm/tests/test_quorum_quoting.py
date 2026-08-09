@@ -17,7 +17,6 @@ import inspect
 import threading
 import time
 
-import pandas as pd
 import pytest
 
 from kalshi_common import legset

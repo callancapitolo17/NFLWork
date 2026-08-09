@@ -10,7 +10,6 @@ serves one RFQ, and a GW that records submits.
 import importlib
 from datetime import datetime, timezone
 
-import pandas as pd
 
 _EVT = "KXMLBGAME-25JUN271905TEXLAA"
 _LEGS = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",

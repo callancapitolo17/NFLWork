@@ -4,7 +4,6 @@ re-quote on movement → feed stops when the RFQ leaves the poll."""
 import importlib
 import threading
 
-import pandas as pd
 
 from kalshi_common import legset
 from kalshi_mlb_mm.on_demand import OnDemandEngine, QUOTE_FRESH_SEC
