@@ -39,5 +39,11 @@ class SportAdapter(ABC):
     def fair_ladder(self, state, event_meta) -> dict | None:
         """Devigged {line: {p_over, book, alt, overround}} for the maker.
         None when this adapter/event has no anchored ladder this tick
-        (adapters without maker support simply inherit this default)."""
+        (adapters without maker support simply inherit this default).
+
+        Contract (issue #73): every rung's raw two-way implied sum must pass
+        pricing.overround_reject BEFORE devig; a rejected rung is included
+        marked {p_over: None, reject: reason} (never devigged) so consumers
+        fail closed on it. See Soccer._anchor_ladder for the reference
+        implementation."""
         return None
