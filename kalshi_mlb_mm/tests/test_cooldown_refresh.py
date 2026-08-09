@@ -13,8 +13,8 @@ us off can immediately post a new RFQ on the same combo. Two gates:
   QUOTE_HYSTERESIS of the fair the fill transacted against.
 
 Gate tests mirror the N7 harness (mocked scope cache / router fair, fresh
-DuckDB per test); _SGP_ODDS stays None throughout — the cooldown lifecycle
-must run entirely sweep-free. The unit block covers
+DuckDB per test); no market-wide odds exist anywhere (#81) — the cooldown
+lifecycle must run entirely sweep-free. The unit block covers
 `_post_fill_live_refresh_landed`'s cross-game and fail-closed edges.
 """
 import importlib

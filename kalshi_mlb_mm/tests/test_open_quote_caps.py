@@ -4,8 +4,8 @@ different combos of one game could previously fill in a single burst to many
 multiples of the per-game / daily caps because those gates read `fills` only.
 
 Gate tests mirror the N7 harness (test_n7_n8_n9_n10_n11_n12.py): mocked
-_SGP_ODDS / scope cache / router fair, fresh DuckDB per test, a Source that
-serves one RFQ, and a GW that records submits.
+scope cache / router fair, fresh DuckDB per test, a Source that serves one
+RFQ, and a GW that records submits.
 """
 import importlib
 from datetime import datetime, timezone
