@@ -20,18 +20,18 @@ NOW = datetime(2026, 7, 24, 18, 0, 0, tzinfo=timezone.utc)
 # ---------------------------------------------------------------------------
 
 def _setup_dbs(monkeypatch, tmp_path):
-    """Create the three maker DBs (state/research/market) fresh in tmp_path.
+    """Create the two maker DBs the report reads (state/research) fresh in
+    tmp_path (#81: the report no longer touches the market DB — the
+    quotable-universe section reads on_demand_result events).
 
-    Returns (state_path, research_path, market_path) as strings.
+    Returns (state_path, research_path) as strings.
     """
     import kalshi_mlb_mm.config as cfg
     import kalshi_mlb_mm.db as db
     import kalshi_mlb_mm.research as research
-    import mlb_sgp.db as sgp_db
 
     state = tmp_path / "state.duckdb"
     research_path = tmp_path / "research.duckdb"
-    market = tmp_path / "market.duckdb"
 
     monkeypatch.setattr(cfg, "DB_PATH", state)
     importlib.reload(db)
@@ -39,9 +39,7 @@ def _setup_dbs(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cfg, "RESEARCH_DB_PATH", research_path)
     research.init_research_db()
-
-    sgp_db.ensure_table(db_path=str(market))
-    return str(state), str(research_path), str(market)
+    return str(state), str(research_path)
 
 
 # ---------------------------------------------------------------------------
@@ -51,8 +49,8 @@ def _setup_dbs(monkeypatch, tmp_path):
 def test_empty_dbs_report_runs(monkeypatch, tmp_path):
     """Fresh schemas, zero rows: the report renders instead of crashing."""
     from kalshi_mlb_mm import report
-    state, research, market = _setup_dbs(monkeypatch, tmp_path)
-    out = report.build_report(state, research, market, now=NOW)
+    state, research = _setup_dbs(monkeypatch, tmp_path)
+    out = report.build_report(state, research, now=NOW)
     assert "State of the Maker" in out
     assert "no fills yet" in out
 
@@ -63,7 +61,6 @@ def test_missing_db_files_report_runs(tmp_path):
     out = report.build_report(
         str(tmp_path / "nope_state.duckdb"),
         str(tmp_path / "nope_research.duckdb"),
-        str(tmp_path / "nope_market.duckdb"),
         now=NOW,
     )
     assert "State of the Maker" in out
@@ -123,7 +120,7 @@ def test_funnel_math(monkeypatch, tmp_path):
     """Seen → in-scope → quoted → accepted → confirmed + path shares."""
     from kalshi_mlb_mm import report
     import kalshi_mlb_mm.db as db
-    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    state, research = _setup_dbs(monkeypatch, tmp_path)
     recent = NOW - timedelta(hours=1)
     old = NOW - timedelta(days=8)  # outside every window
 
@@ -153,7 +150,7 @@ def test_funnel_math(monkeypatch, tmp_path):
 
 def test_funnel_empty(monkeypatch, tmp_path):
     from kalshi_mlb_mm import report
-    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    state, research = _setup_dbs(monkeypatch, tmp_path)
     counts = report.funnel_counts(state, NOW - timedelta(hours=24))
     assert counts["seen"] == 0
     assert counts["paths"]["grid"] == {"rfqs": 0, "quoted": 0}
@@ -182,7 +179,7 @@ def _insert_event(research_path, event_type, ts, payload):
 def test_on_demand_stats(monkeypatch, tmp_path):
     """Request→result pairing on leg_set_hash: success rate + latencies."""
     from kalshi_mlb_mm import report
-    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    state, research = _setup_dbs(monkeypatch, tmp_path)
     t0 = NOW - timedelta(hours=2)
 
     for h in ("h1", "h2", "h3"):
@@ -212,7 +209,7 @@ def test_on_demand_stats(monkeypatch, tmp_path):
 
 def test_on_demand_stats_empty(monkeypatch, tmp_path):
     from kalshi_mlb_mm import report
-    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    state, research = _setup_dbs(monkeypatch, tmp_path)
     stats = report.on_demand_stats(research, NOW - timedelta(days=7))
     assert stats["flights_requested"] == 0
     assert stats["success_rate"] is None
@@ -220,45 +217,37 @@ def test_on_demand_stats_empty(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Task 4: quotable universe (market DB, naive-UTC timestamps)
+# Task 4: quotable universe (#81: on_demand_result flights, research DB)
 # ---------------------------------------------------------------------------
 
-def _insert_sgp_odds(market_path, game_id, combo, bookmaker, fetch_time,
-                     spread_line, total_line):
-    con = duckdb.connect(market_path)
-    try:
-        con.execute(
-            "INSERT INTO mlb_sgp_odds (game_id, combo, period, bookmaker, "
-            "sgp_decimal, sgp_american, fetch_time, source, spread_line, "
-            "total_line) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            [game_id, combo, "full_game", bookmaker, 2.5, 150, fetch_time,
-             "scraper", spread_line, total_line])
-    finally:
-        con.close()
+def _od_result(hash_, books):
+    return {"leg_set_hash": hash_, "dropped_books": [],
+            "books": {b: {"fair": 0.3, "route": "partition",
+                          "latency_sec": 1.0} for b in books}}
 
 
 def test_universe_stats(monkeypatch, tmp_path):
-    """Per-day combos passing MIN_AGREEING_BOOKS + per-book participation."""
+    """Per-day combos passing MIN_AGREEING_BOOKS + per-book participation,
+    computed from the firehose's on_demand_result flights."""
     from kalshi_mlb_mm import report
-    state, research, market = _setup_dbs(monkeypatch, tmp_path)
-    now_naive = NOW.replace(tzinfo=None)
-    day1 = now_naive - timedelta(days=1)
-    day2 = now_naive
+    state, research = _setup_dbs(monkeypatch, tmp_path)
+    day1 = NOW - timedelta(days=1)
+    day2 = NOW
 
-    # Combo X (spread x total) both days; combo Y (ml x total, NULL spread)
-    # day1 only with a single book, so it never passes consensus.
-    for book in ("draftkings", "fanduel", "novig"):
-        _insert_sgp_odds(market, "g1", "sxt", book, day1, -1.5, 8.5)
-    _insert_sgp_odds(market, "g1", "mxt", "draftkings", day1, None, 9.5)
-    for book in ("draftkings", "fanduel"):
-        _insert_sgp_odds(market, "g1", "sxt", book, day2, -1.5, 8.5)
+    # Combo h_sxt lands both days; h_mxt day1 only with a single book, so
+    # it never passes consensus.
+    _insert_event(research, "on_demand_result", day1,
+                  _od_result("h_sxt", ["draftkings", "fanduel", "novig"]))
+    _insert_event(research, "on_demand_result", day1 + timedelta(minutes=1),
+                  _od_result("h_mxt", ["draftkings"]))
+    _insert_event(research, "on_demand_result", day2,
+                  _od_result("h_sxt", ["draftkings", "fanduel"]))
 
-    stats = report.universe_stats(market, now_naive - timedelta(days=7),
-                                  now_naive)
-    per_day = {d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d):
-               (passing, total) for d, passing, total in stats["per_day"]}
-    assert per_day[day1.strftime("%Y-%m-%d")] == (1, 2)
-    assert per_day[day2.strftime("%Y-%m-%d")] == (1, 1)
+    stats = report.universe_stats(research, NOW - timedelta(days=7), NOW)
+    per_day = {str(d): (passing, total)
+               for d, passing, total in stats["per_day"]}
+    assert per_day[str(day1.date())] == (1, 2)
+    assert per_day[str(day2.date())] == (1, 1)
     per_book = {b: (days, combos) for b, days, combos, _age in
                 stats["per_book"]}
     assert per_book["draftkings"] == (2, 2)
@@ -268,10 +257,8 @@ def test_universe_stats(monkeypatch, tmp_path):
 
 def test_universe_empty(monkeypatch, tmp_path):
     from kalshi_mlb_mm import report
-    state, research, market = _setup_dbs(monkeypatch, tmp_path)
-    now_naive = NOW.replace(tzinfo=None)
-    stats = report.universe_stats(market, now_naive - timedelta(days=7),
-                                  now_naive)
+    state, research = _setup_dbs(monkeypatch, tmp_path)
+    stats = report.universe_stats(research, NOW - timedelta(days=7), NOW)
     assert stats["per_day"] == []
     assert stats["per_book"] == []
 
@@ -281,19 +268,20 @@ def test_universe_empty(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_staleness_stats(monkeypatch, tmp_path):
+    """#81: quote-time data age comes from quote_priced's live_games trace
+    (max sub-fetch age); a quote without the trace counts as unknown."""
     from kalshi_mlb_mm import report
-    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    state, research = _setup_dbs(monkeypatch, tmp_path)
     t0 = NOW - timedelta(hours=3)
 
-    _insert_event(research, "scrape_done", t0, {"book_counts": {}})
-    _insert_event(research, "scrape_done", t0 + timedelta(seconds=120),
-                  {"book_counts": {}})
-    # ages vs latest prior scrape: 30s and 30s
     _insert_event(research, "quote_priced", t0 + timedelta(seconds=30),
-                  {"blended_fair": 0.5})
+                  {"blended_fair": 0.5,
+                   "live_games": {"h1": {"age_sec": 2.0},
+                                  "h2": {"age_sec": 30.0}}})
     _insert_event(research, "quote_priced", t0 + timedelta(seconds=150),
-                  {"blended_fair": 0.6})
-    # a quote before any scrape_done: unknown age, not a crash
+                  {"blended_fair": 0.6,
+                   "live_games": {"h1": {"age_sec": 30.0}}})
+    # engine hiccup — no live_games trace: unknown age, not a crash
     _insert_event(research, "quote_priced", t0 - timedelta(seconds=10),
                   {"blended_fair": 0.7})
     _insert_event(research, "confirm_singles_check",
@@ -312,7 +300,7 @@ def test_staleness_stats(monkeypatch, tmp_path):
 
 def test_staleness_empty(monkeypatch, tmp_path):
     from kalshi_mlb_mm import report
-    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    state, research = _setup_dbs(monkeypatch, tmp_path)
     stats = report.staleness_stats(research, NOW - timedelta(days=7))
     assert stats["quote_age"]["n"] == 0
     assert stats["accept_age"]["n"] == 0
@@ -325,7 +313,7 @@ def test_staleness_empty(monkeypatch, tmp_path):
 def test_demand_stats(monkeypatch, tmp_path):
     from kalshi_mlb_mm import report
     import kalshi_mlb_mm.db as db
-    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    state, research = _setup_dbs(monkeypatch, tmp_path)
     recent = NOW - timedelta(hours=1)
 
     # One quoted decision: yes side margin .60-.57=.03 at fair .60;
@@ -352,7 +340,7 @@ def test_demand_stats(monkeypatch, tmp_path):
 
 def test_demand_empty(monkeypatch, tmp_path):
     from kalshi_mlb_mm import report
-    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    state, research = _setup_dbs(monkeypatch, tmp_path)
     stats = report.demand_stats(state, NOW - timedelta(days=7))
     assert stats["cells"] == {}
     assert stats["quote_sides"] == 0
@@ -380,7 +368,7 @@ def _insert_fill(db, fill_id, contracts, price, fee, fair_at_quote,
 def test_pnl_stats_settled(monkeypatch, tmp_path):
     from kalshi_mlb_mm import report
     import kalshi_mlb_mm.db as db
-    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    state, research = _setup_dbs(monkeypatch, tmp_path)
 
     # Won yes-fill: 10 contracts at 55c, 1c/ct fee, fair at quote 58c.
     # realized = 10 * ((1 - 0.55) - 0.01) = 4.40 (settlement.py math)
@@ -406,19 +394,19 @@ def test_pnl_stats_settled(monkeypatch, tmp_path):
 def test_pnl_stats_fills_but_no_settlements(monkeypatch, tmp_path):
     from kalshi_mlb_mm import report
     import kalshi_mlb_mm.db as db
-    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    state, research = _setup_dbs(monkeypatch, tmp_path)
     _insert_fill(db, "f1", 10.0, 0.55, 0.01, 0.58, None)
     stats = report.pnl_stats(state)
     assert stats["fills"] == 1
     assert stats["settled_fills"] == 0
     assert stats["realized_pnl_total"] is None
-    out = report.build_report(state, research, market, now=NOW)
+    out = report.build_report(state, research, now=NOW)
     assert "none settled yet" in out
 
 
 def test_pnl_stats_empty(monkeypatch, tmp_path):
     from kalshi_mlb_mm import report
-    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    state, research = _setup_dbs(monkeypatch, tmp_path)
     stats = report.pnl_stats(state)
     assert stats["fills"] == 0
 
@@ -430,7 +418,7 @@ def test_pnl_stats_empty(monkeypatch, tmp_path):
 def test_health_stats(monkeypatch, tmp_path):
     from kalshi_mlb_mm import report
     import kalshi_mlb_mm.db as db
-    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    state, research = _setup_dbs(monkeypatch, tmp_path)
     recent = NOW - timedelta(hours=1)
 
     _insert_decision(db, "r1", "confirmed", None, recent)
@@ -471,7 +459,7 @@ def test_health_stats(monkeypatch, tmp_path):
 
 def test_health_empty(monkeypatch, tmp_path):
     from kalshi_mlb_mm import report
-    state, research, market = _setup_dbs(monkeypatch, tmp_path)
+    state, research = _setup_dbs(monkeypatch, tmp_path)
     stats = report.health_stats(state, research, NOW - timedelta(days=7))
     assert stats["void_rate"] is None
     assert stats["phantom_fills"] == 0

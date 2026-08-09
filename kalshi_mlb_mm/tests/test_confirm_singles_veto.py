@@ -64,7 +64,6 @@ def _setup(monkeypatch, tmp_path, db_name, *, snapshot_json=None,
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
     importlib.reload(db)
     db.init_database()
-    monkeypatch.setattr(main, "_SGP_ODDS", _stale_grid_df())
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
     monkeypatch.setattr(main, "_game_ref", lambda gid: GREF)
     monkeypatch.setattr(main, "_ENGINE", None)

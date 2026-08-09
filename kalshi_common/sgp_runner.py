@@ -452,6 +452,25 @@ _BOOK_MODULES = {
 }
 
 
+def target_line_cycle(*, bot_market_db: str,
+                      both_teams: bool = False) -> list:
+    """Refresh `mlb_target_lines` from Kalshi MVE enumeration + the Odds
+    API schedule — the sweep-free half of `sgp_cycle`, extracted for #81.
+
+    ZERO book requests by construction: no service, no scraper knobs.
+    After #81 this is the maker's own loop arm (game resolution, tipoff
+    gating and #50's structure warming all read `mlb_target_lines`);
+    the taker still reaches it through `sgp_cycle`.
+
+    Side effect: atomic DELETE+INSERT of `mlb_target_lines` in
+    `bot_market_db`. Returns the enumerated targets so callers can log
+    the count.
+    """
+    targets = enumerate_kalshi_targets(both_teams=both_teams)
+    write_target_lines(targets, db_path=bot_market_db)
+    return targets
+
+
 def sgp_cycle(
     bot_market_db: str,
     scraper_dir: str | None = None,
@@ -460,12 +479,13 @@ def sgp_cycle(
     service=None,
     both_teams: bool = False,
 ) -> dict[str, int]:
-    """One full SGP scrape tick.
+    """One full SGP scrape tick (taker sweep; the maker stopped calling
+    this in #81 and runs `target_line_cycle` alone).
 
     With `service` (an SGPService): in-process path —
-      1. Enumerate Kalshi MVE -> list[TargetLine]
-      2. Write mlb_target_lines (tipoff gating + debugging read it)
-      3. service.refresh(targets); per successful book, clear that
+      1. `target_line_cycle` — enumerate Kalshi MVE, write
+         mlb_target_lines (tipoff gating + debugging read it)
+      2. service.refresh(targets); per successful book, clear that
          book's source labels and upsert its fresh rows. Failed books
          (None) keep their old rows — same outcome as a crashed
          subprocess today. Returns {book: row_count, failed: -1}.
@@ -474,8 +494,8 @@ def sgp_cycle(
     {scraper_name: return_code}. Kept as the rollback hatch
     (scraper_dir / venv_python / timeout_sec are required then).
     """
-    targets = enumerate_kalshi_targets(both_teams=both_teams)
-    write_target_lines(targets, db_path=bot_market_db)
+    targets = target_line_cycle(bot_market_db=bot_market_db,
+                                both_teams=both_teams)
 
     if service is None:
         if not (scraper_dir and venv_python and timeout_sec):

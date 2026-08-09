@@ -251,58 +251,84 @@ def on_demand_stats(research_db: str, since: datetime) -> dict:
     return out
 
 
-def universe_stats(market_db: str, since_naive: datetime,
-                   now_naive: datetime) -> dict:
-    """Quotable universe: combos passing consensus per day + book coverage.
+def universe_stats(research_db: str, since: datetime,
+                   now: datetime) -> dict:
+    """Quotable universe from the firehose's live-flight record (#81).
 
-    A combo is (game_id, combo, spread_line, total_line) — GROUP BY treats
-    NULLs as equal, so ML x total rows (spread_line NULL by design) group
-    correctly. "Passing" = >= MIN_AGREEING_BOOKS distinct books that day
-    (an approximation of the live consensus gate, which also applies the
-    freshness window and the agreement band at price time).
+    The maker writes no market-wide odds table anymore — the record of
+    what the books priced is the `on_demand_result` event stream (one per
+    completed flight, per-book fairs in the payload's `books` dict). A
+    "combo" is a leg_set_hash; it PASSES on a day if ANY landing that day
+    carried >= MIN_AGREEING_BOOKS books (an approximation of the live
+    consensus gate, which also applies freshness + the agreement band at
+    price time). Python-side JSON parsing mirrors `on_demand_stats`.
     """
+    import json as _json
+
     out = {"per_day": [], "per_book": [], "min_books":
            config.MIN_AGREEING_BOOKS, "unavailable": None}
 
-    per_day = _read(
-        market_db,
-        "WITH day_combos AS ( "
-        "  SELECT CAST(fetch_time AS DATE) AS day, game_id, combo, "
-        "         spread_line, total_line, "
-        "         count(DISTINCT bookmaker) AS books "
-        "  FROM mlb_sgp_odds WHERE fetch_time >= ? "
-        "  GROUP BY ALL) "
-        "SELECT day, count(*) FILTER (books >= ?), count(*) "
-        "FROM day_combos GROUP BY day ORDER BY day",
-        [since_naive, config.MIN_AGREEING_BOOKS])
-    if not _usable(per_day):
-        out["unavailable"] = _unavailable_note(per_day, "market")
+    rows = _read(
+        research_db,
+        "SELECT payload, ts FROM events "
+        "WHERE event_type = 'on_demand_result' AND ts >= ? ORDER BY ts",
+        [since])
+    if not _usable(rows):
+        out["unavailable"] = _unavailable_note(rows, "research")
         return out
-    out["per_day"] = [tuple(r) for r in per_day]
 
-    per_book = _read(
-        market_db,
-        "SELECT bookmaker, "
-        "       count(DISTINCT CAST(fetch_time AS DATE)), "
-        "       count(DISTINCT (game_id, combo, spread_line, total_line)), "
-        "       CAST(epoch(? - max(fetch_time)) / 60 AS INTEGER) "
-        "FROM mlb_sgp_odds WHERE fetch_time >= ? "
-        "GROUP BY bookmaker ORDER BY bookmaker",
-        [now_naive, since_naive])
-    if _usable(per_book):
-        out["per_book"] = [tuple(r) for r in per_book]
+    # day -> hash -> max books seen in one landing; book -> (days, hashes, last ts)
+    day_hash_books: dict = {}
+    book_days: dict = {}
+    book_hashes: dict = {}
+    book_last_ts: dict = {}
+    for payload, ts in rows:
+        try:
+            data = _json.loads(payload)
+            hash_ = data.get("leg_set_hash")
+            books = list((data.get("books") or {}))
+        except (TypeError, ValueError):
+            continue
+        if not hash_:
+            continue
+        day = ts.date()
+        per_hash = day_hash_books.setdefault(day, {})
+        per_hash[hash_] = max(per_hash.get(hash_, 0), len(books))
+        for book in books:
+            book_days.setdefault(book, set()).add(day)
+            book_hashes.setdefault(book, set()).add(hash_)
+            prev = book_last_ts.get(book)
+            if prev is None or ts > prev:
+                book_last_ts[book] = ts
+
+    out["per_day"] = [
+        (day,
+         sum(1 for n in per_hash.values() if n >= config.MIN_AGREEING_BOOKS),
+         len(per_hash))
+        for day, per_hash in sorted(day_hash_books.items())]
+    now_cmp = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    out["per_book"] = [
+        (book, len(book_days[book]), len(book_hashes[book]),
+         int((now_cmp - _as_utc(book_last_ts[book])).total_seconds() // 60))
+        for book in sorted(book_days)]
     return out
+
+
+def _as_utc(ts: datetime) -> datetime:
+    """events.ts is TIMESTAMPTZ; duckdb may hand it back naive-UTC or aware
+    depending on adapter version — normalize for arithmetic."""
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
 
 
 def _render_universe(stats: dict) -> str:
     if stats["unavailable"]:
         return stats["unavailable"]
     if not stats["per_day"]:
-        return "_no SGP odds rows in window._"
+        return "_no on-demand flights in window._"
     lines = [
         f"Combos passing consensus (>= {stats['min_books']} books) per day:",
         "",
-        "| day | passing | total scraped |",
+        "| day | passing | total flights (distinct combos) |",
         "|---|---:|---:|",
     ]
     for day, passing, total in stats["per_day"]:
@@ -311,7 +337,7 @@ def _render_universe(stats: dict) -> str:
         "",
         "**Per-book participation (7d):**",
         "",
-        "| book | days present | distinct combos | last row age (min) |",
+        "| book | days present | distinct combos | last answer age (min) |",
         "|---|---:|---:|---:|",
     ]
     for book, days, combos, age_min in stats["per_book"]:
@@ -333,46 +359,46 @@ def _age_dist(ages: list[float]) -> dict:
 def staleness_stats(research_db: str, since: datetime) -> dict:
     """Book-data age at quote time + quote age at accept time (seconds).
 
-    Quote-time age is a proxy: per-book scrape ages aren't persisted at
-    quote time, so we measure each quote_priced event against the latest
-    prior scrape_done (the SGP cycle that produced the data it priced on).
-    Accept-time age is exact: confirm_singles_check.quote_age_sec.
+    Quote-time age is EXACT since #54/#81: every quote_priced event carries
+    a `live_games` trace ({hash: {age_sec, ...}} per sub-fetch); a quote's
+    data age is the max over its sub-fetches. A quote_priced without the
+    trace (engine hiccup — the trace is fail-safe decoration) counts as
+    unknown. Accept-time age is confirm_singles_check.quote_age_sec.
     """
-    import bisect
     import json
 
     out = {"quote_age": _age_dist([]), "quote_age_unknown": 0,
            "accept_age": _age_dist([]), "unavailable": None}
 
-    # One-day lookback before the window so early quotes still find their
-    # scrape, without scanning the unbounded-retention events table forever.
-    scrapes = _read(research_db,
-                    "SELECT ts FROM events WHERE event_type = 'scrape_done' "
-                    "AND ts >= ? ORDER BY ts", [since - timedelta(days=1)])
-    if not _usable(scrapes):
-        out["unavailable"] = _unavailable_note(scrapes, "research")
-        return out
     quotes = _read(research_db,
-                   "SELECT ts FROM events WHERE event_type = 'quote_priced' "
-                   "AND ts >= ?", [since])
+                   "SELECT payload FROM events "
+                   "WHERE event_type = 'quote_priced' AND ts >= ?", [since])
+    if not _usable(quotes):
+        out["unavailable"] = _unavailable_note(quotes, "research")
+        return out
     confirms = _read(research_db,
                      "SELECT payload FROM events "
                      "WHERE event_type = 'confirm_singles_check' "
                      "AND ts >= ?", [since])
-    if not _usable(quotes) or not _usable(confirms):
-        out["unavailable"] = _unavailable_note(LOCKED, "research")
+    if not _usable(confirms):
+        out["unavailable"] = _unavailable_note(confirms, "research")
         return out
 
-    # scrape_done is deliberately unwindowed: a quote just inside the window
-    # may price off a scrape just before it.
-    scrape_ts = [r[0] for r in scrapes]
     quote_ages = []
-    for (quote_ts,) in quotes:
-        idx = bisect.bisect_right(scrape_ts, quote_ts)
-        if idx == 0:
-            out["quote_age_unknown"] += 1
+    for (payload_str,) in quotes:
+        ages = []
+        try:
+            live_games = (json.loads(payload_str) or {}).get("live_games")
+            for detail in (live_games or {}).values():
+                age = detail.get("age_sec")
+                if age is not None:
+                    ages.append(float(age))
+        except (TypeError, ValueError):
+            pass
+        if ages:
+            quote_ages.append(max(ages))
         else:
-            quote_ages.append((quote_ts - scrape_ts[idx - 1]).total_seconds())
+            out["quote_age_unknown"] += 1
     out["quote_age"] = _age_dist(quote_ages)
 
     accept_ages = []
@@ -403,12 +429,12 @@ def _render_staleness(stats: dict) -> str:
         _render_age_row("book data at quote", stats["quote_age"]),
         _render_age_row("quote at accept", stats["accept_age"]),
         "",
-        "_Quote-time age = gap to the latest prior scrape cycle (per-book "
-        "ages aren't persisted at quote time)._",
+        "_Quote-time age = max sub-fetch age from the quote's live_games "
+        "trace (exact — every quote is priced from a post-RFQ fetch)._",
     ]
     if stats["quote_age_unknown"]:
-        lines.append(f"_{stats['quote_age_unknown']} quotes had no prior "
-                     "scrape_done event (bot warmup)._")
+        lines.append(f"_{stats['quote_age_unknown']} quotes carried no "
+                     "live_games trace (engine hiccup)._")
     return "\n".join(lines)
 
 
@@ -732,16 +758,20 @@ def _render_health(stats: dict) -> str:
     return "\n".join(lines)
 
 
-def build_report(state_db: str, research_db: str, market_db: str,
+def build_report(state_db: str, research_db: str,
                  now: datetime | None = None) -> str:
-    """Assemble the full markdown report. Never raises on empty/missing DBs."""
+    """Assemble the full markdown report. Never raises on empty/missing DBs.
+
+    #81: no market-DB input anymore — the quotable-universe section reads
+    the research firehose's on_demand_result flights (the only market-wide
+    record a sweep-free maker produces).
+    """
     now = now or datetime.now(timezone.utc)
     lines = [
         f"# State of the Maker — {now.strftime('%Y-%m-%d %H:%M UTC')}",
         "",
     ]
-    for label, path in (("state", state_db), ("research", research_db),
-                        ("market", market_db)):
+    for label, path in (("state", state_db), ("research", research_db)):
         if not Path(path).exists():
             lines.append(f"- `{label}` DB not found: `{path}`")
     h24 = now - timedelta(hours=24)
@@ -759,9 +789,7 @@ def build_report(state_db: str, research_db: str, market_db: str,
         "",
         "## 2. Quotable universe",
         "",
-        _render_universe(universe_stats(
-            market_db, (now - timedelta(days=7)).replace(tzinfo=None),
-            now.replace(tzinfo=None))),
+        _render_universe(universe_stats(research_db, d7, now)),
         "",
         "## 3. Staleness (7d)",
         "",
@@ -787,9 +815,8 @@ def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-db", default=str(config.DB_PATH))
     parser.add_argument("--research-db", default=str(config.RESEARCH_DB_PATH))
-    parser.add_argument("--market-db", default=str(config.MARKET_DB))
     args = parser.parse_args(argv)
-    print(build_report(args.state_db, args.research_db, args.market_db))
+    print(build_report(args.state_db, args.research_db))
 
 
 if __name__ == "__main__":

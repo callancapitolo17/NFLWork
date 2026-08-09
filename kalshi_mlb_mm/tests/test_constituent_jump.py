@@ -65,7 +65,6 @@ def _setup(monkeypatch, tmp_path, db_name, *, current, quotes=None,
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
     importlib.reload(db)
     db.init_database()
-    monkeypatch.setattr(main, "_SGP_ODDS", _grid_df())
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
     monkeypatch.setattr(main, "_ENGINE", None)
     monkeypatch.setattr(main, "_commence_time",
@@ -262,7 +261,6 @@ def test_sweep_makes_no_constituent_calls_when_flat(monkeypatch, tmp_path):
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
     importlib.reload(db)
     db.init_database()
-    monkeypatch.setattr(main, "_SGP_ODDS", _grid_df())
 
     def must_not_call(tickers):
         raise AssertionError("flat book must not poll constituents")
@@ -284,7 +282,6 @@ def test_unhealthy_books_skip_the_poll_and_cancel_anyway(monkeypatch, tmp_path):
         raise AssertionError("dark books must not poll constituents")
 
     monkeypatch.setattr(singles, "fetch_market_prices", must_not_call)
-    monkeypatch.setattr(main, "_SGP_ODDS", pd.DataFrame())
     dark = BookHealthAlerter(label="T", streak_threshold=1,
                              min_healthy_books=2, paths=("on_demand",),
                              notifier=lambda t, m: None, notify_async=False)

@@ -53,7 +53,6 @@ def _cooldown_env(monkeypatch, tmp_path, db_name, *, completed_age,
     db.init_database()
 
     # Sweep-free on purpose (#57): the cooldown lifecycle must never need it.
-    monkeypatch.setattr(main, "_SGP_ODDS", None)
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m: True)
     monkeypatch.setattr(router_mod, "combo_fair_detail",
                         lambda *a, **k: (router_mod.ComboFair(fair_now, 0.0, 1), "ok"))

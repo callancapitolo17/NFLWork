@@ -42,11 +42,6 @@ def _scaffold(monkeypatch, tmp_path, db, cfg, risk, *, snapshot, fair):
     monkeypatch.setattr(cfg, "DB_PATH", tmp_path / "corr.duckdb")
     importlib.reload(db)
     db.init_database()
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g1"], "combo": ["c"],
-                                      "period": ["FG"], "bookmaker": ["dk"],
-                                      "sgp_decimal": [2.0], "fetch_time": [None],
-                                      "spread_line": [-1.5], "total_line": [8.5]}))
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-CS": (True, "g1", LEGS)})

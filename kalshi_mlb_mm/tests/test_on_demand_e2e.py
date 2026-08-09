@@ -78,11 +78,6 @@ def _setup(monkeypatch, tmp_path):
     clock = FakeClock()
     svc = FakeService()
     eng = OnDemandEngine(svc, now_fn=clock, autostart=False)
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     monkeypatch.setattr(main, "_today_fills_by_game", lambda: [])
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
@@ -175,7 +170,6 @@ def test_mixed_grid_plus_on_demand_combo_prices_product(monkeypatch, tmp_path):
             rows.append(dict(game_id="gA", combo=combo, period="FG",
                              bookmaker=book, sgp_decimal=dec,
                              spread_line=-1.5, total_line=8.5))
-    monkeypatch.setattr(main, "_SGP_ODDS", pd.DataFrame(rows))
     monkeypatch.setattr(main, "_resolve_game_for_legs",
                         lambda gl: "gA" if gl[0].game_id == EVT else "gB")
     monkeypatch.setattr(main, "_SCOPE_CACHE",

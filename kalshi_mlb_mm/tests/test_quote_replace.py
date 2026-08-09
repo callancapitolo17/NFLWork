@@ -31,11 +31,6 @@ def _replace_env(monkeypatch, tmp_path, db_name):
     importlib.reload(db)
     db.init_database()
 
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["game1"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.55, 0.0, 1), "ok"))
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")

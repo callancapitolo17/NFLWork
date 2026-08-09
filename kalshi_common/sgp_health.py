@@ -124,6 +124,44 @@ def transport_error_class(exc) -> str:
     return ":".join(parts)
 
 
+class OnDemandCoverageCounter:
+    """Per-book outcome tally over the on_demand path (#81).
+
+    The maker's sweep — and with it `scrape_done`'s periodic book counts —
+    is gone; this counter is the research-side heir: SGPService owns one
+    UNCONDITIONALLY (never the alerter, which `build_alerter` nulls out
+    when alerting is disabled) and feeds it from the same call site as
+    every health row, and the bot's tick drains it into an
+    `on_demand_coverage` research event. Only on_demand outcomes count —
+    that is the path that prices quotes; warming (and the taker's sweep)
+    say nothing about coverage.
+
+    `observe()` is O(1), lock-protected and never raises — it runs on
+    arbitrary RFQ threads. `snapshot_and_reset()` returns a deep copy.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._counts: dict[str, dict[str, int]] = {}
+
+    def observe(self, *, book: str, path: str, outcome: str) -> None:
+        if path != "on_demand":
+            return
+        try:
+            with self._lock:
+                by_outcome = self._counts.setdefault(book, {})
+                by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
+        except Exception:   # pragma: no cover — must never break a fetch
+            pass
+
+    def snapshot_and_reset(self) -> dict[str, dict[str, int]]:
+        with self._lock:
+            snap = {book: dict(by_outcome)
+                    for book, by_outcome in self._counts.items()}
+            self._counts.clear()
+        return snap
+
+
 class FetchHealthRecorder:
     """Buffered, failure-proof writer for ``sgp_fetch_health``.
 

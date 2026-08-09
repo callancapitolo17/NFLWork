@@ -6,11 +6,13 @@ Composes the prior modules into three timed loops:
   - risk:      kill-switch, book-freshness auto-pull, tipoff-cancel, drift sweep
 
 Fair value is now pure book-consensus median — the model was removed in the v1
-hardening pass (`fairs.py` docstring explains why). Book fairs come from the
-maker's own market DB (its own sgp_runner cadence) and are gated by
-`_consensus_filter` (issue #20: z-space dispersion threshold — quote only
-when the books' fairs agree within SIGMA_Z_MAX in probit space; a loudly
-dissenting book declines the combo rather than being outvoted).
+hardening pass (`fairs.py` docstring explains why). Book fairs come from live
+on-demand fetches triggered by the RFQ being priced (#54; the background sweep
+was removed entirely in #81 — the maker's only background book traffic is #50's
+structure warming) and are gated by `_consensus_filter` (issue #20: z-space
+dispersion threshold — quote only when the books' fairs agree within
+SIGMA_Z_MAX in probit space; a loudly dissenting book declines the combo
+rather than being outvoted).
 """
 import argparse
 import json
@@ -28,7 +30,6 @@ from scipy.stats import norm
 
 from kalshi_common import auth_client, legset, sgp_runner
 from kalshi_common.ev_calc import maker_fee_per_contract
-from kalshi_common.fair_value import devig_book
 from kalshi_common.leg_types import (
     _parse_event_suffix,
     _MLB_CODE_TO_TEAM,
@@ -50,7 +51,6 @@ log = logging.getLogger("kalshi_mlb_mm")
 
 _running = threading.Event()
 _running.set()
-_SGP_ODDS = None         # pd.DataFrame
 _PREV_BOOK_FAIR = {}     # combo_market_ticker -> last blended book fair (circuit breaker)
 _CONSTITUENT_POLL_CURSOR = 0   # #23: rotates the budgeted constituent poll (see _rotated_poll_order)
 _SCOPE_CACHE = {}        # market_ticker -> (in_scope, game_id, legs)
@@ -78,34 +78,35 @@ def _configure_auth():
                           config.KALSHI_BASE_URL, config.PROJECT_ROOT)
 
 
-def _refresh_sgp():
-    """Reload `_SGP_ODDS` from the latest sweep pass. RESEARCH VIEW ONLY
-    (#57): the quote path prices every combo from live on-demand fetches, so
-    this frame feeds nothing but the `scrape_done` book-count log and the
-    `_book_fairs` regression-test oracle. The age bound is two sweep periods
-    — wide enough that the view always covers the last completed pass at the
-    slow cadence, meaningless to trading either way."""
-    global _SGP_ODDS
-    # O-1: a fresh scrape may add games / correct schedule rows — drop the
-    # game-metadata caches before anything else (including the early returns).
-    _invalidate_game_caches()
-    if not config.MARKET_DB.exists():
-        return
+def _target_line_tick():
+    """Refresh `mlb_target_lines` from Kalshi MVE enumeration + the Odds API
+    schedule (issue #81 — the sweep-free half of the old sgp cycle; ZERO
+    book requests). Game resolution, tipoff gating and #50's warming all
+    read the table this writes. O-1 heir: new games / corrected schedule
+    rows appear here now, so the game-metadata caches drop in `finally` —
+    even when Kalshi enumeration fails mid-tick (the old sweep refresh
+    invalidated before its early returns for the same reason)."""
     try:
-        con = duckdb.connect(str(config.MARKET_DB), read_only=True)
-    except duckdb.IOException:
-        return
-    try:
-        tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
-        if "mlb_sgp_odds" not in tables:
-            return
-        _SGP_ODDS = con.execute(
-            "SELECT game_id, combo, period, bookmaker, sgp_decimal, fetch_time, "
-            "spread_line, total_line FROM mlb_sgp_odds WHERE period='FG' "
-            "AND fetch_time > NOW() - INTERVAL (CAST(? AS BIGINT)) SECOND",
-            [2 * config.SGP_REFRESH_SEC]).fetchdf()
+        sgp_runner.target_line_cycle(bot_market_db=str(config.MARKET_DB),
+                                     both_teams=True)
     finally:
-        con.close()
+        _invalidate_game_caches()
+
+
+def _coverage_summary_tick(*, sgp_service):
+    """Drain the service's on-demand coverage tally into one
+    `on_demand_coverage` research event (issue #81 — the heir to the old
+    sweep's per-pass book counts: with no sweep there is no periodic book
+    count, so this is how a silently-dead book stays visible in research,
+    not just #37 alerts).
+    An idle window emits nothing — zero flights is the poll's normal state
+    on an empty slate, not a coverage fact."""
+    snapshot = sgp_service.coverage.snapshot_and_reset()
+    if not snapshot:
+        return
+    research.emit("on_demand_coverage",
+                  payload=dict(books=snapshot,
+                               window_sec=config.COVERAGE_SUMMARY_SEC))
 
 
 def _consensus_filter(book_fairs: dict[str, float]) -> dict[str, float]:
@@ -132,36 +133,6 @@ def _consensus_filter(book_fairs: dict[str, float]) -> dict[str, float]:
     return dict(book_fairs)
 
 
-# Retained as the regression-test oracle; the production pricing path is router.combo_fair.
-# book fairs for a combo, keyed by its ComboDescriptor. Looks up the descriptor's
-# 4-cell family in the grid (spread×total OR ml×total), REQUIRES the full 4-side
-# devig (no fallback) per accepted-risk #6, devigs for the cell matching the
-# STATED leg sides (desc.target_combo — fixes the old hardcoded "Home Spread +
-# Over"), then runs the survivors through _consensus_filter.
-def _book_fairs(game_id, desc):
-    if _SGP_ODDS is None or _SGP_ODDS.empty or desc is None:
-        return {}
-    df = _SGP_ODDS
-    mask = ((df.game_id == game_id)
-            & df.combo.isin(desc.combo_family)
-            & (df.total_line.astype(float).round(2) == round(desc.total_line, 2)))
-    if desc.spread_line is None:
-        # ml×total rows store spread_line = NULL (NaN in pandas).
-        mask &= df.spread_line.isna()
-    else:
-        mask &= (df.spread_line.astype(float).round(2) == round(desc.spread_line, 2))
-    rows = df[mask]
-    if rows.empty:
-        return {}
-    out = {}
-    for book in rows.bookmaker.unique():
-        sub = rows[rows.bookmaker == book]
-        if len(sub) < 4:        # require the full 4-cell grid (no crude fallback)
-            continue
-        f = devig_book(sub, combo=desc.target_combo, vig_fallback=0.0)
-        if f is not None:
-            out[book] = f
-    return _consensus_filter(out)
 
 
 # O-1 fix (issue #18): _commence_time and _resolve_game_for_legs used to open
@@ -792,10 +763,10 @@ def _discovery_tick(source, gateway, dry_run):
     # FIX M2: kill-switch — stop quoting immediately if the kill file exists
     if config.KILL_FILE.exists():
         return
-    # No sweep-freshness top gate (#57): every RFQ's data need is enforced
+    # No freshness top gate (#57/#81): every RFQ's data need is enforced
     # per-RFQ by the live-feed block below (on_demand_pending /
-    # live_fetch_timeout / live_too_few_books) — an empty `_SGP_ODDS` is the
-    # NORMAL state between slow sweep passes and must not idle the bot.
+    # live_fetch_timeout / live_too_few_books) — there is no background
+    # sweep, so nothing market-wide exists to gate on.
     # H4 + N12: global void-rate halt — step back if we're voiding too often.
     # N12: edge-triggered notification so operator gets a single ping on state
     # transitions (False→True = halt; True→False = resume) rather than silence.
@@ -1051,7 +1022,7 @@ def _discovery_tick(source, gateway, dry_run):
         # "books disagree" — everything else stays "no_fair".
         od_lookup = _ENGINE.lookup if _ENGINE is not None else None
         fair_detail, gate_reason = router.combo_fair_detail(
-            legs, _SGP_ODDS, _resolve_game_for_legs,
+            legs, None, _resolve_game_for_legs,
             config.MIN_AGREEING_BOOKS, config.SIGMA_Z_MAX,
             on_demand_fairs=od_lookup, live_routing=True)
         blended = fair_detail.fair if fair_detail is not None else None
@@ -1397,7 +1368,7 @@ def _confirm_tick(gateway, dry_run):
                     refetch_ok = _ENGINE.refetch_now(refetch_jobs,
                                                      CONFIRM_REFETCH_BUDGET_SEC)
             od_lookup = _ENGINE.lookup if _ENGINE is not None else None
-            cur_fair = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
+            cur_fair = router.combo_fair(legs, None, _resolve_game_for_legs,
                                          config.MIN_AGREEING_BOOKS, config.SIGMA_Z_MAX,
                                          on_demand_fairs=od_lookup,
                                          live_routing=True)
@@ -1659,7 +1630,7 @@ def _current_consensus_fair(legs_json: str | None) -> float | None:
         return None
     try:
         legs = json.loads(legs_json)
-        return router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
+        return router.combo_fair(legs, None, _resolve_game_for_legs,
                                  config.MIN_AGREEING_BOOKS,
                                  config.SIGMA_Z_MAX,
                                  on_demand_fairs=(_ENGINE.lookup
@@ -1774,8 +1745,8 @@ def _risk_sweep_tick(gateway, *, book_health=None):
         notify.halt("kill_switch")
         return
     # "We can no longer trust our fair" auto-pull, re-keyed by #57: the old
-    # rule read `_SGP_ODDS` age, which under the slow sweep is empty most of
-    # every cycle and would cancel the whole book constantly. Live-fetch
+    # rule read the sweep view's age, which under the slow sweep was empty
+    # most of every cycle and would cancel the whole book constantly. Live-fetch
     # health (#38 failure streaks via BookHealthAlerter.consensus_dark) is
     # cadence-invariant: fewer than MIN_AGREEING_BOOKS books answering
     # on-demand fetches means resting quotes can no longer be re-verified,
@@ -1912,8 +1883,10 @@ def main_loop(dry_run: bool):
         streak_threshold=config.BOOK_ALERT_STREAK,
         min_healthy_books=config.MIN_AGREEING_BOOKS,
         paths=config.BOOK_ALERT_PATHS)
-    sgp_service = SGPService(per_book_deadline_sec=config.SGP_SCRAPER_TIMEOUT_SEC,
-                             on_demand_deadline_sec=config.ON_DEMAND_DEADLINE_SEC,
+    # #81: no per_book_deadline_sec — that knob budgets service.refresh(),
+    # the full-slate sweep the maker no longer runs. On-demand flights are
+    # budgeted by on_demand_deadline_sec; warming budgets itself.
+    sgp_service = SGPService(on_demand_deadline_sec=config.ON_DEMAND_DEADLINE_SEC,
                              health_db_path=str(config.MARKET_DB),
                              book_health=book_alerter)
     # Phase 2: on-demand pricing engine shares the service's persistent
@@ -1922,30 +1895,22 @@ def main_loop(dry_run: bool):
     global _ENGINE
     from kalshi_mlb_mm.on_demand import OnDemandEngine
     _ENGINE = OnDemandEngine(sgp_service)
-    # synchronous warm-up: one SGP cycle
+    # Synchronous warm-up: populate mlb_target_lines before the loop starts
+    # (game resolution, tipoff gating and the first warming pass all read
+    # it). #81: ZERO book requests here — the maker's book traffic is now
+    # purely on-demand flights + #50's structure warming. both_teams=True
+    # (issue #70) enumerates BOTH teams' margin lines (signed spread_line:
+    # home margin negative, away margin positive), matching the taker.
     try:
-        # Issue #70: both_teams=True scrapes BOTH teams' margin grids (signed
-        # spread_line: home margin negative, away margin positive), matching
-        # the taker. Without it the +N grids don't exist and every
-        # away-favourite spread leg declines as too_few_books. Roughly
-        # doubles the spread target lines per cycle.
-        rc = sgp_runner.sgp_cycle(bot_market_db=str(config.MARKET_DB),
-                                   service=sgp_service, both_teams=True)
-        _refresh_sgp()
-        # Event 8: scrape_done — warmup cycle
-        book_counts = {}
-        if _SGP_ODDS is not None and not _SGP_ODDS.empty:
-            book_counts = {b: int((_SGP_ODDS.bookmaker == b).sum())
-                           for b in _SGP_ODDS.bookmaker.unique()}
-        research.emit("scrape_done", payload=dict(return_codes=rc, book_counts=book_counts))
+        _target_line_tick()
     except Exception as e:
-        log.warning("warmup sgp failed: %s", e)
+        log.warning("warmup target-line refresh failed: %s", e)
     # "warm" starts at 0.0 so the first loop iteration warms immediately:
-    # the warmup sgp_cycle above populated mlb_target_lines and DK/FD's
-    # caches, but PX/NV/MGM/CZR's on-demand structure caches (and the CZR
-    # WAF token) are still cold until the first warming pass (issue #50).
+    # every book's on-demand structure caches (and the CZR WAF token) are
+    # cold until the first warming pass (issue #50).
     last = {"disc": 0.0, "conf": 0.0, "risk": 0.0, "reconcile": 0.0,
-            "settle": 0.0, "sgp": time.time(), "warm": 0.0}
+            "settle": 0.0, "targets": time.time(), "warm": 0.0,
+            "coverage": time.time()}
     try:
         while _running.is_set():
             now = time.time()
@@ -1985,28 +1950,28 @@ def main_loop(dry_run: bool):
                 except Exception as e:
                     log.error("settle err: %s", e)
                 last["settle"] = now
-            if now - last["sgp"] >= config.SGP_REFRESH_SEC:
+            # Issue #81: target-line refresh — Kalshi + Odds API only, zero
+            # book requests. New games appear here, so the game-metadata
+            # caches drop inside the tick.
+            if now - last["targets"] >= config.TARGET_LINE_REFRESH_SEC:
                 try:
-                    rc = sgp_runner.sgp_cycle(
-                        bot_market_db=str(config.MARKET_DB),
-                        service=sgp_service, both_teams=True)  # issue #70
-                    _refresh_sgp()
-                    # Event 8: scrape_done — periodic cycle
-                    book_counts = {}
-                    if _SGP_ODDS is not None and not _SGP_ODDS.empty:
-                        book_counts = {b: int((_SGP_ODDS.bookmaker == b).sum())
-                                       for b in _SGP_ODDS.bookmaker.unique()}
-                    research.emit("scrape_done",
-                                  payload=dict(return_codes=rc, book_counts=book_counts))
+                    _target_line_tick()
                 except Exception as e:
-                    log.error("sgp err: %s", e)
-                last["sgp"] = now
+                    log.error("target-line err: %s", e)
+                last["targets"] = now
+            # Issue #81: periodic on-demand coverage summary — the research
+            # record of which books are actually answering live fetches.
+            if now - last["coverage"] >= config.COVERAGE_SUMMARY_SEC:
+                try:
+                    _coverage_summary_tick(sgp_service=sgp_service)
+                except Exception as e:
+                    log.error("coverage err: %s", e)
+                last["coverage"] = now
             # Issue #50: structure-only warming — no pricing calls, keeps
             # every book's on-demand structure caches + CZR token hot so an
             # RFQ never pays the cold-start penalty. Runs inline on the tick
-            # thread like the sweep (and is far cheaper). Deliberately on its
-            # own FAST cadence while the pricing sweep above idles at the
-            # slow #57 cadence: warming is what keeps live fetches quick.
+            # thread on its own FAST cadence: warming is what keeps live
+            # fetches quick.
             if now - last["warm"] >= config.STRUCTURE_WARM_SEC:
                 try:
                     warmed = sgp_runner.warm_cycle(

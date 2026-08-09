@@ -275,10 +275,6 @@ def _setup(monkeypatch, tmp_path, engine, db_name, legs=GRID_LEGS):
     monkeypatch.setattr(cfg, "MAX_COMBO_EXPOSURE_USD", 200.0)
     importlib.reload(db)
     db.init_database()
-    monkeypatch.setattr(main, "_SGP_ODDS", pd.DataFrame(
-        {"game_id": ["game1"], "combo": ["c"], "period": ["FG"],
-         "bookmaker": ["dk"], "sgp_decimal": [2.0], "fetch_time": [None],
-         "spread_line": [-1.5], "total_line": [8.5]}))
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     monkeypatch.setattr(main, "_today_fills_by_game", lambda: [])
     monkeypatch.setattr(

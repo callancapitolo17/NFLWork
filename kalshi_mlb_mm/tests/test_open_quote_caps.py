@@ -36,11 +36,6 @@ def _setup(monkeypatch, tmp_path, db_name, candidate_ticker, candidate_game):
     importlib.reload(db)
     db.init_database()
 
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": [candidate_game], "combo": ["c"],
-                                      "period": ["FG"], "bookmaker": ["dk"],
-                                      "sgp_decimal": [2.0], "fetch_time": [None],
-                                      "spread_line": [-1.5], "total_line": [8.5]}))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m: True)
     monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.55, 0.0, 1), "ok"))
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)

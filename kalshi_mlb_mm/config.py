@@ -186,16 +186,20 @@ DISCOVERY_SEC = int(_get("DISCOVERY_SEC", "2"))
 CONFIRM_SEC = int(_get("CONFIRM_SEC", "2"))
 RISK_SWEEP_SEC = int(_get("RISK_SWEEP_SEC", "10"))
 RECONCILE_SWEEP_SEC = int(_get("RECONCILE_SWEEP_SEC", "30"))
-# #57: the full-slate pricing sweep is BACKGROUND — research/monitor
-# continuity + mlb_target_lines upkeep only. Quoting never reads it (live
-# on-demand fetches price every quote since #54), so the cadence is set by
-# how fresh the research record needs to be, not by trading. The taker still
-# runs its own sweep at 60s (shared knob name, independent value).
-SGP_REFRESH_SEC = int(_get("SGP_REFRESH_SEC", "300"))
+# #81: the full-slate SGP sweep is GONE — the maker's only background book
+# traffic is #50's structure warming; every price comes from an on-demand
+# flight. This arm refreshes mlb_target_lines only (Kalshi MVE enumeration
+# + Odds API schedule — zero book requests): game resolution, tipoff gating
+# and warming read that table, and its cadence is how fast a NEW game
+# becomes quotable, not anything price-related.
+TARGET_LINE_REFRESH_SEC = int(_get("TARGET_LINE_REFRESH_SEC", "300"))
+# #81: cadence of the on_demand_coverage research event — the periodic
+# per-book "who is actually answering live fetches" record that replaced
+# the sweep's book counts. Research-only; alerts are #37's job.
+COVERAGE_SUMMARY_SEC = int(_get("COVERAGE_SUMMARY_SEC", "300"))
 # Settlement sweep (issue #12): populate fills.realized_pnl once markets
 # settle. Only matters hours post-game, so a slow cadence is plenty.
 SETTLEMENT_SWEEP_SEC = int(_get("SETTLEMENT_SWEEP_SEC", "600"))
-SGP_SCRAPER_TIMEOUT_SEC = int(_get("SGP_SCRAPER_TIMEOUT_SEC", "90"))
 # Issue #50: structure-only warming cadence. Keeps every book's
 # events/structure TTL caches (and Caesars' 240s WAF token) warm so an RFQ
 # never pays a cold-structure penalty. Must stay under STRUCTURE_TTL_SEC
