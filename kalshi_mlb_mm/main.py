@@ -338,6 +338,13 @@ def _ensure_post_fill_fetches(rfq_id, ticker, by_game: dict) -> None:
             if gref is None:
                 continue
             h = legset.leg_set_hash(gl)
+            if _ENGINE.landed_empty(h):
+                # The books just answered "nothing" for this leg set — while
+                # that zero-book landing is fresh, re-feeding would hammer a
+                # dead slate every tick. Retry resumes once it ages out
+                # (~QUOTE_FRESH_SEC), mirroring the pricing path's re-feed
+                # rule after live_fetch_timeout.
+                continue
             if _ENGINE.ensure_fetch(h, gref, gl):
                 research.emit("on_demand_requested", rfq_id=rfq_id,
                               ticker=ticker,

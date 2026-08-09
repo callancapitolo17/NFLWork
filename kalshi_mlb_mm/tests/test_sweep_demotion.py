@@ -62,9 +62,10 @@ class Eng:
     """Duck-typed OnDemandEngine: canned live fairs + a configurable
     completed-landing age (the #57 accessor), records ensure/refetch calls."""
 
-    def __init__(self, fairs=None, completed_age=None):
+    def __init__(self, fairs=None, completed_age=None, empty_landed=False):
         self.fairs = dict(fairs) if fairs else None
         self.completed_age = completed_age    # sec since completed landing
+        self.empty_landed = empty_landed      # fresh zero-book completion
         self.ensure_calls = []
         self.refetch_calls = []
 
@@ -82,7 +83,7 @@ class Eng:
         return 1000.0 if self.fairs else None
 
     def landed_empty(self, h):
-        return False
+        return self.empty_landed
 
     def result_age_sec(self, h):
         return 2.0 if self.fairs else None
@@ -238,6 +239,21 @@ def test_sweep_rows_alone_cannot_clear_cooldown(monkeypatch, tmp_path):
                           sgp_odds=post_fill_rows, fill_fair=0.55)
     main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
     assert _last_decision(db) == ("skipped", "in_cooldown_awaiting_refresh")
+
+
+def test_cooldown_retrigger_respects_fresh_empty_landing(monkeypatch, tmp_path):
+    """A cooled combo whose targeted fetch just COMPLETED with zero books
+    (dead slate) must stay awaiting_refresh WITHOUT re-feeding while the
+    empty landing is fresh — same no-hammer rule as the pricing path's
+    live_fetch_timeout re-feed (#54). Retry resumes once it ages out."""
+    eng = Eng(fairs=None, completed_age=None, empty_landed=True)
+    main, db, _, _ = _env(monkeypatch, tmp_path, "sd12.duckdb", engine=eng,
+                          fill_fair=0.55)
+    main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
+    assert _last_decision(db) == ("skipped", "in_cooldown_awaiting_refresh")
+    assert eng.ensure_calls == [], \
+        "a fresh zero-book landing must not be re-fed — dead books get " \
+        "retried on the ~QUOTE_FRESH_SEC cadence, not per 2s tick"
 
 
 def test_confirm_fill_triggers_targeted_fetch(monkeypatch, tmp_path):
