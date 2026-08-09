@@ -17,7 +17,9 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from pathlib import Path
 
-from kalshi_common.sgp_health import FetchHealthRecorder, transport_error_class
+from kalshi_common.sgp_health import (FetchHealthRecorder,
+                                      OnDemandCoverageCounter,
+                                      transport_error_class)
 from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, BookTransportError,
                              FetchCounters, OnDemandBookResult, PricedRow,
                              RetryProfile, TargetLine, TTLCache,
@@ -171,6 +173,10 @@ class SGPService:
         self._now = now_fn
         self._state = {b: _BookState() for b in self.books}
         self.health = FetchHealthRecorder(health_db_path)
+        # #81: unconditional on-demand coverage tally (scrape_done's heir).
+        # Deliberately NOT on book_health — that is None when alerting is
+        # disabled, and the research coverage record must not die with it.
+        self.coverage = OnDemandCoverageCounter()
         self.book_health = book_health
         self._last_health_flush = None
         # The orchestrators lazily import the legacy scraper modules by
@@ -320,9 +326,11 @@ class SGPService:
 
     def _observe_book_health(self, book: str, path: str, outcome: str,
                              error_class: str | None) -> None:
-        """Feed issue #37's streak tracker. Paired with EVERY health.record
-        call so the alarm can never disagree with the history it alarms on.
+        """Feed issue #37's streak tracker and #81's coverage tally. Paired
+        with EVERY health.record call so neither can disagree with the
+        history it summarizes.
         """
+        self.coverage.observe(book=book, path=path, outcome=outcome)
         if self.book_health is None:
             return
         try:
@@ -352,8 +360,14 @@ class SGPService:
 
     def warm_structures(self, games, *,
                         token_min_remaining_sec: float = 180.0,
-                        refresh_older_than_sec: float = 120.0) -> dict[str, int]:
+                        refresh_older_than_sec: float = 120.0,
+                        wall_budget_sec: float | None = None) -> dict[str, int]:
         """Structure-only warming pass over ``games`` (issue #50 item 2).
+
+        ``wall_budget_sec`` (#81): explicit wall deadline for collecting all
+        books' warming results. None falls back to ``per_book_deadline_sec``
+        — the pre-#81 behavior, when the maker set that knob for its sweep
+        and warming rode along. A sweep-free bot passes its own budget.
 
         For every book, concurrently: pre-warm the auth token where the
         client supports it (Caesars' WAF mint), then run match_event +
@@ -398,7 +412,9 @@ class SGPService:
                                    token_min_remaining_sec,
                                    refresh_older_than_sec)
                     for b in self.books}
-            wall_deadline = time.monotonic() + self.per_book_deadline_sec
+            budget = (wall_budget_sec if wall_budget_sec is not None
+                      else self.per_book_deadline_sec)
+            wall_deadline = time.monotonic() + budget
             for b, fut in futs.items():
                 remaining = max(0.0, wall_deadline - time.monotonic())
                 try:

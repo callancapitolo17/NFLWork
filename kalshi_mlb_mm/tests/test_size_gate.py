@@ -8,7 +8,6 @@ worst-case dollars at risk over both sides the creator could take.
 _rfq_requested_contracts parsing tests remain valid (still used to distinguish
 contract-denominated vs dollar-denominated RFQs).
 """
-import pandas as pd
 
 from kalshi_mlb_mm import main
 from kalshi_mlb_mm.pricing import Quote
@@ -118,11 +117,6 @@ def _scaffold(monkeypatch, tmp_path, db, cfg, risk):
     import importlib
     importlib.reload(db)
     db.init_database()
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g1"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
     # Valid legs that parse through legset.parse_legs (TEXLAA fixture).

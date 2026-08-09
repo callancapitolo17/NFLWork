@@ -11,15 +11,6 @@ def test_discovery_tick_skips_out_of_scope(monkeypatch, tmp_path):
     importlib.reload(db)
     db.init_database()
     from kalshi_mlb_mm import main
-    # v1 hardening replaced the samples-staleness gate with a book-freshness
-    # gate. Provide a non-empty _SGP_ODDS so the gate passes and we reach the
-    # out-of-scope logging path the test is exercising.
-    import pandas as pd
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
 
     class Src:
         def poll(self):
@@ -63,14 +54,6 @@ def test_discovery_dedup_no_resubmit_when_price_unchanged(monkeypatch, tmp_path)
     importlib.reload(db)
     db.init_database()
 
-    # v1 hardening: book-freshness gate replaced the samples gate. Set _SGP_ODDS
-    # non-empty so the discovery tick proceeds.
-    import pandas as pd
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["game1"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     # Bypass kill-switch: make sure KILL_FILE doesn't exist (tmp_path is clean).
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
 
@@ -158,14 +141,6 @@ def test_discovery_skips_when_daily_cap_exhausted(monkeypatch, tmp_path):
     db.init_database()
 
     # Bypass guards that would short-circuit before reaching the cap check.
-    # v1 hardening: book-freshness gate replaced samples-staleness — set
-    # _SGP_ODDS non-empty so we reach the cap check.
-    import pandas as pd
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["game2"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
 
@@ -214,8 +189,8 @@ def test_discovery_skips_when_daily_cap_exhausted(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# #57 — there is NO sweep-freshness top gate. An empty/None _SGP_ODDS is the
-# normal state between slow sweep passes; the tick must keep polling RFQs
+# #57/#81 — there is NO sweep-freshness top gate (and no sweep at all);
+# the tick must keep polling RFQs
 # (per-RFQ data needs are enforced by the live-feed block, covered in
 # test_sweep_demotion.py).
 # ---------------------------------------------------------------------------
@@ -230,7 +205,6 @@ def test_discovery_polls_even_when_sweep_frame_empty(monkeypatch, tmp_path):
     importlib.reload(db)
     db.init_database()
 
-    monkeypatch.setattr(main, "_SGP_ODDS", None)
 
     polled = []
 
@@ -249,8 +223,6 @@ def test_discovery_polls_even_when_sweep_frame_empty(monkeypatch, tmp_path):
     main._discovery_tick(Src(), GW(), dry_run=False)
     assert polled == [1], "an idle sweep must NOT idle RFQ discovery"
 
-    import pandas as pd
-    monkeypatch.setattr(main, "_SGP_ODDS", pd.DataFrame())
     main._discovery_tick(Src(), GW(), dry_run=False)
     assert polled == [1, 1]
 
@@ -275,12 +247,6 @@ def test_risk_sweep_cancels_on_drift_since_quote(monkeypatch, tmp_path):
     db.init_database()
 
     # a book frame exists (inert since #57) and tipoff is far away.
-    import pandas as pd
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g1"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
     # B1 fix: the sweep now re-derives the combo's games from legs_json and
@@ -373,17 +339,11 @@ def _sweep_env(monkeypatch, tmp_path, db_name):
     import kalshi_mlb_mm.config as cfg
     import kalshi_mlb_mm.db as db
     from kalshi_mlb_mm import main
-    import pandas as pd
 
     monkeypatch.setattr(cfg, "DB_PATH", tmp_path / db_name)
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
     importlib.reload(db)
     db.init_database()
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["gA"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     # Resolve each game's legs by GAME CODE (deterministic, no market DB).
     # Keyed on the code, not the event ticker — post-#71 that is what
     # CanonicalLeg.game_id carries.
@@ -752,12 +712,6 @@ def test_discovery_halts_on_high_void_rate(monkeypatch, tmp_path):
     db.init_database()
 
     # books fresh — so the gate before void-rate doesn't short-circuit.
-    import pandas as pd
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
 
     # Pre-seed 4 voids + 1 confirmed in the last hour → 80% void rate > 25%.
     now = datetime.now(timezone.utc)
@@ -813,12 +767,6 @@ def test_discovery_skips_creator_with_too_many_fills(monkeypatch, tmp_path):
     importlib.reload(db)
     db.init_database()
 
-    import pandas as pd
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m_: True)
 
     # Pre-seed: creator 'abc' has 10 fills (>= PER_CREATOR_FILL_HALT default).
@@ -899,12 +847,6 @@ def test_discovery_skips_when_combo_exposure_capped(monkeypatch, tmp_path):
     importlib.reload(db)
     db.init_database()
 
-    import pandas as pd
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m_: True)
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     # Per-combo cap runs after pricing — mock router so pricing produces a valid fair.
@@ -975,12 +917,6 @@ def test_discovery_skips_when_combo_in_cooldown(monkeypatch, tmp_path):
     importlib.reload(db)
     db.init_database()
 
-    import pandas as pd
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m_: True)
     monkeypatch.setattr(main, "_today_fills", lambda: [])
 

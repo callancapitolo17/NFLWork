@@ -1,5 +1,8 @@
 """Regression tests locking 2-leg equivalence between router.combo_fair and
-the original _book_fairs + statistics.median path, plus basic cross-game
+an inline oracle (grid_cell_fairs -> main._consensus_filter -> median; #81
+deleted the old main._book_fairs oracle, but main._consensus_filter survives
+as the INDEPENDENT #20 implementation, so the consensus arithmetic is still
+cross-checked against production router.consensus), plus basic cross-game
 and Phase-1 scope checks.
 """
 import statistics
@@ -50,12 +53,22 @@ def _grid_rows(book, game_id, spread_line, total_line, cells):
 # Core regression: router.combo_fair == median(_book_fairs) for 2-leg grid
 # ---------------------------------------------------------------------------
 
-def test_router_combo_fair_equals_book_fairs_median(monkeypatch):
-    """For a 2-leg spread×total combo on one game, router.combo_fair must
-    equal statistics.median(main._book_fairs(game_id, desc).values()) to
-    within 1e-9.  This locks the two pricing paths to identical arithmetic.
-    """
+def _oracle_book_fairs(desc, df):
+    """Inline oracle: grid devig via router's own cell helper, gated by
+    main._consensus_filter — the independent #20 implementation."""
     from kalshi_mlb_mm import main
+    cell_fairs = router.grid_cell_fairs(GAME_ID, desc.combo_family,
+                                        desc.spread_line, desc.total_line,
+                                        desc.target_combo, df)
+    return main._consensus_filter(cell_fairs)
+
+
+def test_router_combo_fair_equals_oracle_median():
+    """For a 2-leg spread×total combo on one game, router.combo_fair must
+    equal statistics.median over the oracle's consensus-filtered book fairs
+    to within 1e-9.  This locks the two consensus paths to identical
+    arithmetic.
+    """
     import kalshi_mlb_mm.config as cfg
 
     # Two books with a balanced grid (no outlier — both within BAND).
@@ -64,15 +77,12 @@ def test_router_combo_fair_equals_book_fairs_median(monkeypatch):
         + _grid_rows("fd", GAME_ID, -1.5, 8.5, ST_CELLS)
     )
 
-    # Inject into the module global that _book_fairs reads.
-    monkeypatch.setattr(main, "_SGP_ODDS", df)
-
     legs = LEGS_SPREAD_TOTAL
     desc = combo_descriptor(legs)
     assert desc is not None, "Fixture legs must produce a valid ComboDescriptor"
 
-    # Old path: _book_fairs → consensus filter → median
-    book_fairs = main._book_fairs(GAME_ID, desc)
+    # Oracle path: grid cells → independent consensus filter → median
+    book_fairs = _oracle_book_fairs(desc, df)
     assert book_fairs, "Fixture must yield at least 1 agreeing book"
     old_fair = statistics.median(book_fairs.values())
 
@@ -86,12 +96,11 @@ def test_router_combo_fair_equals_book_fairs_median(monkeypatch):
         f"delta={abs(new_fair - old_fair):.2e}")
 
 
-def test_router_combo_fair_equals_book_fairs_with_outlier(monkeypatch):
+def test_router_combo_fair_equals_oracle_with_outlier():
     """Issue #20: a loud dissenter now DECLINES the combo in both paths
     (dispersion gate) instead of being outvoted — the two implementations
     must agree on the decline.
     """
-    from kalshi_mlb_mm import main
     import kalshi_mlb_mm.config as cfg
 
     # Three books: dk + fd agree near 0.23; px heavily favors the target cell
@@ -103,12 +112,11 @@ def test_router_combo_fair_equals_book_fairs_with_outlier(monkeypatch):
         + _grid_rows("fd", GAME_ID, -1.5, 8.5, ST_CELLS)
         + _grid_rows("px", GAME_ID, -1.5, 8.5, OUTLIER_CELLS_PX)
     )
-    monkeypatch.setattr(main, "_SGP_ODDS", df)
 
     legs = LEGS_SPREAD_TOTAL
     desc = combo_descriptor(legs)
 
-    book_fairs = main._book_fairs(GAME_ID, desc)
+    book_fairs = _oracle_book_fairs(desc, df)
     assert book_fairs == {}, "oracle path must decline on dispersion"
 
     new_fair = router.combo_fair(legs, df, lambda gl: GAME_ID,

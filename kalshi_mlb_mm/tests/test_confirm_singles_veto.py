@@ -1,9 +1,9 @@
 """Issue #17 (reworked): confirm-window singles-move veto.
 
 The last-look gate previously re-priced grid combos from the same ~150s
-`_SGP_ODDS` scrape cache the quote was priced from, so cur_fair == prev_fair
-by construction and the drift check was a no-op exactly in the fast-pickoff
-window. The rework: snapshot the RAW Kalshi odds of every leg at quote time
+scrape cache the quote was priced from (deleted with the sweep in #81), so
+cur_fair == prev_fair by construction and the drift check was a no-op
+exactly in the fast-pickoff window. The rework: snapshot the RAW Kalshi odds of every leg at quote time
 (each leg is its own Kalshi singles market), re-read them at accept (<~1s),
 and void if ANY leg's bid or ask moved even one tick. Correlation between
 legs is structural on this horizon — the marginals carry the pickoff signal.
@@ -64,7 +64,6 @@ def _setup(monkeypatch, tmp_path, db_name, *, snapshot_json=None,
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
     importlib.reload(db)
     db.init_database()
-    monkeypatch.setattr(main, "_SGP_ODDS", _stale_grid_df())
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
     monkeypatch.setattr(main, "_game_ref", lambda gid: GREF)
     monkeypatch.setattr(main, "_ENGINE", None)

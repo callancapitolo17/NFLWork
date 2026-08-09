@@ -34,11 +34,6 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
     db.init_database()
 
     import pandas as pd
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g7"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m: True)
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     # Per-combo cap is after pricing — mock router so pricing produces a valid fair.
@@ -128,11 +123,6 @@ def test_n8_unreconciled_fill_counted_conservatively_in_today_fills(monkeypatch,
     db.init_database()
 
     import pandas as pd
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g8"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m: True)
 
     _evt = "KXMLBGAME-25JUN271905TEXLAA"
@@ -445,11 +435,6 @@ def test_n12_void_rate_halt_triggers_notify_on_transition(monkeypatch, tmp_path)
     db.init_database()
 
     import pandas as pd
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
 
     # Ensure halt starts from False state.
     monkeypatch.setattr(main, "_VOID_HALT_ACTIVE", False)
@@ -517,11 +502,6 @@ def test_n12_void_rate_resume_triggers_notify_on_recovery(monkeypatch, tmp_path)
     db.init_database()
 
     import pandas as pd
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
 
     # Start in halt-active state (True).
     monkeypatch.setattr(main, "_VOID_HALT_ACTIVE", True)

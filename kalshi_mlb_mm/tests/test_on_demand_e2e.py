@@ -4,7 +4,6 @@ re-quote on movement → feed stops when the RFQ leaves the poll."""
 import importlib
 import threading
 
-import pandas as pd
 
 from kalshi_common import legset
 from kalshi_mlb_mm.on_demand import OnDemandEngine, QUOTE_FRESH_SEC
@@ -78,11 +77,6 @@ def _setup(monkeypatch, tmp_path):
     clock = FakeClock()
     svc = FakeService()
     eng = OnDemandEngine(svc, now_fn=clock, autostart=False)
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     monkeypatch.setattr(main, "_today_fills_by_game", lambda: [])
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
@@ -175,7 +169,6 @@ def test_mixed_grid_plus_on_demand_combo_prices_product(monkeypatch, tmp_path):
             rows.append(dict(game_id="gA", combo=combo, period="FG",
                              bookmaker=book, sgp_decimal=dec,
                              spread_line=-1.5, total_line=8.5))
-    monkeypatch.setattr(main, "_SGP_ODDS", pd.DataFrame(rows))
     monkeypatch.setattr(main, "_resolve_game_for_legs",
                         lambda gl: "gA" if gl[0].game_id == EVT else "gB")
     monkeypatch.setattr(main, "_SCOPE_CACHE",
@@ -188,8 +181,8 @@ def test_mixed_grid_plus_on_demand_combo_prices_product(monkeypatch, tmp_path):
             return {}
 
     gw = GW()
-    # #54 live-only: BOTH games ride the engine — the grid game no longer
-    # prices from the cached _SGP_ODDS rows seeded above.
+    # #54 live-only: BOTH games ride the engine — no cached grid rows
+    # exist to price from.
     svc.fair = 0.30           # 0.30 * 0.30 = 0.09, above MIN_FAIR_PROB
     main._discovery_tick(SrcMix(), gw, dry_run=False)     # pending (both games)
     assert gw.submits == []

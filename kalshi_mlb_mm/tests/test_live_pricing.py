@@ -109,9 +109,6 @@ def _setup(monkeypatch, tmp_path, engine, db_name):
     db.init_database()
     # A COMPLETE, quotable cached grid — the bait every test leaves out for
     # the quote path. Touching it is the regression these tests exist for.
-    monkeypatch.setattr(main, "_SGP_ODDS", pd.DataFrame(
-        _grid_rows("dk", "game1", -1.5, 8.5, ST_CELLS)
-        + _grid_rows("fd", "game1", -1.5, 8.5, ST_CELLS)))
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     monkeypatch.setattr(main, "_today_fills_by_game", lambda: [])
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")

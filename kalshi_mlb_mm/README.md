@@ -40,7 +40,7 @@ Research-firehose rows written before 2026-08-04 encode away favourites with
 a negative `spread_line`; rows after are signed (convention epoch — mind the
 boundary in longitudinal queries).
 
-The read side is **book-agnostic**: it consumes whatever the 6 SGP scrapers write to `mlb_sgp_odds`, so all books' moneyline rows are priced with no maker-side change.
+The read side is **book-agnostic**: on-demand flights price whichever of the 6 books' scraper modules answer (the same per-book resolve/price hooks the scrapers use), so a new book's moneyline rows are priced with no maker-side change.
 
 **Spec:** `docs/superpowers/specs/2026-05-26-kalshi-mlb-mm-design.md`
 **Plan:** `docs/superpowers/plans/2026-05-27-kalshi-mlb-mm-maker-bot.md`
@@ -86,7 +86,7 @@ rm kalshi_mlb_mm/.kill
 
 ## Architecture
 
-REST-polling daemon, single process. Six timed sub-loops:
+REST-polling daemon, single process. Eight timed sub-loops:
 
 | Loop | Cadence | Job |
 |---|---|---|
@@ -96,7 +96,14 @@ REST-polling daemon, single process. Six timed sub-loops:
 | Reconcile sweep | 30s | Verify recorded fill side/size against Kalshi `/portfolio/positions` (live only) |
 | Settlement sweep | 600s | Poll `GET /markets/{ticker}` for combos with unsettled fills → write `fills.realized_pnl` + `settlements` audit row (live only; issue #12) |
 | Structure warming | 120s | #50: structure-only pass (no pricing calls) keeping every book's events/structure TTL caches + the CZR WAF token hot, so live fetches never pay a cold start |
-| SGP scrape | 300s | **Background only (#57):** full-slate pricing pass → `kalshi_mlb_mm_market.duckdb` for research/monitor continuity + `mlb_target_lines` upkeep. Quoting NEVER reads it |
+| Target-line refresh | 300s | #81: Kalshi MVE enumeration + Odds API schedule → `mlb_target_lines` (game resolution, tipoff gating and warming read it). **Zero book requests** |
+| Coverage summary | 300s | #81: drain the service's per-book on-demand outcome tally into an `on_demand_coverage` research event — the record of which books actually answer live fetches |
+
+There is **no background SGP sweep** (#81 deleted #57's demoted remnant): the
+maker's only book traffic is on-demand flights triggered by live RFQs plus
+the structure-warming pass. `sgp_fetch_health` proves it — post-#81 rows
+carry only the `on_demand` and `warming` paths (`book_requests_per_day` in
+`kalshi_common/fetch_health_queries.sql` is the before/after readout).
 
 **Transport seam.** All exchange I/O goes through two interfaces: `RFQSource.poll()` / `RFQSource.get_market()` and `QuoteGateway.submit_quote()` / `.confirm()` / `.cancel()` (v1: `RestQuoteGateway`). RFQ discovery is **WS-only** (issue #56, user decision 2026-08-07 — no mode switch, mirroring #54's live-only decision; rollback is a git revert): `WebSocketRFQSource` (`ws_rfq_source.py`) runs a daemon reader thread subscribed to Kalshi's `communications` WS channel (`rfq_created` / `rfq_deleted`) and mirrors it into a stateful open-RFQ set, so `poll()` keeps the **level-triggered** contract the discovery tick depends on (all open RFQs every tick — that re-entry drives on-demand re-fetch, quorum refinement, and pulls). Payloads are stored verbatim (`contracts_fp` stays a string), so downstream is byte-compatible with the old REST poll. `RestRFQSource` (the 2s poll of `GET /communications/rfqs?status=open`) is not a mode: it survives only as the WS source's automatic fallback and gap-fill path, and `get_market()` stays pure REST.
 
@@ -104,7 +111,7 @@ REST-polling daemon, single process. Six timed sub-loops:
 
 **Shared math.** Fair value, EV calc (including `maker_fee_per_contract`), authenticated HTTP, SGP orchestration, and leg-typing helpers all live in `kalshi_common/`. Both bots import from there; the taker's original files are now one-line re-export shims (behavior unchanged).
 
-**SGP pricing (2026-06).** The bot prices SGPs **in-process** via `kalshi_common/sgp_service.py::SGPService` — no subprocess per cycle. The service holds persistent per-book HTTP clients reused across cycles (no per-cycle TLS handshake) and prices the four books concurrently under a per-book deadline (`SGP_SCRAPER_TIMEOUT_SEC`). DK/FD structure fetches (event lists, selection-id dicts) are TTL-cached; prices are never cached, and a failed or timed-out book keeps its prior rows. The old subprocess-per-cycle model is retained as a rollback hatch — calling `sgp_cycle` without `service=`.
+**SGP pricing (2026-06, rescoped by #81).** The bot prices SGPs **in-process** via `kalshi_common/sgp_service.py::SGPService` — persistent per-book HTTP clients, TTL-cached structure fetches, prices never cached. Since #81 the maker uses the service ONLY for on-demand flights (`price_on_demand`, budgeted by `ON_DEMAND_DEADLINE_SEC`) and structure warming — `service.refresh()`/`sgp_cycle` (the full-slate scrape and its `SGP_SCRAPER_TIMEOUT_SEC` per-book budget) remain in `kalshi_common` for the taker's sweep only.
 
 **State DB.** The bot writes `kalshi_mlb_mm/kalshi_mlb_mm.duckdb` (quotes, fills, positions, decisions, `fill_games`, and `quote_games`). The `fill_games` table maps each fill to **every** game its combo touches (one row per game); the per-game exposure cap reads a fanned-out `fills⋈fill_games` join so a cross-game combo's full stake counts against each of its games, while the daily cap and P&L keep reading `fills` (one row per combo) and are never double-counted. The per-game and daily caps additionally count **open quotes' worst-case exposure** (issue #22): each `live_quotes` row freezes `worst_exposure_usd` at quote time, `quote_games` fans it out per game (same attribution rule as `fill_games`, written in the same transaction as the quote insert), and both cap gates sum `fills + open quotes` so a burst sweep of resting quotes can no longer fill to multiples of the caps before the first fill registers. A `NULL` `worst_exposure_usd` (pre-migration row) is counted at the per-fill cap, mirroring the N8 unreconciled-fill convention; the RFQ currently being re-quoted is excluded from the sums (its resting quote is superseded, not stacked). The sibling `kalshi_mlb_mm/kalshi_mlb_mm_market.duckdb` holds SGP-line and SGP-odds data (same pattern as the taker's `kalshi_mlb_rfq_market.duckdb`). The v1-hardening pass removed the model component of the blend, so there is no longer a read-only dependency on `Answer Keys/mlb_mm.duckdb`. All timestamp columns are `TIMESTAMPTZ` UTC (repo rule); existing naive-local DBs are migrated in place on startup by the idempotent `MIGRATE_SQL` (instants preserved), and the monitor normalizes reads so both frames render identically.
 
@@ -114,22 +121,21 @@ REST-polling daemon, single process. Six timed sub-loops:
 
 ### Live pricing (issue #54) — the only quote path
 
-EVERY in-scope sub-combo — 2-leg grids, each game of a cross-game combo (including its single legs), novel shapes — rides the on-demand engine: the RFQ landing triggers a fetch of exactly that leg set at all six books, and the quote is priced from those fresh per-book fairs through the same #20 consensus gate and #19 margin machinery (the math is input-agnostic; `σ_books` comes from the live set). **The sweep cache is never in the quote path** (there is deliberately no cached-pricing mode or fallback — user decision 2026-08-05; rollback is a git revert). A fetch that lands with **zero** books declines with `live_fetch_timeout` — never a silent cache fallback — and is not re-fetched until the empty landing ages out (~`QUOTE_FRESH_SEC`), so a dead slate retries on a ~15s cadence instead of hammering per tick. A live consensus with too few books declines `live_too_few_books` (named so the monitor separates a thin live slate from pre-#54 cache-era data). Confirm last look re-fetches **every** sub-combo live (see below). Every `quote_priced` research event carries a per-game `live_games` trace (leg-set hash, result age, per-book fair/route/latency) — combined with `on_demand_requested`/`on_demand_result` timestamps, the research DB proves each quoted fair traces to a fetch initiated after its RFQ landed. `test_live_pricing.py` pins all of this, including "cache present but never consulted".
+EVERY in-scope sub-combo — 2-leg grids, each game of a cross-game combo (including its single legs), novel shapes — rides the on-demand engine: the RFQ landing triggers a fetch of exactly that leg set at all six books, and the quote is priced from those fresh per-book fairs through the same #20 consensus gate and #19 margin machinery (the math is input-agnostic; `σ_books` comes from the live set). **There is no cache in the quote path — and since #81 no sweep at all** (deliberately no cached-pricing mode or fallback — user decision 2026-08-05; rollback is a git revert). A fetch that lands with **zero** books declines with `live_fetch_timeout` — never a silent cache fallback — and is not re-fetched until the empty landing ages out (~`QUOTE_FRESH_SEC`), so a dead slate retries on a ~15s cadence instead of hammering per tick. A live consensus with too few books declines `live_too_few_books` (named so the monitor separates a thin live slate from pre-#54 cache-era data). Confirm last look re-fetches **every** sub-combo live (see below). Every `quote_priced` research event carries a per-game `live_games` trace (leg-set hash, result age, per-book fair/route/latency) — combined with `on_demand_requested`/`on_demand_result` timestamps, the research DB proves each quoted fair traces to a fetch initiated after its RFQ landed. `test_live_pricing.py` pins all of this, including "cache present but never consulted".
 
 Why live is right for this flow: ~40 in-scope RFQs/day × 6 books is a few hundred book hits/day vs the sweep's thousands (~10× less fingerprint surface), and quote-time staleness → ~0 — the adverse-selection window the staleness gates only bounded. DraftKings is never load-bearing: its price call is bimodal (0.8–1.6s usual, 8–22s stalls) and the `ON_DEMAND_DEADLINE_SEC=10` budget drops it; consensus needs `MIN_AGREEING_BOOKS=2` of the remaining books (warm p95s: FD 0.77s, PX 1.55s, MGM 1.66s, CZR 2.37s, NV 4.00s — `mlb_sgp/README.md`).
 
-### Demoted sweep (issue #57)
+### Removed sweep (issue #81; demoted first in #57)
 
-With every quote priced live, the full-slate sweep's residual jobs are (a) the market-wide `mlb_sgp_odds` record the monitor dashboard and research queries read, and (b) refreshing `mlb_target_lines` (leg→game resolution + the warming pass's game list). It runs at `SGP_REFRESH_SEC=300` for exactly those two, while #50's structure warming stays on its own hot 120s knob — warming, not sweeping, is what keeps live fetches fast. Everything that used to *gate* on sweep freshness was deleted, not slowed: the discovery tick has no sweep-freshness top gate (an empty `_SGP_ODDS` is the normal state between passes), the risk sweep's mass-cancel keys on #38 live-fetch failure streaks instead of data age (`books_unhealthy` via `BookHealthAlerter.consensus_dark()`), the drift breaker prices from live engine fairs, and the post-fill cooldown clears on a **targeted** on-demand fetch (below). `BOOK_ALERT_PATHS` counts only `on_demand`, so a slow — or entirely dead — sweep can never trip a #37 alert. The `book_requests_per_day` queries in `kalshi_common/fetch_health_queries.sql` measure the resulting request-volume drop from #38's health rows; full sweep removal is #81, decision-gated on that live data.
+#57 demoted the full-slate sweep to a 300s background record; #81 deleted it outright (user decision 2026-08-09 — the measurement window the ticket's gate asked for was never produced because the bots were off, and the code audit showed the sweep record had NO remaining consumer: the monitor reads `sgp_fetch_health`, never `mlb_sgp_odds`; `research_queries.sql` reads fills/settlements; the firehose's `on_demand_result` events already record every flight's per-book fairs). What replaced its two residual jobs: `mlb_target_lines` upkeep is its own 300s Kalshi-only loop arm (`target_line_cycle`, zero book requests — it also inherits the game-metadata cache invalidation, since new games appear there now), and the per-pass book counts became the periodic `on_demand_coverage` research event fed by an unconditional per-book outcome tally on the service (deliberately NOT on the #37 alerter, which is None when alerting is disabled). The maker's `mlb_sgp_odds` table simply stops being written; the market DB's live tables are `mlb_target_lines` + `sgp_fetch_health`. Everything that used to gate on sweep freshness was already deleted in #57 (no discovery top gate; risk-sweep mass-cancel keys on #38 failure streaks via `BookHealthAlerter.consensus_dark()`; drift breaker prices from live engine fairs; post-fill cooldown clears on a **targeted** on-demand fetch — below). Rollback is a git revert.
 
 ### Consensus fair (shared math)
 
 Fair value is the median of the devigged book fairs, gated on cross-book agreement. `router.combo_fair_detail` parses the RFQ into canonical legs (`legset`), partitions them by game, prices each game's sub-combo, and **multiplies** the per-game fairs (cross-game independence). For each **2-leg same-game grid** (family + cell resolved from the legs — spread×total keyed by game × **signed** spread_line × total_line (#70: negative = home margin market, positive = away margin market), moneyline×total keyed by game × total_line with `spread_line` NULL) we:
 
-1. Pull every book's 4-cell grid from `mlb_sgp_odds` (filtered by combo family, require all 4 cells — no fallback).
-2. Devig each book's 4-way grid to a single combo fair (`devig_book` in `kalshi_common.fair_value`).
-3. **Consensus gate (issue #20 — z-space dispersion threshold).** Transform each book fair via `norm.ppf` (probit); decline the combo (`too_few_books`) if fewer than `MIN_AGREEING_BOOKS` books priced it, or (`consensus_dispersion`) if the sample stddev of the z-values exceeds `SIGMA_Z_MAX`. There is NO outlier removal — a dissenting book is as likely the informed one (news mid-propagation) as a broken scrape, so genuine disagreement declines the quote instead of outvoting the dissenter. Constant width in z-space = the same amount of disagreement at every price level: the tolerated absolute gap tightens automatically at the tails (~2¢ at p=0.50 → ~0.6¢ at p=0.08), where the old absolute ±2¢ band tolerated 25% relative disagreement.
-4. Fair = median of **all** books that priced the combo. The gate also reports `sigma_pts` — the stddev of the book fairs in probability points — which feeds the margin floor (below).
+1. Take every book's devigged fair for the exact leg set from the RFQ's live on-demand fetch (#54/#81: the fetch prices the full 2^N partition per book — the full 4-cell grid for a 2-leg combo, no fallback — and devigs it in `kalshi_common.fair_value`; the router's grid-frame path survives only as the test oracle).
+2. **Consensus gate (issue #20 — z-space dispersion threshold).** Transform each book fair via `norm.ppf` (probit); decline the combo (`too_few_books`) if fewer than `MIN_AGREEING_BOOKS` books priced it, or (`consensus_dispersion`) if the sample stddev of the z-values exceeds `SIGMA_Z_MAX`. There is NO outlier removal — a dissenting book is as likely the informed one (news mid-propagation) as a broken scrape, so genuine disagreement declines the quote instead of outvoting the dissenter. Constant width in z-space = the same amount of disagreement at every price level: the tolerated absolute gap tightens automatically at the tails (~2¢ at p=0.50 → ~0.6¢ at p=0.08), where the old absolute ±2¢ band tolerated 25% relative disagreement.
+3. Fair = median of **all** books that priced the combo. The gate also reports `sigma_pts` — the stddev of the book fairs in probability points — which feeds the margin floor (below).
 
 A **single leg** (within a cross-game combo) is priced by marginalizing that game's grid — summing the two devigged cells along the free axis. **Cross-game** fairs are the product of the per-game consensus fairs (combo `sigma_pts` propagates as relative variances adding: `σ_combo = fair·sqrt(Σ(σ_g/f_g)²)`); if any game fails the gate or is `unpriceable`, the combo is not quoted (fail-safe), with the first failing game's reason logged in `quote_decisions`. Novel same-game shapes (`on_demand` — 3+ legs, spread+ml, total+total, …) price via live book queries — see **On-demand pricing** below. The v1.1 explicit correlation-premium gate is deferred — see spec section 13.
 
@@ -222,9 +228,9 @@ combo) by `SGPService.price_on_demand`:
 
 Consensus is the same `MIN_AGREEING_BOOKS=2` + band rule as grids. Per-book
 `resolve_legs` / `price_selection_set` live in each `mlb_sgp/<book>.py`,
-reusing the orchestrators' own lookup structures — the grid-sweep path is
-untouched (`_priceable_in_phase1` and `test_router_integration.py` are the
-retained Phase 1 regression oracles).
+reusing the orchestrators' own lookup structures (`_priceable_in_phase1`
+and `test_router_integration.py` are the retained Phase 1 regression
+oracles).
 
 **Accepted quotes get a live last look**, two layers (issue #17):
 
@@ -277,8 +283,8 @@ this shipped).
 first; watch route mix, `route_gap`, per-book completion, void rate
 on-demand-vs-grid, Caesars WAF health, PX on-demand volume (each PX fetch is
 a real RFQ on their exchange). Retreat triggers (all code changes, no
-config): drop CZR from on-demand if its WAF failures spill into the grid
-sweep; haircut/disable Route B if `route_gap` shows it systematically rich;
+config): drop CZR from on-demand if its WAF failures spill into the warming
+pass; haircut/disable Route B if `route_gap` shows it systematically rich;
 reinstate a pull loop only if on-demand voids threaten the global void-rate
 halt.
 
@@ -310,8 +316,7 @@ The 5% is a *quoted/expected* ROI — what we actually realize is what the valid
 # Or point at explicit DB copies
 ./kalshi_mlb_mm/venv/bin/python -m kalshi_mlb_mm.report \
     --state-db path/to/kalshi_mlb_mm.duckdb \
-    --research-db path/to/kalshi_mlb_mm_research.duckdb \
-    --market-db path/to/kalshi_mlb_mm_market.duckdb
+    --research-db path/to/kalshi_mlb_mm_research.duckdb
 ```
 
 Sections: **1** RFQ funnel (24h + 7d: seen → in-scope → quoted → accepted →
@@ -330,14 +335,15 @@ Caveats printed in the report itself: the funnel is derived from
 `quote_decisions` (`seen_rfqs` only records out-of-scope and live-quoted
 RFQs); the grid-vs-on-demand split is a heuristic (an on-demand RFQ whose
 fetch lands within its first discovery tick counts as grid); quote-time
-staleness is the gap to the latest prior `scrape_done` event (per-book ages
-aren't persisted at quote time). Fresh/empty/locked DBs degrade to notes —
-the report never crashes and never writes.
+staleness is exact since #81 — the max sub-fetch age from each
+`quote_priced` event's `live_games` trace. Fresh/empty/locked DBs degrade
+to notes — the report never crashes and never writes.
 
 ## Per-book fetch health
 
-Every SGP fetch this bot makes — the periodic sweep and every on-demand live
-fetch — writes one row to `sgp_fetch_health` in
+Every SGP fetch this bot makes — every on-demand live fetch and every
+warming pass (#81: those are the only paths left) — writes one row to
+`sgp_fetch_health` in
 `kalshi_mlb_mm_market.duckdb` (book, path, outcome, duration, error class,
 #35 counters). It is the memory that makes "DraftKings has been 403ing since
 Tuesday" answerable. Buffered and flushed once per tick; a locked DB costs
@@ -379,7 +385,7 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `K_SIGMA` | `1.0` | Margin widening per unit of cross-book disagreement: floor = `MIN_MARGIN_PTS + K_SIGMA·σ_books` |
 | `QUORUM_MARGIN_ADDON` | `0.01` | Extra probability-point floor term on quotes whose thinnest per-game consensus is exactly 2 books (issue #55) — a 2-sample σ underprices visible disagreement; drops out when a straggler book lands |
 | `FAIR_DRIFT_TOLERANCE` | `0.02` | Last-look: void confirm if fair drifted >2¢ against filled side since quote time |
-| `BOOK_MOVE_CB_THRESHOLD` | `0.03` | Circuit breaker: cancel a combo's quotes if book fair jumps >3¢ between scrapes (per-tick) or if drift since quote exceeds this (per-quote risk sweep) |
+| `BOOK_MOVE_CB_THRESHOLD` | `0.03` | Circuit breaker: cancel a combo's quotes if the live book fair jumps >3¢ between consecutive pricings (per-tick) or if drift since quote exceeds this (per-quote risk sweep) |
 | `TIPOFF_CANCEL_MIN` | `5` | Pull quotes this many minutes before first pitch |
 | `QUOTE_HYSTERESIS` | `0.005` | Don't replace a resting quote unless fair moved more than ½¢. Also the ε of the post-fill `same_price_block` |
 | `COMBO_COOLDOWN_SEC` | `60` | Hard FLOOR of the post-fill per-combo cooldown. The combo additionally stays cooled until every game it touches has a completed post-fill TARGETED fetch (#57), then until consensus fair moves off the filled fair (defense item 5) |
@@ -400,10 +406,11 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `RISK_SWEEP_SEC` | `10` | Risk sweep cadence (seconds) |
 | `RECONCILE_SWEEP_SEC` | `30` | Fill side/size reconciliation cadence against Kalshi positions (seconds) |
 | `SETTLEMENT_SWEEP_SEC` | `600` | Settlement sweep cadence (seconds) — populates `realized_pnl` once markets settle; only matters hours post-game |
-| `SGP_REFRESH_SEC` | `300` | Background full-slate sweep cadence (#57) — research/monitor continuity + `mlb_target_lines` upkeep only; quoting never reads it. The taker keeps its own 60s value under the same knob name |
-| `SGP_SCRAPER_TIMEOUT_SEC` | `90` | Per-book deadline passed to `SGPService` (seconds) — a book exceeding it contributes nothing that cycle and its client is rebuilt |
+| `TARGET_LINE_REFRESH_SEC` | `300` | #81: `mlb_target_lines` refresh cadence (Kalshi MVE enumeration + Odds API schedule; zero book requests). Sets how fast a NEW game becomes quotable |
+| `COVERAGE_SUMMARY_SEC` | `300` | #81: cadence of the `on_demand_coverage` research event (per-book live-fetch outcome tally since the last summary; idle windows emit nothing) |
+| `STRUCTURE_WARM_BUDGET_SEC` | `360.0` | #81: wall budget for one warming pass (pre-#81 warming rode the sweep's per-book deadline, which the live env had raised to 360 — this keeps that proven value). A book still running at the budget is dropped with a warming-path timeout health row |
 | `STRUCTURE_WARM_SEC` | `120` | Structure-only warming cadence (issue #50): every book's events/structure TTL caches + Caesars' WAF token are re-warmed with ZERO pricing calls, so an RFQ never pays cold-structure discovery. Keep under `STRUCTURE_TTL_SEC` (180) and the CZR token TTL (240) |
-| `ON_DEMAND_DEADLINE_SEC` | `10.0` | Per-book wall budget for LIVE (on-demand) pricing fetches (issue #50). A book still running at the cap is dropped; the fast books' results land. Sized so warm Novig (p95 ~9s) barely fits — the 75s sweep budget never applies to the quote path |
+| `ON_DEMAND_DEADLINE_SEC` | `10.0` | Per-book wall budget for LIVE (on-demand) pricing fetches (issue #50). A book still running at the cap is dropped; the fast books' results land. Sized so warm Novig (p95 ~9s) barely fits |
 
 ## Defense hierarchy (stale-quote / adverse-selection risk)
 
@@ -419,7 +426,7 @@ Resting quotes are priced off books that lag reality (books refresh every 60s). 
 
 5. **Books-unhealthy auto-pull (#38 health-dark, re-keyed by #57).** The old rule read sweep-row age, which under the slow background sweep is meaningless. Now: the shared `BookHealthAlerter` tracks consecutive live-fetch failures per book (the same streaks #37 alerts on, `on_demand` path only), and when fewer than `MIN_AGREEING_BOOKS` books are healthy (`consensus_dark()`) the risk sweep cancels every open quote (`books_unhealthy`) — resting quotes can no longer be re-verified, so stop resting risk. Cadence-invariant, and fail-safe on startup: books never observed are unknown, not unhealthy, so a fresh process can't false-pull. Blind → no live quotes, same principle, live-keyed signal. Caveat: `BOOK_ALERT_ENABLED=false` disables the alerter entirely and therefore this pull too — the #23 constituent-jump/tipoff/drift breakers still run, but leave alerting on in live sessions.
 
-6. **Book-move circuit breaker (discrete events).** Two layers: (a) per-tick — if a scrape shows a book-fair jump greater than `BOOK_MOVE_CB_THRESHOLD` for a combo vs the prior scrape, the bot immediately cancels that combo's resting quotes (does not wait for the next discovery tick). (b) per-quote in the risk sweep — if current book consensus has drifted more than `BOOK_MOVE_CB_THRESHOLD` from the `book_fair_at_quote` stored when the quote was placed, the quote is cancelled. The per-quote sweep catches gradual drift the per-tick threshold misses (e.g., five 1¢ moves across ticks).
+6. **Book-move circuit breaker (discrete events).** Two layers: (a) per-tick — if a re-pricing shows a live book-fair jump greater than `BOOK_MOVE_CB_THRESHOLD` for a combo vs its prior pricing, the bot immediately cancels that combo's resting quotes (does not wait for the next discovery tick). (b) per-quote in the risk sweep — if current book consensus has drifted more than `BOOK_MOVE_CB_THRESHOLD` from the `book_fair_at_quote` stored when the quote was placed, the quote is cancelled. The per-quote sweep catches gradual drift the per-tick threshold misses (e.g., five 1¢ moves across ticks).
 
 7. **Post-fill cooldown + same-price block (issue #21, re-pointed by #57).** After a fill, the combo is cooled for `COMBO_COOLDOWN_SEC` (hard floor) — and stays cooled past the floor until **every game the combo touches has a completed post-fill TARGETED on-demand fetch** (`in_cooldown_awaiting_refresh`). The confirm tick queues that fetch the instant the fill is recorded (research event `on_demand_requested` with `trigger="post_fill"`), so it lands within seconds and the gate normally clears right at the 60s floor; if the landing is lost (process restart, engine store prune) the cooldown gate lazily re-queues it — self-healing, never wedged, and never waiting on a sweep pass. "Landed" means the engine flight COMPLETED with ≥1 book fair after `filled_at` (`OnDemandEngine.completed_fetch_age_sec`). Once the books have been re-asked, the combo is still skipped (`same_price_block`) while the **live** consensus fair remains within `QUOTE_HYSTERESIS` of the fair the fill transacted against (`fair_at_confirm`, falling back to `blended_fair_at_quote`) — quote prices are fair ± a fixed ROI margin, so unchanged fair ⇔ the identical just-picked-off price. Both skip reasons are logged distinctly in `quote_decisions` for the funnel report. The refresh check fails CLOSED (no engine, missing landings, comparison errors keep the combo cooled).
 

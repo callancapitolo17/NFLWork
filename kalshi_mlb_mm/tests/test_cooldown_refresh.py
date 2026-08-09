@@ -13,8 +13,8 @@ us off can immediately post a new RFQ on the same combo. Two gates:
   QUOTE_HYSTERESIS of the fair the fill transacted against.
 
 Gate tests mirror the N7 harness (mocked scope cache / router fair, fresh
-DuckDB per test); _SGP_ODDS stays None throughout — the cooldown lifecycle
-must run entirely sweep-free. The unit block covers
+DuckDB per test); no market-wide odds exist anywhere (#81) — the cooldown
+lifecycle must run entirely sweep-free. The unit block covers
 `_post_fill_live_refresh_landed`'s cross-game and fail-closed edges.
 """
 import importlib
@@ -53,7 +53,6 @@ def _cooldown_env(monkeypatch, tmp_path, db_name, *, completed_age,
     db.init_database()
 
     # Sweep-free on purpose (#57): the cooldown lifecycle must never need it.
-    monkeypatch.setattr(main, "_SGP_ODDS", None)
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m: True)
     monkeypatch.setattr(router_mod, "combo_fair_detail",
                         lambda *a, **k: (router_mod.ComboFair(fair_now, 0.0, 1), "ok"))

@@ -4,13 +4,12 @@ different combos of one game could previously fill in a single burst to many
 multiples of the per-game / daily caps because those gates read `fills` only.
 
 Gate tests mirror the N7 harness (test_n7_n8_n9_n10_n11_n12.py): mocked
-_SGP_ODDS / scope cache / router fair, fresh DuckDB per test, a Source that
-serves one RFQ, and a GW that records submits.
+scope cache / router fair, fresh DuckDB per test, a Source that serves one
+RFQ, and a GW that records submits.
 """
 import importlib
 from datetime import datetime, timezone
 
-import pandas as pd
 
 _EVT = "KXMLBGAME-25JUN271905TEXLAA"
 _LEGS = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
@@ -36,11 +35,6 @@ def _setup(monkeypatch, tmp_path, db_name, candidate_ticker, candidate_game):
     importlib.reload(db)
     db.init_database()
 
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": [candidate_game], "combo": ["c"],
-                                      "period": ["FG"], "bookmaker": ["dk"],
-                                      "sgp_decimal": [2.0], "fetch_time": [None],
-                                      "spread_line": [-1.5], "total_line": [8.5]}))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m: True)
     monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.55, 0.0, 1), "ok"))
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)

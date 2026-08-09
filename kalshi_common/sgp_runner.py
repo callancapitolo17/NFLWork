@@ -282,7 +282,8 @@ def write_target_lines(target_lines: list[TargetLine], db_path: str):
 
 
 def warm_cycle(*, bot_market_db: str, service,
-               cadence_sec: float | None = None) -> dict[str, int]:
+               cadence_sec: float | None = None,
+               wall_budget_sec: float | None = None) -> dict[str, int]:
     """One structure-only warming pass over the current slate (issue #50).
 
     Inputs: the bot's market DB (``mlb_target_lines``, written by
@@ -300,6 +301,11 @@ def warm_cycle(*, bot_market_db: str, service,
     token-TTL floor (+60s slack) so an env-tuned cadence cannot drift
     from the service defaults. None keeps the service defaults (120s
     cadence semantics).
+
+    ``wall_budget_sec`` (#81): wall deadline for the pass, forwarded to
+    ``service.warm_structures``. None keeps the service's fallback (its
+    ``per_book_deadline_sec``) — a sweep-free maker must pass its own
+    budget, since it no longer sets that knob.
     """
     from mlb_sgp._shared import GameRef
     con = duckdb.connect(bot_market_db, read_only=True)
@@ -315,11 +321,12 @@ def warm_cycle(*, bot_market_db: str, service,
     games = [GameRef(game_id=r[0], home_team=r[1], away_team=r[2],
                      commence_time=r[3]) for r in rows]
     if cadence_sec is None:
-        return service.warm_structures(games)
+        return service.warm_structures(games, wall_budget_sec=wall_budget_sec)
     return service.warm_structures(
         games,
         token_min_remaining_sec=float(cadence_sec) + 60.0,
-        refresh_older_than_sec=float(cadence_sec))
+        refresh_older_than_sec=float(cadence_sec),
+        wall_budget_sec=wall_budget_sec)
 
 
 # Issue #38, item 4. This LEGACY subprocess path (dashboard only — the bots
@@ -452,6 +459,25 @@ _BOOK_MODULES = {
 }
 
 
+def target_line_cycle(*, bot_market_db: str,
+                      both_teams: bool = False) -> list:
+    """Refresh `mlb_target_lines` from Kalshi MVE enumeration + the Odds
+    API schedule — the sweep-free half of `sgp_cycle`, extracted for #81.
+
+    ZERO book requests by construction: no service, no scraper knobs.
+    After #81 this is the maker's own loop arm (game resolution, tipoff
+    gating and #50's structure warming all read `mlb_target_lines`);
+    the taker still reaches it through `sgp_cycle`.
+
+    Side effect: atomic DELETE+INSERT of `mlb_target_lines` in
+    `bot_market_db`. Returns the enumerated targets so callers can log
+    the count.
+    """
+    targets = enumerate_kalshi_targets(both_teams=both_teams)
+    write_target_lines(targets, db_path=bot_market_db)
+    return targets
+
+
 def sgp_cycle(
     bot_market_db: str,
     scraper_dir: str | None = None,
@@ -460,12 +486,13 @@ def sgp_cycle(
     service=None,
     both_teams: bool = False,
 ) -> dict[str, int]:
-    """One full SGP scrape tick.
+    """One full SGP scrape tick (taker sweep; the maker stopped calling
+    this in #81 and runs `target_line_cycle` alone).
 
     With `service` (an SGPService): in-process path —
-      1. Enumerate Kalshi MVE -> list[TargetLine]
-      2. Write mlb_target_lines (tipoff gating + debugging read it)
-      3. service.refresh(targets); per successful book, clear that
+      1. `target_line_cycle` — enumerate Kalshi MVE, write
+         mlb_target_lines (tipoff gating + debugging read it)
+      2. service.refresh(targets); per successful book, clear that
          book's source labels and upsert its fresh rows. Failed books
          (None) keep their old rows — same outcome as a crashed
          subprocess today. Returns {book: row_count, failed: -1}.
@@ -474,8 +501,8 @@ def sgp_cycle(
     {scraper_name: return_code}. Kept as the rollback hatch
     (scraper_dir / venv_python / timeout_sec are required then).
     """
-    targets = enumerate_kalshi_targets(both_teams=both_teams)
-    write_target_lines(targets, db_path=bot_market_db)
+    targets = target_line_cycle(bot_market_db=bot_market_db,
+                                both_teams=both_teams)
 
     if service is None:
         if not (scraper_dir and venv_python and timeout_sec):

@@ -11,8 +11,8 @@ Written FIRST, failing on pre-#57 code, per repo rule. What each block pins:
    fires it eagerly the moment a fill is recorded.
 2. `same_price_block` compares the filled fair against the LIVE fair the
    targeted fetch produced (with zero sweep rows in sight).
-3. Discovery tick has no sweep-freshness top gate: an empty `_SGP_ODDS`
-   prices RFQs normally via the live feed.
+3. Discovery tick has no sweep-freshness top gate: RFQs price normally
+   via the live feed with no market-wide odds anywhere (#81).
 4. Risk sweep: no `books_stale` mass-cancel; the constituent-jump breaker
    runs (and fires) with zero sweep rows; the "can't trust our fair" pull is
    re-keyed on #38 live-fetch health (`books_unhealthy` via
@@ -33,8 +33,6 @@ import inspect
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-
-import pandas as pd
 
 from kalshi_common import legset
 from kalshi_common.book_health import BookHealthAlerter
@@ -116,11 +114,11 @@ class NoQuoteGW:
         raise AssertionError("must not submit in these tests")
 
 
-def _env(monkeypatch, tmp_path, db_name, *, engine, sgp_odds=None,
+def _env(monkeypatch, tmp_path, db_name, *, engine,
          fill_fair=None, filled_secs_ago=120):
-    """Sweep-free discovery/confirm env. `sgp_odds` defaults to None — the
-    whole point of #57 is that the quote path never needs it. `fill_fair`
-    seeds a prior fill + expired cooldown floor on TICKER."""
+    """Sweep-free discovery/confirm env (#81: there IS no sweep — the quote
+    path runs on the live feed alone). `fill_fair` seeds a prior fill +
+    expired cooldown floor on TICKER."""
     import kalshi_mlb_mm.config as cfg
     import kalshi_mlb_mm.db as db
     import kalshi_mlb_mm.risk as risk
@@ -131,7 +129,6 @@ def _env(monkeypatch, tmp_path, db_name, *, engine, sgp_odds=None,
     importlib.reload(db)
     db.init_database()
 
-    monkeypatch.setattr(main, "_SGP_ODDS", sgp_odds)
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     monkeypatch.setattr(main, "_today_fills_by_game", lambda: [])
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
@@ -226,17 +223,12 @@ def test_same_price_block_compares_live_fair(monkeypatch, tmp_path):
     assert _last_decision(db) == ("skipped", "same_price_block")
 
 
-def test_sweep_rows_alone_cannot_clear_cooldown(monkeypatch, tmp_path):
-    """The old clearing condition — post-fill sweep rows in _SGP_ODDS — must
-    no longer open the gate: only a completed targeted fetch counts."""
-    post_fill_rows = pd.DataFrame(
-        {"game_id": ["game1"], "combo": ["c"], "period": ["FG"],
-         "bookmaker": ["dk"], "sgp_decimal": [2.0],
-         "fetch_time": [pd.Timestamp(datetime.now(timezone.utc))],
-         "spread_line": [-1.5], "total_line": [8.5]})
+def test_only_a_completed_targeted_fetch_clears_cooldown(monkeypatch, tmp_path):
+    """Fresh live fairs alone (an incomplete/absent targeted landing) must
+    not open the gate: only a COMPLETED post-fill fetch counts."""
     eng = Eng(fairs=LIVE_FAIRS, completed_age=None)      # no targeted landing
     main, db, _, _ = _env(monkeypatch, tmp_path, "sd5.duckdb", engine=eng,
-                          sgp_odds=post_fill_rows, fill_fair=0.55)
+                          fill_fair=0.55)
     main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
     assert _last_decision(db) == ("skipped", "in_cooldown_awaiting_refresh")
 
@@ -260,7 +252,7 @@ def test_confirm_fill_triggers_targeted_fetch(monkeypatch, tmp_path):
     """The moment a fill is recorded, the confirm tick fires the targeted
     post-fill fetch for the combo's game leg set (research-tagged), so the
     cooldown usually clears right at the 60s floor. Also pins that the whole
-    confirm path (live re-fetch last look included) runs with _SGP_ODDS=None."""
+    confirm path (live re-fetch last look included) runs sweep-free."""
     eng = Eng(fairs=LIVE_FAIRS)
     main, db, emitted, _ = _env(monkeypatch, tmp_path, "sd6.duckdb", engine=eng)
     now = datetime.now(timezone.utc)
@@ -306,12 +298,11 @@ def test_confirm_fill_triggers_targeted_fetch(monkeypatch, tmp_path):
 # 3. Discovery tick has no sweep-freshness top gate                           #
 # --------------------------------------------------------------------------- #
 
-def test_discovery_tick_prices_with_empty_sweep_frame(monkeypatch, tmp_path):
-    """A fresh, never-filled combo prices from the live feed while _SGP_ODDS
-    is an EMPTY frame (mid-gap between two 300s sweep passes)."""
+def test_discovery_tick_prices_from_live_feed_alone(monkeypatch, tmp_path):
+    """A fresh, never-filled combo prices from the live feed with no
+    market-wide odds anywhere (#81: that is the only state there is)."""
     eng = Eng(fairs=LIVE_FAIRS)
-    main, db, emitted, _ = _env(monkeypatch, tmp_path, "sd7.duckdb", engine=eng,
-                                sgp_odds=pd.DataFrame())
+    main, db, emitted, _ = _env(monkeypatch, tmp_path, "sd7.duckdb", engine=eng)
     main._discovery_tick(Src(), NoQuoteGW(), dry_run=True)
     assert _last_decision(db) == ("dry_run_quote", None)
     payloads = [kw["payload"] for ev, kw in emitted if ev == "quote_priced"]
@@ -333,8 +324,8 @@ _JUMPED = {_SPREAD_T: {"yes_bid": 0.55, "yes_ask": 0.57},
 
 
 def _sweep_env(monkeypatch, tmp_path, db_name, *, current):
-    """One open quote with a placement baseline; _SGP_ODDS is None (the #57
-    steady state between slow sweep passes); constituent poll stubbed."""
+    """One open quote with a placement baseline; no market-wide odds exist
+    anywhere (#81); constituent poll stubbed."""
     import kalshi_mlb_mm.config as cfg
     import kalshi_mlb_mm.db as db
     from kalshi_mlb_mm import main, singles
@@ -343,7 +334,6 @@ def _sweep_env(monkeypatch, tmp_path, db_name, *, current):
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
     importlib.reload(db)
     db.init_database()
-    monkeypatch.setattr(main, "_SGP_ODDS", None)
     monkeypatch.setattr(main, "_ENGINE", None)
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
     monkeypatch.setattr(main, "_commence_time",
@@ -393,7 +383,7 @@ class _GW:
 
 
 def test_no_books_stale_mass_cancel_without_sweep_rows(monkeypatch, tmp_path):
-    """_SGP_ODDS=None is the NORMAL state under a 300s sweep — quiet
+    """No market-wide odds is the ONLY state post-#81 — quiet
     constituents must leave the resting quote alone (pre-#57 this cancelled
     everything with books_stale ~40% of every cycle)."""
     main, db, polled = _sweep_env(monkeypatch, tmp_path, "sd8.duckdb",
@@ -486,7 +476,6 @@ def test_consensus_dark_accessor():
 
 def test_current_consensus_fair_uses_live_fairs(monkeypatch):
     from kalshi_mlb_mm import main
-    monkeypatch.setattr(main, "_SGP_ODDS", None)
     monkeypatch.setattr(main, "_ENGINE", Eng(fairs=LIVE_FAIRS))
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
     fair = main._current_consensus_fair(json.dumps(GRID_LEGS))
@@ -544,15 +533,10 @@ def test_engine_completed_fetch_age_sec():
 
 
 # --------------------------------------------------------------------------- #
-# 7. Config: slow sweep, alerts keyed off it                                  #
+# 7. Config: alerts count only the live path                                   #
+# (cadence knobs are pinned in test_sweep_removal.py since #81 deleted the     #
+# sweep knob outright)                                                         #
 # --------------------------------------------------------------------------- #
-
-def test_sweep_cadence_default_slowed_to_300():
-    from kalshi_mlb_mm import config
-    assert config.SGP_REFRESH_SEC == 300
-    assert config.STRUCTURE_WARM_SEC < config.SGP_REFRESH_SEC, \
-        "#50 structure warming must stay on its own HOT cadence"
-
 
 def test_book_alerts_count_only_the_on_demand_path():
     """The #57 flip BOOK_ALERT_PATHS promised in config: a slow (or dead)
