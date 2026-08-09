@@ -162,6 +162,117 @@ def test_trades_fn_rows_inserted(tmp_path, monkeypatch):
     assert got == [("t1", "yes")]
 
 
+# ---------- overround feed-integrity gate (issue #73) ----------
+
+def _poisoned_state():
+    """Transient one-sided-refresh shape: main 2.5 healthy (sum 1.048), alt 1.5
+    crossed (sum ~0.82), alt 3.5 blown vig (sum ~1.35) — all in one ladder."""
+    return feed.parse_snapshot({
+        "marketSources": [{"id": 7, "name": "S"}],
+        "teams": {"1": {"name": "Argentina"}, "2": {"name": "Austria"}},
+        "gameOddsEvents": {"lg21:pt1:pregame": [{
+            "eventId": 1, "eventStart": "2026-12-31T17:00:00+00:00",
+            "eventTeams": {"1": {"id": 1}, "0": {"id": 2}},
+            "gameOddsMarketSourcesLines": {
+                "si0:ms7:an0": {"bt3": {"price": 115, "points": 2.5,
+                                        "modifiedOn": "2026-06-01T00:00:00",
+                                        "alternateLines": [
+                    {"points": 1.5, "price": 144}, {"points": 3.5, "price": -208}]}},
+                "si1:ms7:an0": {"bt3": {"price": -140, "points": 2.5,
+                                        "modifiedOn": "2026-06-01T00:00:00",
+                                        "alternateLines": [
+                    {"points": 1.5, "price": 144}, {"points": 3.5, "price": -208}]}},
+            }}]}}, {"lg21"})
+
+
+_POISON_KEV = {
+    "title": "Argentina vs Austria: Regulation Time Total Goals",
+    "markets": [
+        {"ticker": "T-O15", "strike_type": "greater", "floor_strike": 1.5},
+        {"ticker": "T-O25", "strike_type": "greater", "floor_strike": 2.5},
+        {"ticker": "T-O35", "strike_type": "greater", "floor_strike": 3.5},
+    ],
+}
+
+
+def test_poisoned_rungs_never_flag_healthy_rung_still_does(tmp_path, monkeypatch):
+    """The exploit end-to-end: crossed and blown-vig rungs must produce NO
+    candidate and NO flagged edge, while the healthy rung in the same ladder
+    still flows. Fails on pre-#73 main (both poisoned rungs devig to ~0.5 and
+    flag against the cheap 0.30 ask)."""
+    _init_dbs(tmp_path, monkeypatch)
+    rows = runner.run_tick(Soccer(), _poisoned_state(), [_POISON_KEV], now=_NOW,
+                           dry_run=True, book_fn=lambda t: _BOOK)
+    assert rows and {r["market_ticker"] for r in rows} == {"T-O25"}
+    storage.flush()
+    with storage.connect(config.RESEARCH_DB_PATH, read_only=True) as c:
+        cand_tickers = {r[0] for r in c.execute(
+            "SELECT json_extract_string(payload, '$.label') FROM research_events "
+            "WHERE event_type = 'candidate_priced'").fetchall()}
+        rejects = {(r[0], float(r[1])) for r in c.execute(
+            "SELECT json_extract_string(payload, '$.reason'), "
+            "json_extract_string(payload, '$.line') FROM research_events "
+            "WHERE event_type = 'rung_rejected'").fetchall()}
+    assert all("1.5" not in lbl and "3.5" not in lbl for lbl in cand_tickers)
+    assert ("anchor_crossed", 1.5) in rejects
+    assert ("anchor_overround", 3.5) in rejects
+
+
+def test_rung_rejected_event_carries_provenance(tmp_path, monkeypatch):
+    """The firehose reject rides the same provenance as candidate_priced:
+    event_id, line, book, alt, overround, reason."""
+    _init_dbs(tmp_path, monkeypatch)
+    runner.run_tick(Soccer(), _poisoned_state(), [_POISON_KEV], now=_NOW,
+                    dry_run=True, book_fn=lambda t: _BOOK)
+    storage.flush()
+    with storage.connect(config.RESEARCH_DB_PATH, read_only=True) as c:
+        row = c.execute(
+            "SELECT json_extract_string(payload, '$.reason'), "
+            "json_extract(payload, '$.event_id'), json_extract(payload, '$.book'), "
+            "json_extract(payload, '$.alt'), json_extract(payload, '$.overround') "
+            "FROM research_events WHERE event_type = 'rung_rejected' "
+            "AND json_extract_string(payload, '$.line') = '1.5' LIMIT 1").fetchone()
+    assert row is not None
+    reason, event_id, book, alt, overround = row
+    assert reason == "anchor_crossed"
+    assert int(event_id) == 1 and int(book) == 7
+    assert alt == "true"
+    assert 0.81 < float(overround) < 0.83
+
+
+def test_poisoned_rungs_never_quoted_by_real_maker(tmp_path, monkeypatch):
+    """Same exploit through the REAL maker path (run_tick -> fair_ladder ->
+    MakerEngine): the healthy rung quotes, the crossed and blown-vig rungs
+    never do."""
+    from unabated_edge.maker import engine as mengine, state as mstate, store as mstore
+    from unabated_edge.tests.test_maker_engine import FakeGateway
+    _init_dbs(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "MAKER_DB_PATH", tmp_path / "mk.duckdb")
+    mstore.init()
+    mk = mengine.MakerEngine(FakeGateway(), mstate.MakerState())
+    wide_book = {"yes_bids": [(0.30, 500.0)], "no_bids": [(0.45, 500.0)]}
+    runner.run_tick(Soccer(), _poisoned_state(), [_POISON_KEV], now=_NOW,
+                    dry_run=True, book_fn=lambda t: wide_book, maker=mk)
+    placed_tickers = {t for t, _s, _p, _n in mk.gateway.placed}
+    assert placed_tickers == {"T-O25"}
+
+
+def test_devig_never_receives_crossed_input(tmp_path, monkeypatch):
+    """Boundary proof, not code-reading: spy on pricing.devig through the
+    shipped path and assert no input pair ever sums below 1."""
+    from unabated_edge import pricing
+    _init_dbs(tmp_path, monkeypatch)
+    real_devig, sums = pricing.devig, []
+    def spy(probs):
+        sums.append(sum(probs))
+        return real_devig(probs)
+    monkeypatch.setattr(pricing, "devig", spy)
+    runner.run_tick(Soccer(), _poisoned_state(), [_POISON_KEV], now=_NOW,
+                    dry_run=True, book_fn=lambda t: _BOOK)
+    assert sums                                  # the healthy rung was devigged
+    assert all(s >= 1.0 for s in sums)
+
+
 class _FakeMaker:
     def __init__(self):
         self.calls, self.sweeps = [], []

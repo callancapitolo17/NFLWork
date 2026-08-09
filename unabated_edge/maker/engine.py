@@ -264,7 +264,8 @@ class MakerEngine:
             return self._pull_match(eid, now, "fill_burst")
         if not ladder:
             return self._pull_match(eid, now, "anchor_gone")
-        self._fair_by_event[eid] = {ln: r["p_over"] for ln, r in ladder.items()}
+        self._fair_by_event[eid] = {ln: r["p_over"] for ln, r in ladder.items()
+                                    if r.get("p_over") is not None}
         if self._anchor_stale(ladder, event_meta.start_utc, now):
             return self._pull_match(eid, now, "anchor_stale")
         baseline = self.state.position_baseline
@@ -290,6 +291,15 @@ class MakerEngine:
                 continue
             rung, ticker = ladder.get(line), mk.get("ticker")
             if rung is None or not ticker:
+                continue
+            if rung.get("reject") is not None:
+                # ladder gate refused this rung (issue #73): fail closed — cancel
+                # anything resting at this line (a merely-absent rung holds quotes;
+                # a rejected one must not), regardless of book availability.
+                self.state.register_ticker(ticker, sport, eid, line)
+                for side in ("yes", "no"):
+                    self._sync(sport, eid, ticker, side, None, rung["reject"],
+                               None, bool(rung.get("alt")), now)
                 continue
             book = books.get(ticker)
             if book is None:

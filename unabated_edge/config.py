@@ -56,6 +56,13 @@ ALT_MARGIN_MULT = float(_get("ALT_MARGIN_MULT", "1.5"))
 ALT_SIZE_MULT = float(_get("ALT_SIZE_MULT", "0.5"))
 ALT_OVERROUND_MIN = float(_get("ALT_OVERROUND_MIN", "1.01"))
 ALT_OVERROUND_MAX = float(_get("ALT_OVERROUND_MAX", "1.15"))
+# Feed-integrity envelope on EVERY anchor rung (main and alt) at ladder build
+# (issue #73): raw implied sum < 1 -> anchor_crossed; outside [MIN, MAX] ->
+# anchor_overround; rejected rungs are never devigged. The envelope strictly
+# contains the alt band above, so the maker's tighter alt_overround gate keeps
+# its original behavior for everything that passes here.
+ANCHOR_OVERROUND_MIN = float(_get("ANCHOR_OVERROUND_MIN", "1.005"))
+ANCHOR_OVERROUND_MAX = float(_get("ANCHOR_OVERROUND_MAX", "1.20"))
 QUOTE_PULL_MIN = float(_get("QUOTE_PULL_MIN", "3"))
 MAX_QUOTE_PCT = float(_get("MAX_QUOTE_PCT", "0.30"))
 MATCH_CAP_PCT = float(_get("MATCH_CAP_PCT", "0.40"))
