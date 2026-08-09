@@ -24,7 +24,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import duckdb
-import pandas as pd
 from scipy.stats import norm
 
 from kalshi_common import auth_client, legset, sgp_runner
@@ -80,6 +79,12 @@ def _configure_auth():
 
 
 def _refresh_sgp():
+    """Reload `_SGP_ODDS` from the latest sweep pass. RESEARCH VIEW ONLY
+    (#57): the quote path prices every combo from live on-demand fetches, so
+    this frame feeds nothing but the `scrape_done` book-count log and the
+    `_book_fairs` regression-test oracle. The age bound is two sweep periods
+    — wide enough that the view always covers the last completed pass at the
+    slow cadence, meaningless to trading either way."""
     global _SGP_ODDS
     # O-1: a fresh scrape may add games / correct schedule rows — drop the
     # game-metadata caches before anything else (including the early returns).
@@ -98,7 +103,7 @@ def _refresh_sgp():
             "SELECT game_id, combo, period, bookmaker, sgp_decimal, fetch_time, "
             "spread_line, total_line FROM mlb_sgp_odds WHERE period='FG' "
             "AND fetch_time > NOW() - INTERVAL (CAST(? AS BIGINT)) SECOND",
-            [config.MAX_BOOK_STALENESS_SEC]).fetchdf()
+            [2 * config.SGP_REFRESH_SEC]).fetchdf()
     finally:
         con.close()
 
@@ -281,41 +286,73 @@ def _open_quote_exposure_by_game(exclude_rfq_id: str | None = None):
     return [{"game_id": g, "price": float(exp)} for g, exp in rows]
 
 
-def _post_fill_refresh_landed(game_ids: list, filled_at) -> bool:
-    """True iff EVERY game in `game_ids` has at least one `_SGP_ODDS` row
-    scraped AFTER `filled_at` (P-7, issue #21). The COMBO_COOLDOWN_SEC floor
-    (60s) expires before a full SGP cycle completes (~150-165s end-to-end),
-    so without this check a re-quote after the floor would be priced off the
-    exact book snapshot that produced the picked-off fill.
+def _post_fill_live_refresh_landed(by_game: dict, filled_at) -> bool:
+    """True iff EVERY game leg set of the combo has a COMPLETED on-demand
+    flight with >=1 book fair that landed AFTER `filled_at` (P-7 issue #21,
+    re-pointed by #57). The COMBO_COOLDOWN_SEC floor (60s) alone would let a
+    re-quote be priced off the exact book snapshot that produced the
+    picked-off fill; the old check waited for a full sweep pass, which at
+    the slow cadence would stretch every cooldown to minutes — the gate now
+    keys on the TARGETED fetch `_ensure_post_fill_fetches` fires instead.
 
-    Timezone rule mirrors `risk._now_matching`: a NAIVE fetch_time is
-    session-LOCAL (mlb_sgp_odds.fetch_time is a naive TIMESTAMP column —
-    DuckDB drops the offset on write), an aware one compares as a true
-    instant. Fail-CLOSED: missing games, NaT, or any comparison error keeps
-    the combo cooled — a stale re-quote is worse than a skipped one.
+    The engine stamps landings on the monotonic clock; the age converts to a
+    wall instant here for the comparison against `fills.filled_at`
+    (TIMESTAMPTZ — aware; a naive value is treated as session-local,
+    mirroring `risk._now_matching`). Fail-CLOSED: no engine, no completed
+    priced flight, a pre-fill landing, or any comparison error keeps the
+    combo cooled — a stale re-quote is worse than a skipped one.
     """
     try:
-        if filled_at is None or _SGP_ODDS is None or _SGP_ODDS.empty:
+        if filled_at is None or _ENGINE is None:
             return False
-        combo_rows = _SGP_ODDS[_SGP_ODDS.game_id.isin(game_ids)]
-        if combo_rows.empty:
-            return False
-        per_game_latest = combo_rows.groupby("game_id").fetch_time.max()
-        if (len(per_game_latest) < len(set(game_ids))
-                or per_game_latest.isna().any()):
-            return False
-        oldest_refresh = pd.Timestamp(per_game_latest.min()).to_pydatetime()
-        if oldest_refresh.tzinfo is None:
-            filled_cmp = (filled_at.astimezone().replace(tzinfo=None)
-                          if filled_at.tzinfo is not None else filled_at)
-        else:
-            filled_cmp = (filled_at if filled_at.tzinfo is not None
-                          else filled_at.astimezone())
-        return oldest_refresh > filled_cmp
+        now_utc = datetime.now(timezone.utc)
+        filled_cmp = (filled_at if filled_at.tzinfo is not None
+                      else filled_at.astimezone())
+        for gl in by_game.values():
+            age = _ENGINE.completed_fetch_age_sec(legset.leg_set_hash(gl))
+            if age is None:
+                return False
+            landed_wall = now_utc - timedelta(seconds=age)
+            if landed_wall <= filled_cmp:
+                return False
+        return True
     except Exception:
-        log.warning("[post_fill_refresh_check_failed] game_ids=%s — keeping "
-                    "combo cooled", game_ids)
+        log.warning("[post_fill_refresh_check_failed] — keeping combo cooled")
         return False
+
+
+def _ensure_post_fill_fetches(rfq_id, ticker, by_game: dict) -> None:
+    """Queue a TARGETED on-demand fetch for every game leg set of a filled
+    combo (#57). Fired eagerly by the confirm tick the moment a fill is
+    recorded (so the awaiting-refresh gate usually clears right at the 60s
+    floor) and lazily by the cooldown gate whenever the landing is missing
+    (process restart / engine store prune self-heal). Reuses the live-feed
+    machinery wholesale — per-book pacing gates, job budget, dropped-book
+    accounting, #38 health rows. Fail-safe: never raises into its tick."""
+    try:
+        if _ENGINE is None:
+            return
+        for gl in by_game.values():
+            gid = _resolve_game_for_legs(gl)
+            gref = _game_ref(gid) if gid is not None else None
+            if gref is None:
+                continue
+            h = legset.leg_set_hash(gl)
+            if _ENGINE.landed_empty(h):
+                # The books just answered "nothing" for this leg set — while
+                # that zero-book landing is fresh, re-feeding would hammer a
+                # dead slate every tick. Retry resumes once it ages out
+                # (~QUOTE_FRESH_SEC), mirroring the pricing path's re-feed
+                # rule after live_fetch_timeout.
+                continue
+            if _ENGINE.ensure_fetch(h, gref, gl):
+                research.emit("on_demand_requested", rfq_id=rfq_id,
+                              ticker=ticker,
+                              payload=dict(leg_set_hash=h, game_id=gid,
+                                           n_legs=len(gl),
+                                           trigger="post_fill"))
+    except Exception:
+        log.warning("[post_fill_fetch_failed] ticker=%s", ticker)
 
 
 def _resolve_game_for_legs(game_legs: list) -> str | None:
@@ -755,10 +792,10 @@ def _discovery_tick(source, gateway, dry_run):
     # FIX M2: kill-switch — stop quoting immediately if the kill file exists
     if config.KILL_FILE.exists():
         return
-    # Book-freshness gate: if our books are stale/missing we cannot price anything.
-    # Replaces the old samples-staleness gate (model was removed in v1 hardening).
-    if _SGP_ODDS is None or _SGP_ODDS.empty:
-        return
+    # No sweep-freshness top gate (#57): every RFQ's data need is enforced
+    # per-RFQ by the live-feed block below (on_demand_pending /
+    # live_fetch_timeout / live_too_few_books) — an empty `_SGP_ODDS` is the
+    # NORMAL state between slow sweep passes and must not idle the bot.
     # H4 + N12: global void-rate halt — step back if we're voiding too often.
     # N12: edge-triggered notification so operator gets a single ping on state
     # transitions (False→True = halt; True→False = resume) rather than silence.
@@ -922,13 +959,14 @@ def _discovery_tick(source, gateway, dry_run):
             _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                           reason="per_game_cap")
             continue
-        # H9 + P-7 (issue #21): per-combo cooldown, two layers after a fill:
+        # H9 + P-7 (issue #21, re-pointed by #57): per-combo cooldown, two
+        # layers after a fill:
         # (1) hard floor — COMBO_COOLDOWN_SEC past the fill (unchanged);
         # (2) data-aware — even after the floor, stay cooled until EVERY game
-        #     this combo touches has a post-fill SGP scrape. The 60s floor
-        #     expires before the ~150-165s scrape cycle, so until then a
-        #     re-quote would re-post the exact books that priced the
-        #     picked-off fill.
+        #     this combo touches has a completed post-fill TARGETED fetch
+        #     (fired at fill time by the confirm tick, re-fired lazily here).
+        #     Without it a re-quote could be priced before the books were
+        #     ever re-asked after the picked-off fill.
         # cooled_until is TIMESTAMPTZ (O-2), so the aware bind compares as a
         # true instant. last_fill_fair feeds the same-price block below (only
         # set once the refresh gate has passed).
@@ -950,7 +988,8 @@ def _discovery_tick(source, gateway, dry_run):
                     "FROM fills WHERE combo_market_ticker=? "
                     "ORDER BY filled_at DESC LIMIT 1", [ticker]).fetchone()
             if last_fill is not None:
-                if not _post_fill_refresh_landed(game_ids_list, last_fill[0]):
+                if not _post_fill_live_refresh_landed(by_game, last_fill[0]):
+                    _ensure_post_fill_fetches(rid, ticker, by_game)
                     _log_decision("skipped", rfq_id=rid, ticker=ticker,
                                   game_id=game_id,
                                   reason="in_cooldown_awaiting_refresh")
@@ -1441,6 +1480,13 @@ def _confirm_tick(gateway, dry_run):
                     notify.fill(ticker, side_held, contracts, price)
                     _log_decision("confirmed", rfq_id=rid, quote_id=qid, ticker=ticker,
                                   game_id=game_id)
+                    # #57: fire the targeted post-fill fetch NOW — the
+                    # cooldown's awaiting-refresh gate clears on this
+                    # flight's landing, usually right at the 60s floor,
+                    # with no sweep pass involved.
+                    if canon_c:
+                        _ensure_post_fill_fetches(
+                            rid, ticker, legset.partition_by_game(canon_c))
             else:
                 _log_decision("voided_last_look", rfq_id=rid, quote_id=qid, ticker=ticker,
                               game_id=game_id)
@@ -1603,8 +1649,11 @@ def _current_consensus_fair(legs_json: str | None) -> float | None:
     """Current book-consensus fair for a resting quote's combo, or None.
 
     Extracted so the drift check and the #23 constituent-jump breaker's
-    "were the books quiet?" test read the SAME number. Fail-safe: any parse
-    or pricing error is None (no signal), never an exception into the sweep.
+    "were the books quiet?" test read the SAME number. Live-routed (#57):
+    a resting quote's RFQ is still in the poll, so the engine holds fairs at
+    most ~QUOTE_FRESH_SEC old — sweep rows would be blind between the slow
+    passes. Fail-safe: any parse or pricing error is None (no signal), never
+    an exception into the sweep.
     """
     if not legs_json:
         return None
@@ -1614,7 +1663,8 @@ def _current_consensus_fair(legs_json: str | None) -> float | None:
                                  config.MIN_AGREEING_BOOKS,
                                  config.SIGMA_Z_MAX,
                                  on_demand_fairs=(_ENGINE.lookup
-                                                  if _ENGINE is not None else None))
+                                                  if _ENGINE is not None else None),
+                                 live_routing=True)
     except Exception:
         return None
 
@@ -1719,14 +1769,19 @@ def _constituent_jumped_games(live_rows, current_prices) -> tuple[set, dict]:
     return jumped_games, detail
 
 
-def _risk_sweep_tick(gateway):
+def _risk_sweep_tick(gateway, *, book_health=None):
     if config.KILL_FILE.exists():
         notify.halt("kill_switch")
         return
-    # Freshness / auto-pull: if our book odds are stale/missing, pull EVERY open
-    # quote — we can no longer trust our fair value, so we must stop resting risk.
-    # Replaces the old samples-staleness gate (model was removed in v1 hardening).
-    books_stale = _SGP_ODDS is None or _SGP_ODDS.empty
+    # "We can no longer trust our fair" auto-pull, re-keyed by #57: the old
+    # rule read `_SGP_ODDS` age, which under the slow sweep is empty most of
+    # every cycle and would cancel the whole book constantly. Live-fetch
+    # health (#38 failure streaks via BookHealthAlerter.consensus_dark) is
+    # cadence-invariant: fewer than MIN_AGREEING_BOOKS books answering
+    # on-demand fetches means resting quotes can no longer be re-verified,
+    # so stop resting risk. Fail-safe: no alerter wired (tests, alerts
+    # disabled) → no pull; the #23 breakers below still protect the book.
+    books_unhealthy = book_health is not None and book_health.consensus_dark()
     with db.connect(read_only=True) as con:
         # Pull the per-quote fields we need for the drift-since-quote check too.
         live = con.execute(
@@ -1735,11 +1790,10 @@ def _risk_sweep_tick(gateway):
             "FROM live_quotes lq LEFT JOIN seen_rfqs sr ON lq.rfq_id = sr.rfq_id "
             "WHERE lq.status='open'").fetchall()
     # #23: real-time constituent poll. ONE GET per DISTINCT ticker across all
-    # open quotes — skipped entirely when flat, and when books are already
-    # stale (every quote is being cancelled anyway, so the calls would be
-    # wasted).
+    # open quotes — skipped entirely when flat, and when the books are dark
+    # (every quote is being cancelled anyway, so the calls would be wasted).
     jumped_games, jump_detail = set(), {}
-    if live and not books_stale:
+    if live and not books_unhealthy:
         global _CONSTITUENT_POLL_CURSOR
         poll_order = _rotated_poll_order(_open_quote_constituent_tickers(live))
         current_prices = singles.fetch_market_prices(
@@ -1757,8 +1811,8 @@ def _risk_sweep_tick(gateway):
     for qid, game_id, ticker, book_fair_at_q, rid, legs_json, leg_prices_json in live:
         cancel = False
         cancel_reason = None
-        if books_stale:
-            cancel, cancel_reason = True, "books_stale"
+        if books_unhealthy:
+            cancel, cancel_reason = True, "books_unhealthy"
         else:
             # B1 fix: tipoff-check the EARLIEST commence time across ALL the
             # combo's games, not just the primary game_id column. Any game we
@@ -1848,15 +1902,20 @@ def main_loop(dry_run: bool):
     # health rows — never a query, which on duckdb 1.4.4 could cost a quote
     # (see kalshi_common/book_health.py). Rule B reuses MIN_AGREEING_BOOKS so
     # the alert fires at exactly the count the quoting gate cares about.
+    # The alerter is shared: the service feeds it per-fetch outcomes, and the
+    # risk sweep reads consensus_dark() as its "stop resting risk" signal
+    # (#57). build_alerter returns None when alerting is disabled — the
+    # sweep's book_health=None default then simply skips the pull.
+    book_alerter = build_alerter(
+        label="MM",
+        enabled=config.BOOK_ALERT_ENABLED,
+        streak_threshold=config.BOOK_ALERT_STREAK,
+        min_healthy_books=config.MIN_AGREEING_BOOKS,
+        paths=config.BOOK_ALERT_PATHS)
     sgp_service = SGPService(per_book_deadline_sec=config.SGP_SCRAPER_TIMEOUT_SEC,
                              on_demand_deadline_sec=config.ON_DEMAND_DEADLINE_SEC,
                              health_db_path=str(config.MARKET_DB),
-                             book_health=build_alerter(
-                                 label="MM",
-                                 enabled=config.BOOK_ALERT_ENABLED,
-                                 streak_threshold=config.BOOK_ALERT_STREAK,
-                                 min_healthy_books=config.MIN_AGREEING_BOOKS,
-                                 paths=config.BOOK_ALERT_PATHS))
+                             book_health=book_alerter)
     # Phase 2: on-demand pricing engine shares the service's persistent
     # clients + structure caches. Always on — no switch (user decision);
     # the bot-wide kill file remains the emergency stop.
@@ -1904,7 +1963,7 @@ def main_loop(dry_run: bool):
                 last["conf"] = now
             if now - last["risk"] >= config.RISK_SWEEP_SEC:
                 try:
-                    _risk_sweep_tick(gateway)
+                    _risk_sweep_tick(gateway, book_health=book_alerter)
                 except Exception as e:
                     log.error("risk err: %s", e)
                 last["risk"] = now
@@ -1945,8 +2004,9 @@ def main_loop(dry_run: bool):
             # Issue #50: structure-only warming — no pricing calls, keeps
             # every book's on-demand structure caches + CZR token hot so an
             # RFQ never pays the cold-start penalty. Runs inline on the tick
-            # thread like the sweep (and is far cheaper); #57 re-points
-            # cadence/roles later.
+            # thread like the sweep (and is far cheaper). Deliberately on its
+            # own FAST cadence while the pricing sweep above idles at the
+            # slow #57 cadence: warming is what keeps live fetches quick.
             if now - last["warm"] >= config.STRUCTURE_WARM_SEC:
                 try:
                     warmed = sgp_runner.warm_cycle(

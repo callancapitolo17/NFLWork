@@ -30,7 +30,7 @@ def _source(rel: str) -> str:
 def test_maker_book_alert_knobs_have_defaults():
     assert mm_config.BOOK_ALERT_ENABLED is True
     assert mm_config.BOOK_ALERT_STREAK == 3
-    assert mm_config.BOOK_ALERT_PATHS == ("sweep", "on_demand")
+    assert mm_config.BOOK_ALERT_PATHS == ("on_demand",)
 
 
 def test_paths_knob_parses_a_single_path():

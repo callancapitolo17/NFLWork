@@ -42,9 +42,12 @@ class FakeLiveEngine:
     Tests about the engine/feed itself build their own stubs instead.
     """
 
-    def __init__(self, fairs=None):
+    def __init__(self, fairs=None, completed_age=1.0):
         self.fairs = dict(fairs) if fairs else {"draftkings": 0.55,
                                                 "fanduel": 0.55}
+        # #57 post-fill cooldown gate: default "landed 1s ago" so a test
+        # about something else sails through the awaiting-refresh gate.
+        self.completed_age = completed_age
         self.ensure_calls = []
         self.refetch_calls = []
 
@@ -73,3 +76,6 @@ class FakeLiveEngine:
     def refetch_now(self, jobs, deadline_sec):
         self.refetch_calls.append((list(jobs), deadline_sec))
         return True
+
+    def completed_fetch_age_sec(self, h):
+        return self.completed_age

@@ -89,13 +89,10 @@ FAIR_DRIFT_TOLERANCE = float(_get("FAIR_DRIFT_TOLERANCE", "0.02"))
 MIN_FAIR_PROB = float(_get("MIN_FAIR_PROB", "0.05"))
 MAX_FAIR_PROB = float(_get("MAX_FAIR_PROB", "0.95"))
 
-# Freshness / circuit breaker
-# Observed live 2026-06-08: a full SGP cycle is ~150-165s end-to-end (60s tick
-# gap + ~90-105s scrape runtime), so a 60s staleness window left the bot
-# books-stale (idle) for most of every cycle. 180s covers the worst observed
-# inter-fetch gap; pickoff defense in the stale tail remains margin + circuit
-# breaker + last-look.
-MAX_BOOK_STALENESS_SEC = int(_get("MAX_BOOK_STALENESS_SEC", "180"))
+# Circuit breaker. (#57 deleted the book-data-age staleness knob that lived
+# here: every quote is priced by a live fetch, resting-quote protection is
+# the constituent-jump breaker + the #38 health-dark pull, and sweep-row age
+# gates nothing anymore — do not reintroduce an age rule.)
 BOOK_MOVE_CB_THRESHOLD = float(_get("BOOK_MOVE_CB_THRESHOLD", "0.03"))
 TIPOFF_CANCEL_MIN = int(_get("TIPOFF_CANCEL_MIN", "5"))
 
@@ -189,7 +186,12 @@ DISCOVERY_SEC = int(_get("DISCOVERY_SEC", "2"))
 CONFIRM_SEC = int(_get("CONFIRM_SEC", "2"))
 RISK_SWEEP_SEC = int(_get("RISK_SWEEP_SEC", "10"))
 RECONCILE_SWEEP_SEC = int(_get("RECONCILE_SWEEP_SEC", "30"))
-SGP_REFRESH_SEC = int(_get("SGP_REFRESH_SEC", "60"))
+# #57: the full-slate pricing sweep is BACKGROUND — research/monitor
+# continuity + mlb_target_lines upkeep only. Quoting never reads it (live
+# on-demand fetches price every quote since #54), so the cadence is set by
+# how fresh the research record needs to be, not by trading. The taker still
+# runs its own sweep at 60s (shared knob name, independent value).
+SGP_REFRESH_SEC = int(_get("SGP_REFRESH_SEC", "300"))
 # Settlement sweep (issue #12): populate fills.realized_pnl once markets
 # settle. Only matters hours post-game, so a slow cadence is plenty.
 SETTLEMENT_SWEEP_SEC = int(_get("SETTLEMENT_SWEEP_SEC", "600"))
@@ -210,11 +212,12 @@ ON_DEMAND_DEADLINE_SEC = float(_get("ON_DEMAND_DEADLINE_SEC", "10.0"))
 BOOK_ALERT_ENABLED = _get_bool("BOOK_ALERT_ENABLED", "true")
 # One 403 is noise (a book hiccups); three consecutive is a dead book.
 BOOK_ALERT_STREAK = int(_get("BOOK_ALERT_STREAK", "3"))
-# Which fetch paths count toward a book's health. Post-#53 every quote is
-# priced by an on-demand fetch and the sweep is legacy warming, so #57 flips
-# this to "on_demand" in CONFIG — no code change.
+# Which fetch paths count toward a book's health. Every quote is priced by
+# an on-demand fetch and the sweep is slow background research (#57), so
+# only on_demand counts: a slow — or entirely dead — sweep can never trip a
+# streak alert, darken Rule B, or fire the risk sweep's books_unhealthy pull.
 BOOK_ALERT_PATHS = tuple(
-    p.strip() for p in _get("BOOK_ALERT_PATHS", "sweep,on_demand").split(",")
+    p.strip() for p in _get("BOOK_ALERT_PATHS", "on_demand").split(",")
     if p.strip())
 # Rule B's floor deliberately REUSES MIN_AGREEING_BOOKS rather than adding a
 # second knob: an alert that fires at a different count than the gate it is
