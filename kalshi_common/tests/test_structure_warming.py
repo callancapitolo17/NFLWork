@@ -204,7 +204,7 @@ def test_warm_cycle_derives_games_from_target_lines(tmp_path):
     seen = []
 
     class FakeService:
-        def warm_structures(self, games):
+        def warm_structures(self, games, *, wall_budget_sec=None):
             seen.extend(games)
             return {"betmgm": len(games)}
 
@@ -228,6 +228,43 @@ def test_warm_cycle_params_are_keyword_only():
                for p in sig.parameters.values())
     with pytest.raises(TypeError):
         sig.bind("db_path", object())
+
+
+def test_warm_cycle_forwards_wall_budget(tmp_path):
+    """#81: with the sweep knob gone, warming's wall deadline must come
+    from the caller — warm_cycle forwards wall_budget_sec on BOTH cadence
+    paths, and warm_structures accepts it keyword-only (None keeps the
+    per_book_deadline_sec fallback the taker still relies on)."""
+    from kalshi_common import sgp_runner
+    from kalshi_common.sgp_service import SGPService
+
+    sig = inspect.signature(SGPService.warm_structures)
+    assert sig.parameters["wall_budget_sec"].kind is \
+        inspect.Parameter.KEYWORD_ONLY
+    assert sig.parameters["wall_budget_sec"].default is None
+
+    db = str(tmp_path / "market.duckdb")
+    ct = datetime(2026, 8, 5, 23, 5, tzinfo=timezone.utc)
+    sgp_runner.write_target_lines(
+        [TargetLine(game_id="g1", home_team="Boston Red Sox",
+                    away_team="New York Yankees", commence_time=ct,
+                    period="FG", spread=-1.5, total=8.5)], db_path=db)
+
+    budgets = []
+
+    class FakeService:
+        def warm_structures(self, games, *, token_min_remaining_sec=180.0,
+                            refresh_older_than_sec=120.0,
+                            wall_budget_sec=None):
+            budgets.append(wall_budget_sec)
+            return {"betmgm": len(games)}
+
+    sgp_runner.warm_cycle(bot_market_db=db, service=FakeService(),
+                          wall_budget_sec=360.0)
+    sgp_runner.warm_cycle(bot_market_db=db, service=FakeService(),
+                          cadence_sec=120, wall_budget_sec=360.0)
+    sgp_runner.warm_cycle(bot_market_db=db, service=FakeService())
+    assert budgets == [360.0, 360.0, None]
 
 
 # --------------------------------------------------------------------- #

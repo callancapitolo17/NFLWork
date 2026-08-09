@@ -316,8 +316,7 @@ The 5% is a *quoted/expected* ROI — what we actually realize is what the valid
 # Or point at explicit DB copies
 ./kalshi_mlb_mm/venv/bin/python -m kalshi_mlb_mm.report \
     --state-db path/to/kalshi_mlb_mm.duckdb \
-    --research-db path/to/kalshi_mlb_mm_research.duckdb \
-    --market-db path/to/kalshi_mlb_mm_market.duckdb
+    --research-db path/to/kalshi_mlb_mm_research.duckdb
 ```
 
 Sections: **1** RFQ funnel (24h + 7d: seen → in-scope → quoted → accepted →
@@ -409,6 +408,7 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `SETTLEMENT_SWEEP_SEC` | `600` | Settlement sweep cadence (seconds) — populates `realized_pnl` once markets settle; only matters hours post-game |
 | `TARGET_LINE_REFRESH_SEC` | `300` | #81: `mlb_target_lines` refresh cadence (Kalshi MVE enumeration + Odds API schedule; zero book requests). Sets how fast a NEW game becomes quotable |
 | `COVERAGE_SUMMARY_SEC` | `300` | #81: cadence of the `on_demand_coverage` research event (per-book live-fetch outcome tally since the last summary; idle windows emit nothing) |
+| `STRUCTURE_WARM_BUDGET_SEC` | `360.0` | #81: wall budget for one warming pass (pre-#81 warming rode the sweep's per-book deadline, which the live env had raised to 360 — this keeps that proven value). A book still running at the budget is dropped with a warming-path timeout health row |
 | `STRUCTURE_WARM_SEC` | `120` | Structure-only warming cadence (issue #50): every book's events/structure TTL caches + Caesars' WAF token are re-warmed with ZERO pricing calls, so an RFQ never pays cold-structure discovery. Keep under `STRUCTURE_TTL_SEC` (180) and the CZR token TTL (240) |
 | `ON_DEMAND_DEADLINE_SEC` | `10.0` | Per-book wall budget for LIVE (on-demand) pricing fetches (issue #50). A book still running at the cap is dropped; the fast books' results land. Sized so warm Novig (p95 ~9s) barely fits |
 

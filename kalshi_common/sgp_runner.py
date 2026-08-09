@@ -282,7 +282,8 @@ def write_target_lines(target_lines: list[TargetLine], db_path: str):
 
 
 def warm_cycle(*, bot_market_db: str, service,
-               cadence_sec: float | None = None) -> dict[str, int]:
+               cadence_sec: float | None = None,
+               wall_budget_sec: float | None = None) -> dict[str, int]:
     """One structure-only warming pass over the current slate (issue #50).
 
     Inputs: the bot's market DB (``mlb_target_lines``, written by
@@ -300,6 +301,11 @@ def warm_cycle(*, bot_market_db: str, service,
     token-TTL floor (+60s slack) so an env-tuned cadence cannot drift
     from the service defaults. None keeps the service defaults (120s
     cadence semantics).
+
+    ``wall_budget_sec`` (#81): wall deadline for the pass, forwarded to
+    ``service.warm_structures``. None keeps the service's fallback (its
+    ``per_book_deadline_sec``) — a sweep-free maker must pass its own
+    budget, since it no longer sets that knob.
     """
     from mlb_sgp._shared import GameRef
     con = duckdb.connect(bot_market_db, read_only=True)
@@ -315,11 +321,12 @@ def warm_cycle(*, bot_market_db: str, service,
     games = [GameRef(game_id=r[0], home_team=r[1], away_team=r[2],
                      commence_time=r[3]) for r in rows]
     if cadence_sec is None:
-        return service.warm_structures(games)
+        return service.warm_structures(games, wall_budget_sec=wall_budget_sec)
     return service.warm_structures(
         games,
         token_min_remaining_sec=float(cadence_sec) + 60.0,
-        refresh_older_than_sec=float(cadence_sec))
+        refresh_older_than_sec=float(cadence_sec),
+        wall_budget_sec=wall_budget_sec)
 
 
 # Issue #38, item 4. This LEGACY subprocess path (dashboard only — the bots

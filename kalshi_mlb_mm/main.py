@@ -1882,7 +1882,8 @@ def main_loop(dry_run: bool):
         paths=config.BOOK_ALERT_PATHS)
     # #81: no per_book_deadline_sec — that knob budgets service.refresh(),
     # the full-slate sweep the maker no longer runs. On-demand flights are
-    # budgeted by on_demand_deadline_sec; warming budgets itself.
+    # budgeted by on_demand_deadline_sec; warming gets its own explicit
+    # wall budget at the warm_cycle call (STRUCTURE_WARM_BUDGET_SEC).
     sgp_service = SGPService(on_demand_deadline_sec=config.ON_DEMAND_DEADLINE_SEC,
                              health_db_path=str(config.MARKET_DB),
                              book_health=book_alerter)
@@ -1979,7 +1980,8 @@ def main_loop(dry_run: bool):
                     warmed = sgp_runner.warm_cycle(
                         bot_market_db=str(config.MARKET_DB),
                         service=sgp_service,
-                        cadence_sec=config.STRUCTURE_WARM_SEC)
+                        cadence_sec=config.STRUCTURE_WARM_SEC,
+                        wall_budget_sec=config.STRUCTURE_WARM_BUDGET_SEC)
                     log.info("structure warm: %s", warmed)
                 except Exception as e:
                     log.error("warm err: %s", e)
@@ -2005,6 +2007,13 @@ def main_loop(dry_run: bool):
                         [datetime.now(timezone.utc), qid])
             except Exception:
                 pass
+        # #81: drain the partial coverage window into the buffer, then the
+        # buffer to disk — otherwise up to COVERAGE_SUMMARY_SEC of per-book
+        # outcomes die with the process.
+        try:
+            _coverage_summary_tick(sgp_service=sgp_service)
+        except Exception:
+            pass
         research.flush()  # final drain before shutdown
         db.end_session(sid)
         log.info("=== shutdown complete ===")

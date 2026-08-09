@@ -205,6 +205,13 @@ SETTLEMENT_SWEEP_SEC = int(_get("SETTLEMENT_SWEEP_SEC", "600"))
 # never pays a cold-structure penalty. Must stay under STRUCTURE_TTL_SEC
 # (kalshi_common/sgp_service.py) and under the CZR token TTL.
 STRUCTURE_WARM_SEC = int(_get("STRUCTURE_WARM_SEC", "120"))
+# #81: wall budget for one warming pass. Pre-#81 warming rode the sweep's
+# per-book deadline, which the live .env had raised to 360 because this
+# machine's books time out at the shipped default — keep that proven value
+# now that the sweep knob is gone. A book still running at the budget is
+# dropped (timeout health row + client rebuild), so a too-small budget
+# shows up as warming-path timeouts, not a hang.
+STRUCTURE_WARM_BUDGET_SEC = float(_get("STRUCTURE_WARM_BUDGET_SEC", "360.0"))
 # Issue #50: per-book wall budget for LIVE (on-demand) pricing fetches.
 # 10s keeps warm Novig (p95 ~9s at #42's baseline) barely inside while a
 # hung book is dropped instead of stalling the combo to the sweep budget.

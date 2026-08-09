@@ -360,8 +360,14 @@ class SGPService:
 
     def warm_structures(self, games, *,
                         token_min_remaining_sec: float = 180.0,
-                        refresh_older_than_sec: float = 120.0) -> dict[str, int]:
+                        refresh_older_than_sec: float = 120.0,
+                        wall_budget_sec: float | None = None) -> dict[str, int]:
         """Structure-only warming pass over ``games`` (issue #50 item 2).
+
+        ``wall_budget_sec`` (#81): explicit wall deadline for collecting all
+        books' warming results. None falls back to ``per_book_deadline_sec``
+        — the pre-#81 behavior, when the maker set that knob for its sweep
+        and warming rode along. A sweep-free bot passes its own budget.
 
         For every book, concurrently: pre-warm the auth token where the
         client supports it (Caesars' WAF mint), then run match_event +
@@ -406,7 +412,9 @@ class SGPService:
                                    token_min_remaining_sec,
                                    refresh_older_than_sec)
                     for b in self.books}
-            wall_deadline = time.monotonic() + self.per_book_deadline_sec
+            budget = (wall_budget_sec if wall_budget_sec is not None
+                      else self.per_book_deadline_sec)
+            wall_deadline = time.monotonic() + budget
             for b, fut in futs.items():
                 remaining = max(0.0, wall_deadline - time.monotonic())
                 try:

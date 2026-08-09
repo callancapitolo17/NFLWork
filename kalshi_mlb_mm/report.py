@@ -1,18 +1,19 @@
 """Daily state-of-the-maker report (issue #14).
 
-Aggregates the maker bot's three DuckDBs into a printed markdown report:
-RFQ funnel + on-demand coverage, quotable universe, staleness, demand curve,
-settlement P&L, health.
+Aggregates the maker bot's two report-relevant DuckDBs into a printed
+markdown report: RFQ funnel + on-demand coverage, quotable universe,
+staleness, demand curve, settlement P&L, health.
 
 Inputs:  kalshi_mlb_mm.duckdb (state), kalshi_mlb_mm_research.duckdb
-         (firehose), kalshi_mlb_mm_market.duckdb (SGP odds) — all opened
-         READ-ONLY with the monitor's lock-retry pattern.
+         (firehose) — both opened READ-ONLY with the monitor's lock-retry
+         pattern. #81: the market DB is no longer an input — the quotable
+         universe reads the firehose's on_demand_result flights.
 Outputs: markdown on stdout.
 Side effects: NONE. This module never writes any database.
 
 Usage:
     python -m kalshi_mlb_mm.report              # live DBs (run from repo root)
-    python -m kalshi_mlb_mm.report --state-db X --research-db Y --market-db Z
+    python -m kalshi_mlb_mm.report --state-db X --research-db Y
 """
 
 import argparse

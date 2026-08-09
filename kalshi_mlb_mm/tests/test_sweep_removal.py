@@ -173,6 +173,18 @@ def test_new_cadence_knobs_defaults():
     assert cfg.STRUCTURE_WARM_SEC < cfg.TARGET_LINE_REFRESH_SEC
 
 
+def test_warming_wall_budget_survives_sweep_knob_deletion():
+    """Pre-#81 warming rode the sweep's per-book deadline, which the live
+    env had raised to 360s (books time out at the shipped default). The
+    replacement knob must keep that proven value and actually reach the
+    warm_cycle call — a silent fall-through to the kalshi_common 75s
+    default is the review finding this test pins."""
+    import kalshi_mlb_mm.config as cfg
+    from kalshi_mlb_mm import main
+    assert cfg.STRUCTURE_WARM_BUDGET_SEC == 360.0
+    assert "wall_budget_sec=config.STRUCTURE_WARM_BUDGET_SEC" in _src(main)
+
+
 # --------------------------------------------------------------------------- #
 # 5. report.py universe reads the firehose flight record                       #
 # --------------------------------------------------------------------------- #
