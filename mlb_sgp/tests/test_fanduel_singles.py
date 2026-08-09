@@ -97,7 +97,7 @@ _H, _A = "San Francisco Giants", "Chicago White Sox"
     ("Line / Total Parlay 7", None, None, None),                         # parlay
     ("Total Runs (Bands)", None, None, None),                            # bands
     ("Moneyline Away Listed", None, None, None),                         # listed
-    ("First 7 Innings Result", None, None, None),                        # 3-way result
+    ("First 7 Innings Result", None, None, ("F7", "h2h_3way")),          # 3-way result, modeled period
     ("First 6 Innings Result", None, None, None),                        # 3-way result
     ("7th Inning Total Runs", None, None, None),                         # single inning
     ("7th Inning Run Line", None, None, None),                           # single inning

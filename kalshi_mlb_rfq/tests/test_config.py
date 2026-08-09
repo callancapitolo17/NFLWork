@@ -15,10 +15,18 @@ def test_project_root_strips_worktree_suffix():
             f"PROJECT_ROOT should end with NFLWork, got {config_mod.PROJECT_ROOT}"
 
 
+def _effective_int(key: str, default: str) -> int:
+    """Expected knob value under config's precedence: os.environ > .env > default.
+    Asserting the literal default breaks on any machine with a legit operator
+    override in the (gitignored) .env — e.g. SGP_SCRAPER_TIMEOUT_SEC=240."""
+    import os
+    return int(os.environ.get(key, config_mod._FILE_ENV.get(key, default)))
+
+
 def test_new_env_knobs_have_defaults():
-    assert config_mod.SGP_REFRESH_SEC == 60
-    assert config_mod.SGP_SCRAPER_TIMEOUT_SEC == 90
-    assert config_mod.MIN_BOOK_COUNT_FOR_BLEND == 2
+    assert config_mod.SGP_REFRESH_SEC == _effective_int("SGP_REFRESH_SEC", "60")
+    assert config_mod.SGP_SCRAPER_TIMEOUT_SEC == _effective_int("SGP_SCRAPER_TIMEOUT_SEC", "90")
+    assert config_mod.MIN_BOOK_COUNT_FOR_BLEND == _effective_int("MIN_BOOK_COUNT_FOR_BLEND", "2")
     assert isinstance(config_mod.BOT_MARKET_DB, Path)
     assert str(config_mod.BOT_MARKET_DB).endswith("kalshi_mlb_rfq_market.duckdb")
     assert isinstance(config_mod.MLB_SGP_DIR, Path)
