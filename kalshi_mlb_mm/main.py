@@ -132,8 +132,6 @@ def _consensus_filter(book_fairs: dict[str, float]) -> dict[str, float]:
     return dict(book_fairs)
 
 
-
-
 # O-1 fix (issue #18): _commence_time and _resolve_game_for_legs used to open
 # a fresh read-only DuckDB connection per RFQ per 2s tick (lock churn against
 # the scraper's writes and the monitor's readers). Game→game_id resolution and
@@ -1900,16 +1898,21 @@ def main_loop(dry_run: bool):
     # purely on-demand flights + #50's structure warming. both_teams=True
     # (issue #70) enumerates BOTH teams' margin lines (signed spread_line:
     # home margin negative, away margin positive), matching the taker.
+    warmup_targets_ok = True
     try:
         _target_line_tick()
     except Exception as e:
+        warmup_targets_ok = False
         log.warning("warmup target-line refresh failed: %s", e)
     # "warm" starts at 0.0 so the first loop iteration warms immediately:
     # every book's on-demand structure caches (and the CZR WAF token) are
-    # cold until the first warming pass (issue #50).
+    # cold until the first warming pass (issue #50). A FAILED warmup
+    # target-line refresh retries on the first loop iteration too (then
+    # falls back to the 300s cadence) — without it, a Kalshi blip at boot
+    # leaves game resolution blind for a full period.
     last = {"disc": 0.0, "conf": 0.0, "risk": 0.0, "reconcile": 0.0,
-            "settle": 0.0, "targets": time.time(), "warm": 0.0,
-            "coverage": time.time()}
+            "settle": 0.0, "warm": 0.0, "coverage": time.time(),
+            "targets": time.time() if warmup_targets_ok else 0.0}
     try:
         while _running.is_set():
             now = time.time()
