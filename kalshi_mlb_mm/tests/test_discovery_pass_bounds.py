@@ -50,6 +50,43 @@ class NeverQuoteGateway:
         raise AssertionError("out-of-scope RFQs must never reach submit_quote")
 
 
+def test_discovery_pass_uses_constant_db_connections(monkeypatch, tmp_path):
+    """2026-08-10 round 2: on the ~1GB live state DB every connection close
+    pays a full CHECKPOINT (~0.5s), so the per-RFQ seen-SELECT +
+    per-decision INSERT pattern starved the loop even after scope checks
+    went wire-free. A pass must open O(1) connections, not O(n_rfqs)."""
+    import kalshi_mlb_mm.db as db_mod
+    _fresh_db(monkeypatch, tmp_path, "connes.duckdb")
+    import kalshi_mlb_mm.config as cfg
+    from kalshi_mlb_mm import main
+
+    monkeypatch.setattr(cfg, "SCOPE_FETCH_BUDGET_PER_TICK", 10_000)
+    main._SCOPE_CACHE.clear()
+
+    real_connect = db_mod.connect
+    calls = {"n": 0}
+
+    def counting_connect(*a, **kw):
+        calls["n"] += 1
+        return real_connect(*a, **kw)
+
+    monkeypatch.setattr(main.db, "connect", counting_connect)
+    src = CountingSource(n_rfqs=200)   # 200 brand-new out-of-scope RFQs
+    main._discovery_tick(src, NeverQuoteGateway(), dry_run=True)
+
+    # Pre-pass seen lookup + hoisted open-count/fills reads + one flush —
+    # a handful, regardless of RFQ count. 200 RFQs must NOT mean 400+.
+    assert calls["n"] <= 8, (
+        f"discovery pass opened {calls['n']} DB connections for 200 RFQs — "
+        "per-RFQ connect pattern has regressed")
+    with db_mod.connect(read_only=True) as con:
+        n_dec = con.execute("SELECT COUNT(*) FROM quote_decisions").fetchone()[0]
+        n_seen = con.execute("SELECT COUNT(*) FROM seen_rfqs").fetchone()[0]
+    assert n_dec == 200 and n_seen == 200, (
+        f"buffered writes must all flush: decisions={n_dec} seen={n_seen}")
+    main._SCOPE_CACHE.clear()
+
+
 def test_scope_fetch_budget_bounds_rest_calls_per_tick(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path, "budget.duckdb")
     import kalshi_mlb_mm.config as cfg
