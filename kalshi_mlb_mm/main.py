@@ -58,6 +58,21 @@ _SCOPE_CACHE = {}        # market_ticker -> (in_scope, game_id, legs)
 # set (4k+ tickers on 2026-08-10), so this is a working-set limit — a full
 # clear would re-fetch the entire universe at ~0.5s/ticker every pass.
 _SCOPE_CACHE_MAX = 5000
+
+
+def _scope_cache_put(ticker: str, in_scope: bool, game_id, legs) -> None:
+    """Insert a scope verdict, evicting the OLDEST quarter on overflow
+    (dict = insertion order) — never clear(): with 4k+ open exchange-wide
+    tickers a full clear forces a full re-resolve of the universe every
+    pass. max(1, ...) keeps the cap a hard bound even for tiny test-sized
+    caps where MAX // 4 == 0."""
+    if len(_SCOPE_CACHE) >= _SCOPE_CACHE_MAX:
+        evict_n = max(1, _SCOPE_CACHE_MAX // 4)
+        for stale_ticker in list(_SCOPE_CACHE)[:evict_n]:
+            del _SCOPE_CACHE[stale_ticker]
+    _SCOPE_CACHE[ticker] = (in_scope, game_id, legs)
+
+
 _VOID_HALT_ACTIVE = False  # N12: track prior void-rate halt state for edge-triggered notify
 
 # Phase 2 on-demand pricing: engine constructed in main_loop (None in tests /
@@ -839,6 +854,18 @@ def _discovery_tick(source, gateway, dry_run):
         if ticker in _SCOPE_CACHE:
             in_scope, game_id, legs = _SCOPE_CACHE[ticker]
             canon = legset.parse_legs(legs) if legs else None
+        elif (rfq_legs := scope.decode_legs(rfq)) is not None:
+            # The RFQ payload itself carries mve_selected_legs (verified
+            # against WS rfq_created frames and the REST gap-fill,
+            # 2026-08-10) in the same {event_ticker, market_ticker, side}
+            # shape as GET /markets/{ticker} — so scope resolves with ZERO
+            # wire calls. The budgeted get_market below survives only as a
+            # fallback for payloads missing the field.
+            legs = rfq_legs
+            canon = legset.parse_legs(legs)
+            in_scope = bool(canon and _priceable(canon))
+            game_id = None
+            _scope_cache_put(ticker, in_scope, game_id, legs)
         else:
             if scope_fetches_this_tick >= config.SCOPE_FETCH_BUDGET_PER_TICK:
                 # Budget exhausted: leave this ticker unresolved for a later
@@ -862,16 +889,7 @@ def _discovery_tick(source, gateway, dry_run):
             canon = legset.parse_legs(legs) if legs else None
             in_scope = bool(canon and _priceable(canon))
             game_id = None
-            if len(_SCOPE_CACHE) >= _SCOPE_CACHE_MAX:
-                # Evict the oldest quarter (dict = insertion order), never
-                # clear(): with 4k+ open exchange-wide tickers a full clear
-                # forces a full re-fetch next pass — the mega-pass recurs
-                # forever instead of once. max(1, ...) keeps the cap a hard
-                # bound even for tiny test-sized caps where MAX // 4 == 0.
-                evict_n = max(1, _SCOPE_CACHE_MAX // 4)
-                for stale_ticker in list(_SCOPE_CACHE)[:evict_n]:
-                    del _SCOPE_CACHE[stale_ticker]
-            _SCOPE_CACHE[ticker] = (in_scope, game_id, legs)
+            _scope_cache_put(ticker, in_scope, game_id, legs)
         with db.connect(read_only=True) as con:
             seen = con.execute("SELECT in_scope FROM seen_rfqs WHERE rfq_id=?", [rid]).fetchone()
         if not in_scope:

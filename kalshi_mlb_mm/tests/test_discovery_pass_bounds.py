@@ -97,6 +97,42 @@ def test_running_cleared_breaks_pass_promptly(monkeypatch, tmp_path):
     assert n <= 4
 
 
+def test_rfq_inline_legs_resolve_scope_with_zero_fetches(monkeypatch, tmp_path):
+    """WS rfq_created frames and the REST gap-fill both carry
+    mve_selected_legs on the RFQ itself (verified 2026-08-10), so scope must
+    resolve without ANY get_market call — the budgeted fetch is only a
+    fallback for payloads missing the field."""
+    db = _fresh_db(monkeypatch, tmp_path, "inline.duckdb")
+    import kalshi_mlb_mm.config as cfg
+    from kalshi_mlb_mm import main
+
+    monkeypatch.setattr(cfg, "SCOPE_FETCH_BUDGET_PER_TICK", 0)   # any fetch would defer
+    main._SCOPE_CACHE.clear()
+
+    class InlineLegsSource:
+        def poll(self):
+            return [{
+                "id": f"r{i}", "market_ticker": f"INLINE-{i}", "contracts": 1,
+                "mve_selected_legs": [
+                    {"event_ticker": "KXNBAGAME-X", "market_ticker": "NOT-MLB",
+                     "side": "yes"},
+                ],
+            } for i in range(20)]
+
+        def get_market(self, ticker):
+            raise AssertionError(
+                "scope must come from the RFQ's own mve_selected_legs — "
+                f"get_market({ticker}) should never be called")
+
+    main._discovery_tick(InlineLegsSource(), NeverQuoteGateway(), dry_run=True)
+    with db.connect(read_only=True) as con:
+        n = con.execute(
+            "SELECT COUNT(*) FROM quote_decisions WHERE decision='skipped'"
+        ).fetchone()[0]
+    assert n == 20, f"all 20 inline-legs RFQs must be decided, got {n}"
+    main._SCOPE_CACHE.clear()
+
+
 def test_scope_cache_overflow_evicts_partially_not_clear(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path, "cache.duckdb")
     import kalshi_mlb_mm.config as cfg

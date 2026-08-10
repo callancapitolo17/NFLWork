@@ -183,10 +183,12 @@ WS_CONNECT_ALERT_STREAK = int(_get("WS_CONNECT_ALERT_STREAK", "3"))
 
 # Loops (seconds)
 DISCOVERY_SEC = int(_get("DISCOVERY_SEC", "2"))
-# Max REST market fetches (scope checks on unseen tickers) per discovery tick.
-# The WS mirror can hand a single poll() the ENTIRE exchange-wide open-RFQ set
-# (4k+ cross-category tickers on 2026-08-10); unbounded, one tick then grinds
-# ~0.5s/ticker for 30+ minutes, starving every other loop arm (warming,
+# Max REST market fetches (scope checks) per discovery tick. Scope normally
+# resolves FREE from the RFQ's own mve_selected_legs; this budget bounds the
+# get_market FALLBACK for payloads missing that field. Context: the WS mirror
+# can hand a single poll() the ENTIRE exchange-wide open-RFQ set (4k+
+# cross-category tickers on 2026-08-10) — unbounded per-ticker fetches ground
+# one tick for 30+ minutes, starving every other loop arm (warming,
 # target-line refresh, confirm, research/health flush) and blocking SIGTERM.
 # Tickers beyond the budget simply wait for a later tick — the mirror is
 # level-triggered, so nothing is lost. 40 fetches ≈ 20s worst-case per tick.
