@@ -832,9 +832,10 @@ def _discovery_tick(source, gateway, dry_run):
         # Kalshi RFQ poll responses tag the creator as creator_user_id; fall
         # back to creator_id for forward-compatibility if the API name changes.
         creator_id = rfq.get("creator_user_id") or rfq.get("creator_id") or ""
-        with db.connect(read_only=True) as con:
-            seen = con.execute("SELECT in_scope FROM seen_rfqs WHERE rfq_id=?", [rid]).fetchone()
-        # scope (cache the market lookup verdict)
+        # scope (cache the market lookup verdict). Resolved BEFORE the
+        # seen_rfqs read so a budget-deferred ticker costs zero DB opens —
+        # during a 4k-backlog drain the deferred majority is re-visited
+        # every tick, and a per-RFQ connect there is ~400k pointless opens.
         if ticker in _SCOPE_CACHE:
             in_scope, game_id, legs = _SCOPE_CACHE[ticker]
             canon = legset.parse_legs(legs) if legs else None
@@ -871,6 +872,8 @@ def _discovery_tick(source, gateway, dry_run):
                 for stale_ticker in list(_SCOPE_CACHE)[:evict_n]:
                     del _SCOPE_CACHE[stale_ticker]
             _SCOPE_CACHE[ticker] = (in_scope, game_id, legs)
+        with db.connect(read_only=True) as con:
+            seen = con.execute("SELECT in_scope FROM seen_rfqs WHERE rfq_id=?", [rid]).fetchone()
         if not in_scope:
             if not seen:
                 # Phase 2 instrumentation: granular reason + the legs
