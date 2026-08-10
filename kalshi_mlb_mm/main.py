@@ -53,10 +53,26 @@ _running.set()
 _PREV_BOOK_FAIR = {}     # combo_market_ticker -> last blended book fair (circuit breaker)
 _CONSTITUENT_POLL_CURSOR = 0   # #23: rotates the budgeted constituent poll (see _rotated_poll_order)
 _SCOPE_CACHE = {}        # market_ticker -> (in_scope, game_id, legs)
-# B5 fix (issue #18): bound the scope cache. Crude full-clear on overflow is
-# fine — verdicts re-warm within one poll cycle and a slate is a few hundred
-# tickers, so the bound is a leak backstop, not a working-set limit.
+# B5 fix (issue #18): bound the scope cache. Overflow evicts the OLDEST
+# quarter, never clear(): the WS mirror serves the exchange-wide open-RFQ
+# set (4k+ tickers on 2026-08-10), so this is a working-set limit — a full
+# clear would re-fetch the entire universe at ~0.5s/ticker every pass.
 _SCOPE_CACHE_MAX = 5000
+
+
+def _scope_cache_put(ticker: str, in_scope: bool, game_id, legs) -> None:
+    """Insert a scope verdict, evicting the OLDEST quarter on overflow
+    (dict = insertion order) — never clear(): with 4k+ open exchange-wide
+    tickers a full clear forces a full re-resolve of the universe every
+    pass. max(1, ...) keeps the cap a hard bound even for tiny test-sized
+    caps where MAX // 4 == 0."""
+    if len(_SCOPE_CACHE) >= _SCOPE_CACHE_MAX:
+        evict_n = max(1, _SCOPE_CACHE_MAX // 4)
+        for stale_ticker in list(_SCOPE_CACHE)[:evict_n]:
+            del _SCOPE_CACHE[stale_ticker]
+    _SCOPE_CACHE[ticker] = (in_scope, game_id, legs)
+
+
 _VOID_HALT_ACTIVE = False  # N12: track prior void-rate halt state for edge-triggered notify
 
 # Phase 2 on-demand pricing: engine constructed in main_loop (None in tests /
@@ -812,7 +828,16 @@ def _discovery_tick(source, gateway, dry_run):
     # per combo) so it is never double-counted; only the per-game cap uses this.
     game_exposure_rows = _today_fills_by_game()
     now_utc = datetime.now(timezone.utc)
+    scope_fetches_this_tick = 0
+    scope_fetches_deferred = 0
     for rfq in rfqs:
+        # A poll() snapshot can be the entire exchange-wide open-RFQ set
+        # (thousands of tickers) — without this check a SIGTERM only takes
+        # effect after the full pass, which is the 2026-08-09/10 shutdown
+        # wedge and loop starvation. Bail promptly; nothing here is
+        # half-done (each RFQ is handled atomically).
+        if not _running.is_set():
+            break
         if open_count >= config.MAX_OPEN_QUOTES:
             break
         rid = rfq.get("id")
@@ -822,14 +847,36 @@ def _discovery_tick(source, gateway, dry_run):
         # Kalshi RFQ poll responses tag the creator as creator_user_id; fall
         # back to creator_id for forward-compatibility if the API name changes.
         creator_id = rfq.get("creator_user_id") or rfq.get("creator_id") or ""
-        with db.connect(read_only=True) as con:
-            seen = con.execute("SELECT in_scope FROM seen_rfqs WHERE rfq_id=?", [rid]).fetchone()
-        # scope (cache the market lookup verdict)
+        # scope (cache the market lookup verdict). Resolved BEFORE the
+        # seen_rfqs read so a budget-deferred ticker costs zero DB opens —
+        # during a 4k-backlog drain the deferred majority is re-visited
+        # every tick, and a per-RFQ connect there is ~400k pointless opens.
         if ticker in _SCOPE_CACHE:
             in_scope, game_id, legs = _SCOPE_CACHE[ticker]
             canon = legset.parse_legs(legs) if legs else None
+        elif (rfq_legs := scope.decode_legs(rfq)) is not None:
+            # The RFQ payload itself carries mve_selected_legs (verified
+            # against WS rfq_created frames and the REST gap-fill,
+            # 2026-08-10) in the same {event_ticker, market_ticker, side}
+            # shape as GET /markets/{ticker} — so scope resolves with ZERO
+            # wire calls. The budgeted get_market below survives only as a
+            # fallback for payloads missing the field.
+            legs = rfq_legs
+            canon = legset.parse_legs(legs)
+            in_scope = bool(canon and _priceable(canon))
+            game_id = None
+            _scope_cache_put(ticker, in_scope, game_id, legs)
         else:
+            if scope_fetches_this_tick >= config.SCOPE_FETCH_BUDGET_PER_TICK:
+                # Budget exhausted: leave this ticker unresolved for a later
+                # tick (the mirror is level-triggered, so it will be offered
+                # again). This bounds a tick's REST work so a giant backlog
+                # drains across many breathing loop iterations instead of
+                # one starving mega-pass.
+                scope_fetches_deferred += 1
+                continue
             market = source.get_market(ticker)
+            scope_fetches_this_tick += 1
             if market is None:
                 # B5 fix (issue #18): a transient fetch failure (HTTP blip)
                 # must not be cached as in_scope=False — that permanently
@@ -842,9 +889,9 @@ def _discovery_tick(source, gateway, dry_run):
             canon = legset.parse_legs(legs) if legs else None
             in_scope = bool(canon and _priceable(canon))
             game_id = None
-            if len(_SCOPE_CACHE) >= _SCOPE_CACHE_MAX:
-                _SCOPE_CACHE.clear()
-            _SCOPE_CACHE[ticker] = (in_scope, game_id, legs)
+            _scope_cache_put(ticker, in_scope, game_id, legs)
+        with db.connect(read_only=True) as con:
+            seen = con.execute("SELECT in_scope FROM seen_rfqs WHERE rfq_id=?", [rid]).fetchone()
         if not in_scope:
             if not seen:
                 # Phase 2 instrumentation: granular reason + the legs
@@ -1261,6 +1308,10 @@ def _discovery_tick(source, gateway, dry_run):
             _log_decision("quoted", rfq_id=rid, quote_id=qid, ticker=ticker, game_id=game_id,
                           model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
             open_count += 1
+    if scope_fetches_deferred:
+        log.info("discovery: scope-fetch budget (%d) hit — %d unseen tickers "
+                 "deferred to a later tick",
+                 config.SCOPE_FETCH_BUDGET_PER_TICK, scope_fetches_deferred)
 
 
 def _confirm_tick(gateway, dry_run):
