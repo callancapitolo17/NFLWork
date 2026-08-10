@@ -183,6 +183,14 @@ WS_CONNECT_ALERT_STREAK = int(_get("WS_CONNECT_ALERT_STREAK", "3"))
 
 # Loops (seconds)
 DISCOVERY_SEC = int(_get("DISCOVERY_SEC", "2"))
+# Max REST market fetches (scope checks on unseen tickers) per discovery tick.
+# The WS mirror can hand a single poll() the ENTIRE exchange-wide open-RFQ set
+# (4k+ cross-category tickers on 2026-08-10); unbounded, one tick then grinds
+# ~0.5s/ticker for 30+ minutes, starving every other loop arm (warming,
+# target-line refresh, confirm, research/health flush) and blocking SIGTERM.
+# Tickers beyond the budget simply wait for a later tick — the mirror is
+# level-triggered, so nothing is lost. 40 fetches ≈ 20s worst-case per tick.
+SCOPE_FETCH_BUDGET_PER_TICK = int(_get("SCOPE_FETCH_BUDGET_PER_TICK", "40"))
 CONFIRM_SEC = int(_get("CONFIRM_SEC", "2"))
 RISK_SWEEP_SEC = int(_get("RISK_SWEEP_SEC", "10"))
 RECONCILE_SWEEP_SEC = int(_get("RECONCILE_SWEEP_SEC", "30"))
