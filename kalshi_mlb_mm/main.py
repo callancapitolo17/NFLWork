@@ -128,6 +128,9 @@ def _coverage_summary_tick(*, sgp_service, rfq_source=None):
         research.emit("rfq_ingestion_summary",
                       payload=dict(
                           non_mlb_dropped_total=rfq_source.ingestion_dropped,
+                          drops_by_reason=dict(
+                              getattr(rfq_source, "ingestion_drops", {}) or {}),
+                          kept_total=getattr(rfq_source, "ingestion_kept", None),
                           mirror_size=len(rfq_source.poll()),
                           window_sec=config.COVERAGE_SUMMARY_SEC))
     snapshot = sgp_service.coverage.snapshot_and_reset()

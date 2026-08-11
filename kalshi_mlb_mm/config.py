@@ -193,12 +193,24 @@ DISCOVERY_SEC = int(_get("DISCOVERY_SEC", "2"))
 # Tickers beyond the budget simply wait for a later tick — the mirror is
 # level-triggered, so nothing is lost. 40 fetches ≈ 20s worst-case per tick.
 SCOPE_FETCH_BUDGET_PER_TICK = int(_get("SCOPE_FETCH_BUDGET_PER_TICK", "40"))
-# Skip RFQs older than this before doing ANY work on them. An RFQ resting
-# 10+ minutes un-quoted is dead weight: near expiry, or already picked over
-# by faster makers — quoting it late is how we get adversely selected. Also
-# what keeps a restart from chewing through a Sunday-peak backlog (9k+ open
-# RFQs observed 2026-08-10). RFQs with no parseable created_ts pass (fail-open).
-MAX_RFQ_AGE_SEC = int(_get("MAX_RFQ_AGE_SEC", "600"))
+# Skip RFQs older than this before doing ANY work on them. Measured live
+# (2026-08-11 WS probe, n=30k): RFQ lifetime p50=10s, p90=30s, max 87s —
+# an RFQ we haven't quoted within 30s is almost certainly already deleted,
+# and quoting the stragglers is adverse selection. Also the mirror TTL.
+# RFQs with no parseable created_ts pass (fail-open).
+MAX_RFQ_AGE_SEC = int(_get("MAX_RFQ_AGE_SEC", "30"))
+# Door-filter selection gates (option B, user decision 2026-08-11: NO fetch
+# ceiling — these quality gates are the only thing standing between the bot
+# and the MLB RFQ firehose, measured at ~11.5k candidate creates/min with a
+# $10 median size. Accepted risk: book traffic scales with whatever passes;
+# revisit with fill + book-health data).
+# Dollar floor: applied only when the RFQ is dollar-denominated
+# (target_cost_dollars > 0); contracts-denominated RFQs pass the door and
+# meet the tick's size gate instead.
+MIN_RFQ_TARGET_COST_USD = float(_get("MIN_RFQ_TARGET_COST_USD", "250"))
+# Leg-count cap: full 2^N-partition devig rigor stops at 3 legs, and the
+# 4-8-leg flood is algorithmic basket spam we price worst.
+MAX_RFQ_LEG_COUNT = int(_get("MAX_RFQ_LEG_COUNT", "3"))
 # Wall-clock cap on one discovery pass. The mirror can serve the entire
 # exchange-wide open-RFQ set; without a lap budget one pass starves every
 # other loop arm no matter how cheap each RFQ is. At least one RFQ is always
