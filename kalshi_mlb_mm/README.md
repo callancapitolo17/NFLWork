@@ -194,8 +194,25 @@ beyond → cancel/replace (#16 orphan-safety: submit first, mark
 than we now have, and what we have says the books disagree. Exactly-2-book
 quotes carry `QUORUM_MARGIN_ADDON` (see Margin above), so expect one
 refine-replace per quote when the 3rd book lands and the add-on drops out.
-The live RFQ→first-quote latency vs the #50 table is a **post-restart
-measurement deliverable** — the bots were off when this shipped.
+
+**Pass latency IS quote latency (issue #89).** The first live measurement
+of #55 showed 18.5s median RFQ→quote on RFQs whose median lifetime is 10s
+— not because quorum landings weren't served (they were; the engine tests
+pin it) but because the discovery pass itself ran 8–12s: the in-scope
+gate path opened 4–5 DB connections **per RFQ** (~17ms each on the live
+state DB), so the RFQ re-visit cadence was the pass duration, not
+`DISCOVERY_SEC` (2s). The fix loads one `_PassSnapshot` per pass (open
+quotes + `quote_games`, cooldowns + last fills, per-combo and per-creator
+fill aggregates — ONE read connection) and answers every per-RFQ gate
+from memory; quotes submitted mid-pass fold back into the snapshot so the
+cap gates keep their read-your-writes semantics. A 200-RFQ pass drops
+from ~8.4s of connection churn to ~0.25s. The pass-summary log line now
+carries `pass_sec` and fires unconditionally whenever a pass exceeds
+`DISCOVERY_SEC` — a slow pass is a quote-latency regression even when
+nothing was deferred. Regression tests:
+`test_discovery_pass_constant_connections_for_in_scope_rfqs` (O(1)
+connections) and `test_staggered_landings_quote_on_next_tick_not_deadline`
+(quote fires on the 2-book partial, never at the flight deadline).
 Multi-game RFQs enqueue one job per game; jobs run on up to 4 concurrent
 daemon threads (issue #50 — previously strictly serial) while the #40
 pacing invariant still holds: a per-book gate keeps at most ONE pricing

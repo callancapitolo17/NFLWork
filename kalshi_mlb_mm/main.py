@@ -174,11 +174,15 @@ def _consensus_filter(book_fairs: dict[str, float]) -> dict[str, float]:
 # refresh (the risk sweep fail-safe cancels on None).
 _COMMENCE_CACHE: dict = {}       # game_id -> commence_time
 _RESOLVE_CACHE: dict = {}        # event_ticker -> game_id
+_GAME_REF_CACHE: dict = {}       # game_id -> GameRef (issue #89: was an
+                                 # uncached MARKET_DB open per pending
+                                 # sub-combo per tick)
 
 
 def _invalidate_game_caches():
     _COMMENCE_CACHE.clear()
     _RESOLVE_CACHE.clear()
+    _GAME_REF_CACHE.clear()
 
 
 def _commence_time(game_id):
@@ -256,49 +260,209 @@ def _today_fills_by_game():
     return [{"game_id": g, "price": exp} for g, exp in rows]
 
 
-def _open_quote_exposure_rows(exclude_rfq_id: str | None = None):
-    """Worst-case exposure of OPEN quotes, one row per quote — for the DAILY
-    cap (R-1, issue #22). The cap gates must see money that could fill in one
-    burst (a counterparty sweeping resting quotes), not just money that already
-    filled. worst_exposure_usd is frozen at quote time; NULL (pre-migration
-    rows) counts at the per-fill cap — same conservative convention as N8
-    unreconciled fills. Shape matches `_today_fills` rows so callers can
-    concatenate the two lists straight into `risk.daily_cap_ok`.
+class _PassSnapshot:
+    """One discovery pass's read-side gate state, loaded in ONE connection.
 
-    `exclude_rfq_id`: the RFQ currently being (re-)quoted. Its existing open
-    quote is SUPERSEDED by the new one (hysteresis keeps it, or Kalshi
-    auto-cancels it when the replacement lands — issue #16), so counting it
-    would self-block every replace once a game/day nears its cap.
-    IS DISTINCT FROM makes exclude_rfq_id=None exclude nothing.
+    Issue #89: the 2026-08-10 incident fix batched the seen-lookup and the
+    decision writes, but the IN-SCOPE gate path still paid 4-5 separate
+    `db.connect()` opens per RFQ (~17ms each on the live state DB, measured
+    ~61ms/RFQ) — ~10s of pure connection churn per pass at ~200 open RFQs.
+    That made the effective RFQ re-visit cadence the PASS duration (8-12s),
+    not DISCOVERY_SEC (2s), so the #55 quorum landings sat unread and the
+    median RFQ-created -> quote-submitted latency was 18.5s on RFQs whose
+    median lifetime is 10s. Every per-RFQ gate read now resolves from these
+    in-memory maps.
+
+    Read-your-writes: quotes submitted / replaced / cancelled DURING the
+    pass are folded in via record_submitted / remove_quote, preserving the
+    N7 + R-1 rule that quotes submitted earlier in the same pass count
+    against the caps immediately. Fills, cooldowns and creator counts are
+    written only by OTHER loop arms (confirm/settlement), which never run
+    mid-pass — the loop is single-threaded — so a pass-start snapshot of
+    those is exact, not approximate.
     """
-    with db.connect(read_only=True) as con:
-        rows = con.execute(
-            "SELECT game_id, COALESCE(worst_exposure_usd, ?) AS exposure "
-            "FROM live_quotes WHERE status='open' "
-            "AND rfq_id IS DISTINCT FROM ?",
-            [config.max_fill_exposure_usd(), exclude_rfq_id]).fetchall()
-    return [{"game_id": g, "price": float(exp)} for g, exp in rows]
+
+    def __init__(self, *, open_quotes: dict, quote_games: dict,
+                 cooldowns: dict, last_fills: dict, combo_exposure: dict,
+                 creator_fill_counts: dict):
+        self._open_quotes = open_quotes            # qid -> row dict
+        self._quote_games = quote_games            # qid -> [game_id, ...]
+        self._cooldowns = cooldowns                # ticker -> cooled_until
+        self._last_fills = last_fills              # ticker -> (filled_at, fair)
+        self._combo_exposure = combo_exposure      # ticker -> filled $ exposure
+        self._creator_fill_counts = creator_fill_counts  # creator_id -> n
+
+    @classmethod
+    def load(cls, now_utc):
+        fallback_exposure = config.max_fill_exposure_usd()
+        creator_cutoff = now_utc - timedelta(
+            hours=config.PER_CREATOR_WINDOW_HOURS)
+        with db.connect(read_only=True) as con:
+            open_rows = con.execute(
+                "SELECT quote_id, rfq_id, combo_market_ticker, game_id, "
+                "worst_exposure_usd, yes_bid, no_bid "
+                "FROM live_quotes WHERE status='open'").fetchall()
+            game_rows = con.execute(
+                "SELECT qg.quote_id, qg.game_id FROM quote_games qg "
+                "JOIN live_quotes lq ON lq.quote_id = qg.quote_id "
+                "WHERE lq.status='open'").fetchall()
+            cooldown_rows = con.execute(
+                "SELECT combo_market_ticker, cooled_until "
+                "FROM combo_cooldown").fetchall()
+            cooled_tickers = [t for t, _ in cooldown_rows]
+            fill_rows = []
+            if cooled_tickers:
+                # Newest-first so dict construction below keeps the LATEST
+                # fill per ticker (matches the old ORDER BY ... LIMIT 1).
+                fill_rows = con.execute(
+                    "SELECT combo_market_ticker, filled_at, "
+                    "COALESCE(fair_at_confirm, blended_fair_at_quote) "
+                    "FROM fills "
+                    "WHERE combo_market_ticker IN (SELECT unnest(?)) "
+                    "ORDER BY filled_at DESC", [cooled_tickers]).fetchall()
+            exposure_rows = con.execute(
+                "SELECT combo_market_ticker, "
+                "SUM(CASE WHEN reconciled THEN price * contracts ELSE ? END) "
+                "FROM fills GROUP BY combo_market_ticker",
+                [fallback_exposure]).fetchall()
+            creator_rows = con.execute(
+                "SELECT s.creator_id, COUNT(*) FROM fills f "
+                "JOIN seen_rfqs s ON f.rfq_id = s.rfq_id "
+                "WHERE f.filled_at >= ? GROUP BY s.creator_id",
+                [creator_cutoff]).fetchall()
+        open_quotes = {}
+        for qid, rid, ticker, game_id, worst, yb, nb in open_rows:
+            # NULL worst_exposure_usd (pre-migration rows) counts at the
+            # per-fill cap — same conservative convention as N8.
+            open_quotes[qid] = dict(
+                rfq_id=rid, ticker=ticker, game_id=game_id,
+                worst_exposure_usd=float(worst if worst is not None
+                                         else fallback_exposure),
+                yes_bid=yb, no_bid=nb)
+        quote_games: dict = {}
+        for qid, gid in game_rows:
+            quote_games.setdefault(qid, []).append(gid)
+        last_fills = {}
+        for ticker, filled_at, fair in fill_rows:
+            last_fills.setdefault(ticker, (filled_at, fair))
+        return cls(open_quotes=open_quotes, quote_games=quote_games,
+                   cooldowns=dict(cooldown_rows), last_fills=last_fills,
+                   combo_exposure={t: float(e or 0) for t, e in exposure_rows},
+                   creator_fill_counts={c: int(n or 0)
+                                        for c, n in creator_rows})
+
+    # -- per-creator halt (H4) ------------------------------------------ #
+
+    def creator_fill_count(self, creator_id: str) -> int:
+        return self._creator_fill_counts.get(creator_id, 0)
+
+    def creator_halt_active(self, creator_id: str) -> bool:
+        """H4 (per-creator): refuse a counterparty that has already farmed
+        us for >= PER_CREATOR_FILL_HALT fills in the recent window."""
+        if not creator_id:
+            return False
+        return self.creator_fill_count(creator_id) >= config.PER_CREATOR_FILL_HALT
+
+    # -- open-quote exposure (R-1, issue #22) --------------------------- #
+
+    def _open_rows(self, exclude_rfq_id):
+        # `!=` mirrors the old SQL IS DISTINCT FROM: exclude_rfq_id=None
+        # excludes nothing (every real rfq_id differs from None).
+        return [(qid, row) for qid, row in self._open_quotes.items()
+                if row["rfq_id"] != exclude_rfq_id]
+
+    def open_exposure_rows(self, exclude_rfq_id: str | None = None):
+        """Worst-case exposure of OPEN quotes, one row per quote — for the
+        DAILY cap. The cap gates must see money that could fill in one burst
+        (a counterparty sweeping resting quotes), not just money that already
+        filled. Shape matches `_today_fills` rows so callers can concatenate
+        the two lists straight into `risk.daily_cap_ok`.
+
+        `exclude_rfq_id`: the RFQ currently being (re-)quoted. Its existing
+        open quote is SUPERSEDED by the new one (hysteresis keeps it, or
+        Kalshi auto-cancels it when the replacement lands — issue #16), so
+        counting it would self-block every replace near the caps."""
+        return [{"game_id": row["game_id"], "price": row["worst_exposure_usd"]}
+                for _, row in self._open_rows(exclude_rfq_id)]
+
+    def open_exposure_by_game(self, exclude_rfq_id: str | None = None):
+        """Open-quote worst-case exposure fanned out to one row per
+        (quote × game) via `quote_games` — for the PER-GAME cap. A cross-game
+        quote counts its FULL worst case against EVERY game it touches; a
+        quote with no quote_games rows (pre-migration) falls back to its
+        primary game_id so it is never invisible to the per-game cap."""
+        rows = []
+        for qid, row in self._open_rows(exclude_rfq_id):
+            for gid in self._quote_games.get(qid) or [row["game_id"]]:
+                rows.append({"game_id": gid,
+                             "price": row["worst_exposure_usd"]})
+        return rows
+
+    # -- per-combo / per-RFQ open-quote reads --------------------------- #
+
+    def open_count_for_ticker(self, ticker: str) -> int:
+        return sum(1 for row in self._open_quotes.values()
+                   if row["ticker"] == ticker)
+
+    def open_quote_ids_for_ticker(self, ticker: str) -> list:
+        return [qid for qid, row in self._open_quotes.items()
+                if row["ticker"] == ticker]
+
+    def existing_open_quote(self, rfq_id: str):
+        """(quote_id, yes_bid, no_bid) of this RFQ's resting quote, or None."""
+        for qid, row in self._open_quotes.items():
+            if row["rfq_id"] == rfq_id:
+                return (qid, row["yes_bid"], row["no_bid"])
+        return None
+
+    # -- cooldown (H9/P-7) + per-combo fill exposure (H8/N7/N8) --------- #
+
+    def has_cooldown_row(self, ticker: str) -> bool:
+        return ticker in self._cooldowns
+
+    def cooldown_active(self, ticker: str, now_utc) -> bool:
+        cooled_until = self._cooldowns.get(ticker)
+        return cooled_until is not None and cooled_until > now_utc
+
+    def last_fill(self, ticker: str):
+        """(filled_at, fair_at_confirm|blended_fair_at_quote) of the latest
+        fill on this combo, or None. Loaded only for cooled tickers — the
+        only callers are behind has_cooldown_row."""
+        return self._last_fills.get(ticker)
+
+    def combo_fill_exposure(self, ticker: str) -> float:
+        return self._combo_exposure.get(ticker, 0.0)
+
+    # -- in-pass maintenance (read-your-writes for the cap gates) ------- #
+
+    def record_submitted(self, quote_id: str, rfq_id: str, ticker: str,
+                         primary_game_id, game_ids: list,
+                         worst_exposure_usd: float,
+                         yes_bid: float, no_bid: float) -> None:
+        self._open_quotes[quote_id] = dict(
+            rfq_id=rfq_id, ticker=ticker, game_id=primary_game_id,
+            worst_exposure_usd=float(worst_exposure_usd),
+            yes_bid=yes_bid, no_bid=no_bid)
+        self._quote_games[quote_id] = list(game_ids)
+
+    def remove_quote(self, quote_id: str) -> None:
+        """A quote left 'open' mid-pass (replaced / cancelled / pulled)."""
+        self._open_quotes.pop(quote_id, None)
+        self._quote_games.pop(quote_id, None)
+
+
+def _open_quote_exposure_rows(exclude_rfq_id: str | None = None):
+    """One-off wrapper over `_PassSnapshot.open_exposure_rows` (the pass
+    itself loads one snapshot and reuses it — issue #89)."""
+    snapshot = _PassSnapshot.load(datetime.now(timezone.utc))
+    return snapshot.open_exposure_rows(exclude_rfq_id)
 
 
 def _open_quote_exposure_by_game(exclude_rfq_id: str | None = None):
-    """Open-quote worst-case exposure fanned out to one row per (quote × game)
-    via `quote_games` — for the PER-GAME cap. Mirror of `_today_fills_by_game`:
-    a cross-game quote counts its FULL worst case against EVERY game it
-    touches. LEFT JOIN + COALESCE falls back to the primary game_id for open
-    rows written before the quote_games migration, so a quote is never
-    invisible to the per-game cap. Same NULL-exposure and exclude_rfq_id
-    conventions as `_open_quote_exposure_rows`.
-    """
-    with db.connect(read_only=True) as con:
-        rows = con.execute(
-            "SELECT COALESCE(qg.game_id, lq.game_id) AS game_id, "
-            "COALESCE(lq.worst_exposure_usd, ?) AS exposure "
-            "FROM live_quotes lq "
-            "LEFT JOIN quote_games qg ON lq.quote_id = qg.quote_id "
-            "WHERE lq.status='open' "
-            "AND lq.rfq_id IS DISTINCT FROM ?",
-            [config.max_fill_exposure_usd(), exclude_rfq_id]).fetchall()
-    return [{"game_id": g, "price": float(exp)} for g, exp in rows]
+    """One-off wrapper over `_PassSnapshot.open_exposure_by_game` (see
+    `_open_quote_exposure_rows`)."""
+    snapshot = _PassSnapshot.load(datetime.now(timezone.utc))
+    return snapshot.open_exposure_by_game(exclude_rfq_id)
 
 
 def _post_fill_live_refresh_landed(by_game: dict, filled_at) -> bool:
@@ -427,6 +591,19 @@ def _resolve_game_for_legs_uncached(game_legs: list) -> str | None:
 
 
 def _game_ref(game_id):
+    """Cached wrapper (O-1 pattern, issue #89) — the pending-RFQ feed block
+    calls this every tick per pending sub-combo, and the uncached MARKET_DB
+    open added up at ~200 open RFQs. Failures (None) are not cached;
+    invalidated with the other game-metadata caches on target-line refresh."""
+    if game_id in _GAME_REF_CACHE:
+        return _GAME_REF_CACHE[game_id]
+    ref = _game_ref_uncached(game_id)
+    if ref is not None:
+        _GAME_REF_CACHE[game_id] = ref
+    return ref
+
+
+def _game_ref_uncached(game_id):
     """GameRef (id + team names + commence) from mlb_target_lines, or None.
 
     The per-book on-demand fetch needs team names to match the book's own
@@ -770,34 +947,18 @@ def _void_rate_halt_triggered() -> bool:
     return (voided / denom) > config.VOID_RATE_HALT_THRESHOLD
 
 
-def _creator_halt_active(creator_id: str) -> bool:
-    """H4 (per-creator): if this counterparty has already farmed us for >=N
-    fills in the recent window, refuse to quote them again."""
-    if not creator_id:
-        return False
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=config.PER_CREATOR_WINDOW_HOURS)
-    with db.connect(read_only=True) as con:
-        count = con.execute(
-            "SELECT COUNT(*) FROM fills f JOIN seen_rfqs s ON f.rfq_id = s.rfq_id "
-            "WHERE s.creator_id = ? AND f.filled_at >= ?",
-            [creator_id, cutoff]).fetchone()[0]
-    return int(count or 0) >= config.PER_CREATOR_FILL_HALT
-
-
-def _pull_quorum_quote(gateway, rid, ticker, game_id) -> bool:
+def _pull_quorum_quote(gateway, rid, ticker, game_id, snapshot) -> bool:
     """#55 straggler pull: a late book blew the #20 dispersion gate while a
     quote from an earlier (thinner) quorum rests on this RFQ. The resting
     price was formed from LESS information than we now have, and what we
     have says the books disagree — the stale side of that disagreement is
     us, so the quote comes down. Returns True iff a resting quote was
     pulled (the caller then skips the ordinary gate-decline log)."""
-    with db.connect(read_only=True) as con:
-        row = con.execute(
-            "SELECT quote_id FROM live_quotes WHERE rfq_id=? AND status='open'",
-            [rid]).fetchone()
-    if row is None:
+    existing = snapshot.existing_open_quote(rid)
+    if existing is None:
         return False
-    qid = row[0]
+    qid = existing[0]
+    snapshot.remove_quote(qid)
     try:
         gateway.cancel(qid)
     except Exception:
@@ -861,16 +1022,20 @@ def _discovery_tick(source, gateway, dry_run):
         _log_decision("halted_high_void_rate")
         return
     rfqs = source.poll()
-    with db.connect(read_only=True) as con:
-        open_count = con.execute(
-            "SELECT COUNT(*) FROM live_quotes WHERE status='open'").fetchone()[0]
+    now_utc = datetime.now(timezone.utc)
+    # Issue #89: ONE read connection loads every per-RFQ gate input (open
+    # quotes, cooldowns, per-combo/creator fill aggregates). The per-RFQ
+    # db.connect() opens this replaces were ~61ms/RFQ — the pass ran 8-12s
+    # at ~200 open RFQs, which IS the quote-latency regression (#55's
+    # quorum landings sat unread until the next slow pass).
+    snapshot = _PassSnapshot.load(now_utc)
+    open_count = len(snapshot.open_exposure_rows())
     # FIX I3: load today's fills once before the loop for cap checks
     fills_today = _today_fills()
     # Per-game exposure fanned out across every game each combo touches (cross-game
     # combos count against BOTH games). Daily cap keeps using fills_today (one row
     # per combo) so it is never double-counted; only the per-game cap uses this.
     game_exposure_rows = _today_fills_by_game()
-    now_utc = datetime.now(timezone.utc)
     scope_fetches_this_tick = 0
     scope_fetches_deferred = 0
     # Per-pass write buffers + one bulk seen-lookup (2026-08-10 incident,
@@ -901,7 +1066,8 @@ def _discovery_tick(source, gateway, dry_run):
     start_at = _DISCOVERY_CURSOR % len(rfqs) if rfqs else 0
     if start_at:
         rfqs = rfqs[start_at:] + rfqs[:start_at]
-    pass_deadline = time.monotonic() + config.DISCOVERY_PASS_BUDGET_SEC
+    pass_started = time.monotonic()
+    pass_deadline = pass_started + config.DISCOVERY_PASS_BUDGET_SEC
     iterated = 0
     timebox_deferred = 0
     stale_skipped = 0
@@ -1005,19 +1171,12 @@ def _discovery_tick(source, gateway, dry_run):
                               payload=dict(rfq_keys=list(rfq.keys()), rfq_raw=rfq))
             # H4 (per-creator): refuse to quote a counterparty that's already
             # farmed us this window. Check BEFORE size gate so we don't waste cycles.
-            if _creator_halt_active(creator_id):
+            if snapshot.creator_halt_active(creator_id):
                 _decide("skipped", rfq_id=rid, ticker=ticker, reason="skipped_creator_halt")
                 # Event 10: creator_halt_skip
-                with db.connect(read_only=True) as _con:
-                    fill_count = _con.execute(
-                        "SELECT COUNT(*) FROM fills f JOIN seen_rfqs s ON f.rfq_id = s.rfq_id "
-                        "WHERE s.creator_id = ? AND f.filled_at >= ?",
-                        [creator_id,
-                         datetime.now(timezone.utc) - timedelta(hours=config.PER_CREATOR_WINDOW_HOURS)]
-                    ).fetchone()[0]
                 research.emit("creator_halt_skip", rfq_id=rid, ticker=ticker,
                               payload=dict(creator_id=creator_id,
-                                           fill_count_window=int(fill_count or 0),
+                                           fill_count_window=snapshot.creator_fill_count(creator_id),
                                            window_hours=config.PER_CREATOR_WINDOW_HOURS))
                 continue
             # Size gate. Kalshi RFQs are denominated EITHER in contracts
@@ -1043,10 +1202,10 @@ def _discovery_tick(source, gateway, dry_run):
             # FIX I3: exposure cap gates (wired — were defined but never called).
             # R-1 (issue #22): both gates ALSO count open quotes' worst-case
             # exposure — a burst sweep of resting quotes could otherwise fill to
-            # many multiples of the caps before the first fill registers. Queried
-            # per-RFQ (not per-tick) so quotes submitted earlier in this same loop
-            # count immediately, matching the N7 per-combo precedent.
-            open_quote_rows = _open_quote_exposure_rows(exclude_rfq_id=rid)
+            # many multiples of the caps before the first fill registers. Reads
+            # the pass snapshot, which record_submitted keeps current, so quotes
+            # submitted earlier in this same loop count immediately (N7).
+            open_quote_rows = snapshot.open_exposure_rows(exclude_rfq_id=rid)
             if not risk.daily_cap_ok(fills_today + open_quote_rows,
                                      config.daily_exposure_cap_usd()):
                 _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
@@ -1056,7 +1215,7 @@ def _discovery_tick(source, gateway, dry_run):
             # game_exposure_rows attributes each combo's full stake to EVERY game it
             # touches, so a game can't slip past its cap by only ever being a 2nd leg;
             # open_quotes_by_game does the same for still-resting quotes via quote_games.
-            open_quotes_by_game = _open_quote_exposure_by_game(exclude_rfq_id=rid)
+            open_quotes_by_game = snapshot.open_exposure_by_game(exclude_rfq_id=rid)
             if any(not risk.per_game_cap_ok(gid, game_exposure_rows + open_quotes_by_game,
                                             config.BANKROLL, config.MAX_GAME_EXPOSURE_PCT)
                    for gid in game_ids_list):
@@ -1075,22 +1234,12 @@ def _discovery_tick(source, gateway, dry_run):
             # true instant. last_fill_fair feeds the same-price block below (only
             # set once the refresh gate has passed).
             last_fill_fair = None
-            with db.connect(read_only=True) as con:
-                cd_row = con.execute(
-                    "SELECT CAST(cooled_until > ? AS BOOLEAN) FROM combo_cooldown "
-                    "WHERE combo_market_ticker=?",
-                    [now_utc, ticker]).fetchone()
-            if cd_row is not None:
-                if cd_row[0]:
+            if snapshot.has_cooldown_row(ticker):
+                if snapshot.cooldown_active(ticker, now_utc):
                     _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                                   reason="in_cooldown")
                     continue
-                with db.connect(read_only=True) as con:
-                    last_fill = con.execute(
-                        "SELECT filled_at, "
-                        "COALESCE(fair_at_confirm, blended_fair_at_quote) "
-                        "FROM fills WHERE combo_market_ticker=? "
-                        "ORDER BY filled_at DESC LIMIT 1", [ticker]).fetchone()
+                last_fill = snapshot.last_fill(ticker)
                 if last_fill is not None:
                     if not _post_fill_live_refresh_landed(by_game, last_fill[0]):
                         _ensure_post_fill_fetches(rid, ticker, by_game)
@@ -1190,7 +1339,8 @@ def _discovery_tick(source, gateway, dry_run):
                 # thinned was not contradicted, and the risk sweep's drift and
                 # constituent-jump breakers still cover the resting quote.
                 if (skip_reason == "consensus_dispersion"
-                        and _pull_quorum_quote(gateway, rid, ticker, game_id)):
+                        and _pull_quorum_quote(gateway, rid, ticker, game_id,
+                                               snapshot)):
                     continue
                 _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                               reason=skip_reason, model=None, book=book_med,
@@ -1203,11 +1353,8 @@ def _discovery_tick(source, gateway, dry_run):
                     and risk.book_move_triggered(prev, book_med, config.BOOK_MOVE_CB_THRESHOLD)):
                 # H1: circuit breaker now actually CANCELS open quotes on this combo
                 # (previously it only blocked re-quotes — resting quotes were exposed).
-                with db.connect(read_only=True) as con:
-                    opens = con.execute(
-                        "SELECT quote_id FROM live_quotes WHERE combo_market_ticker=? AND status='open'",
-                        [ticker]).fetchall()
-                for (open_qid,) in opens:
+                opens = snapshot.open_quote_ids_for_ticker(ticker)
+                for open_qid in opens:
                     try:
                         gateway.cancel(open_qid)
                     except Exception:
@@ -1216,6 +1363,7 @@ def _discovery_tick(source, gateway, dry_run):
                         con.execute(
                             "UPDATE live_quotes SET status='cancelled', closed_at=? WHERE quote_id=?",
                             [datetime.now(timezone.utc), open_qid])
+                    snapshot.remove_quote(open_qid)
                 _decide("circuit_breaker", rfq_id=rid, ticker=ticker, game_id=game_id,
                               reason=f"book_move_pulled_{len(opens)}_quotes")
                 # Event 9: circuit_breaker
@@ -1265,18 +1413,10 @@ def _discovery_tick(source, gateway, dry_run):
             # exposure so a burst of RFQs on the same combo can't all be accepted
             # before any fills register. N8: treat unreconciled fills conservatively
             # (counted at the per-fill cap) for the same reason.
-            with db.connect(read_only=True) as con:
-                combo_exp = con.execute(
-                    "SELECT COALESCE(SUM("
-                    "CASE WHEN reconciled THEN price * contracts ELSE ? END), 0) "
-                    "FROM fills WHERE combo_market_ticker=?",
-                    [config.max_fill_exposure_usd(), ticker]).fetchone()[0]
-                inflight_count = con.execute(
-                    "SELECT COUNT(*) FROM live_quotes "
-                    "WHERE combo_market_ticker=? AND status='open'",
-                    [ticker]).fetchone()[0]
+            combo_exp = snapshot.combo_fill_exposure(ticker)
+            inflight_count = snapshot.open_count_for_ticker(ticker)
             worst_inflight = float(inflight_count) * config.max_fill_exposure_usd()
-            if float(combo_exp or 0) + worst_inflight + fill_exposure > config.MAX_COMBO_EXPOSURE_USD:
+            if combo_exp + worst_inflight + fill_exposure > config.MAX_COMBO_EXPOSURE_USD:
                 _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
                               reason="per_combo_cap")
                 continue
@@ -1284,11 +1424,7 @@ def _discovery_tick(source, gateway, dry_run):
             # else mark the old row 'replaced' so we never leave ghost-open rows.
             # #55: computed BEFORE the quote_priced emit so the refine action
             # (initial / hold / replace) rides in the research payload.
-            with db.connect(read_only=True) as con:
-                existing = con.execute(
-                    "SELECT quote_id, yes_bid, no_bid FROM live_quotes "
-                    "WHERE rfq_id=? AND status='open'",
-                    [rid]).fetchone()
+            existing = snapshot.existing_open_quote(rid)
             replaced_qid = None
             refine_action = "initial"
             if existing:
@@ -1412,6 +1548,13 @@ def _discovery_tick(source, gateway, dry_run):
                 _decide("quoted", rfq_id=rid, quote_id=qid, ticker=ticker, game_id=game_id,
                               model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
                 open_count += 1
+                # Fold the new quote into the pass snapshot so the cap gates
+                # see it for the REST of this pass (N7/R-1 read-your-writes).
+                if replaced_qid is not None:
+                    snapshot.remove_quote(replaced_qid)
+                snapshot.record_submitted(qid, rid, ticker, game_id,
+                                          sorted(set(game_ids_list)),
+                                          fill_exposure, q.yes_bid, q.no_bid)
     finally:
         # One write connection — one checkpoint — for the whole pass, and it
         # runs even when the pass breaks early (SIGTERM, MAX_OPEN_QUOTES).
@@ -1427,12 +1570,18 @@ def _discovery_tick(source, gateway, dry_run):
                         "VALUES (?,?,?,?,?,?,?,?)", seen_insert_rows)
         # Advance the rotation so the next lap resumes past this lap's work.
         _DISCOVERY_CURSOR = (start_at + iterated) % len(rfqs) if rfqs else 0
+    # pass_sec is the #89 health metric: the RFQ re-visit cadence IS the
+    # pass duration whenever it exceeds DISCOVERY_SEC, so a slow pass is a
+    # quote-latency regression even when nothing was deferred. Log it with
+    # the usual counters, and unconditionally when it breaches the cadence.
+    pass_sec = time.monotonic() - pass_started
     if (scope_fetches_deferred or timebox_deferred or stale_skipped
-            or tipoff_skipped or horizon_skipped):
-        log.info("discovery pass: iterated=%d/%d stale_skipped=%d "
+            or tipoff_skipped or horizon_skipped
+            or pass_sec > config.DISCOVERY_SEC):
+        log.info("discovery pass: iterated=%d/%d pass_sec=%.2f stale_skipped=%d "
                  "tipoff_skipped=%d horizon_skipped=%d "
                  "timebox_deferred=%d scope_fetch_deferred=%d",
-                 iterated, len(rfqs), stale_skipped, tipoff_skipped,
+                 iterated, len(rfqs), pass_sec, stale_skipped, tipoff_skipped,
                  horizon_skipped, timebox_deferred, scope_fetches_deferred)
 
 

@@ -87,6 +87,84 @@ def test_discovery_pass_uses_constant_db_connections(monkeypatch, tmp_path):
     main._SCOPE_CACHE.clear()
 
 
+def test_discovery_pass_constant_connections_for_in_scope_rfqs(monkeypatch, tmp_path):
+    """Issue #89: the 2026-08-10 fix (above) only covered the OUT-of-scope
+    path — the in-scope gate path still opened 4-5 connections per RFQ
+    (creator halt, daily/per-game caps, cooldown), ~17ms each on the live
+    state DB. At ~200 open RFQs that made the pass 8-12s, so the effective
+    RFQ re-visit cadence was the pass duration instead of DISCOVERY_SEC —
+    which is exactly the 18.5s median RFQ->quote latency: #55's quorum
+    landings sat unread until the next slow pass. The whole in-scope gate
+    chain must read from ONE pass-start snapshot connection."""
+    import kalshi_mlb_mm.db as db_mod
+    _fresh_db(monkeypatch, tmp_path, "connes_inscope.duckdb")
+    import kalshi_mlb_mm.config as cfg
+    import kalshi_mlb_mm.risk as risk
+    from kalshi_mlb_mm import main
+    from kalshi_mlb_mm.tests.conftest import leg
+
+    n_rfqs = 150
+    grid_legs = [
+        leg("KXMLBSPREAD-25JUN271905TEXLAA-LAA2", "yes"),
+        leg("KXMLBTOTAL-25JUN271905TEXLAA-9", "yes"),
+    ]
+    scope_cache = {f"COMBO-{i}": (True, None, grid_legs)
+                   for i in range(n_rfqs)}
+    monkeypatch.setattr(main, "_SCOPE_CACHE", scope_cache)
+    monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
+    monkeypatch.setattr(main, "_commence_time", lambda gid: None)
+    monkeypatch.setattr(main, "_game_ref", lambda gid: object())
+    monkeypatch.setattr(risk, "tipoff_ok", lambda ct, min_: True)
+    monkeypatch.setattr(cfg, "FLIGHT_HORIZON_HOURS", 0)
+    monkeypatch.setattr(main.research, "emit", lambda ev, **kw: None)
+
+    class PendingEngine:
+        """Every combo stays on_demand_pending — the deepest gate chain an
+        RFQ traverses on EVERY tick while its live fetch is in flight."""
+        def lookup(self, h):
+            return None
+
+        def landed_empty(self, h):
+            return False
+
+        def ensure_fetch(self, h, game, legs):
+            return True
+
+    monkeypatch.setattr(main, "_ENGINE", PendingEngine())
+
+    class InScopeSource:
+        def poll(self):
+            return [{"id": f"r{i}", "market_ticker": f"COMBO-{i}",
+                     "contracts": 1} for i in range(n_rfqs)]
+
+        def get_market(self, ticker):
+            raise AssertionError("scope cache pre-seeded — no REST fetches")
+
+    real_connect = db_mod.connect
+    calls = {"n": 0}
+
+    def counting_connect(*a, **kw):
+        calls["n"] += 1
+        return real_connect(*a, **kw)
+
+    monkeypatch.setattr(main.db, "connect", counting_connect)
+    main._discovery_tick(InScopeSource(), NeverQuoteGateway(), dry_run=True)
+
+    # Pass snapshot + seen bulk-lookup + today's-fills pair + decision flush:
+    # a handful of connections regardless of RFQ count. 150 in-scope RFQs
+    # must NOT mean 600+.
+    assert calls["n"] <= 8, (
+        f"discovery pass opened {calls['n']} DB connections for {n_rfqs} "
+        "in-scope RFQs — the per-RFQ gate connect pattern has regressed "
+        "(issue #89)")
+    with db_mod.connect(read_only=True) as con:
+        n_pending = con.execute(
+            "SELECT COUNT(*) FROM quote_decisions "
+            "WHERE reason='on_demand_pending'").fetchone()[0]
+    assert n_pending == n_rfqs, (
+        f"every in-scope RFQ must reach the live-feed gate: {n_pending}")
+
+
 def test_scope_fetch_budget_bounds_rest_calls_per_tick(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path, "budget.duckdb")
     import kalshi_mlb_mm.config as cfg
