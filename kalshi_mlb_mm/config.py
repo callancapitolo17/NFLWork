@@ -255,6 +255,11 @@ ON_DEMAND_DEADLINE_SEC = float(_get("ON_DEMAND_DEADLINE_SEC", "10.0"))
 # the queue. Per-book pressure is UNCHANGED at any value: the engine's
 # per-book gates serialize to one pricing call in flight per book.
 ON_DEMAND_MAX_CONCURRENT_JOBS = int(_get("ON_DEMAND_MAX_CONCURRENT_JOBS", "16"))
+# Only fly flights for combos whose games ALL start within this many hours.
+# Books post/price SGP combos close to game time — far-out flights come back
+# too_few_books (2026-08-11: 14k fetches in 30 min, zero priceable, mostly
+# hours-early requests on tonight's slate). 0 disables the horizon.
+FLIGHT_HORIZON_HOURS = float(_get("FLIGHT_HORIZON_HOURS", "6"))
 
 # Run-time book-health alerting (issue #37). Keys on consecutive FAILED
 # fetches, never on data age — an age rule would false-fire by design once
