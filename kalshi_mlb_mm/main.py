@@ -110,14 +110,26 @@ def _target_line_tick():
         _invalidate_game_caches()
 
 
-def _coverage_summary_tick(*, sgp_service):
+def _coverage_summary_tick(*, sgp_service, rfq_source=None):
     """Drain the service's on-demand coverage tally into one
     `on_demand_coverage` research event (issue #81 — the heir to the old
     sweep's per-pass book counts: with no sweep there is no periodic book
     count, so this is how a silently-dead book stays visible in research,
     not just #37 alerts).
     An idle window emits nothing — zero flights is the poll's normal state
-    on an empty slate, not a coverage fact."""
+    on an empty slate, not a coverage fact.
+
+    Also emits `rfq_ingestion_summary` (2026-08-11): the WS ingestion filter
+    drops the non-MLB firehose with NO per-RFQ record (that record volume is
+    what it exists to prevent), so this periodic aggregate is where non-MLB
+    flow stays stored — cumulative drop count + current mirror size, one row
+    per COVERAGE_SUMMARY_SEC. Analysts diff consecutive rows for rates."""
+    if rfq_source is not None and hasattr(rfq_source, "ingestion_dropped"):
+        research.emit("rfq_ingestion_summary",
+                      payload=dict(
+                          non_mlb_dropped_total=rfq_source.ingestion_dropped,
+                          mirror_size=len(rfq_source.poll()),
+                          window_sec=config.COVERAGE_SUMMARY_SEC))
     snapshot = sgp_service.coverage.snapshot_and_reset()
     if not snapshot:
         return
@@ -2091,7 +2103,7 @@ def main_loop(dry_run: bool):
             # record of which books are actually answering live fetches.
             if now - last["coverage"] >= config.COVERAGE_SUMMARY_SEC:
                 try:
-                    _coverage_summary_tick(sgp_service=sgp_service)
+                    _coverage_summary_tick(sgp_service=sgp_service, rfq_source=source)
                 except Exception as e:
                     log.error("coverage err: %s", e)
                 last["coverage"] = now
@@ -2136,7 +2148,7 @@ def main_loop(dry_run: bool):
         # buffer to disk — otherwise up to COVERAGE_SUMMARY_SEC of per-book
         # outcomes die with the process.
         try:
-            _coverage_summary_tick(sgp_service=sgp_service)
+            _coverage_summary_tick(sgp_service=sgp_service, rfq_source=source)
         except Exception:
             pass
         research.flush()  # final drain before shutdown
