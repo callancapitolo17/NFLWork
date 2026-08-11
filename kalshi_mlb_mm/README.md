@@ -403,6 +403,8 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `WS_CONNECT_ALERT_STREAK` | `3` | Consecutive connect failures before the one-per-outage notification |
 | `DISCOVERY_SEC` | `2` | Discovery + quote loop cadence (seconds) |
 | `SCOPE_FETCH_BUDGET_PER_TICK` | `40` | Max REST market fetches (scope checks) per discovery tick. Scope normally resolves free from the RFQ's own `mve_selected_legs`; this bounds the `get_market` fallback for payloads missing that field, so an exchange-wide open-RFQ backlog (4k+ tickers, 2026-08-10 incident) can't starve the loop's other arms or wedge SIGTERM; excess tickers wait for a later tick |
+| `MAX_RFQ_AGE_SEC` | `600` | Skip RFQs older than this before any work. An RFQ resting 10+ min un-quoted is near expiry or already picked over — quoting late is adverse selection, and classifying it burns lap budget. Missing/unparseable `created_ts` passes (fail-open); skips are counted in the periodic pass-summary log, not per-RFQ decision rows |
+| `DISCOVERY_PASS_BUDGET_SEC` | `20` | Wall-clock cap on one discovery pass. The WS mirror can serve the whole exchange's open-RFQ set (9k+ at Monday-evening peak, 2026-08-10); the lap processes what it can, defers the rest, and resumes at a rotating cursor next tick so tail RFQs never starve. Always makes progress (≥1 RFQ) |
 | `CONFIRM_SEC` | `2` | Confirm loop cadence (seconds) |
 | `RISK_SWEEP_SEC` | `10` | Risk sweep cadence (seconds) |
 | `RECONCILE_SWEEP_SEC` | `30` | Fill side/size reconciliation cadence against Kalshi positions (seconds) |

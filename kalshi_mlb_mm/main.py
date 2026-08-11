@@ -37,6 +37,7 @@ from kalshi_common.leg_types import (
 from kalshi_mlb_mm import (config, db, notify, pricing, research, risk, scope,
                            router, settlement, singles)
 from kalshi_mlb_mm.rfq_source import RestRFQSource
+from kalshi_mlb_mm.ws_rfq_source import _parse_created_ts
 from kalshi_mlb_mm.quote_gateway import RestQuoteGateway
 # #23: the constituent-singles helpers moved to kalshi_mlb_mm/singles.py so the
 # quote-time sanity gate, the risk sweep, and #17's confirm veto all share ONE
@@ -58,6 +59,7 @@ _SCOPE_CACHE = {}        # market_ticker -> (in_scope, game_id, legs)
 # set (4k+ tickers on 2026-08-10), so this is a working-set limit — a full
 # clear would re-fetch the entire universe at ~0.5s/ticker every pass.
 _SCOPE_CACHE_MAX = 5000
+_DISCOVERY_CURSOR = 0    # rotating start offset for the time-boxed discovery pass
 
 
 def _scope_cache_put(ticker: str, in_scope: bool, game_id, legs) -> None:
@@ -861,8 +863,25 @@ def _discovery_tick(source, gateway, dry_run):
             seen_ids = {row[0] for row in con.execute(
                 "SELECT rfq_id FROM seen_rfqs WHERE rfq_id IN (SELECT unnest(?))",
                 [pass_rfq_ids]).fetchall()}
+    # Time-boxed, rotating pass (2026-08-10 round 3): a Sunday-peak mirror
+    # held 9k+ open RFQs — no per-RFQ cost is low enough that an unbounded
+    # pass can't starve the loop. The lap gets a wall-clock budget with
+    # guaranteed progress (>=1 RFQ), and starts where the last lap left off
+    # so tail RFQs are not systematically starved.
+    global _DISCOVERY_CURSOR
+    start_at = _DISCOVERY_CURSOR % len(rfqs) if rfqs else 0
+    if start_at:
+        rfqs = rfqs[start_at:] + rfqs[:start_at]
+    pass_deadline = time.monotonic() + config.DISCOVERY_PASS_BUDGET_SEC
+    iterated = 0
+    timebox_deferred = 0
+    stale_skipped = 0
     try:
         for rfq in rfqs:
+            if iterated and time.monotonic() > pass_deadline:
+                timebox_deferred = len(rfqs) - iterated
+                break
+            iterated += 1
             # A poll() snapshot can be the entire exchange-wide open-RFQ set
             # (thousands of tickers) — without this check a SIGTERM only takes
             # effect after the full pass, which is the 2026-08-09/10 shutdown
@@ -875,6 +894,18 @@ def _discovery_tick(source, gateway, dry_run):
             rid = rfq.get("id")
             ticker = rfq.get("market_ticker")
             if not rid or not ticker:
+                continue
+            # Age gate BEFORE any other work: an RFQ resting past
+            # MAX_RFQ_AGE_SEC un-quoted is near expiry or already picked
+            # over — quoting it late is adverse selection, and classifying
+            # it is wasted lap budget. No decision row (it would re-bloat
+            # the state DB on every restart backlog); the periodic pass
+            # summary carries the count. Unparseable/missing created_ts
+            # passes through (fail-open).
+            rfq_created = _parse_created_ts(rfq.get("created_ts"))
+            if rfq_created is not None and (
+                    (now_utc - rfq_created).total_seconds() > config.MAX_RFQ_AGE_SEC):
+                stale_skipped += 1
                 continue
             # Kalshi RFQ poll responses tag the creator as creator_user_id; fall
             # back to creator_id for forward-compatibility if the API name changes.
@@ -1348,10 +1379,13 @@ def _discovery_tick(source, gateway, dry_run):
                         "(rfq_id, market_ticker, in_scope, game_id, legs_json, "
                         "first_seen_at, last_decision, creator_id) "
                         "VALUES (?,?,?,?,?,?,?,?)", seen_insert_rows)
-    if scope_fetches_deferred:
-        log.info("discovery: scope-fetch budget (%d) hit — %d unseen tickers "
-                 "deferred to a later tick",
-                 config.SCOPE_FETCH_BUDGET_PER_TICK, scope_fetches_deferred)
+        # Advance the rotation so the next lap resumes past this lap's work.
+        _DISCOVERY_CURSOR = (start_at + iterated) % len(rfqs) if rfqs else 0
+    if scope_fetches_deferred or timebox_deferred or stale_skipped:
+        log.info("discovery pass: iterated=%d/%d stale_skipped=%d "
+                 "timebox_deferred=%d scope_fetch_deferred=%d",
+                 iterated, len(rfqs), stale_skipped,
+                 timebox_deferred, scope_fetches_deferred)
 
 
 def _confirm_tick(gateway, dry_run):
