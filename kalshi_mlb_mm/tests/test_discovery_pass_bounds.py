@@ -299,7 +299,7 @@ def test_commence_time_naive_utc_normalized(monkeypatch, tmp_path):
     looked ~7h later than reality, the gate never fired, and in-play games
     generated live-flight traffic all day. _commence_time must return an
     AWARE UTC datetime so tipoff_ok compares real instants."""
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
     import duckdb as ddb
     import kalshi_mlb_mm.config as cfg
     from kalshi_mlb_mm import main, risk
@@ -308,10 +308,13 @@ def test_commence_time_naive_utc_normalized(monkeypatch, tmp_path):
     con = ddb.connect(str(market_db))
     con.execute("CREATE TABLE mlb_target_lines (game_id VARCHAR, "
                 "commence_time TIMESTAMP)")
-    # A game that started 2h ago (UTC instant), written naive — the bug shape.
-    started = datetime.now(timezone.utc).replace(tzinfo=None)
+    # A game that started 2h ago (UTC instant), written naive — the bug
+    # shape. timedelta, NOT hour arithmetic: (hour - 2) % 24 wraps forward
+    # across midnight UTC and inverts the premise for two hours a day.
+    started_2h_ago = (datetime.now(timezone.utc) - timedelta(hours=2)
+                      ).replace(tzinfo=None)
     con.execute("INSERT INTO mlb_target_lines VALUES ('g1', ?)",
-                [started.replace(hour=(started.hour - 2) % 24)])
+                [started_2h_ago])
     con.close()
     monkeypatch.setattr(cfg, "MARKET_DB", market_db)
     main._COMMENCE_CACHE.clear()
