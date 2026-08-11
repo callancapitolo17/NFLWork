@@ -730,6 +730,15 @@ class SGPService:
         """
         if book not in self._state or not legs:
             return None
+        # #85 pre-guard (issue #84): every book's resolve_legs dispatches on
+        # market_type alone against FULL-GAME structures — an F5-period leg
+        # reaching a resolver would silently resolve to the FG selection and
+        # return a confidently wrong price. Fail closed (book declines, zero
+        # wire calls) until #85 plumbs period-aware structures through all six
+        # books; the flight then completes zero-book and the maker declines
+        # live_fetch_timeout / too_few_books instead of quoting a wrong fair.
+        if any(getattr(l, "period", "FG") != "FG" for l in legs):
+            return None
         t0 = time.monotonic()
         # Per-call, never shared: two RFQs can price the same book on two
         # threads at once, so the verdict cannot live on self.
