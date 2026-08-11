@@ -202,7 +202,21 @@ def _commence_time_uncached(game_id):
         row = con.execute(
             "SELECT commence_time FROM mlb_target_lines WHERE game_id=? LIMIT 1",
             [game_id]).fetchone()
-        return row[0] if row else None
+        if not row or row[0] is None:
+            return None
+        ct = row[0]
+        # 2026-08-11 bug: mlb_target_lines stores commence_time as a NAIVE
+        # TIMESTAMP whose instants are UTC (sgp_runner writes Odds API
+        # commence_time), but risk._now_matching treats naive datetimes as
+        # LOCAL (a contract for the R pipeline's naive-local columns). The
+        # mismatch made every tipoff look ~7h later than reality — the gate
+        # never fired and in-play games generated live-flight traffic all
+        # day. Attach UTC here so the comparison is aware-vs-aware.
+        # Durable fix (column -> TIMESTAMPTZ in sgp_runner) is tracked
+        # separately; it touches the taker's copy of the table too.
+        if ct.tzinfo is None:
+            ct = ct.replace(tzinfo=timezone.utc)
+        return ct
     except duckdb.CatalogException:
         return None
     finally:
@@ -891,6 +905,8 @@ def _discovery_tick(source, gateway, dry_run):
     iterated = 0
     timebox_deferred = 0
     stale_skipped = 0
+    tipoff_skipped = 0
+    horizon_skipped = 0
     try:
         for rfq in rfqs:
             if iterated and time.monotonic() > pass_deadline:
@@ -1083,12 +1099,27 @@ def _discovery_tick(source, gateway, dry_run):
                                       reason="in_cooldown_awaiting_refresh")
                         continue
                     last_fill_fair = last_fill[1]
-            # Tipoff gate: earliest commence across all games.
+            # Tipoff gate: earliest commence across all games. Counter, not a
+            # decision row — in-play RFQ flow runs ~100/min at evening peak
+            # and per-pass rows at that rate is the DB bloat the 08-11 prune
+            # removed (pass-summary log + rfq_ingestion_summary carry it).
             commence_times = [_commence_time(gid) for gid in game_ids_list]
             earliest_ct = min((ct for ct in commence_times if ct is not None), default=None)
             if not risk.tipoff_ok(earliest_ct, config.TIPOFF_CANCEL_MIN):
-                _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id, reason="tipoff")
+                tipoff_skipped += 1
                 continue
+            # Flight horizon: books price SGP combos only near game time —
+            # a combo whose farthest game is hours out comes back
+            # too_few_books after 6 wasted fetches. Skip (counter only)
+            # until every game is inside the horizon. 0 disables.
+            if config.FLIGHT_HORIZON_HOURS > 0:
+                latest_ct = max((ct for ct in commence_times if ct is not None),
+                                default=None)
+                if latest_ct is not None and (
+                        (latest_ct - now_utc).total_seconds()
+                        > config.FLIGHT_HORIZON_HOURS * 3600):
+                    horizon_skipped += 1
+                    continue
             # Live pricing (#54): EVERY in-scope sub-combo — grids, cross-game
             # singles, novel shapes — rides a live feed keyed off this very poll.
             # A fresh (<=QUOTE_FRESH_SEC) result prices this tick; otherwise
@@ -1396,11 +1427,13 @@ def _discovery_tick(source, gateway, dry_run):
                         "VALUES (?,?,?,?,?,?,?,?)", seen_insert_rows)
         # Advance the rotation so the next lap resumes past this lap's work.
         _DISCOVERY_CURSOR = (start_at + iterated) % len(rfqs) if rfqs else 0
-    if scope_fetches_deferred or timebox_deferred or stale_skipped:
+    if (scope_fetches_deferred or timebox_deferred or stale_skipped
+            or tipoff_skipped or horizon_skipped):
         log.info("discovery pass: iterated=%d/%d stale_skipped=%d "
+                 "tipoff_skipped=%d horizon_skipped=%d "
                  "timebox_deferred=%d scope_fetch_deferred=%d",
-                 iterated, len(rfqs), stale_skipped,
-                 timebox_deferred, scope_fetches_deferred)
+                 iterated, len(rfqs), stale_skipped, tipoff_skipped,
+                 horizon_skipped, timebox_deferred, scope_fetches_deferred)
 
 
 def _confirm_tick(gateway, dry_run):

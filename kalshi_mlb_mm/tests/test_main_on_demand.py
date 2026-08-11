@@ -205,3 +205,23 @@ def test_confirm_on_demand_refetches_and_voids_on_stale(monkeypatch, tmp_path):
                           "ORDER BY observed_at DESC LIMIT 1").fetchone()
     assert st[0] == "voided"
     assert dec[0] == "voided_no_fresh_books"
+
+
+def test_engine_concurrency_from_config(monkeypatch):
+    """2026-08-11: 4 hard-coded job slots capped pricing at ~50 combos/min
+    vs ~170/min of option-B door survivors — the knob must reach the
+    semaphore, and an explicit ctor arg must win over config."""
+    import kalshi_mlb_mm.config as cfg
+    from kalshi_mlb_mm.on_demand import OnDemandEngine
+
+    monkeypatch.setattr(cfg, "ON_DEMAND_MAX_CONCURRENT_JOBS", 7)
+
+    class NullService:
+        pass
+
+    eng = OnDemandEngine(NullService(), autostart=False)
+    assert eng.max_concurrent_jobs == 7
+    assert eng._job_slots._value == 7
+
+    eng2 = OnDemandEngine(NullService(), autostart=False, max_concurrent_jobs=2)
+    assert eng2.max_concurrent_jobs == 2
