@@ -61,6 +61,28 @@ class WSProtocolError(Exception):
     gap-fills)."""
 
 
+# Ingestion filter (2026-08-10): the communications channel is the ENTIRE
+# exchange's RFQ firehose — measured ~5-10k rfq_created/min at Monday-evening
+# peak — and Kalshi sends no rfq_deleted for expirations, so an unfiltered
+# mirror grows without bound (48k entries in 5 minutes observed). Every MLB
+# leg market starts with this prefix (KXMLBGAME- / KXMLBSPREAD- /
+# KXMLBTOTAL-); an RFQ with any non-KXMLB leg can never be in scope (the
+# leg-typer must type EVERY leg), so it is dropped at the door — no mirror
+# entry, no research event, no per-RFQ decision row downstream.
+MLB_LEG_PREFIX = "KXMLB"
+INGESTION_DROP_LOG_EVERY = 25_000
+
+
+def _rfq_is_mlb_candidate(msg: dict) -> bool:
+    """True iff every leg references an MLB market — or legs are absent
+    (fail-open: the discovery tick's budgeted get_market fallback decides)."""
+    legs = msg.get("mve_selected_legs")
+    if not isinstance(legs, list) or not legs:
+        return True
+    return all(str(leg.get("market_ticker", "")).startswith(MLB_LEG_PREFIX)
+               for leg in legs)
+
+
 class WSTransport(Protocol):
     """Minimal blocking transport the reader thread drives. recv() returns a
     text frame, None for non-message activity (server pings), raises
@@ -147,7 +169,8 @@ class WebSocketRFQSource:
                  reconnect_base_sec: float | None = None,
                  reconnect_max_sec: float | None = None,
                  connect_alert_streak: int | None = None,
-                 subscribe_ack_timeout_sec: float = 10.0):
+                 subscribe_ack_timeout_sec: float = 10.0,
+                 mirror_ttl_sec: float | None = None):
         self._rest = rest_source
         self._transport_factory = transport_factory or (
             lambda: KalshiWSTransport(url=config.KALSHI_WS_URL))
@@ -164,8 +187,17 @@ class WebSocketRFQSource:
             config.WS_CONNECT_ALERT_STREAK if connect_alert_streak is None
             else connect_alert_streak)
         self._subscribe_ack_timeout_sec = subscribe_ack_timeout_sec
+        # TTL on mirror entries (arrival-clock): expirations never arrive as
+        # rfq_deleted, so without this the mirror is a leak. Aligned with the
+        # discovery age gate (MAX_RFQ_AGE_SEC) — an entry the tick would
+        # age-skip anyway has no reason to stay mirrored.
+        self._mirror_ttl_sec = (
+            float(config.MAX_RFQ_AGE_SEC) if mirror_ttl_sec is None
+            else mirror_ttl_sec)
         self._lock = threading.Lock()
         self._open_rfqs: dict[str, dict] = {}
+        self._rfq_arrived: dict[str, float] = {}   # rfq_id -> time.monotonic()
+        self.ingestion_dropped = 0
         self._ws_ready = False          # connect + subscribe + gap-fill done
         self._last_msg_at = 0.0         # any WS frame, pings included
         self._connect_failures = 0
@@ -233,6 +265,13 @@ class WebSocketRFQSource:
         if self._mode != "ws":
             return self._rest.poll()
         with self._lock:
+            if self._mirror_ttl_sec is not None:
+                ttl_cutoff = time.monotonic() - self._mirror_ttl_sec
+                expired = [rid for rid, arrived in self._rfq_arrived.items()
+                           if arrived < ttl_cutoff]
+                for rid in expired:
+                    self._open_rfqs.pop(rid, None)
+                    self._rfq_arrived.pop(rid, None)
             return list(self._open_rfqs.values())
 
     def get_market(self, market_ticker: str) -> dict | None:
@@ -331,11 +370,14 @@ class WebSocketRFQSource:
         the mirror, which loses quoting opportunities until the next event or
         reconnect but can never resurrect a dead RFQ — the safe direction."""
         rest_rfqs = self._rest.poll()
-        snapshot = {rfq["id"]: rfq for rfq in rest_rfqs if rfq.get("id")}
+        snapshot = {rfq["id"]: rfq for rfq in rest_rfqs
+                    if rfq.get("id") and _rfq_is_mlb_candidate(rfq)}
+        now_mono = time.monotonic()
         with self._lock:
             had = len(self._open_rfqs)
             self._open_rfqs.clear()
             self._open_rfqs.update(snapshot)
+            self._rfq_arrived = {rid: now_mono for rid in snapshot}
         self.gap_fill_count += 1
         if had and not snapshot:
             log.warning("[ws_rfq] gap-fill (%s) emptied a %d-entry mirror — "
@@ -385,12 +427,23 @@ class WebSocketRFQSource:
             if not rfq_id or not isinstance(rfq_id, str):
                 raise ValueError(f"{msg_type} missing rfq id")
             if msg_type == "rfq_created":
+                if not _rfq_is_mlb_candidate(msg):
+                    # Dropped silently by design: at ~100+/s a per-RFQ log or
+                    # research event would itself re-bloat what this filter
+                    # exists to protect. Periodic count line only.
+                    self.ingestion_dropped += 1
+                    if self.ingestion_dropped % INGESTION_DROP_LOG_EVERY == 0:
+                        log.info("[ws_rfq] ingestion filter: %d non-MLB RFQs "
+                                 "dropped since start", self.ingestion_dropped)
+                    return
                 with self._lock:
                     self._open_rfqs[rfq_id] = msg
+                    self._rfq_arrived[rfq_id] = time.monotonic()
                 self._emit_seen_latency(msg)
             else:
                 with self._lock:
                     self._open_rfqs.pop(rfq_id, None)
+                    self._rfq_arrived.pop(rfq_id, None)
         except Exception as e:
             self._count_malformed(e)
 

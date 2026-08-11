@@ -259,3 +259,35 @@ def test_pass_timebox_bounds_lap_and_rotates(monkeypatch, tmp_path):
     assert ids == ["r0", "r1"], (
         f"second lap must resume at the cursor (r1), got {ids}")
     main._SCOPE_CACHE.clear()
+
+
+def test_coverage_tick_emits_rfq_ingestion_summary(monkeypatch):
+    """Non-MLB flow must stay measured after the ingestion filter: the
+    coverage arm persists the drop counter + mirror size as a periodic
+    `rfq_ingestion_summary` research event (user requirement 2026-08-11 —
+    the per-RFQ records are gone, the aggregate must not be)."""
+    from kalshi_mlb_mm import main
+
+    emitted = []
+    monkeypatch.setattr(main.research, "emit",
+                        lambda et, **kw: emitted.append((et, kw)))
+
+    class FakeCoverage:
+        def snapshot_and_reset(self):
+            return {}
+
+    class FakeSGPService:
+        coverage = FakeCoverage()
+
+    class FakeSource:
+        ingestion_dropped = 12345
+        def poll(self):
+            return [{"id": "r1"}, {"id": "r2"}]
+
+    main._coverage_summary_tick(sgp_service=FakeSGPService(),
+                                rfq_source=FakeSource())
+    kinds = [et for et, _ in emitted]
+    assert "rfq_ingestion_summary" in kinds
+    payload = dict(emitted[kinds.index("rfq_ingestion_summary")][1])["payload"]
+    assert payload["non_mlb_dropped_total"] == 12345
+    assert payload["mirror_size"] == 2
