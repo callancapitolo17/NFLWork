@@ -73,14 +73,19 @@ class _Flight:
 
 # Issue #50: multi-game RFQs enqueue one job per game; the old single
 # consumer drained them strictly serially, so game N's fetch waited out
-# games 1..N-1 in full. Jobs now run on up to this many concurrent daemon
-# threads (each job already fans one thread per book internally, so the
-# ceiling bounds total fan-out at jobs x books).
-_MAX_CONCURRENT_JOBS = 4
+# games 1..N-1 in full. Jobs run on up to ON_DEMAND_MAX_CONCURRENT_JOBS
+# concurrent daemon threads (config knob, 2026-08-11: 4 slots capped combo
+# throughput at ~50/min while option-B door survivors arrive at ~170/min —
+# a job holds its slot for the full flight, including the slow books).
+# Raising jobs does NOT raise per-book pressure: the per-book gates below
+# still serialize to ONE pricing call in flight per book — more jobs just
+# keep every book's serial lane full instead of idle.
+_MAX_CONCURRENT_JOBS = 4   # fallback when config is absent (tests)
 
 
 class OnDemandEngine:
-    def __init__(self, service, now_fn=time.monotonic, autostart: bool = True):
+    def __init__(self, service, now_fn=time.monotonic, autostart: bool = True,
+                 max_concurrent_jobs: int | None = None):
         self._service = service
         self._now = now_fn
         self._autostart = autostart
@@ -91,9 +96,16 @@ class OnDemandEngine:
         self._landed: dict[str, threading.Event] = {}   # hash -> landing signal
         self._store: dict[str, _Flight] = {}            # hash -> _Flight
         self._worker: threading.Thread | None = None
+        if max_concurrent_jobs is None:
+            try:
+                from kalshi_mlb_mm import config as _config
+                max_concurrent_jobs = _config.ON_DEMAND_MAX_CONCURRENT_JOBS
+            except (ImportError, AttributeError):
+                max_concurrent_jobs = _MAX_CONCURRENT_JOBS
+        self.max_concurrent_jobs = max_concurrent_jobs
         # Caps concurrent jobs; acquired by the dispatcher, released by the
         # job thread — the dispatcher blocks (backpressure) at the cap.
-        self._job_slots = threading.Semaphore(_MAX_CONCURRENT_JOBS)
+        self._job_slots = threading.Semaphore(max_concurrent_jobs)
         # Issue #40 pacing invariant: ONE on-demand pricing call in flight
         # per book, even with concurrent jobs (Novig 403s at ~26 rapid
         # calls; a 3-job burst of 8-cell partitions would blow past it).
