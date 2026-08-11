@@ -177,6 +177,7 @@ def test_scope_cache_overflow_evicts_partially_not_clear(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cfg, "SCOPE_FETCH_BUDGET_PER_TICK", 10_000)
     monkeypatch.setattr(main, "_SCOPE_CACHE_MAX", 8)
+    monkeypatch.setattr(main, "_DISCOVERY_CURSOR", 0)   # rotation would reorder inserts
     main._SCOPE_CACHE.clear()
 
     src = CountingSource(n_rfqs=9)   # one past the cap
@@ -187,4 +188,74 @@ def test_scope_cache_overflow_evicts_partially_not_clear(monkeypatch, tmp_path):
     assert len(main._SCOPE_CACHE) == 7
     assert "TICK-0" not in main._SCOPE_CACHE     # oldest evicted
     assert "TICK-8" in main._SCOPE_CACHE         # newest present
+    main._SCOPE_CACHE.clear()
+
+
+def test_stale_rfqs_skipped_before_any_work(monkeypatch, tmp_path):
+    """MAX_RFQ_AGE_SEC: an RFQ resting past the age cap is skipped before
+    scope work, decision logging, or any fetch — quoting it late is adverse
+    selection, and classifying it burns lap budget. Missing created_ts
+    passes through (fail-open)."""
+    db = _fresh_db(monkeypatch, tmp_path, "stale.duckdb")
+    import kalshi_mlb_mm.config as cfg
+    from kalshi_mlb_mm import main
+
+    monkeypatch.setattr(cfg, "MAX_RFQ_AGE_SEC", 600)
+    monkeypatch.setattr(main, "_DISCOVERY_CURSOR", 0)
+    main._SCOPE_CACHE.clear()
+
+    class MixedAgeSource:
+        def __init__(self):
+            self.fetches = 0
+
+        def poll(self):
+            from datetime import datetime, timedelta, timezone
+            old = (datetime.now(timezone.utc) - timedelta(seconds=3600)).isoformat()
+            return (
+                [{"id": f"old{i}", "market_ticker": f"OLD-{i}", "contracts": 1,
+                  "created_ts": old} for i in range(30)]
+                + [{"id": "fresh1", "market_ticker": "FRESH-1", "contracts": 1}]
+            )
+
+        def get_market(self, ticker):
+            self.fetches += 1
+            return {"mve_selected_legs": [{"market_ticker": "NOT-MLB"}]}
+
+    src = MixedAgeSource()
+    main._discovery_tick(src, NeverQuoteGateway(), dry_run=True)
+    with db.connect(read_only=True) as con:
+        rows = con.execute("SELECT rfq_id FROM quote_decisions").fetchall()
+    assert [r[0] for r in rows] == ["fresh1"], (
+        f"only the fresh RFQ may be decided, got {rows}")
+    assert src.fetches == 1, "stale RFQs must not trigger market fetches"
+    main._SCOPE_CACHE.clear()
+
+
+def test_pass_timebox_bounds_lap_and_rotates(monkeypatch, tmp_path):
+    """DISCOVERY_PASS_BUDGET_SEC: a lap past its wall budget defers the rest
+    of the snapshot but always makes progress (>=1 RFQ), and the next lap
+    resumes at the rotation cursor instead of re-starting from the head."""
+    db = _fresh_db(monkeypatch, tmp_path, "timebox.duckdb")
+    import kalshi_mlb_mm.config as cfg
+    from kalshi_mlb_mm import main
+
+    monkeypatch.setattr(cfg, "SCOPE_FETCH_BUDGET_PER_TICK", 10_000)
+    monkeypatch.setattr(cfg, "DISCOVERY_PASS_BUDGET_SEC", 0.0)   # expire instantly
+    monkeypatch.setattr(main, "_DISCOVERY_CURSOR", 0)
+    main._SCOPE_CACHE.clear()
+
+    src = CountingSource(n_rfqs=10)
+    main._discovery_tick(src, NeverQuoteGateway(), dry_run=True)
+    with db.connect(read_only=True) as con:
+        n1 = con.execute("SELECT COUNT(*) FROM quote_decisions").fetchone()[0]
+    assert n1 == 1, f"zero budget must still process exactly one RFQ, got {n1}"
+    assert main._DISCOVERY_CURSOR == 1, (
+        f"cursor must advance past the processed RFQ, got {main._DISCOVERY_CURSOR}")
+
+    main._discovery_tick(src, NeverQuoteGateway(), dry_run=True)
+    with db.connect(read_only=True) as con:
+        ids = sorted(r[0] for r in con.execute(
+            "SELECT rfq_id FROM quote_decisions").fetchall())
+    assert ids == ["r0", "r1"], (
+        f"second lap must resume at the cursor (r1), got {ids}")
     main._SCOPE_CACHE.clear()

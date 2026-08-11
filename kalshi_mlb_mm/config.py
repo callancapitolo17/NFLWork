@@ -193,6 +193,17 @@ DISCOVERY_SEC = int(_get("DISCOVERY_SEC", "2"))
 # Tickers beyond the budget simply wait for a later tick — the mirror is
 # level-triggered, so nothing is lost. 40 fetches ≈ 20s worst-case per tick.
 SCOPE_FETCH_BUDGET_PER_TICK = int(_get("SCOPE_FETCH_BUDGET_PER_TICK", "40"))
+# Skip RFQs older than this before doing ANY work on them. An RFQ resting
+# 10+ minutes un-quoted is dead weight: near expiry, or already picked over
+# by faster makers — quoting it late is how we get adversely selected. Also
+# what keeps a restart from chewing through a Sunday-peak backlog (9k+ open
+# RFQs observed 2026-08-10). RFQs with no parseable created_ts pass (fail-open).
+MAX_RFQ_AGE_SEC = int(_get("MAX_RFQ_AGE_SEC", "600"))
+# Wall-clock cap on one discovery pass. The mirror can serve the entire
+# exchange-wide open-RFQ set; without a lap budget one pass starves every
+# other loop arm no matter how cheap each RFQ is. At least one RFQ is always
+# processed; a rotating start point stops tail RFQs from starving.
+DISCOVERY_PASS_BUDGET_SEC = float(_get("DISCOVERY_PASS_BUDGET_SEC", "20"))
 CONFIRM_SEC = int(_get("CONFIRM_SEC", "2"))
 RISK_SWEEP_SEC = int(_get("RISK_SWEEP_SEC", "10"))
 RECONCILE_SWEEP_SEC = int(_get("RECONCILE_SWEEP_SEC", "30"))
