@@ -422,3 +422,69 @@ def test_get_market_delegates_to_rest(capture, running):
     m = src.get_market("KXMVE-TEST-1")
     assert m == {"ticker": "KXMVE-TEST-1"}
     assert rest.get_market_calls == ["KXMVE-TEST-1"]
+
+
+# --- ingestion filter + mirror TTL (2026-08-10) ------------------------------
+
+def _mlb_legs():
+    return [{"event_ticker": "KXMLBGAME-26AUG10NYMATL",
+             "market_ticker": "KXMLBGAME-26AUG10NYMATL-ATL", "side": "yes"},
+            {"event_ticker": "KXMLBTOTAL-26AUG10NYMATL",
+             "market_ticker": "KXMLBTOTAL-26AUG10NYMATL-T8.5", "side": "yes"}]
+
+
+def _nba_legs():
+    return [{"event_ticker": "KXNBAGAME-X",
+             "market_ticker": "KXNBAGAME-X-LAL", "side": "yes"}]
+
+
+def test_ingestion_filter_drops_non_mlb_keeps_mlb_and_legless(capture, running):
+    """The communications channel is the whole exchange's firehose
+    (~5-10k creates/min at peak) and expirations never arrive as
+    rfq_deleted — everything not plausibly MLB must die at the door.
+    Legless frames pass (fail-open: the tick's fallback classifies)."""
+    factory, rest = FakeTransportFactory(), FakeRestSource()
+    src = make_source(factory, rest)
+    running.append(src)
+    src.start()
+    assert wait_until(lambda: src.ws_ready)
+    t = factory.transports[0]
+    t.push({"type": "rfq_created", "sid": 1,
+            "msg": _rfq("mlb1", mve_selected_legs=_mlb_legs())})
+    t.push({"type": "rfq_created", "sid": 1,
+            "msg": _rfq("nba1", mve_selected_legs=_nba_legs())})
+    t.push({"type": "rfq_created", "sid": 1, "msg": _rfq("legless1")})
+    assert wait_until(lambda: len(src.poll()) == 2)
+    ids = {r["id"] for r in src.poll()}
+    assert ids == {"mlb1", "legless1"}
+    assert src.ingestion_dropped == 1
+
+
+def test_mirror_ttl_evicts_expired_entries(capture, running):
+    """Kalshi sends no rfq_deleted on expiry, so without a TTL the mirror
+    grows forever (48k entries in 5 min observed live). Entries past the
+    TTL disappear from poll()."""
+    factory, rest = FakeTransportFactory(), FakeRestSource()
+    src = make_source(factory, rest, mirror_ttl_sec=0.2)
+    running.append(src)
+    src.start()
+    assert wait_until(lambda: src.ws_ready)
+    factory.transports[0].push({"type": "rfq_created", "sid": 1,
+                                "msg": _rfq("r1", mve_selected_legs=_mlb_legs())})
+    assert wait_until(lambda: len(src.poll()) == 1)
+    time.sleep(0.3)
+    assert src.poll() == [], "TTL-expired entry must leave the mirror"
+
+
+def test_gap_fill_applies_ingestion_filter(capture, running):
+    """REST gap-fill snapshots go through the same door: a reconcile must
+    not resurrect the non-MLB firehose into the mirror."""
+    rest = FakeRestSource()
+    rest.poll_results = [[_rfq("mlb1", mve_selected_legs=_mlb_legs()),
+                          _rfq("nba1", mve_selected_legs=_nba_legs())]]
+    factory = FakeTransportFactory()
+    src = make_source(factory, rest)
+    running.append(src)
+    src.start()
+    assert wait_until(lambda: src.ws_ready)
+    assert wait_until(lambda: {r["id"] for r in src.poll()} == {"mlb1"})
