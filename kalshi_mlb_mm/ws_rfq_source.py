@@ -76,16 +76,6 @@ INGESTION_DROP_LOG_EVERY = 25_000
 LATENCY_SAMPLE_EVERY = 100     # rfq_seen_latency is answered science; 1% sample
 
 
-def _rfq_is_mlb_candidate(msg: dict) -> bool:
-    """True iff every leg references an MLB market — or legs are absent
-    (fail-open: the discovery tick's budgeted get_market fallback decides)."""
-    legs = msg.get("mve_selected_legs")
-    if not isinstance(legs, list) or not legs:
-        return True
-    return all(str(leg.get("market_ticker", "")).startswith(MLB_LEG_PREFIX)
-               for leg in legs)
-
-
 def _door_verdict(msg: dict, *, max_legs: int, min_cost_usd: float) -> str:
     """'keep', or the drop-reason counter key.
 
