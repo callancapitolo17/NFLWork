@@ -61,16 +61,19 @@ class WSProtocolError(Exception):
     gap-fills)."""
 
 
-# Ingestion filter (2026-08-10): the communications channel is the ENTIRE
-# exchange's RFQ firehose — measured ~5-10k rfq_created/min at Monday-evening
-# peak — and Kalshi sends no rfq_deleted for expirations, so an unfiltered
-# mirror grows without bound (48k entries in 5 minutes observed). Every MLB
-# leg market starts with this prefix (KXMLBGAME- / KXMLBSPREAD- /
-# KXMLBTOTAL-); an RFQ with any non-KXMLB leg can never be in scope (the
-# leg-typer must type EVERY leg), so it is dropped at the door — no mirror
-# entry, no research event, no per-RFQ decision row downstream.
+# Door filter (2026-08-10, widened 2026-08-11 for option B): the
+# communications channel is the ENTIRE exchange's RFQ firehose — measured
+# ~30k rfq_created/min at peak, ~11.5k/min of them MLB-candidates with a
+# $10 median size (algorithmic spam; RFQ lifetime p50=10s). rfq_deleted
+# frames DO arrive (~29k/min — the 2026-08-10 mirror bloat was the reader
+# thread drowning in per-frame work, not missing deletes), but everything
+# not plausibly quotable still dies at the door: no mirror entry, no
+# research event, no per-RFQ decision row downstream. Per user decision
+# 2026-08-11 there is NO fetch ceiling behind these gates (option B) —
+# they are the only limit on book traffic.
 MLB_LEG_PREFIX = "KXMLB"
 INGESTION_DROP_LOG_EVERY = 25_000
+LATENCY_SAMPLE_EVERY = 100     # rfq_seen_latency is answered science; 1% sample
 
 
 def _rfq_is_mlb_candidate(msg: dict) -> bool:
@@ -81,6 +84,29 @@ def _rfq_is_mlb_candidate(msg: dict) -> bool:
         return True
     return all(str(leg.get("market_ticker", "")).startswith(MLB_LEG_PREFIX)
                for leg in legs)
+
+
+def _door_verdict(msg: dict, *, max_legs: int, min_cost_usd: float) -> str:
+    """'keep', or the drop-reason counter key.
+
+    Legless frames pass the leg checks (fail-open — the tick's budgeted
+    get_market fallback classifies), but the dollar floor still applies
+    whenever the RFQ is dollar-denominated; contracts-denominated RFQs
+    (target_cost 0) pass the door and meet the tick's size gate instead."""
+    legs = msg.get("mve_selected_legs")
+    if isinstance(legs, list) and legs:
+        if not all(str(leg.get("market_ticker", "")).startswith(MLB_LEG_PREFIX)
+                   for leg in legs):
+            return "non_mlb"
+        if len(legs) > max_legs:
+            return "too_many_legs"
+    try:
+        cost = float(msg.get("target_cost_dollars") or 0)
+    except (TypeError, ValueError):
+        cost = 0.0
+    if 0 < cost < min_cost_usd:
+        return "below_floor"
+    return "keep"
 
 
 class WSTransport(Protocol):
@@ -170,7 +196,9 @@ class WebSocketRFQSource:
                  reconnect_max_sec: float | None = None,
                  connect_alert_streak: int | None = None,
                  subscribe_ack_timeout_sec: float = 10.0,
-                 mirror_ttl_sec: float | None = None):
+                 mirror_ttl_sec: float | None = None,
+                 door_max_legs: int | None = None,
+                 door_min_cost_usd: float | None = None):
         self._rest = rest_source
         self._transport_factory = transport_factory or (
             lambda: KalshiWSTransport(url=config.KALSHI_WS_URL))
@@ -194,10 +222,18 @@ class WebSocketRFQSource:
         self._mirror_ttl_sec = (
             float(config.MAX_RFQ_AGE_SEC) if mirror_ttl_sec is None
             else mirror_ttl_sec)
+        self._door_max_legs = (
+            config.MAX_RFQ_LEG_COUNT if door_max_legs is None else door_max_legs)
+        self._door_min_cost_usd = (
+            config.MIN_RFQ_TARGET_COST_USD if door_min_cost_usd is None
+            else door_min_cost_usd)
         self._lock = threading.Lock()
         self._open_rfqs: dict[str, dict] = {}
         self._rfq_arrived: dict[str, float] = {}   # rfq_id -> time.monotonic()
-        self.ingestion_dropped = 0
+        self.ingestion_drops: dict[str, int] = {
+            "non_mlb": 0, "too_many_legs": 0, "below_floor": 0}
+        self.ingestion_kept = 0
+        self._latency_sample_counter = 0
         self._ws_ready = False          # connect + subscribe + gap-fill done
         self._last_msg_at = 0.0         # any WS frame, pings included
         self._connect_failures = 0
@@ -217,6 +253,11 @@ class WebSocketRFQSource:
     def ws_ready(self) -> bool:
         with self._lock:
             return self._ws_ready
+
+    @property
+    def ingestion_dropped(self) -> int:
+        """Total door drops across all reasons (see ingestion_drops)."""
+        return sum(self.ingestion_drops.values())
 
     def start(self) -> None:
         if self._thread is not None:
@@ -371,7 +412,9 @@ class WebSocketRFQSource:
         reconnect but can never resurrect a dead RFQ — the safe direction."""
         rest_rfqs = self._rest.poll()
         snapshot = {rfq["id"]: rfq for rfq in rest_rfqs
-                    if rfq.get("id") and _rfq_is_mlb_candidate(rfq)}
+                    if rfq.get("id")
+                    and _door_verdict(rfq, max_legs=self._door_max_legs,
+                                      min_cost_usd=self._door_min_cost_usd) == "keep"}
         now_mono = time.monotonic()
         with self._lock:
             had = len(self._open_rfqs)
@@ -427,19 +470,28 @@ class WebSocketRFQSource:
             if not rfq_id or not isinstance(rfq_id, str):
                 raise ValueError(f"{msg_type} missing rfq id")
             if msg_type == "rfq_created":
-                if not _rfq_is_mlb_candidate(msg):
-                    # Dropped silently by design: at ~100+/s a per-RFQ log or
+                verdict = _door_verdict(msg, max_legs=self._door_max_legs,
+                                        min_cost_usd=self._door_min_cost_usd)
+                if verdict != "keep":
+                    # Dropped silently by design: at ~500/s a per-RFQ log or
                     # research event would itself re-bloat what this filter
-                    # exists to protect. Periodic count line only.
-                    self.ingestion_dropped += 1
+                    # exists to protect. Periodic count line + the aggregate
+                    # rfq_ingestion_summary research event carry the totals.
+                    self.ingestion_drops[verdict] += 1
                     if self.ingestion_dropped % INGESTION_DROP_LOG_EVERY == 0:
-                        log.info("[ws_rfq] ingestion filter: %d non-MLB RFQs "
-                                 "dropped since start", self.ingestion_dropped)
+                        log.info("[ws_rfq] door filter drops since start: %s",
+                                 self.ingestion_drops)
                     return
+                self.ingestion_kept += 1
                 with self._lock:
                     self._open_rfqs[rfq_id] = msg
                     self._rfq_arrived[rfq_id] = time.monotonic()
-                self._emit_seen_latency(msg)
+                # 1% systematic sample (first kept RFQ always emits): the
+                # WS-vs-REST latency question is answered; full-rate emission
+                # was ~2M research rows/day of the same number.
+                self._latency_sample_counter += 1
+                if self._latency_sample_counter % LATENCY_SAMPLE_EVERY == 1:
+                    self._emit_seen_latency(msg)
             else:
                 with self._lock:
                     self._open_rfqs.pop(rfq_id, None)

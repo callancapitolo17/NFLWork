@@ -24,7 +24,8 @@ from kalshi_mlb_mm.ws_rfq_source import TransportTimeout, WebSocketRFQSource
 def _rfq(rid: str, ticker: str = "KXMVE-TEST-1", **extra) -> dict:
     base = {"id": rid, "creator_id": "", "market_ticker": ticker,
             "event_ticker": ticker.rsplit("-", 1)[0],
-            "contracts_fp": "0.00", "target_cost_dollars": "25.00",
+            # $500: above the option-B door floor so generic feed tests pass the door
+            "contracts_fp": "0.00", "target_cost_dollars": "500.00",
             "created_ts": "2026-08-07T18:00:00Z"}
     base.update(extra)
     return base
@@ -488,3 +489,37 @@ def test_gap_fill_applies_ingestion_filter(capture, running):
     src.start()
     assert wait_until(lambda: src.ws_ready)
     assert wait_until(lambda: {r["id"] for r in src.poll()} == {"mlb1"})
+
+
+def test_door_floor_and_leg_count_gates(capture, running):
+    """Option B (2026-08-11): with no fetch ceiling, the door's dollar floor
+    and leg-count cap are the only limits on book traffic. Below-floor and
+    4+-leg RFQs die at the door; contracts-denominated RFQs (target_cost 0)
+    pass the floor and meet the tick's size gate instead."""
+    factory, rest = FakeTransportFactory(), FakeRestSource()
+    src = make_source(factory, rest, door_max_legs=3, door_min_cost_usd=250.0)
+    running.append(src)
+    src.start()
+    assert wait_until(lambda: src.ws_ready)
+    t = factory.transports[0]
+    four_legs = _mlb_legs() + [
+        {"event_ticker": "KXMLBGAME-A", "market_ticker": "KXMLBGAME-A-AAA",
+         "side": "yes"},
+        {"event_ticker": "KXMLBGAME-B", "market_ticker": "KXMLBGAME-B-BBB",
+         "side": "yes"}]
+    t.push({"type": "rfq_created", "sid": 1,
+            "msg": _rfq("big", mve_selected_legs=_mlb_legs(),
+                        target_cost_dollars="300.00")})
+    t.push({"type": "rfq_created", "sid": 1,
+            "msg": _rfq("small", mve_selected_legs=_mlb_legs(),
+                        target_cost_dollars="25.00")})
+    t.push({"type": "rfq_created", "sid": 1,
+            "msg": _rfq("basket", mve_selected_legs=four_legs,
+                        target_cost_dollars="900.00")})
+    t.push({"type": "rfq_created", "sid": 1,
+            "msg": _rfq("contracts", mve_selected_legs=_mlb_legs(),
+                        target_cost_dollars="0.00", contracts_fp="40.00")})
+    assert wait_until(lambda: {r["id"] for r in src.poll()} == {"big", "contracts"})
+    assert src.ingestion_drops["below_floor"] == 1
+    assert src.ingestion_drops["too_many_legs"] == 1
+    assert src.ingestion_kept == 2
