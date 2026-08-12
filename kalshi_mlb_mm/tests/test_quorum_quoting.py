@@ -350,6 +350,52 @@ def test_quote_fires_at_quorum_while_slow_book_in_flight(monkeypatch, tmp_path):
     worker.join(timeout=8.0)
 
 
+def test_staggered_landings_quote_on_next_tick_not_deadline(monkeypatch, tmp_path):
+    """Issue #89 AC3, fully deterministic (no threads, no clocks): book A
+    lands (~t=1s), book B lands (~t=2s), books C-F NEVER answer and the
+    flight NEVER completes. The tick immediately after the second landing
+    must submit a quote — a path that waits for flight completion (the 10s
+    job deadline) fails this by leaving the RFQ pending forever."""
+    from kalshi_mlb_mm.on_demand import OnDemandEngine
+
+    class NeverAnsweringService:
+        books = ("fast_a", "fast_b", "book_c", "book_d", "book_e", "book_f")
+        on_demand_deadline_sec = 10.0
+
+        def price_on_demand(self, book, game, legs):
+            raise AssertionError("white-box test: landings are scripted")
+
+    eng = OnDemandEngine(NeverAnsweringService(), autostart=False)
+    main, db, emitted = _setup(monkeypatch, tmp_path, eng, "quorum89.duckdb")
+    gw = RecordingGW()
+    canon = legset.parse_legs(GRID_LEGS)
+    h = legset.leg_set_hash(canon)
+
+    # Tick 0: the RFQ lands, the tick queues the live fetch and waits.
+    main._discovery_tick(Src(), gw, dry_run=False)
+    assert _last_decision(db) == ("skipped", "on_demand_pending")
+    assert gw.submits == []
+
+    # ~t=1s: the fastest book lands. One book is below MIN_AGREEING_BOOKS —
+    # the tick declines thin, it must NOT quote and must NOT wedge.
+    eng._land_partial(h, "fast_a", _result("fast_a", FAST_FAIRS["fast_a"]))
+    main._discovery_tick(Src(), gw, dry_run=False)
+    assert gw.submits == []
+    assert _last_decision(db) == ("skipped", "live_too_few_books")
+
+    # ~t=2s: the second book lands -> 2-book quorum. The very next tick
+    # must submit, with the flight still in flight (no _finish ever ran).
+    eng._land_partial(h, "fast_b", _result("fast_b", FAST_FAIRS["fast_b"]))
+    main._discovery_tick(Src(), gw, dry_run=False)
+    assert len(gw.submits) == 1, \
+        "quote must fire on the 2-book partial landing, not at the deadline"
+    assert _last_decision(db) == ("quoted", None)
+    assert _quote_priced_payload(emitted)["quorum_size"] == 2
+    with eng._lock:
+        assert h in eng._inflight, \
+            "test invariant: the flight must still be in flight at quote time"
+
+
 def test_all_books_over_budget_declines_live_fetch_timeout(monkeypatch, tmp_path):
     """All books blow the budget -> the completed flight is an empty landing
     -> decline live_fetch_timeout (#54 vocabulary, unchanged by quorum)."""
