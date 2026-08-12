@@ -676,15 +676,15 @@ def _lookup_leg(structure: dict, key: str, line: float | None) -> dict | None:
 
 def resolve_legs(structure, legs, home_team, away_team, *,
                  counters: FetchCounters | None = None):
-    """Resolve canonical legs against Novig's FG per-event leg bucket.
+    """Resolve canonical legs against Novig's period-keyed per-event buckets.
 
     Parameters
     ----------
     structure
-        Line-keyed FG bucket built from Novig's EventMarkets tree — the
-        per-line generalization of ``fetch_event_legs``'s fg dict
-        (scraper_novig_sgp.py:440-459, keys ``home_spread / away_spread /
-        over / under / home_ml / away_ml``)::
+        Both period buckets, keyed by ``CanonicalLeg.period`` values (#85):
+        ``{"FG": <bucket>, "F5": <bucket>}`` — each bucket built by
+        ``build_line_structure`` (``period="fg"`` reads SPREAD/TOTAL/MONEY,
+        ``period="f5"`` reads SPREAD_1H/TOTAL_1H/MONEY_1H)::
 
             {
               "home_spread": {home_line: leg},  # keyed by HOME team's signed line
@@ -699,7 +699,9 @@ def resolve_legs(structure, legs, home_team, away_team, *,
         ``_find_outcome_in_total`` shape: ``{"id": <outcome uuid>,
         "available": <implied prob or None>}``. One NV SPREAD market at
         home-perspective strike -1.5 therefore lands in the bucket as
-        ``home_spread[-1.5]`` + ``away_spread[+1.5]``.
+        ``home_spread[-1.5]`` + ``away_spread[+1.5]``. Each leg resolves
+        from its ``leg.period`` bucket; a missing/None bucket fails the
+        whole book (never a cross-period price).
     legs
         list[CanonicalLeg] — lines are SIGNED home-perspective (negative =
         home favored), so an away-side spread lookup mirrors the sign.
@@ -724,6 +726,10 @@ def resolve_legs(structure, legs, home_team, away_team, *,
             return None
         out: list = []
         for leg in legs:
+            # Period bucket selection — the ONE place period is applied (#85).
+            period_structure = structure.get(leg.period)
+            if not isinstance(period_structure, dict):
+                return None                     # book posts no such period
             mt, side, line = leg.market_type, leg.side, leg.line
             if mt == "spread":
                 if side == "home":
@@ -749,10 +755,10 @@ def resolve_legs(structure, legs, home_team, away_team, *,
             else:
                 return None
 
-            chosen = _lookup_leg(structure, chosen_key, chosen_line)
+            chosen = _lookup_leg(period_structure, chosen_key, chosen_line)
             if chosen is None or not chosen.get("id"):
                 return None                     # chosen side miss → fail all
-            opposite = _lookup_leg(structure, opp_key, opp_line)
+            opposite = _lookup_leg(period_structure, opp_key, opp_line)
             opp_ref = opposite.get("id") if isinstance(opposite, dict) else None
             out.append(ResolvedLeg(
                 ref=chosen["id"],

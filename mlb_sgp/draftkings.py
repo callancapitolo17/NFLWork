@@ -668,16 +668,19 @@ from mlb_sgp._shared import ResolvedLeg  # noqa: E402  (Phase 2 section import)
 
 def resolve_legs(structure, legs, home_team, away_team, *,
                  counters: FetchCounters | None = None):
-    """Resolve canonical legs against DK's FG selection-id structure.
+    """Resolve canonical legs against DK's period-keyed selection-id structure.
 
     Parameters
     ----------
     structure
-        The FG bucket of ``fetch_selection_ids`` output, i.e.
-        ``fetch_selection_ids(session, eid, nums)["fg"]``:
+        Both period buckets of ``fetch_selection_ids`` output, re-keyed to
+        ``CanonicalLeg.period`` values (#85):
+        ``{"FG": <bucket>, "F5": <bucket>}`` where each bucket is
         ``{"spreads": {(sign, abs_line, participant): [sel_ids]},
         "totals": {("O"|"U", line): [sel_ids]},
         "moneyline": {"1": [sel_ids], "3": [sel_ids]}, "canonical": set()}``.
+        Each leg resolves from its ``leg.period`` bucket; a missing/None
+        bucket fails the whole book (never a cross-period price).
     legs
         ``list[kalshi_common.legset.CanonicalLeg]`` — market_type in
         {"spread", "total", "ml"}; spread line SIGNED home-perspective.
@@ -701,6 +704,10 @@ def resolve_legs(structure, legs, home_team, away_team, *,
     try:
         out: list[ResolvedLeg] = []
         for leg in legs:
+            # Period bucket selection — the ONE place period is applied (#85).
+            period_structure = structure.get(leg.period)
+            if not period_structure:
+                return None                      # book posts no such period
             if leg.market_type == "spread":
                 # Same sign convention as price_sgps / try_integer_fallback_dk.
                 if leg.line < 0:
@@ -708,8 +715,8 @@ def resolve_legs(structure, legs, home_team, away_team, *,
                 else:
                     home_sign, away_sign = "P", "N"
                 abs_line = abs(leg.line)
-                home_sels = structure["spreads"].get((home_sign, abs_line, "1")) or []
-                away_sels = structure["spreads"].get((away_sign, abs_line, "3")) or []
+                home_sels = period_structure["spreads"].get((home_sign, abs_line, "1")) or []
+                away_sels = period_structure["spreads"].get((away_sign, abs_line, "3")) or []
                 if leg.side == "home":
                     chosen, opposite = home_sels, away_sels
                 elif leg.side == "away":
@@ -717,8 +724,8 @@ def resolve_legs(structure, legs, home_team, away_team, *,
                 else:
                     return None
             elif leg.market_type == "total":
-                over_sels = structure["totals"].get(("O", leg.line)) or []
-                under_sels = structure["totals"].get(("U", leg.line)) or []
+                over_sels = period_structure["totals"].get(("O", leg.line)) or []
+                under_sels = period_structure["totals"].get(("U", leg.line)) or []
                 if leg.side == "over":
                     chosen, opposite = over_sels, under_sels
                 elif leg.side == "under":
@@ -726,7 +733,7 @@ def resolve_legs(structure, legs, home_team, away_team, *,
                 else:
                     return None
             elif leg.market_type == "ml":
-                ml = structure["moneyline"]
+                ml = period_structure["moneyline"]
                 home_ml = ml.get("1") or []
                 away_ml = ml.get("3") or []
                 if leg.side == "home":

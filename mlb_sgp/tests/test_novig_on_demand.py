@@ -34,16 +34,22 @@ def _leg(uuid, available):
     return {"id": uuid, "available": available}
 
 
+def _wrap(bucket):
+    """The two-period structure resolve_legs consumes since #85 (F5
+    coverage lives in test_f5_on_demand_resolvers.py)."""
+    return {"FG": bucket, "F5": None}
+
+
 def _structure():
     """Home favored -1.5 (so away bucket keys +1.5), total 8.5, both MLs."""
-    return {
+    return _wrap({
         "home_spread": {-1.5: _leg("hs-15", 0.60)},
         "away_spread": {1.5: _leg("as+15", 0.44)},
         "over": {8.5: _leg("ov85", 0.52)},
         "under": {8.5: _leg("un85", 0.50)},
         "home_ml": _leg("hml", 0.62),
         "away_ml": _leg("aml", 0.42),
-    }
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -83,12 +89,12 @@ def test_spread_away_side_mirrors_sign():
 
 def test_spread_positive_home_line_away_favored():
     """Home +2.5 (away favored): home bucket keyed +2.5, away keyed -2.5."""
-    structure = {
+    structure = _wrap({
         "home_spread": {2.5: _leg("hs+25", 0.55)},
         "away_spread": {-2.5: _leg("as-25", 0.49)},
         "over": {}, "under": {},
         "home_ml": None, "away_ml": None,
-    }
+    })
     out = resolve_legs(
         structure, [CanonicalLeg(GAME, "spread", 2.5, "home")], HOME, AWAY)
     assert out[0].ref == "hs+25" and out[0].opposite_ref == "as-25"
@@ -169,12 +175,12 @@ def test_chosen_miss_in_any_leg_fails_all():
 def test_no_integer_line_fallback():
     """Integer total 8.0 with 7.5/8.5 neighbors offered must NOT fall back
     to the adjacent-half-point derivation — exact line match only."""
-    structure = {
+    structure = _wrap({
         "home_spread": {}, "away_spread": {},
         "over": {7.5: _leg("ov75", 0.6), 8.5: _leg("ov85", 0.5)},
         "under": {7.5: _leg("un75", 0.42), 8.5: _leg("un85", 0.52)},
         "home_ml": None, "away_ml": None,
-    }
+    })
     out = resolve_legs(
         structure, [CanonicalLeg(GAME, "total", 8.0, "over")], HOME, AWAY)
     assert out is None
@@ -182,12 +188,12 @@ def test_no_integer_line_fallback():
 
 def test_opposite_miss_yields_none_opposite_ref():
     """One-sided line: chosen resolves, opposite_ref/decimal are None."""
-    structure = {
+    structure = _wrap({
         "home_spread": {-1.5: _leg("hs-15", 0.60)},
         "away_spread": {},                            # away side not offered
         "over": {}, "under": {},
         "home_ml": _leg("hml", 0.62), "away_ml": None,  # ML one-sided too
-    }
+    })
     out = resolve_legs(
         structure,
         [CanonicalLeg(GAME, "spread", -1.5, "home"),
@@ -202,7 +208,8 @@ def test_opposite_miss_yields_none_opposite_ref():
 
 
 def test_chosen_ml_missing_returns_none():
-    structure = dict(_structure(), home_ml=None)
+    structure = _structure()
+    structure["FG"]["home_ml"] = None
     out = resolve_legs(
         structure, [CanonicalLeg(GAME, "ml", None, "home")], HOME, AWAY)
     assert out is None
@@ -214,14 +221,14 @@ def test_chosen_ml_missing_returns_none():
 
 def test_available_edge_values():
     """available=0, 1, None, negative -> single_decimal None; 0.5 -> 2.0."""
-    structure = {
+    structure = _wrap({
         "home_spread": {-1.5: _leg("a", 0.0)},
         "away_spread": {1.5: _leg("b", 1.0)},
         "over": {8.5: _leg("c", None)},
         "under": {8.5: _leg("d", -0.2)},
         "home_ml": _leg("e", 0.5),
         "away_ml": _leg("f", 0.25),
-    }
+    })
     out = resolve_legs(
         structure,
         [CanonicalLeg(GAME, "spread", -1.5, "home"),   # avail 0 / opp 1.0
@@ -240,11 +247,11 @@ def test_available_edge_values():
 
 
 def test_available_non_numeric_is_none_not_raise():
-    structure = {
+    structure = _wrap({
         "home_spread": {-1.5: _leg("a", "garbage")},
         "away_spread": {1.5: _leg("b", 0.5)},
         "over": {}, "under": {}, "home_ml": None, "away_ml": None,
-    }
+    })
     out = resolve_legs(
         structure, [CanonicalLeg(GAME, "spread", -1.5, "home")], HOME, AWAY)
     assert out is not None
@@ -282,16 +289,16 @@ def test_empty_legs_returns_empty_list():
 
 def test_leg_with_missing_id_is_a_miss():
     """A chosen outcome without a usable UUID can't be priced -> None."""
-    structure = dict(_structure())
-    structure["home_spread"] = {-1.5: {"id": None, "available": 0.6}}
+    structure = _structure()
+    structure["FG"]["home_spread"] = {-1.5: {"id": None, "available": 0.6}}
     out = resolve_legs(
         structure, [CanonicalLeg(GAME, "spread", -1.5, "home")], HOME, AWAY)
     assert out is None
 
 
 def test_opposite_with_missing_id_treated_one_sided():
-    structure = dict(_structure())
-    structure["away_spread"] = {1.5: {"id": None, "available": 0.44}}
+    structure = _structure()
+    structure["FG"]["away_spread"] = {1.5: {"id": None, "available": 0.44}}
     out = resolve_legs(
         structure, [CanonicalLeg(GAME, "spread", -1.5, "home")], HOME, AWAY)
     assert out is not None
@@ -470,7 +477,7 @@ def test_builder_feeds_resolve_legs_end_to_end():
         [_spread_mkt(-1.5), _total_mkt(8.5), _money_mkt()],
         HOME_SYM, AWAY_SYM)
     out = resolve_legs(
-        s,
+        _wrap(s),
         [CanonicalLeg(GAME, "spread", -1.5, "away"),
          CanonicalLeg(GAME, "total", 8.5, "over"),
          CanonicalLeg(GAME, "ml", None, "home")],

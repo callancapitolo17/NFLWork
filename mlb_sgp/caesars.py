@@ -475,10 +475,14 @@ def resolve_legs(structure: dict, legs: list, home_team: str,
                  ) -> list[ResolvedLeg] | None:
     """Map CanonicalLegs to Caesars /bets/details leg dicts (the ref IS the dict).
 
-    `structure` is one period of `parse_markets(event)` (e.g. `["FG"]`):
-    {"spreads": {home_line: {"home": leg, "away": leg}},
-     "totals":  {line: {"over": leg, "under": leg}},
-     "moneyline": {"home": leg, "away": leg} | None}.
+    `structure` is the full `parse_markets(event)` output — already keyed by
+    `CanonicalLeg.period` values (#85):
+    {"FG": {"spreads": {home_line: {"home": leg, "away": leg}},
+            "totals":  {line: {"over": leg, "under": leg}},
+            "moneyline": {"home": leg, "away": leg} | None},
+     "F5": { ... same shape ... }}.
+    Each leg resolves from its `leg.period` bucket; a missing/None bucket
+    fails the whole book (never a cross-period price).
 
     Caesars stores spreads keyed by the signed HOME-perspective market line —
     the same convention as CanonicalLeg.line — so lookup is direct. The stored
@@ -496,13 +500,17 @@ def resolve_legs(structure: dict, legs: list, home_team: str,
     try:
         out: list[ResolvedLeg] = []
         for leg in legs:
+            # Period bucket selection — the ONE place period is applied (#85).
+            period_structure = structure.get(leg.period)
+            if not period_structure:
+                return None                      # book posts no such period
             mt = leg.market_type
             if mt == "spread":
-                bucket = structure["spreads"].get(float(leg.line))
+                bucket = period_structure["spreads"].get(float(leg.line))
             elif mt == "total":
-                bucket = structure["totals"].get(float(leg.line))
+                bucket = period_structure["totals"].get(float(leg.line))
             elif mt == "ml":
-                bucket = structure.get("moneyline")
+                bucket = period_structure.get("moneyline")
             else:
                 return None
             if not bucket:

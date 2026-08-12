@@ -785,9 +785,22 @@ def _safe_leg_decimal(sel: dict) -> float:
 # exact-name match is behavior-identical to ``_find_market`` here.
 # ---------------------------------------------------------------------------
 
-# FG market display names (scraper_prophetx_sgp.MARKET_NAMES["fg"]). On-demand
-# pricing is FG-only — CanonicalLegs come from Kalshi FG markets.
-_OD_MARKET_NAMES = {"spread": "Run Line", "total": "Total Runs", "ml": "Moneyline"}
+# (market_type, period) -> market display-name aliases, first hit wins (#85).
+# FG names are scraper_prophetx_sgp.MARKET_NAMES["fg"] (no aliases exist).
+# F5 names are that module's 2026-04-24 catalogue + its NAME_ALIASES — the
+# 2026-08-12 recon board carried ZERO F5 markets at PX, so these are the best
+# known names; an F5 leg with no matching market declines the book cleanly.
+# No F5 moneyline name has ever been catalogued (and F5-winner legs are
+# service-blocked until #86 anyway), so ("ml", "F5") is deliberately absent.
+_OD_MARKET_NAMES = {
+    ("spread", "FG"): ("Run Line",),
+    ("total", "FG"): ("Total Runs",),
+    ("ml", "FG"): ("Moneyline",),
+    ("spread", "F5"): ("1st-5th Inning Spread", "1st-5th Inning Run Line",
+                       "1st 5 Innings Spread", "F5 Run Line"),
+    ("total", "F5"): ("1st-5th Inning Total Runs", "1st 5 Innings Total Runs",
+                      "F5 Total Runs"),
+}
 
 
 def _od_normalize_markets(markets) -> list[dict]:
@@ -810,11 +823,13 @@ def _od_normalize_markets(markets) -> list[dict]:
     return out
 
 
-def _od_find_market(markets: list[dict], name: str) -> dict | None:
-    """Exact-name market lookup (FG names carry no NAME_ALIASES)."""
-    for m in markets:
-        if m.get("name") == name:
-            return m
+def _od_find_market(markets: list[dict], names: tuple) -> dict | None:
+    """Exact-name market lookup over an alias tuple, first hit wins —
+    the scraper_prophetx_sgp.NAME_ALIASES pattern."""
+    for name in names:
+        for m in markets:
+            if m.get("name") == name:
+                return m
     return None
 
 
@@ -906,10 +921,12 @@ def resolve_legs(structure, legs, home_team, away_team, *,
 
         out: list[ResolvedLeg] = []
         for leg in legs:
-            mkt_name = _OD_MARKET_NAMES.get(leg.market_type)
-            if mkt_name is None:
+            # Period dispatch — the ONE place period is applied at PX (#85):
+            # an unknown (market_type, period) pair declines the whole book.
+            mkt_names = _OD_MARKET_NAMES.get((leg.market_type, leg.period))
+            if mkt_names is None:
                 return None
-            market = _od_find_market(markets, mkt_name)
+            market = _od_find_market(markets, mkt_names)
             if market is None:
                 return None
 

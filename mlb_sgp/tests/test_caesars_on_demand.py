@@ -47,9 +47,10 @@ def _event():
 
 
 def _structure():
-    """The per-period dict resolve_legs consumes: parse_markets(event)["FG"]."""
+    """The full period-keyed dict resolve_legs consumes since #85:
+    parse_markets(event) — {"FG": ..., "F5": ...}."""
     from caesars import parse_markets
-    return parse_markets(_event())["FG"]
+    return parse_markets(_event())
 
 
 def _leg(market_type, line, side):
@@ -144,7 +145,7 @@ def test_resolve_multi_leg_order_preserved():
 def test_resolve_one_sided_total_gives_none_opposite():
     from caesars import resolve_legs
     st = _structure()
-    del st["totals"][8.5]["under"]
+    del st["FG"]["totals"][8.5]["under"]
     out = resolve_legs(st, [_leg("total", 8.5, "over")], HOME, AWAY)
     rl = out[0]
     assert rl.ref["selectionId"] == "ov"
@@ -160,10 +161,10 @@ def test_resolve_chosen_miss_returns_none():
     assert resolve_legs(st, [_leg("spread", -2.5, "home")], HOME, AWAY) is None
     assert resolve_legs(st, [_leg("total", 9.5, "over")], HOME, AWAY) is None
     # Chosen SIDE missing from an offered line.
-    del st["spreads"][-1.5]["home"]
+    del st["FG"]["spreads"][-1.5]["home"]
     assert resolve_legs(st, [_leg("spread", -1.5, "home")], HOME, AWAY) is None
     # Moneyline absent entirely.
-    st["moneyline"] = None
+    st["FG"]["moneyline"] = None
     assert resolve_legs(st, [_leg("ml", None, "home")], HOME, AWAY) is None
     # One bad leg poisons the whole set (all-or-nothing).
     assert resolve_legs(_structure(),
@@ -189,7 +190,7 @@ def test_resolve_missing_price_gives_none_decimal():
     decimal is just None — _price_d semantics."""
     from caesars import resolve_legs
     st = _structure()
-    st["totals"][8.5]["over"]["price"] = {}
+    st["FG"]["totals"][8.5]["over"]["price"] = {}
     out = resolve_legs(st, [_leg("total", 8.5, "over")], HOME, AWAY)
     rl = out[0]
     assert rl.ref["selectionId"] == "ov"
@@ -206,7 +207,7 @@ def test_price_selection_set_happy():
     client = MagicMock()
     client.price_combo.return_value = {"decimal": 3.5, "american": 250}
     st = _structure()
-    refs = [st["spreads"][-1.5]["away"], st["totals"][8.5]["over"]]
+    refs = [st["FG"]["spreads"][-1.5]["away"], st["FG"]["totals"][8.5]["over"]]
     assert price_selection_set(client, refs) == 3.5
     client.price_combo.assert_called_once_with(refs)
 

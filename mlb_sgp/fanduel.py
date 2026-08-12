@@ -590,14 +590,18 @@ def _split_ref(entry) -> tuple[tuple | None, float | None]:
 def resolve_legs(structure, legs, home_team, away_team, *,
                  counters: FetchCounters | None = None,
                  ) -> list[ResolvedLeg] | None:
-    """Resolve canonical legs against one FD event's fg structure.
+    """Resolve canonical legs against one FD event's period-keyed structure.
 
     Parameters
     ----------
     structure
-        ``fetch_event_runners(...)["fg"]`` — ``{"spreads": {(side, signed
+        Both period buckets of ``fetch_event_runners`` output, re-keyed to
+        ``CanonicalLeg.period`` values (#85): ``{"FG": <bucket>, "F5":
+        <bucket>}`` where each bucket is ``{"spreads": {(side, signed
         line): (mid, sid, dec)}, "totals": {("O"|"U", line): ...},
-        "moneyline": {"home"|"away": ...}}``.
+        "moneyline": {"home"|"away": ...}}``. Each leg resolves from its
+        ``leg.period`` bucket; a missing/None bucket fails the whole book
+        (never a cross-period price).
     legs
         ``list[CanonicalLeg]`` (kalshi_common.legset): market_type in
         {"spread", "total", "ml"}; spread/total ``line`` is the SIGNED
@@ -620,12 +624,15 @@ def resolve_legs(structure, legs, home_team, away_team, *,
     try:
         if not legs:
             return None
-        spreads = structure.get("spreads") or {}
-        totals = structure.get("totals") or {}
-        moneyline = structure.get("moneyline") or {}
-
         out: list[ResolvedLeg] = []
         for leg in legs:
+            # Period bucket selection — the ONE place period is applied (#85).
+            period_structure = structure.get(leg.period)
+            if not period_structure:
+                return None                      # book posts no such period
+            spreads = period_structure.get("spreads") or {}
+            totals = period_structure.get("totals") or {}
+            moneyline = period_structure.get("moneyline") or {}
             if leg.market_type == "spread":
                 line = float(leg.line)
                 home_key, away_key = ("home", line), ("away", -line)
