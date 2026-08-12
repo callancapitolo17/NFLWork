@@ -7,6 +7,7 @@ Independent maker daemon that listens for others' RFQs on the Kalshi cross-categ
 - **2-leg same-game grids** — spread×total and moneyline×total (both FG), priced from each book's 4-cell devig grid (unchanged math).
 - **Cross-game combos** — each game's sub-combo is priced independently and the per-game fairs are **multiplied** (independence assumption); a single leg within a game is marginalized out of that game's grid.
 - **On-demand same-game shapes (Phase 2)** — 3-leg, spread+ml, total+total and any other novel shape route to `on_demand` and are priced by live book queries at RFQ time (see **On-demand pricing** below). Lone single-leg RFQs remain out of scope (skipped fail-safe).
+- **F5 (first 5 innings) legs — issue #84, epic #82.** `CanonicalLeg` carries a `period` field (`"FG"` default / `"F5"`); `KXMLBF5SPREAD` / `KXMLBF5TOTAL` legs parse with the same suffix grammar and sign semantics as FG (live-verified 2026-08-11: total suffix `-7` ⇔ floor_strike 6.5; spread `-LAD3` ⇔ "LAD −2.5 first 5"). Any F5-containing multi-leg set routes `on_demand` — the 2-leg grids stay **FG-only** (the grid tables are full-game surfaces), and `period` joins the leg-set hash + duplicate-market guard key (FG −1.5 with F5 −1.5 is not a contradiction). Until #85 plumbs F5 through the six book resolvers, `SGPService.price_on_demand` **fails closed** on any non-FG leg (the FG-only resolvers would otherwise silently price the full-game selection), so F5 combos decline `live_fetch_timeout`/`live_too_few_books` — never a wrong number. `KXMLBF5` (F5 winner) parses too — including the live `-TIE` market (the family is 3-way; team markets resolve NO on a tie after 5) — but every combo containing one is explicitly `unpriceable` until #86 lands the push/3-way conversion math (declined `out_of_scope_f5_winner`).
 
 Legs are grouped into games by `legset.game_id_of` — the **game code** inside
 the event ticker (`KXMLBTOTAL-26JUN102105MILATH` → `26JUN102105MILATH`), not
@@ -292,7 +293,8 @@ and decision `pulled` / reason `quorum_dispersion_bust` (the monitor
 reads reason vocabularies from data — no dashboard change).
 Out-of-scope RFQs now store `legs_json` and granular reasons
 (`out_of_scope_non_mlb` / `out_of_scope_lone_single` /
-`out_of_scope_unparseable`) in `seen_rfqs` — on-demand demand is finally
+`out_of_scope_unparseable` / `out_of_scope_f5_winner` since #84) in
+`seen_rfqs` — on-demand demand is finally
 measurable (it was 0 in ~1,100 classified markets over the 30 days before
 this shipped).
 
