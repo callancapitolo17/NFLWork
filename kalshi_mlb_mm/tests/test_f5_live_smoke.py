@@ -104,4 +104,4 @@ def test_f5_spread_total_live_flight():
         pytest.fail(f"no candidate F5 combo reached {MIN_BOOKS} book fairs — "
                     "are F5 markets posted yet? (books post near lineup time)")
     finally:
-        svc.close() if hasattr(svc, "close") else None
+        svc.close()
