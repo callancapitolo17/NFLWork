@@ -92,7 +92,7 @@ REST-polling daemon, single process. Eight timed sub-loops:
 | Loop | Cadence | Job |
 |---|---|---|
 | Discovery + quote | 2s | Poll open RFQs → scope filter → price → submit or refresh quote |
-| Confirm | 2s | Poll open quotes → on `accepted`, last-look gate → confirm or void |
+| Confirm | 2s | Poll open quotes → on `accepted`, last-look gate → confirm or void; an explicit 404 on the quote GET (RFQ expired → Kalshi deleted the quote) closes the row as `expired` — transient errors leave it open |
 | Risk sweep | 10s | Kill-switch, books-unhealthy auto-pull (#38 health-dark), tipoff cancel, constituent-jump + drift-since-quote cancel |
 | Reconcile sweep | 30s | Verify recorded fill side/size against Kalshi `/portfolio/positions` (live only) |
 | Settlement sweep | 600s | Poll `GET /markets/{ticker}` for combos with unsettled fills → write `fills.realized_pnl` + `settlements` audit row (live only; issue #12) |
