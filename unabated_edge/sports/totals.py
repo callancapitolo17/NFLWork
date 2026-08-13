@@ -6,7 +6,7 @@ kalshi_series, event_teams. All ladder devigging and rung matching lives here.""
 import logging
 
 from unabated_edge.sports.base import SportAdapter, Candidate
-from unabated_edge import pricing, config
+from unabated_edge import pricing, config, storage
 from unabated_edge.feed import line_american_price
 
 log = logging.getLogger("unabated_edge")
@@ -38,22 +38,21 @@ class TotalsLadderAdapter(SportAdapter):
 
     def _anchor_ladder(self, state, eid) -> dict[float, dict]:
         """Devigged total ladder {line: {p_over, book, alt, overround}} from the
-        FIRST anchor book that has at least one complete rung (over+under at the
-        same line). Same-book only — never mixes books' vig. `alt` marks rungs
-        built from alternateLines (possibly Unabated-derived, not a raw book
-        quote) and `overround` is the pre-devig implied sum — both go to the
-        research firehose so alt provenance stays auditable. Each rung also
-        carries `modified_on` — the older of the two sides' feed modifiedOn —
-        for the staleness gate.
+        FIRST anchor book that has at least one VALID rung (over+under at the
+        same line, passing the feed-integrity gate below). Same-book only —
+        never mixes books' vig. `alt` marks rungs built from alternateLines
+        (possibly Unabated-derived, not a raw book quote) and `overround` is
+        the pre-devig implied sum — both go to the research firehose so alt
+        provenance stays auditable. Each rung also carries `modified_on` — the
+        older of the two sides' feed modifiedOn — for the staleness gate.
 
-        Overround/crossed gate (Finding #73): a rung is dropped BEFORE devig
-        if its raw implied sum falls outside the applicable band (main rungs:
-        config.MAIN_OVERROUND_MIN/MAX; alt rungs: config.ALT_OVERROUND_MIN/MAX).
-        A crossed pair (sum < 1.0) is a data error, not a real two-way quote —
-        pricing.devig would otherwise silently renormalize it into a
-        plausible-but-wrong p_over. This is the layer that keeps a blown/
-        crossed rung from ever becoming a candidate; engine.py's alt-only
-        gate (_desired) is a second, redundant layer for alt rungs specifically."""
+        Feed-integrity gate (issue #73): every rung's raw implied sum passes
+        pricing.overround_reject BEFORE devig. A rejected rung stays in the
+        ladder marked {p_over: None, reject: reason} — never devigged, never
+        priced — so the maker can cancel resting quotes at that line (an absent
+        rung would silently hold them). A book counts as "found" only if it has
+        at least one VALID rung; an all-rejected book falls through to the next
+        anchor source."""
         for idx, ms in enumerate(config.ANCHOR_SOURCE_IDS):
             over_ln = state.lines.get(f"{eid}|0|{ms}|bt3")
             under_ln = state.lines.get(f"{eid}|1|{ms}|bt3")
@@ -66,18 +65,25 @@ class TotalsLadderAdapter(SportAdapter):
                 alt = o_alt or u_alt
                 po_raw, pu_raw = pricing.american_to_prob(opx), pricing.american_to_prob(upx)
                 overround = round(po_raw + pu_raw, 6)
-                lo, hi = (config.ALT_OVERROUND_MIN, config.ALT_OVERROUND_MAX) if alt \
-                    else (config.MAIN_OVERROUND_MIN, config.MAIN_OVERROUND_MAX)
-                if not (lo <= overround <= hi):
-                    log.warning(
-                        "dropping %s rung: eid=%s line=%s book=%s overround=%.4f "
-                        "outside band [%.2f, %.2f]",
-                        "alt" if alt else "main", eid, line, ms, overround, lo, hi)
+                reject = pricing.overround_reject(
+                    overround,
+                    band_min=config.ANCHOR_OVERROUND_MIN,
+                    band_max=config.ANCHOR_OVERROUND_MAX)
+                if reject is not None:
+                    # ladder builds ~twice per tick (maker fair_ladder + taker
+                    # price_event), so a persistent break emits/warns at that
+                    # cadence — same convention as the crossed_book tripwire.
+                    log.warning("anchor rung rejected (%s): event=%s line=%s book=%s "
+                                "alt=%s overround=%.4f", reject, eid, line, ms, alt, overround)
+                    storage.emit("rung_rejected", self.sport, event_id=eid, line=line,
+                                 book=ms, alt=alt, overround=overround, reason=reject)
+                    ladder[line] = {"p_over": None, "reject": reject, "book": ms,
+                                    "alt": alt, "overround": overround, "modified_on": mo}
                     continue
                 p_over, _ = pricing.devig([po_raw, pu_raw])
                 ladder[line] = {"p_over": p_over, "book": ms, "alt": alt,
                                 "overround": overround, "modified_on": mo}
-            if ladder:
+            if any(r["p_over"] is not None for r in ladder.values()):
                 if idx > 0:
                     log.warning(
                         "anchor failover: eid=%s using book %s (primary book %s "
@@ -86,8 +92,9 @@ class TotalsLadderAdapter(SportAdapter):
         return {}
 
     def _anchor_totals(self, state, eid) -> dict[float, float]:
-        """{line: p_over} view of the ladder (see _anchor_ladder)."""
-        return {line: r["p_over"] for line, r in self._anchor_ladder(state, eid).items()}
+        """{line: p_over} view of the ladder, valid rungs only (see _anchor_ladder)."""
+        return {line: r["p_over"] for line, r in self._anchor_ladder(state, eid).items()
+                if r["p_over"] is not None}
 
     def fair_ladder(self, state, event_meta):
         return self._anchor_ladder(state, event_meta.event_id) or None
@@ -109,8 +116,8 @@ class TotalsLadderAdapter(SportAdapter):
             except (TypeError, ValueError):
                 continue
             rung = ladder.get(line)
-            if rung is None:
-                continue
+            if rung is None or rung.get("reject") is not None:
+                continue                        # absent or gate-rejected: never price
             meta = {"book": rung["book"], "alt": rung["alt"], "overround": rung["overround"]}
             p_over = rung["p_over"]
             out.append(Candidate(mk["ticker"], "yes", p_over, f"over_{line}", meta))

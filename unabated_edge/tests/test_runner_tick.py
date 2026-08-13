@@ -172,12 +172,18 @@ def test_trades_fn_rows_inserted(tmp_path, monkeypatch):
 
 def _poisoned_state():
     """Transient one-sided-refresh shape: main 2.5 healthy (sum 1.048), alt 1.5
-    crossed (sum ~0.82), alt 3.5 blown vig (sum ~1.35) — all in one ladder."""
+    crossed (sum ~0.82), alt 3.5 blown vig (sum ~1.35) — all in one ladder.
+
+    eventStart is 3h after _NOW (matching _state()'s fixture), inside the
+    default BOOK_CAPTURE_HORIZON_HOURS (12) -- run_tick skips the per-market
+    Kalshi book fetch for events further out than that, which would leave
+    every candidate askless and silently produce zero rows regardless of the
+    gate under test."""
     return feed.parse_snapshot({
         "marketSources": [{"id": 7, "name": "S"}],
         "teams": {"1": {"name": "Argentina"}, "2": {"name": "Austria"}},
         "gameOddsEvents": {"lg21:pt1:pregame": [{
-            "eventId": 1, "eventStart": "2026-12-31T17:00:00+00:00",
+            "eventId": 1, "eventStart": "2026-06-01T03:00:00+00:00",
             "eventTeams": {"1": {"id": 1}, "0": {"id": 2}},
             "gameOddsMarketSourcesLines": {
                 "si0:ms7:an0": {"bt3": {"price": 115, "points": 2.5,
