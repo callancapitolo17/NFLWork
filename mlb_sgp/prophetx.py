@@ -800,6 +800,11 @@ _OD_MARKET_NAMES = {
                        "1st 5 Innings Spread", "F5 Run Line"),
     ("total", "F5"): ("1st-5th Inning Total Runs", "1st 5 Innings Total Runs",
                       "F5 Total Runs"),
+    # 1st inning (issue #87). Name live-verified 2026-08-13 — PX listed the
+    # market but with NO priced lines (outcome defs only, no odds), so
+    # resolution declines cleanly until PX carries I1 liquidity (same
+    # posture as its empty F5 board).
+    ("total", "I1"): ("1st Inning Total Runs",),
 }
 
 

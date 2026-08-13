@@ -120,14 +120,18 @@ EVENT_MARKETS_PATH = _THIS_DIR / "novig_event_markets_query.json"
 # Legacy cache path (written by older scraper versions); kept for compat.
 _LEGACY_CACHE_PATH = _THIS_DIR / ".novig_event_markets_query.json"
 
-# Market type names (Novig uses SPREAD_1H / TOTAL_1H for F5)
-SPREAD_TYPE = {"fg": "SPREAD",    "f5": "SPREAD_1H"}
-TOTAL_TYPE  = {"fg": "TOTAL",     "f5": "TOTAL_1H"}
+# Market type names (Novig uses SPREAD_1H / TOTAL_1H for F5). "i1" is the
+# 1st inning (issue #87): FIRST_INNING_TOTAL live-verified 2026-08-13
+# (strike 0.5, "Over 0.5"/"Under 0.5" outcomes). Novig has never listed a
+# 1st-inning spread or moneyline; the FIRST_INNING_* placeholders follow its
+# naming pattern and simply match nothing until such a type appears.
+SPREAD_TYPE = {"fg": "SPREAD",    "f5": "SPREAD_1H", "i1": "FIRST_INNING_SPREAD"}
+TOTAL_TYPE  = {"fg": "TOTAL",     "f5": "TOTAL_1H",  "i1": "FIRST_INNING_TOTAL"}
 # Moneyline market type (for ML×total combos). Novig names it MONEY / MONEY_1H;
 # its outcomes carry competitor.symbol exactly like SPREAD, so the same
 # symbol-matcher (_find_outcome_in_spread) resolves home/away. We only price
 # the FG moneyline (ML_TOTAL_FAMILY is FG-only, matching DK/FD/PX).
-MONEY_TYPE  = {"fg": "MONEY",     "f5": "MONEY_1H"}
+MONEY_TYPE  = {"fg": "MONEY",     "f5": "MONEY_1H",  "i1": "FIRST_INNING_MONEY"}
 
 PARALLEL_MARKETS = 4
 PARALLEL_PRICING = 4

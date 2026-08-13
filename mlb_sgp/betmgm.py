@@ -60,6 +60,12 @@ _F5_TOTAL = "1st 5 innings - totals"
 # "1st 5 innings - Money Line" (F5); both are isBetBuilder-eligible.
 _FG_ML = "money line"
 _F5_ML = "1st 5 innings - money line"
+# 1st-inning YRFI market (issue #87), live-verified 2026-08-13. Its Yes/No
+# options ARE the two sides of a 0.5-run 1st-inning total (Yes = over,
+# No = under); BetMGM's "1st Inning Runs" sibling is 3-way (0/1/2+) and is
+# deliberately NOT read.
+_I1_YRFI = "will there be a run in the 1st inning?"
+_I1_TOTAL_LINE = 0.5
 
 
 def _to_float(s) -> float | None:
@@ -75,10 +81,12 @@ def _to_float(s) -> float | None:
 def _classify_market(name: str) -> tuple[str, str] | None:
     """Return (period, kind) for a spread/total market name, else None.
 
-    kind is 'spread' or 'total'; period is 'FG' or 'F5'. F5 is checked
-    first because its names contain the FG substrings.
+    kind is 'spread', 'total', 'moneyline' or 'yrfi'; period is 'FG', 'F5'
+    or 'I1'. F5 is checked first because its names contain the FG substrings.
     """
     low = name.lower()
+    if low == _I1_YRFI:
+        return ("I1", "yrfi")
     if _F5_SPREAD in low:
         return ("F5", "spread")
     if _F5_TOTAL in low:
@@ -108,6 +116,8 @@ def parse_markets(markets: list[dict], home_team: str, away_team: str) -> dict:
             "totals":  {line: {"over": leg, "under": leg}},
           },
           "F5": { ... },
+          "I1": { ... },   # 1st inning: totals {0.5: {over/under}} from the
+                           # YRFI Yes/No market (issue #87)
         }
 
     where ``leg`` is ``(market_id, option_id, decimal_odds)``. Spread lines
@@ -117,6 +127,7 @@ def parse_markets(markets: list[dict], home_team: str, away_team: str) -> dict:
     out = {
         "FG": {"spreads": {}, "totals": {}, "moneyline": None},
         "F5": {"spreads": {}, "totals": {}, "moneyline": None},
+        "I1": {"spreads": {}, "totals": {}, "moneyline": None},
     }
     home_low = home_team.lower()
     away_low = away_team.lower()
@@ -174,6 +185,26 @@ def parse_markets(markets: list[dict], home_team: str, away_team: str) -> dict:
                     under_leg = (mid, oid, float(odds))
             if over_leg and under_leg and line_val is not None:
                 out[period]["totals"][line_val] = {"over": over_leg, "under": under_leg}
+
+        elif kind == "yrfi":
+            # Yes/No -> over/under at the fixed 0.5 line (issue #87). Exact
+            # option names, so the 3-way "1st Inning Runs" (0/1/2+) sibling
+            # can never be misread even if classification drifts.
+            yes_leg = no_leg = None
+            for o in options:
+                onm = ((o.get("name") or {}).get("value", "")
+                       if isinstance(o.get("name"), dict) else "")
+                odds = ((o.get("price") or {}).get("odds"))
+                oid = o.get("id")
+                if odds is None or oid is None:
+                    continue
+                if onm.lower() == "yes":
+                    yes_leg = (mid, oid, float(odds))
+                elif onm.lower() == "no":
+                    no_leg = (mid, oid, float(odds))
+            if yes_leg and no_leg:
+                out[period]["totals"][_I1_TOTAL_LINE] = {"over": yes_leg,
+                                                         "under": no_leg}
 
         elif kind == "moneyline":
             # ML option names use SHORT team names ("Giants") while home_team is
