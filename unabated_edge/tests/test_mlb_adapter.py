@@ -125,3 +125,44 @@ def test_price_event_prices_matching_rung_skips_others():
     assert labels == {"over_8.5", "under_8.5"}
     total_prob = sum(c.fair_prob for c in candidates)
     assert abs(total_prob - 1.0) < 1e-5
+
+
+# ---------- overround feed-integrity gate (issue #73), shared via TotalsLadderAdapter ----------
+
+def test_crossed_main_rung_rejected_for_mlb():
+    """The #73 feed-integrity gate lives in the shared TotalsLadderAdapter
+    base, not in Soccer -- prove it fires for the Mlb adapter too. A crossed
+    pair (raw implied sum < 1, one side stale mid-refresh) must be refused
+    before devig, marked rejected, never priced."""
+    m = Mlb()
+    st = build_bt3_state("lg5", "Philadelphia Phillies", "New York Yankees",
+                          eid=108549, ms=7, over_price=150, under_price=150, line=8.5)  # 0.4+0.4=0.8
+    ladder = m._anchor_ladder(st, 108549)
+    assert ladder == {} or ladder.get(8.5, {}).get("reject") == "anchor_crossed"
+    assert m._anchor_totals(st, 108549) == {}
+    kalshi_event = {
+        "event_ticker": "KXMLBTOTAL-26JUL251805NYYPHI",
+        "title": "New York Y vs Philadelphia: Total Runs",
+        "markets": [{"ticker": "KXMLBTOTAL-26JUL251805NYYPHI-8",
+                     "strike_type": "greater", "floor_strike": 8.5}],
+    }
+    assert m.price_event(st, st.events[108549], kalshi_event) == []
+
+
+def test_blown_vig_main_rung_rejected_for_mlb():
+    """Same gate, the other rejection reason: implausible vig (sum > 1.20)
+    on an MLB main rung is refused with the distinct band reason."""
+    m = Mlb()
+    st = build_bt3_state("lg5", "Philadelphia Phillies", "New York Yankees",
+                          eid=108549, ms=7, over_price=-200, under_price=-200, line=8.5)  # 0.667*2
+    # ANCHOR_SOURCE_IDS falls through past book 7 (only book with data, and its
+    # only rung is rejected) to books 6/68 (no data at all) -> {}, same as an
+    # all-rejected book on the soccer path.
+    assert m._anchor_totals(st, 108549) == {}
+    kalshi_event = {
+        "event_ticker": "KXMLBTOTAL-26JUL251805NYYPHI",
+        "title": "New York Y vs Philadelphia: Total Runs",
+        "markets": [{"ticker": "KXMLBTOTAL-26JUL251805NYYPHI-8",
+                     "strike_type": "greater", "floor_strike": 8.5}],
+    }
+    assert m.price_event(st, st.events[108549], kalshi_event) == []

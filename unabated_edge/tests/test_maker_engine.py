@@ -1,9 +1,10 @@
 import datetime
 import pytest
-from unabated_edge import config
+from unabated_edge import config, feed
 from unabated_edge.feed import EventMeta
 from unabated_edge.maker import engine as mengine, state as mstate
 from unabated_edge.sports.soccer import Soccer
+from unabated_edge.sports.mlb import Mlb
 
 _NOW = datetime.datetime(2026, 7, 11, 12, 0, tzinfo=datetime.timezone.utc)
 _KICK = _NOW + datetime.timedelta(hours=3)
@@ -133,6 +134,56 @@ def test_alt_band_still_binding_inside_envelope(eng):
     good_alt = {2.5: {**_LADDER[2.5], "alt": True, "overround": 1.05}}
     eng.on_match(Soccer(), _EM, _KEV, good_alt, _BOOKS, _NOW + datetime.timedelta(seconds=5))
     assert eng.gateway.placed
+
+
+def _mlb_two_rung_state(eid, main_over, main_under):
+    """Real Unabated snapshot for one MLB event with two Kalshi-matchable
+    lines: main 8.5 (parametrized -- healthy or poisoned) and alt 9.5 (always
+    healthy), so the ladder stays non-empty across both variants -- the test
+    exercises the per-rung reject-cancellation branch in engine.py, not the
+    whole-ladder anchor_gone pull that fires when fair_ladder returns None."""
+    return feed.parse_snapshot({
+        "marketSources": [{"id": 7, "name": "S"}],
+        "teams": {"1": {"name": "Philadelphia Phillies"}, "2": {"name": "New York Yankees"}},
+        "gameOddsEvents": {"lg5:pt1:pregame": [{
+            "eventId": eid, "eventStart": _KICK.isoformat(),
+            "eventTeams": {"1": {"id": 1}, "0": {"id": 2}},
+            "gameOddsMarketSourcesLines": {
+                "si0:ms7:an0": {"bt3": {"price": main_over, "points": 8.5,
+                                        "modifiedOn": _NOW.isoformat(),
+                                        "alternateLines": [{"points": 9.5, "price": -140}]}},
+                "si1:ms7:an0": {"bt3": {"price": main_under, "points": 8.5,
+                                        "modifiedOn": _NOW.isoformat(),
+                                        "alternateLines": [{"points": 9.5, "price": 120}]}},
+            }}]}}, {"lg5"})
+
+
+def test_mlb_rung_flips_to_rejected_cancels_resting_quote(eng):
+    """The #73 gate lives in shared TotalsLadderAdapter, so it must protect
+    every totals sport, not just soccer: quote MLB off a real Mlb.fair_ladder
+    ladder, then have the 8.5 anchor go crossed mid-slate (one side stale
+    mid-refresh) and prove the engine cancels the resting 8.5 quote off the
+    REAL adapter output (not a synthetic rung dict) while the still-healthy
+    9.5 rung is untouched."""
+    m = Mlb()
+    em = EventMeta(event_id=108549, league_key="lg5", start_utc=_KICK,
+                    home_id=1, away_id=2, home="Phillies", away="Yankees")
+    kev = {"event_ticker": "KXMLBTOTAL-26JUL251805NYYPHI",
+           "title": "New York Y vs Philadelphia: Total Runs",
+           "markets": [{"ticker": "T-85", "strike_type": "greater", "floor_strike": 8.5},
+                       {"ticker": "T-95", "strike_type": "greater", "floor_strike": 9.5}]}
+    books = {"T-85": _BOOK, "T-95": _BOOK}
+    healthy = _mlb_two_rung_state(108549, -119, 104)
+    eng.on_match(m, em, kev, m.fair_ladder(healthy, em), books, _NOW)
+    assert eng.state.quotes_live() == 4          # yes+no at both 8.5 and 9.5
+    crossed = _mlb_two_rung_state(108549, 150, 150)   # 8.5 flips crossed; 9.5 alt untouched
+    eng.on_match(m, em, kev, m.fair_ladder(crossed, em), books,
+                 _NOW + datetime.timedelta(seconds=5))
+    assert eng.state.quotes_live() == 2           # only 9.5's yes+no survive
+    assert eng.state.resting_for("T-85", "yes") is None
+    assert eng.state.resting_for("T-85", "no") is None
+    assert eng.state.resting_for("T-95", "yes") is not None
+    assert eng.state.resting_for("T-95", "no") is not None
 
 
 def test_pull_window_cancels_everything(eng):
