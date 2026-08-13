@@ -49,7 +49,7 @@ ON_DEMAND_MAX_PARTITION_LEGS = 3
 # CanonicalLeg periods the six book resolvers are plumbed for (#85). A leg
 # with any other period declines the whole book before a wire call — see
 # the period guard in price_on_demand.
-ON_DEMAND_PERIODS = frozenset(("FG", "F5"))
+ON_DEMAND_PERIODS = frozenset(("FG", "F5", "I1"))
 
 # Issue #38: how often the per-tick health drain may open the market DB.
 # Health rows are diagnostics — landing them 5s late costs nothing, while
@@ -735,8 +735,10 @@ class SGPService:
         """
         if book not in self._state or not legs:
             return None
-        # Period guard (#84 -> #85 -> #86): resolvers key on (market_type,
-        # period), so FG and F5 legs flow to the hooks — F5-winner TEAM
+        # Period guard (#84 -> #85 -> #86 -> #87): resolvers key on
+        # (market_type, period), so FG, F5 and I1 legs flow to the hooks —
+        # I1 because #87 re-encodes KXMLBRFI legs as 1st-inning totals at
+        # 0.5, and F5-winner TEAM
         # legs included, because #86 re-encodes them as +-0.5 spread legs
         # at parse (books' F5 run line has no push; the ml row would
         # mismatch Kalshi's tie-loses settlement). Two cases stay CLOSED,
@@ -1036,9 +1038,11 @@ class SGPService:
                 sel = f["fetch_selection_ids"](client.session, eid, nums)
                 if not sel:
                     return None
-                # #85: both period buckets, re-keyed to CanonicalLeg.period
-                # values — resolve_legs picks the bucket per leg.
-                return {"FG": sel.get("fg"), "F5": sel.get("f5")}
+                # #85: period buckets re-keyed to CanonicalLeg.period
+                # values — resolve_legs picks the bucket per leg. "I1"
+                # (1st-inning 0.5 total, issue #87) rides the same shape.
+                return {"FG": sel.get("fg"), "F5": sel.get("f5"),
+                        "I1": sel.get("i1")}
 
             return {"match_event": match_event,
                     "build_structure": build_structure,
@@ -1066,9 +1070,11 @@ class SGPService:
                     event["fd_home"], event["fd_away"])
                 if not runners:
                     return None
-                # #85: both period buckets, re-keyed to CanonicalLeg.period
-                # values — resolve_legs picks the bucket per leg.
-                return {"FG": runners.get("fg"), "F5": runners.get("f5")}
+                # #85: period buckets re-keyed to CanonicalLeg.period
+                # values — resolve_legs picks the bucket per leg. "I1"
+                # (1st-inning 0.5 total, issue #87) rides the same shape.
+                return {"FG": runners.get("fg"), "F5": runners.get("f5"),
+                        "I1": runners.get("i1")}
 
             return {"match_event": match_event,
                     "build_structure": build_structure,
@@ -1170,13 +1176,18 @@ class SGPService:
                     return None
                 # #85: one bucket per period from the SAME raw tree —
                 # "f5" reads Novig's SPREAD_1H/TOTAL_1H/MONEY_1H types
-                # (baseball "1st half" = first 5 innings; issue #64).
+                # (baseball "1st half" = first 5 innings; issue #64);
+                # "i1" reads FIRST_INNING_TOTAL (issue #87, live-verified
+                # 2026-08-13: strike 0.5, Over/Under outcomes).
                 return {
                     "FG": mod.build_line_structure(
                         markets, event["nv_home_sym"], event["nv_away_sym"]),
                     "F5": mod.build_line_structure(
                         markets, event["nv_home_sym"], event["nv_away_sym"],
                         period="f5"),
+                    "I1": mod.build_line_structure(
+                        markets, event["nv_home_sym"], event["nv_away_sym"],
+                        period="i1"),
                 }
 
             return {"match_event": match_event,

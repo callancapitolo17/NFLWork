@@ -481,12 +481,16 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
     Returns {
         'fg': {'spreads': {...}, 'totals': {...}},
         'f5': {'spreads': {...}, 'totals': {...}},
+        'i1': {'spreads': {...}, 'totals': {...}},
     }
 
     Period assignment for game line markets:
     - Main market_num for each period is provided as a seed
     - For other game line markets (alts), we partition by total line range:
       F5 totals are <= 5.5, FG totals are >= 6.0
+    - 'i1' (1st-inning totals, issue #87) is NAME-seeded, not range-seeded:
+      the payload's own market list names the "Runs - 1st Inning" market,
+      whose <=2.0-line selections the range heuristic deliberately skips.
     """
     main_market_nums = main_market_nums or {
         "fg": {"run_line": None, "total": None},
@@ -502,13 +506,28 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
                               profile=profile, book=DK_BOOK, stage="structure")
 
     empty = {"fg": {"spreads": {}, "totals": {}, "moneyline": {"1": [], "3": []}},
-             "f5": {"spreads": {}, "totals": {}, "moneyline": {"1": [], "3": []}}}
+             "f5": {"spreads": {}, "totals": {}, "moneyline": {"1": [], "3": []}},
+             "i1": {"spreads": {}, "totals": {}, "moneyline": {"1": [], "3": []}}}
     # 404 = event gone; any other non-200 (DK's 403) is a dead book, not an
     # event with no SGP selections — see issue #33.
     if not check_response(DK_BOOK, "structure", resp, allow_404=True):
         return empty
 
     text = resp.text
+
+    # 1st-inning totals (issue #87): the parlays payload's market list names
+    # each market, and "Runs - 1st Inning" is the game-level 1st-inning O/U
+    # (live 2026-08-13: O/U at 0.5 and 1.5). Its mnums seed the 'i1' bucket
+    # by NAME — the alt-classifier below cannot place it (<=2.0-line
+    # standalone totals are deliberately skipped as inning noise for FG/F5).
+    # Payload-shape drift degrades to an empty i1 bucket, never a crash.
+    i1_total_mnums: set = set()
+    try:
+        for m in (resp.json() or {}).get("data", {}).get("markets", []) or []:
+            if (m.get("name") or "") == "Runs - 1st Inning":
+                i1_total_mnums.add(_strip_prefix(str(m.get("id", ""))))
+    except Exception:
+        i1_total_mnums = set()
 
     spread_matches = re.findall(r'0HC(\d+)([NP])(\d+)(_\d+)', text)
     total_matches = re.findall(r'0OU(\d+)([OU])(\d+)(_\d+)', text)
@@ -569,7 +588,8 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
             fg_total_mnums.add(mnum)
 
     out = {"fg": {"spreads": {}, "totals": {}},
-           "f5": {"spreads": {}, "totals": {}}}
+           "f5": {"spreads": {}, "totals": {}},
+           "i1": {"spreads": {}, "totals": {}}}
 
     # Each (sign, line, participant) key maps to a LIST of candidate sel_ids.
     # The suffix _1 = home team (participant 1), _3 = away team (participant 3).
@@ -613,6 +633,7 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
     assign_spread(f5_spread_mnums, f5_rl, "f5")
     assign_total(fg_total_mnums, fg_tot, "fg")
     assign_total(f5_total_mnums, f5_tot, "f5")
+    assign_total(i1_total_mnums, None, "i1")
 
     # Canonical markets per period = main RL + main total + any market that has
     # BOTH spreads AND totals (primary alt markets). Cross-pairs between two
@@ -627,6 +648,7 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
     out["f5"]["canonical"] = {m for m in (f5_rl, f5_tot) if m} | (
         f5_spread_mnums & f5_total_mnums
     )
+    out["i1"]["canonical"] = set(i1_total_mnums)
 
     # Moneyline selections (home/away) per period, keyed off the main-market
     # moneyline market_num. ML has no line, so it lives in its own bucket rather
@@ -635,6 +657,7 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
     f5_ml = main_market_nums["f5"].get("moneyline")
     out["fg"]["moneyline"] = _extract_moneyline_selections(text, fg_ml)
     out["f5"]["moneyline"] = _extract_moneyline_selections(text, f5_ml)
+    out["i1"]["moneyline"] = {"1": [], "3": []}   # no I1 moneyline market
 
     if logger.isEnabledFor(logging.DEBUG):
         for per in ("fg", "f5"):

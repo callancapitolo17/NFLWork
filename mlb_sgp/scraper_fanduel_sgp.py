@@ -112,6 +112,15 @@ _MARKET_MAP = {
     # F5 alt
     "First 5 Innings Alternate Run Lines":   ("f5", "spreads", "alt"),
     "First 5 Innings Alternate Total Runs":  ("f5", "totals",  "alt"),
+    # 1st inning (issue #87)
+    "1st Inning 0.5 Runs":                   ("i1", "totals",  "main"),
+}
+
+# Markets whose runners are bare "Over"/"Under" with handicap 0 — the line
+# lives only in the market NAME (live-verified 2026-08-13). _parse_total_runner
+# would key these at 0.0; the fixed line overrides it.
+_FIXED_LINE_MARKETS = {
+    "1st Inning 0.5 Runs": 0.5,
 }
 
 
@@ -328,12 +337,13 @@ def match_events(fd_events: list[dict], parlay_lines: dict) -> list[dict]:
 def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
                         fd_home: str, fd_away: str,
                         profile: RetryProfile = RETRY_BACKGROUND) -> dict:
-    """Fetch all SGP-eligible runners for one event (main + alt, FG + F5).
+    """Fetch all SGP-eligible runners for one event (main + alt, FG/F5/I1).
 
     Returns:
         {'fg': {'spreads': {('home'|'away', line): (marketId, selectionId, dec), ...},
                 'totals':  {('O'|'U', line): (marketId, selectionId, dec), ...}},
-         'f5': {'spreads': {...}, 'totals': {...}}}
+         'f5': {'spreads': {...}, 'totals': {...}},
+         'i1': {'totals': {('O'|'U', 0.5): ...}}}   # 1st inning, issue #87
 
     ``dec`` is the runner's single decimal odds from
     ``winRunnerOdds.trueOdds.decimalOdds.decimalOdds`` (same nesting FD
@@ -357,7 +367,8 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
         profile=profile, book=FD_BOOK, stage="structure")
 
     empty = {"fg": {"spreads": {}, "totals": {}, "moneyline": {}},
-             "f5": {"spreads": {}, "totals": {}, "moneyline": {}}}
+             "f5": {"spreads": {}, "totals": {}, "moneyline": {}},
+             "i1": {"spreads": {}, "totals": {}, "moneyline": {}}}
     # 404 = FD dropped this event; any other non-200 is a dead book.
     if not check_response(FD_BOOK, "structure", resp, allow_404=True):
         return empty
@@ -379,7 +390,8 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
     seen = {m["marketId"]: m for m in markets}
 
     out = {"fg": {"spreads": {}, "totals": {}, "moneyline": {}},
-           "f5": {"spreads": {}, "totals": {}, "moneyline": {}}}
+           "f5": {"spreads": {}, "totals": {}, "moneyline": {}},
+           "i1": {"spreads": {}, "totals": {}, "moneyline": {}}}
 
     for mid, m in seen.items():
         name = m.get("marketName", "")
@@ -387,6 +399,7 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
             continue
         period, mtype, main_or_alt = _MARKET_MAP[name]
         bucket = out[period][mtype]
+        fixed_line = _FIXED_LINE_MARKETS.get(name)
 
         for run in m.get("runners", []):
             sid = run.get("selectionId")
@@ -396,7 +409,15 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
                 continue
             dec = _runner_decimal(run)
 
-            if mtype == "spreads":
+            if fixed_line is not None and mtype == "totals":
+                rn_low = rn.lower()
+                ou = ("O" if rn_low.startswith("over")
+                      else "U" if rn_low.startswith("under") else None)
+                if ou is None:
+                    continue
+                bucket[(ou, fixed_line)] = (mid, sid, dec)
+
+            elif mtype == "spreads":
                 parsed = _parse_spread_runner(rn, hc, main_or_alt, fd_home, fd_away)
                 if parsed is None:
                     continue

@@ -842,7 +842,9 @@ def build_line_structure(markets: list, home_sym: str, away_sym: str, *,
     treats a one-sided line as unresolvable (same as pre-#64).
 
     ``period`` (keyword-only, issue #64) selects which market types to read:
-    ``"fg"`` -> SPREAD/TOTAL/MONEY, ``"f5"`` -> SPREAD_1H/TOTAL_1H/MONEY_1H.
+    ``"fg"`` -> SPREAD/TOTAL/MONEY, ``"f5"`` -> SPREAD_1H/TOTAL_1H/MONEY_1H,
+    ``"i1"`` -> FIRST_INNING_* (issue #87; only FIRST_INNING_TOTAL exists
+    on Novig's board today, so the i1 bucket carries totals only).
     It defaults to FG so the on-demand call site is untouched; the sweep
     passes it because the dashboard prices both periods. Prop types are
     always ignored. An unknown ``period`` raises KeyError — that is a caller
