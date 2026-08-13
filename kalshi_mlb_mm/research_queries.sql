@@ -200,3 +200,21 @@ SELECT ts,
 FROM research.events
 WHERE event_type = 'quote_priced'
 ORDER BY ts DESC;
+
+-- ---------------------------------------------------------------------------
+-- 11) EXPIRED-QUOTE OUTCOMES — the margin-tuning ratio. Of quotes that
+--     expired unfilled, how many saw the combo market trade during our
+--     resting window (competitor_traded_in_window = a competing maker won
+--     the RFQ, we're being outpriced) vs no trade at all (no_trade = the
+--     creator never executed with anyone — cutting margin donates edge)?
+--     traded_shortly_after is the near-miss bucket in between.
+--     Uses state.quote_expiry_outcomes (written by the expiry-outcome sweep).
+-- ---------------------------------------------------------------------------
+SELECT CAST(window_end AS DATE)  AS day,
+       label,
+       COUNT(*)                  AS quotes,
+       ROUND(COUNT(*) * 1.0 / SUM(COUNT(*)) OVER (
+           PARTITION BY CAST(window_end AS DATE)), 3) AS share_of_day
+FROM state.quote_expiry_outcomes
+GROUP BY 1, 2
+ORDER BY 1, 2;

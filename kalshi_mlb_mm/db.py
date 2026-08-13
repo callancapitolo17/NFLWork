@@ -130,6 +130,23 @@ CREATE TABLE IF NOT EXISTS settlements (
     raw_payload         VARCHAR,
     recorded_at         TIMESTAMPTZ NOT NULL
 );
+-- Expired-quote outcome labels (expiry_outcome.expiry_outcome_sweep_tick):
+-- one row per terminal unfilled quote, written once after the grace window
+-- elapses. Doubles as the dedupe marker (PK quote_id) and the queryable
+-- label store for the margin-tuning ratio: competitor_traded_in_window
+-- (a competing maker won the RFQ) vs no_trade (the creator never executed).
+-- window_start/window_end are the quote's UTC resting bounds.
+CREATE TABLE IF NOT EXISTS quote_expiry_outcomes (
+    quote_id            VARCHAR PRIMARY KEY,
+    combo_market_ticker VARCHAR NOT NULL,
+    quote_status        VARCHAR NOT NULL,
+    label               VARCHAR NOT NULL,
+    n_trades_in_window  INTEGER NOT NULL,
+    first_trade_after_close_sec DOUBLE,
+    window_start        TIMESTAMPTZ NOT NULL,
+    window_end          TIMESTAMPTZ NOT NULL,
+    recorded_at         TIMESTAMPTZ NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_quote_decisions_observed_at
     ON quote_decisions(observed_at);
 CREATE INDEX IF NOT EXISTS idx_fills_reconciled

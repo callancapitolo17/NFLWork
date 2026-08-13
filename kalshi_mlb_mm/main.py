@@ -34,8 +34,8 @@ from kalshi_common.leg_types import (
     _parse_event_suffix,
     _MLB_CODE_TO_TEAM,
 )
-from kalshi_mlb_mm import (config, db, notify, pricing, research, risk, scope,
-                           router, settlement, singles)
+from kalshi_mlb_mm import (config, db, expiry_outcome, notify, pricing,
+                           research, risk, scope, router, settlement, singles)
 from kalshi_mlb_mm.rfq_source import RestRFQSource
 from kalshi_mlb_mm.ws_rfq_source import _parse_created_ts
 from kalshi_mlb_mm.quote_gateway import RestQuoteGateway
@@ -2264,6 +2264,7 @@ def main_loop(dry_run: bool):
     # leaves game resolution blind for a full period.
     last = {"disc": 0.0, "conf": 0.0, "risk": 0.0, "reconcile": 0.0,
             "settle": 0.0, "warm": 0.0, "coverage": time.time(),
+            "expiry": 0.0,
             "targets": time.time() if warmup_targets_ok else 0.0}
     try:
         while _running.is_set():
@@ -2304,6 +2305,16 @@ def main_loop(dry_run: bool):
                 except Exception as e:
                     log.error("settle err: %s", e)
                 last["settle"] = now
+            # Expired-quote outcome labeler: public trade-tape reads only —
+            # no portfolio dependency, so unlike reconcile/settlement it runs
+            # in dry-run too (dry-run expiries label the same question:
+            # would we have been outpriced?).
+            if now - last["expiry"] >= config.EXPIRY_OUTCOME_SWEEP_SEC:
+                try:
+                    expiry_outcome.expiry_outcome_sweep_tick()
+                except Exception as e:
+                    log.error("expiry-outcome err: %s", e)
+                last["expiry"] = now
             # Issue #81: target-line refresh — Kalshi + Odds API only, zero
             # book requests. New games appear here, so the game-metadata
             # caches drop inside the tick.

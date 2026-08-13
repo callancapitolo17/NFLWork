@@ -233,6 +233,24 @@ COVERAGE_SUMMARY_SEC = int(_get("COVERAGE_SUMMARY_SEC", "300"))
 # Settlement sweep (issue #12): populate fills.realized_pnl once markets
 # settle. Only matters hours post-game, so a slow cadence is plenty.
 SETTLEMENT_SWEEP_SEC = int(_get("SETTLEMENT_SWEEP_SEC", "600"))
+# Expired-quote outcome labeler: for each quote that expires unfilled, read
+# the combo market's public trade tape and label whether a competitor traded
+# during our resting window vs nobody trading at all — the margin-tuning
+# ratio (mostly no_trade = cutting margin donates edge; mostly
+# competitor_traded = we're being outpriced).
+EXPIRY_OUTCOME_SWEEP_SEC = int(_get("EXPIRY_OUTCOME_SWEEP_SEC", "600"))
+# A trade landing within this many seconds AFTER our quote closed labels
+# 'traded_shortly_after' (near-miss). Labeling waits until the grace window
+# has fully elapsed so every quote is labeled exactly once.
+EXPIRY_OUTCOME_GRACE_SEC = int(_get("EXPIRY_OUTCOME_GRACE_SEC", "300"))
+# Tape fetches per sweep cap — quotes/day is tens, so this only bounds the
+# catch-up burst after downtime.
+EXPIRY_OUTCOME_MAX_TICKERS_PER_SWEEP = int(
+    _get("EXPIRY_OUTCOME_MAX_TICKERS_PER_SWEEP", "25"))
+# Also label quotes WE cancelled (risk pulls, tipoff, breakers)? Off by
+# default: pulls are our own decisions and would muddy the headline ratio.
+EXPIRY_OUTCOME_INCLUDE_CANCELLED = _get_bool(
+    "EXPIRY_OUTCOME_INCLUDE_CANCELLED", "false")
 # Issue #50: structure-only warming cadence. Keeps every book's
 # events/structure TTL caches (and Caesars' 240s WAF token) warm so an RFQ
 # never pays a cold-structure penalty. Must stay under STRUCTURE_TTL_SEC

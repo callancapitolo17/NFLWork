@@ -391,6 +391,34 @@ and a book skipped by `min_refresh_sec` is not a failure; see
 the known silent-parser gap, and why this reads memory instead of the DB.
 Knobs: `BOOK_ALERT_ENABLED`, `BOOK_ALERT_STREAK`, `BOOK_ALERT_PATHS`.
 
+## Expired-quote outcome labels
+
+Almost every quote expires unfilled — but *why* matters for margin tuning.
+`expiry_outcome.py` (own sweep arm, `EXPIRY_OUTCOME_SWEEP_SEC` = 600s,
+runs in dry-run too) answers it per quote from the combo market's **public
+trade tape** (`GET /markets/trades?ticker=...` — live-verified 2026-08-13;
+MVE-combo quirk: `yes_price`/`no_price`/`count` come back `None`, so only
+`created_time` + `taker_side` are used):
+
+- `competitor_traded_in_window` — the market printed a trade inside our
+  quote's resting window (`submitted_at`..`closed_at`, both converted to
+  UTC): a competing maker won the RFQ — **we're being outpriced**.
+- `traded_shortly_after` — first print landed within
+  `EXPIRY_OUTCOME_GRACE_SEC` (300s) after our quote closed: a near-miss.
+- `no_trade` — nothing printed: the creator never executed with anyone —
+  **cutting margin would donate edge**.
+
+Each quote is labeled exactly once, after its grace window has fully
+elapsed, into `quote_expiry_outcomes` in the state DB (PK `quote_id` is the
+dedupe marker; also stores `n_trades_in_window`,
+`first_trade_after_close_sec`, and the UTC window bounds) plus one buffered
+`quote_expiry_outcome` research event. One tape fetch per distinct ticker
+per sweep, capped at `EXPIRY_OUTCOME_MAX_TICKERS_PER_SWEEP`; failures are
+logged and retried next sweep — nothing here touches the quote path.
+Quotes WE cancelled (risk pulls, tipoff, breakers) are excluded unless
+`EXPIRY_OUTCOME_INCLUDE_CANCELLED=true`. The daily label ratio is query 11
+in `research_queries.sql`.
+
 ## Knobs
 
 All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Defaults come from `kalshi_mlb_mm/config.py`.
@@ -433,6 +461,10 @@ All knobs are overridable via `kalshi_mlb_mm/.env` or environment variables. Def
 | `RISK_SWEEP_SEC` | `10` | Risk sweep cadence (seconds) |
 | `RECONCILE_SWEEP_SEC` | `30` | Fill side/size reconciliation cadence against Kalshi positions (seconds) |
 | `SETTLEMENT_SWEEP_SEC` | `600` | Settlement sweep cadence (seconds) — populates `realized_pnl` once markets settle; only matters hours post-game |
+| `EXPIRY_OUTCOME_SWEEP_SEC` | `600` | Expired-quote outcome labeler cadence (seconds) — labels each expired unfilled quote from the combo's public trade tape: competitor traded in our window vs no trade at all (the margin-tuning ratio) |
+| `EXPIRY_OUTCOME_GRACE_SEC` | `300` | Trades landing within this many seconds AFTER our quote closed label `traded_shortly_after`; labeling waits until this window has elapsed so each quote is labeled exactly once |
+| `EXPIRY_OUTCOME_MAX_TICKERS_PER_SWEEP` | `25` | Tape fetches per labeler sweep — only bounds the catch-up burst after downtime |
+| `EXPIRY_OUTCOME_INCLUDE_CANCELLED` | `false` | Also label quotes WE cancelled (risk pulls, tipoff, breakers). Off by default — pulls are our own decisions and muddy the headline ratio |
 | `TARGET_LINE_REFRESH_SEC` | `300` | #81: `mlb_target_lines` refresh cadence (Kalshi MVE enumeration + Odds API schedule; zero book requests). Sets how fast a NEW game becomes quotable |
 | `COVERAGE_SUMMARY_SEC` | `300` | #81: cadence of the `on_demand_coverage` research event (per-book live-fetch outcome tally since the last summary; idle windows emit nothing) |
 | `STRUCTURE_WARM_BUDGET_SEC` | `360.0` | #81: wall budget for one warming pass (pre-#81 warming rode the sweep's per-book deadline, which the live env had raised to 360 — this keeps that proven value). A book still running at the budget is dropped with a warming-path timeout health row |
