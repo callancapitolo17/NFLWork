@@ -527,13 +527,19 @@ from mlb_sgp._shared import ResolvedLeg  # noqa: E402
 
 def resolve_legs(structure, legs, home_team: str, away_team: str, *,
                  counters: FetchCounters | None = None):
-    """Map CanonicalLegs onto a ``parse_markets(...)[period]`` structure.
+    """Map CanonicalLegs onto the full ``parse_markets(...)`` structure.
 
-    ``structure`` is one period's dict from :func:`parse_markets`::
+    ``structure`` is :func:`parse_markets` output — already keyed by
+    ``CanonicalLeg.period`` values (#85)::
 
-        {"spreads": {home_signed_line: {"home": (mid, oid, dec), "away": ...}},
-         "totals":  {line: {"over": ..., "under": ...}},
-         "moneyline": {"home": ..., "away": ...} | None}
+        {"FG": {"spreads": {home_signed_line: {"home": (mid, oid, dec),
+                                               "away": ...}},
+                "totals":  {line: {"over": ..., "under": ...}},
+                "moneyline": {"home": ..., "away": ...} | None},
+         "F5": { ... same shape ... }}
+
+    Each leg resolves from its ``leg.period`` bucket; a missing/None
+    bucket fails the whole book (never a cross-period price).
 
     Canonical spread lines are SIGNED home-perspective (negative = home
     favored) — exactly how ``parse_markets`` keys its spread buckets — so a
@@ -551,17 +557,21 @@ def resolve_legs(structure, legs, home_team: str, away_team: str, *,
     try:
         resolved: list[ResolvedLeg] = []
         for leg in legs:
+            # Period bucket selection — the ONE place period is applied (#85).
+            period_structure = structure.get(leg.period)
+            if not period_structure:
+                return None                      # book posts no such period
             mt = leg.market_type
             if mt == "spread":
-                bucket = (structure.get("spreads") or {}).get(float(leg.line))
+                bucket = (period_structure.get("spreads") or {}).get(float(leg.line))
                 chosen_key = leg.side
                 other_key = "away" if leg.side == "home" else "home"
             elif mt == "total":
-                bucket = (structure.get("totals") or {}).get(float(leg.line))
+                bucket = (period_structure.get("totals") or {}).get(float(leg.line))
                 chosen_key = leg.side
                 other_key = "under" if leg.side == "over" else "over"
             elif mt == "ml":
-                bucket = structure.get("moneyline")
+                bucket = period_structure.get("moneyline")
                 chosen_key = leg.side
                 other_key = "away" if leg.side == "home" else "home"
             else:

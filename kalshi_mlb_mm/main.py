@@ -650,7 +650,7 @@ def _out_of_scope_reason(legs, canon) -> str:
     return "out_of_scope"
 
 
-def _maybe_emit_on_demand_result(rfq_id, ticker, hash_):
+def _maybe_emit_on_demand_result(rfq_id, ticker, hash_, legs=()):
     """Emit on_demand_result once per landing (not per tick it gets read)."""
     try:
         if _ENGINE is None:
@@ -671,6 +671,10 @@ def _maybe_emit_on_demand_result(rfq_id, ticker, hash_):
         research.emit("on_demand_result", rfq_id=rfq_id, ticker=ticker,
                       payload=dict(
                           leg_set_hash=hash_,
+                          # #85: which periods the flight's legs span
+                          # ("FG"/"F5") — additive key, report.py readers
+                          # select fields by name and ignore it.
+                          periods=sorted({l.period for l in legs}),
                           dropped_books=list(dropped or ()),
                           books={b: dict(fair=r.fair, route=r.route,
                                          n_cells=r.n_cells_priced,
@@ -697,6 +701,9 @@ def _live_games_detail(by_game):
                 continue
             out[h] = dict(
                 age_sec=_ENGINE.result_age_sec(h),
+                # #85: periods the game's legs span ("FG"/"F5") — additive
+                # key, safe for report.py's live_games readers.
+                periods=sorted({l.period for l in gl}),
                 books={b: dict(fair=r.fair, route=r.route,
                                latency_sec=r.latency_sec)
                        for b, r in res.items()})
@@ -1294,7 +1301,7 @@ def _discovery_tick(source, gateway, dry_run):
                     continue
                 od_hash = legset.leg_set_hash(gl)
                 if _ENGINE.lookup(od_hash) is not None:
-                    _maybe_emit_on_demand_result(rid, ticker, od_hash)
+                    _maybe_emit_on_demand_result(rid, ticker, od_hash, gl)
                     continue
                 if _ENGINE.landed_empty(od_hash):
                     od_timed_out = True

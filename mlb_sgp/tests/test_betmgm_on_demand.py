@@ -53,8 +53,10 @@ def _raw_markets():
 
 
 def _structure():
+    # Full parse_markets output — already period-keyed ("FG"/"F5"), the
+    # exact shape resolve_legs consumes since #85.
     from betmgm import parse_markets
-    return parse_markets(_raw_markets(), HOME, AWAY)["FG"]
+    return parse_markets(_raw_markets(), HOME, AWAY)
 
 
 def _leg(market_type, line, side):
@@ -150,7 +152,7 @@ def test_chosen_line_miss_returns_none():
 def test_missing_moneyline_returns_none():
     from betmgm import resolve_legs
     st = _structure()
-    st = {**st, "moneyline": None}
+    st["FG"] = {**st["FG"], "moneyline": None}
     assert resolve_legs(st, [_leg("ml", None, "home")], HOME, AWAY) is None
 
 
@@ -164,11 +166,11 @@ def test_opposite_side_missing_yields_opposite_ref_none():
     from betmgm import resolve_legs
     # parse_markets only emits two-sided buckets, so hand-build a one-sided
     # structure (Route B shape: chosen side present, opposite absent).
-    st = {
+    st = {"FG": {
         "spreads": {-1.5: {"home": (200, 13, 2.4)}},
         "totals": {8.5: {"over": (300, 15, 1.9)}},
         "moneyline": {"home": (100, 11, 2.5)},
-    }
+    }, "F5": None}
     out = resolve_legs(
         st,
         [_leg("spread", -1.5, "home"), _leg("total", 8.5, "over"),

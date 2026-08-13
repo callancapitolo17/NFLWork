@@ -46,6 +46,11 @@ STRUCTURE_TTL_SEC = 420    # sel-ids / runners churn when a book re-mains a line
 # the ceiling we accept; beyond that Route B (1 SGP call + singles).
 ON_DEMAND_MAX_PARTITION_LEGS = 3
 
+# CanonicalLeg periods the six book resolvers are plumbed for (#85). A leg
+# with any other period declines the whole book before a wire call — see
+# the period guard in price_on_demand.
+ON_DEMAND_PERIODS = frozenset(("FG", "F5"))
+
 # Issue #38: how often the per-tick health drain may open the market DB.
 # Health rows are diagnostics — landing them 5s late costs nothing, while
 # a read-write handle opened 4x/sec on the file the pricing path reads is
@@ -730,15 +735,24 @@ class SGPService:
         """
         if book not in self._state or not legs:
             return None
-        # #85 pre-guard (issue #84): every book's resolve_legs dispatches on
-        # market_type alone against FULL-GAME structures — an F5-period leg
-        # reaching a resolver would silently resolve to the FG selection and
-        # return a confidently wrong price. Fail closed (book declines, zero
-        # wire calls) until #85 plumbs period-aware structures through all six
-        # books; the flight then completes zero-book and the maker declines
-        # live_fetch_timeout / too_few_books instead of quoting a wrong fair.
-        if any(getattr(l, "period", "FG") != "FG" for l in legs):
-            return None
+        # Period guard (#84 -> #85): resolvers now key on (market_type,
+        # period), so FG and F5 legs flow to the hooks. Two cases stay
+        # CLOSED, declining with zero wire calls (flight completes zero-book,
+        # maker declines live_fetch_timeout / too_few_books — never a wrong
+        # price):
+        #  * F5 moneyline (KXMLBF5 winner family): books' F5 ML is
+        #    push-refund/3-way while Kalshi's team markets resolve NO on a
+        #    tie after 5 — mapping one onto the other misprices by ~P(tie).
+        #    classify_subcombo already routes these combos "unpriceable";
+        #    this is the service-level backstop until #86's conversion math.
+        #  * unknown periods: a future period value must never reach a
+        #    resolver that would silently serve the wrong bucket.
+        for l in legs:
+            period = getattr(l, "period", "FG")
+            if period not in ON_DEMAND_PERIODS:
+                return None
+            if period == "F5" and l.market_type == "ml":
+                return None
         t0 = time.monotonic()
         # Per-call, never shared: two RFQs can price the same book on two
         # threads at once, so the verdict cannot live on self.
@@ -1019,7 +1033,11 @@ class SGPService:
                 eid = event["dk_event_id"]
                 nums = f["fetch_main_market_nums"](client.session, eid)
                 sel = f["fetch_selection_ids"](client.session, eid, nums)
-                return (sel or {}).get("fg") or None
+                if not sel:
+                    return None
+                # #85: both period buckets, re-keyed to CanonicalLeg.period
+                # values — resolve_legs picks the bucket per leg.
+                return {"FG": sel.get("fg"), "F5": sel.get("f5")}
 
             return {"match_event": match_event,
                     "build_structure": build_structure,
@@ -1045,7 +1063,11 @@ class SGPService:
                 runners = f["fetch_event_runners"](
                     client.session, event["fd_event_id"],
                     event["fd_home"], event["fd_away"])
-                return (runners or {}).get("fg") or None
+                if not runners:
+                    return None
+                # #85: both period buckets, re-keyed to CanonicalLeg.period
+                # values — resolve_legs picks the bucket per leg.
+                return {"FG": runners.get("fg"), "F5": runners.get("f5")}
 
             return {"match_event": match_event,
                     "build_structure": build_structure,
@@ -1145,8 +1167,16 @@ class SGPService:
                                                     miss_cb=miss_cb)
                 if not markets:
                     return None
-                return mod.build_line_structure(
-                    markets, event["nv_home_sym"], event["nv_away_sym"])
+                # #85: one bucket per period from the SAME raw tree —
+                # "f5" reads Novig's SPREAD_1H/TOTAL_1H/MONEY_1H types
+                # (baseball "1st half" = first 5 innings; issue #64).
+                return {
+                    "FG": mod.build_line_structure(
+                        markets, event["nv_home_sym"], event["nv_away_sym"]),
+                    "F5": mod.build_line_structure(
+                        markets, event["nv_home_sym"], event["nv_away_sym"],
+                        period="f5"),
+                }
 
             return {"match_event": match_event,
                     "build_structure": build_structure,
@@ -1177,7 +1207,9 @@ class SGPService:
                         markets, event.home_team, event.away_team)
                 parsed = struct_cache.get_or_fetch(
                     ("mgm_markets", event.event_id), _fetch, miss_cb=miss_cb)
-                return (parsed or {}).get("FG") or None
+                # parse_markets already keys by period ("FG"/"F5") — pass
+                # both buckets through; resolve_legs picks per leg (#85).
+                return parsed or None
 
             return {"match_event": match_event,
                     "build_structure": build_structure,
@@ -1208,7 +1240,9 @@ class SGPService:
                     return mod.parse_markets(ev) if ev else None
                 parsed = struct_cache.get_or_fetch(
                     ("czr_event", event.event_id), _fetch, miss_cb=miss_cb)
-                return (parsed or {}).get("FG") or None
+                # parse_markets already keys by period ("FG"/"F5") — pass
+                # both buckets through; resolve_legs picks per leg (#85).
+                return parsed or None
 
             return {"match_event": match_event,
                     "build_structure": build_structure,

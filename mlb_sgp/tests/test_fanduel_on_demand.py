@@ -129,9 +129,15 @@ GID = "KXMLBGAME-26JUL10NYYBOS"
 HOME, AWAY = "Home Team", "Away Team"
 
 
+def _wrap(bucket):
+    """The two-period structure resolve_legs consumes since #85 (F5
+    coverage lives in test_f5_on_demand_resolvers.py)."""
+    return {"FG": bucket, "F5": None}
+
+
 def _resolve(legs, struct=STRUCT):
     from mlb_sgp.fanduel import resolve_legs
-    return resolve_legs(struct, legs, HOME, AWAY)
+    return resolve_legs(_wrap(struct), legs, HOME, AWAY)
 
 
 def test_resolve_spread_home_side():
@@ -215,9 +221,9 @@ def test_resolve_never_raises_on_garbage_structure():
     assert resolve_legs(None, legs, HOME, AWAY) is None
     assert resolve_legs({}, legs, HOME, AWAY) is None
     assert resolve_legs({"spreads": "junk"}, legs, HOME, AWAY) is None
-    assert resolve_legs(STRUCT, [], HOME, AWAY) is None
+    assert resolve_legs(_wrap(STRUCT), [], HOME, AWAY) is None
     assert resolve_legs(
-        STRUCT, [CanonicalLeg(GID, "anytime_hr", None, "home")],
+        _wrap(STRUCT), [CanonicalLeg(GID, "anytime_hr", None, "home")],
         HOME, AWAY) is None
 
 
