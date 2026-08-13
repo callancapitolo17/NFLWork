@@ -20,6 +20,7 @@ restarted lazily on the next enqueue; all state is in-memory and ephemeral.
 from __future__ import annotations
 
 import logging
+import statistics
 import threading
 import time
 from collections import deque
@@ -208,11 +209,53 @@ class OnDemandEngine:
         return ent.dropped_books if ent else ()
 
     def lookup(self, hash_: str):
-        """{book: fair} if landed within QUOTE_FRESH_SEC, else None."""
+        """{book: fair} if landed within QUOTE_FRESH_SEC, else None.
+
+        Issue #86: this is the single choke point every consumer reads
+        (quote tick, confirm last-look, book-drift breaker), so F5-winner
+        conversion lives HERE. A flight whose results carry an
+        ``f5_semantics`` label priced a combo containing an F5-winner leg —
+        its push-2way book fairs are CONDITIONAL on no-tie and convert via
+        fair_value.f5_winner_fair_from_book with the flight's median tie
+        anchor. Zero anchors landed -> {} (nothing convertible; consensus
+        declines too_few_books) — NEVER the raw conditional fairs, and
+        never None (which would read as "nothing landed" and hide the
+        flight from research emission). ``lookup_results`` keeps serving
+        the raw results for research provenance."""
         results = self.lookup_results(hash_)
         if not results:
             return None
-        return {b: r.fair for b, r in results.items()}
+        if not any(getattr(r, "f5_semantics", None) for r in results.values()):
+            return {b: r.fair for b, r in results.items()}
+        from kalshi_common import fair_value
+        p_tie = self._median_tie_anchor(results)
+        out = {}
+        for b, r in results.items():
+            fair = fair_value.f5_winner_fair_from_book(
+                r.fair, p_tie, getattr(r, "f5_semantics", None))
+            if fair is not None:
+                out[b] = fair
+        return out
+
+    @staticmethod
+    def _median_tie_anchor(results) -> float | None:
+        """Median of the landed books' own 3-way tie anchors (FD/MGM), or
+        None. One shared anchor per flight keeps the sigma_z dispersion
+        gate measuring conditional-fair disagreement, not tie-estimate
+        noise."""
+        anchors = [r.p_tie_book for r in results.values()
+                   if getattr(r, "p_tie_book", None) is not None]
+        if not anchors:
+            return None
+        return statistics.median(anchors)
+
+    def tie_anchor(self, hash_: str) -> float | None:
+        """The flight's median P(tie) anchor while fresh (research trace:
+        quote_priced carries it as per-game provenance), else None."""
+        results = self.lookup_results(hash_)
+        if not results:
+            return None
+        return self._median_tie_anchor(results)
 
     def lookup_results(self, hash_: str):
         """{book: OnDemandBookResult} while fresh, else None (research read).

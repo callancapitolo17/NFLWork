@@ -374,3 +374,134 @@ def test_ensure_fetch_reaps_wedged_inflight_and_restarts_worker():
     clock.t += 301
     assert eng.ensure_fetch(h, GAME, legs) is True
     assert eng._queue_len() == 1
+
+
+# --------------------------------------------------------------------- #
+# Issue #86: F5-winner tie conversion at the lookup choke point          #
+# --------------------------------------------------------------------- #
+
+class F5FakeService:
+    """Duck-typed service whose results carry #86 semantics/tie fields."""
+    def __init__(self, book_results):
+        self.book_results = dict(book_results)   # book -> OnDemandBookResult
+        self.books = tuple(self.book_results)
+
+    def price_on_demand(self, book, game, legs):
+        return self.book_results.get(book)
+
+
+def _f5_result(book, fair, p_tie_book=None, semantics="push_2way"):
+    return OnDemandBookResult(book=book, fair=fair, route="partition",
+                              n_cells_priced=8, latency_sec=0.1,
+                              f5_semantics=semantics, p_tie_book=p_tie_book)
+
+
+def _f5_legs():
+    return [legset.CanonicalLeg(EVT, "ml", None, "home", "F5"),
+            legset.CanonicalLeg(EVT, "total", 4.5, "over", "F5")]
+
+
+def _land(svc):
+    eng = OnDemandEngine(svc, now_fn=FakeClock(), autostart=False)
+    legs = _f5_legs()
+    h = legset.leg_set_hash(legs)
+    eng.ensure_fetch(h, GAME, legs)
+    eng._drain_once()
+    return eng, h
+
+
+def test_lookup_converts_f5_winner_fairs_with_median_anchor():
+    """Three conditional fairs, two anchors (FD 0.15, MGM 0.13): the flight
+    median 0.14 converts EVERY book — the anchorless one included — and the
+    converted (not raw) fairs are what consensus sees."""
+    svc = F5FakeService({
+        "fanduel": _f5_result("fanduel", 0.62, p_tie_book=0.15),
+        "betmgm": _f5_result("betmgm", 0.64, p_tie_book=0.13),
+        "novig": _f5_result("novig", 0.63),          # no 3-way at NV
+    })
+    eng, h = _land(svc)
+    fairs = eng.lookup(h)
+    assert fairs is not None
+    assert fairs["fanduel"] == pytest.approx(0.62 * (1 - 0.14))
+    assert fairs["betmgm"] == pytest.approx(0.64 * (1 - 0.14))
+    assert fairs["novig"] == pytest.approx(0.63 * (1 - 0.14))
+
+
+def test_lookup_returns_empty_when_no_tie_anchor_landed():
+    """F5-winner flight with zero anchors: nothing is convertible, lookup
+    serves {} (consensus declines too_few_books) — NEVER raw conditional
+    fairs, and NEVER None (which would read as 'nothing landed' and mask
+    the flight from research emission)."""
+    svc = F5FakeService({
+        "novig": _f5_result("novig", 0.63),
+        "draftkings": _f5_result("draftkings", 0.62),
+    })
+    eng, h = _land(svc)
+    assert eng.lookup(h) == {}
+    # research reads see the RAW results (provenance stays intact)
+    raw = eng.lookup_results(h)
+    assert raw is not None and raw["novig"].fair == 0.63
+
+
+def test_lookup_passes_non_f5_flights_through_unconverted():
+    svc = F5FakeService({
+        "fanduel": OnDemandBookResult(book="fanduel", fair=0.14,
+                                      route="partition", n_cells_priced=8,
+                                      latency_sec=0.1),
+    })
+    eng = OnDemandEngine(svc, now_fn=FakeClock(), autostart=False)
+    legs = _legs()
+    h = legset.leg_set_hash(legs)
+    eng.ensure_fetch(h, GAME, legs)
+    eng._drain_once()
+    assert eng.lookup(h) == {"fanduel": 0.14}
+
+
+def test_lookup_excludes_unconvertible_semantics_defensively():
+    """A result labeled with an unknown semantics string converts to None
+    and drops out; the labeled books still serve."""
+    svc = F5FakeService({
+        "fanduel": _f5_result("fanduel", 0.62, p_tie_book=0.14),
+        "novig": _f5_result("novig", 0.63, semantics="mystery_mode"),
+    })
+    eng, h = _land(svc)
+    fairs = eng.lookup(h)
+    assert set(fairs) == {"fanduel"}
+    assert fairs["fanduel"] == pytest.approx(0.62 * (1 - 0.14))
+
+
+def test_mixed_semantics_agree_after_conversion_not_before():
+    """Issue #86 spec case: a push-2way book (conditional 0.62) and a
+    hypothetical 3-way book (unconditional 0.5332) DISAGREE by ~9pts raw —
+    raw sigma_z would blow the gate on two views that are actually
+    identical. Converted, both land at 0.5332 and consensus passes."""
+    from kalshi_mlb_mm import router
+
+    svc = F5FakeService({
+        "fanduel": _f5_result("fanduel", 0.62, p_tie_book=0.14),
+        "betmgm": _f5_result("betmgm", 0.62 * (1 - 0.14),
+                             semantics="three_way_unconditional"),
+    })
+    eng, h = _land(svc)
+    fairs = eng.lookup(h)
+    assert fairs["fanduel"] == pytest.approx(fairs["betmgm"])
+    cons, reason = router.consensus(fairs, min_books=2, sigma_z_max=0.07)
+    assert reason == "ok"
+    assert cons.fair == pytest.approx(0.62 * (1 - 0.14))
+    # the RAW pair would have been declined for dispersion — the mix is
+    # only quotable BECAUSE conversion ran before the gate
+    raw = {b: r.fair for b, r in eng.lookup_results(h).items()}
+    _, raw_reason = router.consensus(raw, min_books=2, sigma_z_max=0.07)
+    assert raw_reason == "consensus_dispersion"
+
+
+def test_tie_anchor_accessor_reports_median_and_none():
+    svc = F5FakeService({
+        "fanduel": _f5_result("fanduel", 0.62, p_tie_book=0.15),
+        "betmgm": _f5_result("betmgm", 0.64, p_tie_book=0.13),
+    })
+    eng, h = _land(svc)
+    assert eng.tie_anchor(h) == pytest.approx(0.14)
+    svc2 = F5FakeService({"novig": _f5_result("novig", 0.63)})
+    eng2, h2 = _land(svc2)
+    assert eng2.tie_anchor(h2) is None

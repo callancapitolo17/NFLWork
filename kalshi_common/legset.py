@@ -188,15 +188,14 @@ def classify_subcombo(game_legs: list[CanonicalLeg]) -> str:
     n = len(game_legs)
     if n == 0:
         return "unpriceable"
-    # #86 guard (issue #84): KXMLBF5 (F5 winner) is a THREE-way family — a
-    # KXMLBF5-...-TIE market exists and the team markets resolve NO on a tie
-    # after 5 (~12-15% of games) — while books' F5 ML is push-refund or 3-way.
-    # Naively mapping a push-refund book price onto Kalshi's tie-loses binary
-    # misprices by ~P(tie): a craftable pick-off. Explicitly unpriceable (so
-    # scope telemetry labels it, never the non_mlb mislabel) until #86 lands
-    # the conversion math. Checked before the n==1 route so a cross-game
-    # combo's lone F5-winner partition can't classify "single".
-    if any(l.market_type == "ml" and l.period == "F5" for l in game_legs):
+    # F5-winner TEAM legs price since #86: books' push-refund F5 ML converts
+    # to Kalshi's unconditional tie-loses space in the engine's lookup
+    # (fair_value.f5_winner_fair_from_book). TIE-side legs stay unpriceable —
+    # no book prices a bare F5-tie leg in an SGP, and an unconverted tie
+    # price would be a craftable pick-off. Checked before the n==1 route so
+    # a cross-game combo's lone TIE partition can't classify "single".
+    if any(l.market_type == "ml" and l.period == "F5"
+           and l.side in ("tie", "not_tie") for l in game_legs):
         return "unpriceable"
     # Duplicate-market guard (Phase 2): a repeated (market_type, period, line)
     # within one game is either the same leg twice or a contradictory pair

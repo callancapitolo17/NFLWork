@@ -190,26 +190,40 @@ def test_cross_game_f5_single_plus_fg_single_routes_per_game_singles():
 
 
 # --------------------------------------------------------------------- #
-# F5 winner: parses, but unpriceable until #86                           #
+# F5 winner: team legs price (#86); TIE legs stay unpriceable            #
 # --------------------------------------------------------------------- #
 
-def test_f5_winner_combo_is_unpriceable_same_game():
+def test_f5_winner_combo_routes_on_demand_same_game():
+    """#86: with the tie-conversion math in place, F5-winner TEAM legs are
+    priceable — the multi-leg set routes on_demand like other F5 shapes."""
     legs = legset.parse_legs([_f5_winner("LAD", "yes"), _f5_total(7, "yes")])
-    assert legs is not None            # parses (never mislabeled non_mlb)
-    assert legset.classify_subcombo(legs) == "unpriceable"
+    assert legs is not None
+    assert legset.classify_subcombo(legs) == "on_demand"
 
 
-def test_f5_winner_is_unpriceable_even_as_a_lone_partition_leg():
+def test_f5_winner_lone_partition_leg_routes_single():
     """A cross-game combo puts the F5 winner alone in its game's partition —
-    the #86 guard must beat the n==1 'single' route."""
+    it prices as a marginalized single (live routing fetches the 1-leg set
+    on-demand; the engine's tie conversion applies there too)."""
     leg = legset.parse_leg(_f5_winner("LAD", "yes"))
-    assert legset.classify_subcombo([leg]) == "unpriceable"
+    assert legset.classify_subcombo([leg]) == "single"
 
 
 def test_f5_winner_tie_leg_is_unpriceable():
+    """No book prices a bare F5-tie leg in an SGP — TIE-side legs stay
+    fail-closed regardless of #86's team-leg conversion."""
     tie = legset.parse_leg(_f5_winner("TIE", "yes"))
     assert legset.classify_subcombo([tie, legset.parse_leg(_f5_total(7, "yes"))]) \
         == "unpriceable"
+    assert legset.classify_subcombo([tie]) == "unpriceable"
+
+
+def test_f5_winner_home_plus_away_dies_on_dup_guard():
+    """Home F5 winner + away F5 winner is a joint-probability-zero pair —
+    both key as ("ml","F5",None) so the dup guard kills it."""
+    legs = [legset.parse_leg(_f5_winner("LAD", "yes")),
+            legset.parse_leg(_f5_winner("KC", "yes"))]
+    assert legset.classify_subcombo(legs) == "unpriceable"
 
 
 # --------------------------------------------------------------------- #
