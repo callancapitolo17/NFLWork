@@ -38,6 +38,9 @@ BOTS = {
         "proc_match": "kalshi_mlb_mm.main",  # pgrep pattern to detect if live
         "state_db": _p("kalshi_mlb_mm", "kalshi_mlb_mm.duckdb"),
         "research_db": _p("kalshi_mlb_mm", "kalshi_mlb_mm_research.duckdb"),
+        # Market DB: SGP odds + per-book fetch health (issue #38). Third
+        # sibling, separate write lock from the state DB.
+        "market_db": _p("kalshi_mlb_mm", "kalshi_mlb_mm_market.duckdb"),
         # RFQ ledger: one row per RFQ the maker *observed*.
         "rfq_table": "seen_rfqs",
         "rfq_ts": "first_seen_at",
@@ -69,6 +72,7 @@ BOTS = {
         "proc_match": "kalshi_mlb_rfq.main",
         "state_db": _p("kalshi_mlb_rfq", "kalshi_mlb_rfq.duckdb"),
         "research_db": _p("kalshi_mlb_rfq", "kalshi_mlb_rfq_research.duckdb"),
+        "market_db": _p("kalshi_mlb_rfq", "kalshi_mlb_rfq_market.duckdb"),
         # RFQ ledger: one row per RFQ the taker *sent*.
         "rfq_table": "live_rfqs",
         "rfq_ts": "submitted_at",
@@ -100,6 +104,9 @@ BOTS = {
 REASON_GLOSS = {
     # ---- shared / maker ----
     "out_of_scope": "Not a spread×total 2-leg combo — outside what the bot quotes",
+    "out_of_scope_unparseable": "RFQ carried no decodable legs",
+    "out_of_scope_non_mlb": "A leg wasn't a typeable MLB market",
+    "out_of_scope_lone_single": "Lone single-leg RFQ — the maker only quotes combos",
     "no_fair": "No blended fair (too few fresh books, or fair out of bounds)",
     "size_gate": "Worst-case exposure exceeds the per-fill contract cap",
     "size_gate_dollars": "Worst-case exposure exceeds the per-fill dollar cap",

@@ -15,36 +15,44 @@ HOME, AWAY = "New York Yankees", "Boston Red Sox"
 
 
 def _structure():
-    """FG bucket of fetch_selection_ids output. Home favored -1.5.
+    """Two-period structure (#85) with the FG bucket populated. Home
+    favored -1.5.
 
     DK keys spreads as (sign, abs_line, participant): sign "N" = the
     negative-line side, participant "1" = home, "3" = away. With home
     favored at -1.5, home is ("N", 1.5, "1") and away ("P", 1.5, "3").
+    F5 coverage lives in test_f5_on_demand_resolvers.py.
     """
     return {
-        "spreads": {
-            ("N", 1.5, "1"): ["0HC100N150_1", "0HC101N150_1"],
-            ("P", 1.5, "3"): ["0HC100P150_3"],
+        "FG": {
+            "spreads": {
+                ("N", 1.5, "1"): ["0HC100N150_1", "0HC101N150_1"],
+                ("P", 1.5, "3"): ["0HC100P150_3"],
+            },
+            "totals": {
+                ("O", 8.5): ["0OU200O850_1"],
+                ("U", 8.5): ["0OU200U850_1"],
+            },
+            "moneyline": {"1": ["0ML300_1"], "3": ["0ML300_3"]},
+            "canonical": {"100", "200", "300"},
         },
-        "totals": {
-            ("O", 8.5): ["0OU200O850_1"],
-            ("U", 8.5): ["0OU200U850_1"],
-        },
-        "moneyline": {"1": ["0ML300_1"], "3": ["0ML300_3"]},
-        "canonical": {"100", "200", "300"},
+        "F5": None,
     }
 
 
 def _structure_home_dog():
     """Home underdog +1.5: home is the P side, away the N side."""
     return {
-        "spreads": {
-            ("P", 1.5, "1"): ["0HC100P150_1"],
-            ("N", 1.5, "3"): ["0HC100N150_3"],
+        "FG": {
+            "spreads": {
+                ("P", 1.5, "1"): ["0HC100P150_1"],
+                ("N", 1.5, "3"): ["0HC100N150_3"],
+            },
+            "totals": {},
+            "moneyline": {"1": [], "3": []},
+            "canonical": set(),
         },
-        "totals": {},
-        "moneyline": {"1": [], "3": []},
-        "canonical": set(),
+        "F5": None,
     }
 
 
@@ -145,7 +153,7 @@ def test_resolve_chosen_side_miss_fails_whole_set():
     assert resolve_legs(_structure(), legs, HOME, AWAY) is None
     # Chosen side present-but-empty list also fails.
     s = _structure()
-    s["totals"][("O", 8.5)] = []
+    s["FG"]["totals"][("O", 8.5)] = []
     legs = [CanonicalLeg("g1", "total", 8.5, "over")]
     assert resolve_legs(s, legs, HOME, AWAY) is None
 
@@ -153,7 +161,7 @@ def test_resolve_chosen_side_miss_fails_whole_set():
 def test_resolve_opposite_side_miss_yields_none_opposite():
     from mlb_sgp.draftkings import resolve_legs
     s = _structure()
-    del s["spreads"][("P", 1.5, "3")]         # book one-sides the spread
+    del s["FG"]["spreads"][("P", 1.5, "3")]   # book one-sides the spread
     out = resolve_legs(
         s, [CanonicalLeg("g1", "spread", -1.5, "home")], HOME, AWAY)
     assert out is not None
@@ -161,7 +169,7 @@ def test_resolve_opposite_side_miss_yields_none_opposite():
     assert out[0].opposite_ref is None        # routes book to Route B
     # Same for a one-sided total.
     s = _structure()
-    s["totals"][("U", 8.5)] = []
+    s["FG"]["totals"][("U", 8.5)] = []
     out = resolve_legs(
         s, [CanonicalLeg("g1", "total", 8.5, "over")], HOME, AWAY)
     assert out[0].opposite_ref is None

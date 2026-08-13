@@ -1,9 +1,9 @@
 """Issue #17 (reworked): confirm-window singles-move veto.
 
 The last-look gate previously re-priced grid combos from the same ~150s
-`_SGP_ODDS` scrape cache the quote was priced from, so cur_fair == prev_fair
-by construction and the drift check was a no-op exactly in the fast-pickoff
-window. The rework: snapshot the RAW Kalshi odds of every leg at quote time
+scrape cache the quote was priced from (deleted with the sweep in #81), so
+cur_fair == prev_fair by construction and the drift check was a no-op
+exactly in the fast-pickoff window. The rework: snapshot the RAW Kalshi odds of every leg at quote time
 (each leg is its own Kalshi singles market), re-read them at accept (<~1s),
 and void if ANY leg's bid or ask moved even one tick. Correlation between
 legs is structural on this horizon — the marginals carry the pickoff signal.
@@ -64,7 +64,6 @@ def _setup(monkeypatch, tmp_path, db_name, *, snapshot_json=None,
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
     importlib.reload(db)
     db.init_database()
-    monkeypatch.setattr(main, "_SGP_ODDS", _stale_grid_df())
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
     monkeypatch.setattr(main, "_game_ref", lambda gid: GREF)
     monkeypatch.setattr(main, "_ENGINE", None)
@@ -161,11 +160,16 @@ def test_confirm_voids_when_snapshot_missing(monkeypatch, tmp_path):
 
 
 def test_confirm_passes_when_all_legs_unchanged(monkeypatch, tmp_path):
-    """Unmoved raw leg odds -> veto passes -> existing cache gates run ->
-    confirm; fair_at_confirm keeps the cache fair convention."""
+    """Unmoved raw leg odds -> veto passes -> #54 live re-fetch re-prices at
+    the unchanged fair -> confirm; fair_at_confirm carries the live fair."""
     main, db = _setup(monkeypatch, tmp_path, "veto_pass.duckdb",
                       snapshot_json=json.dumps(SNAPSHOT),
                       fresh=json.loads(json.dumps(SNAPSHOT)))
+    # #54 live-only: the confirm re-price comes from the engine, not the
+    # cache; serve the same fair the quote was placed at (no drift).
+    from kalshi_mlb_mm.tests.conftest import FakeLiveEngine
+    monkeypatch.setattr(main, "_ENGINE", FakeLiveEngine(
+        {"draftkings": STALE_CACHE_FAIR, "fanduel": STALE_CACHE_FAIR}))
     gw = ConfirmGW()
     main._confirm_tick(gw, dry_run=False)
     assert gw.confirmed == ["q-grid"]
@@ -220,12 +224,14 @@ def test_singles_moved_detects_any_tick_and_leg_mismatch():
 
 
 def test_market_bid_ask_handles_both_kalshi_shapes():
-    from kalshi_mlb_mm import main
-    assert main._market_bid_ask({"yes_bid": 45, "yes_ask": 47}) == (0.45, 0.47)
-    assert main._market_bid_ask(
+    # #23: the price-shape parser now lives in kalshi_mlb_mm/singles.py, shared
+    # by this veto, the quote-time sanity gate and the risk sweep.
+    from kalshi_mlb_mm import singles
+    assert singles.market_bid_ask({"yes_bid": 45, "yes_ask": 47}) == (0.45, 0.47)
+    assert singles.market_bid_ask(
         {"yes_bid_dollars": "0.45", "yes_ask_dollars": "0.47"}) == (0.45, 0.47)
-    assert main._market_bid_ask({"yes_bid": 45}) is None
-    assert main._market_bid_ask({}) is None
+    assert singles.market_bid_ask({"yes_bid": 45}) is None
+    assert singles.market_bid_ask({}) is None
 
 
 def test_leg_market_prices_reads_one_get_per_leg(monkeypatch):

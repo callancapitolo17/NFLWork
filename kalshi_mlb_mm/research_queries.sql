@@ -161,3 +161,60 @@ SELECT COUNT(*)                                                   AS settled_fil
        SUM(f.realized_pnl)                                        AS total_realized_pnl
 FROM state.fills f
 WHERE f.realized_pnl IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- 9) LIVE-PRICING HEALTH (issue #54): daily veto/void rate. Every quote is
+--    priced from a post-RFQ live fetch, so the confirm last look re-checks a
+--    SECONDS-old number — the void rate should collapse vs the pre-#54
+--    cache-era days in this same table. If it does not, live pricing is not
+--    actually working (books timing out, engine wedged, warming broken).
+--    live_fetch_timeout / live_too_few_books daily counts ride along as the
+--    "why aren't we quoting" companions.
+-- ---------------------------------------------------------------------------
+SELECT CAST(observed_at AS DATE)                                       AS day,
+       SUM(CASE WHEN decision LIKE 'voided_%' THEN 1 ELSE 0 END)        AS voided,
+       SUM(CASE WHEN decision = 'confirmed'   THEN 1 ELSE 0 END)        AS confirmed,
+       SUM(CASE WHEN decision LIKE 'voided_%' THEN 1 ELSE 0 END) * 1.0
+         / NULLIF(SUM(CASE WHEN decision LIKE 'voided_%' THEN 1 ELSE 0 END)
+                  + SUM(CASE WHEN decision = 'confirmed' THEN 1 ELSE 0 END), 0)
+                                                                        AS void_rate,
+       SUM(CASE WHEN reason = 'live_fetch_timeout'  THEN 1 ELSE 0 END)  AS live_fetch_timeouts,
+       SUM(CASE WHEN reason = 'live_too_few_books'  THEN 1 ELSE 0 END)  AS live_too_few_books
+FROM state.quote_decisions
+GROUP BY 1
+ORDER BY 1;
+
+-- ---------------------------------------------------------------------------
+-- 10) LIVE FETCH TRACE (issue #54 acceptance): per-quote per-game live books,
+--     latencies, and result age at pricing time — proof every quoted fair
+--     traces to a fetch initiated after its RFQ landed (join the
+--     on_demand_requested / on_demand_result timestamps by leg_set_hash for
+--     the full chain). Novig caveat: NV fairs inherit its open sweep-price
+--     broadcast defect — check per-book values before leaning on NV-heavy
+--     consensus.
+-- ---------------------------------------------------------------------------
+SELECT ts,
+       ticker,
+       json_extract_string(payload, 'blended_fair')  AS blended_fair,
+       json_extract_string(payload, 'live_games')    AS live_games
+FROM research.events
+WHERE event_type = 'quote_priced'
+ORDER BY ts DESC;
+
+-- ---------------------------------------------------------------------------
+-- 11) EXPIRED-QUOTE OUTCOMES — the margin-tuning ratio. Of quotes that
+--     expired unfilled, how many saw the combo market trade during our
+--     resting window (competitor_traded_in_window = a competing maker won
+--     the RFQ, we're being outpriced) vs no trade at all (no_trade = the
+--     creator never executed with anyone — cutting margin donates edge)?
+--     traded_shortly_after is the near-miss bucket in between.
+--     Uses state.quote_expiry_outcomes (written by the expiry-outcome sweep).
+-- ---------------------------------------------------------------------------
+SELECT CAST(window_end AS DATE)  AS day,
+       label,
+       COUNT(*)                  AS quotes,
+       ROUND(COUNT(*) * 1.0 / SUM(COUNT(*)) OVER (
+           PARTITION BY CAST(window_end AS DATE)), 3) AS share_of_day
+FROM state.quote_expiry_outcomes
+GROUP BY 1, 2
+ORDER BY 1, 2;

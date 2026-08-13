@@ -1,22 +1,28 @@
-"""P-7 (issue #21): the post-fill cooldown must outlast the data refresh, and
-same-price re-quotes must be blocked until consensus fair actually moves.
+"""P-7 (issue #21, re-pointed by #57): the post-fill cooldown must outlast
+the data refresh, and same-price re-quotes must be blocked until consensus
+fair actually moves.
 
-The 60s COMBO_COOLDOWN_SEC floor expires before the ~150-165s SGP scrape cycle
-completes, so previously a counterparty who picked us off could post a new RFQ
-on the same combo and hit the SAME stale price again. Two new gates:
+The 60s COMBO_COOLDOWN_SEC floor expires while the counterparty who picked
+us off can immediately post a new RFQ on the same combo. Two gates:
 
-- `in_cooldown_awaiting_refresh`: floor passed, but no post-fill scrape has
-  landed for every game the combo touches.
-- `same_price_block`: books refreshed, but consensus fair is still within
+- `in_cooldown_awaiting_refresh`: floor passed, but no TARGETED on-demand
+  fetch has completed post-fill for every game the combo touches (#57 — the
+  old rule waited for a full sweep pass; sweep rows are now irrelevant, see
+  test_sweep_demotion.py for the re-point regressions).
+- `same_price_block`: books re-asked, but consensus fair is still within
   QUOTE_HYSTERESIS of the fair the fill transacted against.
 
-Gate tests mirror the N7 harness (mocked _SGP_ODDS / scope cache / router
-fair, fresh DuckDB per test).
+Gate tests mirror the N7 harness (mocked scope cache / router fair, fresh
+DuckDB per test); no market-wide odds exist anywhere (#81) — the cooldown
+lifecycle must run entirely sweep-free. The unit block covers
+`_post_fill_live_refresh_landed`'s cross-game and fail-closed edges.
 """
 import importlib
 from datetime import datetime, timedelta, timezone
 
-import pandas as pd
+from kalshi_common import legset
+
+from kalshi_mlb_mm.tests.conftest import FakeLiveEngine, leg
 
 _EVT = "KXMLBGAME-25JUN271905TEXLAA"
 _LEGS = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
@@ -29,11 +35,12 @@ _GAME = "GAME-CD"
 _FILL_FAIR = 0.55
 
 
-def _cooldown_env(monkeypatch, tmp_path, db_name, *, fetch_time, cooled_until,
-                  fair_now):
+def _cooldown_env(monkeypatch, tmp_path, db_name, *, completed_age,
+                  cooled_until, fair_now):
     """Discovery-tick env with one prior fill on _TICKER (fair_at_confirm =
-    _FILL_FAIR, filled 120s ago) and its combo_cooldown row. Returns (db, main,
-    src, gw, filled_at)."""
+    _FILL_FAIR, filled 120s ago) and its combo_cooldown row. `completed_age`
+    is the engine's post-fill-fetch landing age (None = no completed
+    targeted fetch yet). Returns (db, main, src, gw, filled_at)."""
     import kalshi_mlb_mm.config as cfg
     import kalshi_mlb_mm.db as db
     import kalshi_mlb_mm.risk as risk
@@ -45,21 +52,22 @@ def _cooldown_env(monkeypatch, tmp_path, db_name, *, fetch_time, cooled_until,
     importlib.reload(db)
     db.init_database()
 
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": [_GAME], "combo": ["c"],
-                                      "period": ["FG"], "bookmaker": ["dk"],
-                                      "sgp_decimal": [2.0],
-                                      "fetch_time": [fetch_time],
-                                      "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
+    # Sweep-free on purpose (#57): the cooldown lifecycle must never need it.
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m: True)
-    monkeypatch.setattr(router_mod, "combo_fair", lambda *a, **k: fair_now)
+    monkeypatch.setattr(router_mod, "combo_fair_detail",
+                        lambda *a, **k: (router_mod.ComboFair(fair_now, 0.0, 1), "ok"))
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
     monkeypatch.setattr(main, "_SCOPE_CACHE", {_TICKER: (True, _GAME, _LEGS)})
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: _GAME)
+    from mlb_sgp._shared import GameRef
+    monkeypatch.setattr(main, "_game_ref",
+                        lambda gid: GameRef(game_id=_GAME, home_team="H",
+                                            away_team="A", commence_time=None))
     monkeypatch.setattr(main, "_leg_market_prices",
                         lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
+    monkeypatch.setattr(main, "_ENGINE",
+                        FakeLiveEngine(completed_age=completed_age))
 
     filled_at = datetime.now(timezone.utc) - timedelta(seconds=120)
     with db.connect() as con:
@@ -110,7 +118,7 @@ def test_floor_active_still_skips_in_cooldown(monkeypatch, tmp_path):
     now = datetime.now(timezone.utc)
     db, main, src, gw, _ = _cooldown_env(
         monkeypatch, tmp_path, "cd_floor.duckdb",
-        fetch_time=pd.Timestamp(now - timedelta(seconds=10)),
+        completed_age=10.0,
         cooled_until=now + timedelta(seconds=60),   # floor still active
         fair_now=0.58)
     main._discovery_tick(src, gw, dry_run=False)
@@ -118,43 +126,45 @@ def test_floor_active_still_skips_in_cooldown(monkeypatch, tmp_path):
     assert _last_decision(db) == ("skipped", "in_cooldown")
 
 
-def test_floor_passed_but_no_post_fill_scrape_skips(monkeypatch, tmp_path):
-    """THE regression test for issue #21: cooldown floor expired, but the
-    latest scrape for the combo's game predates the fill → the books that
-    priced the picked-off fill are still live → must stay cooled."""
+def test_floor_passed_but_no_targeted_fetch_skips(monkeypatch, tmp_path):
+    """THE regression test for issue #21: cooldown floor expired, but no
+    targeted post-fill fetch has completed → the books were never re-asked
+    after the picked-off fill → must stay cooled (and re-trigger the fetch)."""
     now = datetime.now(timezone.utc)
-    db, main, src, gw, filled_at = _cooldown_env(
+    db, main, src, gw, _ = _cooldown_env(
         monkeypatch, tmp_path, "cd_stale.duckdb",
-        fetch_time=pd.Timestamp(filled_at_offset := now - timedelta(seconds=300)),
-        cooled_until=now - timedelta(seconds=60),   # floor expired
+        completed_age=None,                          # no post-fill landing
+        cooled_until=now - timedelta(seconds=60),    # floor expired
         fair_now=0.58)
-    assert filled_at_offset < filled_at  # scrape strictly predates the fill
     main._discovery_tick(src, gw, dry_run=False)
     assert gw.submits == [], (
-        "must not re-quote before a post-fill scrape lands")
+        "must not re-quote before a targeted post-fill fetch lands")
     assert _last_decision(db) == ("skipped", "in_cooldown_awaiting_refresh")
+    assert main._ENGINE.ensure_calls, (
+        "the gate must lazily re-trigger the targeted fetch")
 
 
-def test_post_fill_scrape_and_fair_moved_allows_quote(monkeypatch, tmp_path):
-    """Books refreshed after the fill AND consensus fair moved → quote."""
+def test_post_fill_fetch_and_fair_moved_allows_quote(monkeypatch, tmp_path):
+    """Targeted fetch completed after the fill AND consensus fair moved →
+    quote."""
     now = datetime.now(timezone.utc)
     db, main, src, gw, _ = _cooldown_env(
         monkeypatch, tmp_path, "cd_moved.duckdb",
-        fetch_time=pd.Timestamp(now - timedelta(seconds=10)),  # after the fill
+        completed_age=10.0,                          # landed 10s ago, post-fill
         cooled_until=now - timedelta(seconds=60),
-        fair_now=0.58)                                          # moved 3¢
+        fair_now=0.58)                               # moved 3¢
     main._discovery_tick(src, gw, dry_run=False)
     assert len(gw.submits) == 1, "refreshed + moved fair must quote"
     assert _last_decision(db)[0] == "quoted"
 
 
-def test_post_fill_scrape_but_fair_unchanged_same_price_block(monkeypatch, tmp_path):
-    """Books refreshed after the fill but consensus fair is within
+def test_post_fill_fetch_but_fair_unchanged_same_price_block(monkeypatch, tmp_path):
+    """Books re-asked after the fill but consensus fair is within
     QUOTE_HYSTERESIS of the fill's fair → same_price_block."""
     now = datetime.now(timezone.utc)
     db, main, src, gw, _ = _cooldown_env(
         monkeypatch, tmp_path, "cd_same.duckdb",
-        fetch_time=pd.Timestamp(now - timedelta(seconds=10)),
+        completed_age=10.0,
         cooled_until=now - timedelta(seconds=60),
         fair_now=_FILL_FAIR + 0.002)                # within ε=0.005
     main._discovery_tick(src, gw, dry_run=False)
@@ -165,11 +175,11 @@ def test_post_fill_scrape_but_fair_unchanged_same_price_block(monkeypatch, tmp_p
 
 def test_no_cooldown_row_means_no_new_gates(monkeypatch, tmp_path):
     """A combo that never filled (no combo_cooldown row) is untouched by the
-    refresh/same-price gates even with stale fetch_time and unchanged fair."""
+    refresh/same-price gates even with no targeted fetch and unchanged fair."""
     now = datetime.now(timezone.utc)
     db, main, src, gw, _ = _cooldown_env(
         monkeypatch, tmp_path, "cd_none.duckdb",
-        fetch_time=pd.Timestamp(now - timedelta(seconds=300)),
+        completed_age=None,
         cooled_until=now - timedelta(seconds=60),
         fair_now=_FILL_FAIR)
     # Remove the cooldown row AND the fill so this combo looks never-filled.
@@ -184,76 +194,80 @@ def test_no_cooldown_row_means_no_new_gates(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _post_fill_refresh_landed unit coverage (timezone + cross-game edges).
+# _post_fill_live_refresh_landed unit coverage (cross-game + fail-closed +
+# timezone edges), against per-hash landing ages.
 # ---------------------------------------------------------------------------
-def _refresh_env(monkeypatch, df):
+_G1_LEGS = [leg("KXMLBSPREAD-25JUN271905TEXLAA-LAA2", "yes"),
+            leg("KXMLBTOTAL-25JUN271905TEXLAA-9", "yes")]
+_G2_LEGS = [leg("KXMLBTOTAL-25JUN271910NYYBOS-9", "yes")]
+
+
+class _GateEng:
+    """Engine stub with per-hash completed-landing ages."""
+
+    def __init__(self, ages):
+        self.ages = dict(ages)
+
+    def completed_fetch_age_sec(self, h):
+        return self.ages.get(h)
+
+
+def _by_game(*leg_lists):
+    canon = legset.parse_legs([l for ls in leg_lists for l in ls])
+    return legset.partition_by_game(canon)
+
+
+def _hash_of(leg_list):
+    return legset.leg_set_hash(legset.parse_legs(leg_list))
+
+
+def _check(monkeypatch, by_game, filled_at, ages):
     from kalshi_mlb_mm import main
-    monkeypatch.setattr(main, "_SGP_ODDS", df)
-    return main
+    monkeypatch.setattr(main, "_ENGINE", _GateEng(ages))
+    return main._post_fill_live_refresh_landed(by_game, filled_at)
 
 
-def _df(rows):
-    return pd.DataFrame(rows, columns=["game_id", "fetch_time"])
+def test_gate_post_fill_landing_true(monkeypatch):
+    fill = datetime.now(timezone.utc) - timedelta(seconds=120)
+    bg = _by_game(_G1_LEGS)
+    assert _check(monkeypatch, bg, fill, {_hash_of(_G1_LEGS): 10.0}) is True
 
 
-def test_refresh_landed_aware_post_fill_true(monkeypatch):
-    now = datetime.now(timezone.utc)
-    main = _refresh_env(monkeypatch, _df([["g1", pd.Timestamp(now)]]))
-    assert main._post_fill_refresh_landed(
-        ["g1"], now - timedelta(seconds=60)) is True
+def test_gate_pre_fill_landing_false(monkeypatch):
+    """A flight that completed BEFORE the fill is the picked-off data."""
+    fill = datetime.now(timezone.utc) - timedelta(seconds=120)
+    bg = _by_game(_G1_LEGS)
+    assert _check(monkeypatch, bg, fill, {_hash_of(_G1_LEGS): 300.0}) is False
 
 
-def test_refresh_landed_aware_pre_fill_false(monkeypatch):
-    now = datetime.now(timezone.utc)
-    main = _refresh_env(monkeypatch,
-                        _df([["g1", pd.Timestamp(now - timedelta(seconds=300))]]))
-    assert main._post_fill_refresh_landed(["g1"], now) is False
+def test_gate_cross_game_requires_every_game(monkeypatch):
+    fill = datetime.now(timezone.utc) - timedelta(seconds=120)
+    bg = _by_game(_G1_LEGS, _G2_LEGS)
+    assert len(bg) == 2, "harness must produce two games"
+    one_landed = {_hash_of(_G1_LEGS): 10.0}          # g2 missing
+    assert _check(monkeypatch, bg, fill, one_landed) is False
+    both = {_hash_of(_G1_LEGS): 10.0, _hash_of(_G2_LEGS): 5.0}
+    assert _check(monkeypatch, bg, fill, both) is True
 
 
-def test_refresh_landed_naive_fetch_time_is_local(monkeypatch):
-    """mlb_sgp_odds.fetch_time is a naive TIMESTAMP column — DuckDB stores the
-    session-LOCAL wall clock. A fresh naive fetch_time must count as refreshed
-    against an aware filled_at (naive→UTC coercion would be off by the UTC
-    offset in any non-UTC timezone)."""
-    naive_local_now = datetime.now()  # naive LOCAL
-    aware_fill = datetime.now(timezone.utc) - timedelta(seconds=60)
-    main = _refresh_env(monkeypatch, _df([["g1", pd.Timestamp(naive_local_now)]]))
-    assert main._post_fill_refresh_landed(["g1"], aware_fill) is True
-    old_naive_local = datetime.now() - timedelta(seconds=600)
-    main = _refresh_env(monkeypatch, _df([["g1", pd.Timestamp(old_naive_local)]]))
-    assert main._post_fill_refresh_landed(
-        ["g1"], datetime.now(timezone.utc)) is False
+def test_gate_naive_filled_at_is_session_local(monkeypatch):
+    """fills.filled_at is TIMESTAMPTZ (aware), but a naive value must be
+    treated as session-LOCAL (risk._now_matching convention), not UTC."""
+    naive_local_fill = datetime.now() - timedelta(seconds=120)
+    bg = _by_game(_G1_LEGS)
+    assert _check(monkeypatch, bg, naive_local_fill,
+                  {_hash_of(_G1_LEGS): 10.0}) is True
+    assert _check(monkeypatch, bg, naive_local_fill,
+                  {_hash_of(_G1_LEGS): 300.0}) is False
 
 
-def test_refresh_landed_cross_game_requires_every_game(monkeypatch):
-    """One game refreshed, the other not → NOT refreshed (fail-closed)."""
-    now = datetime.now(timezone.utc)
-    fill = now - timedelta(seconds=120)
-    main = _refresh_env(monkeypatch, _df([
-        ["g1", pd.Timestamp(now)],                        # post-fill
-        ["g2", pd.Timestamp(now - timedelta(seconds=300))],  # pre-fill
-    ]))
-    assert main._post_fill_refresh_landed(["g1", "g2"], fill) is False
-    # Both refreshed → True.
-    main = _refresh_env(monkeypatch, _df([
-        ["g1", pd.Timestamp(now)],
-        ["g2", pd.Timestamp(now)],
-    ]))
-    assert main._post_fill_refresh_landed(["g1", "g2"], fill) is True
-
-
-def test_refresh_landed_fails_closed_on_missing_data(monkeypatch):
-    now = datetime.now(timezone.utc)
-    # Game absent from odds entirely.
-    main = _refresh_env(monkeypatch, _df([["other", pd.Timestamp(now)]]))
-    assert main._post_fill_refresh_landed(["g1"], now) is False
-    # NaT fetch_time.
-    main = _refresh_env(monkeypatch, _df([["g1", pd.NaT]]))
-    assert main._post_fill_refresh_landed(["g1"], now) is False
-    # Empty frame / None frame / None filled_at.
-    main = _refresh_env(monkeypatch, _df([]))
-    assert main._post_fill_refresh_landed(["g1"], now) is False
-    main = _refresh_env(monkeypatch, None)
-    assert main._post_fill_refresh_landed(["g1"], now) is False
-    main = _refresh_env(monkeypatch, _df([["g1", pd.Timestamp(now)]]))
-    assert main._post_fill_refresh_landed(["g1"], None) is False
+def test_gate_fails_closed(monkeypatch):
+    from kalshi_mlb_mm import main
+    fill = datetime.now(timezone.utc)
+    bg = _by_game(_G1_LEGS)
+    # No engine at all.
+    monkeypatch.setattr(main, "_ENGINE", None)
+    assert main._post_fill_live_refresh_landed(bg, fill) is False
+    # No landing for the hash / no filled_at.
+    assert _check(monkeypatch, bg, fill, {}) is False
+    assert _check(monkeypatch, bg, None, {_hash_of(_G1_LEGS): 1.0}) is False

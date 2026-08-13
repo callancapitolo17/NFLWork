@@ -31,6 +31,26 @@ def test_spread_total_away_under_via_sides():
     # away team LAA? no — away is TEX. Away spread leg + under.
     d = combo_descriptor([_spread("TEX", 2, "yes"), _total(9, "no")])
     assert d.target_combo == "Away Spread + Under"   # NOT hardcoded Home+Over
+    # Issue #70: TEX is the away team, so its margin market is the
+    # away-favourite grid — home-perspective +1.5, not -1.5.
+    assert d.spread_line == 1.5
+
+
+def test_spread_line_sign_four_way():
+    """Issue #70: the four (ticker team x side) combos must land on four
+    distinct (spread_line, cell) pairs."""
+    got = {}
+    for team, side in (("LAA", "yes"), ("LAA", "no"),
+                       ("TEX", "yes"), ("TEX", "no")):
+        d = combo_descriptor([_spread(team, 2, side), _total(9, "yes")])
+        got[(team, side)] = (d.spread_line, d.target_combo)
+    assert got == {
+        ("LAA", "yes"): (-1.5, "Home Spread + Over"),   # home -1.5
+        ("LAA", "no"):  (-1.5, "Away Spread + Over"),   # away +1.5
+        ("TEX", "yes"): (1.5, "Away Spread + Over"),    # away -1.5
+        ("TEX", "no"):  (1.5, "Home Spread + Over"),    # home +1.5
+    }
+    assert len(set(got.values())) == 4
 
 
 def test_spread_no_side_is_other_team():

@@ -63,14 +63,14 @@ with FD-specific junk exclusions (`parlay`, `listed`, `bands`, `tri-bet`,
 under an unlisted name (that bug is why F7 totals were absent). It now covers
 FG/F5/F7/F3 main + alt wherever FD posts them and auto-picks-up new markets.
 
-**Parse-failure tripwire (2026-06-10).** Every scrape prints
-`[fd_singles] alt parse: alternate_spreads N/M, alternate_totals N/M`
-(parsed/seen). If FD hands us alt runners and **none** parse
-(`M > 0, N == 0`) the scrape prints a loud `ALERT` — that's the signature
-of an FD name-format change (the FG alt-total parens bug shipped silently
-in exactly this mode). A day where FD posts no alts at all stays quiet.
-Grep the runner log for `ALERT` when alt pills go missing from the
-dashboard.
+**Parse-failure tripwire (2026-06-10; logging since #36).** Every scrape logs
+`fd_singles: alt parse: alternate_spreads N/M, alternate_totals N/M`
+(parsed/seen) at INFO. If FD hands us alt runners and **none** parse
+(`M > 0, N == 0`) it logs a WARNING — that's the signature of an FD
+name-format change (the FG alt-total parens bug shipped silently in exactly
+this mode). A day where FD posts no alts at all stays quiet. Grep the runner
+log for `PARSE TRIPWIRE` when alt pills go missing from the dashboard; the
+wording is shared with the SGP-path tripwires (#35) so one grep finds both.
 
 ### Coverage
 
@@ -152,18 +152,143 @@ dashboard spawns the shims + blends them in `mlb_correlated_parlay.R`.
   the ZeroFlucs correlated price (`parlays[0].price.decimal`), logged-out.
   Every call needs an `aws-waf-token`, minted **without a browser** by running
   AWS WAF's real `challenge.js` under `node` (the `NetworkBandwidth` challenge —
-  see `caesars_waf.py`; ~1.5s, cached ~4 min, validated before use, emits no
+  see `caesars_waf.py`; ~0.5s, cached ~4 min, validated before use, emits no
   rows on failure → never bad data). Requires `node` on PATH (no Playwright/
-  Chromium). Parsing is **exact-name** (`Run Line`/`Total Runs` + Alternate/F5
+  Chromium). **Never pre-define `window.AwsWafIntegration` in the node
+  harness** (issue #41): AWS's bundle installs itself only when that global is
+  absent, so a placeholder makes `getToken()` return an empty string and the
+  book silently drops to zero rows — that is exactly how Caesars died for a
+  month. The SDK's auto-init rejection is logged and ignored instead, and every
+  mint failure now logs at ERROR with node's stderr. `CaesarsClient.last_mint_sec`
+  carries the last mint's wall-clock cost. Parsing is **exact-name** (`Run Line`/`Total Runs` + Alternate/F5
   variants) to exclude player props, team totals, and in-play (`... Live`)
   markets; events filtered to the **MLB** competition and **pregame** only;
   the away run-line leg carries its own (negated) line so all 4 corners price.
-  Source `caesars_direct`. Verified: browser-free mint validated live; 4/4
-  corners price with sane overround.
+  Source `caesars_direct`. Verified 2026-07-30 (issue #41): mint 0.43–0.68s,
+  tabs feed 200 / 178 KB JSON, sweep 8 rows in 2.2s with a 4-corner partition
+  summing to 1.128 (12.8% hold), on-demand 2.62s. Target parallelism stays at
+  3 — the WAF rate-limits aggressive hits.
 - **bet365** — DEFERRED. Recon (`recon_bet365_*.py`) proved no fast path: odds
   live only on the `zap` WebSocket, which is Cloudflare-fingerprint-blocked for
   any non-browser client. Only a persistent live browser works; revisit if that
   tradeoff becomes acceptable.
+
+## Fetch-health history — `sgp_fetch_health` (issue #38)
+
+Every book fetch the bots make leaves one row behind, so "when did this book
+last return a price?" is a SQL question instead of an archaeology project.
+(The taker's feed died 2026-06-28 and went unnoticed for four weeks; nothing
+recorded it.)
+
+**Where:** the bot's own market DB — the same file, and therefore the same
+write lock, as `mlb_sgp_odds`:
+
+| bot | DB |
+|---|---|
+| maker | `kalshi_mlb_mm/kalshi_mlb_mm_market.duckdb` |
+| taker | `kalshi_mlb_rfq/kalshi_mlb_rfq_market.duckdb` |
+
+The dashboard's CLI-shim path writes **nothing** — health recording is opt-in
+via `SGPService(health_db_path=...)`, which only the bots pass.
+
+**Schema** (`kalshi_common/sgp_health.py`):
+
+| column | meaning |
+|---|---|
+| `fetched_at` | TIMESTAMPTZ, UTC |
+| `book` | draftkings / fanduel / prophetx / novig / betmgm / caesars |
+| `path` | `sweep` (periodic full-slate) or `on_demand` (live at-quote fetch) |
+| `outcome` | `ok` / `empty` / `transport_error` / `timeout` / `error` |
+| `rows_or_prices` | sweep: PricedRows written. on-demand: price calls that returned |
+| `duration_sec` | the WHOLE logical fetch, including #34's retry sleeps |
+| `error_class` | e.g. `BookTransportError:events:403`, `FutureTimeout` |
+| `counters_json` | the #35 per-fetch counter snapshot |
+
+`outcome` distinguishes four failure modes on purpose: `empty` is a book with
+no markets, `transport_error` is a dead endpoint (#33), `timeout` is our own
+deadline firing while the book was still working, and `error` is a bug in our
+parse code. Collapsing them is the meta-bug this epic exists to remove. A book
+skipped by `min_refresh_sec` writes **no row** — it was never fetched.
+
+**Reading it** — `kalshi_common/fetch_health_queries.sql` ships four queries
+(`outcome_mix_24h`, `current_failure_streak`, `parse_health_24h`,
+`retention_footprint`):
+
+```bash
+duckdb kalshi_mlb_mm/kalshi_mlb_mm_market.duckdb -readonly \
+    < kalshi_common/fetch_health_queries.sql
+```
+
+⚠️ **Always group by `path`.** `targets_attempted` and `prices_returned` carry
+different units on the two paths (sweep ~1:4, on-demand 1:1 — see the warning
+block in `_shared.COUNTER_NAMES`). A ratio pooled across paths is wrong, not
+merely noisy.
+
+**Cost and safety.** Writes are buffered in memory and flushed once per bot
+tick (`SGPService.flush_health()`); the on-demand path never touches the DB
+inside a quote. A flush failure (locked DB) is swallowed and the buffer is
+retained for the next attempt — a health write can never break pricing.
+Retention is 30 days, pruned at flush time at most hourly. Measured footprint
+(50k rows written through the real recorder, extrapolated): **~21 MB per 1M
+rows**, and 1M rows is roughly a 30-day worst case at post-#53 quote volume
+(~33k rows/day = 6 books x 1,440 sweeps + ~2k on-demand fetches x 6 books x 2).
+
+## Run-time book-health alerting (issue #37)
+
+The history above is the *memory*; this is the *alarm*. Both bots run
+`kalshi_common/book_health.py::BookHealthAlerter` inside their tick loop, so a
+book that dies mid-slate is loud within a few cycles instead of four weeks
+later.
+
+**Two rules**, both keyed on consecutive failed fetches — never on data age,
+because an age rule would false-fire by design once #57 slows the sweep to
+background structure-warming:
+
+| Rule | Fires when | Message |
+|---|---|---|
+| A — book degraded | `BOOK_ALERT_STREAK` (default 3) consecutive failures on one (book, path) | `SGP book degraded: draftkings/sweep — 3 consecutive failed fetches (last: BookTransportError:events:403)` |
+| B — consensus capacity | healthy books drop below the bot's own gate (maker `MIN_AGREEING_BOOKS`, taker `MIN_BOOK_COUNT_FOR_BLEND`) | `SGP consensus DARK: 1 healthy book(s), need 2 — quoting effectively blind` |
+
+Each fires **once per incident** — a book failing 400 times in a row notifies
+once — and re-arms only when the book answers again. Recovery is logged, not
+notified. Channel: one `ERROR` line in `bot.log` plus a macOS notification
+(`osascript`, same mechanism as `coverage_audit/`); it runs on a daemon thread
+so a slow notification can never stall a loop that ticks 4x/sec.
+
+⚠️ **`empty` is NOT a failure.** The predicate is `outcome NOT IN
+('ok','empty')` — identical to `current_failure_streak` in the shipped SQL. A
+book that answers with no markets is healthy: that is an off-day, a thin
+slate, or (on-demand) "this book won't price that combo", which is the
+*default* verdict for a plain `None`. Alerting on `!= 'ok'` would page on
+every quiet morning and on every RFQ for a game a book doesn't list.
+
+⚠️ **A skipped book is not a failing book.** `min_refresh_sec` skips write no
+health row and make no observation; state simply persists. A gap means "we
+didn't ask".
+
+**Zero alerts while the bots are down.** State is in-memory and per-process,
+so weeks of intentional downtime are silent by construction. It also means
+streaks reset on restart — the first alert after a restart takes
+`BOOK_ALERT_STREAK` fresh failures.
+
+**Known gap — the silent parser.** A book whose parser breaks such that it
+returns zero rows *without raising* records `empty` forever: Rule A stays
+quiet and Rule B still counts it as healthy. That case is what #35's
+`parse_failures` / `legs_resolved` counters are for (`parse_health_24h`), not
+these alerts.
+
+**Why in-memory counters and not a query over `sgp_fetch_health`:** the table
+is a lossy view (flushes are swallowed and retried, so rows land up to 5s
+late and later under a stuck lock), and on duckdb 1.4.4 an in-process
+read-only connect while any read-write handle is open raises
+`ConnectionException` — which the bots' narrow `IOException`/`CatalogException`
+guards don't catch, so it would fall through to a fail-safe and **cost a
+quote**. The monitor dashboard reads the table instead; it is a separate
+process and hits the ordinary cross-process lock, which it already retries.
+
+**Knobs** (both bots): `BOOK_ALERT_ENABLED` (default true),
+`BOOK_ALERT_STREAK` (3), `BOOK_ALERT_PATHS` (`sweep,on_demand` — #57 sets
+this to `on_demand` when every quote is live-priced; config, not code).
 
 ## DraftKings API Endpoints
 
@@ -172,12 +297,42 @@ dashboard spawns the shims + blends them in `mlb_correlated_parlay.R`.
 | `sportsbook-nash.../league/leagueSubcategory/v1/markets` | None | List MLB events |
 | `sportsbook-nash.../event/eventSubcategory/v1/markets` | None | Main market IDs per game |
 | `sportsbook-nash.../parlays/v1/sgp/events/{id}` | curl_cffi | **All selection IDs** (2MB response) |
-| `gaming-us-nj.../api/wager/v1/calculateBets` | curl_cffi | **SGP pricing** (POST, returns trueOdds) |
+| `gaming-us-nj.../en/api/wager/v1/calculateBets` | curl_cffi | **SGP pricing** (POST, returns trueOdds) — note the `/en/`, see below |
 | `sportsbook-nash.../sgp/dkusnj/sportsdata/v2/sgp` | Full Akamai | SGP pricing (DK frontend only — **inaccessible** via REST) |
 
 ### Why curl_cffi?
 
 DraftKings uses Akamai Bot Manager. Plain `requests` gets blocked by TLS fingerprinting. `curl_cffi` impersonates Chrome's TLS signature, which is enough to bypass Akamai on `calculateBets` and `parlays/v1/sgp/events`. The `sportsdata/v2/sgp` endpoint has stricter protection and is inaccessible — that's why we use `calculateBets` instead.
+
+### The `/en/` prefix on calculateBets (issue #39)
+
+DK reads on `sportsbook-nash` but **prices on `gaming-us-nj`**, and only the
+price host is bot-protected. On **2026-06-24** an Akamai edge rule began
+denying `POST /api/wager/v1/calculateBets` — DK's rows fell from ~18k/day to
+zero while events and structure stayed perfectly green (200s, full selection
+lists). That asymmetry is the signature of a price-host block, and it is why
+`PriceCallTally` exists.
+
+The rule matches that path **exactly**. DK's own betslip builds the URL as
+`{locale}/api/wager/v1/calculateBets` (English maps to an empty prefix), and
+the origin still routes the explicit `/en/` form, which the rule misses:
+
+```
+POST /api/wager/v1/calculateBets     -> 403 AkamaiGHost "Access Denied"
+POST /en/api/wager/v1/calculateBets  -> 200 correlated SGP price
+```
+
+**The `/en/` is load-bearing — do not "tidy" it away.** It is pinned by
+`tests/test_dk_price_host_403.py`, along with a guard that no module may
+hardcode a second copy of the wager URL (the trifecta scraper used to, so a
+fix here would have left that one 403ing).
+
+This is *not* a TLS-fingerprint problem: every `impersonate=` target, DK's own
+betslip headers, its anonymous enterprise JWT, and a real logged-out Chrome all
+get the identical 403 on the bare path. If DK closes `/en/` too, the tell is
+`error_class` `BookTransportError:price:403` in `sgp_fetch_health` — the next
+move is re-reading `dkBetSlip.js` for the current route, **not** bumping
+curl_cffi (which is shared by all 6 books).
 
 **Things that DON'T work:** direct HTTP requests, page.evaluate(fetch()), cookie transfer from browser to requests, Playwright stealth plugins. All tested extensively.
 
@@ -386,6 +541,105 @@ New books write to `mlb_sgp_odds` with their own `bookmaker` and `source` values
 
 The blend automatically scales: `mean(model, dk, fd, nb)` when all present, falls back gracefully when books are missing.
 
+## Observability: logging + per-fetch counters (issues #35, #36)
+
+### Logging, not printing
+
+Every module a bot imports uses `logger = logging.getLogger(__name__)`. The
+library attaches **no handlers** — the host process decides where logs go (the
+same principle as R's `message()` vs `cat()`). Both bots run these scrapers
+in-process via `kalshi_common.sgp_service`, so a `print()` here would bypass
+their handlers and levels entirely and never reach `bot.log`.
+
+CLI entry points (`scraper_*_sgp.py`, the two `*_singles.py` scrapers) call
+`logging.basicConfig(..., stream=sys.stdout)` inside their `__main__` block
+only, so subprocess/dashboard runs still write to `mlb_sgp/logs/<scraper>.log`
+exactly as before.
+
+Level policy — chosen so one broken book cannot drown `bot.log`:
+
+| event | level |
+|---|---|
+| per-game "N targets → M offered" | DEBUG |
+| individual `SANITY-DROP` | DEBUG (the per-fetch count rides in the summary) |
+| broad-`except` catch | WARNING the **first** time per stage per fetch, DEBUG after |
+| per-fetch summary | INFO (sweep) / DEBUG (on-demand — it runs per RFQ per book) |
+| parse tripwire | WARNING |
+| auth / token-mint failure | WARNING–ERROR |
+
+`mlb_sgp/tests/test_library_logging.py` enforces this with an AST scan: no
+`print()` outside a `__main__` guard, a module logger in every bot-path file,
+and no handler configuration at import time. Standalone diagnostics
+(`recon_*.py`, `probe_concurrency.py`, `quick_recon.py`, the Pikkit modules)
+are deliberately out of scope — no bot imports them.
+
+### Per-fetch counters and the parse tripwire
+
+`_shared.FetchCounters` records what one book's one fetch actually did. It is
+the parse-side counterpart to `PriceCallTally` (#33): the tally answers *"is
+the book's price endpoint reachable?"*, the counters answer *"does our parser
+still understand what the book sends back?"*
+
+| counter | sweep | on-demand |
+|---|---|---|
+| `events_seen` / `events_matched` | events listed / matched to our slate | 1 / 1 when the game is listed |
+| `legs_attempted` / `legs_resolved` | targets checked against parsed structure / offered by the book | `len(legs)` / `len(resolved)` |
+| `targets_attempted` / `prices_returned` | targets priced / priced rows produced | price calls / non-`None` decimals |
+| `sanity_drops`, `parse_failures`, `transport_errors` | same on both paths | |
+
+Counters sit **outside** `request_with_retry` (#34): one logical fetch is one
+tick no matter how many attempts the wire call took. The per-stage breakdown
+rides along as `stages=price_combo:3,resolve_legs:1`.
+
+**Transport vs parse.** A broad `except` that could have caught something off
+the wire calls `counters.record_exception(...)`, which files a
+`BookTransportError` under `transport_errors` and everything else under
+`parse_failures`. This matters because CZR/MGM swallow a price-stage transport
+error inside the client and return `None`, while DK/FD/NV/PX price through
+module-level helpers whose `request_with_retry(stage="price")` **raises** — so
+without the split, a 403'd FanDuel price endpoint reported `parse_failures=4`
+and fired a PARSE tripwire, sending a fixer to the parser instead of the
+endpoint.
+
+**Units differ by path — do not compare across them.** On the sweep,
+`targets_attempted` counts target LINES (each fanning out to ~4 combo calls)
+and `prices_returned` counts PricedRows; on-demand both count PRICE CALLS.
+Each path's tripwire is right in its own units, but a cross-path ratio is not
+meaningful. `_shared.COUNTER_NAMES` carries the same warning for #38.
+
+Both `price_sgps` (sweep) and `SGPService.price_on_demand` scope a fetch with
+the `fetch_counters(...)` context manager, so the summary line is emitted on
+every exit path — including the several `return []` short-circuits and the way
+out of a `BookTransportError`. Every fetch logs one line:
+
+```
+sgp fetch book=fanduel path=sweep events_seen=15 events_matched=15 \
+  targets_attempted=42 legs_attempted=60 legs_resolved=42 prices_returned=168 \
+  sanity_drops=0 parse_failures=0 transport_errors=0
+```
+
+**Tripwires** (WARNING, `PARSE TRIPWIRE book=… path=… tripped=…`):
+
+| name | condition | what it means |
+|---|---|---|
+| `events_unmatched` | `events_seen > 0 and events_matched == 0` | book is up and listing games, none map to our slate (team-name / canonical-match drift) |
+| `legs_unresolved` | `legs_attempted > 0 and legs_resolved == 0` | **the FanDuel alt-total case** — the book offered lines, our parser recognized none |
+| `prices_empty` | `targets_attempted > 0 and prices_returned == 0 and transport_errors == 0` | legs resolved but nothing priced, and transport never complained |
+
+Each compares a stage's OUTPUT against its INPUT, so a genuinely empty slate
+(no input) never fires, and a transport failure is never dressed up as a parse
+bug — that is #33's story and is already loud there.
+
+On the on-demand path the counters also ride back on
+`OnDemandBookResult.counters` (an immutable `FetchCountersSnapshot`), which is
+what #38's per-book fetch-health history will persist.
+
+`counters` is **keyword-only** everywhere it was threaded into a book module,
+so a future positional argument can never silently bind to it (BetMGM's
+`price_selection_set(client, refs, fixture_id)` is the live hazard).
+`mlb_sgp/tests/test_counter_signatures.py` proves this with
+`inspect.signature().bind()`.
+
 ## Concurrency & Logs
 
 The four SGP scrapers (DK, FD, ProphetX, Novig) are launched in parallel by
@@ -529,17 +783,529 @@ MLB RFQ bot (writes to a sibling `kalshi_mlb_rfq_market.duckdb`).
 
 **Output schema.** `mlb_sgp_odds` now carries `spread_line` and `total_line` columns alongside `combo`, so multi-line target lines from Kalshi can be priced and dedupe-merged without collision (the dashboard pipeline writes a single line per game/period, the bot writes many).
 
+## Failure semantics — "book down" vs "no markets" (issue #33, 2026-07-25)
+
+**The rule: an empty result means the book has nothing to offer. A dead book
+raises.** Before this, every client swallowed a 403 / DNS failure / WAF
+challenge into `[]`, which `SGPService._book_done` scored as SUCCESS (resetting
+the strike counter so the client reinit never fired) and `sgp_cycle` answered by
+running `clear_source` — *deleting* the book's rows. DK (403), Novig (DNS) and
+Caesars (WAF) each rotted for a month with zero alerts.
+
+Two of those three diagnoses turned out to be wrong once the wire was actually
+read: DK was an Akamai path-exact rule, not a stale fingerprint (issue #39),
+and Novig's DNS was a transient blip — the host resolves and the book prices
+(issue #40). Treat a recorded cause as a hypothesis until reproduced.
+
+### Novig: 400 vs 403 at the price stage (issue #40)
+
+Novig's anonymous parlay endpoint has two non-200s that mean opposite things:
+
+| status | meaning | how often |
+|---|---|---|
+| `400 {"message": "Cannot price parlay"}` | the book declines **this combo** | common and normal |
+| `403 <html>` | we have been **rate-limited** | after burst traffic |
+
+Both used to collapse into a bare `BookTransportError:price`. They now carry
+the status (`price:400` vs `price:403` in `sgp_fetch_health.error_class`), on
+both the sweep and the on-demand path.
+
+**Novig rate-limits bursts.** Two full sweeps back-to-back drove 100/100 price
+calls to 403; the same combos recovered after a cooldown. The production
+sweep's ~7-minute cadence is what has been hiding this. Live-at-RFQ pricing
+(epic #53) is exactly the burst pattern that will trigger it — watch
+`price:403`.
+
+#### Novig leg resolution is line-keyed on BOTH paths (issue #64)
+
+The sweep and the on-demand path now resolve legs the same way: one GraphQL
+EventMarkets call per game, parsed by `build_line_structure` into per-**line**
+buckets, then `_lookup_leg`'d per target at exactly the lines that target
+asked for. `fetch_event_legs` is still the fetch, but only its raw `markets`
+half is read — its single-line leg dict is no longer used by the sweep.
+
+This closes a defect found while verifying #40 and fixed in #64. The sweep
+used to collapse every TargetLine of a game into ONE `fg_spread_line` /
+`fg_total_line` (the grouping loop overwrote, so the last target won), resolve
+the leg UUIDs once per *game*, then price all ~33 of that game's targets with
+those SAME legs while stamping each row with its own `spread_line` /
+`total_line` — N rows carrying one price under N labels, which fed the maker's
+cross-book median a wrong number presented as a real one. It was reproduced
+offline (3 targets at totals 7.5 / 8.5 / 12.5 requested a single leg set and
+produced 12 rows) and live (totals 6.5 / 8.5 / 9.5 all priced
+17.5439 / 4.1667 / 4.8544 / 1.4925, hold 18.6%). The on-demand path was never
+affected, which is more evidence for the epic's de-sweep rule.
+
+Two consequences worth knowing:
+
+* A target whose exact `(spread, total)` Novig does not offer on both sides
+  now yields **no row**, where it previously got a plausible-looking wrong
+  one. Integer totals still route to `try_integer_fallback_nv` (which was
+  always per-target correct) and stay labelled `novig_interpolated`.
+* **ML × total** is priced once per game — pricing it at every offered total
+  would multiply wire calls into Novig's rate limit. Its over/under legs are
+  looked up at `fg_total_line`, so the label names the line actually priced,
+  but which rung of the ladder that is remains arbitrary.
+
+### The contract
+
+| Situation | Client returns / raises | Caller must |
+|---|---|---|
+| Non-200 (not 404), connection error, timeout, malformed JSON, failed auth gate | raise `BookTransportError` | **preserve** the book's existing rows + count a failure |
+| Valid payload listing no markets | `[]` / empty structure | clear + rewrite the source (unchanged) |
+| `404` on ONE event's structure fetch | `[]` / `None` for that event | skip that game, keep the cycle |
+
+`BookTransportError(book, stage, status_code=…, cause=…, detail=…)` lives in
+`_shared.py`. `stage` is `"auth"` (MGM accessid, CZR AWS-WAF token),
+`"events"`, `"structure"`, or `"price"`. Helpers `check_response()` and
+`json_or_raise()` do the raising so the six clients don't hand-roll it.
+
+The 404 carve-out matters: without it, one postponed or delisted game would
+abort a whole book's cycle.
+
+### Orchestrators never catch it
+
+`price_sgps` lets `BookTransportError` propagate. `SGPService._run_book_safe`
+converts it to `None` and logs at ERROR with book + stage + status; `None` is
+the fail-safe signal that makes `sgp_cycle` skip `clear_source`. The on-demand
+path (`price_on_demand`) feeds the *same* `_book_done` strike path, so sweep and
+on-demand share one recovery. A clean "this book won't price this combo" (event
+miss, `None` structure, devig rejection) still counts **no** strike.
+
+### `PriceCallTally` — the all-price-calls-failed verdict
+
+A book can read fine and price nothing: DK READS from `sportsbook-nash` but
+PRICES on `gaming-us-nj`, so the price host can be blocked on its own. Each
+`price_sgps` snapshots the book's tally, records every price call, and calls
+`verdict()` before returning — raising `stage="price"` when a cycle made **≥ 8**
+price attempts (`PriceCallTally.MIN_ATTEMPTS_FOR_VERDICT`, ~2 games of combos)
+with **zero** successes. Below that threshold a legitimately thin one-game slate
+would look like a dead book, so the tally stays silent.
+
+Individual declined combos remain row-drops — they are partial, not systemic.
+
+### Consequence for consumers
+
+A book judged down keeps its **previous** rows rather than losing them. That is
+safe because the maker's staleness gate refuses stale fairs (it does not trade
+them) — absence of fresh rows becomes a no-quote, not a bad quote. If that gate
+is ever removed, revisit this fail-safe.
+
+### Shims
+
+All six `scraper_*_sgp.py` shims now catch a failed `price_sgps`, print
+`preserving last cycle's rows`, and exit 1 instead of clearing the source. The
+ProphetX shim additionally **defers** `clear_source` until the first batch
+prices without a transport error (it used to clear up-front, so a dead PX wiped
+the source before we knew it was dead). An empty-but-healthy slate still clears:
+the flag flips on a successful *call*, not on a non-zero row count.
+
+## Retry & backoff (issue #34, 2026-07-27)
+
+Making failures loud (#33) measurably **widened their blast radius**: a 5xx on
+one event's structure fetch used to return `[]` and skip that one game; after
+#33 it raises and the book loses the whole cycle. Retry shrinks that window
+back down — a transient blip must not cost a book its fetch, nor (post-#54)
+its vote on a live quote.
+
+`_shared.request_with_retry(call, profile=…, book=…, stage=…)` wraps every
+wire call in the six clients.
+
+### The two profiles
+
+| Profile | Attempts | Backoff | Max added latency | Used by |
+|---|---|---|---|---|
+| `RETRY_BACKGROUND` | 3 | 1.5s → 3.0s, ±25% jitter | **≤ 5.63s** (hard cap 10s) | sweep / structure-warming fetches (auth, events, structure) |
+| `RETRY_LIVE` | 2 | 0.5s, ±25% jitter | **≤ 0.63s** (hard cap 1.0s) | on-demand pricing fetches, **and every price call on both paths** |
+
+Those ceilings are per **wire call**, not per pricing operation, and are pinned
+by `test_retry_backoff.py::test_worst_case_added_delay_stays_within_profile`.
+`max_total_delay_sec` is a hard cap on cumulative sleep, so the live path can
+never trade a lost book for a blown RFQ quote budget.
+
+**Why price calls are always LIVE:** they fan out across a thread pool
+(targets × combos at DK), so a 3-attempt backoff there would stall a degraded
+cycle for minutes. One fast retry is the right trade at that fan-out.
+
+### What is and isn't retried
+
+| Outcome | Retried? |
+|---|---|
+| 429 (honors `Retry-After` when it FITS the profile's budget, else backs off) | ✅ |
+| 5xx | ✅ |
+| Connection reset / DNS / timeout / TLS | ✅ — classified via `OSError`, which both `curl_cffi`'s and `requests`' exception bases subclass |
+| 200 with an unusable body, where a `body_ok` predicate is supplied | ✅ — Caesars' AWS-WAF challenge is HTTP 200 + HTML |
+| **404** | ❌ — #33's per-event carve-out; one delisted game costs exactly one attempt |
+| **4xx auth/permission** (401/403) | ❌ — a real verdict; DK's production 403 fails immediately |
+| Programming errors (`TypeError` etc.) | ❌ — still raise `BookTransportError` on attempt 1 |
+
+The helper **returns the last response** rather than judging it, so status
+classification stays in `check_response()` / `json_or_raise()` and
+`BookTransportError` keeps being constructed in exactly one place. It raises
+only when every attempt threw, and stamps the attempt count into `detail`
+(`failed after 3 attempt(s) [background profile]`) so a `bot.log` reader can
+tell a transient blip from a book that is simply gone.
+
+### Choosing the profile at a call site
+
+Every structure/events/auth function takes `profile: RetryProfile =
+RETRY_BACKGROUND`, so sweep call sites are unchanged. The **on-demand path
+binds `RETRY_LIVE` at the `SGPService` seam**: `_dk_fetchers(st, profile)` /
+`_fd_fetchers(st, profile)` bake the profile into the fetcher lambdas, and the
+PX/NV/MGM/CZR hooks pass it at the client call. That keeps the profile out of
+the six orchestrators' signatures entirely. Both bindings share one `TTLCache`,
+so a warm entry written by either path serves the other.
+
+This is an explicit argument, deliberately **not** a `contextvars` ambient:
+`ThreadPoolExecutor` does not propagate context, so an ambient profile would
+silently fall back to BACKGROUND inside every book's worker pool — precisely
+the latency blowup the LIVE profile exists to prevent.
+
+### Caesars behavior change
+
+`caesars_client._get_json` used to hand-roll a 4×1.5s loop that retried
+**everything**, including a 403 auth gate — burning ~6s before admitting the
+book was dead. It now uses the shared helper: 4xx fails on the first attempt,
+while the 200-with-HTML WAF challenge retry is preserved via `body_ok`.
+
+### Testing note
+
+`mlb_sgp/tests/conftest.py` installs an autouse fixture that **records** backoff
+instead of sleeping (and pins jitter to its midpoint), so the suite never burns
+wall-clock on retries and the schedule is directly assertable. A test that cares
+takes `recorded_sleeps` as an argument and reads the durations that would have
+been slept.
+
+## Six-book verification + the pre-restart checklist (issue #42)
+
+`mlb_sgp/verify_books.py` is the bot-restart gate. It answers, per book, on the
+path a quote actually uses (`SGPService.price_on_demand`): **can this book
+price a real combo right now, and how fast?**
+
+```bash
+python3 mlb_sgp/verify_books.py                        # all six books
+python3 mlb_sgp/verify_books.py --json /tmp/gate.json  # machine-readable
+python3 mlb_sgp/verify_books.py --books novig --pacing 12   # rate-limit safe
+```
+
+It is read-only: no DB is opened for write, no bot is touched.
+
+### Why it separates four outcomes
+
+A book returning no price is ambiguous, and collapsing that ambiguity is how
+DK, Novig and Caesars each rotted for a month. The harness never collapses it:
+
+| outcome | meaning | action |
+|---|---|---|
+| `priced` | resolved legs, returned a fair | none |
+| `not_offered` | structure healthy, carries none of the probed lines | none — a coverage fact |
+| `no_price` | legs resolved, book declined to price them | check the shape (see below) |
+| `down` | event match or structure fetch failed | **a real failure** |
+
+Coverage is probed through each book's own `resolve` hook — a pure lookup
+against an already-fetched structure — so it costs zero extra wire calls.
+
+### Line coverage differs wildly per book
+
+Measured 2026-08-03, one game (WSH @ PHI, main total 9.0), out of 4 candidate
+spreads and 7 candidate totals:
+
+| book | spreads | totals | shape |
+|---|---|---|---|
+| DraftKings | 4 | 7 | full ladder, half AND whole numbers |
+| ProphetX | 4 | 5 | wide ladder |
+| Novig | 4 | 4 | half-point ladder only (3.5–13.5) |
+| BetMGM | 4 | 4 | half-point ladder only |
+| FanDuel | 4 | **1** | main total only |
+| Caesars | **1** | **1** | main line only |
+
+**No single rung is priced by all six books.** The books split on whole-number
+vs half-point totals: at a 9.0 main line, FD and Caesars carry it and Novig and
+BetMGM do not; at 8.5 the reverse. Expect a quorum of ~4 of 6 at any rung, not
+6 of 6 — this is the number #55 must design against, and it is a property of
+the books, not a bug.
+
+### Shape capability matrix
+
+| shape | DK | FD | PX | NV | MGM | CZR |
+|---|---|---|---|---|---|---|
+| spread × total | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| ML × total | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| spread × ML | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| 3-leg (spread+total+ML) | ❌ | ❌ | ⚠️ | ⚠️ | ❌ | ⚠️ |
+
+**No book prices spread × ML.** Verified on DK for all three side
+combinations (home+home, home+away, away+away) — it is not a same-team
+restriction, the pairing is simply not offered. Since an MLB same-game 3-leg
+can only draw on spread / total / ML, every 3-leg necessarily contains that
+pair, which is why the 3-leg column is mostly ❌.
+
+⚠️ **The three books that do return a 3-leg number return a WRONG one — do not
+quote 3-leg shapes.** A home −1.5 spread *implies* the home ML, so
+`P(spread ∧ total ∧ ML)` must equal `P(spread ∧ total)`. It does not:
+
+```
+Novig  [home -1.5, over 7.5]             dec=3.1949
+Novig  [over 7.5, home ML]               dec=2.3981
+Novig  [home -1.5, over 7.5, home ML]    dec=2.3981   <-- spread leg DROPPED
+```
+
+Novig silently drops the spread leg and returns the 2-leg price under a 3-leg
+label. Its partition confirms it: cells differing only in the spread's side are
+byte-identical, and the implied probabilities sum to **2.364** instead of
+~1.18. ProphetX is less dramatic but still wrong — the book itself prices the
+3-leg identically to the 2-leg (3.25 both), yet our engine devigs them to
+0.2975 vs 0.2885, because Route A cannot complete (the logically impossible
+cells — home covers −1.5 *and* away wins — are correctly refused by the book)
+and Route B's transfer does not preserve the implication.
+
+**Decision (issue #66, 2026-08-03): measured, and deliberately NOT guarded in
+code.** A `classify_subcombo` guard refusing same-game spread+ML sets was built
+and reviewed, then dropped. The reasoning: no RFQ the maker has ever seen
+carries the shape (0 of 341,941 with recorded legs), a counterparty
+constructing one is not someone we want to fill anyway, and #20's z-space
+dispersion gate declines every observed case (σ_z 0.20–0.52 against
+`SIGMA_Z_MAX=0.07`). **That protection is incidental, not designed** — widen
+`SIGMA_Z_MAX`, or have two books agree wrongly, and a bad number reaches a
+quote. Anyone extending the on-demand path (epic #53) should treat this as a
+live, unguarded hazard.
+
+⚠️ **Do not read the routing census as "no same-game demand" (issue #71).**
+Every one of the 738 in-scope RFQs classifies as cross-game single legs, but
+that is a *partitioning artifact*, not the traffic. `parse_leg` keys
+`CanonicalLeg.game_id` on the **event_ticker**, and Kalshi puts each market
+family in its own event — so a spread leg and a total leg on one game can never
+share a partition, and the same-game grids are unreachable in production.
+Regrouped by the game code inside the ticker, 87 of those RFQs are genuinely
+same-game (50 spread×total, 36 ml×total, 1 three-leg) and were quoted after
+having their marginals multiplied as if independent. The three-leg hazard
+measured above therefore has arrived once already — misrouted, not refused.
+
+Re-measured 2026-08-03 (PIT @ MIL, `home −1.5 + over 7.5`), the identity
+`P(3-leg) == P(spread ∧ total)` fails at every book that returns a number:
+
+| book | spread × total | 3-leg | ratio (must be 1.00) |
+|---|---|---|---|
+| ProphetX | 0.2419 | 0.2647 | 1.09× |
+| Novig | 0.2478 | 0.3773 | **1.52×** |
+| Caesars | 0.1933 | 0.1391 | 0.72× |
+| DK / FD / BetMGM | — | `no_price` | book declines the shape |
+
+Novig's 0.3773 also **exceeds its own `ML × total` fair (0.3292)** — a strict
+superset of the event — so the 3-leg number violates a Fréchet upper bound
+outright. Note the manifestation varies by run: the byte-identical leg-drop
+above was Route A (`part`); on 2026-08-03 Novig fell to Route B (`tran`) and
+produced a different wrong number. The failure is not a single book bug to
+patch, which is why the fix refuses the shape rather than special-casing a
+book.
+
+`verify_books.py` probes `spread_x_ml` and `three_leg` on every run, so this
+stays measurable: re-run it before enabling any 3-leg quoting.
+
+### Cross-book agreement
+
+#39 closed with "cross-book price equivalence unverified at n=1". Closed here:
+the harness re-prices one common rung at every book that carries it. Measured
+2026-08-03, `home -1.5 + over 7.5`, devigged fair:
+
+| book | fair |
+|---|---|
+| BetMGM | 0.2550 |
+| Novig | 0.2652 |
+| DraftKings | 0.2661 |
+| ProphetX | 0.2885 |
+
+Range 0.2550–0.2885, **spread 13.1% of the low, median 0.2656**. ProphetX runs
+consistently high — it was also the high book at 8.5 (0.2595 vs ~0.23). Four
+books is the realistic quorum at a half-point rung; FanDuel and Caesars carry
+only the main line and so cannot vote on it.
+
+This is the strongest correctness signal available without a ground truth: an
+independently-wrong book shows up here, whereas #20's dispersion gate cannot
+see books that are jointly wrong.
+
+### Latency baseline (feeds #50 and #55)
+
+`price_on_demand`, seconds, measured 2026-08-03. **Cold** is a fresh
+`SGPService` — event discovery + structure fetch + price, i.e. what the maker
+pays on a game's first RFQ. Warm reuses the cached structure.
+
+| book | shape | cold | warm p50 | warm p95 | structure fetch |
+|---|---|---|---|---|---|
+| DraftKings | spread × total | 2.77 | 0.76 | 3.55 | 1.37 |
+| DraftKings | ML × total | 2.63 | 0.77 | 0.77 | |
+| FanDuel | spread × total | 1.12 | 0.85 | 1.05 | 0.64 |
+| FanDuel | ML × total | 0.90 | 0.72 | 0.74 | |
+| ProphetX | spread × total | 2.42 | 1.38 | 1.43 | 0.51 |
+| ProphetX | ML × total | 1.80 | 1.45 | 2.36 | |
+| ProphetX | 3-leg | 2.78 | 1.76 | 1.86 | |
+| Novig ¹ | spread × total | 6.69 | 3.89 | 9.06 | 0.33 |
+| Novig ¹ | ML × total | 4.63 | 3.68 | 4.49 | |
+| BetMGM | spread × total | 1.71 | 1.30 | 1.35 | 0.85 |
+| BetMGM | ML × total | 1.70 | 1.27 | 1.35 | |
+| Caesars ² | spread × total | 2.68 | 2.20 | 2.36 | 1.36 |
+| Caesars ² | ML × total | 2.54 | 2.36 | 2.54 | |
+| Caesars ² | 3-leg | 7.04 | 6.48 | 7.26 | |
+| Caesars ² | AWS-WAF token mint | 0.67 | (cached 240s) | | |
+
+¹ **Novig must be measured with `--pacing 12`.** At the default 1s pacing it
+returned zero warm samples on three of four shapes — that was its own rate
+limit (26 rapid price calls → 403, #40), not latency. Every shape here fans
+out into a 2^N partition, so a full verification run is 60+ wire price calls
+per book. Novig is the slowest book by a wide margin and its p95 sits at the
+edge of #50's 8–10s budget.
+
+² Caesars numbers are from the run before its WAF began throttling this IP —
+see the checklist note below.
+
+**Reading the `cold` column on a future run.** The table above was captured
+with a harness that built a fresh `SGPService` per shape, so every `cold` cell
+is a true cold path. That cost ~5 client builds per book — and for Caesars, ~5
+AWS-WAF token mints — which is what tripped its throttle (#67). The harness now
+builds **two** services per book (one for coverage + warm, one for the cold
+pass), so on a future run only the FIRST shape's cold time includes event
+discovery and the structure fetch. The JSON marks it: each cold cell carries
+`cold_includes_structure`.
+
+### On-demand latency after #50 (input to #55's quorum design)
+
+`price_on_demand`, seconds, 2-leg spread × total, measured 2026-08-05 on a
+live slate (CWS @ BOS, pre-game) with structure warming in place. **Cold**
+is a fresh service with NO warming pass (what an RFQ paid before #50);
+**warm p50/p95** are repeat calls after `warm_structures` — since #50 the
+health table records the split explicitly (`sgp_fetch_health.cache_state`,
+query `on_demand_latency_cold_warm` in
+`kalshi_common/fetch_health_queries.sql`). Novig measured at 12s pacing
+(its own rate limit, #40); warming-pass cost is per book for one game,
+zero pricing calls.
+
+| book | cold (no warming) | warm p50 | warm p95 | warming pass | p95 ≤ 8s |
+|---|---|---|---|---|---|
+| FanDuel | 1.42 | 0.71 | 0.77 | 0.38 | ✓ |
+| ProphetX | 4.55 | 1.48 | 1.55 | 0.61 | ✓ |
+| BetMGM | 2.01 | 1.45 | 1.66 | 0.70 | ✓ |
+| Caesars ¹ | 2.49 | 2.14 | 2.37 | 0.51 | ✓ |
+| Novig ² | 4.03 | 2.56 | 4.00 | 0.59 | ✓ |
+| DraftKings ³ | 3.27 | 4.78 | 20.79 | 1.75 | ✗ |
+
+**5 of 6 books meet the #50 target (p95 ≤ 8s warm)** — the acceptance bar
+was ≥4. Structure warming removes the cold-start penalty outright at the
+four books whose sweep never touched the on-demand caches (ProphetX is the
+starkest: 4.55s cold → 1.55s warmed).
+
+¹ **Caesars**: WAF healthy this window. Its true cold cost is understated
+here — the coverage probe minted the WAF token minutes earlier and the
+"cold" service loaded it from the shared disk cache. With warming running,
+`ensure_fresh_token` re-mints in background before the 240s TTL lapses, so
+the ~0.7–1.5s mint never lands inline on an RFQ regardless.
+
+² **Novig latency ≠ Novig prices.** Its latency passes, but Novig has an
+open data defect (found in #70's review, tracked separately): sweep rows
+broadcast one grid across all line pairs. A quorum design consuming this
+table must not treat Novig's on-demand column as evidence its *prices* are
+trustworthy — only that it answers fast enough.
+
+³ **DraftKings is the straggler #55 must design around.** Its warm samples
+are bimodal: 4 of 6 landed in 0.82–1.63s, but individual calls stalled at
+7.9s, 17.9s and 21.7s (one returned nothing) — the stall is the *price
+call itself* (structure was warm on those rows), so warming cannot fix it.
+The live path's `ON_DEMAND_DEADLINE_SEC` (10s) drops those stalls instead
+of blocking the combo; for quorum purposes DK answers fast *usually* and
+must never be a required voter.
+
+### Caesars WAF throttles under verification load
+
+#41 closed with "not verified: behaviour under WAF rate-limiting". Now
+observed: after a full verification run plus several diagnostics, Caesars began
+returning `WAF token minted but NOT validated (attempt n/3)`.
+
+**Measured duration: at least 1h45m**, across seven spaced retries — failing at
+19:22, 19:30, 19:39, 19:47 and 20:59 UTC, recovering by 21:08. It then priced
+normally again (0.2229 vs 0.2240 before the throttle, structure fetch 0.82s),
+so nothing was broken by it.
+
+The mint itself succeeds — the WAF rejects the minted token, which is the
+signature of IP throttling rather than a broken integration (the same code
+minted in 0.67s an hour earlier, and again afterwards). Contrast #41's failure
+mode, where the token came back EMPTY.
+
+Operationally this is handled correctly: the client raises
+`BookTransportError(stage="auth")`, and #33's contract preserves Caesars' prior
+rows instead of clearing them. But it means **Caesars should be verified first
+in a session, not last**, and a verification run should not be repeated
+back-to-back.
+
+### Pre-restart checklist
+
+Run this before restarting the maker or taker. Self-contained; nothing here
+starts, stops or restarts a bot.
+
+1. **Confirm you are on a healthy slate.** Games must be upcoming, not live:
+   `python3 mlb_sgp/verify_books.py` prints the game it picked and its start.
+2. **Verify Caesars FIRST if you will run anything else** —
+   `python3 mlb_sgp/verify_books.py --books caesars`. Its WAF throttles under
+   load and takes >30 min to clear.
+3. **Run the gate:** `python3 mlb_sgp/verify_books.py --json /tmp/gate.json`.
+   Every book must report `priced` or `not_offered`. Any `down` blocks the
+   restart — read `coverage.error` in the JSON for the stage.
+4. **Re-measure Novig separately** with `--books novig --pacing 12`; at default
+   pacing its warm samples are rate-limit noise.
+5. **Check cross-book agreement.** The harness re-prices one common rung at
+   every book carrying it. A spread wider than ~15% of the low means one book
+   is mispricing — do not restart into that.
+6. **Run the offline suite:**
+   `python3 -m pytest mlb_sgp/tests/ kalshi_common/tests/ kalshi_mlb_mm/tests/ kalshi_mlb_rfq/tests/ -q`.
+   Goldens (`test_golden_baselines.py`) must pass for every active book.
+7. **Sweep check.** Every active book should write rows with its own
+   `*_direct` source label and no `PARSE TRIPWIRE` lines. A book that raises
+   keeps its previous rows — that is #33 working, not a failure to fix.
+8. **Known limits to carry into the restart:** no book prices spread × ML;
+   3-leg shapes return incoherent numbers and must not be quoted; expect a
+   4-of-6 quorum at any given rung.
+
+### Goldens
+
+`mlb_sgp/tests/test_golden_baselines.py` replays frozen per-book payloads
+through each real `price_sgps` and pins the resulting rows. Fully offline — a
+companion test poisons every HTTP transport to prove it.
+
+Recapture only when a book's call pattern changes on purpose, and only from a
+slate where that book is healthy:
+
+```bash
+python3 mlb_sgp/tests/capture_goldens.py --books novig
+```
+
+Capturing mid-repair bakes a broken book's output in as the baseline. The
+capture refuses to write a fixture for a book that produced zero rows.
+
+Fixtures are gzipped (`<book>_golden.json.gz`). A raw capture is up to 4.5 MB
+of market tree per book — 7.3 MB across the set — and every recapture would add
+another blob; compressed they total ~220 KB.
+
+All six books have a fixture. Caesars' had to wait out its WAF throttle (see
+above) — captured on the seventh attempt, roughly two hours after the throttle
+began.
+
+This replaced two earlier "golden" tests for DK and FD that re-ran the real
+scraper against the live book, wrote into the shared production DuckDB from a
+test run, and diffed against a CSV keyed by `game_id` — so they went stale
+within hours and could never pass on an ordinary day.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
+| `verify_books.py` | Six-book live verification gate (issue #42) — read-only |
+| `tests/golden_replay.py` | Record/replay harness behind the golden baselines |
+| `tests/capture_goldens.py` | Hand-run capture of frozen golden fixtures |
 | `scraper_draftkings_sgp.py` | DK SGP scraper shim (calls `draftkings.price_sgps`) |
 | `scraper_fanduel_sgp.py` | FD SGP scraper shim (calls `fanduel.price_sgps`) |
 | `scraper_prophetx_sgp.py` | ProphetX SGP scraper shim |
 | `scraper_novig_sgp.py` | Novig SGP scraper shim |
 | `draftkings.py` / `fanduel.py` / `prophetx.py` / `novig.py` | Per-book orchestrators (`price_sgps`) |
 | `dk_client.py` / `fd_client.py` / `prophetx_client.py` / `novig_client.py` | Per-book HTTP clients |
-| `_shared.py` | `TargetLine` / `PricedRow` dataclasses, `load_target_lines`, `upsert_priced_rows`, decimal/american helpers |
+| `_shared.py` | `TargetLine` / `PricedRow` dataclasses, `load_target_lines`, `upsert_priced_rows`, decimal/american helpers, `BookTransportError` + `PriceCallTally` (see "Failure semantics"), `request_with_retry` + the two `RetryProfile`s (see "Retry & backoff") |
 | `scraper_pikkit_mlb.py` | Pikkit MLB SGP scraper (fallback) |
 | `pikkit_common.py` | Reusable Pikkit functions |
 | `recon_draftkings_sgp.py` | DK network recon tool |
@@ -551,6 +1317,13 @@ MLB RFQ bot (writes to a sibling `kalshi_mlb_rfq_market.duckdb`).
 **"No mlb_parlay_opportunities table"** — Run the MLB pipeline first (`cd "Answer Keys" && python run.py --sport mlb`).
 
 **All games return "no price"** — curl_cffi session may have expired. The scraper auto-reinits after 3 consecutive failures, but if all games fail, try running again.
+
+**`BookTransportError` in `bot.log`** — the book is genuinely unreachable, not
+quiet. Read `stage=` to localize it: `auth` (MGM accessid / CZR WAF token),
+`events` (the fixture listing), `structure` (a per-event market fetch), `price`
+(every price call in the cycle failed — check whether that book prices on a
+different host). The book's previous rows were preserved, and its client is torn
+down and rebuilt after 3 consecutive failures. See "Failure semantics" above.
 
 **"Total X not found in DK selection IDs"** — Wagerzon total doesn't exist on DK for this game. Rare — DK offers totals from 5.0 to 13.0+.
 

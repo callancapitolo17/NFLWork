@@ -12,9 +12,11 @@ import them lazily. They stay here during the transition; a follow-up
 refactor can lift them into the library module.
 """
 
+import logging
 import os
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from curl_cffi import requests as cffi_requests
 
@@ -31,10 +33,28 @@ from canonical_match import load_team_dict, load_canonical_games, resolve_team_n
 from db import MLB_DB, _connect_with_retry
 from integer_line_derivation import is_integer_line, derive_fair_probs
 
+# Import via the PACKAGE path, never `from _shared import ...`: this file is
+# also importable as a top-level module (cwd=mlb_sgp/), and a second module
+# object would give us a second BookTransportError class that no caller's
+# `except` clause would match.
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, RetryProfile,
+                             check_response, json_or_raise, request_with_retry)
+
+logger = logging.getLogger(__name__)
+
+# Issue #36 moved every diagnostic in this module to the module logger, so the
+# `verbose` parameters marked "inert" below no longer control anything. They
+# are kept because the orchestrators, SGPService's fetcher hooks and the
+# dashboard shims all still pass them; #49 (shim cleanup) removes them and
+# every call site together.
+
 # ---------------------------------------------------------------------------
 # DK API config
 # ---------------------------------------------------------------------------
 
+DK_BOOK = "draftkings"
 DK_BASE_URL = "https://sportsbook.draftkings.com"
 
 # Public REST — event listing (no Akamai)
@@ -49,9 +69,23 @@ DK_SGP_PARLAYS_URL = (
     "parlays/v1/sgp/events"
 )
 
-# SGP pricing — correlation-adjusted odds (curl_cffi bypasses Akamai)
+# SGP pricing — correlation-adjusted odds. DK reads on sportsbook-nash but
+# prices on gaming-us-nj, and only THIS host is bot-protected.
+#
+# The "/en/" is load-bearing — do not "tidy" it away (issue #39). On
+# 2026-06-24 an Akamai edge rule began denying the bare path, which killed
+# every DK price call (~18k rows/day -> 0) while events and structure stayed
+# green. The rule matches the path EXACTLY. DK's own betslip builds this URL
+# as `{locale}/api/wager/v1/calculateBets` (English maps to an empty prefix),
+# and the origin still routes the explicit "/en/" form, which the rule misses.
+# Verified live 2026-07-30:
+#     POST /api/wager/v1/calculateBets     -> 403 AkamaiGHost "Access Denied"
+#     POST /en/api/wager/v1/calculateBets  -> 200 correlated SGP price
+# If DK ever closes this too, the tell is error_class "…:price:403" in
+# sgp_fetch_health; the other locale prefixes (/de/, /fr/) 404, so the next
+# move is re-reading dkBetSlip.js for the current route, not a fingerprint fix.
 DK_CALCULATE_BETS_URL = (
-    "https://gaming-us-nj.draftkings.com/api/wager/v1/calculateBets"
+    "https://gaming-us-nj.draftkings.com/en/api/wager/v1/calculateBets"
 )
 
 DK_MLB_LEAGUE_ID = "84240"
@@ -81,9 +115,15 @@ def init_session() -> cffi_requests.Session:
 # Step 2: Fetch DK events (public REST)
 # ---------------------------------------------------------------------------
 
-def fetch_dk_events(session: cffi_requests.Session) -> list[dict]:
-    """Fetch today's MLB events with home/away teams."""
-    resp = session.get(DK_LEAGUE_URL, params={
+def fetch_dk_events(session: cffi_requests.Session,
+                    profile: RetryProfile = RETRY_BACKGROUND) -> list[dict]:
+    """Fetch today's MLB events with home/away teams.
+
+    Raises ``BookTransportError`` when DK is unreachable (it has been serving
+    403 in production since ~2026-06); ``[]`` means DK genuinely lists no MLB
+    games today. Callers must not confuse the two — see issue #33.
+    """
+    params = {
         "isBatchable": "false",
         "templateVars": DK_MLB_LEAGUE_ID,
         "eventsQuery": (
@@ -96,11 +136,14 @@ def fetch_dk_events(session: cffi_requests.Session) -> list[dict]:
         ),
         "include": "Events",
         "entity": "events",
-    }, timeout=30)
-    resp.raise_for_status()
+    }
+    resp = request_with_retry(
+        lambda: session.get(DK_LEAGUE_URL, params=params, timeout=30),
+        profile=profile, book=DK_BOOK, stage="events")
+    check_response(DK_BOOK, "events", resp)
 
     events = []
-    for evt in resp.json().get("events", []):
+    for evt in json_or_raise(DK_BOOK, "events", resp).get("events", []):
         participants = evt.get("participants", [])
         home = next((p for p in participants if p.get("venueRole") == "Home"), {})
         away = next((p for p in participants if p.get("venueRole") == "Away"), {})
@@ -133,7 +176,9 @@ def load_parlay_lines() -> dict:
     try:
         tables = [t[0] for t in con.execute("SHOW TABLES").fetchall()]
         if "mlb_parlay_lines" not in tables:
-            print("  No mlb_parlay_lines table — run the MLB pipeline first.")
+            # WARNING: a missing table is an upstream pipeline fault, not an
+            # empty slate — exactly the confusion issue #32 exists to remove.
+            logger.warning("no mlb_parlay_lines table — run the MLB pipeline first")
             return {}
 
         rows = con.execute("""
@@ -201,8 +246,7 @@ def try_integer_fallback_dk(
 
     if not (home_spread_sels and away_spread_sels and
             over_lo_sels and under_lo_sels and over_hi_sels and under_hi_sels):
-        if verbose:
-            print(f"      integer fallback: missing alts for {total_line}")
+        logger.debug(f"      integer fallback: missing alts for {total_line}")
         return None
 
     # Helper: price one canonical-canonical combo, return decimal or None
@@ -235,8 +279,7 @@ def try_integer_fallback_dk(
     }
 
     if any(d is None for d in decimals_lo.values()) or any(d is None for d in decimals_hi.values()):
-        if verbose:
-            print(f"      integer fallback: pricing call failed for {total_line}")
+        logger.debug(f"      integer fallback: pricing call failed for {total_line}")
         return None
 
     return derive_fair_probs(decimals_lo, decimals_hi)
@@ -326,9 +369,14 @@ DK_EVENT_MARKETS_URL = (
 )
 
 
-def _fetch_subcat_markets(session, dk_event_id, subcat_id):
-    """Fetch all markets in a given subcategory. Returns list of (id, name)."""
-    resp = session.get(DK_EVENT_MARKETS_URL, params={
+def _fetch_subcat_markets(session, dk_event_id, subcat_id,
+                          profile: RetryProfile = RETRY_BACKGROUND):
+    """Fetch all markets in a given subcategory. Returns list of (id, name).
+
+    404 = DK dropped this event (skip the game). Any other non-200 raises
+    ``BookTransportError`` — see issue #33.
+    """
+    params = {
         "isBatchable": "false",
         "templateVars": dk_event_id,
         "marketsQuery": (
@@ -338,10 +386,14 @@ def _fetch_subcat_markets(session, dk_event_id, subcat_id):
         ),
         "include": "MarketSplits",
         "entity": "markets",
-    }, timeout=15)
-    if resp.status_code != 200:
+    }
+    resp = request_with_retry(
+        lambda: session.get(DK_EVENT_MARKETS_URL, params=params, timeout=15),
+        profile=profile, book=DK_BOOK, stage="structure")
+    if not check_response(DK_BOOK, "structure", resp, allow_404=True):
         return []
-    return [(m["id"], m.get("name", "")) for m in resp.json().get("markets", [])]
+    markets = json_or_raise(DK_BOOK, "structure", resp).get("markets", [])
+    return [(m["id"], m.get("name", "")) for m in markets]
 
 
 def _strip_prefix(mid: str) -> str:
@@ -387,7 +439,8 @@ def _extract_moneyline_selections(text: str, ml_mnum: str | None) -> dict:
     return out
 
 
-def fetch_main_market_nums(session: cffi_requests.Session, dk_event_id: str) -> dict:
+def fetch_main_market_nums(session: cffi_requests.Session, dk_event_id: str,
+                           profile: RetryProfile = RETRY_BACKGROUND) -> dict:
     """Fetch main Run Line + Total + Moneyline market numbers for both FG and F5.
 
     Returns {
@@ -400,14 +453,14 @@ def fetch_main_market_nums(session: cffi_requests.Session, dk_event_id: str) -> 
         "fg": {"run_line": None, "total": None, "moneyline": None},
         "f5": {"run_line": None, "total": None, "moneyline": None},
     }
-    for m_id, name in _fetch_subcat_markets(session, dk_event_id, "4519"):
+    for m_id, name in _fetch_subcat_markets(session, dk_event_id, "4519", profile):
         if name == "Run Line":
             out["fg"]["run_line"] = _strip_prefix(m_id)
         elif name == "Total":
             out["fg"]["total"] = _strip_prefix(m_id)
         elif name == "Moneyline":
             out["fg"]["moneyline"] = _strip_prefix(m_id)
-    for m_id, name in _fetch_subcat_markets(session, dk_event_id, "15628"):
+    for m_id, name in _fetch_subcat_markets(session, dk_event_id, "15628", profile):
         if name == "Run Line - 1st 5 Innings":
             out["f5"]["run_line"] = _strip_prefix(m_id)
         elif name == "Total Runs - 1st 5 Innings":
@@ -419,7 +472,8 @@ def fetch_main_market_nums(session: cffi_requests.Session, dk_event_id: str) -> 
 
 def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
                         main_market_nums: dict | None = None,
-                        verbose: bool = False) -> dict:
+                        verbose: bool = False,   # inert since #36 (see module note)
+                        profile: RetryProfile = RETRY_BACKGROUND) -> dict:
     """
     Fetch all SGP selection IDs for a game from the parlays endpoint, split
     by period (FG vs F5).
@@ -443,14 +497,15 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
     f5_rl = main_market_nums["f5"].get("run_line")
     f5_tot = main_market_nums["f5"].get("total")
 
-    resp = session.get(
-        f"{DK_SGP_PARLAYS_URL}/{dk_event_id}",
-        timeout=60,
-    )
+    url = f"{DK_SGP_PARLAYS_URL}/{dk_event_id}"
+    resp = request_with_retry(lambda: session.get(url, timeout=60),
+                              profile=profile, book=DK_BOOK, stage="structure")
 
     empty = {"fg": {"spreads": {}, "totals": {}, "moneyline": {"1": [], "3": []}},
              "f5": {"spreads": {}, "totals": {}, "moneyline": {"1": [], "3": []}}}
-    if resp.status_code != 200:
+    # 404 = event gone; any other non-200 (DK's 403) is a dead book, not an
+    # event with no SGP selections — see issue #33.
+    if not check_response(DK_BOOK, "structure", resp, allow_404=True):
         return empty
 
     text = resp.text
@@ -581,12 +636,12 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
     out["fg"]["moneyline"] = _extract_moneyline_selections(text, fg_ml)
     out["f5"]["moneyline"] = _extract_moneyline_selections(text, f5_ml)
 
-    if verbose:
+    if logger.isEnabledFor(logging.DEBUG):
         for per in ("fg", "f5"):
             sp = sorted(set(k[1] for k in out[per]["spreads"]))
             to = sorted(set(k[1] for k in out[per]["totals"] if k[0] == 'O'))
-            print(f"    [{per.upper()}] spreads: {sp}  totals(O): {to}  "
-                  f"canonical: {sorted(out[per]['canonical'])}")
+            logger.debug("    [%s] spreads: %s  totals(O): %s  canonical: %s",
+                         per.upper(), sp, to, sorted(out[per]["canonical"]))
 
     return out
 
@@ -597,33 +652,50 @@ def fetch_selection_ids(session: cffi_requests.Session, dk_event_id: str,
 
 def calculate_sgp(session: cffi_requests.Session,
                   spread_sel: str, total_sel: str,
-                  verbose: bool = False) -> dict | None:
-    """Call DK's calculateBets with two selections. Returns {trueOdds, displayOdds} or None."""
-    resp = session.post(DK_CALCULATE_BETS_URL, json={
-        "selections": [],
-        "selectionsForYourBet": [
-            {"id": spread_sel, "yourBetGroup": 0},
-            {"id": total_sel, "yourBetGroup": 0},
-        ],
-        "selectionsForCombinator": [],
-        "selectionsForProgressiveParlay": [],
-        "oddsStyle": "american",
-    }, headers={"Content-Type": "application/json"}, timeout=10)
+                  verbose: bool = False,   # inert since #36 (see module note)
+                  *,
+                  on_decline: Callable[[int], None] | None = None,
+                  ) -> dict | None:
+    """Call DK's calculateBets with two selections. Returns {trueOdds, displayOdds} or None.
+
+    ``on_decline`` is called with the HTTP status whenever the combo is not
+    priced (422 non-combinable, 403 blocked host, anything else non-200).
+    Declines stay non-fatal — one unpriceable combo must never abort a cycle —
+    but the status has to escape, or ``PriceCallTally``'s all-failed verdict
+    cannot say WHY (issue #39). ``PriceCallTally.note_status`` is the intended
+    callback; omitting it leaves behavior exactly as before.
+    """
+    # RETRY_LIVE on the price stage even here: these calls fan out across a
+    # thread pool (targets x combos), so BACKGROUND's 3 attempts would stall a
+    # degraded cycle for minutes. A 422 (non-combinable) is not retried.
+    resp = request_with_retry(
+        lambda: session.post(DK_CALCULATE_BETS_URL, json={
+            "selections": [],
+            "selectionsForYourBet": [
+                {"id": spread_sel, "yourBetGroup": 0},
+                {"id": total_sel, "yourBetGroup": 0},
+            ],
+            "selectionsForCombinator": [],
+            "selectionsForProgressiveParlay": [],
+            "oddsStyle": "american",
+        }, headers={"Content-Type": "application/json"}, timeout=10),
+        profile=RETRY_LIVE, book=DK_BOOK, stage="price")
 
     if resp.status_code == 422:
-        if verbose:
-            try:
-                err = resp.json()
-                code = err.get("statusCode", "")
-                desc = err.get("description", "")
-                print(f"      422: {code} — {desc[:100]}")
-            except Exception:
-                pass
+        try:
+            err = resp.json()
+            logger.debug("      422: %s — %s", err.get("statusCode", ""),
+                         str(err.get("description", ""))[:100])
+        except Exception:
+            pass
+        if on_decline is not None:
+            on_decline(resp.status_code)
         return None
 
     if resp.status_code != 200:
-        if verbose:
-            print(f"      HTTP {resp.status_code}")
+        logger.debug(f"      HTTP {resp.status_code}")
+        if on_decline is not None:
+            on_decline(resp.status_code)
         return None
 
     data = resp.json()
@@ -631,8 +703,7 @@ def calculate_sgp(session: cffi_requests.Session,
     # Check for combinability restrictions (cross-market rejection)
     restrictions = data.get("combinabilityRestrictions", [])
     if restrictions:
-        if verbose:
-            print(f"      NonCombinable: selections can't be combined in SGP")
+        logger.debug(f"      NonCombinable: selections can't be combined in SGP")
         return None
 
     for bet in data.get("bets", []):
@@ -680,16 +751,23 @@ def main():
 
     targets = load_target_lines(db_path)
     if not targets:
-        print(f"  No target lines in {db_path} — nothing to scrape.")
+        logger.info("no target lines in %s — nothing to scrape", db_path)
         return 0
 
     periods_raw = os.environ.get("MLB_SGP_PERIODS", "FG,F5").split(",")
     periods = tuple(p.strip() for p in periods_raw if p.strip())
 
     from mlb_sgp import draftkings
-    print(f"  DK shim: {len(targets)} target lines, periods={periods}")
-    rows = draftkings.price_sgps(targets, periods=periods, verbose=False)
-    print(f"  DK shim: priced {len(rows)} rows")
+    logger.info("DK shim: %d target lines, periods=%s", len(targets), periods)
+    try:
+        rows = draftkings.price_sgps(targets, periods=periods, verbose=False)
+    except Exception as e:
+        # Transport failure (403 / DNS / auth gate — issue #33): leave the
+        # previous cycle's rows in place rather than clearing the source.
+        # The downstream fetch_time freshness gate filters anything stale.
+        logger.error("DK shim: price_sgps failed (%s) — preserving last cycle's rows", e)
+        return 1
+    logger.info("DK shim: priced %d rows", len(rows))
 
     # Wipe both source labels so stale rows from a previous run never linger.
     # The orchestrator tags _direct vs _interpolated rows; clearing both
@@ -701,4 +779,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # Library code attaches no handlers; the CLI entry point does, so a
+    # subprocess/dashboard run still writes progress to the runner log.
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout,
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     sys.exit(main())

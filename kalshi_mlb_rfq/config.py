@@ -120,6 +120,23 @@ MLB_SGP_DIR = Path(_get("MLB_SGP_DIR", str(PROJECT_ROOT / "mlb_sgp")))
 # Cross-book book-count gate (drop candidate if fewer than N books priced).
 MIN_BOOK_COUNT_FOR_BLEND = int(_get("MIN_BOOK_COUNT_FOR_BLEND", "2"))
 
+# Run-time book-health alerting (issue #37). Keys on consecutive FAILED
+# fetches, never on data age — an age rule would false-fire by design once
+# #57 slows the sweep to background structure-warming.
+BOOK_ALERT_ENABLED = _get("BOOK_ALERT_ENABLED", "true").lower() in (
+    "1", "true", "yes", "on")
+# One 403 is noise (a book hiccups); three consecutive is a dead book.
+BOOK_ALERT_STREAK = int(_get("BOOK_ALERT_STREAK", "3"))
+# Which fetch paths count toward a book's health. Post-#53 every quote is
+# priced by an on-demand fetch and the sweep is legacy warming, so #57 flips
+# this to "on_demand" in CONFIG — no code change.
+BOOK_ALERT_PATHS = tuple(
+    p.strip() for p in _get("BOOK_ALERT_PATHS", "sweep,on_demand").split(",")
+    if p.strip())
+# Rule B's floor deliberately REUSES MIN_BOOK_COUNT_FOR_BLEND rather than
+# adding a second knob: an alert that fires at a different count than the
+# gate it is warning about is worse than no alert.
+
 # Logging (operational log rotation)
 LOG_LEVEL = _get("LOG_LEVEL", "INFO")
 LOG_MAX_BYTES = int(_get("LOG_MAX_BYTES", str(50 * 1024 * 1024)))  # 50 MB

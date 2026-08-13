@@ -59,7 +59,7 @@ def _confirm_env(monkeypatch, tmp_path, db_name, quote_response):
         con.execute("UPDATE live_quotes SET leg_prices_json = "
                     "'{\"L\": {\"yes_bid\": 0.5, \"yes_ask\": 0.52}}'")
 
-    monkeypatch.setattr(router_mod, "combo_fair", lambda *a, **k: 0.56)
+    monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.56, 0.0, 1), "ok"))
     monkeypatch.setattr(main, "_leg_market_prices",
                         lambda legs: {"L": {"yes_bid": 0.5, "yes_ask": 0.52}})
 
@@ -122,11 +122,6 @@ def _scope_env(monkeypatch, tmp_path, db_name):
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
     importlib.reload(db)
     db.init_database()
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     monkeypatch.setattr(main, "_SCOPE_CACHE", {})
     return db, main
 
@@ -188,8 +183,8 @@ def test_scope_cache_size_bounded(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 # 3. O-1 — game-metadata caches (no DuckDB connect per call)
 # ---------------------------------------------------------------------------
-def test_commence_time_cached_until_sgp_refresh(monkeypatch, tmp_path):
-    import kalshi_mlb_mm.config as cfg
+def test_commence_time_cached_until_target_line_refresh(monkeypatch, tmp_path):
+    from kalshi_common import sgp_runner
     from kalshi_mlb_mm import main
 
     main._invalidate_game_caches()
@@ -202,12 +197,12 @@ def test_commence_time_cached_until_sgp_refresh(monkeypatch, tmp_path):
     assert main._commence_time("g1") == ct
     assert calls == ["g1"], "second call must hit the cache"
 
-    # SGP refresh invalidates (MARKET_DB absent → refresh early-returns AFTER
-    # clearing the caches).
-    monkeypatch.setattr(cfg, "MARKET_DB", tmp_path / "absent.duckdb")
-    main._refresh_sgp()
+    # #81: the target-line tick is the O-1 invalidation heir (new games
+    # appear via mlb_target_lines now, not a scrape).
+    monkeypatch.setattr(sgp_runner, "target_line_cycle", lambda **kw: [])
+    main._target_line_tick()
     assert main._commence_time("g1") == ct
-    assert calls == ["g1", "g1"], "SGP refresh must invalidate the cache"
+    assert calls == ["g1", "g1"], "target-line refresh must invalidate the cache"
 
 
 def test_commence_time_failure_not_cached(monkeypatch):

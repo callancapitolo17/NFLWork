@@ -7,7 +7,16 @@ both the SGP scraper and the singles scraper need:
   - fetch_event_selections()— all selections with prices, in one call
 """
 from __future__ import annotations
+import logging
 from dataclasses import dataclass
+
+from mlb_sgp._shared import (RETRY_BACKGROUND, PriceCallTallyMixin,
+                             RetryProfile, check_response, json_or_raise,
+                             request_with_retry)
+
+logger = logging.getLogger(__name__)
+
+BOOK = "draftkings"
 
 
 @dataclass
@@ -34,7 +43,9 @@ class Selection:
     american_odds: int
 
 
-class DraftKingsClient:
+class DraftKingsClient(PriceCallTallyMixin):
+    BOOK = BOOK
+
     def __init__(self, verbose: bool = False) -> None:
         from scraper_draftkings_sgp import init_session
         self.session = init_session()
@@ -83,7 +94,8 @@ class DraftKingsClient:
                 ))
         return results
 
-    def fetch_event_selections(self, event_id: str) -> list[Selection]:
+    def fetch_event_selections(self, event_id: str,
+                               profile: RetryProfile = RETRY_BACKGROUND) -> list[Selection]:
         """Returns all selections (with prices) for one event from the parlays endpoint.
 
         DK's parlays/v1/sgp/events/{event_id} returns a payload of shape:
@@ -94,15 +106,18 @@ class DraftKingsClient:
 
         Selections that are disabled or missing displayOdds.american are skipped
         — the singles scraper can't price an unavailable bet.
+
+        A 404 means DK dropped this event; anything else non-200 (DK has been
+        serving 403 in production) raises ``BookTransportError``.
         """
         from scraper_draftkings_sgp import DK_SGP_PARLAYS_URL
-        resp = self.session.get(
-            f"{DK_SGP_PARLAYS_URL}/{event_id}",
-            timeout=60,
-        )
-        if getattr(resp, "status_code", 200) != 200:
+        resp = request_with_retry(
+            lambda: self.session.get(f"{DK_SGP_PARLAYS_URL}/{event_id}",
+                                     timeout=60),
+            profile=profile, book=BOOK, stage="structure")
+        if not check_response(BOOK, "structure", resp, allow_404=True):
             return []
-        payload = resp.json()
+        payload = json_or_raise(BOOK, "structure", resp)
         markets = (payload.get("data") or {}).get("markets") or []
         out: list[Selection] = []
         for mkt in markets:

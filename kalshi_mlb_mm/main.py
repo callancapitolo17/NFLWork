@@ -6,10 +6,13 @@ Composes the prior modules into three timed loops:
   - risk:      kill-switch, book-freshness auto-pull, tipoff-cancel, drift sweep
 
 Fair value is now pure book-consensus median — the model was removed in the v1
-hardening pass (`fairs.py` docstring explains why). Book fairs come from the
-maker's own market DB (its own sgp_runner cadence) and are filtered through
-`_consensus_filter` (median + ±BOOK_CONSENSUS_BAND outlier rejection) so a
-single rogue book can't anchor the quote.
+hardening pass (`fairs.py` docstring explains why). Book fairs come from live
+on-demand fetches triggered by the RFQ being priced (#54; the background sweep
+was removed entirely in #81 — the maker's only background book traffic is #50's
+structure warming) and are gated by `_consensus_filter` (issue #20: z-space
+dispersion threshold — quote only when the books' fairs agree within
+SIGMA_Z_MAX in probit space; a loudly dissenting book declines the combo
+rather than being outvoted).
 """
 import argparse
 import json
@@ -23,32 +26,55 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import duckdb
-import pandas as pd
+from scipy.stats import norm
 
 from kalshi_common import auth_client, legset, sgp_runner
 from kalshi_common.ev_calc import maker_fee_per_contract
-from kalshi_common.fair_value import devig_book
 from kalshi_common.leg_types import (
     _parse_event_suffix,
     _MLB_CODE_TO_TEAM,
-    combo_descriptor,
 )
-from kalshi_mlb_mm import (config, db, notify, pricing, research, risk, scope,
-                           router, settlement)
+from kalshi_mlb_mm import (config, db, expiry_outcome, notify, pricing,
+                           research, risk, scope, router, settlement, singles)
 from kalshi_mlb_mm.rfq_source import RestRFQSource
+from kalshi_mlb_mm.ws_rfq_source import _parse_created_ts
 from kalshi_mlb_mm.quote_gateway import RestQuoteGateway
+# #23: the constituent-singles helpers moved to kalshi_mlb_mm/singles.py so the
+# quote-time sanity gate, the risk sweep, and #17's confirm veto all share ONE
+# implementation of "read a Kalshi single and compare it". Imported under their
+# original private names so existing call sites and test monkeypatches
+# (main._leg_market_prices, main._singles_moved) keep working unchanged.
+from kalshi_mlb_mm.singles import leg_market_prices as _leg_market_prices
+from kalshi_mlb_mm.singles import singles_moved as _singles_moved
 
 log = logging.getLogger("kalshi_mlb_mm")
 
 _running = threading.Event()
 _running.set()
-_SGP_ODDS = None         # pd.DataFrame
 _PREV_BOOK_FAIR = {}     # combo_market_ticker -> last blended book fair (circuit breaker)
+_CONSTITUENT_POLL_CURSOR = 0   # #23: rotates the budgeted constituent poll (see _rotated_poll_order)
 _SCOPE_CACHE = {}        # market_ticker -> (in_scope, game_id, legs)
-# B5 fix (issue #18): bound the scope cache. Crude full-clear on overflow is
-# fine — verdicts re-warm within one poll cycle and a slate is a few hundred
-# tickers, so the bound is a leak backstop, not a working-set limit.
+# B5 fix (issue #18): bound the scope cache. Overflow evicts the OLDEST
+# quarter, never clear(): the WS mirror serves the exchange-wide open-RFQ
+# set (4k+ tickers on 2026-08-10), so this is a working-set limit — a full
+# clear would re-fetch the entire universe at ~0.5s/ticker every pass.
 _SCOPE_CACHE_MAX = 5000
+_DISCOVERY_CURSOR = 0    # rotating start offset for the time-boxed discovery pass
+
+
+def _scope_cache_put(ticker: str, in_scope: bool, game_id, legs) -> None:
+    """Insert a scope verdict, evicting the OLDEST quarter on overflow
+    (dict = insertion order) — never clear(): with 4k+ open exchange-wide
+    tickers a full clear forces a full re-resolve of the universe every
+    pass. max(1, ...) keeps the cap a hard bound even for tiny test-sized
+    caps where MAX // 4 == 0."""
+    if len(_SCOPE_CACHE) >= _SCOPE_CACHE_MAX:
+        evict_n = max(1, _SCOPE_CACHE_MAX // 4)
+        for stale_ticker in list(_SCOPE_CACHE)[:evict_n]:
+            del _SCOPE_CACHE[stale_ticker]
+    _SCOPE_CACHE[ticker] = (in_scope, game_id, legs)
+
+
 _VOID_HALT_ACTIVE = False  # N12: track prior void-rate halt state for edge-triggered notify
 
 # Phase 2 on-demand pricing: engine constructed in main_loop (None in tests /
@@ -69,83 +95,74 @@ def _configure_auth():
                           config.KALSHI_BASE_URL, config.PROJECT_ROOT)
 
 
-def _refresh_sgp():
-    global _SGP_ODDS
-    # O-1: a fresh scrape may add games / correct schedule rows — drop the
-    # game-metadata caches before anything else (including the early returns).
-    _invalidate_game_caches()
-    if not config.MARKET_DB.exists():
-        return
+def _target_line_tick():
+    """Refresh `mlb_target_lines` from Kalshi MVE enumeration + the Odds API
+    schedule (issue #81 — the sweep-free half of the old sgp cycle; ZERO
+    book requests). Game resolution, tipoff gating and #50's warming all
+    read the table this writes. O-1 heir: new games / corrected schedule
+    rows appear here now, so the game-metadata caches drop in `finally` —
+    even when Kalshi enumeration fails mid-tick (the old sweep refresh
+    invalidated before its early returns for the same reason)."""
     try:
-        con = duckdb.connect(str(config.MARKET_DB), read_only=True)
-    except duckdb.IOException:
-        return
-    try:
-        tables = {t[0] for t in con.execute("SHOW TABLES").fetchall()}
-        if "mlb_sgp_odds" not in tables:
-            return
-        _SGP_ODDS = con.execute(
-            "SELECT game_id, combo, period, bookmaker, sgp_decimal, fetch_time, "
-            "spread_line, total_line FROM mlb_sgp_odds WHERE period='FG' "
-            "AND fetch_time > NOW() - INTERVAL (CAST(? AS BIGINT)) SECOND",
-            [config.MAX_BOOK_STALENESS_SEC]).fetchdf()
+        sgp_runner.target_line_cycle(bot_market_db=str(config.MARKET_DB),
+                                     both_teams=True)
     finally:
-        con.close()
+        _invalidate_game_caches()
+
+
+def _coverage_summary_tick(*, sgp_service, rfq_source=None):
+    """Drain the service's on-demand coverage tally into one
+    `on_demand_coverage` research event (issue #81 — the heir to the old
+    sweep's per-pass book counts: with no sweep there is no periodic book
+    count, so this is how a silently-dead book stays visible in research,
+    not just #37 alerts).
+    An idle window emits nothing — zero flights is the poll's normal state
+    on an empty slate, not a coverage fact.
+
+    Also emits `rfq_ingestion_summary` (2026-08-11): the WS ingestion filter
+    drops the non-MLB firehose with NO per-RFQ record (that record volume is
+    what it exists to prevent), so this periodic aggregate is where non-MLB
+    flow stays stored — cumulative drop count + current mirror size, one row
+    per COVERAGE_SUMMARY_SEC. Analysts diff consecutive rows for rates."""
+    if rfq_source is not None and hasattr(rfq_source, "ingestion_dropped"):
+        research.emit("rfq_ingestion_summary",
+                      payload=dict(
+                          non_mlb_dropped_total=rfq_source.ingestion_dropped,
+                          drops_by_reason=dict(
+                              getattr(rfq_source, "ingestion_drops", {}) or {}),
+                          kept_total=getattr(rfq_source, "ingestion_kept", None),
+                          mirror_size=len(rfq_source.poll()),
+                          window_sec=config.COVERAGE_SUMMARY_SEC))
+    snapshot = sgp_service.coverage.snapshot_and_reset()
+    if not snapshot:
+        return
+    research.emit("on_demand_coverage",
+                  payload=dict(books=snapshot,
+                               window_sec=config.COVERAGE_SUMMARY_SEC))
 
 
 def _consensus_filter(book_fairs: dict[str, float]) -> dict[str, float]:
-    """Book-consensus-band gate (v1 correlation defense).
+    """Z-space dispersion gate (issue #20) — regression-test oracle.
 
-    Algorithm:
+    Algorithm (kept as an INDEPENDENT implementation of router.consensus so
+    the two can cross-check each other in tests):
       1. If fewer than MIN_AGREEING_BOOKS supplied → return {} (no quote).
-      2. Compute median of all supplied book devigged fairs.
-      3. Keep only books within ±BOOK_CONSENSUS_BAND of that median.
-      4. If fewer than MIN_AGREEING_BOOKS survive → return {} (no quote).
-      5. Otherwise return the surviving (agreeing) books.
-
-    Mirrors the MLB answer-key dashboard's consensus-band logic. The caller
-    then medians the surviving books to get the fair (see `fairs.blended_fair`).
+         A single book has sigma == 0 by construction, so the count check
+         must refuse it before dispersion is considered.
+      2. Transform each book's devigged fair via norm.ppf (probit z-space).
+      3. If the sample stddev (ddof=1) of the z-values exceeds SIGMA_Z_MAX
+         → return {} (books genuinely disagree; the dissenter may be the
+         informed one, so decline instead of outvoting it).
+      4. Otherwise return ALL supplied books — there is no outlier removal;
+         the caller medians the full set to get the fair.
     """
-    if len(book_fairs) < config.MIN_AGREEING_BOOKS:
+    if len(book_fairs) < max(config.MIN_AGREEING_BOOKS, 2):
         return {}
-    med = statistics.median(book_fairs.values())
-    agreeing = {b: f for b, f in book_fairs.items()
-                if abs(f - med) <= config.BOOK_CONSENSUS_BAND}
-    if len(agreeing) < config.MIN_AGREEING_BOOKS:
+    zs = [float(norm.ppf(min(max(f, 1e-6), 1.0 - 1e-6)))
+          for f in book_fairs.values()]
+    if statistics.stdev(zs) > config.SIGMA_Z_MAX:
         return {}
-    return agreeing
-
-
-# Retained as the regression-test oracle; the production pricing path is router.combo_fair.
-# book fairs for a combo, keyed by its ComboDescriptor. Looks up the descriptor's
-# 4-cell family in the grid (spread×total OR ml×total), REQUIRES the full 4-side
-# devig (no fallback) per accepted-risk #6, devigs for the cell matching the
-# STATED leg sides (desc.target_combo — fixes the old hardcoded "Home Spread +
-# Over"), then runs the survivors through _consensus_filter.
-def _book_fairs(game_id, desc):
-    if _SGP_ODDS is None or _SGP_ODDS.empty or desc is None:
-        return {}
-    df = _SGP_ODDS
-    mask = ((df.game_id == game_id)
-            & df.combo.isin(desc.combo_family)
-            & (df.total_line.astype(float).round(2) == round(desc.total_line, 2)))
-    if desc.spread_line is None:
-        # ml×total rows store spread_line = NULL (NaN in pandas).
-        mask &= df.spread_line.isna()
-    else:
-        mask &= (df.spread_line.astype(float).round(2) == round(desc.spread_line, 2))
-    rows = df[mask]
-    if rows.empty:
-        return {}
-    out = {}
-    for book in rows.bookmaker.unique():
-        sub = rows[rows.bookmaker == book]
-        if len(sub) < 4:        # require the full 4-cell grid (no crude fallback)
-            continue
-        f = devig_book(sub, combo=desc.target_combo, vig_fallback=0.0)
-        if f is not None:
-            out[book] = f
-    return _consensus_filter(out)
+    return dict(book_fairs)
 
 
 # O-1 fix (issue #18): _commence_time and _resolve_game_for_legs used to open
@@ -157,11 +174,15 @@ def _book_fairs(game_id, desc):
 # refresh (the risk sweep fail-safe cancels on None).
 _COMMENCE_CACHE: dict = {}       # game_id -> commence_time
 _RESOLVE_CACHE: dict = {}        # event_ticker -> game_id
+_GAME_REF_CACHE: dict = {}       # game_id -> GameRef (issue #89: was an
+                                 # uncached MARKET_DB open per pending
+                                 # sub-combo per tick)
 
 
 def _invalidate_game_caches():
     _COMMENCE_CACHE.clear()
     _RESOLVE_CACHE.clear()
+    _GAME_REF_CACHE.clear()
 
 
 def _commence_time(game_id):
@@ -185,7 +206,21 @@ def _commence_time_uncached(game_id):
         row = con.execute(
             "SELECT commence_time FROM mlb_target_lines WHERE game_id=? LIMIT 1",
             [game_id]).fetchone()
-        return row[0] if row else None
+        if not row or row[0] is None:
+            return None
+        ct = row[0]
+        # 2026-08-11 bug: mlb_target_lines stores commence_time as a NAIVE
+        # TIMESTAMP whose instants are UTC (sgp_runner writes Odds API
+        # commence_time), but risk._now_matching treats naive datetimes as
+        # LOCAL (a contract for the R pipeline's naive-local columns). The
+        # mismatch made every tipoff look ~7h later than reality — the gate
+        # never fired and in-play games generated live-flight traffic all
+        # day. Attach UTC here so the comparison is aware-vs-aware.
+        # Durable fix (column -> TIMESTAMPTZ in sgp_runner) is tracked
+        # separately; it touches the taker's copy of the table too.
+        if ct.tzinfo is None:
+            ct = ct.replace(tzinfo=timezone.utc)
+        return ct
     except duckdb.CatalogException:
         return None
     finally:
@@ -225,116 +260,311 @@ def _today_fills_by_game():
     return [{"game_id": g, "price": exp} for g, exp in rows]
 
 
-def _open_quote_exposure_rows(exclude_rfq_id: str | None = None):
-    """Worst-case exposure of OPEN quotes, one row per quote — for the DAILY
-    cap (R-1, issue #22). The cap gates must see money that could fill in one
-    burst (a counterparty sweeping resting quotes), not just money that already
-    filled. worst_exposure_usd is frozen at quote time; NULL (pre-migration
-    rows) counts at the per-fill cap — same conservative convention as N8
-    unreconciled fills. Shape matches `_today_fills` rows so callers can
-    concatenate the two lists straight into `risk.daily_cap_ok`.
+class _PassSnapshot:
+    """One discovery pass's read-side gate state, loaded in ONE connection.
 
-    `exclude_rfq_id`: the RFQ currently being (re-)quoted. Its existing open
-    quote is SUPERSEDED by the new one (hysteresis keeps it, or Kalshi
-    auto-cancels it when the replacement lands — issue #16), so counting it
-    would self-block every replace once a game/day nears its cap.
-    IS DISTINCT FROM makes exclude_rfq_id=None exclude nothing.
+    Issue #89: the 2026-08-10 incident fix batched the seen-lookup and the
+    decision writes, but the IN-SCOPE gate path still paid 4-5 separate
+    `db.connect()` opens per RFQ (~17ms each on the live state DB, measured
+    ~61ms/RFQ) — ~10s of pure connection churn per pass at ~200 open RFQs.
+    That made the effective RFQ re-visit cadence the PASS duration (8-12s),
+    not DISCOVERY_SEC (2s), so the #55 quorum landings sat unread and the
+    median RFQ-created -> quote-submitted latency was 18.5s on RFQs whose
+    median lifetime is 10s. Every per-RFQ gate read now resolves from these
+    in-memory maps.
+
+    Read-your-writes: quotes submitted / replaced / cancelled DURING the
+    pass are folded in via record_submitted / remove_quote, preserving the
+    N7 + R-1 rule that quotes submitted earlier in the same pass count
+    against the caps immediately. Fills, cooldowns and creator counts are
+    written only by OTHER loop arms (confirm/settlement), which never run
+    mid-pass — the loop is single-threaded — so a pass-start snapshot of
+    those is exact, not approximate.
     """
-    with db.connect(read_only=True) as con:
-        rows = con.execute(
-            "SELECT game_id, COALESCE(worst_exposure_usd, ?) AS exposure "
-            "FROM live_quotes WHERE status='open' "
-            "AND rfq_id IS DISTINCT FROM ?",
-            [config.max_fill_exposure_usd(), exclude_rfq_id]).fetchall()
-    return [{"game_id": g, "price": float(exp)} for g, exp in rows]
+
+    def __init__(self, *, open_quotes: dict, quote_games: dict,
+                 cooldowns: dict, last_fills: dict, combo_exposure: dict,
+                 creator_fill_counts: dict):
+        self._open_quotes = open_quotes            # qid -> row dict
+        self._quote_games = quote_games            # qid -> [game_id, ...]
+        self._cooldowns = cooldowns                # ticker -> cooled_until
+        self._last_fills = last_fills              # ticker -> (filled_at, fair)
+        self._combo_exposure = combo_exposure      # ticker -> filled $ exposure
+        self._creator_fill_counts = creator_fill_counts  # creator_id -> n
+
+    @classmethod
+    def load(cls, now_utc):
+        fallback_exposure = config.max_fill_exposure_usd()
+        creator_cutoff = now_utc - timedelta(
+            hours=config.PER_CREATOR_WINDOW_HOURS)
+        with db.connect(read_only=True) as con:
+            open_rows = con.execute(
+                "SELECT quote_id, rfq_id, combo_market_ticker, game_id, "
+                "worst_exposure_usd, yes_bid, no_bid "
+                "FROM live_quotes WHERE status='open'").fetchall()
+            game_rows = con.execute(
+                "SELECT qg.quote_id, qg.game_id FROM quote_games qg "
+                "JOIN live_quotes lq ON lq.quote_id = qg.quote_id "
+                "WHERE lq.status='open'").fetchall()
+            cooldown_rows = con.execute(
+                "SELECT combo_market_ticker, cooled_until "
+                "FROM combo_cooldown").fetchall()
+            cooled_tickers = [t for t, _ in cooldown_rows]
+            fill_rows = []
+            if cooled_tickers:
+                # Newest-first so dict construction below keeps the LATEST
+                # fill per ticker (matches the old ORDER BY ... LIMIT 1).
+                fill_rows = con.execute(
+                    "SELECT combo_market_ticker, filled_at, "
+                    "COALESCE(fair_at_confirm, blended_fair_at_quote) "
+                    "FROM fills "
+                    "WHERE combo_market_ticker IN (SELECT unnest(?)) "
+                    "ORDER BY filled_at DESC", [cooled_tickers]).fetchall()
+            exposure_rows = con.execute(
+                "SELECT combo_market_ticker, "
+                "SUM(CASE WHEN reconciled THEN price * contracts ELSE ? END) "
+                "FROM fills GROUP BY combo_market_ticker",
+                [fallback_exposure]).fetchall()
+            creator_rows = con.execute(
+                "SELECT s.creator_id, COUNT(*) FROM fills f "
+                "JOIN seen_rfqs s ON f.rfq_id = s.rfq_id "
+                "WHERE f.filled_at >= ? GROUP BY s.creator_id",
+                [creator_cutoff]).fetchall()
+        open_quotes = {}
+        for qid, rid, ticker, game_id, worst, yb, nb in open_rows:
+            # NULL worst_exposure_usd (pre-migration rows) counts at the
+            # per-fill cap — same conservative convention as N8.
+            open_quotes[qid] = dict(
+                rfq_id=rid, ticker=ticker, game_id=game_id,
+                worst_exposure_usd=float(worst if worst is not None
+                                         else fallback_exposure),
+                yes_bid=yb, no_bid=nb)
+        quote_games: dict = {}
+        for qid, gid in game_rows:
+            quote_games.setdefault(qid, []).append(gid)
+        last_fills = {}
+        for ticker, filled_at, fair in fill_rows:
+            last_fills.setdefault(ticker, (filled_at, fair))
+        return cls(open_quotes=open_quotes, quote_games=quote_games,
+                   cooldowns=dict(cooldown_rows), last_fills=last_fills,
+                   combo_exposure={t: float(e or 0) for t, e in exposure_rows},
+                   creator_fill_counts={c: int(n or 0)
+                                        for c, n in creator_rows})
+
+    # -- per-creator halt (H4) ------------------------------------------ #
+
+    def creator_fill_count(self, creator_id: str) -> int:
+        return self._creator_fill_counts.get(creator_id, 0)
+
+    def creator_halt_active(self, creator_id: str) -> bool:
+        """H4 (per-creator): refuse a counterparty that has already farmed
+        us for >= PER_CREATOR_FILL_HALT fills in the recent window."""
+        if not creator_id:
+            return False
+        return self.creator_fill_count(creator_id) >= config.PER_CREATOR_FILL_HALT
+
+    # -- open-quote exposure (R-1, issue #22) --------------------------- #
+
+    def _open_rows(self, exclude_rfq_id):
+        # `!=` mirrors the old SQL IS DISTINCT FROM: exclude_rfq_id=None
+        # excludes nothing (every real rfq_id differs from None).
+        return [(qid, row) for qid, row in self._open_quotes.items()
+                if row["rfq_id"] != exclude_rfq_id]
+
+    def open_exposure_rows(self, exclude_rfq_id: str | None = None):
+        """Worst-case exposure of OPEN quotes, one row per quote — for the
+        DAILY cap. The cap gates must see money that could fill in one burst
+        (a counterparty sweeping resting quotes), not just money that already
+        filled. Shape matches `_today_fills` rows so callers can concatenate
+        the two lists straight into `risk.daily_cap_ok`.
+
+        `exclude_rfq_id`: the RFQ currently being (re-)quoted. Its existing
+        open quote is SUPERSEDED by the new one (hysteresis keeps it, or
+        Kalshi auto-cancels it when the replacement lands — issue #16), so
+        counting it would self-block every replace near the caps."""
+        return [{"game_id": row["game_id"], "price": row["worst_exposure_usd"]}
+                for _, row in self._open_rows(exclude_rfq_id)]
+
+    def open_exposure_by_game(self, exclude_rfq_id: str | None = None):
+        """Open-quote worst-case exposure fanned out to one row per
+        (quote × game) via `quote_games` — for the PER-GAME cap. A cross-game
+        quote counts its FULL worst case against EVERY game it touches; a
+        quote with no quote_games rows (pre-migration) falls back to its
+        primary game_id so it is never invisible to the per-game cap."""
+        rows = []
+        for qid, row in self._open_rows(exclude_rfq_id):
+            for gid in self._quote_games.get(qid) or [row["game_id"]]:
+                rows.append({"game_id": gid,
+                             "price": row["worst_exposure_usd"]})
+        return rows
+
+    # -- per-combo / per-RFQ open-quote reads --------------------------- #
+
+    def open_count_for_ticker(self, ticker: str) -> int:
+        return sum(1 for row in self._open_quotes.values()
+                   if row["ticker"] == ticker)
+
+    def open_quote_ids_for_ticker(self, ticker: str) -> list:
+        return [qid for qid, row in self._open_quotes.items()
+                if row["ticker"] == ticker]
+
+    def existing_open_quote(self, rfq_id: str):
+        """(quote_id, yes_bid, no_bid) of this RFQ's resting quote, or None."""
+        for qid, row in self._open_quotes.items():
+            if row["rfq_id"] == rfq_id:
+                return (qid, row["yes_bid"], row["no_bid"])
+        return None
+
+    # -- cooldown (H9/P-7) + per-combo fill exposure (H8/N7/N8) --------- #
+
+    def has_cooldown_row(self, ticker: str) -> bool:
+        return ticker in self._cooldowns
+
+    def cooldown_active(self, ticker: str, now_utc) -> bool:
+        cooled_until = self._cooldowns.get(ticker)
+        return cooled_until is not None and cooled_until > now_utc
+
+    def last_fill(self, ticker: str):
+        """(filled_at, fair_at_confirm|blended_fair_at_quote) of the latest
+        fill on this combo, or None. Loaded only for cooled tickers — the
+        only callers are behind has_cooldown_row."""
+        return self._last_fills.get(ticker)
+
+    def combo_fill_exposure(self, ticker: str) -> float:
+        return self._combo_exposure.get(ticker, 0.0)
+
+    # -- in-pass maintenance (read-your-writes for the cap gates) ------- #
+
+    def record_submitted(self, quote_id: str, rfq_id: str, ticker: str,
+                         primary_game_id, game_ids: list,
+                         worst_exposure_usd: float,
+                         yes_bid: float, no_bid: float) -> None:
+        self._open_quotes[quote_id] = dict(
+            rfq_id=rfq_id, ticker=ticker, game_id=primary_game_id,
+            worst_exposure_usd=float(worst_exposure_usd),
+            yes_bid=yes_bid, no_bid=no_bid)
+        self._quote_games[quote_id] = list(game_ids)
+
+    def remove_quote(self, quote_id: str) -> None:
+        """A quote left 'open' mid-pass (replaced / cancelled / pulled)."""
+        self._open_quotes.pop(quote_id, None)
+        self._quote_games.pop(quote_id, None)
+
+
+def _open_quote_exposure_rows(exclude_rfq_id: str | None = None):
+    """One-off wrapper over `_PassSnapshot.open_exposure_rows` (the pass
+    itself loads one snapshot and reuses it — issue #89)."""
+    snapshot = _PassSnapshot.load(datetime.now(timezone.utc))
+    return snapshot.open_exposure_rows(exclude_rfq_id)
 
 
 def _open_quote_exposure_by_game(exclude_rfq_id: str | None = None):
-    """Open-quote worst-case exposure fanned out to one row per (quote × game)
-    via `quote_games` — for the PER-GAME cap. Mirror of `_today_fills_by_game`:
-    a cross-game quote counts its FULL worst case against EVERY game it
-    touches. LEFT JOIN + COALESCE falls back to the primary game_id for open
-    rows written before the quote_games migration, so a quote is never
-    invisible to the per-game cap. Same NULL-exposure and exclude_rfq_id
-    conventions as `_open_quote_exposure_rows`.
-    """
-    with db.connect(read_only=True) as con:
-        rows = con.execute(
-            "SELECT COALESCE(qg.game_id, lq.game_id) AS game_id, "
-            "COALESCE(lq.worst_exposure_usd, ?) AS exposure "
-            "FROM live_quotes lq "
-            "LEFT JOIN quote_games qg ON lq.quote_id = qg.quote_id "
-            "WHERE lq.status='open' "
-            "AND lq.rfq_id IS DISTINCT FROM ?",
-            [config.max_fill_exposure_usd(), exclude_rfq_id]).fetchall()
-    return [{"game_id": g, "price": float(exp)} for g, exp in rows]
+    """One-off wrapper over `_PassSnapshot.open_exposure_by_game` (see
+    `_open_quote_exposure_rows`)."""
+    snapshot = _PassSnapshot.load(datetime.now(timezone.utc))
+    return snapshot.open_exposure_by_game(exclude_rfq_id)
 
 
-def _post_fill_refresh_landed(game_ids: list, filled_at) -> bool:
-    """True iff EVERY game in `game_ids` has at least one `_SGP_ODDS` row
-    scraped AFTER `filled_at` (P-7, issue #21). The COMBO_COOLDOWN_SEC floor
-    (60s) expires before a full SGP cycle completes (~150-165s end-to-end),
-    so without this check a re-quote after the floor would be priced off the
-    exact book snapshot that produced the picked-off fill.
+def _post_fill_live_refresh_landed(by_game: dict, filled_at) -> bool:
+    """True iff EVERY game leg set of the combo has a COMPLETED on-demand
+    flight with >=1 book fair that landed AFTER `filled_at` (P-7 issue #21,
+    re-pointed by #57). The COMBO_COOLDOWN_SEC floor (60s) alone would let a
+    re-quote be priced off the exact book snapshot that produced the
+    picked-off fill; the old check waited for a full sweep pass, which at
+    the slow cadence would stretch every cooldown to minutes — the gate now
+    keys on the TARGETED fetch `_ensure_post_fill_fetches` fires instead.
 
-    Timezone rule mirrors `risk._now_matching`: a NAIVE fetch_time is
-    session-LOCAL (mlb_sgp_odds.fetch_time is a naive TIMESTAMP column —
-    DuckDB drops the offset on write), an aware one compares as a true
-    instant. Fail-CLOSED: missing games, NaT, or any comparison error keeps
-    the combo cooled — a stale re-quote is worse than a skipped one.
+    The engine stamps landings on the monotonic clock; the age converts to a
+    wall instant here for the comparison against `fills.filled_at`
+    (TIMESTAMPTZ — aware; a naive value is treated as session-local,
+    mirroring `risk._now_matching`). Fail-CLOSED: no engine, no completed
+    priced flight, a pre-fill landing, or any comparison error keeps the
+    combo cooled — a stale re-quote is worse than a skipped one.
     """
     try:
-        if filled_at is None or _SGP_ODDS is None or _SGP_ODDS.empty:
+        if filled_at is None or _ENGINE is None:
             return False
-        combo_rows = _SGP_ODDS[_SGP_ODDS.game_id.isin(game_ids)]
-        if combo_rows.empty:
-            return False
-        per_game_latest = combo_rows.groupby("game_id").fetch_time.max()
-        if (len(per_game_latest) < len(set(game_ids))
-                or per_game_latest.isna().any()):
-            return False
-        oldest_refresh = pd.Timestamp(per_game_latest.min()).to_pydatetime()
-        if oldest_refresh.tzinfo is None:
-            filled_cmp = (filled_at.astimezone().replace(tzinfo=None)
-                          if filled_at.tzinfo is not None else filled_at)
-        else:
-            filled_cmp = (filled_at if filled_at.tzinfo is not None
-                          else filled_at.astimezone())
-        return oldest_refresh > filled_cmp
+        now_utc = datetime.now(timezone.utc)
+        filled_cmp = (filled_at if filled_at.tzinfo is not None
+                      else filled_at.astimezone())
+        for gl in by_game.values():
+            age = _ENGINE.completed_fetch_age_sec(legset.leg_set_hash(gl))
+            if age is None:
+                return False
+            landed_wall = now_utc - timedelta(seconds=age)
+            if landed_wall <= filled_cmp:
+                return False
+        return True
     except Exception:
-        log.warning("[post_fill_refresh_check_failed] game_ids=%s — keeping "
-                    "combo cooled", game_ids)
+        log.warning("[post_fill_refresh_check_failed] — keeping combo cooled")
         return False
 
 
+def _ensure_post_fill_fetches(rfq_id, ticker, by_game: dict) -> None:
+    """Queue a TARGETED on-demand fetch for every game leg set of a filled
+    combo (#57). Fired eagerly by the confirm tick the moment a fill is
+    recorded (so the awaiting-refresh gate usually clears right at the 60s
+    floor) and lazily by the cooldown gate whenever the landing is missing
+    (process restart / engine store prune self-heal). Reuses the live-feed
+    machinery wholesale — per-book pacing gates, job budget, dropped-book
+    accounting, #38 health rows. Fail-safe: never raises into its tick."""
+    try:
+        if _ENGINE is None:
+            return
+        for gl in by_game.values():
+            gid = _resolve_game_for_legs(gl)
+            gref = _game_ref(gid) if gid is not None else None
+            if gref is None:
+                continue
+            h = legset.leg_set_hash(gl)
+            if _ENGINE.landed_empty(h):
+                # The books just answered "nothing" for this leg set — while
+                # that zero-book landing is fresh, re-feeding would hammer a
+                # dead slate every tick. Retry resumes once it ages out
+                # (~QUOTE_FRESH_SEC), mirroring the pricing path's re-feed
+                # rule after live_fetch_timeout.
+                continue
+            if _ENGINE.ensure_fetch(h, gref, gl):
+                research.emit("on_demand_requested", rfq_id=rfq_id,
+                              ticker=ticker,
+                              payload=dict(leg_set_hash=h, game_id=gid,
+                                           n_legs=len(gl),
+                                           trigger="post_fill"))
+    except Exception:
+        log.warning("[post_fill_fetch_failed] ticker=%s", ticker)
+
+
 def _resolve_game_for_legs(game_legs: list) -> str | None:
-    """Cached wrapper (O-1) — keyed by the game's event_ticker; failures (None)
+    """Cached wrapper (O-1) — keyed by the game code; failures (None)
     are not cached; invalidated on SGP refresh."""
     if not game_legs:
         return None
-    event_ticker = game_legs[0].game_id
-    if event_ticker in _RESOLVE_CACHE:
-        return _RESOLVE_CACHE[event_ticker]
+    game_code = game_legs[0].game_id
+    if game_code in _RESOLVE_CACHE:
+        return _RESOLVE_CACHE[game_code]
     gid = _resolve_game_for_legs_uncached(game_legs)
     if gid is not None:
-        _RESOLVE_CACHE[event_ticker] = gid
+        _RESOLVE_CACHE[game_code] = gid
     return gid
 
 
 def _resolve_game_for_legs_uncached(game_legs: list) -> str | None:
     """Resolve ONE game's CanonicalLegs to the mlb_target_lines game_id, or None.
 
-    game_legs[0].game_id is the Kalshi event_ticker shared by all legs of that
-    game. Parses the event suffix with _parse_event_suffix + _MLB_CODE_TO_TEAM
-    and looks up mlb_target_lines. Fail-safe: returns None on any error — never raises.
+    game_legs[0].game_id is the family-independent GAME CODE shared by all legs
+    of that game (issue #71 — it used to be the whole event ticker, which
+    differs per market family). Parses it with _parse_event_suffix +
+    _MLB_CODE_TO_TEAM and looks up mlb_target_lines. Fail-safe: returns None on
+    any error — never raises.
     """
     try:
         if not game_legs:
             return None
-        event_ticker = game_legs[0].game_id
-        if "-" not in event_ticker:
+        # Already the trailing code; tolerate a stray prefix rather than
+        # returning None, so a future ticker shape can't silently unprice a game.
+        suffix = game_legs[0].game_id.rsplit("-", 1)[-1]
+        if not suffix:
             return None
-        suffix = event_ticker.rsplit("-", 1)[-1]
         away_code, home_code = _parse_event_suffix(suffix)
         if not away_code or not home_code:
             return None
@@ -361,6 +591,19 @@ def _resolve_game_for_legs_uncached(game_legs: list) -> str | None:
 
 
 def _game_ref(game_id):
+    """Cached wrapper (O-1 pattern, issue #89) — the pending-RFQ feed block
+    calls this every tick per pending sub-combo, and the uncached MARKET_DB
+    open added up at ~200 open RFQs. Failures (None) are not cached;
+    invalidated with the other game-metadata caches on target-line refresh."""
+    if game_id in _GAME_REF_CACHE:
+        return _GAME_REF_CACHE[game_id]
+    ref = _game_ref_uncached(game_id)
+    if ref is not None:
+        _GAME_REF_CACHE[game_id] = ref
+    return ref
+
+
+def _game_ref_uncached(game_id):
     """GameRef (id + team names + commence) from mlb_target_lines, or None.
 
     The per-book on-demand fetch needs team names to match the book's own
@@ -399,10 +642,16 @@ def _out_of_scope_reason(legs, canon) -> str:
         return "out_of_scope_non_mlb"      # some leg untypeable (other sport etc.)
     if len(canon) < 2:
         return "out_of_scope_lone_single"
+    # F5-winner TEAM legs are in scope since #86 (re-encoded as +-0.5 run
+    # lines at parse). Only the TIE market still parses as (ml, F5) — no
+    # book leg can express it. Labeled distinctly so the declined demand
+    # stays measurable.
+    if any(l.market_type == "ml" and l.period == "F5" for l in canon):
+        return "out_of_scope_f5_tie_leg"
     return "out_of_scope"
 
 
-def _maybe_emit_on_demand_result(rfq_id, ticker, hash_):
+def _maybe_emit_on_demand_result(rfq_id, ticker, hash_, legs=()):
     """Emit on_demand_result once per landing (not per tick it gets read)."""
     try:
         if _ENGINE is None:
@@ -416,15 +665,52 @@ def _maybe_emit_on_demand_result(rfq_id, ticker, hash_):
         while len(_OD_RESULT_EMITTED) > 512:
             _OD_RESULT_EMITTED.pop(next(iter(_OD_RESULT_EMITTED)))
         res = _ENGINE.lookup_results(hash_) or {}
+        # #55: budget-dropped books ride along (getattr — duck-typed test
+        # engines may not implement the accessor). latency_sec per book is
+        # the arrival-order/latency record the quorum design is judged by.
+        dropped = getattr(_ENGINE, "dropped_books", lambda h: ())(hash_)
         research.emit("on_demand_result", rfq_id=rfq_id, ticker=ticker,
                       payload=dict(
                           leg_set_hash=hash_,
+                          # #85: which periods the flight's legs span
+                          # ("FG"/"F5") — additive key, report.py readers
+                          # select fields by name and ignore it.
+                          periods=sorted({l.period for l in legs}),
+                          dropped_books=list(dropped or ()),
                           books={b: dict(fair=r.fair, route=r.route,
                                          n_cells=r.n_cells_priced,
                                          latency_sec=r.latency_sec)
                                  for b, r in res.items()}))
     except Exception:                      # research must never break the tick
         pass
+
+
+def _live_games_detail(by_game):
+    """Per-game live-fetch trace for quote_priced (issue #54 acceptance: a
+    live-mode quote's fair must be provably backed by a post-RFQ fetch).
+    {hash: {age_sec, books: {book: {fair, route, latency_sec}}}} for every
+    game with a stored engine result; None when there is none (cached mode).
+    Fail-safe: research decoration only, never raises into the tick."""
+    try:
+        if _ENGINE is None:
+            return None
+        out = {}
+        for gl in by_game.values():
+            h = legset.leg_set_hash(gl)
+            res = _ENGINE.lookup_results(h)
+            if not res:
+                continue
+            out[h] = dict(
+                age_sec=_ENGINE.result_age_sec(h),
+                # #85: periods the game's legs span ("FG"/"F5") — additive
+                # key, safe for report.py's live_games readers.
+                periods=sorted({l.period for l in gl}),
+                books={b: dict(fair=r.fair, route=r.route,
+                               latency_sec=r.latency_sec)
+                       for b, r in res.items()})
+        return out or None
+    except Exception:
+        return None
 
 
 def _on_demand_fill_info(canon):
@@ -443,7 +729,7 @@ def _on_demand_fill_info(canon):
                 continue
             fairs = {b: r.fair for b, r in res.items()}
             det = router.consensus_detail(fairs, config.MIN_AGREEING_BOOKS,
-                                          config.BOOK_CONSENSUS_BAND)
+                                          config.SIGMA_Z_MAX)
             out[h] = dict(
                 books={b: dict(fair=r.fair, route=r.route) for b, r in res.items()},
                 consensus_books=det[1] if det else [])
@@ -465,59 +751,6 @@ def _quote_age_sec(submitted_at) -> float | None:
         return max(0.0, (datetime.now() - submitted_at).total_seconds())
     except Exception:
         return None
-
-
-def _market_bid_ask(mkt: dict) -> tuple[float, float] | None:
-    """(yes_bid, yes_ask) in DOLLARS from either Kalshi market response shape
-    — int cents (`yes_bid`) or string-dollar (`yes_bid_dollars`); see the
-    kalshi_price_gotchas note on *_dollars vs int shapes."""
-    bid, ask = mkt.get("yes_bid"), mkt.get("yes_ask")
-    if bid is not None and ask is not None:
-        return float(bid) / 100.0, float(ask) / 100.0
-    bid, ask = mkt.get("yes_bid_dollars"), mkt.get("yes_ask_dollars")
-    if bid is not None and ask is not None:
-        return float(bid), float(ask)
-    return None
-
-
-def _leg_market_prices(legs: list[dict]) -> dict | None:
-    """Raw Kalshi odds for every leg of a combo: {leg market_ticker:
-    {"yes_bid": $, "yes_ask": $}}. Each leg IS its own Kalshi singles market,
-    so this is one fast GET per leg (~<1s for a 2-3 leg combo). Returns None
-    if ANY leg can't be read (fail-safe: no partial baselines)."""
-    try:
-        out = {}
-        for leg in legs:
-            mt = str(leg.get("market_ticker") or "")
-            if not mt:
-                return None
-            if mt in out:
-                continue
-            _status, body, _hdrs = auth_client.api("GET", f"/markets/{mt}")
-            mkt = body.get("market") if isinstance(body, dict) else None
-            prices = _market_bid_ask(mkt) if isinstance(mkt, dict) else None
-            if prices is None:
-                return None
-            out[mt] = {"yes_bid": prices[0], "yes_ask": prices[1]}
-        return out or None
-    except Exception as e:
-        log.warning("[leg_snapshot] fetch failed: %s", e)
-        return None
-
-
-def _singles_moved(snapshot: dict, fresh: dict) -> bool:
-    """True if ANY leg's yes_bid or yes_ask differs between the quote-time
-    snapshot and the fresh read. Zero tolerance by design: Kalshi prices move
-    in 1c ticks, so 'moved at all' == 'moved >= one tick'. A leg-set mismatch
-    counts as moved (fail-safe)."""
-    if set(snapshot) != set(fresh):
-        return True
-    for mt, snap in snapshot.items():
-        cur = fresh[mt]
-        if (abs(float(snap["yes_bid"]) - float(cur["yes_bid"])) > 1e-9
-                or abs(float(snap["yes_ask"]) - float(cur["yes_ask"])) > 1e-9):
-            return True
-    return False
 
 
 def _fill_game_ids(legs, primary_game_id):
@@ -679,15 +912,27 @@ def _worst_fill_exposure_usd(rfq: dict, q) -> float:
     return 0.0
 
 
+_DECISION_INSERT_SQL = (
+    "INSERT INTO quote_decisions (decision_id, rfq_id, quote_id, "
+    "combo_market_ticker, game_id, decision, reason, model_fair, book_fair, "
+    "blended_fair, yes_bid, no_bid, observed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+
+
 def _log_decision(decision, *, rfq_id=None, quote_id=None, ticker=None, game_id=None,
-                  reason=None, model=None, book=None, blended=None, yb=None, nb=None):
-    with db.connect() as con:
-        con.execute(
-            "INSERT INTO quote_decisions (decision_id, rfq_id, quote_id, "
-            "combo_market_ticker, game_id, decision, reason, model_fair, book_fair, "
-            "blended_fair, yes_bid, no_bid, observed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [str(uuid.uuid4()), rfq_id, quote_id, ticker, game_id, decision, reason,
-             model, book, blended, yb, nb, datetime.now(timezone.utc)])
+                  reason=None, model=None, book=None, blended=None, yb=None, nb=None,
+                  buffer: list | None = None):
+    """Record a quote decision. With buffer=None (default) the row is written
+    immediately on its own connection. The discovery pass instead passes its
+    per-pass buffer: on the ~1GB state DB EVERY connection close pays a full
+    CHECKPOINT (~0.5s, sampled 2026-08-10), so thousands of per-RFQ writes
+    must collapse into one flush per pass or the tick starves the loop."""
+    row = [str(uuid.uuid4()), rfq_id, quote_id, ticker, game_id, decision, reason,
+           model, book, blended, yb, nb, datetime.now(timezone.utc)]
+    if buffer is not None:
+        buffer.append(row)
+    else:
+        with db.connect() as con:
+            con.execute(_DECISION_INSERT_SQL, row)
     # Event 3: decision — research mirror of every quote_decisions row.
     research.emit("decision", rfq_id=rfq_id, quote_id=quote_id, ticker=ticker,
                   payload=dict(decision=decision, game_id=game_id, reason=reason,
@@ -715,18 +960,32 @@ def _void_rate_halt_triggered() -> bool:
     return (voided / denom) > config.VOID_RATE_HALT_THRESHOLD
 
 
-def _creator_halt_active(creator_id: str) -> bool:
-    """H4 (per-creator): if this counterparty has already farmed us for >=N
-    fills in the recent window, refuse to quote them again."""
-    if not creator_id:
+def _pull_quorum_quote(gateway, rid, ticker, game_id, snapshot) -> bool:
+    """#55 straggler pull: a late book blew the #20 dispersion gate while a
+    quote from an earlier (thinner) quorum rests on this RFQ. The resting
+    price was formed from LESS information than we now have, and what we
+    have says the books disagree — the stale side of that disagreement is
+    us, so the quote comes down. Returns True iff a resting quote was
+    pulled (the caller then skips the ordinary gate-decline log)."""
+    existing = snapshot.existing_open_quote(rid)
+    if existing is None:
         return False
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=config.PER_CREATOR_WINDOW_HOURS)
-    with db.connect(read_only=True) as con:
-        count = con.execute(
-            "SELECT COUNT(*) FROM fills f JOIN seen_rfqs s ON f.rfq_id = s.rfq_id "
-            "WHERE s.creator_id = ? AND f.filled_at >= ?",
-            [creator_id, cutoff]).fetchone()[0]
-    return int(count or 0) >= config.PER_CREATOR_FILL_HALT
+    qid = existing[0]
+    snapshot.remove_quote(qid)
+    try:
+        gateway.cancel(qid)
+    except Exception:
+        pass
+    with db.connect() as con:
+        con.execute(
+            "UPDATE live_quotes SET status='cancelled', closed_at=? WHERE quote_id=?",
+            [datetime.now(timezone.utc), qid])
+    _log_decision("pulled", rfq_id=rid, quote_id=qid, ticker=ticker,
+                  game_id=game_id, reason="quorum_dispersion_bust")
+    research.emit("quote_pulled", rfq_id=rid, ticker=ticker,
+                  payload=dict(quote_id=qid, game_id=game_id,
+                               reason="quorum_dispersion_bust"))
+    return True
 
 
 def _discovery_tick(source, gateway, dry_run):
@@ -734,10 +993,10 @@ def _discovery_tick(source, gateway, dry_run):
     # FIX M2: kill-switch — stop quoting immediately if the kill file exists
     if config.KILL_FILE.exists():
         return
-    # Book-freshness gate: if our books are stale/missing we cannot price anything.
-    # Replaces the old samples-staleness gate (model was removed in v1 hardening).
-    if _SGP_ODDS is None or _SGP_ODDS.empty:
-        return
+    # No freshness top gate (#57/#81): every RFQ's data need is enforced
+    # per-RFQ by the live-feed block below (on_demand_pending /
+    # live_fetch_timeout / live_too_few_books) — there is no background
+    # sweep, so nothing market-wide exists to gate on.
     # H4 + N12: global void-rate halt — step back if we're voiding too often.
     # N12: edge-triggered notification so operator gets a single ping on state
     # transitions (False→True = halt; True→False = resume) rather than silence.
@@ -776,361 +1035,567 @@ def _discovery_tick(source, gateway, dry_run):
         _log_decision("halted_high_void_rate")
         return
     rfqs = source.poll()
-    with db.connect(read_only=True) as con:
-        open_count = con.execute(
-            "SELECT COUNT(*) FROM live_quotes WHERE status='open'").fetchone()[0]
+    now_utc = datetime.now(timezone.utc)
+    # Issue #89: ONE read connection loads every per-RFQ gate input (open
+    # quotes, cooldowns, per-combo/creator fill aggregates). The per-RFQ
+    # db.connect() opens this replaces were ~61ms/RFQ — the pass ran 8-12s
+    # at ~200 open RFQs, which IS the quote-latency regression (#55's
+    # quorum landings sat unread until the next slow pass).
+    snapshot = _PassSnapshot.load(now_utc)
+    open_count = len(snapshot.open_exposure_rows())
     # FIX I3: load today's fills once before the loop for cap checks
     fills_today = _today_fills()
     # Per-game exposure fanned out across every game each combo touches (cross-game
     # combos count against BOTH games). Daily cap keeps using fills_today (one row
     # per combo) so it is never double-counted; only the per-game cap uses this.
     game_exposure_rows = _today_fills_by_game()
-    now_utc = datetime.now(timezone.utc)
-    for rfq in rfqs:
-        if open_count >= config.MAX_OPEN_QUOTES:
-            break
-        rid = rfq.get("id")
-        ticker = rfq.get("market_ticker")
-        if not rid or not ticker:
-            continue
-        # Kalshi RFQ poll responses tag the creator as creator_user_id; fall
-        # back to creator_id for forward-compatibility if the API name changes.
-        creator_id = rfq.get("creator_user_id") or rfq.get("creator_id") or ""
+    scope_fetches_this_tick = 0
+    scope_fetches_deferred = 0
+    # Per-pass write buffers + one bulk seen-lookup (2026-08-10 incident,
+    # round 2): on the ~1GB state DB every connection close pays a full
+    # CHECKPOINT (~0.5s — confirmed by stack sampling), so the old
+    # per-RFQ seen-SELECT + per-decision INSERT pattern cost the pass
+    # O(thousands) of checkpoints and starved the loop even after scope
+    # checks went wire-free. One read + one write connection per pass.
+    decision_rows: list[list] = []
+    seen_insert_rows: list[list] = []
+
+    def _decide(decision, **kw):
+        _log_decision(decision, buffer=decision_rows, **kw)
+
+    pass_rfq_ids = [r.get("id") for r in rfqs if r.get("id")]
+    seen_ids: set[str] = set()
+    if pass_rfq_ids:
         with db.connect(read_only=True) as con:
-            seen = con.execute("SELECT in_scope FROM seen_rfqs WHERE rfq_id=?", [rid]).fetchone()
-        # scope (cache the market lookup verdict)
-        if ticker in _SCOPE_CACHE:
-            in_scope, game_id, legs = _SCOPE_CACHE[ticker]
-            canon = legset.parse_legs(legs) if legs else None
-        else:
-            market = source.get_market(ticker)
-            if market is None:
-                # B5 fix (issue #18): a transient fetch failure (HTTP blip)
-                # must not be cached as in_scope=False — that permanently
-                # blacklisted the combo until restart — nor recorded as a
-                # decided RFQ. Skip this tick; a later poll retries.
-                log.warning("[market_fetch_failed] ticker=%s — will retry "
-                            "next tick", ticker)
+            seen_ids = {row[0] for row in con.execute(
+                "SELECT rfq_id FROM seen_rfqs WHERE rfq_id IN (SELECT unnest(?))",
+                [pass_rfq_ids]).fetchall()}
+    # Time-boxed, rotating pass (2026-08-10 round 3): a Sunday-peak mirror
+    # held 9k+ open RFQs — no per-RFQ cost is low enough that an unbounded
+    # pass can't starve the loop. The lap gets a wall-clock budget with
+    # guaranteed progress (>=1 RFQ), and starts where the last lap left off
+    # so tail RFQs are not systematically starved.
+    global _DISCOVERY_CURSOR
+    start_at = _DISCOVERY_CURSOR % len(rfqs) if rfqs else 0
+    if start_at:
+        rfqs = rfqs[start_at:] + rfqs[:start_at]
+    pass_started = time.monotonic()
+    pass_deadline = pass_started + config.DISCOVERY_PASS_BUDGET_SEC
+    iterated = 0
+    timebox_deferred = 0
+    stale_skipped = 0
+    tipoff_skipped = 0
+    horizon_skipped = 0
+    try:
+        for rfq in rfqs:
+            if iterated and time.monotonic() > pass_deadline:
+                timebox_deferred = len(rfqs) - iterated
+                break
+            iterated += 1
+            # A poll() snapshot can be the entire exchange-wide open-RFQ set
+            # (thousands of tickers) — without this check a SIGTERM only takes
+            # effect after the full pass, which is the 2026-08-09/10 shutdown
+            # wedge and loop starvation. Bail promptly; nothing here is
+            # half-done (each RFQ is handled atomically).
+            if not _running.is_set():
+                break
+            if open_count >= config.MAX_OPEN_QUOTES:
+                break
+            rid = rfq.get("id")
+            ticker = rfq.get("market_ticker")
+            if not rid or not ticker:
                 continue
-            legs = scope.decode_legs(market)
-            canon = legset.parse_legs(legs) if legs else None
-            in_scope = bool(canon and _priceable(canon))
-            game_id = None
-            if len(_SCOPE_CACHE) >= _SCOPE_CACHE_MAX:
-                _SCOPE_CACHE.clear()
-            _SCOPE_CACHE[ticker] = (in_scope, game_id, legs)
-        if not in_scope:
+            # Age gate BEFORE any other work: an RFQ resting past
+            # MAX_RFQ_AGE_SEC un-quoted is near expiry or already picked
+            # over — quoting it late is adverse selection, and classifying
+            # it is wasted lap budget. No decision row (it would re-bloat
+            # the state DB on every restart backlog); the periodic pass
+            # summary carries the count. Unparseable/missing created_ts
+            # passes through (fail-open).
+            rfq_created = _parse_created_ts(rfq.get("created_ts"))
+            if rfq_created is not None and (
+                    (now_utc - rfq_created).total_seconds() > config.MAX_RFQ_AGE_SEC):
+                stale_skipped += 1
+                continue
+            # Kalshi RFQ poll responses tag the creator as creator_user_id; fall
+            # back to creator_id for forward-compatibility if the API name changes.
+            creator_id = rfq.get("creator_user_id") or rfq.get("creator_id") or ""
+            # scope (cache the market lookup verdict). Resolved BEFORE the
+            # seen_rfqs read so a budget-deferred ticker costs zero DB opens —
+            # during a 4k-backlog drain the deferred majority is re-visited
+            # every tick, and a per-RFQ connect there is ~400k pointless opens.
+            if ticker in _SCOPE_CACHE:
+                in_scope, game_id, legs = _SCOPE_CACHE[ticker]
+                canon = legset.parse_legs(legs) if legs else None
+            elif (rfq_legs := scope.decode_legs(rfq)) is not None:
+                # The RFQ payload itself carries mve_selected_legs (verified
+                # against WS rfq_created frames and the REST gap-fill,
+                # 2026-08-10) in the same {event_ticker, market_ticker, side}
+                # shape as GET /markets/{ticker} — so scope resolves with ZERO
+                # wire calls. The budgeted get_market below survives only as a
+                # fallback for payloads missing the field.
+                legs = rfq_legs
+                canon = legset.parse_legs(legs)
+                in_scope = bool(canon and _priceable(canon))
+                game_id = None
+                _scope_cache_put(ticker, in_scope, game_id, legs)
+            else:
+                if scope_fetches_this_tick >= config.SCOPE_FETCH_BUDGET_PER_TICK:
+                    # Budget exhausted: leave this ticker unresolved for a later
+                    # tick (the mirror is level-triggered, so it will be offered
+                    # again). This bounds a tick's REST work so a giant backlog
+                    # drains across many breathing loop iterations instead of
+                    # one starving mega-pass.
+                    scope_fetches_deferred += 1
+                    continue
+                market = source.get_market(ticker)
+                scope_fetches_this_tick += 1
+                if market is None:
+                    # B5 fix (issue #18): a transient fetch failure (HTTP blip)
+                    # must not be cached as in_scope=False — that permanently
+                    # blacklisted the combo until restart — nor recorded as a
+                    # decided RFQ. Skip this tick; a later poll retries.
+                    log.warning("[market_fetch_failed] ticker=%s — will retry "
+                                "next tick", ticker)
+                    continue
+                legs = scope.decode_legs(market)
+                canon = legset.parse_legs(legs) if legs else None
+                in_scope = bool(canon and _priceable(canon))
+                game_id = None
+                _scope_cache_put(ticker, in_scope, game_id, legs)
+            seen = rid in seen_ids
+            if not in_scope:
+                if not seen:
+                    # Phase 2 instrumentation: granular reason + the legs
+                    # themselves, so out-of-scope flow is finally measurable
+                    # (previously legs_json was NULL and every reason was the
+                    # single opaque "out_of_scope").
+                    oos_reason = _out_of_scope_reason(legs, canon)
+                    _decide("skipped", rfq_id=rid, ticker=ticker, reason=oos_reason)
+                    seen_insert_rows.append(
+                        [rid, ticker, False, None,
+                         json.dumps(legs) if legs else None, now_utc,
+                         oos_reason, creator_id])
+                    seen_ids.add(rid)
+                continue
+            # Event 1: rfq_received — in-scope candidate, first time we act on it.
             if not seen:
-                # Phase 2 instrumentation: granular reason + the legs
-                # themselves, so out-of-scope flow is finally measurable
-                # (previously legs_json was NULL and every reason was the
-                # single opaque "out_of_scope").
-                oos_reason = _out_of_scope_reason(legs, canon)
-                _log_decision("skipped", rfq_id=rid, ticker=ticker, reason=oos_reason)
+                research.emit("rfq_received", rfq_id=rid, ticker=ticker,
+                              payload=dict(rfq_keys=list(rfq.keys()), rfq_raw=rfq))
+            # H4 (per-creator): refuse to quote a counterparty that's already
+            # farmed us this window. Check BEFORE size gate so we don't waste cycles.
+            if snapshot.creator_halt_active(creator_id):
+                _decide("skipped", rfq_id=rid, ticker=ticker, reason="skipped_creator_halt")
+                # Event 10: creator_halt_skip
+                research.emit("creator_halt_skip", rfq_id=rid, ticker=ticker,
+                              payload=dict(creator_id=creator_id,
+                                           fill_count_window=snapshot.creator_fill_count(creator_id),
+                                           window_hours=config.PER_CREATOR_WINDOW_HOURS))
+                continue
+            # Size gate. Kalshi RFQs are denominated EITHER in contracts
+            # (contracts_fp, fixed-point string) OR in dollars (target_cost_dollars,
+            # with contracts_fp == "0.00"). Live data 2026-06-08: ~85% of in-scope
+            # flow was dollar-denominated, so both paths matter. The per-fill dollar
+            # cap runs post-pricing (needs the quote — see _worst_fill_exposure_usd).
+            req_contracts = _rfq_requested_contracts(rfq)
+            target_cost = float(rfq.get("target_cost_dollars") or 0)
+            if req_contracts <= 0 and target_cost <= 0:
+                _decide("skipped", rfq_id=rid, ticker=ticker, reason="size_unknown")
+                continue
+            # Multi-game resolution: canon must be parseable and all games resolvable.
+            if canon is None:
+                _decide("skipped", rfq_id=rid, ticker=ticker, reason="no_game")
+                continue
+            by_game = legset.partition_by_game(canon)
+            game_ids_list = [_resolve_game_for_legs(gl) for gl in by_game.values()]
+            if any(gid is None for gid in game_ids_list):
+                _decide("skipped", rfq_id=rid, ticker=ticker, reason="no_game")
+                continue
+            game_id = game_ids_list[0]  # primary id stored in schema (single column)
+            # FIX I3: exposure cap gates (wired — were defined but never called).
+            # R-1 (issue #22): both gates ALSO count open quotes' worst-case
+            # exposure — a burst sweep of resting quotes could otherwise fill to
+            # many multiples of the caps before the first fill registers. Reads
+            # the pass snapshot, which record_submitted keeps current, so quotes
+            # submitted earlier in this same loop count immediately (N7).
+            open_quote_rows = snapshot.open_exposure_rows(exclude_rfq_id=rid)
+            if not risk.daily_cap_ok(fills_today + open_quote_rows,
+                                     config.daily_exposure_cap_usd()):
+                _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                              reason="daily_cap")
+                continue
+            # Per-game cap: all games must pass (cross-game combos checked per-game).
+            # game_exposure_rows attributes each combo's full stake to EVERY game it
+            # touches, so a game can't slip past its cap by only ever being a 2nd leg;
+            # open_quotes_by_game does the same for still-resting quotes via quote_games.
+            open_quotes_by_game = snapshot.open_exposure_by_game(exclude_rfq_id=rid)
+            if any(not risk.per_game_cap_ok(gid, game_exposure_rows + open_quotes_by_game,
+                                            config.BANKROLL, config.MAX_GAME_EXPOSURE_PCT)
+                   for gid in game_ids_list):
+                _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                              reason="per_game_cap")
+                continue
+            # H9 + P-7 (issue #21, re-pointed by #57): per-combo cooldown, two
+            # layers after a fill:
+            # (1) hard floor — COMBO_COOLDOWN_SEC past the fill (unchanged);
+            # (2) data-aware — even after the floor, stay cooled until EVERY game
+            #     this combo touches has a completed post-fill TARGETED fetch
+            #     (fired at fill time by the confirm tick, re-fired lazily here).
+            #     Without it a re-quote could be priced before the books were
+            #     ever re-asked after the picked-off fill.
+            # cooled_until is TIMESTAMPTZ (O-2), so the aware bind compares as a
+            # true instant. last_fill_fair feeds the same-price block below (only
+            # set once the refresh gate has passed).
+            last_fill_fair = None
+            if snapshot.has_cooldown_row(ticker):
+                if snapshot.cooldown_active(ticker, now_utc):
+                    _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                                  reason="in_cooldown")
+                    continue
+                last_fill = snapshot.last_fill(ticker)
+                if last_fill is not None:
+                    if not _post_fill_live_refresh_landed(by_game, last_fill[0]):
+                        _ensure_post_fill_fetches(rid, ticker, by_game)
+                        _decide("skipped", rfq_id=rid, ticker=ticker,
+                                      game_id=game_id,
+                                      reason="in_cooldown_awaiting_refresh")
+                        continue
+                    last_fill_fair = last_fill[1]
+            # Tipoff gate: earliest commence across all games. Counter, not a
+            # decision row — in-play RFQ flow runs ~100/min at evening peak
+            # and per-pass rows at that rate is the DB bloat the 08-11 prune
+            # removed (pass-summary log + rfq_ingestion_summary carry it).
+            commence_times = [_commence_time(gid) for gid in game_ids_list]
+            earliest_ct = min((ct for ct in commence_times if ct is not None), default=None)
+            if not risk.tipoff_ok(earliest_ct, config.TIPOFF_CANCEL_MIN):
+                tipoff_skipped += 1
+                continue
+            # Flight horizon: books price SGP combos only near game time —
+            # a combo whose farthest game is hours out comes back
+            # too_few_books after 6 wasted fetches. Skip (counter only)
+            # until every game is inside the horizon. 0 disables.
+            if config.FLIGHT_HORIZON_HOURS > 0:
+                latest_ct = max((ct for ct in commence_times if ct is not None),
+                                default=None)
+                if latest_ct is not None and (
+                        (latest_ct - now_utc).total_seconds()
+                        > config.FLIGHT_HORIZON_HOURS * 3600):
+                    horizon_skipped += 1
+                    continue
+            # Live pricing (#54): EVERY in-scope sub-combo — grids, cross-game
+            # singles, novel shapes — rides a live feed keyed off this very poll.
+            # A fresh (<=QUOTE_FRESH_SEC) result prices this tick; otherwise
+            # ensure a fetch is queued and skip. The tick re-enters every open
+            # RFQ every 2s, so this single rule IS the feed: re-fetch fires each
+            # time the result ages out, and stops the moment the RFQ leaves the
+            # poll. The sweep cache is never in the quote path: a fetch that
+            # lands with ZERO books is a DECLINE (live_fetch_timeout), and while
+            # that empty landing is fresh we deliberately do not re-feed, so a
+            # dead slate retries every ~QUOTE_FRESH_SEC. Placed after the
+            # caps/cooldown/tipoff gates so gated RFQs never generate book
+            # traffic.
+            od_pending = False
+            od_timed_out = False
+            for gl, od_gid in zip(by_game.values(), game_ids_list):
+                if _ENGINE is None:
+                    od_pending = True          # engine absent -> fail-safe skip
+                    continue
+                od_hash = legset.leg_set_hash(gl)
+                if _ENGINE.lookup(od_hash) is not None:
+                    _maybe_emit_on_demand_result(rid, ticker, od_hash, gl)
+                    continue
+                if _ENGINE.landed_empty(od_hash):
+                    od_timed_out = True
+                    continue
+                gref = _game_ref(od_gid)
+                if gref is not None and _ENGINE.ensure_fetch(od_hash, gref, gl):
+                    research.emit("on_demand_requested", rfq_id=rid, ticker=ticker,
+                                  payload=dict(leg_set_hash=od_hash, game_id=od_gid,
+                                               n_legs=len(gl)))
+                od_pending = True
+            if od_pending:
+                _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                              reason="on_demand_pending")
+                continue
+            if od_timed_out:
+                # Only claimed once nothing is still pending: every sub-combo
+                # either priced or landed empty — "we asked live and the books
+                # didn't answer" is a decline, not a wait.
+                _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                              reason="live_fetch_timeout")
+                continue
+            # Fair value: router prices via legset/grid across all games; fresh
+            # on-demand fairs are injected via the engine's pure lookup. The
+            # detail carries sigma_pts (cross-book dispersion) and n_games for
+            # the uncertainty-scaled margin (#19); gate declines get their own
+            # skip reasons (#20) so the report can tell "not enough books" from
+            # "books disagree" — everything else stays "no_fair".
+            od_lookup = _ENGINE.lookup if _ENGINE is not None else None
+            fair_detail, gate_reason = router.combo_fair_detail(
+                legs, None, _resolve_game_for_legs,
+                config.MIN_AGREEING_BOOKS, config.SIGMA_Z_MAX,
+                on_demand_fairs=od_lookup, live_routing=True)
+            blended = fair_detail.fair if fair_detail is not None else None
+            book_med = blended  # single consensus fair; book_med == blended
+            if blended is None or not (config.MIN_FAIR_PROB <= blended <= config.MAX_FAIR_PROB):
+                skip_reason = (gate_reason if fair_detail is None and gate_reason
+                               in ("too_few_books", "consensus_dispersion")
+                               else "no_fair")
+                if skip_reason == "too_few_books":
+                    # "The live fetch answered too thin" — named so the monitor
+                    # separates a thin live slate from the pre-#54 cache era.
+                    skip_reason = "live_too_few_books"
+                # #55: a dispersion bust doesn't just block a NEW quote — it
+                # pulls the RESTING one this RFQ may already have (a straggler
+                # book just contradicted the thinner quorum that priced it).
+                # too_few_books deliberately does NOT pull: a set that merely
+                # thinned was not contradicted, and the risk sweep's drift and
+                # constituent-jump breakers still cover the resting quote.
+                if (skip_reason == "consensus_dispersion"
+                        and _pull_quorum_quote(gateway, rid, ticker, game_id,
+                                               snapshot)):
+                    continue
+                _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                              reason=skip_reason, model=None, book=book_med,
+                              blended=blended)
+                continue
+            # circuit breaker bookkeeping
+            prev = _PREV_BOOK_FAIR.get(ticker)
+            _PREV_BOOK_FAIR[ticker] = book_med
+            if (prev is not None and book_med is not None
+                    and risk.book_move_triggered(prev, book_med, config.BOOK_MOVE_CB_THRESHOLD)):
+                # H1: circuit breaker now actually CANCELS open quotes on this combo
+                # (previously it only blocked re-quotes — resting quotes were exposed).
+                opens = snapshot.open_quote_ids_for_ticker(ticker)
+                for open_qid in opens:
+                    try:
+                        gateway.cancel(open_qid)
+                    except Exception:
+                        pass
+                    with db.connect() as con:
+                        con.execute(
+                            "UPDATE live_quotes SET status='cancelled', closed_at=? WHERE quote_id=?",
+                            [datetime.now(timezone.utc), open_qid])
+                    snapshot.remove_quote(open_qid)
+                _decide("circuit_breaker", rfq_id=rid, ticker=ticker, game_id=game_id,
+                              reason=f"book_move_pulled_{len(opens)}_quotes")
+                # Event 9: circuit_breaker
+                research.emit("circuit_breaker", rfq_id=rid, ticker=ticker,
+                              payload=dict(prev_book_med=prev, cur_book_med=book_med,
+                                           threshold=config.BOOK_MOVE_CB_THRESHOLD,
+                                           opens_cancelled=len(opens),
+                                           game_id=game_id))
+                continue
+            # P-7 same-price block (issue #21): books have refreshed since the
+            # last fill on this combo (refresh gate above), but if consensus fair
+            # hasn't actually moved we would re-post the exact price that just got
+            # picked off. Placed after the circuit breaker so a big move still
+            # cancels resting quotes first.
+            if last_fill_fair is not None and risk.same_price_blocked(
+                    blended, last_fill_fair, config.QUOTE_HYSTERESIS):
+                _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                              reason="same_price_block", book=book_med, blended=blended)
+                continue
+            # #19: uncertainty-scaled margin — cross-book dispersion widens the
+            # cushion, game count compounds the ROI divisor. #55: a quote whose
+            # thinnest per-game consensus is exactly 2 books rides a 2-sample
+            # sigma, so it carries QUORUM_MARGIN_ADDON as one extra floor term;
+            # the add-on drops out on its own when a straggler thickens the set
+            # and the quote refines.
+            quorum_addon_pts = (config.QUORUM_MARGIN_ADDON
+                                if fair_detail.min_n_books == 2 else 0.0)
+            q = pricing.quote(blended, config.TARGET_ROI,
+                              sigma_pts=fair_detail.sigma_pts,
+                              n_games=fair_detail.n_games,
+                              min_margin_pts=config.MIN_MARGIN_PTS,
+                              k_sigma=config.K_SIGMA,
+                              quorum_addon_pts=quorum_addon_pts)
+            if q is None:
+                _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                              reason="unpriceable")
+                continue
+            # Per-fill dollar cap (replaces the old contract cap). Worst-case over
+            # both sides the creator could take; our held-side cost basis = max loss.
+            fill_exposure = _worst_fill_exposure_usd(rfq, q)
+            if fill_exposure > config.max_fill_exposure_usd():
+                _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                              reason="size_gate")
+                continue
+            # H8 + N7 + N8: per-combo exposure cap — block multi-RFQ concentration
+            # on one combo. N7: also count outstanding open live_quotes' worst-case
+            # exposure so a burst of RFQs on the same combo can't all be accepted
+            # before any fills register. N8: treat unreconciled fills conservatively
+            # (counted at the per-fill cap) for the same reason.
+            combo_exp = snapshot.combo_fill_exposure(ticker)
+            inflight_count = snapshot.open_count_for_ticker(ticker)
+            worst_inflight = float(inflight_count) * config.max_fill_exposure_usd()
+            if combo_exp + worst_inflight + fill_exposure > config.MAX_COMBO_EXPOSURE_USD:
+                _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                              reason="per_combo_cap")
+                continue
+            # FIX I1 + M1: dedup + hysteresis — skip re-quote if price unchanged,
+            # else mark the old row 'replaced' so we never leave ghost-open rows.
+            # #55: computed BEFORE the quote_priced emit so the refine action
+            # (initial / hold / replace) rides in the research payload.
+            existing = snapshot.existing_open_quote(rid)
+            replaced_qid = None
+            refine_action = "initial"
+            if existing:
+                eqid, eyb, enb = existing
+                if (abs(q.yes_bid - eyb) < config.QUOTE_HYSTERESIS
+                        and abs(q.no_bid - enb) < config.QUOTE_HYSTERESIS):
+                    refine_action = "hold"  # price essentially unchanged
+                else:
+                    # price moved beyond hysteresis → replace. B2 fix (issue #16):
+                    # submit FIRST, mark the old row 'replaced' only on success.
+                    # Kalshi auto-cancels the prior quote only when a new one
+                    # lands, so marking 'replaced' before a submit that then fails
+                    # would leave a live exchange quote invisible to the confirm
+                    # loop and risk sweep. On failure the old row stays 'open'
+                    # (still tracked); the next tick retries the replace.
+                    refine_action = "replace"
+                    replaced_qid = eqid
+            # Event 2: quote_priced — we have a valid quote from the pricer.
+            # #19 item 5: margin components ride in the firehose payload (NOT in
+            # quote_decisions — the #14 report's column semantics stay intact).
+            # #55: quorum_size + quorum_addon_pts + refine_action make quorum
+            # quoting and every refinement measurable from research data.
+            research.emit("quote_priced", rfq_id=rid, ticker=ticker,
+                          payload=dict(leg_set_hash=legset.leg_set_hash(canon),
+                                       n_games=len(by_game),
+                                       blended_fair=blended, yes_bid=q.yes_bid, no_bid=q.no_bid,
+                                       game_id=game_id,
+                                       sigma_pts=q.sigma_pts, floor_pts=q.floor_pts,
+                                       quorum_size=fair_detail.min_n_books,
+                                       quorum_addon_pts=q.quorum_addon_pts,
+                                       refine_action=refine_action,
+                                       resting_quote_id=existing[0] if existing else None,
+                                       roi_pts_yes=q.roi_pts_yes, roi_pts_no=q.roi_pts_no,
+                                       margin_pts_yes=q.margin_pts_yes,
+                                       margin_pts_no=q.margin_pts_no,
+                                       live_games=_live_games_detail(by_game)))
+            if dry_run:
+                _decide("dry_run_quote", rfq_id=rid, ticker=ticker, game_id=game_id,
+                              model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
+                continue
+            if refine_action == "hold":
+                continue  # leave the resting quote in place
+            # #17 singles baseline: snapshot the raw Kalshi odds of every leg at
+            # quote time — the confirm-window veto compares a fresh read against
+            # this and voids on any tick. No baseline ⇒ don't quote: a quote
+            # without one is doomed to void on accept, and chronic non-confirms
+            # are abusive behavior Kalshi can throttle.
+            leg_snapshot = _leg_market_prices(legs)
+            if leg_snapshot is None:
+                _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                              reason="no_leg_snapshot")
+                continue
+            # #23 item 3: correlation sanity against Kalshi's live singles. The leg
+            # snapshot we just fetched for #17's veto IS the marginal anchor, so
+            # this costs ZERO extra API calls. Independent of the #20 gate: that
+            # one asks whether the books agree with EACH OTHER, this asks whether
+            # their consensus is consistent with the real-time single-leg prices —
+            # tightly-agreeing books can still be jointly wrong. Degenerate books
+            # (yes_ask=100, empty, crossed) yield no marginals: we log the miss and
+            # quote on book consensus alone, exactly as before this ticket, rather
+            # than declining on missing information.
+            marginals = singles.marginals_for_legs(leg_snapshot, legs)
+            sanity = singles.corr_sanity(blended, marginals,
+                                         config.CORR_PREMIUM_MIN,
+                                         config.CORR_PREMIUM_MAX) if marginals else None
+            # Item 5: premium + marginals per quote — the tuning dataset for the
+            # band and the calibration dataset for a Phase-3 correlation model.
+            research.emit("corr_sanity_check", rfq_id=rid, ticker=ticker,
+                          payload=dict(game_id=game_id, combo_fair=blended,
+                                       n_legs=len(legs), marginals=marginals,
+                                       baseline_independent=(
+                                           sanity.baseline_independent if sanity else None),
+                                       premium=sanity.premium if sanity else None,
+                                       frechet_lo=sanity.frechet_lo if sanity else None,
+                                       frechet_hi=sanity.frechet_hi if sanity else None,
+                                       reason=sanity.reason if sanity else None))
+            gated = sanity is not None and (
+                (sanity.reason == "frechet" and config.CORR_SANITY_FRECHET_ENABLED)
+                or (sanity.reason == "premium" and config.CORR_SANITY_PREMIUM_ENABLED))
+            if gated:
+                _decide("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
+                              reason=f"corr_sanity_{sanity.reason}",
+                              book=book_med, blended=blended)
+                continue
+            qid = gateway.submit_quote(rid, q.yes_bid, q.no_bid)
+            if qid:
                 with db.connect() as con:
+                    # One explicit transaction: DuckDB autocommits per statement,
+                    # and a crash between marking the old row 'replaced' and
+                    # inserting the new one would leave the freshly-submitted
+                    # exchange quote untracked.
+                    con.execute("BEGIN TRANSACTION")
+                    if replaced_qid is not None:
+                        con.execute(
+                            "UPDATE live_quotes SET status='replaced', closed_at=? WHERE quote_id=?",
+                            [datetime.now(timezone.utc), replaced_qid])
+                    con.execute(
+                        "INSERT INTO live_quotes (quote_id, rfq_id, combo_market_ticker, "
+                        "game_id, yes_bid, no_bid, model_fair, book_fair, blended_fair, "
+                        "status, submitted_at, closed_at, worst_exposure_usd, leg_prices_json) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        [qid, rid, ticker, game_id, q.yes_bid, q.no_bid, None, book_med,
+                         blended, "open", datetime.now(timezone.utc), None, fill_exposure,
+                         json.dumps(leg_snapshot)])
+                    # R-1 (issue #22): game attribution for the OPEN-quote exposure
+                    # gates — one row per game the combo touches, same rule as
+                    # fill_games. Written in this transaction so an open quote can
+                    # never exist without its game map.
+                    for quote_game_id in sorted(set(game_ids_list)):
+                        con.execute(
+                            "INSERT OR REPLACE INTO quote_games (quote_id, game_id) "
+                            "VALUES (?, ?)", [qid, quote_game_id])
                     con.execute(
                         "INSERT OR REPLACE INTO seen_rfqs "
                         "(rfq_id, market_ticker, in_scope, game_id, legs_json, "
                         "first_seen_at, last_decision, creator_id) "
                         "VALUES (?,?,?,?,?,?,?,?)",
-                        [rid, ticker, False, None,
-                         json.dumps(legs) if legs else None, now_utc,
-                         oos_reason, creator_id])
-            continue
-        # Event 1: rfq_received — in-scope candidate, first time we act on it.
-        if not seen:
-            research.emit("rfq_received", rfq_id=rid, ticker=ticker,
-                          payload=dict(rfq_keys=list(rfq.keys()), rfq_raw=rfq))
-        # H4 (per-creator): refuse to quote a counterparty that's already
-        # farmed us this window. Check BEFORE size gate so we don't waste cycles.
-        if _creator_halt_active(creator_id):
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="skipped_creator_halt")
-            # Event 10: creator_halt_skip
-            with db.connect(read_only=True) as _con:
-                fill_count = _con.execute(
-                    "SELECT COUNT(*) FROM fills f JOIN seen_rfqs s ON f.rfq_id = s.rfq_id "
-                    "WHERE s.creator_id = ? AND f.filled_at >= ?",
-                    [creator_id,
-                     datetime.now(timezone.utc) - timedelta(hours=config.PER_CREATOR_WINDOW_HOURS)]
-                ).fetchone()[0]
-            research.emit("creator_halt_skip", rfq_id=rid, ticker=ticker,
-                          payload=dict(creator_id=creator_id,
-                                       fill_count_window=int(fill_count or 0),
-                                       window_hours=config.PER_CREATOR_WINDOW_HOURS))
-            continue
-        # Size gate. Kalshi RFQs are denominated EITHER in contracts
-        # (contracts_fp, fixed-point string) OR in dollars (target_cost_dollars,
-        # with contracts_fp == "0.00"). Live data 2026-06-08: ~85% of in-scope
-        # flow was dollar-denominated, so both paths matter. The per-fill dollar
-        # cap runs post-pricing (needs the quote — see _worst_fill_exposure_usd).
-        req_contracts = _rfq_requested_contracts(rfq)
-        target_cost = float(rfq.get("target_cost_dollars") or 0)
-        if req_contracts <= 0 and target_cost <= 0:
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="size_unknown")
-            continue
-        # Multi-game resolution: canon must be parseable and all games resolvable.
-        if canon is None:
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="no_game")
-            continue
-        by_game = legset.partition_by_game(canon)
-        game_ids_list = [_resolve_game_for_legs(gl) for gl in by_game.values()]
-        if any(gid is None for gid in game_ids_list):
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, reason="no_game")
-            continue
-        game_id = game_ids_list[0]  # primary id stored in schema (single column)
-        # FIX I3: exposure cap gates (wired — were defined but never called).
-        # R-1 (issue #22): both gates ALSO count open quotes' worst-case
-        # exposure — a burst sweep of resting quotes could otherwise fill to
-        # many multiples of the caps before the first fill registers. Queried
-        # per-RFQ (not per-tick) so quotes submitted earlier in this same loop
-        # count immediately, matching the N7 per-combo precedent.
-        open_quote_rows = _open_quote_exposure_rows(exclude_rfq_id=rid)
-        if not risk.daily_cap_ok(fills_today + open_quote_rows,
-                                 config.daily_exposure_cap_usd()):
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
-                          reason="daily_cap")
-            continue
-        # Per-game cap: all games must pass (cross-game combos checked per-game).
-        # game_exposure_rows attributes each combo's full stake to EVERY game it
-        # touches, so a game can't slip past its cap by only ever being a 2nd leg;
-        # open_quotes_by_game does the same for still-resting quotes via quote_games.
-        open_quotes_by_game = _open_quote_exposure_by_game(exclude_rfq_id=rid)
-        if any(not risk.per_game_cap_ok(gid, game_exposure_rows + open_quotes_by_game,
-                                        config.BANKROLL, config.MAX_GAME_EXPOSURE_PCT)
-               for gid in game_ids_list):
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
-                          reason="per_game_cap")
-            continue
-        # H9 + P-7 (issue #21): per-combo cooldown, two layers after a fill:
-        # (1) hard floor — COMBO_COOLDOWN_SEC past the fill (unchanged);
-        # (2) data-aware — even after the floor, stay cooled until EVERY game
-        #     this combo touches has a post-fill SGP scrape. The 60s floor
-        #     expires before the ~150-165s scrape cycle, so until then a
-        #     re-quote would re-post the exact books that priced the
-        #     picked-off fill.
-        # cooled_until is TIMESTAMPTZ (O-2), so the aware bind compares as a
-        # true instant. last_fill_fair feeds the same-price block below (only
-        # set once the refresh gate has passed).
-        last_fill_fair = None
-        with db.connect(read_only=True) as con:
-            cd_row = con.execute(
-                "SELECT CAST(cooled_until > ? AS BOOLEAN) FROM combo_cooldown "
-                "WHERE combo_market_ticker=?",
-                [now_utc, ticker]).fetchone()
-        if cd_row is not None:
-            if cd_row[0]:
-                _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
-                              reason="in_cooldown")
-                continue
-            with db.connect(read_only=True) as con:
-                last_fill = con.execute(
-                    "SELECT filled_at, "
-                    "COALESCE(fair_at_confirm, blended_fair_at_quote) "
-                    "FROM fills WHERE combo_market_ticker=? "
-                    "ORDER BY filled_at DESC LIMIT 1", [ticker]).fetchone()
-            if last_fill is not None:
-                if not _post_fill_refresh_landed(game_ids_list, last_fill[0]):
-                    _log_decision("skipped", rfq_id=rid, ticker=ticker,
-                                  game_id=game_id,
-                                  reason="in_cooldown_awaiting_refresh")
-                    continue
-                last_fill_fair = last_fill[1]
-        # Tipoff gate: earliest commence across all games.
-        commence_times = [_commence_time(gid) for gid in game_ids_list]
-        earliest_ct = min((ct for ct in commence_times if ct is not None), default=None)
-        if not risk.tipoff_ok(earliest_ct, config.TIPOFF_CANCEL_MIN):
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id, reason="tipoff")
-            continue
-        # Phase 2: on-demand same-game shapes ride a live feed keyed off this
-        # very poll — a fresh (<=QUOTE_FRESH_SEC) result prices this tick;
-        # otherwise ensure a fetch is queued and skip. The tick re-enters
-        # every open RFQ every 2s, so this single rule IS the feed: re-fetch
-        # fires each time the result ages out, and stops the moment the RFQ
-        # leaves the poll. Placed after the caps/cooldown/tipoff gates so
-        # gated RFQs never generate book traffic.
-        od_pending = False
-        for gl, od_gid in zip(by_game.values(), game_ids_list):
-            if legset.classify_subcombo(gl) != "on_demand":
-                continue
-            if _ENGINE is None:
-                od_pending = True          # engine absent -> fail-safe skip
-                continue
-            od_hash = legset.leg_set_hash(gl)
-            if _ENGINE.lookup(od_hash) is not None:
-                _maybe_emit_on_demand_result(rid, ticker, od_hash)
-                continue
-            gref = _game_ref(od_gid)
-            if gref is not None and _ENGINE.ensure_fetch(od_hash, gref, gl):
-                research.emit("on_demand_requested", rfq_id=rid, ticker=ticker,
-                              payload=dict(leg_set_hash=od_hash, game_id=od_gid,
-                                           n_legs=len(gl)))
-            od_pending = True
-        if od_pending:
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
-                          reason="on_demand_pending")
-            continue
-        # Fair value: router prices via legset/grid across all games; fresh
-        # on-demand fairs are injected via the engine's pure lookup.
-        od_lookup = _ENGINE.lookup if _ENGINE is not None else None
-        blended = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
-                                    config.MIN_AGREEING_BOOKS, config.BOOK_CONSENSUS_BAND,
-                                    on_demand_fairs=od_lookup)
-        book_med = blended  # single consensus fair; book_med == blended
-        if blended is None or not (config.MIN_FAIR_PROB <= blended <= config.MAX_FAIR_PROB):
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
-                          reason="no_fair", model=None, book=book_med, blended=blended)
-            continue
-        # circuit breaker bookkeeping
-        prev = _PREV_BOOK_FAIR.get(ticker)
-        _PREV_BOOK_FAIR[ticker] = book_med
-        if (prev is not None and book_med is not None
-                and risk.book_move_triggered(prev, book_med, config.BOOK_MOVE_CB_THRESHOLD)):
-            # H1: circuit breaker now actually CANCELS open quotes on this combo
-            # (previously it only blocked re-quotes — resting quotes were exposed).
-            with db.connect(read_only=True) as con:
-                opens = con.execute(
-                    "SELECT quote_id FROM live_quotes WHERE combo_market_ticker=? AND status='open'",
-                    [ticker]).fetchall()
-            for (open_qid,) in opens:
-                try:
-                    gateway.cancel(open_qid)
-                except Exception:
-                    pass
-                with db.connect() as con:
-                    con.execute(
-                        "UPDATE live_quotes SET status='cancelled', closed_at=? WHERE quote_id=?",
-                        [datetime.now(timezone.utc), open_qid])
-            _log_decision("circuit_breaker", rfq_id=rid, ticker=ticker, game_id=game_id,
-                          reason=f"book_move_pulled_{len(opens)}_quotes")
-            # Event 9: circuit_breaker
-            research.emit("circuit_breaker", rfq_id=rid, ticker=ticker,
-                          payload=dict(prev_book_med=prev, cur_book_med=book_med,
-                                       threshold=config.BOOK_MOVE_CB_THRESHOLD,
-                                       opens_cancelled=len(opens),
-                                       game_id=game_id))
-            continue
-        # P-7 same-price block (issue #21): books have refreshed since the
-        # last fill on this combo (refresh gate above), but if consensus fair
-        # hasn't actually moved we would re-post the exact price that just got
-        # picked off. Placed after the circuit breaker so a big move still
-        # cancels resting quotes first.
-        if last_fill_fair is not None and risk.same_price_blocked(
-                blended, last_fill_fair, config.QUOTE_HYSTERESIS):
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
-                          reason="same_price_block", book=book_med, blended=blended)
-            continue
-        q = pricing.quote(blended, config.TARGET_ROI)
-        if q is None:
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
-                          reason="unpriceable")
-            continue
-        # Per-fill dollar cap (replaces the old contract cap). Worst-case over
-        # both sides the creator could take; our held-side cost basis = max loss.
-        fill_exposure = _worst_fill_exposure_usd(rfq, q)
-        if fill_exposure > config.max_fill_exposure_usd():
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
-                          reason="size_gate")
-            continue
-        # H8 + N7 + N8: per-combo exposure cap — block multi-RFQ concentration
-        # on one combo. N7: also count outstanding open live_quotes' worst-case
-        # exposure so a burst of RFQs on the same combo can't all be accepted
-        # before any fills register. N8: treat unreconciled fills conservatively
-        # (counted at the per-fill cap) for the same reason.
-        with db.connect(read_only=True) as con:
-            combo_exp = con.execute(
-                "SELECT COALESCE(SUM("
-                "CASE WHEN reconciled THEN price * contracts ELSE ? END), 0) "
-                "FROM fills WHERE combo_market_ticker=?",
-                [config.max_fill_exposure_usd(), ticker]).fetchone()[0]
-            inflight_count = con.execute(
-                "SELECT COUNT(*) FROM live_quotes "
-                "WHERE combo_market_ticker=? AND status='open'",
-                [ticker]).fetchone()[0]
-        worst_inflight = float(inflight_count) * config.max_fill_exposure_usd()
-        if float(combo_exp or 0) + worst_inflight + fill_exposure > config.MAX_COMBO_EXPOSURE_USD:
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
-                          reason="per_combo_cap")
-            continue
-        # Event 2: quote_priced — we have a valid quote from the pricer.
-        research.emit("quote_priced", rfq_id=rid, ticker=ticker,
-                      payload=dict(leg_set_hash=legset.leg_set_hash(canon),
-                                   n_games=len(by_game),
-                                   blended_fair=blended, yes_bid=q.yes_bid, no_bid=q.no_bid,
-                                   game_id=game_id))
-        if dry_run:
-            _log_decision("dry_run_quote", rfq_id=rid, ticker=ticker, game_id=game_id,
-                          model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
-            continue
-        # FIX I1 + M1: dedup + hysteresis — skip re-quote if price unchanged, else
-        # mark the old row 'replaced' so we never leave ghost-open rows.
-        with db.connect(read_only=True) as con:
-            existing = con.execute(
-                "SELECT quote_id, yes_bid, no_bid FROM live_quotes "
-                "WHERE rfq_id=? AND status='open'",
-                [rid]).fetchone()
-        replaced_qid = None
-        if existing:
-            eqid, eyb, enb = existing
-            if (abs(q.yes_bid - eyb) < config.QUOTE_HYSTERESIS
-                    and abs(q.no_bid - enb) < config.QUOTE_HYSTERESIS):
-                continue  # price essentially unchanged — leave the resting quote in place
-            # price moved beyond hysteresis → replace. B2 fix (issue #16):
-            # submit FIRST, mark the old row 'replaced' only on success. Kalshi
-            # auto-cancels the prior quote only when a new one lands, so
-            # marking 'replaced' before a submit that then fails would leave a
-            # live exchange quote invisible to the confirm loop and risk sweep.
-            # On failure the old row stays 'open' (still tracked); the next
-            # tick retries the replace.
-            replaced_qid = eqid
-        # #17 singles baseline: snapshot the raw Kalshi odds of every leg at
-        # quote time — the confirm-window veto compares a fresh read against
-        # this and voids on any tick. No baseline ⇒ don't quote: a quote
-        # without one is doomed to void on accept, and chronic non-confirms
-        # are abusive behavior Kalshi can throttle.
-        leg_snapshot = _leg_market_prices(legs)
-        if leg_snapshot is None:
-            _log_decision("skipped", rfq_id=rid, ticker=ticker, game_id=game_id,
-                          reason="no_leg_snapshot")
-            continue
-        qid = gateway.submit_quote(rid, q.yes_bid, q.no_bid)
-        if qid:
-            with db.connect() as con:
-                # One explicit transaction: DuckDB autocommits per statement,
-                # and a crash between marking the old row 'replaced' and
-                # inserting the new one would leave the freshly-submitted
-                # exchange quote untracked.
-                con.execute("BEGIN TRANSACTION")
+                        [rid, ticker, True, game_id, json.dumps(legs),
+                         datetime.now(timezone.utc), "quoted", creator_id])
+                    con.execute("COMMIT")
+                _decide("quoted", rfq_id=rid, quote_id=qid, ticker=ticker, game_id=game_id,
+                              model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
+                open_count += 1
+                # Fold the new quote into the pass snapshot so the cap gates
+                # see it for the REST of this pass (N7/R-1 read-your-writes).
                 if replaced_qid is not None:
-                    con.execute(
-                        "UPDATE live_quotes SET status='replaced', closed_at=? WHERE quote_id=?",
-                        [datetime.now(timezone.utc), replaced_qid])
-                con.execute(
-                    "INSERT INTO live_quotes (quote_id, rfq_id, combo_market_ticker, "
-                    "game_id, yes_bid, no_bid, model_fair, book_fair, blended_fair, "
-                    "status, submitted_at, closed_at, worst_exposure_usd, leg_prices_json) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    [qid, rid, ticker, game_id, q.yes_bid, q.no_bid, None, book_med,
-                     blended, "open", datetime.now(timezone.utc), None, fill_exposure,
-                     json.dumps(leg_snapshot)])
-                # R-1 (issue #22): game attribution for the OPEN-quote exposure
-                # gates — one row per game the combo touches, same rule as
-                # fill_games. Written in this transaction so an open quote can
-                # never exist without its game map.
-                for quote_game_id in sorted(set(game_ids_list)):
-                    con.execute(
-                        "INSERT OR REPLACE INTO quote_games (quote_id, game_id) "
-                        "VALUES (?, ?)", [qid, quote_game_id])
-                con.execute(
-                    "INSERT OR REPLACE INTO seen_rfqs "
-                    "(rfq_id, market_ticker, in_scope, game_id, legs_json, "
-                    "first_seen_at, last_decision, creator_id) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
-                    [rid, ticker, True, game_id, json.dumps(legs),
-                     datetime.now(timezone.utc), "quoted", creator_id])
-                con.execute("COMMIT")
-            _log_decision("quoted", rfq_id=rid, quote_id=qid, ticker=ticker, game_id=game_id,
-                          model=None, book=book_med, blended=blended, yb=q.yes_bid, nb=q.no_bid)
-            open_count += 1
+                    snapshot.remove_quote(replaced_qid)
+                snapshot.record_submitted(qid, rid, ticker, game_id,
+                                          sorted(set(game_ids_list)),
+                                          fill_exposure, q.yes_bid, q.no_bid)
+    finally:
+        # One write connection — one checkpoint — for the whole pass, and it
+        # runs even when the pass breaks early (SIGTERM, MAX_OPEN_QUOTES).
+        if decision_rows or seen_insert_rows:
+            with db.connect() as con:
+                if decision_rows:
+                    con.executemany(_DECISION_INSERT_SQL, decision_rows)
+                if seen_insert_rows:
+                    con.executemany(
+                        "INSERT OR REPLACE INTO seen_rfqs "
+                        "(rfq_id, market_ticker, in_scope, game_id, legs_json, "
+                        "first_seen_at, last_decision, creator_id) "
+                        "VALUES (?,?,?,?,?,?,?,?)", seen_insert_rows)
+        # Advance the rotation so the next lap resumes past this lap's work.
+        _DISCOVERY_CURSOR = (start_at + iterated) % len(rfqs) if rfqs else 0
+    # pass_sec is the #89 health metric: the RFQ re-visit cadence IS the
+    # pass duration whenever it exceeds DISCOVERY_SEC, so a slow pass is a
+    # quote-latency regression even when nothing was deferred. Log it with
+    # the usual counters, and unconditionally when it breaches the cadence.
+    pass_sec = time.monotonic() - pass_started
+    if (scope_fetches_deferred or timebox_deferred or stale_skipped
+            or tipoff_skipped or horizon_skipped
+            or pass_sec > config.DISCOVERY_SEC):
+        log.info("discovery pass: iterated=%d/%d pass_sec=%.2f stale_skipped=%d "
+                 "tipoff_skipped=%d horizon_skipped=%d "
+                 "timebox_deferred=%d scope_fetch_deferred=%d",
+                 iterated, len(rfqs), pass_sec, stale_skipped, tipoff_skipped,
+                 horizon_skipped, timebox_deferred, scope_fetches_deferred)
 
 
 def _confirm_tick(gateway, dry_run):
@@ -1221,8 +1686,9 @@ def _confirm_tick(gateway, dry_run):
             refetch_ok = True
             if _ENGINE is not None and canon_c:
                 for gl in legset.partition_by_game(canon_c).values():
-                    if legset.classify_subcombo(gl) != "on_demand":
-                        continue
+                    # #54: EVERY sub-combo re-fetches — the quote's fair came
+                    # from the engine, whose result has aged out by accept
+                    # time; the cache must not stand in.
                     gid_c = _resolve_game_for_legs(gl)
                     gref = _game_ref(gid_c) if gid_c else None
                     if gref is None:
@@ -1234,9 +1700,10 @@ def _confirm_tick(gateway, dry_run):
                     refetch_ok = _ENGINE.refetch_now(refetch_jobs,
                                                      CONFIRM_REFETCH_BUDGET_SEC)
             od_lookup = _ENGINE.lookup if _ENGINE is not None else None
-            cur_fair = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
-                                         config.MIN_AGREEING_BOOKS, config.BOOK_CONSENSUS_BAND,
-                                         on_demand_fairs=od_lookup)
+            cur_fair = router.combo_fair(legs, None, _resolve_game_for_legs,
+                                         config.MIN_AGREEING_BOOKS, config.SIGMA_Z_MAX,
+                                         on_demand_fairs=od_lookup,
+                                         live_routing=True)
             if cur_fair is None or not refetch_ok:
                 _log_decision("voided_no_fresh_books", rfq_id=rid, quote_id=qid, ticker=ticker,
                               game_id=game_id)
@@ -1316,6 +1783,13 @@ def _confirm_tick(gateway, dry_run):
                     notify.fill(ticker, side_held, contracts, price)
                     _log_decision("confirmed", rfq_id=rid, quote_id=qid, ticker=ticker,
                                   game_id=game_id)
+                    # #57: fire the targeted post-fill fetch NOW — the
+                    # cooldown's awaiting-refresh gate clears on this
+                    # flight's landing, usually right at the 60s floor,
+                    # with no sweep pass involved.
+                    if canon_c:
+                        _ensure_post_fill_fetches(
+                            rid, ticker, legset.partition_by_game(canon_c))
             else:
                 _log_decision("voided_last_look", rfq_id=rid, quote_id=qid, ticker=ticker,
                               game_id=game_id)
@@ -1327,6 +1801,22 @@ def _confirm_tick(gateway, dry_run):
             with db.connect() as con:
                 con.execute("UPDATE live_quotes SET status=?, closed_at=? WHERE quote_id=?",
                             [st, datetime.now(timezone.utc), qid])
+        elif status == 404 and isinstance(body, dict):
+            # Kalshi DELETES the quote object when its RFQ expires: the GET
+            # returns 404 {'error': {'code': 'not_found'}} (live-verified
+            # 2026-08-12). Without this branch st is None, nothing matches,
+            # and the row wedges as 'open' forever — counting against
+            # MAX_OPEN_QUOTES and both exposure caps until the bot silently
+            # stops quoting. Only an explicit 404 with a parsed JSON body is
+            # terminal; transient failures (5xx, timeout, non-dict body,
+            # connection errors) fall through and leave the quote open.
+            log.info("[quote_gone] quote_id=%s ticker=%s — 404 on quote GET; "
+                     "RFQ expired and Kalshi deleted the quote; closing as "
+                     "expired", qid, ticker)
+            with db.connect() as con:
+                con.execute(
+                    "UPDATE live_quotes SET status='expired', closed_at=? WHERE quote_id=?",
+                    [datetime.now(timezone.utc), qid])
 
 
 def _reconcile_sweep_tick():
@@ -1474,26 +1964,174 @@ def _quote_game_ids(legs_json: str | None) -> list[str] | None:
         return None
 
 
-def _risk_sweep_tick(gateway):
+def _current_consensus_fair(legs_json: str | None) -> float | None:
+    """Current book-consensus fair for a resting quote's combo, or None.
+
+    Extracted so the drift check and the #23 constituent-jump breaker's
+    "were the books quiet?" test read the SAME number. Live-routed (#57):
+    a resting quote's RFQ is still in the poll, so the engine holds fairs at
+    most ~QUOTE_FRESH_SEC old — sweep rows would be blind between the slow
+    passes. Fail-safe: any parse or pricing error is None (no signal), never
+    an exception into the sweep.
+    """
+    if not legs_json:
+        return None
+    try:
+        legs = json.loads(legs_json)
+        return router.combo_fair(legs, None, _resolve_game_for_legs,
+                                 config.MIN_AGREEING_BOOKS,
+                                 config.SIGMA_Z_MAX,
+                                 on_demand_fairs=(_ENGINE.lookup
+                                                  if _ENGINE is not None else None),
+                                 live_routing=True)
+    except Exception:
+        return None
+
+
+def _open_quote_constituent_tickers(live_rows) -> set:
+    """Every DISTINCT constituent ticker across all open quotes.
+
+    This set IS the sweep's API cost: one GET per element, per sweep. It is
+    bounded by (open quotes × legs) and is usually far smaller, because quotes
+    on the same game share legs. Zero open quotes → zero calls.
+    """
+    tickers = set()
+    for row in live_rows:
+        leg_prices_json = row[6]
+        if not leg_prices_json:
+            continue
+        try:
+            tickers.update(str(t) for t in json.loads(leg_prices_json))
+        except Exception:
+            continue
+    return tickers
+
+
+def _rotated_poll_order(tickers: set) -> list:
+    """Constituent tickers in a deterministic order, rotated each sweep.
+
+    The poll is wall-clock budgeted (see singles.fetch_market_prices), so on a
+    large resting book some tickers go unpolled. Rotating the start point means
+    the SAME tail is not starved every sweep — over a few sweeps every ticker
+    gets looked at. Sorted first so the order is reproducible in tests.
+    """
+    global _CONSTITUENT_POLL_CURSOR
+    ordered = sorted(tickers)
+    if not ordered:
+        return ordered
+    start = _CONSTITUENT_POLL_CURSOR % len(ordered)
+    return ordered[start:] + ordered[:start]
+
+
+def _games_for_tickers(raw_legs: list, tickers: set) -> set:
+    """game_ids of the legs whose market_ticker is in `tickers`.
+
+    CanonicalLeg carries the game code but not the market_ticker, so the raw
+    leg dicts map ticker → event_ticker, `legset.game_id_of` reduces that to
+    the same family-independent code `partition_by_game` keys on (#71), and
+    that yields the CanonicalLegs `_resolve_game_for_legs` consumes.
+    """
+    out = set()
+    try:
+        canon = legset.parse_legs(raw_legs)
+        if not canon:
+            return out
+        by_game = legset.partition_by_game(canon)
+        jumped_games = {legset.game_id_of(str(leg.get("event_ticker") or ""))
+                        for leg in raw_legs
+                        if str(leg.get("market_ticker") or "") in tickers}
+        for game_code in jumped_games:
+            game_legs = by_game.get(game_code)
+            gid = _resolve_game_for_legs(game_legs) if game_legs else None
+            if gid:
+                out.add(gid)
+    except Exception:
+        return out
+    return out
+
+
+def _constituent_jumped_games(live_rows, current_prices) -> tuple[set, dict]:
+    """(game_ids whose constituents jumped since quote time, per-quote detail).
+
+    #23 items 1-2. Our books refresh every ~150-165s; the constituent Kalshi
+    singles trade in real time, so a constituent that moved since we quoted is
+    the fastest evidence that the market left our resting price behind.
+
+    The placement baseline is `live_quotes.leg_prices_json` — the raw Kalshi
+    odds #17 already snapshots at submission — so this needs no schema of its
+    own. The jump is unconditional (#54): every quote was live-priced at
+    placement, so any constituent move since then means the market moved
+    after us.
+
+    Fail-safe: any row we cannot evaluate contributes NO jump signal. It is
+    still covered by the tipoff / staleness / book-drift gates, and #17's
+    confirm veto still fails closed on any accept.
+    """
+    jumped_games, detail = set(), {}
+    if not current_prices:
+        return jumped_games, detail
+    for (qid, _game_id, _ticker, book_fair_at_q, _rid,
+         legs_json, leg_prices_json) in live_rows:
+        if not legs_json or not leg_prices_json:
+            continue
+        try:
+            baseline = json.loads(leg_prices_json)
+            raw_legs = json.loads(legs_json)
+        except Exception:
+            continue
+        moves = singles.jumped_tickers(baseline, current_prices,
+                                       config.CONSTITUENT_JUMP_THRESHOLD)
+        if not moves:
+            continue
+        detail[qid] = moves
+        jumped_games.update(_games_for_tickers(raw_legs, set(moves)))
+    return jumped_games, detail
+
+
+def _risk_sweep_tick(gateway, *, book_health=None):
     if config.KILL_FILE.exists():
         notify.halt("kill_switch")
         return
-    # Freshness / auto-pull: if our book odds are stale/missing, pull EVERY open
-    # quote — we can no longer trust our fair value, so we must stop resting risk.
-    # Replaces the old samples-staleness gate (model was removed in v1 hardening).
-    books_stale = _SGP_ODDS is None or _SGP_ODDS.empty
+    # "We can no longer trust our fair" auto-pull, re-keyed by #57: the old
+    # rule read the sweep view's age, which under the slow sweep was empty
+    # most of every cycle and would cancel the whole book constantly. Live-fetch
+    # health (#38 failure streaks via BookHealthAlerter.consensus_dark) is
+    # cadence-invariant: fewer than MIN_AGREEING_BOOKS books answering
+    # on-demand fetches means resting quotes can no longer be re-verified,
+    # so stop resting risk. Fail-safe: no alerter wired (tests, alerts
+    # disabled) → no pull; the #23 breakers below still protect the book.
+    books_unhealthy = book_health is not None and book_health.consensus_dark()
     with db.connect(read_only=True) as con:
         # Pull the per-quote fields we need for the drift-since-quote check too.
         live = con.execute(
             "SELECT lq.quote_id, lq.game_id, lq.combo_market_ticker, lq.book_fair, "
-            "       lq.rfq_id, sr.legs_json "
+            "       lq.rfq_id, sr.legs_json, lq.leg_prices_json "
             "FROM live_quotes lq LEFT JOIN seen_rfqs sr ON lq.rfq_id = sr.rfq_id "
             "WHERE lq.status='open'").fetchall()
-    for qid, game_id, ticker, book_fair_at_q, rid, legs_json in live:
+    # #23: real-time constituent poll. ONE GET per DISTINCT ticker across all
+    # open quotes — skipped entirely when flat, and when the books are dark
+    # (every quote is being cancelled anyway, so the calls would be wasted).
+    jumped_games, jump_detail = set(), {}
+    if live and not books_unhealthy:
+        global _CONSTITUENT_POLL_CURSOR
+        poll_order = _rotated_poll_order(_open_quote_constituent_tickers(live))
+        current_prices = singles.fetch_market_prices(
+            poll_order, budget_sec=config.CONSTITUENT_POLL_BUDGET_SEC)
+        # Advance past what we actually got, so the next sweep starts where
+        # this one ran out of budget (approximate: failed reads are not
+        # counted, which just re-polls them sooner).
+        _CONSTITUENT_POLL_CURSOR += max(1, len(current_prices))
+        jumped_games, jump_detail = _constituent_jumped_games(live, current_prices)
+        if jumped_games:
+            research.emit("constituent_jump",
+                          payload=dict(games=sorted(jumped_games),
+                                       threshold=config.CONSTITUENT_JUMP_THRESHOLD,
+                                       moves=jump_detail))
+    for qid, game_id, ticker, book_fair_at_q, rid, legs_json, leg_prices_json in live:
         cancel = False
         cancel_reason = None
-        if books_stale:
-            cancel, cancel_reason = True, "books_stale"
+        if books_unhealthy:
+            cancel, cancel_reason = True, "books_unhealthy"
         else:
             # B1 fix: tipoff-check the EARLIEST commence time across ALL the
             # combo's games, not just the primary game_id column. Any game we
@@ -1509,6 +2147,16 @@ def _risk_sweep_tick(gateway):
                     earliest_ct = min(commence_times)
                     if not risk.tipoff_ok(earliest_ct, config.TIPOFF_CANCEL_MIN):
                         cancel, cancel_reason = True, "tipoff"
+        if not cancel and jumped_games:
+            # #23 item 2: a constituent single moved past the threshold since
+            # this quote was placed. Evaluated BEFORE the book-drift check
+            # because it is the more specific and much faster signal, so it
+            # wins the logged reason when both would fire. Game-level: a quote
+            # is pulled when ANY game it touches is compromised, even if its
+            # own legs are not the ones that moved.
+            gids = _quote_game_ids(legs_json)
+            if gids and (set(gids) & jumped_games):
+                cancel, cancel_reason = True, "constituent_jump"
         if not cancel:
             # H1 (part 2): per-open-quote drift-since-quote sweep.
             # Recompute current book consensus for this combo; if it has drifted
@@ -1516,14 +2164,8 @@ def _risk_sweep_tick(gateway):
             # Catches gradual drift that the per-tick (last vs current) circuit
             # breaker misses (e.g., 1¢ moves over several ticks adding to 4¢).
             if book_fair_at_q is not None and legs_json:
+                cur_med = _current_consensus_fair(legs_json)
                 try:
-                    legs = json.loads(legs_json)
-                    cur_med = router.combo_fair(legs, _SGP_ODDS, _resolve_game_for_legs,
-                                               config.MIN_AGREEING_BOOKS,
-                                               config.BOOK_CONSENSUS_BAND,
-                                               on_demand_fairs=(_ENGINE.lookup
-                                                                if _ENGINE is not None
-                                                                else None))
                     if cur_med is not None and risk.book_move_triggered(
                             book_fair_at_q, cur_med, config.BOOK_MOVE_CB_THRESHOLD):
                         cancel, cancel_reason = True, "book_drift"
@@ -1542,6 +2184,23 @@ def _risk_sweep_tick(gateway):
                           game_id=game_id, reason=cancel_reason)
 
 
+def build_rfq_source():
+    """WS discovery source (issue #56, WS-only by user decision 2026-08-07 —
+    no mode switch; rollback is a git revert).
+
+    The WS source owns its loud automatic REST fallback (watchdog trip →
+    ERROR + notify + rest serving; recovery flips back), so the tick loop
+    never needs to know how discovery is feeling. Must run after
+    _configure_auth(): the WS handshake signs with the same injected
+    credentials.
+    """
+    from kalshi_mlb_mm import ws_rfq_source
+    source = ws_rfq_source.WebSocketRFQSource(rest_source=RestRFQSource())
+    source.start()
+    log.info("WS RFQ discovery started (REST is automatic fallback only)")
+    return source
+
+
 def main_loop(dry_run: bool):
     from kalshi_mlb_mm.log_setup import setup_logging
     setup_logging()
@@ -1551,30 +2210,62 @@ def main_loop(dry_run: bool):
     sid = db.start_session(pid=os.getpid(), dry_run=dry_run)
     research.set_session_id(str(sid))
     log.info("=== MM bot session %s dry_run=%s ===", sid, dry_run)
-    source, gateway = RestRFQSource(), RestQuoteGateway()
+    source, gateway = build_rfq_source(), RestQuoteGateway()
+    from kalshi_common.book_health import build_alerter
     from kalshi_common.sgp_service import SGPService
-    sgp_service = SGPService(per_book_deadline_sec=config.SGP_SCRAPER_TIMEOUT_SEC)
+    # health_db_path (issue #38): per-book fetch health lands in the SAME
+    # market DB (and write lock) the SGP rows go to. Buffered — see
+    # flush_health() in the tick loop below.
+    # book_health (issue #37): run-time alerting on consecutive failed
+    # fetches. In-memory streaks fed by the same two call sites that write
+    # health rows — never a query, which on duckdb 1.4.4 could cost a quote
+    # (see kalshi_common/book_health.py). Rule B reuses MIN_AGREEING_BOOKS so
+    # the alert fires at exactly the count the quoting gate cares about.
+    # The alerter is shared: the service feeds it per-fetch outcomes, and the
+    # risk sweep reads consensus_dark() as its "stop resting risk" signal
+    # (#57). build_alerter returns None when alerting is disabled — the
+    # sweep's book_health=None default then simply skips the pull.
+    book_alerter = build_alerter(
+        label="MM",
+        enabled=config.BOOK_ALERT_ENABLED,
+        streak_threshold=config.BOOK_ALERT_STREAK,
+        min_healthy_books=config.MIN_AGREEING_BOOKS,
+        paths=config.BOOK_ALERT_PATHS)
+    # #81: no per_book_deadline_sec — that knob budgets service.refresh(),
+    # the full-slate sweep the maker no longer runs. On-demand flights are
+    # budgeted by on_demand_deadline_sec; warming gets its own explicit
+    # wall budget at the warm_cycle call (STRUCTURE_WARM_BUDGET_SEC).
+    sgp_service = SGPService(on_demand_deadline_sec=config.ON_DEMAND_DEADLINE_SEC,
+                             health_db_path=str(config.MARKET_DB),
+                             book_health=book_alerter)
     # Phase 2: on-demand pricing engine shares the service's persistent
     # clients + structure caches. Always on — no switch (user decision);
     # the bot-wide kill file remains the emergency stop.
     global _ENGINE
     from kalshi_mlb_mm.on_demand import OnDemandEngine
     _ENGINE = OnDemandEngine(sgp_service)
-    # synchronous warm-up: one SGP cycle
+    # Synchronous warm-up: populate mlb_target_lines before the loop starts
+    # (game resolution, tipoff gating and the first warming pass all read
+    # it). #81: ZERO book requests here — the maker's book traffic is now
+    # purely on-demand flights + #50's structure warming. both_teams=True
+    # (issue #70) enumerates BOTH teams' margin lines (signed spread_line:
+    # home margin negative, away margin positive), matching the taker.
+    warmup_targets_ok = True
     try:
-        rc = sgp_runner.sgp_cycle(bot_market_db=str(config.MARKET_DB),
-                                   service=sgp_service)
-        _refresh_sgp()
-        # Event 8: scrape_done — warmup cycle
-        book_counts = {}
-        if _SGP_ODDS is not None and not _SGP_ODDS.empty:
-            book_counts = {b: int((_SGP_ODDS.bookmaker == b).sum())
-                           for b in _SGP_ODDS.bookmaker.unique()}
-        research.emit("scrape_done", payload=dict(return_codes=rc, book_counts=book_counts))
+        _target_line_tick()
     except Exception as e:
-        log.warning("warmup sgp failed: %s", e)
+        warmup_targets_ok = False
+        log.warning("warmup target-line refresh failed: %s", e)
+    # "warm" starts at 0.0 so the first loop iteration warms immediately:
+    # every book's on-demand structure caches (and the CZR WAF token) are
+    # cold until the first warming pass (issue #50). A FAILED warmup
+    # target-line refresh retries on the first loop iteration too (then
+    # falls back to the 300s cadence) — without it, a Kalshi blip at boot
+    # leaves game resolution blind for a full period.
     last = {"disc": 0.0, "conf": 0.0, "risk": 0.0, "reconcile": 0.0,
-            "settle": 0.0, "sgp": time.time()}
+            "settle": 0.0, "warm": 0.0, "coverage": time.time(),
+            "expiry": 0.0,
+            "targets": time.time() if warmup_targets_ok else 0.0}
     try:
         while _running.is_set():
             now = time.time()
@@ -1592,7 +2283,7 @@ def main_loop(dry_run: bool):
                 last["conf"] = now
             if now - last["risk"] >= config.RISK_SWEEP_SEC:
                 try:
-                    _risk_sweep_tick(gateway)
+                    _risk_sweep_tick(gateway, book_health=book_alerter)
                 except Exception as e:
                     log.error("risk err: %s", e)
                 last["risk"] = now
@@ -1614,25 +2305,58 @@ def main_loop(dry_run: bool):
                 except Exception as e:
                     log.error("settle err: %s", e)
                 last["settle"] = now
-            if now - last["sgp"] >= config.SGP_REFRESH_SEC:
+            # Expired-quote outcome labeler: public trade-tape reads only —
+            # no portfolio dependency, so unlike reconcile/settlement it runs
+            # in dry-run too (dry-run expiries label the same question:
+            # would we have been outpriced?).
+            if now - last["expiry"] >= config.EXPIRY_OUTCOME_SWEEP_SEC:
                 try:
-                    rc = sgp_runner.sgp_cycle(
-                        bot_market_db=str(config.MARKET_DB),
-                        service=sgp_service)
-                    _refresh_sgp()
-                    # Event 8: scrape_done — periodic cycle
-                    book_counts = {}
-                    if _SGP_ODDS is not None and not _SGP_ODDS.empty:
-                        book_counts = {b: int((_SGP_ODDS.bookmaker == b).sum())
-                                       for b in _SGP_ODDS.bookmaker.unique()}
-                    research.emit("scrape_done",
-                                  payload=dict(return_codes=rc, book_counts=book_counts))
+                    expiry_outcome.expiry_outcome_sweep_tick()
                 except Exception as e:
-                    log.error("sgp err: %s", e)
-                last["sgp"] = now
+                    log.error("expiry-outcome err: %s", e)
+                last["expiry"] = now
+            # Issue #81: target-line refresh — Kalshi + Odds API only, zero
+            # book requests. New games appear here, so the game-metadata
+            # caches drop inside the tick.
+            if now - last["targets"] >= config.TARGET_LINE_REFRESH_SEC:
+                try:
+                    _target_line_tick()
+                except Exception as e:
+                    log.error("target-line err: %s", e)
+                last["targets"] = now
+            # Issue #81: periodic on-demand coverage summary — the research
+            # record of which books are actually answering live fetches.
+            if now - last["coverage"] >= config.COVERAGE_SUMMARY_SEC:
+                try:
+                    _coverage_summary_tick(sgp_service=sgp_service, rfq_source=source)
+                except Exception as e:
+                    log.error("coverage err: %s", e)
+                last["coverage"] = now
+            # Issue #50: structure-only warming — no pricing calls, keeps
+            # every book's on-demand structure caches + CZR token hot so an
+            # RFQ never pays the cold-start penalty. Runs inline on the tick
+            # thread on its own FAST cadence: warming is what keeps live
+            # fetches quick.
+            if now - last["warm"] >= config.STRUCTURE_WARM_SEC:
+                try:
+                    warmed = sgp_runner.warm_cycle(
+                        bot_market_db=str(config.MARKET_DB),
+                        service=sgp_service,
+                        cadence_sec=config.STRUCTURE_WARM_SEC,
+                        wall_budget_sec=config.STRUCTURE_WARM_BUDGET_SEC)
+                    log.info("structure warm: %s", warmed)
+                except Exception as e:
+                    log.error("warm err: %s", e)
+                last["warm"] = now
             research.flush()  # per-tick batched drain
+            sgp_service.flush_health()   # issue #38: drain fetch-health rows
+            sgp_service.check_book_health()   # issue #37: book-death alerts
             time.sleep(0.25)   # short sleep → responsive SIGTERM
     finally:
+        # Stop the WS reader first (no-op for RestRFQSource) so shutdown's
+        # quote-cancel sweep doesn't race reconnect attempts and their logs.
+        if hasattr(source, "stop"):
+            source.stop()
         with db.connect(read_only=True) as con:
             live = [r[0] for r in con.execute(
                 "SELECT quote_id FROM live_quotes WHERE status='open'").fetchall()]
@@ -1645,6 +2369,13 @@ def main_loop(dry_run: bool):
                         [datetime.now(timezone.utc), qid])
             except Exception:
                 pass
+        # #81: drain the partial coverage window into the buffer, then the
+        # buffer to disk — otherwise up to COVERAGE_SUMMARY_SEC of per-book
+        # outcomes die with the process.
+        try:
+            _coverage_summary_tick(sgp_service=sgp_service, rfq_source=source)
+        except Exception:
+            pass
         research.flush()  # final drain before shutdown
         db.end_session(sid)
         log.info("=== shutdown complete ===")

@@ -1,5 +1,8 @@
 """Regression tests locking 2-leg equivalence between router.combo_fair and
-the original _book_fairs + statistics.median path, plus basic cross-game
+an inline oracle (grid_cell_fairs -> main._consensus_filter -> median; #81
+deleted the old main._book_fairs oracle, but main._consensus_filter survives
+as the INDEPENDENT #20 implementation, so the consensus arithmetic is still
+cross-checked against production router.consensus), plus basic cross-game
 and Phase-1 scope checks.
 """
 import statistics
@@ -50,12 +53,22 @@ def _grid_rows(book, game_id, spread_line, total_line, cells):
 # Core regression: router.combo_fair == median(_book_fairs) for 2-leg grid
 # ---------------------------------------------------------------------------
 
-def test_router_combo_fair_equals_book_fairs_median(monkeypatch):
-    """For a 2-leg spread×total combo on one game, router.combo_fair must
-    equal statistics.median(main._book_fairs(game_id, desc).values()) to
-    within 1e-9.  This locks the two pricing paths to identical arithmetic.
-    """
+def _oracle_book_fairs(desc, df):
+    """Inline oracle: grid devig via router's own cell helper, gated by
+    main._consensus_filter — the independent #20 implementation."""
     from kalshi_mlb_mm import main
+    cell_fairs = router.grid_cell_fairs(GAME_ID, desc.combo_family,
+                                        desc.spread_line, desc.total_line,
+                                        desc.target_combo, df)
+    return main._consensus_filter(cell_fairs)
+
+
+def test_router_combo_fair_equals_oracle_median():
+    """For a 2-leg spread×total combo on one game, router.combo_fair must
+    equal statistics.median over the oracle's consensus-filtered book fairs
+    to within 1e-9.  This locks the two consensus paths to identical
+    arithmetic.
+    """
     import kalshi_mlb_mm.config as cfg
 
     # Two books with a balanced grid (no outlier — both within BAND).
@@ -64,21 +77,18 @@ def test_router_combo_fair_equals_book_fairs_median(monkeypatch):
         + _grid_rows("fd", GAME_ID, -1.5, 8.5, ST_CELLS)
     )
 
-    # Inject into the module global that _book_fairs reads.
-    monkeypatch.setattr(main, "_SGP_ODDS", df)
-
     legs = LEGS_SPREAD_TOTAL
     desc = combo_descriptor(legs)
     assert desc is not None, "Fixture legs must produce a valid ComboDescriptor"
 
-    # Old path: _book_fairs → consensus filter → median
-    book_fairs = main._book_fairs(GAME_ID, desc)
+    # Oracle path: grid cells → independent consensus filter → median
+    book_fairs = _oracle_book_fairs(desc, df)
     assert book_fairs, "Fixture must yield at least 1 agreeing book"
     old_fair = statistics.median(book_fairs.values())
 
     # New path: router.combo_fair with identity resolve_game
     new_fair = router.combo_fair(legs, df, lambda gl: GAME_ID,
-                                 cfg.MIN_AGREEING_BOOKS, cfg.BOOK_CONSENSUS_BAND)
+                                 cfg.MIN_AGREEING_BOOKS, cfg.SIGMA_Z_MAX)
     assert new_fair is not None, "router.combo_fair must price this combo"
 
     assert abs(new_fair - old_fair) < 1e-9, (
@@ -86,33 +96,32 @@ def test_router_combo_fair_equals_book_fairs_median(monkeypatch):
         f"delta={abs(new_fair - old_fair):.2e}")
 
 
-def test_router_combo_fair_equals_book_fairs_with_outlier(monkeypatch):
-    """Outlier rejection: one rogue book should be filtered by both paths
-    identically, yielding equal medians to 1e-9.
+def test_router_combo_fair_equals_oracle_with_outlier():
+    """Issue #20: a loud dissenter now DECLINES the combo in both paths
+    (dispersion gate) instead of being outvoted — the two implementations
+    must agree on the decline.
     """
-    from kalshi_mlb_mm import main
     import kalshi_mlb_mm.config as cfg
 
-    # Three books: dk + fd agree near 0.25; px is a clear outlier (0.60).
-    OUTLIER_CELLS_PX = {k: 1 / 0.40 for k in ST_CELLS}  # ~0.40 each → devigged ~0.40+
+    # Three books: dk + fd agree near 0.23; px heavily favors the target cell
+    # (devigs to ~0.45) — a genuine dispute, well past SIGMA_Z_MAX.
+    OUTLIER_CELLS_PX = {"Home Spread + Over": 2.0, "Home Spread + Under": 5.0,
+                        "Away Spread + Over": 5.0, "Away Spread + Under": 5.0}
     df = pd.DataFrame(
         _grid_rows("dk", GAME_ID, -1.5, 8.5, ST_CELLS)
         + _grid_rows("fd", GAME_ID, -1.5, 8.5, ST_CELLS)
         + _grid_rows("px", GAME_ID, -1.5, 8.5, OUTLIER_CELLS_PX)
     )
-    monkeypatch.setattr(main, "_SGP_ODDS", df)
 
     legs = LEGS_SPREAD_TOTAL
     desc = combo_descriptor(legs)
 
-    book_fairs = main._book_fairs(GAME_ID, desc)
-    old_fair = statistics.median(book_fairs.values())
+    book_fairs = _oracle_book_fairs(desc, df)
+    assert book_fairs == {}, "oracle path must decline on dispersion"
 
     new_fair = router.combo_fair(legs, df, lambda gl: GAME_ID,
-                                 cfg.MIN_AGREEING_BOOKS, cfg.BOOK_CONSENSUS_BAND)
-    assert new_fair is not None
-    assert abs(new_fair - old_fair) < 1e-9, (
-        f"Outlier-filtered paths diverge: old={old_fair:.12f} new={new_fair:.12f}")
+                                 cfg.MIN_AGREEING_BOOKS, cfg.SIGMA_Z_MAX)
+    assert new_fair is None, "production path must decline on dispersion"
 
 
 # ---------------------------------------------------------------------------
@@ -157,17 +166,18 @@ def test_cross_game_combo_prices_via_priceable_in_phase1():
     assert canon is not None, "Legs must parse"
     assert _priceable_in_phase1(canon), "Cross-game single legs must be priceable in Phase 1"
 
-    out = router.combo_fair(legs_dicts, df, resolve, min_books=2, band=0.02)
+    out = router.combo_fair(legs_dicts, df, resolve, min_books=2,
+                            sigma_z_max=0.07)
     assert out is not None, "router.combo_fair must price 2-game single-leg combo"
 
     # Verify it's the product of the two per-game fairs.
     parts = legset.partition_by_game(canon)
     game_legs_per_game = list(parts.values())
-    f1 = router.subcombo_fair(GAME1, game_legs_per_game[0], df, 2, 0.02)
-    f2 = router.subcombo_fair(GAME2, game_legs_per_game[1], df, 2, 0.02)
-    assert f1 is not None and f2 is not None
-    assert abs(out - f1 * f2) < 1e-9, (
-        f"Cross-game product mismatch: combo={out:.10f} f1*f2={f1*f2:.10f}")
+    c1, _ = router.subcombo_consensus(GAME1, game_legs_per_game[0], df, 2, 0.07)
+    c2, _ = router.subcombo_consensus(GAME2, game_legs_per_game[1], df, 2, 0.07)
+    assert c1 is not None and c2 is not None
+    assert abs(out - c1.fair * c2.fair) < 1e-9, (
+        f"Cross-game product mismatch: combo={out:.10f} f1*f2={c1.fair*c2.fair:.10f}")
 
 
 # ---------------------------------------------------------------------------

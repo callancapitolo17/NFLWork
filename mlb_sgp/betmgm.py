@@ -29,12 +29,17 @@ product. Legitimate anti-correlated corners top out ~1.15x.
 """
 from __future__ import annotations
 
+import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-from mlb_sgp._shared import PricedRow, TargetLine, decimal_to_american
+from mlb_sgp._shared import (BookTransportError, FetchCounters, PricedRow,
+                             TargetLine, decimal_to_american, fetch_counters,
+                             price_tally_for)
 from mlb_sgp.betmgm_client import BetMGMClient, Event
+
+logger = logging.getLogger(__name__)
 
 BOOK_NAME = "betmgm"
 SOURCE_LABEL = "betmgm_direct"
@@ -245,12 +250,34 @@ def price_sgps(
     periods: tuple[str, ...] = ("FG",),
     client: BetMGMClient | None = None,
     verbose: bool = False,
+    *,
+    counters: FetchCounters | None = None,
 ) -> list[PricedRow]:
     """Price every target line against BetMGM's Angstrom bet-builder endpoint.
 
     Up to four PricedRow per (game, period) — one per spread×total corner.
     Combos BetMGM won't price, or that fail the sanity filter, are dropped.
+
+    Thin wrapper over ``_price_sgps`` so issue #35's per-fetch counter summary
+    and parse tripwire are emitted on every exit path, early returns included.
+
+    ``counters`` (issue #38, keyword-only) prices into a CALLER-owned
+    ``FetchCounters`` instead of a fresh one, so ``SGPService`` can read
+    this fetch's counts afterwards and persist them to
+    ``sgp_fetch_health``. Omitting it keeps the pre-#38 behavior.
     """
+    with fetch_counters(BOOK_NAME, "sweep", logger,
+                        counters=counters) as counters:
+        return _price_sgps(target_lines, periods, client, verbose, counters)
+
+
+def _price_sgps(
+    target_lines: list[TargetLine],
+    periods: tuple[str, ...],
+    client: BetMGMClient | None,
+    verbose: bool,
+    counters: FetchCounters,
+) -> list[PricedRow]:
     if not target_lines:
         return []
     targets = [t for t in target_lines if t.period in periods]
@@ -259,15 +286,24 @@ def price_sgps(
 
     if client is None:
         client = BetMGMClient(verbose=verbose)
-    if not client.accessid():
-        if verbose:
-            print("  [mgm] no accessid — aborting (wrong state / harvest failed)")
-        return []
+    # accessid() now RAISES BookTransportError when the harvest fails (issue
+    # #33) — a missing accessid is an auth failure, not an empty slate — so
+    # there is no "" case to guard here.
+    client.accessid()
+
+    # Issue #33: the Angstrom price endpoint can be blocked while the CDS
+    # reads still work. client.price_picks records into this tally; a cycle
+    # where EVERY price call failed raises a "price"-stage transport error.
+    price_calls = price_tally_for(client, BOOK_NAME)
+    tally_start = price_calls.snapshot()
 
     events = client.list_events()
+    counters.bump("events_seen", len(events))
     if not events:
+        logger.info("%s: no events listed (off-day) — no rows", BOOK_NAME)
         return []
     matched_by_gid = _match_events(events, targets)
+    counters.bump("events_matched", len(matched_by_gid))
     if not matched_by_gid:
         return []
 
@@ -295,11 +331,14 @@ def price_sgps(
             if float(t.spread) in per["spreads"] and float(t.total) in per["totals"]:
                 filtered.append(t)
                 kept += 1
-        if verbose:
-            print(f"  [mgm] game {gid[:8]}: {len(game_targets)} targets → {kept} offered")
+        counters.bump("legs_attempted", len(game_targets))
+        counters.bump("legs_resolved", kept)
+        logger.debug("%s: game %s: %d targets -> %d offered",
+                     BOOK_NAME, gid[:8], len(game_targets), kept)
 
     if not filtered:
         return []
+    counters.bump("targets_attempted", len(filtered))
 
     fetch_now = datetime.now(timezone.utc)
 
@@ -333,8 +372,11 @@ def price_sgps(
             dec = priced["decimal"]
             naive = sp_leg[2] * to_leg[2]
             if naive > 0 and dec > naive * SANITY_MULT_RATIO:
-                if verbose:
-                    print(f"      [mgm] SANITY-DROP {combo_name} dec={dec:.2f} naive={naive:.2f}")
+                counters.bump("sanity_drops")
+                # DEBUG, not WARNING: one line per dropped combo across a
+                # thread pool. The per-fetch count rides in the summary.
+                logger.debug("%s: SANITY-DROP %s dec=%.2f naive=%.2f",
+                             BOOK_NAME, combo_name, dec, naive)
                 return combo_name, None
             return combo_name, dec
 
@@ -344,7 +386,8 @@ def price_sgps(
             for f in as_completed(futs):
                 try:
                     combo_name, dec = f.result()
-                except Exception:
+                except Exception as e:
+                    counters.record_exception("price_combo", logger, e)
                     continue
                 if dec is None:
                     continue
@@ -369,24 +412,32 @@ def price_sgps(
             try:
                 out.extend(f.result())
             except Exception as e:
-                if verbose:
-                    print(f"  [mgm] target error: {e}")
+                counters.record_exception("price_target", logger, e)
 
     # ----- Phase 3: moneyline × total combos (FG only) ----- #
     out.extend(_price_ml_total_for_games(
-        client, matched_by_gid, parsed_cache, filtered, fetch_now, verbose))
+        client, matched_by_gid, parsed_cache, filtered, fetch_now,
+        counters=counters))
+    counters.bump("prices_returned", len(out))
+    price_calls.verdict(tally_start)   # raises if EVERY price call failed
     return out
 
 
 def _price_ml_total_for_games(client, matched_by_gid, parsed_cache, filtered,
-                              fetch_now, verbose) -> list[PricedRow]:
+                              fetch_now, *,
+                              counters: FetchCounters | None = None,
+                              ) -> list[PricedRow]:
     """Price the 4 FG ML×total combos per (game, distinct FG total) — ONCE.
 
     ML_TOTAL_FAMILY is FG-only. Priced per distinct (game, total) rather than
     per spread target so a game with several alt-spread targets at the same
     total doesn't re-issue identical ML price_picks calls (footprint + rate
     limits). spread_line=None marks "no spread leg".
+
+    ``counters`` is keyword-only and optional so existing direct-call tests
+    keep working; a throwaway tally stands in when it is absent.
     """
+    counters = counters or FetchCounters(BOOK_NAME, "sweep")
     # Distinct FG totals to price per game (from the targets BetMGM offered).
     totals_by_game: dict[str, set] = {}
     for t in filtered:
@@ -426,8 +477,9 @@ def _price_ml_total_for_games(client, matched_by_gid, parsed_cache, filtered,
             dec = priced["decimal"]
             naive = ml_leg[2] * to_leg[2]
             if naive > 0 and dec > naive * SANITY_MULT_RATIO:
-                if verbose:
-                    print(f"      [mgm] SANITY-DROP {combo_name} dec={dec:.2f} naive={naive:.2f}")
+                counters.bump("sanity_drops")
+                logger.debug("%s: SANITY-DROP %s dec=%.2f naive=%.2f",
+                             BOOK_NAME, combo_name, dec, naive)
                 return None
             return (combo_name, total, dec)
 
@@ -436,7 +488,8 @@ def _price_ml_total_for_games(client, matched_by_gid, parsed_cache, filtered,
             for f in as_completed(futs):
                 try:
                     res = f.result()
-                except Exception:
+                except Exception as e:
+                    counters.record_exception("price_ml_combo", logger, e)
                     continue
                 if res is None:
                     continue
@@ -460,8 +513,7 @@ def _price_ml_total_for_games(client, matched_by_gid, parsed_cache, filtered,
             try:
                 out.extend(f.result())
             except Exception as e:
-                if verbose:
-                    print(f"  [mgm] ML target error: {e}")
+                counters.record_exception("price_ml_target", logger, e)
     return out
 
 
@@ -473,14 +525,21 @@ def _price_ml_total_for_games(client, matched_by_gid, parsed_cache, filtered,
 from mlb_sgp._shared import ResolvedLeg  # noqa: E402
 
 
-def resolve_legs(structure, legs, home_team: str, away_team: str):
-    """Map CanonicalLegs onto a ``parse_markets(...)[period]`` structure.
+def resolve_legs(structure, legs, home_team: str, away_team: str, *,
+                 counters: FetchCounters | None = None):
+    """Map CanonicalLegs onto the full ``parse_markets(...)`` structure.
 
-    ``structure`` is one period's dict from :func:`parse_markets`::
+    ``structure`` is :func:`parse_markets` output — already keyed by
+    ``CanonicalLeg.period`` values (#85)::
 
-        {"spreads": {home_signed_line: {"home": (mid, oid, dec), "away": ...}},
-         "totals":  {line: {"over": ..., "under": ...}},
-         "moneyline": {"home": ..., "away": ...} | None}
+        {"FG": {"spreads": {home_signed_line: {"home": (mid, oid, dec),
+                                               "away": ...}},
+                "totals":  {line: {"over": ..., "under": ...}},
+                "moneyline": {"home": ..., "away": ...} | None},
+         "F5": { ... same shape ... }}
+
+    Each leg resolves from its ``leg.period`` bucket; a missing/None
+    bucket fails the whole book (never a cross-period price).
 
     Canonical spread lines are SIGNED home-perspective (negative = home
     favored) — exactly how ``parse_markets`` keys its spread buckets — so a
@@ -498,17 +557,21 @@ def resolve_legs(structure, legs, home_team: str, away_team: str):
     try:
         resolved: list[ResolvedLeg] = []
         for leg in legs:
+            # Period bucket selection — the ONE place period is applied (#85).
+            period_structure = structure.get(leg.period)
+            if not period_structure:
+                return None                      # book posts no such period
             mt = leg.market_type
             if mt == "spread":
-                bucket = (structure.get("spreads") or {}).get(float(leg.line))
+                bucket = (period_structure.get("spreads") or {}).get(float(leg.line))
                 chosen_key = leg.side
                 other_key = "away" if leg.side == "home" else "home"
             elif mt == "total":
-                bucket = (structure.get("totals") or {}).get(float(leg.line))
+                bucket = (period_structure.get("totals") or {}).get(float(leg.line))
                 chosen_key = leg.side
                 other_key = "under" if leg.side == "over" else "over"
             elif mt == "ml":
-                bucket = structure.get("moneyline")
+                bucket = period_structure.get("moneyline")
                 chosen_key = leg.side
                 other_key = "away" if leg.side == "home" else "home"
             else:
@@ -527,11 +590,17 @@ def resolve_legs(structure, legs, home_team: str, away_team: str):
                 opposite_decimal=opp[2] if opp else None,
             ))
         return resolved
-    except Exception:
+    except Exception as e:
+        # Fail-safe stays (a raise here would kill the quote); the counter is
+        # what tells "book doesn't offer this leg" from "our parser broke".
+        if counters is not None:
+            counters.record_parse_failure("resolve_legs", logger, e)
         return None
 
 
-def price_selection_set(client, refs, fixture_id) -> float | None:
+def price_selection_set(client, refs, fixture_id, *,
+                        counters: FetchCounters | None = None,
+                        ) -> float | None:
     """Price one same-game selection set; return its correlated decimal.
 
     ``refs`` is a list of ``(market_id, option_id)`` tuples (``ResolvedLeg.ref``
@@ -555,5 +624,12 @@ def price_selection_set(client, refs, fixture_id) -> float | None:
         if not dec or dec <= 1.0:
             return None
         return float(dec)
-    except Exception:
+    except BookTransportError:
+        # Counted, NOT re-raised — see caesars.price_selection_set.
+        if counters is not None:
+            counters.bump("transport_errors")
+        return None
+    except Exception as e:
+        if counters is not None:
+            counters.record_parse_failure("price_selection_set", logger, e)
         return None

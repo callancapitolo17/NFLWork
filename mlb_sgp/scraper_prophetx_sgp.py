@@ -30,6 +30,7 @@ so a second client-side filter would be redundant. Matches DK/FD's shim
 shape and behavior.
 """
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -48,6 +49,14 @@ from canonical_match import load_team_dict, load_canonical_games, resolve_team_n
 
 from db import MLB_DB, _connect_with_retry
 from integer_line_derivation import is_integer_line, derive_fair_probs
+
+logger = logging.getLogger(__name__)
+
+# Issue #36 moved every diagnostic in this module to the module logger, so the
+# `verbose` parameters marked "inert" below no longer control anything. They
+# are kept because the orchestrators, SGPService's fetcher hooks and the
+# dashboard shims all still pass them; #49 (shim cleanup) removes them and
+# every call site together.
 
 # ---------------------------------------------------------------------------
 # ProphetX API config
@@ -145,9 +154,11 @@ def init_session() -> cffi_requests.Session:
 
     cookies_loaded = _load_profile_cookies(session)
     if cookies_loaded:
-        print(f"  Loaded {cookies_loaded} cookies from .prophetx_profile")
+        logger.info("prophetx: loaded %d cookies from .prophetx_profile",
+                    cookies_loaded)
     else:
-        print("  No cookies loaded (trying anonymous first; will fall back if 401)")
+        logger.info("prophetx: no cookies loaded (trying anonymous first; "
+                    "will fall back if 401)")
     return session
 
 
@@ -176,7 +187,8 @@ def _load_profile_cookies(session) -> int:
         con.close()
         return count
     except Exception as e:
-        print(f"  (cookie load failed: {e} — continuing anonymously)")
+        logger.warning("prophetx: cookie load failed (%s) — continuing "
+                       "anonymously", e)
         return 0
 
 
@@ -235,7 +247,9 @@ def load_parlay_lines() -> dict:
     try:
         tables = [t[0] for t in con.execute("SHOW TABLES").fetchall()]
         if "mlb_parlay_lines" not in tables:
-            print("  No mlb_parlay_lines table — run the MLB pipeline first.")
+            # WARNING: a missing table is an upstream pipeline fault, not an
+            # empty slate — exactly the confusion issue #32 exists to remove.
+            logger.warning("no mlb_parlay_lines table — run the MLB pipeline first")
             return {}
         rows = con.execute("""
             SELECT game_id, home_team, away_team,
@@ -356,7 +370,9 @@ def _verify_competitor_ids(markets, home_id, away_id) -> bool:
     return True  # no moneyline market — can't verify; don't block
 
 
-def fetch_event_legs(session, game: dict, verbose: bool = False) -> dict:
+def fetch_event_legs(session, game: dict,
+                     verbose: bool = False,   # inert since #36 (see module note)
+                     ) -> dict:
     """For one game, fetch its market tree and extract the 4 canonical legs
     per period: home spread, away spread, over, under.
 
@@ -377,8 +393,7 @@ def fetch_event_legs(session, game: dict, verbose: bool = False) -> dict:
     out = {"fg": {"home_spread": None, "away_spread": None, "over": None, "under": None},
            "f5": {"home_spread": None, "away_spread": None, "over": None, "under": None}}
     if resp.status_code != 200:
-        if verbose:
-            print(f"      markets HTTP {resp.status_code} for {game['px_event_id']}")
+        logger.debug(f"      markets HTTP {resp.status_code} for {game['px_event_id']}")
         return out, []
 
     markets = resp.json().get("data", {}).get("markets", [])
@@ -388,10 +403,12 @@ def fetch_event_legs(session, game: dict, verbose: bool = False) -> dict:
     # C1 guard: if tournaments/markets use different competitorId namespaces,
     # every competitorId-based lookup below silently fails. Detect + skip loudly.
     if not _verify_competitor_ids(markets, home_id, away_id):
-        print(f"  WARN: {game.get('home_team')} / {game.get('away_team')} "
-              f"(event {game['px_event_id']}): competitorId mismatch between "
-              f"tournaments (home={home_id}, away={away_id}) and markets — skipping. "
-              "If this persists, switch to name-based outcome matching.")
+        logger.warning(
+            "prophetx: %s / %s (event %s): competitorId mismatch between "
+            "tournaments (home=%s, away=%s) and markets — skipping. If this "
+            "persists, switch to name-based outcome matching.",
+            game.get("home_team"), game.get("away_team"),
+            game["px_event_id"], home_id, away_id)
         return out, markets
 
     def _leg_from_sel(sel, market_id):
@@ -457,11 +474,11 @@ def fetch_event_legs(session, game: dict, verbose: bool = False) -> dict:
             out[period]["over"]  = _leg_from_sel(over_sel,  mid)
             out[period]["under"] = _leg_from_sel(under_sel, mid)
 
-        if verbose:
-            missing = [k for k, v in out[period].items() if v is None]
-            if missing:
-                print(f"      [{period.upper()}] {game['game_id'][:8]}: "
-                      f"missing {missing}  (spread={target_spread_line}, total={target_total_line})")
+        missing = [k for k, v in out[period].items() if v is None]
+        if missing:
+            logger.debug("      [%s] %s: missing %s  (spread=%s, total=%s)",
+                         period.upper(), game["game_id"][:8], missing,
+                         target_spread_line, target_total_line)
 
     return out, markets
 
@@ -526,8 +543,7 @@ def try_integer_fallback_px(
     # --- Spread legs at the exact spread_line ---
     spread_mkt = _find_market(markets, MARKET_NAMES[period]["spread"])
     if spread_mkt is None:
-        if verbose:
-            print(f"      integer fallback: no spread market for {period} spread={spread_line}")
+        logger.debug(f"      integer fallback: no spread market for {period} spread={spread_line}")
         return None
     mid_spread = spread_mkt.get("id")
     home_sel = _pick_selection(
@@ -545,15 +561,13 @@ def try_integer_fallback_px(
     home_leg = _leg_from_sel(home_sel, mid_spread)
     away_leg = _leg_from_sel(away_sel, mid_spread)
     if not (home_leg and away_leg):
-        if verbose:
-            print(f"      integer fallback: spread legs missing at spread={spread_line}")
+        logger.debug(f"      integer fallback: spread legs missing at spread={spread_line}")
         return None
 
     # --- Adjacent total markets at lo and hi ---
     total_mkt = _find_market(markets, MARKET_NAMES[period]["total"])
     if total_mkt is None:
-        if verbose:
-            print(f"      integer fallback: no total market for {period}")
+        logger.debug(f"      integer fallback: no total market for {period}")
         return None
     mid_total = total_mkt.get("id")
 
@@ -573,13 +587,13 @@ def try_integer_fallback_px(
     under_hi = _get_total_leg("under", hi)
 
     if not all([over_lo, under_lo, over_hi, under_hi]):
-        if verbose:
-            missing = []
-            if not over_lo:  missing.append(f"over {lo}")
-            if not under_lo: missing.append(f"under {lo}")
-            if not over_hi:  missing.append(f"over {hi}")
-            if not under_hi: missing.append(f"under {hi}")
-            print(f"      integer fallback: missing adjacent alt legs {missing} for total={total_line}")
+        missing = []
+        if not over_lo:  missing.append(f"over {lo}")
+        if not under_lo: missing.append(f"under {lo}")
+        if not over_hi:  missing.append(f"over {hi}")
+        if not under_hi: missing.append(f"under {hi}")
+        logger.debug("      integer fallback: missing adjacent alt legs %s "
+                     "for total=%s", missing, total_line)
         return None
 
     def _build_rfq_legs(sp_leg, tot_leg):
@@ -610,8 +624,7 @@ def try_integer_fallback_px(
     }
 
     if any(d is None for d in decimals_lo.values()) or any(d is None for d in decimals_hi.values()):
-        if verbose:
-            print(f"      integer fallback: pricing failed for total={total_line}")
+        logger.debug(f"      integer fallback: pricing failed for total={total_line}")
         return None
 
     return derive_fair_probs(decimals_lo, decimals_hi)
@@ -620,7 +633,9 @@ def try_integer_fallback_px(
 # ---------------------------------------------------------------------------
 # Step 4: RFQ pricing
 # ---------------------------------------------------------------------------
-def submit_parlay_rfq(session, legs: list[dict], verbose: bool = False) -> tuple[dict | None, bool]:
+def submit_parlay_rfq(session, legs: list[dict],
+                      verbose: bool = False,   # inert since #36 (see module note)
+                      ) -> tuple[dict | None, bool]:
     """POST two legs to the RFQ endpoint.
 
     Returns (priced, auth_failed) where:
@@ -635,18 +650,15 @@ def submit_parlay_rfq(session, legs: list[dict], verbose: bool = False) -> tuple
             timeout=RFQ_TIMEOUT,
         )
     except Exception as e:
-        if verbose:
-            print(f"      RFQ error: {e}")
+        logger.debug(f"      RFQ error: {e}")
         return None, False
 
     if resp.status_code == 401 or resp.status_code == 403:
-        if verbose:
-            print(f"      RFQ {resp.status_code} — auth required; cookies may be stale")
+        logger.debug(f"      RFQ {resp.status_code} — auth required; cookies may be stale")
         return None, True
     if resp.status_code != 200:
-        if verbose:
-            body_preview = resp.text[:200] if resp.text else ""
-            print(f"      RFQ HTTP {resp.status_code}: {body_preview}")
+        logger.debug("      RFQ HTTP %s: %s", resp.status_code,
+                     resp.text[:200] if resp.text else "")
         return None, False
 
     try:
@@ -655,8 +667,7 @@ def submit_parlay_rfq(session, legs: list[dict], verbose: bool = False) -> tuple
         return None, False
 
     if not data.get("success"):
-        if verbose:
-            print(f"      RFQ success=false: {data.get('error') or data}")
+        logger.debug(f"      RFQ success=false: {data.get('error') or data}")
         return None, False
 
     offers = (data.get("data") or {}).get("offers") or []
@@ -721,14 +732,14 @@ def main():
 
     targets = load_target_lines(db_path)
     if not targets:
-        print(f"  No target lines in {db_path} — nothing to scrape.")
+        logger.info("no target lines in %s — nothing to scrape", db_path)
         return 0
 
     periods_raw = os.environ.get("MLB_SGP_PERIODS", "FG,F5").split(",")
     periods = tuple(p.strip() for p in periods_raw if p.strip())
 
     from mlb_sgp import prophetx
-    print(f"  PX shim: {len(targets)} target lines, periods={periods}", flush=True)
+    logger.info("PX shim: %d target lines, periods=%s", len(targets), periods)
 
     # Incremental batched writes (2026-06-10). PX prices line-by-line over the
     # RFQ endpoint (~250-350s for a full slate) and used to write ONCE at the
@@ -743,24 +754,39 @@ def main():
     # The orchestrator currently emits only _direct rows; clearing
     # _interpolated too preserves the invariant in case the legacy
     # integer-fallback path is ever re-wired.
-    db.clear_source("prophetx_direct", db_path=db_path)
-    db.clear_source("prophetx_interpolated", db_path=db_path)
-
+    # Clearing is DEFERRED until the first batch prices without a transport
+    # error (issue #33): clearing up-front meant a dead PX deleted the whole
+    # source before we knew it was dead. An empty-but-healthy slate still
+    # clears — the flag flips on a successful CALL, not on a non-zero count.
     batch_size = int(os.environ.get("PX_WRITE_BATCH", "50"))
     client = prophetx.ProphetXClient(verbose=False)
     total = 0
+    cleared = False
     for i in range(0, len(targets), batch_size):
         batch = targets[i:i + batch_size]
-        rows = prophetx.price_sgps(batch, periods=periods, client=client,
-                                   verbose=False)
+        try:
+            rows = prophetx.price_sgps(batch, periods=periods, client=client,
+                                       verbose=False)
+        except Exception as e:
+            logger.error("PX shim: price_sgps failed (%s) — preserving "
+                         "last cycle's rows", e)
+            return 1
+        if not cleared:
+            db.clear_source("prophetx_direct", db_path=db_path)
+            db.clear_source("prophetx_interpolated", db_path=db_path)
+            cleared = True
         if rows:
             db.upsert_priced_rows(rows, db_path=db_path)
             total += len(rows)
-        print(f"  PX shim: batch {i // batch_size + 1} — {len(rows)} rows "
-              f"(total {total})", flush=True)
-    print(f"  PX shim: priced {total} rows", flush=True)
+        logger.info("PX shim: batch %d — %d rows (total %d)",
+                    i // batch_size + 1, len(rows), total)
+    logger.info("PX shim: priced %d rows", total)
     return 0
 
 
 if __name__ == "__main__":
+    # Library code attaches no handlers; the CLI entry point does, so a
+    # subprocess/dashboard run still writes progress to the runner log.
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout,
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     sys.exit(main())

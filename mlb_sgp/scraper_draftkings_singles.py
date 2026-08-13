@@ -9,7 +9,9 @@ function, DK team-name canonicalization, and DuckDB write.
 """
 from __future__ import annotations
 import argparse
+import logging
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,6 +19,8 @@ from typing import Any
 import duckdb
 
 from dk_client import DraftKingsClient, Event, Selection
+
+logger = logging.getLogger(__name__)
 
 
 # DK team-name canonicalization. DK uses abbreviated-city prefixes
@@ -296,12 +300,10 @@ def parse_selections_to_wide_rows(
                 # enough on F5/F7 alts that warning would be noise.
                 continue
             if abs(row["home_spread"] + row["away_spread"]) > 1e-9:
-                print(
-                    f"[dk_singles] WARN: asymmetric spread "
-                    f"home={row['home_spread']} away={row['away_spread']} "
-                    f"on event={event.event_id}; skipping",
-                    flush=True,
-                )
+                logger.warning(
+                    "dk_singles: asymmetric spread home=%s away=%s on "
+                    "event=%s; skipping",
+                    row["home_spread"], row["away_spread"], event.event_id)
                 continue
         out.append(row)
     return out
@@ -315,7 +317,7 @@ def scrape_singles(verbose: bool = False) -> int:
     """
     client = DraftKingsClient(verbose=verbose)
     events = client.list_events()
-    print(f"[dk_singles] {len(events)} events to scrape", flush=True)
+    logger.info("dk_singles: %d events to scrape", len(events))
 
     # Use timezone-aware UTC so DuckDB's TIMESTAMPTZ column receives an
     # explicit UTC instant. A naive datetime would be interpreted as local
@@ -369,8 +371,7 @@ def scrape_singles(verbose: bool = False) -> int:
                         if cls is not None:
                             market_meta[mid] = cls
             except Exception as e:
-                if verbose:
-                    print(f"  [{event.event_id}] parlays-enrich failed: {e}", flush=True)
+                logger.debug(f"  [{event.event_id}] parlays-enrich failed: {e}")
 
             rows = parse_selections_to_wide_rows(event, selections, market_meta, fetch_time)
             # Re-stamp DK team names to canonical Odds-API names.
@@ -380,25 +381,18 @@ def scrape_singles(verbose: bool = False) -> int:
                 row["home_team"] = canonical_home
                 row["away_team"] = canonical_away
             all_rows.extend(rows)
-            if verbose:
-                print(f"  [{event.event_id}] {event.away_team} @ {event.home_team}: {len(rows)} rows", flush=True)
+            logger.debug(f"  [{event.event_id}] {event.away_team} @ {event.home_team}: {len(rows)} rows")
         except Exception as e:
-            print(f"  [{event.event_id}] FAILED: {e}", flush=True)
+            logger.warning("dk_singles: event %s FAILED: %s", event.event_id, e)
             failed.append(event.event_id)
             continue
 
     write_to_duckdb(all_rows)
-    print(
-        f"[dk_singles] wrote {len(all_rows)} rows "
-        f"({len(failed)} events failed)",
-        flush=True,
-    )
+    logger.info("dk_singles: wrote %d rows (%d events failed)",
+                len(all_rows), len(failed))
     if unmapped_teams:
-        print(
-            f"[dk_singles] WARNING — DK team names missing from DK_TEAM_MAP: "
-            f"{sorted(unmapped_teams)}",
-            flush=True,
-        )
+        logger.warning("dk_singles: DK team names missing from DK_TEAM_MAP: %s",
+                       sorted(unmapped_teams))
     return len(all_rows)
 
 
@@ -428,8 +422,9 @@ def write_to_duckdb(rows: list[dict]) -> None:
             "WHERE table_name = 'mlb_odds' AND column_name = 'fetch_time'"
         ).fetchone()
         if existing is not None and "WITH TIME ZONE" not in (existing[1] or "").upper():
-            print(f"[dk] Migrating mlb_odds.fetch_time TIMESTAMP -> TIMESTAMPTZ "
-                  f"(existing snapshot will be re-populated this run)")
+            logger.warning(
+                "dk_singles: migrating mlb_odds.fetch_time TIMESTAMP -> "
+                "TIMESTAMPTZ (existing snapshot will be re-populated this run)")
             con.execute("DROP TABLE mlb_odds")
 
         con.execute(
@@ -483,10 +478,8 @@ def write_to_duckdb(rows: list[dict]) -> None:
             )
             con.execute("DROP TABLE IF EXISTS mlb_odds_new")
         else:
-            print(
-                "[dk_singles] empty scrape — leaving prior snapshot in place",
-                flush=True,
-            )
+            logger.warning(
+                "dk_singles: empty scrape — leaving prior snapshot in place")
     finally:
         con.close()
 
@@ -498,10 +491,14 @@ def main() -> None:
     p.add_argument("--verbose", action="store_true", help="Per-event row logging")
     args = p.parse_args()
     if args.sport != "mlb":
-        print(f"[dk_singles] sport={args.sport!r} not supported, exiting", flush=True)
+        logger.info("dk_singles: sport=%r not supported, exiting", args.sport)
         return
     scrape_singles(verbose=args.verbose)
 
 
 if __name__ == "__main__":
+    # Library code attaches no handlers; the CLI entry point does, so a
+    # subprocess/dashboard run still writes progress to the runner log.
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout,
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     main()

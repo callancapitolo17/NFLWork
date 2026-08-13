@@ -53,12 +53,19 @@ and a flat `{"event": [...]}` / `{"events": [...]}` fallback so synthetic
 fixtures stay simple.
 """
 from __future__ import annotations
+import logging
 
 import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, BookTransportError,
+                             PriceCallTallyMixin, RetryProfile, check_response,
+                             json_or_raise, request_with_retry)
 
+logger = logging.getLogger(__name__)
+
+BOOK = "novig"
 NOVIG_GRAPHQL = "https://api.novig.us/v1/graphql"
 NOVIG_PARLAY = "https://api.novig.us/nbx/v1/parlay/request/unauthenticated"
 
@@ -93,8 +100,10 @@ SPREAD_TYPES = {"SPREAD", "SPREAD_1H"}
 TOTAL_TYPES = {"TOTAL", "TOTAL_1H"}
 
 
-class NovigClient:
+class NovigClient(PriceCallTallyMixin):
     """Thin wrapper around Novig's anonymous GraphQL + parlay RFQ endpoints."""
+
+    BOOK = BOOK
 
     def __init__(self, verbose: bool = False) -> None:
         # Reuse the legacy scraper's session bootstrap (curl_cffi Chrome
@@ -103,7 +112,7 @@ class NovigClient:
         self.session = init_session()
         self.verbose = verbose
 
-    def list_events(self) -> list[Event]:
+    def list_events(self, profile: RetryProfile = RETRY_BACKGROUND) -> list[Event]:
         """List upcoming MLB events. Uses the same query the legacy scraper does."""
         from datetime import datetime, timezone, timedelta
         from scraper_novig_sgp import MLB_EVENTS_QUERY, EVENT_WINDOW_HOURS
@@ -114,44 +123,50 @@ class NovigClient:
             "query": MLB_EVENTS_QUERY,
             "variables": {"start_gte": now.isoformat(), "start_lte": cutoff},
         })
-        try:
-            r = self.session.post(
-                NOVIG_GRAPHQL, data=body,
-                headers={"Content-Type": "application/json"},
-                timeout=20,
-            )
-        except TypeError:
-            # FakeSession in unit tests may not accept all kwargs
-            r = self.session.post(NOVIG_GRAPHQL, data=body)
-        if getattr(r, "status_code", 200) != 200:
-            return []
-        try:
-            data = r.json()
-        except Exception:
-            return []
-        return _parse_events_response(data)
+        def _post():
+            try:
+                return self.session.post(
+                    NOVIG_GRAPHQL, data=body,
+                    headers={"Content-Type": "application/json"},
+                    timeout=20,
+                )
+            except TypeError:
+                # FakeSession in unit tests may not accept all kwargs
+                return self.session.post(NOVIG_GRAPHQL, data=body)
 
-    def fetch_event_legs(self, event_id: str) -> EventLegs:
+        # A connection failure that survives the retries is a dead book, not
+        # an off-day. (The 2026-07 "api.novig.us unresolvable" reports were a
+        # transient blip — the host resolves and answers; see issue #40.)
+        r = request_with_retry(_post, profile=profile, book=BOOK,
+                               stage="events")
+        check_response(BOOK, "events", r)
+        return _parse_events_response(json_or_raise(BOOK, "events", r))
+
+    def fetch_event_legs(self, event_id: str,
+                         profile: RetryProfile = RETRY_BACKGROUND) -> EventLegs:
         """Fetch the market tree for one event and extract spread + total outcomes."""
         from scraper_novig_sgp import _load_event_markets_query
 
         query_text = _load_event_markets_query()
         q_obj = json.loads(query_text)
         q_obj["variables"]["eventId"] = event_id
-        try:
-            r = self.session.post(
-                NOVIG_GRAPHQL, data=json.dumps(q_obj),
-                headers={"Content-Type": "application/json"},
-                timeout=20,
-            )
-        except TypeError:
-            r = self.session.post(NOVIG_GRAPHQL, data=json.dumps(q_obj))
-        if getattr(r, "status_code", 200) != 200:
+
+        def _post():
+            try:
+                return self.session.post(
+                    NOVIG_GRAPHQL, data=json.dumps(q_obj),
+                    headers={"Content-Type": "application/json"},
+                    timeout=20,
+                )
+            except TypeError:
+                return self.session.post(NOVIG_GRAPHQL, data=json.dumps(q_obj))
+
+        r = request_with_retry(_post, profile=profile, book=BOOK,
+                               stage="structure")
+        # 404 = Novig dropped this event; skip the game, keep the cycle.
+        if not check_response(BOOK, "structure", r, allow_404=True):
             return EventLegs(event_id=event_id)
-        try:
-            data = r.json()
-        except Exception:
-            return EventLegs(event_id=event_id)
+        data = json_or_raise(BOOK, "structure", r)
         return _parse_event_legs_response(data, event_id_fallback=event_id)
 
     def submit_parlay(self, outcome_ids: list[str], stake: float = 1.0) -> dict:
@@ -169,21 +184,57 @@ class NovigClient:
         endpoint doesn't gate by stake — it returns offers regardless.
         """
         payload = {"outcomes": [{"id": oid} for oid in outcome_ids], "boostId": None}
+
+        def _post():
+            try:
+                return self.session.post(
+                    NOVIG_PARLAY, json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=15,
+                )
+            except TypeError:
+                return self.session.post(NOVIG_PARLAY, json=payload)
+
         try:
-            r = self.session.post(
-                NOVIG_PARLAY, json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=15,
-            )
-        except TypeError:
-            r = self.session.post(NOVIG_PARLAY, json=payload)
-        if getattr(r, "status_code", 200) not in (200, 201):
+            # RETRY_LIVE on every path — price calls are the fan-out surface.
+            r = request_with_retry(_post, profile=RETRY_LIVE, book=BOOK,
+                                   stage="price")
+        except BookTransportError as e:
+            # Per-combo failures stay row-drops, but must be tallied so an
+            # all-fail cycle still yields a "price" transport verdict.
+            self._decline(e.status_code)
+            return {}
+        status = getattr(r, "status_code", 200)
+        if status not in (200, 201):
+            # Novig's two non-200s mean opposite things (issue #40):
+            #   400 "Cannot price parlay" -> the book declines THIS combo,
+            #                                which is the common, normal case
+            #   403 <html>                -> we have been RATE-LIMITED
+            # Recording the status is what lets sgp_fetch_health.error_class
+            # say which, instead of an ambiguous bare "price".
+            self._decline(status)
             return {}
         try:
             offers = r.json()
         except Exception:
+            self._decline(None)
             return {}
-        return _parse_parlay_response(offers)
+        parsed = _parse_parlay_response(offers)
+        if not parsed:
+            # A 200 whose body carries no usable price is still a decline, but
+            # the status says nothing about why — don't attribute one.
+            self._decline(None)
+            return parsed
+        self.price_calls.record(True)
+        return parsed
+
+    def _decline(self, status: int | None) -> None:
+        """Tally one failed price call, carrying its HTTP status when there is
+        one. Order matters: ``note_status`` stamps the in-flight attempt, so it
+        must precede ``record`` (see PriceCallTally)."""
+        if status is not None:
+            self.price_calls.note_status(status)
+        self.price_calls.record(False)
 
 
 # ---------------------------------------------------------------------------

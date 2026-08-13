@@ -60,13 +60,18 @@ The plan-spec didn't match the actual helper signatures shipped in
 """
 from __future__ import annotations
 
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-from mlb_sgp._shared import PricedRow, TargetLine, american_to_decimal, decimal_to_american
+from mlb_sgp._shared import (BookTransportError, FetchCounters, PricedRow,
+                             TargetLine, american_to_decimal,
+                             decimal_to_american, fetch_counters,
+                             price_tally_for)
 from mlb_sgp.prophetx_client import ProphetXClient, SelectionLeg
 
+logger = logging.getLogger(__name__)
 
 BOOK_NAME = "prophetx"
 SOURCE_LABEL = "prophetx_direct"
@@ -175,6 +180,8 @@ def price_sgps(
     client: ProphetXClient | None = None,
     verbose: bool = False,
     parallelism: int | None = None,
+    *,
+    counters: FetchCounters | None = None,
 ) -> list[PricedRow]:
     """Price every target line against the ProphetX RFQ pricer.
 
@@ -204,7 +211,30 @@ def price_sgps(
     list[PricedRow]
         Up to four PricedRow per (game, period) — one per combo. Combos
         that fail the SANITY_MULT_RATIO check are silently dropped.
+
+    This is a thin wrapper over ``_price_sgps`` so issue #35's per-fetch
+    counter summary and parse tripwire are emitted on every exit path,
+    early returns included.
+
+    ``counters`` (issue #38, keyword-only) prices into a CALLER-owned
+    ``FetchCounters`` instead of a fresh one, so ``SGPService`` can read
+    this fetch's counts afterwards and persist them to
+    ``sgp_fetch_health``. Omitting it keeps the pre-#38 behavior.
     """
+    with fetch_counters(BOOK_NAME, "sweep", logger,
+                        counters=counters) as counters:
+        return _price_sgps(target_lines, periods, client, verbose,
+                           parallelism, counters)
+
+
+def _price_sgps(
+    target_lines: list[TargetLine],
+    periods: tuple[str, ...],
+    client: ProphetXClient | None,
+    verbose: bool,
+    parallelism: int | None,
+    counters: FetchCounters,
+) -> list[PricedRow]:
     if not target_lines:
         return []
 
@@ -228,6 +258,12 @@ def price_sgps(
         _verify_competitor_ids,
         MARKET_NAMES,
     )
+
+    # Issue #33: the RFQ endpoint can be blocked while the read endpoints
+    # still work. client.submit_parlay_rfq records into this tally; a cycle
+    # where EVERY price call failed raises a "price"-stage transport error.
+    price_calls = price_tally_for(client, BOOK_NAME)
+    tally_start = price_calls.snapshot()
 
     # ----- Group target lines into the legacy parlay_lines dict shape ----- #
     # match_events expects: {game_id: {home_team, away_team, commence_time,
@@ -266,7 +302,9 @@ def price_sgps(
         }
         for e in events
     ]
+    counters.bump("events_seen", len(px_events))
     matched = match_events(px_events, parlay_lines)
+    counters.bump("events_matched", len(matched or []))
     if not matched:
         return []
 
@@ -340,8 +378,11 @@ def price_sgps(
                 continue
             filtered_targets.append(t)
             post += 1
-        if verbose:
-            print(f"  game {game_id}: {pre} kalshi → {post} offered", flush=True)
+        counters.bump("legs_attempted", pre)
+        counters.bump("legs_resolved", post)
+        logger.debug("%s: game %s: %d kalshi -> %d offered",
+                     BOOK_NAME, game_id, pre, post)
+    counters.bump("targets_attempted", len(filtered_targets))
 
     # ----- Phase 2: per target row, build 4 legs and price 4 combos ----- #
     # Layer target-level concurrency on top of the per-combo parallelism
@@ -415,7 +456,7 @@ def price_sgps(
 
         priced_by_combo = _price_combos_parallel(
             client, game["px_event_id"], spread_mid, total_mid,
-            combos, verbose,
+            combos, counters=counters,
         )
 
         target_rows: list[PricedRow] = []
@@ -443,21 +484,23 @@ def price_sgps(
             try:
                 out.extend(f.result())
             except Exception as e:
-                if verbose:
-                    print(f"  px target error: {e}", flush=True)
+                counters.record_exception("price_target", logger, e)
 
     # ----- Phase 3: moneyline × total combos (FG) ----- #
     out.extend(_price_ml_total_for_games(
         client, markets_cache, matched_by_gid, filtered_targets,
-        fetch_now, parallelism, verbose,
+        fetch_now, parallelism, verbose, counters=counters,
     ))
 
+    counters.bump("prices_returned", len(out))
+    price_calls.verdict(tally_start)   # raises if EVERY price call failed
     return out
 
 
 def _price_ml_total_for_games(
     client, markets_cache, matched_by_gid, filtered_targets,
-    fetch_now, parallelism, verbose,
+    fetch_now, parallelism, verbose, *,
+    counters: FetchCounters | None = None,
 ) -> list[PricedRow]:
     """Price the 4 moneyline×total combos per (game, distinct FG total) on PX.
 
@@ -524,7 +567,8 @@ def _price_ml_total_for_games(
                 ("Away ML + Under", away_sel, under_sel),
             )
             priced = _price_combos_parallel(
-                client, event_id, ml_mid, total_mid, ml_combos, verbose)
+                client, event_id, ml_mid, total_mid, ml_combos,
+                counters=counters)
             for combo_name, _ml, _tot in ml_combos:
                 dec = priced.get(combo_name)
                 if dec is None:
@@ -548,8 +592,7 @@ def _price_ml_total_for_games(
             try:
                 out.extend(f.result())
             except Exception as e:
-                if verbose:
-                    print(f"  px ML target error: {e}", flush=True)
+                counters.record_exception("price_ml_target", logger, e)
     return out
 
 
@@ -559,7 +602,8 @@ def _price_combos_parallel(
     spread_mid,
     total_mid,
     combos: tuple,
-    verbose: bool,
+    *,
+    counters: FetchCounters | None = None,
 ) -> dict:
     """Price the 4 combo flavors in parallel and return {combo_name: sgp_decimal}.
 
@@ -573,7 +617,10 @@ def _price_combos_parallel(
     spread×total combos, or the moneyline market for ML×total combos (the
     ML pricer reuses this same path now that the ML leg carries odds). The
     ``combos`` tuples are ``(name, leg1_sel, total_sel)`` either way.
+
+    ``counters`` is keyword-only and optional (direct-call tests).
     """
+    counters = counters or FetchCounters(BOOK_NAME, "sweep")
     results: dict = {}
 
     def _price_one(combo_name, sp_sel, tot_sel):
@@ -598,15 +645,17 @@ def _price_combos_parallel(
             leg1_dec = _safe_leg_decimal(sp_sel)
             leg2_dec = _safe_leg_decimal(tot_sel)
             if not _passes_sanity_mult_ratio(sgp_decimal, leg1_dec, leg2_dec):
-                if verbose:
-                    print(
-                        f"      SANITY-DROP {combo_name} "
-                        f"parlay={sgp_decimal:.2f} naive={leg1_dec * leg2_dec:.2f}"
-                    )
+                counters.bump("sanity_drops")
+                # DEBUG, not WARNING: one line per dropped combo across a
+                # thread pool. The per-fetch count rides in the summary.
+                logger.debug("%s: SANITY-DROP %s parlay=%.2f naive=%.2f",
+                             BOOK_NAME, combo_name, sgp_decimal,
+                             leg1_dec * leg2_dec)
                 return combo_name, None
 
             return combo_name, sgp_decimal
-        except Exception:
+        except Exception as e:
+            counters.record_exception("price_combo", logger, e)
             return combo_name, None
 
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -617,7 +666,8 @@ def _price_combos_parallel(
         for fut in as_completed(futures):
             try:
                 combo_name, sgp_decimal = fut.result()
-            except Exception:
+            except Exception as e:
+                counters.record_exception("price_combo_future", logger, e)
                 continue
             if sgp_decimal is not None:
                 results[combo_name] = sgp_decimal
@@ -735,9 +785,22 @@ def _safe_leg_decimal(sel: dict) -> float:
 # exact-name match is behavior-identical to ``_find_market`` here.
 # ---------------------------------------------------------------------------
 
-# FG market display names (scraper_prophetx_sgp.MARKET_NAMES["fg"]). On-demand
-# pricing is FG-only — CanonicalLegs come from Kalshi FG markets.
-_OD_MARKET_NAMES = {"spread": "Run Line", "total": "Total Runs", "ml": "Moneyline"}
+# (market_type, period) -> market display-name aliases, first hit wins (#85).
+# FG names are scraper_prophetx_sgp.MARKET_NAMES["fg"] (no aliases exist).
+# F5 names are that module's 2026-04-24 catalogue + its NAME_ALIASES — the
+# 2026-08-12 recon board carried ZERO F5 markets at PX, so these are the best
+# known names; an F5 leg with no matching market declines the book cleanly.
+# No F5 moneyline name has ever been catalogued (and F5-winner legs are
+# service-blocked until #86 anyway), so ("ml", "F5") is deliberately absent.
+_OD_MARKET_NAMES = {
+    ("spread", "FG"): ("Run Line",),
+    ("total", "FG"): ("Total Runs",),
+    ("ml", "FG"): ("Moneyline",),
+    ("spread", "F5"): ("1st-5th Inning Spread", "1st-5th Inning Run Line",
+                       "1st 5 Innings Spread", "F5 Run Line"),
+    ("total", "F5"): ("1st-5th Inning Total Runs", "1st 5 Innings Total Runs",
+                      "F5 Total Runs"),
+}
 
 
 def _od_normalize_markets(markets) -> list[dict]:
@@ -760,11 +823,13 @@ def _od_normalize_markets(markets) -> list[dict]:
     return out
 
 
-def _od_find_market(markets: list[dict], name: str) -> dict | None:
-    """Exact-name market lookup (FG names carry no NAME_ALIASES)."""
-    for m in markets:
-        if m.get("name") == name:
-            return m
+def _od_find_market(markets: list[dict], names: tuple) -> dict | None:
+    """Exact-name market lookup over an alias tuple, first hit wins —
+    the scraper_prophetx_sgp.NAME_ALIASES pattern."""
+    for name in names:
+        for m in markets:
+            if m.get("name") == name:
+                return m
     return None
 
 
@@ -809,7 +874,8 @@ def _od_leg_decimal(sel: dict) -> float | None:
         return None
 
 
-def resolve_legs(structure, legs, home_team, away_team):
+def resolve_legs(structure, legs, home_team, away_team, *,
+                 counters: FetchCounters | None = None):
     """Resolve CanonicalLegs to ProphetX SelectionLeg refs for one event.
 
     Parameters
@@ -855,10 +921,12 @@ def resolve_legs(structure, legs, home_team, away_team):
 
         out: list[ResolvedLeg] = []
         for leg in legs:
-            mkt_name = _OD_MARKET_NAMES.get(leg.market_type)
-            if mkt_name is None:
+            # Period dispatch — the ONE place period is applied at PX (#85):
+            # an unknown (market_type, period) pair declines the whole book.
+            mkt_names = _OD_MARKET_NAMES.get((leg.market_type, leg.period))
+            if mkt_names is None:
                 return None
-            market = _od_find_market(markets, mkt_name)
+            market = _od_find_market(markets, mkt_names)
             if market is None:
                 return None
 
@@ -913,12 +981,18 @@ def resolve_legs(structure, legs, home_team, away_team):
                                   if opposite is not None else None),
             ))
         return out
-    except Exception:
+    except Exception as e:
         # Fail-safe contract: malformed structure/legs -> None, never raise.
+        # The counter is what tells "book doesn't offer this leg" from "our
+        # parser broke".
+        if counters is not None:
+            counters.record_parse_failure("resolve_legs", logger, e)
         return None
 
 
-def price_selection_set(client, refs) -> float | None:
+def price_selection_set(client, refs, *,
+                        counters: FetchCounters | None = None,
+                        ) -> float | None:
     """Price one arbitrary set of PX selections with a single RFQ.
 
     ``refs`` is a list of ``SelectionLeg`` (from ``resolve_legs`` refs /
@@ -940,5 +1014,12 @@ def price_selection_set(client, refs) -> float | None:
         if am_parlay is None:
             return None
         return american_to_decimal(int(am_parlay))
-    except Exception:
+    except BookTransportError:
+        # Counted, NOT re-raised — see caesars.price_selection_set.
+        if counters is not None:
+            counters.bump("transport_errors")
+        return None
+    except Exception as e:
+        if counters is not None:
+            counters.record_parse_failure("price_selection_set", logger, e)
         return None

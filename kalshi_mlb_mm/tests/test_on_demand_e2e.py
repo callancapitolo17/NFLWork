@@ -4,20 +4,18 @@ re-quote on movement → feed stops when the RFQ leaves the poll."""
 import importlib
 import threading
 
-import pandas as pd
 
 from kalshi_common import legset
 from kalshi_mlb_mm.on_demand import OnDemandEngine, QUOTE_FRESH_SEC
 from mlb_sgp._shared import GameRef, OnDemandBookResult
+from kalshi_mlb_mm.tests.conftest import leg
 
-EVT = "KXMLBGAME-25JUN271905TEXLAA"
+
+EVT = "25JUN271905TEXLAA"
 OD_LEGS = [
-    {"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
-     "event_ticker": EVT, "side": "yes"},
-    {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
-     "event_ticker": EVT, "side": "yes"},
-    {"market_ticker": "KXMLBGAME-25JUN271905TEXLAA-LAA",
-     "event_ticker": EVT, "side": "yes"},
+    leg("KXMLBSPREAD-25JUN271905TEXLAA-LAA2", "yes"),
+    leg("KXMLBTOTAL-25JUN271905TEXLAA-9", "yes"),
+    leg("KXMLBGAME-25JUN271905TEXLAA-LAA", "yes"),
 ]
 GREF = GameRef(game_id="game1", home_team="Los Angeles Angels",
                away_team="Texas Rangers", commence_time=None)
@@ -79,11 +77,6 @@ def _setup(monkeypatch, tmp_path):
     clock = FakeClock()
     svc = FakeService()
     eng = OnDemandEngine(svc, now_fn=clock, autostart=False)
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     monkeypatch.setattr(main, "_today_fills_by_game", lambda: [])
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
@@ -164,17 +157,11 @@ def test_full_feed_lifecycle(monkeypatch, tmp_path):
 def test_mixed_grid_plus_on_demand_combo_prices_product(monkeypatch, tmp_path):
     main, db, clock, svc, eng = _setup(monkeypatch, tmp_path)
     # Combo: game A 2-leg grid + game B 3-leg on-demand.
-    evt_b = "KXMLBGAME-25JUN272005SDLAD"
-    legs_a = [{"market_ticker": "KXMLBSPREAD-25JUN271905TEXLAA-LAA2",
-               "event_ticker": EVT, "side": "yes"},
-              {"market_ticker": "KXMLBTOTAL-25JUN271905TEXLAA-9",
-               "event_ticker": EVT, "side": "yes"}]
-    legs_b = [{"market_ticker": "KXMLBSPREAD-25JUN272005SDLAD-LAD2",
-               "event_ticker": evt_b, "side": "yes"},
-              {"market_ticker": "KXMLBTOTAL-25JUN272005SDLAD-8",
-               "event_ticker": evt_b, "side": "yes"},
-              {"market_ticker": "KXMLBGAME-25JUN272005SDLAD-LAD",
-               "event_ticker": evt_b, "side": "yes"}]
+    legs_a = [leg("KXMLBSPREAD-25JUN271905TEXLAA-LAA2", "yes"),
+              leg("KXMLBTOTAL-25JUN271905TEXLAA-9", "yes")]
+    legs_b = [leg("KXMLBSPREAD-25JUN272005SDLAD-LAD2", "yes"),
+              leg("KXMLBTOTAL-25JUN272005SDLAD-8", "yes"),
+              leg("KXMLBGAME-25JUN272005SDLAD-LAD", "yes")]
     rows = []
     for book in ("draftkings", "fanduel"):
         for combo, dec in (("Home Spread + Over", 3.10), ("Home Spread + Under", 4.20),
@@ -182,7 +169,6 @@ def test_mixed_grid_plus_on_demand_combo_prices_product(monkeypatch, tmp_path):
             rows.append(dict(game_id="gA", combo=combo, period="FG",
                              bookmaker=book, sgp_decimal=dec,
                              spread_line=-1.5, total_line=8.5))
-    monkeypatch.setattr(main, "_SGP_ODDS", pd.DataFrame(rows))
     monkeypatch.setattr(main, "_resolve_game_for_legs",
                         lambda gl: "gA" if gl[0].game_id == EVT else "gB")
     monkeypatch.setattr(main, "_SCOPE_CACHE",
@@ -195,18 +181,17 @@ def test_mixed_grid_plus_on_demand_combo_prices_product(monkeypatch, tmp_path):
             return {}
 
     gw = GW()
-    main._discovery_tick(SrcMix(), gw, dry_run=False)     # pending (game B)
+    # #54 live-only: BOTH games ride the engine — no cached grid rows
+    # exist to price from.
+    svc.fair = 0.30           # 0.30 * 0.30 = 0.09, above MIN_FAIR_PROB
+    main._discovery_tick(SrcMix(), gw, dry_run=False)     # pending (both games)
     assert gw.submits == []
+    assert eng._queue_len() == 2, "one live job per game, grid included"
+    eng._drain_once()
     eng._drain_once()
     main._discovery_tick(SrcMix(), gw, dry_run=False)     # both games priceable
     assert len(gw.submits) == 1
-    # sanity: quoted fair = grid(gA) * consensus(gB) — recompute directly
-    from kalshi_mlb_mm import router
-    canon_b = legset.parse_legs(legs_b)
-    fair_b = router.consensus({"draftkings": 0.20, "fanduel": 0.20},
-                              2, 0.02)
-    fair_a = router.subcombo_fair("gA", legset.parse_legs(legs_a),
-                                  main._SGP_ODDS, 2, 0.02)
+    # quoted fair = live consensus(gA) * live consensus(gB) = 0.30 * 0.30
     with db.connect(read_only=True) as con:
         blended = con.execute("SELECT blended_fair FROM live_quotes").fetchone()[0]
-    assert abs(blended - fair_a * fair_b) < 1e-9
+    assert abs(blended - 0.09) < 1e-9

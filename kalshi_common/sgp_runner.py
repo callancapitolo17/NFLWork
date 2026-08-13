@@ -88,7 +88,9 @@ def _fetch_kalshi_spread_lines(suffix: str, home_code: str | None = None,
             line = -(n - 0.5) if who == "home" else (n - 0.5)
             out.append((line, who))
         else:
-            # Legacy/MM behavior: one home-favorite grid per |line|, deduped.
+            # Legacy behavior (dashboard subprocess path only since #70 —
+            # both bots pass both_teams=True): one home-favorite grid per
+            # |line|, deduped, losing WHICH team is favoured.
             line = -(n - 0.5)
             key = round(line, 1)
             if key in seen:
@@ -279,6 +281,73 @@ def write_target_lines(target_lines: list[TargetLine], db_path: str):
         con.close()
 
 
+def warm_cycle(*, bot_market_db: str, service,
+               cadence_sec: float | None = None,
+               wall_budget_sec: float | None = None) -> dict[str, int]:
+    """One structure-only warming pass over the current slate (issue #50).
+
+    Inputs: the bot's market DB (``mlb_target_lines``, written by
+    ``sgp_cycle`` each sweep) and an ``SGPService``. Reads the DB
+    READ-ONLY on the caller's thread — call from the bot's main tick
+    thread, like ``flush_health`` (same duckdb same-process caveat).
+
+    No pricing calls, no odds writes; the only side effect is the
+    service's buffered path='warming' health rows. Returns
+    ``service.warm_structures``'s {book: games_warmed} ({} on an empty
+    slate).
+
+    ``cadence_sec``: how often the caller runs this (the maker's
+    STRUCTURE_WARM_SEC). Sets both the refresh-eviction age and the
+    token-TTL floor (+60s slack) so an env-tuned cadence cannot drift
+    from the service defaults. None keeps the service defaults (120s
+    cadence semantics).
+
+    ``wall_budget_sec`` (#81): wall deadline for the pass, forwarded to
+    ``service.warm_structures``. None keeps the service's fallback (its
+    ``per_book_deadline_sec``) — a sweep-free maker must pass its own
+    budget, since it no longer sets that knob.
+    """
+    from mlb_sgp._shared import GameRef
+    con = duckdb.connect(bot_market_db, read_only=True)
+    try:
+        rows = con.execute("""
+            SELECT DISTINCT game_id, home_team, away_team, commence_time
+            FROM mlb_target_lines
+        """).fetchall()
+    finally:
+        con.close()
+    if not rows:
+        return {}
+    games = [GameRef(game_id=r[0], home_team=r[1], away_team=r[2],
+                     commence_time=r[3]) for r in rows]
+    if cadence_sec is None:
+        return service.warm_structures(games, wall_budget_sec=wall_budget_sec)
+    return service.warm_structures(
+        games,
+        token_min_remaining_sec=float(cadence_sec) + 60.0,
+        refresh_older_than_sec=float(cadence_sec),
+        wall_budget_sec=wall_budget_sec)
+
+
+# Issue #38, item 4. This LEGACY subprocess path (dashboard only — the bots
+# price in-process) opened each scraper's log with mode "w", so every cycle
+# erased the last one: a book that died at 14:02 left no trace by 14:03.
+# Append instead, and reset the file once it passes the cap so an unattended
+# dashboard cannot fill the disk. Deliberately no rotation — the path is
+# legacy and does not warrant the machinery.
+RUNNER_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _log_open_mode(log_path: Path) -> str:
+    """"a" normally; "w" when the existing log has outgrown the cap."""
+    try:
+        if log_path.stat().st_size >= RUNNER_LOG_MAX_BYTES:
+            return "w"
+    except OSError:
+        pass            # missing file (first run) or unstattable — just append
+    return "a"
+
+
 def run_scrapers(
     scraper_dir: str,
     scraper_names: list[str],
@@ -306,7 +375,7 @@ def run_scrapers(
     try:
         for name in scraper_names:
             log_path = Path(scraper_dir) / f"{name}.runner.log"
-            handle = open(log_path, "w")
+            handle = open(log_path, _log_open_mode(log_path))
             log_handles.append(handle)
             try:
                 p = subprocess.Popen(
@@ -390,6 +459,25 @@ _BOOK_MODULES = {
 }
 
 
+def target_line_cycle(*, bot_market_db: str,
+                      both_teams: bool = False) -> list:
+    """Refresh `mlb_target_lines` from Kalshi MVE enumeration + the Odds
+    API schedule — the sweep-free half of `sgp_cycle`, extracted for #81.
+
+    ZERO book requests by construction: no service, no scraper knobs.
+    After #81 this is the maker's own loop arm (game resolution, tipoff
+    gating and #50's structure warming all read `mlb_target_lines`);
+    the taker still reaches it through `sgp_cycle`.
+
+    Side effect: atomic DELETE+INSERT of `mlb_target_lines` in
+    `bot_market_db`. Returns the enumerated targets so callers can log
+    the count.
+    """
+    targets = enumerate_kalshi_targets(both_teams=both_teams)
+    write_target_lines(targets, db_path=bot_market_db)
+    return targets
+
+
 def sgp_cycle(
     bot_market_db: str,
     scraper_dir: str | None = None,
@@ -398,12 +486,13 @@ def sgp_cycle(
     service=None,
     both_teams: bool = False,
 ) -> dict[str, int]:
-    """One full SGP scrape tick.
+    """One full SGP scrape tick (taker sweep; the maker stopped calling
+    this in #81 and runs `target_line_cycle` alone).
 
     With `service` (an SGPService): in-process path —
-      1. Enumerate Kalshi MVE -> list[TargetLine]
-      2. Write mlb_target_lines (tipoff gating + debugging read it)
-      3. service.refresh(targets); per successful book, clear that
+      1. `target_line_cycle` — enumerate Kalshi MVE, write
+         mlb_target_lines (tipoff gating + debugging read it)
+      2. service.refresh(targets); per successful book, clear that
          book's source labels and upsert its fresh rows. Failed books
          (None) keep their old rows — same outcome as a crashed
          subprocess today. Returns {book: row_count, failed: -1}.
@@ -412,8 +501,8 @@ def sgp_cycle(
     {scraper_name: return_code}. Kept as the rollback hatch
     (scraper_dir / venv_python / timeout_sec are required then).
     """
-    targets = enumerate_kalshi_targets(both_teams=both_teams)
-    write_target_lines(targets, db_path=bot_market_db)
+    targets = target_line_cycle(bot_market_db=bot_market_db,
+                                both_teams=both_teams)
 
     if service is None:
         if not (scraper_dir and venv_python and timeout_sec):

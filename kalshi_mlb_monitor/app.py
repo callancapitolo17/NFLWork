@@ -377,8 +377,72 @@ def _tab_overview(bot_key, window, cutoff):
                            "incoming RFQ flow isn't the kind of market this bot quotes. "
                            "See the ", html.B("Why Not Filled"), " tab for the full breakdown."],
                            style={"color": C["text"], "lineHeight": "1.6"}))
-    children = [c for c in (dormant, kpi_row, funnel_card, note) if c]
+    children = [c for c in (dormant, kpi_row, funnel_card, feed_health_card(bot_key),
+                            note) if c]
     return html.Div(children)
+
+
+# ---- Per-book SGP feed health (issues #37/#38) ---- #
+_HEALTH_COLORS = {"ok": "green", "degraded": "amber", "dead": "red"}
+_HEALTH_LABEL = {"ok": "● healthy", "degraded": "● degraded", "dead": "● DEAD"}
+
+
+def feed_health_card(bot_key):
+    """Which books are still answering — the panel that makes a dead feed
+    impossible to miss.
+
+    A book here is red at the SAME failure streak the bot alerts on, so the
+    dashboard and the macOS notification can never tell different stories.
+    Colour keys on consecutive FAILED fetches, never on data age: 'empty' is
+    a healthy answer (off-day, thin slate), and once #57 slows the sweep, an
+    age-based panel would paint a working feed red.
+    """
+    df = Q.book_health(bot_key)
+    if df is Q.LOCKED:
+        return section("SGP feed health — per book", locked_state())
+    if df is None or not len(df):
+        return section(
+            "SGP feed health — per book",
+            empty_state("No fetch-health history yet. The bot writes it on "
+                        "every SGP fetch (sweep and on-demand); a bot that "
+                        "hasn't run since this shipped has nothing here."))
+
+    rows = []
+    for _, r in df.iterrows():
+        status = r["status"]
+        pct_answered = r.get("pct_answered")
+        rows.append(html.Div(
+            style={"display": "flex", "gap": "14px", "alignItems": "baseline",
+                   "padding": "4px 0",
+                   "borderBottom": f"1px solid {C['border']}"},
+            children=[
+                html.Span(_HEALTH_LABEL[status],
+                          style={"color": C[_HEALTH_COLORS[status]],
+                                 "fontWeight": "700", "minWidth": "110px"}),
+                html.Span(f"{r['book']} · {r['path']}",
+                          style={"color": C["text"], "minWidth": "200px",
+                                 "fontFamily": "ui-monospace,Menlo,monospace"}),
+                html.Span(f"streak {int(r['failing_streak'])}",
+                          style={"color": C["muted"], "minWidth": "90px"}),
+                html.Span(_age_str(r["last_fetch_at"].to_pydatetime()
+                                   if pd.notna(r["last_fetch_at"]) else None),
+                          style={"color": C["muted"], "minWidth": "90px"}),
+                html.Span("—" if pct_answered is None or pd.isna(pct_answered)
+                          else f"{float(pct_answered):.0f}% answered / 24h",
+                          style={"color": C["muted"], "minWidth": "140px"}),
+                html.Span(r.get("newest_error_class") or "",
+                          style={"color": C["amber"],
+                                 "fontFamily": "ui-monospace,Menlo,monospace"}),
+            ]))
+
+    n_healthy = int((df["status"] == "ok").sum())
+    caption = html.Div(
+        f"{n_healthy} book/path pair(s) healthy. Red at "
+        f"{Q.BOOK_ALERT_STREAK}+ consecutive failed fetches — the same "
+        f"threshold the bot alerts on. 'empty' (book answered, no markets) "
+        f"counts as healthy.",
+        style={"color": C["muted"], "fontSize": "0.78em", "marginTop": "8px"})
+    return section("SGP feed health — per book × path", *rows, caption)
 
 
 # ---- Tab 2: Why Not Filled ---- #

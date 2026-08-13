@@ -46,11 +46,18 @@ nested response here so tests can pin shape-level behaviour without depending
 on the legacy flattening helper.
 """
 from __future__ import annotations
+import logging
 
 from dataclasses import dataclass, field
 from typing import Any
 
+from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, BookTransportError,
+                             PriceCallTallyMixin, RetryProfile, check_response,
+                             json_or_raise, request_with_retry)
 
+logger = logging.getLogger(__name__)
+
+BOOK = "prophetx"
 PROPHETX_BASE = "https://www.prophetx.co"
 DEFAULT_MIN_OFFER_STAKE = 150
 
@@ -101,8 +108,10 @@ class SelectionLeg:
     line: float
 
 
-class ProphetXClient:
+class ProphetXClient(PriceCallTallyMixin):
     """Thin wrapper around the three ProphetX endpoints SGP scrapers need."""
+
+    BOOK = BOOK
 
     def __init__(self, verbose: bool = False) -> None:
         # Reuse the legacy scraper's session bootstrap to avoid duplicating
@@ -111,29 +120,48 @@ class ProphetXClient:
         self.session = init_session()
         self.verbose = verbose
 
-    def list_events(self) -> list[Event]:
-        """Fetch all events with `expand=events`, return MLB-only Event list."""
+    def list_events(self, profile: RetryProfile = RETRY_BACKGROUND) -> list[Event]:
+        """Fetch all events with `expand=events`, return MLB-only Event list.
+
+        Raises ``BookTransportError`` when ProphetX is unreachable after
+        ``profile``'s retries; an empty list means ProphetX genuinely lists
+        no MLB games.
+        """
         url = f"{PROPHETX_BASE}/trade/public/api/v1/tournaments"
         params = {"expand": "events", "type": "highlight", "limit": 150}
-        try:
-            r = self.session.get(url, params=params, timeout=15)
-        except TypeError:
-            # FakeSession in unit tests doesn't accept params/timeout kwargs
-            r = self.session.get(url)
-        if getattr(r, "status_code", 200) != 200:
-            return []
-        return _parse_events_response(r.json())
 
-    def fetch_event_markets(self, event_id: str) -> list[Market]:
-        """Fetch the full market tree for one event."""
+        def _get():
+            try:
+                return self.session.get(url, params=params, timeout=15)
+            except TypeError:
+                # FakeSession in unit tests doesn't accept params/timeout kwargs
+                return self.session.get(url)
+
+        r = request_with_retry(_get, profile=profile, book=BOOK, stage="events")
+        check_response(BOOK, "events", r)
+        return _parse_events_response(json_or_raise(BOOK, "events", r))
+
+    def fetch_event_markets(self, event_id: str,
+                            profile: RetryProfile = RETRY_BACKGROUND) -> list[Market]:
+        """Fetch the full market tree for one event.
+
+        A 404 means PX dropped this game (postponed/delisted) — return [] and
+        let the caller skip it (never retried). Anything else is a transport
+        failure, retried per ``profile``.
+        """
         url = f"{PROPHETX_BASE}/trade/public/api/v2/events/{event_id}/markets"
-        try:
-            r = self.session.get(url, timeout=15)
-        except TypeError:
-            r = self.session.get(url)
-        if getattr(r, "status_code", 200) != 200:
+
+        def _get():
+            try:
+                return self.session.get(url, timeout=15)
+            except TypeError:
+                return self.session.get(url)
+
+        r = request_with_retry(_get, profile=profile, book=BOOK,
+                               stage="structure")
+        if not check_response(BOOK, "structure", r, allow_404=True):
             return []
-        return _parse_event_markets(r.json())
+        return _parse_event_markets(json_or_raise(BOOK, "structure", r))
 
     def submit_parlay_rfq(
         self,
@@ -165,24 +193,40 @@ class ProphetXClient:
             ],
             "stake": stake,
         }
+        def _post():
+            try:
+                return self.session.post(
+                    url, json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=10,
+                )
+            except TypeError:
+                return self.session.post(url, json=payload)
+
         try:
-            r = self.session.post(
-                url, json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=10,
-            )
-        except TypeError:
-            r = self.session.post(url, json=payload)
+            # RETRY_LIVE, not BACKGROUND: price calls fan out across a thread
+            # pool (one per target x combo), so a 3-attempt backoff here would
+            # stall a degraded cycle for minutes. One fast retry only.
+            r = request_with_retry(_post, profile=RETRY_LIVE, book=BOOK,
+                                   stage="price")
+        except BookTransportError:
+            # Per-combo price failures stay row-drops (they are partial), but
+            # they must be TALLIED so an all-fail cycle still gets a verdict.
+            self.price_calls.record(False)
+            return None, False
 
         if getattr(r, "status_code", 200) != 200:
+            self.price_calls.record(False)
             return None, False
         try:
             data = r.json()
         except Exception:
+            self.price_calls.record(False)
             return None, False
         # ProphetX wraps offers under data.offers when successful
         offers = (data.get("data") or {}).get("offers") or data.get("offers") or []
         picked = _pick_offer(offers, min_stake=min_offer_stake)
+        self.price_calls.record(picked is not None)
         if picked is None:
             return None, False
         used_fallback = (picked.get("stake") or 0) < min_offer_stake

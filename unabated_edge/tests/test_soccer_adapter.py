@@ -275,49 +275,105 @@ def test_older_mo_helper():
     assert _older_mo(None, None) is None
 
 
-# ---------- main-rung overround/crossed gate (Finding #73) ----------
+# ---------- overround feed-integrity gate (issue #73) ----------
 
-def test_anchor_ladder_drops_crossed_main_rung(caplog):
-    """A crossed pair (po_raw+pu_raw < 1.0) is a data error -- possible only
-    from bad feed data, never a real two-way quote. It must be dropped
-    before ever reaching devig, which would otherwise silently normalize it
-    into a plausible-but-wrong p_over (confirmed against
-    kalshi_common.fair_value._probit_devig_n, which just renormalizes any
-    two raw probs to sum to 1 regardless of whether they started crossed)."""
+def test_crossed_main_rung_rejected():
+    """MAIN rung whose raw sides sum < 1 (one side stale mid-refresh) must be
+    refused before devig — marked rejected, never priced. Fails on pre-#73 main:
+    devig used to clip-and-solve the crossed pair into a plausible p_over."""
     s = Soccer()
-    # american_to_prob(144) == 100/244 ~= 0.40984 on both sides -> sum ~0.8197
-    st = build_bt3_state("lg21", "Colombia", "Ghana", eid=9, ms=7,
-                         over_price=144, under_price=144, line=2.5)
+    st = _state_with_bt3(eid=9, ms=7, over_price=150, under_price=150, line=2.5)  # 0.4+0.4=0.8
+    ladder = s._anchor_ladder(st, 9)
+    assert ladder == {} or ladder.get(2.5, {}).get("reject") == "anchor_crossed"
+    assert s._anchor_totals(st, 9) == {}
+    kev = {"title": "Colombia vs Ghana: Regulation Time Total Goals",
+           "markets": [{"ticker": "T-O25", "strike_type": "greater", "floor_strike": 2.5}]}
+    assert s.price_event(st, st.events[9], kev) == []
+
+
+def test_blown_vig_main_rung_rejected():
+    """MAIN rung with implausible vig (sum 1.33) is refused with the distinct
+    band reason, not silently devigged."""
+    s = Soccer()
+    st = _state_with_bt3(eid=9, ms=7, over_price=-200, under_price=-200, line=2.5)  # 0.667*2
+    assert s._anchor_totals(st, 9) == {}
+    kev = {"title": "Colombia vs Ghana: Regulation Time Total Goals",
+           "markets": [{"ticker": "T-O25", "strike_type": "greater", "floor_strike": 2.5}]}
+    assert s.price_event(st, st.events[9], kev) == []
+
+
+def _poisoned_transient_state():
+    """The ticket's one-sided-refresh shape in ONE ladder: main 2.5 healthy
+    (sum 1.048), alt 1.5 crossed (sum ~0.82), alt 3.5 blown (sum ~1.35)."""
+    return feed.parse_snapshot({
+        "marketSources": [{"id": 7, "name": "S"}],
+        "teams": {"1": {"name": "Colombia"}, "2": {"name": "Ghana"}},
+        "gameOddsEvents": {"lg21:pt1:pregame": [{
+            "eventId": 9, "eventStart": "2026-06-22T17:00:00+00:00",
+            "eventTeams": {"1": {"id": 1}, "0": {"id": 2}},
+            "gameOddsMarketSourcesLines": {
+                "si0:ms7:an0": {"bt3": {"price": 115, "points": 2.5, "alternateLines": [
+                    {"points": 1.5, "price": 144}, {"points": 3.5, "price": -208}]}},
+                "si1:ms7:an0": {"bt3": {"price": -140, "points": 2.5, "alternateLines": [
+                    {"points": 1.5, "price": 144}, {"points": 3.5, "price": -208}]}},
+            }}]}}, {"lg21"})
+
+
+def test_transient_one_sided_refresh_only_healthy_rung_prices():
+    """Poisoned rungs are marked with distinct reasons + full provenance; the
+    healthy rung in the SAME ladder still prices (the gate is per-rung, not
+    per-ladder)."""
+    s = Soccer()
+    st = _poisoned_transient_state()
+    ladder = s._anchor_ladder(st, 9)
+    assert set(ladder) == {1.5, 2.5, 3.5}
+    assert ladder[1.5]["reject"] == "anchor_crossed" and ladder[1.5]["p_over"] is None
+    assert ladder[3.5]["reject"] == "anchor_overround" and ladder[3.5]["p_over"] is None
+    assert ladder[2.5].get("reject") is None and 0 < ladder[2.5]["p_over"] < 1
+    # rejected rungs keep their research provenance
+    assert ladder[1.5]["book"] == 7 and ladder[1.5]["alt"] is True
+    assert 0.81 < ladder[1.5]["overround"] < 0.83
+    kev = {"title": "Colombia vs Ghana: Regulation Time Total Goals", "markets": [
+        {"ticker": "T-O15", "strike_type": "greater", "floor_strike": 1.5},
+        {"ticker": "T-O25", "strike_type": "greater", "floor_strike": 2.5},
+        {"ticker": "T-O35", "strike_type": "greater", "floor_strike": 3.5}]}
+    cands = s.price_event(st, st.events[9], kev)
+    assert {c.market_ticker for c in cands} == {"T-O25"}      # only the healthy rung
+
+
+def test_rejected_rung_logs_warning(caplog):
+    """Rejects must be LOUD: a WARNING per rejected rung with reason + provenance."""
     with caplog.at_level(logging.WARNING, logger="unabated_edge"):
-        ladder = s._anchor_ladder(st, 9)
-    assert ladder == {}
-    assert any("main" in r.getMessage() and "2.5" in r.getMessage()
-              for r in caplog.records)
+        Soccer()._anchor_ladder(_poisoned_transient_state(), 9)
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("anchor_crossed" in m and "line=1.5" in m for m in msgs)
+    assert any("anchor_overround" in m and "line=3.5" in m for m in msgs)
 
 
-def test_anchor_ladder_drops_blown_vig_main_rung():
-    """Both sides implying a favorite (overround well above a normal ~1.05
-    two-way vig) is also a data error for a main (non-alt) rung."""
+def test_all_rejected_book_falls_through_to_next_anchor():
+    """A book whose every rung fails the gate is not 'found' — fall through to
+    the next anchor source's healthy ladder (same-book-only preserved)."""
     s = Soccer()
-    # american_to_prob(-300)=0.75, american_to_prob(-140)=0.5833 -> sum ~1.333
-    st = build_bt3_state("lg21", "Colombia", "Ghana", eid=9, ms=7,
-                         over_price=-300, under_price=-140, line=2.5)
+    st = feed.parse_snapshot({
+        "marketSources": [{"id": 7, "name": "S7"}, {"id": 6, "name": "S6"}],
+        "teams": {"1": {"name": "A"}, "2": {"name": "B"}},
+        "gameOddsEvents": {"lg21:pt1:pregame": [{
+            "eventId": 9, "eventStart": "2026-07-11T21:00:00+00:00",
+            "eventTeams": {"1": {"id": 1}, "0": {"id": 2}},
+            "gameOddsMarketSourcesLines": {
+                "si0:ms7:an0": {"bt3": {"price": 150, "points": 2.5}},   # book 7: crossed
+                "si1:ms7:an0": {"bt3": {"price": 150, "points": 2.5}},
+                "si0:ms6:an0": {"bt3": {"price": 100, "points": 2.5}},   # book 6: healthy
+                "si1:ms6:an0": {"bt3": {"price": -120, "points": 2.5}},
+            }}]}}, {"lg21"})
     ladder = s._anchor_ladder(st, 9)
-    assert ladder == {}
-
-
-def test_anchor_ladder_keeps_main_rung_within_band():
-    s = Soccer()
-    # american_to_prob(-115)=0.5349, american_to_prob(-110)=0.5238 -> sum ~1.059
-    st = build_bt3_state("lg21", "Colombia", "Ghana", eid=9, ms=7,
-                         over_price=-115, under_price=-110, line=2.5)
-    ladder = s._anchor_ladder(st, 9)
-    assert 2.5 in ladder
+    assert ladder[2.5]["book"] == 6 and ladder[2.5].get("reject") is None
 
 
 def test_anchor_ladder_logs_failover_when_primary_book_unavailable(caplog):
     """Finding #4b: falling through past the primary anchor book (7) to a
-    later one in ANCHOR_SOURCE_IDS must be visible in logs, not silent."""
+    later one in ANCHOR_SOURCE_IDS (no data at all for book 7, not merely a
+    rejected rung) must be visible in logs, not silent."""
     s = Soccer()
     st = feed.parse_snapshot({
         "marketSources": [{"id": 7, "name": "S7"}, {"id": 6, "name": "S6"}],

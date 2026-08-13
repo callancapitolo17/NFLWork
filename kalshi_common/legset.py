@@ -13,15 +13,42 @@ from kalshi_common import leg_types
 
 @dataclass(frozen=True)
 class CanonicalLeg:
-    game_id: str          # the leg's event_ticker (all legs of one game share it)
+    game_id: str          # the GAME code, family-independent — see game_id_of
     market_type: str      # "spread" | "total" | "ml"
     line: float | None    # signed home-perspective; None for ml
-    side: str             # "home"/"away" (spread, ml) or "over"/"under" (total)
+    side: str             # "home"/"away" (spread, ml), "over"/"under" (total),
+                          # or "tie"/"not_tie" (F5-winner TIE market only)
+    period: str = "FG"    # "FG" (full game) | "F5" (first 5 innings). Defaulted
+                          # trailing field (issue #84) so 4-positional
+                          # constructions across both bots stay valid.
+
+
+def game_id_of(event_ticker: str) -> str:
+    """The family-independent game code inside a Kalshi event ticker.
+
+    Kalshi gives every market family its own event, so one physical game is
+    named by several event tickers that agree only on the trailing code:
+
+        KXMLBSPREAD-26JUN102105MILATH  ->  26JUN102105MILATH
+        KXMLBTOTAL -26JUN102105MILATH  ->  26JUN102105MILATH
+        KXMLBGAME  -26JUN102105MILATH  ->  26JUN102105MILATH
+
+    Issue #71: keying ``CanonicalLeg.game_id`` on the whole event ticker put a
+    game's spread and total legs in different partitions, so
+    ``classify_subcombo`` never saw a same-game 2-leg set — the correlation
+    grids were unreachable and same-game combos were priced as independent
+    games multiplied together. Every MLB event ticker in the recorded corpus
+    (2.2M legs) has exactly one dash, but a ticker without one degrades to
+    itself rather than raising: it still partitions consistently, and the
+    downstream game lookup is already fail-safe on an unparseable code.
+    """
+    _, _, code = event_ticker.partition("-")
+    return code or event_ticker
 
 
 def parse_leg(leg: dict) -> CanonicalLeg | None:
     """One Kalshi leg dict -> CanonicalLeg in home-perspective, or None."""
-    et = str(leg.get("event_ticker", ""))
+    et = game_id_of(str(leg.get("event_ticker", "")))
     mt = str(leg.get("market_ticker", ""))
     if not et or not mt:
         return None
@@ -34,7 +61,15 @@ def parse_leg(leg: dict) -> CanonicalLeg | None:
             return None
         home_covers = ((typed.team_is_home and typed.side == "yes")
                        or (not typed.team_is_home and typed.side == "no"))
-        return CanonicalLeg(et, "spread", -(typed.line_n - 0.5),
+        # Issue #70: the line's sign follows the ticker's TEAM (which margin
+        # market this is), matching mlb_sgp_odds.spread_line — home margin
+        # ticker -> negative, away margin ticker -> positive. The side is the
+        # covering team. This keeps the four (team x side) legs distinct;
+        # collapsing both teams onto -(n-0.5) selected the away +1.5 grid
+        # cell for an away -1.5 leg.
+        home_perspective_line = (-(typed.line_n - 0.5) if typed.team_is_home
+                                 else (typed.line_n - 0.5))
+        return CanonicalLeg(et, "spread", home_perspective_line,
                             "home" if home_covers else "away")
     if mt.startswith("KXMLBTOTAL-"):
         try:
@@ -53,6 +88,62 @@ def parse_leg(leg: dict) -> CanonicalLeg | None:
         home_ml = ((team_is_home and side == "yes")
                    or (not team_is_home and side == "no"))
         return CanonicalLeg(et, "ml", None, "home" if home_ml else "away")
+    # F5 (first 5 innings) series — issue #84. Suffix grammar and sign
+    # semantics live-verified identical to FG (2026-08-11 API pull):
+    # KXMLBF5SPREAD-...-LAD3 = "LAD -2.5 first 5", KXMLBF5TOTAL-...-7 has
+    # floor_strike 6.5 (N - 0.5).
+    if mt.startswith("KXMLBF5SPREAD-"):
+        try:
+            typed = leg_types._typed_spread_from_leg(leg)   # SpreadLeg or None
+        except (KeyError, TypeError, ValueError):
+            return None
+        if typed is None:
+            return None
+        home_covers = ((typed.team_is_home and typed.side == "yes")
+                       or (not typed.team_is_home and typed.side == "no"))
+        home_perspective_line = (-(typed.line_n - 0.5) if typed.team_is_home
+                                 else (typed.line_n - 0.5))
+        return CanonicalLeg(et, "spread", home_perspective_line,
+                            "home" if home_covers else "away", "F5")
+    if mt.startswith("KXMLBF5TOTAL-"):
+        try:
+            typed = leg_types._typed_total_from_leg(leg)    # TotalLeg or None
+        except (KeyError, TypeError, ValueError):
+            return None
+        if typed is None:
+            return None
+        return CanonicalLeg(et, "total", typed.line_n - 0.5,
+                            "over" if typed.side == "yes" else "under", "F5")
+    if mt.startswith("KXMLBF5-"):
+        # F5 winner. Live grammar (2026-08-11): KXMLBF5-{suffix}-{TEAM} PLUS a
+        # third KXMLBF5-{suffix}-TIE market — the family is 3-way (team markets
+        # resolve NO on a tie after 5, per live rules_secondary 2026-08-12).
+        # #86 rework: a team market IS a +-0.5 run line — "team wins F5" =
+        # "team -0.5" (win by >=1; tie loses), and its NO side = "other team
+        # +0.5" (win or tie). Books price the F5 run line at +-0.5 two-sided
+        # with NO push, so re-encoding as spread legs prices both sides
+        # exactly with zero tie modeling. (An ml-complement encoding would
+        # silently drop the tie mass a NO holder wins — the #86 pick-off.)
+        # Only the TIE market still parses as (ml, F5): no book leg can
+        # express it, so classify_subcombo keeps it unpriceable.
+        team = mt.rsplit("-", 1)[-1]
+        if team == "TIE":
+            tie_yes = str(leg.get("side", "yes")) == "yes"
+            return CanonicalLeg(et, "ml", None,
+                                "tie" if tie_yes else "not_tie", "F5")
+        ml = leg_types._moneyline_side(leg)             # (team_is_home, side) or None
+        if ml is None:
+            return None
+        team_is_home, side = ml
+        ticker_team_covers = (side == "yes")
+        if team_is_home:
+            home_perspective_line = -0.5     # home -0.5 market
+            covering_side = "home" if ticker_team_covers else "away"
+        else:
+            home_perspective_line = 0.5      # away -0.5 market
+            covering_side = "away" if ticker_team_covers else "home"
+        return CanonicalLeg(et, "spread", home_perspective_line,
+                            covering_side, "F5")
     return None
 
 
@@ -71,7 +162,8 @@ def parse_legs(legs: list[dict]) -> list[CanonicalLeg] | None:
 
 def _sort_key(l: CanonicalLeg):
     # None-safe: ml legs (line=None) sort after numeric lines within a market_type
-    return (l.game_id, l.market_type, l.line is None, l.line or 0.0, l.side)
+    return (l.game_id, l.market_type, l.period,
+            l.line is None, l.line or 0.0, l.side)
 
 
 def canonical_legs(legs: list[CanonicalLeg]) -> list[CanonicalLeg]:
@@ -79,14 +171,18 @@ def canonical_legs(legs: list[CanonicalLeg]) -> list[CanonicalLeg]:
 
 
 def leg_set_hash(legs: list[CanonicalLeg]) -> str:
-    payload = [[l.game_id, l.market_type, l.line, l.side]
+    # period in the payload (issue #84): FG spread -1.5 and F5 spread -1.5
+    # agree on every other field and MUST hash apart. Hashes are in-memory
+    # engine keys + research payloads only (never persisted-and-compared
+    # across restarts), so the FG hash change this causes is safe.
+    payload = [[l.game_id, l.market_type, l.period, l.line, l.side]
                for l in canonical_legs(legs)]
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(blob.encode()).hexdigest()
 
 
 def partition_by_game(legs: list[CanonicalLeg]) -> dict[str, list[CanonicalLeg]]:
-    """Partition legs by game_id (event_ticker)."""
+    """Partition legs by game_id (the family-independent game code, #71)."""
     out: dict[str, list[CanonicalLeg]] = {}
     for l in legs:
         out.setdefault(l.game_id, []).append(l)
@@ -102,31 +198,82 @@ def classify_subcombo(game_legs: list[CanonicalLeg]) -> str:
     n = len(game_legs)
     if n == 0:
         return "unpriceable"
-    # Duplicate-market guard (Phase 2): a repeated (market_type, line) within
-    # one game is either the same leg twice or a contradictory pair whose
-    # joint probability is exactly 0 (Over 8.5 & Under 8.5, both moneylines).
-    # RFQ creators choose the leg set, and a book that product-prices
-    # contradictory legs would let Route B assign such a combo real value —
-    # a craftable pick-off. Nested totals at DIFFERENT lines stay allowed.
-    keys = [(l.market_type, l.line) for l in game_legs]
+    # F5-winner TEAM legs price since #86 (re-encoded as +-0.5 spread legs
+    # at parse). Only the TIE market still parses as (ml, F5) — no book leg
+    # can express it, so it stays unpriceable. Checked before the n==1
+    # route so a cross-game combo's lone TIE partition can't classify
+    # "single".
+    if any(l.market_type == "ml" and l.period == "F5" for l in game_legs):
+        return "unpriceable"
+    # Duplicate-market guard (Phase 2): a repeated (market_type, period, line)
+    # within one game is either the same leg twice or a contradictory pair
+    # whose joint probability is exactly 0 (Over 8.5 & Under 8.5, both
+    # moneylines). RFQ creators choose the leg set, and a book that
+    # product-prices contradictory legs would let Route B assign such a combo
+    # real value — a craftable pick-off. Nested totals at DIFFERENT lines stay
+    # allowed, as does the same line across periods (FG -1.5 with F5 -1.5 is
+    # no contradiction — issue #84).
+    keys = [(l.market_type, l.period, l.line) for l in game_legs]
     if len(set(keys)) != len(keys):
         return "unpriceable"
+    # Contradiction guard (#86): opposed spread/total legs at DIFFERENT
+    # lines can also have joint probability exactly 0 — e.g. home -0.5 with
+    # away -0.5 (both F5 winners, distinct keys so the dup guard is blind),
+    # or Over 8.5 with Under 4.5. A book that product-priced such a pair
+    # would let us quote real value on a worthless contract — the same
+    # craftable pick-off the dup guard exists for. Per period (F5 and FG
+    # margins/totals are different variables): a spread leg bounds the home
+    # margin (home side of line L => margin > -L; away side => margin < -L)
+    # and a total leg bounds the run count (over T => total > T; under T =>
+    # total < T); any upper bound <= any lower bound is an empty combo.
+    # Lines are half-integers, so touching bounds (b == a) are empty too and
+    # a strictly-open band (a, b) with b > a always contains an integer.
+    for period in {l.period for l in game_legs}:
+        margin_lowers = [-l.line for l in game_legs
+                         if l.market_type == "spread" and l.period == period
+                         and l.side == "home"]
+        margin_uppers = [-l.line for l in game_legs
+                         if l.market_type == "spread" and l.period == period
+                         and l.side == "away"]
+        if (margin_lowers and margin_uppers
+                and min(margin_uppers) <= max(margin_lowers)):
+            return "unpriceable"
+        total_lowers = [l.line for l in game_legs
+                        if l.market_type == "total" and l.period == period
+                        and l.side == "over"]
+        total_uppers = [l.line for l in game_legs
+                        if l.market_type == "total" and l.period == period
+                        and l.side == "under"]
+        if (total_lowers and total_uppers
+                and min(total_uppers) <= max(total_lowers)):
+            return "unpriceable"
     if n == 1:
         return "single"
+    # Grid routes are FULL-GAME surfaces (mlb_sgp_odds 4-cell families): any
+    # F5-containing multi-leg set routes on_demand instead (issue #84). Live
+    # mode prices grids on-demand anyway, but the route string keys research
+    # attribution and the taker's grid expectations — keep it honest.
+    all_fg = all(l.period == "FG" for l in game_legs)
     types = sorted(l.market_type for l in game_legs)
-    if n == 2 and types == ["spread", "total"]:
+    if n == 2 and types == ["spread", "total"] and all_fg:
         return "grid_spread_total"
-    if n == 2 and types == ["ml", "total"]:
+    if n == 2 and types == ["ml", "total"] and all_fg:
         return "grid_ml_total"
     return "on_demand"
 
 
-_FLIP = {"home": "away", "away": "home", "over": "under", "under": "over"}
+# "tie"/"not_tie" (F5-winner TIE market, issue #84) are exact complements —
+# the TIE market is binary — so flip_leg stays total over every side
+# parse_leg can emit, even though F5-winner legs never reach enumerate_
+# partition today (classify_subcombo keeps them unpriceable until #86).
+_FLIP = {"home": "away", "away": "home", "over": "under", "under": "over",
+         "tie": "not_tie", "not_tie": "tie"}
 
 
 def flip_leg(leg: CanonicalLeg) -> CanonicalLeg:
-    """The same leg on its opposite side (line unchanged)."""
-    return CanonicalLeg(leg.game_id, leg.market_type, leg.line, _FLIP[leg.side])
+    """The same leg on its opposite side (line and period unchanged)."""
+    return CanonicalLeg(leg.game_id, leg.market_type, leg.line,
+                        _FLIP[leg.side], leg.period)
 
 
 def enumerate_partition(game_legs: list[CanonicalLeg]) -> list[list[CanonicalLeg]]:

@@ -23,6 +23,7 @@ Origin: https://sportsbook.caesars.com.
 See recon_caesars_betdetails_live.py for the end-to-end proof (3 MLB games).
 """
 from __future__ import annotations
+import logging
 
 import json
 import time
@@ -31,6 +32,26 @@ from pathlib import Path
 
 from curl_cffi import requests
 
+from mlb_sgp._shared import (RETRY_BACKGROUND, RETRY_LIVE, BookTransportError,
+                             PriceCallTallyMixin, RetryProfile,
+                             request_with_retry)
+
+logger = logging.getLogger(__name__)
+
+
+def _looks_like_json(resp) -> bool:
+    """True when the body opens like JSON.
+
+    Caesars' AWS-WAF challenge is served as HTTP 200 with an HTML
+    interstitial, so status alone cannot tell a good response from a blocked
+    one. Passed to ``request_with_retry(body_ok=...)`` so a challenge is
+    RETRIED (asking again after a token mint is exactly how this book
+    recovers) rather than treated as a usable response.
+    """
+    return (getattr(resp, "text", "") or "").strip().startswith(("{", "["))
+
+
+BOOK = "caesars"
 DEFAULT_STATE = "nj"
 API = "https://api.americanwagering.com"
 # A real (non-Headless) Chrome UA — CloudFront blocks HeadlessChrome.
@@ -55,7 +76,9 @@ class Event:
     start_time: str          # ISO-8601 UTC (event.startTime)
 
 
-class CaesarsClient:
+class CaesarsClient(PriceCallTallyMixin):
+    BOOK = BOOK
+
     def __init__(self, state: str = DEFAULT_STATE, verbose: bool = False):
         self.state = state
         self.verbose = verbose
@@ -64,6 +87,8 @@ class CaesarsClient:
         self._device = ""
         self._cookies: dict = {}
         self._minted_at = 0.0
+        # Wall-clock cost of the most recent token mint (0.0 until one runs).
+        self.last_mint_sec = 0.0
 
     # --- hosts -------------------------------------------------------------- #
     @property
@@ -96,6 +121,30 @@ class CaesarsClient:
         if self._token and (time.time() - self._minted_at) < TOKEN_TTL_SEC:
             return True
         if self._load_cache():
+            return True
+        return self._mint()
+
+    def ensure_fresh_token(self, *, min_remaining_sec: float) -> bool:
+        """Pre-warm (#50): guarantee the token has >= ``min_remaining_sec``
+        of TTL left, re-minting in the BACKGROUND if not.
+
+        ``ensure_token`` refreshes only at expiry, so an RFQ landing just
+        after the 240s TTL lapses pays the ~1.5s node mint inline on the
+        quote path. The warming pass calls this instead with its own cadence
+        (+ slack) as the floor: a token that cannot outlive the next warming
+        gap is re-minted NOW, while nobody is waiting on it. Keyword-only so
+        the floor can never bind positionally by accident.
+
+        A sibling process's fresher on-disk token satisfies the floor
+        without a duplicate mint. Returns False only if a needed mint failed
+        (same contract as ``ensure_token`` — caller just skips this cycle).
+        """
+        def _remaining() -> float:
+            return TOKEN_TTL_SEC - (time.time() - self._minted_at)
+
+        if self._token and _remaining() >= min_remaining_sec:
+            return True
+        if self._load_cache() and _remaining() >= min_remaining_sec:
             return True
         return self._mint()
 
@@ -138,22 +187,32 @@ class CaesarsClient:
 
         Runs AWS WAF's real challenge.js under `node` (no Chromium/Playwright)
         via caesars_waf.mint_token_browser_free, then validates the token.
-        ~1.5s and works in the bot venvs (node on PATH + curl_cffi only).
+        Sub-second in practice and works in the bot venvs (node on PATH +
+        curl_cffi only). `last_mint_sec` carries the most recent mint's
+        wall-clock cost — the latency an RFQ pays on a cold token, which #50's
+        pre-warm work needs to measure.
         """
         try:
             from mlb_sgp.caesars_waf import mint_token_browser_free
         except ImportError:
             from caesars_waf import mint_token_browser_free  # cwd=mlb_sgp path
+        def _record_duration(seconds: float) -> None:
+            self.last_mint_sec = seconds
+
         for attempt in range(3):
             try:
-                tok, dev = mint_token_browser_free(state=self.state, verbose=self.verbose)
+                tok, dev = mint_token_browser_free(state=self.state,
+                                                   on_duration=_record_duration)
             except Exception as e:
-                if self.verbose:
-                    print(f"  [czr] mint error (attempt {attempt+1}): {e!r}")
+                # Auth-stage surprise: WARNING (rare, and a dead WAF token is
+                # how this book rots silently — see issue #32's meta-bug).
+                logger.warning("caesars: WAF mint error (attempt %d/3): %r",
+                               attempt + 1, e)
                 continue
             if not tok:
-                if self.verbose:
-                    print(f"  [czr] node mint returned no token (attempt {attempt+1})")
+                logger.warning("caesars: WAF mint returned no token "
+                               "(attempt %d/3, %.2fs)",
+                               attempt + 1, self.last_mint_sec)
                 continue
             self._token = tok
             self._device = dev
@@ -161,31 +220,56 @@ class CaesarsClient:
             self._minted_at = time.time()
             if self._validate():
                 self._save_cache()
-                if self.verbose:
-                    print(f"  [czr] token minted+validated browser-free (attempt {attempt+1})")
+                logger.info("caesars: WAF token minted+validated browser-free "
+                            "(attempt %d/3, mint %.2fs)",
+                            attempt + 1, self.last_mint_sec)
                 return True
-            if self.verbose:
-                print(f"  [czr] token minted but NOT validated (attempt {attempt+1}) "
-                      f"— WAF reject or IP throttle")
+            logger.warning("caesars: WAF token minted but NOT validated "
+                           "(attempt %d/3) — WAF reject or IP throttle",
+                           attempt + 1)
         return False
 
     # --- REST --------------------------------------------------------------- #
-    def _get_json(self, url: str, tries: int = 4):
-        for _ in range(tries):
-            try:
-                r = self.session.get(url, headers=self._headers(), cookies=self._cookies,
-                                     impersonate="chrome", timeout=25)
-                if r.status_code == 200 and r.text.strip().startswith(("{", "[")):
-                    return r.json()
-            except Exception:
-                pass
-            time.sleep(1.5)
-        return None
+    # NOTE: the module-level _looks_like_json (top of this file) is what makes
+    # a 200-with-HTML AWS-WAF challenge retryable instead of an instant failure.
+    def _get_json(self, url: str, stage: str,
+                  profile: RetryProfile = RETRY_BACKGROUND):
+        """GET + decode, or raise ``BookTransportError``.
 
-    def list_events(self) -> list[Event]:
+        Returns None for a 404 at the ``structure`` stage only — one delisted
+        event is a skip, but a 404 on the tabs FEED means the endpoint moved
+        and the book is down. A WAF challenge comes back 200 with HTML, so
+        "not JSON" is a transport failure too: before issue #33 that quietly
+        became an empty slate.
+
+        Issue #34 replaced this method's bespoke 4x1.5s loop with the shared
+        helper. The behavior change worth knowing: that loop retried EVERY
+        non-JSON outcome including a 403 auth gate, burning 6s before
+        admitting the book was dead. 4xx now fails on the first attempt; only
+        5xx/429/connection errors and the 200-with-HTML WAF challenge (via
+        ``body_ok``) are retried.
+        """
+        r = request_with_retry(
+            lambda: self.session.get(url, headers=self._headers(),
+                                     cookies=self._cookies,
+                                     impersonate="chrome", timeout=25),
+            profile=profile, book=BOOK, stage=stage,
+            body_ok=_looks_like_json, detail="no usable JSON")
+        status = getattr(r, "status_code", 200)
+        if status == 404 and stage == "structure":
+            return None
+        if status == 200 and _looks_like_json(r):
+            return r.json()
+        raise BookTransportError(
+            BOOK, stage, status_code=status,
+            detail="response was not usable JSON")
+
+    def list_events(self, profile: RetryProfile = RETRY_BACKGROUND) -> list[Event]:
         if not self.ensure_token():
-            return []
-        tj = self._get_json(f"{self._sb}/{TABS_PATH}")
+            raise BookTransportError(
+                BOOK, "auth",
+                detail="AWS-WAF token could not be minted/validated")
+        tj = self._get_json(f"{self._sb}/{TABS_PATH}", "events", profile)
         if not tj:
             return []
         out: list[Event] = []
@@ -216,11 +300,19 @@ class CaesarsClient:
                 ))
         return out
 
-    def fetch_event(self, event_id: str) -> dict | None:
-        """Full event detail (event.keyMarketGroups[].markets[] incl. alts)."""
+    def fetch_event(self, event_id: str,
+                    profile: RetryProfile = RETRY_BACKGROUND) -> dict | None:
+        """Full event detail (event.keyMarketGroups[].markets[] incl. alts).
+
+        None means Caesars no longer lists this event (404); transport
+        failures raise instead — see issue #33.
+        """
         if not self.ensure_token():
-            return None
-        j = self._get_json(f"{self._sb}/v4/events/{event_id}")
+            raise BookTransportError(
+                BOOK, "auth",
+                detail="AWS-WAF token could not be minted/validated")
+        j = self._get_json(f"{self._sb}/v4/events/{event_id}", "structure",
+                           profile)
         if not j:
             return None
         return j.get("event") or j
@@ -236,26 +328,40 @@ class CaesarsClient:
             "legs": legs,
         }
         try:
-            r = self.session.post(f"{self._sb}/v2/bets/details", headers=self._headers(),
-                                  cookies=self._cookies, json=body, impersonate="chrome",
-                                  timeout=30)
-        except Exception:
+            # RETRY_LIVE on every path — price calls are the fan-out surface.
+            r = request_with_retry(
+                lambda: self.session.post(
+                    f"{self._sb}/v2/bets/details", headers=self._headers(),
+                    cookies=self._cookies, json=body, impersonate="chrome",
+                    timeout=30),
+                profile=RETRY_LIVE, book=BOOK, stage="price",
+                body_ok=_looks_like_json)
+        except BookTransportError:
+            # Per-combo price failures stay row-drops (they are partial), but
+            # they must be TALLIED so an all-fail cycle still gets a verdict.
+            self.price_calls.record(False)
             return None
-        if r.status_code != 200 or not r.text.strip().startswith("{"):
+        if (getattr(r, "status_code", 200) != 200
+                or not (getattr(r, "text", "") or "").strip().startswith("{")):
+            self.price_calls.record(False)
             return None
         try:
             parlays = r.json().get("parlays") or []
         except Exception:
+            self.price_calls.record(False)
             return None
         if not parlays:
+            self.price_calls.record(False)
             return None
         price = (parlays[0].get("price") or {})
         dec = price.get("decimal") if price.get("decimal") is not None else price.get("d")
         if not dec or dec <= 1.0:
+            self.price_calls.record(False)
             return None
         am = price.get("american")
         try:
             am = int(str(am).replace("+", "")) if am is not None else None
         except (TypeError, ValueError):
             am = None
+        self.price_calls.record(True)
         return {"decimal": float(dec), "american": am}

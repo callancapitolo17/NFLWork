@@ -34,16 +34,11 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
     db.init_database()
 
     import pandas as pd
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g7"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m: True)
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     # Per-combo cap is after pricing — mock router so pricing produces a valid fair.
     import kalshi_mlb_mm.router as router_mod
-    monkeypatch.setattr(router_mod, "combo_fair", lambda *a, **k: 0.55)
+    monkeypatch.setattr(router_mod, "combo_fair_detail", lambda *a, **k: (router_mod.ComboFair(0.55, 0.0, 1), "ok"))
     monkeypatch.setattr(main, "_commence_time", lambda gid: None)
     monkeypatch.setattr(main, "_PREV_BOOK_FAIR", {})
 
@@ -54,6 +49,9 @@ def test_n7_inflight_quotes_trigger_per_combo_cap(monkeypatch, tmp_path):
              "event_ticker": _evt, "side": "yes"}]
     monkeypatch.setattr(main, "_SCOPE_CACHE", {"COMBO-N7": (True, "g7", legs)})
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "g7")
+    # #54 live-only: pricing requires a live engine result for every game.
+    from kalshi_mlb_mm.tests.conftest import FakeLiveEngine
+    monkeypatch.setattr(main, "_ENGINE", FakeLiveEngine())
 
     # Pre-seed 4 open live_quotes on COMBO-N7 — fills table is EMPTY.
     # N7: inflight worst-case = 4 * max_fill_exposure_usd() = 4 * $50 = $200.
@@ -125,11 +123,6 @@ def test_n8_unreconciled_fill_counted_conservatively_in_today_fills(monkeypatch,
     db.init_database()
 
     import pandas as pd
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g8"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     monkeypatch.setattr(risk, "tipoff_ok", lambda ct, m: True)
 
     _evt = "KXMLBGAME-25JUN271905TEXLAA"
@@ -442,11 +435,6 @@ def test_n12_void_rate_halt_triggers_notify_on_transition(monkeypatch, tmp_path)
     db.init_database()
 
     import pandas as pd
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
 
     # Ensure halt starts from False state.
     monkeypatch.setattr(main, "_VOID_HALT_ACTIVE", False)
@@ -514,11 +502,6 @@ def test_n12_void_rate_resume_triggers_notify_on_recovery(monkeypatch, tmp_path)
     db.init_database()
 
     import pandas as pd
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
 
     # Start in halt-active state (True).
     monkeypatch.setattr(main, "_VOID_HALT_ACTIVE", True)

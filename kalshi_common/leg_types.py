@@ -68,42 +68,83 @@ def _home_code_from_event_ticker(event_ticker: str) -> str | None:
     return home
 
 
+def _typed_spread_from_leg(leg: dict):
+    """SpreadLeg from any ``-{TEAM}{N}`` spread ticker (prefix-agnostic).
+
+    Shared by the FG (KXMLBSPREAD) and F5 (KXMLBF5SPREAD) parse branches —
+    the suffix grammar and sign semantics are identical (live-verified
+    2026-08-11: KXMLBF5SPREAD-...-LAD3 is "LAD -2.5 first 5 innings").
+    Callers gate on the series prefix; this helper never checks it.
+    """
+    mt = leg["market_ticker"]
+    side = leg["side"]
+    suffix = mt.rsplit("-", 1)[-1]
+    n_chars = "".join(c for c in suffix if c.isdigit())
+    team_chars = "".join(c for c in suffix if not c.isdigit())
+    if not n_chars or not team_chars:
+        return None
+    n = int(n_chars)
+    home_code = _home_code_from_event_ticker(leg.get("event_ticker", ""))
+    team_is_home = (home_code is not None and team_chars == home_code)
+    return fair_value.SpreadLeg(team_is_home=team_is_home, line_n=n, side=side)
+
+
+def _typed_total_from_leg(leg: dict):
+    """TotalLeg from any ``-{N}`` total ticker (prefix-agnostic).
+
+    Shared by FG (KXMLBTOTAL) and F5 (KXMLBF5TOTAL): both use integer suffix
+    N for line N - 0.5 (live-verified 2026-08-11: KXMLBF5TOTAL-...-7 has
+    floor_strike 6.5). Callers gate on the series prefix.
+    """
+    side = leg["side"]
+    try:
+        n = int(leg["market_ticker"].rsplit("-", 1)[-1])
+    except ValueError:
+        return None
+    return fair_value.TotalLeg(line_n=n, side=side)
+
+
 def _leg_dict_to_typed(leg: dict, game_id: str):
     """Convert {market_ticker, event_ticker, side} to fair_value typed leg.
 
     Determines team_is_home by parsing the home code from the event_ticker
     (no DB lookup needed — the ticker self-encodes the home/away convention).
+
+    Deliberately FG-only (issue #84): the taker calls this ungated on its
+    candidate legs and has no period concept — teaching it F5 prefixes would
+    let an F5 leg silently type as a full-game leg there. F5 parsing lives in
+    legset.parse_leg, which carries the period.
     """
     mt = leg["market_ticker"]
-    et = leg.get("event_ticker", "")
-    side = leg["side"]
     if mt.startswith("KXMLBSPREAD-"):
-        suffix = mt.rsplit("-", 1)[-1]
-        n_chars = "".join(c for c in suffix if c.isdigit())
-        team_chars = "".join(c for c in suffix if not c.isdigit())
-        if not n_chars or not team_chars:
-            return None
-        n = int(n_chars)
-        home_code = _home_code_from_event_ticker(et)
-        team_is_home = (home_code is not None and team_chars == home_code)
-        return fair_value.SpreadLeg(team_is_home=team_is_home, line_n=n, side=side)
+        return _typed_spread_from_leg(leg)
     if mt.startswith("KXMLBTOTAL-"):
-        try:
-            n = int(mt.rsplit("-", 1)[-1])
-        except ValueError:
-            return None
-        return fair_value.TotalLeg(line_n=n, side=side)
+        return _typed_total_from_leg(leg)
     return None
 
 
-def _spread_line_from_legs(legs: list[dict]) -> float:
+def _spread_line_from_legs(legs: list[dict]) -> float | None:
+    """Signed home-perspective spread line of the first spread leg.
+
+    Issue #70: sign follows the ticker's team — home margin -> -(n-0.5),
+    away margin -> +(n-0.5). Returns 0.0 when no leg is a spread (legacy
+    contract) and None when a spread leg's team cannot be resolved from its
+    event ticker — a silently wrong sign is worse than a NULL in telemetry
+    (this helper's only production caller is the taker's research events).
+    """
     for l in legs:
         if l["market_ticker"].startswith("KXMLBSPREAD-"):
-            suffix = l["market_ticker"].rsplit("-", 1)[-1]
-            digits = "".join(c for c in suffix if c.isdigit())
-            if digits:
-                n = int(digits)
-                return -(n - 0.5)
+            try:
+                typed = _leg_dict_to_typed(l, "")
+            except (KeyError, TypeError, ValueError):
+                return None
+            if typed is None:
+                return None
+            home_code = _home_code_from_event_ticker(str(l.get("event_ticker", "")))
+            if home_code is None:
+                return None
+            return (-(typed.line_n - 0.5) if typed.team_is_home
+                    else (typed.line_n - 0.5))
     return 0.0
 
 
@@ -204,9 +245,12 @@ def combo_descriptor(legs: list[dict]) -> "ComboDescriptor | None":
         home_covers = ((spread.team_is_home and spread.side == "yes")
                        or (not spread.team_is_home and spread.side == "no"))
         part = "Home" if home_covers else "Away"
+        # Issue #70: sign follows the ticker's team (home margin -> negative,
+        # away margin -> positive), matching mlb_sgp_odds.spread_line.
         return ComboDescriptor(
             kind="spread_total",
-            spread_line=-(spread.line_n - 0.5),
+            spread_line=(-(spread.line_n - 0.5) if spread.team_is_home
+                         else (spread.line_n - 0.5)),
             total_line=total_line,
             target_combo=f"{part} Spread + {over_part}",
             combo_family=SPREAD_TOTAL_FAMILY,

@@ -8,9 +8,12 @@
 // (document scripts-scan, navigator/screen fingerprint, FileReader for the
 // bandwidth blob). No Chromium.
 //
-// Usage:  node recon_caesars_waf_node.js [issuerHost] [issuerKey] [UA]
+// Usage:  node caesars_waf_node.js [issuerHost] [issuerKey] [UA]
 // Emits a single JSON line on stdout: {"token": "...", "ok": true}
 // Diagnostics go to stderr (suppressed unless CZR_WAF_DEBUG=1).
+//
+// issuerHost may be a bare host (production) or a full base URL including the
+// scheme, which is what lets the tests point it at a loopback stub issuer.
 'use strict';
 
 const ISSUER = process.argv[2] || '4ad3fec456d9.edge.sdk.awswaf.com';
@@ -113,12 +116,14 @@ setGlobal('document', documentShim); setGlobal('navigator', navigatorShim);
 setGlobal('screen', screenShim);
 win.location = locationShim; win.localStorage = localStorage; win.sessionStorage = localStorage;
 win.origin = ORIGIN; win.gokuProps = { key: '', iv: '', context: '' };
-// pre-stub so challenge.js auto-init (reads window.AwsWafIntegration.checkForceRefresh)
-// doesn't crash before the real object is assigned at end of the IIFE.
-win.AwsWafIntegration = {
-  checkForceRefresh: () => Promise.resolve(false), getToken: () => Promise.resolve(''),
-  forceRefreshToken: () => Promise.resolve(), hasToken: () => false, saveReferrer: () => {},
-};
+// DO NOT pre-stub window.AwsWafIntegration here (issue #41). AWS's bundle
+// decides whether to install itself by testing
+//     void 0 !== window['AwsWafIntegration']
+// so any placeholder makes the SDK conclude it is already integrated and skip
+// its own assignment. getToken() then returns the placeholder's empty string,
+// the mint reports "empty token", and Caesars silently produces zero rows.
+// The auto-init race a stub used to hide is handled below instead: the SDK's
+// unhandled rejection is logged and ignored, and the token check is the gate.
 win.addEventListener = () => {}; win.removeEventListener = () => {};
 win.requestAnimationFrame = (cb) => setTimeout(() => cb(Date.now()), 16);
 win.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {} });
@@ -168,22 +173,63 @@ globalThis.fetch = (url, opts = {}) => {
 };
 
 function fail(msg) { process.stdout.write(JSON.stringify({ ok: false, error: msg }) + '\n'); process.exit(1); }
-process.on('uncaughtException', (e) => fail('uncaught:' + (e && e.message || e)));
-process.on('unhandledRejection', (e) => fail('unhandled:' + (e && e.message || e)));
 
-(async () => {
-  const r = await _origFetch(`https://${ISSUER}/${KEY}/challenge.js`, {
+// The SDK's auto-init reads window.AwsWafIntegration before the bundle assigns
+// it, which rejects. That is benign — we drive forceRefreshToken() ourselves —
+// so it must NOT abort the mint (issue #41). Record it for diagnosis and carry
+// on; "did a token come out" is the only real verdict. The Python side's
+// subprocess timeout is the backstop if the SDK ever wedges instead.
+const noise = [];
+function note(kind, e) {
+  const msg = kind + ':' + ((e && e.message) || e);
+  noise.push(msg);
+  dlog('[waf] ignored ' + msg);
+}
+process.on('uncaughtException', (e) => note('uncaught', e));
+process.on('unhandledRejection', (e) => note('unhandled', e));
+
+// Production passes a bare host; the tests pass a full base URL.
+const ISSUER_BASE = ISSUER.includes('://') ? ISSUER : `https://${ISSUER}`;
+
+// Hard deadline. Ignoring stray rejections (above) means a wedged SDK no
+// longer exits early, and the mint can sit on the on-demand quote path — so
+// bound it here rather than waiting out the Python-side subprocess timeout.
+// A healthy mint takes well under a second.
+// A malformed override must not become NaN — setTimeout(fn, NaN) fires
+// immediately, which would fail every mint instantly.
+const DEADLINE_DEFAULT_MS = 20000;
+const _deadlineOverride = Number(process.env.CZR_WAF_DEADLINE_MS);
+const DEADLINE_MS = Number.isFinite(_deadlineOverride) && _deadlineOverride > 0
+  ? _deadlineOverride : DEADLINE_DEFAULT_MS;
+
+async function mint() {
+  const r = await _origFetch(`${ISSUER_BASE}/${KEY}/challenge.js`, {
     headers: { Origin: ORIGIN, Referer: ORIGIN + '/', 'User-Agent': UA },
   });
   if (!r.ok) return fail('challenge.js ' + r.status);
   const js = await r.text();
-  // eslint-disable-next-line no-eval
-  (0, eval)(js); // runs IIFE -> assigns the real window.AwsWafIntegration
+  try {
+    // eslint-disable-next-line no-eval
+    (0, eval)(js); // runs IIFE -> assigns the real window.AwsWafIntegration
+  } catch (e) {
+    // A throw during auto-init does not necessarily mean the integration was
+    // never assigned; check for it before giving up.
+    note('eval', e);
+  }
   const integ = win.AwsWafIntegration;
-  if (!integ || typeof integ.forceRefreshToken !== 'function') return fail('no integration');
+  if (!integ || typeof integ.forceRefreshToken !== 'function') {
+    return fail('no integration' + (noise.length ? ' (' + noise.join('; ') + ')' : ''));
+  }
   await integ.forceRefreshToken();
   const token = await integ.getToken();
-  if (!token) return fail('empty token');
+  if (!token) {
+    return fail('empty token' + (noise.length ? ' (' + noise.join('; ') + ')' : ''));
+  }
   process.stdout.write(JSON.stringify({ ok: true, token }) + '\n');
   process.exit(0);
-})();
+}
+
+const deadline = new Promise((_resolve, reject) => setTimeout(
+  () => reject(new Error('deadline ' + DEADLINE_MS + 'ms')), DEADLINE_MS));
+Promise.race([mint(), deadline])
+  .catch((e) => fail('mint:' + ((e && e.message) || e)));

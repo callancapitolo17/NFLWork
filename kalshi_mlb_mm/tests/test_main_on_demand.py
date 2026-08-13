@@ -4,7 +4,6 @@ import importlib
 import json
 from datetime import datetime, timezone
 
-import pandas as pd
 
 from kalshi_common import legset
 from mlb_sgp._shared import GameRef
@@ -43,6 +42,12 @@ class FakeEngine:
     def landed_at(self, h):
         return self.landed if self.fairs else None
 
+    def landed_empty(self, h):
+        return False            # #54: "never landed" rather than "landed empty"
+
+    def result_age_sec(self, h):
+        return 1.0 if self.fairs else None
+
     def ensure_fetch(self, h, game, legs):
         self.ensure_calls.append((h, game, tuple(legs)))
         return len(self.ensure_calls) == 1     # first call = newly enqueued
@@ -61,11 +66,6 @@ def _setup(monkeypatch, tmp_path, engine, db_name):
     monkeypatch.setattr(cfg, "KILL_FILE", tmp_path / ".kill")
     importlib.reload(db)
     db.init_database()
-    monkeypatch.setattr(main, "_SGP_ODDS",
-                        pd.DataFrame({"game_id": ["g"], "combo": ["c"], "period": ["FG"],
-                                      "bookmaker": ["dk"], "sgp_decimal": [2.0],
-                                      "fetch_time": [None], "spread_line": [-1.5],
-                                      "total_line": [8.5]}))
     monkeypatch.setattr(main, "_today_fills", lambda: [])
     monkeypatch.setattr(main, "_today_fills_by_game", lambda: [])
     monkeypatch.setattr(main, "_resolve_game_for_legs", lambda gl: "game1")
@@ -205,3 +205,23 @@ def test_confirm_on_demand_refetches_and_voids_on_stale(monkeypatch, tmp_path):
                           "ORDER BY observed_at DESC LIMIT 1").fetchone()
     assert st[0] == "voided"
     assert dec[0] == "voided_no_fresh_books"
+
+
+def test_engine_concurrency_from_config(monkeypatch):
+    """2026-08-11: 4 hard-coded job slots capped pricing at ~50 combos/min
+    vs ~170/min of option-B door survivors — the knob must reach the
+    semaphore, and an explicit ctor arg must win over config."""
+    import kalshi_mlb_mm.config as cfg
+    from kalshi_mlb_mm.on_demand import OnDemandEngine
+
+    monkeypatch.setattr(cfg, "ON_DEMAND_MAX_CONCURRENT_JOBS", 7)
+
+    class NullService:
+        pass
+
+    eng = OnDemandEngine(NullService(), autostart=False)
+    assert eng.max_concurrent_jobs == 7
+    assert eng._job_slots._value == 7
+
+    eng2 = OnDemandEngine(NullService(), autostart=False, max_concurrent_jobs=2)
+    assert eng2.max_concurrent_jobs == 2

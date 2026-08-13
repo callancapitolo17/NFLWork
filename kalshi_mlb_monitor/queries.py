@@ -13,6 +13,7 @@ computed in Python with ``datetime.now()`` and passed as parameters.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from datetime import datetime, timedelta
@@ -20,7 +21,20 @@ from datetime import datetime, timedelta
 import duckdb
 import pandas as pd
 
+# Import-light on purpose: kalshi_common.health_queries pulls in nothing but
+# pathlib, and book_health only the alert threshold — so the read-only
+# dashboard still imports no bot code and no scraper package.
+from kalshi_common import health_queries as HQ
+from kalshi_common.book_health import DEFAULT_STREAK_THRESHOLD
+
 from .bots import BOTS
+
+# The monitor's red/amber line must match what the bots actually alert on
+# (kalshi_mlb_mm/kalshi_mlb_rfq config BOOK_ALERT_STREAK). Env override is
+# read here so a bot running a non-default streak can be mirrored without a
+# code change.
+BOOK_ALERT_STREAK = int(os.environ.get("BOOK_ALERT_STREAK",
+                                       DEFAULT_STREAK_THRESHOLD))
 
 
 class _Locked:
@@ -340,3 +354,93 @@ def taker_quote_quality(bot_key: str, cutoff) -> "pd.DataFrame | _Locked":
            f"      ('accepted','failed_quote_walked','halted_low_fill_ratio'){wcd} "
            f"GROUP BY 1,2 ORDER BY 1")
     return _read(bot["state_db"], sql, wpd)
+
+
+# --------------------------------------------------------------------------- #
+# Per-book SGP feed health (issues #37/#38)
+# --------------------------------------------------------------------------- #
+def _table_exists(db_path: str, table: str) -> "bool | _Locked":
+    """Distinguish "the bot never wrote this table" from "the file is locked".
+
+    Without this, a bot that has not run since #38 shipped would render as
+    LOCKED — i.e. the dashboard would claim a live-data problem where there
+    is simply no history yet.
+    """
+    df = _read(db_path,
+               "SELECT count(*) AS n FROM information_schema.tables "
+               "WHERE table_name = ?", [table])
+    if df is LOCKED:
+        return LOCKED
+    return bool(len(df) and int(df.iloc[0]["n"]) > 0)
+
+
+def book_health(bot_key: str) -> "pd.DataFrame | _Locked | None":
+    """One row per (book, path): 24h outcome mix + current failure streak.
+
+    Returns None when the bot has no ``sgp_fetch_health`` table yet.
+
+    Both halves come from the SHIPPED queries in
+    ``kalshi_common/fetch_health_queries.sql`` — in particular
+    ``current_failure_streak``, which already encodes the predicate that
+    matters: ``outcome IN ('ok','empty')`` is HEALTHY. 'empty' means the book
+    answered and had no markets (an off-day, a thin slate, or "won't price
+    that combo"), so re-deriving the rule here in Python would eventually
+    paint quiet mornings red and disagree with the bot's own alerting.
+
+    Read from the MARKET DB, read-only, out of process — so this hits the
+    ordinary cross-process file lock that ``_read`` already retries, not the
+    same-process ConnectionException the bots must avoid.
+    """
+    bot = BOTS[bot_key]
+    db = bot["market_db"]
+    exists = _table_exists(db, "sgp_fetch_health")
+    if exists is LOCKED:
+        return LOCKED
+    if not exists:
+        return None
+
+    mix = _read(db, HQ.named_query("outcome_mix_24h"))
+    streaks = _read(db, HQ.named_query("current_failure_streak"))
+    if mix is LOCKED or streaks is LOCKED:
+        return LOCKED
+
+    # Outer join: a book that died three days ago has no rows in the 24h mix
+    # but a live streak (7d window), and must not vanish from the panel.
+    df = mix.merge(streaks, on=["book", "path"], how="outer",
+                   suffixes=("", "_streak"))
+    if "last_fetch_at_streak" in df.columns:
+        df["last_fetch_at"] = df["last_fetch_at"].fillna(
+            df["last_fetch_at_streak"])
+        df = df.drop(columns=["last_fetch_at_streak"])
+    # `current_failure_streak` HAVINGs out healthy books, so an all-healthy
+    # fleet returns zero rows — with the column still present. Guard the
+    # column explicitly rather than with a .get() default that would only
+    # ever be reached as an AttributeError.
+    if "failing_streak" not in df.columns:
+        df["failing_streak"] = 0
+    df["failing_streak"] = df["failing_streak"].fillna(0).astype(int)
+    for col in ("n_fetches", "n_ok", "n_empty"):
+        if col in df.columns:
+            df[col] = df[col].fillna(0).astype(int)
+    # ANSWERED, not ok: a book whose 24h was all 'empty' (off-day, thin
+    # slate) is perfectly healthy, and showing it as "0% ok" next to a green
+    # dot would teach the reader to distrust the colour. Same ok+empty
+    # predicate the streak and the bot's alerting use.
+    df["pct_answered"] = [
+        None if not n else round(100.0 * (ok + empty) / n, 1)
+        for n, ok, empty in zip(df["n_fetches"], df["n_ok"], df["n_empty"])]
+    df["status"] = df["failing_streak"].map(_health_status)
+    return df.sort_values(["status", "book", "path"],
+                          key=lambda s: s.map(_STATUS_ORDER) if s.name == "status" else s)
+
+
+_STATUS_ORDER = {"dead": 0, "degraded": 1, "ok": 2}
+
+
+def _health_status(streak: int) -> str:
+    """green / amber / red, using the SAME threshold the bots alert on."""
+    if streak >= BOOK_ALERT_STREAK:
+        return "dead"
+    if streak > 0:
+        return "degraded"
+    return "ok"

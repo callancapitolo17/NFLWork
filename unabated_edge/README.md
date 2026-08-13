@@ -127,10 +127,39 @@ unabated_edge/
 **Data flow per tick (every `V2_POLL_SEC`, default 5s):**
 1. `feed.fetch_v2(league_id, league_prefix)` re-fetches Unabated's **v2 per-league odds file** (`content.unabated.com/markets/v2/league/<id>/odds.json`). Anchors are **unblurred anonymously** in this file — no token needed — and each line carries its full `alternateLines` ladder. (The legacy `changes/query` delta feed does not carry soccer at all; the legacy snapshot's anchors are blurred. Both legacy functions remain in `feed.py` for future US-league adapters.)
 2. `mapping.pair_events` matches Unabated events to open Kalshi events by canonical team-pair (parsed from the Kalshi event title).
-3. `adapter.price_event()` calls `_anchor_totals` to devig the bt3 over/under ladder from the first complete anchor book, then emits candidates at every Kalshi rung matching a ladder line by `floor_strike`.
+3. `adapter.price_event()` calls `_anchor_totals` to devig the bt3 over/under ladder from the first complete anchor book, then emits candidates at every Kalshi rung matching a ladder line by `floor_strike`. Every rung passes the [feed-integrity overround gate](#feed-integrity-the-overround-gate) before devig.
 4. **Kalshi microstructure capture:** for every paired pre-kickoff event, each market's full orderbook is fetched **once** per tick (`venues.kalshi.get_book`) and written to `book_snapshots` — top-of-book bid/ask/size columns plus the full depth ladder as JSON, and the market's `volume_fp`/`open_interest_fp`. Every `TRADES_POLL_SEC` (default 30s) the executed-trades tape is polled per market into `kalshi_trades` (PK `trade_id`, overlapping poll windows dedup via `INSERT OR IGNORE`; a >100-trade burst inside one window loses the excess). Both stop at kickoff, same close semantics as `line_snapshots`. This is the maker-design dataset: spread width, re-centering speed after anchor moves, and where flow trades.
 5. For each `Candidate` (Over=YES, Under=NO), `ev.edge_for_yes` computes net EV after Kalshi taker fee. Asks are derived from the same fetched book (`yes_ask_from_book` / `no_ask_from_book`), so pricing costs no extra REST calls.
 6. Candidates above both `MIN_EV_PCT` and `MIN_EV_DOLLARS` are Kelly-sized and written to `flagged_edges`. Line snapshots (with the feed's `modified_on`) are written every tick **until kickoff** — so the last snapshot per event is the closing line by construction. Every priced candidate goes to the research firehose with rung provenance (`book`, `alt`, `overround`) so alt-line trustworthiness stays auditable. If both sides of one rung flag at once, that's a crossed/stale book and is logged as a data error, not a double edge.
+
+### Feed integrity: the overround gate
+
+Every ladder rung — main **and** alt, in every sport adapter — must pass
+`pricing.overround_reject` on its raw implied sum (`po_raw + pu_raw`) **before**
+devig (issue #73). The exploit this closes: the anchor book moves one side on a
+live adjustment and the other side hasn't refreshed within the same tick, so
+the pair briefly sums to e.g. 0.82 (crossed) or 1.35 (blown vig) — and devig
+would silently clip-and-solve that into a plausible-but-wrong fair that gets
+quoted and flagged next tick. Two distinct reject reasons:
+
+- `anchor_crossed` — sum < 1: arithmetically not a two-way market. Hard reject
+  regardless of band; the higher-severity signal (one side is provably stale).
+- `anchor_overround` — sum outside `[ANCHOR_OVERROUND_MIN, ANCHOR_OVERROUND_MAX]`
+  (default `[1.005, 1.20]`): near-zero or blown vig, not a plausible one-book
+  quote. The envelope strictly contains the maker's alt band `[1.01, 1.15]`, so
+  `alt_overround` behavior is unchanged for anything that passes here.
+
+Rejected rungs **fail closed and loud**: they are never devigged (the rung is
+kept in the ladder marked `{p_over: None, reject: reason}`), the taker never
+prices or flags them, the maker cancels any resting quotes at that line with
+the reject reason, and every reject is logged (WARNING) plus written to the
+research firehose as a `rung_rejected` event with full rung provenance
+(`event_id`, `line`, `book`, `alt`, `overround`, `reason`). Because the ladder
+is built ~twice per tick (maker + taker paths), a persistently broken rung
+emits at that cadence — loud is the point. Adapter contract lives in
+`sports/base.py::fair_ladder`; `Soccer._anchor_ladder` is the reference
+implementation. Note the gate is not a staleness check: a frozen feed can be
+un-crossed and in-band — `ANCHOR_STALE_SEC` and the poll watchdog own that.
 
 **Databases (both gitignored, pkg-local):**
 - `unabated_edge_market.duckdb` — `line_snapshots`, `flagged_edges`, `book_snapshots` (Kalshi bid/ask/depth per rung per tick), `kalshi_trades` (executed-trades tape)
@@ -535,6 +564,8 @@ All tuneable constants live in `config.py` and can be overridden via `.env` or e
 | `MAKER_MAX_CONTRACTS` | `2` | Hard per-quote contract ceiling (tuition-run leash — binds before the %-based ledger caps at this account size) |
 | `HARD_STOP_DOLLARS` | `50` | Cumulative realized (always live, settled-fills excluded from the unrealized mark so nothing double-counts) + mark-to-anchor unrealized loss on still-open positions (dollars) that halts NEW quoting for the day. **Secondary breaker, not the per-game leash** (finding #74/F2/F8) — see §cap stack's `MATCH_CAP_PCT` for the constraint that actually bounds a single game |
 | `ANCHOR_STALE_SEC` | `180` | Pull a match if even its freshest anchor rung's `modifiedOn` is older than this — frozen-feed guard |
+| `ANCHOR_OVERROUND_MIN` | `1.005` | Feed-integrity envelope floor on every rung's raw implied sum (below → `anchor_overround` reject; < 1 → `anchor_crossed`) |
+| `ANCHOR_OVERROUND_MAX` | `1.20` | Feed-integrity envelope ceiling on every rung's raw implied sum (above → `anchor_overround` reject) |
 
 ---
 
@@ -575,6 +606,17 @@ print(con.execute("""
 # Research firehose (every candidate priced, not just flagged ones)
 res = duckdb.connect("unabated_edge/unabated_edge_research.duckdb", read_only=True)
 print(res.execute("SELECT * FROM research_events ORDER BY ts DESC LIMIT 50").df())
+
+# Feed-integrity rejects: crossed / blown-vig anchor rungs refused before devig
+print(res.execute("""
+    SELECT ts, json_extract_string(payload, '$.reason') AS reason,
+           json_extract(payload, '$.event_id') AS event_id,
+           json_extract(payload, '$.line') AS line,
+           json_extract(payload, '$.book') AS book,
+           json_extract(payload, '$.overround') AS overround
+    FROM research_events WHERE event_type = 'rung_rejected'
+    ORDER BY ts DESC LIMIT 50
+""").df())
 
 # Kalshi microstructure (maker design data): spread + depth per rung over time
 print(con.execute("""

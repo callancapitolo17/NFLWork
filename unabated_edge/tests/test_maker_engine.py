@@ -81,6 +81,60 @@ def test_alt_rung_gated_on_overround(eng):
     assert eng.gateway.placed == []
 
 
+# ---------- overround feed-integrity gate (issue #73) ----------
+
+_REJECTED_RUNG = {"p_over": None, "reject": "anchor_crossed", "book": 7, "alt": False,
+                  "overround": 0.82, "modified_on": _NOW.isoformat()}
+
+
+def test_rejected_rung_cancels_resting_quotes(eng):
+    """Fail closed AND loud: a rung the ladder gate rejected must CANCEL our
+    resting quotes at that line (a merely-absent rung holds them), never rest new
+    ones, and never crash on the None fair."""
+    eng.on_match(Soccer(), _EM, _KEV, _LADDER, _BOOKS, _NOW)
+    assert eng.state.quotes_live() == 2
+    poisoned = {2.5: dict(_REJECTED_RUNG)}
+    eng.on_match(Soccer(), _EM, _KEV, poisoned, _BOOKS, _NOW + datetime.timedelta(seconds=5))
+    assert len(eng.gateway.cancelled) == 2 and eng.state.quotes_live() == 0
+    # and it stays flat while the rung stays rejected
+    n_placed = len(eng.gateway.placed)
+    eng.on_match(Soccer(), _EM, _KEV, poisoned, _BOOKS, _NOW + datetime.timedelta(seconds=10))
+    assert len(eng.gateway.placed) == n_placed
+
+
+def test_mixed_ladder_quotes_healthy_cancels_rejected(eng):
+    """Per-rung gate: healthy 2.5 quotes normally while rejected 3.5 is refused
+    in the same tick."""
+    kev = {"title": "A vs B: Regulation Time Total Goals", "markets": [
+        {"ticker": "T-O25", "strike_type": "greater", "floor_strike": 2.5},
+        {"ticker": "T-O35", "strike_type": "greater", "floor_strike": 3.5}]}
+    books = {"T-O25": _BOOK, "T-O35": _BOOK}
+    ladder = {2.5: dict(_LADDER[2.5]),
+              3.5: {**_REJECTED_RUNG, "reject": "anchor_overround", "overround": 1.35}}
+    eng.on_match(Soccer(), _EM, kev, ladder, books, _NOW)
+    placed_tickers = {t for t, _s, _p, _n in eng.gateway.placed}
+    assert placed_tickers == {"T-O25"}
+
+
+def test_rejected_rung_excluded_from_mark_to_fair(eng):
+    """_fair_by_event must skip p_over=None rungs (mark-to-fair would TypeError)."""
+    poisoned = {2.5: dict(_LADDER[2.5]), 3.5: dict(_REJECTED_RUNG)}
+    eng.on_match(Soccer(), _EM, _KEV, poisoned, _BOOKS, _NOW)
+    assert eng._fair_by_event[1] == {2.5: _LADDER[2.5]["p_over"]}
+
+
+def test_alt_band_still_binding_inside_envelope(eng):
+    """Alt behavior preserved (issue #73 bar): overround 1.17 passes the new
+    feed-integrity envelope (<=1.20) but must STILL be refused by the original
+    alt band (<=1.15), same gate, same effect. In-band alt still quotes."""
+    marginal_alt = {2.5: {**_LADDER[2.5], "alt": True, "overround": 1.17}}
+    eng.on_match(Soccer(), _EM, _KEV, marginal_alt, _BOOKS, _NOW)
+    assert eng.gateway.placed == []
+    good_alt = {2.5: {**_LADDER[2.5], "alt": True, "overround": 1.05}}
+    eng.on_match(Soccer(), _EM, _KEV, good_alt, _BOOKS, _NOW + datetime.timedelta(seconds=5))
+    assert eng.gateway.placed
+
+
 def test_pull_window_cancels_everything(eng):
     eng.on_match(Soccer(), _EM, _KEV, _LADDER, _BOOKS, _NOW)
     near_kick = _KICK - datetime.timedelta(minutes=2)
