@@ -388,7 +388,12 @@ def test_silent_dead_socket_forces_reconnect(capture, running):
         "reader must reconnect off a silently-dead socket"
     assert factory.transports[0].closed
     assert wait_until(lambda: src.ws_ready)  # transport 1 acked + gap-filled
-    assert rest.poll_calls == 2  # one gap-fill per (re)connect
+    # Transport 1 is also silent, so further teardowns may land before this
+    # line on a slow machine — pin the invariant, not a fixed count. Reading
+    # poll_calls BEFORE created keeps the bound race-free (gap-fills only
+    # happen after their transport is created, so poll_calls <= created).
+    polls = rest.poll_calls
+    assert 2 <= polls <= factory.created  # one gap-fill per (re)connect
 
 
 def test_frames_within_heartbeat_do_not_reconnect(capture, running):
