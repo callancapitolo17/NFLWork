@@ -1793,6 +1793,22 @@ def _confirm_tick(gateway, dry_run):
             with db.connect() as con:
                 con.execute("UPDATE live_quotes SET status=?, closed_at=? WHERE quote_id=?",
                             [st, datetime.now(timezone.utc), qid])
+        elif status == 404 and isinstance(body, dict):
+            # Kalshi DELETES the quote object when its RFQ expires: the GET
+            # returns 404 {'error': {'code': 'not_found'}} (live-verified
+            # 2026-08-12). Without this branch st is None, nothing matches,
+            # and the row wedges as 'open' forever — counting against
+            # MAX_OPEN_QUOTES and both exposure caps until the bot silently
+            # stops quoting. Only an explicit 404 with a parsed JSON body is
+            # terminal; transient failures (5xx, timeout, non-dict body,
+            # connection errors) fall through and leave the quote open.
+            log.info("[quote_gone] quote_id=%s ticker=%s — 404 on quote GET; "
+                     "RFQ expired and Kalshi deleted the quote; closing as "
+                     "expired", qid, ticker)
+            with db.connect() as con:
+                con.execute(
+                    "UPDATE live_quotes SET status='expired', closed_at=? WHERE quote_id=?",
+                    [datetime.now(timezone.utc), qid])
 
 
 def _reconcile_sweep_tick():
