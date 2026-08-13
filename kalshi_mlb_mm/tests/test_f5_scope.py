@@ -31,8 +31,8 @@ def test_f5_spread_total_rfq_is_priceable():
 
 
 def test_f5_winner_team_leg_rfq_is_priceable():
-    """#86: F5-winner TEAM legs are in scope — the tie conversion lives in
-    the engine's lookup, so the RFQ routes on_demand like other F5 shapes."""
+    """#86: F5-winner TEAM legs are in scope — re-encoded as +-0.5 run-line
+    spread legs at parse, the RFQ routes on_demand like other F5 shapes."""
     from kalshi_mlb_mm.main import _priceable
     canon = legset.parse_legs([_f5_winner("LAD", "yes"), _f5_total(7, "yes")])
     assert canon is not None
