@@ -144,6 +144,20 @@ def parse_leg(leg: dict) -> CanonicalLeg | None:
             covering_side = "away" if ticker_team_covers else "home"
         return CanonicalLeg(et, "spread", home_perspective_line,
                             covering_side, "F5")
+    if mt.startswith("KXMLBRFI-"):
+        # Run in 1st inning — ONE binary market per event, market ticker ==
+        # event ticker (no team/line suffix; live grammar 2026-08-13).
+        # rules_primary "if either team scores a run in the first inning"
+        # with floor_strike 1 / greater_or_equal makes YES exactly
+        # "1st-inning total runs >= 1" = Over 0.5 — so RFI re-encodes as a
+        # 1st-inning total at 0.5 (the #86 pattern) and the on-demand
+        # pipeline prices it off books' two-sided I1 0.5 totals with no
+        # push and zero new pricing machinery.
+        side = leg.get("side")
+        if side not in ("yes", "no"):
+            return None
+        return CanonicalLeg(et, "total", 0.5,
+                            "over" if side == "yes" else "under", "I1")
     return None
 
 
@@ -272,8 +286,14 @@ _FLIP = {"home": "away", "away": "home", "over": "under", "under": "over",
 
 def flip_leg(leg: CanonicalLeg) -> CanonicalLeg:
     """The same leg on its opposite side (line and period unchanged)."""
+    flipped = _FLIP.get(leg.side)
+    if flipped is None:
+        # #87 insurance: a side outside the vocabulary means parse_leg grew
+        # a branch without extending _FLIP — fail with the leg named, not a
+        # bare KeyError three frames deep in enumerate_partition.
+        raise ValueError(f"flip_leg: unknown side {leg.side!r} on {leg}")
     return CanonicalLeg(leg.game_id, leg.market_type, leg.line,
-                        _FLIP[leg.side], leg.period)
+                        flipped, leg.period)
 
 
 def enumerate_partition(game_legs: list[CanonicalLeg]) -> list[list[CanonicalLeg]]:

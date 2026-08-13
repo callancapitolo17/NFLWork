@@ -18,7 +18,10 @@ from mlb_sgp._shared import TargetLine  # noqa: E402
 
 def test_money_type_constant():
     from scraper_novig_sgp import MONEY_TYPE
-    assert MONEY_TYPE == {"fg": "MONEY", "f5": "MONEY_1H"}
+    # "i1" is a naming-pattern placeholder (issue #87): Novig lists no
+    # 1st-inning moneyline today, so the type matches nothing.
+    assert MONEY_TYPE == {"fg": "MONEY", "f5": "MONEY_1H",
+                          "i1": "FIRST_INNING_MONEY"}
 
 
 def _markets(home_sym="DET", away_sym="HOU"):
