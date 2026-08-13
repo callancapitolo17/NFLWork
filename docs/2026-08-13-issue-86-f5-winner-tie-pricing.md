@@ -1,5 +1,23 @@
 # Issue #86 — KXMLBF5 (F5 winner) tie-adjusted pricing: implementation plan
 
+> **SUPERSEDED (2026-08-13, same branch): ±0.5 run-line re-encoding.**
+> During review the user caught that a team market's NO side pays on
+> "other team wins OR tie" — the ml-complement encoding below drops that
+> tie mass. Chasing it revealed the cleaner design that shipped instead:
+> "team wins F5" ⟺ "team −0.5 on the F5 run line" (win by ≥1; tie loses)
+> and NO ⟺ "other team +0.5" (win or tie). Books price the F5 run line at
+> ±0.5 two-sided with NO push, so `legset.parse_leg` re-encodes
+> `KXMLBF5-{TEAM}` legs (both sides) as F5 spread legs at ±0.5 and the
+> whole #85 pipeline prices them exactly — no tie anchor, no conversion
+> function, no semantics labels. All of that machinery was removed; a
+> `classify_subcombo` contradiction guard (jointly-empty spread/total
+> bounds per period) replaces the dup-guard protection the old
+> `("ml","F5",None)` key collision provided for home+away winner pairs,
+> and also closes the pre-existing FG opposed-favorites hole. TIE legs
+> stay unpriceable (`out_of_scope_f5_tie_leg`). The recon below remains
+> the evidence record; the conversion-math design is kept for the
+> archive only.
+
 **Date:** 2026-08-13 · **Branch:** `worktree-issue-86-f5-winner-tie` · **Epic:** #82 · Depends: #84, #85 (merged)
 
 Recon findings (posted on the issue): Kalshi F5-winner team markets are

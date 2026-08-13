@@ -968,13 +968,6 @@ class OnDemandBookResult:
     # Per-fetch drop counters for THIS on-demand call (issue #35). Optional so
     # existing constructions keep working; #38 persists it to the health table.
     counters: "FetchCountersSnapshot | None" = None
-    # Issue #86: set ONLY when the leg set contains an F5-winner TEAM leg.
-    # f5_semantics is the book adapter's F5 ML semantics label (its `fair`
-    # is then CONDITIONAL on no-tie for push_2way books); p_tie_book is the
-    # book's own devigged 3-way tie anchor when its structure carries one
-    # (FD/MGM), else None. The engine's lookup converts before consensus.
-    f5_semantics: str | None = None
-    p_tie_book: float | None = None
 
 
 @dataclass(frozen=True)

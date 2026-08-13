@@ -642,11 +642,11 @@ def _out_of_scope_reason(legs, canon) -> str:
         return "out_of_scope_non_mlb"      # some leg untypeable (other sport etc.)
     if len(canon) < 2:
         return "out_of_scope_lone_single"
-    # F5-winner TEAM legs are in scope since #86 (tie-adjusted pricing).
-    # TIE-side legs stay declined — no book prices a bare F5-tie leg in an
-    # SGP. Labeled distinctly so the declined demand stays measurable.
-    if any(l.market_type == "ml" and l.period == "F5"
-           and l.side in ("tie", "not_tie") for l in canon):
+    # F5-winner TEAM legs are in scope since #86 (re-encoded as +-0.5 run
+    # lines at parse). Only the TIE market still parses as (ml, F5) — no
+    # book leg can express it. Labeled distinctly so the declined demand
+    # stays measurable.
+    if any(l.market_type == "ml" and l.period == "F5" for l in canon):
         return "out_of_scope_f5_tie_leg"
     return "out_of_scope"
 
@@ -677,20 +677,9 @@ def _maybe_emit_on_demand_result(rfq_id, ticker, hash_, legs=()):
                           # select fields by name and ignore it.
                           periods=sorted({l.period for l in legs}),
                           dropped_books=list(dropped or ()),
-                          # #86: p_tie_used is the flight's median anchor the
-                          # lookup converts with (None on non-F5-winner
-                          # flights). Per-book fair here stays RAW (the
-                          # book's conditional number for push_2way) — the
-                          # semantics label + anchor make it auditable.
-                          p_tie_used=getattr(_ENGINE, "tie_anchor",
-                                             lambda h: None)(hash_),
                           books={b: dict(fair=r.fair, route=r.route,
                                          n_cells=r.n_cells_priced,
-                                         latency_sec=r.latency_sec,
-                                         f5_semantics=getattr(
-                                             r, "f5_semantics", None),
-                                         p_tie_book=getattr(
-                                             r, "p_tie_book", None))
+                                         latency_sec=r.latency_sec)
                                  for b, r in res.items()}))
     except Exception:                      # research must never break the tick
         pass
@@ -716,14 +705,8 @@ def _live_games_detail(by_game):
                 # #85: periods the game's legs span ("FG"/"F5") — additive
                 # key, safe for report.py's live_games readers.
                 periods=sorted({l.period for l in gl}),
-                # #86: the tie anchor the lookup converted with (None on
-                # non-F5-winner flights) — additive key.
-                p_tie_used=getattr(_ENGINE, "tie_anchor",
-                                   lambda _h: None)(h),
                 books={b: dict(fair=r.fair, route=r.route,
-                               latency_sec=r.latency_sec,
-                               f5_semantics=getattr(r, "f5_semantics", None),
-                               p_tie_book=getattr(r, "p_tie_book", None))
+                               latency_sec=r.latency_sec)
                        for b, r in res.items()})
         return out or None
     except Exception:
@@ -744,12 +727,7 @@ def _on_demand_fill_info(canon):
             if not res:
                 out[h] = None
                 continue
-            # #86: consensus ran on the lookup's CONVERTED fairs — recompute
-            # from the same source so consensus_books can't drift from what
-            # actually priced (raw fairs stay in `books` for provenance).
-            fairs = _ENGINE.lookup(h)
-            if fairs is None:                    # stale store: legacy raw
-                fairs = {b: r.fair for b, r in res.items()}
+            fairs = {b: r.fair for b, r in res.items()}
             det = router.consensus_detail(fairs, config.MIN_AGREEING_BOOKS,
                                           config.SIGMA_Z_MAX)
             out[h] = dict(

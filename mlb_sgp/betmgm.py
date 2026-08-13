@@ -60,9 +60,6 @@ _F5_TOTAL = "1st 5 innings - totals"
 # "1st 5 innings - Money Line" (F5); both are isBetBuilder-eligible.
 _FG_ML = "money line"
 _F5_ML = "1st 5 innings - money line"
-# 3-way home/tie/away result — the P(tie) anchor for #86's F5-winner
-# conversion. Never priced as a leg; only its option decimals are kept.
-_F5_1X2 = "1st 5 innings - 1x2"
 
 
 def _to_float(s) -> float | None:
@@ -88,8 +85,6 @@ def _classify_market(name: str) -> tuple[str, str] | None:
         return ("F5", "total")
     if _F5_ML in low:
         return ("F5", "moneyline")
-    if _F5_1X2 in low:
-        return ("F5", "result3")
     # Guard against other-period markets (1st 3 / 1st 7 innings, 1X2, etc.)
     if "innings" in low and "1st 5" not in low:
         return None
@@ -120,8 +115,8 @@ def parse_markets(markets: list[dict], home_team: str, away_team: str) -> dict:
     Only markets flagged SGP-eligible (``isBetBuilder`` not False) contribute.
     """
     out = {
-        "FG": {"spreads": {}, "totals": {}, "moneyline": None, "result3": None},
-        "F5": {"spreads": {}, "totals": {}, "moneyline": None, "result3": None},
+        "FG": {"spreads": {}, "totals": {}, "moneyline": None},
+        "F5": {"spreads": {}, "totals": {}, "moneyline": None},
     }
     home_low = home_team.lower()
     away_low = away_team.lower()
@@ -202,45 +197,7 @@ def parse_markets(markets: list[dict], home_team: str, away_team: str) -> dict:
             if home_leg and away_leg:
                 out[period]["moneyline"] = {"home": home_leg, "away": away_leg}
 
-        elif kind == "result3":
-            # 3-way result (#86 tie anchor): decimals only, keyed
-            # home/tie/away. The Tie option is literally named "Tie".
-            home_dec = tie_dec = away_dec = None
-            for o in options:
-                onm = ((o.get("name") or {}).get("value", "")
-                       if isinstance(o.get("name"), dict) else "")
-                odds = ((o.get("price") or {}).get("odds"))
-                if odds is None:
-                    continue
-                onm_low = onm.lower().strip()
-                if onm_low == "tie":
-                    tie_dec = float(odds)
-                elif home_low and (home_low in onm_low or onm_low in home_low):
-                    home_dec = float(odds)
-                elif away_low and (away_low in onm_low or onm_low in away_low):
-                    away_dec = float(odds)
-            if home_dec and tie_dec and away_dec:
-                out[period]["result3"] = {"home": home_dec, "tie": tie_dec,
-                                          "away": away_dec}
-
     return out
-
-
-def f5_tie_prob(structure) -> float | None:
-    """Devigged P(tie after 5) from MGM's "1st 5 Innings - 1X2" 3-way
-    (#86 tie anchor). Reads the ``result3`` decimals ``parse_markets``
-    stashed in the F5 bucket; missing market or an insane vig envelope
-    returns None. Never raises."""
-    try:
-        bucket = (structure.get("F5") or {}).get("result3") or {}
-        home, tie, away = (bucket.get("home"), bucket.get("tie"),
-                           bucket.get("away"))
-        if home is None or tie is None or away is None:
-            return None
-        from kalshi_common.fair_value import tie_prob_from_three_way
-        return tie_prob_from_three_way(home, tie, away)
-    except Exception:
-        return None
 
 
 def _match_events(events: list[Event], targets: list[TargetLine]) -> dict[str, Event]:

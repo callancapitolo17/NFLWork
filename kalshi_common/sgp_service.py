@@ -736,30 +736,23 @@ class SGPService:
         if book not in self._state or not legs:
             return None
         # Period guard (#84 -> #85 -> #86): resolvers key on (market_type,
-        # period), so FG and F5 legs — F5-winner TEAM legs included since
-        # #86 — flow to the hooks. What stays CLOSED, declining with zero
-        # wire calls (flight completes zero-book, maker declines
-        # live_fetch_timeout / too_few_books — never a wrong price):
-        #  * F5-winner TIE-side legs: no book prices a bare F5-tie leg in
-        #    an SGP (classify_subcombo also routes these "unpriceable";
-        #    this is the service-level backstop).
-        #  * F5-winner sets at a book whose hooks declare NO
-        #    f5_ml_semantics label: an unlabeled conditional fair must
-        #    never leak into consensus — that IS the ~P(tie) pick-off.
+        # period), so FG and F5 legs flow to the hooks — F5-winner TEAM
+        # legs included, because #86 re-encodes them as +-0.5 spread legs
+        # at parse (books' F5 run line has no push; the ml row would
+        # mismatch Kalshi's tie-loses settlement). Two cases stay CLOSED,
+        # declining with zero wire calls (flight completes zero-book, maker
+        # declines live_fetch_timeout / too_few_books — never a wrong
+        # price):
+        #  * (ml, F5) legs — post-#86 that is only the KXMLBF5 TIE market,
+        #    which no book leg can express; classify_subcombo already
+        #    routes these combos "unpriceable", this is the backstop.
         #  * unknown periods: a future period value must never reach a
         #    resolver that would silently serve the wrong bucket.
-        has_f5_winner = False
         for l in legs:
             period = getattr(l, "period", "FG")
             if period not in ON_DEMAND_PERIODS:
                 return None
             if period == "F5" and l.market_type == "ml":
-                if l.side in ("tie", "not_tie"):
-                    return None
-                has_f5_winner = True
-        if has_f5_winner:
-            hooks = (self._on_demand_hooks or {}).get(book)
-            if hooks is not None and hooks.get("f5_ml_semantics") is None:
                 return None
         t0 = time.monotonic()
         # Per-call, never shared: two RFQs can price the same book on two
@@ -800,16 +793,6 @@ class SGPService:
                 self._ensure_client(book)
                 hooks = self._book_on_demand_hooks(book, counters=counters)
 
-            # Issue #86: an F5-winner set prices ONLY at books whose hooks
-            # label their F5 ML semantics (checked here as well as in
-            # price_on_demand because real books build hooks lazily above).
-            # Zero wire calls on the decline.
-            has_f5_winner = any(getattr(l, "period", "FG") == "F5"
-                                and l.market_type == "ml" for l in legs)
-            f5_semantics = hooks.get("f5_ml_semantics") if has_f5_winner else None
-            if has_f5_winner and f5_semantics is None:
-                return None
-
             event = hooks["match_event"](st.client, game)
             if event is None:
                 return None                      # book doesn't list the game
@@ -820,15 +803,6 @@ class SGPService:
             structure = hooks["build_structure"](st.client, event, game)
             if structure is None:
                 return None
-            # Issue #86: the book's own 3-way tie anchor, when its structure
-            # carries one (FD/MGM). A broken hook costs the anchor, not the
-            # book — the engine converts with the flight's median anchor.
-            p_tie_book = None
-            if has_f5_winner and hooks.get("tie_prob") is not None:
-                try:
-                    p_tie_book = hooks["tie_prob"](structure)
-                except Exception:
-                    p_tie_book = None
             counters.bump("legs_attempted", len(legs))
             resolved = hooks["resolve"](structure, legs,
                                         game.home_team, game.away_team)
@@ -909,9 +883,7 @@ class SGPService:
                 n_cells_priced=n_cells_priced,
                 latency_sec=time.monotonic() - t0,
                 route_gap=route_gap,
-                counters=counters.snapshot(),
-                f5_semantics=f5_semantics,
-                p_tie_book=p_tie_book)
+                counters=counters.snapshot())
         except BookTransportError as e:
             # Same strike path as the sweep, so on-demand and refresh share
             # one recovery (issue #33). A clean "book won't price this"
@@ -1075,10 +1047,7 @@ class SGPService:
                                          counters=counters),
                     "price": lambda client, refs, event:
                         mod.price_selection_set(client, refs,
-                                                counters=counters),
-                    # #86: DK F5 ML is push-refund 2-way (live implied sums
-                    # 1.059-1.069, singles DB 2026-08-09). No 3-way market.
-                    "f5_ml_semantics": "push_2way"}
+                                                counters=counters)}
 
         if book == "fanduel":
             from mlb_sgp import fanduel as mod
@@ -1108,12 +1077,7 @@ class SGPService:
                                          counters=counters),
                     "price": lambda client, refs, event:
                         mod.price_selection_set(client, refs,
-                                                counters=counters),
-                    # #86: FD F5 ML is push-refund 2-way (live sum 1.0544,
-                    # 2026-08-12); its "First 5 Innings Result" 3-way rides
-                    # the same structure fetch as the tie anchor.
-                    "f5_ml_semantics": "push_2way",
-                    "tie_prob": mod.f5_tie_prob}
+                                                counters=counters)}
 
         if book == "prophetx":
             from mlb_sgp import prophetx as mod
@@ -1160,10 +1124,6 @@ class SGPService:
                 return {"event_id": eid, "markets": markets,
                         "home_id": home_id, "away_id": away_id}
 
-            # #86: deliberately NO f5_ml_semantics — PX's board listed zero
-            # F5 markets on the 2026-08-12 recon, so its F5 ML settlement is
-            # unverified. If PX re-lists F5, the missing label keeps
-            # F5-winner sets fail-closed here until verified and labeled.
             return {"match_event": match_event,
                     "build_structure": build_structure,
                     "resolve": lambda structure, legs, home, away:
@@ -1226,12 +1186,7 @@ class SGPService:
                                          counters=counters),
                     "price": lambda client, refs, event:
                         mod.price_selection_set(client, refs,
-                                                counters=counters),
-                    # #86: Novig MONEY_1H is 2 outcomes summing ~1.01 (live
-                    # 2026-08-12) — exchange-thin vig; an unconditional
-                    # tie-loses pair would sum ~0.87-0.92, impossible at
-                    # 1.01. Conditional push/void semantics (mirrors DK).
-                    "f5_ml_semantics": "push_2way"}
+                                                counters=counters)}
 
         if book == "betmgm":
             from mlb_sgp import betmgm as mod
@@ -1267,12 +1222,7 @@ class SGPService:
                     # counters stays keyword-only so it can never bind here.
                     "price": lambda client, refs, event:
                         mod.price_selection_set(client, refs, event.event_id,
-                                                counters=counters),
-                    # #86: MGM F5 ML is push-refund 2-way (live sum 1.0598,
-                    # 2026-08-12); its "1st 5 Innings - 1X2" 3-way rides the
-                    # same structure fetch as the tie anchor.
-                    "f5_ml_semantics": "push_2way",
-                    "tie_prob": mod.f5_tie_prob}
+                                                counters=counters)}
 
         if book == "caesars":
             from mlb_sgp import caesars as mod
@@ -1302,12 +1252,7 @@ class SGPService:
                                          counters=counters),
                     "price": lambda client, refs, event:
                         mod.price_selection_set(client, refs,
-                                                counters=counters),
-                    # #86: CZR's first-N-innings ML family is push-refund
-                    # 2-way (live "1st 3 Innings Money Line" sum 1.0623,
-                    # 2026-08-13; the F5 board posts near lineups). No
-                    # 3-way observed — no tie anchor.
-                    "f5_ml_semantics": "push_2way"}
+                                                counters=counters)}
 
         raise ValueError(f"unknown book {book!r}")
 

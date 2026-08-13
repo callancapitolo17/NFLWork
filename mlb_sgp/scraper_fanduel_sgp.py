@@ -109,9 +109,6 @@ _MARKET_MAP = {
     "First 5 Innings Run Line":              ("f5", "spreads", "main"),
     "First 5 Innings Total Runs":            ("f5", "totals",  "main"),
     "First 5 Innings Money Line":            ("f5", "moneyline", "main"),
-    # 3-way home/tie/away result — the P(tie) anchor for #86's F5-winner
-    # conversion. Never priced as a leg; only its runner decimals are kept.
-    "First 5 Innings Result":                ("f5", "result3", "main"),
     # F5 alt
     "First 5 Innings Alternate Run Lines":   ("f5", "spreads", "alt"),
     "First 5 Innings Alternate Total Runs":  ("f5", "totals",  "alt"),
@@ -359,8 +356,8 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
         lambda: session.get(url, headers=FD_HEADERS, timeout=20),
         profile=profile, book=FD_BOOK, stage="structure")
 
-    empty = {"fg": {"spreads": {}, "totals": {}, "moneyline": {}, "result3": {}},
-             "f5": {"spreads": {}, "totals": {}, "moneyline": {}, "result3": {}}}
+    empty = {"fg": {"spreads": {}, "totals": {}, "moneyline": {}},
+             "f5": {"spreads": {}, "totals": {}, "moneyline": {}}}
     # 404 = FD dropped this event; any other non-200 is a dead book.
     if not check_response(FD_BOOK, "structure", resp, allow_404=True):
         return empty
@@ -381,8 +378,8 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
     walk(data)
     seen = {m["marketId"]: m for m in markets}
 
-    out = {"fg": {"spreads": {}, "totals": {}, "moneyline": {}, "result3": {}},
-           "f5": {"spreads": {}, "totals": {}, "moneyline": {}, "result3": {}}}
+    out = {"fg": {"spreads": {}, "totals": {}, "moneyline": {}},
+           "f5": {"spreads": {}, "totals": {}, "moneyline": {}}}
 
     for mid, m in seen.items():
         name = m.get("marketName", "")
@@ -426,18 +423,6 @@ def fetch_event_runners(session: cffi_requests.Session, fd_event_id: str,
                 if side is None:
                     continue
                 bucket[side] = (mid, sid, dec)
-
-            elif mtype == "result3":
-                # 3-way result (#86 tie anchor): decimals only, keyed
-                # home/tie/away. The Tie runner is literally named "Tie".
-                if dec is None:
-                    continue
-                side = ("home" if rn == fd_home
-                        else "away" if rn == fd_away
-                        else "tie" if rn.strip().lower() == "tie" else None)
-                if side is None:
-                    continue
-                bucket[side] = dec
 
     return out
 

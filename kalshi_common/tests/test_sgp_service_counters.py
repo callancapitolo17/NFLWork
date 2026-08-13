@@ -255,9 +255,7 @@ def test_hooks_without_counters_still_work(monkeypatch):
     monkeypatch.setattr(svc, "_ensure_client", lambda b: None)
     svc._state["novig"].client = object()
     hooks = svc._book_on_demand_hooks("novig")
-    # #86 added the f5_ml_semantics label alongside the four callables.
-    assert set(hooks) == {"match_event", "build_structure", "resolve",
-                          "price", "f5_ml_semantics"}
+    assert set(hooks) == {"match_event", "build_structure", "resolve", "price"}
 
 
 class _FakeEvent:

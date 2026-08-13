@@ -87,13 +87,9 @@ def _classify(name: str) -> tuple[str, str] | None:
     low = " ".join(low.split())  # collapse internal whitespace
     fg_spread = {"run line", "alternate run line"}
     fg_total = {"total runs", "alternate total runs"}
-    # Moneyline. Accept the common name variants. F5 ML (#86): CZR's F5
-    # board posts near lineups; the name mirrors its posted "1st 5 Innings
-    # Run Line"/"Total Runs" family and its live "1st 3 Innings Money Line"
-    # (verified 2026-08-13, implied sum 1.0623 = push-2-way family).
+    # Moneyline (for ML×total combos). ML_TOTAL_FAMILY is FG-only, so only the
+    # full-game moneyline is classified. Accept the common name variants.
     fg_ml = {"moneyline", "money line"}
-    f5_ml = {"1st 5 innings money line", "1st 5 innings moneyline",
-             "1st 5 innings - money line"}
     f5_spread = {"1st 5 innings run line", "alternate 1st 5 innings run line",
                  "1st 5 innings - run line"}
     f5_total = {"1st 5 innings total runs", "alternate 1st 5 innings total runs",
@@ -104,8 +100,6 @@ def _classify(name: str) -> tuple[str, str] | None:
         return ("FG", "total")
     if low in fg_ml:
         return ("FG", "moneyline")
-    if low in f5_ml:
-        return ("F5", "moneyline")
     if low in f5_spread:
         return ("F5", "spread")
     if low in f5_total:
