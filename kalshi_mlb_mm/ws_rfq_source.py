@@ -9,7 +9,12 @@ being fetched and refined by design. A WebSocket stream is EDGE-TRIGGERED
 
   - a daemon reader thread owns the connection (connect → subscribe → recv
     loop → reconnect with backoff+jitter) and mutates the open-RFQ set under
-    a lock; the raw `msg` payload is stored as-is, so poll() output is
+    a lock; post-subscribe the reader tears the socket down itself when no
+    frame (server pings included) arrives for a full heartbeat timeout — a
+    silently-dead TCP socket raises only recv timeouts, never an error, and
+    the poll() watchdog below can only change serving mode, not reconnect
+    (live incident 2026-08-12: 13h deaf reader). The raw `msg` payload is
+    stored as-is, so poll() output is
     byte-compatible with RestRFQSource (id, market_ticker, creator_id,
     contracts_fp as STRING, target_cost_dollars — all verbatim from Kalshi);
   - poll() runs on the tick thread, never blocks on the network, and snapshots
@@ -334,7 +339,22 @@ class WebSocketRFQSource:
                     try:
                         raw = transport.recv()
                     except TransportTimeout:
-                        continue  # idle — watchdog in poll() judges liveness
+                        # Pre-ack idle is judged by ack_deadline above. Post-ack,
+                        # the reader must judge staleness ITSELF: a TCP socket
+                        # killed without a close/error frame (network blip, NAT
+                        # drop — live incident 2026-08-12) raises only these
+                        # timeouts forever, and the poll() watchdog can flip
+                        # serving mode but cannot tear this socket down. Kalshi
+                        # pings ~10s, so a subscribed socket silent for a full
+                        # heartbeat timeout is dead — reconnect, don't wait.
+                        if subscribed:
+                            with self._lock:
+                                stale_sec = time.time() - self._last_msg_at
+                            if stale_sec > self._heartbeat_timeout_sec:
+                                raise ConnectionError(
+                                    f"no WS frames (pings included) in "
+                                    f"{stale_sec:.0f}s — socket presumed dead")
+                        continue
                     if not subscribed:
                         # Pre-ack frames: only the ack or an error matter.
                         # TCP ordering guarantees no channel events precede

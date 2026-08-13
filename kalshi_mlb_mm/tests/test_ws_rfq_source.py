@@ -9,6 +9,7 @@ no real sockets, no websocket-client dependency.
 import inspect
 import json
 import queue
+import threading
 import time
 
 import pytest
@@ -34,7 +35,8 @@ def _rfq(rid: str, ticker: str = "KXMVE-TEST-1", **extra) -> dict:
 class FakeTransport:
     """Scripted transport: recv() blocks on an inbox queue with a short
     timeout so the reader thread stays responsive to stop(). Acks the
-    subscription on connect (like the real server) unless auto_ack=False."""
+    subscription on connect (like the real server) unless auto_ack=False.
+    Set connect_exc to make connect() fail (e.g. a DNS resolver error)."""
 
     def __init__(self, auto_ack: bool = True):
         self.inbox: queue.Queue = queue.Queue()
@@ -42,9 +44,16 @@ class FakeTransport:
         self.connect_calls = 0
         self.closed = False
         self.auto_ack = auto_ack
+        self.connect_exc: Exception | None = None
+        # While set, recv() blocks — simulates a WEDGED reader thread (stuck
+        # inside the transport), which is the one failure the reader's own
+        # staleness teardown cannot see; only the poll() watchdog can.
+        self.wedged = threading.Event()
 
     def connect(self) -> None:
         self.connect_calls += 1
+        if self.connect_exc is not None:
+            raise self.connect_exc
         if self.auto_ack:
             self.push({"id": 1, "type": "subscribed",
                        "msg": {"channel": "communications", "sid": 1}})
@@ -53,6 +62,8 @@ class FakeTransport:
         self.sent.append(text)
 
     def recv(self) -> str | None:
+        while self.wedged.is_set():
+            time.sleep(0.005)
         try:
             item = self.inbox.get(timeout=0.02)
         except queue.Empty:
@@ -295,6 +306,10 @@ def test_connect_failure_streak_alerts_once(capture, running):
 # --- watchdog / fallback ----------------------------------------------------
 
 def test_silent_stale_ws_falls_back_to_rest_loudly(capture, running):
+    """A WEDGED reader (stuck inside the transport — cannot run its own
+    staleness teardown) must still degrade loudly: the poll()-side watchdog
+    trips into REST fallback. A merely-dead socket is the reader's own job
+    (test_silent_dead_socket_forces_reconnect)."""
     factory, rest = FakeTransportFactory(), FakeRestSource()
     rest.poll_results = [[], [_rfq("from_rest")]]
     src = make_source(factory, rest, heartbeat_timeout_sec=0.05)
@@ -302,6 +317,7 @@ def test_silent_stale_ws_falls_back_to_rest_loudly(capture, running):
     src.start()
     assert wait_until(lambda: src.ws_ready)
     assert src.poll() == []  # healthy WS, empty book
+    factory.transports[0].wedged.set()
     time.sleep(0.15)  # exceed heartbeat timeout with zero frames
     out = src.poll()
     assert [r["id"] for r in out] == ["from_rest"], "stale WS must serve REST"
@@ -310,6 +326,7 @@ def test_silent_stale_ws_falls_back_to_rest_loudly(capture, running):
     transitions = [e for e in capture
                    if e[0] == "emit" and e[1] == "rfq_source_transition"]
     assert transitions and transitions[-1][2]["payload"]["to"] == "rest_fallback"
+    factory.transports[0].wedged.clear()  # let stop() join the reader promptly
 
 
 def test_recovery_flips_back_to_ws_and_notifies(capture, running):
@@ -319,11 +336,14 @@ def test_recovery_flips_back_to_ws_and_notifies(capture, running):
     running.append(src)
     src.start()
     assert wait_until(lambda: src.ws_ready)
+    t = factory.transports[0]
+    t.wedged.set()  # wedged reader: only the poll() watchdog can see this
     time.sleep(0.15)
     src.poll()  # trips watchdog → REST fallback
     assert any(e[0] == "halt" for e in capture)
     # Any WS frame refreshes liveness (server pings count as activity too).
-    factory.transports[0].push({"type": "subscribed", "msg": {"sid": 1}})
+    t.push({"type": "subscribed", "msg": {"sid": 1}})
+    t.wedged.clear()
     assert wait_until(
         lambda: src.poll() and src.poll()[0]["id"] == "seed" and
         any(e[0] == "resume" for e in capture))
@@ -338,10 +358,80 @@ def test_fallback_notifies_once_per_outage(capture, running):
     running.append(src)
     src.start()
     assert wait_until(lambda: src.ws_ready)
+    factory.transports[0].wedged.set()
     time.sleep(0.15)
     for _ in range(5):
         src.poll()
     assert len([e for e in capture if e[0] == "halt"]) == 1
+    factory.transports[0].wedged.clear()  # let stop() join the reader promptly
+
+
+# --- silent dead socket (2026-08-12 incident) --------------------------------
+
+def test_silent_dead_socket_forces_reconnect(capture, running):
+    """Live incident 2026-08-12 ~18:59: a machine-wide network blip killed
+    the TCP connection WITHOUT any close/error frame reaching us. recv()
+    then raises only TransportTimeout forever, which the reader treated as
+    benign idle — subscribed stayed True, ws_ready stayed True, and the
+    reader never reconnected for 13+ hours (the poll() watchdog only flips
+    the serving mode; it cannot tear down the socket). Kalshi pings every
+    ~10s, so a subscribed connection with no frames for a full heartbeat
+    timeout is dead: the reader must tear down and reconnect on its own."""
+    factory, rest = FakeTransportFactory(), FakeRestSource()
+    src = make_source(factory, rest, heartbeat_timeout_sec=0.1)
+    running.append(src)
+    src.start()
+    assert wait_until(lambda: src.ws_ready)
+    # No frames ever arrive on transport 0 after the ack — silence, not an
+    # exception. The reader must notice staleness and reconnect by itself.
+    assert wait_until(lambda: factory.created >= 2), \
+        "reader must reconnect off a silently-dead socket"
+    assert factory.transports[0].closed
+    assert wait_until(lambda: src.ws_ready)  # transport 1 acked + gap-filled
+    assert rest.poll_calls == 2  # one gap-fill per (re)connect
+
+
+def test_frames_within_heartbeat_do_not_reconnect(capture, running):
+    """The staleness teardown must not fire on a healthy-but-quiet feed:
+    any frame (server pings surface as recv() None) refreshes liveness."""
+    factory, rest = FakeTransportFactory(), FakeRestSource()
+    src = make_source(factory, rest, heartbeat_timeout_sec=0.3)
+    running.append(src)
+    src.start()
+    assert wait_until(lambda: src.ws_ready)
+    for _ in range(6):  # 0.6s of sparse traffic, each gap < heartbeat
+        time.sleep(0.1)
+        factory.transports[0].push({"type": "quote_created", "sid": 1,
+                                    "msg": {"id": "q1"}})
+    time.sleep(0.1)
+    assert factory.created == 1, "no reconnect while frames keep arriving"
+    assert src.ws_ready
+
+
+def test_dns_failure_during_reconnect_retries_until_recovery(capture, running):
+    """Same incident, hypothesized path (disproven but pinned here): a DNS
+    outage during reconnect raises OSError from connect(). Every such
+    failure must be caught, logged, and retried with backoff until the
+    resolver recovers — never allowed to kill the reader thread."""
+    factory, rest = FakeTransportFactory(count=5), FakeRestSource()
+    dns_error = OSError("nodename nor servname provided, or not known")
+    factory.transports[1].connect_exc = dns_error
+    factory.transports[2].connect_exc = dns_error
+    factory.transports[3].connect_exc = dns_error
+    src = make_source(factory, rest)
+    running.append(src)
+    src.start()
+    assert wait_until(lambda: src.ws_ready)
+    factory.transports[0].drop()
+    # Three DNS-failed attempts, then transport 4 connects and acks.
+    assert wait_until(lambda: factory.created == 5 and src.ws_ready)
+    assert factory.transports[4].connect_calls == 1
+    # The alert streak (3) was hit exactly once during the outage, and the
+    # first healthy poll() after recovery sends the matching resume.
+    halts = [e for e in capture if e[0] == "halt"]
+    assert len(halts) == 1 and halts[0][1] == "ws_rfq_source"
+    src.poll()
+    assert any(e[0] == "resume" for e in capture)
 
 
 # --- malformed payloads -----------------------------------------------------
