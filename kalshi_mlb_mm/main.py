@@ -642,11 +642,12 @@ def _out_of_scope_reason(legs, canon) -> str:
         return "out_of_scope_non_mlb"      # some leg untypeable (other sport etc.)
     if len(canon) < 2:
         return "out_of_scope_lone_single"
-    # Issue #84: F5-winner legs parse (market_type="ml", period="F5") but every
-    # combo containing one stays unpriceable until #86 (tie semantics). Label
-    # distinctly so the declined demand #86 would unlock is measurable.
+    # F5-winner TEAM legs are in scope since #86 (re-encoded as +-0.5 run
+    # lines at parse). Only the TIE market still parses as (ml, F5) — no
+    # book leg can express it. Labeled distinctly so the declined demand
+    # stays measurable.
     if any(l.market_type == "ml" and l.period == "F5" for l in canon):
-        return "out_of_scope_f5_winner"
+        return "out_of_scope_f5_tie_leg"
     return "out_of_scope"
 
 

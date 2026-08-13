@@ -117,10 +117,15 @@ def parse_leg(leg: dict) -> CanonicalLeg | None:
     if mt.startswith("KXMLBF5-"):
         # F5 winner. Live grammar (2026-08-11): KXMLBF5-{suffix}-{TEAM} PLUS a
         # third KXMLBF5-{suffix}-TIE market — the family is 3-way (team markets
-        # resolve NO on a tie after 5). Parsed so scope telemetry stays honest
-        # (never mislabeled out_of_scope_non_mlb), but classify_subcombo keeps
-        # every combo containing one unpriceable until #86 lands the push/3-way
-        # conversion math.
+        # resolve NO on a tie after 5, per live rules_secondary 2026-08-12).
+        # #86 rework: a team market IS a +-0.5 run line — "team wins F5" =
+        # "team -0.5" (win by >=1; tie loses), and its NO side = "other team
+        # +0.5" (win or tie). Books price the F5 run line at +-0.5 two-sided
+        # with NO push, so re-encoding as spread legs prices both sides
+        # exactly with zero tie modeling. (An ml-complement encoding would
+        # silently drop the tie mass a NO holder wins — the #86 pick-off.)
+        # Only the TIE market still parses as (ml, F5): no book leg can
+        # express it, so classify_subcombo keeps it unpriceable.
         team = mt.rsplit("-", 1)[-1]
         if team == "TIE":
             tie_yes = str(leg.get("side", "yes")) == "yes"
@@ -130,10 +135,15 @@ def parse_leg(leg: dict) -> CanonicalLeg | None:
         if ml is None:
             return None
         team_is_home, side = ml
-        home_ml = ((team_is_home and side == "yes")
-                   or (not team_is_home and side == "no"))
-        return CanonicalLeg(et, "ml", None,
-                            "home" if home_ml else "away", "F5")
+        ticker_team_covers = (side == "yes")
+        if team_is_home:
+            home_perspective_line = -0.5     # home -0.5 market
+            covering_side = "home" if ticker_team_covers else "away"
+        else:
+            home_perspective_line = 0.5      # away -0.5 market
+            covering_side = "away" if ticker_team_covers else "home"
+        return CanonicalLeg(et, "spread", home_perspective_line,
+                            covering_side, "F5")
     return None
 
 
@@ -188,14 +198,11 @@ def classify_subcombo(game_legs: list[CanonicalLeg]) -> str:
     n = len(game_legs)
     if n == 0:
         return "unpriceable"
-    # #86 guard (issue #84): KXMLBF5 (F5 winner) is a THREE-way family — a
-    # KXMLBF5-...-TIE market exists and the team markets resolve NO on a tie
-    # after 5 (~12-15% of games) — while books' F5 ML is push-refund or 3-way.
-    # Naively mapping a push-refund book price onto Kalshi's tie-loses binary
-    # misprices by ~P(tie): a craftable pick-off. Explicitly unpriceable (so
-    # scope telemetry labels it, never the non_mlb mislabel) until #86 lands
-    # the conversion math. Checked before the n==1 route so a cross-game
-    # combo's lone F5-winner partition can't classify "single".
+    # F5-winner TEAM legs price since #86 (re-encoded as +-0.5 spread legs
+    # at parse). Only the TIE market still parses as (ml, F5) — no book leg
+    # can express it, so it stays unpriceable. Checked before the n==1
+    # route so a cross-game combo's lone TIE partition can't classify
+    # "single".
     if any(l.market_type == "ml" and l.period == "F5" for l in game_legs):
         return "unpriceable"
     # Duplicate-market guard (Phase 2): a repeated (market_type, period, line)
@@ -209,6 +216,37 @@ def classify_subcombo(game_legs: list[CanonicalLeg]) -> str:
     keys = [(l.market_type, l.period, l.line) for l in game_legs]
     if len(set(keys)) != len(keys):
         return "unpriceable"
+    # Contradiction guard (#86): opposed spread/total legs at DIFFERENT
+    # lines can also have joint probability exactly 0 — e.g. home -0.5 with
+    # away -0.5 (both F5 winners, distinct keys so the dup guard is blind),
+    # or Over 8.5 with Under 4.5. A book that product-priced such a pair
+    # would let us quote real value on a worthless contract — the same
+    # craftable pick-off the dup guard exists for. Per period (F5 and FG
+    # margins/totals are different variables): a spread leg bounds the home
+    # margin (home side of line L => margin > -L; away side => margin < -L)
+    # and a total leg bounds the run count (over T => total > T; under T =>
+    # total < T); any upper bound <= any lower bound is an empty combo.
+    # Lines are half-integers, so touching bounds (b == a) are empty too and
+    # a strictly-open band (a, b) with b > a always contains an integer.
+    for period in {l.period for l in game_legs}:
+        margin_lowers = [-l.line for l in game_legs
+                         if l.market_type == "spread" and l.period == period
+                         and l.side == "home"]
+        margin_uppers = [-l.line for l in game_legs
+                         if l.market_type == "spread" and l.period == period
+                         and l.side == "away"]
+        if (margin_lowers and margin_uppers
+                and min(margin_uppers) <= max(margin_lowers)):
+            return "unpriceable"
+        total_lowers = [l.line for l in game_legs
+                        if l.market_type == "total" and l.period == period
+                        and l.side == "over"]
+        total_uppers = [l.line for l in game_legs
+                        if l.market_type == "total" and l.period == period
+                        and l.side == "under"]
+        if (total_lowers and total_uppers
+                and min(total_uppers) <= max(total_lowers)):
+            return "unpriceable"
     if n == 1:
         return "single"
     # Grid routes are FULL-GAME surfaces (mlb_sgp_odds 4-cell families): any

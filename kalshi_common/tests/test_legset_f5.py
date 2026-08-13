@@ -84,13 +84,25 @@ def test_parse_f5_total_under_6_5():
     assert leg == legset.CanonicalLeg(EVT, "total", 6.5, "under", "F5")
 
 
-def test_parse_f5_winner_home_and_away():
+def test_parse_f5_winner_yes_is_half_run_line_favorite():
+    """#86 rework: 'team wins F5' IS 'team -0.5 on the F5 run line' (win by
+    >=1; a tie loses both). Team-winner legs re-encode as spread legs at
+    +-0.5, which books price two-sided with NO push — the tie mass is
+    already inside the +0.5 side, so no conversion is ever needed."""
     assert legset.parse_leg(_f5_winner("LAD", "yes")) == \
-        legset.CanonicalLeg(EVT, "ml", None, "home", "F5")
+        legset.CanonicalLeg(EVT, "spread", -0.5, "home", "F5")
     assert legset.parse_leg(_f5_winner("KC", "yes")) == \
-        legset.CanonicalLeg(EVT, "ml", None, "away", "F5")
+        legset.CanonicalLeg(EVT, "spread", 0.5, "away", "F5")
+
+
+def test_parse_f5_winner_no_is_other_team_plus_half():
+    """NO on a team market pays on 'other team wins OR tie' — which is
+    exactly the other team +0.5 (this is what the ml-complement encoding
+    got wrong: it dropped the tie mass a NO holder wins)."""
     assert legset.parse_leg(_f5_winner("LAD", "no")) == \
-        legset.CanonicalLeg(EVT, "ml", None, "away", "F5")
+        legset.CanonicalLeg(EVT, "spread", -0.5, "away", "F5")
+    assert legset.parse_leg(_f5_winner("KC", "no")) == \
+        legset.CanonicalLeg(EVT, "spread", 0.5, "home", "F5")
 
 
 def test_parse_f5_winner_tie_market_is_not_a_team_side():
@@ -190,26 +202,87 @@ def test_cross_game_f5_single_plus_fg_single_routes_per_game_singles():
 
 
 # --------------------------------------------------------------------- #
-# F5 winner: parses, but unpriceable until #86                           #
+# F5 winner: team legs price as +-0.5 run lines (#86); TIE legs decline  #
 # --------------------------------------------------------------------- #
 
-def test_f5_winner_combo_is_unpriceable_same_game():
+def test_f5_winner_combo_routes_on_demand_same_game():
+    """#86: F5-winner TEAM legs are priceable — re-encoded as +-0.5 spread
+    legs, the multi-leg set routes on_demand like other F5 shapes."""
     legs = legset.parse_legs([_f5_winner("LAD", "yes"), _f5_total(7, "yes")])
-    assert legs is not None            # parses (never mislabeled non_mlb)
-    assert legset.classify_subcombo(legs) == "unpriceable"
+    assert legs is not None
+    assert legset.classify_subcombo(legs) == "on_demand"
 
 
-def test_f5_winner_is_unpriceable_even_as_a_lone_partition_leg():
+def test_f5_winner_lone_partition_leg_routes_single():
     """A cross-game combo puts the F5 winner alone in its game's partition —
-    the #86 guard must beat the n==1 'single' route."""
+    it prices as a marginalized single (live routing fetches the 1-leg set
+    on-demand as a +-0.5 run-line single)."""
     leg = legset.parse_leg(_f5_winner("LAD", "yes"))
-    assert legset.classify_subcombo([leg]) == "unpriceable"
+    assert legset.classify_subcombo([leg]) == "single"
 
 
 def test_f5_winner_tie_leg_is_unpriceable():
+    """No book prices a bare F5-tie leg in an SGP — TIE-side legs stay
+    fail-closed (they're the one leg the +-0.5 re-encoding can't express)."""
     tie = legset.parse_leg(_f5_winner("TIE", "yes"))
     assert legset.classify_subcombo([tie, legset.parse_leg(_f5_total(7, "yes"))]) \
         == "unpriceable"
+    assert legset.classify_subcombo([tie]) == "unpriceable"
+
+
+def test_f5_winner_home_plus_away_dies_on_contradiction_guard():
+    """Home F5 winner + away F5 winner is a joint-probability-zero pair.
+    Pre-rework both keyed as ("ml","F5",None) and the dup guard caught it;
+    re-encoded they sit at DIFFERENT keys ((-0.5,home) / (+0.5,away)), so
+    the spread contradiction guard must catch it instead — a book that
+    product-priced it would hand RFQ creators a worthless-YES pick-off."""
+    legs = [legset.parse_leg(_f5_winner("LAD", "yes")),
+            legset.parse_leg(_f5_winner("KC", "yes"))]
+    assert legset.classify_subcombo(legs) == "unpriceable"
+
+
+def test_f5_winner_duplicates_equivalent_f5spread_ticker():
+    """KXMLBF5SPREAD at N=1 encodes the SAME +-0.5 market — combining it
+    with the winner ticker is the same leg twice (dup guard)."""
+    legs = [legset.parse_leg(_f5_winner("LAD", "yes")),
+            legset.parse_leg(_f5_spread("LAD", 1, "yes"))]
+    assert legset.classify_subcombo(legs) == "unpriceable"
+
+
+def test_spread_contradiction_guard_catches_opposed_favorites_fg_too():
+    """The guard is general: FG home -1.5 + FG away -1.5 (both favorites,
+    margin >=2 both ways) is impossible and previously slipped past the
+    same-key dup guard."""
+    legs = [legset.parse_leg(_fg_spread("LAD", 2, "yes")),
+            legset.parse_leg(_fg_spread("KC", 2, "yes"))]
+    assert legset.classify_subcombo(legs) == "unpriceable"
+
+
+def test_nested_same_side_spreads_still_allowed():
+    """Home -0.5 with home -2.5 nests (both can win) — must NOT trip the
+    contradiction guard."""
+    legs = [legset.parse_leg(_f5_winner("LAD", "yes")),
+            legset.parse_leg(_f5_spread("LAD", 3, "yes"))]
+    assert legset.classify_subcombo(legs) == "on_demand"
+
+
+def test_total_contradiction_guard_catches_impossible_band():
+    """Over 8.5 + Under 4.5 (same period) is empty; Over 4.5 + Under 8.5
+    is a legitimate band and stays priceable."""
+    impossible = [legset.parse_leg(_fg_total(9, "yes")),
+                  legset.parse_leg(_fg_total(5, "no"))]
+    assert legset.classify_subcombo(impossible) == "unpriceable"
+    band = [legset.parse_leg(_fg_total(5, "yes")),
+            legset.parse_leg(_fg_total(9, "no"))]
+    assert legset.classify_subcombo(band) == "on_demand"
+
+
+def test_cross_period_bounds_do_not_interact():
+    """F5 and FG margins are different variables — F5 home -0.5 with FG
+    away -1.5 is a legitimate correlated combo, not a contradiction."""
+    legs = [legset.parse_leg(_f5_winner("LAD", "yes")),
+            legset.parse_leg(_fg_spread("KC", 2, "yes"))]
+    assert legset.classify_subcombo(legs) == "on_demand"
 
 
 # --------------------------------------------------------------------- #

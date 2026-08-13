@@ -30,20 +30,29 @@ def test_f5_spread_total_rfq_is_priceable():
     assert _priceable(canon)
 
 
-def test_f5_winner_rfq_is_not_priceable():
+def test_f5_winner_team_leg_rfq_is_priceable():
+    """#86: F5-winner TEAM legs are in scope — re-encoded as +-0.5 run-line
+    spread legs at parse, the RFQ routes on_demand like other F5 shapes."""
     from kalshi_mlb_mm.main import _priceable
     canon = legset.parse_legs([_f5_winner("LAD", "yes"), _f5_total(7, "yes")])
+    assert canon is not None
+    assert _priceable(canon)
+
+
+def test_f5_winner_tie_leg_rfq_is_not_priceable():
+    from kalshi_mlb_mm.main import _priceable
+    canon = legset.parse_legs([_f5_winner("TIE", "yes"), _f5_total(7, "yes")])
     assert canon is not None
     assert not _priceable(canon)
 
 
-def test_f5_winner_combo_gets_distinct_scope_reason():
-    """The #86 guard must be measurable in the firehose: not the generic
-    out_of_scope, and never the non_mlb mislabel."""
+def test_f5_tie_leg_combo_gets_distinct_scope_reason():
+    """TIE-side legs stay declined and measurable in the firehose: not the
+    generic out_of_scope, and never the non_mlb mislabel."""
     from kalshi_mlb_mm.main import _out_of_scope_reason
-    legs = [_f5_winner("LAD", "yes"), _f5_total(7, "yes")]
+    legs = [_f5_winner("TIE", "yes"), _f5_total(7, "yes")]
     canon = legset.parse_legs(legs)
-    assert _out_of_scope_reason(legs, canon) == "out_of_scope_f5_winner"
+    assert _out_of_scope_reason(legs, canon) == "out_of_scope_f5_tie_leg"
 
 
 def test_generic_out_of_scope_reason_unchanged_for_fg():

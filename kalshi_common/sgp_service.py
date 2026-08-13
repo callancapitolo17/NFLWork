@@ -735,16 +735,17 @@ class SGPService:
         """
         if book not in self._state or not legs:
             return None
-        # Period guard (#84 -> #85): resolvers now key on (market_type,
-        # period), so FG and F5 legs flow to the hooks. Two cases stay
-        # CLOSED, declining with zero wire calls (flight completes zero-book,
-        # maker declines live_fetch_timeout / too_few_books — never a wrong
+        # Period guard (#84 -> #85 -> #86): resolvers key on (market_type,
+        # period), so FG and F5 legs flow to the hooks — F5-winner TEAM
+        # legs included, because #86 re-encodes them as +-0.5 spread legs
+        # at parse (books' F5 run line has no push; the ml row would
+        # mismatch Kalshi's tie-loses settlement). Two cases stay CLOSED,
+        # declining with zero wire calls (flight completes zero-book, maker
+        # declines live_fetch_timeout / too_few_books — never a wrong
         # price):
-        #  * F5 moneyline (KXMLBF5 winner family): books' F5 ML is
-        #    push-refund/3-way while Kalshi's team markets resolve NO on a
-        #    tie after 5 — mapping one onto the other misprices by ~P(tie).
-        #    classify_subcombo already routes these combos "unpriceable";
-        #    this is the service-level backstop until #86's conversion math.
+        #  * (ml, F5) legs — post-#86 that is only the KXMLBF5 TIE market,
+        #    which no book leg can express; classify_subcombo already
+        #    routes these combos "unpriceable", this is the backstop.
         #  * unknown periods: a future period value must never reach a
         #    resolver that would silently serve the wrong bucket.
         for l in legs:
