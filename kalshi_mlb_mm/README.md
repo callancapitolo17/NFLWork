@@ -294,7 +294,9 @@ and decision `pulled` / reason `quorum_dispersion_bust` (the monitor
 reads reason vocabularies from data — no dashboard change).
 Out-of-scope RFQs now store `legs_json` and granular reasons
 (`out_of_scope_non_mlb` / `out_of_scope_lone_single` /
-`out_of_scope_unparseable` / `out_of_scope_f5_winner` since #84) in
+`out_of_scope_unparseable` since #84; `out_of_scope_f5_winner` was
+emitted #84→#86 and became `out_of_scope_f5_tie_leg` — TIE legs only —
+when #86 made team legs priceable) in
 `seen_rfqs` — on-demand demand is finally
 measurable (it was 0 in ~1,100 classified markets over the 30 days before
 this shipped).
