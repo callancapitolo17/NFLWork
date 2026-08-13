@@ -219,3 +219,82 @@ def book_on_demand_fair(cells, sgp_decimal, singles,
         if fair is not None:
             return fair, "transfer"
     return None
+
+
+# ------------------------------------------------------------------ #
+# Issue #86: F5-winner tie conversion.                                #
+# ------------------------------------------------------------------ #
+
+# Books' F5 ML semantics labels a book adapter may declare. Anything else
+# fails closed in f5_winner_fair_from_book.
+F5_ML_PUSH_2WAY = "push_2way"                       # P(win F5 | not tied)
+F5_ML_THREE_WAY = "three_way_unconditional"         # P(win F5), ties lose
+
+# Sanity ceiling on a devigged F5 tie probability. Real MLB tie-after-5
+# mass is ~0.10-0.20 (live anchors 2026-08-12: FD 0.142, MGM 0.137, Kalshi
+# TIE mid 0.145); 0.5+ means swapped outcomes in a parse, not baseball.
+MAX_F5_TIE_PROB = 0.5
+
+# Vig envelope for a 3-way result market's raw implied sum (recon: FD
+# 1.081, MGM 1.081). Mirrors the partition gate's shape: crossed (<1) or
+# absurd overround is a feed bug, never devigged.
+THREE_WAY_OVERROUND_MAX = 0.25
+
+
+def f5_winner_fair_from_book(conditional_fair, p_tie,
+                             semantics) -> float | None:
+    """Convert one book's fair for a combo containing an F5-winner leg into
+    Kalshi's UNCONDITIONAL space (team markets resolve NO on a tie after 5).
+
+    Books' push-refund F5 ML prices P(team wins F5 | not tied); because
+    "team leads after 5" is a subset of "not tied", for any such combo C:
+
+        P(C) = P(C | not tied) x (1 - P(tie))
+
+    exactly, with the MARGINAL P(tie) — no correlation assumption, even
+    when C also carries F5 totals. A book that priced off a true 3-way
+    market is already unconditional (identity). Unknown semantics or an
+    unusable tie anchor fails closed: quoting the conditional number would
+    overprice Kalshi YES by ~P(tie) — a craftable pick-off (issue #86).
+    """
+    try:
+        fair = float(conditional_fair)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(fair) or not (0.0 < fair < 1.0):
+        return None
+    if semantics == F5_ML_THREE_WAY:
+        return fair
+    if semantics != F5_ML_PUSH_2WAY:
+        return None
+    try:
+        tie = float(p_tie)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(tie) or not (0.0 < tie < MAX_F5_TIE_PROB):
+        return None
+    return fair * (1.0 - tie)
+
+
+def tie_prob_from_three_way(home_dec, tie_dec, away_dec) -> float | None:
+    """Devigged P(tie) from a book's 3-way F5 result market (home/tie/away
+    decimals), probit devig for consistency with every other devig here.
+    Raw implied sum outside [1.0, 1 + THREE_WAY_OVERROUND_MAX] fails closed
+    (crossed or absurd vig = feed bug), as does a tie mass at or beyond
+    MAX_F5_TIE_PROB."""
+    raw = []
+    for d in (home_dec, tie_dec, away_dec):
+        try:
+            d = float(d)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(d) or d <= 1.0:
+            return None
+        raw.append(1.0 / d)
+    s = sum(raw)
+    if not (1.0 <= s <= 1.0 + THREE_WAY_OVERROUND_MAX):
+        return None
+    tie = float(_probit_devig_n(raw)[1])
+    if not (0.0 < tie < MAX_F5_TIE_PROB):
+        return None
+    return tie
