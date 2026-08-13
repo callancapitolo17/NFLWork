@@ -467,6 +467,11 @@ def fetch_main_market_nums(session: cffi_requests.Session, dk_event_id: str,
             out["f5"]["total"] = _strip_prefix(m_id)
         elif name == "Moneyline - 1st 5 Innings":
             out["f5"]["moneyline"] = _strip_prefix(m_id)
+        elif name == "1st 5 Innings" and out["f5"]["moneyline"] is None:
+            # #86: DK's live board (2026-08-12) names the F5 winner market
+            # bare "1st 5 Innings" (2-way, push-refund — singles DB sums
+            # 1.059-1.069). Fallback only: an explicit Moneyline row wins.
+            out["f5"]["moneyline"] = _strip_prefix(m_id)
     return out
 
 

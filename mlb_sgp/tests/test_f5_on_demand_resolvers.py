@@ -430,3 +430,150 @@ def test_px_f5_moneyline_has_no_known_name_declines():
     s = _px_structure(_px_fg_markets() + _px_f5_markets())
     leg = CanonicalLeg("g1", "ml", None, "home", "F5")
     assert resolve_legs(s, [leg], HOME, AWAY) is None
+
+
+# ---------------------------------------------------------------------------
+# Issue #86: F5-winner (ml, F5) legs — resolution + tie anchors per book
+# ---------------------------------------------------------------------------
+F5_ML = CanonicalLeg("g1", "ml", None, "home", "F5")
+
+
+def test_fd_f5_moneyline_resolves_from_f5_bucket():
+    from mlb_sgp.fanduel import resolve_legs
+    out = resolve_legs(_fd_structure(), [F5_ML, F5_TOTAL], HOME, AWAY)
+    assert out is not None and len(out) == 2
+    assert out[0].ref == ("m6", "s11")
+    assert out[0].opposite_ref == ("m6", "s12")
+
+
+def test_nv_f5_moneyline_resolves_from_f5_bucket():
+    from mlb_sgp.novig import resolve_legs
+    out = resolve_legs(_nv_structure(), [F5_ML, F5_TOTAL], HOME, AWAY)
+    assert out is not None and len(out) == 2
+    assert out[0].ref == "f5hml"
+
+
+def test_dk_f5_moneyline_resolves_from_f5_bucket():
+    from mlb_sgp.draftkings import resolve_legs
+    out = resolve_legs(_dk_structure(), [F5_ML, F5_TOTAL], HOME, AWAY)
+    assert out is not None and len(out) == 2
+    assert out[0].ref == "0ML700_1"
+    assert out[0].opposite_ref == "0ML700_3"
+
+
+def test_fd_tie_prob_devigs_the_result3_bucket():
+    """FD's "First 5 Innings Result" runners (home/tie/away decimals) ride
+    the F5 bucket as ``result3``; f5_tie_prob deviggs P(tie) off them."""
+    from mlb_sgp.fanduel import f5_tie_prob
+    s = _fd_structure()
+    s["F5"]["result3"] = {"home": 1.72463768115942, "tie": 6.5, "away": 2.88}
+    out = f5_tie_prob(s)
+    assert out is not None
+    assert 0.10 < out < 0.17
+
+
+def test_fd_tie_prob_none_when_result3_missing_or_partial():
+    from mlb_sgp.fanduel import f5_tie_prob
+    assert f5_tie_prob(_fd_structure()) is None            # no result3 key
+    s = _fd_structure()
+    s["F5"]["result3"] = {"home": 1.72, "away": 2.88}      # tie runner absent
+    assert f5_tie_prob(s) is None
+    s["F5"] = None                                         # no F5 board
+    assert f5_tie_prob(s) is None
+
+
+def test_fd_market_map_carries_first_5_innings_result():
+    from scraper_fanduel_sgp import _MARKET_MAP
+    assert _MARKET_MAP.get("First 5 Innings Result") == ("f5", "result3", "main")
+
+
+def test_mgm_parse_markets_captures_f5_1x2_and_tie_prob():
+    """BetMGM "1st 5 Innings - 1X2" options land as F5 result3 decimals;
+    f5_tie_prob deviggs them. Live recon 2026-08-12: Royals 2.65 / Tie 6.75
+    / Dodgers 1.8 (sum 1.0811)."""
+    from mlb_sgp.betmgm import parse_markets, f5_tie_prob
+
+    def opt(name, oid, odds):
+        return {"name": {"value": name}, "id": oid,
+                "price": {"odds": odds}}
+
+    markets = [{
+        "name": {"value": "1st 5 Innings - 1X2"},
+        "id": "om9",
+        "isBetBuilder": True,
+        "options": [opt("Royals", "x1", 2.65), opt("Tie", "x2", 6.75),
+                    opt("Dodgers", "x3", 1.8)],
+    }]
+    s = parse_markets(markets, "Los Angeles Dodgers", "Kansas City Royals")
+    assert s["F5"]["result3"] == {"home": 1.8, "tie": 6.75, "away": 2.65}
+    out = f5_tie_prob(s)
+    assert out is not None
+    assert 0.10 < out < 0.18
+
+
+def test_mgm_parse_markets_result3_absent_leaves_tie_prob_none():
+    from mlb_sgp.betmgm import parse_markets, f5_tie_prob
+    s = parse_markets([], "Los Angeles Dodgers", "Kansas City Royals")
+    assert f5_tie_prob(s) is None
+
+
+def test_czr_classifies_f5_moneyline_names():
+    """CZR posts its F5 board near lineups; the ML name mirrors its posted
+    "1st 5 Innings Run Line"/"Total Runs" family (and its live "1st 3
+    Innings Money Line"). Both plain and dashed variants classify."""
+    from mlb_sgp.caesars import parse_markets
+
+    def mkt(name, sels):
+        return {"name": name, "id": "m1", "selections": sels}
+
+    sels = [{"type": "home", "name": "|LAD|", "price": {"d": 1.6}},
+            {"type": "away", "name": "|KC|", "price": {"d": 2.3}}]
+    for name in ("1st 5 Innings Money Line", "1st 5 innings - money line"):
+        event = {"id": "e1", "competitionId": "c1",
+                 "keyMarketGroups": [{"markets": [mkt(name, sels)]}]}
+        s = parse_markets(event)
+        assert s["F5"]["moneyline"] is not None, name
+        assert s["F5"]["moneyline"]["home"]["price"]["d"] == 1.6
+
+
+def test_czr_f5_moneyline_resolves_once_parsed():
+    from mlb_sgp.caesars import resolve_legs
+    s = _czr_structure()
+    s["F5"]["moneyline"] = {"home": _czr_leg("f5-hml", 1.6),
+                            "away": _czr_leg("f5-aml", 2.3)}
+    out = resolve_legs(s, [F5_ML, F5_TOTAL], HOME, AWAY)
+    assert out is not None and len(out) == 2
+    assert out[0].ref["name"] == "f5-hml"
+
+
+def test_dk_main_market_nums_accepts_bare_1st_5_innings_as_f5_ml(monkeypatch):
+    """DK's live board (2026-08-12) names the F5 winner market bare
+    "1st 5 Innings" — no "Moneyline - 1st 5 Innings" row existed. Both
+    names must seed the F5 moneyline market_num (bare name only as
+    fallback, never overriding an explicit Moneyline row)."""
+    import scraper_draftkings_sgp as dk
+
+    def fake_subcats(session, event_id, subcat_id, profile=None):
+        if subcat_id == "4519":
+            return [("m_1", "Run Line"), ("m_2", "Total"), ("m_3", "Moneyline")]
+        return [("2_100", "Run Line - 1st 5 Innings"),
+                ("3_200", "Total Runs - 1st 5 Innings"),
+                ("359435579", "1st 5 Innings")]
+
+    monkeypatch.setattr(dk, "_fetch_subcat_markets", fake_subcats)
+    out = dk.fetch_main_market_nums(None, "evt")
+    assert out["f5"]["moneyline"] == "359435579"
+
+
+def test_dk_explicit_f5_moneyline_name_beats_bare_alias(monkeypatch):
+    import scraper_draftkings_sgp as dk
+
+    def fake_subcats(session, event_id, subcat_id, profile=None):
+        if subcat_id == "4519":
+            return []
+        return [("359435579", "1st 5 Innings"),
+                ("4_300", "Moneyline - 1st 5 Innings")]
+
+    monkeypatch.setattr(dk, "_fetch_subcat_markets", fake_subcats)
+    out = dk.fetch_main_market_nums(None, "evt")
+    assert out["f5"]["moneyline"] == "300"

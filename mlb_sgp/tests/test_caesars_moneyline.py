@@ -27,7 +27,9 @@ def test_classify_moneyline():
     assert _classify("Money Line") == ("FG", "moneyline")
     # Run line / total still classify; unrelated names do not.
     assert _classify("Run Line") == ("FG", "spread")
-    assert _classify("1st 5 Innings Moneyline") is None
+    # #86: the F5 winner family is priceable now — F5 ML names classify.
+    assert _classify("1st 5 Innings Moneyline") == ("F5", "moneyline")
+    assert _classify("1st 3 Innings Money Line") is None
 
 
 def _sel(t, sid, d):

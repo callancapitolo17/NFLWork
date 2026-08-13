@@ -673,6 +673,24 @@ def resolve_legs(structure, legs, home_team, away_team, *,
         return None
 
 
+def f5_tie_prob(structure) -> float | None:
+    """Devigged P(tie after 5) from FD's "First 5 Innings Result" 3-way
+    (#86 tie anchor). Reads the ``result3`` decimals ``fetch_event_runners``
+    stashed in the F5 bucket; any missing outcome or an insane vig envelope
+    returns None (the engine then converts with another book's anchor, or
+    declines the combo). Never raises."""
+    try:
+        bucket = (structure.get("F5") or {}).get("result3") or {}
+        home, tie, away = (bucket.get("home"), bucket.get("tie"),
+                           bucket.get("away"))
+        if home is None or tie is None or away is None:
+            return None
+        from kalshi_common.fair_value import tie_prob_from_three_way
+        return tie_prob_from_three_way(home, tie, away)
+    except Exception:
+        return None
+
+
 def price_selection_set(client, refs, *,
                         counters: FetchCounters | None = None,
                         ) -> float | None:
