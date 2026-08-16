@@ -61,6 +61,14 @@ def _svc(book, hooks):
     return SGPService(books=(book,), on_demand_hooks={book: hooks})
 
 
+def _cell_of(refs):
+    """Bitmask cell index a refs list encodes (o{j} = leg j flipped).
+
+    Batch cells (1..2^N-1) price concurrently since #93, so fake price
+    functions key on the refs themselves, never on call order."""
+    return sum(1 << j for j, r in enumerate(refs) if r.startswith("o"))
+
+
 # --------------------------------------------------------------------- #
 # Route A (partition)                                                    #
 # --------------------------------------------------------------------- #
@@ -70,12 +78,12 @@ CELL_FAIRS = [0.30, 0.10, 0.10, 0.05, 0.15, 0.10, 0.10, 0.10]
 CELL_DECS = [1.0 / (1.30 * p) for p in CELL_FAIRS]
 
 
-def test_route_a_three_legs_prices_eight_cells_in_bitmask_order():
+def test_route_a_three_legs_prices_all_eight_cells_cell0_first():
     calls = []
 
     def price(client, refs, event):
         calls.append(list(refs))
-        return CELL_DECS[len(calls) - 1]
+        return CELL_DECS[_cell_of(refs)]
 
     svc = _svc("novig", _hooks(_resolved(3), price))
     res = svc.price_on_demand("novig", GAME, _legs(3))
@@ -86,30 +94,34 @@ def test_route_a_three_legs_prices_eight_cells_in_bitmask_order():
     assert res.n_cells_priced == 8
     assert res.latency_sec >= 0.0
     assert res.fair == pytest.approx(fair_value.devig_partition(CELL_DECS, 3))
-    # Bitmask ordering: cell i flips leg j to o{j} iff bit j of i is set;
-    # cell 0 (all chosen refs) priced FIRST.
+    # Cell 0 (all chosen refs) prices FIRST and alone; cells 1..7 land
+    # concurrently (#93), so assert coverage, not call order.
+    assert calls[0] == ["r0", "r1", "r2"]
     assert len(calls) == 8
-    for i, refs in enumerate(calls):
-        assert refs == [f"o{j}" if (i >> j) & 1 else f"r{j}" for j in range(3)]
+    expected = {tuple(f"o{j}" if (i >> j) & 1 else f"r{j}" for j in range(3))
+                for i in range(8)}
+    assert {tuple(c) for c in calls} == expected
 
 
 def test_route_a_later_cell_missing_falls_to_route_b_without_repricing_target():
     calls = []
+    by_cell = {0: 3.0, 1: None, 2: 2.8, 3: 2.5}   # cell 1 -> abandon
 
     def price(client, refs, event):
         calls.append(list(refs))
-        if len(calls) == 1:
-            return 3.0          # cell 0 = target
-        return None             # cell 1 missing -> abandon partition
+        return by_cell[_cell_of(refs)]
 
     svc = _svc("novig", _hooks(_resolved(2), price))
     res = svc.price_on_demand("novig", GAME, _legs(2))
 
     assert res is not None
     assert res.route == "transfer"
-    assert res.n_cells_priced == 1              # only the target cell priced
-    # Abandoned after cell 1; target NOT re-priced (cell 0 reused).
-    assert calls == [["r0", "r1"], ["o0", "r1"]]
+    # Target + the two batch cells that DID price (cell 1 failed).
+    assert res.n_cells_priced == 3
+    # 4 calls total: target FIRST, then the 3 batch cells (any order);
+    # the target is NOT re-priced for Route B (cell 0 reused).
+    assert calls[0] == ["r0", "r1"]
+    assert len(calls) == 4
     fair = fair_value.devig_two_way(1.9, 1.9)[0]
     expected = fair_value.fair_by_correlation_transfer(
         3.0, [(1.0 / 1.9, fair)] * 2)
@@ -138,12 +150,12 @@ def test_route_a_cell0_missing_reprices_target_for_route_b():
 def test_partition_gate_failure_falls_to_route_b_reusing_cell0():
     # All 4 cells price, but the overround is insane -> devig_partition None
     # -> Route B without any extra wire call (target = cell 0).
-    insane = [3.0, 1.05, 1.05, 1.05]
+    insane = {0: 3.0, 1: 1.05, 2: 1.05, 3: 1.05}
     calls = []
 
     def price(client, refs, event):
         calls.append(list(refs))
-        return insane[len(calls) - 1]
+        return insane[_cell_of(refs)]
 
     svc = _svc("novig", _hooks(_resolved(2), price))
     res = svc.price_on_demand("novig", GAME, _legs(2))
@@ -152,6 +164,50 @@ def test_partition_gate_failure_falls_to_route_b_reusing_cell0():
     assert res.route == "transfer"
     assert res.n_cells_priced == 4
     assert len(calls) == 4                       # no 5th (re-price) call
+
+
+def test_route_a_batch_cells_price_concurrently():
+    """#93: cells 1..2^N-1 must be in flight AT THE SAME TIME. Each batch
+    call blocks on a 3-party barrier; the old sequential loop would trip
+    the barrier timeout (one thread can never satisfy 3 parties)."""
+    import threading
+    barrier = threading.Barrier(3, timeout=5)
+    four_fairs = [0.40, 0.20, 0.25, 0.15]        # uniform 1.2 overround
+    four_decs = [1.0 / (1.2 * p) for p in four_fairs]
+
+    def price(client, refs, event):
+        i = _cell_of(refs)
+        if i != 0:
+            barrier.wait()
+        return four_decs[i]
+
+    svc = _svc("novig", _hooks(_resolved(2), price))
+    res = svc.price_on_demand("novig", GAME, _legs(2))
+
+    assert res is not None
+    assert res.route == "partition"
+    assert res.n_cells_priced == 4
+    assert res.fair == pytest.approx(fair_value.devig_partition(four_decs, 2))
+
+
+def test_route_b_skipped_when_flight_budget_already_burned():
+    """#93: Route B spends extra wire calls a budget-exceeded fetch can
+    never convert into a quote (measured p50 21.6s vs the ~15s flight).
+    One-sided legs skip Route A; with the deadline at 0 the fetch must
+    decline WITHOUT a single price call."""
+    calls = []
+
+    def price(client, refs, event):
+        calls.append(list(refs))
+        return 3.0
+
+    svc = SGPService(
+        books=("novig",),
+        on_demand_hooks={"novig": _hooks(_resolved(2, two_sided=False),
+                                         price)},
+        on_demand_deadline_sec=0.0)
+    assert svc.price_on_demand("novig", GAME, _legs(2)) is None
+    assert calls == []
 
 
 # --------------------------------------------------------------------- #

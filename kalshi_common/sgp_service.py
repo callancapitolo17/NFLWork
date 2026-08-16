@@ -706,8 +706,10 @@ class SGPService:
         Route A (partition): if N <= ON_DEMAND_MAX_PARTITION_LEGS and every
         leg resolved two-sided, price all 2^N cells — cell i flips leg j to
         its opposite_ref iff bit j of i is set (legset.enumerate_partition
-        ordering; cell 0 = target, priced FIRST). Any missing cell abandons
-        the partition (the already-priced target is reused for Route B).
+        ordering). Cell 0 = the target, priced FIRST and alone (a combo the
+        book won't price stays one wire call); cells 1..2^N-1 then price
+        concurrently (#93). Any missing cell abandons the partition (the
+        already-priced target is reused for Route B).
 
         Route B (correlation transfer): one SGP price for the target +
         per-leg devigged singles — structure odds where the book carries
@@ -830,19 +832,19 @@ class SGPService:
             # ---- Route A: full 2^N partition ---- #
             if (n <= ON_DEMAND_MAX_PARTITION_LEGS
                     and all(r.opposite_ref is not None for r in resolved)):
-                cell_decs = []
-                for i in range(2 ** n):
-                    refs = [resolved[j].opposite_ref if (i >> j) & 1
-                            else resolved[j].ref for j in range(n)]
-                    d = _price(refs)
-                    if i == 0:
-                        target_dec = d           # reusable by Route B
-                    if d is None:
-                        cell_decs = None         # abandon the partition
-                        break
+                # Cell 0 (the target) prices FIRST and ALONE: the dominant
+                # "book won't price this combo" outcome stays a single wire
+                # call — firing every cell up front would multiply wasted
+                # wire volume ~2^N on that path (#93; the 08-11 PX block
+                # was rate-triggered, so wasted wire is not free).
+                target_dec = _price([r.ref for r in resolved])
+                if target_dec is not None:
                     n_cells_priced += 1
-                    cell_decs.append(d)
-                cells = cell_decs
+                    rest, n_rest = self._price_partition_cells(
+                        resolved, n, _price)
+                    n_cells_priced += n_rest
+                    if rest is not None:
+                        cells = [target_dec] + rest
 
             # ---- Route B inputs (only if the partition can't produce) --- #
             from kalshi_common import fair_value
@@ -850,6 +852,12 @@ class SGPService:
             partition_ok = (cells is not None
                             and fair_value.devig_partition(cells, n) is not None)
             if not partition_ok:
+                # #93: Route B costs 1+ extra wire round trips; measured
+                # Route-B fetches ran p50 21.6s — a fetch that has already
+                # burned the flight budget can never land in a quote, so
+                # stop before spending more wire.
+                if time.monotonic() - t0 > self.on_demand_deadline_sec:
+                    return None
                 if target_dec is None:
                     target_dec = _price([r.ref for r in resolved])
                     if target_dec is not None:
@@ -988,6 +996,52 @@ class SGPService:
         if first_error is not None:
             raise first_error
         return fetched
+
+    @staticmethod
+    def _price_partition_cells(resolved, n, price_fn):
+        """Concurrently price partition cells 1..2^N-1 (cell 0 is the
+        target, already priced by the caller — see the Route A block).
+
+        #93: these cells used to price sequentially; at ~0.8s per RFQ
+        round trip that put the whole fetch at ~2^N x a single call's
+        latency, blowing the on-demand flight budget at the slower books.
+
+        Returns ``(cells, n_priced)``: ``cells`` is the cell decimals in
+        legset.enumerate_partition order (index 1 up), or None when any
+        cell failed (partition abandoned); ``n_priced`` counts the cells
+        that DID price either way, for n_cells_priced accounting. A wire
+        exception re-raises AFTER every in-flight call completes — same
+        transport-accounting contract as ``_fetch_missing_singles``.
+        """
+        def _cell_refs(i):
+            return [resolved[j].opposite_ref if (i >> j) & 1
+                    else resolved[j].ref for j in range(n)]
+
+        cell_idx = list(range(1, 2 ** n))
+        results: dict = {}
+        if len(cell_idx) == 1:
+            results[1] = price_fn(_cell_refs(1))
+        else:
+            first_error = None
+            pool = ThreadPoolExecutor(max_workers=min(8, len(cell_idx)),
+                                      thread_name_prefix="sgp-cell")
+            try:
+                futs = {i: pool.submit(price_fn, _cell_refs(i))
+                        for i in cell_idx}
+                for i, fut in futs.items():
+                    try:
+                        results[i] = fut.result()
+                    except Exception as e:
+                        if first_error is None:
+                            first_error = e
+            finally:
+                pool.shutdown(wait=True)
+            if first_error is not None:
+                raise first_error
+        n_priced = sum(1 for d in results.values() if d is not None)
+        if any(results.get(i) is None for i in cell_idx):
+            return None, n_priced
+        return [results[i] for i in cell_idx], n_priced
 
     # ------------------------------------------------------------------ #
     # Per-book on-demand hooks (real implementations).                    #
