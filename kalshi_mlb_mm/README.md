@@ -234,7 +234,11 @@ combo) by `SGPService.price_on_demand`:
 - **Route A — full partition** (≤3 legs, all sides offered): price all 2^N
   side-combination cells (`legset.enumerate_partition`; cell 0 = target,
   bit j of cell i flips leg j), probit-devig across the partition
-  (`devig_partition`), read the target cell. Overround gate scales with leg
+  (`devig_partition`), read the target cell. Cell 0 prices first and
+  alone (a combo the book won't price stays one wire call), then the
+  remaining cells fire **concurrently** (#93 — sequentially they compounded
+  to ~2^N× one round trip, blowing the flight budget at PX/Novig).
+  Overround gate scales with leg
   count (`1 ≤ Σ(1/dec) ≤ 1 + 0.25·N`, live-calibrated — real FD 2-leg partitions sum to ~1.28). No fallback within the route — any
   missing/insane cell abandons to Route B.
 - **Route B — correlation transfer** (any N, or any one-sided leg): one SGP
@@ -244,7 +248,9 @@ combo) by `SGPService.price_on_demand`:
   IDs only, so DK singles are priced as 1-leg `calculateBets` calls (only
   when Route B is actually taken). Result gated by exact **Fréchet bounds**
   (`max(0, Σp−(n−1)) ≤ fair ≤ min(p)`) — assumption-free joint-probability
-  limits.
+  limits. Skipped entirely once the fetch has already burned
+  `on_demand_deadline_sec` (#93 — measured Route-B fallbacks ran p50 21.6s,
+  past any flight budget, so the extra wire calls could never reach a quote).
 
 Consensus is the same `MIN_AGREEING_BOOKS=2` + band rule as grids. Per-book
 `resolve_legs` / `price_selection_set` live in each `mlb_sgp/<book>.py`,
