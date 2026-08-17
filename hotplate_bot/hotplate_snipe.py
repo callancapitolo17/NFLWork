@@ -329,6 +329,76 @@ def snipe_add_to_cart(page: Page, config: dict[str, Any]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------------------
+# recon probe
+# --------------------------------------------------------------------------------------
+
+# Mirrors how the sniper matches, so recon's answer is the sniper's answer. It reads
+# innerText but falls back to textContent: a page saved to disk and reloaded without
+# its stylesheets can lay out differently, and innerText alone would under-report.
+RECON_PROBE_JS = r"""
+(options) => {
+    const buttonRegex = new RegExp(options.buttonPattern, "i");
+    const readText = (element) => ((element.innerText || element.textContent || "").trim());
+
+    const buttons = [...document.querySelectorAll("button, [role=button], a")]
+        .map((element) => ({
+            text: readText(element).slice(0, 60),
+            disabled: Boolean(element.disabled) || element.getAttribute("aria-disabled") === "true",
+        }))
+        .filter((entry) => entry.text.length > 0);
+
+    const pageText = readText(document.body).toLowerCase();
+    const foundItems = options.itemNames.filter((name) => pageText.includes(name.toLowerCase()));
+
+    return {
+        pageTitle: document.title,
+        foundItems,
+        missingItems: options.itemNames.filter((name) => !foundItems.includes(name)),
+        matchingButtons: buttons.filter((entry) => buttonRegex.test(entry.text)),
+        allButtonTexts: [...new Set(buttons.map((entry) => entry.text))].slice(0, 40),
+    };
+}
+"""
+
+
+def probe_page(page: Page, config: dict[str, Any]) -> dict[str, Any]:
+    """Run the recon probe against whatever is currently loaded in `page`."""
+    return page.evaluate(
+        RECON_PROBE_JS,
+        {"itemNames": config["target_items"], "buttonPattern": config["add_to_cart_pattern"]},
+    )
+
+
+def print_recon_report(probe_result: dict[str, Any], config: dict[str, Any]) -> None:
+    """Print the probe result, leading with the two failure modes that lose drops."""
+    print("\n=== RECON ===")
+    print(f"Page title      : {probe_result['pageTitle']}")
+    print(f"Items found     : {probe_result['foundItems'] or 'NONE — fix config.target_items'}")
+    print(f"Items missing   : {probe_result['missingItems'] or 'none'}")
+    print(f"\nButtons matching '{config['add_to_cart_pattern']}':")
+    for entry in probe_result["matchingButtons"]:
+        print(f"    [{'DISABLED' if entry['disabled'] else 'ENABLED'}] {entry['text']!r}")
+    if not probe_result["matchingButtons"]:
+        print("    NONE — widen config.add_to_cart_pattern using the button texts below.")
+
+    print("\nAll button texts on page (first 40):")
+    for text in probe_result["allButtonTexts"]:
+        print(f"    {text!r}")
+
+    print("\nVerdict:")
+    if not probe_result["foundItems"]:
+        print("    NOT READY — none of your target_items appear on this page.")
+    elif not probe_result["matchingButtons"]:
+        print("    NOT READY — items found, but no button matches add_to_cart_pattern.")
+    elif probe_result["missingItems"]:
+        print(f"    PARTIAL — will race for {probe_result['foundItems']}, but "
+              f"{probe_result['missingItems']} were not found.")
+    else:
+        print("    READY — all target items and a matching button are visible.")
+    print(f"\nDump written to {BOT_DIR / 'recon_dump.html'} and recon_dump.png")
+
+
+# --------------------------------------------------------------------------------------
 # subcommands
 # --------------------------------------------------------------------------------------
 
@@ -354,64 +424,40 @@ def command_login(config: dict[str, Any]) -> int:
     return 0
 
 
-def command_recon(config: dict[str, Any]) -> int:
+def command_recon(config: dict[str, Any], html_file: Path | None = None) -> int:
     """
-    Load the event page and dump what the sniper would see, so config can be verified.
+    Report what the sniper would see on the drop page, so config can be verified.
 
     Run this on a live drop page BEFORE the real drop. It reports which target items
     it can find and whether their buttons are currently disabled (they should be,
     during the waiting room — that is the signal the matcher is working).
+
+    With html_file set, probes a saved copy of the page instead of fetching it. The
+    probe only needs the DOM, so this works with no network at all — useful when the
+    page is saved from one machine and checked on another.
     """
-    require_saved_session()
+    if html_file is None:
+        require_saved_session()
+    elif not html_file.exists():
+        raise SystemExit(f"No such HTML file: {html_file}")
+
     with sync_playwright() as playwright:
-        browser = launch_browser(playwright, headless=config["headless"])
+        # Offline mode never needs a visible window, and often runs somewhere headless.
+        browser = launch_browser(playwright, headless=config["headless"] or html_file is not None)
         context = open_context(browser)
         page = context.new_page()
-        page.goto(config["event_url"], wait_until="networkidle")
-        check_clock_skew(page)
 
-        probe_result = page.evaluate(
-            r"""
-            (options) => {
-                const buttonRegex = new RegExp(options.buttonPattern, "i");
-                const buttons = [...document.querySelectorAll("button, [role=button], a")]
-                    .map((element) => ({
-                        text: (element.innerText || "").trim().slice(0, 60),
-                        disabled: Boolean(element.disabled) || element.getAttribute("aria-disabled") === "true",
-                        matchesPattern: buttonRegex.test((element.innerText || "").trim()),
-                    }))
-                    .filter((entry) => entry.text.length > 0);
-                const foundItems = options.itemNames.filter((name) =>
-                    document.body.innerText.toLowerCase().includes(name.toLowerCase()));
-                return {
-                    pageTitle: document.title,
-                    foundItems,
-                    missingItems: options.itemNames.filter((name) => !foundItems.includes(name)),
-                    matchingButtons: buttons.filter((entry) => entry.matchesPattern),
-                    allButtonTexts: [...new Set(buttons.map((entry) => entry.text))].slice(0, 40),
-                };
-            }
-            """,
-            {"itemNames": config["target_items"], "buttonPattern": config["add_to_cart_pattern"]},
-        )
+        if html_file is None:
+            page.goto(config["event_url"], wait_until="networkidle")
+            check_clock_skew(page)
+        else:
+            log.info("Offline recon against %s (no network).", html_file)
+            page.set_content(html_file.read_text(encoding="utf-8", errors="replace"))
 
+        probe_result = probe_page(page, config)
         (BOT_DIR / "recon_dump.html").write_text(page.content())
         page.screenshot(path=str(BOT_DIR / "recon_dump.png"), full_page=True)
-
-        print("\n=== RECON ===")
-        print(f"Page title      : {probe_result['pageTitle']}")
-        print(f"Items found     : {probe_result['foundItems'] or 'NONE — fix config.target_items'}")
-        print(f"Items missing   : {probe_result['missingItems'] or 'none'}")
-        print(f"Buttons matching '{config['add_to_cart_pattern']}':")
-        for entry in probe_result["matchingButtons"] or []:
-            state = "DISABLED" if entry["disabled"] else "ENABLED"
-            print(f"    [{state}] {entry['text']!r}")
-        if not probe_result["matchingButtons"]:
-            print("    NONE — widen config.add_to_cart_pattern using the button texts below.")
-        print("\nAll button texts on page (first 40):")
-        for text in probe_result["allButtonTexts"]:
-            print(f"    {text!r}")
-        print(f"\nDump written to {BOT_DIR / 'recon_dump.html'} and recon_dump.png")
+        print_recon_report(probe_result, config)
 
         context.close()
         browser.close()
@@ -506,7 +552,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Hotplate drop assistant.")
     parser.add_argument("command", choices=["login", "recon", "arm"])
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument(
+        "--html-file",
+        type=Path,
+        default=None,
+        help="recon only: probe a saved copy of the drop page instead of fetching it (no network).",
+    )
     args = parser.parse_args(argv)
+
+    if args.html_file is not None and args.command != "recon":
+        raise SystemExit("--html-file is only valid with the `recon` command.")
 
     logging.basicConfig(
         level=logging.INFO,
@@ -515,7 +570,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     config = load_config(args.config)
-    handlers = {"login": command_login, "recon": command_recon, "arm": command_arm}
+    if args.command == "recon":
+        return command_recon(config, html_file=args.html_file)
+    handlers = {"login": command_login, "arm": command_arm}
     return handlers[args.command](config)
 
 

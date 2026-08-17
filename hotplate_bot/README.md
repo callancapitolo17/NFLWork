@@ -74,6 +74,20 @@ sit there and time out.
 
 If no button matches, widen `add_to_cart_pattern` using the button texts recon dumps.
 
+### Offline recon
+
+The probe only needs the DOM, so it can run against a saved copy of the page with no
+network at all:
+
+```bash
+python hotplate_snipe.py recon --html-file ~/Downloads/drop.html
+```
+
+Save the page from the browser (`Cmd+S`, or DevTools → Elements → right-click `<html>`
+→ Copy → Copy outerHTML, into a file). Useful when the machine holding the page can't
+reach the machine checking the config — including handing the HTML to someone else to
+sanity-check your `target_items` against.
+
 ### What `arm` does
 
 Loads the page, warns you if your clock is skewed from Hotplate's server, then waits.
