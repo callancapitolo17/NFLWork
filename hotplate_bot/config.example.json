@@ -1,0 +1,21 @@
+{
+  "event_url": "https://www.hotplate.com/butterandcrumble/REPLACE-WITH-EVENT-ID",
+
+  "_comment_target_items": "Priority order. The first item whose button becomes clickable is the one clicked. Use the exact text shown on the drop page; partial matches are fine and case is ignored.",
+  "target_items": [
+    "Pistachio Croissant",
+    "Cinnamon Roll"
+  ],
+
+  "_comment_add_to_cart_pattern": "Case-insensitive regex matched against button text. Run `recon` against a live drop page and widen this if it matches nothing.",
+  "add_to_cart_pattern": "add to cart|add|order now|reserve",
+
+  "_comment_headless": "Keep false. You want to see the window and take over checkout by hand.",
+  "headless": false,
+
+  "_comment_auto_submit_payment": "Not implemented on purpose. Payment is yours to confirm.",
+  "auto_submit_payment": false,
+
+  "_comment_max_wait_minutes": "How long `arm` sits on the page before giving up. Cover the whole waiting room plus slack.",
+  "max_wait_minutes": 20
+}

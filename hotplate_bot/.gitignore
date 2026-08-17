@@ -1,0 +1,11 @@
+# Live session cookies — as good as your password. Never commit.
+storage_state.json
+
+# Your real config (contains the event URL you were personally sent).
+config.json
+
+# Run artifacts.
+recon_dump.html
+recon_dump.png
+snipe_*.png
+snipe_*.log
