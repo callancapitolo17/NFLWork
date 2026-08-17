@@ -19,7 +19,7 @@ import sys
 
 from playwright.sync_api import Page, sync_playwright
 
-from hotplate_snipe import IN_PAGE_SNIPER_JS, SNIPE_POLL_BACKSTOP_MS, launch_browser
+from hotplate_snipe import BOT_DIR, IN_PAGE_SNIPER_JS, SNIPE_POLL_BACKSTOP_MS, launch_browser
 
 # Generous enough not to flake on a loaded CI box, tight enough that a regression
 # to Python-side polling (tens of ms, plus CDP round-trips) would fail the test.
@@ -172,6 +172,35 @@ def test_ignores_items_not_in_config(page: Page) -> bool:
     return check(clicks == ["Sourdough Loaf"], "clicked only the configured item, not its neighbours")
 
 
+def test_console_recon_pairs_items_to_buttons(page: Page) -> bool:
+    """
+    console_recon.js walks button -> item name; the sniper walks item name -> button.
+
+    They must agree, because recon's whole job is telling you what the sniper will do.
+    """
+    snippet = (BOT_DIR / "console_recon.js").read_text()
+
+    page.set_content(build_mock_page(999999, ENABLE_IN_PLACE))
+    locked = page.evaluate(snippet)
+    pairs_locked = {entry["itemName"]: entry["clickableNow"] for entry in locked["items"]}
+
+    page.evaluate("document.querySelectorAll('#menu button').forEach(function (b) { b.disabled = false; });")
+    opened = page.evaluate(snippet)
+    pairs_open = {entry["itemName"]: entry["clickableNow"] for entry in opened["items"]}
+
+    print(f"\n[console-recon]  locked={pairs_locked}  open={pairs_open}")
+    return all(
+        [
+            check(
+                set(pairs_locked) == {"Pistachio Croissant", "Cinnamon Roll", "Sourdough Loaf"},
+                "paired every button back to its own item name",
+            ),
+            check(not any(pairs_locked.values()), "reports nothing clickable during the waiting room"),
+            check(all(pairs_open.values()), "reports buttons clickable once the drop opens"),
+        ]
+    )
+
+
 def main() -> int:
     tests = [
         test_clicks_promptly_when_enabled_in_place,
@@ -179,6 +208,7 @@ def main() -> int:
         test_falls_through_to_second_choice,
         test_does_not_click_while_disabled,
         test_ignores_items_not_in_config,
+        test_console_recon_pairs_items_to_buttons,
     ]
 
     with sync_playwright() as playwright:

@@ -74,6 +74,32 @@ sit there and time out.
 
 If no button matches, widen `add_to_cart_pattern` using the button texts recon dumps.
 
+### Console recon (no setup at all)
+
+The fastest check, and the one to use during a live waiting room. Open the drop page,
+DevTools → Console, paste all of `console_recon.js`, Enter:
+
+```
+=== HOTPLATE RECON ===
+┌─────────┬────────────────────────┬───────────────┬───────────────┐
+│ (index) │        itemName        │  buttonLabel  │ clickableNow  │
+├─────────┼────────────────────────┼───────────────┼───────────────┤
+│    0    │ 'Pistachio Croissant'  │ 'Add to Cart' │     false     │
+│    1    │    'Cinnamon Roll'     │ 'Add to Cart' │     false     │
+└─────────┴────────────────────────┴───────────────┴───────────────┘
+All buttons currently locked — expected during a waiting room. Matcher is working.
+Report copied to clipboard.
+```
+
+It reads the DOM and clicks nothing. Use the exact `itemName` strings it prints as your
+`target_items` — those are the strings the sniper matches against, so copying them
+removes the guesswork entirely.
+
+It also pairs each button back to its item name, which is the check that matters: the
+sniper finds an item by name then walks *up* to the nearest ancestor containing a
+button. A card whose name and button don't share an ancestor within 8 levels is
+invisible to it, and `(no name found)` in this table is where you'd catch that.
+
 ### Offline recon
 
 The probe only needs the DOM, so it can run against a saved copy of the page with no
