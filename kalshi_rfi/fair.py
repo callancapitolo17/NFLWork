@@ -57,8 +57,15 @@ class FairService:
     """Holds one SGPService (persistent per-book clients) for the daemon."""
 
     def __init__(self, service: SGPService | None = None):
+        # structure_ttl_sec=0.0: our fair IS the structure's odds, so every
+        # fetch must hit the book's wire — the TTL cache exists for the MM's
+        # cadence, and serving cached odds here would be stale fair sold as
+        # live (adversarial review 2026-08-25, finding 1).
+        # single_leg_structure_fair=True: opt in to the n==1 fast path;
+        # default-off keeps the MM/taker SGP pipeline untouched.
         self._service = service or SGPService(
-            books=config.BOOKS, health_db_path=None)
+            books=config.BOOKS, health_db_path=None,
+            structure_ttl_sec=0.0, single_leg_structure_fair=True)
         self._pool = ThreadPoolExecutor(max_workers=len(config.BOOKS))
 
     def fetch(self, game: RfiGame) -> FairResult | None:

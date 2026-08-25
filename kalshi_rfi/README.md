@@ -12,8 +12,14 @@ A `KXMLBRFI` market is exactly a 1st-inning total at 0.5 (issue #87). Each
 game's fair P(YRFI) comes from a **live** fetch at the 4 books with working
 period-aware I1 hooks — DraftKings, FanDuel, BetMGM, Novig — through the
 shared `SGPService.price_on_demand` on a single `CanonicalLeg(..., "I1")`.
-A lone leg takes the n==1 fast path added for this bot (exact two-way probit
-devig of the structure's own odds, zero SGP price calls); DK lacks structure
+A lone leg takes the **opt-in** n==1 fast path added for this bot (exact
+2-cell probit devig of the structure's own odds via `devig_partition`, so
+crossed/degenerate pairs fail the [1.0, 1.25] overround gate; zero SGP price
+calls). The fast path is enabled per `SGPService` instance
+(`single_leg_structure_fair=True`) and this bot pairs it with
+`structure_ttl_sec=0.0` so **every fair refresh re-fetches the book's odds
+from the wire** — never the structure TTL cache. Both knobs default off/420s,
+so the MM/taker SGP pipeline is completely unaffected. DK lacks structure
 odds and its SGP endpoint refuses 1-selection sets, so in practice ~3 books
 price (live-verified 2026-08-25: FD/MGM/Novig priced, σ_z 0.052).
 

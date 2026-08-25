@@ -73,6 +73,17 @@ def test_ttlcache_miss_cb_fires_again_after_expiry():
     assert misses == [1, 1]
 
 
+def test_ttlcache_zero_ttl_always_refetches():
+    # structure_ttl_sec=0.0 is kalshi_rfi's "live" contract: every call pays
+    # the wire, even back-to-back at the same clock instant.
+    cache = TTLCache(ttl_sec=0.0)
+    misses = []
+    cache.get_or_fetch("k", lambda: "v1", miss_cb=lambda: misses.append(1))
+    assert cache.get_or_fetch("k", lambda: "v2",
+                              miss_cb=lambda: misses.append(1)) == "v2"
+    assert misses == [1, 1]
+
+
 def test_service_on_demand_deadline_param_is_keyword_only():
     sig = inspect.signature(SGPService.__init__)
     assert (sig.parameters["on_demand_deadline_sec"].kind
