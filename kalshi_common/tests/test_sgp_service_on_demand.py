@@ -481,3 +481,43 @@ def test_service_init_makes_canonical_match_resolvable():
     assert any(p.endswith("Answer Keys") for p in sys.path)
     import importlib
     assert importlib.util.find_spec("canonical_match") is not None
+
+
+# --------------------------------------------------------------------- #
+# n == 1 fast path (kalshi_rfi, 2026-08-25)                              #
+# --------------------------------------------------------------------- #
+
+def test_single_leg_with_structure_odds_prices_without_any_price_call():
+    # A lone leg is its own single market: where the structure carries both
+    # sides, the fair is the exact two-way devig and the book's SGP price
+    # endpoint is never hit (several books refuse 1-selection sets).
+    calls = []
+
+    def price(client, refs, event):
+        calls.append(list(refs))
+        return 2.0
+
+    svc = _svc("novig", _hooks(_resolved(1, singles=True), price))
+    res = svc.price_on_demand("novig", GAME, _legs(1))
+
+    assert res is not None
+    assert res.route == "single_two_way"
+    assert res.n_cells_priced == 0
+    assert calls == []
+    assert res.fair == pytest.approx(fair_value.devig_two_way(1.9, 1.9)[0])
+
+
+def test_single_leg_without_structure_odds_falls_through_to_route_a():
+    # DK-style structure (no odds): the 2-cell partition still prices via
+    # 1-leg price calls, unchanged by the fast path.
+    def price(client, refs, event):
+        (ref,) = refs
+        return 1.90 if ref.startswith("r") else 1.95  # implied sum 1.039 (vigged)
+
+    svc = _svc("draftkings", _hooks(_resolved(1, singles=False), price))
+    res = svc.price_on_demand("draftkings", GAME, _legs(1))
+
+    assert res is not None
+    assert res.route == "partition"
+    assert res.n_cells_priced == 2
+    assert res.fair == pytest.approx(fair_value.devig_two_way(1.90, 1.95)[0])

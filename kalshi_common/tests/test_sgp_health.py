@@ -520,7 +520,10 @@ def test_on_demand_duration_is_recorded(db):
         time.sleep(0.02)
         return CELL_DECS[0]
 
-    svc = _svc_od(db, _hooks(_resolved(1), slow_price))
+    # No structure odds: a 1-leg set with them would take the n==1 fast path
+    # (zero price calls) and record a near-zero duration.
+    no_odds = [ResolvedLeg(ref="r0", opposite_ref="o0")]
+    svc = _svc_od(db, _hooks(no_odds, slow_price))
     svc.price_on_demand("novig", GAME, _legs(1))
     svc.flush_health(force=True)
     assert _read(db)[0]["duration_sec"] >= 0.02

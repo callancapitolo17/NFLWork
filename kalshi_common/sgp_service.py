@@ -814,6 +814,28 @@ class SGPService:
                 return None                      # a chosen side is missing
             counters.bump("legs_resolved", len(resolved))
 
+            # n == 1 fast path: a lone leg IS its single market, so where the
+            # structure carries both sides' odds the exact two-way devig needs
+            # ZERO price calls. Also load-bearing for correctness of coverage:
+            # several books' SGP price endpoints refuse 1-selection sets
+            # (live-verified DK/Novig/MGM 2026-08-25, kalshi_rfi smoke), so
+            # without this a single leg priced only at the books that happen
+            # to accept them. Books without structure odds (DK) fall through
+            # to the normal routes.
+            if len(legs) == 1:
+                from kalshi_common import fair_value as _fv
+                r0 = resolved[0]
+                if (r0.single_decimal is not None
+                        and r0.opposite_decimal is not None):
+                    pair = _fv.devig_two_way(r0.single_decimal,
+                                             r0.opposite_decimal)
+                    if pair is not None:
+                        return OnDemandBookResult(
+                            book=book, fair=pair[0], route="single_two_way",
+                            n_cells_priced=0,
+                            latency_sec=time.monotonic() - t0,
+                            counters=counters.snapshot())
+
             def _price(refs):
                 # Counted here rather than inside the book modules so one
                 # LOGICAL price is one tick no matter how many times #34's
