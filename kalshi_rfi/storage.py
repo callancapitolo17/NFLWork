@@ -122,6 +122,29 @@ def log_fill(con, trade_id: str, order_id: str, ticker: str,
         log.error("storage: fill insert failed for %s: %s", ticker, e)
 
 
+def load_recent_fills(con, hours: float = 48.0) -> list[tuple]:
+    """(trade_id, ticker, price_cents, count, ts) for recent fills — startup
+    state hydration, so a restart doesn't forget filled exposure (caps) or
+    orphan unsettled fills from settlement matching. 48h comfortably covers
+    an ET trading day plus settlement lag."""
+    try:
+        return con.execute(
+            "SELECT trade_id, ticker, price_cents, count, ts FROM fills "
+            "WHERE ts >= now() - (? * INTERVAL 1 HOUR)", [hours]).fetchall()
+    except duckdb.Error as e:
+        log.error("storage: recent-fills load failed: %s", e)
+        return []
+
+
+def load_settled_tickers(con) -> set:
+    try:
+        return {r[0] for r in con.execute(
+            "SELECT DISTINCT ticker FROM settlements").fetchall()}
+    except duckdb.Error as e:
+        log.error("storage: settled-tickers load failed: %s", e)
+        return set()
+
+
 def log_settlement(con, ticker: str, pnl_usd: float):
     try:
         con.execute(

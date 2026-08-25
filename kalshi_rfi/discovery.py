@@ -113,8 +113,12 @@ def drop_doubleheaders(games: list[RfiGame]) -> list[RfiGame]:
     return kept
 
 
-def fetch_open_rfi_games() -> list[RfiGame]:
+def fetch_open_rfi_games() -> list[RfiGame] | None:
     """All open KXMLBRFI markets as RfiGames (doubleheaders excluded).
+
+    Returns None on an API failure — the caller must skip the cycle, NOT
+    treat it as an empty board (an empty list would read as "every market
+    vanished" and mass-cancel resting quotes as market_gone).
 
     limit=1000 is the API max and far above a 3-day listing window
     (~45 markets), so no cursor pagination is needed.
@@ -123,7 +127,7 @@ def fetch_open_rfi_games() -> list[RfiGame]:
         "GET", "/markets?series_ticker=KXMLBRFI&status=open&limit=1000")
     if status != 200 or not isinstance(body, dict):
         log.warning("discovery: markets fetch failed status=%s", status)
-        return []
+        return None
     games = []
     for m in body.get("markets", []):
         g = parse_market(m)

@@ -99,10 +99,11 @@ def run():
 
     con = storage.connect()
     st = state_mod.RfiState()
+    if gateway.is_live:
+        st.hydrate_from_db(con)
+        state_mod.sweep_orphan_orders(st, gateway)
     fair_service = FairService()
     fair_cache: dict[str, _CachedFair] = {}
-    if gateway.is_live:
-        state_mod.sweep_orphan_orders(st, gateway)
     last_settle_poll = 0.0
 
     try:
@@ -115,6 +116,10 @@ def run():
             now_naive = now.replace(tzinfo=None)
 
             games = discovery.fetch_open_rfi_games()
+            if games is None:
+                # API failure, not an empty board: hold all state, retry.
+                time.sleep(config.CYCLE_SEC)
+                continue
             by_ticker = {g.ticker: g for g in games}
             for ticker in list(st.resting):
                 if ticker not in by_ticker:

@@ -110,6 +110,26 @@ class RfiState:
         return (self.daily_filled_cost_usd(now)
                 + self.resting_cost_usd(exclude_ticker))
 
+    def hydrate_from_db(self, con):
+        """Startup restore of filled exposure from the fills table, so a
+        restart cannot forget today's fills (per-game + daily caps) or lose
+        unsettled fills from settlement matching. Resting orders are NOT
+        restored — the live orphan sweep cancels them instead."""
+        self.settled |= storage.load_settled_tickers(con)
+        for trade_id, ticker, price_cents, count, ts in \
+                storage.load_recent_fills(con):
+            if trade_id in self._done_trades:
+                continue
+            self._done_trades.add(trade_id)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=datetime.timezone.utc)
+            self.fills.setdefault(ticker, []).append(
+                (float(count), int(price_cents), trading_day(ts)))
+        if self.fills:
+            log.info("hydrated %d fills across %d tickers from DB",
+                     sum(len(v) for v in self.fills.values()),
+                     len(self.fills))
+
 
 def poll_fills(state: RfiState, con, now: datetime.datetime) -> int:
     """Ingest new fills on our orders. Returns the number ingested."""
